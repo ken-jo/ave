@@ -183,13 +183,13 @@ describe("GitMarketplaceTab package sheet", () => {
     const fake = fakeMarketplace({ sources: [team], entries: [item] });
     fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item) });
     fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(item) });
-    fake.market.executeInstall.mockResolvedValue({ ok: false, code: "process-entry-unsupported", message: "This app cannot run process-entry extensions yet." });
+    fake.market.executeInstall.mockResolvedValue({ ok: false, code: "process-entry-requires-pinned-artifact", message: "This extension runs its own program." });
     renderTab(fake);
     fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:process-kit")).getByTestId("git-marketplace:card:state"));
     const sheet = await screen.findByTestId("git-marketplace:sheet");
     fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:confirm"));
-    expect(await within(sheet).findByText("이 앱은 아직 프로세스 진입점이 있는 익스텐션을 실행할 수 없습니다.")).toBeInTheDocument();
+    expect(await within(sheet).findByText(/이 설치는 거부되었습니다. 이 버전의 Ave는 자체 프로그램을 실행하는 익스텐션의 지원되는 사본을 아직 설치할 수 없습니다/)).toBeInTheDocument();
   });
 
   it("passes only separately selected plugin servers with their reviewed digests", async () => {

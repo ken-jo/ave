@@ -599,11 +599,13 @@ describe("SourceSyncer", () => {
     repo.commit({ "plugin.json": `${JSON.stringify({
       $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
       name: "process-kit", version: "1.0.0", description: "Process extension",
-      extensions: { "ai.agent-connector.ave": { process: { command: "node" }, tools: [], requires: { minAppVersion: "0.12.0" } } },
-    })}\n` }, "process package");
+      extensions: { "ai.agent-connector.ave": {
+        process: { command: "./bin/plugin" }, tools: [], requires: { minAppVersion: "0.13.0", hostProtocol: "2" },
+      } },
+    })}\n`, "bin/plugin": "#!/bin/sh\n" }, "process package");
     const { registry, syncer } = await setup();
     await registry.add({ id: "process-src", origin: "direct", url: server.url(name), auth: { kind: "none" } });
-    expectFailed(await syncer.sync("process-src"), "process-entry-unsupported");
+    expectFailed(await syncer.sync("process-src"), "process-entry-requires-pinned-artifact");
     expect(await syncer.readSnapshot("process-src")).toBeNull();
   });
 

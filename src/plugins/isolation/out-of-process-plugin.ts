@@ -29,6 +29,8 @@
  * why the five plugins that are not the pilot keep loading as they did.
  */
 import { mkdirSync, statSync } from "node:fs";
+import { ENV_NAME_RE } from "../../mcp/safe-names.js";
+import { ProcessEntryUnconfinedError, type ProcessLaunch } from "../process-entry.js";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { mainDir } from "../../main/main-paths.js";
@@ -620,8 +622,95 @@ export interface ConfinedPluginChildSpec {
    * CONNECT there, and the allow is generated when the child is wrapped.
    */
   readonly workerRunRoot: string;
-  /** The child's own entry module. Injected so a test can serve a stand-in. */
-  readonly childEntryPath: string;
+  /** What the wrap runs: see {@link ConfinedPluginLaunch}. */
+  readonly launch: ConfinedPluginLaunch;
+}
+
+/**
+ * The two ways a plugin child is produced (docs/design/plugin-hostapi-protocol.md §2.1).
+ *
+ *  - `entry`: the host's reference runtime, `childEntryPath`, run by the
+ *    Electron binary as Node. Injected so a test can serve a stand-in.
+ *  - `process`: the plugin's own executable, as {@link ProcessLaunch} resolved
+ *    it — `env` holds the declared pairs and then the host-owned pair.
+ */
+type ConfinedPluginLaunch =
+  | { readonly kind: "entry"; readonly childEntryPath: string }
+  | ({ readonly kind: "process" } & ProcessLaunch);
+
+/**
+ * Where a `process` launch's environment is applied: `env(1)`, INSIDE the
+ * wrap. Never a `PATH` lookup — both supported platforms ship it here.
+ */
+const PROCESS_ENV_LAUNCHER = "/usr/bin/env";
+
+/**
+ * The spawn line for one launch (decision 36).
+ *
+ * A `process` launch runs `/usr/bin/env <declared pairs> PLUGIN_ROOT=…
+ * PLUGIN_DATA=… <command> <args>`, so every variable — host-owned and
+ * declared — is set by a process that already runs inside the wrap. The outer
+ * executable ASRT spawns is `/bin/bash -c <wrapped>`, which reads its OWN
+ * environment before the sandbox command runs (a `BASH_ENV` there is sourced
+ * unconfined), so the base environment carries no manifest byte at all: the
+ * safe host allow-list, plus the sandbox HOME the caller overlays.
+ */
+function confinedSpawnLine(
+  pluginId: string,
+  launch: ConfinedPluginLaunch,
+): { command: string; args: string[]; baseEnv: NodeJS.ProcessEnv } {
+  if (launch.kind === "entry") {
+    return {
+      // `process.execPath` is the Electron binary — in production AND under
+      // this repository's own test runner, which launches Vitest through that
+      // binary (`scripts/run-vitest-under-electron.mjs`). A child spawned from
+      // a test is therefore spawned from the executable production spawns
+      // from, which is what makes the confinement suite's `electron` answers
+      // measurements rather than artefacts of a Node-versus-Electron runner.
+      // `ELECTRON_RUN_AS_NODE` makes that binary behave as Node, which is what
+      // removes `electron` from the child's CJS registry — §4's "No Electron"
+      // is this environment variable plus the absence of a renderer, not a
+      // promise. It does NOT act uniformly across module systems, so
+      // `confined-plugin-child.test.ts` asserts each form separately rather
+      // than one on the others' behalf.
+      command: process.execPath,
+      args: [launch.childEntryPath],
+      baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
+    };
+  }
+  // `env` reads an operand containing `=` as an assignment, so a command path
+  // with one would be split rather than run. The manifest schema refuses it in
+  // `command`; a resolved path can still carry one through a user-chosen home
+  // or data directory, and that is refused here, never passed on.
+  if (launch.command.includes("=")) {
+    throw new Error(
+      `[out-of-process-plugin] ${pluginId}: the process entry's resolved path '${launch.command}' contains '=', `
+        + "which env(1) would read as an assignment; move the plugin to a directory without '=' in its path",
+    );
+  }
+  const pairs = Object.entries(launch.env).map(([name, value]) => {
+    if (!ENV_NAME_RE.test(name)) {
+      throw new Error(`[out-of-process-plugin] ${pluginId}: '${name}' is not an environment variable name`);
+    }
+    return `${name}=${value}`;
+  });
+  let launcherIsFile = false;
+  try {
+    launcherIsFile = statSync(PROCESS_ENV_LAUNCHER).isFile();
+  } catch {
+    launcherIsFile = false;
+  }
+  if (!launcherIsFile) {
+    throw new Error(
+      `[out-of-process-plugin] ${pluginId}: ${PROCESS_ENV_LAUNCHER} is missing or not a regular file on this system; `
+        + "a process entry is launched through it",
+    );
+  }
+  return {
+    command: PROCESS_ENV_LAUNCHER,
+    args: [...pairs, launch.command, ...launch.args],
+    baseEnv: buildSafeChildEnv(),
+  };
 }
 
 /**
@@ -725,6 +814,8 @@ export async function spawnConfinedPluginChild(
   spec: ConfinedPluginChildSpec,
 ): Promise<ConfinedPluginChild> {
   spec.assertStillValid?.();
+  // Decided before anything is created, so a refused line leaves nothing behind.
+  const spawnLine = confinedSpawnLine(spec.pluginId, spec.launch);
   const sandboxHome = createSandboxProcessHome();
   const socketDir = spec.socketDir;
   const workerRunRoot = spec.workerRunRoot;
@@ -818,26 +909,18 @@ export async function spawnConfinedPluginChild(
       await registerWorkerUnixSocketDir(workerRunRoot);
       workerRunRootRegistered = true;
     }
+    const { command, args, baseEnv } = spawnLine;
     const child = await spawnConfinedChild({
-      // `process.execPath` is the Electron binary — in production AND under
-      // this repository's own test runner, which launches Vitest through that
-      // binary (`scripts/run-vitest-under-electron.mjs`). A child spawned from
-      // a test is therefore spawned from the executable production spawns
-      // from, which is what makes the confinement suite's `electron` answers
-      // measurements rather than artefacts of a Node-versus-Electron runner.
-      // `ELECTRON_RUN_AS_NODE` makes that binary behave as Node, which is what
-      // removes `electron` from the child's CJS registry — §4's "No Electron"
-      // is this environment variable plus the absence of a renderer, not a
-      // promise. It does NOT act uniformly across module systems, so
-      // `confined-plugin-child.test.ts` asserts each form separately rather
-      // than one on the others' behalf.
-      command: process.execPath,
-      args: [spec.childEntryPath],
+      command,
+      args,
       label: `plugin-child:${spec.pluginId}`,
       grantMode: process.platform === "win32" ? "deny-only" : "allow-list",
       allowRead: [...spec.envelope.read, sandboxHome.path],
       allowWrite: [...spec.envelope.write, sandboxHome.path],
-      baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
+      // The data root above all: the host keeps resolving it, so a child that
+      // could swap it for a link would steer the next storage handle or spawn.
+      pinWriteRoots: true,
+      baseEnv,
       extraEnv: { ...sandboxHome.env },
       // The child is a JSON-RPC server whose pipes the host owns, so unlike the
       // Python worker it needs stdin.
@@ -912,12 +995,21 @@ export async function spawnConfinedPluginChild(
 export interface OutOfProcessPluginSpec {
   readonly manifest: PluginManifest;
   readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
-  /** The resolved, real entry path of the PLUGIN (not of the child runtime). */
-  readonly entryPath: string;
+  /**
+   * How the plugin's process is produced, and so what construct's `entryPath`
+   * says (decision 33): the resolved, real path of the plugin's JS module
+   * (not of the child runtime) for an `entry` plugin; for a `process` plugin
+   * the launch `resolveProcessLaunch` built, whose command path construct
+   * carries.
+   */
+  readonly launch:
+    | { readonly kind: "entry"; readonly entryPath: string }
+    | ({ readonly kind: "process" } & ProcessLaunch);
   /**
    * Defaults to the emitted `plugin-child-main.js` under the runtime asset dir.
-   * It is the path the CONFINED spawn runs, so a test that serves a stand-in
-   * still runs it under the real wrap and bypasses nothing.
+   * It is the path the CONFINED spawn runs for an `entry` launch, so a test
+   * that serves a stand-in still runs it under the real wrap and bypasses
+   * nothing.
    */
   readonly childEntryPath?: string;
   readonly registerSandboxEnvelope?: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) => {
@@ -971,6 +1063,14 @@ export function createOutOfProcessPluginFactory(
     // rule, so a factory reached any other way cannot start a child that would
     // be told a version it does not speak.
     const hostProtocolVersion = connectionHostProtocol(spec.manifest);
+    // A `process` launch runs code the host cannot read, so it runs only under
+    // a live sandbox that confines processes: never unwrapped (unlike an
+    // `entry` launch with the sandbox off), and never on Windows, whose
+    // sandbox does not confine process creation (§2.2, §7.3). The deny floor
+    // and the wrap stay `spawnConfinedChild`'s.
+    if (spec.launch.kind === "process" && (!isAsrtSandboxActive() || process.platform === "win32")) {
+      throw new ProcessEntryUnconfinedError();
+    }
     const hostApi = context.hostApi as unknown as DispatchableHostApi;
     // Derived ONCE, here, and then held: the spawn wraps the child with it and
     // the dispatch table checks delegated workers against it, so the two cannot
@@ -997,7 +1097,9 @@ export function createOutOfProcessPluginFactory(
         assertStillValid: () => registration?.assertCurrent(),
         socketDir: resolvePluginSocketDir(context.pluginDataDir),
         workerRunRoot: resolvePluginWorkerRunRoot(context.pluginDataDir),
-        childEntryPath,
+        launch: spec.launch.kind === "entry"
+          ? { kind: "entry", childEntryPath }
+          : spec.launch,
       });
       registration?.assertCurrent();
     } catch (error) {
@@ -1037,7 +1139,7 @@ export function createOutOfProcessPluginFactory(
       hostProtocolVersion,
       link: spawned.link,
       context,
-      entryPath: spec.entryPath,
+      entryPath: spec.launch.kind === "entry" ? spec.launch.entryPath : spec.launch.command,
       table,
       ...(spec.auditLog ? { auditLog: spec.auditLog } : {}),
       onClosed: async () => {

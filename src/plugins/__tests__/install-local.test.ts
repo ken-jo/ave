@@ -99,15 +99,21 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(registry.plugins).toEqual([]);
   });
 
+  // A local install is never pinned by a release or archive artifact, so a
+  // process entry is refused before anything is copied.
   it("refuses a process-entry extension before local install changes the registry", async () => {
     await writeFile(join(sourceDir, "plugin.json"), JSON.stringify({
       $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
       name: "test-plugin", version: "1.2.3", description: "Process extension",
-      extensions: { "ai.agent-connector.ave": { process: { command: "node" }, tools: [] } },
+      extensions: { "ai.agent-connector.ave": {
+        process: { command: "./bin/plugin" },
+        requires: { minAppVersion: "0.13.0", hostProtocol: "2" },
+        tools: [],
+      } },
     }), "utf8");
     const service = makeService();
     await expect(service.installLocal(sourceDir, preparedActivationOptionsForTest))
-      .rejects.toMatchObject({ code: "process-entry-unsupported" });
+      .rejects.toMatchObject({ code: "process-entry-requires-pinned-artifact" });
     expect(existsSync(join(pluginsDir, "test-plugin"))).toBe(false);
     expect(JSON.parse(await readFile(registryPath, "utf8"))).toMatchObject({ plugins: [] });
   });

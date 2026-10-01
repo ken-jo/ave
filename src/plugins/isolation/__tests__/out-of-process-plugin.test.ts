@@ -29,6 +29,20 @@ vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
   spawnConfinedChild,
 }));
 
+/**
+ * Whether the OS sandbox reads as live. Off, as in every test process, unless a
+ * case turns it on; while it is on, ASRT's shared-config registrations are
+ * no-ops here, because the spawn they precede is recorded rather than run.
+ */
+const sandbox = vi.hoisted(() => ({ active: false }));
+vi.mock("../../../permissions/asrt-sandbox.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../permissions/asrt-sandbox.js")>()),
+  isAsrtSandboxActive: () => sandbox.active,
+  registerWorkerUnixSocketDir: async () => undefined,
+  unregisterWorkerUnixSocketDir: async () => undefined,
+  cleanupAsrtSandboxAfterCommand: async () => undefined,
+}));
+
 /** What the host transport warned, for the cases that assert a notification was dropped. */
 const transportWarnings = vi.hoisted(() => [] as unknown[][]);
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
@@ -67,6 +81,9 @@ import {
 } from "../host-api-wire.js";
 import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
 import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
+import { buildSafeChildEnv } from "../../../tools/safe-env.js";
+import { createSandboxProcessHome } from "../../../permissions/sandbox-process-home.js";
+import { ProcessEntryUnconfinedError } from "../../process-entry.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 
 const PLUGIN_ID = "vega-helper";
@@ -910,7 +927,7 @@ describe("construct negotiates the host protocol", () => {
     try {
       const factory = createOutOfProcessPluginFactory({
         manifest: { ...MANIFEST, requires: undefined },
-        entryPath: join(tmpdir(), "never-imported.mjs"),
+        launch: { kind: "entry", entryPath: join(tmpdir(), "never-imported.mjs") },
       });
       await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toMatchObject({
         detail: { declared: null },
@@ -927,7 +944,7 @@ describe("construct negotiates the host protocol", () => {
     try {
       const factory = createOutOfProcessPluginFactory({
         manifest: { ...MANIFEST, requires: { hostProtocol: "1" } },
-        entryPath: join(tmpdir(), "never-imported.mjs"),
+        launch: { kind: "entry", entryPath: join(tmpdir(), "never-imported.mjs") },
       });
       const refused = factory(hostContext(fakeHostApi(), roots.context));
       await expect(refused).rejects.toBeInstanceOf(IncompatibleHostProtocolError);
@@ -1016,6 +1033,159 @@ describe("construct negotiates the host protocol", () => {
       /construct answered no pluginProtocol\.requires list/,
     );
     expect(terminated()).toMatch(/startup failed/);
+  });
+});
+
+/**
+ * The two launches, as the spawn receives them (docs/design/plugin-hostapi-protocol.md
+ * §9.7 P3, decision 36). Recorded, not run: what a real wrap does with them is
+ * `confined-plugin-child.test.ts`'s.
+ */
+describe("the factory's launch reaches the spawn as decided", () => {
+  const PROCESS_MANIFEST: PluginManifest = {
+    id: "process-kit",
+    name: "Process Kit",
+    version: "1.0.0",
+    process: { command: "./bin/plugin", args: ["--x=1"], env: { SMOKE_VENDOR_DIR: "${PLUGIN_ROOT}/vendor" } },
+    requires: { minAppVersion: "0.13.0", hostProtocol: "2" },
+    description: "a process entry whose spawn is recorded",
+    tools: [],
+  };
+
+  function processLaunch(root: string) {
+    return {
+      kind: "process" as const,
+      command: join(root, "bin", "plugin"),
+      args: ["--x=1"],
+      env: {
+        SMOKE_VENDOR_DIR: join(root, "vendor"),
+        PLUGIN_ROOT: root,
+        PLUGIN_DATA: join(root, "data"),
+      },
+    };
+  }
+
+  async function attempt(
+    launch: Parameters<typeof createOutOfProcessPluginFactory>[0]["launch"],
+    manifest: PluginManifest,
+    roots: ReturnType<typeof spawnableRoots>,
+  ): Promise<unknown> {
+    const factory = createOutOfProcessPluginFactory({ manifest, launch });
+    return Promise.resolve(factory(hostContext(fakeHostApi(), roots.context))).then(() => undefined, (error: unknown) => error);
+  }
+
+  // The two POSIX launch cases below do not run on Windows: there a process
+  // launch is refused before any of this, which is asserted on every platform,
+  // Windows included, by "refuses a process launch on Windows even with the
+  // sandbox on" below.
+  it.skipIf(process.platform === "win32")(
+    "spawns /usr/bin/env inside the wrap with the declared pairs, then the host-owned pair, then the command",
+    async () => {
+      const roots = spawnableRoots();
+      const root = roots.context.pluginRoot!;
+      spawnConfinedChild.mockClear();
+      sandbox.active = true;
+      const sandboxHomeKeys = (() => {
+        const home = createSandboxProcessHome();
+        try {
+          return Object.keys(home.env).sort();
+        } finally {
+          home.cleanup();
+        }
+      })();
+      try {
+        await attempt(processLaunch(root), PROCESS_MANIFEST, roots);
+        expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
+        const spec = spawnConfinedChild.mock.calls[0]![0] as {
+          command: string;
+          args: string[];
+          baseEnv: NodeJS.ProcessEnv;
+          extraEnv: Record<string, string>;
+        };
+        expect(spec.command).toBe("/usr/bin/env");
+        expect(spec.args).toEqual([
+          `SMOKE_VENDOR_DIR=${join(root, "vendor")}`,
+          `PLUGIN_ROOT=${root}`,
+          `PLUGIN_DATA=${join(root, "data")}`,
+          join(root, "bin", "plugin"),
+          "--x=1",
+        ]);
+        // No manifest byte reaches the wrapper's environment: the outer shell
+        // reads its own environment before the sandbox command runs.
+        expect(spec.baseEnv).toEqual(buildSafeChildEnv());
+        expect(Object.keys(spec.extraEnv).sort()).toEqual(sandboxHomeKeys);
+        for (const name of ["SMOKE_VENDOR_DIR", "PLUGIN_ROOT", "PLUGIN_DATA", "ELECTRON_RUN_AS_NODE"]) {
+          expect(spec.baseEnv).not.toHaveProperty(name);
+          expect(spec.extraEnv).not.toHaveProperty(name);
+        }
+      } finally {
+        sandbox.active = false;
+        roots.remove();
+      }
+    },
+  );
+
+  it("refuses a process launch with the sandbox off before anything is spawned", async () => {
+    const roots = spawnableRoots();
+    spawnConfinedChild.mockClear();
+    try {
+      const refused = await attempt(processLaunch(roots.context.pluginRoot!), PROCESS_MANIFEST, roots);
+      expect(refused).toBeInstanceOf(ProcessEntryUnconfinedError);
+      expect(refused).toMatchObject({ code: "process-entry-unconfined" });
+      expect(spawnConfinedChild).not.toHaveBeenCalled();
+    } finally {
+      roots.remove();
+    }
+  });
+
+  it("refuses a process launch on Windows even with the sandbox on, before anything is spawned", async () => {
+    const roots = spawnableRoots();
+    spawnConfinedChild.mockClear();
+    sandbox.active = true;
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    try {
+      const refused = await attempt(processLaunch(roots.context.pluginRoot!), PROCESS_MANIFEST, roots);
+      expect(refused).toBeInstanceOf(ProcessEntryUnconfinedError);
+      expect(spawnConfinedChild).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      sandbox.active = false;
+      roots.remove();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "refuses a resolved command path containing '=' before the spawn, naming the path",
+    async () => {
+      const roots = spawnableRoots();
+      const root = join(roots.context.pluginRoot!, "a=b");
+      spawnConfinedChild.mockClear();
+      sandbox.active = true;
+      try {
+        const refused = await attempt(processLaunch(root), PROCESS_MANIFEST, roots);
+        expect(refused).toBeInstanceOf(Error);
+        expect((refused as Error).message).toContain(`'${join(root, "bin", "plugin")}' contains '='`);
+        expect(spawnConfinedChild).not.toHaveBeenCalled();
+      } finally {
+        sandbox.active = false;
+        roots.remove();
+      }
+    },
+  );
+
+  it("keeps an entry launch on the reference runtime, as Node", async () => {
+    const roots = spawnableRoots();
+    spawnConfinedChild.mockClear();
+    try {
+      await attempt({ kind: "entry", entryPath: join(tmpdir(), "never-imported.mjs") }, MANIFEST, roots);
+      expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
+      const spec = spawnConfinedChild.mock.calls[0]![0] as { command: string; baseEnv: NodeJS.ProcessEnv };
+      expect(spec.command).toBe(process.execPath);
+      expect(spec.baseEnv.ELECTRON_RUN_AS_NODE).toBe("1");
+    } finally {
+      roots.remove();
+    }
   });
 });
 

@@ -102,7 +102,7 @@ describe("git-install manifest rules (design §5.3)", () => {
     const document = manifest({ process: { command: "node" } });
     delete (document.extensions as { "ai.agent-connector.ave": Record<string, unknown> })["ai.agent-connector.ave"].entry;
     expect(() => assertGitInstallManifest(document, expected())).toThrow(
-      expect.objectContaining({ code: "process-entry-unsupported" }),
+      expect.objectContaining({ code: "process-entry-requires-pinned-artifact" }),
     );
   });
 });

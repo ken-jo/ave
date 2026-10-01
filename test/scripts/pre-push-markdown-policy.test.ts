@@ -253,7 +253,7 @@ describe("documentation impact policy", () => {
 
   it("keeps required CI checks green only after successful documentation classification", () => {
     const workflow = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
-    for (const jobName of ["build-and-test", "windows-permission-tests", "macos-permission-tests"]) {
+    for (const jobName of ["build-and-test", "windows-permission-tests", "macos-permission-tests", "linux-confinement-tests"]) {
       const job = workflow.split(`  ${jobName}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]+:\n/)[0];
       expect(job).toBeDefined();
       const steps = job!.split(/^      - /m).slice(1);
@@ -311,8 +311,11 @@ describe("documentation impact policy", () => {
       expect(classify("push", base)).toBe("docs_only=false\n");
       expect(classify("pull_request", base)).toBe("docs_only=true\n");
       const workflow = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
-      expect(workflow.match(/EVENT_NAME: \$\{\{ github\.event_name \}\}/g)).toHaveLength(3);
-      expect(workflow.match(/classify-docs-diff\.mjs "\$BASE_SHA" HEAD "\$EVENT_NAME"/g)).toHaveLength(3);
+      // Every job classifies the same way.
+      const jobs = workflow.match(/^ {4}runs-on: /gm)?.length ?? 0;
+      expect(jobs).toBe(4);
+      expect(workflow.match(/EVENT_NAME: \$\{\{ github\.event_name \}\}/g)).toHaveLength(jobs);
+      expect(workflow.match(/classify-docs-diff\.mjs "\$BASE_SHA" HEAD "\$EVENT_NAME"/g)).toHaveLength(jobs);
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

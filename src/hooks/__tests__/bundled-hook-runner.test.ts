@@ -18,7 +18,9 @@ vi.mock("../../main/managed-child-processes.js", async (original) => {
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => {
   const real = await original<typeof import("../../permissions/asrt-sandbox.js")>();
   return { ...real, isAsrtSandboxActive: () => sandboxActive,
-    wrapWorkerCommand: (cmdline: string, options?: unknown) => wrap(cmdline, options), cleanupAsrtSandboxAfterCommand: vi.fn(async () => undefined) };
+    wrapWorkerCommand: (cmdline: string, options?: unknown) => wrap(cmdline, options), cleanupAsrtSandboxAfterCommand: vi.fn(async () => undefined),
+    // Not the real one: it creates `<AVE_HOME>/sandbox/tmp`, and this file does not isolate AVE_HOME.
+    useAppOwnedSandboxTempRoot: () => "/tmp/ave-test-sandbox-tmp" };
 });
 
 import { runOneHookScript } from "../script-hook-runner.js";

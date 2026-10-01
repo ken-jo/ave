@@ -42,9 +42,6 @@ export type ConfigInheritDeclaration =
       to: string;
       value: unknown;
     };
-export type GovernedRiskFloor = "read" | "write" | "network" | "shell";
-export type HostProtocolVersion = "2";
-export type JsonRpcRequestId = string | number;
 export type PluginOnboardingAction =
   | {
       kind: "composer";
@@ -68,6 +65,10 @@ export type PluginSandboxGrant =
       kind: "userChosenDirectory";
       why: string;
     };
+export type GovernedRiskFloor = "read" | "write" | "network" | "shell";
+export type HostProtocolVersion = "2";
+export type JsonRpcRequestId = string | number;
+export type PluginManifest = EntryPluginManifest | ProcessPluginManifest;
 export type PluginLifecycleHookName = "start" | "onPublished" | "stop";
 export type PluginLifecycleEvent =
   | {
@@ -266,95 +267,7 @@ export interface DependencySpec {
   required?: boolean;
   versionRange?: string;
 }
-export interface EventSubscription {
-  hint?: EventSubscriptionHint;
-  type: string;
-}
-export interface EventSubscriptionHint {
-  category: "task" | "note" | "session" | "meeting" | "email" | "calendar" | "system";
-  priority: "high" | "medium" | "low";
-  title: string;
-}
-export interface HostApiHandle {
-  handleId: string;
-}
-export interface PluginAccessSpec {
-  agentApprovalScopes?: string[];
-  plugins: PluginAccessTarget[];
-}
-export interface PluginAccessTarget {
-  events?: string[];
-  pluginId: string;
-}
-export interface PluginAlertsDeclaration {
-  kinds: AlertKindDeclaration[];
-  reasoning: string;
-  suggestions?: string[];
-}
-export interface PluginAuthSpec {
-  label?: string;
-  loginTool: string;
-  logoutTool?: string;
-  partitionDomains?: string[];
-  statusTool: string;
-}
-export interface PluginChildContext {
-  appPreferences?: {
-    keys: string[];
-    values: {
-      [k: string]: unknown | undefined;
-    };
-  };
-  config?: {
-    [k: string]: unknown | undefined;
-  };
-  hostRoot: string;
-  installedPluginIds: string[];
-  aveHome: string;
-  pluginDataDir: string;
-  pluginId: string;
-  pluginRoot: string;
-  userHome: string;
-}
-export interface PluginConfigSchema {
-  $schema?: string;
-  customPanel?: {
-    entry: string;
-    exportName: string;
-  };
-  properties: {
-    [k: string]: PluginConfigSchemaProperty | undefined;
-  };
-  required?: string[];
-}
-export interface PluginConfigSchemaProperty {
-  default?: unknown;
-  description?: string;
-  enum?: (string | number | boolean)[];
-  format?: "secret" | "uri" | "email" | "date-time";
-  items?: {
-    enum?: (string | number | boolean)[];
-    type: "string" | "number" | "integer" | "boolean";
-  };
-  maxLength?: number;
-  maximum?: number;
-  minLength?: number;
-  minimum?: number;
-  pattern?: string;
-  title?: string;
-  type: "string" | "number" | "integer" | "boolean" | "array";
-}
-export interface PluginConstructParams {
-  context: PluginChildContext;
-  declaredToolNames: string[];
-  entryPath: string;
-  hostProtocol: {
-    capabilities: string[];
-    version: HostProtocolVersion;
-  };
-  manifest: PluginManifest;
-}
-export interface PluginManifest {
+export interface EntryPluginManifest {
   alerts?: PluginAlertsDeclaration;
   auth?: PluginAuthSpec;
   capabilities?: string[];
@@ -386,6 +299,7 @@ export interface PluginManifest {
   onboarding?: PluginOnboardingSpec;
   packageName?: string;
   pluginAccess?: PluginAccessSpec;
+  process?: never;
   prompts?: PluginContributionDeclaration[];
   python?: {
     interpreter?: string;
@@ -406,6 +320,55 @@ export interface PluginManifest {
     kinds: WorkProposalKind[];
     reasoning?: string;
   };
+}
+export interface PluginAlertsDeclaration {
+  kinds: AlertKindDeclaration[];
+  reasoning: string;
+  suggestions?: string[];
+}
+export interface PluginAuthSpec {
+  label?: string;
+  loginTool: string;
+  logoutTool?: string;
+  partitionDomains?: string[];
+  statusTool: string;
+}
+export interface PluginConfigSchema {
+  $schema?: string;
+  customPanel?: {
+    entry: string;
+    exportName: string;
+  };
+  properties: {
+    [k: string]: PluginConfigSchemaProperty | undefined;
+  };
+  required?: string[];
+}
+export interface PluginConfigSchemaProperty {
+  default?: unknown;
+  description?: string;
+  enum?: (string | number | boolean)[];
+  format?: "secret" | "uri" | "email" | "date-time";
+  items?: {
+    enum?: (string | number | boolean)[];
+    type: "string" | "number" | "integer" | "boolean";
+  };
+  maxLength?: number;
+  maximum?: number;
+  minLength?: number;
+  minimum?: number;
+  pattern?: string;
+  title?: string;
+  type: "string" | "number" | "integer" | "boolean" | "array";
+}
+export interface EventSubscription {
+  hint?: EventSubscriptionHint;
+  type: string;
+}
+export interface EventSubscriptionHint {
+  category: "task" | "note" | "session" | "meeting" | "email" | "calendar" | "system";
+  priority: "high" | "medium" | "low";
+  title: string;
 }
 export interface PluginContributionDeclaration {
   id: string;
@@ -438,6 +401,14 @@ export interface PluginHighlightCopy {
   actionLabel: string;
   body: string;
   headline: string;
+}
+export interface PluginAccessSpec {
+  agentApprovalScopes?: string[];
+  plugins: PluginAccessTarget[];
+}
+export interface PluginAccessTarget {
+  events?: string[];
+  pluginId: string;
 }
 export interface RequiresSpec {
   capabilities?: string[];
@@ -553,6 +524,98 @@ export interface PluginUiResourceDecl {
 export interface WorkProposalKind {
   id: string;
   label: string;
+}
+export interface HostApiHandle {
+  handleId: string;
+}
+export interface PluginChildContext {
+  appPreferences?: {
+    keys: string[];
+    values: {
+      [k: string]: unknown | undefined;
+    };
+  };
+  config?: {
+    [k: string]: unknown | undefined;
+  };
+  hostRoot: string;
+  installedPluginIds: string[];
+  aveHome: string;
+  pluginDataDir: string;
+  pluginId: string;
+  pluginRoot: string;
+  userHome: string;
+}
+export interface PluginConstructParams {
+  context: PluginChildContext;
+  declaredToolNames: string[];
+  entryPath: string;
+  hostProtocol: {
+    capabilities: string[];
+    version: HostProtocolVersion;
+  };
+  manifest: PluginManifest;
+}
+export interface ProcessPluginManifest {
+  alerts?: PluginAlertsDeclaration;
+  auth?: PluginAuthSpec;
+  capabilities?: string[];
+  config?: {
+    [k: string]: unknown | undefined;
+  };
+  configInherits?: ConfigInheritDeclaration[];
+  configSchema?: PluginConfigSchema;
+  dependencies?: (string | DependencySpec)[];
+  description: string;
+  emittedEvents?: string[];
+  entry?: never;
+  eventSubscriptions?: string[] | EventSubscription[];
+  hooks?: PluginContributionDeclaration[];
+  hostSecrets?: {
+    read?: string[];
+  };
+  icon?: string;
+  iconText?: string;
+  id: string;
+  mcpServers?: PluginContributionDeclaration[];
+  name?: string;
+  networkAccess?: {
+    allowPrivateNetworks?: boolean;
+    allowedDomains: string[];
+    authCookiePartition?: string;
+    reasoning?: string;
+  };
+  onboarding?: PluginOnboardingSpec;
+  packageName?: string;
+  pluginAccess?: PluginAccessSpec;
+  process: PluginProcessEntry;
+  prompts?: PluginContributionDeclaration[];
+  python?: {
+    interpreter?: string;
+    managedBy?: "ave" | "self";
+    requirementsLock?: string;
+  };
+  requires?: RequiresSpec;
+  routineTemplates?: PluginContributionDeclaration[];
+  sandbox?: PluginSandboxDeclaration;
+  skills?: PluginContributionDeclaration[];
+  startupTimeoutMs?: number;
+  tools: Tool[];
+  ui?: PluginUiExtension[];
+  uiResources?: PluginUiResourceDecl[];
+  uiSlots?: string[];
+  version: string;
+  workProposals?: {
+    kinds: WorkProposalKind[];
+    reasoning?: string;
+  };
+}
+export interface PluginProcessEntry {
+  args?: string[];
+  command: string;
+  env?: {
+    [k: string]: string | undefined;
+  };
 }
 export interface PluginConstructResult {
   implementedToolNames: string[];

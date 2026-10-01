@@ -111,7 +111,8 @@ export function failureText(t: Translate, failure: { code: GitMarketplaceErrorCo
     case "PACKAGE_ID_CONFLICT": return t("gitMarketplace.error.idConflict", { message: failure.message });
     case "PACKAGE_POLICY_BLOCKED": return t("gitMarketplace.error.policyBlocked", { message: failure.message });
     case "SOURCE_DISABLED": return t("gitMarketplace.error.sourceDisabled");
-    case "process-entry-unsupported": return t("formatIpcError.processEntryUnsupported");
+    case "process-entry-unconfined": return t("formatIpcError.processEntryUnconfined");
+    case "process-entry-requires-pinned-artifact": return t("formatIpcError.processEntryRequiresPinnedArtifact");
     case "unavailable": return t("gitMarketplace.error.unavailable", { message: failure.message });
     default: return `${failure.code} · ${failure.message}`;
   }

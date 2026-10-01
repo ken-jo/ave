@@ -14,7 +14,7 @@ import {
   createNoopHostApiForTests,
   type PluginRuntimeOptions,
 } from "../../runtime.js";
-import type { PluginManifest } from "../../types.js";
+import type { EntryPluginManifest, PluginManifest } from "../../types.js";
 import { canonicalJSON } from "../../secret-access/canonical-json.js";
 import { agentPluginsDocument } from "../../__tests__/test-helpers.js";
 
@@ -32,7 +32,7 @@ async function writePreparedPlugin(
   manifestId: string,
   installId: string,
   entrySource?: (toolName: string) => string,
-  manifestOverrides: Partial<PluginManifest> = {},
+  manifestOverrides: Partial<EntryPluginManifest> = {},
 ): Promise<{
   pluginRoot: string;
   manifest: PluginManifest;

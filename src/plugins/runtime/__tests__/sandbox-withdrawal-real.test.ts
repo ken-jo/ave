@@ -111,7 +111,7 @@ describe("real sandbox ceiling withdrawal", () => {
           envelope,
           socketDir: resolvePluginSocketDir(dataDir),
           workerRunRoot: resolvePluginWorkerRunRoot(dataDir),
-          childEntryPath,
+          launch: { kind: "entry", childEntryPath },
           assertStillValid: registration.assertCurrent,
         });
         worker = await spawnWorker({

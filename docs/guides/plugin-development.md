@@ -26,7 +26,8 @@ The manifest should include:
 
 - stable extension id;
 - display name and version;
-- runtime entry point and optional UI declarations;
+- exactly one way to produce its process, `entry` or `process` (below), and
+  optional UI declarations;
 - pure MCP `Tool[]` objects with colocated input schemas;
 - required capabilities;
 - settings schema if configurable;
@@ -56,6 +57,64 @@ extension-owned instruction bundles declared by `manifest.skills`; callable
 behavior remains in typed `tools[]`. Skills can guide the model to the relevant
 Tool, while the Host's bounded tool catalog and `tool_search` control schema
 exposure. The Host does not dispatch or silently preload Tools from keywords.
+
+### `entry` or `process`
+
+An extension declares exactly one of two keys under `extensions["ai.agent-connector.ave"]`.
+A manifest with both, or with neither, is rejected.
+
+```jsonc
+"entry": "dist/hostPlugin.js"                        // a JS module the host's own runtime loads
+"process": {                                         // a program that speaks the extension protocol itself
+  "command": "./bin/plugin",
+  "args": ["--stdio", "${PLUGIN_ROOT}/vendor"],
+  "env": { "PLUGIN_LOG_LEVEL": "info", "PLUGIN_STATE_DIR": "${PLUGIN_DATA}/state" }
+}
+```
+
+A `process` extension is a program in any language. It reads and writes the
+JSON-RPC channel that `schemas/plugin-host-protocol/2/protocol.schema.json`
+describes on its own stdin and stdout, starting with `ave/instance/construct`,
+whose `entryPath` is the resolved absolute path of `command`. Its rules:
+
+- `command` is a path inside the package, written `./…` or `${PLUGIN_ROOT}/…`,
+  naming a regular file. A bare program name (`python`, `node`) is rejected,
+  because an extension gets no `PATH` search; so are an absolute path, `..`
+  and `=`. Ship the interpreter's launcher in the package, or a script with a
+  shebang.
+- `args` and `env` values may use two placeholders. `${PLUGIN_ROOT}/…` must
+  name a file or directory the package contains, and must not leave the
+  package through a symlink. `${PLUGIN_DATA}` and `${PLUGIN_DATA}/…` stay inside
+  the extension's data directory, whose leaf may not exist yet, and may not
+  pass through a symlink there, even one that points inside it. The data
+  directory's parents are host paths and are resolved, links included, but the
+  data directory itself must be the real directory Ave created: the extension
+  cannot remove or rename it, and one replaced by a link is refused.
+  Any other `${…}` is rejected, and so is an argument that looks like a path
+  but uses neither placeholder: name it through one of them. Any other `env`
+  value is passed to the program as an opaque literal.
+- `env` names may not be ones the host reserves, in any letter case:
+  `PLUGIN_ROOT` and `PLUGIN_DATA`, which the host sets to the real paths of the
+  package and the data directory; loader and interpreter variables such as
+  `PATH`, `HOME`, `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS`,
+  `BASH_ENV`, `PYTHONPATH`; and launcher, proxy and trust-store prefixes such as
+  `NODE_`, `PYTHON`, `UV_`, `PIP_`, `HTTPS_PROXY` and `SSL_CERT_`. Set such a
+  variable from your own launcher inside the process instead. The program
+  starts from the host's minimal environment, not the user's.
+- `requires.minAppVersion` must be `0.13.0` or newer, the first release that
+  runs a `process` extension, and `requires.hostProtocol` must be `"2"`.
+
+Two refusals apply to a `process` extension, each with what to do:
+
+- `process-entry-requires-pinned-artifact`: the extension runs only from an
+  install pinned to a release or archive artifact by its sha256 hash. This
+  version of Ave cannot yet install a supported copy like that, so a
+  marketplace, direct, or local development install of one is refused at
+  install, and an installed copy without that pin is refused when it starts.
+  Remove such a copy; reinstalling it will not help.
+- `process-entry-unconfined`: the program runs only inside the OS Tool Sandbox
+  on macOS or Linux. With the sandbox off it is refused, and it cannot run on
+  Windows, whose sandbox does not confine the processes a program starts.
 
 ## HostApi Boundaries
 

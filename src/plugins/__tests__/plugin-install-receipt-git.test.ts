@@ -69,7 +69,7 @@ describe("git install receipts (schema v4)", () => {
     await restoreInstallReceiptRaw(cacheRoot, "alpha", raw);
     await expect(verifyPluginIntegrity(cacheRoot, "alpha", pluginRoot)).resolves.toEqual({
       ok: true,
-      verified: { installSource: "git", artifactSha256: DIGEST, signerKeyId: null },
+      verified: { installSource: "git", artifactSha256: DIGEST, signerKeyId: null, rung: "archive" },
     });
   });
 

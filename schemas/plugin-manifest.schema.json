@@ -1129,7 +1129,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 200,
-                  "pattern": "^(?:[A-Za-z][A-Za-z0-9._-]*|\\./(?:[^/\\\\]+/)*[^/\\\\]+)$",
+                  "pattern": "^(?:\\./|\\$\\{PLUGIN_ROOT\\}/)(?:[^/\\\\=]+/)*[^/\\\\=]+$",
                   "not": {
                     "pattern": "[\\r\\n]"
                   }

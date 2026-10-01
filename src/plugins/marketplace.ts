@@ -50,7 +50,7 @@ import {
 } from "./plugin-removal-transaction.js";
 import type { PluginInstallReceipt } from "./plugin-install-receipt.js";
 import { flattenAgentPluginsManifest } from "./public-contract.js";
-import { assertProcessEntrySupported } from "./process-entry-support.js";
+import { hasProcessEntry, ProcessEntryRequiresPinnedArtifactError } from "./process-entry.js";
 import type { PluginRegistryEntry } from "./types.js";
 import { createLogger } from "../lib/logger.js";
 import { materializePluginContributions } from "./plugin-contributions.js";
@@ -830,7 +830,9 @@ export class PluginMarketplaceService {
             }
             await opts.assertManifest(manifestFile, pluginRoot);
             preparedDocument = JSON.parse(manifestRaw) as unknown;
-            assertProcessEntrySupported(preparedDocument);
+            // Refused unconditionally until marketplace admission reads the
+            // verified rung (§9.7 P4); the runtime gate covers what is on disk.
+            if (hasProcessEntry(preparedDocument)) throw new ProcessEntryRequiresPinnedArtifactError();
             preparedManifest = flattenAgentPluginsManifest(preparedDocument);
             preparedReceiptRaw = await opts.prepareReceipt(pluginRoot, [...files]);
             return opts.activatePreparedArtifact({
@@ -1026,7 +1028,8 @@ export class PluginMarketplaceService {
     } catch {
       throw new Error(`[installLocal] could not read plugin.json in ${sourcePath}`);
     }
-    assertProcessEntrySupported(manifestDocument);
+    // A local install is never pinned by a release or archive artifact.
+    if (hasProcessEntry(manifestDocument)) throw new ProcessEntryRequiresPinnedArtifactError();
 
     const pluginId = typeof manifest.id === "string" ? manifest.id.trim() : "";
     if (!pluginId) {

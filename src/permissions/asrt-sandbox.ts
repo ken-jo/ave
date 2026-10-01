@@ -4,7 +4,7 @@
 
 
 import { spawn } from "node:child_process";
-import { lstatSync, mkdirSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -271,6 +271,18 @@ export interface PerCommandFilesystem {
   readonly denyRead?: readonly string[];
   /** Paths the child is denied writing (takes precedence over allowWrite). */
   readonly denyWrite?: readonly string[];
+  /**
+   * The child may write INSIDE each `allowWrite` root but not unlink, rename
+   * or replace the root itself. Set by every wrap of PLUGIN-OWNED code — the
+   * plugin child, its workers, bundled hooks and MCP stdio servers — whose
+   * write roots are directories the host created and keeps resolving, a
+   * plugin's data root above all. Never by a wrap of the user's own shell or
+   * tools, whose write roots are the user's workspaces. Narrows only: it adds
+   * write denies (see {@link PINNED_WRITE_ROOT_MARKER}), so it requires
+   * `denyWrite` to be restated, since a per-command `denyWrite` replaces the
+   * shared floor rather than extending it.
+   */
+  readonly pinWriteRoots?: boolean;
 }
 
 export interface WindowsWorkerFilesystemGrant {
@@ -419,14 +431,73 @@ export function assertPerExecFilesystemSupported(
   );
 }
 
+/**
+ * A name inside each pinned write root that the child may not write. Nothing is
+ * ever created there; the deny exists for what ASRT derives from it.
+ *
+ * WHY A CHILD DENY PINS THE ROOT. A Seatbelt write grant is `(subpath W)`,
+ * which covers W's own entry, and the read section re-allows
+ * `file-write-unlink`/`file-write-create` on every write root — so a child can
+ * `rmdir W` and `ln -s elsewhere W`, or rename W away. For every write deny
+ * ASRT also emits `(deny file-write-unlink file-write-create (literal D))` for
+ * each ancestor D of the denied path, after those allows, and the last
+ * matching rule wins. A deny on `W/<marker>` therefore makes `(literal W)`
+ * unremovable and unreplaceable while every other entry inside W stays
+ * writable. ASRT 0.0.75 offers no per-command literal rule of its own, so the
+ * root is pinned through this one.
+ *
+ * macOS only. Under bubblewrap each write root is its own bind mount: the
+ * child's `rmdir` or `rename` of it fails with EBUSY, so the marker is not
+ * added there (the confinement cases in `confined-plugin-child.test.ts`
+ * assert both platforms).
+ */
+const PINNED_WRITE_ROOT_MARKER = ".ave-pinned-write-root";
+
+/**
+ * The marker denies for {@link PerCommandFilesystem.pinWriteRoots}. Built here,
+ * inside the wrap, AFTER the wrap has ensured the app-owned temp root, so every
+ * root a wrap grants exists when its marker is computed.
+ */
+function pinnedWriteRootDenies(writeRoots: readonly string[]): string[] {
+  if (process.platform !== "darwin") return [];
+  const denies: string[] = [];
+  for (const root of writeRoots) {
+    // Canonical, because Seatbelt matches real paths and ASRT canonicalises
+    // only paths that exist: the marker never does, so `/var/…` would stay
+    // `/var/…` and its derived literal would never match `/private/var/…`. A
+    // root that does not exist is dropped from the grant by ASRT, so there is
+    // nothing to pin.
+    let real: string;
+    try {
+      real = realpathSync(root);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    denies.push(join(real, PINNED_WRITE_ROOT_MARKER));
+  }
+  return denies;
+}
+
 export function buildPerCommandSandboxCustomConfig(
   filesystem: PerCommandFilesystem | undefined,
 ): Partial<SandboxRuntimeConfig> | undefined {
   if (filesystem === undefined) return undefined;
+  if (filesystem.pinWriteRoots === true && filesystem.denyWrite === undefined) {
+    throw new Error(
+      "buildPerCommandSandboxCustomConfig: pinWriteRoots needs denyWrite restated; a per-command denyWrite "
+        + "replaces the shared deny floor",
+    );
+  }
   const fs: Partial<FilesystemConfig> = {};
   if (filesystem.denyRead !== undefined) fs.denyRead = [...filesystem.denyRead];
   if (filesystem.allowWrite !== undefined) fs.allowWrite = [...filesystem.allowWrite];
-  if (filesystem.denyWrite !== undefined) fs.denyWrite = [...filesystem.denyWrite];
+  if (filesystem.denyWrite !== undefined) {
+    fs.denyWrite = [
+      ...filesystem.denyWrite,
+      ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite ?? []) : []),
+    ];
+  }
   if (filesystem.allowRead !== undefined) fs.allowRead = [...filesystem.allowRead];
   if (Object.keys(fs).length === 0) return undefined;
   return { filesystem: fs as FilesystemConfig };

@@ -51,6 +51,6 @@ describe("agent-plugin manifest branches", () => {
     }
     expect(() => parseAgentPluginManifest(JSON.stringify(ROOT))).toThrow("needs version");
     expect(() => parseAgentPluginManifest(JSON.stringify({ ...MARKET, extensions: { "ai.agent-connector.ave": { entry: "dist/index.js", tools: [] } } }))).toThrow("extension process");
-    expect(() => parseAgentPluginManifest(JSON.stringify(namespace({ process: { command: "node" }, tools: [] })))).toThrow("extension process");
+    expect(() => parseAgentPluginManifest(JSON.stringify(namespace({ process: { command: "./bin/plugin" }, tools: [] })))).toThrow("extension process");
   });
 });

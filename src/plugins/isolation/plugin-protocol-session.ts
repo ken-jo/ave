@@ -79,7 +79,11 @@ export interface PluginProtocolSessionSpec {
   readonly hostProtocolVersion: HostProtocolVersion;
   readonly link: ChildLink;
   readonly context: PluginRuntimeContext;
-  /** The resolved, real entry path of the PLUGIN (not of the child runtime). */
+  /**
+   * What construct carries as `entryPath`: the resolved, real path of the
+   * plugin's JS module (not of the child runtime), or of a `process` plugin's
+   * own executable.
+   */
   readonly entryPath: string;
   /**
    * The session's whole authority: the table it serves, and the members it

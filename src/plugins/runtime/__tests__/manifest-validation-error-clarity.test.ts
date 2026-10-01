@@ -190,3 +190,72 @@ describe("manifest-validation enriched error messages (#737)", () => {
     expect(err!.message).not.toContain("Invalid tool name 'undefined'");
   });
 });
+
+/**
+ * The exactly-one rule and the `process` shape checks are the hardening's own,
+ * so they are exercised here against a validator that says nothing about
+ * `entry` or `process`: the field-named refusal is the hardening's, not the
+ * schema's `oneOf`.
+ */
+describe("manifest-validation names the process-entry field to fix", () => {
+  let workDir: string;
+  beforeEach(async () => {
+    workDir = await mkdtemp(join(tmpdir(), "manifest-process-"));
+  });
+  afterEach(async () => {
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  const makeValidator = permissiveManifestValidatorFactory();
+  const PROCESS = {
+    command: "./bin/plugin",
+    args: ["${PLUGIN_ROOT}/vendor", "--x=1"],
+    env: { SMOKE_VENDOR_DIR: "${PLUGIN_ROOT}/vendor" },
+  };
+
+  async function parse(fields: Record<string, unknown>): Promise<unknown> {
+    const path = join(workDir, "plugin.json");
+    await writeFile(path, JSON.stringify(agentPluginsDocument({
+      id: "process-kit",
+      name: "Process Kit",
+      description: "x",
+      version: "1.0.0",
+      tools: [{ name: "process_kit_ping", inputSchema: { type: "object", properties: {} } }],
+      requires: { minAppVersion: "0.13.0", hostProtocol: "2" },
+      ...fields,
+    })));
+    return parsePluginJson(path, makeValidator());
+  }
+
+  it("admits a well-formed process entry", async () => {
+    await expect(parse({ process: PROCESS })).resolves.toMatchObject({ process: PROCESS });
+  });
+
+  it("refuses a manifest with both entry and process", async () => {
+    await expect(parse({ process: PROCESS, entry: "dist/p.js" })).rejects.toThrow(
+      /at 'extensions\["xyz\.ave"\]\.process'.*exactly one of 'entry' and 'process'/u,
+    );
+  });
+
+  it("refuses a manifest with neither entry nor process", async () => {
+    await expect(parse({})).rejects.toThrow(/at 'extensions\["xyz\.ave"\]\.entry'.*or declare 'process' instead/u);
+  });
+
+  it("refuses an argument that looks like a path, naming its index", async () => {
+    await expect(parse({ process: { ...PROCESS, args: ["--x=1", "../vendor"] } })).rejects.toThrow(
+      /at 'extensions\["xyz\.ave"\]\.process\.args\[1\]'.*looks like a path/u,
+    );
+  });
+
+  it("refuses a reserved environment name in any letter case", async () => {
+    await expect(parse({ process: { ...PROCESS, env: { Plugin_Data: "x" } } })).rejects.toThrow(
+      /at 'extensions\["xyz\.ave"\]\.process\.env\.Plugin_Data'.*reserves/u,
+    );
+  });
+
+  it("refuses a process entry below the version floor", async () => {
+    await expect(parse({ process: PROCESS, requires: { minAppVersion: "0.12.9", hostProtocol: "2" } })).rejects.toThrow(
+      /at 'extensions\["xyz\.ave"\]\.requires\.minAppVersion'.*0\.13\.0 or newer/u,
+    );
+  });
+});

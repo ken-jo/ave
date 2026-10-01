@@ -56,6 +56,16 @@ export interface ConfinedChildSpec {
   /** Ignored under `deny-only`, where ACLs grant reachability instead. */
   readonly allowRead?: readonly string[];
   readonly allowWrite?: readonly string[];
+  /**
+   * The child may write INSIDE each write root but not unlink, rename or
+   * replace the root itself, the sandbox temp root included. For a child whose
+   * write roots are directories the host created and keeps resolving — a
+   * plugin's data root above all — so that the child cannot `rmdir` one and
+   * leave a link in its place. Carried to the wrap as
+   * `PerCommandFilesystem.pinWriteRoots` (`asrt-sandbox.ts`), the one place
+   * every wrap of plugin-owned code pins its roots.
+   */
+  readonly pinWriteRoots?: boolean;
   /** Secret-stripped base environment the child starts from. */
   readonly baseEnv: NodeJS.ProcessEnv;
   /** Overlaid last — the sandbox process HOME, which must win. */
@@ -158,6 +168,7 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec): {
   allowWrite?: string[];
   denyRead: string[];
   denyWrite: string[];
+  pinWriteRoots?: boolean;
 } {
   const floor = {
     denyRead: getDefaultSensitiveReadDenyPaths(),
@@ -177,6 +188,7 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec): {
     allowRead: [...(spec.allowRead ?? [])],
     allowWrite: [appOwnedSandboxTempRoot(), ...(spec.allowWrite ?? [])],
     ...floor,
+    ...(spec.pinWriteRoots === true ? { pinWriteRoots: true } : {}),
   };
 }
 

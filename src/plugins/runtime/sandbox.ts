@@ -13,6 +13,7 @@ import { applyConfigDefaults } from "../config-schema.js";
 import { createLogger } from "../../lib/logger.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { PLUGIN_DATA_DIR_NAME, resolvePluginSocketDir } from "../plugin-storage-layout.js";
+import { resolvePluginDataRoot } from "../plugin-storage-containment.js";
 const log = createLogger("sandbox");
 
 /**
@@ -115,7 +116,16 @@ export function ensurePluginDataDir(
   pluginsRoot: string | undefined,
 ): string {
   const dataDir = resolvePluginDataDir(pluginId, pluginRoot, pluginsRoot);
-  mkdirSync(dataDir, { recursive: true });
+  // Created when missing, and otherwise held to the one data-root check: a
+  // root a confined plugin replaced with a link is refused here, at load,
+  // rather than handed to the next spawn as a write grant on the link's target.
+  // `mkdirSync` cannot be the check — `recursive` accepts a link to a directory.
+  try {
+    resolvePluginDataRoot(`plugin '${pluginId}'`, dataDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    mkdirSync(dataDir, { recursive: true });
+  }
   // The socket directory beside it, made HERE because this is the one function
   // that owns "bring this plugin's directories into existence" — and because
   // the alternative, making it where the context is built, would put a `mkdir`

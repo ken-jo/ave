@@ -53,6 +53,7 @@ vi.mock("../../permissions/sandbox-process-home.js", () => ({
 
 // ─── ASRT mock — gate + wrap controllable per test ──────────
 let gateActive = false;
+const SANDBOX_TEMP_ROOT = "/tmp/ave-test-sandbox-tmp";
 const wrapWorkerCommandMock = vi.fn<
   (command: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
 >();
@@ -68,6 +69,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     wrapWorkerCommand: (command: string, options?: unknown) =>
       wrapWorkerCommandMock(command, options),
     cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
+    useAppOwnedSandboxTempRoot: () => SANDBOX_TEMP_ROOT,
     getDefaultSensitiveReadDenyPaths: actual.getDefaultSensitiveReadDenyPaths,
     getDefaultSensitiveWriteDenyPaths: actual.getDefaultSensitiveWriteDenyPaths,
   };
@@ -241,7 +243,8 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     expect(cmdline).toContain("'--root'");
     expect(cmdline).toContain("'/tmp'");
     // Write-jail = the fresh process HOME + per-server sandbox root.
-    expect(options.filesystem.allowWrite).toEqual([SANDBOX_HOME, sandboxRoot, pluginDataDir]);
+    // ASRT points TMPDIR at the app-owned temp root, so it is granted first.
+    expect(options.filesystem.allowWrite).toEqual([SANDBOX_TEMP_ROOT, SANDBOX_HOME, sandboxRoot, pluginDataDir]);
     expect(options.filesystem.allowRead).toContain(SANDBOX_HOME);
     // The root + tmp are re-allowed for read; HOME is never re-allowed wholesale.
     expect(options.filesystem.allowRead).toContain(sandboxRoot);
@@ -261,6 +264,10 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     expect(options.filesystem.denyWrite).toEqual(sensitiveWrite);
     expect(options.filesystem.denyWrite).toContain(join(homedir(), ".ssh"));
     expect(options.filesystem.denyWrite).toContain(join(homedir(), ".config"));
+    // An MCP stdio server is plugin-owned or third-party code: its write roots
+    // (the process HOME, the server sandbox root, the plugin data root) are
+    // pinned, so it cannot remove or replace one with a link.
+    expect((options.filesystem as { pinWriteRoots?: boolean }).pinWriteRoots).toBe(true);
 
     // spawn ran the WRAPPED argv with shell:false + a writable stdin pipe.
     const [spawnedCmd, spawnedArgs, spawnOpts] = spawnMock.mock.calls[0] as [
@@ -284,7 +291,7 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     expect(isMcpServerWrapped("fs")).toBe(false);
   });
 
-  it("absent sandboxRoot grants only the fresh process HOME (never real HOME/cwd)", async () => {
+  it("absent sandboxRoot grants only the fresh process HOME and the sandbox temp root (never real HOME/cwd)", async () => {
     gateActive = true;
     const fake = new FakeChildProcess();
     fake.responses = handshakeResponses("nojail");
@@ -312,8 +319,9 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
       string,
       { filesystem: { allowWrite: string[]; allowRead: string[]; denyRead: string[] } },
     ];
-    expect(options.filesystem.allowWrite).toEqual([SANDBOX_HOME]);
-    // No real HOME / cwd ever re-allowed for write.
+    // Only host-created roots: the app-owned temp root ASRT points TMPDIR at,
+    // and the fresh process HOME. No real HOME / cwd ever re-allowed for write.
+    expect(options.filesystem.allowWrite).toEqual([SANDBOX_TEMP_ROOT, SANDBOX_HOME]);
     expect(options.filesystem.allowWrite).not.toContain(process.env.HOME);
     expect(options.filesystem.allowWrite).not.toContain(process.cwd());
 

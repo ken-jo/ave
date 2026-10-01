@@ -68,39 +68,44 @@
  *    initialize — for the cases that need a live one. Where
  *    `asrtCanInitialize()` answers false they return before measuring. That is
  *    not a hypothetical machine: the Linux runner that runs the whole suite on
- *    every pull request has no bubblewrap — nothing in `.github/` or `scripts/`
- *    installs it and ASRT vendors only seccomp and srt-win — so on that runner
- *    those cases return without spawning anything. To see what that looks like,
- *    make `asrtCanInitialize()` return false and run this file: on darwin/arm64
- *    all 36 cases that run there pass in about a second, with no skip mark and
- *    no warning, where the 13 that need the backend take hundreds of
- *    milliseconds each when it is there.
+ *    every pull request has no bubblewrap — ASRT vendors only seccomp and
+ *    srt-win — so on that runner those cases return without spawning anything.
+ *    To see what that looks like, make `asrtCanInitialize()` return false and
+ *    run this file: on darwin/arm64 all 46 cases that run there pass, with no
+ *    skip mark and no warning, where the 20 that need the backend take
+ *    hundreds of milliseconds each when it is there.
  *    `sandboxCasesRun()` below is what stops that from being invisible: an
  *    environment that is SUPPOSED to run them sets
  *    `AVE_REQUIRE_SANDBOX_CASES=1` and gets a failure instead of a silent
- *    pass. The macOS job in `ci.yml` sets it, because the macOS backend needs
- *    no install; the Linux job does not, and there these cases still return
- *    without measuring.
+ *    pass. Two jobs in `ci.yml` set it: the macOS job, because the macOS
+ *    backend needs no install, and the Linux confinement job, which installs
+ *    bubblewrap, socat and ripgrep, opens unprivileged user namespaces and
+ *    proves `bwrap` runs before it runs this file. The whole-suite Linux job
+ *    sets neither, and there these cases still return without measuring.
  *
- *    The OTHER 23 cases need no sandbox: they drive `derivePluginChildEnvelope`
+ *    The OTHER 26 cases need no sandbox: they drive `derivePluginChildEnvelope`
  *    directly, or they drive the spawn's refusal paths, which run ahead of the
  *    wrap. Measured with `asrtCanInitialize()` forced false on darwin/arm64:
- *    23 passed and 13 failed under `AVE_REQUIRE_SANDBOX_CASES=1`. So the
+ *    26 passed and 20 failed under `AVE_REQUIRE_SANDBOX_CASES=1`. So the
  *    envelope decisions this file pins keep being measured on a machine that
  *    cannot sandbox; what stops being measured there is the kernel half.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import type { Stats } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,6 +128,7 @@ import {
   type ObservedPluginChild,
 } from "../out-of-process-plugin.js";
 import {
+  appOwnedSandboxTempRoot,
   initializeAsrtSandbox,
   isAsrtSandboxActive,
   resetAsrtSandbox,
@@ -132,9 +138,14 @@ import { isPluginChildConfined } from "../../../permissions/sandbox-capability.j
 import { connect } from "node:net";
 import { createServer } from "node:http";
 import { spawnConfinedPluginChild } from "../out-of-process-plugin.js";
+import { spawnWorker } from "../../../permissions/worker-spawn.js";
+import { runOneHookScript } from "../../../hooks/script-hook-runner.js";
 import { flattenAgentPluginsManifest } from "../../public-contract.js";
 import { createValidationHost } from "../../validate/validation-host.js";
 import { createRecordingHost } from "./host-protocol-recording-host.js";
+import { resolveProcessLaunch } from "../../process-entry.js";
+import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
+import { execFileSync } from "node:child_process";
 
 const PLUGIN_ID = "vega-helper";
 const WIDENED_PLUGIN_ID = "local-indexer";
@@ -196,7 +207,8 @@ const ASRT_DEFAULT_TEMP_ROOT = "/tmp/claude";
  * request has no bubblewrap, so `asrtCanInitialize()` is false there and the
  * cases that call this return immediately — no skip mark, no warning,
  * green. Every case that calls it is an `it.runIf` spawning a real child; the
- * file's other 23 cases do not call it and keep measuring there.
+ * file's other 26 cases do not call it and keep measuring there. The Linux
+ * confinement job in `ci.yml` is where these cases measure on Linux.
  *
  * `AVE_REQUIRE_SANDBOX_CASES` is how an environment that is supposed to run
  * them says so. With it set, a machine that cannot initialize the sandbox fails
@@ -582,7 +594,7 @@ async function runProbe(
     socketDir: resolvePluginSocketDir(fx.pluginDataDir),
     workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
     envelope,
-    childEntryPath: writeProbeModule(fx),
+    launch: { kind: "entry", childEntryPath: writeProbeModule(fx) },
   });
   return await new Promise<ProbeReport>((resolve, reject) => {
     let stdout = "";
@@ -638,7 +650,7 @@ process.stdout.write("PROBE:" + JSON.stringify(attempt(() => readFileSync(${JSON
       pluginDataDir: reader.pluginDataDir,
       configValue: () => undefined,
     }),
-    childEntryPath: probePath,
+    launch: { kind: "entry", childEntryPath: probePath },
   });
   return await new Promise<ProbeAttempt>((resolve, reject) => {
     let stdout = "";
@@ -707,7 +719,7 @@ setTimeout(() => process.exit(0), 4000).unref?.();
     socketDir: resolvePluginSocketDir(fx.pluginDataDir),
     workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
     envelope: baseEnvelope(fx),
-    childEntryPath: probePath,
+    launch: { kind: "entry", childEntryPath: probePath },
   });
   try {
     const report = await new Promise<{ ok: boolean; port?: number; code?: string }>(
@@ -1242,7 +1254,7 @@ setTimeout(() => process.exit(0), 2000).unref?.();
       socketDir: resolvePluginSocketDir(fx.pluginDataDir),
       workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
       envelope: baseEnvelope(fx),
-      childEntryPath: probePath,
+      launch: { kind: "entry", childEntryPath: probePath },
     });
     try {
       const report = await new Promise<{ started: boolean }>((resolve, reject) => {
@@ -1288,7 +1300,7 @@ setTimeout(() => process.exit(0), 2000).unref?.();
         socketDir: resolvePluginSocketDir(fx.pluginDataDir),
         workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
         envelope: { read: [fx.pluginRoot, fx.pluginDataDir, dangling], write: [dangling] },
-        childEntryPath: writeProbeModule(fx),
+        launch: { kind: "entry", childEntryPath: writeProbeModule(fx) },
       }),
     ).rejects.toThrow(/ENOENT/);
   });
@@ -1316,7 +1328,7 @@ setTimeout(() => process.exit(0), 2000).unref?.();
             socketDir: resolvePluginSocketDir(fx.pluginDataDir),
             workerRunRoot: resolvePluginWorkerRunRoot(fx.pluginDataDir),
             envelope: { read: [fx.pluginRoot, fx.pluginDataDir, dangling], write: [dangling] },
-            childEntryPath: writeProbeModule(fx),
+            launch: { kind: "entry", childEntryPath: writeProbeModule(fx) },
           }),
         ).rejects.toThrow(/ENOENT/);
       }
@@ -1681,7 +1693,7 @@ export const createPlugin = async (context) => ({
             },
           ],
         } as PluginManifest,
-        entryPath,
+        launch: { kind: "entry", entryPath },
         childEntryPath,
       });
       const hostApi = {
@@ -1810,7 +1822,7 @@ describe("the host protocol, spoken by a real confined child", () => {
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       // The host the transcript was recorded against, neighbourhood included.
       const host = createRecordingHost();
-      const factory = createOutOfProcessPluginFactory({ manifest, entryPath, childEntryPath });
+      const factory = createOutOfProcessPluginFactory({ manifest, launch: { kind: "entry", entryPath }, childEntryPath });
       const instance = await factory(contextFor(fx, plugin, host.api));
       try {
         const exercised = await instance.handlers.exercise_host!();
@@ -1855,7 +1867,7 @@ describe("the host protocol, spoken by a real confined child", () => {
       // ends the child's stdin and watches it exit, and touches nothing else.
       const factory = createOutOfProcessPluginFactory({
         manifest,
-        entryPath,
+        launch: { kind: "entry", entryPath },
         childEntryPath,
         observeChild: (child) => {
           observed = child;
@@ -1917,7 +1929,7 @@ export const createPlugin = async () => {
       // the protocol starts, so every byte the child writes is collected.
       const factory = createOutOfProcessPluginFactory({
         manifest,
-        entryPath,
+        launch: { kind: "entry", entryPath },
         childEntryPath,
         observeChild: (child) => {
           child.onStdout((chunk) => {
@@ -2112,7 +2124,7 @@ export const createPlugin = async (context) => {
             inputSchema: { type: "object", properties: {} },
           })),
         } as PluginManifest,
-        entryPath,
+        launch: { kind: "entry", entryPath },
         childEntryPath,
       });
       const instance = await factory({
@@ -2525,7 +2537,7 @@ export const createPlugin = async (context) => {
             inputSchema: { type: "object", properties: {} },
           })),
         } as PluginManifest,
-        entryPath,
+        launch: { kind: "entry", entryPath },
         childEntryPath,
       });
       // Reproduce, on THIS machine, the temp root an ordinary machine has:
@@ -2805,7 +2817,7 @@ setTimeout(() => process.exit(0), 4000).unref?.();
       pluginDataDir: plugin.pluginDataDir,
       configValue: () => undefined,
     }),
-    childEntryPath: probePath,
+    launch: { kind: "entry", childEntryPath: probePath },
   });
   try {
     const report = await new Promise<{ ok: boolean; code?: string }>((resolve, reject) => {
@@ -2895,7 +2907,7 @@ setTimeout(() => process.exit(0), 5000).unref?.();
       pluginDataDir: plugin.pluginDataDir,
       configValue: () => undefined,
     }),
-    childEntryPath: probePath,
+    launch: { kind: "entry", childEntryPath: probePath },
   });
   try {
     return await new Promise<{ ok: boolean; code?: string }>((resolve, reject) => {
@@ -3142,7 +3154,7 @@ export default async function createPlugin(context) {
             inputSchema: { type: "object", properties: {} },
           })),
         } as PluginManifest,
-        entryPath,
+        launch: { kind: "entry", entryPath },
         childEntryPath,
       });
 
@@ -3192,3 +3204,438 @@ export default async function createPlugin(context) {
     120_000,
   );
 });
+
+/**
+ * A `process` entry under the real wrap (docs/design/plugin-hostapi-protocol.md
+ * §9.7 P3, decision 36). These prove the spawn path and the environment only —
+ * a real non-JS interpreter is the cross-language smoke's job.
+ *
+ * The launch is `/usr/bin/env <declared pairs> PLUGIN_ROOT=… PLUGIN_DATA=…
+ * <command> <args>`, run INSIDE the wrap; the wrapper ASRT spawns — `/bin/bash
+ * -c` — sees only the safe host environment and the sandbox HOME. So a
+ * variable that would make the wrapper itself run code is set too late to do
+ * so, and anything it makes the plugin's own process run is confined.
+ */
+describe("a process entry, spawned under the real wrap", () => {
+  /**
+   * The executable the manifest names: a shell script that `exec`s this host's
+   * own binary, as Node, on a small protocol responder. It stands in for a
+   * plugin's own launcher, so the spawn and the environment are the production
+   * ones and only the program at the end differs.
+   */
+  function installProcessPlugin(fx: Fixture): { plugin: InstalledPlugin; manifest: PluginManifest } {
+    const plugin = installPlugin(fx, "processprobe");
+    mkdirSync(join(plugin.pluginRoot, "bin"), { recursive: true });
+    mkdirSync(join(plugin.pluginRoot, "vendor"), { recursive: true });
+    writeFileSync(
+      join(plugin.pluginRoot, "invoker.mjs"),
+      `import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+const reply = (frame) => process.stdout.write(JSON.stringify(frame) + "\\n");
+createInterface({ input: process.stdin }).on("line", (line) => {
+  let frame;
+  try { frame = JSON.parse(line); } catch { return; }
+  if (frame.method === ${JSON.stringify(PLUGIN_INSTANCE_METHODS.construct)}) {
+    writeFileSync(join(process.env.PLUGIN_DATA, "launch-env.json"), JSON.stringify({
+      PLUGIN_ROOT: process.env.PLUGIN_ROOT,
+      PLUGIN_DATA: process.env.PLUGIN_DATA,
+      SMOKE_VENDOR_DIR: process.env.SMOKE_VENDOR_DIR,
+      entryPath: frame.params.entryPath,
+    }));
+    reply({ jsonrpc: "2.0", id: frame.id, result: {
+      implementedToolNames: [], servesUiResources: false, lifecycleHooks: [], pluginProtocol: { requires: [] },
+    } });
+  } else if (frame.method !== undefined && frame.id !== undefined) {
+    reply({ jsonrpc: "2.0", id: frame.id, error: { code: -32601, message: "not served by this probe" } });
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`,
+      "utf-8",
+    );
+    const launcher = join(plugin.pluginRoot, "bin", "plugin");
+    writeFileSync(
+      launcher,
+      `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/invoker.mjs"\n`,
+      "utf-8",
+    );
+    chmodSync(launcher, 0o755);
+    return {
+      plugin,
+      manifest: {
+        id: plugin.pluginId,
+        name: plugin.pluginId,
+        version: "1.0.0",
+        process: { command: "./bin/plugin", env: { SMOKE_VENDOR_DIR: "${PLUGIN_ROOT}/vendor" } },
+        requires: { minAppVersion: "0.13.0", hostProtocol: "2" },
+        description: "a process entry whose environment is measured",
+        tools: [],
+      },
+    };
+  }
+
+  function processContext(fx: Fixture, plugin: InstalledPlugin): PluginRuntimeContext {
+    return {
+      pluginId: plugin.pluginId,
+      pluginSocketDir: resolvePluginSocketDir(plugin.pluginDataDir),
+      pluginRoot: plugin.pluginRoot,
+      hostRoot: fx.hostRoot,
+      pluginDataDir: plugin.pluginDataDir,
+      userHome: homedir(),
+      aveHome: aveHome(),
+      config: {},
+      log: () => undefined,
+      hostApi: createValidationHost().api,
+    };
+  }
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "reaches construct and reads PLUGIN_ROOT, PLUGIN_DATA and a declared variable from its environment",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const { plugin, manifest } = installProcessPlugin(fx);
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const launch = resolveProcessLaunch(manifest, plugin.pluginRoot, plugin.pluginDataDir);
+      const factory = createOutOfProcessPluginFactory({ manifest, launch: { kind: "process", ...launch } });
+      const instance = await factory(processContext(fx, plugin));
+      try {
+        const seen = JSON.parse(readFileSync(join(plugin.pluginDataDir, "launch-env.json"), "utf-8")) as Record<string, string>;
+        expect(seen).toEqual({
+          PLUGIN_ROOT: realpathSync(plugin.pluginRoot),
+          PLUGIN_DATA: realpathSync(plugin.pluginDataDir),
+          SMOKE_VENDOR_DIR: join(realpathSync(plugin.pluginRoot), "vendor"),
+          // Construct's entryPath is the resolved command for a process launch.
+          entryPath: join(realpathSync(plugin.pluginRoot), "bin", "plugin"),
+        });
+        expect(isPluginChildConfined(plugin.pluginId)).toBe(true);
+      } finally {
+        await instance.stop?.();
+      }
+    },
+    120_000,
+  );
+
+  /** Spawn a process launch directly, below the manifest hardening, and wait for it to end. */
+  async function spawnBelowHardening(
+    plugin: InstalledPlugin,
+    env: Record<string, string>,
+  ): Promise<void> {
+    const launcher = join(plugin.pluginRoot, "bin", "plugin");
+    const child = await spawnConfinedPluginChild({
+      pluginId: plugin.pluginId,
+      socketDir: resolvePluginSocketDir(plugin.pluginDataDir),
+      workerRunRoot: resolvePluginWorkerRunRoot(plugin.pluginDataDir),
+      envelope: derivePluginChildEnvelope({
+        pluginId: plugin.pluginId,
+        pluginRoot: plugin.pluginRoot,
+        pluginDataDir: plugin.pluginDataDir,
+        configValue: () => undefined,
+      }),
+      launch: {
+        kind: "process",
+        command: launcher,
+        args: [],
+        env: { ...env, PLUGIN_ROOT: plugin.pluginRoot, PLUGIN_DATA: plugin.pluginDataDir },
+      },
+    });
+    const exited = new Promise<string>((resolve) => child.link.onGone(resolve));
+    child.link.output.end();
+    await exited;
+    await child.waitForExit?.();
+  }
+
+  /**
+   * The positive control: the same environment given to the wrap's own outer
+   * shell, `/bin/bash -c`, OUTSIDE any sandbox. It must run the fixture, or the
+   * sentinel's absence under the wrap would prove nothing; the control's
+   * sentinel is removed before the wrapped run. Its stdin is `/dev/null`:
+   * on a socket stdin, which is what a default Node pipe is, bash takes its
+   * rshd heuristic, sources `~/.bashrc` and skips `BASH_ENV`.
+   */
+  function runOuterShellUnconfined(env: Record<string, string>, sentinel: string): void {
+    execFileSync("/bin/bash", ["-c", "true"], {
+      env: { ...env, PATH: "/usr/bin:/bin" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    expect(existsSync(sentinel), "the control did not run the fixture, so the wrapped case would measure nothing")
+      .toBe(true);
+    rmSync(sentinel);
+  }
+
+  /** A launcher that does nothing, so anything that ran came from the environment. */
+  function installInertPlugin(fx: Fixture): InstalledPlugin {
+    const plugin = installPlugin(fx, "inertprobe");
+    mkdirSync(join(plugin.pluginRoot, "bin"), { recursive: true });
+    const launcher = join(plugin.pluginRoot, "bin", "plugin");
+    writeFileSync(launcher, "#!/bin/sh\nexit 0\n", "utf-8");
+    chmodSync(launcher, 0o755);
+    return plugin;
+  }
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "runs nothing before confinement from a BASH_ENV pair",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const plugin = installInertPlugin(fx);
+      const sentinelDir = mkdtempSync(join(fx.root, "bash-env-sentinel-"));
+      const sentinel = join(sentinelDir, "ran");
+      const startup = join(plugin.pluginRoot, "startup.sh");
+      writeFileSync(startup, `echo ran > ${JSON.stringify(sentinel)}\n`, "utf-8");
+      runOuterShellUnconfined({ BASH_ENV: startup }, sentinel);
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      await spawnBelowHardening(plugin, { BASH_ENV: startup });
+      expect(existsSync(sentinel)).toBe(false);
+    },
+    120_000,
+  );
+
+  // Linux only. On macOS, System Integrity Protection strips DYLD_* from the
+  // environment of /bin/bash, which is the wrap's outer shell, so the positive
+  // control cannot run the library there and a green case would claim nothing.
+  it.runIf(process.platform === "linux")(
+    "runs nothing before confinement from an LD_PRELOAD library (Linux, where the control loads it)",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const plugin = installInertPlugin(fx);
+      const sentinelDir = mkdtempSync(join(fx.root, "preload-sentinel-"));
+      const sentinel = join(sentinelDir, "ran");
+      // A library whose constructor writes the sentinel, built in the plugin's
+      // own root. The C compiler is a precondition of this case, not optional:
+      // a machine without one fails here rather than passing unmeasured.
+      const source = join(fx.root, "preload.c");
+      const library = join(plugin.pluginRoot, "preload.so");
+      writeFileSync(
+        source,
+        `#include <stdio.h>\n__attribute__((constructor)) static void ran(void) {\n`
+          + `  FILE *f = fopen(${JSON.stringify(sentinel)}, "w");\n  if (f) { fputs("ran", f); fclose(f); }\n}\n`,
+        "utf-8",
+      );
+      execFileSync("cc", ["-shared", "-fPIC", "-o", library, source]);
+      runOuterShellUnconfined({ LD_PRELOAD: library }, sentinel);
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      await spawnBelowHardening(plugin, { LD_PRELOAD: library });
+      expect(existsSync(sentinel)).toBe(false);
+    },
+    120_000,
+  );
+  // The host keeps resolving the data root — every storage handle and every
+  // spawn starts from it — so plugin-owned code that could swap it for a link
+  // would steer those. It still writes freely inside the root (the first step,
+  // which is also the proof the script ran under the wrap); it may not rename
+  // the root into another of its write roots, remove it, or so put a link in
+  // its place. macOS: the pinned-root deny (`pinWriteRoots`, asrt-sandbox.ts).
+  // Linux: every write root is a bubblewrap bind mount.
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "a plugin child cannot rename, remove or replace its own data root, while writing inside it",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const plugin = installInertPlugin(fx);
+      const outside = mkdtempSync(join(fx.root, "root-swap-outside-"));
+      // An empty root, so `rmdir` measures the pin and not what was inside.
+      for (const item of readdirSync(plugin.pluginDataDir)) {
+        rmSync(join(plugin.pluginDataDir, item), { recursive: true, force: true });
+      }
+      const before = lstatSync(plugin.pluginDataDir);
+      // The socket directory is another write root of the same child.
+      const elsewhere = resolvePluginSocketDir(plugin.pluginDataDir);
+      const report = join(elsewhere, "root-swap-report");
+      writeFileSync(
+        join(plugin.pluginRoot, "bin", "plugin"),
+        rootSwapScript("", "printf '%s\\n' \"$result\" > \"$REPORT\""),
+        "utf-8",
+      );
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      await spawnBelowHardening(plugin, { ELSEWHERE: elsewhere, OUTSIDE: outside, REPORT: report });
+      expectRootHeld(readFileSync(report, "utf-8"), plugin.pluginDataDir, before, elsewhere, outside);
+    },
+    120_000,
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "a plugin worker cannot rename, remove or replace its plugin's data root, while writing inside it",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      // A home short enough for the worker's control-socket path to fit
+      // `sun_path`; the fixture's lives deep under the OS temp directory.
+      const home = mkdtempSync(join("/tmp", "lvw-"));
+      process.env.AVE_HOME = home;
+      try {
+        const pluginRoot = join(home, "plugins", "rs");
+        const dataDir = join(pluginRoot, "data");
+        const elsewhere = join(pluginRoot, "scratch");
+        const outside = join(home, "outside");
+        for (const dir of [dataDir, elsewhere, outside, join(pluginRoot, "bin")]) mkdirSync(dir, { recursive: true });
+        const script = join(pluginRoot, "bin", "swap.sh");
+        writeFileSync(script, rootSwapScript("", "printf '%s\\n' \"$result\" > \"$REPORT\""), "utf-8");
+        const before = lstatSync(dataDir);
+        await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+        const worker = await spawnWorker({
+          pluginId: "rs",
+          workerId: "w",
+          command: "/bin/sh",
+          args: [script],
+          env: { PLUGIN_DATA: dataDir, ELSEWHERE: elsewhere, OUTSIDE: outside, REPORT: join(elsewhere, "report") },
+          allowReadPaths: [join(pluginRoot, "bin")],
+          allowWritePaths: [dataDir, elsewhere],
+        });
+        await new Promise<void>((resolve) => worker.onExit(() => resolve()));
+        expectRootHeld(readFileSync(join(elsewhere, "report"), "utf-8"), dataDir, before, elsewhere, outside);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "a bundled hook cannot rename, remove or replace its plugin's data root, while writing inside it",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const generationRoot = mkdtempSync(join(fx.root, "hook-generation-"));
+      const dataDir = mkdtempSync(join(fx.root, "hook-data-"));
+      const outside = mkdtempSync(join(fx.root, "hook-outside-"));
+      const script = join(generationRoot, "swap.sh");
+      // The hook's other write root is its process HOME.
+      writeFileSync(
+        script,
+        rootSwapScript(
+          `ELSEWHERE="$HOME"\nOUTSIDE=${JSON.stringify(outside)}\n`,
+          "printf '{\"action\":\"allow\",\"reason\":\"%s\"}' \"$result\"",
+        ),
+        "utf-8",
+      );
+      const before = lstatSync(dataDir);
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const result = await runOneHookScript(
+        { id: "swap", hookType: "pre", source: "config", hookPath: script, command: ["/bin/sh", script],
+          confinement: { kind: "bundled", dataDir, generationRoot } },
+        { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin", category: "read", input: {},
+          sessionId: "root-swap", trustOrigin: "user-keyboard" },
+        { timeoutMs: 10_000 },
+      );
+      expect(result.decision, result.reason).toBe("allow");
+      expectRootHeld(result.reason, dataDir, before, undefined, outside);
+    },
+    120_000,
+  );
+});
+
+describe("a bundled hook's temp directory", () => {
+  // ASRT writes `TMPDIR=<app-owned temp root>` into the wrapped command, so a
+  // hook's temp files land there whatever environment it is given. The bundled
+  // wrap grants that root and pins it like its other write roots: the hook can
+  // write a temp file, and cannot rename or remove the root other children
+  // share.
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "writes under $TMPDIR, and cannot rename or remove the temp root",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      // The root a fresh process publishes for this fixture's AVE_HOME. Set
+      // here because the module publishes it once per process, and an earlier
+      // case in this file published another fixture's.
+      const tempRoot = appOwnedSandboxTempRoot();
+      mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
+      process.env.CLAUDE_CODE_TMPDIR = tempRoot;
+      const before = lstatSync(tempRoot);
+      const generationRoot = mkdtempSync(join(fx.root, "hook-generation-"));
+      const dataDir = mkdtempSync(join(fx.root, "hook-data-"));
+      const script = join(generationRoot, "tmp.sh");
+      const node = `'${process.execPath.replace(/'/g, "'\\''")}'`;
+      writeFileSync(
+        script,
+        "#!/bin/sh\n"
+          + `NODE=${node}\n`
+          + "echo probe > \"$TMPDIR/hook-tmp-probe\" 2>/dev/null\nwrote=$?\n"
+          + "/bin/rm -f \"$TMPDIR/hook-tmp-probe\"\n"
+          + "entries=$(/bin/ls -A \"$TMPDIR\" | /usr/bin/wc -l | /usr/bin/tr -d ' ')\n"
+          + "ELECTRON_RUN_AS_NODE=1 \"$NODE\" -e 'process.exit(0)' 2>/dev/null\nnode=$?\n"
+          + "ELECTRON_RUN_AS_NODE=1 \"$NODE\" -e 'require(\"fs\").renameSync(process.argv[1], process.argv[2])' "
+          + "\"$TMPDIR\" \"$HOME/moved-tmp\" 2>/dev/null\nrenamed=$?\n"
+          + "/bin/rmdir \"$TMPDIR\" 2>/dev/null\nremoved=$?\n"
+          + "printf '{\"action\":\"allow\",\"reason\":\"%s %s %s %s %s %s\"}' "
+          + "\"$wrote\" \"$entries\" \"$node\" \"$renamed\" \"$removed\" \"$TMPDIR\"\n",
+        "utf-8",
+      );
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const result = await runOneHookScript(
+        { id: "tmp", hookType: "pre", source: "config", hookPath: script, command: ["/bin/sh", script],
+          confinement: { kind: "bundled", dataDir, generationRoot } },
+        { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin", category: "read", input: {},
+          sessionId: "hook-tmp", trustOrigin: "user-keyboard" },
+        { timeoutMs: 10_000 },
+      );
+      expect(result.decision, result.reason).toBe("allow");
+      const [wrote, entries, node_, renamed, removed, tmpdirSeen] = result.reason.split(" ");
+      expect(realpathSync(tmpdirSeen!), "the hook's TMPDIR is not the app-owned temp root").toBe(realpathSync(tempRoot));
+      expect(wrote, "the hook could not write under its TMPDIR").toBe("0");
+      expect(entries, "the temp root was not empty, so rmdir would measure nothing").toBe("0");
+      expect(node_, "Node did not run under the wrap, so the rename measured nothing").toBe("0");
+      expect(renamed, "the hook renamed the shared temp root").not.toBe("0");
+      expect(removed, "the hook removed the shared temp root").not.toBe("0");
+      const after = lstatSync(tempRoot);
+      expect(after.isDirectory()).toBe(true);
+      expect(after.ino).toBe(before.ino);
+    },
+    120_000,
+  );
+});
+
+/**
+ * What plugin-owned code tries against its own data root, as a shell script.
+ * It writes inside the root, counts what is there, renames the root into
+ * `$ELSEWHERE` (another of its write roots), removes it if it is still there,
+ * and, if the root is gone, puts a link to `$OUTSIDE` in its place. `$result`
+ * is "<inside> <entries> <node> <renamed> <removed>"; `emit` reports it.
+ *
+ * The rename is the `rename` syscall through this test's own Node binary, not
+ * `mv`: across two bind mounts GNU `mv` gets EXDEV and falls back to copy then
+ * delete, so it measures the fallback rather than the rename. `<node>` is the
+ * positive control — the binary ran under the wrap at all — so a rename that
+ * failed because Node could not start does not read as a pinned root.
+ * `ELECTRON_RUN_AS_NODE` makes the Electron binary the suite runs under act as
+ * Node; plain Node ignores it.
+ */
+function rootSwapScript(preamble: string, emit: string): string {
+  const node = `'${process.execPath.replace(/'/g, "'\\''")}'`;
+  return "#!/bin/sh\n" + preamble
+    + `NODE=${node}\n`
+    + "/bin/mkdir \"$PLUGIN_DATA/inside\" && /bin/rmdir \"$PLUGIN_DATA/inside\"\ninside=$?\n"
+    + "entries=$(/bin/ls -A \"$PLUGIN_DATA\" | /usr/bin/wc -l | /usr/bin/tr -d ' ')\n"
+    + "ELECTRON_RUN_AS_NODE=1 \"$NODE\" -e 'process.exit(0)' 2>/dev/null\nnode=$?\n"
+    + "ELECTRON_RUN_AS_NODE=1 \"$NODE\" -e 'require(\"fs\").renameSync(process.argv[1], process.argv[2])' "
+    + "\"$PLUGIN_DATA\" \"$ELSEWHERE/moved-root\" 2>/dev/null\nrenamed=$?\n"
+    + "removed=skipped\n"
+    + "if [ -d \"$PLUGIN_DATA\" ]; then /bin/rmdir \"$PLUGIN_DATA\" 2>/dev/null; removed=$?; fi\n"
+    + "[ -e \"$PLUGIN_DATA\" ] || /bin/ln -s \"$OUTSIDE\" \"$PLUGIN_DATA\"\n"
+    + `result="$inside $entries $node $renamed $removed"\n${emit}\nexit 0\n`;
+}
+
+/** The root is where and what it was, and nothing reached past it. */
+function expectRootHeld(
+  result: string,
+  dataDir: string,
+  before: Stats,
+  elsewhere: string | undefined,
+  outside: string,
+): void {
+  const [inside, entries, node, renamed, removed] = result.trim().split(" ");
+  expect({ inside, entries }, "the code could not write inside its root, or the root was not empty")
+    .toEqual({ inside: "0", entries: "0" });
+  expect(node, "Node did not run under the wrap, so the rename below measured nothing").toBe("0");
+  expect(renamed, "the code renamed its data root into another write root").not.toBe("0");
+  expect(removed, "the code removed its data root").not.toBe("0");
+  expect(removed, "the root was gone before rmdir could be measured").not.toBe("skipped");
+  const after = lstatSync(dataDir);
+  expect(after.isSymbolicLink()).toBe(false);
+  expect(after.isDirectory()).toBe(true);
+  expect(after.ino).toBe(before.ino);
+  if (elsewhere !== undefined) expect(existsSync(join(elsewhere, "moved-root"))).toBe(false);
+  expect(readdirSync(outside)).toEqual([]);
+}

@@ -6731,6 +6731,241 @@
         ],
         "type": "object"
       },
+      "EntryPluginManifest": {
+        "properties": {
+          "alerts": {
+            "$ref": "#/$defs/types/PluginAlertsDeclaration"
+          },
+          "auth": {
+            "$ref": "#/$defs/types/PluginAuthSpec"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "config": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "configInherits": {
+            "items": {
+              "$ref": "#/$defs/types/ConfigInheritDeclaration"
+            },
+            "type": "array"
+          },
+          "configSchema": {
+            "$ref": "#/$defs/types/PluginConfigSchema"
+          },
+          "dependencies": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/types/DependencySpec"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "description": {
+            "type": "string"
+          },
+          "emittedEvents": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "entry": {
+            "type": "string"
+          },
+          "eventSubscriptions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "items": {
+                  "$ref": "#/$defs/types/EventSubscription"
+                },
+                "type": "array"
+              }
+            ]
+          },
+          "hooks": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "hostSecrets": {
+            "properties": {
+              "read": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "icon": {
+            "type": "string"
+          },
+          "iconText": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "mcpServers": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "networkAccess": {
+            "properties": {
+              "allowPrivateNetworks": {
+                "type": "boolean"
+              },
+              "allowedDomains": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "authCookiePartition": {
+                "type": "string"
+              },
+              "reasoning": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "allowedDomains"
+            ],
+            "type": "object"
+          },
+          "onboarding": {
+            "$ref": "#/$defs/types/PluginOnboardingSpec"
+          },
+          "packageName": {
+            "type": "string"
+          },
+          "pluginAccess": {
+            "$ref": "#/$defs/types/PluginAccessSpec"
+          },
+          "process": false,
+          "prompts": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "python": {
+            "properties": {
+              "interpreter": {
+                "type": "string"
+              },
+              "managedBy": {
+                "enum": [
+                  "ave",
+                  "self"
+                ],
+                "type": "string"
+              },
+              "requirementsLock": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "requires": {
+            "$ref": "#/$defs/types/RequiresSpec"
+          },
+          "routineTemplates": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "sandbox": {
+            "$ref": "#/$defs/types/PluginSandboxDeclaration"
+          },
+          "skills": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "startupTimeoutMs": {
+            "type": "number"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/$defs/types/Tool"
+            },
+            "type": "array"
+          },
+          "ui": {
+            "items": {
+              "$ref": "#/$defs/types/PluginUiExtension"
+            },
+            "type": "array"
+          },
+          "uiResources": {
+            "items": {
+              "$ref": "#/$defs/types/PluginUiResourceDecl"
+            },
+            "type": "array"
+          },
+          "uiSlots": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "string"
+          },
+          "workProposals": {
+            "properties": {
+              "kinds": {
+                "items": {
+                  "$ref": "#/$defs/types/WorkProposalKind"
+                },
+                "type": "array"
+              },
+              "reasoning": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kinds"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "description",
+          "entry",
+          "id",
+          "tools",
+          "version"
+        ],
+        "type": "object"
+      },
       "EventSubscription": {
         "properties": {
           "hint": {
@@ -7276,238 +7511,14 @@
         "type": "string"
       },
       "PluginManifest": {
-        "properties": {
-          "alerts": {
-            "$ref": "#/$defs/types/PluginAlertsDeclaration"
+        "anyOf": [
+          {
+            "$ref": "#/$defs/types/EntryPluginManifest"
           },
-          "auth": {
-            "$ref": "#/$defs/types/PluginAuthSpec"
-          },
-          "capabilities": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "config": {
-            "additionalProperties": {},
-            "type": "object"
-          },
-          "configInherits": {
-            "items": {
-              "$ref": "#/$defs/types/ConfigInheritDeclaration"
-            },
-            "type": "array"
-          },
-          "configSchema": {
-            "$ref": "#/$defs/types/PluginConfigSchema"
-          },
-          "dependencies": {
-            "items": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "$ref": "#/$defs/types/DependencySpec"
-                }
-              ]
-            },
-            "type": "array"
-          },
-          "description": {
-            "type": "string"
-          },
-          "emittedEvents": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "entry": {
-            "type": "string"
-          },
-          "eventSubscriptions": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "items": {
-                  "$ref": "#/$defs/types/EventSubscription"
-                },
-                "type": "array"
-              }
-            ]
-          },
-          "hooks": {
-            "items": {
-              "$ref": "#/$defs/types/PluginContributionDeclaration"
-            },
-            "type": "array"
-          },
-          "hostSecrets": {
-            "properties": {
-              "read": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              }
-            },
-            "type": "object"
-          },
-          "icon": {
-            "type": "string"
-          },
-          "iconText": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "mcpServers": {
-            "items": {
-              "$ref": "#/$defs/types/PluginContributionDeclaration"
-            },
-            "type": "array"
-          },
-          "name": {
-            "type": "string"
-          },
-          "networkAccess": {
-            "properties": {
-              "allowPrivateNetworks": {
-                "type": "boolean"
-              },
-              "allowedDomains": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "authCookiePartition": {
-                "type": "string"
-              },
-              "reasoning": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "allowedDomains"
-            ],
-            "type": "object"
-          },
-          "onboarding": {
-            "$ref": "#/$defs/types/PluginOnboardingSpec"
-          },
-          "packageName": {
-            "type": "string"
-          },
-          "pluginAccess": {
-            "$ref": "#/$defs/types/PluginAccessSpec"
-          },
-          "prompts": {
-            "items": {
-              "$ref": "#/$defs/types/PluginContributionDeclaration"
-            },
-            "type": "array"
-          },
-          "python": {
-            "properties": {
-              "interpreter": {
-                "type": "string"
-              },
-              "managedBy": {
-                "enum": [
-                  "ave",
-                  "self"
-                ],
-                "type": "string"
-              },
-              "requirementsLock": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "requires": {
-            "$ref": "#/$defs/types/RequiresSpec"
-          },
-          "routineTemplates": {
-            "items": {
-              "$ref": "#/$defs/types/PluginContributionDeclaration"
-            },
-            "type": "array"
-          },
-          "sandbox": {
-            "$ref": "#/$defs/types/PluginSandboxDeclaration"
-          },
-          "skills": {
-            "items": {
-              "$ref": "#/$defs/types/PluginContributionDeclaration"
-            },
-            "type": "array"
-          },
-          "startupTimeoutMs": {
-            "type": "number"
-          },
-          "tools": {
-            "items": {
-              "$ref": "#/$defs/types/Tool"
-            },
-            "type": "array"
-          },
-          "ui": {
-            "items": {
-              "$ref": "#/$defs/types/PluginUiExtension"
-            },
-            "type": "array"
-          },
-          "uiResources": {
-            "items": {
-              "$ref": "#/$defs/types/PluginUiResourceDecl"
-            },
-            "type": "array"
-          },
-          "uiSlots": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "version": {
-            "type": "string"
-          },
-          "workProposals": {
-            "properties": {
-              "kinds": {
-                "items": {
-                  "$ref": "#/$defs/types/WorkProposalKind"
-                },
-                "type": "array"
-              },
-              "reasoning": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "kinds"
-            ],
-            "type": "object"
+          {
+            "$ref": "#/$defs/types/ProcessPluginManifest"
           }
-        },
-        "required": [
-          "id",
-          "version",
-          "entry",
-          "tools",
-          "description"
-        ],
-        "type": "object"
+        ]
       },
       "PluginOnboardingAction": {
         "anyOf": [
@@ -7609,6 +7620,29 @@
             "type": "array"
           }
         },
+        "type": "object"
+      },
+      "PluginProcessEntry": {
+        "properties": {
+          "args": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+            "type": "string"
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "command"
+        ],
         "type": "object"
       },
       "PluginSandboxDeclaration": {
@@ -7899,6 +7933,241 @@
         },
         "required": [
           "uri"
+        ],
+        "type": "object"
+      },
+      "ProcessPluginManifest": {
+        "properties": {
+          "alerts": {
+            "$ref": "#/$defs/types/PluginAlertsDeclaration"
+          },
+          "auth": {
+            "$ref": "#/$defs/types/PluginAuthSpec"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "config": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "configInherits": {
+            "items": {
+              "$ref": "#/$defs/types/ConfigInheritDeclaration"
+            },
+            "type": "array"
+          },
+          "configSchema": {
+            "$ref": "#/$defs/types/PluginConfigSchema"
+          },
+          "dependencies": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/types/DependencySpec"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "description": {
+            "type": "string"
+          },
+          "emittedEvents": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "entry": false,
+          "eventSubscriptions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "items": {
+                  "$ref": "#/$defs/types/EventSubscription"
+                },
+                "type": "array"
+              }
+            ]
+          },
+          "hooks": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "hostSecrets": {
+            "properties": {
+              "read": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "icon": {
+            "type": "string"
+          },
+          "iconText": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "mcpServers": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "networkAccess": {
+            "properties": {
+              "allowPrivateNetworks": {
+                "type": "boolean"
+              },
+              "allowedDomains": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "authCookiePartition": {
+                "type": "string"
+              },
+              "reasoning": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "allowedDomains"
+            ],
+            "type": "object"
+          },
+          "onboarding": {
+            "$ref": "#/$defs/types/PluginOnboardingSpec"
+          },
+          "packageName": {
+            "type": "string"
+          },
+          "pluginAccess": {
+            "$ref": "#/$defs/types/PluginAccessSpec"
+          },
+          "process": {
+            "$ref": "#/$defs/types/PluginProcessEntry"
+          },
+          "prompts": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "python": {
+            "properties": {
+              "interpreter": {
+                "type": "string"
+              },
+              "managedBy": {
+                "enum": [
+                  "ave",
+                  "self"
+                ],
+                "type": "string"
+              },
+              "requirementsLock": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "requires": {
+            "$ref": "#/$defs/types/RequiresSpec"
+          },
+          "routineTemplates": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "sandbox": {
+            "$ref": "#/$defs/types/PluginSandboxDeclaration"
+          },
+          "skills": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "startupTimeoutMs": {
+            "type": "number"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/$defs/types/Tool"
+            },
+            "type": "array"
+          },
+          "ui": {
+            "items": {
+              "$ref": "#/$defs/types/PluginUiExtension"
+            },
+            "type": "array"
+          },
+          "uiResources": {
+            "items": {
+              "$ref": "#/$defs/types/PluginUiResourceDecl"
+            },
+            "type": "array"
+          },
+          "uiSlots": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "string"
+          },
+          "workProposals": {
+            "properties": {
+              "kinds": {
+                "items": {
+                  "$ref": "#/$defs/types/WorkProposalKind"
+                },
+                "type": "array"
+              },
+              "reasoning": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kinds"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "description",
+          "id",
+          "process",
+          "tools",
+          "version"
         ],
         "type": "object"
       },

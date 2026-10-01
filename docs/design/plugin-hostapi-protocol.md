@@ -2681,7 +2681,7 @@ own side. The third column is that order restricted to the file:
 | `src/plugins/isolation/plugin-protocol-session.ts`, `bound-host-api-table.ts` (new) | S1 creates; P3 adds the `entryPath` semantics for a process launch | S1 → P3 |
 | `src/plugins/isolation/plugin-child-transport.ts` | S1 only (the instance/MCP request split, the metadata producer, the probe) | — |
 | `src/plugins/validate/validation-host.ts`, `validation-session.ts` (new) | S1 only; P2 and P5 consume and add no export S1 did not define | — |
-| `scripts/lib/plugin-isolation-type-assertions.ts` (new) | S1 creates; P3 updates the `OutOfProcessPluginSpec` key set for `launch` | S1 → P3 |
+| `scripts/lib/plugin-isolation-type-assertions.ts` (new) | S1 creates; P3 replaces `entryPath` with `launch` in the `OutOfProcessPluginSpec` key set | S1 → P3 |
 | `out-of-process-plugin.test.ts`, `child-process-config-wire.test.ts`, `plugin-protocol-session.test.ts` (new), `plugin-child-transport.test.ts` (new) | S1 (the `connect` migration; the session and transport cases), P3 (recorded spawn-spec cases for a process launch) | S1 → P3 |
 | `host-protocol-golden-host.ts` (moved), `host-protocol-golden.test.ts`, `host-protocol-schema-parity.test.ts`, the `2/plugins/*` fixtures and transcripts | S1 (host moved, fixtures self-contained, transcripts regenerated with the request metadata), P3 (process-launch construct golden; the exclusive-manifest negatives), P5 (Python golden) | S1 → P3 → P5 |
 | `confined-plugin-child.test.ts` | S1 (`:1858`, `:1920` move to `observeChild`; the `createGoldenHost` import), P3 (process launch, environment negatives), P5 (smoke, stdin-close, stdout, measurement) | S1 → P3 → P5 |
@@ -2696,7 +2696,8 @@ own side. The third column is that order restricted to the file:
 
 **The interface S1 freezes**, which P2, P3 and P5 are written against and which none of
 them may change (P3 may only **add** the launch kind that decides `entryPath`, and the
-`launch` member of `OutOfProcessPluginSpec`):
+`launch` member of `OutOfProcessPluginSpec`, which **replaces** its top-level `entryPath`;
+construct's `entryPath` is derived from the launch):
 
 - `createBoundHostApiDispatchTable(hostApi, confinement, onMalformedCredentialSelector?)`,
   its `hostApi` parameter type `DispatchableHostApi` and its branded result
@@ -3157,7 +3158,7 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
   `Equal<keyof OutOfProcessPluginSpec, "manifest" | "auditLog" | "entryPath" |
   "childEntryPath" | "registerSandboxEnvelope" | "onMalformedCredentialSelector" |
   "observeChild">` — an exact key set, so restoring `connect` or adding any member fails
-  `typecheck` until the set is edited in review (P3 edits it for `launch`);
+  `typecheck` until the set is edited in review (P3 replaces `entryPath` with `launch`);
   `Equal<PluginProtocolSessionSpec["table"], BoundHostApiDispatchTable>` together with
   `{} extends Pick<PluginProtocolSessionSpec, "table"> ? false : true` (required);
   `Equal<Parameters<PluginChildTransport["request"]>[0], PluginInstanceMethod>`. The
@@ -3623,7 +3624,10 @@ marketplace still refuses to install one until P4.
   emitted `$defs.types.<Interface>.properties.<name>` is set to `false` — the same
   `false` subschema the manifest schema already uses for the same exclusion
   (`schemas/plugin-manifest.schema.json:1200-1203`, `:1210-1213`). A property declared
-  `never` whose interface is not emitted is a generator error, not a silent skip. Checked
+  `never` whose interface is not emitted is a generator error, not a silent skip. The one
+  exemption is the generator's `TABLE_DECLARATIONS` list (`HostApiEventPayloads`), the
+  declarations it reads as data tables — where `never` means "pushes nothing" and nothing
+  is emitted — and each table's reader takes its name from that same list. Checked
   the same day: Ajv 2020 (the repository's `node_modules/ajv/dist/2020.js`) accepts an
   entry-only and a process-only object and rejects both-present and neither against that
   shape, and `json-schema-to-typescript` 15.0.4 compiles a `false` property back to
@@ -3673,8 +3677,11 @@ marketplace still refuses to install one until P4.
   bytes.
 - `src/plugins/isolation/out-of-process-plugin.ts` (on S1's shape): `OutOfProcessPluginSpec`
   (`:992-1009` less `connect`) gains `launch: { kind: "entry"; entryPath } | { kind:
-  "process"; command; args; env }` (the resolver's output), and the exact key set in
-  `scripts/lib/plugin-isolation-type-assertions.ts` (S1) gains `launch` in the same PR;
+  "process"; command; args; env }` (the resolver's output), which **replaces** the
+  top-level `entryPath`: construct's `entryPath` is derived from it (`entryPath` for an
+  entry launch, the resolved `command` for a process launch), so one value has one
+  source. The exact key set in `scripts/lib/plugin-isolation-type-assertions.ts` (S1)
+  swaps `entryPath` for `launch` in the same PR;
   `ConfinedPluginChildSpec`
   (`:705-739`) carries it; `spawnConfinedPluginChild` (`:817`, the one call at `:914-947`)
   keeps `process.execPath` + `ELECTRON_RUN_AS_NODE=1` for an entry launch and, for a

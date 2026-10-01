@@ -446,21 +446,35 @@ describe("PluginConfigTab", () => {
     ).toBeNull();
   });
 
-  it("shows a localized Doctor diagnosis for a process-entry extension", async () => {
+  it.each([
+    {
+      kind: "process-entry-requires-pinned-artifact" as const,
+      title: "고정되지 않은 익스텐션 설치",
+      detail: /이 설치는 거부되었습니다\. 이 버전의 Ave는 자체 프로그램을 실행하는 익스텐션의 지원되는 사본을 아직 설치할 수 없습니다/,
+      remedy: /설치된 이 사본은 거부되었습니다\..*이 버전은 아직 그런 사본을 설치할 수 없습니다\. 익스텐션을 제거하세요\. 어느 소스에서 다시 설치해도/,
+    },
+    {
+      kind: "process-entry-unconfined" as const,
+      title: "OS 도구 샌드박스가 필요한 익스텐션",
+      detail: /OS 도구 샌드박스 안에서만 실행합니다/,
+      remedy: /설정 > 권한 > OS 도구 샌드박스를 켠 뒤 익스텐션을 다시 시작하세요\. 다시 설치해도/,
+    },
+  ])("shows a localized Doctor diagnosis for a process-entry extension refused as $kind", async ({ kind, title, detail, remedy }) => {
     const broken = {
       id: "process-kit", name: "Process Kit", description: "Process extension",
       sampleTools: [], capabilities: [], tools: [], loadStatus: "failed" as const,
-      installFailureKind: "process-entry-unsupported" as const,
-      installFailureMessage: "This app cannot run process-entry extensions yet.",
+      installFailureKind: kind,
+      installFailureMessage: "English refusal from main.",
     };
     Object.defineProperty(window, "ave", {
       value: { plugins: { cards: vi.fn().mockResolvedValue([broken]) }, pluginConfig: { get: mockGet, set: mockSet } },
       writable: true, configurable: true,
     });
     render(<PluginConfigTab />);
-    await waitFor(() => expect(screen.getByText("프로세스 진입점 익스텐션을 실행할 수 없습니다")).toBeInTheDocument());
-    expect(screen.getByText("이 앱은 아직 프로세스 진입점이 있는 익스텐션을 실행할 수 없습니다.")).toBeInTheDocument();
-    expect(screen.getByText(/다시 설치해도 해결되지 않습니다/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(title)).toBeInTheDocument());
+    expect(screen.getByText(detail)).toBeInTheDocument();
+    expect(screen.getByText(remedy)).toBeInTheDocument();
+    expect(screen.queryByText("English refusal from main.")).toBeNull();
   });
 
   it("shows an unresolved warning without reinstalling when the app is too old", async () => {

@@ -6,10 +6,12 @@
  * so tests pick a single tmp root and the helper derives the rest.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import { execFile } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import { promisify } from "node:util";
 import type { ValidateFunction } from "ajv";
 import { resolveAddFormats, resolveAjv } from "../config-schema.js";
 import type { PluginPaths } from "../plugin-paths.js";
@@ -39,13 +41,33 @@ import { HOST_PROTOCOL_VERSIONS_SERVED } from "../isolation/host-api-wire.js";
 
 type GenerationCommitScope = <T>(operation: () => Promise<T>) => Promise<T>;
 
-/** Restore owner write access before deleting immutable generation fixtures. */
+const execFileAsync = promisify(execFile);
+
+/**
+ * Restore owner write access before deleting immutable generation fixtures.
+ *
+ * On darwin a fixture may also carry the user-immutable flag (`uchg`), which
+ * refuses both `chmod` and `rm`, so it is cleared first and again once every
+ * directory is listable — the first pass cannot reach below a `000` directory.
+ * Best effort, like the rest of the teardown: `chflags -R` reports entries it
+ * could not reach, and the second pass is what reaches them.
+ */
 export async function makeTestTreeWritable(root: string): Promise<void> {
+  if (process.platform === "darwin") await clearUserImmutable(root);
+  await restoreOwnerModes(root);
+  if (process.platform === "darwin") await clearUserImmutable(root);
+}
+
+async function clearUserImmutable(root: string): Promise<void> {
+  await execFileAsync("/usr/bin/chflags", ["-R", "-P", "nouchg", root]).catch(() => undefined);
+}
+
+async function restoreOwnerModes(root: string): Promise<void> {
   await chmod(root, 0o700).catch(() => undefined);
   const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
   await Promise.all(entries
     .filter((entry) => entry.isDirectory())
-    .map((entry) => makeTestTreeWritable(join(root, entry.name))));
+    .map((entry) => restoreOwnerModes(join(root, entry.name))));
 }
 
 /**

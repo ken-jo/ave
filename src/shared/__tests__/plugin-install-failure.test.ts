@@ -52,8 +52,11 @@ describe("isReinstallFixableFailureKind", () => {
     expect(isReinstallFixableFailureKind("incompatible-host-protocol")).toBe(false);
   });
 
-  it("classifies an unsupported process entry as NOT reinstall-fixable", () => {
-    expect(isReinstallFixableFailureKind("process-entry-unsupported")).toBe(false);
+  it("classifies both process-entry refusals as NOT reinstall-fixable", () => {
+    // Neither the sandbox setting and platform nor the install's provenance
+    // changes when the same version is reinstalled from the same source.
+    expect(isReinstallFixableFailureKind("process-entry-unconfined")).toBe(false);
+    expect(isReinstallFixableFailureKind("process-entry-requires-pinned-artifact")).toBe(false);
   });
 
   it("classifies a sandbox grant outside the ceiling as NOT reinstall-fixable", () => {
@@ -85,7 +88,8 @@ describe("isReinstallFixableFailureKind", () => {
     expect(notFixable).toEqual([
       "incompatible-app-version",
       "incompatible-host-protocol",
-      "process-entry-unsupported",
+      "process-entry-unconfined",
+      "process-entry-requires-pinned-artifact",
       "sandbox-grant-outside-ceiling",
       "plugin-revoked",
     ]);

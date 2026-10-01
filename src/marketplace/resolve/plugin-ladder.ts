@@ -36,7 +36,10 @@ import type { ArtifactCache } from "./artifact-cache.js";
 import { candidateVersion, DESCRIPTOR_NAME, planPackage, readDescriptorAtVersion, repoPath, type PackagePlan, type RepositoryAccess } from "./descriptor.js";
 import { downloadBounded } from "./download.js";
 import { assertGitInstallManifest } from "./manifest-rules.js";
-import { PROCESS_ENTRY_UNSUPPORTED_CODE, PROCESS_ENTRY_UNSUPPORTED_MESSAGE } from "../../plugins/process-entry-support.js";
+import {
+  PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE,
+  PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_MESSAGE,
+} from "../../plugins/process-entry.js";
 
 export interface PluginInstallPlan extends PackagePlan {
   kind: "plugin";
@@ -153,8 +156,8 @@ async function assertDescriptorAtVersion(plan: PluginInstallPlan, deps: LadderDe
 /** Read and check plugin.json from a zip that passed the preflight. */
 function stagedManifest(plan: PluginInstallPlan, zipBuffer: Buffer, deps: LadderDeps, rungs: readonly RungOutcome[], rung: ArtifactRung): unknown {
   const stop = (code: MarketplaceErrorCode, message: string, cause: unknown) =>
-    new LadderError(code, message, [...rungs, { rung, outcome: "failed", code, message: code === PROCESS_ENTRY_UNSUPPORTED_CODE
-      ? PROCESS_ENTRY_UNSUPPORTED_MESSAGE
+    new LadderError(code, message, [...rungs, { rung, outcome: "failed", code, message: code === PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE
+      ? PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_MESSAGE
       : code === "PACKAGE_COMPAT_UNDECLARED" ? "plugin.json does not declare requires.minAppVersion" : "plugin.json differs from the descriptor" }], { cause });
   let text: string;
   try {

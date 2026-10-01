@@ -290,7 +290,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
     });
     const { gate, syncer } = await open(name);
     const error = await ladder(syncer, gate, planPluginInstall(await row(syncer))).catch((caught: unknown) => caught);
-    expect(error).toMatchObject({ code: "process-entry-unsupported", rungs: [{ rung: "release", outcome: "failed", code: "process-entry-unsupported" }] });
+    expect(error).toMatchObject({ code: "process-entry-requires-pinned-artifact", rungs: [{ rung: "release", outcome: "failed", code: "process-entry-requires-pinned-artifact" }] });
     server.file(releasePath, null);
   });
 

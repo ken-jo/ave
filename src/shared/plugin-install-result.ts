@@ -3,7 +3,12 @@ import {
   IncompatibleAppVersionError,
   INCOMPATIBLE_APP_VERSION_CODE,
 } from "../plugins/public-contract.js";
-import { ProcessEntryUnsupportedError, PROCESS_ENTRY_UNSUPPORTED_CODE } from "../plugins/process-entry-support.js";
+import {
+  ProcessEntryRequiresPinnedArtifactError,
+  ProcessEntryUnconfinedError,
+  PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE,
+  PROCESS_ENTRY_UNCONFINED_CODE,
+} from "../plugins/process-entry.js";
 
 /**
  * Uninstall refused because the package is not installed (plugin, agent, skill).
@@ -55,8 +60,10 @@ export function buildInstallFailureResult(
   const message = (error instanceof Error ? error.message : "") || fallbackMessage;
   const code = error instanceof IncompatibleAppVersionError
     ? INCOMPATIBLE_APP_VERSION_CODE
-    : error instanceof ProcessEntryUnsupportedError
-      ? PROCESS_ENTRY_UNSUPPORTED_CODE
+    : error instanceof ProcessEntryUnconfinedError
+      ? PROCESS_ENTRY_UNCONFINED_CODE
+    : error instanceof ProcessEntryRequiresPinnedArtifactError
+      ? PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE
     : undefined;
   return {
     slug,
