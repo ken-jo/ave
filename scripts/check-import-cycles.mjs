@@ -106,7 +106,12 @@ function resolveLocalImport(from, specifier, fileSet, packageConfig) {
   return candidates.find((path) => fileSet.has(path)) ?? null;
 }
 
-export function findRuntimeImportCycles(rootInput) {
+/**
+ * The runtime import graph of every TypeScript file under `rootInput`: each
+ * file mapped to the set of local files it imports at runtime. Type-only
+ * imports and exports are not edges, because they do not load a module.
+ */
+export function buildRuntimeImportGraph(rootInput) {
   const root = resolve(rootInput);
   const files = collectTypeScriptFiles(root);
   const fileSet = new Set(files);
@@ -130,6 +135,13 @@ export function findRuntimeImportCycles(rootInput) {
       }
     }
   }
+  return graph;
+}
+
+export function findRuntimeImportCycles(rootInput) {
+  const root = resolve(rootInput);
+  const graph = buildRuntimeImportGraph(root);
+  const files = [...graph.keys()];
 
   let nextIndex = 0;
   const indexes = new Map();

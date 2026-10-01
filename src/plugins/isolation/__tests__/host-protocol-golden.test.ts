@@ -2,12 +2,14 @@
  * The host protocol, pinned frame by frame.
  *
  * Every golden here is recorded over the REAL stack: `servePluginChild` and the
- * real child runtime on one side, `createOutOfProcessPluginFactory` with the
- * dispatch table assembled from the group factories on the other, joined by two
- * in-memory `PassThrough`s — the substitution `out-of-process-plugin.test.ts`
- * makes, and the only one. The host answers from `createGoldenHost`, so a
- * transcript is a function of the plugin module, and a transcript that changes
- * is the wire that changed (plugin-hostapi-protocol.md §10.1).
+ * real child runtime on one side, `openValidationSession` — the production
+ * protocol session with the dispatch table assembled from the group factories
+ * — on the other, joined by two in-memory `PassThrough`s, the substitution
+ * `out-of-process-plugin.test.ts` makes, and the only one. The host answers
+ * from `createValidationHost` — with the recorded neighbourhood supplied by
+ * `createRecordingHost` — so a transcript is a function of the plugin
+ * module, and a transcript that changes is the wire that changed
+ * (plugin-hostapi-protocol.md §10.1).
  *
  * Three kinds, under `fixtures/host-protocol/2/`:
  *
@@ -24,12 +26,12 @@
  * and read the diff — it IS the protocol change.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PassThrough, type Readable } from "node:stream";
+import { PassThrough, Writable, type Readable } from "node:stream";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { PluginManifest, PluginRuntimeContext, RuntimePlugin } from "../../types.js";
+import type { PluginManifest, RuntimePlugin } from "../../types.js";
 import { flattenAgentPluginsManifest } from "../../public-contract.js";
 import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { EffectBoundaryDeniedError } from "../../../permissions/effect-enforcement.js";
@@ -41,29 +43,35 @@ import {
   PluginStorageError,
 } from "../../public-contract.js";
 import { servePluginChild } from "../plugin-child-main.js";
-import { createOutOfProcessPluginFactory } from "../out-of-process-plugin.js";
 import type { ChildLink } from "../plugin-child-transport.js";
 import {
   FRAME_BYTES_MAX,
   HOST_API_WIRE_ERROR_CODES,
   HOST_PROTOCOL_NOTIFICATIONS,
   HOSTAPI_PATH_CONTRACTS,
+  IncompatibleHostProtocolError,
   WIRE_BYTES_MAX,
   hostApiMethodOf,
   type HostApiPath,
   type HostApiWireErrorCode,
 } from "../host-api-wire.js";
 import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
-import {
-  createGoldenHost,
-  goldenFiles,
-  type GoldenHost,
-  type GoldenHostOverrides,
-} from "./host-protocol-golden-host.js";
+import type {
+  ValidationHost,
+  ValidationHostOverrides,
+} from "../../validate/validation-host.js";
+import { createRecordingHost } from "./host-protocol-recording-host.js";
+import { openValidationSession } from "../../validate/validation-session.js";
+import { goldenFiles } from "./host-protocol-golden-files.js";
+import { settle } from "./stream-turns.js";
 
 const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/2/", import.meta.url));
-const FIXTURE_CODE_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/1/", import.meta.url));
-const INVOKER_ENTRY = join(FIXTURE_CODE_ROOT, "invoker.mjs");
+/**
+ * Where the invoker's code lives. It is the one module still shared with the
+ * protocol-1 fixtures; every `2/plugins/<id>` directory holds its own entry.
+ */
+const INVOKER_CODE_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/1/", import.meta.url));
+const INVOKER_ENTRY = join(INVOKER_CODE_ROOT, "invoker.mjs");
 
 type Frame = Record<string, unknown>;
 
@@ -137,42 +145,12 @@ afterAll(() => {
   rmSync(aveHomeRoot, { recursive: true, force: true });
 });
 
-/** Let the notification hops and queued replies drain. */
-async function settle(): Promise<void> {
-  for (let turn = 0; turn < 5; turn += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-}
-
 /** Record every frame written to `stream`, decoded exactly as its reader decodes it. */
 function tap(stream: Readable, from: RecordedFrame["from"], frames: RecordedFrame[]): void {
   const decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
   stream.on("data", (chunk: Buffer) => {
     for (const frame of decoder.push(chunk)) frames.push({ from, frame });
   });
-}
-
-function hostContext(manifest: PluginManifest, host: GoldenHost): PluginRuntimeContext {
-  const pluginId = manifest.id;
-  // The resolved config the runtime hands a plugin, read from the same host the
-  // later snapshots are read from, so construction and re-push agree.
-  const config: Record<string, unknown> = {};
-  for (const key of Object.keys(manifest.configSchema?.properties ?? {})) {
-    const value = host.api.config.get(key);
-    if (value !== undefined) config[key] = value;
-  }
-  return {
-    pluginId,
-    pluginRoot: `/plugins/${pluginId}`,
-    hostRoot: "/app",
-    pluginDataDir: `/plugins/${pluginId}/data`,
-    pluginSocketDir: `/plugins/${pluginId}/sockets`,
-    userHome: "/Users/example",
-    aveHome: "/Users/example/.ave",
-    config,
-    log: () => undefined,
-    hostApi: host.api,
-  };
 }
 
 interface Session {
@@ -186,7 +164,7 @@ interface Session {
 async function openSession(
   manifest: PluginManifest,
   entryPath: string,
-  host: GoldenHost,
+  host: ValidationHost,
 ): Promise<Session> {
   const hostToChild = new PassThrough();
   const childToHost = new PassThrough();
@@ -199,13 +177,17 @@ async function openSession(
     output: hostToChild,
     terminate: () => service.hostGone(),
     onGone: () => undefined,
+    // No process, so nothing can fault.
+    onFault: () => undefined,
   };
-  const factory = createOutOfProcessPluginFactory({
+  const { instance } = await openValidationSession({
     manifest,
+    host,
+    link,
     entryPath,
-    connect: async () => ({ link }),
+    pluginRoot: `/plugins/${manifest.id}`,
+    pluginDataDir: `/plugins/${manifest.id}/data`,
   });
-  const instance = await factory(hostContext(manifest, host));
   await settle();
   return {
     instance,
@@ -222,7 +204,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
  * which the root's replacement alone would leave behind.
  */
 function goldenPath(text: string): string {
-  text = text.replaceAll(FIXTURE_CODE_ROOT, GOLDEN_ROOT);
+  text = text.replaceAll(INVOKER_CODE_ROOT, GOLDEN_ROOT);
   let out = "";
   let from = 0;
   for (let at = text.indexOf(GOLDEN_ROOT); at !== -1; at = text.indexOf(GOLDEN_ROOT, from)) {
@@ -325,7 +307,7 @@ function once<T>(record: () => Promise<T>): () => Promise<T> {
 
 /** The invoker calling every member and every lifecycle method once. */
 const recordInvokerConversation = once(async (): Promise<RecordedFrame[]> => {
-  const host = createGoldenHost();
+  const host = createRecordingHost();
   const session = await openSession(INVOKER_MANIFEST, INVOKER_ENTRY, host);
   const { instance, frames } = session;
 
@@ -380,7 +362,7 @@ describe("one request/response pair per method", () => {
 interface ErrorTrigger {
   /** What the golden records as the reason this reply was sent. */
   readonly trigger: string;
-  readonly overrides?: GoldenHostOverrides;
+  readonly overrides?: ValidationHostOverrides;
   /** Stop the incarnation first, so the request arrives at a host that retired it. */
   readonly afterStop?: boolean;
   /** Produce the request whose reply is the golden, and return it. */
@@ -535,7 +517,7 @@ const recordErrorConversation = Object.fromEntries(
   Object.entries(ERROR_TRIGGERS).map(([code, { overrides, afterStop, provoke }]) => [
     code,
     once(async () => {
-      const host = createGoldenHost(overrides);
+      const host = createRecordingHost(overrides);
       const session = await openSession(INVOKER_MANIFEST, INVOKER_ENTRY, host);
       if (afterStop) await session.instance.stop?.();
       const request = await provoke(session);
@@ -608,7 +590,7 @@ describe("one reply per error code", () => {
 /** The invoker abandoning a call in flight, which is what sends `notifications/cancelled`. */
 const recordCancelledConversation = once(async () => {
   let hostSignal: AbortSignal | undefined;
-  const host = createGoldenHost({
+  const host = createRecordingHost({
     callLlm: (_prompt: string, options: { signal: AbortSignal }) =>
       new Promise((_resolve, reject) => {
         hostSignal = options.signal;
@@ -690,9 +672,34 @@ describe("one conversation per installed plugin's surface", () => {
   it.each(["meeting", "local-indexer"])("refuses an old %s bundle before its child connects", async (pluginId) => {
     const dir = fileURLToPath(new URL(`./fixtures/host-protocol/1/plugins/${pluginId}/`, import.meta.url));
     const manifest = flattenAgentPluginsManifest(JSON.parse(readFileSync(join(dir, "plugin.json"), "utf-8")));
-    const connect = () => { throw new Error("an old child was connected"); };
-    const factory = createOutOfProcessPluginFactory({ manifest, entryPath: join(dir, "entry.mjs"), connect });
-    await expect(factory(hostContext(manifest, createGoldenHost()))).rejects.toThrow(/does not declare a host protocol/);
+    // The entry beside the protocol-1 manifest throws when imported, so a
+    // refusal that came after an import would surface as that throw instead.
+    // A link whose child must never hear from the host: any write fails the case.
+    const written: unknown[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        written.push(chunk);
+        callback(new Error("a frame was written to an old child"));
+      },
+    });
+    const link: ChildLink = {
+      input: new PassThrough(),
+      output,
+      terminate: () => undefined,
+      onGone: () => undefined,
+      onFault: () => undefined,
+    };
+    const refused = openValidationSession({
+      manifest,
+      host: createRecordingHost(),
+      link,
+      entryPath: join(dir, "entry.mjs"),
+      pluginRoot: `/plugins/${pluginId}`,
+      pluginDataDir: `/plugins/${pluginId}/data`,
+    });
+    await expect(refused).rejects.toBeInstanceOf(IncompatibleHostProtocolError);
+    await expect(refused).rejects.toThrow(/does not declare a host protocol/);
+    expect(written).toEqual([]);
   });
 
   for (const [pluginId, survey] of Object.entries(PLUGIN_SURVEY)) {
@@ -702,9 +709,10 @@ describe("one conversation per installed plugin's surface", () => {
         JSON.parse(readFileSync(join(dir, "plugin.json"), "utf-8")),
       );
       expect(manifest.id).toBe(pluginId);
-      const host = createGoldenHost();
-      const codeRoot = pluginId === "local-indexer" ? GOLDEN_ROOT : FIXTURE_CODE_ROOT;
-      const session = await openSession(manifest, join(codeRoot, "plugins", pluginId, "entry.mjs"), host);
+      const host = createRecordingHost();
+      // The plugin's own directory is a complete plugin: its manifest and its
+      // entry, as a directory validator takes it.
+      const session = await openSession(manifest, join(dir, "entry.mjs"), host);
       const { instance, frames } = session;
 
       await instance.handlers.exercise_host!();

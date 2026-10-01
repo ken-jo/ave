@@ -41,8 +41,9 @@ import {
 } from "../host-api-wire.js";
 import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
 import { hostProtocolCapabilities } from "../host-api-dispatcher.js";
-import { createBoundHostApiDispatchTable } from "../out-of-process-plugin.js";
-import { createGoldenHost, goldenFiles } from "./host-protocol-golden-host.js";
+import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
+import { createValidationHost } from "../../validate/validation-host.js";
+import { goldenFiles } from "./host-protocol-golden-files.js";
 import { ts } from "ts-json-schema-generator";
 import {
   HOST_PROTOCOL_SCHEMA_LABEL,
@@ -192,8 +193,8 @@ describe("the schema names what the host serves, and nothing else", () => {
   });
 
   it("advertises what construct advertises for a host with every optional member bound", () => {
-    // `createGoldenHost` implements every member, optional ones included.
-    const table = createBoundHostApiDispatchTable(createGoldenHost().api, { read: [], write: [] });
+    // `createValidationHost` implements every member, optional ones included.
+    const table = createBoundHostApiDispatchTable(createValidationHost().api, { read: [], write: [] });
     expect(SCHEMA.$defs.capabilities.items.enum).toEqual(hostProtocolCapabilities(table));
   });
 });

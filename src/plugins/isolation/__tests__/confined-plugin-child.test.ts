@@ -120,6 +120,7 @@ import {
   createOutOfProcessPluginFactory,
   derivePluginChildEnvelope,
   PluginSandboxGrantError,
+  type ObservedPluginChild,
 } from "../out-of-process-plugin.js";
 import {
   initializeAsrtSandbox,
@@ -131,9 +132,9 @@ import { isPluginChildConfined } from "../../../permissions/sandbox-capability.j
 import { connect } from "node:net";
 import { createServer } from "node:http";
 import { spawnConfinedPluginChild } from "../out-of-process-plugin.js";
-import type { ChildLink } from "../plugin-child-transport.js";
 import { flattenAgentPluginsManifest } from "../../public-contract.js";
-import { createGoldenHost } from "./host-protocol-golden-host.js";
+import { createValidationHost } from "../../validate/validation-host.js";
+import { createRecordingHost } from "./host-protocol-recording-host.js";
 
 const PLUGIN_ID = "vega-helper";
 const WIDENED_PLUGIN_ID = "local-indexer";
@@ -1729,11 +1730,9 @@ export const createPlugin = async (context) => ({
  * need the bundled entry running in its sandbox.
  */
 describe("the host protocol, spoken by a real confined child", () => {
+  /** A complete plugin: its manifest, its entry and its recorded transcript. */
   const MEETING_GOLDEN = fileURLToPath(
     new URL("./fixtures/host-protocol/2/plugins/meeting/", import.meta.url),
-  );
-  const MEETING_CODE = fileURLToPath(
-    new URL("./fixtures/host-protocol/1/plugins/meeting/", import.meta.url),
   );
 
   /** The plugin's own tool results in a recorded transcript, by tool name. */
@@ -1803,13 +1802,14 @@ describe("the host protocol, spoken by a real confined child", () => {
       // Copied into the plugin's own root, which is where an installed entry
       // lives and what the child's read grant covers.
       const entryPath = join(plugin.pluginRoot, "entry.mjs");
-      copyFileSync(join(MEETING_CODE, "entry.mjs"), entryPath);
+      copyFileSync(join(MEETING_GOLDEN, "entry.mjs"), entryPath);
       const manifest = flattenAgentPluginsManifest(
         JSON.parse(readFileSync(join(MEETING_GOLDEN, "plugin.json"), "utf-8")),
       );
 
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-      const host = createGoldenHost();
+      // The host the transcript was recorded against, neighbourhood included.
+      const host = createRecordingHost();
       const factory = createOutOfProcessPluginFactory({ manifest, entryPath, childEntryPath });
       const instance = await factory(contextFor(fx, plugin, host.api));
       try {
@@ -1850,26 +1850,26 @@ describe("the host protocol, spoken by a real confined child", () => {
       );
 
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-      let link: ChildLink | undefined;
+      let observed: ObservedPluginChild | undefined;
+      // The production factory's own spawn, observed after the wrap: the case
+      // ends the child's stdin and watches it exit, and touches nothing else.
       const factory = createOutOfProcessPluginFactory({
         manifest,
         entryPath,
         childEntryPath,
-        connect: async (spec) => {
-          const child = await spawnConfinedPluginChild(spec);
-          link = child.link;
-          return child;
+        observeChild: (child) => {
+          observed = child;
         },
       });
-      const instance = await factory(contextFor(fx, plugin, createGoldenHost().api));
+      const instance = await factory(contextFor(fx, plugin, createValidationHost().api));
       try {
         await expect(instance.handlers.speak!()).resolves.toBe("spoke");
-        const gone = new Promise<string>((resolve) => link!.onGone(resolve));
+        expect(observed!.pid).toEqual(expect.any(Number));
         // The host dying looks like this from the child: its stdin ends. No
         // `stop`, no signal — a host that crashed sends neither.
-        link!.output.end();
+        observed!.endInput();
         const outcome = await Promise.race([
-          gone.then(() => "exited"),
+          observed!.exited.then(() => "exited"),
           new Promise<string>((resolve) => setTimeout(() => resolve("still running"), 5_000)),
         ]);
         expect(outcome).toBe("exited");
@@ -1913,19 +1913,19 @@ export const createPlugin = async () => {
 
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       let stdout = "";
+      // The production factory's own spawn, observed after the wrap and before
+      // the protocol starts, so every byte the child writes is collected.
       const factory = createOutOfProcessPluginFactory({
         manifest,
         entryPath,
         childEntryPath,
-        connect: async (spec) => {
-          const child = await spawnConfinedPluginChild(spec);
-          child.link.input.on("data", (chunk: Buffer) => {
+        observeChild: (child) => {
+          child.onStdout((chunk) => {
             stdout += chunk.toString("utf-8");
           });
-          return child;
         },
       });
-      const instance = await factory(contextFor(fx, plugin, createGoldenHost().api));
+      const instance = await factory(contextFor(fx, plugin, createValidationHost().api));
       try {
         // Bounded: a stray line that swallowed the reply would otherwise hang
         // the call until the case times out, and say nothing about why.

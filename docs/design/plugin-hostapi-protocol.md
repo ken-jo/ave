@@ -2698,24 +2698,31 @@ own side. The third column is that order restricted to the file:
 them may change (P3 may only **add** the launch kind that decides `entryPath`, and the
 `launch` member of `OutOfProcessPluginSpec`):
 
-- `createBoundHostApiDispatchTable(hostApi, confinement, onMalformedCredentialSelector?)`
-  and its branded result `BoundHostApiDispatchTable`, in `bound-host-api-table.ts`;
+- `createBoundHostApiDispatchTable(hostApi, confinement, onMalformedCredentialSelector?)`,
+  its `hostApi` parameter type `DispatchableHostApi` and its branded result
+  `BoundHostApiDispatchTable`, in `bound-host-api-table.ts`;
 - `openPluginProtocolSession(spec)`, `PluginProtocolSessionSpec` (with the required
   `table` and the optional `signal`, which the opener honours from its first line),
   `PluginProtocolSession` (`instance`, `capabilities`, `construction`,
   `channel`, `teardown`) and `PluginProtocolChannel` (`requestMcp`, `probe`,
   `runStopHook`, `closeInput`, `exited`);
-- `PluginChildTransport.request` (instance methods only), `requestMcp`, `probe`, the
+- `PluginChildTransport.request` (instance methods only), `requestMcp` with its method
+  type `PluginMcpRequestMethod`, `probe` with its reply type `PluginChildProbeReply`, the
   metadata producer `pluginChildRequestMeta()`, and the split of an observed exit
   (`peerGone`, non-destructive) from a requested termination (`close`) and a live
   child's fault (`fault`: starts the one termination sequence if none is active, else
   records only), with `link.terminate` called at most once per transport;
 - `ChildLink` with `onGone` terminal-only and the required `onFault`;
-- `OutOfProcessPluginSpec` without `connect` and with `observeChild`, and
-  `ObservedPluginChild` (`pid`, `onStdout`, `endInput`, `exited`);
-- `openValidationSession(input)` (with the same optional `signal`), `ValidationSession`,
-  `createValidationHost(overrides?)` and `validationConfinement(pluginId, pluginRoot,
-  pluginDataDir)`.
+- `OutOfProcessPluginSpec` without `connect` and with `observeChild`,
+  `ObservedPluginChild` (`pid`, `onStdout`, `endInput`, `exited`), and the admission
+  check `connectionHostProtocol(manifest)`, exported for the validation session;
+- `openValidationSession(input)` with its input type `ValidationSessionInput` (with the
+  same optional `signal`), `ValidationSession`, `createValidationHost(overrides?)` with
+  its `ValidationHostOverrides` parameter and `ValidationHost` result, and
+  `validationConfinement(pluginId, pluginRoot, pluginDataDir)`.
+
+The modules S1 creates export nothing beyond this list, and the modules it changes add
+no export beyond it.
 
 ##### P1. The protocol TS client
 
@@ -3068,7 +3075,10 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
   with recording handlers; the worker double at `:95` and `:175` becomes
   `scriptedWorker`, and every `mock`/`fake` identifier in the moved code is renamed for
   what it does, which keeps the file inside the naming gate without a `Why` header
-  (fact 12). `goldenFiles` (`:283`) stays in `__tests__`. The file also defines **the
+  (fact 12). `goldenFiles` (`:283`) stays in `__tests__`. Its `getInstalledPluginIds`
+  default is `[]` (the member excludes the caller, and a validated plugin is validated
+  alone); the recorded neighbourhood the goldens pin is supplied through `overrides` by
+  a `__tests__` helper, so no recorded plugin id lands in the production host. The file also defines **the
   validation host's authority**, `validationConfinement(pluginId, pluginRoot,
   pluginDataDir)` = `derivePluginChildEnvelope({ pluginId, pluginRoot, pluginDataDir,
   configValue })` **with no `sandbox` input** — the base envelope of fact 13 and nothing
@@ -3100,9 +3110,11 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
      on any write and expects the same `does not declare a host protocol` rejection; the
      `FIXTURE_CODE_ROOT` mapping (`:64-66`, `:700-707`) is deleted and each of the four
      protocol-2 fixtures (`orion-api`, `meeting`, `lyra-mail`, `vega-helper`) receives its
-     own `entry.mjs`, copied from `fixtures/host-protocol/1/plugins/<id>/entry.mjs`, so
+     own `entry.mjs`, moved from `fixtures/host-protocol/1/plugins/<id>/entry.mjs`, so
      every `2/plugins/<id>` directory is a complete plugin a directory validator can take
-     as is (`1/` keeps its files; `INVOKER_ENTRY` is still read from there); the five
+     as is (`1/` keeps its manifests, transcripts and `invoker.mjs`, from which
+     `INVOKER_ENTRY` is still read, and its `meeting` and `local-indexer` entries become
+     import traps that throw, so the old-bundle case proves refusal before import); the five
      `2/plugins/*/expected.jsonl` transcripts are regenerated, and the reviewed diff is
      exactly the two `_meta` keys on every `tools/call` and `resources/read` frame.
   2. `out-of-process-plugin.test.ts`, the 20 `connect` sites (`:291` to `:1031`): the

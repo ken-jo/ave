@@ -32,8 +32,6 @@ import { mkdirSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { mainDir } from "../../main/main-paths.js";
-import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { RAW_RESULT_META } from "../../mcp/protocol-constants.js";
 import { spawnConfinedChild } from "../../permissions/confined-child.js";
 import {
   markPluginChildConfined,
@@ -52,11 +50,6 @@ import {
 } from "../plugin-storage-layout.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { terminateChildProcess } from "../../tools/terminate-child-process.js";
-// The allowlist is READ where it is declared rather than mirrored here. It is
-// the host's answer to "which preferences may a plugin see", and a second copy
-// of that list would be a second answer to a security question.
-import { HOST_PUBLIC_PREFERENCE_KEYS } from "../../boot/steps/plugin-runtime/app-preference.js";
-import { subscribeAppPreferenceChange } from "../config-change-bus.js";
 import {
   isPathAllowed,
   sanitizeAllowedDirectories,
@@ -70,133 +63,26 @@ import {
 import { aveHome } from "../../shared/ave-home.js";
 import { HOST_DIRECTORY_CATALOG } from "../sandbox-authority.js";
 import type {
-  PluginHostApi,
   PluginManifest,
   PluginRuntimeContext,
-  PluginToolHandler,
   RuntimePlugin,
   RuntimePluginFactory,
 } from "../types.js";
 import type { PluginSandboxDeclaration, PluginSandboxGrant } from "../public-contract.js";
+import type { DelegatedWorkerConfinement } from "./host-api-dispatcher.js";
 import {
-  HOSTAPI_DISPATCH_TABLE,
-  createConfigSubscriptionHostApiPaths,
-  createInteractionHostApiPaths,
-  createServiceHostApiPaths,
-  hostProtocolCapabilities,
-  createStorageHostApiPaths,
-  type DelegatedWorkerConfinement,
-  type HostApiPathHandler,
-} from "./host-api-dispatcher.js";
-import {
-  HOST_PROTOCOL_NOTIFICATIONS,
   IncompatibleHostProtocolError,
   isServedHostProtocolVersion,
-  type HostApiPath,
   type HostProtocolVersion,
 } from "./host-api-wire.js";
+import type { ChildLink } from "./plugin-child-transport.js";
 import {
-  PLUGIN_INSTANCE_METHODS,
-  type PluginConstructParams,
-  type PluginConstructResult,
-} from "./plugin-instance-wire.js";
-import {
-  PluginChildTransport,
-  type ChildLink,
-} from "./plugin-child-transport.js";
-import type { PluginChildContext } from "./plugin-child-runtime.js";
+  createBoundHostApiDispatchTable,
+  type DispatchableHostApi,
+} from "./bound-host-api-table.js";
+import { openPluginProtocolSession } from "./plugin-protocol-session.js";
 
 const log = createLogger("out-of-process-plugin");
-
-/**
- * The `hostApi` members this path needs to bind, as the union of the four
- * groups' own narrowings.
- *
- * Stated as an intersection of what each group asks for rather than as
- * `PluginHostApi`, so a group that widens its needs widens this too — and a
- * caller cannot satisfy the assembly with an object that happens to have the
- * right shape for three groups and not the fourth.
- */
-export type DispatchableHostApi = Parameters<typeof createStorageHostApiPaths>[0] &
-  Parameters<typeof createConfigSubscriptionHostApiPaths>[0] &
-  Parameters<typeof createInteractionHostApiPaths>[0] &
-  Parameters<typeof createServiceHostApiPaths>[0] &
-  /**
-   * `getInstalledPluginIds` belongs to no group because it is DISPATCHED BY
-   * NOBODY: its contract is `child-local` and the table refuses it if it ever
-   * arrives. The host still calls it — to build the snapshot the child answers
-   * from — so it is named here rather than inside a group whose job is binding
-   * handlers.
-   */
-  Pick<PluginHostApi, "getInstalledPluginIds">
-  /**
-   * `getAppPreference` joins it for the same reason and stays OPTIONAL, because
-   * it is optional on `PluginHostApi`. A host that does not implement it
-   * publishes no preference snapshot at all, and the child's member then throws
-   * instead of answering `undefined` — see `PluginChildContext.appPreferences`.
-   */
-  & Pick<PluginHostApi, "getAppPreference">;
-
-/**
- * Bind every dispatched member to ONE plugin incarnation's `hostApi`.
- *
- * The instance passed here must be the one the host handed the factory —
- * `context.hostApi`, which `buildHostApiIncarnation` has already wrapped in the
- * effect recorder, the effect gate and the active-incarnation proxy. Binding a
- * freshly built hostApi instead would produce a boundary that works in every
- * test and records nothing in the field: the recorder's ledger is per-wrapper,
- * so effects would be attributed to a wrapper no one reads.
- *
- * The four spreads are applied over the shipped table rather than replacing it,
- * so a member no group claims keeps its throwing default instead of becoming
- * absent. `Record<HostApiPath, …>` makes a missing key a compile error either
- * way; this makes an UNBOUND key a loud runtime refusal.
- */
-export function createBoundHostApiDispatchTable(
-  hostApi: DispatchableHostApi,
-  /**
-   * The roots the child's own ASRT wrap grants it, so `spawnWorker` can refuse
-   * a delegated worker that would reach further. It is the SAME value
-   * `spawnConfinedPluginChild` passes to the wrap — one
-   * {@link derivePluginChildEnvelope} result, held by the factory — because a
-   * boundary that checked against a differently-derived envelope would be
-   * checking against something other than the jail.
-   */
-  confinement: DelegatedWorkerConfinement,
-  onMalformedCredentialSelector?: () => void,
-): Record<HostApiPath, HostApiPathHandler> {
-  return {
-    ...HOSTAPI_DISPATCH_TABLE,
-    ...createStorageHostApiPaths(hostApi),
-    ...createConfigSubscriptionHostApiPaths(hostApi),
-    ...createInteractionHostApiPaths(hostApi),
-    ...createServiceHostApiPaths(hostApi, confinement, onMalformedCredentialSelector),
-  };
-}
-
-/**
- * Every config key the host can resolve for this plugin.
- *
- * `config.get` merges schema defaults, the manifest's own config, a host
- * wildcard slot and the user's saved settings, and `PluginHostApi` publishes no
- * way to enumerate the result — so the key set is assembled from the three
- * sources the host DOES hold: the schema's declared properties, the manifest's
- * config, and the construction snapshot (which is the merge, as it stood when
- * the plugin started). Their union is what the settings surface can change,
- * which is what a re-push has to cover.
- */
-function resolvableConfigKeys(
-  manifest: PluginManifest,
-  constructionConfig: Record<string, unknown> | undefined,
-): readonly string[] {
-  return [
-    ...new Set([
-      ...Object.keys(manifest.configSchema?.properties ?? {}),
-      ...Object.keys(manifest.config ?? {}),
-      ...Object.keys(constructionConfig ?? {}),
-    ]),
-  ];
-}
 
 /**
  * Where the child's entry module lives.
@@ -739,15 +625,36 @@ export interface ConfinedPluginChildSpec {
 }
 
 /**
- * A connected child.
+ * A spawned, confined child.
  *
- * It is a {@link ChildLink} and nothing else: the factory above never touches a
- * `ChildProcess`, so the protocol can be exercised over in-memory paired
- * streams while the confinement is exercised against a real process.
+ * A {@link ChildLink} plus what the factory's owner needs about the process:
+ * its pid and its exit. The protocol session never touches a `ChildProcess`,
+ * so the protocol can be exercised over in-memory paired streams while the
+ * confinement is exercised against a real process.
  */
 export interface ConfinedPluginChild {
   readonly link: ChildLink;
+  /** The spawned wrapper's pid, or `undefined` when the spawn produced none. */
+  readonly pid: number | undefined;
   readonly waitForExit?: () => Promise<void>;
+}
+
+/**
+ * What {@link OutOfProcessPluginSpec.observeChild} is handed: the production
+ * child, observable and nothing more.
+ *
+ * It can read the child's stdout bytes beside the transport, read the
+ * wrapper's pid, observe the exit and end the child's stdin — which is how a
+ * crashed host looks to the child. It cannot supply, replace or re-spawn the
+ * child, see the envelope, the spawn spec, the table or the registration,
+ * write a frame or terminate anything.
+ */
+export interface ObservedPluginChild {
+  readonly pid: number | undefined;
+  onStdout(listener: (chunk: Buffer) => void): void;
+  endInput(): void;
+  /** Settles with the reason the child's link reported it gone. */
+  readonly exited: Promise<string>;
 }
 
 /**
@@ -960,7 +867,13 @@ export async function spawnConfinedPluginChild(
       child.once("close", () => resolve());
     });
     child.once("exit", releaseSandboxState);
+    // Gone means the process no longer exists: it exited, or the spawn
+    // produced no process to run. An `error` from a process that has a pid is
+    // a fault on a live child — Node emits one when a signal could not be
+    // delivered — and must not release it as if it were gone.
+    const hasProcess = (): boolean => typeof child.pid === "number" && child.pid > 0;
     return {
+      pid: hasProcess() ? child.pid : undefined,
       waitForExit: () => exited,
       link: {
         input: child.stdout,
@@ -977,9 +890,16 @@ export async function spawnConfinedPluginChild(
                 `code=${String(code)} signal=${String(signal)}`,
             ),
           );
-          child.once("error", (error: Error) =>
-            handler(`[out-of-process-plugin] ${spec.pluginId}: child error: ${error.message}`),
-          );
+          child.on("error", (error: Error) => {
+            if (hasProcess()) return;
+            handler(`[out-of-process-plugin] ${spec.pluginId}: child error: ${error.message}`);
+          });
+        },
+        onFault: (handler) => {
+          child.on("error", (error: Error) => {
+            if (!hasProcess()) return;
+            handler(`[out-of-process-plugin] ${spec.pluginId}: child fault: ${error.message}`);
+          });
         },
       },
     };
@@ -995,92 +915,24 @@ export interface OutOfProcessPluginSpec {
   /** The resolved, real entry path of the PLUGIN (not of the child runtime). */
   readonly entryPath: string;
   /**
-   * How the factory obtains a child. Defaults to the confined spawn; a test may
-   * supply paired streams so the protocol can be exercised without a process.
+   * Defaults to the emitted `plugin-child-main.js` under the runtime asset dir.
+   * It is the path the CONFINED spawn runs, so a test that serves a stand-in
+   * still runs it under the real wrap and bypasses nothing.
    */
-  readonly connect?: (spec: ConfinedPluginChildSpec) => Promise<ConfinedPluginChild>;
-  /** Defaults to the emitted `plugin-child-main.js` under the runtime asset dir. */
   readonly childEntryPath?: string;
   readonly registerSandboxEnvelope?: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) => {
     assertCurrent(): void;
     dispose(): void;
   };
   readonly onMalformedCredentialSelector?: (pluginId: string) => void;
-}
-
-/**
- * Read a plugin's declared tool names.
- *
- * The same derivation `buildMethodMap` performs, and it is repeated here rather
- * than shared because it answers a different question: that one asks which
- * handlers an instance HAS, this one tells the child which handlers the host
- * will ask it for. Passing the declared set is what stops a compromised child
- * announcing a tool the reviewed manifest never contained.
- */
-function declaredToolNames(manifest: PluginManifest): string[] {
-  return [...new Set((manifest.tools ?? []).map((tool) => tool.name))];
-}
-
-/**
- * The `tools/call` arguments object for one invocation.
- *
- * Refuses anything that is neither absent nor a plain object. Coercing a
- * string or an array to `{}` would turn "you invoked this tool wrongly" into
- * "you invoked it with no payload", which the plugin would answer as a normal
- * call — a wrong answer with no error anywhere.
- */
-function asToolArguments(
-  pluginId: string,
-  toolName: string,
-  payload: unknown,
-): Record<string, unknown> {
-  if (payload === undefined) return {};
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
-    throw new Error(
-      `[out-of-process-plugin] ${pluginId}: tool '${toolName}' payload must be an ` +
-        `object or absent to cross the boundary, received ${typeof payload}`,
-    );
-  }
-  return payload as Record<string, unknown>;
-}
-
-/**
- * Read a tool result off the MCP reply.
- *
- * `_meta[RAW_RESULT_META]` and NOT `content[0].text`: the text branch is lossy,
- * because a plugin returning the string `'{"a":1}'` and one returning the
- * object `{a:1}` produce the same text. The raw value is the plugin's own
- * return, and this is the same key the in-process delegate uses, so a tool's
- * result has one representation regardless of which arm ran it.
- */
-function readToolResult(pluginId: string, toolName: string, result: unknown): unknown {
-  if (typeof result !== "object" || result === null) {
-    throw new Error(
-      `[out-of-process-plugin] ${pluginId}: tool '${toolName}' returned no result body`,
-    );
-  }
-  const body = result as { isError?: boolean; content?: unknown; _meta?: Record<string, unknown> };
-  if (body.isError === true) {
-    // The child turns a throwing handler into an `isError` result, which is the
-    // mechanism `plugin-mcp-server.ts` already has for the child→host
-    // direction (§3.3). The identity that survives is the message; nothing is
-    // reconstructed by matching it.
-    const content = Array.isArray(body.content) ? body.content : [];
-    const first = content[0] as { text?: unknown } | undefined;
-    throw new Error(
-      typeof first?.text === "string"
-        ? first.text
-        : `[out-of-process-plugin] ${pluginId}: tool '${toolName}' failed`,
-    );
-  }
-  const meta = body._meta;
-  if (!meta || !Object.prototype.hasOwnProperty.call(meta, RAW_RESULT_META)) {
-    throw new Error(
-      `[out-of-process-plugin] ${pluginId}: tool '${toolName}' returned a result ` +
-        `without '${RAW_RESULT_META}' — the child and the host disagree about the wire`,
-    );
-  }
-  return meta[RAW_RESULT_META];
+  /**
+   * Observe the production child, once, after the wrap and the grant re-check
+   * and before the protocol starts — so a listener sees every byte. Test-only:
+   * no runtime caller passes it (`validate-boundary.test.ts`), and
+   * {@link ObservedPluginChild} can observe the child and end its input but
+   * cannot replace, re-spawn or terminate it.
+   */
+  readonly observeChild?: (child: ObservedPluginChild) => void;
 }
 
 /**
@@ -1090,46 +942,12 @@ function readToolResult(pluginId: string, toolName: string, result: unknown): un
  * fail before activation on the runtime loader's two paths; this check also
  * protects a direct connection from bypassing that gate.
  */
-function connectionHostProtocol(manifest: PluginManifest): HostProtocolVersion {
+export function connectionHostProtocol(manifest: PluginManifest): HostProtocolVersion {
   const declared = manifest.requires?.hostProtocol;
   if (!isServedHostProtocolVersion(declared)) {
     throw new IncompatibleHostProtocolError(manifest.id, { declared: declared ?? null });
   }
   return declared;
-}
-
-/**
- * Refuse a child whose `construct` reply names a method it cannot run without
- * that this connection did not advertise (§3.2). A reply with no
- * `pluginProtocol` is a child that does not speak this protocol version, and
- * fails as one rather than being read as "requires nothing".
- */
-function requireServedCapabilities(
-  pluginId: string,
-  construction: PluginConstructResult,
-  capabilities: readonly string[],
-): void {
-  const requires: unknown = construction.pluginProtocol?.requires;
-  if (!Array.isArray(requires) || !requires.every((entry) => typeof entry === "string")) {
-    throw new Error(
-      `[out-of-process-plugin] ${pluginId}: construct answered no pluginProtocol.requires list`,
-    );
-  }
-  const served = new Set(capabilities);
-  const missing = requires.filter((method) => !served.has(method));
-  if (missing.length > 0) {
-    throw new IncompatibleHostProtocolError(pluginId, { missingCapabilities: missing });
-  }
-}
-
-/** The card's HTML out of an MCP `resources/read` result, or a clear failure. */
-function readUiResourceHtml(pluginId: string, uri: string, result: unknown): string {
-  const contents = (result as { contents?: unknown } | undefined)?.contents;
-  const first = Array.isArray(contents) ? (contents[0] as { text?: unknown } | undefined) : undefined;
-  if (typeof first?.text !== "string") {
-    throw new Error(`[out-of-process-plugin] ${pluginId}: resources/read('${uri}') returned no html`);
-  }
-  return first.text;
 }
 
 /**
@@ -1144,7 +962,6 @@ function readUiResourceHtml(pluginId: string, uri: string, result: unknown): str
 export function createOutOfProcessPluginFactory(
   spec: OutOfProcessPluginSpec,
 ): RuntimePluginFactory {
-  const connect = spec.connect ?? spawnConfinedPluginChild;
   const childEntryPath = spec.childEntryPath ?? resolvePluginChildEntryPath();
   const pluginId = spec.manifest.id;
 
@@ -1154,9 +971,6 @@ export function createOutOfProcessPluginFactory(
     // rule, so a factory reached any other way cannot start a child that would
     // be told a version it does not speak.
     const hostProtocolVersion = connectionHostProtocol(spec.manifest);
-    // No generation id crosses: each factory call spawns its own child, so the
-    // connection IS the incarnation (§2.4), and the pipe closing when the
-    // incarnation retires is what pins it.
     const hostApi = context.hostApi as unknown as DispatchableHostApi;
     // Derived ONCE, here, and then held: the spawn wraps the child with it and
     // the dispatch table checks delegated workers against it, so the two cannot
@@ -1173,15 +987,17 @@ export function createOutOfProcessPluginFactory(
       onUserChosenDirectory: (path) => chosenPaths.push(path),
     });
     const registration = spec.registerSandboxEnvelope?.(chosenPaths, context.pluginRoot, context.pluginDataDir);
+    // The only way this factory obtains a child: the confined spawn, with the
+    // envelope derived above.
     let child: ConfinedPluginChild | undefined;
     try {
-      child = await connect({
-      pluginId,
-      envelope,
-      assertStillValid: () => registration?.assertCurrent(),
-      socketDir: resolvePluginSocketDir(context.pluginDataDir),
-      workerRunRoot: resolvePluginWorkerRunRoot(context.pluginDataDir),
-      childEntryPath,
+      child = await spawnConfinedPluginChild({
+        pluginId,
+        envelope,
+        assertStillValid: () => registration?.assertCurrent(),
+        socketDir: resolvePluginSocketDir(context.pluginDataDir),
+        workerRunRoot: resolvePluginWorkerRunRoot(context.pluginDataDir),
+        childEntryPath,
       });
       registration?.assertCurrent();
     } catch (error) {
@@ -1190,11 +1006,24 @@ export function createOutOfProcessPluginFactory(
       registration?.dispose();
       throw error;
     }
-    if (!child) throw new Error(`[out-of-process-plugin] ${pluginId}: child connection missing`);
+    const spawned = child;
 
-    let live = true;
-    // ONE table: the dispatcher serves it and `construct` advertises it, so
-    // what the child is told it may call is what the host will answer.
+    if (spec.observeChild) {
+      const { link } = spawned;
+      spec.observeChild({
+        pid: spawned.pid,
+        onStdout: (listener) => {
+          link.input.on("data", listener);
+        },
+        endInput: () => {
+          link.output.end();
+        },
+        exited: new Promise<string>((resolve) => link.onGone(resolve)),
+      });
+    }
+
+    // The SAME envelope value the spawn received, so the boundary checks
+    // delegated workers against the jail the child actually runs in.
     const table = createBoundHostApiDispatchTable(
       hostApi,
       envelope,
@@ -1202,354 +1031,25 @@ export function createOutOfProcessPluginFactory(
         ? () => spec.onMalformedCredentialSelector?.(pluginId)
         : undefined,
     );
-    const transport = new PluginChildTransport({
+    const session = await openPluginProtocolSession({
       pluginId,
-      // The boundary's own liveness, not a second authority. The authoritative
-      // check is still `enforceActiveHostApi` on the object below, which throws
-      // on every member once the incarnation deactivates — and which the child
-      // cannot reach around, because it is on the other side of a pipe. This
-      // one exists so a call arriving after `stop()` is refused at the wire
-      // instead of being carried to a hostApi that will refuse it anyway.
-      isActive: () => live,
-      // Same shape the in-process arm emits from `buildPluginContext`, so a
-      // reader searching the log by `pluginId` finds an isolated plugin's lines
-      // next to an in-process one's rather than not at all. The module tag
-      // differs — these did come from a child — and that is the only difference.
-      log: (message, meta) => {
-        if (meta !== undefined) {
-          log.info({ pluginId, meta }, message);
-          return;
-        }
-        log.info({ pluginId }, message);
-      },
-      // The host's own voice about the connection, not the plugin's: a params
-      // field the member does not declare is accepted and ignored (§3.3), and
-      // named here once per (method, field) so a protocol skew is visible.
-      reportUnknownField: (report) => {
-        if (report.kind === "suppressed") {
-          log.warn(
-            { pluginId, limit: report.limit },
-            "further undeclared params fields suppressed for this connection",
-          );
-          return;
-        }
-        log.warn(
-          { pluginId, method: report.method, field: report.field },
-          "ignored an undeclared params field",
-        );
-      },
-      reportBudgetAudit: (entry) => {
-        try {
-          spec.auditLog?.("warn", entry.type, {
-            pluginId: entry.pluginId,
-            method: entry.method,
-            code: entry.code,
-            count: entry.count,
-            summary: entry.summary,
-            ...(entry.bucket === undefined ? {} : { bucket: entry.bucket }),
-          });
-        } catch { /* audit sink failure cannot alter a dispatcher result */ }
-        log.warn(entry, entry.type);
-      },
+      manifest: spec.manifest,
+      hostProtocolVersion,
+      link: spawned.link,
+      context,
+      entryPath: spec.entryPath,
       table,
-      link: child.link,
+      ...(spec.auditLog ? { auditLog: spec.auditLog } : {}),
+      onClosed: async () => {
+        try {
+          await spawned.waitForExit?.();
+        } finally {
+          registration?.dispose();
+        }
+      },
     });
-    transport.start();
-
-    /**
-     * Every host-owned watcher for this incarnation, ended together.
-     *
-     * A LIST rather than three named disposers, because REGISTERING one can
-     * fail: `hostApi` here is the generation-scoped proxy, and every member on
-     * it throws once that generation retires. A failure partway through has to
-     * end the ones that already exist, and by this line the child is already
-     * spawned — so anything that escapes without this leaves a live process
-     * reading stdin with nobody subscribed on its behalf.
-     */
-    const hostWatchers: Array<() => void> = [];
-    const stopHostWatchers = (): void => {
-      while (hostWatchers.length > 0) hostWatchers.pop()?.();
-    };
-    /**
-     * Give up the child this call spawned, and everything registered for it.
-     *
-     * ONE teardown for the whole bring-up below, rather than a guard around the
-     * single step most likely to throw. Every step after the spawn can fail —
-     * the watcher registrations, the two hostApi reads that build the child's
-     * context, `construct` itself, and the snapshot pushed once it returns —
-     * and each of them fails with the same thing already owned: a child
-     * process, an open transport, and however many watchers exist.
-     *
-     * NOT the same path `instance.stop()` takes, and deliberately so: a normal
-     * stop keeps `live` true across the plugin's own `stop()` hook so that hook
-     * can still reach hostApi, and flips it only afterwards. Here there is no
-     * hook to run — the plugin never became an instance — so the flip comes
-     * first and nothing the child sends after it is honoured.
-     */
-    const abandonChild = (reason: string): void => {
-      live = false;
-      stopHostWatchers();
-      transport.close(reason);
-      if (child.waitForExit) void child.waitForExit().finally(() => registration?.dispose());
-      else registration?.dispose();
-    };
-
-    try {
-      // The host re-pushes the installed-plugin snapshot the child answers
-      // `getInstalledPluginIds` from. It is the host's OWN subscription, separate
-      // from any the plugin opens: the member has to answer whether or not the
-      // plugin ever subscribed to `onPluginsChanged`.
-      hostWatchers.push(hostApi.onPluginsChanged(() => {
-        transport.sendToChild({
-          jsonrpc: "2.0",
-          method: HOST_PROTOCOL_NOTIFICATIONS.installedPluginsSnapshot,
-          params: { pluginIds: hostApi.getInstalledPluginIds() },
-        });
-      }));
-
-      /**
-       * The host re-pushes the config snapshot the child answers `config.get`
-       * from. Also the host's OWN subscription, and for the same reason as the
-       * one above: `config.get` has to answer whether or not the plugin ever
-       * called `config.onChange`, and without a re-push it would answer with the
-       * value the key had at construction for the life of the process.
-       *
-       * `"*"` is the change bus's every-key wildcard, so this fires for a user's
-       * settings edit and for the plugin's own `config.set` alike. The bus emits
-       * INSIDE `config.set`'s persistence chain, before that call's reply is
-       * produced — which is what makes the contract's ordering obligation ("the
-       * push is emitted before the `config.set` reply") hold on the wire rather
-       * than by luck: both are written to the same pipe in that order.
-       *
-       * The callback's value is ignored on purpose. It carries one key's new
-       * value and not which key, and a snapshot rebuilt through `config.get` is
-       * the same merge the in-process member reads — one authority for what a
-       * config value is, rather than a second assembled from change events.
-       */
-      const configKeys = resolvableConfigKeys(spec.manifest, context.config);
-      hostWatchers.push(hostApi.config.onChange("*", () => {
-        const values: Record<string, unknown> = {};
-        for (const key of configKeys) {
-          const value = hostApi.config.get(key);
-          // Absent, not `undefined`: the wire distinguishes "unset" from "has a
-          // value" by presence in this record, because JSON has no `undefined`.
-          if (value !== undefined) values[key] = value;
-        }
-        transport.sendToChild({
-          jsonrpc: "2.0",
-          method: HOST_PROTOCOL_NOTIFICATIONS.configSnapshot,
-          params: { keys: configKeys, values },
-        });
-      }));
-      /**
-       * The allow-listed host preferences, read through the SAME member a plugin
-       * would call — so the snapshot is the reader's answer, not a second one.
-       *
-       * `undefined` when this host implements no `getAppPreference`: the member
-       * is optional on `PluginHostApi`, and a child seeded with an empty snapshot
-       * could not tell "unset" from "unavailable". Not seeding at all keeps those
-       * apart, because the child's member throws when nothing was seeded.
-       *
-       * NO HOST THE APP BUILDS TAKES THAT BRANCH — `host-api-factory.ts` always
-       * defines the member — so it is the shape of a partial hostApi assembled in
-       * a test, kept because the optional member and this reader are two objects
-       * that nothing forces to agree.
-       */
-      const readAppPreferences = ():
-        | { keys: readonly string[]; values: Record<string, unknown> }
-        | undefined => {
-        const read = hostApi.getAppPreference;
-        if (typeof read !== "function") return undefined;
-        const values: Record<string, unknown> = {};
-        for (const key of HOST_PUBLIC_PREFERENCE_KEYS) {
-          const value = read.call(hostApi, key);
-          // Absent, not `undefined`: the wire distinguishes "unset" from "has a
-          // value" by presence in this record, because JSON has no `undefined`.
-          if (value !== undefined) values[key] = value;
-        }
-        return { keys: HOST_PUBLIC_PREFERENCE_KEYS, values };
-      };
-
-      /**
-       * Send the child the preferences as they read RIGHT NOW.
-       *
-       * One function for the watcher below and for the post-construct push, so
-       * the two cannot disagree about what a snapshot contains.
-       */
-      const pushPreferenceSnapshot = (): void => {
-        const snapshot = readAppPreferences();
-        // A host with no reader never seeded the child, so there is nothing this
-        // push could correct. Unreachable for the same reason the branch above
-        // is; it is here so the two stay one decision rather than two.
-        if (!snapshot) return;
-        transport.sendToChild({
-          jsonrpc: "2.0",
-          method: HOST_PROTOCOL_NOTIFICATIONS.preferencesSnapshot,
-          params: { keys: snapshot.keys, values: snapshot.values },
-        });
-      };
-
-      /**
-       * The host re-pushes the preference snapshot the child answers
-       * `getAppPreference` from — the third host-owned watcher, and the one that
-       * makes the member answerable out of process at all.
-       *
-       * `getAppPreference` is synchronous, so §3.1 answers it from a snapshot,
-       * and a snapshot with no re-push is the value the preference held at plugin
-       * start. `lyra-mail` reads `webView.preferredFlow` at CALL time, so it would
-       * have read a stale answer for the life of the process with nothing
-       * reporting it. The bus announces only a REAL change to an allow-listed
-       * key (`publishAppPreferenceChange` diffs before emitting), so an unrelated
-       * settings save costs nothing here.
-       */
-      hostWatchers.push(subscribeAppPreferenceChange(pushPreferenceSnapshot));
-
-      const constructionPreferences = readAppPreferences();
-      const childContext: PluginChildContext = {
-        pluginId,
-        pluginRoot: context.pluginRoot,
-        hostRoot: context.hostRoot,
-        pluginDataDir: context.pluginDataDir,
-        // From the context the HOST built, not re-read here. Re-reading would
-        // work today — this line runs in main — but it would put a second
-        // reader of the same two environment values on the spawn path, and the
-        // two would only ever disagree in the case that matters.
-        userHome: context.userHome,
-        aveHome: context.aveHome,
-        installedPluginIds: hostApi.getInstalledPluginIds(),
-        ...(context.config !== undefined ? { config: context.config } : {}),
-        // Omitted entirely when the host implements no reader, which is what lets
-        // the child tell "unset" from "unavailable".
-        ...(constructionPreferences ? { appPreferences: constructionPreferences } : {}),
-      };
-      const constructParams: PluginConstructParams = {
-        hostProtocol: {
-          version: hostProtocolVersion,
-          capabilities: hostProtocolCapabilities(table),
-        },
-        manifest: spec.manifest,
-        context: childContext,
-        entryPath: spec.entryPath,
-        declaredToolNames: declaredToolNames(spec.manifest),
-      };
-
-      const construction = (await transport.request(
-        PLUGIN_INSTANCE_METHODS.construct,
-        constructParams as unknown as Record<string, unknown>,
-        // The child performs BOTH halves of what the in-process path splits
-        // between `importPluginFactory` and the factory call, so the import
-        // bound is applied here and the outer factory bound covers the rest. A
-        // child that hangs is killed by this deadline rather than left running
-        // under a confinement nobody is watching.
-        TOOL_TIMEOUT_POLICY.pluginImportMs + TOOL_TIMEOUT_POLICY.pluginFactoryMs,
-      )) as PluginConstructResult;
-      requireServedCapabilities(pluginId, construction, constructParams.hostProtocol.capabilities);
-
-      /**
-       * The seed above was read BEFORE the child could receive anything, so this
-       * re-push closes the window between the two.
-       *
-       * A preferences snapshot sent while the child is still constructing is
-       * DROPPED: the child routes notifications through a runtime it assigns only
-       * after the plugin module has imported and its factory has run
-       * (`plugin-child-main.ts`). The two watchers above survive that: neither
-       * compares anything, so the next event either of them receives re-pushes
-       * its whole snapshot and repairs the drop. Preferences do not work that
-       * way — the bus announces only a MOVE, and the value that moved is already
-       * the current one — so the child would answer `getAppPreference` with its
-       * construction value until the preference moved AGAIN, which is exactly the
-       * staleness this member was wired to end.
-       *
-       * Sending it here cannot be dropped in turn: the child assigns its runtime
-       * before it writes the construct reply, this runs after that reply arrived,
-       * and one pipe delivers both in order.
-       */
-      pushPreferenceSnapshot();
-
-      const handlers: Record<string, PluginToolHandler> = {};
-      for (const toolName of construction.implementedToolNames) {
-        handlers[toolName] = async (payload?: unknown) => {
-          const result = await transport.request("tools/call", {
-            name: toolName,
-            // MCP's `tools/call` params are an OBJECT, so an absent payload
-            // crosses as `{}` and the child's delegate turns it back into
-            // "absent" — the same conversion the in-process delegate performs.
-            // A payload that is neither absent nor an object cannot make that
-            // round trip, and is refused rather than silently replaced by `{}`.
-            arguments: asToolArguments(pluginId, toolName, payload),
-          });
-          return readToolResult(pluginId, toolName, result);
-        };
-      }
-
-      const instance: RuntimePlugin = {
-        handlers,
-        /**
-         * ALWAYS present, unlike the other two hooks.
-         *
-         * `stop` is the host's only hand on the child's lifetime: the lifecycle
-         * calls `instance.stop?.()` when it retires a generation, and if the
-         * proxy omitted it for a plugin that implements no `stop()` the child
-         * would outlive the incarnation it serves. So the plugin's own hook is
-         * optional and the teardown is not.
-         */
-        stop: async () => {
-          stopHostWatchers();
-          try {
-            if (construction.lifecycleHooks.includes("stop")) {
-              await transport.request(
-                PLUGIN_INSTANCE_METHODS.stop,
-                {},
-                // Bounded where the in-process call is not, which §3.1 names as
-                // an improvement: today a plugin can hang shutdown forever. The
-                // child is killed either way on the next line.
-                TOOL_TIMEOUT_POLICY.pluginStartupDefaultMs,
-              );
-            }
-          } finally {
-            // Marked dead AFTER the hook, not before. The in-process lifecycle
-            // deactivates the incarnation once `stop()` has returned, so a
-            // plugin's stop hook can still reach hostApi — flipping this first
-            // would refuse the very last thing a plugin does (flush a file, log a
-            // shutdown line) and would do it silently, as a `plugin-inactive`
-            // rejection on a `void` member the plugin never awaits.
-            live = false;
-            transport.close(`[out-of-process-plugin] ${pluginId}: stopped`);
-            try {
-              await child.waitForExit?.();
-            } finally {
-              registration?.dispose();
-            }
-          }
-        },
-      };
-      if (construction.lifecycleHooks.includes("start")) {
-        instance.start = async () => {
-          await transport.request(PLUGIN_INSTANCE_METHODS.start, {});
-        };
-      }
-      if (construction.lifecycleHooks.includes("onPublished")) {
-        instance.onPublished = async () => {
-          await transport.request(PLUGIN_INSTANCE_METHODS.onPublished, {});
-        };
-      }
-      if (construction.servesUiResources) {
-        // MCP `resources/read`, which the child's server answers with the
-        // card's HTML — the same verb a plugin in any language serves its card
-        // with. The host's own provider still applies the manifest's policy to
-        // what comes back; this is only the content.
-        instance.readUiResource = async (uri: string) =>
-          readUiResourceHtml(pluginId, uri, await transport.request("resources/read", { uri }));
-      }
-      return instance;
-    } catch (error) {
-      // Named for the whole bring-up rather than for `construct`: a throw from
-      // any of the steps above leaves the same three things owned — the spawned
-      // child, the open transport, and the watchers registered so far — and one
-      // teardown for all of them is what keeps a failed start from turning into
-      // an orphaned process no ledger knows about.
-      abandonChild(`[out-of-process-plugin] ${pluginId}: startup failed`);
-      throw error;
-    }
+    // The channel and `teardown` stay here: the lifecycle gets the instance,
+    // whose `stop` is its one hand on the child's lifetime.
+    return session.instance;
   };
 }
