@@ -72,14 +72,22 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
+      # The Python smoke's interpreter (§9.7 P5): the harness verifies it,
+      # installs `mcp` 2.2.0 for it with the uv above and proves the import, so
+      # no step relies on the runner image's own python3.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: python
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        with:
+          python-version: "3.12"
       # The steps above are preconditions, not gates: without a checkout, an
-      # install and the uv toolchain there is nothing to verify, so a red job
-      # there genuinely means "could not verify". From here down the job
-      # compiles, builds and tests the product — every step below is one of
-      # those, except `Remove root-level Bun binary shims`, which prepares the
-      # runner for the step after it — and the repository-hygiene gates run
-      # after all of it, at the end of this job. The block above them says why
-      # they are there and not above.
+      # install, the uv toolchain and the smoke's Python there is nothing to
+      # verify, so a red job there genuinely means "could not verify". From
+      # here down the job compiles, builds and tests the product — every step
+      # below is one of those, except `Remove root-level Bun binary shims`,
+      # which prepares the runner for the step after it — and the
+      # repository-hygiene gates run after all of it, at the end of this job.
+      # The block above them says why they are there and not above.
       - name: Typecheck
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -114,6 +122,8 @@ jobs:
         # layer down, in an npm script instead of a workflow. This job calls the
         # composite's two halves separately, the duplicate scan last;
         # `check:test-quality` stays as the local one-shot README.md documents.
+        env:
+          AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: bun run check:test-coverage
         working-directory: ave
       # Test suites, not policy gates, which is why they sit with the
@@ -358,6 +368,20 @@ jobs:
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+      # The Python smoke's harness runs `uv pip install` with the app's uv, and
+      # a restored node_modules cache skips the postinstall that fetches it.
+      - name: Ensure uv toolchain
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node scripts/fetch-uv.mjs
+      # The Python smoke's interpreter (§9.7 P5): the harness verifies it,
+      # installs `mcp` 2.2.0 for it with the uv above and proves the import, so
+      # no step relies on the runner image's own python3.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: python
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        with:
+          python-version: "3.12"
       # The plugin-confinement cases need a LIVE sandbox, and the Linux job that
       # runs the whole suite has no bubblewrap — so there they return early and
       # pass without measuring anything. macOS needs no backend install; Linux
@@ -370,6 +394,7 @@ jobs:
         working-directory: ave
         env:
           AVE_REQUIRE_SANDBOX_CASES: "1"
+          AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: >
           bun run test --
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
@@ -440,6 +465,20 @@ jobs:
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+      # The Python smoke's harness runs `uv pip install` with the app's uv, and
+      # a restored node_modules cache skips the postinstall that fetches it.
+      - name: Ensure uv toolchain
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node scripts/fetch-uv.mjs
+      # The Python smoke's interpreter (§9.7 P5): the harness verifies it,
+      # installs `mcp` 2.2.0 for it with the uv above and proves the import, so
+      # no step relies on the runner image's own python3.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: python
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        with:
+          python-version: "3.12"
       # With the flag set, a case that cannot initialise the sandbox FAILS
       # instead of returning green, so a green job is a measurement.
       - name: Run Linux confinement regressions
@@ -447,4 +486,5 @@ jobs:
         working-directory: ave
         env:
           AVE_REQUIRE_SANDBOX_CASES: "1"
+          AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: bun run test -- src/plugins/isolation/__tests__/confined-plugin-child.test.ts

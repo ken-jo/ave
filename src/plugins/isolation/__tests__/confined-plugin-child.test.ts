@@ -106,6 +106,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  PLUGIN_RUNTIME_DIR_NAMES,
   resolvePluginSocketDir,
   resolvePluginWorkerRunRoot,
 } from "../../plugin-storage-layout.js";
@@ -115,7 +116,7 @@ import { aveHome } from "../../../shared/ave-home.js";
 // them is a second chance for one case to prove something about a child that
 // does not ship.
 import { buildChildEntry, childBundleDir, repositoryRoot } from "./child-entry-bundle.js";
-import type { PluginHostApi, PluginManifest, PluginRuntimeContext } from "../../types.js";
+import type { PluginHostApi, PluginManifest, PluginRuntimeContext, RuntimePlugin } from "../../types.js";
 import type { DelegatedWorkerConfinement } from "../host-api-dispatcher.js";
 import {
   createOutOfProcessPluginFactory,
@@ -143,12 +144,24 @@ import { runOneHookScript } from "../../../hooks/script-hook-runner.js";
 import { flattenAgentPluginsManifest } from "../../public-contract.js";
 import { createValidationHost } from "../../validate/validation-host.js";
 import { createRecordingHost } from "./host-protocol-recording-host.js";
-import { resolveProcessLaunch } from "../../process-entry.js";
+import { assertProcessEntryAdmitted, resolveProcessLaunch } from "../../process-entry.js";
 import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
-import { execFileSync, spawn } from "node:child_process";
 import { bundledWrappedEnv, wrapBundledCommand } from "../../../sandbox/wrap-bundled-command.js";
 import { createSandboxProcessHome } from "../../../permissions/sandbox-process-home.js";
 import { buildSafeChildEnv } from "../../../tools/safe-env.js";
+import { FRAME_BYTES_MAX } from "../host-api-wire.js";
+import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
+import {
+  buildGitInstallReceipt,
+  listFilesRecursive,
+  writeInstallReceipt,
+} from "../../plugin-install-receipt.js";
+import { verifyPluginIntegrity } from "../../runtime/index.js";
+import { installPythonSmoke, reportSmoke } from "./python-smoke-harness.js";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 const PLUGIN_ID = "vega-helper";
 const WIDENED_PLUGIN_ID = "local-indexer";
@@ -1805,8 +1818,21 @@ describe("the host protocol, spoken by a real confined child", () => {
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       // The host the transcript was recorded against, neighbourhood included.
       const host = createRecordingHost();
-      const factory = createOutOfProcessPluginFactory({ manifest, launch: { kind: "entry", entryPath }, childEntryPath });
+      // Observed for the resource record only (decision 41): the reference
+      // runtime's cost beside the Python smoke's.
+      let spawnedAt = 0;
+      let tree: Promise<TreeMeasurement> | undefined;
+      const factory = createOutOfProcessPluginFactory({
+        manifest,
+        launch: { kind: "entry", entryPath },
+        childEntryPath,
+        observeChild: (child) => {
+          spawnedAt = performance.now();
+          tree = sampleProcessTree(child.pid!, child.exited);
+        },
+      });
       const instance = await factory(contextFor(fx, plugin, host.api));
+      const spawnToConstructMs = Math.round(performance.now() - spawnedAt);
       try {
         const exercised = await instance.handlers.exercise_host!();
         // Pushed down the same pipe the next call travels, so the child has
@@ -1820,6 +1846,15 @@ describe("the host protocol, spoken by a real confined child", () => {
         await instance.stop?.();
         rmSync(childOutDir, { recursive: true, force: true });
       }
+      const measured = await tree!;
+      reportSmoke("confined measurement", {
+        platform: process.platform,
+        fixture: "meeting",
+        spawnToConstructMs,
+        treePeakRssBytes: measured.peakRssBytes,
+        treeSamples: measured.samples,
+      });
+      expect(measured.samples).toBeGreaterThan(0);
     },
     120_000,
   );
@@ -3194,6 +3229,22 @@ export default async function createPlugin(context) {
  * variable that would make the wrapper itself run code is set too late to do
  * so, and anything it makes the plugin's own process run is confined.
  */
+/** The context the lifecycle hands a process plugin's factory, over the validation host. */
+function processContext(fx: Fixture, plugin: InstalledPlugin): PluginRuntimeContext {
+  return {
+    pluginId: plugin.pluginId,
+    pluginSocketDir: resolvePluginSocketDir(plugin.pluginDataDir),
+    pluginRoot: plugin.pluginRoot,
+    hostRoot: fx.hostRoot,
+    pluginDataDir: plugin.pluginDataDir,
+    userHome: homedir(),
+    aveHome: aveHome(),
+    config: {},
+    log: () => undefined,
+    hostApi: createValidationHost().api,
+  };
+}
+
 describe("a process entry, spawned under the real wrap", () => {
   /**
    * The executable the manifest names: a shell script that `exec`s this host's
@@ -3250,21 +3301,6 @@ process.stdin.on("end", () => process.exit(0));
         description: "a process entry whose environment is measured",
         tools: [],
       },
-    };
-  }
-
-  function processContext(fx: Fixture, plugin: InstalledPlugin): PluginRuntimeContext {
-    return {
-      pluginId: plugin.pluginId,
-      pluginSocketDir: resolvePluginSocketDir(plugin.pluginDataDir),
-      pluginRoot: plugin.pluginRoot,
-      hostRoot: fx.hostRoot,
-      pluginDataDir: plugin.pluginDataDir,
-      userHome: homedir(),
-      aveHome: aveHome(),
-      config: {},
-      log: () => undefined,
-      hostApi: createValidationHost().api,
     };
   }
 
@@ -3501,6 +3537,269 @@ process.stdin.on("end", () => process.exit(0));
       expectRootHeld(result.reason, dataDir, before, undefined, outside);
     },
     120_000,
+  );
+});
+
+/**
+ * Every line of a child's raw stdout that is not one JSON object ended by
+ * 0x0A (decision 40). Read beside the decoder, never instead of it: the
+ * decoder drops such a line by design and still yields the frame after it, so
+ * counting decoded frames cannot see one.
+ */
+function rawStdoutViolations(stdout: Buffer): string[] {
+  const text = stdout.toString("utf-8");
+  const lines = text.split("\n");
+  const violations: string[] = [];
+  // A stream that ends on 0x0A leaves an empty tail.
+  const tail = lines.pop();
+  if (tail !== "") violations.push(`unterminated: ${JSON.stringify(tail)}`);
+  for (const line of lines) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      violations.push(JSON.stringify(line));
+      continue;
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) violations.push(JSON.stringify(line));
+  }
+  return violations;
+}
+
+/** What one child's process tree cost, sampled from spawn to exit (decision 41). */
+interface TreeMeasurement {
+  readonly peakRssBytes: number;
+  readonly samples: number;
+}
+
+/**
+ * Sample the process tree rooted at `rootPid` — the spawned wrapper, as
+ * `observeChild` reports it — every 50 ms with `ps`, until `exited` settles.
+ * RSS is in KiB on both platforms. `process.resourceUsage()` is not used: it
+ * reports the test runner.
+ */
+function sampleProcessTree(rootPid: number, exited: Promise<unknown>): Promise<TreeMeasurement> {
+  let peakKiB = 0;
+  let samples = 0;
+  let done = false;
+  void exited.then(() => {
+    done = true;
+  });
+  const sample = async (): Promise<void> => {
+    const { stdout } = await execFileAsync("ps", ["-o", "pid=,ppid=,rss=", "-A"]);
+    const children = new Map<number, number[]>();
+    const rss = new Map<number, number>();
+    for (const line of stdout.split("\n")) {
+      const [pid, ppid, kib] = line.trim().split(/\s+/u).map(Number);
+      if (!Number.isInteger(pid) || !Number.isInteger(ppid) || !Number.isFinite(kib)) continue;
+      rss.set(pid!, kib!);
+      children.set(ppid!, [...(children.get(ppid!) ?? []), pid!]);
+    }
+    if (!rss.has(rootPid)) return;
+    let total = 0;
+    for (const queue = [rootPid]; queue.length > 0;) {
+      const pid = queue.pop()!;
+      total += rss.get(pid) ?? 0;
+      queue.push(...(children.get(pid) ?? []));
+    }
+    samples += 1;
+    peakKiB = Math.max(peakKiB, total);
+  };
+  return (async () => {
+    while (!done) {
+      await sample();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return { peakRssBytes: peakKiB * 1024, samples };
+  })();
+}
+
+/**
+ * The cross-language smoke under the real wrap (§9.7 P5, §10.1): the Python
+ * fixture installed where a plugin lives, with a v4 receipt at rung `release`
+ * that the production integrity check verifies and P3's provenance gate
+ * admits, run by the production factory under the live sandbox — with
+ * `observeChild` as the cases' only view of the child.
+ */
+describe("the python smoke, confined by the production factory", () => {
+  const PYTHON_SMOKE_ID = "python-smoke";
+  /** Stands in for the pinned release zip's hash; the gate reads that it is pinned. */
+  const ARTIFACT_SHA256 = "c".repeat(64);
+
+  /**
+   * Install the smoke, pinned. `launcherPreamble` is shell put ahead of the
+   * launcher's `exec`, for the stdout cases; it is installed before the
+   * receipt is taken, so the receipt covers the bytes that run.
+   */
+  async function installPinnedPythonSmoke(
+    fx: Fixture,
+    launcherPreamble = "",
+  ): Promise<{ plugin: InstalledPlugin; manifest: PluginManifest }> {
+    const plugin = installPlugin(fx, PYTHON_SMOKE_ID);
+    installPythonSmoke(plugin.pluginRoot);
+    if (launcherPreamble !== "") {
+      const launcher = join(plugin.pluginRoot, "bin", "plugin");
+      writeFileSync(
+        launcher,
+        readFileSync(launcher, "utf-8").replace("set -eu\n", `set -eu\n${launcherPreamble}\n`),
+        "utf-8",
+      );
+    }
+    const manifest = flattenAgentPluginsManifest(
+      JSON.parse(readFileSync(join(plugin.pluginRoot, "plugin.json"), "utf-8")),
+    );
+    const cacheRoot = join(fx.root, "receipts");
+    const { receipt } = await buildGitInstallReceipt(plugin.pluginRoot, {
+      pluginId: PYTHON_SMOKE_ID,
+      version: manifest.version,
+      artifactSha256: ARTIFACT_SHA256,
+      git: {
+        sourceId: "official",
+        sourceOrigin: "official",
+        snapshotCommit: "a".repeat(40),
+        versionCommit: "b".repeat(40),
+        packagePath: `plugins/${PYTHON_SMOKE_ID}`,
+        rung: "release",
+        rungs: [{ rung: "release", outcome: "used" }],
+      },
+      files: await listFilesRecursive(plugin.pluginRoot, PLUGIN_RUNTIME_DIR_NAMES),
+    });
+    await writeInstallReceipt(cacheRoot, receipt);
+    const integrity = await verifyPluginIntegrity(cacheRoot, PYTHON_SMOKE_ID, plugin.pluginRoot);
+    expect(integrity).toEqual({
+      ok: true,
+      verified: { installSource: "git", artifactSha256: ARTIFACT_SHA256, signerKeyId: null, rung: "release", sourceOrigin: "official" },
+    });
+    // P3's gate, on the evidence the integrity check returned.
+    assertProcessEntryAdmitted(manifest, integrity.ok ? integrity.verified : undefined);
+    return { plugin, manifest };
+  }
+
+  interface ObservedRun {
+    readonly instance: RuntimePlugin;
+    readonly child: ObservedPluginChild;
+    readonly stdout: Buffer[];
+    readonly spawnToConstructMs: number;
+    readonly tree: Promise<TreeMeasurement>;
+  }
+
+  /** The production factory over the pinned install, observed from its spawn. */
+  async function runObserved(fx: Fixture, plugin: InstalledPlugin, manifest: PluginManifest): Promise<ObservedRun> {
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    let observed: ObservedPluginChild | undefined;
+    let spawnedAt = 0;
+    let tree: Promise<TreeMeasurement> | undefined;
+    const stdout: Buffer[] = [];
+    const factory = createOutOfProcessPluginFactory({
+      manifest,
+      launch: { kind: "process", ...resolveProcessLaunch(manifest, plugin.pluginRoot, plugin.pluginDataDir) },
+      observeChild: (child) => {
+        observed = child;
+        spawnedAt = performance.now();
+        child.onStdout((chunk) => stdout.push(chunk));
+        tree = sampleProcessTree(child.pid!, child.exited);
+      },
+    });
+    const instance = await factory(processContext(fx, plugin));
+    return {
+      instance,
+      child: observed!,
+      stdout,
+      spawnToConstructMs: Math.round(performance.now() - spawnedAt),
+      tree: tree!,
+    };
+  }
+
+  /** Construct, start, one `tools/call` and stop, as the lifecycle drives them. */
+  async function driveLifecycle(run: ObservedRun): Promise<void> {
+    await run.instance.start!();
+    await expect(run.instance.handlers.echo!({ said: "confined" })).resolves.toEqual({ echoed: { said: "confined" } });
+    await run.instance.stop!();
+    await run.child.exited;
+  }
+
+  /** The child's own `ru_maxrss` from its stop log, in bytes: darwin reports bytes, linux KiB. */
+  function childRuMaxrssBytes(stdout: Buffer): number {
+    const decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
+    const stopLog = decoder.push(stdout).find(
+      (frame) => frame.method === "notifications/ave/log"
+        && typeof (frame.params as { meta?: { ruMaxrss?: unknown } }).meta?.ruMaxrss === "number",
+    );
+    const value = (stopLog!.params as { meta: { ruMaxrss: number } }).meta.ruMaxrss;
+    return process.platform === "darwin" ? value : value * 1024;
+  }
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "runs construct, start, tools/call and stop over the real wrap, with nothing on stdout but frames",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const { plugin, manifest } = await installPinnedPythonSmoke(fx);
+      const run = await runObserved(fx, plugin, manifest);
+      expect(isPluginChildConfined(plugin.pluginId)).toBe(true);
+      expect(run.child.pid).toEqual(expect.any(Number));
+      await driveLifecycle(run);
+      const tree = await run.tree;
+      const stdout = Buffer.concat(run.stdout);
+      expect(rawStdoutViolations(stdout)).toEqual([]);
+      reportSmoke("confined measurement", {
+        platform: process.platform,
+        fixture: PYTHON_SMOKE_ID,
+        spawnToConstructMs: run.spawnToConstructMs,
+        treePeakRssBytes: tree.peakRssBytes,
+        treeSamples: tree.samples,
+        childRuMaxrssBytes: childRuMaxrssBytes(stdout),
+      });
+      expect(tree.samples).toBeGreaterThan(0);
+    },
+    600_000,
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "exits within five seconds of its stdin closing, with no request from the host and no termination",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const { plugin, manifest } = await installPinnedPythonSmoke(fx);
+      const run = await runObserved(fx, plugin, manifest);
+      // What a crashed host looks like to the child: stdin ends. No `stop`,
+      // no signal.
+      run.child.endInput();
+      const outcome = await Promise.race([
+        run.child.exited.then(() => "exited"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("still running"), 5_000)),
+      ]);
+      // Only a child that failed the rule is terminated, and only after the
+      // failure is recorded; its stop hook may not answer either, so how the
+      // stop went is reported beside the failure rather than in place of it.
+      let stopped = "";
+      if (outcome !== "exited") {
+        stopped = await Promise.resolve(run.instance.stop!()).then(
+          () => "; then stopped",
+          (error: unknown) => `; then stop failed: ${String(error)}`,
+        );
+      }
+      expect(`${outcome}${stopped}`).toBe("exited");
+    },
+    600_000,
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux").each([
+    ["a bare line before its first frame", "echo ready"],
+    ["a Content-Length header", "printf 'Content-Length: 120\\r\\n\\r\\n'"],
+  ])(
+    "fails the raw stdout check for %s, which the decoder tolerates",
+    async (_label, preamble) => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture!;
+      const { plugin, manifest } = await installPinnedPythonSmoke(fx, preamble);
+      const run = await runObserved(fx, plugin, manifest);
+      // The decoder still yields every frame: the whole lifecycle answers.
+      await driveLifecycle(run);
+      await run.tree;
+      expect(rawStdoutViolations(Buffer.concat(run.stdout))).not.toEqual([]);
+    },
+    600_000,
   );
 });
 

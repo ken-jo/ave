@@ -22,6 +22,9 @@
  *  - `launches/process/construct.json`: the construct pair for a plugin whose
  *    process is its own executable (§9.7 P3, decision 33), beside the complete
  *    plugin it was recorded from.
+ *  - `plugins/python-smoke/expected.jsonl`: the one conversation NOT recorded
+ *    in memory. A Python process cannot run on in-memory streams, so its
+ *    child is a real process on pipes the test spawns and owns (§9.7 P5).
  *
  * Frames are compared after canonical key ordering and id normalisation: a
  * UUID becomes `<uuid-N>` by first appearance, so a transcript does not change
@@ -29,11 +32,12 @@
  * and read the diff — it IS the protocol change.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { spawn } from "node:child_process";
 import { PassThrough, Writable, type Readable } from "node:stream";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { PluginManifest, RuntimePlugin } from "../../types.js";
 import { flattenAgentPluginsManifest } from "../../public-contract.js";
 import { resolveProcessLaunch } from "../../process-entry.js";
@@ -66,8 +70,12 @@ import type {
 } from "../../validate/validation-host.js";
 import { createRecordingHost } from "./host-protocol-recording-host.js";
 import { openValidationSession } from "../../validate/validation-session.js";
+import { createValidationChildLink } from "../../validate/validation-child-link.js";
+import { buildSafeChildEnv } from "../../../tools/safe-env.js";
 import { goldenFiles } from "./host-protocol-golden-files.js";
 import { settle } from "./stream-turns.js";
+import { installPythonSmoke, reportSmoke } from "./python-smoke-harness.js";
+import { repositoryRoot } from "./child-entry-bundle.js";
 
 const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/2/", import.meta.url));
 /**
@@ -258,6 +266,78 @@ function goldenJson(value: unknown): string {
 function goldenJsonl(frames: readonly RecordedFrame[]): string {
   const ids = new Map<string, string>();
   return frames.map((recorded) => `${JSON.stringify(canonicalise(recorded, ids))}\n`).join("");
+}
+
+/**
+ * Every string a transcript carries, decoded: each JSON key and string value,
+ * and, where a value is itself JSON text (a tool's text content often is), the
+ * strings inside that too. Checking decoded strings rather than the serialized
+ * transcript is what makes the leftover-path guard independent of how a
+ * plugin escaped them: JavaScript keeps non-ASCII literal, Python's
+ * `json.dumps` writes `\uXXXX`, and either may nest JSON inside a string.
+ */
+function decodedStrings(transcript: string): string[] {
+  const out: string[] = [];
+  const visit = (value: unknown, depth: number): void => {
+    if (typeof value === "string") {
+      out.push(value);
+      const text = value.trim();
+      if (depth < 4 && /^[[{"]/.test(text)) {
+        let inner: unknown;
+        try {
+          inner = JSON.parse(text);
+        } catch {
+          return; // prose that merely starts like JSON; already pushed as is
+        }
+        visit(inner, depth + 1);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth);
+      return;
+    }
+    if (value !== null && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) {
+        visit(key, depth);
+        visit(item, depth);
+      }
+    }
+  };
+  for (const line of transcript.split("\n")) if (line !== "") visit(JSON.parse(line), 0);
+  return out;
+}
+
+/**
+ * Where a root ends when it is named: at a separator (something inside it), at
+ * the end of the string, or at prose punctuation or whitespace naming the root
+ * itself. Anything else that can continue a file name (`+`, `(`, a letter, a
+ * dot followed by more name) makes it a sibling such as `/work/repo+backup`,
+ * not the root. A space is taken as the end: `/work/repo backup` is then a
+ * false positive, which fails the recording loudly rather than passing a leak.
+ */
+const ROOT_END = String.raw`(?=$|[\\/\s"'\x60,;:!?)\]}>]|\.(?:\s|$))`;
+
+/**
+ * The first carried string that still names `root` as a path, if any. A path,
+ * not a substring: a short root such as a container's `/w` is also inside
+ * `ave/host/storage/write`, so no path character may stand before it and it
+ * must end at `ROOT_END`. The spellings are the root with any trailing
+ * separator dropped and as a `file://` URL's path (percent-encoding `#`, `?`
+ * and spaces), each also as JSON escapes it inside prose that embeds JSON:
+ * literal, or ASCII-only with `\uXXXX` as Python writes it.
+ */
+function keptRoot(root: string, carried: readonly string[]): string | undefined {
+  const bare = root.length > 1 ? root.replace(/[/\\]+$/, "") : root;
+  const jsonEscaped = (text: string) => JSON.stringify(text).slice(1, -1);
+  const asciiEscaped = (text: string) =>
+    jsonEscaped(text).replace(/[\u0080-\uffff]/g, (unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  const forms = new Set([bare, pathToFileURL(bare).pathname].flatMap((text) => [text, jsonEscaped(text), asciiEscaped(text)]));
+  const patterns = [...forms].map((form) => {
+    const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?<![\\p{L}\\p{N}_.-])${escaped}${ROOT_END}`, "u");
+  });
+  return carried.find((text) => patterns.some((pattern) => pattern.test(text)));
 }
 
 /** The reply to `id` from the other end, waiting for it if it has not crossed yet. */
@@ -768,4 +848,228 @@ describe("one conversation per installed plugin's surface", () => {
       await expect(goldenJsonl(frames)).toMatchFileSnapshot(join(dir, "expected.jsonl"));
     });
   }
+});
+
+/**
+ * The Python smoke's conversation, over real pipes (§9.7 P5).
+ *
+ * The child is the fixture's own `bin/plugin`, spawned plainly by the test —
+ * never the production factory, which would demand a live sandbox and pinned
+ * provenance and is right to — on the validator's own link, and attached to
+ * `openValidationSession`. Two rules beyond `canonicalise`, each keyed to one
+ * thing that varies by run and not by wire behaviour:
+ *
+ *  - MEASUREMENT: in a child `notifications/ave/log` frame,
+ *    `params.meta.ruMaxrss` is the child's peak RSS. Its raw value is copied
+ *    to the measurement record and the frame holds `"<measured>"`. Any other
+ *    number still compares exactly.
+ *  - TEMPORARY ROOTS: the plugin root (a `mkdtemp` copy of the fixture with
+ *    its `vendor/`) and the data root are outside the golden root, so
+ *    `goldenPath` leaves them; they reach construct's context and `entryPath`.
+ *    Each is replaced, as allocated and after `realpath`, longest spelling
+ *    first, as are the validation context's fixed roots — and the transcript
+ *    is refused if the OS temp directory or the checkout still appears in it.
+ */
+describe.runIf(process.platform !== "win32")("the python smoke's conversation, over real pipes", () => {
+  const PYTHON_SMOKE_GOLDEN = join(GOLDEN_ROOT, "plugins", "python-smoke", "expected.jsonl");
+
+  /** The two spellings of a path: as given, and after `realpath`. */
+  const spellings = (path: string): string[] => [...new Set([path, realpathSync(path)])];
+
+  /**
+   * Replace `params.meta.ruMaxrss` of each child log frame with `"<measured>"`,
+   * returning the raw values in order. The frames are rewritten in place.
+   */
+  function measureRuMaxrss(frames: RecordedFrame[]): number[] {
+    const measured: number[] = [];
+    for (const recorded of frames) {
+      const { frame } = recorded;
+      if (recorded.from !== "child" || frame.method !== HOST_PROTOCOL_NOTIFICATIONS.log) continue;
+      const meta = (frame.params as { meta?: Record<string, unknown> } | undefined)?.meta;
+      if (meta && typeof meta.ruMaxrss === "number") {
+        measured.push(meta.ruMaxrss);
+        meta.ruMaxrss = "<measured>";
+      }
+    }
+    return measured;
+  }
+
+  /** Every string in `value` with each `[spelling, placeholder]` replaced, in the order given. */
+  function replaceRoots(value: unknown, replacements: ReadonlyArray<readonly [string, string]>): unknown {
+    if (typeof value === "string") {
+      return replacements.reduce((text, [spelling, placeholder]) => text.replaceAll(spelling, placeholder), value);
+    }
+    if (Array.isArray(value)) return value.map((entry) => replaceRoots(entry, replacements));
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, entry]) => [key, replaceRoots(entry, replacements)]),
+      );
+    }
+    return value;
+  }
+
+  interface PythonRecording {
+    readonly transcript: string;
+    /** The child's own `ru_maxrss`, in bytes: darwin reports bytes, linux KiB. */
+    readonly ruMaxrssBytes: number;
+  }
+
+  /** One recording, in its own freshly allocated plugin and data roots. */
+  async function recordPythonConversation(): Promise<PythonRecording> {
+    const pluginRoot = mkdtempSync(join(tmpdir(), "python-smoke-plugin-"));
+    const pluginDataDir = mkdtempSync(join(tmpdir(), "python-smoke-data-"));
+    try {
+      installPythonSmoke(pluginRoot);
+      const manifest = flattenAgentPluginsManifest(
+        JSON.parse(readFileSync(join(pluginRoot, "plugin.json"), "utf-8")),
+      );
+      const launch = resolveProcessLaunch(manifest, pluginRoot, pluginDataDir);
+      let stderr = "";
+      const child = spawn(launch.command, [...launch.args], {
+        env: buildSafeChildEnv({ ...launch.env }),
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      const { link, record } = createValidationChildLink(child);
+      child.stderr!.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf-8");
+      });
+      const frames: RecordedFrame[] = [];
+      // The validator's link writes to the child through a `PassThrough` it
+      // pipes into stdin, so the host's frames are read where they are written.
+      tap(link.output as PassThrough, "host", frames);
+      tap(link.input, "child", frames);
+      const host = createRecordingHost();
+      try {
+        const session = await openValidationSession({
+          manifest,
+          host,
+          link,
+          entryPath: launch.command,
+          pluginRoot,
+          pluginDataDir,
+        });
+        await session.instance.start!();
+        await session.channel.requestMcp("server/discover", {});
+        await session.channel.requestMcp("tools/list", {});
+        expect(await session.instance.handlers.echo!({ said: "hello" })).toEqual({ echoed: { said: "hello" } });
+        await session.instance.stop!();
+      } catch (error) {
+        // The session never reached its own teardown, so the child is ended
+        // here; the link starts its one termination sequence at most once.
+        link.terminate("the python smoke's recording failed");
+        throw new Error(`the python smoke failed: ${String(error)}\nits stderr:\n${stderr}`, { cause: error });
+      } finally {
+        await record.exited;
+        await record.stdoutEnded;
+      }
+
+      const measured = measureRuMaxrss(frames);
+      expect(measured, "one stop log carries the child's ru_maxrss").toHaveLength(1);
+      const ruMaxrssBytes = process.platform === "darwin" ? measured[0]! : measured[0]! * 1024;
+      const replacements = [
+        ...spellings(pluginRoot).map((spelling) => [spelling, "<plugin-root>"] as const),
+        ...spellings(pluginDataDir).map((spelling) => [spelling, "<plugin-data>"] as const),
+        [host.roots.hostRoot, "<host-root>"] as const,
+        [host.roots.userHome, "<user-home>"] as const,
+        [host.roots.aveHome, "<ave-home>"] as const,
+      ].sort(([a], [b]) => b.length - a.length);
+      const transcript = goldenJsonl(
+        frames.map((recorded) => replaceRoots(recorded, replacements) as RecordedFrame),
+      );
+      const carried = decodedStrings(transcript);
+      for (const leftover of [...spellings(tmpdir()), repositoryRoot()]) {
+        const kept = keptRoot(leftover, carried);
+        if (kept !== undefined) {
+          throw new Error(`the python smoke's golden kept a machine path: ${leftover} (in ${JSON.stringify(kept.slice(0, 200))})`);
+        }
+      }
+      return { transcript, ruMaxrssBytes };
+    } finally {
+      rmSync(pluginRoot, { recursive: true, force: true });
+      rmSync(pluginDataDir, { recursive: true, force: true });
+    }
+  }
+
+  it("is the committed golden, recorded twice in independently allocated roots", async () => {
+    const first = await recordPythonConversation();
+    const second = await recordPythonConversation();
+    reportSmoke("measurement", {
+      platform: process.platform,
+      ruMaxrssBytes: [first.ruMaxrssBytes, second.ruMaxrssBytes],
+    });
+    expect(second.transcript).toBe(first.transcript);
+    await expect(first.transcript).toMatchFileSnapshot(PYTHON_SMOKE_GOLDEN);
+
+    const recorded = first.transcript.trim().split("\n").map((line) => JSON.parse(line) as RecordedFrame);
+    const methods = recorded.filter(({ frame }) => "id" in frame && "method" in frame).map(({ frame }) => frame.method);
+    expect(methods).toEqual(expect.arrayContaining(["server/discover", "tools/list", "tools/call"]));
+    for (const { from, frame } of recorded) {
+      if (from !== "host" || !["server/discover", "tools/list", "tools/call"].includes(String(frame.method))) continue;
+      // Every MCP request carries the S1 metadata, and the plugin answered it.
+      expect((frame.params as { _meta?: unknown })._meta).toEqual({
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      });
+      const reply = recorded.find((candidate) => candidate.from === "child" && candidate.frame.id === frame.id);
+      expect(reply?.frame, String(frame.method)).toHaveProperty("result");
+    }
+  }, 600_000);
+
+  it("answers -32602 itself to an MCP request that lacks either metadata key, and serves one that has both", async () => {
+    const pluginRoot = mkdtempSync(join(tmpdir(), "python-smoke-plugin-"));
+    const pluginDataDir = mkdtempSync(join(tmpdir(), "python-smoke-data-"));
+    try {
+      installPythonSmoke(pluginRoot);
+      const manifest = flattenAgentPluginsManifest(
+        JSON.parse(readFileSync(join(pluginRoot, "plugin.json"), "utf-8")),
+      );
+      const launch = resolveProcessLaunch(manifest, pluginRoot, pluginDataDir);
+      // The pipe the test owns: these frames are written by hand, because the
+      // session's `requestMcp` always stamps the metadata and its `probe`
+      // refuses MCP methods.
+      const child = spawn(launch.command, [...launch.args], {
+        env: buildSafeChildEnv({ ...launch.env }),
+        stdio: ["pipe", "pipe", "inherit"],
+      });
+      const replies = new Map<unknown, Frame>();
+      const decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
+      let allAnswered!: () => void;
+      const answered = new Promise<void>((resolve) => {
+        allAnswered = resolve;
+      });
+      child.stdout!.on("data", (chunk: Buffer) => {
+        for (const frame of decoder.push(chunk)) replies.set(frame.id, frame);
+        if (replies.size === 4) allAnswered();
+      });
+      const exited = new Promise((resolve) => child.once("exit", resolve));
+      const call = (id: string, meta?: Record<string, unknown>): string =>
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name: "echo", arguments: { said: id }, ...(meta ? { _meta: meta } : {}) },
+        })}\n`;
+      const version = { "io.modelcontextprotocol/protocolVersion": "2026-07-28" };
+      const capabilities = { "io.modelcontextprotocol/clientCapabilities": {} };
+      child.stdin!.write(call("bare"));
+      child.stdin!.write(call("version-only", version));
+      child.stdin!.write(call("capabilities-only", capabilities));
+      child.stdin!.write(call("both", { ...version, ...capabilities }));
+      // Ended only once every request is answered: the plugin leaves when its
+      // stdin ends, abandoning whatever is still in flight.
+      await answered;
+      child.stdin!.end();
+      await exited;
+
+      for (const id of ["bare", "version-only", "capabilities-only"]) {
+        expect((replies.get(id) as { error?: { code?: number } } | undefined)?.error?.code, id).toBe(-32602);
+      }
+      expect(replies.get("both")).toMatchObject({
+        result: { _meta: { "ave/rawResult": { echoed: { said: "both" } } }, isError: false },
+      });
+    } finally {
+      rmSync(pluginRoot, { recursive: true, force: true });
+      rmSync(pluginDataDir, { recursive: true, force: true });
+    }
+  }, 600_000);
 });

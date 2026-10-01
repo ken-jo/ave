@@ -35,6 +35,7 @@ import {
 import { VALIDATION_KILL_GRACE_MS } from "../validation-child-link.js";
 import { reportExitCode, type ReportRow } from "../report.js";
 import { openValidationSession } from "../validation-session.js";
+import { installPythonSmoke } from "../../isolation/__tests__/python-smoke-harness.js";
 
 vi.mock("../validation-session.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../validation-session.js")>();
@@ -336,6 +337,33 @@ describe("the process arm", () => {
       expect(reportExitCode(rows)).toBe(1);
     });
   }
+
+  // The cross-language smoke (§9.7 P5): a Python plugin on the stock `mcp`
+  // library, which answers `server/discover` and refuses an MCP request that
+  // lacks the per-request metadata. A process entry never runs on win32.
+  it.runIf(process.platform !== "win32")("validates the Python smoke plugin end to end", async () => {
+    const root = installPythonSmoke(join(scratch, "python-smoke"));
+    const rows = await validatePluginDirectory(root, SOURCE_MODE);
+    expect(rows.filter((candidate) => candidate.ok === false)).toEqual([]);
+    for (const check of [
+      ...MANIFEST_ROWS,
+      "protocol.construct",
+      "construct.requires",
+      "lifecycle.start",
+      "discover.capabilities",
+      "tools.list",
+      "tools.call:echo",
+      "protocol.unknown-method",
+      "lifecycle.stop",
+      "protocol.stdin-close",
+      "protocol.stdout-discipline",
+      "protocol.request-meta",
+      "protocol.teardown",
+    ]) {
+      expect(row(rows, check).ok, check).toBe(true);
+    }
+    expect(reportExitCode(rows)).toBe(0);
+  }, 600_000);
 });
 
 describe("the session-level rows", () => {

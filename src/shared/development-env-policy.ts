@@ -41,6 +41,8 @@ export const DEVELOPMENT_ENV_POLICY = [
   { name: "AVE_SECRET_PROBE", lifecycle: "active", packaged: "scrub" },
   // A staging service base for source runs (design §11); packaged builds use the build constant or policy.
   { name: "AVE_SERVICE_BASE_URL", lifecycle: "active", packaged: "scrub" },
+  // The interpreter CI provisioned for the cross-language smoke's harness (§9.7 P5).
+  { name: "AVE_SMOKE_PYTHON", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_TEST_NODE_EXEC_PATH", lifecycle: "active", packaged: "scrub" },
   // Explicitly source/test-only; packaged builds do not accept this env switch.
   { name: "AVE_TRACE", lifecycle: "active", packaged: "scrub" },

@@ -261,7 +261,7 @@ describe("every golden frame is valid under the schema", () => {
 
   it("holds for every ave frame of each installed plugin's conversation", () => {
     const transcripts = goldenFiles(join(GOLDEN_ROOT, "plugins")).filter((file) => file.endsWith(".jsonl"));
-    expect(transcripts).toHaveLength(5);
+    expect(transcripts).toHaveLength(6);
     let checked = 0;
     const failures = transcripts.flatMap((file) => {
       const lines = readFileSync(join(GOLDEN_ROOT, "plugins", file), "utf-8").trim().split("\n");
