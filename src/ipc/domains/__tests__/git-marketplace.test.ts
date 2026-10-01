@@ -55,6 +55,42 @@ vi.mock("../../../main/app-shutdown.js", async (importOriginal) => ({
   }),
 }));
 
+/**
+ * Holds the update history's next save of a finished apply check until the
+ * test releases it, so a test can act while that check is still in flight.
+ * Every other save, and every save while nothing is held, goes straight
+ * through to the real store.
+ */
+const historySave = vi.hoisted(() => ({ held: null as Promise<void> | null }));
+vi.mock("../../../marketplace/updates/history.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../../marketplace/updates/history.js")>();
+  return {
+    ...original,
+    updateHistoryStore: (path: string) => {
+      const store = original.updateHistoryStore(path);
+      return {
+        ...store,
+        save: async (history: Parameters<typeof store.save>[0]) => {
+          if (history.applyCheckAt !== null && historySave.held) await historySave.held;
+          await store.save(history);
+        },
+      };
+    },
+  };
+});
+
+/** Hold apply-check saves until the returned release is called. */
+function holdApplyCheckSaves(): () => void {
+  let release!: () => void;
+  historySave.held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return () => {
+    historySave.held = null;
+    release();
+  };
+}
+
 const channels = CHANNELS.gitMarketplace;
 
 async function setup(overrides: Record<string, unknown> = {}) {
@@ -190,8 +226,9 @@ describe("git marketplace IPC boundary", () => {
     });
     expect(service.discover).not.toHaveBeenCalled();
 
-    registration.startBackground();
-    await vi.waitFor(() => expect(latestBootstrapStatus()).toEqual({ phase: "complete", installed: ["meeting"], failed: [] }));
+    // The pass, its apply check and the first update list: what Retry would otherwise join.
+    await registration.startBackground();
+    expect(latestBootstrapStatus()).toEqual({ phase: "complete", installed: ["meeting"], failed: [] });
     expect(service.discover).toHaveBeenCalledTimes(1);
     expect(service.applyBootInstalls).toHaveBeenCalledTimes(1);
     expect(state.getBootInstallNotice()).toEqual({ forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [] });
@@ -201,6 +238,29 @@ describe("git marketplace IPC boundary", () => {
     await expect(invokeAppIpcHandlerFromFrame(handlers, CHANNELS.bootstrap.retry, "file:///app/plugin-ui-shell.html"))
       .resolves.toEqual({ ok: false, error: "unauthorized-frame" });
     expect(service.applyBootInstalls).toHaveBeenCalledTimes(2);
+  });
+
+  it("joins the boot pass in flight on Retry, and the boot's apply check in flight on Check now", async () => {
+    const { registration, service } = await setup();
+    const release = holdApplyCheckSaves();
+    try {
+      const started = registration.startBackground();
+      // The boot's apply check has recorded its time and is held saving it: the pass awaits it, so both are in flight.
+      await vi.waitFor(async () => {
+        const status = await invokeFileIpcHandler(handlers, channels.updatesStatus) as { ok: true; value: { running: boolean; applyCheckAt: string | null } };
+        expect(status.value).toMatchObject({ running: true, applyCheckAt: expect.any(String) });
+      });
+      const retried = invokeFileIpcHandler(handlers, CHANNELS.bootstrap.retry);
+      const checked = invokeFileIpcHandler(handlers, channels.updatesCheck);
+      release();
+      await expect(retried).resolves.toEqual({ ok: true });
+      await expect(checked).resolves.toMatchObject({ ok: true, value: { running: false } });
+      await started;
+    } finally {
+      release();
+    }
+    expect(service.applyBootInstalls).toHaveBeenCalledTimes(1);
+    expect(service.discover).toHaveBeenCalledTimes(1);
   });
 
   it("rechecks the updates when marketplace settings are written, once the boot pass runs", async () => {
@@ -222,11 +282,11 @@ describe("git marketplace IPC boundary", () => {
     // Before the window starts it there is no scheduler; the card says why.
     await expect(invokeFileIpcHandler(handlers, channels.updatesStatus)).resolves.toEqual({ ok: false, code: "unavailable", message: "update checks have not started" });
 
-    registration.startBackground();
-    await vi.waitFor(async () => {
-      const status = await invokeFileIpcHandler(handlers, channels.updatesStatus) as { ok: true; value: { applyCheckAt: string | null } };
-      expect(status.ok && status.value.applyCheckAt).not.toBe(null);
-    });
+    // The boot's apply check has ended, not only recorded its time: Check now starts its own.
+    await registration.startBackground();
+    const status = await invokeFileIpcHandler(handlers, channels.updatesStatus) as { ok: true; value: { applyCheckAt: string | null; running: boolean } };
+    expect(status).toMatchObject({ ok: true, value: { running: false } });
+    expect(status.value.applyCheckAt).not.toBeNull();
     const checked = await invokeFileIpcHandler(handlers, channels.updatesCheck) as { ok: true; value: { running: boolean; discovery: { result: string }; packages: unknown[] } };
     expect(checked).toMatchObject({ ok: true, value: { running: false, discovery: { result: "ok" }, packages: [{ key: { name: "meeting" }, state: "manual" }] } });
     expect(service.discover).toHaveBeenCalledTimes(2);
