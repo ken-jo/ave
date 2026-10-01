@@ -5,6 +5,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { MAX_HOOK_STDOUT_BYTES, type ScriptHookStdin } from "../script-hook-types.js";
 
+const SANDBOX_TEMP_ROOT = "/tmp/ave-test-sandbox-tmp";
 let sandboxActive = false;
 let admissionOpen = true;
 const wrap = vi.fn<(cmdline: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>>();
@@ -19,8 +20,9 @@ vi.mock("../../permissions/asrt-sandbox.js", async (original) => {
   const real = await original<typeof import("../../permissions/asrt-sandbox.js")>();
   return { ...real, isAsrtSandboxActive: () => sandboxActive,
     wrapWorkerCommand: (cmdline: string, options?: unknown) => wrap(cmdline, options), cleanupAsrtSandboxAfterCommand: vi.fn(async () => undefined),
-    // Not the real one: it creates `<AVE_HOME>/sandbox/tmp`, and this file does not isolate AVE_HOME.
-    useAppOwnedSandboxTempRoot: () => "/tmp/ave-test-sandbox-tmp" };
+    // Not the real one: it creates `<AVE_HOME>/sandbox/tmp/…`, and this file does not isolate AVE_HOME.
+    ensureSandboxTempPrincipalDir: (principal: { kind: "plugin" | "mcp"; id: string }) => ({
+      dir: join(SANDBOX_TEMP_ROOT, real.sandboxTempPrincipalDirName(principal)), root: SANDBOX_TEMP_ROOT }) };
 });
 
 import { runOneHookScript } from "../script-hook-runner.js";
@@ -33,7 +35,7 @@ const script = join(generationRoot, "hook.cjs");
 const payload: ScriptHookStdin = { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin",
   category: "read", input: {}, sessionId: "runner", trustOrigin: "user-keyboard" };
 const runnable = () => ({ id: "hook", hookType: "pre" as const, source: "config" as const,
-  hookPath: script, command: ["node", script], confinement: { kind: "bundled" as const, dataDir, generationRoot } });
+  hookPath: script, command: ["node", script], confinement: { kind: "bundled" as const, pluginId: "hook-plugin", dataDir, generationRoot } });
 
 afterEach(() => { sandboxActive = false; admissionOpen = true; wrap.mockReset(); vi.restoreAllMocks(); });
 afterAll(async () => { await cleanupTmpDir(root); });
@@ -70,9 +72,17 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     wrap.mockResolvedValueOnce({ argv: ["node", script], env: {} });
     const result = await runOneHookScript(runnable(), payload);
     expect(result.decision).toBe("allow");
-    const options = wrap.mock.calls[0]?.[1] as { filesystem: { allowWrite: string[]; denyRead: string[]; denyWrite: string[] } };
+    const [cmdline, raw] = wrap.mock.calls[0]!;
+    const options = raw as { filesystem: { allowWrite: string[]; denyRead: string[]; denyWrite: string[] } };
     expect(options.filesystem.allowWrite).toContain(dataDir);
     expect(options.filesystem.allowWrite).not.toContain(generationRoot);
+    // Its plugin's temp directory, set as TMPDIR inside the wrap, granted alone;
+    // the shared root holding every other principal's is read-denied.
+    const tempDir = join(SANDBOX_TEMP_ROOT, `plugin-${Buffer.from("hook-plugin").toString("hex")}`);
+    expect(cmdline.startsWith(`'/usr/bin/env' 'TMPDIR=${tempDir}' 'TMP=${tempDir}' 'TEMP=${tempDir}' 'node' `)).toBe(true);
+    expect(options.filesystem.allowWrite).toContain(tempDir);
+    expect(options.filesystem.allowWrite).not.toContain(SANDBOX_TEMP_ROOT);
+    expect(options.filesystem.denyRead).toContain(SANDBOX_TEMP_ROOT);
     expect(options.filesystem.denyRead).toContain(join(homedir(), ".ssh"));
     expect(options.filesystem.denyWrite.length).toBeGreaterThan(0);
   });

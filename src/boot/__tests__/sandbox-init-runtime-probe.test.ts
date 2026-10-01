@@ -33,6 +33,8 @@ vi.mock("../../lib/logger.js", () => ({
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", () => ({
+  // A root that never exists, so the boot sweep of it has nothing to remove.
+  appOwnedSandboxTempRoot: () => "/nonexistent-ave-test/sandbox/tmp",
   useAppOwnedSandboxTempRoot: () => "/tmp/ave-test-sandbox-tmp",
   initializeAsrtSandbox: h.initialize,
   checkAsrtDependencies: h.checkDeps,

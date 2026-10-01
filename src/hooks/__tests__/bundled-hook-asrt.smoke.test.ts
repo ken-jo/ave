@@ -60,7 +60,7 @@ connection.on('close', () => process.stdout.write(JSON.stringify({ action: 'allo
         await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
         const result = await runOneHookScript({ id: "hook", hookType: "pre", source: "config",
           hookPath: script, command: ["node", script, secret, outside, join(dataDir, "state.json"), String(address.port)],
-          confinement: { kind: "bundled", dataDir, generationRoot } }, payload, { timeoutMs: 4000 });
+          confinement: { kind: "bundled", pluginId: "smoke-plugin", dataDir, generationRoot } }, payload, { timeoutMs: 4000 });
         expect(result.decision, result.reason).toBe("allow");
         expect(JSON.parse(result.reason)).toEqual({ read: false, outsideWrite: false, dataWrite: true, socket: false });
       } finally {

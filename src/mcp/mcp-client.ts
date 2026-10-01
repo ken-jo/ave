@@ -2219,6 +2219,7 @@ class StdioTransport implements McpTransport {
         args: spawnCommand.args,
         sandboxHome,
         allowWrite,
+        tempPrincipal: { kind: "mcp", id: this.config.id },
       });
       wrapped = true;
 

@@ -4,7 +4,7 @@
 
 
 import { spawn } from "node:child_process";
-import { lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -455,8 +455,9 @@ const PINNED_WRITE_ROOT_MARKER = ".ave-pinned-write-root";
 
 /**
  * The marker denies for {@link PerCommandFilesystem.pinWriteRoots}. Built here,
- * inside the wrap, AFTER the wrap has ensured the app-owned temp root, so every
- * root a wrap grants exists when its marker is computed.
+ * inside the wrap, after the caller has created every root it grants — the
+ * principal's temp directory included ({@link ensureSandboxTempPrincipalDir}) —
+ * so each one exists when its marker is computed.
  */
 function pinnedWriteRootDenies(writeRoots: readonly string[]): string[] {
   if (process.platform !== "darwin") return [];
@@ -1352,15 +1353,15 @@ export async function wrapToolCommand(
  * a read/write channel between this app's sandbox and whatever else on the
  * machine uses the same runtime, in both directions, that no manifest mentions.
  *
- * WHAT THIS CLOSES, and what it does not. Moving the root under `~/.ave` ends
- * the CROSS-APPLICATION half: the directory is ours, created `0o700`. It does
- * NOT end the cross-PLUGIN half — every confined child of this app still shares
- * one root, so two plugins still meet there. Closing that needs a root per
- * child, and ASRT takes the value from the wrapping process's environment
- * rather than from a per-command option, so a per-child root would mean
- * mutating `process.env` around an `await` on the spawn path. That is a
- * concurrency hazard on a security boundary, and it is why this stops here
- * rather than going one step further quietly.
+ * WHAT THIS CLOSES. Moving the root under `~/.ave` ends the
+ * CROSS-APPLICATION half: the directory is ours, created `0o700`. The
+ * cross-PRINCIPAL half — every confined child of this app sharing one root —
+ * is closed one level down, by {@link ensureSandboxTempPrincipalDir}: plugin-
+ * owned and third-party processes get a directory of their own under this root
+ * and a `TMPDIR` naming it, set inside the wrap, and none of them is granted
+ * the root itself. What this variable still decides is the `TMPDIR` ASRT
+ * writes for a wrap that sets none of its own, which it keeps off
+ * `/tmp/claude`.
  *
  * Called once, before any wrap, so nothing observes it changing.
  */
@@ -1369,6 +1370,114 @@ export function appOwnedSandboxTempRoot(): string {
 }
 
 let appOwnedTempRootReady = false;
+
+/**
+ * Whose temp directory a confined process gets: a plugin, covering its child,
+ * its workers and its bundled hooks, or one MCP stdio server.
+ */
+export interface SandboxTempPrincipal {
+  readonly kind: "plugin" | "mcp";
+  readonly id: string;
+}
+
+const SANDBOX_TEMP_PRINCIPAL_KINDS: ReadonlySet<string> = new Set(["plugin", "mcp"]);
+
+/**
+ * The longest id, in UTF-8 bytes, that names a temp directory. Its hex form
+ * after the longest kind prefix stays under the 255-byte name limit every
+ * supported filesystem has.
+ */
+const MAX_SANDBOX_TEMP_PRINCIPAL_ID_BYTES = 120;
+
+/**
+ * The directory name a principal's temp directory has under the shared root:
+ * `<kind>-<hex of the id's UTF-8 bytes>`. Lowercase hex is one spelling per id
+ * on case-insensitive and case-sensitive filesystems alike, carries no
+ * separator, dot or link-like segment whatever the id holds (an agent plugin's
+ * id contains `/`), and the kind prefix keeps a plugin and an MCP server with
+ * the same id apart. An id that is empty, longer than
+ * {@link MAX_SANDBOX_TEMP_PRINCIPAL_ID_BYTES}, or not well-formed text (whose
+ * UTF-8 bytes would be shared with another id's) is refused.
+ */
+export function sandboxTempPrincipalDirName(principal: SandboxTempPrincipal): string {
+  if (!SANDBOX_TEMP_PRINCIPAL_KINDS.has(principal.kind)) {
+    throw new Error(`sandbox temp: unknown principal kind ${JSON.stringify(principal.kind)}`);
+  }
+  const bytes = Buffer.from(principal.id, "utf8");
+  if (bytes.length === 0 || bytes.length > MAX_SANDBOX_TEMP_PRINCIPAL_ID_BYTES || bytes.toString("utf8") !== principal.id) {
+    throw new Error(
+      `sandbox temp: ${principal.kind} id ${JSON.stringify(principal.id)} cannot name a temp directory `
+        + `(empty, longer than ${MAX_SANDBOX_TEMP_PRINCIPAL_ID_BYTES} UTF-8 bytes, or not well-formed text)`,
+    );
+  }
+  return `${principal.kind}-${bytes.toString("hex")}`;
+}
+
+/**
+ * Create (or take back) a principal's temp directory and return it with the
+ * root it sits in.
+ *
+ * A wrap that uses it grants read and write on `dir` alone, sets
+ * `TMPDIR`/`TMP`/`TEMP` to it inside the wrap ({@link sandboxTempEnvLaunch}),
+ * and denies reading `root`. ASRT reads are deny-only, so without that deny
+ * every confined process could list the root and read every other
+ * principal's files in it; the deny is what makes the directory private, and
+ * `0o700` adds nothing against a process of the same user.
+ *
+ * The directory must be a real directory: a link here is refused, never
+ * followed. Nothing confined can write the root, so nothing confined can put
+ * one there; one left by a version that still granted the root is removed by
+ * the boot sweep before any wrap.
+ */
+export function ensureSandboxTempPrincipalDir(principal: SandboxTempPrincipal): { readonly dir: string; readonly root: string } {
+  const root = appOwnedSandboxTempRoot();
+  const dir = join(root, sandboxTempPrincipalDirName(principal));
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  try {
+    mkdirSync(dir, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  const entry = lstatSync(dir);
+  if (!entry.isDirectory()) {
+    throw new Error(`sandbox temp: ${dir} is not a directory the host created; refusing to grant it`);
+  }
+  // A principal may have narrowed its own directory's mode; the host decides it.
+  if ((entry.mode & 0o7777) !== 0o700) chmodSync(dir, 0o700);
+  return { dir, root };
+}
+
+/**
+ * The launcher that sets a principal's temp directory: `/usr/bin/env
+ * TMPDIR=<dir> TMP=<dir> TEMP=<dir> <command> <args>`, run INSIDE the wrap.
+ * ASRT writes its own `TMPDIR=` (from `CLAUDE_CODE_TMPDIR`) ahead of the
+ * sandboxed command on both platforms — `env` arguments on macOS, a bwrap
+ * `--setenv` on Linux — so a value in the spawn environment never reaches the
+ * child; one assigned by a process already inside the sandbox does.
+ *
+ * `env` reads an operand containing `=` as an assignment, so a command with
+ * one would be split rather than run; it is refused.
+ */
+export function sandboxTempEnvLaunch(
+  dir: string,
+  command: string,
+  args: readonly string[],
+): { readonly command: string; readonly args: string[] } {
+  if (command.includes("=")) {
+    throw new Error(
+      `sandbox temp: the command '${command}' contains '=', which env(1) would read as an assignment; `
+        + "move it to a path without '='",
+    );
+  }
+  return {
+    command: SANDBOX_TEMP_ENV_LAUNCHER,
+    args: [`TMPDIR=${dir}`, `TMP=${dir}`, `TEMP=${dir}`, command, ...args],
+  };
+}
+
+/** `env(1)`, never a `PATH` lookup: both platforms that wrap ship it here. */
+const SANDBOX_TEMP_ENV_LAUNCHER = "/usr/bin/env";
+
 
 export function useAppOwnedSandboxTempRoot(): string {
   const root = appOwnedSandboxTempRoot();

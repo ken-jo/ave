@@ -117,7 +117,7 @@ export interface RunnableHook {
    */
   commandIdentity?: string;
   pluginOwner?: PluginHookOwner;
-  confinement?: { kind: "bundled"; dataDir: string; generationRoot: string };
+  confinement?: { kind: "bundled"; pluginId: string; dataDir: string; generationRoot: string };
 }
 
 /** sha256 (hex) of a verbatim command argv — the forensic anchor for a generic
@@ -270,7 +270,7 @@ export async function runOneHookScript(
     const sandboxHome = createSandboxProcessHome();
     try {
       const wrapped = await wrapBundledCommand({ command: spawnCmd, args: spawnArgs,
-        sandboxHome, allowWrite: [confinement.dataDir] });
+        sandboxHome, allowWrite: [confinement.dataDir], tempPrincipal: { kind: "plugin", id: confinement.pluginId } });
       [spawnCmd, ...spawnArgs] = wrapped.argv;
       spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, sandboxHome.env);
       let cleaned = false;

@@ -64,8 +64,9 @@ export function sandboxProcessProfileEnvironment(
     // `TMPDIR=` into the sandboxed command line, which is evaluated INSIDE the
     // sandbox and therefore wins over anything this env carries. Setting one
     // would be a value that never applies — a comment claiming a substitution
-    // the child never sees. The POSIX temp root is set where it CAN take
-    // effect, at `sandbox-init.ts`, through the variable ASRT reads.
+    // the child never sees. The POSIX temp directory is set where it CAN take
+    // effect: inside the wrap, per principal (`sandboxTempEnvLaunch`,
+    // `asrt-sandbox.ts`).
   };
 }
 

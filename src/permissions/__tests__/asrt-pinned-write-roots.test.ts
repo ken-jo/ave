@@ -2,8 +2,9 @@
  * `PerCommandFilesystem.pinWriteRoots` — the one mechanism that keeps
  * plugin-owned code from removing or replacing the host-created roots it writes
  * into. Its own file because one of these cases is about the FIRST wrap of a
- * process: the app-owned temp root does not exist until a wrap creates it, and
- * a pin computed before that would silently leave the temp root unpinned.
+ * process: a principal's temp directory does not exist until the host creates
+ * it for that wrap, and a pin computed from a root that is not there yet is
+ * silently dropped.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -13,6 +14,7 @@ import { join } from "node:path";
 import {
   appOwnedSandboxTempRoot,
   buildPerCommandSandboxCustomConfig,
+  ensureSandboxTempPrincipalDir,
   getDefaultSensitiveWriteDenyPaths,
   initializeAsrtSandbox,
   isAsrtSandboxActive,
@@ -40,27 +42,27 @@ afterAll(async () => {
 
 describe("pinned write roots", () => {
   it.runIf(process.platform === "darwin")(
-    "pins the app-owned temp root on the first wrap of a process, which is the wrap that creates it",
+    "pins a principal's temp directory on the first wrap of a process, created for that wrap",
     async () => {
       if (!(await asrtCanInitialize())) {
         if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
         return;
       }
-      const tempRoot = appOwnedSandboxTempRoot();
       const dataDir = join(home, "data");
       mkdirSync(dataDir);
-      expect(existsSync(tempRoot), "the temp root existed before the first wrap").toBe(false);
+      expect(existsSync(appOwnedSandboxTempRoot()), "the temp root existed before the first wrap").toBe(false);
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const { dir: tempDir } = ensureSandboxTempPrincipalDir({ kind: "plugin", id: "pinned" });
       const { argv } = await wrapWorkerCommand("true", {
         filesystem: {
-          allowWrite: [tempRoot, dataDir],
+          allowWrite: [tempDir, dataDir],
           denyRead: [],
           denyWrite: getDefaultSensitiveWriteDenyPaths(),
           pinWriteRoots: true,
         },
       });
       const profile = argv.join("\n");
-      for (const root of [tempRoot, dataDir]) {
+      for (const root of [tempDir, dataDir]) {
         const real = realpathSync(root);
         expect(profile, `no marker deny for ${real}`).toContain(`(subpath "${join(real, MARKER)}")`);
         expect(profile, `no literal pin for ${real}`).toContain(`(literal "${real}")`);

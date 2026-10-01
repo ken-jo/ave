@@ -81,19 +81,20 @@ export class AgentPluginHookRuntime {
 
   private async projections(item: InstalledAgentPluginRuntime, activationId: string): Promise<PreparedPluginHookProjection[]> {
     const dataDir = await this.dataDir(item.name);
+    const pluginId = `agent-plugin/${item.name}`;
     return item.content.components.hooks.map((hook, index) => {
       const envEntries = Object.entries(hook.env ?? {});
       const resolved = resolveBundledArgv({ generationRoot: item.dir, dataDir,
         argv: [...hook.command, ...envEntries.map(([, value]) => value)],
         baseFingerprint: hook.digest, label: `hook ${item.name}#${index}`, policy: "hook" });
       return {
-        owner: { pluginId: `agent-plugin/${item.name}`, pluginVersion: item.version,
+        owner: { pluginId, pluginVersion: item.version,
           activationId, generationId: item.generationId, localId: String(index), fingerprint: hook.digest },
         entries: [{ id: String(index), event: hook.event as PreparedPluginHookProjection["entries"][number]["event"],
           ...(hook.matcher ? { matcher: hook.matcher } : {}), command: [...resolved.argv.slice(0, hook.command.length)],
           ...(hook.env ? { env: Object.fromEntries(envEntries.map(([key], offset) => [key, resolved.argv[hook.command.length + offset]!])) } : {}),
           timeoutMs: hook.timeoutMs, source: "config" }],
-        confinement: { kind: "bundled" as const, dataDir, generationRoot: item.dir },
+        confinement: { kind: "bundled" as const, pluginId, dataDir, generationRoot: item.dir },
       };
     });
   }

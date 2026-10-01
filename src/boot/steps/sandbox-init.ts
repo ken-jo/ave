@@ -2,10 +2,14 @@
 
 
 
+import { lstat, readdir, unlink } from "node:fs/promises";
+import { join } from "node:path";
+
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 import type { SandboxGateAction, SandboxGateReason } from "./sandbox-gate.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { removeOwnedPluginTree } from "../../plugins/plugin-removal-transaction.js";
 
 const log = createLogger("ave");
 
@@ -34,6 +38,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
   {
     const {
       initializeAsrtSandbox,
+      appOwnedSandboxTempRoot,
       useAppOwnedSandboxTempRoot,
       checkAsrtDependencies,
       isAsrtLinuxRuntimeProbeError,
@@ -217,6 +222,13 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           // from THIS process's environment at wrap time — a value published
           // after a wrap would apply to some children and not others, which is
           // the one shape a temp-root decision must not have.
+          // The principals' temp directories are emptied first, while no
+          // confined process exists to use one — the plugins have not started.
+          // That is what removes the directory of a plugin uninstalled, or an
+          // MCP server dropped, since the last start.
+          await sweepSandboxTempRoot(appOwnedSandboxTempRoot()).catch((error: unknown) => {
+            log.warn("boot: could not empty the sandbox temp root: %s", errorMessage(error));
+          });
           const sandboxTempRoot = useAppOwnedSandboxTempRoot();
           await initializeAsrtSandbox({
             allowedDomains: unionAllowedDomains,
@@ -351,4 +363,30 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
       );
     }
   }
+}
+
+/**
+ * Remove everything under the sandbox temp root: the temp directories of every
+ * principal, and whatever a version that still granted the root left in it.
+ *
+ * Run at boot, before any confined process exists, so nothing is using a
+ * directory it removes and nothing can change the tree while it is walked. No
+ * link is followed: a root that is a link is unlinked, never listed; each entry
+ * is removed with {@link removeOwnedPluginTree}, which deletes a link rather
+ * than its target and takes back the modes and, on macOS, the user-immutable
+ * flags a confined process could have set inside its own directory.
+ */
+export async function sweepSandboxTempRoot(root: string): Promise<void> {
+  let entry;
+  try {
+    entry = await lstat(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!entry.isDirectory()) {
+    await unlink(root);
+    return;
+  }
+  for (const name of await readdir(root)) await removeOwnedPluginTree(join(root, name));
 }

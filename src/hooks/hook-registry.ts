@@ -57,7 +57,7 @@ interface BaseHookRegistryEntry {
   /** Exact plugin-owned trust identity; absent for user/global hooks. */
   owner?: PluginHookOwner;
   /** Package-owned hooks run with a bounded write grant. */
-  confinement?: { kind: "bundled"; dataDir: string; generationRoot: string };
+  confinement?: { kind: "bundled"; pluginId: string; dataDir: string; generationRoot: string };
 }
 
 /** A registry entry synthesized from a legacy `.sh` `DiscoveredHook`. */

@@ -547,6 +547,8 @@ vi.mock("../../permissions/sandbox-capability.js", () => ({
 }));
 vi.mock("../../permissions/asrt-sandbox.js", () => ({
   initializeAsrtSandbox: vi.fn(async () => {}),
+  // A root that never exists, so the boot sweep of it has nothing to remove.
+  appOwnedSandboxTempRoot: vi.fn(() => "/nonexistent-ave-test/sandbox/tmp"),
   useAppOwnedSandboxTempRoot: vi.fn(() => "/tmp/ave-test-sandbox-tmp"),
   checkAsrtDependencies: vi.fn(async () => ({ errors: [], warnings: [] })),
   isAsrtLinuxRuntimeProbeError: vi.fn(() => false),

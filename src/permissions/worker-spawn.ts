@@ -564,6 +564,8 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       args,
       label: `worker:${safePlugin}:${safeWorker}:asrt`,
       grantMode: "allow-list",
+      // A worker shares its plugin's temp directory, and no other plugin's.
+      tempPrincipal: { kind: "plugin", id: spec.pluginId },
       allowRead,
       allowWrite,
       // A plugin worker is plugin-owned code: it may not remove or replace the

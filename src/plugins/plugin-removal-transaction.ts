@@ -359,8 +359,9 @@ async function removeTransactionStaged(paths: PluginPaths, journal: RemovalTrans
 const execFileAsync = promisify(execFile);
 
 /**
- * Remove a staged plugin tree, first taking back what the plugin may have
- * taken from its owner.
+ * Remove a staged plugin tree, or a principal's sandbox temp directory at boot
+ * (`sweepSandboxTempRoot`), first taking back what confined code may have taken
+ * from its owner.
  *
  * A confined plugin writes inside its data root, so it can `chmod 000` a
  * directory there or, on macOS, set the user-immutable flag (`chflags uchg`)
@@ -370,7 +371,7 @@ const execFileAsync = promisify(execFile);
  * clear `uchg`, before one more removal. No link is followed: the walk uses
  * `lstat` and `chflags -P`. If that removal fails too, its error propagates.
  */
-async function removeOwnedPluginTree(path: string): Promise<void> {
+export async function removeOwnedPluginTree(path: string): Promise<void> {
   try {
     await retryOnTransientFsLock(() => rm(path, { recursive: true, force: true }));
     return;

@@ -915,6 +915,9 @@ export async function spawnConfinedPluginChild(
       args,
       label: `plugin-child:${spec.pluginId}`,
       grantMode: process.platform === "win32" ? "deny-only" : "allow-list",
+      // The plugin's own temp directory, shared with its workers and bundled
+      // hooks and with no other principal.
+      tempPrincipal: { kind: "plugin", id: spec.pluginId },
       allowRead: [...spec.envelope.read, sandboxHome.path],
       allowWrite: [...spec.envelope.write, sandboxHome.path],
       // The data root above all: the host keeps resolving it, so a child that

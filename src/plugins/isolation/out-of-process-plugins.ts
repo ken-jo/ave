@@ -223,11 +223,12 @@
  *    directory. This axis is about those values being DIFFERENT in a child, not
  *    about what the child may then do with them — that is axis 6, and the two
  *    are separated because a plugin can be broken by either one alone. The
- *    sandbox SUBSTITUTES the temp root, and it is now THIS APP'S:
- *    `useAppOwnedSandboxTempRoot` publishes `~/.ave/sandbox/tmp` through the
- *    variable ASRT reads, from the wrap path itself rather than from a boot
- *    step a caller could skip, and creates it `0o700`. A confined child's
- *    `os.tmpdir()` therefore now names a directory that EXISTS and that the
+ *    temp directory is the PLUGIN'S: the host creates
+ *    `~/.ave/sandbox/tmp/plugin-<hex of the id>` `0o700` before every spawn
+ *    and sets `TMPDIR`, `TMP` and `TEMP` to it inside the wrap, after ASRT's
+ *    own assignment (`ensureSandboxTempPrincipalDir` and
+ *    `sandboxTempEnvLaunch`, `asrt-sandbox.ts`). A confined child's
+ *    `os.tmpdir()` therefore names a directory that EXISTS and that the
  *    confinement primitive grants for writing. Before, it named ASRT's
  *    `/tmp/claude`, which ASRT creates nothing for. Measured against an absent path
  *    that is INSIDE the write jail: `readdirSync` and `mkdtempSync` fail
@@ -296,15 +297,20 @@
  *    plugin's — and the same module `rmSync`s it when the child exits.
  *      So the write half has FOUR outcomes, not two and not three:
  *      (a) durable under `pluginDataDir` — where plugin state belongs;
- *      (b) refused with `EPERM` outside the grants and off ASRT's default list;
+ *      (b) refused with `EPERM` outside the grants, ASRT's own default write
+ *          paths included;
  *      (c) succeeding-then-vanishing under `homedir()`, which a source census
  *          reads as fine and which costs the user their state on every restart;
- *      (d) succeeding AND DURABLE outside both named grants, on one of ASRT's
- *          default write paths. (d) is the outcome this file previously said
- *          did not exist, and it is now asserted rather than described: a case
- *          writes into the substituted temp root — which is on that list — and
- *          the host reads the bytes back.
- *      (d) WAS A HOLE, AND THE CROSS-APPLICATION HALF IS NOW CLOSED. Those
+ *      (d) succeeding AND DURABLE outside both named grants, in the plugin's
+ *          own temp directory — `tmpdir()`, which the confinement primitive
+ *          grants rather than the spawn. Durable until the next start, which
+ *          empties every temp directory (`sweepSandboxTempRoot`), and shared
+ *          with this plugin's workers and bundled hooks and with nothing else.
+ *          Asserted rather than described: a case writes there and the host
+ *          reads the bytes back.
+ *      (d) WAS A HOLE IN TWO HALVES, AND BOTH ARE NOW CLOSED. ASRT's default
+ *    write paths were the first, and the temp root ASRT pointed at was one of
+ *    them. Those
  *    paths are per-MACHINE while the jail this spawn builds is per-plugin, so
  *    before the fix two confined plugins reached the same directory — measured,
  *    one confined child wrote bytes under the substituted temp root and a
@@ -325,17 +331,22 @@
  *    also broke every `writeFileSync(join(tmpdir(), …))` in every confined
  *    child. The mechanism the earlier note could not name is
  *    `CLAUDE_CODE_TMPDIR`, which ASRT reads from the WRAPPING process rather
- *    than from a per-command option — which is exactly why the other half is
- *    still open.
- *      WHAT REMAINS. The temp root is one directory for ALL of this app's
- *    confined children, so every admitted plugin meets every other one in it —
- *    four of them now, and the channel widens with each admission rather than
- *    staying the size it was when it was written down. Narrower than it was,
- *    and still a channel neither manifest declares. Closing it needs a root per
- *    CHILD, and because ASRT takes the value from the wrapping process's
- *    environment that means mutating `process.env` around an `await` on the
- *    spawn path — a concurrency hazard on a security boundary, which is why
- *    this stopped here rather than going one step further quietly.
+ *    than from a per-command option.
+ *      The CROSS-PLUGIN half was the root itself: one directory for ALL of this
+ *    app's confined children, so every admitted plugin met every other one in
+ *    it — measured, a second child read the first one's bytes there. ASRT
+ *    takes its value from the wrapping process's environment, and mutating
+ *    `process.env` around an `await` on the spawn path would be a concurrency
+ *    hazard on a security boundary; the assignment is made INSIDE the wrap
+ *    instead, by `env(1)` ahead of the command, so ASRT's own `TMPDIR=` is
+ *    overridden in the one process that reads it. Each principal — a plugin,
+ *    or an MCP stdio server — gets its own directory, granted and pinned alone;
+ *    the root is read-denied, because ASRT's reads are deny-only and `0o700`
+ *    stops no process of the same user. Asserted in `confined-plugin-child
+ *    .test.ts` ("the sandbox temp directories"): two plugin children, a
+ *    worker, a bundled hook and an MCP stdio wrap each write their own
+ *    directory and neither read nor write another's, while a worker reads and
+ *    writes its own plugin's.
  *      READ is NOT a jail, and calling it one would be the same error facing
  *    the other way. ASRT's read model is deny-only (`asrt-sandbox.ts`,
  *    `getDefaultSensitiveReadDenyPaths`, which says so in its own header): a
@@ -370,16 +381,14 @@
  *      · rooted at `pluginDataDir` → durable, and the only one that is;
  *      · rooted at `homedir()` → succeeds and vanishes at exit. Check for this
  *        one BY NAME; it is the case that passes;
- *      · on ASRT's default write list — `/tmp/claude`, `/private/tmp/claude`,
- *        `<real home>/.npm/_logs`, `<real home>/.claude/debug`, the `/dev`
- *        entries, and anything derived from `tmpdir()`, which the sandbox
- *        points AT that list → succeeds and is durable, in a directory shared
- *        with every other confined plugin. Check this one by name too: it is
- *        the second case that passes, and the one that makes "an absolute
- *        literal is refused" a WRONG rule to check by;
+ *      · derived from `tmpdir()` → succeeds and is durable until the next
+ *        start, in the plugin's own temp directory, shared with its own
+ *        workers and hooks and no other plugin. Check this one by name too:
+ *        it is the second case that passes;
  *      · anything else — `context.hostRoot`, `process.cwd()`, an absolute
- *        literal off that list, a path out of the plugin's own config, a
- *        picker's return value → refused `EPERM`.
+ *        literal (ASRT's own default write paths included: the deny floor
+ *        refuses them), a path out of the plugin's own config, a picker's
+ *        return value → refused `EPERM`.
  *    So the question is not "is this path absolute" and not "is it one of the
  *    two grants". It is which of the four roots it has, and two of the four
  *    are silent. Then drive the ones you find in a real confined child, because
