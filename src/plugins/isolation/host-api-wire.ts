@@ -58,6 +58,19 @@ export const HOST_PROTOCOL_VERSIONS_SERVED = ["2"] as const;
 /** One served version, as it travels: an integer written as a string. */
 export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number];
 
+/**
+ * The first app version that served each protocol this build serves
+ * (`docs/design/plugin-hostapi-protocol.md` decision 29).
+ *
+ * A manifest that declares a protocol must not declare a `minAppVersion` below
+ * this: an older app would install the plugin and then refuse to load it. Held
+ * by a test to the lowest `appVersion` the published schema mirror records for
+ * the protocol, so it is read off the release history rather than restated.
+ */
+export const HOST_PROTOCOL_FIRST_APP_VERSION: Readonly<Record<HostProtocolVersion, string>> = {
+  "2": "0.12.0",
+};
+
 /** Whether `value` names a version this build serves. */
 export function isServedHostProtocolVersion(value: unknown): value is HostProtocolVersion {
   return (HOST_PROTOCOL_VERSIONS_SERVED as readonly unknown[]).includes(value);

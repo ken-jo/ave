@@ -22,11 +22,11 @@
           "lyra-mail",
           "vega-helper"
         ],
-        "aveHome": "/Users/example/.ave",
+        "aveHome": "/validation/user/.ave",
         "pluginDataDir": "/plugins/process-launch/data",
         "pluginId": "process-launch",
         "pluginRoot": "/plugins/process-launch",
-        "userHome": "/Users/example"
+        "userHome": "/validation/user"
       },
       "declaredToolNames": [
         "report_launch"

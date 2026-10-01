@@ -22,11 +22,11 @@
           "lyra-mail",
           "vega-helper"
         ],
-        "aveHome": "/Users/example/.ave",
+        "aveHome": "/validation/user/.ave",
         "pluginDataDir": "/plugins/golden-invoker/data",
         "pluginId": "golden-invoker",
         "pluginRoot": "/plugins/golden-invoker",
-        "userHome": "/Users/example"
+        "userHome": "/validation/user"
       },
       "declaredToolNames": [
         "invoke_member",

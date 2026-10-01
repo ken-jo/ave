@@ -56,6 +56,7 @@
     "test": "bun run test:prepare && bun run test:vitest -- run",
     "test:a2a-tck": "bun scripts/run-a2a-tck.ts",
     "test:a2a-external": "bun scripts/run-a2a-external-smoke.ts",
+    "plugin:validate": "node --import tsx --import ./scripts/lib/stub-app-logger-hook.mjs src/plugins/validate/cli.ts --child-entry src/plugins/isolation/plugin-child-main.ts --child-exec-arg=--import --child-exec-arg=tsx --child-exec-arg=--import --child-exec-arg=./scripts/lib/stub-app-logger-hook.mjs",
     "check:i18n-catalog": "node --import tsx scripts/i18n-validate-catalog.ts",
     "check:plugin-host-protocol-schema": "node --import tsx scripts/generate-plugin-host-protocol-schema.ts --check",
     "check:plugin-host-protocol-mirror": "node scripts/check-plugin-host-protocol-mirror.mjs",
