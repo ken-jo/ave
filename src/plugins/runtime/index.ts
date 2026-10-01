@@ -39,6 +39,7 @@ import {
   verifyInstallReceipt,
   verifyInstallReceiptRaw,
   type ArtifactRung,
+  type GitInstallRecord,
   type PluginInstallReceipt,
 } from "../plugin-install-receipt.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -1469,6 +1470,8 @@ export interface PluginIntegrityEvidence {
   artifactSha256: string | null;
   /** The git artifact ladder rung the bytes came through; `null` for any other install. */
   rung: ArtifactRung | null;
+  /** The kind of git source the install came from; `null` for any other install. */
+  sourceOrigin: GitInstallRecord["sourceOrigin"] | null;
 }
 
 export type PluginIntegrityCheckResult =
@@ -1626,6 +1629,7 @@ function integrityEvidence(receipt: PluginInstallReceipt): PluginIntegrityEviden
     artifactSha256: receipt.artifactSha256,
     signerKeyId: receipt.signerKeyId,
     rung: receipt.installSource === "git" ? receipt.git.rung : null,
+    sourceOrigin: receipt.installSource === "git" ? receipt.git.sourceOrigin : null,
   };
 }
 

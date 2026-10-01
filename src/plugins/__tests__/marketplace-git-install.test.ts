@@ -201,6 +201,118 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     expect(existsSync(installReceiptPath(cacheRoot, "alpha"))).toBe(false);
   });
 
+  describe("a process entry: the zip transaction admits the verified rung (§9.7 P4)", () => {
+    const processAuthority = authority({ requires: { minAppVersion: "0.13.0", hostProtocol: "2" } });
+
+    function processZip(): Buffer {
+      const document = {
+        name: "alpha", version: "1.0.0", description: "alpha",
+        extensions: { "ai.agent-connector.ave": { displayName: "Alpha", process: { command: "./bin/plugin" }, tools: [], ...processAuthority } },
+      };
+      const zip = new AdmZip();
+      zip.addFile("plugin.json", Buffer.from(JSON.stringify(document)));
+      zip.addFile("bin/plugin", Buffer.from("#!/bin/sh\nexit 0\n"), "", 0o755);
+      return zip.toBuffer();
+    }
+
+    /**
+     * A plan whose release pins `pin` (the zip's own digest unless given), and
+     * the artifact the ladder hands over for it from `rung`.
+     */
+    function processInstall(rung: "release" | "tree", patch: Partial<PluginInstallPlan> = {}, pin?: string) {
+      const zipBuffer = processZip();
+      const digest = createHash("sha256").update(zipBuffer).digest("hex");
+      const forPlan = plan("1.0.0", {
+        minAppVersion: "0.13.0",
+        hostProtocol: "2",
+        platforms: ["darwin", "linux"],
+        authority: processAuthority,
+        artifact: { release: { repo: "acme/alpha", sha256: pin ?? digest } },
+        ...patch,
+      });
+      const artifact: StagedPluginArtifact = {
+        plan: forPlan,
+        zipBuffer,
+        artifactSha256: digest,
+        rung,
+        rungs: rung === "release"
+          ? [{ rung: "release", outcome: "used" }]
+          : [
+            { rung: "release", outcome: "failed", code: "SOURCE_UNREACHABLE", message: "HTTP 404" },
+            { rung: "archive", outcome: "skipped", reason: "NOT_DECLARED" },
+            { rung: "tree", outcome: "used" },
+          ],
+        manifestDocument: JSON.parse(new AdmZip(zipBuffer).readAsText("plugin.json")) as unknown,
+      };
+      return { forPlan, artifact };
+    }
+
+    /** Nothing of the refused install is left: no registry entry, payload or receipt. */
+    async function nothingLeft(): Promise<void> {
+      expect(await entry()).toBeUndefined();
+      expect(existsSync(join(pluginsDir, "alpha"))).toBe(false);
+      expect(existsSync(installReceiptPath(cacheRoot, "alpha"))).toBe(false);
+    }
+
+    it("installs one staged from a pinned release, and its receipt records the release rung", async () => {
+      const { forPlan, artifact } = processInstall("release");
+      await expect(install(forPlan, artifact)).resolves.toMatchObject({ pluginId: "alpha", installed: true });
+      expect(await entry()).toMatchObject({ origin: { rung: "release", artifactSha256: artifact.artifactSha256 } });
+      expect(await verifyInstallReceipt(cacheRoot, "alpha", join(pluginsDir, "alpha"))).toMatchObject({
+        ok: true,
+        receipt: { installSource: "git", artifactSha256: artifact.artifactSha256, git: { rung: "release", sourceOrigin: "custom" } },
+      });
+    });
+
+    it("refuses one the transaction would commit from the tree rung, leaving nothing behind", async () => {
+      const { forPlan, artifact } = processInstall("tree");
+      await expect(install(forPlan, artifact)).rejects.toMatchObject({ code: "process-entry-requires-pinned-artifact" });
+      await nothingLeft();
+    });
+
+    it("refuses one whose receipt names a direct source, even from a pinned release", async () => {
+      const { forPlan, artifact } = processInstall("release", { sourceOrigin: "direct", packagePath: "" });
+      await expect(install(forPlan, artifact)).rejects.toMatchObject({ code: "process-entry-requires-pinned-artifact" });
+      await nothingLeft();
+    });
+
+    it("refuses one whose staged digest is not the pin the plan carries, before activation", async () => {
+      const { forPlan, artifact } = processInstall("release", {}, "d".repeat(64));
+      let activated = false;
+      await expect(install(forPlan, artifact, async (prepared) => {
+        activated = true;
+        return activateAndCommitPreparedPluginForTest(prepared);
+      })).rejects.toMatchObject({ code: "ARTIFACT_DIGEST_MISMATCH", message: expect.stringContaining(`the catalog pins ${"d".repeat(64)}`) });
+      expect(activated).toBe(false);
+      await nothingLeft();
+    });
+
+    it("refuses one whose prepared receipt does not verify against the staged payload, before activation", async () => {
+      const { forPlan, artifact } = processInstall("release");
+      const receipts = service as unknown as { prepareGitInstallReceipt: (...args: unknown[]) => Promise<string> };
+      const prepare = receipts.prepareGitInstallReceipt.bind(service);
+      // A receipt whose provenance is in order but whose file digest is not the payload's.
+      receipts.prepareGitInstallReceipt = async (...args) => {
+        const receipt = JSON.parse(await prepare(...args)) as { files: Array<{ sha256: string }> };
+        receipt.files[0]!.sha256 = "0".repeat(64);
+        return JSON.stringify(receipt);
+      };
+      let activated = false;
+      await expect(install(forPlan, artifact, async (prepared) => {
+        activated = true;
+        return activateAndCommitPreparedPluginForTest(prepared);
+      })).rejects.toThrow("prepared receipt does not verify against its staged payload");
+      expect(activated).toBe(false);
+      await nothingLeft();
+    });
+
+    it("refuses at the extracted manifest when the plan lets it run on Windows", async () => {
+      const { forPlan, artifact } = processInstall("release", { platforms: ["darwin", "win32", "linux"] });
+      await expect(install(forPlan, artifact)).rejects.toMatchObject({ code: "MANIFEST_MISMATCH" });
+      await nothingLeft();
+    });
+  });
+
   it("refuses a staged artifact made for another plan", async () => {
     await expect(install(plan(), staged(plan("1.0.0")))).rejects.toThrow("belongs to another plan");
   });

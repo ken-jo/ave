@@ -65,7 +65,7 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     const card = runtime.listPluginCards().find((candidate) => candidate.id === "process-kit");
     expect(card).toMatchObject({ loadStatus: "failed", installFailureKind: "process-entry-requires-pinned-artifact" });
     expect(card?.installFailureMessage).toContain("pinned by its sha256 hash");
-    expect(card?.installFailureMessage).toContain("Installation refused: this Ave version cannot yet install a supported copy");
+    expect(card?.installFailureMessage).toContain("Install it from a marketplace that pins its release");
     expect(isReinstallFixableFailureKind(card?.installFailureKind)).toBe(false);
     expect(isReinstallFixableFailureKind("process-entry-unconfined")).toBe(false);
   });

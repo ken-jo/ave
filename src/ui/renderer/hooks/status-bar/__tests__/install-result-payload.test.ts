@@ -105,7 +105,7 @@ describe("install-result payload", () => {
   it("keeps both process-entry refusals typed and localizes the install toast", () => {
     const unpinned = buildInstallFailureResult("process-kit", new ProcessEntryRequiresPinnedArtifactError(), "addPlugin failed");
     expect(unpinned.error).toBe("process-entry-requires-pinned-artifact");
-    expect(toastCopyFor(unpinned)).toContain("이 설치는 거부되었습니다. 이 버전의 Ave는 자체 프로그램을 실행하는 익스텐션의 지원되는 사본을 아직 설치할 수 없습니다");
+    expect(toastCopyFor(unpinned)).toContain("이 사본은 거부되었습니다. 릴리스를 고정한 마켓플레이스에서 설치하세요.");
     const unconfined = buildInstallFailureResult("process-kit", new ProcessEntryUnconfinedError(), "addPlugin failed");
     expect(unconfined.error).toBe("process-entry-unconfined");
     expect(toastCopyFor(unconfined)).toContain("OS 도구 샌드박스 안에서만 실행합니다");

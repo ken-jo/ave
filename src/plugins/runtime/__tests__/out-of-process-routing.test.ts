@@ -164,6 +164,7 @@ const PINNED_RELEASE: PluginIntegrityEvidence = {
   signerKeyId: null,
   artifactSha256: "a".repeat(64),
   rung: "release",
+  sourceOrigin: "custom",
 };
 
 function processManifestFor(pluginId: string): PluginManifest {

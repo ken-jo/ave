@@ -189,7 +189,7 @@ describe("GitMarketplaceTab package sheet", () => {
     const sheet = await screen.findByTestId("git-marketplace:sheet");
     fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
     fireEvent.click(await within(sheet).findByTestId("git-marketplace:confirm"));
-    expect(await within(sheet).findByText(/이 설치는 거부되었습니다. 이 버전의 Ave는 자체 프로그램을 실행하는 익스텐션의 지원되는 사본을 아직 설치할 수 없습니다/)).toBeInTheDocument();
+    expect(await within(sheet).findByText(/이 사본은 거부되었습니다\. 릴리스를 고정한 마켓플레이스에서 설치하세요\./)).toBeInTheDocument();
   });
 
   it("passes only separately selected plugin servers with their reviewed digests", async () => {

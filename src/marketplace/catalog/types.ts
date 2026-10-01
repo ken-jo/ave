@@ -34,7 +34,7 @@ export function isPackageName(value: unknown): value is string {
   return typeof value === "string" && value.length >= 3 && value.length <= 64 && PACKAGE_NAME_RE.test(value);
 }
 
-type Platform = "darwin" | "win32" | "linux";
+export type Platform = "darwin" | "win32" | "linux";
 
 interface MarketplaceOwner {
   name: string;

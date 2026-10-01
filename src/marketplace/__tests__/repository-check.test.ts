@@ -308,3 +308,80 @@ describe("retired notification declaration", () => {
     expect(checkMarketplaceRepository(tree(validFiles()), { ...OFFICIAL, alertsReleaseVersion: "0.12.0", releasedManifests: new Map([["alpha@1.0.0", document]]) })).toEqual([]);
   });
 });
+
+describe("process-entry rules, per released version (§9.7 P4)", () => {
+  const DESCRIPTOR = "plugins/alpha/ave-package.json";
+  type Patch = { platforms?: string[]; artifact?: Record<string, unknown>; minAppVersion?: string };
+
+  const processAuthority = (minAppVersion: string) => ({ capabilities: [], requires: { minAppVersion, hostProtocol: "2" } });
+  const pinned = () => ({ release: { repo: "acme/market", tag: "alpha-v2.0.0", asset: "alpha-2.0.0.zip", sha256: SHA } });
+
+  /** `2.0.0`: a process entry, no Windows, a pinned release, 0.13.0. `1.0.0`: an entry on every platform, from the tree. */
+  function alpha(newer: Patch = {}, older: Patch = {}) {
+    const newMin = newer.minAppVersion ?? "0.13.0";
+    const oldMin = older.minAppVersion ?? "0.12.0";
+    const v2 = {
+      version: "2.0.0", minAppVersion: newMin, hostProtocol: "2",
+      platforms: newer.platforms ?? ["darwin", "linux"], artifact: newer.artifact ?? pinned(), authority: processAuthority(newMin),
+    };
+    const v1 = {
+      version: "1.0.0", minAppVersion: oldMin,
+      platforms: older.platforms ?? ["darwin", "win32", "linux"], artifact: older.artifact ?? { tree: "plugins/alpha" }, authority: { capabilities: [], requires: { minAppVersion: oldMin } },
+    };
+    const files = validFiles();
+    index(files).packages[0] = { kind: "plugin", name: "alpha", path: "plugins/alpha", latest: "2.0.0", versions: [version(v2), version(v1)] };
+    files.set(DESCRIPTOR, descriptor("plugin", "alpha", { authority: v2.authority, artifact: v2.artifact }, {
+      version: "2.0.0", minAppVersion: newMin, hostProtocol: "2", platforms: v2.platforms,
+    }));
+    const released = new Map<string, unknown>([
+      ["alpha@2.0.0", { name: "alpha", version: "2.0.0", extensions: { "ai.agent-connector.ave": { process: { command: "./bin/plugin" }, tools: [], ...v2.authority } } }],
+      ["alpha@1.0.0", { name: "alpha", version: "1.0.0", extensions: { "ai.agent-connector.ave": { entry: "dist/index.js", ...v1.authority } } }],
+    ]);
+    return checkMarketplaceRepository(tree(files), { ...OFFICIAL, releasedManifests: released });
+  }
+
+  const problem = (message: string) => [{ subject: "plugin/alpha", message: `the released plugin.json of 2.0.0: ${message}` }];
+
+  it("accepts a process 2.0.0 beside an entry 1.0.0 that runs on win32 from the tree", () => {
+    expect(alpha()).toEqual([]);
+  });
+
+  it.each<[string, Patch, string]>([
+    ["adds win32", { platforms: ["darwin", "win32", "linux"] }, `platforms in ${DESCRIPTOR} includes "win32", where a process entry cannot run`],
+    ["drops its pin", { artifact: { release: { repo: "acme/market", tag: "alpha-v2.0.0", asset: "alpha-2.0.0.zip" } } },
+      `artifact in ${DESCRIPTOR} pins no release or archive by sha256, which a process entry is installed from`],
+    ["adds a tree", { artifact: { ...pinned(), tree: "plugins/alpha" } }, `artifact.tree is declared in ${DESCRIPTOR}; a process entry is never installed from the tree rung`],
+    ["lowers its minAppVersion", { minAppVersion: "0.12.0" },
+      `minAppVersion in ${DESCRIPTOR} is "0.12.0"; a process entry needs 0.13.0 or newer, the first release that runs one`],
+  ])("reports 2.0.0 when it %s, naming the descriptor and the version", (_label, patch, message) => {
+    // A declared tree without a plugin.json beside the descriptor is its own, older rule.
+    const treeAlone = patch.artifact?.tree ? [{ subject: "plugin/alpha", message: "artifact.tree is declared but plugins/alpha/plugin.json is missing" }] : [];
+    expect(alpha(patch)).toEqual([...problem(message), ...treeAlone]);
+  });
+
+  it.each<[string, Patch]>([
+    ["adds win32", { platforms: ["win32"] }],
+    ["has an unpinned release", { artifact: { release: { repo: "acme/market", tag: "alpha-v1.0.0", asset: "alpha-1.0.0.zip" } } }],
+    ["adds a tree beside a release", { artifact: { release: { repo: "acme/market", tag: "alpha-v1.0.0", asset: "alpha-1.0.0.zip" }, tree: "plugins/alpha" } }],
+    ["keeps a minAppVersion below 0.13.0", { minAppVersion: "0.11.0" }],
+  ])("leaves the entry 1.0.0 clean when it %s", (_label, patch) => {
+    expect(alpha({}, patch)).toEqual([]);
+  });
+
+  it("reports a process plugin.json in the package directory, which declares the tree rung", () => {
+    const files = validFiles();
+    const authority = processAuthority("0.13.0");
+    const artifact = pinned();
+    index(files).packages[0] = {
+      kind: "plugin", name: "alpha", path: "plugins/alpha", latest: "2.0.0",
+      versions: [version({ version: "2.0.0", minAppVersion: "0.13.0", hostProtocol: "2", platforms: ["darwin", "linux"], authority, artifact })],
+    };
+    files.delete("plugins/alpha/source/package.json");
+    files.set(DESCRIPTOR, descriptor("plugin", "alpha", { authority, artifact }, { version: "2.0.0", minAppVersion: "0.13.0", hostProtocol: "2", platforms: ["darwin", "linux"] }));
+    files.set("plugins/alpha/plugin.json", { name: "alpha", version: "2.0.0", extensions: { "ai.agent-connector.ave": { process: { command: "./dist/plugin" }, tools: [], ...authority } } });
+    expect(check(files)).toEqual([{
+      subject: "plugin/alpha",
+      message: "plugins/alpha/plugin.json: a process entry is never installed from the tree rung, which this file declares; publish it as a pinned release or archive only",
+    }]);
+  });
+});

@@ -77,6 +77,22 @@ describe("chooseVersion (design §6.1)", () => {
     expect(choice).toEqual({ state: "candidate", version: expect.objectContaining({ version: "1.0.0" }) });
   });
 
+  it("keeps a process-entry version from a 0.12.x app and from Windows, and offers it on darwin 0.13.0 (§9.7 P4)", () => {
+    // No new index field carries the entry kind (decision 34): minAppVersion and platforms do the selecting.
+    const processVersion = version("2.0.0", { minAppVersion: "0.13.0", hostProtocol: "2", platforms: ["darwin", "linux"] });
+    const entryVersion = version("1.0.0", { hostProtocol: "2", platforms: ["darwin", "win32", "linux"] });
+    const old = context({ appVersion: "0.12.4" });
+    const windows = context({ appVersion: "0.13.0", platform: "win32" });
+    const mac = context({ appVersion: "0.13.0", platform: "darwin" });
+    expect(versionExclusions("acme", "plugin", "alpha", processVersion, [], old)).toEqual(["min_app_version"]);
+    expect(versionExclusions("acme", "plugin", "alpha", processVersion, [], windows)).toEqual(["platform"]);
+    expect(versionExclusions("acme", "plugin", "alpha", processVersion, [], mac)).toEqual([]);
+    const both = plugin([processVersion, entryVersion]);
+    expect(chooseVersion("acme", both, [], old)).toEqual({ state: "candidate", version: entryVersion });
+    expect(chooseVersion("acme", both, [], windows)).toEqual({ state: "candidate", version: entryVersion });
+    expect(chooseVersion("acme", both, [], mac)).toEqual({ state: "candidate", version: processVersion });
+  });
+
   it("offers a pre-release only with canaryOptIn, and a release still outranks its own pre-release", () => {
     const versions = [version("2.0.0-beta.1"), version("1.0.0")];
     expect(chooseVersion("acme", pkg(versions), [], context())).toMatchObject({ state: "candidate", version: { version: "1.0.0" } });
