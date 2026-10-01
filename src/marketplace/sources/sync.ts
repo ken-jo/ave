@@ -526,6 +526,24 @@ export class SourceSyncer {
     return readPinnedSnapshot(this.options.root, id);
   }
 
+  /**
+   * The snapshot at `commit` if it is still kept (the pin, the previous pin,
+   * or a commit an installed package references, §2.3), or null. An
+   * automatic update reads the catalog an install was planned from to
+   * compute a baseline the install did not store (§18.7.3).
+   */
+  async readRetainedSnapshot(id: string, commit: string): Promise<SourceSnapshot | null> {
+    let text: string;
+    try {
+      text = await readFile(this.snapshotPath(id, commit), "utf8");
+    } catch (error) {
+      if (isMissingPathError(error)) return null;
+      throw error;
+    }
+    const validated = validateCachedSnapshotText(text);
+    return validated.ok && validated.value.sourceId === id && validated.value.commit === commit ? validated.value : null;
+  }
+
   /** The revocations at the pin, for the revocation feed ({@link readPinnedRevocations}). */
   readRevocations(id: string, appVersion: string): Promise<SourceSnapshot["revocations"]> {
     return readPinnedRevocations(this.options.root, id, appVersion);

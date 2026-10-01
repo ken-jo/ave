@@ -15,11 +15,15 @@
  *     to download from; `internal-network` does not imply it;
  *   - `network-folder`: the source is a folder on another computer, so
  *     reading it signs in to that server as the user (§18.4.6); a managed
- *     folder source holds it through its policy entry.
+ *     folder source holds it through its policy entry;
+ *   - `unencrypted-updates`: updates from this plain-http source may install
+ *     by themselves (§18.7.2): a network attacker could replace them with
+ *     their own code. Recorded only by main, when the user turns automatic
+ *     updates on for the source.
  *
  * Free of imports, so the renderer reads the same list main validates.
  */
-const SOURCE_WARNINGS = ["unencrypted", "token-unencrypted", "internal-network", "this-computer", "internal-downloads", "network-folder"] as const;
+const SOURCE_WARNINGS = ["unencrypted", "token-unencrypted", "internal-network", "this-computer", "internal-downloads", "network-folder", "unencrypted-updates"] as const;
 
 export type SourceWarning = (typeof SOURCE_WARNINGS)[number];
 

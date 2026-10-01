@@ -11,8 +11,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppliedDefaults } from "../../boot-installs/applied.js";
 import type { BootInstallReport } from "../../boot-installs/run.js";
-import type { PackageUpdateOffer, PackageUpdateView, UpdateStatusView } from "../../../shared/git-marketplace.js";
+import { UPDATE_PACKAGE_STATES, type PackageUpdateOffer, type PackageUpdateView, type UpdateStatusView } from "../../../shared/git-marketplace.js";
+import { MarketplaceError } from "../../errors.js";
+import type { ApplyOutcome } from "../../updates/apply.js";
 import { emptyUpdateHistory, updateHistoryStore, type SyncDiscovery, type UpdateHistory, type UpdateHistoryStore } from "../../updates/history.js";
+import type { UpdateCandidate } from "../service.js";
 import {
   DEFAULT_SYNC_INTERVAL_MS,
   MIN_SYNC_INTERVAL_MS,
@@ -24,7 +27,7 @@ import {
 
 const HOUR = 60 * 60 * 1000;
 const T0 = Date.parse("2026-10-01T00:00:00.000Z");
-const EMPTY_REPORT: BootInstallReport = { installed: [], updated: [], switched: [], skipped: [], failed: [] };
+const EMPTY_REPORT: BootInstallReport = { installed: [], skipped: [], failed: [] };
 const OK: SyncDiscovery = { result: "ok", reached: ["ave", "acme"] };
 const OFFLINE: SyncDiscovery = { result: "offline", reached: [] };
 
@@ -32,8 +35,32 @@ function offer(name: string, to: string, sourceId = "ave"): PackageUpdateOffer {
   return { key: { sourceId, kind: "plugin", name }, displayName: name, from: "1.0.0", to };
 }
 
+/** The harness turns automatic updates off (`autoUpdate: false`), so every update waits for the user. */
 function manual(name: string, to: string, sourceId = "ave"): PackageUpdateView {
-  return { ...offer(name, to, sourceId), state: "manual" };
+  return { ...offer(name, to, sourceId), state: "manual", reasons: ["switched-off"], autoUpdate: { effective: false, override: null, lockedByPolicy: false } };
+}
+
+/** An offer as the service's candidate: an upgrade from an official source with nothing to review. */
+function candidateOf(update: PackageUpdateOffer, facts: Partial<UpdateCandidate["facts"]> = {}): UpdateCandidate {
+  return {
+    ...update,
+    commitRange: { from: "a".repeat(40), to: "b".repeat(40) },
+    switchSource: false,
+    provides: [],
+    needs: [],
+    facts: {
+      switchKey: update.key.name,
+      to: update.to,
+      change: "upgrade",
+      enabled: true,
+      required: false,
+      policyBlocked: false,
+      source: { id: update.key.sourceId, origin: "official", http: false, acknowledgedUnencryptedUpdates: false, shown: true, pendingRewrite: false },
+      consent: [],
+      unconfirmedApprovals: [],
+      ...facts,
+    },
+  };
 }
 
 function memoryHistory(initial: UpdateHistory | null = null): UpdateHistoryStore & { saved: UpdateHistory | null } {
@@ -56,8 +83,8 @@ function harness(options: {
 } = {}) {
   const calls: string[] = [];
   const discoveries = [...(options.discoveries ?? [])];
-  /** What the sources publish: a discovery's `updates()` reads it. */
-  const published = { offers: [] as PackageUpdateOffer[] };
+  /** What the sources publish: a discovery's `updates()` reads it, and `facts` classify each by name. */
+  const published = { offers: [] as PackageUpdateOffer[], facts: {} as Record<string, Partial<UpdateCandidate["facts"]>> };
   const service: BackgroundService = {
     enforceRevocations: vi.fn(async () => {
       calls.push("enforceRevocations");
@@ -75,16 +102,32 @@ function harness(options: {
       calls.push("applyBootInstalls");
       return { report: EMPTY_REPORT, notice: null };
     }),
+    updateCandidates: vi.fn(async (reached: ReadonlySet<string>) =>
+      published.offers.filter((update) => reached.has(update.key.sourceId)).map((update) => candidateOf(update, published.facts[update.key.name]))),
+    autoUpdateContext: vi.fn(async () => ({ policy: "user" as const, sources: [] })),
+    applyUpdate: vi.fn(async () => ({ state: "applied" as const })),
+    appliedState: vi.fn(async () => ({ state: "applied" as const })),
+    callsInFlight: vi.fn(async () => false),
+    approveComponents: vi.fn(async () => undefined),
     ...options.service,
   };
   const settings = { current: options.settings ?? { updateNotices: true } };
+  const activity = { busy: false, idle: new Set<() => void>() };
   const resume = new Set<() => void>();
   const history = options.history ?? memoryHistory();
   const input: MarketplaceBackgroundInput = {
     service: async () => service,
     appliedDefaults: async () => ({}) as AppliedDefaults,
     defaults: [{ kind: "plugin", name: "meeting", source: "ave" }],
-    settings: () => settings.current,
+    // Automatic updates are off unless a test turns them on: the update list then waits for the user.
+    settings: () => ({ autoUpdate: false, ...settings.current }),
+    activity: {
+      isBusy: () => activity.busy,
+      onIdle: (listener: () => void) => {
+        activity.idle.add(listener);
+        return () => activity.idle.delete(listener);
+      },
+    },
     history,
     publishStatus: vi.fn(),
     publishNotice: vi.fn(),
@@ -98,7 +141,12 @@ function harness(options: {
   };
   const discoverCount = () => calls.filter((call) => call === "discover").length;
   const lastStatus = (): UpdateStatusView => vi.mocked(input.publishUpdateStatus).mock.calls.at(-1)![0];
-  return { input, service, calls, settings, history, published, resume, discoverCount, lastStatus, discoveries };
+  /** End the conversation's busy spell: the idle listeners hear it. */
+  const goIdle = () => {
+    activity.busy = false;
+    for (const listener of [...activity.idle]) listener();
+  };
+  return { input, service, calls, settings, history, published, resume, discoverCount, lastStatus, discoveries, activity, goIdle };
 }
 
 /** Let every pending promise chain run; the fake clock does not move. */
@@ -133,7 +181,7 @@ describe("syncIntervalMs", () => {
 
 describe("the boot pass", () => {
   it("enforces the revocations on disk, discovers, applies the boot installs, publishes the notice and status, then the updates", async () => {
-    const notice = { forYou: [{ sourceId: "ave", kind: "plugin" as const, name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [] };
+    const notice = { forYou: [{ sourceId: "ave", kind: "plugin" as const, name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [], autoUpdated: [] };
     const report: BootInstallReport = {
       ...EMPTY_REPORT,
       installed: [{ kind: "plugin", name: "meeting", source: "ave" }],
@@ -188,6 +236,7 @@ describe("the boot pass", () => {
       unmanaged: [],
       lostGrants: [],
       revoked: [{ key: { sourceId: "acme", kind: "mcp" as const, name: "notes" }, version: "2.0.0", reason: "exfiltrates notes", outcome: "uninstalled" as const }],
+      autoUpdated: [],
     };
     const notices = [null, null, revoked];
     const h = harness({
@@ -290,14 +339,18 @@ describe("the update list", () => {
     });
     const order: string[] = [];
     let installed = false;
+    let listed: PackageUpdateOffer[] = [];
     const h = harness({
       service: {
         updates: vi.fn(async () => {
           const read = installed;
           order.push(`read:${read ? "after" : "before"}`);
           await gate;
-          return read ? [] : [offer("meeting", "0.5.24")];
+          listed = read ? [] : [offer("meeting", "0.5.24")];
+          return listed;
         }),
+        // Classified from the same read.
+        updateCandidates: vi.fn(async () => listed.map((update) => candidateOf(update))),
       },
     });
     const background = startMarketplaceBackground(h.input);
@@ -444,7 +497,7 @@ describe("the due rules (design §18.7.1)", () => {
 
     await at(24);
     expect(h.discoverCount()).toBe(2);
-    expect(history.saved?.packages).toEqual({ "ave:plugin:meeting": { to: "2.0.0", state: "manual", attempts: 0 } });
+    expect(history.saved?.packages).toEqual({ "ave:plugin:meeting": { to: "2.0.0", state: "manual", attempts: 0, from: "1.0.0", displayName: "meeting" } });
     expect(history.saved?.applyCheckAt).toBe(new Date(T0 + 24 * HOUR).toISOString());
     background.stop();
   });
@@ -475,7 +528,7 @@ describe("the due rules (design §18.7.1)", () => {
     await at(27);
     expect(h.discoverCount()).toBe(9);
     expect(history.saved?.applyCheckAt).toBe(new Date(T0 + 27 * HOUR).toISOString());
-    expect(history.saved?.packages["ave:plugin:meeting"]).toEqual({ to: "2.0.0", state: "manual", attempts: 0 });
+    expect(history.saved?.packages["ave:plugin:meeting"]).toEqual({ to: "2.0.0", state: "manual", attempts: 0, from: "1.0.0", displayName: "meeting" });
     background.stop();
   });
 
@@ -505,7 +558,7 @@ describe("the due rules (design §18.7.1)", () => {
     await settle();
     expect(h.lastStatus().running).toBe(false);
     expect(h.discoverCount()).toBe(2);
-    expect(history.saved?.packages).toEqual({ "ave:plugin:meeting": { to: "2.0.0", state: "manual", attempts: 0 } });
+    expect(history.saved?.packages).toEqual({ "ave:plugin:meeting": { to: "2.0.0", state: "manual", attempts: 0, from: "1.0.0", displayName: "meeting" } });
     expect(history.saved?.applyCheckAt).toBe(new Date(T0).toISOString());
     expect(history.saved?.discovery?.result).toBe("partial");
 
@@ -516,8 +569,8 @@ describe("the due rules (design §18.7.1)", () => {
     expect(h.discoverCount()).toBe(3);
     expect(history.saved?.applyCheckAt).toBe(new Date(T0 + 25 * HOUR).toISOString());
     expect(history.saved?.packages).toEqual({
-      "ave:plugin:meeting": { to: "2.0.0", state: "manual", attempts: 0 },
-      "acme:plugin:notes": { to: "3.0.0", state: "manual", attempts: 0 },
+      "ave:plugin:meeting": { to: "2.0.0", state: "manual", attempts: 0, from: "1.0.0", displayName: "meeting" },
+      "acme:plugin:notes": { to: "3.0.0", state: "manual", attempts: 0, from: "1.0.0", displayName: "notes" },
     });
     background.stop();
   });
@@ -798,7 +851,7 @@ describe("updates.json", () => {
 });
 
 describe("a stopped scheduler (the lifecycle gate)", () => {
-  const notice = { forYou: [{ sourceId: "ave", kind: "plugin" as const, name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [] };
+  const notice = { forYou: [{ sourceId: "ave", kind: "plugin" as const, name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [], autoUpdated: [] };
 
   it("publishes no revocation notice from a recheck whose service opens after the stop", async () => {
     const h = harness();
@@ -1009,5 +1062,184 @@ describe("a stopped scheduler (the lifecycle gate)", () => {
     expect(counts()).toEqual(before);
     // No wake-up is left armed.
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("automatic apply (design §18.7.4, §18.7.5)", () => {
+  const ON = { updateNotices: true, autoUpdate: true };
+  const APPLIED_AT = new Date(T0).toISOString();
+
+  function applying(outcomes: ApplyOutcome[] = []) {
+    const store = memoryHistory();
+    const h = Object.assign(harness({ settings: ON, history: store }), { store });
+    h.published.offers = [offer("meeting", "2.0.0")];
+    const queue = [...outcomes];
+    vi.mocked(h.service.applyUpdate).mockImplementation(async () => queue.shift() ?? { state: "applied" });
+    return h;
+  }
+
+  async function idle(background: { started: Promise<void> }): Promise<void> {
+    await background.started;
+    await settle();
+  }
+
+  it("applies an automatic update at the boot apply check while idle, records it, and announces it once", async () => {
+    const h = applying();
+    const background = startMarketplaceBackground(h.input);
+    await idle(background);
+    expect(h.service.applyUpdate).toHaveBeenCalledOnce();
+    expect(vi.mocked(h.service.applyUpdate).mock.calls[0]![0]).toEqual({ key: offer("meeting", "2.0.0").key, from: "1.0.0", to: "2.0.0", required: false, switchSource: false });
+    expect(h.store.saved?.packages["ave:plugin:meeting"]).toEqual({ to: "2.0.0", from: "1.0.0", displayName: "meeting", state: "applied", attempts: 0, appliedAt: APPLIED_AT });
+    const notices = vi.mocked(h.input.publishNotice).mock.calls.map(([notice]) => notice.autoUpdated);
+    expect(notices).toEqual([[{ key: offer("meeting", "2.0.0").key, displayName: "meeting", from: "1.0.0", to: "2.0.0", commitRange: { from: "a".repeat(40), to: "b".repeat(40) }, required: false, state: "applied" }]]);
+    // Its offer is gone once installed; the applied entry stays in the view, and never reaches the pill.
+    h.published.offers = [];
+    await background.recheck();
+    expect(h.lastStatus().packages).toEqual([{ ...offer("meeting", "2.0.0"), state: "applied", appliedAt: APPLIED_AT }]);
+    expect(vi.mocked(h.input.publishUpdates).mock.calls.flat(2).filter((update) => update.state === "applied")).toEqual([]);
+    background.stop();
+  });
+
+  it("waits while the conversation is busy, shows waiting, and applies on the next idle moment", async () => {
+    const h = applying();
+    h.activity.busy = true;
+    const background = startMarketplaceBackground(h.input);
+    await idle(background);
+    expect(h.service.applyUpdate).not.toHaveBeenCalled();
+    expect(h.lastStatus()).toMatchObject({ waitingSince: APPLIED_AT, escalated: false, packages: [{ key: { name: "meeting" }, state: "waiting" }] });
+    // Thirty minutes on, the card offers Apply now; without it the queue keeps waiting.
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+    expect(h.lastStatus().escalated).toBe(true);
+    expect(h.service.applyUpdate).not.toHaveBeenCalled();
+    h.goIdle();
+    await settle();
+    expect(h.service.applyUpdate).toHaveBeenCalledOnce();
+    expect(h.lastStatus()).toMatchObject({ waitingSince: null, escalated: false });
+    background.stop();
+  });
+
+  it("Apply now applies what waits while the conversation stays busy", async () => {
+    const h = applying();
+    h.activity.busy = true;
+    const background = startMarketplaceBackground(h.input);
+    await idle(background);
+    expect(h.service.applyUpdate).not.toHaveBeenCalled();
+    await background.applyNow();
+    await settle();
+    expect(h.service.applyUpdate).toHaveBeenCalledOnce();
+    background.stop();
+  });
+
+  it("records a failure before commit with its attempt, retries at each apply check, and stops after the third", async () => {
+    const error = new MarketplaceError("SOURCE_UNREACHABLE", "git fetch failed", { detail: { reason: "offline" } });
+    const h = applying([{ state: "failed", error }, { state: "failed", error }, { state: "failed", error: new Error("disk full at /Users/someone") }]);
+    const background = startMarketplaceBackground(h.input);
+    await idle(background);
+    expect(h.store.saved?.packages["ave:plugin:meeting"]).toMatchObject({ state: "failed", attempts: 1, lastError: { code: "SOURCE_UNREACHABLE", detail: { reason: "offline" } } });
+    expect(h.lastStatus().packages).toEqual([expect.objectContaining({ state: "failed", failure: { code: "SOURCE_UNREACHABLE", detail: { reason: "offline" }, message: "git fetch failed", attempts: 1 } })]);
+    await background.checkNow();
+    await settle();
+    await background.checkNow();
+    await settle();
+    expect(h.service.applyUpdate).toHaveBeenCalledTimes(3);
+    // Anything but a marketplace refusal is `unavailable`, its message kept behind Copy details.
+    expect(h.store.saved?.packages["ave:plugin:meeting"]).toMatchObject({ state: "failed", attempts: 3, lastError: { code: "unavailable" } });
+    await background.checkNow();
+    await settle();
+    expect(h.service.applyUpdate).toHaveBeenCalledTimes(3);
+    expect(h.lastStatus().packages).toEqual([expect.objectContaining({ state: "failed", reasons: ["failed-three-times"] })]);
+    background.stop();
+  });
+
+  it("a deferral at checkpoint two three passes in a row stays needs-review with no attempt", async () => {
+    const deferred: ApplyOutcome = { state: "needs-review", delta: [{ field: "hook:audit", checkpoint: "staged", before: null, after: "a".repeat(64) }] };
+    const h = applying([deferred, deferred, deferred]);
+    const background = startMarketplaceBackground(h.input);
+    await idle(background);
+    await background.checkNow();
+    await settle();
+    await background.checkNow();
+    await settle();
+    expect(h.service.applyUpdate).toHaveBeenCalledTimes(3);
+    expect(h.store.saved?.packages["ave:plugin:meeting"]).toMatchObject({ state: "needs-review", attempts: 0 });
+    expect(h.store.saved?.packages["ave:plugin:meeting"]?.lastError).toBeUndefined();
+    expect(h.lastStatus().packages).toEqual([expect.objectContaining({ state: "needs-review", reasons: ["consent-changed"] })]);
+    background.stop();
+  });
+
+  it("records a committed generation that did not start as applied-not-running, counting no attempt", async () => {
+    const h = applying([{ state: "applied-not-running" }]);
+    vi.mocked(h.service.appliedState).mockResolvedValue({ state: "applied-not-running" });
+    const background = startMarketplaceBackground(h.input);
+    await idle(background);
+    expect(h.store.saved?.packages["ave:plugin:meeting"]).toMatchObject({ state: "applied-not-running", attempts: 0 });
+    expect(vi.mocked(h.input.publishNotice).mock.calls.at(-1)![0].autoUpdated).toEqual([expect.objectContaining({ state: "applied-not-running" })]);
+    h.published.offers = [];
+    await background.recheck();
+    // It needs the user: Restart Ave.
+    expect(vi.mocked(h.input.publishUpdates).mock.calls.at(-1)![0]).toEqual([expect.objectContaining({ state: "applied-not-running" })]);
+    background.stop();
+  });
+
+  it("writes only states of the view's union", async () => {
+    const error = new Error("x");
+    for (const outcome of [{ state: "applied" }, { state: "applied-not-running" }, { state: "approval-pending" }, { state: "needs-review", delta: null }, { state: "failed", error }] as ApplyOutcome[]) {
+      const h = applying([outcome]);
+      vi.mocked(h.service.appliedState).mockResolvedValue(outcome.state === "approval-pending" ? { state: "approval-pending", pendingApproval: null } : { state: "applied" });
+      const background = startMarketplaceBackground(h.input);
+      await idle(background);
+      for (const record of Object.values(h.store.saved?.packages ?? {})) expect(UPDATE_PACKAGE_STATES).toContain(record.state);
+      for (const update of h.lastStatus().packages) expect(UPDATE_PACKAGE_STATES).toContain(update.state);
+      background.stop();
+    }
+  });
+
+  it("a required update leaves a component unapproved as approval-pending, with its review, until the user approves it", async () => {
+    const h = applying([{ state: "approval-pending" }]);
+    h.published.offers = [{ key: { sourceId: "corp", kind: "agent-plugin", name: "assist" }, displayName: "Assist", from: "1.0.0", to: "2.0.0" }];
+    h.published.facts = { assist: { required: true } };
+    const pendingApproval = {
+      installId: "11111111-2222-4333-8444-555555555555",
+      consentDelta: [{ field: "mcpServer:search", checkpoint: "staged" as const, before: null, after: "b".repeat(64) }],
+      components: [{ name: "search", digest: "c".repeat(64), approvalDigest: "b".repeat(64) }],
+    };
+    vi.mocked(h.service.appliedState).mockResolvedValue({ state: "approval-pending", pendingApproval });
+    const discoveries = [...h.discoveries];
+    h.discoveries.splice(0, h.discoveries.length, ...discoveries, { result: "ok", reached: ["corp"] }, { result: "ok", reached: ["corp"] });
+    const background = startMarketplaceBackground(h.input);
+    await idle(background);
+    // Applied with the policy's review, though automatic updates are on or off.
+    expect(vi.mocked(h.service.applyUpdate).mock.calls[0]![0]).toMatchObject({ required: true });
+    expect(h.store.saved?.packages["corp:agent-plugin:assist"]).toMatchObject({ state: "approval-pending" });
+    h.published.offers = [];
+    await background.recheck();
+    expect(h.lastStatus().packages).toEqual([expect.objectContaining({ state: "approval-pending", pendingApproval })]);
+    expect(vi.mocked(h.input.publishNotice).mock.calls.at(-1)![0].autoUpdated).toEqual([expect.objectContaining({ required: true, state: "approval-pending" })]);
+
+    vi.mocked(h.service.appliedState).mockResolvedValue({ state: "applied" });
+    const status = await background.approveComponents({ sourceId: "corp", kind: "agent-plugin", name: "assist" }, pendingApproval.installId, pendingApproval.components);
+    expect(h.service.approveComponents).toHaveBeenCalledWith({ sourceId: "corp", kind: "agent-plugin", name: "assist" }, pendingApproval.installId, pendingApproval.components);
+    expect(status.packages).toEqual([expect.objectContaining({ state: "applied" })]);
+    background.stop();
+  });
+
+  it("does not apply a switched-off update, and applies nothing more once stopped", async () => {
+    const h = applying();
+    h.settings.current = { updateNotices: true, autoUpdate: false };
+    const background = startMarketplaceBackground(h.input);
+    await idle(background);
+    expect(h.service.applyUpdate).not.toHaveBeenCalled();
+
+    const busy = applying();
+    busy.activity.busy = true;
+    const second = startMarketplaceBackground(busy.input);
+    await idle(second);
+    const saved = structuredClone(busy.store.saved);
+    second.stop();
+    busy.goIdle();
+    await settle();
+    expect(busy.service.applyUpdate).not.toHaveBeenCalled();
+    expect(busy.store.saved).toEqual(saved);
+    background.stop();
   });
 });

@@ -19,6 +19,7 @@ import type { PluginPaths } from "../plugin-paths.js";
 import { installReceiptPath, verifyInstallReceipt } from "../plugin-install-receipt.js";
 import { readPluginRegistry, updatePluginRegistry } from "../registry.js";
 import { MissingDependenciesError, MissingPluginDependenciesError } from "../types.js";
+import { pluginConsent, requireConsentEqual, UpdateNeedsReviewError } from "../../marketplace/updates/consent.js";
 import {
   activateAndCommitPreparedPluginForTest,
   agentPluginsDocument,
@@ -62,10 +63,22 @@ function pluginDocument(version: string, auth: PluginAuthority = authority()): R
   return { name: "alpha", version, description: "alpha", extensions: { "ai.agent-connector.ave": { displayName: "Alpha", entry: "dist/index.js", ...auth } } };
 }
 
-function staged(forPlan: PluginInstallPlan, document = pluginDocument(forPlan.version, forPlan.authority)): StagedPluginArtifact {
+/** A bundled command hook (design §18.7.3) and the files it adds. */
+const HOOK_FILES: Record<string, string> = {
+  "hooks/audit.json": JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["node", "${PLUGIN_ROOT}/hooks/audit.js"] }] }] } }),
+  "hooks/audit.js": "process.exit(0)",
+};
+
+function withHook(document: Record<string, unknown>): Record<string, unknown> {
+  const extensions = document.extensions as Record<string, Record<string, unknown>>;
+  return { ...document, extensions: { "ai.agent-connector.ave": { ...extensions["ai.agent-connector.ave"], hooks: [{ id: "audit", path: "hooks/audit.json" }] } } };
+}
+
+function staged(forPlan: PluginInstallPlan, document = pluginDocument(forPlan.version, forPlan.authority), extra: Record<string, string> = {}): StagedPluginArtifact {
   const zip = new AdmZip();
   zip.addFile("plugin.json", Buffer.from(JSON.stringify(document)));
   zip.addFile("dist/index.js", Buffer.from(ENTRY_JS));
+  for (const [path, text] of Object.entries(extra)) zip.addFile(path, Buffer.from(text));
   const zipBuffer = zip.toBuffer();
   return {
     plan: forPlan,
@@ -400,6 +413,55 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
       ok: true,
       receipt: { schemaVersion: 4, installSource: "git", version: "1.0.0" },
     });
+  });
+
+  it("stores the consent it installed with in the receipt, and reads the baseline from there (§18.7.3)", async () => {
+    await install(plan());
+    const expected = pluginConsent(pluginDocument("1.0.0"), [
+      { path: "plugin.json", data: Buffer.from(JSON.stringify(pluginDocument("1.0.0"))) },
+      { path: "dist/index.js", data: Buffer.from(ENTRY_JS) },
+    ]);
+    const receipt = await verifyInstallReceipt(cacheRoot, "alpha", join(pluginsDir, "alpha"));
+    expect(receipt.ok && "git" in receipt.receipt ? receipt.receipt.git.consent : null).toEqual(expected);
+    await expect(service.getInstalledConsentBaseline("alpha")).resolves.toMatchObject({ consent: expected, enabled: true, reviewedAppVersion: null });
+  });
+
+  it("computes a baseline for a receipt from before slice F from the receipt-covered bytes, and none from bytes that no longer match", async () => {
+    await install(plan());
+    const path = installReceiptPath(cacheRoot, "alpha");
+    const raw = JSON.parse(await readFile(path, "utf8")) as { git: Record<string, unknown> };
+    const stored = raw.git.consent;
+    delete raw.git.consent;
+    await writeFile(path, JSON.stringify(raw));
+    // The same fields, computed from what is installed rather than read back.
+    await expect(service.getInstalledConsentBaseline("alpha")).resolves.toMatchObject({ consent: stored });
+    await writeFile(join(pluginsDir, "alpha", "dist", "index.js"), "export default 'changed';\n");
+    await expect(service.getInstalledConsentBaseline("alpha")).resolves.toMatchObject({ consent: { kind: "plugin", fields: {}, unknown: ["*"] }, files: null });
+  });
+
+  it("checkpoint two: a staged plugin.json with a new bundled hook throws UpdateNeedsReviewError before activation, and installs nothing", async () => {
+    await install(plan("1.0.0"));
+    const before = await entry();
+    const baseline = (await service.getInstalledConsentBaseline("alpha"))!.consent;
+    const next = plan("1.1.0");
+    let activated = false;
+    const attempt = service.installGitPlugin(next, {
+      stage: async () => staged(next, withHook(pluginDocument("1.1.0")), HOOK_FILES),
+      assertConsent: requireConsentEqual("alpha", baseline),
+      activatePreparedArtifact: async (prepared) => {
+        activated = true;
+        return activateAndCommitPreparedPluginForTest(prepared);
+      },
+    });
+    await expect(attempt).rejects.toBeInstanceOf(UpdateNeedsReviewError);
+    await expect(attempt).rejects.toMatchObject({ delta: [expect.objectContaining({ field: "contributionKinds" }), expect.objectContaining({ field: "hook:audit", before: null })] });
+    expect(activated).toBe(false);
+    expect(await entry()).toEqual(before);
+    expect(JSON.parse(await readFile(join(pluginsDir, "alpha", "plugin.json"), "utf8"))).toMatchObject({ version: "1.0.0" });
+
+    // The same release without the hook is equal, so it installs.
+    await expect(service.installGitPlugin(next, { stage: async () => staged(next), assertConsent: requireConsentEqual("alpha", baseline), activatePreparedArtifact: activateAndCommitPreparedPluginForTest }))
+      .resolves.toMatchObject({ version: "1.1.0" });
   });
 
   it("reports the replacement direction within the bound source", async () => {

@@ -747,6 +747,7 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
     unmanaged: [],
     lostGrants: [],
     revoked: [],
+    autoUpdated: [],
   };
 
   it("lists what the boot installed, uninstalls a default install keeping MCP data, and dismisses", async () => {
@@ -778,6 +779,7 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
         { key: { sourceId: "acme", kind: "mcp" as const, name: "scraper" }, version: "1.2.0", reason: "exfiltrates cookies", outcome: "uninstalled" as const },
         { key: { sourceId: "corp", kind: "plugin" as const, name: "vpn" }, version: "2.0.0", reason: "bad build", outcome: "required" as const },
       ],
+      autoUpdated: [],
     };
     const fake = fakeMarketplace({ sources: [official], bootNotice: migrated });
     renderTab(fake);

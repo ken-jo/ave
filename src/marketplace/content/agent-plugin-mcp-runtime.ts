@@ -109,6 +109,22 @@ export class AgentPluginMcpRuntime {
     return current !== undefined && (this.activations.get(current.activationId)?.leases ?? 0) > 0;
   }
 
+  /**
+   * The approval state of each server of the package's published
+   * generation (§18.7.2, §18.7.5): whether it is approved, and the approval
+   * digest its record holds (null for an approval from an earlier Ave
+   * version that could not be matched to its bytes).
+   */
+  async approvals(name: string): Promise<Array<{ name: string; approvalDigest: string | null; approved: boolean; recordDigest: string | null }>> {
+    const current = this.active.get(name);
+    if (!current) return [];
+    const trust = await this.trustStore();
+    return current.projections.map((projection) => {
+      const record = trust.record(projection);
+      return { name: projection.owner.localId, approvalDigest: projection.approvalDigest, approved: record !== undefined, recordDigest: record?.approvalDigest ?? null };
+    });
+  }
+
   private async trustStore(): Promise<PluginMcpTrustStore> {
     if (this.trust) return this.trust;
     const dir = await openFeatureNamespace("agent-plugin-trust").childDir("mcp");

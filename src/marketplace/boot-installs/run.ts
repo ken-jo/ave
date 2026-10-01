@@ -2,10 +2,11 @@
  * Default and required installs at boot (design §10.2).
  *
  * Required installs (policy `requiredInstalls`, official or managed sources
- * only) are brought to the source's candidate every boot: installed when
- * absent, updated when the bound source offers a newer version, and switched
- * to the listed source when the user installed the name from another one.
- * The policy file stands for the consent.
+ * only) are installed here when absent: a first install replaces no running
+ * generation, so it cannot interrupt a turn. Updating one, or switching it
+ * to the listed source when the user installed the name from another one, is
+ * the apply queue's (design §18.7.2): it waits for the conversation to pause
+ * like every automatic update. The policy file stands for the consent.
  *
  * Default installs (the app's DEFAULT_INSTALLS and policy `defaultInstalls`)
  * are installed once. A key is recorded when it is installed, found already
@@ -24,7 +25,7 @@ import { MarketplaceError } from "../errors.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import type { PackageKind } from "../catalog/types.js";
 import type { LegacyPluginReport } from "../migration/legacy-plugins.js";
-import { updateFor, type InstalledPackage } from "../resolve/identity.js";
+import type { InstalledPackage } from "../resolve/identity.js";
 import type { MarketplacePolicy, PackageKey } from "../sources/policy.js";
 import type { SourceOrigin } from "../sources/registry.js";
 import type { AppliedDefaults } from "./applied.js";
@@ -52,10 +53,6 @@ export interface BootInstallInput {
 export interface BootInstallReport {
   /** Installed for the first time (default or required). */
   installed: PackageKey[];
-  /** Required packages moved to a newer version. */
-  updated: PackageKey[];
-  /** Required packages moved to the listed source (plugin data kept). */
-  switched: PackageKey[];
   skipped: Array<{ key: PackageKey; reason: string }>;
   failed: Array<{ key: PackageKey; message: string }>;
 }
@@ -76,10 +73,10 @@ export function bootInstallNoticeFrom(
   const view = (key: PackageKey): PackageKeyView => ({ sourceId: key.source, kind: key.kind, name: key.name });
   const required = (key: PackageKey) => requiredByPolicy(policy, key.kind, key.name) !== undefined;
   const forYou = report.installed.filter((key) => !required(key)).map(view);
-  const requiredKeys = [...report.installed.filter(required), ...report.updated, ...report.switched].map(view);
+  const requiredKeys = report.installed.filter(required).map(view);
   const unmanaged = [...(legacy?.unmanaged ?? [])];
   const lostGrants = (legacy?.lostGrants ?? []).map((item) => ({ plugin: item.plugin, keys: [...item.keys] }));
-  const notice = { forYou, required: requiredKeys, unmanaged, lostGrants, revoked: revoked.map((item) => ({ ...item, key: { ...item.key } })) };
+  const notice = { forYou, required: requiredKeys, unmanaged, lostGrants, revoked: revoked.map((item) => ({ ...item, key: { ...item.key } })), autoUpdated: [] };
   return bootInstallNoticeIsEmpty(notice) ? null : notice;
 }
 
@@ -135,31 +132,15 @@ async function required(key: PackageKey, input: BootInstallInput, report: BootIn
     report.skipped.push({ key, reason: `${key.source} does not list ${key.kind} ${key.name}` });
     return;
   }
-  const current = await input.installed(key.kind, key.name);
-  let outcome: "installed" | "updated" | "switched";
-  if (!current) {
-    outcome = "installed";
-  } else if (current.sourceId !== key.source) {
-    outcome = "switched";
-  } else {
-    if (current.version === null) {
-      outcome = "updated";
-    } else {
-      const state = updateFor({ ...current, version: current.version }, input.rows, new Set(input.synced.keys()));
-      if (state.state !== "update") {
-        if (state.state === "upgrade_required") report.skipped.push({ key, reason: `the update needs Ave ${state.minAppVersion}` });
-        return;
-      }
-      outcome = "updated";
-    }
-  }
+  // Installed (from this source or another): its update or switch is the apply queue's (§18.7.2).
+  if (await input.installed(key.kind, key.name)) return;
   if (row.choice.state !== "candidate") {
     report.skipped.push({ key, reason: row.choice.state === "upgrade_required" ? `needs Ave ${row.choice.minAppVersion}` : "no version is offered to this installation" });
     return;
   }
   try {
-    await input.install(row, { switchSource: outcome === "switched", required: true });
-    report[outcome].push(key);
+    await input.install(row, { switchSource: false, required: true });
+    report.installed.push(key);
   } catch (error) {
     report.failed.push({ key, message: errorMessage(error) });
   }
@@ -203,7 +184,7 @@ async function byDefault(key: PackageKey, input: BootInstallInput, report: BootI
 }
 
 export async function runBootInstalls(input: BootInstallInput): Promise<BootInstallReport> {
-  const report: BootInstallReport = { installed: [], updated: [], switched: [], skipped: [], failed: [] };
+  const report: BootInstallReport = { installed: [], skipped: [], failed: [] };
   const requiredIds = new Set(input.policy.requiredInstalls.map(packageKeyId));
   for (const key of input.policy.requiredInstalls) {
     input.signal?.throwIfAborted();

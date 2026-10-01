@@ -229,6 +229,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "plugin-not-loaded": "formatIpcError.pluginNotLoaded",
   "plugin-bundle-lifecycle-unavailable": "formatIpcError.noEngine",
   "contribution-trust-update-failed": "formatIpcError.writeFailed",
+  "contribution-trust-review-stale": "formatIpcError.contributionReviewStale",
   "unknown-plugin-id": "formatIpcError.unknownPluginId",
   // The target Electron webview was already destroyed or is not registered
   // as a live plugin panel. Reuse the established not-registered wording.

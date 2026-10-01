@@ -235,6 +235,9 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // The folder dialogs (design §18.9): a native folder chooser, and a folder source opened in the file manager.
   ["git-marketplace", CHANNELS.gitMarketplace.sourcesPickFolder, []],
   ["git-marketplace", CHANNELS.gitMarketplace.sourcesReveal, ["team"]],
+  // *Apply now* skips the idle gate; approving components runs an agent plugin's servers and hooks (§18.7.4, §18.7.5).
+  ["git-marketplace", CHANNELS.gitMarketplace.updatesApplyNow, []],
+  ["git-marketplace", CHANNELS.gitMarketplace.componentsApprove, [{ sourceId: "official", kind: "agent-plugin", name: "notes" }, "id", []]],
 ];
 
 beforeEach(async () => {

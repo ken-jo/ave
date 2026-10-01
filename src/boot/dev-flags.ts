@@ -244,3 +244,12 @@ export function isPackagedElectronProcess(
 export function isE2eTestRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.AVE_E2E === "1" && env.NODE_ENV === "test";
 }
+
+/**
+ * An E2E run that exercises the marketplace's real update scheduler (design
+ * §18.10 F): `AVE_E2E_MARKETPLACE_SCHEDULER=1` inside the e2e harness only.
+ * The spec points `AVE_HOME` at an isolated home with its own sources.
+ */
+export function isE2eMarketplaceSchedulerRun(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isE2eTestRuntime(env) && env.AVE_E2E_MARKETPLACE_SCHEDULER === "1";
+}

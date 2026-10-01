@@ -69,6 +69,12 @@ export interface MarketplacePolicy {
   /** Folder sources and folder installs are allowed (§18.6); false is a policy block. */
   allowLocalSources: boolean;
   allowDisablingOfficial: boolean;
+  /**
+   * Automatic updates (§18.7.2): `"user"` leaves them to the user's
+   * switches, `"on"` and `"off"` decide for every package and lock the
+   * switches.
+   */
+  autoUpdate: "user" | "on" | "off";
   additional: readonly ManagedSourceSpec[];
   defaultInstalls: readonly PackageKey[];
   /** A key listed in both lists appears here only (§12). */
@@ -87,6 +93,7 @@ export const EMPTY_MARKETPLACE_POLICY: MarketplacePolicy = Object.freeze({
   allowDirectInstall: true,
   allowLocalSources: true,
   allowDisablingOfficial: false,
+  autoUpdate: "user",
   additional: Object.freeze([]),
   defaultInstalls: Object.freeze([]),
   requiredInstalls: Object.freeze([]),
@@ -101,6 +108,7 @@ const SECTION_KEYS = new Set([
   "allowDirectInstall",
   "allowLocalSources",
   "allowDisablingOfficial",
+  "autoUpdate",
   "additional",
   "defaultInstalls",
   "requiredInstalls",
@@ -231,6 +239,13 @@ function orEmpty(value: unknown): unknown {
   return value === undefined ? [] : value;
 }
 
+/** `autoUpdate` (§18.6): absent is `"user"`; anything but the three values is invalid. */
+function autoUpdateRule(value: unknown): MarketplacePolicy["autoUpdate"] {
+  if (value === undefined) return "user";
+  if (value === "user" || value === "on" || value === "off") return value;
+  return fail(".autoUpdate", 'must be "user", "on" or "off"');
+}
+
 /** Parse the `marketplaces` value (not the whole file); throws on anything it cannot read exactly. A folder path is read for `platform`. */
 function parseSection(value: unknown, platform: NodeJS.Platform): MarketplacePolicy {
   const section = record(value, "", SECTION_KEYS);
@@ -248,6 +263,7 @@ function parseSection(value: unknown, platform: NodeJS.Platform): MarketplacePol
     allowDirectInstall: bool(section.allowDirectInstall, ".allowDirectInstall", true),
     allowLocalSources: bool(section.allowLocalSources, ".allowLocalSources", true),
     allowDisablingOfficial: bool(section.allowDisablingOfficial, ".allowDisablingOfficial", false),
+    autoUpdate: autoUpdateRule(section.autoUpdate),
     additional: [],
     defaultInstalls: [],
     requiredInstalls: [],

@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { readPayloadFiles } from "../../../plugins/contribution-approval-digest.js";
 import { descriptorText as descriptor, jsonText as text } from "../../__tests__/fixtures/package-files.js";
 import type { McpServerConfig } from "../../../mcp/types.js";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
@@ -213,6 +214,7 @@ describe("MarketplaceService", () => {
           return { retired: Promise.resolve() };
         },
         deactivate: async () => {},
+        approveComponents: async () => {},
       },
       now: () => now,
     });
@@ -234,6 +236,10 @@ describe("MarketplaceService", () => {
         install: vi.fn(async () => {
           throw new Error("no plugin installs in this suite");
         }),
+        baseline: async () => null,
+        stagedFiles: () => [],
+        componentApprovals: () => [],
+        running: () => true,
         retire: vi.fn(async () => {}),
         uninstall: vi.fn(async () => {}),
       },
@@ -248,6 +254,19 @@ describe("MarketplaceService", () => {
           await duringContentInstall?.();
           return { action: (await store.install(staged, options)).action };
         },
+        baseline: async (kind, name, descriptor) => {
+          if (kind === "plugin" || kind === "mcp") throw new Error("not content");
+          return store.installedConsent(kind, name, (entry) =>
+            descriptor({ sourceId: entry.origin.sourceId, commit: entry.origin.commit, packagePath: entry.origin.packagePath, version: entry.version }));
+        },
+        installedFiles: async (kind, name) => {
+          const found = (await store.load()).loaded.find((item) => item.entry.kind === kind && item.entry.name === name);
+          return found ? readPayloadFiles(found.dir) : null;
+        },
+        installId: async (kind, name) => store.list().find((entry) => entry.kind === kind && entry.name === name)?.origin.installId ?? null,
+        componentApprovals: async () => [],
+        callsInFlight: async () => false,
+        approveComponents: (name, installId, consents) => store.approveComponents(name, installId, consents),
         uninstall: async (kind, name) => {
           if (kind === "plugin" || kind === "mcp") throw new Error("not content");
           await store.uninstall(kind, name, EMPTY_MARKETPLACE_POLICY);
@@ -470,7 +489,7 @@ describe("MarketplaceService", () => {
     const first = await service.applyBootInstalls(defaults, applied);
     expect(first.report.installed).toEqual([defaults[0]]);
     expect(first.report.skipped).toEqual([{ key: defaults[1], reason: "corp does not list skill missing" }]);
-    expect(first.notice).toEqual({ forYou: [{ sourceId: "corp", kind: "skill", name: "review" }], required: [], unmanaged: [], lostGrants: [], revoked: [] });
+    expect(first.notice).toEqual({ forYou: [{ sourceId: "corp", kind: "skill", name: "review" }], required: [], unmanaged: [], lostGrants: [], revoked: [] , autoUpdated: [] });
     // No official snapshot yet: the migration waits for one.
     expect(legacyRuns).toEqual([]);
     expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual(["skill:review@corp"]);
@@ -478,7 +497,7 @@ describe("MarketplaceService", () => {
     // Uninstalling a default is final: the next boot installs nothing.
     await service.uninstall({ sourceId: "corp", kind: "skill", name: "review" });
     const second = await service.applyBootInstalls(defaults, applied);
-    expect(second.report).toEqual({ installed: [], updated: [], switched: [], skipped: [], failed: [] });
+    expect(second.report).toEqual({ installed: [], skipped: [], failed: [] });
     expect(second.notice).toBeNull();
     expect(store.list()).toEqual([]);
   });
@@ -535,7 +554,7 @@ describe("MarketplaceService", () => {
     expect(legacyRuns).toHaveLength(1);
     // The lookup reads the official snapshot: this fixture lists skills, not plugins.
     expect(legacyRuns[0]!("review")).toBeNull();
-    expect(first.notice).toEqual({ forYou: [], required: [], unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }], revoked: [] });
+    expect(first.notice).toEqual({ forYou: [], required: [], unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }], revoked: [] , autoUpdated: [] });
 
     const second = await service.applyBootInstalls([], applied);
     expect(legacyRuns).toHaveLength(1);
@@ -864,6 +883,7 @@ describe("MarketplaceService", () => {
       unmanaged: [],
       lostGrants: [],
       revoked: [{ key: { sourceId: "acme-tools", kind: "mcp", name: "notes" }, version: "2.0.0", reason: "exfiltrates notes", outcome: "uninstalled" }],
+      autoUpdated: [],
     });
     expect(service.takeRevocationNotice()).toBeNull();
     // The boot notice does not repeat what was already reported.
@@ -1387,12 +1407,19 @@ describe("MarketplaceService", () => {
           entered();
           return service.updates();
         },
+        updateCandidates: (reached, signal) => service.updateCandidates(reached, signal),
+        autoUpdateContext: (signal) => service.autoUpdateContext(signal),
+        applyUpdate: (target, signal) => service.applyUpdate(target, signal),
+        appliedState: (key, to) => service.appliedState(key, to),
+        callsInFlight: (name) => service.callsInFlight(name),
+        approveComponents: (key, installId, consents) => service.approveComponents(key, installId, consents),
       };
       const background = startMarketplaceBackground({
         service: async () => scheduled,
         appliedDefaults: () => AppliedDefaults.open(join(root, "packages", "default-installs.json")),
         defaults: [],
         settings: () => ({ updateNotices: true, updateCheckIntervalMs: 0 }),
+        activity: { isBusy: () => false, onIdle: () => () => {} },
         history: { load: async () => ({ history: emptyUpdateHistory(), reset: false as const }), save: async () => {} },
         publishStatus: () => {},
         publishNotice: () => {},
@@ -1542,6 +1569,7 @@ describe("MarketplaceService", () => {
         appliedDefaults: () => AppliedDefaults.open(join(root, "packages", "default-installs.json")),
         defaults: [],
         settings: () => ({ updateNotices: true, updateCheckIntervalMs: 0 }),
+        activity: { isBusy: () => false, onIdle: () => () => {} },
         history: { load: async () => ({ history: emptyUpdateHistory(), reset: false as const }), save: async () => {} },
         publishStatus: () => {},
         publishNotice: () => {},
@@ -1769,6 +1797,7 @@ describe("MarketplaceService", () => {
       appliedDefaults: () => AppliedDefaults.open(join(root, "packages", "default-installs.json")),
       defaults: [],
       settings: () => ({ updateNotices: true }),
+      activity: { isBusy: () => false, onIdle: () => () => {} },
       history,
       publishStatus: vi.fn(),
       publishNotice: vi.fn(),
@@ -1841,6 +1870,7 @@ describe("MarketplaceService", () => {
       appliedDefaults: () => AppliedDefaults.open(appliedPath),
       defaults: [{ kind: "skill" as const, name: "review", source: "ave" }],
       settings: () => ({ updateNotices: true }),
+      activity: { isBusy: () => false, onIdle: () => () => {} },
       history: {
         load: async () => ({ history: emptyUpdateHistory(), reset: false as const }),
         save: async (_history: UpdateHistory) => {

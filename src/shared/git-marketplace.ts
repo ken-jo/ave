@@ -378,6 +378,29 @@ export interface InstallPlanView {
   notInstalled: string[];
 }
 
+// ─── Consent (design §18.7.3) ───────────────────────────────────────────────
+
+export type ConsentJson = null | boolean | number | string | ConsentJson[] | { [key: string]: ConsentJson };
+
+/**
+ * One field of the consent fingerprint that differs between the installed
+ * baseline and an update. `checkpoint` says where the difference was seen:
+ * the catalog (no download) or the staged bytes. `before` is the baseline's
+ * value (`"unknown"` when it could not be computed), `after` the update's
+ * (`null`: the component is gone; `"added"`: the catalog lists a component
+ * the baseline lacks). `changedFiles` is set for a changed approval digest:
+ * the package paths whose bytes differ, split for display only.
+ */
+export interface ConsentDeltaEntry {
+  field: string;
+  checkpoint: "catalog" | "staged";
+  before: ConsentJson | "unknown";
+  after: ConsentJson;
+  changedFiles?: { code: string[]; nonCode: string[] };
+}
+
+export type ConsentDelta = ConsentDeltaEntry[];
+
 export interface UpdatePlanView extends InstallPlanView {
   from: string | null;
   /** `origin.commit` of the install to the plan's snapshot commit. */
@@ -388,7 +411,29 @@ export interface UpdatePlanView extends InstallPlanView {
   historyRewritten: { pinned: string | null; candidate: string } | null;
   /** New network hosts, secrets or capabilities, or rewritten history: the update needs an explicit decision. */
   needsConfirmation: boolean;
+  /**
+   * Every consent-fingerprint field that differs from the installed
+   * baseline, from the staged bytes when the review staged them (§18.7.3):
+   * a review with no `pending` field left. `authorityDelta` and
+   * `componentsDelta` are projections of it.
+   */
+  consentDelta: ConsentDelta;
+  /** The only differences are approval digests and no changed file is code: the one-row review with *Approve update*. */
+  codeFreeChange: boolean;
+  /**
+   * The bundled MCP servers and hooks whose approval this update changes, as
+   * the review's approve boxes send them back: an agent plugin's by name or
+   * index with its declared digest, an extension's by local id with its
+   * approval digest (§18.7.3 "Extension components").
+   */
+  reviewComponents: ReviewComponentView[];
 }
+
+/** One bundled component an update review can approve. */
+export type ReviewComponentView =
+  | { kind: "mcpServer"; consent: McpComponentConsent; field: string }
+  | { kind: "hook"; consent: HookComponentConsent; field: string }
+  | { kind: "extension"; consent: ExtensionComponentConsent; field: string };
 
 type InstallPhaseView = "resolving" | "downloading" | "verifying" | "installing" | "activating";
 
@@ -507,10 +552,64 @@ export interface PackageUpdateView {
    * an earlier discovery classified, kept as it was, not a new classification.
    */
   stale?: true;
+  /** Why it is not automatic (§18.7.2, §18.7.3), as {@link UpdateReason} codes. */
+  reasons?: UpdateReason[];
+  /** The last attempt failed before commit (§18.7.4): its code, why, and the attempts at this version. */
+  failure?: { code: GitMarketplaceErrorCode; detail?: MarketplaceErrorDetail; message?: string; attempts: number };
+  /** When an automatic or required update installed it. */
+  appliedAt?: string;
+  /**
+   * An agent plugin's `approval-pending` entry (§18.7.5): the installed
+   * generation and the unapproved components, which *Review* approves through
+   * `components:approve`. An extension's entry has none: its review reads the
+   * plugin's trust rows.
+   */
+  pendingApproval?: { installId: string; consentDelta: ConsentDelta; components: ReviewedComponentConsent[] };
+  /** The package's automatic-update switch and what it resolves to (§18.7.2). */
+  autoUpdate?: AutoUpdateSwitchView;
+}
+
+/**
+ * Why an update is not applied by itself (§18.7.2, §18.7.3):
+ * - `disabled`: the package is turned off, by the user or a revocation;
+ * - `source-hidden`, `history-rewritten`: its source is hidden, or has a rewrite pending review;
+ * - `not-an-upgrade`: a downgrade or a source switch;
+ * - `unencrypted-updates`: its source is plain http and automatic updates were not accepted for it;
+ * - `switched-off`: a switch, or the organization's policy, turns automatic updates off for it;
+ * - `consent-changed`: the update asks for more than (or differs from) what was accepted;
+ * - `baseline-unknown`: what was accepted cannot be computed, so it must be confirmed once;
+ * - `approval-unconfirmed`: an approval from an earlier Ave version must be confirmed;
+ * - `failed-three-times`: three attempts at this version failed;
+ * - `calls-in-flight`: an agent plugin's calls are running (waiting only);
+ * - `policy-blocked`: the organization's policy refuses installs from its source now.
+ */
+export type UpdateReason =
+  | "disabled"
+  | "source-hidden"
+  | "history-rewritten"
+  | "not-an-upgrade"
+  | "unencrypted-updates"
+  | "switched-off"
+  | "consent-changed"
+  | "baseline-unknown"
+  | "approval-unconfirmed"
+  | "failed-three-times"
+  | "calls-in-flight"
+  | "policy-blocked";
+
+/**
+ * A package's or source's automatic-update switch (§18.7.2): its own
+ * override, what the resolution gives, and whether the organization's
+ * policy decides it.
+ */
+export interface AutoUpdateSwitchView {
+  effective: boolean;
+  override: "on" | "off" | null;
+  lockedByPolicy: boolean;
 }
 
 /** An update as the service computes it, before the scheduler gives it a state. */
-export type PackageUpdateOffer = Omit<PackageUpdateView, "state" | "stale">;
+export type PackageUpdateOffer = Omit<PackageUpdateView, "state" | "stale" | "reasons" | "failure" | "appliedAt" | "pendingApproval" | "autoUpdate">;
 
 /** How the last discovery ended (§18.7.1): every source synced, some, none because offline, or it threw. */
 export type UpdateDiscoveryResult = "ok" | "partial" | "offline" | "error";
@@ -534,6 +633,20 @@ export interface UpdateStatusView {
   applyCheckAt: string | null;
   running: boolean;
   historyReset: boolean;
+  /** Since when the apply queue waits for the conversation to pause (§18.7.4); null when it does not wait. */
+  waitingSince: string | null;
+  /** True once the queue has waited 30 minutes: the card offers *Apply now*. */
+  escalated: boolean;
+  /**
+   * The global switch, the organization's lock, and each source's switch
+   * (§18.7.2). The per-source and per-package switches live in the Updates
+   * card (§18.9).
+   */
+  autoUpdate: {
+    enabled: boolean;
+    lockedByPolicy: "on" | "off" | null;
+    sources: Array<{ id: string; label: string; switch: AutoUpdateSwitchView; needsUnencryptedUpdates: boolean }>;
+  };
   packages: PackageUpdateView[];
 }
 
@@ -563,11 +676,44 @@ export interface BootInstallNoticeView {
   lostGrants: Array<{ plugin: string; keys: string[] }>;
   /** Packages removed, or left in place, because their source revoked them (§10.4). */
   revoked: RevokedPackageView[];
+  /** Updates applied by themselves or by the organization's policy since the notice was last dismissed (§18.7.5). */
+  autoUpdated: AutoUpdatedView[];
+}
+
+/** One update applied without the user's review: "Updated automatically" (§18.7.5). */
+export interface AutoUpdatedView {
+  key: PackageKeyView;
+  displayName: string;
+  from: string;
+  to: string;
+  /** `origin.commit` before and after: *What changed* (§15.6). */
+  commitRange: { from: string | null; to: string | null };
+  /** `required`: the organization's policy applied it. */
+  required: boolean;
+  state: "applied" | "applied-not-running" | "approval-pending";
+}
+
+/**
+ * A notice joined to the one the user has not dismissed yet: each list
+ * appended, and an update applied again replacing its earlier entry, so one
+ * notice says everything since it was last dismissed (§18.7.5).
+ */
+export function mergeBootInstallNotices(held: BootInstallNoticeView | null, next: BootInstallNoticeView): BootInstallNoticeView {
+  if (!held) return next;
+  const sameKey = (left: PackageKeyView, right: PackageKeyView) => left.sourceId === right.sourceId && left.kind === right.kind && left.name === right.name;
+  return {
+    forYou: [...held.forYou, ...next.forYou],
+    required: [...held.required, ...next.required],
+    unmanaged: [...held.unmanaged, ...next.unmanaged],
+    lostGrants: [...held.lostGrants, ...next.lostGrants],
+    revoked: [...held.revoked, ...next.revoked],
+    autoUpdated: [...held.autoUpdated.filter((item) => !next.autoUpdated.some((entry) => sameKey(entry.key, item.key))), ...next.autoUpdated],
+  };
 }
 
 /** Nothing left to show: every list is empty. */
 export function bootInstallNoticeIsEmpty(notice: BootInstallNoticeView): boolean {
-  return notice.forYou.length + notice.required.length + notice.unmanaged.length + notice.lostGrants.length + notice.revoked.length === 0;
+  return notice.forYou.length + notice.required.length + notice.unmanaged.length + notice.lostGrants.length + notice.revoked.length + notice.autoUpdated.length === 0;
 }
 
 export type GitMarketplaceErrorCode = MarketplaceErrorCode | "invalid-request" | "unauthorized-frame" | "unavailable";
@@ -602,7 +748,25 @@ export interface HookComponentConsent {
   digest: string;
 }
 
-export type ComponentConsent = McpComponentConsent | HookComponentConsent;
+/**
+ * Consent for one bundled component of an extension (`plugin`), by its
+ * local id, with the approval digest the review showed (§18.7.3).
+ */
+export interface ExtensionComponentConsent {
+  kind: "extension";
+  component: "hook" | "mcpServer";
+  localId: string;
+  approvalDigest: string | null;
+}
+
+export type ComponentConsent = McpComponentConsent | HookComponentConsent | ExtensionComponentConsent;
+
+/**
+ * An approval of an installed agent plugin's component (§18.7.5): the
+ * consent and the approval digest the review showed, bound to the installed
+ * generation through `components:approve`'s `installId`.
+ */
+export type ReviewedComponentConsent = (McpComponentConsent | HookComponentConsent) & { approvalDigest: string | null };
 
 export interface GitMarketplaceApi {
   listSources(): Promise<GitMarketplaceResult<SourceView[]>>;
@@ -644,6 +808,14 @@ export interface GitMarketplaceApi {
   updateStatus(): Promise<GitMarketplaceResult<UpdateStatusView>>;
   /** *Check now*: joins a discovery in flight, and answers when that discovery and its apply check end. */
   checkUpdates(): Promise<GitMarketplaceResult<UpdateStatusView>>;
+  /** *Apply now*: the queue skips the wait for the conversation to pause (§18.7.4). */
+  applyUpdatesNow(): Promise<GitMarketplaceResult<UpdateStatusView>>;
+  /**
+   * Approve an `approval-pending` agent plugin's components (§18.7.5), bound
+   * to the installed generation `installId`; `PLAN_EXPIRED` reason
+   * `package-changed` when it has changed since the review.
+   */
+  approveComponents(key: PackageKeyView, installId: string, consents: readonly ReviewedComponentConsent[]): Promise<GitMarketplaceResult<UpdateStatusView>>;
   onUpdateStatus(listener: (status: UpdateStatusView) => void): () => void;
 }
 
@@ -694,7 +866,27 @@ function isUpdatePackage(value: unknown): value is PackageUpdateView {
   return typeof key.sourceId === "string" && isPackageKind(key.kind) && typeof key.name === "string"
     && typeof value.displayName === "string" && typeof value.from === "string" && typeof value.to === "string"
     && (UPDATE_PACKAGE_STATES as readonly unknown[]).includes(value.state)
-    && (value.stale === undefined || value.stale === true);
+    && (value.stale === undefined || value.stale === true)
+    && (value.reasons === undefined || (Array.isArray(value.reasons) && value.reasons.every((reason) => typeof reason === "string")))
+    && (value.failure === undefined || (isRecord(value.failure) && typeof value.failure.code === "string" && ENVELOPE_CODES.has(value.failure.code)
+      && typeof value.failure.attempts === "number"))
+    && (value.appliedAt === undefined || isTime(value.appliedAt))
+    && (value.autoUpdate === undefined || isSwitchView(value.autoUpdate))
+    && (value.pendingApproval === undefined || (isRecord(value.pendingApproval) && typeof value.pendingApproval.installId === "string"
+      && Array.isArray(value.pendingApproval.consentDelta) && Array.isArray(value.pendingApproval.components)));
+}
+
+function isSwitchView(value: unknown): value is AutoUpdateSwitchView {
+  return isRecord(value) && typeof value.effective === "boolean" && typeof value.lockedByPolicy === "boolean"
+    && (value.override === null || value.override === "on" || value.override === "off");
+}
+
+function isAutoUpdateStatus(value: unknown): boolean {
+  return isRecord(value) && typeof value.enabled === "boolean"
+    && (value.lockedByPolicy === null || value.lockedByPolicy === "on" || value.lockedByPolicy === "off")
+    && Array.isArray(value.sources)
+    && value.sources.every((source: unknown) => isRecord(source) && typeof source.id === "string" && typeof source.label === "string"
+      && isSwitchView(source.switch) && typeof source.needsUnencryptedUpdates === "boolean");
 }
 
 /** Shape check for a `marketplace:update-status` payload; anything else is dropped. */
@@ -705,6 +897,7 @@ export function parseUpdateStatus(value: unknown): UpdateStatusView | null {
   if (!timeOrNull(discovery.lastAttemptAt) || !timeOrNull(discovery.lastSuccessAt) || !isTime(discovery.nextAt)) return null;
   if (discovery.result !== null && !DISCOVERY_RESULTS.has(discovery.result as string)) return null;
   if (!timeOrNull(value.applyCheckAt) || typeof value.running !== "boolean" || typeof value.historyReset !== "boolean") return null;
+  if (!timeOrNull(value.waitingSince) || typeof value.escalated !== "boolean" || !isAutoUpdateStatus(value.autoUpdate)) return null;
   if (!value.packages.every(isUpdatePackage)) return null;
   return value as unknown as UpdateStatusView;
 }

@@ -604,6 +604,7 @@ export const en = {
   "gitMarketplace.action.copyDetails": "Copy details",
   "gitMarketplace.action.copyCommand": "Copy command",
   "gitMarketplace.action.continue": "Continue",
+  "gitMarketplace.warning.unencryptedUpdates": "Updates from {source} arrive over http. Anyone on the network path could replace them with their own code, and it would install without asking. Turn on automatic updates anyway?",
 };
 
 export const ko: Record<keyof typeof en, string> = {
@@ -1208,4 +1209,5 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.action.copyDetails": "세부 정보 복사",
   "gitMarketplace.action.copyCommand": "명령 복사",
   "gitMarketplace.action.continue": "계속",
+  "gitMarketplace.warning.unencryptedUpdates": "{source}의 업데이트는 http로 전달됩니다. 네트워크 경로에 있는 누구든 이를 자신의 코드로 바꿀 수 있고, 그 코드는 묻지 않고 설치될 수 있습니다. 그래도 자동 업데이트를 켤까요?",
 };

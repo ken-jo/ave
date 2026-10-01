@@ -396,6 +396,7 @@ async function startLocalApiServerForBoot(
   const conversationSurfaceRuntime = suppliedSurfaceRuntime ?? createConversationSurfaceRuntime();
   conversationSurfaceRuntime.activity.bindSessionTransitionGuard(
     () => services.conversationLoop.isSessionTransitioning?.() ?? false,
+    (notify) => services.conversationLoop.onSessionTransitionSettled?.(notify) ?? (() => undefined),
   );
   const a2aRuntime = bootRouteFamilies.a2a
     ? await Promise.race([

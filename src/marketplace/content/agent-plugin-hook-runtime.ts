@@ -91,6 +91,17 @@ export class AgentPluginHookRuntime {
     publication.publish();
   }
 
+  /** As {@link AgentPluginMcpRuntime.approvals}, for each hook of the published generation, by index. */
+  async approvals(name: string): Promise<Array<{ index: number; approvalDigest: string | null; approved: boolean; recordDigest: string | null }>> {
+    const current = this.active.get(name);
+    if (!current) return [];
+    const trust = await this.trustStore();
+    return current.projections.map((projection) => {
+      const record = trust.record(projection);
+      return { index: Number(projection.owner.localId), approvalDigest: projection.approvalDigest, approved: record !== undefined, recordDigest: record?.approvalDigest ?? null };
+    });
+  }
+
   /** Whether a hook of the package's current activation is running (the apply queue waits for none, §18.7.4). */
   hasCallsInFlight(name: string): boolean {
     return (this.active.get(name)?.leases ?? 0) > 0;

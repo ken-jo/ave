@@ -28,6 +28,7 @@ import { deriveAgentPluginComponents } from "../agent-plugin-components.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 import { gitAccess } from "../../sources/source-tree.js";
+import { agentPluginComponentDigests } from "../../../plugins/contribution-approval-digest.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
@@ -48,7 +49,7 @@ describe("content package store", () => {
   let root: string;
   let repos: FixtureRepo[] = [];
   let counter = 0;
-  let activated: Array<{ op: "activate" | "deactivate"; key: string; content: ParsedContent | null; previous?: string | null; adopt?: boolean }>;
+  let activated: Array<{ op: "activate" | "deactivate" | "approve"; key: string; content: ParsedContent | null; previous?: string | null; adopt?: boolean }>;
   let failActivation: boolean;
   /** What the activations report as their predecessor's retirement. */
   let retirement: Promise<void>;
@@ -58,6 +59,9 @@ describe("content package store", () => {
       if (failActivation) throw new Error("settings write failed");
       activated.push({ op: "activate", key: `${entry.kind}:${entry.name}@${entry.version}`, content, previous: previous ? previous.version : null, adopt });
       return { retired: retirement };
+    },
+    async approveComponents(entry) {
+      activated.push({ op: "approve", key: `${entry.kind}:${entry.name}@${entry.version}`, content: null });
     },
     async deactivate(entry, content) {
       activated.push({ op: "deactivate", key: `${entry.kind}:${entry.name}@${entry.version}`, content });
@@ -533,6 +537,73 @@ describe("content package store", () => {
     expect(store.list()).toEqual([]);
     expect(installs("theme", "harbor")).toEqual([]);
     expect(activated).toEqual([]);
+  });
+
+  describe("components:approve is bound to the reviewed install (§18.7.5)", () => {
+    const packagePath = "agent-plugins/review-plugin";
+    const pluginJson = (version: string) => text({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "review-plugin", version, description: "Review" });
+
+    /** Publish `version` of an agent plugin whose hook may read a rules file, then stage and install it. */
+    async function publish(store: ContentStore, version: string, rules: string, component: "hook") {
+      const hooksJson = text({ version: 1, hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["./server/hook.sh"] }] }] } });
+      const program = "#!/bin/sh\nexit 0\n";
+      const files = [
+        { path: "plugin.json", data: Buffer.from(pluginJson(version)) },
+        { path: `ai.agent-connector.ave/${component}s.json`, data: Buffer.from(hooksJson) },
+        { path: "server/hook.sh", data: Buffer.from(program), executable: true },
+        { path: "skills/helper/assets/rules.txt", data: Buffer.from(rules) },
+        { path: "skills/helper/SKILL.md", data: Buffer.from("---\nname: helper\ndescription: Helper\n---\nHelp.\n") },
+      ];
+      const components = deriveAgentPluginComponents(files);
+      const name = `content-${++counter}`;
+      const repo = createFixtureRepo(serverRoot, name);
+      repos.push(repo);
+      repo.commit({}, "seed");
+      repo.commitEntries([
+        { path: "marketplace.2.json", mode: "100644", content: text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "agent-plugin", name: "review-plugin", path: packagePath }] }) },
+        { path: `${packagePath}/ave-package.json`, mode: "100644", content: descriptor("agent-plugin", "review-plugin", version, { manifest: "plugin.json", components }) },
+        ...files.map((file) => ({ path: `${packagePath}/${file.path}`, mode: file.executable ? "100755" : "100644", content: file.data.toString("utf8") })),
+      ], "publish");
+      const syncer = await open(name);
+      const staged = await stage(syncer, (await rows(syncer))[0]!);
+      const { entry } = await store.install(staged);
+      const consent = { kind: "hook" as const, index: 0, digest: components.hooks[0]!.digest, approvalDigest: agentPluginComponentDigests(components, files).hooks[0]! };
+      return { entry, consent, staged };
+    }
+
+    const approvals = () => activated.filter((item) => item.op === "approve").map((item) => item.key);
+
+    it("approves an unchanged install's components; after a replacement, the old review approves nothing", async () => {
+      const store = await openStore();
+      const a = await publish(store, "1.0.0", "rule one", "hook");
+      expect(a.consent.approvalDigest).toMatch(/^[a-f0-9]{64}$/u);
+      await store.approveComponents("review-plugin", a.entry.origin.installId!, [a.consent]);
+      expect(approvals()).toEqual(["agent-plugin:review-plugin@1.0.0"]);
+
+      // A required update installs B, changing only the rules file: the hook's declared digest stays, its approval digest moves.
+      const b = await publish(store, "1.0.1", "rule two", "hook");
+      expect(b.consent.digest).toBe(a.consent.digest);
+      expect(b.consent.approvalDigest).not.toBe(a.consent.approvalDigest);
+      const stale = { code: "PLAN_EXPIRED", detail: { reason: "package-changed" } };
+      await expect(store.approveComponents("review-plugin", a.entry.origin.installId!, [a.consent])).rejects.toMatchObject(stale);
+      // B's install id with A's digest: the review did not show these bytes.
+      await expect(store.approveComponents("review-plugin", b.entry.origin.installId!, [a.consent])).rejects.toMatchObject(stale);
+      expect(approvals()).toEqual(["agent-plugin:review-plugin@1.0.0"]);
+      await store.approveComponents("review-plugin", b.entry.origin.installId!, [b.consent]);
+      expect(approvals()).toEqual(["agent-plugin:review-plugin@1.0.0", "agent-plugin:review-plugin@1.0.1"]);
+    });
+
+    it("binds by the generation alone: the same bytes installed again are another install, and the old review approves nothing", async () => {
+      // So a component whose approval digest is null, which no digest can bind, is bound all the same.
+      const store = await openStore();
+      const a = await publish(store, "1.0.0", "rule one", "hook");
+      const { entry: b } = await store.install(a.staged);
+      expect(b.origin.installId).not.toBe(a.entry.origin.installId);
+      await expect(store.approveComponents("review-plugin", a.entry.origin.installId!, [a.consent])).rejects.toMatchObject({ code: "PLAN_EXPIRED", detail: { reason: "package-changed" } });
+      expect(approvals()).toEqual([]);
+      await store.approveComponents("review-plugin", b.origin.installId!, [a.consent]);
+      expect(approvals()).toEqual(["agent-plugin:review-plugin@1.0.0"]);
+    });
   });
 
   it("refuses to open over a ledger it cannot read", async () => {

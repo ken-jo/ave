@@ -347,6 +347,8 @@ describe("preload contextBridge world shape lock", () => {
             "acceptRewrite",
             "acknowledgeSource",
             "addSource",
+            "applyUpdatesNow",
+            "approveComponents",
             "bootInstallNotice",
             "checkUpdates",
             "deleteToken",

@@ -138,9 +138,15 @@ async function setup(overrides: Record<string, unknown> = {}, window: unknown = 
     enforceRevocations: vi.fn(async () => {}),
     takeRevocationNotice: vi.fn(() => null),
     revealFolder: vi.fn(async (): Promise<string | null> => null),
+    updateCandidates: vi.fn(async () => []),
+    autoUpdateContext: vi.fn(async () => ({ policy: "user", sources: [] })),
+    applyUpdate: vi.fn(async () => ({ state: "applied" })),
+    appliedState: vi.fn(async () => null),
+    callsInFlight: vi.fn(async () => false),
+    approveComponents: vi.fn(async () => {}),
     applyBootInstalls: vi.fn(async () => ({
-      report: { installed: [{ kind: "plugin", name: "meeting", source: "ave" }], updated: [], switched: [], skipped: [], failed: [] },
-      notice: { forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [] },
+      report: { installed: [{ kind: "plugin", name: "meeting", source: "ave" }], skipped: [], failed: [] },
+      notice: { forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [], autoUpdated: [] },
     })),
     ...overrides,
   };
@@ -149,18 +155,25 @@ async function setup(overrides: Record<string, unknown> = {}, window: unknown = 
   const onBuilt = vi.fn(async () => {});
   const home = mkdtempSync(join(tmpdir(), "ave-git-marketplace-ipc-"));
   const marketplace: Record<string, unknown> = { updateCheckIntervalMs: 0 };
-  const settings = { get: () => marketplace };
+  const settings = {
+    get: () => marketplace,
+    patch: vi.fn(async (partial: { marketplace?: Record<string, unknown> }) => {
+      Object.assign(marketplace, partial.marketplace ?? {});
+    }),
+  };
+  /** The conversation's idle gate, idle unless a test says otherwise. */
+  const activity = { isBusy: vi.fn(() => false), onIdle: vi.fn(() => () => {}) };
   // A lifetime of its own: the app's shared one (`getMarketplaceLifetime`) would outlive this test's shutdown.
   const lifetime = new AbortController();
   const registration = registerGitMarketplaceHandlers(
-    { auditLogger: { log: vi.fn() }, getMainWindow: () => window, settingsService: settings } as never,
+    { auditLogger: { log: vi.fn() }, getMainWindow: () => window, settingsService: settings, conversationSurfaceRuntime: { activity } } as never,
     async () => null,
     create,
     onBuilt,
     home,
     lifetime,
   );
-  return { service, create, onBuilt, registration, home, marketplace, lifetime };
+  return { service, create, onBuilt, registration, home, marketplace, lifetime, settings, activity };
 }
 
 beforeEach(() => {
@@ -216,13 +229,13 @@ describe("git marketplace IPC boundary", () => {
     });
     await expect(invokeFileIpcHandler(handlers, channels.deepLinkTake)).resolves.toEqual({ ok: true, value: null });
 
-    const notice = { forYou: [{ sourceId: "ave", kind: "plugin" as const, name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [] };
+    const notice = { forYou: [{ sourceId: "ave", kind: "plugin" as const, name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [], autoUpdated: [] };
     state.setBootInstallNotice(notice);
     await expect(invokeFileIpcHandler(handlers, channels.bootInstallsNotice)).resolves.toEqual({ ok: true, value: notice });
     await expect(invokeFileIpcHandler(handlers, channels.bootInstallsNotice)).resolves.toEqual({ ok: true, value: notice });
     await expect(invokeFileIpcHandler(handlers, channels.bootInstallsDismiss)).resolves.toEqual({ ok: true, value: null });
     await expect(invokeFileIpcHandler(handlers, channels.bootInstallsNotice)).resolves.toEqual({ ok: true, value: null });
-    state.setBootInstallNotice({ forYou: [], required: [], unmanaged: [], lostGrants: [], revoked: [] });
+    state.setBootInstallNotice({ forYou: [], required: [], unmanaged: [], lostGrants: [], revoked: [], autoUpdated: [] });
     await expect(invokeFileIpcHandler(handlers, channels.bootInstallsNotice)).resolves.toEqual({ ok: true, value: null });
 
     state.setPendingGitMarketplaceLink({ action: "add", url: "acme/tools" });
@@ -249,7 +262,9 @@ describe("git marketplace IPC boundary", () => {
     expect(latestBootstrapStatus()).toEqual({ phase: "complete", installed: ["meeting"], failed: [] });
     expect(service.discover).toHaveBeenCalledTimes(1);
     expect(service.applyBootInstalls).toHaveBeenCalledTimes(1);
-    expect(state.getBootInstallNotice()).toEqual({ forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [] });
+    expect(state.getBootInstallNotice()).toEqual({ forYou: [{ sourceId: "ave", kind: "plugin", name: "meeting" }], required: [], unmanaged: [], lostGrants: [], revoked: [], autoUpdated: [] });
+    // The boot pass ends with its apply check and the list after it; a Retry during it would join it.
+    await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(2));
 
     await expect(invokeFileIpcHandler(handlers, CHANNELS.bootstrap.retry)).resolves.toEqual({ ok: true });
     expect(service.applyBootInstalls).toHaveBeenCalledTimes(2);
@@ -296,7 +311,24 @@ describe("git marketplace IPC boundary", () => {
   });
 
   it("answers the update scheduler's status and Check now from the host renderer only, once the scheduler runs", async () => {
-    const { registration, service, home } = await setup({ updates: vi.fn(async () => [{ key: { sourceId: "ave", kind: "plugin", name: "meeting" }, displayName: "Meeting", from: "1.0.0", to: "1.1.0" }]) });
+    const update = { key: { sourceId: "ave", kind: "plugin", name: "meeting" }, displayName: "Meeting", from: "1.0.0", to: "1.1.0" };
+    const { registration, service, home, marketplace } = await setup({
+      updates: vi.fn(async () => [update]),
+      updateCandidates: vi.fn(async () => [{
+        ...update,
+        commitRange: { from: null, to: "b".repeat(40) },
+        switchSource: false,
+        provides: [],
+        needs: [],
+        facts: {
+          switchKey: "meeting", to: "1.1.0", change: "upgrade", enabled: true, required: false, policyBlocked: false,
+          source: { id: "ave", origin: "official", http: false, acknowledgedUnencryptedUpdates: false, shown: true, pendingRewrite: false },
+          consent: [], unconfirmedApprovals: [],
+        },
+      }]),
+    });
+    // Automatic updates off: the update waits for the user.
+    marketplace.autoUpdate = false;
     // Before the window starts it there is no scheduler; the card says why.
     await expect(invokeFileIpcHandler(handlers, channels.updatesStatus)).resolves.toEqual({ ok: false, code: "unavailable", message: "update checks have not started" });
 
@@ -355,6 +387,74 @@ describe("git marketplace IPC boundary", () => {
     // Nor does a scheduler start again after the shutdown.
     await registration.startBackground();
     expect(service.discover.mock.calls.length).toBe(discoveries);
+  });
+
+  it("approves an approval-pending agent plugin's components bound to its install, and clears its state (§18.7.5)", async () => {
+    const key = { sourceId: "ave", kind: "agent-plugin", name: "notes" };
+    const consents = [{ name: "search", digest: "a".repeat(64), approvalDigest: "b".repeat(64) }, { kind: "hook", index: 0, digest: "c".repeat(64), approvalDigest: null }];
+    const approveComponents = vi.fn(async () => {});
+    const { registration, service } = await setup({ approveComponents });
+    // No scheduler yet: nothing is approved.
+    await expect(invokeFileIpcHandler(handlers, channels.componentsApprove, key, "install-1", consents)).resolves.toMatchObject({ ok: false, code: "unavailable" });
+    registration.startBackground();
+    await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(2));
+
+    const answer = await invokeFileIpcHandler(handlers, channels.componentsApprove, key, "install-1", consents);
+    expect(answer).toMatchObject({ ok: true, value: { packages: [] } });
+    expect(approveComponents).toHaveBeenCalledWith(key, "install-1", consents);
+
+    // A review that went stale answers with its code and reason; the renderer reloads the review.
+    approveComponents.mockRejectedValueOnce(new MarketplaceError("PLAN_EXPIRED", "agent plugin notes changed since it was reviewed", { detail: { reason: "package-changed" } }));
+    await expect(invokeFileIpcHandler(handlers, channels.componentsApprove, key, "install-0", consents)).resolves.toEqual({
+      ok: false, code: "PLAN_EXPIRED", message: "agent plugin notes changed since it was reviewed", detail: { reason: "package-changed" },
+    });
+
+    // A request that names a component twice, an extension's component, or no digest the review showed is refused before the service.
+    for (const bad of [[consents[0], consents[0]], [{ kind: "extension", component: "hook", localId: "x", approvalDigest: null }], [{ name: "search", digest: "a".repeat(64) }], []]) {
+      await expect(invokeFileIpcHandler(handlers, channels.componentsApprove, key, "install-1", bad)).resolves.toMatchObject({ ok: false, code: "invalid-request" });
+    }
+    expect(approveComponents).toHaveBeenCalledTimes(2);
+  });
+
+  it("applies queued updates now on Apply now, from the host renderer only (§18.7.4)", async () => {
+    const { registration, service } = await setup();
+    registration.startBackground();
+    await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(2));
+    await expect(invokeFileIpcHandler(handlers, channels.updatesApplyNow)).resolves.toMatchObject({ ok: true, value: { waitingSince: null, escalated: false } });
+    for (const channel of [channels.updatesApplyNow, channels.componentsApprove]) {
+      await expect(invokeAppIpcHandlerFromFrame(handlers, channel, "file:///app/plugin-ui-shell.html"))
+        .resolves.toEqual({ ok: false, code: "unauthorized-frame", message: "unauthorized-frame" });
+    }
+  });
+
+  it("records the version a rollback by hand left as skipped, so the next apply check does not undo it (§18.7.5)", async () => {
+    const result = (action: unknown) => ({ key: { sourceId: "ave", kind: "plugin", name: "meeting" }, version: "1.0.0", action, rungs: [], connectionWarning: null });
+    const executeInstall = vi.fn(async () => result({ action: "replace", direction: "downgrade", from: "1.2.0" }));
+    const { settings, marketplace } = await setup({ executeInstall });
+    await expect(invokeFileIpcHandler(handlers, channels.installExecute, "p1")).resolves.toMatchObject({ ok: true });
+    expect(settings.patch).toHaveBeenCalledTimes(1);
+    expect({ ...(marketplace.skippedPluginUpdates as object) }).toEqual({ meeting: "1.2.0" });
+
+    // An upgrade or a reinstall skips nothing.
+    executeInstall.mockResolvedValueOnce(result({ action: "replace", direction: "upgrade", from: "1.0.0" }));
+    await invokeFileIpcHandler(handlers, channels.installExecute, "p2");
+    expect(settings.patch).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts an extension's component consent by local id with its approval digest (§18.7.3)", async () => {
+    const installed = { key: { sourceId: "ave", kind: "plugin", name: "meeting" }, version: "1.1.0", action: { action: "install" }, rungs: [], connectionWarning: null };
+    const executeInstall = vi.fn(async () => installed);
+    await setup({ executeInstall });
+    const consents = [{ kind: "extension", component: "mcpServer", localId: "notes", approvalDigest: "d".repeat(64) }, { kind: "extension", component: "hook", localId: "audit", approvalDigest: null }];
+    await expect(invokeFileIpcHandler(handlers, channels.installExecute, "p1", consents)).resolves.toMatchObject({ ok: true });
+    expect(executeInstall).toHaveBeenLastCalledWith("p1", consents, true);
+    for (const bad of [
+      [{ kind: "extension", component: "process", localId: "x", approvalDigest: null }],
+      [{ kind: "extension", component: "hook", localId: "x", approvalDigest: "not-a-digest" }],
+      [{ kind: "extension", component: "hook", localId: "x", approvalDigest: null, extra: 1 }],
+    ]) {
+      await expect(invokeFileIpcHandler(handlers, channels.installExecute, "p1", bad)).resolves.toMatchObject({ ok: false, code: "invalid-request" });
+    }
   });
 
   it("lets a plugin install that lands after the shutdown hook finish, without telling the host or refreshing the bridge", async () => {
@@ -434,11 +534,12 @@ describe("git marketplace IPC boundary", () => {
   });
 
   it("passes reviewed authority and validated MCP consent through one install request", async () => {
-    const executeInstall = vi.fn(async () => ({ installed: true }));
+    const installed = { key: { sourceId: "ave", kind: "agent-plugin", name: "notes" }, version: "1.0.0", action: { action: "install" }, rungs: [], connectionWarning: null };
+    const executeInstall = vi.fn(async () => installed);
     await setup({ executeInstall });
     const consents = [{ name: "notes", digest: "a".repeat(64) }];
     await expect(invokeFileIpcHandler(handlers, channels.installExecute, "p1", consents))
-      .resolves.toEqual({ ok: true, value: { installed: true } });
+      .resolves.toEqual({ ok: true, value: installed });
     expect(executeInstall).toHaveBeenLastCalledWith("p1", consents, true);
     await invokeFileIpcHandler(handlers, channels.installExecute, "p2");
     expect(executeInstall).toHaveBeenLastCalledWith("p2", [], true);

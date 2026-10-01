@@ -29,34 +29,38 @@ import { agentPluginComponentDigests, changedPayloadFiles, extensionComponentDig
 import { resolvePluginContributionDeclarations } from "../../plugins/plugin-contributions.js";
 import { flattenAgentPluginsManifest } from "../../plugins/public-contract.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
-import { PACKAGE_KINDS, type AgentPluginComponents, type IndexVersion, type PackageKind, type PluginAuthority } from "../catalog/types.js";
+import { type AgentPluginComponents, type IndexVersion, type PackageKind, type PluginAuthority } from "../catalog/types.js";
 import { manifestAuthority } from "../resolve/manifest-rules.js";
+import type { ConsentDelta, ConsentDeltaEntry, ConsentJson } from "../../shared/git-marketplace.js";
+import { parseConsentFingerprint, type ConsentFingerprint } from "./consent-record.js";
 
-export type ConsentJson = null | boolean | number | string | ConsentJson[] | { [key: string]: ConsentJson };
+export type { ConsentDelta, ConsentDeltaEntry, ConsentJson };
 
-/** What the user agreed to, field by field. `unknown` names the fields that could not be computed. */
-export interface ConsentFingerprint {
-  kind: PackageKind;
-  fields: Record<string, ConsentJson>;
-  unknown: string[];
+export { parseConsentFingerprint, type ConsentFingerprint };
+
+/**
+ * Checkpoint two found a difference (§18.7.3): the staged update differs
+ * from what the user accepted. Thrown before anything activates; the apply
+ * pass records `needs-review`. A consent deferral, never a failure.
+ */
+export class UpdateNeedsReviewError extends Error {
+  constructor(readonly packageName: string, readonly delta: ConsentDelta) {
+    super(`${packageName}: the update differs from what was accepted (${delta.map((entry) => entry.field).join(", ")})`);
+    this.name = "UpdateNeedsReviewError";
+  }
 }
 
 /**
- * One field that differs. `checkpoint` says where the difference was seen;
- * `before` is the baseline's value (`"unknown"` when it could not be
- * computed) and `after` the update's (null: the component is gone).
- * `changedFiles` is set for a changed approval digest (§18.7.3 "Cheap
- * review"); it only shortens the review.
+ * The checkpoint-two callback an automatic update hands an installer: it
+ * sees the staged fingerprint before anything activates and throws
+ * {@link UpdateNeedsReviewError} on any difference from `baseline`.
  */
-export interface ConsentDeltaEntry {
-  field: string;
-  checkpoint: "catalog" | "staged";
-  before: ConsentJson | "unknown";
-  after: ConsentJson;
-  changedFiles?: { code: string[]; nonCode: string[] };
+export function requireConsentEqual(packageName: string, baseline: ConsentFingerprint): (staged: ConsentFingerprint) => void {
+  return (staged) => {
+    const delta = stagedDelta(baseline, staged);
+    if (delta.length > 0) throw new UpdateNeedsReviewError(packageName, delta);
+  };
 }
-
-export type ConsentDelta = ConsentDeltaEntry[];
 
 /** The authority fields of the fingerprint, by the authority key each reads. */
 const AUTHORITY_FIELDS = ["capabilities", "networkAccess", "hostSecrets", "pluginAccess", "auth", "dependencies", "sandbox"] as const;
@@ -264,35 +268,6 @@ export function stagedDelta(baseline: ConsentFingerprint, staged: ConsentFingerp
     else if (isUnknown(staged, field) || !same(baseline.fields[field], after)) delta.push({ field, checkpoint, before: baseline.fields[field] ?? null, after });
   }
   return delta;
-}
-
-// ─── storage ────────────────────────────────────────────────────────────────
-
-const KINDS = new Set<string>(PACKAGE_KINDS);
-
-function isConsentJson(value: unknown, depth = 0): value is ConsentJson {
-  if (depth > 32) return false;
-  if (value === null || typeof value === "boolean" || typeof value === "string") return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every((item) => isConsentJson(item, depth + 1));
-  if (typeof value === "object") return Object.values(value as Record<string, unknown>).every((item) => isConsentJson(item, depth + 1));
-  return false;
-}
-
-/**
- * Read a stored fingerprint exactly: `kind`, `fields` and `unknown` and
- * nothing else. Throws on any other shape: a baseline is never guessed.
- */
-export function parseConsentFingerprint(value: unknown, what: string): ConsentFingerprint {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${what} is not a consent fingerprint`);
-  const record = value as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== "kind" && key !== "fields" && key !== "unknown")) throw new Error(`${what} has an unknown field`);
-  if (typeof record.kind !== "string" || !KINDS.has(record.kind)) throw new Error(`${what}.kind is not a package kind`);
-  if (typeof record.fields !== "object" || record.fields === null || Array.isArray(record.fields) || !isConsentJson(record.fields)) {
-    throw new Error(`${what}.fields is not a JSON object`);
-  }
-  if (!Array.isArray(record.unknown) || !record.unknown.every((field) => typeof field === "string")) throw new Error(`${what}.unknown is not a list of fields`);
-  return { kind: record.kind as PackageKind, fields: record.fields as Record<string, ConsentJson>, unknown: [...record.unknown as string[]] };
 }
 
 /** The approval digests a fingerprint records, by component field (`mcpServer:<id>`, `hook:<id>`). */

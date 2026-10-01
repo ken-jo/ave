@@ -406,6 +406,27 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
   }
 
   /**
+   * The approval state of each bundled component of the active generation
+   * (§18.7.2): whether it is approved, and the approval digest its record
+   * holds (null for an approval from an earlier Ave version that could not
+   * be matched to its bytes, which does not carry).
+   */
+  componentApprovals(pluginId: string): Array<{ kind: "hook" | "mcpServer"; localId: string; approvalDigest: string | null; approved: boolean; recordDigest: string | null }> {
+    const generation = this.coordinator.getActive(pluginId);
+    if (!generation) return [];
+    return [
+      ...generation.state.hooks.map((projection) => {
+        const record = this.hookTrust.record(projection);
+        return { kind: "hook" as const, localId: projection.owner.localId, approvalDigest: projection.approvalDigest, approved: record !== undefined, recordDigest: record?.approvalDigest ?? null };
+      }),
+      ...generation.state.mcpServers.map((projection) => {
+        const record = this.mcpTrust.record(projection);
+        return { kind: "mcpServer" as const, localId: projection.owner.localId, approvalDigest: projection.approvalDigest, approved: record !== undefined, recordDigest: record?.approvalDigest ?? null };
+      }),
+    ];
+  }
+
+  /**
    * `binding` approves, bound to the reviewed generation and digest; null
    * revokes, which only narrows trust and needs no binding. The binding is
    * checked here, under the serialization a new generation's publication

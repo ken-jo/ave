@@ -52,7 +52,14 @@ const port = {
   },
   servedFile: () => null,
 };
-const runtime = (service: typeof port) => ({ store: {} as ContentStore, service, reload: async () => {}, removeAgentPluginData: async () => {} });
+const runtime = (service: typeof port) => ({
+  store: {} as ContentStore,
+  service,
+  reload: async () => {},
+  removeAgentPluginData: async () => {},
+  componentApprovals: async () => ({ mcpServers: [], hooks: [] }),
+  callsInFlight: () => false,
+});
 const installedDeps = (templates: unknown[] = []) => ({
   pluginBundleLifecycle: { listRoutineTemplates: () => templates },
 } as unknown as IpcDeps);
@@ -138,7 +145,7 @@ describe("loadInstalledContent", () => {
     const list = Object.entries(files).map(([path, value]) => ({ path, data: Buffer.from(typeof value === "string" ? value : JSON.stringify(value)) }));
     const plan = { sourceId: "acme", sourceOrigin: "custom", snapshotCommit: "a".repeat(40), versionCommit: "a".repeat(40), packagePath: `${kind}s/${name}`, kind, name, version: "1.0.0", minAppVersion: "0.12.0" } as PackagePlan;
     const staged = { plan, files: list, contentSha256: treeDigest(list.map((file) => ({ ...file, executable: false }))), content, minAppVersion: "0.12.0", hostProtocol: null } as StagedContent;
-    const store = into ?? (await ContentStore.open({ root, english: {}, activation: { activate: async () => ({ retired: Promise.resolve() }), deactivate: async () => {} } }));
+    const store = into ?? (await ContentStore.open({ root, english: {}, activation: { activate: async () => ({ retired: Promise.resolve() }), deactivate: async () => {}, approveComponents: async () => {} } }));
     await store.install(staged);
   }
 

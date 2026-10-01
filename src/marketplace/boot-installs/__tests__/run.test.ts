@@ -94,7 +94,7 @@ describe("runBootInstalls (design §10.2)", () => {
     installedState.clear(); // the user uninstalls both
     calls = [];
     const second = await boot();
-    expect(second).toEqual({ installed: [], updated: [], switched: [], skipped: [], failed: [] });
+    expect(second).toEqual({ installed: [], skipped: [], failed: [] });
     expect(calls).toEqual([]);
     expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({
       version: 1,
@@ -147,7 +147,7 @@ describe("runBootInstalls (design §10.2)", () => {
     expect(report.skipped).toEqual([{ key: key("toy", "acme"), reason: "source acme is neither official nor managed" }]);
   });
 
-  it("brings required installs to the candidate every boot: install, update, switch, repair", async () => {
+  it("installs a missing required package every boot, and leaves an installed one's update or switch to the apply queue (§18.7.2)", async () => {
     const policy = { requiredInstalls: [key("wiki", "corp")] };
     const synced = { ave: "official", corp: "managed" } as Record<string, SourceOrigin>;
     const rows = (v: string) => [row("ave", "meeting"), row("ave", "local-indexer"), row("corp", "wiki", { state: "candidate", version: version(v) })];
@@ -155,16 +155,15 @@ describe("runBootInstalls (design §10.2)", () => {
     expect((await boot({ policy, synced, rows: rows("1.0.0") })).installed).toContainEqual(key("wiki", "corp"));
     installedState.delete("wiki"); // removed behind the app's back: required means it comes back
     expect((await boot({ policy, synced, rows: rows("1.0.0") })).installed).toEqual([key("wiki", "corp")]);
-    expect((await boot({ policy, synced, rows: rows("1.0.0") }))).toMatchObject({ installed: [], updated: [] });
-    expect((await boot({ policy, synced, rows: rows("1.1.0") })).updated).toEqual([key("wiki", "corp")]);
 
-    installedState.set("wiki", { kind: "plugin", name: "wiki", version: "5.0.0", sourceId: "acme" });
+    // A newer version, another source, or an unreadable version: the boot pass replaces no running generation.
     calls = [];
-    expect((await boot({ policy, synced, rows: rows("1.1.0") })).switched).toEqual([key("wiki", "corp")]);
-    expect(calls).toEqual([{ name: "wiki", source: "corp", switchSource: true, required: true }]);
-
+    expect((await boot({ policy, synced, rows: rows("1.1.0") }))).toMatchObject({ installed: [], failed: [] });
+    installedState.set("wiki", { kind: "plugin", name: "wiki", version: "5.0.0", sourceId: "acme" });
+    expect((await boot({ policy, synced, rows: rows("1.1.0") }))).toMatchObject({ installed: [], failed: [] });
     installedState.set("wiki", { kind: "plugin", name: "wiki", version: null, sourceId: "corp" });
-    expect((await boot({ policy, synced, rows: rows("1.1.0") })).updated).toEqual([key("wiki", "corp")]);
+    expect((await boot({ policy, synced, rows: rows("1.1.0") }))).toMatchObject({ installed: [], failed: [] });
+    expect(calls).toEqual([]);
   });
 
   it("never records required keys as defaults, and a required key is not also installed as a default", async () => {
@@ -213,17 +212,17 @@ describe("runBootInstalls (design §10.2)", () => {
 });
 
 describe("bootInstallNoticeFrom (design §15.1)", () => {
-  const empty = { installed: [], updated: [], switched: [], skipped: [], failed: [] };
+  const empty = { installed: [], skipped: [], failed: [] };
 
   it("is null when the boot installed, updated and moved nothing", () => {
     expect(bootInstallNoticeFrom({ ...empty, skipped: [{ key: key("a"), reason: "r" }], failed: [{ key: key("b"), message: "m" }] }, EMPTY_MARKETPLACE_POLICY, null, [])).toBeNull();
     expect(bootInstallNoticeFrom(empty, EMPTY_MARKETPLACE_POLICY, { unmanaged: [], lostGrants: [] }, [])).toBeNull();
   });
 
-  it("offers the default installs to the user, lists what the policy required, updated or moved, and what the migration unlocked", () => {
+  it("offers the default installs to the user, lists what the policy required, and what the migration unlocked", () => {
     const policy: MarketplacePolicy = { ...EMPTY_MARKETPLACE_POLICY, requiredInstalls: [key("vpn", "corp")] };
     const notice = bootInstallNoticeFrom(
-      { ...empty, installed: [key("meeting"), key("vpn", "corp"), key("tokyo-night", "ave", "theme")], updated: [key("audit", "corp")], switched: [key("mail", "corp")] },
+      { ...empty, installed: [key("meeting"), key("vpn", "corp"), key("tokyo-night", "ave", "theme")] },
       policy,
       { unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }] },
       [],
@@ -233,19 +232,16 @@ describe("bootInstallNoticeFrom (design §15.1)", () => {
         { sourceId: "ave", kind: "plugin", name: "meeting" },
         { sourceId: "ave", kind: "theme", name: "tokyo-night" },
       ],
-      required: [
-        { sourceId: "corp", kind: "plugin", name: "vpn" },
-        { sourceId: "corp", kind: "plugin", name: "audit" },
-        { sourceId: "corp", kind: "plugin", name: "mail" },
-      ],
+      required: [{ sourceId: "corp", kind: "plugin", name: "vpn" }],
       unmanaged: ["orion"],
       lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }],
       revoked: [],
+      autoUpdated: [],
     });
   });
 
   it("reports a revocation the boot pass acted on even when nothing else moved (§10.4)", () => {
     const revoked = [{ key: { sourceId: "acme", kind: "mcp" as const, name: "scraper" }, version: "1.2.0", reason: "exfiltrates cookies", outcome: "uninstalled" as const }];
-    expect(bootInstallNoticeFrom(empty, EMPTY_MARKETPLACE_POLICY, null, revoked)).toEqual({ forYou: [], required: [], unmanaged: [], lostGrants: [], revoked });
+    expect(bootInstallNoticeFrom(empty, EMPTY_MARKETPLACE_POLICY, null, revoked)).toEqual({ forYou: [], required: [], unmanaged: [], lostGrants: [], revoked, autoUpdated: [] });
   });
 });

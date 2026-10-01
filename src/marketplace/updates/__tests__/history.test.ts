@@ -26,7 +26,8 @@ function file(overrides: Record<string, unknown> = {}): string {
     applyCheckAt: T0,
     packages: {
       "ave:plugin:meeting": { to: "2.0.0", state: "failed", attempts: 2, lastError: { code: "SOURCE_UNREACHABLE", detail: { reason: "dns", host: "github.com" }, at: T1 } },
-      "acme:agent-plugin:notes": { to: "1.1.0", state: "applied", attempts: 0, appliedAt: T1 },
+      "acme:agent-plugin:notes": { to: "1.1.0", state: "applied", attempts: 0, appliedAt: T1, from: "1.0.0", displayName: "Notes" },
+      "acme:plugin:stats": { to: "3.0.0", state: "failed", attempts: 1, lastError: { code: "unavailable", message: "EACCES: permission denied", at: T1 } },
     },
     ...overrides,
   });
@@ -43,6 +44,9 @@ describe("parseUpdateHistory", () => {
       attempts: 2,
       lastError: { code: "SOURCE_UNREACHABLE", detail: { reason: "dns", host: "github.com" }, at: T1 },
     });
+    // A failure outside a marketplace refusal is kept as `unavailable` with its scrubbed message (§18.7.5).
+    expect(history.packages["acme:plugin:stats"]?.lastError).toEqual({ code: "unavailable", message: "EACCES: permission denied", at: T1 });
+    expect(history.packages["acme:agent-plugin:notes"]).toMatchObject({ from: "1.0.0", displayName: "Notes" });
     expect(parseUpdateHistory(JSON.stringify(history))).toEqual(history);
     expect(Object.getPrototypeOf(history.packages)).toBeNull();
   });
@@ -65,6 +69,8 @@ describe("parseUpdateHistory", () => {
     ["a negative attempt count", file({ packages: { "ave:plugin:meeting": { to: "2.0.0", state: "manual", attempts: -1 } } })],
     ["a key that is not source:kind:name", file({ packages: { "meeting": { to: "2.0.0", state: "manual", attempts: 0 } } })],
     ["a key with an unknown kind", file({ packages: { "ave:widget:meeting": { to: "2.0.0", state: "manual", attempts: 0 } } })],
+    ["an applied entry without what the view shows of it", file({ packages: { "ave:plugin:meeting": { to: "2.0.0", state: "applied", attempts: 0, appliedAt: T1 } } })],
+    ["a message that is not text", file({ packages: { "ave:plugin:meeting": { to: "2.0.0", state: "failed", attempts: 1, lastError: { code: "unavailable", message: 7, at: T1 } } } })],
     ["an unknown error code", file({ packages: { "ave:plugin:meeting": { to: "2.0.0", state: "failed", attempts: 1, lastError: { code: "NOPE", at: T1 } } } })],
     ["duplicate keys", '{"version":1,"version":1,"discovery":null,"applyCheckAt":null,"packages":{}}'],
     ["text that is not JSON", "{ not json"],

@@ -26,6 +26,8 @@ export const DEVELOPMENT_ENV_POLICY = [
   { name: "AVE_DEV_PROMPT_SOURCE_DUMP", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_DEV_RELOAD", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_E2E", lifecycle: "active", packaged: "scrub" },
+  // An isolated E2E run starts the real marketplace update scheduler (design §18.10 F); honoured only with AVE_E2E.
+  { name: "AVE_E2E_MARKETPLACE_SCHEDULER", lifecycle: "active", packaged: "scrub" },
   // Trusted an E2E-signed whitelist; host-secret grants now come from the app and local snapshots.
   { name: "AVE_E2E_WHITELIST_PUBLIC_KEY", lifecycle: "tombstone", packaged: "scrub" },
   { name: "AVE_LOG_FILE", lifecycle: "active", packaged: "scrub" },

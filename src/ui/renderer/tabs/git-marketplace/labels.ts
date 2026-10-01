@@ -466,6 +466,8 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
           return t("gitMarketplace.warning.internalDownloads", { source: sourceName(t, subject, detail.source), host: detail.host });
         case "network-folder":
           return warningText(t, { warning: "network-folder", host: detail.server === "" ? null : detail.server, address: detail.path });
+        case "unencrypted-updates":
+          return t("gitMarketplace.warning.unencryptedUpdates", { source: sourceName(t, subject, detail.source) });
       }
       return unhandled(detail);
     }

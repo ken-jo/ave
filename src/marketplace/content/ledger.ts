@@ -22,7 +22,7 @@ import type { SourceOrigin } from "../sources/registry.js";
 import type { OriginReader } from "../sources/retained.js";
 import { isSourcePin } from "../sources/source-tree.js";
 import { CONTENT_KINDS, type ContentKind } from "./rules.js";
-import { parseConsentFingerprint, type ConsentFingerprint } from "../updates/consent.js";
+import { parseConsentFingerprint, type ConsentFingerprint } from "../updates/consent-record.js";
 
 interface ContentOrigin {
   sourceId: string | null;

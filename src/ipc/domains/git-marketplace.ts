@@ -28,7 +28,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { notifyBootstrapStatus } from "../../boot/bootstrap-status.js";
-import { isDevModeUnlocked, isE2eTestRuntime } from "../../boot/dev-flags.js";
+import { isDevModeUnlocked, isE2eMarketplaceSchedulerRun, isE2eTestRuntime } from "../../boot/dev-flags.js";
 import { emitEvent as emitHostEvent } from "../../boot/types.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { t } from "../../i18n/index.js";
@@ -64,6 +64,7 @@ import { SourceRegistry } from "../../marketplace/sources/registry.js";
 import { pluginRegistryOrigins, retainedCommitsFrom } from "../../marketplace/sources/retained.js";
 import { SourceSyncer } from "../../marketplace/sources/sync.js";
 import { withPluginInstallLock } from "../../plugins/install-lifecycle.js";
+import { readPayloadFiles } from "../../plugins/contribution-approval-digest.js";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../plugins/marketplace-artifact-limits.js";
 import { PluginArtifactStore } from "../../plugins/plugin-artifact-store.js";
 import { resolveUpdateCheckEnabled } from "../../plugins/update-detector.js";
@@ -72,12 +73,14 @@ import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
 import { errorMessage } from "../../shared/error-message.js";
 import {
   isPackageKind,
+  mergeBootInstallNotices,
   type CatalogQuery,
   type DirectMcpPreviewRequest,
   type GitMarketplaceResult,
   type InstallPlanRequest,
   type InstalledKeyView,
   type ComponentConsent,
+  type ReviewedComponentConsent,
   type PackageKeyView,
   type SourceAddRequest,
   type FolderPickView,
@@ -85,6 +88,7 @@ import {
   type UninstallRequest,
 } from "../../shared/git-marketplace.js";
 import { aveHome } from "../../shared/ave-home.js";
+import { packageUpdateSkipKey, putSkippedPluginUpdate, readSkippedPluginUpdates } from "../../shared/skipped-plugin-updates.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
 import { legacyContentSettings, type InstalledContentRuntime } from "./marketplace-content.js";
@@ -121,6 +125,12 @@ export type GitMarketplacePort = Pick<
   | "applyBootInstalls"
   | "enforceRevocations"
   | "takeRevocationNotice"
+  | "updateCandidates"
+  | "autoUpdateContext"
+  | "applyUpdate"
+  | "appliedState"
+  | "callsInFlight"
+  | "approveComponents"
 >;
 
 /** The settings secret each host's token is stored under (design §2.1). */
@@ -146,9 +156,22 @@ function settingsTokenStore(deps: IpcDeps): TokenStore {
 export function pluginInstaller(deps: IpcDeps, gated: ReturnType<typeof whileRunning>): PluginInstallerPort {
   const { pluginMarketplace, pluginRuntime } = deps;
   const lifecycle = pluginLifecycleServices(deps);
+  const bundles = () => {
+    if (!deps.pluginBundleLifecycle) throw new Error("the plugin bundle lifecycle is not wired");
+    return deps.pluginBundleLifecycle;
+  };
   return {
     list: async () => (await pluginMarketplace.listInstalledPackages()).map((row) => ({ kind: "plugin" as const, ...row })),
     installedAuthority: (name) => pluginMarketplace.getInstalledAuthority(name),
+    baseline: (name) => pluginMarketplace.getInstalledConsentBaseline(name),
+    stagedFiles: (staged) => pluginMarketplace.stagedPayloadFiles(staged),
+    componentApprovals: (name) => bundles().componentApprovals(name).map((item) => ({
+      field: `${item.kind}:${item.localId}`,
+      approvalDigest: item.approvalDigest,
+      approved: item.approved,
+      recordDigest: item.recordDigest,
+    })),
+    running: (name) => bundles().getActive(name) !== undefined,
     install: async (plan, options) => {
       const pluginId = plan.name;
       if (pluginRuntime.resolvePluginInstallIdIfKnown(pluginRuntime.resolvePluginId(pluginId)) === null) {
@@ -157,13 +180,17 @@ export function pluginInstaller(deps: IpcDeps, gated: ReturnType<typeof whileRun
       pluginRuntime.cancelPendingRestart(pluginId);
       return withPluginInstallLock(pluginId, async () => {
         await lifecycle.ensureInstallStateReady(pluginId);
-        const result = await pluginMarketplace.installGitPlugin(plan, {
+        const consents = (options.componentConsents ?? []).map((consent) => ({ kind: consent.component, localId: consent.localId, approvalDigest: consent.approvalDigest }));
+        // The reviewed components are approved for the generation this install prepares (§18.7.3).
+        const install = () => pluginMarketplace.installGitPlugin(plan, {
           stage: options.stage,
           switchSource: options.switchSource,
           ...(options.reviewedAppVersion ? { reviewedAppVersion: options.reviewedAppVersion } : {}),
           ...(options.signal ? { signal: options.signal } : {}),
+          ...(options.assertConsent ? { assertConsent: options.assertConsent } : {}),
           activatePreparedArtifact: (prepared) => pluginRuntime.activatePreparedArtifact<string>(prepared),
         });
+        const result = consents.length > 0 ? await bundles().withComponentConsents(pluginId, consents, install) : await install();
         if (!pluginRuntime.listPluginIds().includes(result.pluginId)) {
           throw new Error(`atomic git install committed without active runtime: ${result.pluginId}`);
         }
@@ -197,7 +224,35 @@ function contentInstaller(content: () => Promise<InstalledContentRuntime | null>
         version: entry.version,
         sourceId: entry.origin.sourceId,
         originCommit: entry.origin.commit,
+        digest: entry.origin.contentSha256,
       })),
+    baseline: async (kind, name, descriptor) => {
+      if (kind === "plugin" || kind === "mcp") throw new Error(`${kind} ${name} is not a content package`);
+      return (await runtime()).store.installedConsent(kind, name, (entry) =>
+        descriptor({ sourceId: entry.origin.sourceId, commit: entry.origin.commit, packagePath: entry.origin.packagePath, version: entry.version }));
+    },
+    installedFiles: async (kind, name) => {
+      if (kind === "plugin" || kind === "mcp") throw new Error(`${kind} ${name} is not a content package`);
+      const { loaded } = await (await runtime()).store.load();
+      const found = loaded.find((item) => item.entry.kind === kind && item.entry.name === name);
+      return found ? readPayloadFiles(found.dir) : null;
+    },
+    installId: async (kind, name) => {
+      if (kind === "plugin" || kind === "mcp") throw new Error(`${kind} ${name} is not a content package`);
+      return (await runtime()).store.list().find((entry) => entry.kind === kind && entry.name === name)?.origin.installId ?? null;
+    },
+    componentApprovals: async (name) => {
+      const approvals = await (await runtime()).componentApprovals(name);
+      return [
+        ...approvals.mcpServers.map((item) => ({ field: `mcpServer:${item.name}`, approvalDigest: item.approvalDigest, approved: item.approved, recordDigest: item.recordDigest })),
+        ...approvals.hooks.map((item) => ({ field: `hook:${item.index}`, approvalDigest: item.approvalDigest, approved: item.approved, recordDigest: item.recordDigest })),
+      ];
+    },
+    callsInFlight: async (name) => (await runtime()).callsInFlight(name),
+    approveComponents: async (name, installId, consents) => {
+      const loaded = await runtime();
+      await loaded.store.approveComponents(name, installId, consents);
+    },
     installedComponents: async (name) => {
       const { loaded } = await (await runtime()).store.load();
       const content = loaded.find((item) => item.entry.kind === "agent-plugin" && item.entry.name === name)?.content;
@@ -426,12 +481,25 @@ function optionalFlag(value: unknown, what: string): boolean | undefined {
   return value;
 }
 
+const SHA256 = /^[a-f0-9]{64}$/u;
+
 function componentConsents(value: unknown): readonly ComponentConsent[] {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 64) throw new InvalidRequest("component consents must be an array of at most 64 entries");
   const names = new Set<string>();
-  return value.map((item: unknown) => {
+  return value.map((item: unknown): ComponentConsent => {
     const consent = record(item, "a component consent");
+    if (consent.kind === "extension") {
+      // An extension's bundled component by local id, with the approval digest its review showed (§18.7.3).
+      if (Object.keys(consent).some((key) => !["kind", "component", "localId", "approvalDigest"].includes(key))
+        || (consent.component !== "hook" && consent.component !== "mcpServer")) throw new InvalidRequest("extension consent has an invalid component or field");
+      const localId = text(consent.localId, "component local id", 128);
+      const approvalDigest = consent.approvalDigest === null ? null : text(consent.approvalDigest, "approval digest", 64);
+      const key = `extension:${consent.component}:${localId}`;
+      if ((approvalDigest !== null && !SHA256.test(approvalDigest)) || names.has(key)) throw new InvalidRequest("extension consent has an invalid digest or repeated component");
+      names.add(key);
+      return { kind: "extension", component: consent.component, localId, approvalDigest };
+    }
     if (consent.kind === "hook") {
       if (Object.keys(consent).some((key) => !["kind", "index", "digest"].includes(key))
         || !Number.isInteger(consent.index) || (consent.index as number) < 0) throw new InvalidRequest("hook consent has an invalid index or field");
@@ -447,6 +515,24 @@ function componentConsents(value: unknown): readonly ComponentConsent[] {
     if (!/^[a-f0-9]{64}$/u.test(digest) || names.has(`mcp:${name}`)) throw new InvalidRequest("MCP server consent has an invalid digest or repeated name");
     names.add(`mcp:${name}`);
     return { name, digest };
+  });
+}
+
+/** `components:approve`'s consents (§18.7.5): an agent plugin's server or hook consent plus the approval digest its review showed. */
+function reviewedConsents(value: unknown): readonly ReviewedComponentConsent[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 64) throw new InvalidRequest("consents must be an array of 1 to 64 entries");
+  const names = new Set<string>();
+  return value.map((item: unknown): ReviewedComponentConsent => {
+    const consent = record(item, "a component consent");
+    const approvalDigest = consent.approvalDigest === null ? null : text(consent.approvalDigest, "approval digest", 64);
+    if (approvalDigest !== null && !SHA256.test(approvalDigest)) throw new InvalidRequest("approval digest is not a sha256");
+    const { approvalDigest: _shown, ...rest } = consent;
+    const [parsed] = componentConsents([rest]);
+    if (!parsed || ("kind" in parsed && parsed.kind === "extension")) throw new InvalidRequest("components:approve takes agent plugin components");
+    const key = "kind" in parsed ? `hook:${parsed.index}` : `mcp:${parsed.name}`;
+    if (names.has(key)) throw new InvalidRequest("a component is named twice");
+    names.add(key);
+    return { ...parsed, approvalDigest };
   });
 }
 
@@ -596,6 +682,24 @@ async function closeOnQuit(close: () => Promise<void>): Promise<void> {
   });
 }
 
+/**
+ * The conversation's idle gate for the apply queue (§18.7.4): the main
+ * conversation's activity coordinator, which every surface acquires before
+ * it touches the main loop.
+ */
+function conversationActivity(deps: IpcDeps): { isBusy(): boolean; onIdle(listener: () => void): () => void } {
+  const runtime = deps.conversationSurfaceRuntime;
+  if (!runtime) throw new Error("the conversation surface runtime is not wired; the apply queue has no idle gate");
+  return runtime.activity;
+}
+
+/** Record `version` of `key` as skipped (`skippedPluginUpdates`, §18.7.5). */
+async function skipVersion(deps: IpcDeps, key: { kind: string; name: string }, version: string): Promise<void> {
+  const skipped = readSkippedPluginUpdates(deps.settingsService.get("marketplace").skippedPluginUpdates);
+  putSkippedPluginUpdate(skipped, packageUpdateSkipKey(key), version);
+  await deps.settingsService.patch({ marketplace: { skippedPluginUpdates: skipped } });
+}
+
 /** Every window gets `payload` with its strings scrubbed: what the marketplace tells the renderer crosses only scrubbed (§18.8). */
 function broadcastTo(deps: IpcDeps, channel: string, payload?: unknown): void {
   const scrubbed = scrubMarketplaceStrings(payload);
@@ -661,6 +765,16 @@ export function registerGitMarketplaceHandlers(
     return ready;
   };
 
+  /** A failure as the envelope carries it (§18.8). */
+  const failure = <T>(channel: string, error: unknown): GitMarketplaceResult<T> => {
+    // A message or a detail's text can quote a git error or an address; it reaches the renderer and its clipboard only scrubbed.
+    if (error instanceof MarketplaceError) return { ok: false, code: error.code, message: scrubDiagnosticSecrets(error.message), ...(error.detail ? { detail: scrubMarketplaceErrorDetail(error.code, error.detail) } : {}) };
+    if (error instanceof InvalidRequest) return { ok: false, code: "invalid-request", message: scrubDiagnosticSecrets(error.message) };
+    const message = scrubDiagnosticSecrets(errorMessage(error));
+    log.error({ err: message, channel }, "git marketplace request failed");
+    return { ok: false, code: "unavailable", message };
+  };
+
   const handle = <T>(channel: string, run: (service: GitMarketplacePort, args: unknown[]) => T | Promise<T>) => {
     ipcMain.handle(channel, async (event: IpcMainInvokeEvent, ...args: unknown[]): Promise<GitMarketplaceResult<T>> => {
       if (!validateHostRendererSender(event)) {
@@ -672,12 +786,7 @@ export function registerGitMarketplaceHandlers(
         // Paths, addresses, labels and names in an answer reach the renderer only scrubbed, like a failure's detail.
         return { ok: true, value: scrubMarketplaceStrings(await run(service, args)) };
       } catch (error) {
-        // A message or a detail's text can quote a git error or an address; it reaches the renderer and its clipboard only scrubbed.
-        if (error instanceof MarketplaceError) return { ok: false, code: error.code, message: scrubDiagnosticSecrets(error.message), ...(error.detail ? { detail: scrubMarketplaceErrorDetail(error.code, error.detail) } : {}) };
-        if (error instanceof InvalidRequest) return { ok: false, code: "invalid-request", message: scrubDiagnosticSecrets(error.message) };
-        const message = scrubDiagnosticSecrets(errorMessage(error));
-        log.error({ err: message, channel }, "git marketplace request failed");
-        return { ok: false, code: "unavailable", message };
+        return failure<T>(channel, error);
       }
     });
   };
@@ -724,7 +833,15 @@ export function registerGitMarketplaceHandlers(
   handle(channels.packageDetail, (service, [key]) => service.detail(packageKey(key)));
   handle(channels.installPlan, (service, [request]) => service.planInstall(planRequest(request)));
   handle(channels.updatePlan, (service, [key]) => service.planUpdate(packageKey(key)));
-  handle(channels.installExecute, (service, [planId, consents]) => service.executeInstall(text(planId, "planId", 64), componentConsents(consents), true));
+  handle(channels.installExecute, async (service, [planId, consents]) => {
+    const result = await service.executeInstall(text(planId, "planId", 64), componentConsents(consents), true);
+    // A rollback by hand: the version it left is skipped, so the next apply check does not undo it (§18.7.5).
+    if (result.action.action === "replace" && result.action.direction === "downgrade" && result.action.from !== null) {
+      await skipVersion(deps, result.key, result.action.from);
+      void background?.settingsChanged().catch((error: unknown) => log.warn({ err: errorMessage(error) }, "marketplace settings recheck failed"));
+    }
+    return result;
+  });
   handle(channels.uninstall, (service, [request]) => service.uninstall(uninstallRequest(request)));
   handle(channels.directPreview, (service, [request]) => service.previewDirectMcp(directMcpRequest(request)));
 
@@ -766,24 +883,25 @@ export function registerGitMarketplaceHandlers(
   });
 
   // The update scheduler's answers (design §18.7.1); none exists before the window has loaded, or in an isolated E2E run.
-  const handleScheduler = <T>(channel: string, run: (scheduler: MarketplaceBackground) => Promise<T>) => {
-    ipcMain.handle(channel, async (event: IpcMainInvokeEvent): Promise<GitMarketplaceResult<T>> => {
+  const handleScheduler = <T>(channel: string, run: (scheduler: MarketplaceBackground, args: unknown[]) => Promise<T>) => {
+    ipcMain.handle(channel, async (event: IpcMainInvokeEvent, ...args: unknown[]): Promise<GitMarketplaceResult<T>> => {
       if (!validateHostRendererSender(event)) {
         auditUnauthorized(deps.auditLogger, channel, event);
         return UNAUTHORIZED;
       }
       if (!background) return { ok: false, code: "unavailable", message: "update checks have not started" };
       try {
-        return { ok: true, value: scrubMarketplaceStrings(await run(background)) };
+        return { ok: true, value: scrubMarketplaceStrings(await run(background, args)) };
       } catch (error) {
-        const message = scrubDiagnosticSecrets(errorMessage(error));
-        log.error({ err: message, channel }, "git marketplace update request failed");
-        return { ok: false, code: "unavailable", message };
+        return failure<T>(channel, error);
       }
     });
   };
   handleScheduler(channels.updatesStatus, (scheduler) => scheduler.status());
   handleScheduler(channels.updatesCheck, (scheduler) => scheduler.checkNow());
+  handleScheduler(channels.updatesApplyNow, (scheduler) => scheduler.applyNow());
+  handleScheduler(channels.componentsApprove, (scheduler, [key, installId, consents]) =>
+    scheduler.approveComponents(packageKey(key), text(installId, "installId", 64), reviewedConsents(consents)));
 
   ipcMain.handle(CHANNELS.bootstrap.retry, async (event: IpcMainInvokeEvent) => {
     if (!validateHostRendererSender(event)) {
@@ -812,7 +930,8 @@ export function registerGitMarketplaceHandlers(
     startBackground: () => {
       if (background) return background.started;
       if (shutdown.signal.aborted) return Promise.resolve();
-      if (isE2eTestRuntime()) {
+      // An isolated E2E run skips the pass, unless the spec exercises the real scheduler against its own sources.
+      if (isE2eTestRuntime() && !isE2eMarketplaceSchedulerRun()) {
         notifyBootstrapStatus(deps.getMainWindow(), { phase: "complete", installed: [], failed: [], skipped: { reason: "e2e-isolated" } });
         return Promise.resolve();
       }
@@ -826,11 +945,16 @@ export function registerGitMarketplaceHandlers(
             updateNotices: resolveUpdateCheckEnabled(marketplace.updateCheckEnabled),
             ...(marketplace.updateCheckIntervalMs !== undefined ? { updateCheckIntervalMs: marketplace.updateCheckIntervalMs } : {}),
             skippedPluginUpdates: marketplace.skippedPluginUpdates,
+            ...(marketplace.autoUpdate !== undefined ? { autoUpdate: marketplace.autoUpdate } : {}),
+            ...(marketplace.autoUpdateSources ? { autoUpdateSources: marketplace.autoUpdateSources } : {}),
+            ...(marketplace.autoUpdatePackages ? { autoUpdatePackages: marketplace.autoUpdatePackages } : {}),
           };
         },
+        activity: conversationActivity(deps),
         publishStatus: gated((status) => notifyBootstrapStatus(deps.getMainWindow(), scrubMarketplaceStrings(status))),
         publishNotice: gated((notice) => {
-          setBootInstallNotice(notice);
+          // Added to what the user has not dismissed yet: an update applied after the boot notice joins it (§18.7.5).
+          setBootInstallNotice(mergeBootInstallNotices(getBootInstallNotice(), notice));
           broadcastTo(deps, channels.bootInstallsApplied);
         }),
         publishUpdates: gated((updates) => broadcastTo(deps, CHANNELS.marketplace.updatesAvailable, updates)),

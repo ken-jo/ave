@@ -23,7 +23,7 @@ import { createMarketplaceLogger } from "../log.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { assertNotRequiredByPolicy } from "../boot-installs/run.js";
 import type { PackageDescriptor } from "../catalog/types.js";
-import type { ComponentConsent } from "../../shared/git-marketplace.js";
+import type { ComponentConsent, ReviewedComponentConsent } from "../../shared/git-marketplace.js";
 import { MarketplaceError } from "../errors.js";
 import { DESCRIPTOR_NAME, readDescriptorAtVersion, type PackagePlan, type RepositoryAccess } from "../resolve/descriptor.js";
 import { classifyInstall, type InstallAction, type InstalledPackage } from "../resolve/identity.js";
@@ -32,7 +32,8 @@ import { deriveAgentPluginComponents } from "./agent-plugin-components.js";
 import type { MarketplacePolicy } from "../sources/policy.js";
 import { isDataContentKind, parseContent, type ContentFile, type DataContentKind, type ParsedContent } from "./kinds.js";
 import { ContentLedger, installPayloadDir, type LedgerEntry } from "./ledger.js";
-import { agentPluginConsent, contentConsent, type ConsentFingerprint } from "../updates/consent.js";
+import { agentPluginConsent, contentConsent, unknownConsent, type ConsentFingerprint } from "../updates/consent.js";
+import { agentPluginComponentDigests } from "../../plugins/contribution-approval-digest.js";
 import { CONTENT_KINDS, CONTENT_RULES, DESCRIPTOR_ALLOWANCE_BYTES, checkContentFiles, isContentKind, type ContentKind } from "./rules.js";
 
 const log = createMarketplaceLogger("marketplace-content-store");
@@ -159,6 +160,12 @@ export interface ContentActivation {
   activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string, componentConsents?: readonly ComponentConsent[]): Promise<{ retired: Promise<void> }>;
   /** Before the ledger drops the package; a throw leaves it installed. `content` is null when its files no longer parse. */
   deactivate(entry: LedgerEntry, content: ParsedContent | null, dir?: string): Promise<void>;
+  /**
+   * Approve components of the installed agent plugin `entry` (design
+   * §18.7.5), after the store checked the review's binding: publish them
+   * with these consents on the installed generation.
+   */
+  approveComponents(entry: LedgerEntry, content: ParsedContent & { kind: "agent-plugin" }, dir: string, consents: readonly ComponentConsent[]): Promise<void>;
 }
 
 export interface ContentStoreOptions {
@@ -410,6 +417,60 @@ export class ContentStore {
       await this.ledger.remove(kind, name);
       await rm(join(this.options.root, kind, name), { recursive: true, force: true });
       return entry;
+    });
+  }
+
+  /**
+   * The consent baseline of an installed package (§18.7.3): the fingerprint
+   * its ledger entry stored, or, for an install from before slice F, one
+   * computed from its installed files with `minAppVersion` (and an agent
+   * plugin's `hostProtocol`) from the catalog it was installed from, which
+   * `descriptor` reads from the retained snapshot (null: not kept, so
+   * unknown). Files that no longer verify give an entirely unknown one.
+   */
+  async installedConsent(
+    kind: ContentKind,
+    name: string,
+    descriptor: (entry: LedgerEntry) => Promise<{ minAppVersion: string | null; hostProtocol: string | null } | null>,
+  ): Promise<ConsentFingerprint | null> {
+    const entry = this.ledger.get(kind, name);
+    if (!entry) return null;
+    if (entry.origin.consent) return entry.origin.consent;
+    const loaded = await this.serialize(() => this.loadOne(entry));
+    if (!("content" in loaded)) return unknownConsent(kind);
+    const files = await readInstalledFiles(loaded.dir);
+    const fields = await descriptor(entry);
+    if (loaded.content.kind === "agent-plugin") {
+      const consent = agentPluginConsent({ minAppVersion: fields?.minAppVersion ?? null, hostProtocol: fields?.hostProtocol ?? null, components: loaded.content.components, files });
+      // A hostProtocol the snapshot cannot vouch for is unknown, not "none".
+      return fields ? consent : { ...consent, unknown: [...new Set([...consent.unknown, "hostProtocol"])].sort() };
+    }
+    return contentConsent(kind as Exclude<ContentKind, "agent-plugin">, fields?.minAppVersion ?? null, files);
+  }
+
+  /**
+   * Approve components of an `approval-pending` agent plugin (§18.7.5).
+   * Inside the install serialization: the installed entry must be the
+   * reviewed install `installId`, and each consent's approval digest must be
+   * the one its component has in that install's files; otherwise nothing is
+   * approved and the review is stale (`PLAN_EXPIRED` `package-changed`).
+   */
+  async approveComponents(name: string, installId: string, consents: readonly ReviewedComponentConsent[]): Promise<void> {
+    await this.serialize(async () => {
+      const entry = this.ledger.get("agent-plugin", name);
+      const stale = () => new MarketplaceError("PLAN_EXPIRED", `agent plugin ${name} changed since it was reviewed`, { detail: { reason: "package-changed" } });
+      if (!entry || entry.origin.installId !== installId) throw stale();
+      const loaded = await this.loadOne(entry);
+      if (!("content" in loaded) || loaded.content.kind !== "agent-plugin") throw stale();
+      const digests = agentPluginComponentDigests(loaded.content.components, await readInstalledFiles(loaded.dir));
+      for (const consent of consents) {
+        const actual = "kind" in consent ? digests.hooks[consent.index] : Object.hasOwn(digests.mcpServers, consent.name) ? digests.mcpServers[consent.name] : undefined;
+        if (actual === undefined || actual !== consent.approvalDigest) throw stale();
+      }
+      const plain = consents.map((consent): ComponentConsent => ("kind" in consent
+        ? { kind: "hook", index: consent.index, digest: consent.digest }
+        : { name: consent.name, digest: consent.digest }));
+      await this.options.activation.approveComponents(entry, loaded.content, loaded.dir, plain);
     });
   }
 

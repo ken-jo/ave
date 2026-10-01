@@ -789,7 +789,10 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const surfaceRuntime = isMain
       ? deps.conversationSurfaceRuntime ?? createConversationSurfaceRuntime()
       : createConversationSurfaceRuntime();
-    surfaceRuntime.activity.bindSessionTransitionGuard(() => loop.isSessionTransitioning?.() ?? false);
+    surfaceRuntime.activity.bindSessionTransitionGuard(
+      () => loop.isSessionTransitioning?.() ?? false,
+      (notify) => loop.onSessionTransitionSettled?.(notify) ?? (() => undefined),
+    );
     const commandPort = isMain
       ? deps.conversationCommandPort ?? createConversationCommandPort(groupDeps, surfaceRuntime)
       : createConversationCommandPort(groupDeps, surfaceRuntime);
