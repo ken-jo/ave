@@ -221,6 +221,7 @@ const marketplacePreview: MarketplacePreviewView = {
   previewId: "preview-1",
   expiresAt: new Date(Date.now() + 600_000).toISOString(),
   url: "https://github.com/example/team.git",
+  badges: [],
   ref: null,
   commit: COMMIT_A,
   marketplace: { name: "team", displayName: "Team tools", description: null, owner: "example" },
@@ -496,5 +497,96 @@ describe("DirectInstallView", () => {
     fireEvent.change(screen.getByTestId("git-marketplace:direct:server-json"), { target: { value: '{"name":"forecast"}' } });
     fireEvent.click(screen.getByRole("button", { name: "검토" }));
     await waitFor(() => expect(fake.market.previewDirectMcp).toHaveBeenLastCalledWith({ serverJson: '{"name":"forecast"}' }));
+  });
+});
+
+describe("confirmations, badges and Allow… (§18.5)", () => {
+  it("asks before contacting an http address, then checks again carrying the confirmation", async () => {
+    const fake = fakeMarketplace();
+    fake.market.previewSource
+      .mockResolvedValueOnce({ ok: true, value: { type: "confirm", warnings: [{ warning: "unencrypted", host: "git.corp.example", address: null }, { warning: "internal-network", host: "git.corp.example", address: "10.0.0.5" }] } })
+      .mockResolvedValueOnce({ ok: true, value: { ...marketplacePreview, url: "http://git.corp.example/team", badges: ["unencrypted", "internal-network"] } });
+    addDialog(fake);
+
+    await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "http://git.corp.example/team" } });
+    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+
+    const warnings = await screen.findByTestId("git-marketplace:add:warnings");
+    expect(warnings).toHaveAttribute("data-tone", "warning");
+    expect(screen.getByTestId("git-marketplace:add:warnings:title")).toHaveTextContent("Ave가 연결하기 전에");
+    expect(warnings).toHaveTextContent("git.corp.example은(는) http를 씁니다.");
+    expect(warnings).toHaveTextContent("git.corp.example은(는) 사내망 주소(10.0.0.5)입니다.");
+    // No preview before the answer.
+    expect(screen.queryByTestId("git-marketplace:add:preview")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("git-marketplace:add:warnings:continue"));
+    await waitFor(() => expect(fake.market.previewSource).toHaveBeenLastCalledWith({ input: "http://git.corp.example/team", auth: "none", acknowledge: ["unencrypted", "internal-network"] }));
+    await screen.findByTestId("git-marketplace:add:preview");
+    expect(screen.getByTestId("git-marketplace:add:badge:unencrypted")).toHaveTextContent("암호화 안 됨(http)");
+    expect(screen.getByTestId("git-marketplace:add:badge:internal-network")).toHaveTextContent("사내망");
+  });
+
+  it("drops the confirmations when the address changes, and on Cancel", async () => {
+    const fake = fakeMarketplace();
+    fake.market.previewSource.mockResolvedValue({ ok: true, value: { type: "confirm", warnings: [{ warning: "unencrypted", host: "a.example", address: null }] } });
+    addDialog(fake);
+
+    await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "http://a.example/m" } });
+    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await screen.findByTestId("git-marketplace:add:warnings");
+    fireEvent.click(screen.getByTestId("git-marketplace:add:warnings:continue"));
+    await waitFor(() => expect(fake.market.previewSource).toHaveBeenCalledTimes(2));
+    await screen.findByTestId("git-marketplace:add:warnings");
+    fireEvent.click(screen.getByTestId("git-marketplace:add:warnings:cancel"));
+    expect(screen.queryByTestId("git-marketplace:add:warnings")).toBeNull();
+
+    // Another address starts with no confirmation carried over.
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "http://b.example/m" } });
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await waitFor(() => expect(fake.market.previewSource).toHaveBeenLastCalledWith({ input: "http://b.example/m", auth: "none" }));
+  });
+
+  it("shows a source's badges as text with a tooltip", () => {
+    const fake = fakeMarketplace();
+    sourcesView(fake, [source({ id: "corp", url: "http://git.corp.example/m", acknowledged: ["unencrypted", "internal-network"], badges: ["unencrypted", "internal-network"] })]);
+    const badge = screen.getByTestId("git-marketplace:source:corp:badge:unencrypted");
+    expect(badge).toHaveTextContent("암호화 안 됨(http)");
+    expect(badge).toHaveAttribute("title", "네트워크 경로에 있는 누구나 이 소스가 보내는 내용을 읽고 제공하는 내용을 바꿀 수 있습니다. 이 소스의 업데이트는 자동으로 설치되지 않습니다.");
+    expect(screen.getByTestId("git-marketplace:source:corp:badge:internal-network")).toHaveTextContent("사내망");
+  });
+
+  it("offers Allow… when a sync needs a confirmation, states the risk, then allows it", async () => {
+    const fake = fakeMarketplace();
+    fake.market.acknowledgeSource.mockResolvedValue({ ok: true, value: source({ id: "corp", acknowledged: ["internal-network"], badges: ["internal-network"] }) });
+    const { onChanged } = sourcesView(fake, [
+      source({ id: "corp", status: { state: "unreachable", code: "SOURCE_CONFIRMATION_REQUIRED", detail: { reason: "internal-network", host: "git.corp.example", address: "10.0.0.5" }, cached: true } }),
+      source({ id: "team", status: { state: "unreachable", code: "SOURCE_UNREACHABLE", detail: { reason: "dns", host: "x.example" }, cached: false } }),
+    ]);
+    expect(screen.getByText("확인 필요 — 캐시 표시 중")).toBeInTheDocument();
+    expect(screen.queryByTestId("git-marketplace:source:team:allow")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("git-marketplace:source:corp:allow"));
+    expect(await screen.findByText("corp에 허용할까요?")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("git-marketplace:sources:confirm"));
+    await waitFor(() => expect(fake.market.acknowledgeSource).toHaveBeenCalledWith("corp", ["internal-network"]));
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("asks before Set token… on an http source sends sign-in unencrypted, then opens Set token…", async () => {
+    const fake = fakeMarketplace();
+    const http = source({ id: "corp", url: "http://git.corp.example/m", auth: "token", tokenHost: "git.corp.example", acknowledged: ["unencrypted"], badges: ["unencrypted"] });
+    fake.market.acknowledgeSource.mockResolvedValue({ ok: true, value: { ...http, acknowledged: ["unencrypted", "token-unencrypted"] } });
+    sourcesView(fake, [http]);
+
+    fireEvent.click(screen.getByTestId("git-marketplace:source:corp:set-token"));
+    expect(await screen.findByText(/git\.corp\.example 로그인 정보가 암호화되지 않은 채 전송되어/)).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("git-marketplace:sources:confirm"));
+    await waitFor(() => expect(fake.market.acknowledgeSource).toHaveBeenCalledWith("corp", ["token-unencrypted"]));
+    // Then the token dialog itself.
+    expect(await screen.findByPlaceholderText("액세스 토큰 붙여넣기")).toBeInTheDocument();
   });
 });

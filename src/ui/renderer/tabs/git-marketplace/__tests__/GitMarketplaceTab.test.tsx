@@ -534,6 +534,75 @@ describe("GitMarketplaceTab deep links", () => {
   });
 });
 
+describe("GitMarketplaceTab target classes (§18.3, §18.5)", () => {
+  it("opens the Add dialog empty for a link that named a folder, and says why", async () => {
+    const fake = fakeMarketplace({ sources: [team], deepLink: { action: "add-refused", reason: "deep-link-path" } });
+    renderTab(fake);
+
+    const input = await screen.findByTestId<HTMLInputElement>("git-marketplace:add:url");
+    expect(input.value).toBe("");
+    expect(await screen.findByTestId("git-marketplace:add:error")).toHaveTextContent("링크로는 이 컴퓨터의 폴더를 지정할 수 없어 아무것도 채우지 않았습니다.");
+    expect(fake.market.previewSource).not.toHaveBeenCalled();
+  });
+
+  it("shows a source's badges on its package cards", async () => {
+    const calendar = entry("team", "plugin", "calendar", { sourceBadges: ["unencrypted"] });
+    renderTab(fakeMarketplace({ sources: [team], entries: [calendar] }));
+    const badge = await screen.findByTestId("git-marketplace:card:team:calendar:badge:unencrypted");
+    expect(badge).toHaveTextContent("암호화 안 됨(http)");
+    expect(badge.getAttribute("title")).toContain("업데이트는 자동으로 설치되지 않습니다");
+  });
+
+  it("says a plain http download is verified by its pinned sha256", async () => {
+    const calendar = entry("team", "plugin", "calendar");
+    const fake = fakeMarketplace({ sources: [team], entries: [calendar] });
+    fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(calendar, { rungs: [{ rung: "archive", declared: true, pinned: true, detail: "downloads.example.com", unencrypted: true }] }) });
+    renderTab(fake);
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
+    expect(await screen.findByTestId("git-marketplace:rung:archive:unencrypted")).toHaveTextContent("암호화되지 않은 다운로드 — 고정된 sha256으로 검증");
+  });
+
+  it("offers Allow internal downloads when an install needs it, then reviews again", async () => {
+    const calendar = entry("team", "plugin", "calendar");
+    const fake = fakeMarketplace({ sources: [team], entries: [calendar] });
+    fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(calendar) });
+    fake.market.executeInstall.mockResolvedValue({ ok: false, code: "SOURCE_CONFIRMATION_REQUIRED", message: "internal", detail: { reason: "internal-downloads", source: "Team tools", host: "10.0.0.9" } });
+    fake.market.acknowledgeSource.mockResolvedValue({ ok: true, value: { ...team, acknowledged: ["internal-downloads"], badges: ["internal-downloads"] } });
+    renderTab(fake);
+
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:confirm"));
+    const failed = await within(sheet).findByTestId("git-marketplace:failed");
+    expect(failed).toHaveAttribute("data-tone", "warning");
+    expect(failed).toHaveTextContent("Team tools 마켓플레이스가 다른 사내 주소 10.0.0.9에서 내려받게 합니다.");
+    const allow = within(failed).getByTestId("git-marketplace:failed:allow");
+    expect(allow).toHaveTextContent("사내 다운로드 허용");
+    fireEvent.click(allow);
+    await waitFor(() => expect(fake.market.acknowledgeSource).toHaveBeenCalledWith("team", ["internal-downloads"]));
+    await waitFor(() => expect(fake.market.planInstall).toHaveBeenCalledTimes(2));
+    expect(await within(sheet).findByTestId("git-marketplace:review")).toBeInTheDocument();
+  });
+
+  it("reviews again with a fresh plan after the organization's policy changed", async () => {
+    const calendar = entry("team", "plugin", "calendar");
+    const fake = fakeMarketplace({ sources: [team], entries: [calendar] });
+    fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(calendar) });
+    fake.market.executeInstall.mockResolvedValue({ ok: false, code: "PLAN_EXPIRED", message: "policy changed", detail: { reason: "policy-changed" } });
+    renderTab(fake);
+
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:plan"));
+    fireEvent.click(await within(sheet).findByTestId("git-marketplace:confirm"));
+    expect(await within(sheet).findByTestId("git-marketplace:failed")).toHaveTextContent("검토하는 사이 조직 정책이 바뀌었습니다.");
+    fireEvent.click(within(sheet).getByTestId("git-marketplace:review-again"));
+    await waitFor(() => expect(fake.market.planInstall).toHaveBeenCalledTimes(2));
+    expect(await within(sheet).findByTestId("git-marketplace:review")).toBeInTheDocument();
+  });
+});
+
 describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
   const notice = {
     forYou: [

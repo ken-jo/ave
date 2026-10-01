@@ -15,9 +15,10 @@ import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixture
 import { aggregateCatalog, versionExclusions } from "../../catalog/aggregate.js";
 import { MarketplaceError } from "../../errors.js";
 import { NetworkGate } from "../../net/network-gate.js";
+import { createPinnedFetch } from "../../net/pinned-fetch.js";
 import { normalizeSourceUrl, parseSourcePattern } from "../../net/source-url.js";
 import type { OfficialMarketplace } from "../official.js";
-import { FIXTURE_POLICY_PATH, policyLoad as policyWith } from "../../__tests__/fixtures/policy.js";
+import { FIXTURE_POLICY_PATH, policyLoad as policyWith, policySource } from "../../__tests__/fixtures/policy.js";
 import type { PolicyLoad } from "../policy.js";
 import { SourceRegistry } from "../registry.js";
 import { SourceSyncer, shouldSyncSource, type SyncResult } from "../sync.js";
@@ -100,12 +101,12 @@ describe("SourceSyncer", () => {
   }
 
   async function setup(options: { policy?: PolicyLoad; official?: OfficialMarketplace; retained?: string[] } = {}) {
-    const policy = options.policy ?? policyWith({});
+    const policy = policySource(options.policy ?? policyWith({}));
     const registry = await SourceRegistry.open({ root, policy, ...(options.official ? { official: options.official } : {}) });
     const changed: string[] = [];
     const syncer = new SourceSyncer({
       registry,
-      gate: new NetworkGate({ policy, allowLoopback: true }),
+      gate: new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() }),
       runner: git.runner,
       root,
       now: () => new Date(AT),
@@ -353,7 +354,7 @@ describe("SourceSyncer", () => {
     expect(await registry.readState("acme")).toEqual({ pinnedCommit: pinned, enabled: true });
 
     mkdirSync(join(root, ".trash-acme-crashed", "repo.git"), { recursive: true });
-    await SourceRegistry.open({ root, policy: policyWith({}) });
+    await SourceRegistry.open({ root, policy: policySource(policyWith({})) });
     expect(trashLeft()).toEqual([]);
   });
 
@@ -628,7 +629,7 @@ describe("SourceSyncer", () => {
         detail: { reason: "dns", host: "nowhere.invalid" },
       });
 
-      const reopened = await SourceRegistry.open({ root, policy: policyWith({}) });
+      const reopened = await SourceRegistry.open({ root, policy: policySource(policyWith({})) });
       expect((await reopened.readState("acme")).lastSync).toEqual({ at: AT, result: "SOURCE_UNREACHABLE", detail: { reason: "dns", host: "nowhere.invalid" } });
     } finally {
       spy.mockRestore();
@@ -641,7 +642,7 @@ describe("SourceSyncer", () => {
     const broken: PolicyLoad = { ok: false, error: '/fixture/ave-policy.json: duplicate key "https://alice:detail-canary@example.com/x"', path: FIXTURE_POLICY_PATH };
     const syncer = new SourceSyncer({
       registry,
-      gate: new NetworkGate({ policy: broken, allowLoopback: true }),
+      gate: new NetworkGate({ policy: policySource(broken), allowLoopback: true, transport: createPinnedFetch() }),
       runner: git.runner,
       root,
       now: () => new Date(AT),

@@ -67,6 +67,28 @@ describe("MarketplaceProblem", () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
+  it("reads a failure a confirmation resolves as a warning, with the caller's Allow…, and offers none without one", () => {
+    const onAllow = vi.fn();
+    const failure = { code: "SOURCE_CONFIRMATION_REQUIRED" as const, message: "needs internal-network", detail: { reason: "internal-network" as const, host: "git.corp.example", address: "10.0.0.5" } };
+    const { unmount } = render(<MarketplaceProblem testId="problem" subject={ENTRY_SUBJECT} failure={failure} onAllow={onAllow} />);
+    expect(screen.getByTestId("problem")).toHaveAttribute("data-tone", "warning");
+    expect(screen.getByTestId("problem")).toHaveTextContent("git.corp.example은(는) 사내망 주소(10.0.0.5)입니다.");
+    fireEvent.click(screen.getByTestId("problem:allow"));
+    expect(onAllow).toHaveBeenCalledTimes(1);
+    unmount();
+
+    // Sign-in over http is resolved the same way.
+    render(<MarketplaceProblem testId="auth" subject={ENTRY_SUBJECT} failure={{ code: "SOURCE_AUTH_REQUIRED", message: "", detail: { reason: "token-unencrypted", host: "git.corp.example" } }} />);
+    expect(screen.getByTestId("auth")).toHaveAttribute("data-tone", "warning");
+    expect(screen.queryByTestId("auth:allow")).toBeNull();
+  });
+
+  it("lists every warning of one confirmation, each as its own sentence", () => {
+    render(<MarketplaceProblem tone="warning" testId="problem" text={["First risk.", "Second risk."]} onContinue={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.getByText("First risk.")).toBeInTheDocument();
+    expect(screen.getByText("Second risk.")).toBeInTheDocument();
+  });
+
   it("says what failed and copies the command it asks for", () => {
     const writeText = clipboard();
     render(

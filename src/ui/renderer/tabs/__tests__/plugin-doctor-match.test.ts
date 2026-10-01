@@ -25,6 +25,7 @@ function entry(name: string, state: PackageStateView, over: Partial<CatalogEntry
     state,
     required: false,
     runsCode: true,
+    sourceBadges: [],
     ...over,
   };
 }

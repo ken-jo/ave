@@ -320,6 +320,13 @@ export type ElectronOptions = {
   seedRepositoryPlugins: boolean;
   seedApiKey: boolean;
   seedLocale: "ko" | "en";
+  /**
+   * Launch with `AVE_DEV=1` (the default). A spec that checks what a user's
+   * build asks for (an http or loopback marketplace's confirmations, design
+   * §18.2.2) turns it off; without it, plugins seeded from the repository do
+   * not load, so such a spec also sets `seedRepositoryPlugins: false`.
+   */
+  devFlag: boolean;
 };
 
 export const test = base.extend<ElectronFixtures & ElectronOptions>({
@@ -339,6 +346,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
   // Korean override with `test.use({ seedLocale: 'ko' })`; specs with their own
   // harness pin their locale via a module-scoped `makeTestT(...)`.
   seedLocale: ["en", { option: true }],
+  devFlag: [true, { option: true }],
 
   userDataDir: async ({}, use) => {
     const dir = fs.mkdtempSync(path.join("/tmp", "ave-e2e-"));
@@ -361,6 +369,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       seedPermissionMode,
       seedApiKey,
       seedLocale,
+      devFlag,
     },
     use,
   ) => {
@@ -465,7 +474,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
         ...launchEnv,
         HOME: userDataDir,
         USERPROFILE: userDataDir,
-        AVE_DEV: "1",
+        ...(devFlag ? { AVE_DEV: "1" } : {}),
         AVE_E2E: "1",
         AVE_HOME: aveHomeForTest,
         NODE_ENV: "test",

@@ -28,10 +28,11 @@ import {
 } from "../../marketplace/__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../marketplace/__tests__/fixtures/git-runner.js";
 import { sha256Hex as sha } from "../../marketplace/__tests__/fixtures/package-files.js";
-import { policyLoad } from "../../marketplace/__tests__/fixtures/policy.js";
+import { policySource } from "../../marketplace/__tests__/fixtures/policy.js";
 import { aggregateCatalog } from "../../marketplace/catalog/aggregate.js";
 import type { PluginAuthority } from "../../marketplace/catalog/types.js";
 import { NetworkGate } from "../../marketplace/net/network-gate.js";
+import { createPinnedFetch } from "../../marketplace/net/pinned-fetch.js";
 import { NO_ARTIFACT_CACHE } from "../../marketplace/resolve/artifact-cache.js";
 import { planPluginInstall, runPluginLadder, type PluginInstallPlan } from "../../marketplace/resolve/plugin-ladder.js";
 import { SourceRegistry } from "../../marketplace/sources/registry.js";
@@ -127,8 +128,8 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
       "marketplace.2.json": `${JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "plugin", name: "alpha", path: "plugins/alpha" }] })}\n`,
       "plugins/alpha/ave-package.json": described,
     }, "publish alpha");
-    const policy = policyLoad({});
-    const gate = new NetworkGate({ policy, allowLoopback: true });
+    const policy = policySource({});
+    const gate = new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() });
     const marketplaces = join(testDir, "marketplaces");
     await mkdir(marketplaces, { recursive: true });
     const registry = await SourceRegistry.open({ root: marketplaces, policy });
@@ -152,7 +153,7 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
         sourceUrl: source.url,
         direct: source.origin === "direct",
         gate,
-        fetchImpl: fetch,
+        catalog: { id: "acme", label: "acme", url: source.url, acknowledged: new Set() },
         sourceToken: null,
         tokenMissing: false,
         zip: new PluginArtifactStore({ installRoot: join(testDir, "ladder-store"), cacheRoot: join(testDir, "ladder-store", ".cache") }),

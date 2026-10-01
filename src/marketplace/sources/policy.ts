@@ -9,7 +9,8 @@
  * fails closed: the caller treats every non-official source as
  * `SOURCE_POLICY_BLOCKED` rather than guessing what a typo meant.
  */
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile, stat as fsStat } from "node:fs/promises";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { getAdminPolicyPath } from "../../permissions/policy-store.js";
 import { parseStrictJson, StrictJsonError } from "../catalog/strict-json.js";
@@ -55,6 +56,10 @@ export interface MarketplacePolicy {
   block: readonly SourcePattern[];
   /** Normalized hosts that may be reached over plain http. */
   allowHttpHosts: ReadonlySet<string>;
+  /** Plain http is a policy block, `allowHttpHosts` excepted (design §18.6). */
+  requireHttps: boolean;
+  /** Internal and this-computer targets are a policy block, policy-listed hosts excepted (§18.6). */
+  blockPrivateNetworks: boolean;
   allowDirectInstall: boolean;
   allowDisablingOfficial: boolean;
   additional: readonly ManagedSourceSpec[];
@@ -70,6 +75,8 @@ export const EMPTY_MARKETPLACE_POLICY: MarketplacePolicy = Object.freeze({
   allow: null,
   block: Object.freeze([]),
   allowHttpHosts: new Set<string>(),
+  requireHttps: false,
+  blockPrivateNetworks: false,
   allowDirectInstall: true,
   allowDisablingOfficial: false,
   additional: Object.freeze([]),
@@ -81,6 +88,8 @@ const SECTION_KEYS = new Set([
   "allow",
   "block",
   "allowHttpHosts",
+  "requireHttps",
+  "blockPrivateNetworks",
   "allowDirectInstall",
   "allowDisablingOfficial",
   "additional",
@@ -206,6 +215,8 @@ function parseSection(value: unknown): MarketplacePolicy {
     allow: section.allow === undefined ? null : patterns(section.allow, ".allow"),
     block: patterns(orEmpty(section.block), ".block"),
     allowHttpHosts,
+    requireHttps: bool(section.requireHttps, ".requireHttps", false),
+    blockPrivateNetworks: bool(section.blockPrivateNetworks, ".blockPrivateNetworks", false),
     allowDirectInstall: bool(section.allowDirectInstall, ".allowDirectInstall", true),
     allowDisablingOfficial: bool(section.allowDisablingOfficial, ".allowDisablingOfficial", false),
     additional: [],
@@ -253,15 +264,8 @@ function parseSection(value: unknown): MarketplacePolicy {
   return { ...policy, additional, defaultInstalls: defaults, requiredInstalls: required };
 }
 
-/** Read the system policy file's `marketplaces` section. A file problem is a result; only a bug throws. */
-export async function loadMarketplacePolicy(path: string = getAdminPolicyPath()): Promise<PolicyLoad> {
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch (error) {
-    if (isMissingPathError(error)) return { ok: true, policy: EMPTY_MARKETPLACE_POLICY, path };
-    return { ok: false, error: `cannot read ${path}: ${(error as Error).message}`, path };
-  }
+/** The `marketplaces` section of a policy file's text; a file problem is a result, only a bug throws. */
+function parsePolicyText(path: string, text: string): PolicyLoad {
   try {
     const file = parseStrictJson(text);
     if (!isRecord(file)) return { ok: false, error: `${path}: the policy file must be a JSON object`, path };
@@ -272,5 +276,108 @@ export async function loadMarketplacePolicy(path: string = getAdminPolicyPath())
       return { ok: false, error: `${path}: ${error.message}`, path };
     }
     throw error;
+  }
+}
+
+/** One read of the policy file: its load, and the digest that names its content (§18.6). */
+interface PolicyRead {
+  load: PolicyLoad;
+  /** sha256 of the file, `absent` without one, `unreadable:<code>` when it cannot be read. */
+  digest: string;
+  /** Size and modification time of the file read, for the next comparison. */
+  stat: string;
+}
+
+/** Size and modification time, in the form {@link PolicyRead.stat} records them. */
+async function policyStat(path: string): Promise<string> {
+  try {
+    const info = await fsStat(path);
+    return `${info.size}:${info.mtimeMs}`;
+  } catch (error) {
+    if (isMissingPathError(error)) return "absent";
+    return `unreadable:${(error as NodeJS.ErrnoException).code ?? "unknown"}`;
+  }
+}
+
+async function readPolicy(path: string): Promise<PolicyRead> {
+  let text: string;
+  let stat: string;
+  try {
+    const info = await fsStat(path);
+    stat = `${info.size}:${info.mtimeMs}`;
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    if (isMissingPathError(error)) return { load: { ok: true, policy: EMPTY_MARKETPLACE_POLICY, path }, digest: "absent", stat: "absent" };
+    const code = (error as NodeJS.ErrnoException).code ?? "unknown";
+    return { load: { ok: false, error: `cannot read ${path}: ${(error as Error).message}`, path }, digest: `unreadable:${code}`, stat: `unreadable:${code}` };
+  }
+  return { load: parsePolicyText(path, text), digest: createHash("sha256").update(text, "utf8").digest("hex"), stat };
+}
+
+/** Read the system policy file's `marketplaces` section. A file problem is a result; only a bug throws. */
+export async function loadMarketplacePolicy(path: string = getAdminPolicyPath()): Promise<PolicyLoad> {
+  return (await readPolicy(path)).load;
+}
+
+/** A newer read of the policy, not yet in force. */
+export interface PolicyUpdate {
+  readonly load: PolicyLoad;
+  readonly digest: string;
+}
+
+/**
+ * Where every part of the marketplace reads the managed policy (design
+ * §18.6): the gate, the registry's managed sources and the installers read
+ * {@link PolicySource.load} when they need it, so one {@link PolicySource.apply}
+ * changes all of them at once. The service checks the file at the start of
+ * every operation and applies a change under its operation lock.
+ */
+export interface PolicySource {
+  /** The policy in force. */
+  readonly load: PolicyLoad;
+  /** Names the content `load` came from; a plan made under one digest expires under another. */
+  readonly digest: string;
+  /** Read the file again: the update when its content changed, else null. */
+  check(): Promise<PolicyUpdate | null>;
+  apply(update: PolicyUpdate): void;
+}
+
+/** The system policy file as a {@link PolicySource}: compared by size, modification time and sha256 at each check. */
+export class FilePolicySource implements PolicySource {
+  private current: PolicyRead;
+
+  private constructor(private readonly path: string, first: PolicyRead) {
+    this.current = first;
+  }
+
+  static async open(path: string = getAdminPolicyPath()): Promise<FilePolicySource> {
+    return new FilePolicySource(path, await readPolicy(path));
+  }
+
+  get load(): PolicyLoad {
+    return this.current.load;
+  }
+
+  get digest(): string {
+    return this.current.digest;
+  }
+
+  async check(): Promise<PolicyUpdate | null> {
+    // Unchanged size and modification time: the file was not written since the last read.
+    // A file that could not be read is read again: fixing its permissions changes neither.
+    const readable = !this.current.digest.startsWith("unreadable:");
+    if (readable && this.current.stat !== "applied" && (await policyStat(this.path)) === this.current.stat) return null;
+    const next = await readPolicy(this.path);
+    if (next.digest === this.current.digest) {
+      // Same content, perhaps touched: nothing to apply.
+      this.current = { ...this.current, stat: next.stat };
+      return null;
+    }
+    return { load: next.load, digest: next.digest };
+  }
+
+  apply(update: PolicyUpdate): void {
+    // The next check reads the file again and records its size and time.
+    this.current = { load: update.load, digest: update.digest, stat: "applied" };
   }
 }

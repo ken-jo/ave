@@ -8,7 +8,8 @@ import { CHANNELS, isPublicChannel } from "../../../contract/app-contract.js";
 import { MarketplaceError } from "../../../marketplace/errors.js";
 import { NetworkGate } from "../../../marketplace/net/network-gate.js";
 import { normalizeSourceUrl } from "../../../marketplace/net/source-url.js";
-import { loadMarketplacePolicy } from "../../../marketplace/sources/policy.js";
+import { createPinnedFetch } from "../../../marketplace/net/pinned-fetch.js";
+import { FilePolicySource } from "../../../marketplace/sources/policy.js";
 import { parseGitMarketplaceResult } from "../../../shared/git-marketplace.js";
 import { breakDiagnosticScrubberOn, DIAGNOSTIC_KEPT, DIAGNOSTIC_SECRET_PROBES } from "../../../shared/__tests__/fixtures/diagnostic-secret-probes.js";
 import { invokeAppIpcHandlerFromFrame, invokeFileIpcHandler } from "./test-helpers.js";
@@ -43,6 +44,7 @@ async function setup(overrides: Record<string, unknown> = {}) {
     refresh: vi.fn(async () => []),
     repairSource: vi.fn(async () => []),
     acceptRewrite: vi.fn(),
+    acknowledgeSource: vi.fn(async (id: string, warnings: unknown) => ({ id, acknowledged: warnings })),
     setToken: vi.fn(async (host: string) => ({ host })),
     deleteToken: vi.fn(),
     catalog: vi.fn(async (query: unknown) => ({ entries: [], query })),
@@ -334,9 +336,9 @@ describe("git marketplace IPC boundary", () => {
     try {
       const key = "https://alice:detail-canary@example.com/x";
       writeFileSync(join(dir, "policy.json"), `{"${key}": 1, "${key}": 2}`);
-      const load = await loadMarketplacePolicy(join(dir, "policy.json"));
-      const gate = new NetworkGate({ policy: load, allowLoopback: false });
-      await setup({ refresh: vi.fn(async () => gate.checkRemote(normalizeSourceUrl("https://1.1.1.1/acme/market"), { official: false })) });
+      const policy = await FilePolicySource.open(join(dir, "policy.json"));
+      const gate = new NetworkGate({ policy, allowLoopback: false, transport: createPinnedFetch() });
+      await setup({ refresh: vi.fn(async () => gate.checkRemote(normalizeSourceUrl("https://1.1.1.1/acme/market"), { official: false, acknowledged: new Set() })) });
       const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
       expect(answer).toMatchObject({
         ok: false,
@@ -403,6 +405,24 @@ describe("git marketplace IPC boundary", () => {
     expect(service.planInstall).toHaveBeenCalledWith({ sourceId: "acme", kind: "plugin", name: "x", version: "1.2.0", switchSource: true });
     await invokeFileIpcHandler(handlers, channels.catalogList, { kind: "skill", query: "" });
     expect(service.catalog).toHaveBeenCalledWith({ kind: "skill" });
+  });
+
+  it("passes only known confirmations, each once, to a preview and to Allow… (§18.5)", async () => {
+    const { service } = await setup();
+    const invalid = { ok: false, code: "invalid-request" };
+    await expect(invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "http://x.example/m", auth: "none", acknowledge: ["network-folder"] })).resolves.toMatchObject(invalid);
+    await expect(invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "http://x.example/m", auth: "none", acknowledge: ["unencrypted", "unencrypted"] })).resolves.toMatchObject(invalid);
+    await expect(invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "http://x.example/m", auth: "none", acknowledge: "unencrypted" })).resolves.toMatchObject(invalid);
+    expect(service.previewSource).not.toHaveBeenCalled();
+    await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "http://x.example/m", auth: "none", acknowledge: ["unencrypted", "internal-network"] });
+    expect(service.previewSource).toHaveBeenCalledWith({ input: "http://x.example/m", auth: "none", acknowledge: ["unencrypted", "internal-network"] });
+
+    await expect(invokeFileIpcHandler(handlers, channels.sourcesAcknowledge, "corp", [])).resolves.toMatchObject(invalid);
+    await expect(invokeFileIpcHandler(handlers, channels.sourcesAcknowledge, "corp", ["everything"])).resolves.toMatchObject(invalid);
+    await expect(invokeFileIpcHandler(handlers, channels.sourcesAcknowledge, 7, ["unencrypted"])).resolves.toMatchObject(invalid);
+    expect(service.acknowledgeSource).not.toHaveBeenCalled();
+    await expect(invokeFileIpcHandler(handlers, channels.sourcesAcknowledge, "corp", ["internal-downloads"])).resolves.toEqual({ ok: true, value: { id: "corp", acknowledged: ["internal-downloads"] } });
+    expect(service.acknowledgeSource).toHaveBeenCalledWith("corp", ["internal-downloads"]);
   });
 
   it("uninstalls a package bound to no source", async () => {

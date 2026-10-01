@@ -17,7 +17,7 @@ import { detectGitRuntime, nodeGitDetectionDeps, type GitDetectionDeps, type Git
 import { readCopiedCredentialConfig, writeGeneratedGlobalConfig, type CopiedConfigEntry } from "./global-config.js";
 import { findManagedGit, managedRunnerOptions } from "./managed-git.js";
 import { MANAGED_GIT, type ManagedGitPins } from "./managed-git-pins.js";
-import { GitRunner, type GitCommands, type GitRunnerOptions } from "./run-git.js";
+import { GitRunner, type GitCommands, type GitRemote, type GitRunnerOptions } from "./run-git.js";
 
 export interface MarketplaceGitOptions {
   /** Holds the generated global config and the empty directory. */
@@ -127,6 +127,11 @@ export class MarketplaceGit {
   readonly commands: GitCommands = {
     run: async (args, options) => (await this.runner()).run(args, options),
   };
+
+  /** The address check of a remote, without a git command (see {@link GitRunner.preflight}). */
+  async preflight(remote: GitRemote): Promise<void> {
+    await (await this.runner()).preflight(remote);
+  }
 
   /**
    * Whether an OS credential helper will answer for `host` (design §9.3,

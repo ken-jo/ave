@@ -14,15 +14,18 @@ import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplac
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
 import { createFixtureRepo, type FixtureRepo, type GitHttpServer, removeFixtureRepo, startGitHttpServer } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
-import { policyLoad } from "../../__tests__/fixtures/policy.js";
+import { policyLoad, policySource } from "../../__tests__/fixtures/policy.js";
+import type { GitRunner } from "../../git/run-git.js";
 import { ContentStore } from "../../content/store.js";
 import { NetworkGate } from "../../net/network-gate.js";
+import { createPinnedFetch } from "../../net/pinned-fetch.js";
+import type { SourcePreviewResultView } from "../../../shared/git-marketplace.js";
 import { NO_ARTIFACT_CACHE } from "../../resolve/artifact-cache.js";
 import { migrateLegacyContent, type LegacyActivations, type LegacyContentReport } from "../../migration/legacy-content.js";
 import type { LegacyPluginReport, OfficialPlugin } from "../../migration/legacy-plugins.js";
 import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js";
 import { OFFICIAL_MARKETPLACE, type OfficialMarketplace } from "../../sources/official.js";
-import { EMPTY_MARKETPLACE_POLICY, type PolicyLoad } from "../../sources/policy.js";
+import { EMPTY_MARKETPLACE_POLICY, FilePolicySource, type PolicyLoad, type PolicySource } from "../../sources/policy.js";
 import { AppliedDefaults } from "../../boot-installs/applied.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
 import { SourceRegistry } from "../../sources/registry.js";
@@ -34,6 +37,13 @@ import type { InstallerPorts, PluginInstallerPort, TokenStore } from "../ports.j
 import type { RevocationFeed } from "../revocations.js";
 import { MarketplaceService } from "../service.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+
+
+/** The preview's id; a confirmation step here is a test failure. */
+function previewIdOf(view: SourcePreviewResultView): string {
+  if (view.type === "confirm") throw new Error(`preview asked for ${view.warnings.map((item) => item.warning).join(", ")}`);
+  return view.previewId;
+}
 
 const AT = new Date("2026-09-24T00:00:00.000Z");
 const SURFACES = { "surface-sunken": "228 30% 97%", surface: "0 0% 100%", "surface-raised": "0 0% 100%", "surface-overlay": "0 0% 100%", "border-subtle": "228 24% 94%", "border-strong": "228 18% 84%" };
@@ -114,12 +124,13 @@ describe("MarketplaceService", () => {
   });
 
   /** The service over `root`, under `policy`; a test that needs a managed or a local official source builds again. */
-  async function build(policy: PolicyLoad = policyLoad({}), official?: OfficialMarketplace) {
+  async function build(load: PolicyLoad | PolicySource = policyLoad({}), official?: OfficialMarketplace, runner: GitRunner = git.runner) {
     manager = new FakeManager();
-    const gate = new NetworkGate({ policy, allowLoopback: true });
+    const policy = "check" in load ? load : policySource(load);
+    const gate = new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() });
     const marketplaces = join(root, "marketplaces");
     const registry = await SourceRegistry.open({ root: marketplaces, policy, now: () => now, ...(official ? { official } : {}) });
-    const syncer = new SourceSyncer({ registry, gate, runner: git.runner, root: marketplaces, now: () => now, retainedCommits: async () => new Set() });
+    const syncer = new SourceSyncer({ registry, gate, runner, root: marketplaces, now: () => now, retainedCommits: async () => new Set() });
     store = await ContentStore.open({ root: join(root, "packages"), english: {}, activation: { activate: async (_content, _entry, _previous, adopt) => void adopting.push(adopt), deactivate: async () => {} }, now: () => now });
     const artifacts = new PluginArtifactStore({
       installRoot: join(root, "mcp"),
@@ -164,16 +175,16 @@ describe("MarketplaceService", () => {
     service = new MarketplaceService({
       registry,
       syncer,
-      git: { commands: git.runner, credentialHelperFor: async () => false },
+      git: { commands: runner, credentialHelperFor: async () => false, preflight: (remote) => runner.preflight(remote) },
       gate,
       root: marketplaces,
       workRoot: mkdtempSync(join(root, "work-")),
-      policy: policy.ok ? policy.policy : EMPTY_MARKETPLACE_POLICY,
+      policy,
       tokens,
       previewTokens: new Map(),
       versionContext: () => ({ appVersion: "0.14.0", platform: process.platform, canaryOptIn: false, installationId: INSTALLATION }),
       installers,
-      ladder: { fetchImpl: fetch, zip: artifacts, limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS, artifacts: NO_ARTIFACT_CACHE },
+      ladder: { zip: artifacts, limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS, artifacts: NO_ARTIFACT_CACHE },
       mcpLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
       english: {},
       onCatalogChanged: () => {
@@ -260,7 +271,7 @@ describe("MarketplaceService", () => {
   async function addMarket(url: string) {
     const preview = await service.previewSource({ input: url, auth: "none" });
     expect(preview.type).toBe("marketplace");
-    return service.addSource({ previewId: preview.previewId });
+    return service.addSource({ previewId: previewIdOf(preview) });
   }
 
   it("previews a marketplace, adds it under the suggested id, and lists its packages", async () => {
@@ -275,10 +286,10 @@ describe("MarketplaceService", () => {
       credentialHelper: false,
       suggestedId: "acme-tools",
     });
-    const added = await service.addSource({ previewId: preview.previewId });
+    const added = await service.addSource({ previewId: previewIdOf(preview) });
     expect(added).toMatchObject({ id: "acme-tools", origin: "custom", packageCount: 2, status: { state: "up-to-date" }, canRemove: true });
     // The preview is used up.
-    await expect(service.addSource({ previewId: preview.previewId })).rejects.toMatchObject({ code: "PLAN_EXPIRED" });
+    await expect(service.addSource({ previewId: previewIdOf(preview) })).rejects.toMatchObject({ code: "PLAN_EXPIRED" });
 
     const catalog = await service.catalog({});
     expect(catalog.entries.map((entry) => [entry.key.kind, entry.key.name, entry.state]).sort()).toEqual([
@@ -811,7 +822,7 @@ describe("MarketplaceService", () => {
     const preview = await service.previewSource({ input: server.url(name), auth: "none" });
     expect(preview).toMatchObject({ type: "package", detectedFrom: "SKILL.md", kind: "skill", name: "summarize", versionSynthesized: true, runsCode: false, subdir: null });
     expect(preview.type === "package" && preview.version).toBe(`0.0.0+g${first.slice(0, 12)}`);
-    const added = await service.addSource({ previewId: preview.previewId });
+    const added = await service.addSource({ previewId: previewIdOf(preview) });
     expect(added).toMatchObject({ origin: "direct", packageCount: 1 });
     const plan = await service.planInstall({ sourceId: added.id, kind: "skill", name: "summarize" });
     await service.executeInstall(plan.planId);
@@ -920,6 +931,93 @@ describe("MarketplaceService", () => {
     // Still damaged, still repairable.
     expect((await service.listSources()).find((item) => item.id === "acme-tools")!.status).toMatchObject({ state: "broken", detail: { reason: "state-missing" } });
     await expect(service.repairSource("acme-tools")).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: "acme-tools", status: { state: "up-to-date" } })]));
+  });
+
+  it("asks before contacting an http address, stores exactly what was confirmed, and asks again when the host turns internal (§18.5)", async () => {
+    let answers: readonly string[] = ["127.0.0.1"];
+    const lookups: string[] = [];
+    const pinned = await createTestGitRunner({
+      lookup: async (host) => {
+        lookups.push(host);
+        return answers;
+      },
+    });
+    try {
+      await build(policyLoad({}), undefined, pinned.runner);
+      const run = vi.spyOn(pinned.runner, "run");
+      const { url } = market();
+      // A name the fixture's resolver answers; git cannot resolve it, so every connection goes through the pin.
+      const named = url.replace("127.0.0.1", "market.test");
+      server.seen.length = 0;
+
+      const asked = await service.previewSource({ input: named, auth: "none" });
+      expect(asked).toEqual({ type: "confirm", warnings: [{ warning: "unencrypted", host: "market.test", address: null }] });
+      // No git command, no lookup, no request before the answer.
+      expect(run).not.toHaveBeenCalled();
+      expect(lookups).toEqual([]);
+      expect(server.seen).toEqual([]);
+
+      const preview = await service.previewSource({ input: named, auth: "none", acknowledge: ["unencrypted"] });
+      expect(preview).toMatchObject({ type: "marketplace", badges: ["unencrypted"] });
+      const added = await service.addSource({ previewId: previewIdOf(preview) });
+      expect(added).toMatchObject({ acknowledged: ["unencrypted"], badges: ["unencrypted"], status: { state: "up-to-date" } });
+      const stored = JSON.parse(readFileSync(join(root, "marketplaces", "sources.json"), "utf8")) as { sources: Array<{ id: string; acknowledged?: string[] }> };
+      expect(stored.sources.find((entry) => entry.id === added.id)?.acknowledged).toEqual(["unencrypted"]);
+
+      // The name now answers an internal address: the sync asks before connecting to it.
+      answers = ["10.0.0.5"];
+      server.seen.length = 0;
+      const after = (await service.refresh(added.id)).find((item) => item.id === added.id)!;
+      expect(after.status).toMatchObject({
+        state: "unreachable",
+        code: "SOURCE_CONFIRMATION_REQUIRED",
+        detail: { reason: "internal-network", host: "market.test", address: "10.0.0.5" },
+      });
+      expect(server.seen).toEqual([]);
+
+      // *Allow…* adds the confirmation and syncs again (the fixture answers on loopback again).
+      answers = ["127.0.0.1"];
+      const allowed = await service.acknowledgeSource(added.id, ["internal-network"]);
+      expect(allowed).toMatchObject({ acknowledged: ["unencrypted", "internal-network"], badges: ["unencrypted", "internal-network"], status: { state: "up-to-date" } });
+      expect((await service.catalog({})).entries.find((entry) => entry.key.name === "review")?.sourceBadges).toEqual(["unencrypted", "internal-network"]);
+    } finally {
+      await pinned.cleanup();
+    }
+  });
+
+  it("asks for an internal address the one lookup finds before any git command runs", async () => {
+    const pinned = await createTestGitRunner({ lookup: async () => ["10.0.0.5"] });
+    try {
+      await build(policyLoad({}), undefined, pinned.runner);
+      const run = vi.spyOn(pinned.runner, "run");
+      const { url } = market();
+      const asked = await service.previewSource({ input: url.replace("127.0.0.1", "market.test"), auth: "none", acknowledge: ["unencrypted"] });
+      expect(asked).toEqual({ type: "confirm", warnings: [{ warning: "internal-network", host: "market.test", address: "10.0.0.5" }] });
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      await pinned.cleanup();
+    }
+  });
+
+  it("applies a rewritten policy file to the next operation, and expires a plan made under the old one (§18.6)", async () => {
+    const path = join(root, "ave-policy.json");
+    const write = (marketplaces: unknown) => writeFileSync(path, JSON.stringify({ version: 1, managed: true, marketplaces }));
+    write({});
+    await build(await FilePolicySource.open(path));
+    const { url } = market();
+    const added = await addMarket(url);
+    const plan = await service.planInstall({ sourceId: added.id, kind: "skill", name: "review" });
+
+    write({ block: ["host:127.0.0.1"] });
+    await expect(service.previewSource({ input: url, auth: "none" })).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "blocked-by-pattern", pattern: "host:127.0.0.1" } });
+    await expect(service.executeInstall(plan.planId)).rejects.toMatchObject({ code: "PLAN_EXPIRED", detail: { reason: "policy-changed" } });
+    expect(store.list()).toEqual([]);
+
+    // A file the organization broke leaves only the official source; fixing it brings the rest back.
+    writeFileSync(path, "{ this is not the policy any more, it does not parse }");
+    await expect(service.previewSource({ input: url, auth: "none" })).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "policy-invalid" } });
+    write({ requireHttps: false });
+    expect(await service.previewSource({ input: url, auth: "none" })).toMatchObject({ type: "marketplace" });
   });
 
   it("stores a token under its normalized host and refuses one that spans lines", async () => {

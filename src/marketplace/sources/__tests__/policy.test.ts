@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { normalizeSourceUrl } from "../../net/source-url.js";
-import { EMPTY_MARKETPLACE_POLICY, isBlockedByPolicy, loadMarketplacePolicy, type MarketplacePolicy } from "../policy.js";
+import { EMPTY_MARKETPLACE_POLICY, FilePolicySource, isBlockedByPolicy, loadMarketplacePolicy, type MarketplacePolicy } from "../policy.js";
 
 let dir: string;
 let path: string;
@@ -78,6 +78,17 @@ describe("loadMarketplacePolicy", () => {
     expect(policy.allow).toBeNull();
     expect(policy.allowDirectInstall).toBe(true);
     expect(policy.allowDisablingOfficial).toBe(false);
+    expect(policy.requireHttps).toBe(false);
+    expect(policy.blockPrivateNetworks).toBe(false);
+  });
+
+  it("reads requireHttps and blockPrivateNetworks exactly (§18.6)", async () => {
+    expect(await loaded({ requireHttps: true, blockPrivateNetworks: false })).toMatchObject({ requireHttps: true, blockPrivateNetworks: false });
+    expect(await loaded({ requireHttps: false, blockPrivateNetworks: true })).toMatchObject({ requireHttps: false, blockPrivateNetworks: true });
+    expect(await rejected({ requireHttps: "yes" })).toContain("requireHttps: must be true or false");
+    expect(await rejected({ blockPrivateNetworks: 1 })).toContain("blockPrivateNetworks: must be true or false");
+    // A near miss is not one of them: the section is invalid, not unrestricted.
+    expect(await rejected({ requireHTTPS: true })).toContain("marketplaces.requireHTTPS: is not a known key");
   });
 
   it("gives an ssh additional source ssh auth and normalizes a token host", async () => {
@@ -151,5 +162,42 @@ describe("isBlockedByPolicy", () => {
     expect(isBlockedByPolicy(policy, normalizeSourceUrl("https://git.example.org/a/b"))).toBe(true);
     expect(isBlockedByPolicy(policy, normalizeSourceUrl("git@git.example.org:a/b"))).toBe(true);
     expect(isBlockedByPolicy(policy, normalizeSourceUrl("acme/market"))).toBe(false);
+  });
+});
+
+describe("FilePolicySource (§18.6)", () => {
+  it("reports a rewritten file once, and nothing while it is unchanged", async () => {
+    writePolicy({ requireHttps: false });
+    const source = await FilePolicySource.open(path);
+    expect(source.load).toMatchObject({ ok: true, policy: { requireHttps: false } });
+    expect(await source.check()).toBeNull();
+
+    writePolicy({ requireHttps: true, block: ["host:git.example.org"] });
+    const update = await source.check();
+    expect(update?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+    expect(update?.digest).not.toBe(source.digest);
+    source.apply(update!);
+    expect(source.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+    expect(await source.check()).toBeNull();
+  });
+
+  it("goes invalid when the file breaks, and back when it is fixed", async () => {
+    writePolicy({});
+    const source = await FilePolicySource.open(path);
+    writeFileSync(path, "{ not json, and longer than before so the size differs");
+    const broken = await source.check();
+    expect(broken?.load.ok).toBe(false);
+    source.apply(broken!);
+    writePolicy({ blockPrivateNetworks: true });
+    const fixed = await source.check();
+    expect(fixed?.load).toMatchObject({ ok: true, policy: { blockPrivateNetworks: true } });
+  });
+
+  it("names an absent file apart from an empty policy, and reads one that appears", async () => {
+    const source = await FilePolicySource.open(join(dir, "absent.json"));
+    expect(source.load).toMatchObject({ ok: true, policy: EMPTY_MARKETPLACE_POLICY });
+    expect(source.digest).toBe("absent");
+    writeFileSync(join(dir, "absent.json"), JSON.stringify({ version: 1, marketplaces: { requireHttps: true } }));
+    expect((await source.check())?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
   });
 });

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MarketplaceError } from "../../errors.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
 import { OFFICIAL_MARKETPLACE } from "../official.js";
-import { policyLoad as policy } from "../../__tests__/fixtures/policy.js";
+import { policyLoad as policy, policySource } from "../../__tests__/fixtures/policy.js";
 import type { PolicyLoad } from "../policy.js";
 import { SourceRegistry, type NewSource } from "../registry.js";
 
@@ -26,7 +26,7 @@ const CORP_POLICY = policy({
 });
 
 function open(load: PolicyLoad = policy()): Promise<SourceRegistry> {
-  return SourceRegistry.open({ root, policy: load, now: () => NOW });
+  return SourceRegistry.open({ root, policy: policySource(load), now: () => NOW });
 }
 
 const custom = (overrides: Partial<NewSource> = {}): NewSource => ({

@@ -29,8 +29,8 @@ import { canonicalStringify } from "../../shared/canonical-json.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import type { IndexVersion, PluginArtifactPins, PluginAuthority } from "../catalog/types.js";
-import { MarketplaceError, isMarketplaceError, type MarketplaceErrorCode } from "../errors.js";
-import type { NetworkGate } from "../net/network-gate.js";
+import { MarketplaceError, isMarketplaceError, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
+import type { CatalogSource, NetworkGate } from "../net/network-gate.js";
 import type { NormalizedSourceUrl } from "../net/source-url.js";
 import type { ArtifactCache } from "./artifact-cache.js";
 import { candidateVersion, DESCRIPTOR_NAME, planPackage, readDescriptorAtVersion, repoPath, type PackagePlan, type RepositoryAccess } from "./descriptor.js";
@@ -68,7 +68,8 @@ export interface LadderDeps extends RepositoryAccess {
   /** The source URL: release assets without `url` live on its host. */
   sourceUrl: NormalizedSourceUrl;
   gate: NetworkGate;
-  fetchImpl: typeof fetch;
+  /** The source as its catalog's downloads are judged (§18.2.3): its host, label and confirmations. */
+  catalog: CatalogSource;
   /** The stored token for the source host when the source uses token auth; GitHub release assets then go through the REST API. */
   sourceToken: string | null;
   /** The source uses token auth and no token is stored for its host: a hidden (404) release asset needs sign-in. */
@@ -87,7 +88,7 @@ export class LadderError extends MarketplaceError {
     code: MarketplaceErrorCode,
     message: string,
     readonly rungs: readonly RungOutcome[],
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; detail?: MarketplaceErrorDetail },
   ) {
     super(code, message, options);
     this.name = "LadderError";
@@ -220,7 +221,7 @@ interface RungBytes {
 function downloadOptions(deps: LadderDeps, plan: PluginInstallPlan, headers?: Record<string, string>) {
   return {
     gate: deps.gate,
-    fetchImpl: deps.fetchImpl,
+    catalog: deps.catalog,
     official: plan.sourceOrigin === "official",
     maxBytes: deps.limits.maxCompressedBytes,
     ...(headers ? { headers } : {}),
@@ -365,6 +366,8 @@ function failureCode(error: unknown): MarketplaceErrorCode {
 export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps): Promise<StagedPluginArtifact> {
   await assertDescriptorAtVersion(plan, deps);
   const rungs: RungOutcome[] = [];
+  /** The first rung that failed for want of a confirmation the source can give (*Allow…*, §18.2.3). */
+  let confirmation: MarketplaceError | null = null;
   for (const rung of ARTIFACT_RUNGS) {
     deps.signal?.throwIfAborted();
     let pinned: string | undefined;
@@ -403,6 +406,7 @@ export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps)
         : pinned === undefined ? await treeRung(plan, deps) : rung === "release" ? await releaseRung(plan, deps, pinned) : await archiveRung(plan, deps, pinned);
     } catch (error) {
       deps.signal?.throwIfAborted();
+      if (isMarketplaceError(error) && error.code === "SOURCE_CONFIRMATION_REQUIRED") confirmation ??= error;
       rungs.push({ rung, outcome: "failed", code: failureCode(error), message: (error as Error).message });
       continue;
     }
@@ -419,6 +423,13 @@ export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps)
     return { plan, zipBuffer: bytes.zipBuffer, artifactSha256: bytes.artifactSha256, rung, rungs, manifestDocument };
   }
   const summary = rungs.map((item) => `${item.rung}: ${item.outcome === "failed" ? `${item.code} (${item.message})` : item.outcome === "skipped" ? `skipped (${item.reason})` : "used"}`);
+  // A download that needs the source's confirmation is the failure the user can act on: *Allow…* and install again.
+  if (confirmation !== null) {
+    throw new LadderError("SOURCE_CONFIRMATION_REQUIRED", `${plan.name}@${plan.version}: ${confirmation.message} — ${summary.join("; ")}`, rungs, {
+      cause: confirmation,
+      ...(confirmation.detail ? { detail: confirmation.detail } : {}),
+    });
+  }
   // Every rung that was tried wanted sign-in: that, not a missing artifact, is what to fix.
   const failed = rungs.filter((item) => item.outcome === "failed");
   const code = failed.length > 0 && failed.every((item) => item.code === "SOURCE_AUTH_REQUIRED") ? "SOURCE_AUTH_REQUIRED" : "NO_INSTALLABLE_ARTIFACT";

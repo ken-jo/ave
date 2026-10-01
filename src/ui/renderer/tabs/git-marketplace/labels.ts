@@ -13,8 +13,11 @@ import {
   type InstallActionView,
   type PackageKind,
   type PackageStateView,
+  type SourceBadge,
   type SourceOriginKind,
   type SourceStatusView,
+  type EnteredTargetWarningView,
+  type SourceWarning,
   type SourceView,
   type VersionExclusionView,
 } from "../../../../shared/git-marketplace.js";
@@ -104,6 +107,7 @@ function failedSyncLabel(t: Translate, code: Extract<SourceStatusView, { state: 
     case "SOURCE_SSH_HOST_UNKNOWN": return t("gitMarketplace.sources.status.hostKeyUnverified");
     case "SOURCE_AUTH_REQUIRED": return t("gitMarketplace.sources.status.authRequired");
     case "SOURCE_POLICY_BLOCKED": return t("gitMarketplace.sources.status.policyBlocked");
+    case "SOURCE_CONFIRMATION_REQUIRED": return t("gitMarketplace.sources.status.confirmationRequired");
     case "SOURCE_URL_REJECTED": return t("gitMarketplace.sources.status.addressRefused");
     case "SOURCE_LOCAL_DATA_DAMAGED": return t("gitMarketplace.sources.status.broken");
     case "GIT_RUNTIME_MISSING":
@@ -352,8 +356,21 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       // The normalizer's reasons: only an address being typed has them, since a stored one that fails is not served.
       switch (detail.reason) {
         case "credentials-in-url": return t("gitMarketplace.error.urlRejected.credentialsInUrl");
+        case "helper-transport": return t("gitMarketplace.error.urlRejected.helperTransport", { scheme: detail.scheme });
         case "scheme-unsupported": return t("gitMarketplace.error.urlRejected.schemeUnsupported", { scheme: detail.scheme });
         case "format": return t("gitMarketplace.error.urlRejected.format");
+        case "deep-link-path": return t("gitMarketplace.error.urlRejected.deepLinkPath");
+        // The address a connection would use: only who can change the address is told to check it.
+        case "address-metadata":
+          return audience === "entry" || audience === "custom"
+            ? t("gitMarketplace.error.urlRejected.addressMetadata", { host: detail.host, address: detail.address })
+            : t("gitMarketplace.error.urlRejected.addressMetadata.network", { host: detail.host, address: detail.address });
+        case "address-unroutable":
+          return audience === "entry" || audience === "custom"
+            ? t("gitMarketplace.error.urlRejected.addressUnroutable", { host: detail.host, address: detail.address })
+            : t("gitMarketplace.error.urlRejected.addressUnroutable.network", { host: detail.host, address: detail.address });
+        case "catalog-this-computer":
+          return t("gitMarketplace.error.urlRejected.catalogThisComputer", { source: sourceName(t, subject, detail.source), host: detail.host });
       }
       return unhandled(detail);
     }
@@ -363,7 +380,24 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       switch (detail.reason) {
         case "blocked-by-pattern": return t("gitMarketplace.policy.blockedByPattern", { target: detail.target, pattern: detail.pattern, policyPath: detail.policyPath });
         case "not-in-allow-list": return t("gitMarketplace.policy.notInAllowList", { target: detail.target, policyPath: detail.policyPath });
+        case "https-required": return t("gitMarketplace.policy.httpsRequired", { target: detail.target, policyPath: detail.policyPath });
+        case "private-network-blocked":
+          return t("gitMarketplace.policy.privateNetworkBlocked", { target: detail.target, address: detail.address, policyPath: detail.policyPath });
         case "policy-invalid": return t("gitMarketplace.policy.policyInvalid", { error: scrubDiagnosticSecrets(detail.error) });
+      }
+      return unhandled(detail);
+    }
+    case "SOURCE_CONFIRMATION_REQUIRED": {
+      const detail = parseMarketplaceErrorDetail(code, failure.detail);
+      if (!detail) return t("gitMarketplace.error.confirmationRequired");
+      switch (detail.reason) {
+        case "unencrypted":
+        case "token-unencrypted":
+        case "internal-network":
+        case "this-computer":
+          return warningText(t, { warning: detail.reason, host: detail.host, address: "address" in detail ? detail.address : null });
+        case "internal-downloads":
+          return t("gitMarketplace.warning.internalDownloads", { source: sourceName(t, subject, detail.source), host: detail.host });
       }
       return unhandled(detail);
     }
@@ -422,7 +456,14 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       }
       return unhandled(detail);
     }
-    case "PLAN_EXPIRED": return t("gitMarketplace.error.planExpired");
+    case "PLAN_EXPIRED": {
+      const detail = parseMarketplaceErrorDetail(code, failure.detail);
+      if (!detail) return t("gitMarketplace.error.planExpired");
+      switch (detail.reason) {
+        case "policy-changed": return t("gitMarketplace.error.planExpired.policyChanged");
+      }
+      return unhandled(detail.reason);
+    }
     case "PACKAGE_INCOMPATIBLE": {
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
       if (!detail) return t("gitMarketplace.error.incompatible");
@@ -608,9 +649,81 @@ function authRequiredText(t: Translate, detail: MarketplaceErrorDetail<"SOURCE_A
       }
       return unhandled(audience);
     }
+    case "token-unencrypted":
+      // Ave withheld every credential: the confirmation comes first, then the token where the row offers one.
+      switch (signIn) {
+        case "entry": return t("gitMarketplace.error.authRequired.tokenUnencrypted.entry", { host });
+        case "set-token":
+        case "replace-token":
+          return t("gitMarketplace.error.authRequired.tokenUnencrypted.setToken", { host });
+        case "readd":
+        case "administrator":
+        case "owned":
+        case "other":
+          return t("gitMarketplace.error.authRequired.tokenUnencrypted", { host });
+      }
+      return unhandled(signIn);
     case "ssh": return t("gitMarketplace.error.authRequired.ssh", { host });
   }
   return unhandled(detail);
+}
+
+/** An address in 198.18.0.0/15, the benchmarking range some proxy tools answer every name with. */
+function inProxyRange(address: string | null): boolean {
+  return address !== null && /^198\.1[89]\./u.test(address);
+}
+
+/**
+ * The risk of a warning about a source's own address (§18.5, §18.8): what
+ * happens and when to continue. The Add dialog lists these before any
+ * connection; a sync or install that hits one names it with *Allow…*.
+ */
+export function warningText(t: Translate, view: EnteredTargetWarningView): string {
+  const host = view.host ?? "";
+  const address = view.address ?? "";
+  switch (view.warning) {
+    case "unencrypted": return t("gitMarketplace.warning.unencrypted", { host });
+    case "token-unencrypted": return t("gitMarketplace.warning.tokenUnencrypted", { host });
+    case "internal-network":
+      return inProxyRange(view.address)
+        ? t("gitMarketplace.warning.internalNetwork.proxyRange", { host, address })
+        : t("gitMarketplace.warning.internalNetwork", { host, address });
+    case "this-computer": return t("gitMarketplace.warning.thisComputer", { host, address });
+  }
+  return unhandled(view.warning);
+}
+
+/** A source badge's text (§18.5). */
+export function badgeLabel(t: Translate, badge: SourceBadge): string {
+  switch (badge) {
+    case "unencrypted": return t("gitMarketplace.badge.unencrypted");
+    case "internal-network": return t("gitMarketplace.badge.internalNetwork");
+    case "this-computer": return t("gitMarketplace.badge.thisComputer");
+    case "internal-downloads": return t("gitMarketplace.badge.internalDownloads");
+  }
+  return unhandled(badge);
+}
+
+/** A source badge's tooltip: what it means for the user. */
+export function badgeTooltip(t: Translate, badge: SourceBadge): string {
+  switch (badge) {
+    case "unencrypted": return t("gitMarketplace.badge.unencrypted.tooltip");
+    case "internal-network": return t("gitMarketplace.badge.internalNetwork.tooltip");
+    case "this-computer": return t("gitMarketplace.badge.thisComputer.tooltip");
+    case "internal-downloads": return t("gitMarketplace.badge.internalDownloads.tooltip");
+  }
+  return unhandled(badge);
+}
+
+/**
+ * The confirmation a failure asks for, when *Allow…* resolves it (§18.5): a
+ * target that needs a warning the source does not hold, or sign-in over
+ * http. Null for every other failure.
+ */
+export function allowableWarning(failure: Pick<GitMarketplaceFailure, "code" | "detail">): SourceWarning | null {
+  if (failure.code === "SOURCE_CONFIRMATION_REQUIRED") return parseMarketplaceErrorDetail(failure.code, failure.detail)?.reason ?? null;
+  if (failure.code === "SOURCE_AUTH_REQUIRED" && parseMarketplaceErrorDetail(failure.code, failure.detail)?.reason === "token-unencrypted") return "token-unencrypted";
+  return null;
 }
 
 /** Exhaustiveness, after each switch: a code or reason added without a sentence fails to compile here. */

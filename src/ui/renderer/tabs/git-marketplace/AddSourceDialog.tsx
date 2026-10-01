@@ -2,7 +2,10 @@
  * Add a marketplace (design §15.5, §7.2): the address, then a preview of
  * what the repository holds, then the confirm that adds it. A repository
  * that holds one package switches to the direct-install preview. When git is
- * missing, installing it is the first, blocking step (§15.7).
+ * missing, installing it is the first, blocking step (§15.7). An address
+ * that needs a warning (plain http, an internal network, this computer) is
+ * asked about before Ave contacts it: *Continue* checks again carrying the
+ * confirmations, and *Add* stores exactly those (§18.5).
  */
 import { useEffect, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
@@ -11,11 +14,12 @@ import { Input } from "../../../../components/ui/input.js";
 import { Label } from "../../../../components/ui/label.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
-import type { GitMarketplaceFailure, SourcePreviewRequest, SourcePreviewView, SourceView } from "../../../../shared/git-marketplace.js";
+import type { EnteredTargetWarningView, GitMarketplaceFailure, SourcePreviewRequest, SourcePreviewView, SourceView, SourceWarning } from "../../../../shared/git-marketplace.js";
 import type { AveApi } from "../../types.js";
 import { GitRuntimeCard } from "./GitRuntimeCard.js";
-import { ENTRY_SUBJECT, KIND_ORDER, kindLabel, shortSha } from "./labels.js";
+import { ENTRY_SUBJECT, KIND_ORDER, kindLabel, shortSha, warningText } from "./labels.js";
 import { MarketplaceProblem } from "./MarketplaceProblem.js";
+import { SourceBadges } from "./SourcesView.js";
 
 type Auth = SourcePreviewRequest["auth"];
 
@@ -26,12 +30,14 @@ export interface AddSourceDialogProps {
   direct?: boolean;
   /** An address from `ave://marketplace/add?url=…`, filled in for the user to check. */
   initialInput?: string;
+  /** Why a deep link filled nothing in (§18.3 #7), shown when the dialog opens. */
+  initialFailure?: GitMarketplaceFailure | null;
   onClose: () => void;
   /** The source was added; for a single package, the caller opens it. */
   onAdded: (source: SourceView, preview: SourcePreviewView) => void;
 }
 
-export function AddSourceDialog({ api, open, direct = false, initialInput = "", onClose, onAdded }: AddSourceDialogProps) {
+export function AddSourceDialog({ api, open, direct = false, initialInput = "", initialFailure = null, onClose, onAdded }: AddSourceDialogProps) {
   const { t } = useTranslation();
   const [gitReady, setGitReady] = useState<boolean | null>(null);
   const [input, setInput] = useState("");
@@ -43,6 +49,17 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
   const [id, setId] = useState("");
   const [failure, setFailure] = useState<GitMarketplaceFailure | null>(null);
   const [busy, setBusy] = useState(false);
+  /** The warnings the last check asked about, before any connection. */
+  const [warnings, setWarnings] = useState<EnteredTargetWarningView[] | null>(null);
+  /** What the user confirmed for the address as typed; a changed field asks again. */
+  const [acknowledged, setAcknowledged] = useState<SourceWarning[]>([]);
+
+  /** A field edit: the confirmations were for the address as it was. */
+  const edit = <T,>(set: (value: T) => void) => (value: T) => {
+    set(value);
+    setWarnings(null);
+    setAcknowledged([]);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -53,14 +70,17 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
     setToken("");
     setPreview(null);
     setId("");
-    setFailure(null);
+    setFailure(initialFailure);
+    setWarnings(null);
+    setAcknowledged([]);
     setGitReady(null);
     void api.gitRuntime.status().then((result) => setGitReady(result.ok && result.status.state === "ready"));
-  }, [open, api, initialInput]);
+  }, [open, api, initialInput, initialFailure]);
 
-  const check = async () => {
+  const check = async (acknowledge: readonly SourceWarning[] = acknowledged) => {
     setBusy(true);
     setFailure(null);
+    setWarnings(null);
     try {
       const request: SourcePreviewRequest = {
         input: input.trim(),
@@ -68,11 +88,16 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
         ...(ref.trim() ? { ref: ref.trim() } : {}),
         ...(subdir.trim() ? { subdir: subdir.trim() } : {}),
         ...(auth === "token" && token ? { token } : {}),
+        ...(acknowledge.length > 0 ? { acknowledge: [...acknowledge] } : {}),
       };
       const result = await api.gitMarketplace.previewSource(request);
       if (result.ok) {
-        setPreview(result.value);
-        setId(result.value.suggestedId);
+        if (result.value.type === "confirm") {
+          setWarnings(result.value.warnings);
+        } else {
+          setPreview(result.value);
+          setId(result.value.suggestedId);
+        }
       } else {
         setFailure(result);
         if (result.code === "GIT_RUNTIME_MISSING" || result.code === "GIT_RUNTIME_TOO_OLD") setGitReady(false);
@@ -80,6 +105,14 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
     } finally {
       setBusy(false);
     }
+  };
+
+  /** *Continue* on the warnings: check again carrying them. */
+  const confirmWarnings = () => {
+    if (!warnings) return;
+    const next = [...new Set([...acknowledged, ...warnings.map((view) => view.warning)])];
+    setAcknowledged(next);
+    void check(next);
   };
 
   const add = async () => {
@@ -122,7 +155,7 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
               <Input
                 id="git-marketplace-add-url"
                 value={input}
-                onChange={(event) => setInput(event.target.value)}
+                onChange={(event) => edit(setInput)(event.target.value)}
                 placeholder={t("gitMarketplace.add.addressPlaceholder")}
                 data-testid="git-marketplace:add:url"
                 autoFocus
@@ -131,19 +164,19 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
             {direct && (
               <div className="space-y-1">
                 <Label htmlFor="git-marketplace-add-subdir">{t("gitMarketplace.add.folder")}</Label>
-                <Input id="git-marketplace-add-subdir" className="font-mono" value={subdir} onChange={(event) => setSubdir(event.target.value)} placeholder="skills/proofread" />
+                <Input id="git-marketplace-add-subdir" className="font-mono" value={subdir} onChange={(event) => edit(setSubdir)(event.target.value)} placeholder="skills/proofread" />
               </div>
             )}
             <div className="space-y-1">
               <Label htmlFor="git-marketplace-add-ref">{t("gitMarketplace.add.ref")}</Label>
-              <Input id="git-marketplace-add-ref" className="font-mono" value={ref} onChange={(event) => setRef(event.target.value)} placeholder="main" />
+              <Input id="git-marketplace-add-ref" className="font-mono" value={ref} onChange={(event) => edit(setRef)(event.target.value)} placeholder="main" />
             </div>
             <fieldset className="space-y-1">
               <legend className="text-sm font-medium">{t("gitMarketplace.add.signIn")}</legend>
               <div className="flex gap-3 text-sm">
                 {(["none", "token", "ssh"] as const).map((value) => (
                   <label key={value} className="flex items-center gap-1.5">
-                    <input type="radio" name="git-marketplace-auth" checked={auth === value} onChange={() => setAuth(value)} data-testid={`git-marketplace:add:auth:${value}`} />
+                    <input type="radio" name="git-marketplace-auth" checked={auth === value} onChange={() => edit(setAuth)(value)} data-testid={`git-marketplace:add:auth:${value}`} />
                     {value === "none" ? t("gitMarketplace.add.authNone") : value === "token" ? t("gitMarketplace.add.authToken") : t("gitMarketplace.add.authSsh")}
                   </label>
                 ))}
@@ -152,6 +185,19 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
                 <Input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder={t("gitMarketplace.add.tokenPlaceholder")} data-testid="git-marketplace:add:token" />
               )}
             </fieldset>
+            {warnings && (
+              <MarketplaceProblem
+                tone="warning"
+                title={t("gitMarketplace.warning.title")}
+                text={warnings.map((view) => warningText(t, view))}
+                onContinue={confirmWarnings}
+                onCancel={() => {
+                  setWarnings(null);
+                  setAcknowledged([]);
+                }}
+                testId="git-marketplace:add:warnings"
+              />
+            )}
           </div>
         )}
 
@@ -194,6 +240,11 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
                 <p className="text-xs">{preview.runsCode ? t("gitMarketplace.direct.runsCode") : t("gitMarketplace.direct.noCode")}</p>
               </>
             )}
+            {preview.badges.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                <SourceBadges badges={preview.badges} testId="git-marketplace:add:badge" />
+              </div>
+            )}
             {preview.credentialHelper && <p className="text-xs text-muted-foreground">{t("gitMarketplace.add.credentialHelper")}</p>}
             <div className="space-y-1">
               <Label htmlFor="git-marketplace-add-id">{t("gitMarketplace.add.sourceName")}</Label>
@@ -213,7 +264,7 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
           )}
           <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
           {step === 1 && (
-            <Button onClick={() => void check()} disabled={busy || input.trim().length === 0 || gitReady === null} data-testid="git-marketplace:add:check">
+            <Button onClick={() => void check()} disabled={busy || warnings !== null || input.trim().length === 0 || gitReady === null} data-testid="git-marketplace:add:check">
               {busy ? t("gitMarketplace.add.checking") : t("gitMarketplace.add.check")}
             </Button>
           )}

@@ -36,7 +36,7 @@ import { MarketplaceProblem } from "./MarketplaceProblem.js";
 import { PackageSheet } from "./PackageSheet.js";
 import { LocalPluginPackageSheet, PluginStudioView } from "./PluginStudioView.js";
 import type { StudioLocalPreview } from "../../../../shared/plugin-studio.js";
-import { SourcesView } from "./SourcesView.js";
+import { SourceBadges, SourcesView } from "./SourcesView.js";
 import { onUpdateReview, takeUpdateReview } from "./update-review-request.js";
 
 type View = "browse" | "sources" | "direct" | "studio";
@@ -98,6 +98,7 @@ function PackageCard({ entry, onOpen, onUninstallUnbound, onExport }: { entry: C
             {entry.sourceOrigin === "official" ? originLabel(t, "official") : entry.sourceLabel}
           </Badge>
         )}
+        <SourceBadges badges={entry.sourceBadges} testId={`git-marketplace:card:${entry.key.sourceId ?? "unbound"}:${entry.key.name}:badge`} />
         {!bound && entry.key.kind === "agent-plugin" && <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{t("pluginStudio.createdHere")}</Badge>}
         <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{kindLabel(t, entry.key.kind)}</Badge>
         {entry.key.kind === "agent-plugin" && ["installed", "unbound", "update", "installed-elsewhere", "source-removed"].includes(entry.state.state)
@@ -141,6 +142,8 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
   const [localPreview, setLocalPreview] = useState<StudioLocalPreview | null>(null);
   const [addOpen, setAddOpen] = useState<"marketplace" | "direct" | null>(null);
   const [addInput, setAddInput] = useState("");
+  /** Why a deep link filled nothing in, for the Add dialog it opened. */
+  const [addRefusal, setAddRefusal] = useState<GitMarketplaceFailure | null>(null);
   const [notice, setNotice] = useState<BootInstallNoticeView | null>(null);
   const [updateCheckEnabled, setUpdateCheckEnabled] = useState(true);
   const [offlineCacheEnabled, setOfflineCacheEnabled] = useState(true);
@@ -219,7 +222,13 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
         const link = result.value;
         if (!link) return;
         if (link.action === "add") {
+          setAddRefusal(null);
           setAddInput(link.url);
+          setAddOpen("marketplace");
+        } else if (link.action === "add-refused") {
+          // A link may not choose a folder (§18.3 #7): the dialog opens empty and says why.
+          setAddInput("");
+          setAddRefusal({ code: "SOURCE_URL_REJECTED", message: "a deep link named a folder", detail: { reason: link.reason } });
           setAddOpen("marketplace");
         } else {
           setView("browse");
@@ -608,12 +617,15 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
         open={addOpen !== null}
         direct={addOpen === "direct"}
         initialInput={addInput}
+        initialFailure={addRefusal}
         onClose={() => {
           setAddOpen(null);
           setAddInput("");
+          setAddRefusal(null);
         }}
         onAdded={(source, preview) => {
           setAddInput("");
+          setAddRefusal(null);
           onAdded(source, preview);
         }}
       />

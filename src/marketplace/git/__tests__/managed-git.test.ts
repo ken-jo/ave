@@ -8,6 +8,8 @@ import { c as createTar } from "tar";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { MarketplaceError } from "../../errors.js";
 import { NetworkGate } from "../../net/network-gate.js";
+import { createPinnedFetch } from "../../net/pinned-fetch.js";
+import { policySource } from "../../__tests__/fixtures/policy.js";
 import { parseSourcePattern } from "../../net/source-url.js";
 import { EMPTY_MARKETPLACE_POLICY } from "../../sources/policy.js";
 import type { GitRuntimeProgress } from "../../../shared/git-runtime.js";
@@ -56,8 +58,8 @@ describe.skipIf(process.platform === "win32")("managed git install", () => {
   let server: Server;
   let origin: string;
   const bodies = new Map<string, { bytes: Buffer; mode: "full" | "truncate" | "extra" | "stall" }>();
-  const gate = new NetworkGate({ policy: { ok: true, policy: EMPTY_MARKETPLACE_POLICY, path: "/fixture/ave-policy.json" }, allowLoopback: true });
-  const download = (url: string, signal?: AbortSignal) => gate.fetch(url, { fetchImpl: fetch, official: true, ...(signal ? { signal } : {}) });
+  const gate = new NetworkGate({ policy: policySource({ ok: true, policy: EMPTY_MARKETPLACE_POLICY, path: "/fixture/ave-policy.json" }), allowLoopback: true, transport: createPinnedFetch() });
+  const download = (url: string, signal?: AbortSignal) => gate.fetch(url, { official: true, catalog: null, ...(signal ? { signal } : {}) });
 
   beforeAll(async () => {
     server = createServer((req, res) => {
@@ -300,12 +302,13 @@ describe("managed git download policy", () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-managed-policy-"));
     try {
       const blocked = new NetworkGate({
-        policy: { ok: true, policy: { ...EMPTY_MARKETPLACE_POLICY, block: [parseSourcePattern("host:github.com")] }, path: "/fixture/ave-policy.json" },
+        policy: policySource({ ok: true, policy: { ...EMPTY_MARKETPLACE_POLICY, block: [parseSourcePattern("host:github.com")] }, path: "/fixture/ave-policy.json" }),
         allowLoopback: false,
+        transport: createPinnedFetch(),
       });
       const error = await installManagedGit({
         runtimeRoot: join(dir, "git"),
-        download: (url) => blocked.fetch(url, { fetchImpl: fetch, official: true }),
+        download: (url) => blocked.fetch(url, { official: true, catalog: null }),
         pins: { version: VERSION, assets: { [KEY]: { url: MANAGED_GIT.assets["darwin-arm64"]!.url, sha256: "0".repeat(64), size: 1 } } },
       }).catch((failure: unknown) => failure);
       expect(error).toBeInstanceOf(MarketplaceError);

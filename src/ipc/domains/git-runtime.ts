@@ -5,13 +5,15 @@
  * `install` downloads a binary the marketplace then runs, so it carries a live
  * keyboard intent like every other "run this for me" decision. The download
  * goes through the marketplace network gate under the current system policy,
- * on the PAC-aware single-hop transport.
+ * on the pinned transport (the session's PAC route, one lookup per hop).
+ * Its URL is a build constant: an entered target (design §18.2).
  */
-import { ipcMain } from "electron";
+import { ipcMain, session } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { GitRuntimeService, gitRuntimeRoot } from "../../marketplace/git/runtime-service.js";
 import { NetworkGate } from "../../marketplace/net/network-gate.js";
-import { loadMarketplacePolicy } from "../../marketplace/sources/policy.js";
+import { createPinnedFetch } from "../../marketplace/net/pinned-fetch.js";
+import { FilePolicySource } from "../../marketplace/sources/policy.js";
 import { hasUserKeyboardIntentPayload, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
 import type { GitRuntimeProgress, GitRuntimeResult } from "../../shared/git-runtime.js";
 import { aveHome } from "../../shared/ave-home.js";
@@ -31,8 +33,9 @@ function createGitRuntimeService(deps: IpcDeps): GitRuntimeService {
     mode: () => deps.settingsService.get("marketplace").git?.mode ?? "auto",
     download: async (url, signal) => {
       // Read per install: a policy file changed by device management applies to the next download.
-      const gate = new NetworkGate({ policy: await loadMarketplacePolicy(), allowLoopback: false });
-      return gate.fetch(url, { fetchImpl: deps.singleHopNetworkFetch, official: true, ...(signal ? { signal } : {}) });
+      const transport = createPinnedFetch({ resolveProxy: (target) => session.defaultSession.resolveProxy(target) });
+      const gate = new NetworkGate({ policy: await FilePolicySource.open(), allowLoopback: false, transport });
+      return gate.fetch(url, { catalog: null, official: true, ...(signal ? { signal } : {}) });
     },
     onProgress: broadcast,
   });

@@ -344,6 +344,7 @@ describe("preload contextBridge world shape lock", () => {
           "getWorkBoardRunTranscript": "function",
           "gitMarketplace": [
             "acceptRewrite",
+            "acknowledgeSource",
             "addSource",
             "bootInstallNotice",
             "deleteToken",

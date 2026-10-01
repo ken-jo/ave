@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { classifyAddress, NetworkGuardError } from "../../../core/network-guard.js";
 import { MarketplaceError } from "../../errors.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
 import {
@@ -19,8 +20,12 @@ import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
 
 function remote(url: string, allowHttp = true, useToken = true): GitRemote {
-  return { url: normalizeSourceUrl(url), sourceId: "fixture", allowHttp, useToken };
+  return { url: normalizeSourceUrl(url), sourceId: "fixture", allowHttp, useToken, credentialsAllowed: true, addressPolicy: () => "allow" };
 }
+
+/** The gate's rule for an entered target, reduced to the refusal these tests need. */
+const refuseMetadata: GitRemote["addressPolicy"] = (address) =>
+  classifyAddress(address) === "metadata" ? new NetworkGuardError(`${address} is metadata`, { cause: new MarketplaceError("SOURCE_URL_REJECTED", "metadata", { detail: { reason: "address-metadata", host: "market.test", address } }), rank: 4 }) : "allow";
 
 async function expectCode(promise: Promise<unknown>, code: string): Promise<MarketplaceError> {
   try {
@@ -151,6 +156,42 @@ describe("GitRunner against a smart-HTTP server", () => {
       timeoutMs: GIT_TIMEOUTS_MS.lsRemote,
     });
     expect(result.stdout.toString()).toContain(`${head}\trefs/heads/main`);
+  });
+
+  it("pins the remote's host to its one lookup's answer with http.curloptResolve, and looks it up no second time (§18.2.4)", async () => {
+    // A rebinding resolver: the fixture's address to the first lookup, the metadata address to any later one.
+    const lookups: string[] = [];
+    const pinned = await createTestGitRunner({
+      lookup: async (host) => {
+        lookups.push(host);
+        return lookups.length === 1 ? ["127.0.0.1"] : ["169.254.169.254"];
+      },
+    });
+    try {
+      // git cannot resolve market.test itself: the call succeeds only through the pinned entry.
+      const url = server.url("tools").replace("127.0.0.1", "market.test");
+      const target: GitRemote = { ...remote(url), addressPolicy: refuseMetadata };
+      const result = await pinned.runner.run(["ls-remote", url, "refs/heads/main"], { remote: target, timeoutMs: GIT_TIMEOUTS_MS.lsRemote });
+      expect(result.stdout.toString()).toContain(`${head}\trefs/heads/main`);
+      expect(lookups).toEqual(["market.test"]);
+    } finally {
+      await pinned.cleanup();
+    }
+  });
+
+  it("starts no git when the one lookup answers only refused addresses", async () => {
+    const refused = await createTestGitRunner({ lookup: async () => ["169.254.169.254"] });
+    try {
+      const url = server.url("tools").replace("127.0.0.1", "market.test");
+      const error = await expectCode(
+        refused.runner.run(["ls-remote", url], { remote: { ...remote(url), addressPolicy: refuseMetadata }, timeoutMs: GIT_TIMEOUTS_MS.lsRemote }),
+        "SOURCE_URL_REJECTED",
+      );
+      expect(error.detail).toEqual({ reason: "address-metadata", host: "market.test", address: "169.254.169.254" });
+      expect(server.seen).toEqual([]);
+    } finally {
+      await refused.cleanup();
+    }
   });
 
   it("names the branches and tags the remote has when a ref is missing", async () => {
@@ -314,6 +355,29 @@ describe("GitRunner authentication through the askpass broker", () => {
         }),
         "SOURCE_AUTH_REQUIRED",
       );
+      expect(server.seen.every((request) => request.authorization === undefined)).toBe(true);
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it("sends no credential over http without token-unencrypted, a stored token included (§18.2.2)", async () => {
+    const t = await createTestGitRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
+    const store = join(t.dir, "stored-credentials");
+    writeFileSync(store, "http://x-access-token:s3cret-token@127.0.0.1\n");
+    writeFileSync(join(t.dir, "gitconfig"), `[credential]\n\thelper = store --file=${store.replaceAll("\\", "/")}\n`);
+    server.seen.length = 0;
+    try {
+      // A token source over http whose user has not accepted sending the token unencrypted, as a listed
+      // (managed) host is: the listing does not imply it.
+      const withheld: GitRemote = { ...remote(server.url("private-tools")), credentialsAllowed: false };
+      expect(await t.runner.configArgs(withheld)).toContain("credential.helper=");
+      const error = await expectCode(
+        t.runner.run(["ls-remote", server.url("private-tools")], { remote: withheld, timeoutMs: GIT_TIMEOUTS_MS.lsRemote }),
+        "SOURCE_AUTH_REQUIRED",
+      );
+      expect(error.detail).toEqual({ reason: "token-unencrypted", host: "127.0.0.1" });
+      // Neither askpass (holding the token) nor the user's own helper (holding it too) answered.
       expect(server.seen.every((request) => request.authorization === undefined)).toBe(true);
     } finally {
       await t.cleanup();

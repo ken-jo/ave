@@ -164,6 +164,14 @@ describe("parseGitMarketplaceUri", () => {
     expect(parseGitMarketplaceUri("ave://marketplace/add?url=acme%2Ftools")).toEqual({ action: "add", url: "acme/tools" });
   });
 
+  it("refuses a folder named by a link: the Add dialog opens empty and says why (§18.3 #7)", () => {
+    for (const address of ["file:///Users/me/market", "/Users/me/market", "~/market", "C:\\market", "\\\\server\\share\\market", "./market", "../market"]) {
+      expect(parseGitMarketplaceUri(`ave://marketplace/add?url=${encodeURIComponent(address)}`), address).toEqual({ action: "add-refused", reason: "deep-link-path" });
+    }
+    // The address is not carried: nothing of the folder reaches the dialog.
+    expect(JSON.stringify(parseGitMarketplaceUri("ave://marketplace/add?url=%2FUsers%2Fme%2Fsecret"))).not.toContain("secret");
+  });
+
   it("reads nothing from the server-era slug links it replaces (design §16.2)", () => {
     expect(parseGitMarketplaceUri("ave://install/my-plugin")).toBeNull();
     expect(parseGitMarketplaceUri("ave://install/plugin/my-plugin")).toBeNull();

@@ -1,4 +1,5 @@
 import { PACKAGE_KINDS, isPackageName, type PackageKind } from "../marketplace/catalog/types.js";
+import { isFolderPathInput } from "../marketplace/net/source-url.js";
 import { SOURCE_ID_RE } from "../marketplace/sources/official.js";
 import type { GitMarketplaceDeepLink } from "../shared/git-marketplace.js";
 
@@ -14,7 +15,9 @@ const GIT_MARKETPLACE_ADD_URL_MAX = 2048;
  * `ave://install/<kind>/<name>@<source>`, `ave://uninstall/<kind>/<name>@<source>`
  * and `ave://marketplace/add?url=<address>`. They replace the server-era
  * `ave://install/<slug>` forms (design §16.2), which parse as nothing. The
- * address is checked by the Add dialog's preview like one typed there.
+ * address is checked by the Add dialog's preview like one typed there. A
+ * link may not choose a folder on this computer (§18.3 #7): an address that
+ * is a path or a `file:` URL opens the Add dialog empty, saying why.
  */
 export function parseGitMarketplaceUri(url: string): GitMarketplaceDeepLink | null {
   let parsed: URL;
@@ -31,6 +34,7 @@ export function parseGitMarketplaceUri(url: string): GitMarketplaceDeepLink | nu
     const address = parsed.searchParams.get("url");
     if (keys.length !== 1 || keys[0] !== "url" || !address) return null;
     if (address.length > GIT_MARKETPLACE_ADD_URL_MAX || /[\u0000-\u001f\u007f]/u.test(address)) return null;
+    if (isFolderPathInput(address)) return { action: "add-refused", reason: "deep-link-path" };
     return { action: "add", url: address };
   }
   if (host !== "install" && host !== "uninstall") return null;

@@ -9,11 +9,19 @@
  */
 import { PACKAGE_KINDS, type AgentPluginComponents, type PackageKind } from "../marketplace/catalog/types.js";
 import type { ComponentDelta } from "../marketplace/app/component-delta.js";
-import { MARKETPLACE_ERROR_CODES, parseMarketplaceErrorDetail, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../marketplace/errors.js";
+import { MARKETPLACE_ERROR_CODES, parseMarketplaceErrorDetail, type EnteredTargetWarningView, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../marketplace/errors.js";
 import type { DirectDetectedFile } from "../marketplace/sources/direct-package.js";
+import type { SourceWarning, SourceWarningView } from "../marketplace/sources/warnings.js";
 
-export type { MarketplaceErrorDetail, PackageKind };
+export type { EnteredTargetWarningView, MarketplaceErrorDetail, PackageKind, SourceWarning, SourceWarningView };
 export { parseMarketplaceErrorDetail };
+
+/**
+ * What a source's row and its package cards show while it applies (design
+ * §18.5): plain http, and each address class the user confirmed. Text plus
+ * a tooltip, never colour alone.
+ */
+export type SourceBadge = "unencrypted" | "internal-network" | "this-computer" | "internal-downloads";
 
 export type SourceOriginKind = "official" | "managed" | "custom" | "direct";
 
@@ -75,6 +83,9 @@ export interface SourceView {
   canRemove: boolean;
   /** Packages the snapshot dropped, as "path: problem". */
   diagnostics: string[];
+  /** The confirmations the source holds (§18.5). */
+  acknowledged: SourceWarning[];
+  badges: SourceBadge[];
 }
 
 export interface SourcePreviewRequest {
@@ -86,6 +97,18 @@ export interface SourcePreviewRequest {
   auth: "none" | "token" | "ssh";
   /** Used for this preview only; stored under the host when the source is added. */
   token?: string;
+  /**
+   * The warnings the user confirmed for this address (§18.5). A preview that
+   * needs one it does not carry answers `confirm` before any network or git
+   * traffic; *Add* stores exactly these.
+   */
+  acknowledge?: SourceWarning[];
+}
+
+/** The address needs confirmations before Ave contacts it (§18.5 step 3); *Continue* previews again with them. */
+interface SourceConfirmView {
+  type: "confirm";
+  warnings: EnteredTargetWarningView[];
 }
 
 export interface MarketplacePreviewView {
@@ -93,6 +116,8 @@ export interface MarketplacePreviewView {
   previewId: string;
   expiresAt: string;
   url: string;
+  /** What the source will show once added (§18.5 step 4): plain http and each class confirmed. */
+  badges: SourceBadge[];
   ref: string | null;
   commit: string;
   marketplace: { name: string; displayName: string; description: string | null; owner: string | null };
@@ -111,6 +136,8 @@ interface DirectPackagePreviewView {
   previewId: string;
   expiresAt: string;
   url: string;
+  /** What the source will show once added (§18.5 step 4): plain http and each class confirmed. */
+  badges: SourceBadge[];
   ref: string | null;
   subdir: string | null;
   commit: string;
@@ -128,6 +155,8 @@ interface DirectPackagePreviewView {
 }
 
 export type SourcePreviewView = MarketplacePreviewView | DirectPackagePreviewView;
+
+export type SourcePreviewResultView = SourcePreviewView | SourceConfirmView;
 
 export interface SourceAddRequest {
   previewId: string;
@@ -165,6 +194,8 @@ export interface CatalogEntryView {
   required: boolean;
   /** Plugins and MCP servers. */
   runsCode: boolean;
+  /** The badges of the source this row is from (§18.5); none for a package bound to no source. */
+  sourceBadges: SourceBadge[];
 }
 
 export interface CatalogQuery {
@@ -218,6 +249,8 @@ export interface RungView {
   pinned: boolean;
   /** Asset name, archive host or tree path. */
   detail: string | null;
+  /** The download is plain http: verified only by its pinned sha256 (§18.2.3). */
+  unencrypted: boolean;
 }
 
 export type RungOutcomeView =
@@ -352,7 +385,9 @@ export interface DirectMcpPreviewView {
  */
 export type GitMarketplaceDeepLink =
   | { action: "install" | "uninstall"; key: PackageKeyView }
-  | { action: "add"; url: string };
+  | { action: "add"; url: string }
+  /** The link named a folder, which no link may choose (§18.3 #7): the Add dialog opens empty and says why. */
+  | { action: "add-refused"; reason: "deep-link-path" };
 
 /** An installed package whose bound source offers a newer version (`marketplace:updates-available`, design §7.3). */
 export interface PackageUpdateView {
@@ -431,8 +466,10 @@ export type ComponentConsent = McpComponentConsent | HookComponentConsent;
 
 export interface GitMarketplaceApi {
   listSources(): Promise<GitMarketplaceResult<SourceView[]>>;
-  previewSource(request: SourcePreviewRequest): Promise<GitMarketplaceResult<SourcePreviewView>>;
+  previewSource(request: SourcePreviewRequest): Promise<GitMarketplaceResult<SourcePreviewResultView>>;
   addSource(request: SourceAddRequest): Promise<GitMarketplaceResult<SourceView>>;
+  /** Add confirmations to a source (*Allow…*, §18.5) and sync it again. */
+  acknowledgeSource(id: string, warnings: readonly SourceWarning[]): Promise<GitMarketplaceResult<SourceView>>;
   removeSource(id: string): Promise<GitMarketplaceResult<{ orphanedPackages: PackageKeyView[] }>>;
   setSourceEnabled(id: string, enabled: boolean): Promise<GitMarketplaceResult<SourceView>>;
   refreshSources(id?: string): Promise<GitMarketplaceResult<SourceView[]>>;

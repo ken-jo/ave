@@ -25,7 +25,7 @@ export async function hostGitExecutable(): Promise<GitExecutable> {
 }
 
 export async function createTestGitRunner(
-  options: { tokens?: Record<string, string> } & Partial<Pick<GitRunnerOptions, "resolveProxy">> = {},
+  options: { tokens?: Record<string, string> } & Partial<Pick<GitRunnerOptions, "resolveProxy" | "lookup" | "readSshConfig">> = {},
 ): Promise<TestGitRunner> {
   const dir = mkdtempSync(join(tmpdir(), "ave-git-runner-"));
   const emptyDir = join(dir, "empty");
@@ -41,6 +41,8 @@ export async function createTestGitRunner(
     emptyDir,
     askpass: broker,
     ...(options.resolveProxy ? { resolveProxy: options.resolveProxy } : {}),
+    ...(options.lookup ? { lookup: options.lookup } : {}),
+    ...(options.readSshConfig ? { readSshConfig: options.readSshConfig } : {}),
   });
   return {
     runner,
