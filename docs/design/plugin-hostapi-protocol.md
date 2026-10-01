@@ -2701,16 +2701,20 @@ them may change (P3 may only **add** the launch kind that decides `entryPath`, a
 - `createBoundHostApiDispatchTable(hostApi, confinement, onMalformedCredentialSelector?)`
   and its branded result `BoundHostApiDispatchTable`, in `bound-host-api-table.ts`;
 - `openPluginProtocolSession(spec)`, `PluginProtocolSessionSpec` (with the required
-  `table`), `PluginProtocolSession` (`instance`, `capabilities`, `construction`,
+  `table` and the optional `signal`, which the opener honours from its first line),
+  `PluginProtocolSession` (`instance`, `capabilities`, `construction`,
   `channel`, `teardown`) and `PluginProtocolChannel` (`requestMcp`, `probe`,
   `runStopHook`, `closeInput`, `exited`);
 - `PluginChildTransport.request` (instance methods only), `requestMcp`, `probe`, the
   metadata producer `pluginChildRequestMeta()`, and the split of an observed exit
-  (`peerGone`, non-destructive) from a requested termination (`close`);
+  (`peerGone`, non-destructive) from a requested termination (`close`) and a live
+  child's fault (`fault`, destructive, not suppressed by `closedReason`);
+- `ChildLink` with `onGone` terminal-only and the required `onFault`;
 - `OutOfProcessPluginSpec` without `connect` and with `observeChild`, and
   `ObservedPluginChild` (`pid`, `onStdout`, `endInput`, `exited`);
-- `openValidationSession(input)`, `ValidationSession`, `createValidationHost(overrides?)`
-  and `validationConfinement(pluginId, pluginRoot, pluginDataDir)`.
+- `openValidationSession(input)` (with the same optional `signal`), `ValidationSession`,
+  `createValidationHost(overrides?)` and `validationConfinement(pluginId, pluginRoot,
+  pluginDataDir)`.
 
 ##### P1. The protocol TS client
 
@@ -2894,14 +2898,15 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
   directory, i.e. P3's engineer):
   `openPluginProtocolSession(spec): Promise<PluginProtocolSession>` with
   - `PluginProtocolSessionSpec = { pluginId, manifest, hostProtocolVersion, link:
-    ChildLink, context: PluginRuntimeContext, entryPath, table: BoundHostApiDispatchTable,
-    auditLog?, onClosed(reason): Promise<void> }`. **`table` is required and is the
-    session's whole authority**: the session serves exactly that table, advertises
-    `hostProtocolCapabilities(spec.table)` in construct, and never derives, widens or
-    defaults an envelope — it imports nothing from `permissions/`, does not import
-    `derivePluginChildEnvelope`, spawns nothing and reads no sandbox state.
-    `onMalformedCredentialSelector` leaves the spec, because it is an input of the table
-    binding, where the factory passes it today (`out-of-process-plugin.ts:1198-1203`).
+    ChildLink, context: PluginRuntimeContext, entryPath, table:
+    BoundHostApiDispatchTable, auditLog?, onClosed(reason): Promise<void>, signal?:
+    AbortSignal }`. **`table` is required and is the session's whole authority**: the
+    session serves exactly that table, advertises `hostProtocolCapabilities(spec.table)`
+    in construct, and never derives, widens or defaults an envelope — it imports nothing
+    from `permissions/`, does not import `derivePluginChildEnvelope`, spawns nothing and
+    reads no sandbox state. `onMalformedCredentialSelector` leaves the spec, because it
+    is an input of the table binding, where the factory passes it today
+    (`out-of-process-plugin.ts:1198-1203`).
   - `PluginProtocolSession = { instance: RuntimePlugin; capabilities: readonly string[];
     construction: PluginConstructResult; channel: PluginProtocolChannel;
     teardown(reason: string): Promise<void> }`. `teardown` is the **only destructive
@@ -2912,12 +2917,24 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
     `peerGone` (below: pending calls rejected with the exit reason, dispatcher state
     released, **no** `terminate`), then `onClosed` — exactly once. A later `teardown`
     after that release terminates nothing, because the transport is already closed by
-    the peer, and only makes `onClosed`'s once-guard visible. Deadlines and framing
-    failures remain destructive: a request deadline (`plugin-child-transport.ts:175-180`)
-    and a fatal stream error (`:137`) still reach `transport.close`, and so
-    `link.terminate`, and the session's release follows from the resulting exit.
-    `instance.stop` keeps
-    today's production behaviour exactly (the stop hook bounded by
+    the peer, and only makes `onClosed`'s once-guard visible. Deadlines, framing
+    failures and **link faults** remain destructive: a request deadline
+    (`plugin-child-transport.ts:175-180`), a fatal stream error (`:137`) and a fault the
+    link reports on a live child (below; host re-review #28) reach `transport.close`,
+    and so `link.terminate`, and the session's release follows from the resulting exit.
+    **Cancellation exists before construction completes** (host re-review #29): when
+    `spec.signal` is given, the session listens from its first line — before the
+    transport starts and before construct is written — until its release. Aborting runs
+    `teardown` with the signal's reason at any point, including while construct is
+    pending: the pending construct rejects (the transport closed), the opener rejects
+    with the abort reason instead of waiting for construct's own deadline, and the link
+    is terminated once. A construct reply that arrives after the abort is dropped with
+    the closed channel, and the opener re-checks `signal.aborted` after construct
+    resolves and before returning, so a success racing the abort is torn down and never
+    returned. An already-aborted signal tears down before any frame is written.
+    Production passes no signal — the runtime's factory timeout already disposes a late
+    instance (`runtime/index.ts:1209-1227`) — and the validation CLI always passes one.
+    `instance.stop` keeps today's production behaviour exactly (the stop hook bounded by
     `pluginStartupDefaultMs`, then termination, `:1496-1524`) by being
     `channel.runStopHook()` followed by `teardown(...)`.
   - `PluginProtocolChannel = { requestMcp(method, params, timeoutMs?): Promise<unknown>;
@@ -2928,7 +2945,9 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
     unknown-method check; `runStopHook` sends `ave/instance/stop` when the construction
     declared it and does not close, flip `live` or terminate; `closeInput` is
     `link.output.end()` and nothing else; `exited` settles with the reason the link's
-    `onGone` reports.
+    `onGone` reports, **and on nothing else**: a fault, a deadline, an abort or a
+    `teardown` does not settle it; each ends the child, and `exited` settles when that
+    child's exit is then observed.
 
   The body is the factory's from the transport (`:1205`) to the returned proxy
   (`:1544`): `PluginChildTransport` over the link and the table, the host watchers, the
@@ -2966,8 +2985,28 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
     (`:203-218`) except `link.terminate`, which has nothing left to end. `close` keeps
     its callers and its meaning, "the host ends the child": the request deadline, the
     fatal-stream callback and the session's `teardown`. Both are idempotent against each
-    other through `closedReason`, so whichever happens first decides whether a
-    termination was ever requested.
+    other through `closedReason` for the rejection and `childGone` part, so whichever
+    happens first decides whether a termination was ever requested; an observed exit is
+    recorded even after `close` (it is what settles the session's `exited`).
+  - **`onGone` is terminal-only, and a live child's fault has its own path** (host
+    re-review #28). `ChildLink.onGone` is documented and implemented as "the child no
+    longer exists": the process's `exit`, or an `error` from a spawn that produced no
+    process (`child.pid` not a positive number). Node also emits `error` when a signal
+    could not be delivered to a process that is still running
+    (<https://nodejs.org/api/child_process.html#event-error>, checked 2026-10-01), which
+    `managed-child-processes.ts:109-113` already refuses to treat as termination. Such
+    an `error` goes to a new required member, `ChildLink.onFault(handler: (reason) =>
+    void)`, and the transport's `start()` registers `link.onFault((reason) =>
+    this.fault(reason))`. `fault` is destructive and is **not** suppressed by
+    `closedReason`: before any close it is `close(reason)`; after a `close` (the failed
+    delivery may be that close's own signal) it calls `link.terminate(reason)` again,
+    because the child is still alive and the termination it was asked for has not
+    happened; only an observed exit makes it a no-op. The production adapter
+    (`out-of-process-plugin.ts:973-982`) and the plain adapter
+    `child-process-config-wire.test.ts:218-222` (and the validate CLI's link, P2) both
+    stop forwarding every `error` to `onGone`: `exit` → `onGone`; `error` with no pid →
+    `onGone`; `error` with a pid → `onFault`. In-memory links have no process to fault
+    and implement `onFault` as a registration that never fires.
 
   `ave/instance/*` and `ave/host/*` frames carry no MCP `_meta`: they are Ave methods
   (§3), and the metadata rule is MCP's. The factory's `tools/call` and `resources/read`
@@ -3020,11 +3059,13 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
   apply reported `not exercised` (P2's `sandbox.grants` row), never as passed.
 - `src/plugins/validate/validation-session.ts` (new; owner: the validate directory, i.e.
   P2's engineer): `openValidationSession({ manifest, host: ValidationHost, link:
-  ChildLink, entryPath, pluginRoot, pluginDataDir }): Promise<ValidationSession>` refuses
+  ChildLink, entryPath, pluginRoot, pluginDataDir, signal?: AbortSignal }):
+  Promise<ValidationSession>` refuses
   an undeclared or unserved protocol with `connectionHostProtocol` before writing any
   frame, binds `table = createBoundHostApiDispatchTable(host.api,
   validationConfinement(manifest.id, pluginRoot, pluginDataDir))`, builds the
-  `PluginRuntimeContext` from the validation host and calls `openPluginProtocolSession`;
+  `PluginRuntimeContext` from the validation host and calls `openPluginProtocolSession`
+  with the caller's `signal`;
   `ValidationSession` is the whole `PluginProtocolSession` (channel and `teardown`
   included) plus the `confinement` it was bound to. **This is the validation-only entry
   point.** Among production modules it is the only caller of `openPluginProtocolSession`
@@ -3068,6 +3109,13 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
      `createValidationHost`; `createBoundHostApiDispatchTable`'s
      (`out-of-process-plugin.test.ts`, `host-protocol-schema-parity.test.ts`) import it
      from `bound-host-api-table.ts`.
+  6. Every `ChildLink` literal gains `onFault` (host re-review #28): the in-memory links
+     at `out-of-process-plugin.test.ts:224` and `:833`,
+     `child-stream-multiplex.test.ts:85` and `host-protocol-golden.test.ts:201` register
+     a handler that never fires; the process links (production `:973-982`,
+     `spawnPlainChild` at `child-process-config-wire.test.ts:218-222`) split `error` by
+     pid as above. The member is required, so `typecheck` finds a production link that
+     was missed and `check:typecheck-tests` (`package.json:84`) a test link.
 - `scripts/lib/plugin-isolation-type-assertions.ts` (new; types-only, inside the root
   `include`, so `bun run typecheck` and CI `.github/workflows/ci.yml:86` enforce it):
   `Equal<keyof OutOfProcessPluginSpec, "manifest" | "auditLog" | "entryPath" |
@@ -3103,17 +3151,29 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
   and a following `close` records zero as well (make `peerGone` call `close` → fails);
   a request whose deadline expires records exactly one termination (drop the deadline's
   `close` → fails); a fatal framing error from the stream records exactly one (same
-  revert on `:137`).
+  revert on `:137`). **Faults**: firing `onFault` on a live link rejects the pending
+  request and records exactly one termination (route the fault to `peerGone` → zero,
+  fails); firing it after a `close` records a second termination (let `closedReason`
+  suppress `fault` → fails); firing it after `onGone` records none.
 - `src/plugins/isolation/__tests__/plugin-protocol-session.test.ts` (new), over a paired
   link whose `terminate` is recorded: `runStopHook()` sends `ave/instance/stop` and no
   terminate follows (make it call `transport.close` → fails); **the natural-exit path**:
   `closeInput()` ends the child's input, the child end then closes and the link reports
   it gone, `exited` settles, `onClosed` has run once, the host watchers are gone, and
   the recorded terminate count is **zero** — and it stays zero after a following
-  `teardown()` (route the session's exit release through `teardown`, or restore
-  `onGone → close` in the transport → fails); **the forced path**, a separate case:
-  `teardown()` on a live child terminates exactly once, calls `onClosed` once and is
-  idempotent;
+  `teardown()` (route the session's exit release through `teardown`, or restore `onGone
+  → close` in the transport → fails); **the forced path**, a separate case: `teardown()`
+  on a live child terminates exactly once, calls `onClosed` once and is idempotent; **a
+  failed signal delivery on a live child** — the link fires `onFault` while its child
+  end stays open — leaves `exited` unsettled, records exactly one terminate, and only
+  when the child end then closes does `exited` settle with the exit reason and
+  `onClosed` run once (forward the fault to `onGone` → `exited` settles early, fails);
+  **cancellation mid-construct** — a child end that reads construct and never replies,
+  and a signal aborted 50 ms after the call — the opener rejects with the abort reason
+  within 1 s, one terminate, `onClosed` once, no host watcher left; the child end then
+  writes the construct reply, and nothing follows (no instance, no unhandled rejection,
+  no second `onClosed`) (drop the signal listener → the opener waits for construct's own
+  deadline, fails); an already-aborted signal rejects with no frame written;
   `instance.stop()` is one stop frame then exactly one terminate (the production
   behaviour of `:1496-1524`, unchanged); construct's `hostProtocol.capabilities` equals
   `hostProtocolCapabilities(spec.table)`, and a `spawnWorker` request whose
@@ -3160,60 +3220,74 @@ test-only spec member add no channel, export, bridge method, setting or package 
      failure prints the JSON-pointer path (`#/extensions/ai.agent-connector.ave/requires/hostProtocol`).
   2. **Protocol**: `runProtocolChecks(launch, manifest, options)` spawns a
      `ValidationLaunch = { command, args, env }` with a plain `child_process.spawn` the
-     CLI owns, wraps its pipes in a `ChildLink`, and attaches it to
+     CLI owns, wraps its pipes in a `ChildLink` (`exit` and a pid-less `error` →
+     `onGone`, any other `error` → `onFault`, S1), and attaches it to
      `openValidationSession` with `createValidationHost` (S1). The launch is built per
-     entry kind: `process.execPath [...childExecArgs] <sibling>/ave-plugin-child-main.js
-     <entry>` for an `entry` plugin (P2); for a `process` plugin, the command, args and
-     environment from P3's `resolveProcessLaunch` (`process-entry.ts`: the resolved
-     command and args under policy `"process"`, the declared `env` pairs, then
-     `PLUGIN_ROOT` and `PLUGIN_DATA` = a temporary directory). P2 merges after P3 (the
-     one merge order), so it ships both arms and no commit on `main` has a CLI that
-     accepts a `process` manifest without a launch for it. The CLI never calls
-     `createOutOfProcessPluginFactory`, never confines (decision 30) and needs no sandbox:
-     it proves protocol conformance without the app; confinement is proven by the host's
-     own suite (§10.1 item 3). Its authority is the validation host's base envelope
-     (`validationConfinement`, S1); a manifest's `sandbox` grants are not applied and are
-     reported `not exercised` in a `sandbox.grants` row. Every step goes through the S1
-     session: `openValidationSession` performs `ave/instance/construct` first
-     (`out-of-process-plugin.ts:1436-1446`) → `instance.start()` → `instance.onPublished()`
-     → `channel.requestMcp("server/discover")` → `channel.requestMcp("tools/list")` →
-     `tools/call` through `instance.handlers` (the production path, which uses `requestMcp`)
-     → `channel.probe(<unknown ave/host/* method>)` → `channel.runStopHook()` →
-     `channel.closeInput()` → `channel.exited` raced against the deadline → `teardown`;
-     **no MCP request precedes construct**, for either entry kind, because the host never
-     sends one (§10.2 amended).
-     **Every awaited step is bounded, and `runProtocolChecks` owns every bound** (host
-     re-review #26). The CLI bypasses the runtime's timeout owners —
-     `runStartWithTimeout` for `start` (`src/plugins/runtime/index.ts:1242-1256`) and
-     the executor ceiling for a tool (`src/tools/executor-ceiling.ts:56-76`), which is
-     why the proxy's own `tools/call`, `start` and `onPublished` requests carry no
-     transport deadline (`out-of-process-plugin.ts:1472-1480`, `:1527-1535`;
+     entry kind: `process.execPath [...childExecArgs]
+     <sibling>/ave-plugin-child-main.js <entry>` for an `entry` plugin (P2); for a
+     `process` plugin, the command, args and environment from P3's
+     `resolveProcessLaunch` (`process-entry.ts`: the resolved command and args under
+     policy `"process"`, the declared `env` pairs, then `PLUGIN_ROOT` and `PLUGIN_DATA`
+     = a temporary directory). P2 merges after P3 (the one merge order), so it ships
+     both arms and no commit on `main` has a CLI that accepts a `process` manifest
+     without a launch for it. The CLI never calls `createOutOfProcessPluginFactory`,
+     never confines (decision 30) and needs no sandbox: it proves protocol conformance
+     without the app; confinement is proven by the host's own suite (§10.1 item 3). Its
+     authority is the validation host's base envelope (`validationConfinement`, S1); a
+     manifest's `sandbox` grants are not applied and are reported `not exercised` in a
+     `sandbox.grants` row. Every step goes through the S1 session:
+     `openValidationSession` performs `ave/instance/construct` first
+     (`out-of-process-plugin.ts:1436-1446`) → `instance.start()` →
+     `instance.onPublished()` → `channel.requestMcp("server/discover")` →
+     `channel.requestMcp("tools/list")` → `tools/call` through `instance.handlers` (the
+     production path, which uses `requestMcp`) → `channel.probe(<unknown ave/host/*
+     method>)` → `channel.runStopHook()` → `channel.closeInput()` → `channel.exited`
+     raced against the deadline → `teardown`; **no MCP request precedes construct**, for
+     either entry kind, because the host never sends one (§10.2 amended). **Every
+     awaited step is bounded, and `runProtocolChecks` owns every bound** (host re-review
+     #26). The CLI bypasses the runtime's timeout owners — `runStartWithTimeout` for
+     `start` (`src/plugins/runtime/index.ts:1242-1256`) and the executor ceiling for a
+     tool (`src/tools/executor-ceiling.ts:56-76`), which is why the proxy's own
+     `tools/call`, `start` and `onPublished` requests carry no transport deadline
+     (`out-of-process-plugin.ts:1472-1480`, `:1527-1535`;
      `plugin-child-transport.ts:159-165`; no timer without one,
      `child-stream-multiplex.ts:287-290`) — so it applies the same `TOOL_TIMEOUT_POLICY`
      values itself, one helper in `validate-plugin.ts` racing each operation against its
-     bound: construct `pluginImportMs + pluginFactoryMs` (the session's own deadline,
-     `:1436-1446`) → row `protocol.construct`; `start` and `onPublished` the manifest's
-     `startupTimeoutMs` clamped to `pluginStartupMaxMs`, else `pluginStartupDefaultMs`
-     (the runtime's rule) → `lifecycle.start`, `lifecycle.on-published`;
-     `server/discover`, `tools/list` and the unknown-method probe `mcpRequestDefaultMs`
-     → `discover.capabilities`, `tools.list`, `protocol.unknown-method`; each
-     `tools/call` `globalCeilingMs`, the ceiling plugin tools inherit →
-     `tools.call:<name>`; the stop hook `pluginStartupDefaultMs` (production's bound,
-     `:1496-1507`) → `lifecycle.stop`; `closeInput` → `exited` 5 s →
-     `protocol.stdin-close`. `--fast` caps every bound at 1 s. On expiry the helper
-     records that row as failed with `timed out after <n> ms`, calls
-     `teardown("validation deadline: <row>")` — the destructive path, so the child is
-     terminated and every pending call rejects — and reports each later row `not
-     exercised: <row> timed out`; the exit code is 1. No awaited operation in the CLI is
-     unbounded, and cancellation is always `teardown`.
-     Asserted: every stdout line is a JSON object terminated by `0x0A` and nothing else
-     is written to stdout, checked on the **raw bytes** the CLI tees beside the decoder
-     (fact 11), so a bare `ready` line or a `Content-Length:` header fails
+     bound: construct `pluginFactoryMs` → row `protocol.construct` — the runtime's owner
+     of that wait is `runPluginFactoryWithTimeout` (`runtime/index.ts:1215-1227`, 10 s),
+     applied at every activation (`:4007`, `:4912`, `:5528`, `:6282`) with the child's
+     import inside it (`:5151-5154`), so a plugin that constructs in 15 s fails here as
+     it would fail in the app (host re-review #30). The session's own construct
+     deadline, `pluginImportMs + pluginFactoryMs` (20 s,
+     `out-of-process-plugin.ts:1444`, `tool-timeout-policy.ts:131-132`), is unchanged
+     and is **not** a validation bound: it is the transport's cleanup deadline that ends
+     a child nobody is waiting for any more. `start` the manifest's `startupTimeoutMs`
+     clamped to `pluginStartupMaxMs`, else `pluginStartupDefaultMs` — the runtime's rule
+     → `lifecycle.start`; `onPublished` the same value as **validator-only policy** →
+     `lifecycle.on-published`: the runtime awaits `onPublished` with no bound
+     (`runtime/index.ts:3437`), so this is no parity claim, only a refusal to let one
+     hook hang the validator and CI; `server/discover`, `tools/list` and the
+     unknown-method probe `mcpRequestDefaultMs` → `discover.capabilities`, `tools.list`,
+     `protocol.unknown-method`; each `tools/call` `globalCeilingMs`, the ceiling plugin
+     tools inherit → `tools.call:<name>`; the stop hook `pluginStartupDefaultMs`
+     (production's bound, `:1496-1507`) → `lifecycle.stop`; `closeInput` → `exited` 5 s
+     → `protocol.stdin-close`. `--fast` caps every bound at 1 s. Cancellation is one
+     `AbortController` per run, created before the session and passed to
+     `openValidationSession` as `signal` (S1), so it exists while construct is still
+     pending (host re-review #29). On expiry the helper records that row as failed with
+     `timed out after <n> ms` and aborts the controller with `validation deadline:
+     <row>`; the session turns the abort into `teardown` — the destructive path, so the
+     child is terminated and every pending call rejects — before construct completes as
+     after it. Each later row is reported `not exercised: <row> timed out`, and the exit
+     code is 1. No awaited operation in the CLI is unbounded, and the abort is its only
+     cancellation. Asserted: every stdout line is a JSON object terminated by `0x0A` and
+     nothing else is written to stdout, checked on the **raw bytes** the CLI tees beside
+     the decoder (fact 11), so a bare `ready` line or a `Content-Length:` header fails
      `protocol.stdout-discipline` even though `StdioFrameDecoder` would have dropped it
-     (the decoder is not changed; production stays tolerant, decision 40);
-     every MCP request frame the CLI sent carries the two required `_meta` keys (the
-     transport's producer, S1; checked on the recorded host-side frames, so a regression
-     in the producer fails `protocol.request-meta` rather than passing silently against a
+     (the decoder is not changed; production stays tolerant, decision 40); every MCP
+     request frame the CLI sent carries the two required `_meta` keys (the transport's
+     producer, S1; checked on the recorded host-side frames, so a regression in the
+     producer fails `protocol.request-meta` rather than passing silently against a
      tolerant runtime); `server/discover` lists `2026-07-28` in `supportedVersions` and
      advertises `capabilities.tools` when the manifest declares tools
      (`discover.capabilities`); `tools/list` returns exactly the manifest's tools
@@ -3222,16 +3296,16 @@ test-only spec member add no channel, export, bridge method, setting or package 
      answered `-32601` (`protocol.unknown-method`); after the stop hook the CLI **closes
      stdin and nothing else** — `runStopHook` neither closes the transport nor
      terminates, fact 14 — and the process must exit within 5 s (1 s under `--fast`); on
-     timeout the row `protocol.stdin-close` fails, and only after the failure is recorded
-     does `teardown` terminate the child (after an observed exit `teardown` only releases
-     the host side, since terminating an exited child is a no-op,
+     timeout the row `protocol.stdin-close` fails, and only after the failure is
+     recorded does `teardown` terminate the child (after an observed exit `teardown`
+     only releases the host side, since terminating an exited child is a no-op,
      `src/tools/terminate-child-process.ts:12-34`, which the CLI's own link uses too).
      `tools/call` is issued with `{}` for every declared tool whose `inputSchema` has no
-     `required` properties, and with the arguments from
-     `--tool-args <file.json>` for the others; a tool with no arguments available is
-     reported `not exercised`, not failed (decision 31). On `win32` the protocol step for
-     a `process` plugin is reported `not exercised: process entries do not run on win32`
-     (§2.2) and the manifest and source checks still run.
+     `required` properties, and with the arguments from `--tool-args <file.json>` for
+     the others; a tool with no arguments available is reported `not exercised`, not
+     failed (decision 31). On `win32` the protocol step for a `process` plugin is
+     reported `not exercised: process entries do not run on win32` (§2.2) and the
+     manifest and source checks still run.
   3. **Source drift**: the checks the meeting script does today, ported from
      `validate-hostapi.mjs:10-17` and `ui-bridge-usage.mjs` (official repository) into
      `src/plugins/validate/source-drift.ts`: `emitEvent`/`onEvent` literals in
@@ -3334,7 +3408,15 @@ app logger, and one test per mode parses every stdout line as a report row.
   row is `not exercised` and the exit code is 1 (remove the bound → the case hangs until
   the test's own timeout and fails); **`withholds-tool-reply`** answers through
   `tools/list` and never answers `tools/call` → `tools.call:echo` fails the same way
-  (same revert).
+  (same revert); **`withholds-construct`** reads construct and never answers → under
+  `--fast`, `protocol.construct` fails `timed out after 1000 ms` and the CLI exits 1
+  within 3 s — long before the 20 s cleanup deadline — with exactly one terminate, no
+  live child or open handle left, and a reply the fixture writes 2 s later ignored (stop
+  passing `signal` → the run lasts until the cleanup deadline, fails);
+  **`slow-construct`** answers construct after 10.5 s, run **without** `--fast` →
+  `protocol.construct` fails at 10 s with every later row `not exercised` (bound
+  construct at `pluginImportMs + pluginFactoryMs` again → construct passes at 10.5 s,
+  fails). It is the suite's one slow case, with a 20 s test timeout.
   `knip.jsonc:47-50` gains the `fixtures/raw/*.mjs` glob beside the host-protocol one.
 - The session-level rows: a recording link shows every `server/discover`, `tools/list`
   and `tools/call` frame carrying both `_meta` keys (replace the transport's producer
@@ -4329,11 +4411,11 @@ What Ave should not adopt, and why:
 | 40 | **Stdout discipline is proven on the raw bytes, and the production decoder stays tolerant.** The validate CLI and the confined-child suite tee stdout and fail on any line that is not a JSON object terminated by `0x0A`, including a `Content-Length:` header; `StdioFrameDecoder` still drops such a line in production. | The decoder drops malformed lines by design (`stdio-framing.ts:35-46`), so counting decoded frames cannot see a violation. A strict production decoder would turn a stray line into a failed plugin for every installed plugin mid-release, a contract change with no notice or replacement path; the reference runtime already takes stdout away from plugin code, and the validator catches a non-JS plugin's violation before publication. |
 | 41 | **Plugin resource cost is measured on the child, not on the test runner.** The confined-child harness samples the spawned wrapper's process tree with `ps` every 50 ms from spawn to exit (RSS in KiB on both platforms) and records peak RSS and spawn-to-construct time for the Python smoke and the `meeting` fixture; the Python child also reports its own `ru_maxrss` as `params.meta.ruMaxrss` of its last log notification, normalised per platform, and the golden canonicalises exactly that field to `"<measured>"` after recording its raw value, and replaces the temporary plugin and data roots (as allocated and after `realpath`) and the validation context's `hostRoot`, `userHome` and `aveHome` with named placeholders, guarded by a throw if `os.tmpdir()` or the checkout root survives; the repeat-run byte-equality check records twice with independently allocated roots and compares both to the committed golden. The numbers are reported, not gated, and the UNVERIFIED item stays open until a run produces them. | `process.resourceUsage()` reports the calling Node process and its peak persists across tests (Node documentation, <https://nodejs.org/api/process.html#processresourceusage>, checked 2026-09-28); a gate sized before any measurement exists would be a guess (decision 7). An RSS value in a golden would fail it on unchanged wire behaviour (cross-language re-review 4); a rule keyed to one field keeps every other number exact. A `mkdtemp` root differs on every run and is outside `goldenPath`'s fixture root, so without its own rule the golden holds a path no other run can produce, and a repeat run that reused one root would not notice (cross-language re-review round 3, finding 2). |
 | 42 | **Retired sources are outside validation by absence, not by a skip list.** The official repository's validation targets are the tracked sources that remain after the candidate wave (`feat/lease-candidates`, `e53fb40a8`), whose commit `0835fd2` deletes `plugins/vega-helper/source` and keeps its `marketplace.json`, `marketplace.2.json` and revocation entries. E2′ item 1 waits for that wave; the CLI then runs unconditionally for every discovered directory. | The revoked plugin is outside the replacement set (§9.5) and its source cannot pass protocol-2 validation; a lifecycle flag or skip list would be a way to switch validation off, while deleting the source leaves nothing to skip and keeps the catalog and revocation records that clients still need. |
-| 43 | **The protocol-session layer's authority is an input, and its controls are split by consequence.** `openPluginProtocolSession` requires a `BoundHostApiDispatchTable` — branded, produced only by `createBoundHostApiDispatchTable`, which moves to `bound-host-api-table.ts` — and never derives or defaults an envelope. Production binds it to **the same envelope value** the spawn received; the validation host binds it to `validationConfinement`, the plugin's base envelope with no declared grant applied and no read of the user's approvals. The session returns a non-destructive `channel` (`requestMcp`, `probe`, `runStopHook`, `closeInput`, `exited`) and one destructive `teardown`; `instance.stop` is `runStopHook` then `teardown`, unchanged in production. `teardown` is the only destructive call: a child that exits by itself is observed (`onGone` → the transport's `peerGone`), and the session releases its watchers, pending calls and dispatcher state and runs `onClosed` once **without** `terminate`; a deadline or a fatal framing error still reaches `close` and terminates. The production factory's only test seam is `observeChild` (`pid`, `onStdout`, `endInput`, `exited`), called after the wrap; it cannot supply, replace or re-spawn the child, see the envelope or table, write a frame or terminate. All of this is frozen in S1, and S1 migrates the 28 `connect` consumer sites. | `createServiceHostApiPaths` makes the envelope required because an omitted one "would silently mean 'unbounded'" (`host-api-dispatcher.ts:1352-1360`); a session that derived its own could check delegated workers against something other than the jail (`out-of-process-plugin.ts:157-165`), and a validator that read `~/.ave/settings.json` would validate against one user's approvals (both re-reviews' P0). The factory's `stop` always terminates (fact 14), so a stdin-close test built on it measures the termination, not the rule (host re-review #18, cross-language re-review 2); and while `onGone` is wired to `close` (`plugin-child-transport.ts:154-156`), a natural exit also calls `terminate`, which the third round found the second round's text still allowed (host re-review #25, cross-language re-review round 3, new 1). The confined suite needs the real child's bytes, PID and stdin (fact 15); a seam that could substitute the child is the bypass decision 30 removed, one that only observes after the wrap is not. Rejected: a pre-bound table passed as a plain `Record` (a hand-built or unbound record would type-check); an envelope input to the session (it would bind the table itself, a second binding site); an `unconfined` flag (decision 30). |
+| 43 | **The protocol-session layer's authority is an input, and its controls are split by consequence.** `openPluginProtocolSession` requires a `BoundHostApiDispatchTable` — branded, produced only by `createBoundHostApiDispatchTable`, which moves to `bound-host-api-table.ts` — and never derives or defaults an envelope. Production binds it to **the same envelope value** the spawn received; the validation host binds it to `validationConfinement`, the plugin's base envelope with no declared grant applied and no read of the user's approvals. The session returns a non-destructive `channel` (`requestMcp`, `probe`, `runStopHook`, `closeInput`, `exited`) and one destructive `teardown`; `instance.stop` is `runStopHook` then `teardown`, unchanged in production. `teardown` is the only destructive call: a child that exits by itself is observed (`onGone` → the transport's `peerGone`), and the session releases its watchers, pending calls and dispatcher state and runs `onClosed` once **without** `terminate`; a deadline or a fatal framing error still reaches `close` and terminates. `onGone` is terminal-only — an exit, or an `error` from a spawn that produced no process — and an `error` on a live child (a failed signal delivery) goes to the required `ChildLink.onFault`, whose transport handler terminates again even after `close`; `channel.exited` settles only on an observed exit. Both openers take an optional `signal` honoured from their first line, so a caller can cancel while construct is pending; an abort is `teardown`, and a construct success that races it is torn down, not returned. The production factory's only test seam is `observeChild` (`pid`, `onStdout`, `endInput`, `exited`), called after the wrap; it cannot supply, replace or re-spawn the child, see the envelope or table, write a frame or terminate. All of this is frozen in S1, and S1 migrates the 28 `connect` consumer sites. | `createServiceHostApiPaths` makes the envelope required because an omitted one "would silently mean 'unbounded'" (`host-api-dispatcher.ts:1352-1360`); a session that derived its own could check delegated workers against something other than the jail (`out-of-process-plugin.ts:157-165`), and a validator that read `~/.ave/settings.json` would validate against one user's approvals (both re-reviews' P0). The factory's `stop` always terminates (fact 14), so a stdin-close test built on it measures the termination, not the rule (host re-review #18, cross-language re-review 2); and while `onGone` is wired to `close` (`plugin-child-transport.ts:154-156`), a natural exit also calls `terminate`, which the third round found the second round's text still allowed (host re-review #25, cross-language re-review round 3, new 1). Both process adapters forward every `error` to `onGone` today (`out-of-process-plugin.ts:973-982`, `child-process-config-wire.test.ts:218-222`), while Node emits `error` for a signal it could not deliver to a running process (<https://nodejs.org/api/child_process.html#event-error>, checked 2026-10-01) and `managed-child-processes.ts:109-113` already keeps such a child; treating that as an exit would release a live child and let `closedReason` swallow its termination (host re-review #28). The opener returns the session only after construct (`out-of-process-plugin.ts:1436-1446`, `:1544`), so a caller's deadline that fires during construct had nothing to cancel with (host re-review #29). Rejected: a separate `cancelConstruct()` handle (a second cancellation path beside `teardown`); making `signal` required (production's factory timeout already disposes a late instance). The confined suite needs the real child's bytes, PID and stdin (fact 15); a seam that could substitute the child is the bypass decision 30 removed, one that only observes after the wrap is not. Rejected: a pre-bound table passed as a plain `Record` (a hand-built or unbound record would type-check); an envelope input to the session (it would bind the table itself, a second binding site); an `unconfined` flag (decision 30). |
 | 44 | **One producer of MCP request metadata on the plugin-child channel.** `PluginChildTransport.requestMcp` stamps `_meta` with `io.modelcontextprotocol/protocolVersion: "2026-07-28"` and `io.modelcontextprotocol/clientCapabilities: {}` on `server/discover`, `tools/list`, `tools/call` and `resources/read`, and refuses a caller `_meta`; `request` takes `ave/instance/*` only and `ave/*` frames carry no MCP `_meta`. `clientInfo` is omitted. The reference runtime's tolerance of a missing version is unchanged; the Python fixture rejects a request missing either required key with `-32602`, and the validate CLI checks the host-side frames. Landed in S1 with the goldens regenerated. | MCP `2026-07-28` makes both keys required on every request and a request without them malformed (fact 16); the factory sent neither on `tools/call` or `resources/read`, and a tolerant runtime hid it. `{}` is truthful: the host serves no server-to-client MCP request on these pipes (`plugin-child-transport.ts:242-247`). `clientInfo` is a SHOULD, display-only and self-reported; an app version in every MCP frame would move every golden at each release. Rejected: making the reference runtime strict in 0.13.0 (it also serves the in-process loopback, whose internal caller it tolerates by design, `plugin-mcp-server.ts:233-237`, and a behaviour change for every installed plugin is not Publication's); stamping in the session instead of the transport (two call sites, and the validator's requests would need a third). |
 | 45 | **Vendored bundles use the official repository's post-wave recipe, and the host logger is silent in them by intent.** `ave-plugin-validate.js` and `ave-plugin-child-main.js` are `tools/vendor/` `build` entries with `logger: "stub-app-logger"`, built by `bundle-app-marketplace.mjs` via `buildAtRef`; `orion` and `git` adopt the same recipe byte-for-byte; ave's bundle test runs that recipe from a fixture copy that names its commit. Source mode (`npm run plugin:validate`) applies the same substitution through `scripts/lib/stub-app-logger-hook.mjs`, a resolve hook loaded in the CLI and its child, and each mode's test parses every stdout line as a report row. | At the wave `vendor.mjs` refuses any other logger recipe (`:92`), so the pre-wave plain `bun build` the second round named could not be vendored (cross-language re-review 7). The app logger writes to stdout outside a headless run (`logger.ts:70-99`) and the CLI's stdout is its report; the child's diagnostics that matter cross as `notifications/ave/log`. Reproduced 2026-10-01: the recipe builds `plugin-child-main.ts` at `c73f59580` with no `pino` and no embedded path (fact 17). In source mode neither `LOG_LEVEL` nor rebinding `process.stdout.write` is enough: the logger's test-mode path calls `console.log` whenever `VITEST` or `NODE_ENV=test` is set (`logger.ts:37-38`, `:223-259`) and its pretty stream defaults to stdout (`:93-99`), so only replacing the module covers both (host re-review #27, cross-language re-review round 3, new 3). Rejected: a source-mode-only flag in the logger (a second silencing mechanism that the bundles would not exercise). |
 | 46 | **The Python smoke provisions one interpreter in one tree.** Every uv call runs with `UV_PYTHON_INSTALL_DIR`, `UV_PYTHON_BIN_DIR`, `UV_PYTHON_INSTALL_BIN=0` and `UV_CACHE_DIR` under `node_modules/.cache/ave-python-smoke`, discovery is `--managed-python`, every job that runs the smoke ensures uv with `scripts/fetch-uv.mjs` before it, and CI supplies the interpreter through `AVE_SMOKE_PYTHON` from `actions/setup-python`. The launcher is tested by running `bin/plugin` under `env -i` and checking the imported `mcp` comes from `<root>/vendor`. | `--install-dir` alone does not tell a later `find` where to look, default discovery falls through to `PATH`, and from uv 0.8.0 an install links an executable into the user's `PATH` (fact 17; cross-language re-review 6). The confinement jobs had no uv step and a cache hit skips the postinstall (re-review 5). A preflight that sets `PYTHONPATH` itself cannot fail when the launcher forgets to (re-review 9). |
-| 47 | **Every call the validate CLI awaits is bounded, by `runProtocolChecks`, from `TOOL_TIMEOUT_POLICY`.** Construct `pluginImportMs + pluginFactoryMs`; `start` and `onPublished` the manifest's `startupTimeoutMs` clamped to `pluginStartupMaxMs`, else `pluginStartupDefaultMs`; `server/discover`, `tools/list` and the unknown-method probe `mcpRequestDefaultMs`; each `tools/call` `globalCeilingMs`; the stop hook `pluginStartupDefaultMs`; `closeInput` → `exited` 5 s; `--fast` caps each at 1 s. Expiry fails that row with `timed out after <n> ms`, calls `teardown`, marks every later row `not exercised` and exits 1. | The CLI drives the session directly, so the runtime's owners (`runStartWithTimeout`, `src/plugins/runtime/index.ts:1242-1256`; the executor ceiling, `src/tools/executor-ceiling.ts:56-76`) never run, and the transport sets no timer for a call without a deadline (`plugin-child-transport.ts:159-165`, `child-stream-multiplex.ts:287-290`): a child that answers construct and then goes silent would hang the CLI and CI (host re-review #26). Reusing the production values keeps a plugin that passes validation inside the bounds the app will apply. Rejected: a single CLI-wide timeout (it would report no row and could not tell a slow `start` from a hung tool); bounds inside the session (the runtime owns production bounds, and a second owner there would race it). |
+| 47 | **Every call the validate CLI awaits is bounded, by `runProtocolChecks`, from `TOOL_TIMEOUT_POLICY`, and cancelled through one `AbortSignal`.** Construct `pluginFactoryMs`, the runtime's activation bound (the session's 20 s `pluginImportMs + pluginFactoryMs` stays as the transport's cleanup deadline, not a validation bound); `start` the manifest's `startupTimeoutMs` clamped to `pluginStartupMaxMs`, else `pluginStartupDefaultMs`; `onPublished` the same value as validator-only policy, since the runtime does not bound it; `server/discover`, `tools/list` and the unknown-method probe `mcpRequestDefaultMs`; each `tools/call` `globalCeilingMs`; the stop hook `pluginStartupDefaultMs`; `closeInput` → `exited` 5 s; `--fast` caps each at 1 s. Expiry fails that row with `timed out after <n> ms` and aborts the run's controller, which the session (given it as `signal` before construct) turns into `teardown`; every later row is `not exercised` and the exit code is 1. | The CLI drives the session directly, so the runtime's owners (`runStartWithTimeout`, `src/plugins/runtime/index.ts:1242-1256`; the executor ceiling, `src/tools/executor-ceiling.ts:56-76`) never run, and the transport sets no timer for a call without a deadline (`plugin-child-transport.ts:159-165`, `child-stream-multiplex.ts:287-290`): a child that answers construct and then goes silent would hang the CLI and CI (host re-review #26). Reusing the production values keeps a plugin that passes validation inside the bounds the app will apply: activation bounds the whole child construct, import included, by `runPluginFactoryWithTimeout` at `pluginFactoryMs` (`runtime/index.ts:1215-1227`, `:4007`, `:4912`, `:5528`, `:6282`, `:5151-5154`), so the round-3 bound of import plus factory would have passed a plugin the app refuses (host re-review #30). `onPublished` is awaited unbounded (`runtime/index.ts:3437`); its bound is labelled the validator's own policy rather than parity. Rejected: a single CLI-wide timeout (it would report no row and could not tell a slow `start` from a hung tool); bounds inside the session (the runtime owns production bounds, and a second owner there would race it). |
 
 ### Owner decisions still open
 
