@@ -272,9 +272,9 @@ describe("git marketplace IPC boundary", () => {
     registration.settingsChanged();
     expect(service.updates).not.toHaveBeenCalled();
 
-    registration.startBackground();
     // The boot's discovery, then the list after the boot installs.
-    await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(2));
+    await registration.startBackground();
+    expect(service.updates).toHaveBeenCalledTimes(2);
     registration.settingsChanged();
     await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(3));
     expect(service.discover).toHaveBeenCalledTimes(1);
@@ -312,8 +312,9 @@ describe("git marketplace IPC boundary", () => {
   it("answers every scheduler request with its declared refusal once the app has stopped the scheduler", async () => {
     shutdownHooks.clear();
     const { registration, service } = await setup();
-    registration.startBackground();
-    await vi.waitFor(() => expect(latestBootstrapStatus()).toMatchObject({ phase: "complete" }));
+    // This scheduler's own boot pass: the recorded bootstrap status is process-wide and may still be an earlier test's.
+    await registration.startBackground();
+    expect(latestBootstrapStatus()).toMatchObject({ phase: "complete" });
     // One hook closes the domain's event boundary and stops the scheduler in the same step.
     await vi.waitFor(() => expect(shutdownHooks.has("git-marketplace-events")).toBe(true));
     shutdownHooks.get("git-marketplace-events")!();
@@ -338,8 +339,7 @@ describe("git marketplace IPC boundary", () => {
     expect(service.discover.mock.calls.length).toBe(discoveries);
     expect(service.applyBootInstalls).toHaveBeenCalledTimes(1);
     // Nor does a scheduler start again after the shutdown.
-    registration.startBackground();
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await registration.startBackground();
     expect(service.discover.mock.calls.length).toBe(discoveries);
   });
 
@@ -399,11 +399,13 @@ describe("git marketplace IPC boundary", () => {
     const { registration, create } = await setup();
     vi.stubEnv("AVE_E2E", "1");
     vi.stubEnv("NODE_ENV", "test");
+    let started: Promise<void>;
     try {
-      registration.startBackground();
+      started = registration.startBackground();
     } finally {
       vi.unstubAllEnvs();
     }
+    await started;
     expect(latestBootstrapStatus()).toEqual({ phase: "complete", installed: [], failed: [], skipped: { reason: "e2e-isolated" } });
     expect(create).not.toHaveBeenCalled();
   });
