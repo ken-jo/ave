@@ -739,6 +739,13 @@ describe("candidateVersion (design §14)", () => {
   });
 });
 
+describe("candidateVersion detail (design §18.8)", () => {
+  it("names the Ave version a package needs", () => {
+    const row = { sourceId: "acme", name: "alpha", choice: { state: "upgrade_required", minAppVersion: "9.0.0" } } as CatalogRow;
+    expect(() => candidateVersion(row)).toThrow(expect.objectContaining({ code: "PACKAGE_INCOMPATIBLE", detail: { reason: "min_app_version", name: "alpha", version: "9.0.0" } }));
+  });
+});
+
 describe("treeDigest (design §6.4)", () => {
   it("hashes mode, file digest and path per line, sorted by path bytes", () => {
     const run = Buffer.from("#!/bin/sh\n");

@@ -10,7 +10,8 @@ import { useTranslation } from "../../../../i18n/react.js";
 import type { GitRuntimeMode } from "../../../../shared/git-runtime-mode.js";
 import type { GitRuntimeProgress, GitRuntimeStatus } from "../../../../shared/git-runtime.js";
 import { isIpcErrorResult, type AveApi } from "../../types.js";
-import { formatBytes } from "./labels.js";
+import { formatBytes, OTHER_SUBJECT } from "./labels.js";
+import { MarketplaceProblem } from "./MarketplaceProblem.js";
 
 const MODES: readonly GitRuntimeMode[] = ["auto", "system", "managed"];
 const PHASES = ["checking", "downloading", "verifying", "extracting", "smoke-testing"] as const;
@@ -31,6 +32,7 @@ export function GitRuntimeCard({ api, compact = false, onReady }: GitRuntimeCard
   const [unavailable, setUnavailable] = useState(false);
   const [progress, setProgress] = useState<GitRuntimeProgress | null>(null);
   const [installing, setInstalling] = useState(false);
+  /** Why the last mode change was not saved, as the raw text behind *Copy details*. */
   const [modeError, setModeError] = useState<string | null>(null);
   // The caller passes a fresh closure each render; reading it through a ref
   // keeps `refresh` (and the status read it starts) to one per mount.
@@ -75,7 +77,7 @@ export function GitRuntimeCard({ api, compact = false, onReady }: GitRuntimeCard
     setModeError(null);
     const result = await api.updateSettings({ marketplace: { git: { mode } } });
     if (isIpcErrorResult(result)) {
-      setModeError(result.message ?? result.error);
+      setModeError(result.message === undefined ? result.error : `${result.error}\n${result.message}`);
       return;
     }
     await refresh();
@@ -117,7 +119,9 @@ export function GitRuntimeCard({ api, compact = false, onReady }: GitRuntimeCard
           </div>
         </div>
       )}
-      {modeError && <p className="text-xs text-destructive">{modeError}</p>}
+      {modeError !== null && (
+        <MarketplaceProblem tone="error" text={t("gitMarketplace.git.modeSaveFailed")} details={modeError} testId="git-runtime:mode-error" />
+      )}
 
       {status.state === "ready" && status.active && (
         <div className="rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-soft) px-3 py-2 text-xs" data-testid="git-runtime:ready">
@@ -140,8 +144,9 @@ export function GitRuntimeCard({ api, compact = false, onReady }: GitRuntimeCard
         </div>
       )}
       {failed && !installing && (
-        <div className="rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-soft) px-3 py-2 text-xs text-destructive" data-testid="git-runtime:failed">
-          {t("gitMarketplace.git.failed", { code: failed.code, message: failed.message })}
+        <div className="space-y-1" data-testid="git-runtime:failed">
+          <p className="text-xs text-destructive">{t("gitMarketplace.git.failed")}</p>
+          <MarketplaceProblem failure={failed} subject={OTHER_SUBJECT} />
         </div>
       )}
       {status.mode === "system" && status.state !== "ready" && (

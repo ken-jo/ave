@@ -3,6 +3,7 @@
  * §15.7): `ave:git:runtime:status`, `ave:git:runtime:install` and the
  * `git-runtime:progress` event.
  */
+import type { MarketplaceErrorCode, MarketplaceErrorDetail } from "../marketplace/errors.js";
 import type { GitRuntimeMode } from "./git-runtime-mode.js";
 
 export type GitRuntimeProgress =
@@ -31,8 +32,8 @@ export interface GitRuntimeStatus {
     /** The pinned archive's size in bytes for this platform (design §15.7); null when none is pinned. */
     size: number | null;
   };
-  /** The last install attempt's failure in this session, cleared by a success. */
-  lastInstallError: { code: string; message: string } | null;
+  /** The last install attempt's failure in this session, cleared by a success; shown with its sentence (§18.8). */
+  lastInstallError: { code: MarketplaceErrorCode; message: string; detail?: MarketplaceErrorDetail } | null;
 }
 
 export type GitRuntimeResult =

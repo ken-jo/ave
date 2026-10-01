@@ -4,7 +4,7 @@
  * the user previews is what is added, what a plan shows is what installs,
  * a plan is used once, and every install lands in its kind's installer.
  */
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -576,6 +576,20 @@ describe("MarketplaceService", () => {
     expect(uninstall).toHaveBeenLastCalledWith(entry.name, { reason: "superseded", sourceId: "acme-tools", successors: entry.successors });
   });
 
+  it("says which Ave version a chosen version needs (§18.8)", async () => {
+    const source = market();
+    source.repo.commit(
+      { "skills/review/ave-package.json": text({ schemaVersion: 2, kind: "skill", name: "review", version: "2.0.0", minAppVersion: "9.0.0", payload: { entry: "SKILL.md" } }) },
+      "needs a newer app",
+    );
+    await addMarket(source.url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    await expect(service.planInstall({ ...key, version: "2.0.0" })).rejects.toMatchObject({
+      code: "PACKAGE_INCOMPATIBLE",
+      detail: { reason: "min_app_version", name: "review", version: "9.0.0" },
+    });
+  });
+
   it("uses conditional policies for detail and install/update review", async () => {
     const source = market();
     await addMarket(source.url);
@@ -832,6 +846,80 @@ describe("MarketplaceService", () => {
       expect.objectContaining({ key: { sourceId: "acme-tools", kind: "skill", name: "review" }, state: { state: "source-removed", version: "1.0.0" } }),
     ]);
     await expect(service.removeSource(OFFICIAL_MARKETPLACE.id)).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED" });
+  });
+
+  it("repairs an official source whose state file went missing, keeps its installs, and follows no link inside (§18.8)", async () => {
+    const { url } = market("1.0.0", "ave");
+    service.close();
+    await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
+    await service.refresh("ave");
+    const key = { sourceId: "ave", kind: "skill" as const, name: "review" };
+    await service.executeInstall((await service.planInstall(key)).planId);
+    const sourceDir = join(root, "marketplaces", "ave");
+    rmSync(join(sourceDir, "state.json"));
+    // A link inside the source's directory, to data that is not the marketplace's.
+    const outside = join(root, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "canary"), "kept\n");
+    symlinkSync(outside, join(sourceDir, "snapshots", "linked"), process.platform === "win32" ? "junction" : "dir");
+
+    const damaged = { reason: "state-missing", sourceId: "ave" };
+    expect((await service.listSources()).find((item) => item.id === "ave")!.status).toEqual({
+      state: "broken",
+      message: "state.json of source ave is missing while its synced data remains",
+      detail: damaged,
+    });
+    // Refresh cannot help, and says so with the same code.
+    await expect(service.refresh("ave")).rejects.toMatchObject({ code: "SOURCE_LOCAL_DATA_DAMAGED", detail: damaged });
+
+    const repaired = (await service.repairSource("ave")).find((item) => item.id === "ave")!;
+    expect(repaired).toMatchObject({ status: { state: "up-to-date" }, packageCount: 2, pinnedCommit: expect.stringMatching(/^[0-9a-f]{40}$/u) });
+    expect(readFileSync(join(outside, "canary"), "utf8")).toBe("kept\n");
+    expect(existsSync(join(sourceDir, "snapshots", "linked"))).toBe(false);
+    expect(store.list().map((entry) => `${entry.origin.sourceId}:${entry.kind}:${entry.name}@${entry.version}`)).toEqual(["ave:skill:review@1.0.0"]);
+    expect((await service.catalog({ installedOnly: true })).entries.map((entry) => [entry.key, entry.state])).toEqual([[key, { state: "installed", version: "1.0.0" }]]);
+  });
+
+  it("repairs a damaged snapshot keeping the pin, the hidden switch and sources.json", async () => {
+    const { url } = market();
+    await addMarket(url);
+    await service.setEnabled("acme-tools", false);
+    const before = (await service.listSources()).find((item) => item.id === "acme-tools")!;
+    const sourcesFile = readFileSync(join(root, "marketplaces", "sources.json"), "utf8");
+    writeFileSync(join(root, "marketplaces", "acme-tools", "snapshots", `${before.pinnedCommit}.json`), "{ not json");
+
+    expect((await service.listSources()).find((item) => item.id === "acme-tools")!.status).toMatchObject({
+      state: "broken",
+      detail: { reason: "snapshot-invalid", sourceId: "acme-tools" },
+    });
+    const repaired = (await service.repairSource("acme-tools")).find((item) => item.id === "acme-tools")!;
+    expect(repaired).toMatchObject({ status: { state: "up-to-date" }, pinnedCommit: before.pinnedCommit, enabled: false, packageCount: 2 });
+    expect(readFileSync(join(root, "marketplaces", "sources.json"), "utf8")).toBe(sourcesFile);
+    expect(readdirSync(join(root, "marketplaces", "acme-tools", "snapshots"))).toEqual([`${before.pinnedCommit}.json`]);
+  });
+
+  it("says a repair that could not move the damaged copy aside failed, without a home path", async () => {
+    const { url } = market();
+    await addMarket(url);
+    rmSync(join(root, "marketplaces", "acme-tools", "state.json"));
+    const busy = Object.assign(new Error(`EBUSY: resource busy or locked, rename '${join(root, "marketplaces", "acme-tools")}'`), { code: "EBUSY" });
+    const removal = vi.spyOn(SourceRegistry.prototype as unknown as { moveAside(from: string, to: string): Promise<void> }, "moveAside").mockRejectedValueOnce(busy);
+    try {
+      const failure = await service.repairSource("acme-tools").then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(failure).toMatchObject({
+        code: "SOURCE_LOCAL_DATA_DAMAGED",
+        message: "could not move the downloaded copy of source acme-tools aside (EBUSY)",
+        detail: { reason: "repair-failed-unpinned", sourceId: "acme-tools" },
+      });
+    } finally {
+      removal.mockRestore();
+    }
+    // Still damaged, still repairable.
+    expect((await service.listSources()).find((item) => item.id === "acme-tools")!.status).toMatchObject({ state: "broken", detail: { reason: "state-missing" } });
+    await expect(service.repairSource("acme-tools")).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: "acme-tools", status: { state: "up-to-date" } })]));
   });
 
   it("stores a token under its normalized host and refuses one that spans lines", async () => {

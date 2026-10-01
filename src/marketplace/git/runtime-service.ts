@@ -3,9 +3,10 @@
  * under the configured mode, and the managed install with its progress.
  */
 import { join } from "node:path";
+import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
 import type { GitRuntimeMode } from "../../shared/git-runtime-mode.js";
 import type { GitRuntimeProgress, GitRuntimeStatus } from "../../shared/git-runtime.js";
-import { isMarketplaceError } from "../errors.js";
+import { isMarketplaceError, scrubMarketplaceErrorDetail } from "../errors.js";
 import { detectGitRuntime, nodeGitDetectionDeps, type GitDetectionDeps, type ManagedGitInstall } from "./detect.js";
 import { findManagedGit, installManagedGit } from "./managed-git.js";
 import { MANAGED_GIT, type ManagedGitPins } from "./managed-git-pins.js";
@@ -78,7 +79,12 @@ export class GitRuntimeService {
       this.lastInstallError = null;
     } catch (error) {
       if (!isMarketplaceError(error)) throw error;
-      this.lastInstallError = { code: error.code, message: error.message };
+      // The status crosses to the renderer; its message and detail text go scrubbed.
+      this.lastInstallError = {
+        code: error.code,
+        message: scrubDiagnosticSecrets(error.message),
+        ...(error.detail ? { detail: scrubMarketplaceErrorDetail(error.code, error.detail) } : {}),
+      };
     }
     return this.status();
   }

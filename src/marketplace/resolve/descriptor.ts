@@ -53,7 +53,9 @@ export function candidateVersion(row: CatalogRow): IndexVersion {
   const { choice } = row;
   if (choice.state === "candidate") return choice.version;
   if (choice.state === "upgrade_required") {
-    throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `${row.name} needs Ave ${choice.minAppVersion} or newer`);
+    throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `${row.name} needs Ave ${choice.minAppVersion} or newer`, {
+      detail: { reason: "min_app_version", name: row.name, version: choice.minAppVersion },
+    });
   }
   switch (choice.reason) {
     case "revoked":

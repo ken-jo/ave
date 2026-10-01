@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { promises as dnsPromises } from "node:dns";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createFixtureRepo,
   type FixtureRepo,
@@ -16,10 +17,11 @@ import { MarketplaceError } from "../../errors.js";
 import { NetworkGate } from "../../net/network-gate.js";
 import { normalizeSourceUrl, parseSourcePattern } from "../../net/source-url.js";
 import type { OfficialMarketplace } from "../official.js";
-import { policyLoad as policyWith } from "../../__tests__/fixtures/policy.js";
+import { FIXTURE_POLICY_PATH, policyLoad as policyWith } from "../../__tests__/fixtures/policy.js";
 import type { PolicyLoad } from "../policy.js";
 import { SourceRegistry } from "../registry.js";
 import { SourceSyncer, shouldSyncSource, type SyncResult } from "../sync.js";
+import { sourceStatus } from "../../app/views.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
 
@@ -211,7 +213,198 @@ describe("SourceSyncer", () => {
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     await syncer.sync("acme");
     rmSync(join(root, "acme", "state.json"));
-    await expect(syncer.sync("acme")).rejects.toThrow("state.json is missing");
+    await expect(syncer.sync("acme")).rejects.toMatchObject({
+      code: "SOURCE_LOCAL_DATA_DAMAGED",
+      message: "state.json of source acme is missing while its synced data remains",
+      detail: { reason: "state-missing", sourceId: "acme" },
+    });
+  });
+
+  it("resets a damaged source's downloaded copy without following a link, then syncs it from scratch", async () => {
+    const { repo, name } = fixture();
+    const first = repo.commit({ "marketplace.2.json": index("acme", []) }, "first");
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    await syncer.sync("acme");
+    rmSync(join(root, "acme", "state.json"));
+    const outside = mkdtempSync(join(tmpdir(), "ave-sync-outside-"));
+    try {
+      writeFileSync(join(outside, "canary"), "kept\n");
+      symlinkSync(outside, join(root, "acme", "linked"), process.platform === "win32" ? "junction" : "dir");
+      // A file link needs a privilege on Windows; a junction does not.
+      if (process.platform !== "win32") symlinkSync(join(outside, "canary"), join(root, "acme", "snapshots", "file-link"));
+
+      await syncer.resetLocalData("acme");
+      expect(existsSync(join(root, "acme"))).toBe(false);
+      expect(readdirSync(root).filter((entry) => entry.startsWith(".trash-"))).toEqual([]);
+      expect(readdirSync(outside)).toEqual(["canary"]);
+      expect(readFileSync(join(outside, "canary"), "utf8")).toBe("kept\n");
+      // Unpinned again, so the first sync trusts what the source serves now.
+      expect(await syncer.sync("acme")).toEqual({ status: "ok", pinnedCommit: first, changed: true });
+    } finally {
+      await cleanupTmpDir(outside);
+    }
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("names an unreadable state file as damaged, by its error code and not its path", async () => {
+    const { repo, name } = fixture();
+    repo.commit({ "marketplace.2.json": index("acme", []) }, "first");
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    await syncer.sync("acme");
+    chmodSync(join(root, "acme", "state.json"), 0o000);
+    await expect(registry.readState("acme")).rejects.toMatchObject({
+      code: "SOURCE_LOCAL_DATA_DAMAGED",
+      message: "state.json of source acme cannot be read (EACCES)",
+      detail: { reason: "state-unreadable", sourceId: "acme" },
+    });
+    await syncer.resetLocalData("acme");
+    expect(await registry.readState("acme")).toEqual({ pinnedCommit: null, enabled: true });
+  });
+
+  /** A synced custom source whose snapshot at the pin no longer parses; the pin itself still reads. */
+  async function damagedSnapshot() {
+    const { repo, name } = fixture();
+    const base = repo.commit({ "marketplace.2.json": index("acme", []) }, "base");
+    const pinned = repo.commit({ "README.md": "v2\n" }, "second");
+    const context = await setup();
+    await context.registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    expect(await context.syncer.sync("acme")).toMatchObject({ status: "ok", pinnedCommit: pinned });
+    writeFileSync(join(root, "acme", "snapshots", `${pinned}.json`), "{ not json");
+    return { ...context, repo, base, pinned };
+  }
+
+  const trashLeft = () => readdirSync(root).filter((name) => name.startsWith(".trash-"));
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("names an unreadable snapshot apart from an unreadable state, since Repair keeps that pin", async () => {
+    const { syncer, registry, pinned } = await damagedSnapshot();
+    writeFileSync(join(root, "acme", "snapshots", `${pinned}.json`), "{}");
+    chmodSync(join(root, "acme", "snapshots", `${pinned}.json`), 0o000);
+    await expect(syncer.readSnapshot("acme")).rejects.toMatchObject({
+      code: "SOURCE_LOCAL_DATA_DAMAGED",
+      message: `snapshot ${pinned}.json of source acme cannot be read (EACCES)`,
+      detail: { reason: "snapshot-unreadable", sourceId: "acme" },
+    });
+    await syncer.resetLocalData("acme");
+    expect(await registry.readState("acme")).toEqual({ pinnedCommit: pinned, enabled: true });
+  });
+
+  it("keeps the pin and the damage when writing the kept pin back fails, and says it was the write", async () => {
+    const { syncer, registry, repo, base, pinned } = await damagedSnapshot();
+    const before = await registry.readState("acme");
+    vi.spyOn(registry, "writeState").mockRejectedValueOnce(Object.assign(new Error("no space left on device"), { code: "ENOSPC" }));
+
+    await expect(syncer.resetLocalData("acme")).rejects.toMatchObject({
+      code: "SOURCE_LOCAL_DATA_DAMAGED",
+      message: "could not write the kept pin of source acme (ENOSPC)",
+      detail: { reason: "repair-write-failed", sourceId: "acme" },
+    });
+    // Nothing moved: the pin reads as before and the row is still broken, so Repair stays on offer.
+    expect(await registry.readState("acme")).toEqual(before);
+    await expect(syncer.readSnapshot("acme")).rejects.toMatchObject({ detail: { reason: "snapshot-invalid" } });
+    expect(existsSync(join(root, "acme", "repo.git", "HEAD"))).toBe(true);
+    // And the history rule still holds: a rewritten upstream is held for review, not accepted.
+    rewrite(repo, base, { "README.md": "other\n" });
+    expectFailed(await syncer.sync("acme"), "SOURCE_HISTORY_REWRITTEN");
+    expect((await registry.readState("acme")).pinnedCommit).toBe(pinned);
+  });
+
+  it("keeps the pin when a Repair stops right after moving the first entry aside, and a later Repair finishes", async () => {
+    const { syncer, registry, repo, base, pinned } = await damagedSnapshot();
+    const move = vi.spyOn(registry as unknown as { moveAside(from: string, to: string): Promise<void> }, "moveAside");
+    move.mockImplementationOnce(async (from, to) => {
+      await (await import("node:fs/promises")).rename(from, to);
+      throw Object.assign(new Error("interrupted"), { code: "EINTR" });
+    });
+
+    await expect(syncer.resetLocalData("acme")).rejects.toMatchObject({ detail: { reason: "repair-failed", sourceId: "acme" } });
+    expect(await registry.readState("acme")).toEqual({ pinnedCommit: pinned, enabled: true });
+    // Whichever entry went first, the source is either still repairable or rebuilds at the pin; never unpinned.
+    move.mockRestore();
+    await syncer.resetLocalData("acme");
+    expect(trashLeft()).toEqual([]);
+    rewrite(repo, base, { "README.md": "other\n" });
+    expectFailed(await syncer.sync("acme"), "SOURCE_HISTORY_REWRITTEN");
+    expect((await registry.readState("acme")).pinnedCommit).toBe(pinned);
+  });
+
+  it("walks a real repository's read-only git objects away when Repair moves the copy aside", async () => {
+    const { syncer, registry, pinned } = await damagedSnapshot();
+    const objects = join(root, "acme", "repo.git", "objects");
+    const files = (readdirSync(objects, { recursive: true }) as string[]).map((name) => join(objects, name)).filter((path) => statSync(path).isFile());
+    // git writes its packs and loose objects read-only (Windows: the read-only attribute), so this is the case to walk.
+    expect(files.length).toBeGreaterThan(0);
+    expect(files.filter((path) => (statSync(path).mode & 0o200) === 0).length).toBeGreaterThan(0);
+
+    await syncer.resetLocalData("acme");
+    expect(trashLeft()).toEqual([]);
+    expect(readdirSync(join(root, "acme"))).toEqual(["state.json"]);
+    expect(await registry.readState("acme")).toEqual({ pinnedCommit: pinned, enabled: true });
+    expect(await syncer.sync("acme")).toMatchObject({ status: "ok", pinnedCommit: pinned });
+  });
+
+  it("moves a damaged copy aside before walking it, and sweeps what an interrupted walk left on the next open", async () => {
+    const { syncer, registry, pinned } = await damagedSnapshot();
+    mkdirSync(join(root, ".trash-acme-left"), { recursive: true });
+    writeFileSync(join(root, ".trash-acme-left", "stale"), "x");
+    await syncer.resetLocalData("acme");
+    expect(trashLeft()).toEqual([]);
+    expect(readdirSync(join(root, "acme"))).toEqual(["state.json"]);
+    expect(await registry.readState("acme")).toEqual({ pinnedCommit: pinned, enabled: true });
+
+    mkdirSync(join(root, ".trash-acme-crashed", "repo.git"), { recursive: true });
+    await SourceRegistry.open({ root, policy: policyWith({}) });
+    expect(trashLeft()).toEqual([]);
+  });
+
+  it("offers Repair, not network advice, when the source's own repository is half removed", async () => {
+    const { repo, name } = fixture();
+    repo.commit({ "marketplace.2.json": index("acme", []) }, "first");
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    const first = await syncer.sync("acme");
+    // What an interrupted walk of an older build leaves: HEAD without objects or refs. Removed with the
+    // teardown helper: git's objects are read-only, which a synchronous recursive rm refuses on Windows.
+    await cleanupTmpDir(join(root, "acme", "repo.git", "objects"));
+    await cleanupTmpDir(join(root, "acme", "repo.git", "refs"));
+
+    expect(await syncer.sync("acme")).toMatchObject({
+      status: "failed",
+      code: "SOURCE_LOCAL_DATA_DAMAGED",
+      message: "repo.git of source acme is not a repository git can open",
+      detail: { reason: "repository-damaged", sourceId: "acme" },
+    });
+    expect((await registry.readState("acme")).lastSync).toMatchObject({ result: "SOURCE_LOCAL_DATA_DAMAGED", detail: { reason: "repository-damaged" } });
+    await syncer.resetLocalData("acme");
+    expect(await syncer.sync("acme")).toMatchObject({ status: "ok", pinnedCommit: (first as { pinnedCommit: string }).pinnedCommit });
+  });
+
+  it("offers Repair, not a dead review, when a held rewrite sits on a half-removed repository", async () => {
+    const { repo, name } = fixture();
+    const base = repo.commit({ "marketplace.2.json": index("acme", []) }, "base");
+    repo.commit({ "README.md": "v2\n" }, "second");
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    await syncer.sync("acme");
+    const rewritten = rewrite(repo, base, { "README.md": "other\n" });
+    expectFailed(await syncer.sync("acme"), "SOURCE_HISTORY_REWRITTEN");
+    expect((await registry.readState("acme")).pendingRewrite).toMatchObject({ candidate: rewritten });
+
+    await cleanupTmpDir(join(root, "acme", "repo.git", "objects"));
+    await cleanupTmpDir(join(root, "acme", "repo.git", "refs"));
+    expect(await syncer.sync("acme")).toMatchObject({ code: "SOURCE_LOCAL_DATA_DAMAGED", detail: { reason: "repository-damaged" } });
+    // The review is still pending in the state, but the row offers Repair.
+    const state = await registry.readState("acme");
+    expect(state.pendingRewrite).toBeDefined();
+    expect(sourceStatus(state, false, true, true)).toMatchObject({ state: "broken", detail: { reason: "repository-damaged", sourceId: "acme" } });
+
+    const refused = await syncer.acceptRewrite("acme", rewritten).then(
+      () => null,
+      (error: unknown) => error as MarketplaceError,
+    );
+    expect(refused).toBeInstanceOf(MarketplaceError);
+    expect(refused).toMatchObject({ code: "SOURCE_LOCAL_DATA_DAMAGED", message: "repo.git of source acme is not a repository git can open", detail: { reason: "repository-damaged" } });
+    expect(refused!.message).not.toContain(root);
   });
 
   it("lets a running sync finish before its source is removed", async () => {
@@ -416,6 +609,62 @@ describe("SourceSyncer", () => {
     rewrite(repo, base, { "README.md": "forked\n" });
     expectFailed(await syncer.sync("ave"), "SOURCE_HISTORY_REWRITTEN");
     expect((await registry.readState("ave")).pinnedCommit).toBe(commit);
+  });
+
+  it("persists why a background sync failed, and the reason survives reopening the registry", async () => {
+    // The resolver answers for every other name, so only this source's host is missing.
+    const lookup = dnsPromises.lookup.bind(dnsPromises);
+    const spy = vi.spyOn(dnsPromises, "lookup").mockImplementation(((host: string, options: unknown) => {
+      if (host === "nowhere.invalid") return Promise.reject(Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" }));
+      return (lookup as (host: string, options: unknown) => Promise<unknown>)(host, options);
+    }) as typeof dnsPromises.lookup);
+    try {
+      const { registry, syncer } = await setup();
+      await registry.add({ id: "acme", origin: "custom", url: "https://nowhere.invalid/acme/market", auth: { kind: "none" } });
+
+      expect(await syncer.sync("acme")).toMatchObject({
+        status: "failed",
+        code: "SOURCE_UNREACHABLE",
+        detail: { reason: "dns", host: "nowhere.invalid" },
+      });
+
+      const reopened = await SourceRegistry.open({ root, policy: policyWith({}) });
+      expect((await reopened.readState("acme")).lastSync).toEqual({ at: AT, result: "SOURCE_UNREACHABLE", detail: { reason: "dns", host: "nowhere.invalid" } });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("stores and returns a detail's diagnostic text scrubbed", async () => {
+    const { registry } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: "https://1.1.1.1/acme/market", auth: { kind: "none" } });
+    const broken: PolicyLoad = { ok: false, error: '/fixture/ave-policy.json: duplicate key "https://alice:detail-canary@example.com/x"', path: FIXTURE_POLICY_PATH };
+    const syncer = new SourceSyncer({
+      registry,
+      gate: new NetworkGate({ policy: broken, allowLoopback: true }),
+      runner: git.runner,
+      root,
+      now: () => new Date(AT),
+      retainedCommits: async () => new Set(),
+      onCatalogChanged: () => undefined,
+    });
+
+    const result = await syncer.sync("acme");
+    const scrubbed = { reason: "policy-invalid", error: '/fixture/ave-policy.json: duplicate key "https://[REDACTED:CREDENTIALS]@example.com/x"' };
+    expect(result).toMatchObject({ status: "failed", code: "SOURCE_POLICY_BLOCKED", detail: scrubbed });
+    expect(readFileSync(join(root, "acme", "state.json"), "utf8")).not.toContain("detail-canary");
+    expect((await registry.readState("acme")).lastSync).toEqual({ at: AT, result: "SOURCE_POLICY_BLOCKED", detail: scrubbed });
+  });
+
+  it("keeps the code but drops a stored detail that does not belong to it", async () => {
+    const { registry } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: "https://nowhere.invalid/acme/market", auth: { kind: "none" } });
+    const stateFile = join(root, "acme", "state.json");
+    mkdirSync(dirname(stateFile), { recursive: true });
+    const lastSync = { at: AT, result: "SOURCE_UNREACHABLE", detail: { reason: "token", host: "nowhere.invalid" } };
+    writeFileSync(stateFile, `${JSON.stringify({ pinnedCommit: null, enabled: true, lastSync })}\n`);
+
+    expect((await registry.readState("acme")).lastSync).toEqual({ at: AT, result: "SOURCE_UNREACHABLE" });
   });
 
   it("reports a host that goes down while an accepted rewrite fetches its files as the sync's result", async () => {

@@ -61,6 +61,7 @@ import {
   createLoopbackToolCallSource,
 } from "../../mcp/mcp-ui-tool-call.js";
 import type { McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
+import type { ClaudeDesktopImportFailure } from "../../mcp/claude-desktop-import.js";
 import { parseUiMessageIntent, type McpUiMessageOutcome } from "../../mcp/mcp-ui-message.js";
 import { parseMcpAppDownload, type McpUiDownloadOutcome } from "../../mcp/mcp-app-download.js";
 import type { McpUiModelContextOutcome } from "../../mcp/mcp-app-model-context.js";
@@ -1837,7 +1838,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         auditUnauthorized(auditLogger, CHANNELS.mcp.importClaudeDesktopApply, e);
         return UNAUTHORIZED_FRAME;
       }
-      const { parseClaudeDesktopConfig } = await import("../../mcp/claude-desktop-import.js");
+      const { importFailureKind, parseClaudeDesktopConfig } = await import("../../mcp/claude-desktop-import.js");
       const policy = payload?.conflictPolicy ?? "skip";
       const parsed = parseClaudeDesktopConfig(typeof payload?.raw === "string" ? payload.raw : "");
       const seenIds = new Set<string>();
@@ -1850,12 +1851,10 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
       const existing = await deps.mcpManager.getConfigs();
       const existingIds = new Set(existing.map((s) => s.id));
-      const results: Array<{
-        id: string;
-        action: "added" | "skipped-conflict" | "overwritten" | "failed";
-        reason?: string;
-        warning?: string;
-      }> = [];
+      const results: Array<
+        | { id: string; action: "added" | "skipped-conflict" | "overwritten"; reason?: string; warning?: string }
+        | { id: string; action: "failed"; failure: ClaudeDesktopImportFailure; reason: string; warning?: string }
+      > = [];
       for (const entry of dedupedEntries) {
         const conflictedAtStart = existingIds.has(entry.id);
         if (conflictedAtStart) {
@@ -1870,6 +1869,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
             results.push({
               id: entry.id,
               action: "failed",
+              failure: importFailureKind(err),
               reason: (err as Error).message ?? "remove failed",
             });
             continue;
@@ -1888,6 +1888,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
           results.push({
             id: entry.id,
             action: "failed",
+            failure: importFailureKind(err),
             reason: (err as Error).message ?? "addConfig failed",
             warning: entry.warning,
           });

@@ -682,12 +682,10 @@ export type AveApi = {
   applyClaudeDesktopMcpImport: (payload: { raw: string; conflictPolicy?: "skip" | "overwrite" }) => Promise<
     | {
         ok: true;
-        results: Array<{
-          id: string;
-          action: "added" | "skipped-conflict" | "overwritten" | "failed";
-          reason?: string;
-          warning?: string;
-        }>;
+        results: Array<
+          | { id: string; action: "added" | "skipped-conflict" | "overwritten"; reason?: string; warning?: string }
+          | { id: string; action: "failed"; failure: import("../../mcp/claude-desktop-import.js").ClaudeDesktopImportFailure; reason: string; warning?: string }
+        >;
         parseErrors: Array<{ id: string; reason: string }>;
       }
     | { ok: false; error: string }

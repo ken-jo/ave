@@ -11,10 +11,11 @@ import { Input } from "../../../../components/ui/input.js";
 import { Label } from "../../../../components/ui/label.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
-import type { GitMarketplaceErrorCode, SourcePreviewRequest, SourcePreviewView, SourceView } from "../../../../shared/git-marketplace.js";
+import type { GitMarketplaceFailure, SourcePreviewRequest, SourcePreviewView, SourceView } from "../../../../shared/git-marketplace.js";
 import type { AveApi } from "../../types.js";
 import { GitRuntimeCard } from "./GitRuntimeCard.js";
-import { KIND_ORDER, failureText, kindLabel, shortSha } from "./labels.js";
+import { ENTRY_SUBJECT, KIND_ORDER, kindLabel, shortSha } from "./labels.js";
+import { MarketplaceProblem } from "./MarketplaceProblem.js";
 
 type Auth = SourcePreviewRequest["auth"];
 
@@ -40,7 +41,7 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
   const [token, setToken] = useState("");
   const [preview, setPreview] = useState<SourcePreviewView | null>(null);
   const [id, setId] = useState("");
-  const [failure, setFailure] = useState<{ code: GitMarketplaceErrorCode; message: string } | null>(null);
+  const [failure, setFailure] = useState<GitMarketplaceFailure | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -202,7 +203,7 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
           </div>
         )}
 
-        {failure && <p className="text-sm text-destructive" data-testid="git-marketplace:add:error">{failureText(t, failure)}</p>}
+        {failure && <MarketplaceProblem failure={failure} subject={ENTRY_SUBJECT} testId="git-marketplace:add:error" />}
 
         <DialogFooter className="gap-2">
           {step === 2 && (

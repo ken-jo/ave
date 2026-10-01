@@ -51,9 +51,9 @@ const DESIGN_EXAMPLE = {
 
 describe("loadMarketplacePolicy", () => {
   it("means no restrictions when the file is missing or has no marketplaces section", async () => {
-    expect(await loadMarketplacePolicy(join(dir, "absent.json"))).toEqual({ ok: true, policy: EMPTY_MARKETPLACE_POLICY });
+    expect(await loadMarketplacePolicy(join(dir, "absent.json"))).toEqual({ ok: true, policy: EMPTY_MARKETPLACE_POLICY, path: join(dir, "absent.json") });
     writeFileSync(path, JSON.stringify({ version: 1, requireExplicitApproval: true, managed: false, updatedAt: "x" }));
-    expect(await loadMarketplacePolicy(path)).toEqual({ ok: true, policy: EMPTY_MARKETPLACE_POLICY });
+    expect(await loadMarketplacePolicy(path)).toEqual({ ok: true, policy: EMPTY_MARKETPLACE_POLICY, path });
   });
 
   it("reads the design example and keeps a key listed in both lists as required only", async () => {

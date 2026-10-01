@@ -481,3 +481,29 @@ describe("ave:plugins:config:secret:set — restart policy", () => {
     expect(restartPlugin).not.toHaveBeenCalled();
   });
 });
+
+describe("ave:mcp:import:claude-desktop:apply", () => {
+  it("says why each server was not added as a kind the renderer words, with main's reason kept for Copy details", async () => {
+    const { deps } = await setup();
+    // Node's shape for a write the OS refused; chmod cannot refuse one on Windows or as root.
+    const denied = Object.assign(new Error("EACCES: permission denied, open '/Users/me/.ave/mcp-servers.json'"), { code: "EACCES", errno: -13, syscall: "open" });
+    const addConfig = vi.fn(async (config: { id: string }) => {
+      if (config.id === "files") throw denied;
+      if (config.id === "notes") throw new Error("[mcp-manager] governance refused notes");
+      return { connected: true };
+    });
+    Object.assign(deps, { mcpManager: { getConfigs: vi.fn(async () => []), removeConfig: vi.fn(), addConfig } });
+    const raw = JSON.stringify({ mcpServers: { files: { command: "npx", args: ["files"] }, notes: { command: "npx", args: ["notes"] }, web: { command: "npx", args: ["web"] } } });
+
+    const res = await invoke("ave:mcp:import:claude-desktop:apply", { raw, conflictPolicy: "skip" });
+
+    expect(res).toMatchObject({
+      ok: true,
+      results: [
+        { id: "files", action: "failed", failure: "permission-denied", reason: denied.message },
+        { id: "notes", action: "failed", failure: "other", reason: "[mcp-manager] governance refused notes" },
+        { id: "web", action: "added" },
+      ],
+    });
+  });
+});

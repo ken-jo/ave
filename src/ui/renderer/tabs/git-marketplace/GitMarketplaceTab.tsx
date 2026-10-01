@@ -18,7 +18,7 @@ import {
   type BootInstallNoticeView,
   type CatalogEntryView,
   type CatalogView,
-  type GitMarketplaceErrorCode,
+  type GitMarketplaceFailure,
   type PackageKeyView,
   type PackageKind,
   type RevokedPackageView,
@@ -31,7 +31,8 @@ import { isIpcErrorResult, type AveApi } from "../../types.js";
 import { AddSourceDialog } from "./AddSourceDialog.js";
 import { DirectInstallView } from "./DirectInstallView.js";
 import { GitRuntimeCard } from "./GitRuntimeCard.js";
-import { KIND_ORDER, failureText, kindLabel, originLabel, relativeTime, stateLabel } from "./labels.js";
+import { KIND_ORDER, kindLabel, originLabel, OTHER_SUBJECT, relativeTime, stateLabel } from "./labels.js";
+import { MarketplaceProblem } from "./MarketplaceProblem.js";
 import { PackageSheet } from "./PackageSheet.js";
 import { LocalPluginPackageSheet, PluginStudioView } from "./PluginStudioView.js";
 import type { StudioLocalPreview } from "../../../../shared/plugin-studio.js";
@@ -129,7 +130,9 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
   const [view, setView] = useState<View>("browse");
   const [sources, setSources] = useState<SourceView[]>([]);
   const [catalog, setCatalog] = useState<CatalogView | null>(null);
-  const [failure, setFailure] = useState<{ code: GitMarketplaceErrorCode; message: string } | null>(null);
+  const [failure, setFailure] = useState<GitMarketplaceFailure | null>(null);
+  /** A plugin-file action that failed outside the marketplace's codes: its sentence, and the raw text behind *Copy details*. */
+  const [actionFailure, setActionFailure] = useState<{ action: "open"; details: string } | { action: "export"; name: string; details: string } | null>(null);
   const [kind, setKind] = useState<PackageKind | null>(initialKind);
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [installedOnly, setInstalledOnly] = useState(false);
@@ -144,6 +147,8 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
   // A switch flipped before the saved value arrives would write a guess.
   const [flagsLoaded, setFlagsLoaded] = useState(false);
   const [flagsFailure, setFlagsFailure] = useState<string | null>(null);
+  /** Why the last switch was not saved, as the raw text behind *Copy details*. */
+  const [flagSaveFailure, setFlagSaveFailure] = useState<string | null>(null);
   const envForcedPaths = useEnvForcedSettings(api);
   const syncedOnce = useRef(false);
 
@@ -287,8 +292,9 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
   }, [api]);
 
   const persistFlag = async (patch: { updateCheckEnabled?: boolean; offlineCacheEnabled?: boolean }) => {
+    setFlagSaveFailure(null);
     const result = await api.updateSettings({ marketplace: patch });
-    if (isIpcErrorResult(result)) setFailure({ code: "unavailable", message: result.message ?? result.error });
+    if (isIpcErrorResult(result)) setFlagSaveFailure(result.message === undefined ? result.error : `${result.error}\n${result.message}`);
   };
 
   const entries = useMemo(() => (catalog?.entries ?? []).filter((entry) => kind === null || entry.key.kind === kind), [catalog, kind]);
@@ -311,13 +317,15 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
   };
 
   const openLocalFile = async () => {
+    setActionFailure(null);
     const result = await api.pluginStudio.previewInstallFromFile();
     if (result.ok && result.value) setLocalPreview(result.value);
-    else if (!result.ok) setFailure({ code: "unavailable", message: result.message });
+    else if (!result.ok) setActionFailure({ action: "open", details: `${result.code}\n${result.message}` });
   };
   const exportInstalled = async (name: string, projection: boolean) => {
+    setActionFailure(null);
     const result = await api.pluginStudio.exportInstalled(name, projection);
-    if (!result.ok) setFailure({ code: "unavailable", message: result.message });
+    if (!result.ok) setActionFailure({ action: "export", name, details: `${result.code}\n${result.message}` });
   };
 
   return (
@@ -356,7 +364,16 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
           </DropdownMenu>
         </div>
 
-        {failure && <p className="mt-2 text-sm text-destructive" data-testid="git-marketplace:error">{failureText(t, failure)}</p>}
+        {failure && <MarketplaceProblem failure={failure} subject={OTHER_SUBJECT} className="mt-2" testId="git-marketplace:error" />}
+        {actionFailure && (
+          <MarketplaceProblem
+            tone="error"
+            text={actionFailure.action === "open" ? t("gitMarketplace.local.openFailed") : t("gitMarketplace.local.exportFailed", { name: actionFailure.name })}
+            details={actionFailure.details}
+            className="mt-2"
+            testId="git-marketplace:action-error"
+          />
+        )}
 
         {view === "browse" && notice && (
           <div className="mt-3 space-y-2 rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-soft) px-3 py-2 text-xs" data-testid="git-marketplace:boot-notice">
@@ -537,9 +554,10 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
       <SettingsSection data-settings-section="marketplace-maintenance" title={t("gitMarketplace.maintenance.title")} description={t("gitMarketplace.maintenance.description")}>
         <GitRuntimeCard api={api} />
         {flagsFailure !== null && (
-          <p className="mt-4 text-sm text-destructive" data-testid="git-marketplace:maintenance:error">
-            {t("gitMarketplace.error.unavailable", { message: flagsFailure })}
-          </p>
+          <MarketplaceProblem failure={{ code: "unavailable", message: flagsFailure }} subject={OTHER_SUBJECT} className="mt-4" testId="git-marketplace:maintenance:error" />
+        )}
+        {flagSaveFailure !== null && (
+          <MarketplaceProblem tone="error" text={t("gitMarketplace.maintenance.saveFailed")} details={flagSaveFailure} className="mt-4" testId="git-marketplace:maintenance:save-error" />
         )}
         <div className="mt-4 flex items-center justify-between gap-4">
           <span className="text-sm font-medium">{t("gitMarketplace.maintenance.updateCheck")}</span>
@@ -604,6 +622,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
         alertsApi={api}
         onOpenPluginSettings={onOpenPluginSettings}
         target={sheet}
+        source={sheet ? (sources.find((source) => source.id === sheet.key.sourceId) ?? null) : null}
         onClose={() => setSheet(null)}
         onChanged={() => {
           void loadCatalog();

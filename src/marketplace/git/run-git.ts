@@ -27,7 +27,7 @@ import type { Readable } from "node:stream";
 import { proxyUrlFromPacEntry } from "../../shared/pac-proxy.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../../main/managed-child-processes.js";
-import { MarketplaceError, type MarketplaceErrorCode } from "../errors.js";
+import { MarketplaceError, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
 import type { NormalizedSourceUrl } from "../net/source-url.js";
 import type { AskpassBroker } from "./askpass.js";
 import type { GitExecutable } from "./detect.js";
@@ -43,6 +43,25 @@ const DEFAULT_MAX_STDOUT_BYTES = 32 * 1024 * 1024;
 const STDERR_TAIL_BYTES = 64 * 1024;
 /** How long git gets to remove its lock files after SIGTERM before its group is killed. */
 const FORCE_KILL_AFTER_MS = 2_000;
+
+/**
+ * The repository a call works on (`gitDir`) is not one git can open, as a
+ * half-removed copy leaves it: the local copy is damaged, whatever the
+ * remote's state, so it is never read as a network failure. Not a
+ * {@link GitCommandError}, so no caller reads it as an ordinary "no".
+ */
+export class LocalRepositoryDamagedError extends Error {
+  constructor(
+    message: string,
+    readonly gitDir: string,
+  ) {
+    super(message);
+    this.name = "LocalRepositoryDamagedError";
+  }
+}
+
+/** git's refusal to open `GIT_DIR` (C locale). */
+const LOCAL_REPOSITORY_BROKEN = /not a git repository/u;
 
 export class GitCommandError extends Error {
   constructor(
@@ -113,22 +132,81 @@ const REMOTE_FAILURES: ReadonlyArray<readonly [MarketplaceErrorCode, RegExp]> = 
   ["SOURCE_REF_NOT_FOUND", /couldn't find remote ref|remote branch .* not found|no such ref was fetched/u],
 ];
 
-const NOT_FOUND = /repository .* not found|returned error: 404|does not appear to be a git repository/u;
+/**
+ * The host's "no repository here": GitHub over https ("repository '…' not
+ * found") and ssh ("ERROR: Repository not found."), GitLab's "could not be
+ * found or you don't have permission", a plain 404, and a path that is not a
+ * repository. Hosts answer this way for a private repository the caller
+ * cannot see as well, so it never says which of the two it is.
+ */
+const NOT_FOUND = /repository .* not found|repository not found|could not be found or you don't have permission|returned error: 404|does not appear to be a git repository/u;
+
+/** OpenSSH's banner for a key that differs from the one in known_hosts, before "host key verification failed". */
+const HOST_KEY_CHANGED = /remote host identification has changed|host key for .* has changed/u;
 
 /**
- * Map a remote-call failure to its error code. A "repository not found"
- * after the broker offered a token means the token cannot see the
- * repository (hosts answer 404 rather than 403 to hide private
- * repositories), so it is an auth problem; without a credential it is a
- * wrong or unreachable URL.
+ * Why git could not reach the remote, from curl's and ssh's (C-locale)
+ * messages, in the order that keeps one cause from reading as another:
+ * "network is unreachable" also follows "failed to connect", and a timeout
+ * is reported on the same line as the address it was connecting to.
  */
-export function classifyRemoteFailure(stderr: string, credentialOffered: boolean): MarketplaceErrorCode {
-  const text = stderr.toLowerCase();
-  for (const [code, pattern] of REMOTE_FAILURES) {
-    if (pattern.test(text)) return code;
+const UNREACHABLE_REASONS: ReadonlyArray<readonly ["offline" | "dns" | "timeout" | "refused" | "tls", RegExp]> = [
+  ["offline", /network is unreachable/u],
+  ["dns", /could not resolve host|could not resolve hostname|name or service not known|nodename nor servname provided|temporary failure in name resolution|no such host is known/u],
+  ["timeout", /timed out|timeout was reached/u],
+  ["refused", /connection refused|couldn't connect to server|failed to connect to|connection reset by peer|no route to host/u],
+  ["tls", /ssl certificate problem|server certificate verification failed|certificate verify failed|unable to get local issuer certificate|self[- ]signed certificate|sec_e_untrusted_root|ssl: no alternative certificate subject name/u],
+];
+
+const HTTP_STATUS = /returned error: (\d{3})/u;
+
+/** `ssh://host` without a port is port 22, the one ssh and known_hosts use. */
+function sshPort(url: NormalizedSourceUrl): number {
+  return url.port ?? 22;
+}
+
+function unreachableDetail(text: string, host: string): MarketplaceErrorDetail<"SOURCE_UNREACHABLE"> | undefined {
+  for (const [reason, pattern] of UNREACHABLE_REASONS) {
+    if (!pattern.test(text)) continue;
+    return reason === "offline" ? { reason } : { reason, host };
   }
-  if (NOT_FOUND.test(text)) return credentialOffered ? "SOURCE_AUTH_REQUIRED" : "SOURCE_UNREACHABLE";
-  return "SOURCE_UNREACHABLE";
+  const status = HTTP_STATUS.exec(text);
+  return status ? { reason: "http-status", host, status: Number(status[1]) } : undefined;
+}
+
+/**
+ * Map a remote-call failure to its error, with the detail its sentence
+ * needs when git's message says why (design §18.8). A "repository not found"
+ * after the broker offered a token means the token may not reach the
+ * repository (hosts answer 404 rather than 403 to hide private
+ * repositories): `SOURCE_AUTH_REQUIRED` `token-no-access`. Without a token
+ * from Ave it is `SOURCE_UNREACHABLE` `not-found` (`not-found-ssh` over
+ * ssh), whose sentence names both a wrong address and a private repository,
+ * since the answer is the same for both. A failure whose cause git does not
+ * name carries no detail and reads as its code's reason-less sentence.
+ */
+export function classifyRemoteFailure(stderr: string, credentialOffered: boolean, url: NormalizedSourceUrl, message: string): MarketplaceError {
+  const text = stderr.toLowerCase();
+  const host = url.host;
+  for (const [code, pattern] of REMOTE_FAILURES) {
+    if (!pattern.test(text)) continue;
+    switch (code) {
+      case "SOURCE_AUTH_REQUIRED":
+        return new MarketplaceError(code, message, { detail: { reason: url.scheme === "ssh" ? "ssh" : "token", host } });
+      case "SOURCE_SSH_HOST_UNKNOWN":
+        return new MarketplaceError(code, message, { detail: { reason: HOST_KEY_CHANGED.test(text) ? "changed" : "unknown", host, port: sshPort(url) } });
+      default:
+        return new MarketplaceError(code, message);
+    }
+  }
+  if (NOT_FOUND.test(text)) {
+    if (url.scheme === "ssh") return new MarketplaceError("SOURCE_UNREACHABLE", message, { detail: { reason: "not-found-ssh", host } });
+    return credentialOffered
+      ? new MarketplaceError("SOURCE_AUTH_REQUIRED", message, { detail: { reason: "token-no-access", host } })
+      : new MarketplaceError("SOURCE_UNREACHABLE", message, { detail: { reason: "not-found", host } });
+  }
+  const detail = unreachableDetail(text, host);
+  return new MarketplaceError("SOURCE_UNREACHABLE", message, detail ? { detail } : undefined);
 }
 
 function lastLine(text: string): string {
@@ -207,7 +285,11 @@ export class GitRunner {
     const kindUpper = kind.toUpperCase();
     const proxy = (kindUpper === "SOCKS" || kindUpper === "SOCKS4") && endpoint ? `socks4://${endpoint}` : proxyUrlFromPacEntry(entry);
     // Going direct would send the traffic where the configuration did not choose.
-    if (!proxy) throw new MarketplaceError("SOURCE_UNREACHABLE", `the system proxy for ${remote.url.host} (${entry}) is not one git can use`);
+    if (!proxy) {
+      throw new MarketplaceError("SOURCE_UNREACHABLE", `the system proxy for ${remote.url.host} (${entry}) is not one git can use`, {
+        detail: { reason: "proxy", host: remote.url.host, proxy: entry },
+      });
+    }
     return proxy;
   }
 
@@ -282,7 +364,9 @@ export class GitRunner {
       const timer = setTimeout(() => {
         stop(
           options.remote
-            ? new MarketplaceError("SOURCE_UNREACHABLE", `git ${command} timed out after ${options.timeoutMs} ms`)
+            ? new MarketplaceError("SOURCE_UNREACHABLE", `git ${command} timed out after ${options.timeoutMs} ms`, {
+                detail: { reason: "timeout", host: options.remote.url.host },
+              })
             : new GitCommandError(`git ${command} timed out after ${options.timeoutMs} ms`, null, stderr),
         );
       }, options.timeoutMs);
@@ -336,9 +420,13 @@ export class GitRunner {
             resolve({ stdout: Buffer.concat(stdoutChunks), stderr });
             return;
           }
+          // Checked before the remote's classification: a fetch into a broken repository is not a network failure.
+          if (options.gitDir && LOCAL_REPOSITORY_BROKEN.test(stderr.toLowerCase())) {
+            reject(new LocalRepositoryDamagedError(`git ${command} failed: ${lastLine(stderr) || `exit ${code}`}`, options.gitDir));
+            return;
+          }
           if (options.remote) {
-            const errorCode = classifyRemoteFailure(stderr, credentialOffered());
-            reject(new MarketplaceError(errorCode, `git ${command} failed: ${lastLine(stderr) || `exit ${code}`}`));
+            reject(classifyRemoteFailure(stderr, credentialOffered(), options.remote.url, `git ${command} failed: ${lastLine(stderr) || `exit ${code}`}`));
             return;
           }
           reject(new GitCommandError(`git ${command} failed: ${lastLine(stderr) || `exit ${code}`}`, code, stderr));

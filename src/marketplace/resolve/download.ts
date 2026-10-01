@@ -31,12 +31,13 @@ export interface DownloadOptions {
 function statusError(url: string, status: number, tokenMissing: boolean): MarketplaceError {
   const where = new URL(url).host;
   if (status === 401 || status === 403) {
+    // No host in the detail: the token belongs to the source's host, which a download host (a CDN, the API) need not be.
     return new MarketplaceError("SOURCE_AUTH_REQUIRED", `${where} refused the download (HTTP ${status})`);
   }
   if (status === 404 && tokenMissing) {
     return new MarketplaceError("SOURCE_AUTH_REQUIRED", `${where} answered HTTP 404 and no token is stored for this source's host`);
   }
-  return new MarketplaceError("SOURCE_UNREACHABLE", `${where} answered HTTP ${status}`);
+  return new MarketplaceError("SOURCE_UNREACHABLE", `${where} answered HTTP ${status}`, { detail: { reason: "http-status", host: where, status } });
 }
 
 /** The gated response for `url`; a non-2xx status becomes the matching error code. */
@@ -67,7 +68,8 @@ export async function downloadBounded(url: string, options: DownloadOptions): Pr
   const chunks: Buffer[] = [];
   let bytes = 0;
   try {
-    for await (const chunk of stallGuarded(response.body, stallMs, () => new MarketplaceError("SOURCE_UNREACHABLE", `download stalled: no data for ${stallMs} ms`))) {
+    const stalled = () => new MarketplaceError("SOURCE_UNREACHABLE", `download stalled: no data for ${stallMs} ms`, { detail: { reason: "timeout", host: new URL(url).host } });
+    for await (const chunk of stallGuarded(response.body, stallMs, stalled)) {
       bytes += chunk.byteLength;
       if (bytes > options.maxBytes) {
         throw new MarketplaceError("CONTENT_RULE_VIOLATION", `${new URL(url).host}: the artifact is over ${options.maxBytes} bytes`);

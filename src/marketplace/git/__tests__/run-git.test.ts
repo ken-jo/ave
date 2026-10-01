@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,8 +13,10 @@ import {
   startGitHttpServer,
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
+import { BareRepo } from "../repo.js";
 import { classifyRemoteFailure, GIT_TIMEOUTS_MS, type GitRemote } from "../run-git.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
 
 function remote(url: string, allowHttp = true, useToken = true): GitRemote {
   return { url: normalizeSourceUrl(url), sourceId: "fixture", allowHttp, useToken };
@@ -148,6 +151,13 @@ describe("GitRunner against a smart-HTTP server", () => {
       timeoutMs: GIT_TIMEOUTS_MS.lsRemote,
     });
     expect(result.stdout.toString()).toContain(`${head}\trefs/heads/main`);
+  });
+
+  it("names the branches and tags the remote has when a ref is missing", async () => {
+    execFileSync("git", ["tag", "v1.0.0", head], { cwd: repo.bare, env: gitFixtureEnv(repo.bare) });
+    const local = await BareRepo.init(t.runner, join(root, "missing-ref.git"));
+    const error = await expectCode(local.fetchRef(remote(server.url("tools")), "nope", "candidate"), "SOURCE_REF_NOT_FOUND");
+    expect(error.detail).toEqual({ reason: "missing", ref: "nope", repository: remote(server.url("tools")).url.url, available: ["main", "v1.0.0"] });
   });
 
   it("refuses plain http unless the host is listed", async () => {
@@ -329,15 +339,62 @@ describe("GitRunner authentication through the askpass broker", () => {
 });
 
 describe("classifyRemoteFailure", () => {
+  const https = normalizeSourceUrl("https://github.com/a/b");
+  const ssh = normalizeSourceUrl("git@github.com:a/b.git");
+  const sshOnPort = normalizeSourceUrl("ssh://git@git.example.com:2222/a/b");
+
   it.each([
-    ["fatal: Authentication failed for 'https://github.com/a/b/'", false, "SOURCE_AUTH_REQUIRED"],
-    ["git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.", false, "SOURCE_AUTH_REQUIRED"],
-    ["Host key verification failed.\nfatal: Could not read from remote repository.", false, "SOURCE_SSH_HOST_UNKNOWN"],
-    ["fatal: couldn't find remote ref refs/heads/nope", false, "SOURCE_REF_NOT_FOUND"],
-    ["fatal: unable to access 'https://x/': Could not resolve host: x", false, "SOURCE_UNREACHABLE"],
-    ["remote: Repository not found.\nfatal: repository 'https://github.com/a/b/' not found", true, "SOURCE_AUTH_REQUIRED"],
-    ["remote: Repository not found.\nfatal: repository 'https://github.com/a/b/' not found", false, "SOURCE_UNREACHABLE"],
-  ] as const)("%j", (stderr, offered, code) => {
-    expect(classifyRemoteFailure(stderr, offered)).toBe(code);
+    ["fatal: Authentication failed for 'https://github.com/a/b/'", false, https, "SOURCE_AUTH_REQUIRED", { reason: "token", host: "github.com" }],
+    ["git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.", false, ssh, "SOURCE_AUTH_REQUIRED", { reason: "ssh", host: "github.com" }],
+    [
+      "No ED25519 host key is known for github.com and you have requested strict checking.\nHost key verification failed.\nfatal: Could not read from remote repository.",
+      false,
+      ssh,
+      "SOURCE_SSH_HOST_UNKNOWN",
+      { reason: "unknown", host: "github.com", port: 22 },
+    ],
+    ["fatal: couldn't find remote ref refs/heads/nope", false, https, "SOURCE_REF_NOT_FOUND", undefined],
+    ["fatal: unable to access 'https://github.com/a/b/': Could not resolve host: github.com", false, https, "SOURCE_UNREACHABLE", { reason: "dns", host: "github.com" }],
+    ["ssh: Could not resolve hostname github.com: nodename nor servname provided, or not known", false, ssh, "SOURCE_UNREACHABLE", { reason: "dns", host: "github.com" }],
+    ["ssh: connect to host github.com port 22: Network is unreachable", false, ssh, "SOURCE_UNREACHABLE", { reason: "offline" }],
+    ["fatal: unable to access 'https://github.com/a/b/': Failed to connect to github.com port 443 after 75003 ms: Timed out", false, https, "SOURCE_UNREACHABLE", { reason: "timeout", host: "github.com" }],
+    ["fatal: unable to access 'https://github.com/a/b/': Failed to connect to github.com port 443 after 2 ms: Couldn't connect to server", false, https, "SOURCE_UNREACHABLE", { reason: "refused", host: "github.com" }],
+    ["fatal: unable to access 'https://github.com/a/b/': SSL certificate problem: unable to get local issuer certificate", false, https, "SOURCE_UNREACHABLE", { reason: "tls", host: "github.com" }],
+    ["fatal: unable to access 'https://github.com/a/b/': The requested URL returned error: 502", false, https, "SOURCE_UNREACHABLE", { reason: "http-status", host: "github.com", status: 502 }],
+    // A host's "not found" is also its answer for a private repository: with Ave's token the token may not reach it,
+    // without one the address may be wrong or the repository private; neither is claimed.
+    ["remote: Repository not found.\nfatal: repository 'https://github.com/a/b/' not found", true, https, "SOURCE_AUTH_REQUIRED", { reason: "token-no-access", host: "github.com" }],
+    ["remote: Repository not found.\nfatal: repository 'https://github.com/a/b/' not found", false, https, "SOURCE_UNREACHABLE", { reason: "not-found", host: "github.com" }],
+    ["fatal: unable to access 'https://git.example.com/a/b/': The requested URL returned error: 404", false, https, "SOURCE_UNREACHABLE", { reason: "not-found", host: "github.com" }],
+    [
+      "remote: The project you were looking for could not be found or you don't have permission to view it.\nfatal: repository 'https://github.com/a/b/' not found",
+      false,
+      https,
+      "SOURCE_UNREACHABLE",
+      { reason: "not-found", host: "github.com" },
+    ],
+    ["ERROR: Repository not found.\nfatal: Could not read from remote repository.", false, ssh, "SOURCE_UNREACHABLE", { reason: "not-found-ssh", host: "github.com" }],
+    // An empty answer to the host's prompt is a refused sign-in, not a missing repository.
+    ["remote: Repository not found.\nfatal: Authentication failed for 'https://github.com/a/b/'", false, https, "SOURCE_AUTH_REQUIRED", { reason: "token", host: "github.com" }],
+  ] as const)("%j", (stderr, offered, url, code, detail) => {
+    const error = classifyRemoteFailure(stderr, offered, url, "git ls-remote failed");
+    expect(error.code).toBe(code);
+    expect(error.detail).toEqual(detail);
+    expect(error.message).toBe("git ls-remote failed");
+  });
+
+  it("tells a changed host key from an unknown one, with the port ssh files it under", () => {
+    const stderr = [
+      "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@",
+      "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @",
+      "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@",
+      "IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!",
+      "Host key for [git.example.com]:2222 has changed and you have requested strict checking.",
+      "Host key verification failed.",
+      "fatal: Could not read from remote repository.",
+    ].join("\n");
+    const error = classifyRemoteFailure(stderr, false, sshOnPort, "git fetch failed");
+    expect(error.code).toBe("SOURCE_SSH_HOST_UNKNOWN");
+    expect(error.detail).toEqual({ reason: "changed", host: "git.example.com", port: 2222 });
   });
 });

@@ -60,6 +60,9 @@ export function assertRepoPath(path: string): void {
   }
 }
 
+/** How many of the remote's branches and tags a missing ref lists. */
+const LISTED_REFS = 10;
+
 export class BareRepo {
   constructor(
     private readonly runner: GitCommands,
@@ -84,9 +87,24 @@ export class BareRepo {
     return refs;
   }
 
+  /** The remote's branch and tag names (`main`, `v1.2.0`), branches first, at most `limit`. */
+  async refNames(remote: GitRemote, limit: number, signal?: AbortSignal): Promise<string[]> {
+    const refs = await this.runner.run(["ls-remote", "--refs", "--", remote.url.url, "refs/heads/*", "refs/tags/*"], {
+      remote,
+      timeoutMs: GIT_TIMEOUTS_MS.lsRemote,
+      ...(signal ? { signal } : {}),
+    });
+    const names = refs.stdout.toString("utf8").split("\n").map((line) => line.split("\t")[1] ?? "");
+    const branches = names.filter((name) => name.startsWith("refs/heads/")).map((name) => name.slice("refs/heads/".length));
+    const tags = names.filter((name) => name.startsWith("refs/tags/")).map((name) => name.slice("refs/tags/".length));
+    return [...branches, ...tags].slice(0, limit);
+  }
+
   /**
    * Fetch `ref` (default: the remote's HEAD) with full commit history and no
-   * blobs into `refs/ave/<localRef>`, and return the fetched commit.
+   * blobs into `refs/ave/<localRef>`, and return the fetched commit. A ref
+   * the remote does not have fails with the branches and tags it does have
+   * (design §18.8).
    */
   async fetchRef(remote: GitRemote, ref: string | undefined, localRef: string, signal?: AbortSignal): Promise<string> {
     const source = ref ?? "HEAD";
@@ -94,10 +112,19 @@ export class BareRepo {
       throw new MarketplaceError("SOURCE_REF_NOT_FOUND", `invalid ref: ${source}`);
     }
     const target = `refs/ave/${localRef}`;
-    await this.runner.run(
-      ["fetch", "--filter=blob:none", "--no-tags", "--quiet", "--", remote.url.url, `+${source}:${target}`],
-      { gitDir: this.dir, remote, timeoutMs: GIT_TIMEOUTS_MS.fetch, ...(signal ? { signal } : {}) },
-    );
+    try {
+      await this.runner.run(
+        ["fetch", "--filter=blob:none", "--no-tags", "--quiet", "--", remote.url.url, `+${source}:${target}`],
+        { gitDir: this.dir, remote, timeoutMs: GIT_TIMEOUTS_MS.fetch, ...(signal ? { signal } : {}) },
+      );
+    } catch (error) {
+      if (!(error instanceof MarketplaceError) || error.code !== "SOURCE_REF_NOT_FOUND") throw error;
+      const available = await this.refNames(remote, LISTED_REFS, signal);
+      throw new MarketplaceError("SOURCE_REF_NOT_FOUND", error.message, {
+        cause: error,
+        detail: { reason: "missing", ref: source, repository: remote.url.url, available },
+      });
+    }
     return this.resolve(target);
   }
 

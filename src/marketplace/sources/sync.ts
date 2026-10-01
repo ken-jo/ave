@@ -22,11 +22,12 @@ import { join } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
-import { MarketplaceError, isMarketplaceError, type MarketplaceErrorCode } from "../errors.js";
+import { MarketplaceError, isMarketplaceError, scrubMarketplaceErrorDetail, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
 import { BareRepo } from "../git/repo.js";
-import type { GitCommands, GitRemote } from "../git/run-git.js";
+import { LocalRepositoryDamagedError, type GitCommands, type GitRemote } from "../git/run-git.js";
 import type { NetworkGate } from "../net/network-gate.js";
-import { readSourceState, type ResolvedSource, type SourceRegistry, type SourceState } from "./registry.js";
+import { errorMessage } from "../../shared/error-message.js";
+import { fsErrorCode, readSourceState, type ResolvedSource, type SourceRegistry, type SourceState } from "./registry.js";
 import { pinnedArtifactSha256s, SnapshotBuilder, type SourceSnapshot } from "./snapshot.js";
 
 export interface SourceSyncOptions {
@@ -44,7 +45,8 @@ export interface SourceSyncOptions {
 
 export type SyncResult =
   | { status: "ok"; pinnedCommit: string; changed: boolean }
-  | { status: "failed"; code: MarketplaceErrorCode; message: string; pinnedCommit: string | null };
+  /** `detail` says why when the failure did (design §18.8); it is persisted with the code. */
+  | { status: "failed"; code: MarketplaceErrorCode; message: string; detail?: MarketplaceErrorDetail; pinnedCommit: string | null };
 
 const SNAPSHOT_FILE = /^[0-9a-f]{40}\.json$/u;
 const CANDIDATE_REF = "candidate";
@@ -125,12 +127,24 @@ export class SourceSyncer {
     throw firstError ?? new Error(`source ${source.id} has no URL`);
   }
 
-  private async recordFailure(source: ResolvedSource, code: MarketplaceErrorCode, message: string, candidate?: string): Promise<SyncResult> {
+  /**
+   * Record a failed sync in the source's state. The detail is stored with the
+   * code, because a background failure reaches the Sources view through
+   * `sources:list`, never through a failed answer (design §18.8).
+   */
+  private async recordFailure(
+    source: ResolvedSource,
+    failure: { code: MarketplaceErrorCode; message: string; detail?: MarketplaceErrorDetail | undefined },
+    candidate?: string,
+  ): Promise<SyncResult> {
+    const { code, message } = failure;
+    // Stored and returned scrubbed: a detail's text can quote a credential (design §14).
+    const detail = failure.detail && scrubMarketplaceErrorDetail(code, failure.detail);
     const state = await this.options.registry.updateState(source.id, (current) => ({
       ...current,
-      lastSync: { at: this.now(), result: code, ...(candidate ? { candidate } : {}) },
+      lastSync: { at: this.now(), result: code, ...(detail ? { detail } : {}), ...(candidate ? { candidate } : {}) },
     }));
-    return { status: "failed", code, message, pinnedCommit: state.pinnedCommit };
+    return { status: "failed", code, message, ...(detail ? { detail } : {}), pinnedCommit: state.pinnedCommit };
   }
 
   /** Build and write the snapshot at `commit`, then move the pin there. */
@@ -143,7 +157,7 @@ export class SourceSyncer {
     signal?: AbortSignal,
   ): Promise<SyncResult> {
     const built = await new SnapshotBuilder(repo, remote, source, commit, signal).build(this.now());
-    if (!built.ok) return this.recordFailure(source, built.code, built.message, commit);
+    if (!built.ok) return this.recordFailure(source, built, commit);
     await writeFileAtomicAtPath(this.snapshotPath(source.id, commit), `${JSON.stringify(built.snapshot)}\n`);
     await this.options.registry.updateState(source.id, (current) => {
       const { pendingRewrite: _cleared, ...rest } = current;
@@ -175,7 +189,22 @@ export class SourceSyncer {
     return validated.ok && validated.value.sourceId === id && validated.value.commit === commit;
   }
 
+  /**
+   * One sync. A source repository git cannot open (a copy half removed by an
+   * interrupted walk of an older build) is the sync's result as
+   * SOURCE_LOCAL_DATA_DAMAGED `repository-damaged`, which the row offers
+   * Repair for, never a network failure.
+   */
   private async run(id: string, signal?: AbortSignal): Promise<SyncResult> {
+    try {
+      return await this.runOnce(id, signal);
+    } catch (error) {
+      if (!(error instanceof LocalRepositoryDamagedError)) throw error;
+      return this.recordFailure(this.source(id), repositoryDamaged(id, error));
+    }
+  }
+
+  private async runOnce(id: string, signal?: AbortSignal): Promise<SyncResult> {
     const source = this.source(id);
     // Written before the repository exists, so a state file that goes missing
     // later is noticed instead of read as a fresh, unpinned source.
@@ -188,7 +217,7 @@ export class SourceSyncer {
       fetched = await this.fetchCandidate(repo, source, signal);
     } catch (error) {
       if (!isMarketplaceError(error)) throw error;
-      return this.recordFailure(source, error.code, error.message);
+      return this.recordFailure(source, error);
     }
     const { candidate, remote } = fetched;
 
@@ -206,7 +235,7 @@ export class SourceSyncer {
     if (pin !== null && !((await repo.hasCommit(pin)) && (await repo.isAncestor(pin, candidate)))) {
       const message = `${candidate} does not descend from the pinned ${pin}`;
       if (source.origin === "official" || source.origin === "managed") {
-        return this.recordFailure(source, "SOURCE_HISTORY_REWRITTEN", message, candidate);
+        return this.recordFailure(source, { code: "SOURCE_HISTORY_REWRITTEN", message }, candidate);
       }
       const updated = await this.options.registry.updateState(id, (current) => ({
         ...current,
@@ -270,18 +299,24 @@ export class SourceSyncer {
         throw new Error(`the ${source.origin} source ${id} never accepts rewritten history`);
       }
       const state = await this.options.registry.readState(id);
-      const repo = await this.openRepo(id);
-      if (state.pendingRewrite?.candidate !== candidate || !(await repo.hasCommit(candidate))) {
-        throw new MarketplaceError("PLAN_EXPIRED", `the reviewed history ${candidate} is no longer pending for ${id}`);
-      }
-      let remote: GitRemote;
       try {
-        remote = await this.remoteFor(source);
+        const repo = await this.openRepo(id);
+        if (state.pendingRewrite?.candidate !== candidate || !(await repo.hasCommit(candidate))) {
+          throw new MarketplaceError("PLAN_EXPIRED", `the reviewed history ${candidate} is no longer pending for ${id}`);
+        }
+        let remote: GitRemote;
+        try {
+          remote = await this.remoteFor(source);
+        } catch (error) {
+          if (!isMarketplaceError(error)) throw error;
+          return await this.recordFailure(source, error, candidate);
+        }
+        return await this.publish(repo, remote, source, candidate, state.pinnedCommit, signal);
       } catch (error) {
-        if (!isMarketplaceError(error)) throw error;
-        return this.recordFailure(source, error.code, error.message, candidate);
+        // Like a sync and an install: a repository git cannot open is the damaged copy Repair clears, never a raw path.
+        if (error instanceof LocalRepositoryDamagedError) throw repositoryDamaged(id, error);
+        throw error;
       }
-      return this.publish(repo, remote, source, candidate, state.pinnedCommit, signal);
     });
   }
 
@@ -300,7 +335,33 @@ export class SourceSyncer {
       }
       const dir = join(this.sourceDir(id), "repo.git");
       if (!existsSync(join(dir, "HEAD"))) throw new Error(`source ${id} has not been synced`);
-      return fn({ source, repo: new BareRepo(this.options.runner, dir), remote: await this.remoteFor(source) });
+      try {
+        return await fn({ source, repo: new BareRepo(this.options.runner, dir), remote: await this.remoteFor(source) });
+      } catch (error) {
+        if (error instanceof LocalRepositoryDamagedError) throw repositoryDamaged(id, error);
+        throw error;
+      }
+    });
+  }
+
+  /**
+   * Repair (design §18.8): move the source's downloaded copy aside once any
+   * running sync, accept or install from it has finished; the caller syncs
+   * it next. A state that still reads keeps its pin and switch; one that
+   * does not starts the source unpinned, which the row's sentence warns
+   * about. Its failures are SOURCE_LOCAL_DATA_DAMAGED `repair-failed` or
+   * `repair-write-failed` ({@link SourceRegistry.resetLocalData}).
+   */
+  resetLocalData(id: string): Promise<void> {
+    return this.withSourceLock(id, async () => {
+      this.source(id);
+      let kept: SourceState | null = null;
+      try {
+        kept = await this.options.registry.readState(id);
+      } catch (error) {
+        if (!isMarketplaceError(error) || error.code !== "SOURCE_LOCAL_DATA_DAMAGED") throw error;
+      }
+      await this.options.registry.resetLocalData(id, kept);
     });
   }
 
@@ -320,6 +381,14 @@ export class SourceSyncer {
   }
 }
 
+/** A source repository git cannot open, as the damaged copy Repair clears; the message names no path. */
+function repositoryDamaged(id: string, error: LocalRepositoryDamagedError): MarketplaceError {
+  return new MarketplaceError("SOURCE_LOCAL_DATA_DAMAGED", `repo.git of source ${id} is not a repository git can open`, {
+    cause: error,
+    detail: { reason: "repository-damaged", sourceId: id },
+  });
+}
+
 /**
  * The snapshot at a source's pin under `root` (`~/.ave/marketplaces`), or
  * null before the first successful sync. Boot reads it before the syncer
@@ -335,13 +404,27 @@ async function readPinnedSnapshot(root: string, id: string): Promise<SourceSnaps
   } catch (error) {
     // The next sync rebuilds a lost snapshot at the same pin.
     if (isMissingPathError(error)) return null;
-    throw error;
+    throw new MarketplaceError("SOURCE_LOCAL_DATA_DAMAGED", `snapshot ${pinnedCommit}.json of source ${id} cannot be read (${fsErrorCode(error)})`, {
+      cause: error,
+      detail: { reason: "snapshot-unreadable", sourceId: id },
+    });
   }
-  const snapshot = parseStrictJson(text) as SourceSnapshot;
-  if (snapshot.sourceId !== id || snapshot.commit !== pinnedCommit) {
-    throw new Error(`snapshot ${pinnedCommit}.json of ${id} names ${snapshot.sourceId}@${snapshot.commit}`);
+  const invalid = (problem: string, cause?: unknown) =>
+    new MarketplaceError("SOURCE_LOCAL_DATA_DAMAGED", `snapshot ${pinnedCommit}.json of source ${id} ${problem}`, {
+      ...(cause === undefined ? {} : { cause }),
+      detail: { reason: "snapshot-invalid", sourceId: id },
+    });
+  let parsed: unknown;
+  try {
+    parsed = parseStrictJson(text);
+  } catch (error) {
+    throw invalid(`is invalid: ${errorMessage(error)}`, error);
   }
-  return snapshot;
+  const named = typeof parsed === "object" && parsed !== null ? (parsed as Partial<SourceSnapshot>) : {};
+  if (named.sourceId !== id || named.commit !== pinnedCommit) {
+    throw invalid(`names ${String(named.sourceId)}@${String(named.commit)}`);
+  }
+  return parsed as SourceSnapshot;
 }
 
 /**

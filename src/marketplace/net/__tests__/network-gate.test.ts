@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { promises as dnsPromises } from "node:dns";
+import { describe, expect, it, vi } from "vitest";
 import { MarketplaceError } from "../../errors.js";
-import { policyLoad as policy } from "../../__tests__/fixtures/policy.js";
+import { FIXTURE_POLICY_PATH, policyLoad as policy } from "../../__tests__/fixtures/policy.js";
 import type { PolicyLoad } from "../../sources/policy.js";
 import { NetworkGate, downloadUrlForPolicy } from "../network-gate.js";
 import { normalizeSourceUrl, parseSourcePattern } from "../source-url.js";
@@ -43,8 +44,54 @@ describe("NetworkGate.checkRemote", () => {
     expect(await code(gate(load).checkRemote(remote("https://1.0.0.1/acme/market"), OFFICIAL))).toBe("SOURCE_POLICY_BLOCKED");
   });
 
+  it("says which rule blocked a target, and where the policy lives (§18.8)", async () => {
+    const load = policy({
+      allow: [parseSourcePattern("host:1.1.1.1")],
+      block: [parseSourcePattern("https://1.1.1.1/acme/secret")],
+    });
+    const detail = async (promise: Promise<unknown>) => {
+      try {
+        await promise;
+      } catch (error) {
+        return (error as MarketplaceError).detail;
+      }
+      throw new Error("expected a block");
+    };
+    expect(await detail(gate(load).checkRemote(remote("https://1.1.1.1/acme/secret"), OTHER))).toEqual({
+      reason: "blocked-by-pattern",
+      target: "https://1.1.1.1/acme/secret",
+      pattern: "https://1.1.1.1/acme/secret",
+      policyPath: FIXTURE_POLICY_PATH,
+    });
+    expect(await detail(gate(load).checkRemote(remote("https://1.0.0.1/acme/market"), OTHER))).toEqual({
+      reason: "not-in-allow-list",
+      target: "https://1.0.0.1/acme/market",
+      policyPath: FIXTURE_POLICY_PATH,
+    });
+    const broken: PolicyLoad = { ok: false, error: "/fixture/ave-policy.json: marketplaces.blok: is not a known key", path: FIXTURE_POLICY_PATH };
+    expect(await detail(gate(broken).checkRemote(remote("https://1.1.1.1/acme/market"), OTHER))).toEqual({
+      reason: "policy-invalid",
+      error: "/fixture/ave-policy.json: marketplaces.blok: is not a known key",
+    });
+  });
+
+  it("reports a host name that does not resolve as a DNS failure naming the host", async () => {
+    const lookup = dnsPromises.lookup.bind(dnsPromises);
+    const spy = vi.spyOn(dnsPromises, "lookup").mockImplementation(((host: string, options: unknown) => {
+      if (host === "nowhere.invalid") return Promise.reject(Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" }));
+      return (lookup as (host: string, options: unknown) => Promise<unknown>)(host, options);
+    }) as typeof dnsPromises.lookup);
+    try {
+      const error = await gate().checkRemote(remote("https://nowhere.invalid/acme/market"), OTHER).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(MarketplaceError);
+      expect(error).toMatchObject({ code: "SOURCE_UNREACHABLE", detail: { reason: "dns", host: "nowhere.invalid" } });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("blocks every source but the official one when the policy is unreadable", async () => {
-    const broken: PolicyLoad = { ok: false, error: "marketplaces.blok: is not a known key" };
+    const broken: PolicyLoad = { ok: false, error: "marketplaces.blok: is not a known key", path: "/fixture/ave-policy.json" };
     expect(await code(gate(broken).checkRemote(remote("https://1.1.1.1/acme/market"), OTHER))).toBe("SOURCE_POLICY_BLOCKED");
     expect(await code(gate(broken).checkRemote(remote("https://1.1.1.1/acme/market"), OFFICIAL))).toBe("passed");
   });

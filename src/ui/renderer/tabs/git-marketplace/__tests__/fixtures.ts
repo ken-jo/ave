@@ -157,6 +157,7 @@ export function fakeMarketplace(
     removeSource: vi.fn(async () => ok({ orphanedPackages: [] })),
     setSourceEnabled: vi.fn(async (id: string) => ok(sources.find((item) => item.id === id))),
     refreshSources: vi.fn(async () => ok(sources)),
+    repairSource: vi.fn(async () => ok(sources)),
     acceptRewrite: vi.fn(async (id: string) => ok(sources.find((item) => item.id === id))),
     setToken: vi.fn(async (host: string) => ok({ host })),
     deleteToken: vi.fn(async (host: string) => ok({ host })),

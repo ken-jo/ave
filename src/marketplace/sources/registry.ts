@@ -11,16 +11,27 @@
  * reserved id, collides with a managed id, or no longer normalizes is left in
  * the file untouched but not served, with a diagnostic. A `sources.json` that
  * cannot be read at all serves the official and managed sources only, and
- * refuses writes until it is repaired, so nothing the user added is
- * overwritten.
+ * refuses writes (`SOURCE_LIST_UNREADABLE`) until the user fixes or deletes
+ * it, so nothing the user added is overwritten.
  */
-import { existsSync } from "node:fs";
-import { rm, readFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { existsSync, type Stats } from "node:fs";
+import { lstat, mkdir, readdir, readFile, rmdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
+import { createLogger } from "../../lib/logger.js";
+import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
+import { errorMessage } from "../../shared/error-message.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
-import { MARKETPLACE_ERROR_CODES, MarketplaceError, isMarketplaceError, type MarketplaceErrorCode } from "../errors.js";
+import {
+  MARKETPLACE_ERROR_CODES,
+  MarketplaceError,
+  isMarketplaceError,
+  parseMarketplaceErrorDetail,
+  type MarketplaceErrorCode,
+  type MarketplaceErrorDetail,
+} from "../errors.js";
 import { assertRepoPath } from "../git/repo.js";
 import { normalizeSourceHost, normalizeSourceUrl, sameSourceRepository, type NormalizedSourceUrl } from "../net/source-url.js";
 import {
@@ -53,7 +64,8 @@ export interface SourceState {
   pinnedCommit: string | null;
   /** Browsing and installing only; sync continues while installed packages are bound (§7.3). */
   enabled: boolean;
-  lastSync?: { at: string; result: "ok" | MarketplaceErrorCode; candidate?: string };
+  /** `detail` is why a failed sync failed, when it said (design §18.8). */
+  lastSync?: { at: string; result: "ok" | MarketplaceErrorCode; detail?: MarketplaceErrorDetail; candidate?: string };
   pendingRewrite?: { candidate: string; seenAt: string };
 }
 
@@ -171,13 +183,21 @@ function checkState(raw: unknown): SourceState {
   knownKeys(raw, STATE_KEYS, "state");
   shape(raw.pinnedCommit === null || (typeof raw.pinnedCommit === "string" && COMMIT_RE.test(raw.pinnedCommit)), "pinnedCommit must be null or a commit id");
   shape(typeof raw.enabled === "boolean", "enabled must be true or false");
+  let state = raw;
   if (raw.lastSync !== undefined) {
     const last = raw.lastSync;
     shape(isRecord(last), "lastSync must be an object");
-    knownKeys(last, new Set(["at", "result", "candidate"]), "lastSync");
+    knownKeys(last, new Set(["at", "result", "detail", "candidate"]), "lastSync");
     shape(isIsoTime(last.at), "lastSync.at must be an ISO-8601 time");
     shape(last.result === "ok" || MARKETPLACE_ERROR_CODES.includes(last.result as MarketplaceErrorCode), "lastSync.result is not a result code");
     shape(last.candidate === undefined || (typeof last.candidate === "string" && COMMIT_RE.test(last.candidate)), "lastSync.candidate must be a commit id");
+    if (last.detail !== undefined) {
+      // A detail is display data: one this build does not know for the code
+      // (written by a newer build, or edited) is dropped, and the code stays.
+      const detail = last.result === "ok" ? undefined : parseMarketplaceErrorDetail(last.result as MarketplaceErrorCode, last.detail);
+      const { detail: _dropped, ...rest } = last;
+      state = { ...raw, lastSync: detail ? { ...rest, detail } : rest };
+    }
   }
   if (raw.pendingRewrite !== undefined) {
     const pending = raw.pendingRewrite;
@@ -186,7 +206,7 @@ function checkState(raw: unknown): SourceState {
     shape(typeof pending.candidate === "string" && COMMIT_RE.test(pending.candidate), "pendingRewrite.candidate must be a commit id");
     shape(isIsoTime(pending.seenAt), "pendingRewrite.seenAt must be an ISO-8601 time");
   }
-  return raw as unknown as SourceState;
+  return state as unknown as SourceState;
 }
 
 const FRESH_STATE: SourceState = Object.freeze({ pinnedCommit: null, enabled: true });
@@ -203,29 +223,85 @@ export interface SourceRegistryOptions {
 /**
  * One source's state under `root`, without opening the registry: boot reads
  * pins before anything else is wired. A missing state is a fresh source
- * unless synced data exists beside it.
+ * unless synced data exists beside it. A state that cannot be used throws
+ * SOURCE_LOCAL_DATA_DAMAGED, which Repair clears ({@link SourceRegistry.resetLocalData});
+ * its message names files relative to the source, never a home path.
  */
 export async function readSourceState(root: string, id: string): Promise<SourceState> {
   const dir = join(root, id);
-  const path = join(dir, "state.json");
   let text: string;
   try {
-    text = await readFile(path, "utf8");
+    text = await readFile(join(dir, "state.json"), "utf8");
   } catch (error) {
     if (isMissingPathError(error)) {
       // Synced data without a state lost its pin; a fresh state would accept any history (§2.1).
       if (existsSync(join(dir, "repo.git")) || existsSync(join(dir, "snapshots"))) {
-        throw new Error(`${path} is missing while ${dir} holds synced data; remove the directory to start the source over`, { cause: error });
+        throw new MarketplaceError("SOURCE_LOCAL_DATA_DAMAGED", `state.json of source ${id} is missing while its synced data remains`, {
+          cause: error,
+          detail: { reason: "state-missing", sourceId: id },
+        });
       }
       return { ...FRESH_STATE };
     }
-    throw error;
+    throw new MarketplaceError("SOURCE_LOCAL_DATA_DAMAGED", `state.json of source ${id} cannot be read (${fsErrorCode(error)})`, {
+      cause: error,
+      detail: { reason: "state-unreadable", sourceId: id },
+    });
   }
   try {
     return checkState(parseStrictJson(text));
   } catch (error) {
-    throw new Error(`${path} is invalid: ${(error as Error).message}`, { cause: error });
+    throw new MarketplaceError("SOURCE_LOCAL_DATA_DAMAGED", `state.json of source ${id} is invalid: ${errorMessage(error)}`, {
+      cause: error,
+      detail: { reason: "state-invalid", sourceId: id },
+    });
   }
+}
+
+const log = createLogger("marketplace-registry");
+
+/** Where Repair moves a source's copy before walking it: `.trash-<id>-<random>` beside the sources. */
+const TRASH_PREFIX = ".trash-";
+
+/** A file system error's code (else the error's name), which unlike its message names no path under the user's home. */
+export function fsErrorCode(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (typeof code === "string") return code;
+  return error instanceof Error ? error.name : typeof error;
+}
+
+/**
+ * Remove a host-owned tree without following a link inside it. Every entry is
+ * `lstat`ed and removed one by one, never by a recursive `rm`: on Windows a
+ * recursive removal follows a junction and deletes its target. A link (a
+ * junction too) is removed as a link, `rmdir` where Windows refuses `unlink`
+ * on a directory link. Nothing else writes under `marketplaces/<id>`, and the
+ * callers hold the registry's queue.
+ */
+async function removeTreeNoFollow(path: string): Promise<void> {
+  let entry: Stats;
+  try {
+    entry = await lstat(path);
+  } catch (error) {
+    if (isMissingPathError(error)) return;
+    throw error;
+  }
+  if (entry.isSymbolicLink()) {
+    try {
+      await unlink(path);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EPERM" && code !== "EISDIR") throw error;
+      await rmdir(path);
+    }
+    return;
+  }
+  if (!entry.isDirectory()) {
+    await unlink(path);
+    return;
+  }
+  for (const name of await readdir(path)) await removeTreeNoFollow(join(path, name));
+  await rmdir(path);
 }
 
 export class SourceRegistry {
@@ -233,7 +309,12 @@ export class SourceRegistry {
   private stored: ResolvedSource[] = [];
   /** The raw entry each served source came from, so a removal touches only that entry. */
   private storedRaw = new Map<string, unknown>();
-  private fileError: string | null = null;
+  /**
+   * Why `sources.json` cannot be used, when it cannot (§14
+   * `SOURCE_LIST_UNREADABLE`). Its message names the file and an fs error by
+   * its code, never a home path, since it reaches *Copy details*.
+   */
+  private fileProblem: { message: string; detail: MarketplaceErrorDetail<"SOURCE_LIST_UNREADABLE"> } | null = null;
   private loadDiagnostics: RegistryDiagnostic[] = [];
   private queue: Promise<unknown> = Promise.resolve();
   private readonly policy: MarketplacePolicy;
@@ -265,7 +346,44 @@ export class SourceRegistry {
   static async open(options: SourceRegistryOptions): Promise<SourceRegistry> {
     const registry = new SourceRegistry(options);
     await registry.reload();
+    await registry.sweepTrash();
     return registry;
+  }
+
+  /**
+   * Remove what an interrupted Repair left aside (`.trash-*`; a source id
+   * never starts with a dot). Best effort: a leftover only takes disk space,
+   * and the next open or Repair tries again.
+   */
+  private async sweepTrash(): Promise<void> {
+    let names: string[];
+    try {
+      names = await readdir(this.options.root);
+    } catch (error) {
+      // Best effort, so it never fails an open or a Repair: a leftover waits for the next sweep.
+      if (!isMissingPathError(error)) log.warn({ error: fsErrorCode(error) }, "repair: could not list the marketplaces folder to sweep moved-aside copies");
+      return;
+    }
+    for (const name of names) {
+      if (name.startsWith(TRASH_PREFIX)) await this.reclaim(join(this.options.root, name));
+    }
+  }
+
+  /** Walk a copy moved aside by Repair; a failure is logged and left for the next sweep. */
+  private async reclaim(trash: string): Promise<void> {
+    try {
+      await removeTreeNoFollow(trash);
+    } catch (error) {
+      log.warn({ trash: trash.slice(this.options.root.length + 1), error: fsErrorCode(error) }, "repair: could not remove a copy moved aside; the next sweep retries");
+    }
+  }
+
+  /**
+   * One rename (retrying a transient Windows lock), the step an interrupted
+   * Repair can stop between (a seam for tests).
+   */
+  protected async moveAside(from: string, to: string): Promise<void> {
+    await renameDirectory(from, to);
   }
 
   private get sourcesPath(): string {
@@ -284,13 +402,16 @@ export class SourceRegistry {
   }
 
   async reload(): Promise<void> {
-    this.fileError = null;
+    this.fileProblem = null;
     this.rawEntries = [];
     let text: string | null = null;
     try {
       text = await readFile(this.sourcesPath, "utf8");
     } catch (error) {
-      if (!isMissingPathError(error)) this.fileError = `cannot read sources.json: ${(error as Error).message}`;
+      if (!isMissingPathError(error)) {
+        const fsCode = fsErrorCode(error);
+        this.fileProblem = { message: `cannot read sources.json (${fsCode})`, detail: { reason: "unreadable", fsCode } };
+      }
     }
     if (text !== null) {
       try {
@@ -301,7 +422,7 @@ export class SourceRegistry {
         shape(Array.isArray(file.sources), "sources.json sources must be an array");
         this.rawEntries = file.sources;
       } catch (error) {
-        this.fileError = `sources.json is invalid: ${(error as Error).message}`;
+        this.fileProblem = { message: `sources.json is invalid: ${errorMessage(error)}`, detail: { reason: "invalid" } };
       }
     }
     this.resolveStored();
@@ -347,7 +468,7 @@ export class SourceRegistry {
     }
     this.stored = stored;
     this.storedRaw = storedRaw;
-    this.loadDiagnostics = this.fileError ? [{ subject: "sources.json", message: this.fileError }, ...diagnostics] : diagnostics;
+    this.loadDiagnostics = this.fileProblem ? [{ subject: "sources.json", message: this.fileProblem.message }, ...diagnostics] : diagnostics;
   }
 
   /** Official first, then managed, then custom and direct in file order. */
@@ -387,7 +508,12 @@ export class SourceRegistry {
   }
 
   private assertWritable(): void {
-    if (this.fileError) throw new Error(`${this.fileError}; repair or remove it before changing sources`);
+    // The file is the user's list: it is never rewritten or repaired here, so nothing they added is lost (§14).
+    if (this.fileProblem) {
+      throw new MarketplaceError("SOURCE_LIST_UNREADABLE", `${this.fileProblem.message}; no source is changed until it is fixed or deleted`, {
+        detail: this.fileProblem.detail,
+      });
+    }
   }
 
   private async writeSources(entries: unknown[]): Promise<void> {
@@ -440,7 +566,81 @@ export class SourceRegistry {
       const entry = this.storedRaw.get(id);
       const remaining = this.rawEntries.filter((raw) => raw !== entry);
       await this.writeSources(remaining);
-      await rm(join(this.options.root, id), { recursive: true, force: true });
+      await removeTreeNoFollow(join(this.options.root, id));
+    });
+  }
+
+  /**
+   * Repair (design §18.8): move the source's downloaded copy (repository,
+   * snapshots, a damaged state) aside to `.trash-<id>-<random>` and walk it
+   * there with `lstat`, so the next sync starts it over. Only
+   * `marketplaces/<id>` moves; installed packages, tokens, policy and
+   * `sources.json` live elsewhere and stay. `kept` is the readable part of
+   * the old state, its pin and switch, written back so the history rule and
+   * the user's choice survive; without it the source starts unpinned.
+   * Writing the pin fails as `repair-write-failed`, moving the copy aside as
+   * `repair-failed`; neither loses a readable pin.
+   */
+  async resetLocalData(id: string, kept: Pick<SourceState, "pinnedCommit" | "enabled"> | null): Promise<void> {
+    return this.exclusive(async () => {
+      if (!this.get(id)) throw new Error(`no source named ${id}`);
+      await this.sweepTrash();
+      const dir = join(this.options.root, id);
+      const trash = join(this.options.root, `${TRASH_PREFIX}${id}-${randomBytes(6).toString("hex")}`);
+      // Messages name the source and an fs error by its code, never a path (the error's own message has one).
+      // A failed move says whether a pin is still there to keep (`repair-failed`) or the state had none (`-unpinned`).
+      const moveReason = kept?.pinnedCommit ? "repair-failed" : "repair-failed-unpinned";
+      const damaged = (reason: "repair-failed" | "repair-failed-unpinned" | "repair-write-failed", error: unknown) =>
+        new MarketplaceError(
+          "SOURCE_LOCAL_DATA_DAMAGED",
+          reason === "repair-write-failed"
+            ? `could not write the kept pin of source ${id} (${fsErrorCode(error)})`
+            : `could not move the downloaded copy of source ${id} aside (${fsErrorCode(error)})`,
+          { cause: error, detail: { reason, sourceId: id } },
+        );
+      let entry: Stats | null;
+      try {
+        entry = await lstat(dir);
+      } catch (error) {
+        if (!isMissingPathError(error)) throw damaged(moveReason, error);
+        entry = null;
+      }
+      const writeKept = async () => {
+        if (!kept) return;
+        try {
+          await this.writeState(id, { pinnedCommit: kept.pinnedCommit, enabled: kept.enabled });
+        } catch (error) {
+          throw damaged("repair-write-failed", error);
+        }
+      };
+      if (entry?.isDirectory() && kept) {
+        // The kept pin is written first, atomically and in place; everything
+        // else then goes aside one rename at a time. `state.json` never
+        // leaves, so a failure or crash at any step leaves the pin, and the
+        // next sync fetches what is gone.
+        await writeKept();
+        try {
+          await mkdir(trash);
+          for (const name of await readdir(dir)) {
+            if (name !== "state.json") await this.moveAside(join(dir, name), join(trash, name));
+          }
+        } catch (error) {
+          throw damaged(moveReason, error);
+        }
+      } else if (entry) {
+        // The pin is already lost (or the copy is a link Ave did not make):
+        // the whole entry goes aside in one rename, a link as a link.
+        try {
+          await this.moveAside(dir, trash);
+        } catch (error) {
+          throw damaged(moveReason, error);
+        }
+        await writeKept();
+      } else {
+        await writeKept();
+        return;
+      }
+      await this.reclaim(trash);
     });
   }
 

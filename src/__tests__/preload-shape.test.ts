@@ -363,6 +363,7 @@ describe("preload contextBridge world shape lock", () => {
             "previewSource",
             "refreshSources",
             "removeSource",
+            "repairSource",
             "setSourceEnabled",
             "setToken",
             "takeDeepLink",

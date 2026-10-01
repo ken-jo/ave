@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -41,6 +41,16 @@ function writeSources(sources: unknown[]): void {
   writeFileSync(join(root, "sources.json"), JSON.stringify({ version: 1, sources }));
 }
 
+async function failure(promise: Promise<unknown>): Promise<MarketplaceError> {
+  try {
+    await promise;
+  } catch (error) {
+    if (error instanceof MarketplaceError) return error;
+    throw error;
+  }
+  throw new Error("expected a MarketplaceError");
+}
+
 async function code(promise: Promise<unknown>): Promise<string> {
   try {
     await promise;
@@ -65,7 +75,7 @@ describe("SourceRegistry listing", () => {
   });
 
   it("serves no managed sources when the policy is unreadable", async () => {
-    const registry = await open({ ok: false, error: "bad" });
+    const registry = await open({ ok: false, error: "bad", path: "/fixture/ave-policy.json" });
     expect(registry.list().map((source) => source.id)).toEqual(["ave"]);
   });
 });
@@ -184,8 +194,38 @@ describe("SourceRegistry load checks", () => {
     const registry = await open(CORP_POLICY);
     expect(registry.list().map((source) => source.id)).toEqual(["ave", "corp"]);
     expect(registry.diagnostics()[0]).toMatchObject({ subject: "sources.json" });
-    expect(await code(registry.add(custom()))).toContain("repair or remove it");
+    const refused = await failure(registry.add(custom()));
+    expect(refused.code).toBe("SOURCE_LIST_UNREADABLE");
+    expect(refused.detail).toEqual({ reason: "invalid" });
     expect(readFileSync(join(root, "sources.json"), "utf8")).toBe('{"version":1,"sources":[],"sources":[]}');
+  });
+
+  it("refuses writes with the fs error's code, and no home path, when sources.json cannot be opened", async () => {
+    mkdirSync(join(root, "sources.json"));
+    const registry = await open();
+    expect(registry.list().map((source) => source.id)).toEqual(["ave"]);
+    const refused = await failure(registry.add(custom()));
+    expect(refused.code).toBe("SOURCE_LIST_UNREADABLE");
+    expect(refused.detail).toEqual({ reason: "unreadable", fsCode: "EISDIR" });
+    expect(refused.message).toContain("sources.json (EISDIR)");
+    for (const text of [refused.message, registry.diagnostics()[0]!.message]) expect(text).not.toContain(root);
+    expect(statSync(join(root, "sources.json")).isDirectory()).toBe(true);
+  });
+});
+
+describe("SourceRegistry sweep of copies Repair moved aside", () => {
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("opens even when the marketplaces folder cannot be listed, leaving the sweep for later", async () => {
+    mkdirSync(join(root, ".trash-acme-left"));
+    chmodSync(root, 0o300);
+    try {
+      const registry = await open();
+      expect(registry.list().map((source) => source.id)).toEqual(["ave"]);
+    } finally {
+      chmodSync(root, 0o700);
+    }
+    expect(existsSync(join(root, ".trash-acme-left"))).toBe(true);
+    await open();
+    expect(existsSync(join(root, ".trash-acme-left"))).toBe(false);
   });
 });
 
@@ -241,7 +281,11 @@ describe("SourceRegistry state", () => {
     const registry = await open();
     mkdirSync(join(root, "ave"), { recursive: true });
     writeFileSync(join(root, "ave", "state.json"), JSON.stringify({ pinnedCommit: "main", enabled: true }));
-    expect(await code(registry.readState("ave"))).toContain("pinnedCommit must be null or a commit id");
+    await expect(registry.readState("ave")).rejects.toMatchObject({
+      code: "SOURCE_LOCAL_DATA_DAMAGED",
+      message: "state.json of source ave is invalid: pinnedCommit must be null or a commit id",
+      detail: { reason: "state-invalid", sourceId: "ave" },
+    });
     expect(await code(registry.writeState("ave", { pinnedCommit: null, enabled: true, lastSync: { at: "x", result: "ok" } }))).toContain(
       "refusing to write an invalid state",
     );
