@@ -2336,20 +2336,26 @@ other opaque secret) is masked only in these positions:
   the secret. A redaction marker already in the value is not trusted
   (`[REDACTED:TOKEN] <secret>`, or a folded line after it): the whole value
   becomes one marker, so a value that is one marker stays one marker. The
-  header names are `Authorization` and `Proxy-Authorization` after any
-  character but a letter or digit, or right after an escape sequence
-  (`x-authorization:`, `\nAuthorization:` in a JSON string), with `:` or
-  `=`, as a JSON key, or as a `--authorization` flag. A JSON key counts at
-  any depth of JSON carried in JSON strings: its quotes escaped by any
-  number of backslashes (`\"Authorization\":`), or its letters
-  `\u`-escaped; its value runs to the end of the line like any other. One
-  stage recognizes Authorization keys and values: both scrubbers run it
-  first, with one value-span function, and nothing else in either does. A `Bearer` value; an
-  `x-api-key` or `x-auth-token` value;
+  header is read by one grammar: the name (`Authorization` or
+  `Proxy-Authorization`, after any character but a letter or digit or right
+  after an escape sequence, so `x-authorization:` and `\nAuthorization:` in
+  a JSON string count; each letter as itself or `\u`-escaped), an optional
+  closing quote escaped by any number of backslashes, then `SEP_WS*`, `:` or
+  `=`, `SEP_WS*`. `SEP_WS` is any raw whitespace, line breaks (CR, LF,
+  CRLF) and U+2028/U+2029 included, and the same whitespace escaped in a
+  JSON string at any depth (`\n`, `\\\t`, `\u000a`). So a JSON key counts
+  at any depth and with any whitespace JSON allows around its colon
+  (`{"Authorization":` and a line break, then the value). The value starts
+  at the first character after that grammar and runs to the end of the
+  line it starts on, through folded lines, or to the end of the text. A
+  `--authorization` flag counts too. One stage, `maskAuthorizationValues`,
+  is the only code that reads `authorization`: both scrubbers run it first,
+  with one value-span function, and nothing else in either does. A
+  `Bearer` value; an `x-api-key` or `x-auth-token` value;
 - the value of a credential assignment (`key=value`, `key: value`, JSON
   `"key": "value"`, `--key value`) whose key holds `token`, `secret`,
   `password`, `passwd`, `pwd`, `apikey`, `accesskey`, `privatekey`,
-  `credential`, `bearer` or `authorization`, or has `auth` or `pat` as a
+  `credential` or `bearer`, or has `auth` or `pat` as a
   whole segment (`AZURE_DEVOPS_EXT_PAT=…`, `pat=…`; not `path=`);
 - a query parameter `api_key`, `token`, `access_token` or `refresh_token`.
 

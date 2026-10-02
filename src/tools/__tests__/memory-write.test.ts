@@ -251,6 +251,15 @@ describe("memory_write — credential guard", () => {
     expect(result.output).toContain("credentials");
     expect(saveMemory).not.toHaveBeenCalled();
   });
+
+  it.each(["\n", "\r", "\r\n"])("rejects a JSON Authorization value after a line break %j at its colon (§18.8)", async (gap) => {
+    const { store, saveMemory } = makeStore();
+    const content = `{"Authorization":${gap}"Custom opaque-pass-12345"}`;
+    expect(JSON.parse(content).Authorization).toBe("Custom opaque-pass-12345");
+    const result = await run({ title: "HTTP configuration", content }, store);
+    expect(result.isError).toBe(true);
+    expect(saveMemory).not.toHaveBeenCalled();
+  });
 });
 
 describe("memory_write — store failure", () => {

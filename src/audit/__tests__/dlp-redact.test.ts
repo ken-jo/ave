@@ -532,8 +532,8 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
     // A header quoted inside a longer text takes the rest of the line too: the quote around it is not its end.
     expect(scrubDiagnosticSecrets('x {"msg":"Authorization: Custom opaque-pass-12345","status":200}')).toBe('x {"msg":"Authorization: [REDACTED:TOKEN]');
     expect(scrubDiagnosticSecrets("error: 'Authorization: Custom opaque-pass-12345' failed")).toBe("error: 'Authorization: [REDACTED:TOKEN]");
-    // Accepted: a key holding `authorization` takes its value even when it is not a secret.
-    expect(scrubDiagnosticSecrets("x: authorization_url=https://idp.example/x kept")).toBe("x: authorization_url=[REDACTED:TOKEN] kept");
+    // Only the header stage reads `authorization`: a key that merely holds the word is not a header (§18.8).
+    expect(scrubDiagnosticSecrets("x: authorization_url=https://idp.example/x kept")).toBe("x: authorization_url=https://idp.example/x kept");
   });
 
   describe("an Authorization value ends only at its line's end, or the text's (§18.8)", () => {
@@ -585,6 +585,63 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
         expect(scrubSecretsForLLM(masked)).toBe(masked);
         expect(holdsCredential(masked)).toBe(false);
       }
+    });
+
+    describe("JSON whitespace at the separator, any indent and depth (seeded property)", () => {
+      /** A small deterministic generator (mulberry32), so a failure names the case that reproduces it. */
+      const generator = (seed: number) => () => {
+        seed = (seed + 0x6d2b79f5) | 0;
+        let value = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+        return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+      };
+      const KEYS = ["Authorization", "authorization", "Proxy-Authorization", "AUTHORIZATION", "x-authorization"];
+      const SCHEMES = ["Custom", "Basic", "Bearer", "[REDACTED:TOKEN]", 'Digest username="O\'Neil", response=', ""];
+      const INDENTS: ReadonlyArray<number | string | undefined> = [undefined, 0, 1, 2, "\t"];
+      /** Whitespace written around a key's colon, raw (as a hand-written or pretty file has it) or already escaped in a string. */
+      const GAPS = ["", " ", "\n", "\r", "\r\n", "\t", " \n  ", " ", "\\n", "\\r\\n", "\\t", "\\u000a"];
+      const SHAPES: ReadonlyArray<(key: string, value: string) => unknown> = [
+        (key, value) => ({ [key]: value }),
+        (key, value) => ({ level: 30, headers: { accept: "*/*", [key]: value, host: "git.example" } }),
+        (key, value) => ({ request: { url: "https://git.example/x", headers: [{ name: "accept" }, { [key]: value }] } }),
+      ];
+      const pick = <T,>(random: () => number, items: readonly T[]): T => items[Math.floor(random() * items.length)]!;
+      const CASES = Array.from({ length: 300 }, (_, seed) => {
+        const random = generator(seed + 1);
+        const key = pick(random, KEYS);
+        let text = JSON.stringify(pick(random, SHAPES)(key, `${pick(random, SCHEMES)} ${secret}`.trim()), null, pick(random, INDENTS));
+        // Whitespace around the colon after the key, as JSON allows.
+        const before = pick(random, GAPS);
+        const after = pick(random, GAPS);
+        text = text.replace(`"${key}":`, `"${key}"${before}:${after}`);
+        const depth = Math.floor(random() * 4);
+        for (let level = 0; level < depth; level++) text = JSON.stringify({ level: 30, msg: text }, null, random() < 0.5 ? undefined : 2);
+        return { seed: seed + 1, depth, text };
+      });
+
+      it.each(CASES)("seed $seed, depth $depth: neither scrubber leaks, both agree, and again is a no-op", ({ text }) => {
+        const diagnostic = scrubDiagnosticSecrets(text);
+        const model = scrubSecretsForLLM(text);
+        expect(diagnostic).not.toContain(secret);
+        expect(model).not.toContain(secret);
+        expect(model).toBe(diagnostic);
+        expect(scrubDiagnosticSecrets(diagnostic)).toBe(diagnostic);
+        expect(scrubSecretsForLLM(model)).toBe(model);
+      });
+    });
+
+    it("has one place in the scrubber that reads `authorization`: the header stage", async () => {
+      const { readFileSync } = await import("node:fs");
+      const source = readFileSync(new URL("../../shared/dlp.ts", import.meta.url), "utf8");
+      // Code only: comments say Authorization a lot.
+      const code = source.replace(/\/\*[\s\S]*?\*\//gu, (block) => block.replace(/[^\n]/gu, " ")).replace(/(^|[^:"'`\\])\/\/.*$/gmu, "$1");
+      const stageStart = code.indexOf("function authorizationValueEnd(");
+      const stageEnd = code.indexOf("\n}\n", code.indexOf("function maskAuthorizationValues(")) + 3;
+      expect(stageStart).toBeGreaterThan(0);
+      expect(stageEnd).toBeGreaterThan(stageStart);
+      const outside = [...code.matchAll(/authorization/giu)].filter((match) => match.index < stageStart || match.index >= stageEnd);
+      // Outside the stage, only the two scrubbers' calls into it, each first.
+      expect(outside.map((match) => code.slice(match.index - 4, match.index + 25))).toEqual(["maskAuthorizationValues(text)", "maskAuthorizationValues(text)"]);
     });
 
     describe("one stage for both scrubbers, at any JSON depth (differential)", () => {
@@ -743,6 +800,8 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
       `Authorization: Digest ${fill('a="b", ')}`, fill("Authorization: Basic a\n"), fill("x: Authorization: Basic "),
       // The header stage reads escaped names and quotes: runs of backslashes and of near-names.
       fill("\\u0041"), fill("\\\\u0041uthorizatio"), fill("Authorizatio"), fill('\\"Authorization\\"'), fill("\\nauthorization"), fill("--authorizatio"),
+      // Separator whitespace, raw and escaped, with no separator after it.
+      `Authorization${fill("\n")}`, `"Authorization"${fill("\\n")}`, `Authorization${fill("\\\\\\t")}`, fill("Authorization \n"), fill('"authorization"\\u000a'), `authorization:${fill(" \r\n")}`,
     ];
     for (const input of inputs) {
       for (const scrub of [scrubDiagnosticSecrets, scrubSecretsForLLM]) {

@@ -175,6 +175,21 @@ describe("ave:logs:tail", () => {
     for (const line of r.lines) expect(line).toMatch(/Authorization\\*":\[REDACTED:TOKEN\]$/u);
   });
 
+  it.each([
+    ["a tab before the colon", '{"Authorization"\t:"[REDACTED:TOKEN] opaque-pass-12345"}'],
+    ["a line break before the colon", '{"Authorization"\n:"Custom opaque-pass-12345"}'],
+    ["a carriage return before the colon", '{"Authorization"\r:"Custom opaque-pass-12345"}'],
+    ["a line break after the colon", '{"Authorization":\n"Custom opaque-pass-12345"}'],
+    ["CRLF and spaces around the colon", '{"Proxy-Authorization" \r\n : \r\n "[REDACTED:TOKEN] opaque-pass-12345"}'],
+  ])("masks an Authorization value with JSON whitespace at its colon, %s, serialized in a log line (§18.8)", async (_label, inner) => {
+    expect(JSON.stringify(JSON.parse(inner))).toContain("opaque-pass-12345");
+    writeFileSync(join(tmp, "logs", "ave-2025-06-01.log"), [inner.replace(/[\r\n]/gu, " "), JSON.stringify({ level: 30, msg: inner })].join("\n") + "\n", "utf-8");
+    const r = (await invokeRegisteredHandlerWithEvent(handlers, CHANNELS.logs.tail, ACCEPT_EVENT, { lines: 50 })) as { ok: boolean; lines: string[] };
+    expect(r.ok).toBe(true);
+    expect(r.lines).toHaveLength(2);
+    expect(r.lines.join("\n")).not.toContain("opaque-pass-12345");
+  });
+
   it("clamps an absurd line count and never throws on empty", async () => {
     const r = (await invokeRegisteredHandlerWithEvent(handlers, CHANNELS.logs.tail, ACCEPT_EVENT, {
       lines: 10_000_000,

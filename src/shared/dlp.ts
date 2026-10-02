@@ -82,7 +82,7 @@ function overHttp(scheme: string): boolean {
 /** Words that make a key a credential's, matched in the lowercased key. */
 const CREDENTIAL_WORDS = [
   "token", "secret", "password", "passwd", "pwd", "apikey", "api_key", "api-key", "accesskey", "access_key", "access-key",
-  "privatekey", "private_key", "private-key", "credential", "bearer", "authorization",
+  "privatekey", "private_key", "private-key", "credential", "bearer",
 ] as const;
 
 /**
@@ -597,18 +597,30 @@ function escapedNamePattern(name: string): string {
 }
 
 /**
- * An `Authorization` or `Proxy-Authorization` header name and what separates
- * its value: `Authorization: `, `authorization=`, a JSON key
- * (`"authorization": `), and the same key in JSON carried in a JSON string
- * at any depth, its quotes escaped (`\\"Authorization\\":`, `\\\\\\"…`) or its
- * letters `\\u`-escaped; and a flag `--authorization `. The name starts after
- * any character but a letter or digit, or right after an escape sequence
- * (`\\nAuthorization:` in a JSON string), so any key ending in it counts
- * (`x-authorization:`).
+ * Whitespace that may stand around a header's separator (`SEP_WS`): any raw
+ * whitespace, line breaks and U+2028/U+2029 included (JSON allows a line
+ * break between a key, its colon and its value), and the same whitespace
+ * escaped in a JSON string at any depth (`\n`, `\\\t`, `\u000a`). An escape's
+ * backslashes are read from the first of their run only, so the scan stays linear.
+ */
+const SEP_WS = String.raw`(?:\s|(?<!\\)\\+(?:[nrtfv]|u(?:0009|000a|000b|000c|000d|0020|2028|2029)))`;
+
+/**
+ * The grammar of an `Authorization` or `Proxy-Authorization` header up to
+ * its value (§18.8): the name — after any character but a letter or digit,
+ * or right after an escape sequence (`\nAuthorization` in a JSON string),
+ * each letter as itself or `\u`-escaped — then an optional closing quote,
+ * escaped by any number of backslashes, then `SEP_WS*`, `:` or `=`,
+ * `SEP_WS*`. So `Authorization: `, `authorization=`, a JSON key at any depth
+ * and with any JSON whitespace around its colon, and any key ending in the
+ * name (`x-authorization:`) all count; so does a flag `--authorization `.
+ * The value starts at the first character after that.
  */
 const AUTHORIZATION_HEADER = new RegExp(
-  `(?:(?<![A-Za-z0-9])|(?<=\\\\[nrtbf])|(?<=\\\\u[0-9A-Fa-f]{4}))(?:${escapedNamePattern("proxy-")})?${escapedNamePattern("authorization")}(?:\\\\*["'])?[ \\t]*[:=][ \\t]*` +
-    `|(?<!\\S)--(?:proxy-)?authorization[ \\t]+`,
+  String.raw`(?:(?<![A-Za-z0-9])|(?<=\\[nrtbf])|(?<=\\u[0-9A-Fa-f]{4}))` +
+    `(?:${escapedNamePattern("proxy-")})?${escapedNamePattern("authorization")}` +
+    String.raw`(?:\\*["'])?${SEP_WS}*[:=]${SEP_WS}*` +
+    String.raw`|(?<!\S)--(?:proxy-)?authorization[ \t]+`,
   "giu",
 );
 
