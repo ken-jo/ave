@@ -152,6 +152,29 @@ describe("ave:logs:tail", () => {
     expect(text).toContain("[REDACTED:TOKEN]");
   });
 
+  it("masks an Authorization value in a log line at any JSON depth, a marker in it or not (§18.8)", async () => {
+    const secret = fixtureSecret("opaque-", "pass-12345");
+    const lines: string[] = [];
+    for (const value of [`Custom ${secret}`, `[REDACTED:TOKEN] ${secret}`, `Digest username="O'Neil", response="${secret}"`]) {
+      // The record itself, then records whose message is a serialized record, nested up to three deep.
+      let message = JSON.stringify({ Authorization: value });
+      lines.push(message);
+      for (let depth = 0; depth < 3; depth++) {
+        lines.push(JSON.stringify({ level: 30, msg: message }));
+        message = JSON.stringify({ level: 30, msg: message });
+      }
+    }
+    writeFileSync(join(tmp, "logs", "ave-2025-06-01.log"), lines.join("\n") + "\n", "utf-8");
+    const r = (await invokeRegisteredHandlerWithEvent(handlers, CHANNELS.logs.tail, ACCEPT_EVENT, { lines: 50 })) as {
+      ok: boolean;
+      lines: string[];
+    };
+    expect(r.ok).toBe(true);
+    expect(r.lines).toHaveLength(lines.length);
+    expect(r.lines.join("\n")).not.toContain(secret);
+    for (const line of r.lines) expect(line).toMatch(/Authorization\\*":\[REDACTED:TOKEN\]$/u);
+  });
+
   it("clamps an absurd line count and never throws on empty", async () => {
     const r = (await invokeRegisteredHandlerWithEvent(handlers, CHANNELS.logs.tail, ACCEPT_EVENT, {
       lines: 10_000_000,

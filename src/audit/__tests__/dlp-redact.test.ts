@@ -587,6 +587,39 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
       }
     });
 
+    describe("one stage for both scrubbers, at any JSON depth (differential)", () => {
+      const SCHEMES = ["Custom", "Basic", "Bearer", "Negotiate", 'Digest username="O\'Neil", response=', "[REDACTED:TOKEN]", ""];
+      /** Each header form with `value` as its value: plain, `=`, proxy, JSON key, flag, x-prefixed, folded, after an escape, `\u`-escaped. */
+      const FORMS: ReadonlyArray<readonly [string, (value: string) => string]> = [
+        ["plain", (value) => `Authorization: ${value}`],
+        ["equals", (value) => `authorization=${value}`],
+        ["proxy", (value) => `Proxy-Authorization: ${value}`],
+        ["JSON key", (value) => JSON.stringify({ Authorization: value, safe: "keep" })],
+        ["flag", (value) => `curl --authorization ${value} --next`],
+        ["x-prefixed", (value) => `x-authorization: ${value}`],
+        ["folded", (value) => `Authorization: Custom\r\n\t${value}\r\nHost: git.example`],
+        ["after a line break", (value) => `request failed\nAuthorization: ${value}`],
+        ["u-escaped JSON key", (value) => `{"\\u0041uthorization":${JSON.stringify(value)}}`],
+      ];
+      /** `text` serialized `depth` times as a log record's message, as nested structured logs carry it. */
+      const encode = (text: string, depth: number): string => {
+        let out = text;
+        for (let level = 0; level < depth; level++) out = JSON.stringify({ level: 30, msg: out });
+        return out;
+      };
+      const CASES = FORMS.flatMap(([form, build]) => SCHEMES.flatMap((scheme) => [0, 1, 2, 3].map((depth) => ({ form, scheme, depth, text: encode(build(`${scheme} ${secret}`.trim()), depth) }))));
+
+      it.each(CASES)("$form, $scheme, depth $depth: neither leaks, both mask the same span, and again is a no-op", ({ text }) => {
+        const diagnostic = scrubDiagnosticSecrets(text);
+        const model = scrubSecretsForLLM(text);
+        expect(diagnostic).not.toContain(secret);
+        expect(model).not.toContain(secret);
+        expect(model).toBe(diagnostic);
+        expect(scrubDiagnosticSecrets(diagnostic)).toBe(diagnostic);
+        expect(scrubSecretsForLLM(model)).toBe(model);
+      });
+    });
+
     it("masks the same span for model-bound and diagnostic text", () => {
       const inputs = [
         `Authorization: Custom ${secret}`,
@@ -708,12 +741,16 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
       fill('\\"a'), fill('\\"a\\\\\\"'), `\\"${fill('a\\\\\\"')}`, fill('\\"token\\":'), fill('\\"token\\":\\"a\\"'), fill('"token":\n"a"\n:'), fill("token: a :"),
       `"${fill('\\"a')}": 1`, `"\\"${fill('a\\\\\\"')}": 1`, fill('\\"a \\"'), `"${fill('\\"token\\": ')}": 1`, fill("token=Basic "), `token=Basic${fill(" ")}x`,
       `Authorization: Digest ${fill('a="b", ')}`, fill("Authorization: Basic a\n"), fill("x: Authorization: Basic "),
+      // The header stage reads escaped names and quotes: runs of backslashes and of near-names.
+      fill("\\u0041"), fill("\\\\u0041uthorizatio"), fill("Authorizatio"), fill('\\"Authorization\\"'), fill("\\nauthorization"), fill("--authorizatio"),
     ];
     for (const input of inputs) {
-      const started = performance.now();
-      scrubDiagnosticSecrets(input);
-      // Generous for a loaded CI host; the quadratic key regex took seconds on each of the first two.
-      expect(performance.now() - started, input.slice(0, 24)).toBeLessThan(250);
+      for (const scrub of [scrubDiagnosticSecrets, scrubSecretsForLLM]) {
+        const started = performance.now();
+        scrub(input);
+        // Generous for a loaded CI host; the quadratic key regex took seconds on each of the first two.
+        expect(performance.now() - started, input.slice(0, 24)).toBeLessThan(250);
+      }
     }
   });
 

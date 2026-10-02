@@ -241,7 +241,7 @@ function redactCredentialAssignments(text: string): string {
     const key = pending[pending.length - 1];
     return key !== undefined && at < key.close ? key.close : text.length;
   };
-  // An Authorization header's value is not this scan's: {@link maskAuthorizationValues} takes it whole, after.
+  // An Authorization header's value is not this scan's: {@link maskAuthorizationValues} took it whole, before.
   const valueEnd = (start: number, toLineEnd: boolean, limit: number): number => {
     if (start >= limit) return start;
     if (text[start] === '"' || text[start] === "'") {
@@ -381,8 +381,9 @@ function redactCredentialAssignments(text: string): string {
 
 /** Every userinfo and assignment shape {@link scrubDiagnosticSecrets} redacts; throws on an internal contract violation. */
 export function scrubDiagnosticSecretsStrict(text: string): string {
+  // Authorization values first, by the stage the model-bound scrubber runs first too (§18.8).
   return scrubCredentialShapes(redactCredentialAssignments(
-    text
+    maskAuthorizationValues(text)
       // A scheme starts after a character no scheme holds, so `a.a.a…` is read once, not from every `a`.
       .replace(/(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*)(:\/\/)([^\s/?#]*)@/gi, (match: string, scheme: string, slashes: string, userinfo: string): string =>
         userinfoHidesCredential(userinfo, scheme) ? `${scheme}${slashes}[REDACTED:CREDENTIALS]@` : match,
@@ -437,7 +438,7 @@ export function hasRedaction(text: string): boolean {
  * mistake costs nothing, and a key missed costs a leak.
  */
 export function scrubSecretsForLLM(text: string): string {
-  return scrubCredentialShapes(text, "broad");
+  return scrubCredentialShapes(maskAuthorizationValues(text), "broad");
 }
 
 /**
@@ -582,19 +583,46 @@ function authorizationValueEnd(text: string, start: number): number {
 }
 
 /**
- * An `Authorization` or `Proxy-Authorization` header name and what separates
- * its value: `Authorization: `, a JSON key `"authorization": `, `authorization=`,
- * a flag `--authorization `. Any key ending in the name counts (`x-authorization:`).
+ * `name` as a pattern that also reads each character spelled as a JSON
+ * `\\uXXXX` escape, under any number of backslashes (a key in JSON carried
+ * in a JSON string, at any depth). Case-insensitive, like header names.
  */
-const AUTHORIZATION_HEADER = /(?<![A-Za-z0-9])(?:proxy-)?authorization["']?[ \t]*[:=][ \t]*|(?<!\S)--(?:proxy-)?authorization[ \t]+/giu;
+function escapedNamePattern(name: string): string {
+  return [...name].map((char) => {
+    const codes = [...new Set([char.toLowerCase(), char.toUpperCase()])].map((form) => form.charCodeAt(0).toString(16).padStart(4, "0"));
+    // Letters and `-` only: each stands for itself in a pattern. An escape's backslashes are read from the
+    // first of their run only, so a long run of backslashes is scanned once, not from each of them.
+    return `(?:${char}|(?<!\\\\)\\\\+u(?:${codes.join("|")}))`;
+  }).join("");
+}
+
+/**
+ * An `Authorization` or `Proxy-Authorization` header name and what separates
+ * its value: `Authorization: `, `authorization=`, a JSON key
+ * (`"authorization": `), and the same key in JSON carried in a JSON string
+ * at any depth, its quotes escaped (`\\"Authorization\\":`, `\\\\\\"…`) or its
+ * letters `\\u`-escaped; and a flag `--authorization `. The name starts after
+ * any character but a letter or digit, or right after an escape sequence
+ * (`\\nAuthorization:` in a JSON string), so any key ending in it counts
+ * (`x-authorization:`).
+ */
+const AUTHORIZATION_HEADER = new RegExp(
+  `(?:(?<![A-Za-z0-9])|(?<=\\\\[nrtbf])|(?<=\\\\u[0-9A-Fa-f]{4}))(?:${escapedNamePattern("proxy-")})?${escapedNamePattern("authorization")}(?:\\\\*["'])?[ \\t]*[:=][ \\t]*` +
+    `|(?<!\\S)--(?:proxy-)?authorization[ \\t]+`,
+  "giu",
+);
 
 /**
  * `text` with every Authorization header's value, of any scheme known or
  * not, replaced whole by one marker: from after the name (and separator) to
  * {@link authorizationValueEnd}. A marker already in the value is not trusted
  * (`[REDACTED:TOKEN] <secret>`, a folded line after it): the value goes with
- * it, so a value that is one marker stays one marker. Both scrubber modes
- * apply this one pass, so model-bound and diagnostic text mask the same span.
+ * it, so a value that is one marker stays one marker.
+ *
+ * The one stage that recognizes an Authorization key or value: both
+ * {@link scrubSecretsForLLM} and {@link scrubDiagnosticSecretsStrict} run it
+ * first and run nothing else that does, so model-bound and diagnostic text
+ * mask the same span. A later pass sees only its marker.
  */
 function maskAuthorizationValues(text: string): string {
   let out = "";
@@ -619,7 +647,7 @@ function maskAuthorizationValues(text: string): string {
  * always has: there a name masked by mistake costs nothing.
  */
 function scrubCredentialShapes(text: string, mode: "broad" | "precise"): string {
-  let out = maskAuthorizationValues(text)
+  let out = text
     .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, "[REDACTED:PRIVATE_KEY]")
     .replace(
       /((?:x-api-key|x-auth-token)\s*:\s*)[A-Za-z0-9._\-~+/=]+/gi,
@@ -631,7 +659,7 @@ function scrubCredentialShapes(text: string, mode: "broad" | "precise"): string 
       "$1=[REDACTED:TOKEN]",
     )
     .replace(
-      /(["'](?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|authorization|x-api-key|x-auth-token|aws[_-]?secret[_-]?access[_-]?key)["']\s*:\s*["'])[^"']+(["'])/gi,
+      /(["'](?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|x-api-key|x-auth-token|aws[_-]?secret[_-]?access[_-]?key)["']\s*:\s*["'])[^"']+(["'])/gi,
       "$1[REDACTED:TOKEN]$2",
     )
     // JSON Web Tokens: three base64url segments separated by dots (header.payload.sig).

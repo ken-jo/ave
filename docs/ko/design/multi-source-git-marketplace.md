@@ -2130,9 +2130,13 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
   나머지를 가리는 비용은 표시뿐이지만 일찍 멈추면 비밀이 샙니다. 값 안에 이미 있는 가림
   표시도 믿지 않습니다(`[REDACTED:TOKEN] <비밀>`, 그 뒤의 접힌 줄). 값 전체가 표시 하나가
   되므로, 이미 표시 하나인 값은 표시 하나로 남습니다. 헤더 이름은 글자·숫자가 아닌 문자 뒤의
-  `Authorization`·`Proxy-Authorization`(`x-authorization:`도 포함)이고, `:`나 `=`, JSON 키,
-  `--authorization` 플래그 형태입니다. 두 스크러버가 값 범위 함수 하나를 쓰는 같은 단계로
-  이를 적용합니다. 그리고 `Bearer` 값, `x-api-key`·`x-auth-token` 값
+  `Authorization`·`Proxy-Authorization`이고, 이스케이프 시퀀스 바로 뒤도 포함합니다
+  (`x-authorization:`, JSON 문자열 안의 `\nAuthorization:`). `:`나 `=`, JSON 키,
+  `--authorization` 플래그 형태입니다. JSON 문자열에 담긴 JSON의 키는 깊이와 상관없이 셉니다.
+  따옴표가 백슬래시 몇 개로 이스케이프되었든(`\"Authorization\":`), 글자가 `\u`로
+  이스케이프되었든 마찬가지이고, 값은 다른 경우처럼 줄 끝까지입니다. Authorization 키와 값을
+  알아보는 단계는 하나뿐입니다. 두 스크러버가 값 범위 함수 하나를 쓰는 그 단계를 맨 먼저
+  실행하고, 어느 쪽에도 그 밖의 처리는 없습니다. 그리고 `Bearer` 값, `x-api-key`·`x-auth-token` 값
 - 키에 `token`, `secret`, `password`, `passwd`, `pwd`, `apikey`, `accesskey`, `privatekey`,
   `credential`, `bearer`, `authorization`이 들었거나 `auth`·`pat`이 온전한 조각인
   자격 증명 할당(`key=value`, `key: value`, JSON `"key": "value"`, `--key value`)의 값

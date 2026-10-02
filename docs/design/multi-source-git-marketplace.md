@@ -2337,9 +2337,14 @@ other opaque secret) is masked only in these positions:
   (`[REDACTED:TOKEN] <secret>`, or a folded line after it): the whole value
   becomes one marker, so a value that is one marker stays one marker. The
   header names are `Authorization` and `Proxy-Authorization` after any
-  character but a letter or digit (`x-authorization:` too), with `:` or
-  `=`, as a JSON key, or as a `--authorization` flag. One pass, with one
-  value-span function, applies this in both scrubbers. A `Bearer` value; an
+  character but a letter or digit, or right after an escape sequence
+  (`x-authorization:`, `\nAuthorization:` in a JSON string), with `:` or
+  `=`, as a JSON key, or as a `--authorization` flag. A JSON key counts at
+  any depth of JSON carried in JSON strings: its quotes escaped by any
+  number of backslashes (`\"Authorization\":`), or its letters
+  `\u`-escaped; its value runs to the end of the line like any other. One
+  stage recognizes Authorization keys and values: both scrubbers run it
+  first, with one value-span function, and nothing else in either does. A `Bearer` value; an
   `x-api-key` or `x-auth-token` value;
 - the value of a credential assignment (`key=value`, `key: value`, JSON
   `"key": "value"`, `--key value`) whose key holds `token`, `secret`,
