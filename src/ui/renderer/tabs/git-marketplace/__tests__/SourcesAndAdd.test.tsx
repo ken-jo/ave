@@ -717,6 +717,8 @@ describe("folder sources (§18.4.8)", () => {
   const REVISION = `local-${"c".repeat(64)}`;
   /** The id main gives the row of a source stored under a credential-shaped id (§18.8). */
   const HANDLE = "ave-legacy-0123456789abcdef0123456789abcdef";
+  /** A *Choose folder…* selection main holds (§18.9). */
+  const PICK = `pick-${"e".repeat(32)}`;
   const folderPreview: MarketplacePreviewView = {
     ...marketplacePreview,
     transport: "folder",
@@ -787,7 +789,7 @@ describe("folder sources (§18.4.8)", () => {
 
   it("chooses a folder with main's dialog and checks it at once, asking no branch or sign-in, then shows where it was resolved from and when it is read", async () => {
     const fake = fakeMarketplace();
-    fake.market.pickFolder.mockResolvedValue({ ok: true, value: { path: "/tmp/market" } });
+    fake.market.pickFolder.mockResolvedValue({ ok: true, value: { pick: PICK, display: "/tmp/market" } });
     fake.market.previewSource.mockResolvedValue({ ok: true, value: folderPreview });
     addDialog(fake);
 
@@ -797,13 +799,63 @@ describe("folder sources (§18.4.8)", () => {
     fireEvent.change(screen.getByLabelText("브랜치 또는 태그(선택)"), { target: { value: "main" } });
     fireEvent.click(screen.getByTestId("git-marketplace:add:choose-folder"));
 
-    await waitFor(() => expect(fake.market.previewSource).toHaveBeenCalledWith({ input: "/tmp/market", auth: "none" }));
+    // The chosen folder goes by its pick: main reads the folder it chose, not the text shown.
+    await waitFor(() => expect(fake.market.previewSource).toHaveBeenCalledWith({ pick: PICK, auth: "none" }));
     const preview = await screen.findByTestId("git-marketplace:add:preview");
     expect(within(preview).getByTestId("git-marketplace:add:folder")).toHaveTextContent("폴더 /private/tmp/market");
     expect(within(preview).getByTestId("git-marketplace:add:resolved-from")).toHaveTextContent("입력한 경로는 /tmp/market입니다.");
     expect(preview).toHaveTextContent("내용 ccccccc");
     expect(within(preview).getByTestId("git-marketplace:add:folder-pickup")).toHaveTextContent("시작할 때, 몇 시간마다, 그리고 새로 고침할 때 반영됩니다.");
     expect(within(preview).getByTestId("git-marketplace:add:badge:local-folder")).toHaveTextContent("로컬 폴더");
+  });
+
+  it("sends a chosen folder by its pick, never its masked display, through a confirmation, and as typed once the address is edited (§18.9)", async () => {
+    const fake = fakeMarketplace();
+    const masked = "/Users/example/[REDACTED:TOKEN]";
+    fake.market.pickFolder.mockResolvedValue({ ok: true, value: { pick: PICK, display: masked } });
+    fake.market.previewSource.mockResolvedValueOnce({ ok: true, value: { type: "confirm", warnings: [{ warning: "network-folder", host: "files.corp", address: masked }] } });
+    fake.market.previewSource.mockResolvedValue({ ok: true, value: folderPreview });
+    addDialog(fake);
+    await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId("git-marketplace:add:choose-folder"));
+    await waitFor(() => expect(fake.market.previewSource).toHaveBeenCalledWith({ pick: PICK, auth: "none" }));
+    await screen.findByTestId("git-marketplace:add:warnings");
+    // The field shows the masked display; it is never sent as an address.
+    expect(screen.getByTestId("git-marketplace:add:url")).toHaveValue(masked);
+    // Continue on the question previews the same chosen folder again, still by its pick.
+    fireEvent.click(screen.getByTestId("git-marketplace:add:warnings:continue"));
+    await waitFor(() => expect(fake.market.previewSource).toHaveBeenLastCalledWith({ pick: PICK, auth: "none", acknowledge: ["network-folder"] }));
+    await screen.findByTestId("git-marketplace:add:preview");
+    expect(fake.market.previewSource.mock.calls.flat()).not.toContainEqual(expect.objectContaining({ input: masked }));
+  });
+
+  it("sends an address edited after Choose folder… as typed, with no pick", async () => {
+    const fake = fakeMarketplace();
+    fake.market.pickFolder.mockResolvedValue({ ok: true, value: { pick: PICK, display: "/Users/example/market" } });
+    fake.market.previewSource.mockResolvedValue({ ok: true, value: { type: "confirm", warnings: [{ warning: "network-folder", host: "files.corp", address: "/Users/example/market" }] } });
+    addDialog(fake);
+    await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId("git-marketplace:add:choose-folder"));
+    await screen.findByTestId("git-marketplace:add:warnings");
+
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "/Users/example/other" } });
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await waitFor(() => expect(fake.market.previewSource).toHaveBeenLastCalledWith({ input: "/Users/example/other", auth: "none" }));
+    // Typed back to the chosen text, it is still the user's text: the pick went with the edit.
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "/Users/example/market" } });
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await waitFor(() => expect(fake.market.previewSource).toHaveBeenLastCalledWith({ input: "/Users/example/market", auth: "none" }));
+  });
+
+  it("says a chosen folder Ave no longer holds must be chosen again", async () => {
+    const fake = fakeMarketplace();
+    fake.market.pickFolder.mockResolvedValue({ ok: true, value: { pick: PICK, display: "/Users/example/market" } });
+    fake.market.previewSource.mockResolvedValue({ ok: false, code: "SOURCE_URL_REJECTED", message: "the chosen folder is no longer held", detail: { reason: "folder-pick-unknown" } });
+    addDialog(fake);
+    await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId("git-marketplace:add:choose-folder"));
+    expect(await screen.findByTestId("git-marketplace:add:error")).toHaveTextContent("Ave가 고른 폴더를 더 이상 갖고 있지 않습니다");
   });
 
   it("stops asking for a branch, package folder and sign-in once the address is a folder, and says why", async () => {
@@ -991,7 +1043,7 @@ describe("folder sources (§18.4.8)", () => {
 
   it("lets a folder be added without installing git", async () => {
     const fake = fakeMarketplace({ git: "missing" });
-    fake.market.pickFolder.mockResolvedValue({ ok: true, value: { path: "/Users/example/market" } });
+    fake.market.pickFolder.mockResolvedValue({ ok: true, value: { pick: PICK, display: "/Users/example/market" } });
     fake.market.previewSource.mockResolvedValue({ ok: true, value: { ...folderPreview, path: "/Users/example/market", resolvedFrom: null } });
     addDialog(fake);
 

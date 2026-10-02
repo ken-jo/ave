@@ -23,6 +23,7 @@
  * the scheduler.
  */
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session, shell, type IpcMainInvokeEvent } from "electron";
+import { randomBytes } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -79,6 +80,7 @@ import {
   type ComponentConsent,
   type PackageKeyView,
   type SourceAddRequest,
+  type FolderPickView,
   type SourcePreviewRequest,
   type UninstallRequest,
 } from "../../shared/git-marketplace.js";
@@ -468,8 +470,53 @@ function warnings(value: unknown, what: string): SourceWarning[] {
   return value as SourceWarning[];
 }
 
-function previewRequest(value: unknown): SourcePreviewRequest {
+/** How long a *Choose folder…* selection stays usable for previews (§18.9). */
+const FOLDER_PICK_TTL_MS = 15 * 60_000;
+
+/**
+ * The folder *Choose folder…* last chose (§18.9), held in main. The tab gets
+ * an opaque `pick` and the path scrubbed for display: scrubbed text is not an
+ * address (a masked name can name another folder, or none), so a preview of
+ * the chosen folder names it by `pick` and main reads the path it kept. One
+ * selection at a time: a newer pick replaces it, an add drops it, and it
+ * expires after {@link FOLDER_PICK_TTL_MS}. It lives only as long as this
+ * process. Any other `pick` is refused as `folder-pick-unknown`.
+ */
+class FolderPicks {
+  private held: { pick: string; path: string; at: number } | null = null;
+
+  constructor(private readonly now: () => number = () => Date.now()) {}
+
+  hold(path: string): FolderPickView {
+    const pick = `pick-${randomBytes(16).toString("hex")}`;
+    this.held = { pick, path, at: this.now() };
+    return { pick, display: scrubMarketplaceStrings(path) };
+  }
+
+  /** The path `pick` names; any pick not held now is refused, never guessed. */
+  resolve(pick: string): string {
+    const held = this.held;
+    if (held === null || held.pick !== pick || this.now() - held.at >= FOLDER_PICK_TTL_MS) {
+      throw new MarketplaceError("SOURCE_URL_REJECTED", "the chosen folder is no longer held; choose it again", { detail: { reason: "folder-pick-unknown" } });
+    }
+    return held.path;
+  }
+
+  drop(): void {
+    this.held = null;
+  }
+}
+
+function previewRequest(value: unknown, picks: FolderPicks): SourcePreviewRequest {
   const request = record(value, "the preview request");
+  if (request.pick !== undefined) {
+    // A chosen folder: main's own path for it, and nothing a folder does not take.
+    if (request.input !== undefined || request.ref !== undefined || request.subdir !== undefined || request.token !== undefined || request.auth !== "none") {
+      throw new InvalidRequest("a chosen folder is previewed by its pick alone, with no address, branch, package folder or sign-in");
+    }
+    const acknowledge = request.acknowledge === undefined ? undefined : warnings(request.acknowledge, "acknowledge");
+    return { input: picks.resolve(text(request.pick, "pick", 64)), auth: "none", ...(acknowledge && acknowledge.length > 0 ? { acknowledge } : {}) };
+  }
   if (request.auth !== "none" && request.auth !== "token" && request.auth !== "ssh") throw new InvalidRequest("auth must be none, token or ssh");
   const ref = optionalText(request.ref, "ref", 256);
   const subdir = optionalText(request.subdir, "subdir", 1024);
@@ -637,8 +684,14 @@ export function registerGitMarketplaceHandlers(
 
   const channels = CHANNELS.gitMarketplace;
   handle(channels.sourcesList, (service) => service.listSources());
-  handle(channels.sourcesPreview, (service, [request]) => service.previewSource(previewRequest(request)));
-  handle(channels.sourcesAdd, (service, [request]) => service.addSource(addRequest(request)));
+  const picks = new FolderPicks();
+  handle(channels.sourcesPreview, (service, [request]) => service.previewSource(previewRequest(request, picks)));
+  handle(channels.sourcesAdd, async (service, [request]) => {
+    const added = await service.addSource(addRequest(request));
+    // The chosen folder was for this add: a later preview chooses again.
+    picks.drop();
+    return added;
+  });
   handle(channels.sourcesAcknowledge, (service, [id, list]) => {
     const confirmed = warnings(list, "warnings");
     if (confirmed.length === 0) throw new InvalidRequest("warnings must name at least one confirmation");
@@ -687,9 +740,9 @@ export function registerGitMarketplaceHandlers(
   };
   handleHeld(channels.deepLinkTake, takePendingGitMarketplaceLink);
 
-  // *Choose folder…* (§18.9): main's own folder dialog, which needs no marketplace. The path it answers
-  // goes into the address field and through `sources:preview` like a typed one.
-  ipcMain.handle(channels.sourcesPickFolder, async (event: IpcMainInvokeEvent): Promise<GitMarketplaceResult<{ path: string } | null>> => {
+  // *Choose folder…* (§18.9): main's own folder dialog, which needs no marketplace. Main keeps the path;
+  // the tab shows it scrubbed and previews it by its pick (`FolderPicks`).
+  ipcMain.handle(channels.sourcesPickFolder, async (event: IpcMainInvokeEvent): Promise<GitMarketplaceResult<FolderPickView | null>> => {
     if (!validateHostRendererSender(event)) {
       auditUnauthorized(deps.auditLogger, channels.sourcesPickFolder, event);
       return UNAUTHORIZED;
@@ -699,8 +752,7 @@ export function registerGitMarketplaceHandlers(
       const parent = BrowserWindow.fromWebContents(event.sender);
       const picked = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
       const path = picked.filePaths[0];
-      // Scrubbed like every answer the tab gets (§18.8): a folder named like a token arrives masked.
-      return { ok: true, value: picked.canceled || !path ? null : scrubMarketplaceStrings({ path }) };
+      return { ok: true, value: picked.canceled || !path ? null : picks.hold(path) };
     } catch (error) {
       const message = scrubDiagnosticSecrets(errorMessage(error));
       log.error({ err: message }, "git marketplace folder dialog failed");

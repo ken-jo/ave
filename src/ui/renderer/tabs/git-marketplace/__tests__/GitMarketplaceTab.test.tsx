@@ -474,6 +474,39 @@ describe("GitMarketplaceTab package sheet", () => {
     await waitFor(() => expect(screen.queryByTestId("git-marketplace:sheet")).toBeNull());
   });
 
+  describe("a package whose source's stored id looks like a token (§18.8)", () => {
+    const HANDLE = "ave-legacy-0123456789abcdef0123456789abcdef";
+    const QUARANTINE = { ok: false as const, code: "SOURCE_ID_INVALID" as const, message: "this source's id looks like a password or token", detail: { reason: "stored-id-holds-credential" } };
+
+    it.each([
+      ["while its source is listed", "installed"],
+      ["after its source is removed", "source-removed"],
+    ] as const)("keeps Uninstall, by its row's handle, beside the reason its detail is refused, %s", async (_label, state) => {
+      const note = entry(HANDLE, "skill", "note", { sourceLabel: HANDLE, state: { state, version: "1.0.0" } });
+      const fake = fakeMarketplace({ entries: [note] });
+      fake.market.packageDetail.mockResolvedValue(QUARANTINE);
+      renderTab(fake);
+
+      fireEvent.click(within(await screen.findByTestId(`git-marketplace:card:${HANDLE}:skill:note`)).getByTestId("git-marketplace:card:state"));
+      const sheet = await screen.findByTestId("git-marketplace:sheet");
+      expect(await within(sheet).findByText(/이 소스의 ID가 비밀번호나 토큰처럼 보여 Ave가 동기화하거나 패키지를 제공하지 않습니다/u)).toBeInTheDocument();
+      fireEvent.click(within(sheet).getByTestId("git-marketplace:uninstall"));
+      await waitFor(() => expect(fake.market.uninstall).toHaveBeenCalledWith({ sourceId: HANDLE, kind: "skill", name: "note" }));
+    });
+
+    it("offers no Uninstall when the row that opened the sheet says nothing is installed from it", async () => {
+      const note = entry(HANDLE, "skill", "note", { sourceLabel: HANDLE, state: { state: "install", version: "1.0.0" } });
+      const fake = fakeMarketplace({ entries: [note] });
+      fake.market.packageDetail.mockResolvedValue(QUARANTINE);
+      renderTab(fake);
+
+      fireEvent.click(within(await screen.findByTestId(`git-marketplace:card:${HANDLE}:skill:note`)).getByTestId("git-marketplace:card:state"));
+      const sheet = await screen.findByTestId("git-marketplace:sheet");
+      await within(sheet).findByText(/이 소스의 ID가 비밀번호나 토큰처럼 보여/u);
+      expect(within(sheet).queryByTestId("git-marketplace:uninstall")).toBeNull();
+    });
+  });
+
   it("offers no uninstall for a package the policy requires", async () => {
     const calendar = entry("team", "plugin", "calendar", { state: { state: "installed", version: "1.0.0" }, required: true });
     const fake = fakeMarketplace({ sources: [team], entries: [calendar] });

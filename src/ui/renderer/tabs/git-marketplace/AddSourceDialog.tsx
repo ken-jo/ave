@@ -23,7 +23,7 @@ import { Label } from "../../../../components/ui/label.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
 import { reservedPrefixIn } from "../../../../shared/dlp.js";
-import type { EnteredTargetWarningView, GitMarketplaceFailure, SourcePreviewRequest, SourcePreviewView, SourceView, SourceWarning } from "../../../../shared/git-marketplace.js";
+import type { EnteredTargetWarningView, FolderPickView, GitMarketplaceFailure, SourcePreviewAsk, SourcePreviewRequest, SourcePreviewView, SourceView, SourceWarning } from "../../../../shared/git-marketplace.js";
 import type { AveApi } from "../../types.js";
 import { GitRuntimeCard } from "./GitRuntimeCard.js";
 import { ENTRY_SUBJECT, KIND_ORDER, kindLabel, looksLikeFolder, reservedIdText, shortSha, warningText } from "./labels.js";
@@ -71,6 +71,11 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
   const [acknowledged, setAcknowledged] = useState<SourceWarning[]>([]);
   /** The folder dialog could not open: main's text, for Copy details. */
   const [pickFailure, setPickFailure] = useState<string | null>(null);
+  /**
+   * The folder *Choose folder…* chose, while the address still shows it: main holds the path and the
+   * field shows it scrubbed, so a check sends the pick, never the shown text (§18.9). Typing drops it.
+   */
+  const [picked, setPicked] = useState<FolderPickView | null>(null);
   /** A folder takes no branch, package folder or sign-in, and needs no git (§18.4.1). */
   const folder = looksLikeFolder(input);
 
@@ -108,11 +113,12 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
     setWarnings(null);
     setAcknowledged([]);
     setPickFailure(null);
+    setPicked(null);
     setGitReady(null);
     void api.gitRuntime.status().then((result) => setGitReady(result.ok && result.status.state === "ready"));
   }, [open, api, initialInput, initialFailure]);
 
-  const check = async (acknowledge: readonly SourceWarning[] = acknowledged, address: string = input) => {
+  const check = async (acknowledge: readonly SourceWarning[] = acknowledged, address: string = input, chosen: FolderPickView | null = picked) => {
     const mine = ++generation.current;
     setBusy(true);
     setFailure(null);
@@ -120,8 +126,12 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
     setWarnings(null);
     try {
       // A folder is sent without the fields the form hides for it: they would only be refused.
-      const request: SourcePreviewRequest = looksLikeFolder(address)
-        ? { input: address.trim(), auth: "none", ...(acknowledge.length > 0 ? { acknowledge: [...acknowledge] } : {}) }
+      // A chosen folder goes by its pick: the address field holds only its scrubbed display.
+      const confirmed = acknowledge.length > 0 ? { acknowledge: [...acknowledge] } : {};
+      const request: SourcePreviewAsk = chosen !== null && address === chosen.display
+        ? { pick: chosen.pick, auth: "none", ...confirmed }
+        : looksLikeFolder(address)
+        ? { input: address.trim(), auth: "none", ...confirmed }
         : {
             input: address.trim(),
             auth,
@@ -149,22 +159,24 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
   };
 
   /**
-   * *Choose folder…*: main's folder dialog. The chosen folder replaces the
-   * address, as typing it would, and is checked at once; a cancel changes
-   * nothing.
+   * *Choose folder…*: main's folder dialog. The chosen folder's display
+   * replaces the address and is checked at once by its pick (main reads the
+   * folder it chose); a cancel changes nothing.
    */
   const chooseFolder = async () => {
     const mine = generation.current;
     setPickFailure(null);
-    const picked = await api.gitMarketplace.pickFolder();
+    const answer = await api.gitMarketplace.pickFolder();
     if (mine !== generation.current) return;
-    if (!picked.ok) {
-      setPickFailure(picked.message);
+    if (!answer.ok) {
+      setPickFailure(answer.message);
       return;
     }
-    if (picked.value === null) return;
-    edit(setInput)(picked.value.path);
-    void check([], picked.value.path);
+    if (answer.value === null) return;
+    const chosen = answer.value;
+    edit(setInput)(chosen.display);
+    setPicked(chosen);
+    void check([], chosen.display, chosen);
   };
 
   /** *Continue* on the warnings: check again carrying them. */
@@ -238,7 +250,10 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
                   id="git-marketplace-add-url"
                   className="min-w-0"
                   value={input}
-                  onChange={(event) => edit(setInput)(event.target.value)}
+                  onChange={(event) => {
+                    edit(setInput)(event.target.value);
+                    setPicked(null);
+                  }}
                   placeholder={t("gitMarketplace.add.addressPlaceholder")}
                   data-testid="git-marketplace:add:url"
                   autoFocus

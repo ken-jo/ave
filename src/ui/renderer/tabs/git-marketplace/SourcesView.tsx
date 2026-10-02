@@ -275,8 +275,9 @@ export function SourcesView({ api, sources, onChanged, onAdd, highlightId = null
                         {t("gitMarketplace.action.copyDetails")}
                       </Button>
                     )}
+                    {/* A floor under the sentence: breaking anywhere lets a long path wrap, but alone it let the column shrink to a word. */}
                     {statusDetail !== null && (
-                      <p className="mt-0.5 max-w-xs text-muted-foreground [overflow-wrap:anywhere]" data-testid={`git-marketplace:source:${source.id}:status-detail`}>{statusDetail}</p>
+                      <p className="mt-0.5 min-w-48 max-w-xs text-muted-foreground [overflow-wrap:anywhere]" data-testid={`git-marketplace:source:${source.id}:status-detail`}>{statusDetail}</p>
                     )}
                     {allowable !== null && (status.state === "unreachable" || status.state === "auth-required") && (
                       <Button

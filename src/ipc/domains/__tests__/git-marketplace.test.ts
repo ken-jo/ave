@@ -4,7 +4,7 @@
  * the service built once, on the first request.
  */
 import { createHash } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, isPublicChannel } from "../../../contract/app-contract.js";
 import { MARKETPLACE_ERROR_DETAIL_FIELDS, MarketplaceError } from "../../../marketplace/errors.js";
 import { NetworkGate } from "../../../marketplace/net/network-gate.js";
@@ -12,9 +12,10 @@ import { normalizeSourceUrl } from "../../../marketplace/net/source-url.js";
 import { createPinnedFetch } from "../../../marketplace/net/pinned-fetch.js";
 import { FilePolicySource } from "../../../marketplace/sources/policy.js";
 import { parseGitMarketplaceResult, type EnteredTargetWarningView } from "../../../shared/git-marketplace.js";
+import { scrubDiagnosticSecrets } from "../../../shared/dlp.js";
 import { breakDiagnosticScrubberOn, DIAGNOSTIC_KEPT, DIAGNOSTIC_SECRET_PROBES } from "../../../shared/__tests__/fixtures/diagnostic-secret-probes.js";
 import { invokeAppIpcHandlerFromFrame, invokeFileIpcHandler } from "./test-helpers.js";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { latestBootstrapStatus } from "../../../boot/bootstrap-status.js";
@@ -1266,6 +1267,69 @@ describe("revocationSink", () => {
   });
 });
 
+describe("a package installed from a source stored under a credential-shaped id (§18.8)", () => {
+  // Assembled here so no whole token sits in the source.
+  const TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
+
+  it.each([
+    ["while its source is listed", false],
+    ["after its source is removed", true],
+  ])("is refused detail with the quarantine reason but uninstalled through its row's handle, %s", async (_label, removeFirst) => {
+    const root = mkdtempSync(join(tmpdir(), "ave-git-marketplace-quarantine-"));
+    const folder = join(mkdtempSync(join(tmpdir(), "ave-git-marketplace-quarantine-source-")), "market");
+    writeFolderFiles(folder, { "SKILL.md": "---\nname: note\ndescription: A note skill\n---\nWrite notes.\n" });
+    const installed = [{ kind: "skill" as const, name: "note", version: "1.0.0", sourceId: TOKEN, originCommit: null }];
+    let harness = await folderService({ root, folders: nodeFolders(), installed });
+    try {
+      const preview = await harness.service.previewSource({ input: folder, auth: "none" });
+      if (preview.type === "confirm") throw new Error("a local folder needs no confirmation");
+      await harness.service.addSource({ previewId: preview.previewId, id: "notes" });
+      // As an earlier build stored it: the source under the token, then reopened.
+      harness.service.close();
+      const marketplaces = join(root, "marketplaces");
+      const list = join(marketplaces, "sources.json");
+      writeFileSync(list, readFileSync(list, "utf8").replaceAll('"notes"', JSON.stringify(TOKEN)));
+      renameSync(join(marketplaces, "notes"), join(marketplaces, TOKEN));
+      for (const file of readdirSync(join(marketplaces, TOKEN, "snapshots"))) {
+        const path = join(marketplaces, TOKEN, "snapshots", file);
+        writeFileSync(path, readFileSync(path, "utf8").replace('"sourceId":"notes"', `"sourceId":${JSON.stringify(TOKEN)}`));
+      }
+      harness = await folderService({ root, folders: nodeFolders(), installed });
+      handlers.clear();
+      const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
+      registerGitMarketplaceHandlers(
+        { auditLogger: { log: vi.fn() }, getMainWindow: () => null, settingsService: { get: () => ({}) } } as never,
+        async () => null,
+        async () => ({ service: harness.service as never, close: async () => {} }),
+        async () => {},
+        root,
+        new AbortController(),
+      );
+
+      const catalog = await invokeFileIpcHandler(handlers, channels.catalogList, { installedOnly: true });
+      const entry = (catalog as { value: { entries: Array<{ key: { sourceId: string; kind: string; name: string } }> } }).value.entries.find((item) => item.key.name === "note")!;
+      const handle = entry.key.sourceId;
+      expect(handle).toMatch(/^ave-legacy-[0-9a-f]{32}$/u);
+      if (removeFirst) {
+        await expect(invokeFileIpcHandler(handlers, channels.sourcesRemove, handle)).resolves.toMatchObject({ ok: true, value: { orphanedPackages: [{ sourceId: handle, kind: "skill", name: "note" }] } });
+      }
+      // The sheet reads detail first: refused for the quarantine either way, so it can say why beside Uninstall.
+      const detail = await invokeFileIpcHandler(handlers, channels.packageDetail, entry.key);
+      expect(detail).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID", detail: { reason: "stored-id-holds-credential" } });
+      expect(JSON.stringify(detail)).not.toContain(TOKEN);
+
+      const removed = await invokeFileIpcHandler(handlers, channels.uninstall, entry.key);
+      expect(removed).toMatchObject({ ok: true, value: { key: { sourceId: handle, kind: "skill", name: "note" } } });
+      expect(installed).toEqual([]);
+      expect(JSON.stringify(removed)).not.toContain(TOKEN);
+    } finally {
+      harness.service.close();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(join(folder, ".."), { recursive: true, force: true });
+    }
+  });
+});
+
 describe("folder dialogs (§18.9)", () => {
   const PLUGIN_FRAME = "file:///app/plugin-ui-shell.html";
 
@@ -1274,15 +1338,111 @@ describe("folder dialogs (§18.9)", () => {
     desktop.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] });
     await expect(invokeFileIpcHandler(handlers, channels.sourcesPickFolder)).resolves.toEqual({ ok: true, value: null });
     desktop.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ["/Users/example/market"] });
-    await expect(invokeFileIpcHandler(handlers, channels.sourcesPickFolder)).resolves.toEqual({ ok: true, value: { path: "/Users/example/market" } });
+    await expect(invokeFileIpcHandler(handlers, channels.sourcesPickFolder)).resolves.toEqual({ ok: true, value: { pick: expect.stringMatching(/^pick-[0-9a-f]{32}$/u), display: "/Users/example/market" } });
     expect(desktop.showOpenDialog.mock.calls.at(-1)?.at(-1)).toMatchObject({ properties: ["openDirectory", "dontAddToRecent"] });
-    // A folder named like a token crosses scrubbed, as every answer to the tab does (§18.8).
+    // A folder named like a token is shown scrubbed, as every answer to the tab is (§18.8); its pick names it.
     const token = `glp${"at-"}${"abcd1234".repeat(3)}`;
     desktop.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [`/Users/example/${token}`] });
     const masked = await invokeFileIpcHandler(handlers, channels.sourcesPickFolder);
     expect(JSON.stringify(masked)).not.toContain(token);
-    expect(masked).toMatchObject({ ok: true, value: { path: expect.stringMatching(/^\/Users\/example\//u) } });
+    expect(masked).toMatchObject({ ok: true, value: { pick: expect.stringMatching(/^pick-[0-9a-f]{32}$/u), display: expect.stringMatching(/^\/Users\/example\/\[REDACTED/u) } });
     expect(create).not.toHaveBeenCalled();
+  });
+
+  describe("a chosen folder is previewed by its pick, not by the text the tab shows (§18.9)", () => {
+    const TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
+    const marketplace = (displayName: string) => ({
+      "marketplace.2.json": `${JSON.stringify({ schemaVersion: 2, name: "team", displayName, packages: [] })}\n`,
+    });
+    let root: string;
+    let parent: string;
+    let harness: Awaited<ReturnType<typeof folderService>>;
+    beforeEach(async () => {
+      root = mkdtempSync(join(tmpdir(), "ave-git-marketplace-pick-"));
+      parent = mkdtempSync(join(tmpdir(), "ave-git-marketplace-pick-parent-"));
+      // The chosen folder, named like a token, and a sibling literally named as its masked text.
+      writeFolderFiles(join(parent, TOKEN), marketplace("Team Folder"));
+      writeFolderFiles(join(parent, scrubDiagnosticSecrets(TOKEN)), marketplace("Different Folder"));
+      harness = await folderService({ root, folders: nodeFolders() });
+      handlers.clear();
+      const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
+      registerGitMarketplaceHandlers(
+        { auditLogger: { log: vi.fn() }, getMainWindow: () => null, settingsService: { get: () => ({}) } } as never,
+        async () => null,
+        async () => ({ service: harness.service as never, close: async () => {} }),
+        async () => {},
+        root,
+        new AbortController(),
+      );
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+      harness.service.close();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(parent, { recursive: true, force: true });
+    });
+
+    async function choose(path: string): Promise<{ pick: string; display: string }> {
+      desktop.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [path] });
+      const answer = await invokeFileIpcHandler(handlers, channels.sourcesPickFolder);
+      if (!(answer as { ok: boolean }).ok) throw new Error(`the pick failed: ${JSON.stringify(answer)}`);
+      return (answer as { value: { pick: string; display: string } }).value;
+    }
+
+    it("reads and adds the folder main chose, never the sibling its masked display names", async () => {
+      const chosen = await choose(join(parent, TOKEN));
+      expect(chosen.display).toBe(join(parent, scrubDiagnosticSecrets(TOKEN)));
+      const preview = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { pick: chosen.pick, auth: "none" });
+      expect(preview).toMatchObject({ ok: true, value: { type: "marketplace", marketplace: { displayName: "Team Folder" } } });
+      expect(JSON.stringify(preview)).not.toContain(TOKEN);
+      const added = await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: (preview as { value: { previewId: string } }).value.previewId, id: "team" });
+      expect(added).toMatchObject({ ok: true, value: { id: "team", transport: "folder" } });
+      // Main stored the folder it chose.
+      expect(harness.registry.get("team")).toMatchObject({ transport: "folder", path: realpathSync(join(parent, TOKEN)) });
+      // The masked text typed as an address is the user's text: it names the sibling.
+      const typed = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: chosen.display, auth: "none" });
+      expect(typed).toMatchObject({ ok: true, value: { marketplace: { displayName: "Different Folder" } } });
+    });
+
+    it.each([
+      ["a pick main never issued", async () => `pick-${"0".repeat(32)}`],
+      ["a pick a newer choice replaced", async () => {
+        const old = await choose(join(parent, TOKEN));
+        await choose(join(parent, scrubDiagnosticSecrets(TOKEN)));
+        return old.pick;
+      }],
+      ["a pick already used for an add", async () => {
+        const chosen = await choose(join(parent, TOKEN));
+        const preview = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { pick: chosen.pick, auth: "none" });
+        await expect(invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: (preview as { value: { previewId: string } }).value.previewId, id: "team" })).resolves.toMatchObject({ ok: true });
+        return chosen.pick;
+      }],
+      ["a pick older than fifteen minutes", async () => {
+        const chosen = await choose(join(parent, TOKEN));
+        const at = Date.now();
+        vi.spyOn(Date, "now").mockReturnValue(at + 15 * 60_000);
+        return chosen.pick;
+      }],
+    ])("refuses %s with folder-pick-unknown and its sentence, reading nothing", async (_label, pickOf) => {
+      const pick = await pickOf();
+      const answer = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { pick, auth: "none" });
+      expect(answer).toMatchObject({ ok: false, code: "SOURCE_URL_REJECTED", detail: { reason: "folder-pick-unknown" } });
+      const parsed = parseGitMarketplaceResult(answer);
+      if (parsed.ok) throw new Error("expected a failure");
+      expect(failureText((key, vars) => translate("en", key, vars), parsed, ENTRY_SUBJECT)).toBe(
+        "Ave no longer has the folder you chose (it was replaced by a newer choice, already used, or chosen too long ago). Choose the folder again.",
+      );
+    });
+
+    it("keeps a pick for a second preview, as a confirmation asks, and takes no address, branch or sign-in beside it", async () => {
+      const chosen = await choose(join(parent, TOKEN));
+      for (let round = 0; round < 2; round += 1) {
+        await expect(invokeFileIpcHandler(handlers, channels.sourcesPreview, { pick: chosen.pick, auth: "none" })).resolves.toMatchObject({ ok: true });
+      }
+      for (const extra of [{ input: "/tmp" }, { ref: "main" }, { subdir: "x" }, { token: "t" }, { auth: "token" }]) {
+        await expect(invokeFileIpcHandler(handlers, channels.sourcesPreview, { pick: chosen.pick, auth: "none", ...extra }), JSON.stringify(extra)).resolves.toMatchObject({ ok: false, code: "invalid-request" });
+      }
+    });
   });
 
   it("refuses a plugin frame before any dialog opens or any folder is shown", async () => {

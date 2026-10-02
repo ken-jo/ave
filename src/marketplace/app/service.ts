@@ -298,6 +298,13 @@ function folderBadge(network: FolderNetwork, acknowledged: readonly SourceWarnin
   return acknowledged.includes("network-folder") ? "network-folder" : "network-folder-unconfirmed";
 }
 
+/** A request naming a quarantined source, by its stored id or its handle (§18.8): only Remove (and Uninstall of what it installed) is served. */
+function quarantineRefusal(): MarketplaceError {
+  return new MarketplaceError("SOURCE_ID_INVALID", "this source's id looks like a password or token; remove it and add it again with another id", {
+    detail: { reason: "stored-id-holds-credential" },
+  });
+}
+
 /** The folder classifier could not run (§18.4.1): a state of its own, never a guessed class. */
 function classifierUnavailable(error: unknown): boolean {
   return isMarketplaceError(error) && error.code === "SOURCE_LOCAL_UNREADABLE" && error.detail?.reason === "classifier-unavailable";
@@ -532,11 +539,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   private source(id: string): ResolvedSource {
     const source = this.registry.get(id);
     if (source && !this.registry.isQuarantined(source)) return source;
-    if (source || this.quarantinedByHandle(id)) {
-      throw new MarketplaceError("SOURCE_ID_INVALID", "this source's id looks like a password or token; remove it and add it again with another id", {
-        detail: { reason: "stored-id-holds-credential" },
-      });
-    }
+    if (source || this.quarantinedByHandle(id)) throw quarantineRefusal();
     throw new MarketplaceError("SOURCE_ID_INVALID", `no source named ${id}`);
   }
 
@@ -1340,6 +1343,12 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   private async detailNow(key: PackageKeyView): Promise<PackageDetailView> {
+    // A handle outlives its removed source while a package installed from it stays (§18.8): the
+    // detail is refused for the same reason as before the removal, so the sheet says why and offers Uninstall.
+    if (key.sourceId.startsWith(QUARANTINE_HANDLE_PREFIX) && !this.registry.get(key.sourceId)) {
+      const installed = await this.installed(key.kind, key.name);
+      if (installed?.sourceId && holdsCredential(installed.sourceId) && this.handleOf(installed.sourceId) === key.sourceId) throw quarantineRefusal();
+    }
     const source = this.source(key.sourceId);
     const { row, rows, snapshot, label, badges } = await this.row(key);
     const installed = await this.installed(key.kind, key.name);

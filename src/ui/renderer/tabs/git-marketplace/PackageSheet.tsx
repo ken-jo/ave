@@ -46,7 +46,11 @@ export interface PackageSheetProps {
   api: GitMarketplaceApi;
   alertsApi?: AveApi;
   onOpenPluginSettings?: (pluginId: string) => void;
-  target: { key: PackageKeyView; mode: "detail" | "update" } | null;
+  /**
+   * The package to show. `installed`: the row that opened it says the package is installed from
+   * `key`, so Uninstall stays offered when its detail cannot be read (a quarantined or removed source, §18.8).
+   */
+  target: { key: PackageKeyView; mode: "detail" | "update"; installed?: boolean } | null;
   /** The target's source as Sources lists it, so a failure names only what its row offers; null when it is not listed. */
   source: SourceView | null;
   onClose: () => void;
@@ -271,6 +275,8 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
   const entry = detail?.entry ?? null;
   const state = entry?.state ?? null;
   const installedHere = state?.state === "installed" || state?.state === "update";
+  // What is installed stays removable when its detail is refused: by the key its row carries, beside the refusal's reason.
+  const uninstallWithoutDetail = detail === null && loadFailure !== null && target?.installed === true;
   const expiresIn = stage.stage === "review" ? Math.max(0, Math.round((new Date(stage.plan.expiresAt).getTime() - now) / 1000)) : 0;
   const reviewPlan = stage.stage === "review" ? stage.plan : null;
   const needsRewriteTrust = reviewPlan !== null && isUpdatePlan(reviewPlan) && reviewPlan.historyRewritten !== null;
@@ -594,7 +600,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
         </div>
 
         <DialogFooter className="flex-wrap gap-2">
-          {stage.stage === "detail" && target && state && !entry?.required && installedHere && (
+          {stage.stage === "detail" && target && ((state && !entry?.required && installedHere) || uninstallWithoutDetail) && (
             <div className="mr-auto flex items-center gap-2">
               {(target.key.kind === "mcp" || target.key.kind === "agent-plugin") && (
                 <label className="flex items-center gap-1.5 text-xs">

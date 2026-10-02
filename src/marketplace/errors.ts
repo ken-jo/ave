@@ -113,6 +113,8 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "unc-credentials": {},
     "outside-root": {},
     "folder-options": {},
+    /** A *Choose folder…* selection main no longer holds (replaced, used for an add, or too old) or never made (§18.9). */
+    "folder-pick-unknown": {},
   },
   /**
    * An id the user entered that has a credential's shape (§18.8): the

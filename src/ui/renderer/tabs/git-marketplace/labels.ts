@@ -434,6 +434,7 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
         case "unc-credentials": return t("gitMarketplace.error.urlRejected.uncCredentials");
         case "outside-root": return t("gitMarketplace.error.urlRejected.outsideRoot");
         case "folder-options": return t("gitMarketplace.error.urlRejected.folderOptions");
+        case "folder-pick-unknown": return t("gitMarketplace.error.urlRejected.folderPickUnknown");
       }
       return unhandled(detail);
     }

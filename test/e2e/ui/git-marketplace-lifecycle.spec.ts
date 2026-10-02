@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Page } from '@playwright/test';
@@ -30,6 +30,7 @@ import type {
 import type { McpGovernancePolicy } from '../../../src/mcp/types.js';
 import type { InstalledContentResult } from '../../../src/shared/installed-content.js';
 import { TEST_IDS, testIdSelector } from '../../../src/shared/test-ids.js';
+import { scrubDiagnosticSecrets } from '../../../src/shared/dlp.js';
 
 /**
  * The git marketplace end to end (design §17): the built app, run with the dev
@@ -630,5 +631,36 @@ test.describe('git marketplace folder source (design §18.4)', () => {
     await test.info().attach('folder-source-update', { body: await settings.getByTestId('git-marketplace').screenshot(), contentType: 'image/png' });
     await call(mainWindow, { method: 'uninstall', args: [key] });
     await closeInlineSettings(app, settings);
+  });
+
+  test('previews the folder Choose folder… chose when its name looks like a token, never the folder its masked name names (§18.9)', async ({ app, mainWindow, t }) => {
+    // Assembled here so no whole token sits in the source.
+    const token = `glp${'at-'}${'abcd1234'.repeat(3)}`;
+    const chosen = join(parent, token);
+    const sibling = join(parent, scrubDiagnosticSecrets(token));
+    cpSync(folder, chosen, { recursive: true });
+    cpSync(folder, sibling, { recursive: true });
+    writeFileSync(join(sibling, 'marketplace.2.json'), readFileSync(join(sibling, 'marketplace.2.json'), 'utf8').replace('Team Folder', 'Different Folder'));
+    try {
+      await app.evaluate(({ dialog }, path) => {
+        dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [path] })) as typeof dialog.showOpenDialog;
+      }, chosen);
+      const settings = await openInlineSettings(app, mainWindow, 'marketplace');
+      await settings.getByTestId('git-marketplace:add-menu').click();
+      await settings.getByRole('menuitem', { name: t('gitMarketplace.addMarketplace') }).click();
+      await settings.getByTestId('git-marketplace:add:choose-folder').click();
+      const preview = settings.getByTestId('git-marketplace:add:preview');
+      await expect(preview).toContainText('Team Folder', { timeout: 30_000 });
+      await expect(preview).not.toContainText('Different Folder');
+      // The tab only ever held the masked name.
+      expect(await mainWindow.locator('body').innerText()).not.toContain(token);
+      await test.info().attach('folder-pick-token-name', { body: await settings.getByTestId('git-marketplace:add').screenshot(), contentType: 'image/png' });
+      await mainWindow.keyboard.press('Escape');
+      await expect(settings.getByTestId('git-marketplace:add')).toHaveCount(0);
+      await closeInlineSettings(app, settings);
+    } finally {
+      rmSync(chosen, { recursive: true, force: true });
+      rmSync(sibling, { recursive: true, force: true });
+    }
   });
 });
