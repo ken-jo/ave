@@ -26,6 +26,7 @@ import { NO_ARTIFACT_CACHE } from "../../resolve/artifact-cache.js";
 import { migrateLegacyContent, type LegacyActivations, type LegacyContentReport } from "../../migration/legacy-content.js";
 import type { LegacyPluginReport, OfficialPlugin } from "../../migration/legacy-plugins.js";
 import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js";
+import type { MarketplaceError } from "../../errors.js";
 import { OFFICIAL_MARKETPLACE, type OfficialMarketplace } from "../../sources/official.js";
 import { EMPTY_MARKETPLACE_POLICY, FilePolicySource, type PolicyLoad, type PolicySource } from "../../sources/policy.js";
 import { AppliedDefaults } from "../../boot-installs/applied.js";
@@ -854,6 +855,63 @@ describe("MarketplaceService", () => {
     expect(await requiredNames()).toEqual({ ...damaged, required: ["notes"] });
   });
 
+  it("lists each required install it cannot meet, with why, and a same-named install from another source (§10.2)", async () => {
+    const acme = market("1.0.0", "acme-tools", { theme: true });
+    const beta = market("1.0.0", "beta-tools");
+    beta.repo.commit(
+      { "skills/review/ave-package.json": text({ schemaVersion: 2, kind: "skill", name: "review", version: "1.0.0", minAppVersion: "9.0.0", payload: { entry: "SKILL.md" } }) },
+      "needs a newer app",
+    );
+    const corp = market("1.0.0", "corp");
+    // The organization's sources; corp is never reached, so it has no snapshot.
+    const managed = (id: string, url: string) => ({ transport: "git" as const, id, url: normalizeSourceUrl(url), auth: { kind: "none" as const } });
+    const additional = [managed("acme-tools", acme.url), managed("beta-tools", beta.url), managed("corp", corp.url)];
+    service.close();
+    await build(policyLoad({ additional }));
+    await service.refresh("acme-tools");
+    await service.refresh("beta-tools");
+    await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).planId);
+    service.close();
+    await build(policyLoad({
+      additional,
+      requiredInstalls: [
+        { kind: "mcp", name: "notes", source: "nowhere" },
+        { kind: "theme", name: "harbor", source: "corp" },
+        { kind: "plugin", name: "absent", source: "acme-tools" },
+        { kind: "skill", name: "review", source: "beta-tools" },
+      ],
+    }));
+    const unmet = (await service.autoUpdateContext()).unmetRequired;
+    expect(unmet).toEqual([
+      { key: { sourceId: "nowhere", kind: "mcp", name: "notes" }, sourceLabel: "nowhere", reason: "source-missing", minAppVersion: null, installedFrom: { sourceId: "acme-tools", label: "Acme Tools" } },
+      { key: { sourceId: "corp", kind: "theme", name: "harbor" }, sourceLabel: "corp", reason: "source-unreachable", minAppVersion: null, installedFrom: null },
+      { key: { sourceId: "acme-tools", kind: "plugin", name: "absent" }, sourceLabel: "Acme Tools", reason: "not-in-catalog", minAppVersion: null, installedFrom: null },
+      { key: { sourceId: "beta-tools", kind: "skill", name: "review" }, sourceLabel: "Acme Tools", reason: "incompatible", minAppVersion: "9.0.0", installedFrom: null },
+    ]);
+    // The boot pass skips the same four for the same reasons.
+    const boot = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
+    expect(boot.report.skipped.map((item) => `${item.key.name}: ${item.reason}`)).toEqual([
+      "notes: source nowhere is not one of the app's sources",
+      "harbor: source corp has no snapshot yet",
+      "absent: acme-tools does not list plugin absent",
+      "review: needs Ave 9.0.0",
+    ]);
+
+    // Met, or one its source can provide: not listed, and the boot pass installs the second.
+    service.close();
+    const met = policyLoad({
+      additional,
+      requiredInstalls: [
+        { kind: "mcp", name: "notes", source: "acme-tools" },
+        { kind: "theme", name: "harbor", source: "acme-tools" },
+      ],
+    });
+    await build(met);
+    expect((await service.autoUpdateContext()).unmetRequired).toEqual([]);
+    const installed = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
+    expect(installed.report).toMatchObject({ installed: [{ kind: "theme", name: "harbor", source: "acme-tools" }], skipped: [], failed: [] });
+  });
+
   it("judges a package mid-switch by the source it moves to, in every feed while it moves", async () => {
     const acme = market();
     const other = market("1.1.0", "other-tools");
@@ -1371,6 +1429,24 @@ describe("MarketplaceService", () => {
     await expect(service.previewSource({ input: url, auth: "none" })).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "policy-invalid" } });
     write({ requireHttps: false });
     expect(await service.previewSource({ input: url, auth: "none" })).toMatchObject({ type: "marketplace" });
+  });
+
+  it("treats a package required from two sources as a policy it cannot read: only the official source works, and the error names both (§12, §18.7.2)", async () => {
+    const path = join(root, "ave-policy.json");
+    writeFileSync(path, JSON.stringify({ version: 1, managed: true, marketplaces: {
+      additional: [{ id: "corp", url: "https://git.corp.example/a" }],
+      requiredInstalls: [{ kind: "skill", name: "review", source: "ave" }, { kind: "skill", name: "review", source: "corp" }],
+    } }));
+    service.close();
+    await build(await FilePolicySource.open(path));
+    const { url } = market();
+    const refused = service.previewSource({ input: url, auth: "none" });
+    await expect(refused).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "policy-invalid" } });
+    const error = ((await refused.catch((caught: unknown) => caught)) as MarketplaceError).detail as { error: string };
+    expect(error.error).toContain("marketplaces.requiredInstalls[1]: requires skill/review from corp, but marketplaces.requiredInstalls[0] requires it from ave");
+    // Nothing of the invalid policy applies: no managed source, nothing required.
+    expect((await service.listSources()).map((source) => source.id)).toEqual([OFFICIAL_MARKETPLACE.id]);
+    expect((await service.autoUpdateContext()).requiredInstalls).toEqual([]);
   });
 
   /** The managed policy file the next two groups rewrite while operations run. */

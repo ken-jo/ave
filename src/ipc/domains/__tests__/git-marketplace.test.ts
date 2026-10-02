@@ -139,7 +139,7 @@ async function setup(overrides: Record<string, unknown> = {}, window: unknown = 
     takeRevocationNotice: vi.fn(() => null),
     revealFolder: vi.fn(async (): Promise<string | null> => null),
     updateCandidates: vi.fn(async () => []),
-    autoUpdateContext: vi.fn(async () => ({ policy: "user", requiredInstalls: [], sources: [], installed: [] })),
+    autoUpdateContext: vi.fn(async () => ({ policy: "user", requiredInstalls: [], unmetRequired: [], sources: [], installed: [] })),
     applyUpdate: vi.fn(async () => ({ state: "applied" })),
     appliedState: vi.fn(async () => null),
     callsInFlight: vi.fn(async () => false),
@@ -683,6 +683,20 @@ describe("git marketplace IPC boundary", () => {
               repairSource: vi.fn(async () => poison(synced, token)),
               // A key the scheduler can match, so the package and its name reach the status and its broadcasts.
               updates: vi.fn(async () => [{ key: { sourceId: "ave", kind: "plugin", name: "meeting" }, displayName: `Meeting ${token}`, from: "1.0.0", to: "1.1.0" }]),
+              // An unmet required install's labels reach the Updates card the same way (§10.2).
+              autoUpdateContext: vi.fn(async () => ({
+                policy: "user",
+                requiredInstalls: [{ source: "corp", kind: "skill", name: "audit" }],
+                unmetRequired: [{
+                  key: { sourceId: "corp", kind: "skill", name: "audit" },
+                  sourceLabel: `Corp ${token}`,
+                  reason: "source-unreachable",
+                  minAppVersion: null,
+                  installedFrom: { sourceId: "team", label: `Team ${token}` },
+                }],
+                sources: [],
+                installed: [],
+              })),
             }, { isDestroyed: () => false, webContents: { send: sent } }).then(async ({ registration }) => {
               const answers = [
                 await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" }),
@@ -700,6 +714,7 @@ describe("git marketplace IPC boundary", () => {
                 expect(answer).toMatchObject({ ok: true });
                 expect(leaks(JSON.stringify(answer))).toBe(false);
               }
+              expect(answers.at(-1)).toMatchObject({ value: { unmetRequired: [{ reason: "source-unreachable", sourceLabel: expect.stringMatching(/^Corp /u), installedFrom: { label: expect.stringMatching(/^Team /u) } }] } });
               // The scheduler's broadcasts (its status, the boot status and notice) cross scrubbed too.
               expect(sent.mock.calls.map(([channel]) => channel)).toEqual(expect.arrayContaining([channels.updateStatusChanged, channels.bootInstallsApplied, CHANNELS.bootstrap.status]));
               expect(leaks(JSON.stringify(sent.mock.calls))).toBe(false);

@@ -136,6 +136,26 @@ describe("loadMarketplacePolicy", () => {
     expect(await rejected(section)).toContain(message);
   });
 
+  it("fails closed on a package required from two sources, naming both entries, and keeps defaults and other packages free to (§18.7.2)", async () => {
+    const corp = { id: "corp", url: "https://git.corp.example/a" };
+    const error = await rejected({
+      additional: [corp],
+      requiredInstalls: [
+        { kind: "plugin", name: "wiki", source: "ave" },
+        { kind: "skill", name: "wiki", source: "corp" },
+        { kind: "plugin", name: "wiki", source: "corp" },
+      ],
+    });
+    expect(error).toContain("marketplaces.requiredInstalls[2]: requires plugin/wiki from corp, but marketplaces.requiredInstalls[0] requires it from ave; a package is installed from one source");
+    // Another kind of the same name, and defaults naming a package from two sources, are not a conflict.
+    const policy = await loaded({
+      additional: [corp],
+      defaultInstalls: [{ kind: "plugin", name: "wiki", source: "ave" }, { kind: "plugin", name: "wiki", source: "corp" }],
+      requiredInstalls: [{ kind: "plugin", name: "wiki", source: "ave" }, { kind: "skill", name: "wiki", source: "corp" }],
+    });
+    expect(policy.requiredInstalls).toEqual([{ kind: "plugin", name: "wiki", source: "ave" }, { kind: "skill", name: "wiki", source: "corp" }]);
+  });
+
   it("takes an http additional source as its own listing, and under requireHttps with its host in allowHttpHosts (§18.2.2)", async () => {
     const plain = await loaded({ requireHttps: false, additional: [{ id: "team-tools", url: "http://git.example.test/catalog" }] });
     expect(plain.additional.map((spec) => (spec.transport === "git" ? spec.url.url : spec.path))).toEqual(["http://git.example.test/catalog"]);

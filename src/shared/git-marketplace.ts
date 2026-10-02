@@ -681,6 +681,33 @@ export interface UpdateStatusView {
     packages: Array<{ key: PackageKeyView; switch: AutoUpdateSwitchView }>;
   };
   packages: PackageUpdateView[];
+  /** Each `requiredInstalls` entry the app cannot meet now, and why (§10.2, §18.7.2). */
+  unmetRequired: UnmetRequirementView[];
+}
+
+/**
+ * Why a required install cannot be met from the source the policy names
+ * (§10.2): the source is not among the app's sources (`source-missing`), it
+ * has no readable copy of its catalog (`source-unreachable`), its catalog
+ * does not list the package (`not-in-catalog`), or it offers no version this
+ * app can install (`incompatible`).
+ */
+const UNMET_REQUIREMENT_REASONS = ["source-missing", "source-unreachable", "not-in-catalog", "incompatible"] as const;
+export type UnmetRequirementReason = (typeof UNMET_REQUIREMENT_REASONS)[number];
+
+/**
+ * A required install not met (§10.2): the package the policy requires from
+ * its source, that source's name, the reason, the app version an
+ * `incompatible` package needs (null when it needs none this app can reach),
+ * and the same-named package installed from another source, which does not
+ * meet the requirement and may stand in its way.
+ */
+export interface UnmetRequirementView {
+  key: PackageKeyView;
+  sourceLabel: string;
+  reason: UnmetRequirementReason;
+  minAppVersion: string | null;
+  installedFrom: { sourceId: string; label: string } | null;
 }
 
 /** What the boot pass installed, moved or migrated (design §10.2, §16.3), shown once until dismissed. */
@@ -931,6 +958,15 @@ function isAutoUpdateStatus(value: unknown): boolean {
       && isPackageKind(item.key.kind) && typeof item.key.name === "string" && isSwitchView(item.switch));
 }
 
+function isUnmetRequirement(value: unknown): boolean {
+  return isRecord(value) && isRecord(value.key) && typeof value.key.sourceId === "string" && isPackageKind(value.key.kind)
+    && typeof value.key.name === "string" && typeof value.sourceLabel === "string"
+    && (UNMET_REQUIREMENT_REASONS as readonly unknown[]).includes(value.reason)
+    && (value.minAppVersion === null || (value.reason === "incompatible" && typeof value.minAppVersion === "string"))
+    && (value.installedFrom === null || (isRecord(value.installedFrom) && typeof value.installedFrom.sourceId === "string"
+      && typeof value.installedFrom.label === "string"));
+}
+
 /** Shape check for a `marketplace:update-status` payload; anything else is dropped. */
 export function parseUpdateStatus(value: unknown): UpdateStatusView | null {
   if (!isRecord(value) || !isRecord(value.discovery) || !Array.isArray(value.packages)) return null;
@@ -941,6 +977,7 @@ export function parseUpdateStatus(value: unknown): UpdateStatusView | null {
   if (!timeOrNull(value.applyCheckAt) || typeof value.running !== "boolean" || typeof value.historyReset !== "boolean") return null;
   if (!timeOrNull(value.waitingSince) || typeof value.escalated !== "boolean" || !isAutoUpdateStatus(value.autoUpdate)) return null;
   if (!value.packages.every(isUpdatePackage)) return null;
+  if (!Array.isArray(value.unmetRequired) || !value.unmetRequired.every(isUnmetRequirement)) return null;
   return value as unknown as UpdateStatusView;
 }
 

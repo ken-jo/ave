@@ -20,7 +20,7 @@
  * verification, receipt). Nothing here decides consent or reads the network.
  */
 import { errorMessage } from "../../shared/error-message.js";
-import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type PackageKeyView, type RevokedPackageView } from "../../shared/git-marketplace.js";
+import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type PackageKeyView, type RevokedPackageView, type UnmetRequirementReason } from "../../shared/git-marketplace.js";
 import { MarketplaceError } from "../errors.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import type { PackageKind } from "../catalog/types.js";
@@ -38,6 +38,8 @@ export interface BootInstallInput {
   rows: readonly CatalogRow[];
   /** Sources that have a snapshot now, with their origin. */
   synced: ReadonlyMap<string, SourceOrigin>;
+  /** Whether the app has a source of this id at all. */
+  known(sourceId: string): boolean;
   installed(kind: PackageKind, name: string): Promise<InstalledPackage | null>;
   install(row: CatalogRow, options: { switchSource: boolean; required: boolean }): Promise<void>;
   applied: AppliedDefaults;
@@ -80,9 +82,18 @@ export function bootInstallNoticeFrom(
   return bootInstallNoticeIsEmpty(notice) ? null : notice;
 }
 
-/** The requiredInstalls entry naming `(kind, name)`, if any, whichever source it names. */
+/**
+ * The requiredInstalls entry naming `(kind, name)`, if any, whichever source
+ * it names. A policy names each package from one source at most (an entry
+ * for another source makes it invalid, §12), so there is no first match to
+ * choose: two found is a broken invariant and throws.
+ */
 export function requiredByPolicy(policy: Pick<MarketplacePolicy, "requiredInstalls">, kind: PackageKind, name: string): PackageKey | undefined {
-  return policy.requiredInstalls.find((key) => key.kind === kind && key.name === name);
+  const found = policy.requiredInstalls.filter((key) => key.kind === kind && key.name === name);
+  if (found.length > 1) {
+    throw new Error(`requiredInstalls names ${kind} ${name} from ${found.map((key) => key.source).join(" and ")}; a parsed policy names one source per package`);
+  }
+  return found[0];
 }
 
 /**
@@ -117,27 +128,52 @@ function rowFor(rows: readonly CatalogRow[], key: PackageKey): CatalogRow | unde
   return rows.find((row) => row.sourceId === key.source && row.kind === key.kind && row.name === key.name);
 }
 
+/** Why a required install cannot be had from its source now (§10.2); see {@link requirementGap}. */
+export type RequirementGap =
+  | { reason: Exclude<UnmetRequirementReason, "incompatible"> }
+  | { reason: "incompatible"; minAppVersion: string | null };
+
+/**
+ * Why `key`, which the policy requires, cannot be installed from its source
+ * now, or null when the source's catalog offers a version of it: the one
+ * judgement the boot pass and the Updates card share. `source` says whether
+ * the app has the source at all, and whether a copy of its catalog reads.
+ */
+export function requirementGap(key: PackageKey, source: { known: boolean; synced: boolean }, rows: readonly CatalogRow[]): RequirementGap | null {
+  if (!source.known) return { reason: "source-missing" };
+  if (!source.synced) return { reason: "source-unreachable" };
+  const row = rowFor(rows, key);
+  if (!row) return { reason: "not-in-catalog" };
+  if (row.choice.state === "candidate") return null;
+  return { reason: "incompatible", minAppVersion: row.choice.state === "upgrade_required" ? row.choice.minAppVersion : null };
+}
+
+function gapText(key: PackageKey, gap: RequirementGap): string {
+  switch (gap.reason) {
+    case "source-missing": return `source ${key.source} is not one of the app's sources`;
+    case "source-unreachable": return `source ${key.source} has no snapshot yet`;
+    case "not-in-catalog": return `${key.source} does not list ${key.kind} ${key.name}`;
+    case "incompatible": return gap.minAppVersion ? `needs Ave ${gap.minAppVersion}` : "no version is offered to this installation";
+  }
+}
+
 async function required(key: PackageKey, input: BootInstallInput, report: BootInstallReport): Promise<void> {
   const origin = input.synced.get(key.source);
-  if (!origin) {
-    report.skipped.push({ key, reason: `source ${key.source} has no snapshot yet` });
-    return;
-  }
-  if (!LISTABLE_ORIGINS.has(origin)) {
+  if (origin && !LISTABLE_ORIGINS.has(origin)) {
     report.skipped.push({ key, reason: `source ${key.source} is neither official nor managed` });
     return;
   }
-  const row = rowFor(input.rows, key);
-  if (!row) {
-    report.skipped.push({ key, reason: `${key.source} does not list ${key.kind} ${key.name}` });
+  // Installed from this source: its update is the apply queue's (§18.7.2).
+  const current = await input.installed(key.kind, key.name);
+  if (current?.sourceId === key.source) return;
+  const gap = requirementGap(key, { known: input.known(key.source), synced: origin !== undefined }, input.rows);
+  if (gap) {
+    report.skipped.push({ key, reason: gapText(key, gap) });
     return;
   }
-  // Installed (from this source or another): its update or switch is the apply queue's (§18.7.2).
-  if (await input.installed(key.kind, key.name)) return;
-  if (row.choice.state !== "candidate") {
-    report.skipped.push({ key, reason: row.choice.state === "upgrade_required" ? `needs Ave ${row.choice.minAppVersion}` : "no version is offered to this installation" });
-    return;
-  }
+  // Installed from another source: the apply queue switches it to this one (§18.7.2).
+  if (current) return;
+  const row = rowFor(input.rows, key)!;
   try {
     await input.install(row, { switchSource: false, required: true });
     report.installed.push(key);

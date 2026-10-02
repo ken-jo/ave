@@ -677,6 +677,17 @@ export const en = {
   "gitMarketplace.boot.titleChanges": "Marketplace changes",
   "gitMarketplace.updates.automaticUpdates": "Automatic updates",
   "gitMarketplace.updates.requiredOn": "Required by your organization: it updates automatically, whatever this switch is set to.",
+  "gitMarketplace.updates.unmet.title": "Required by your organization, not installed",
+  "gitMarketplace.updates.unmet.sourceMissing": "Your organization requires {name} from {source}, but that marketplace is not added in Ave.",
+  "gitMarketplace.updates.unmet.sourceUnreachable": "Your organization requires {name} from {source}, but that marketplace has not been reached yet.",
+  "gitMarketplace.updates.unmet.notInCatalog": "Your organization requires {name} from {source}, but that marketplace does not list it.",
+  "gitMarketplace.updates.unmet.incompatible": "Your organization requires {name} from {source}, but it needs Ave {version} or later.",
+  "gitMarketplace.updates.unmet.incompatibleUnknown": "Your organization requires {name} from {source}, but no release of it works with this version of Ave.",
+  "gitMarketplace.updates.unmet.installedFrom": "{name} is installed from {source} instead; it may stand in the way.",
+  "gitMarketplace.updates.unmet.contactAdmin": "If this does not resolve itself, contact your administrator.",
+  "gitMarketplace.updates.unmet.refresh": "Refresh source",
+  "gitMarketplace.updates.unmet.refreshing": "Refreshing…",
+  "gitMarketplace.updates.unmet.remove": "Remove from {source}…",
 };
 
 export const ko: Record<keyof typeof en, string> = {
@@ -1354,4 +1365,15 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.boot.titleChanges": "마켓플레이스 변경 사항",
   "gitMarketplace.updates.automaticUpdates": "자동 업데이트",
   "gitMarketplace.updates.requiredOn": "조직이 필수로 지정한 패키지입니다. 이 스위치와 상관없이 자동으로 업데이트됩니다.",
+  "gitMarketplace.updates.unmet.title": "조직이 필수로 지정했지만 설치되지 않은 패키지",
+  "gitMarketplace.updates.unmet.sourceMissing": "조직이 {source}의 {name}을(를) 필수로 지정했지만, 이 마켓플레이스가 Ave에 추가되어 있지 않습니다.",
+  "gitMarketplace.updates.unmet.sourceUnreachable": "조직이 {source}의 {name}을(를) 필수로 지정했지만, 아직 이 마켓플레이스에 연결하지 못했습니다.",
+  "gitMarketplace.updates.unmet.notInCatalog": "조직이 {source}의 {name}을(를) 필수로 지정했지만, 이 마켓플레이스 목록에 없습니다.",
+  "gitMarketplace.updates.unmet.incompatible": "조직이 {source}의 {name}을(를) 필수로 지정했지만, Ave {version} 이상이 필요합니다.",
+  "gitMarketplace.updates.unmet.incompatibleUnknown": "조직이 {source}의 {name}을(를) 필수로 지정했지만, 이 Ave 버전에서 동작하는 릴리스가 없습니다.",
+  "gitMarketplace.updates.unmet.installedFrom": "{name}이(가) 대신 {source}에서 설치되어 있어 필수 패키지 설치를 막을 수 있습니다.",
+  "gitMarketplace.updates.unmet.contactAdmin": "해결되지 않으면 관리자에게 문의하세요.",
+  "gitMarketplace.updates.unmet.refresh": "소스 새로 고침",
+  "gitMarketplace.updates.unmet.refreshing": "새로 고치는 중…",
+  "gitMarketplace.updates.unmet.remove": "{source}에서 제거…",
 };

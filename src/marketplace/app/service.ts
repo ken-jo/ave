@@ -52,6 +52,7 @@ import type {
   ReviewedComponentConsent,
   ExtensionComponentConsent,
   ConsentDelta,
+  UnmetRequirementView,
 } from "../../shared/git-marketplace.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
 import { AGENT_PLUGIN_DECLARATION_PATHS, extensionDeclarationPaths, type PayloadFile } from "../../plugins/contribution-approval-digest.js";
@@ -75,7 +76,7 @@ import { classifyInstall, compareVersions, updateFor, type InstalledPackage } fr
 import { assertMcpRuntimePinned, resolveMcpPackage, runtimeFromServerJson, type ResolvedMcpServer } from "../resolve/mcp.js";
 import { planPluginVersion, runFolderRung, runPluginLadder, type LadderDeps, type PluginInstallPlan, type StagedPluginArtifact } from "../resolve/plugin-ladder.js";
 import type { AppliedDefaults } from "../boot-installs/applied.js";
-import { assertNotRequiredByPolicy, bootInstallNoticeFrom, lockedByPolicy, requiredByPolicy, runBootInstalls, type BootInstallReport } from "../boot-installs/run.js";
+import { assertNotRequiredByPolicy, bootInstallNoticeFrom, lockedByPolicy, requiredByPolicy, requirementGap, runBootInstalls, type BootInstallReport } from "../boot-installs/run.js";
 import type { LegacyContentKind, LegacyContentReport } from "../migration/legacy-content.js";
 import type { LegacyPluginReport, OfficialPlugin } from "../migration/legacy-plugins.js";
 import { runLegacyMigration } from "../migration/run.js";
@@ -222,6 +223,8 @@ export interface UpdateCandidate extends PackageUpdateOffer {
 export interface AutoUpdateContext {
   policy: MarketplacePolicy["autoUpdate"];
   requiredInstalls: PackageKey[];
+  /** Each required install not met now, and why (§10.2), for the Updates card. */
+  unmetRequired: UnmetRequirementView[];
   sources: Array<{ id: string; label: string; origin: SourceOrigin; http: boolean; acknowledgedUnencryptedUpdates: boolean }>;
   installed: PackageKeyView[];
 }
@@ -2404,12 +2407,58 @@ export class MarketplaceService implements RetirementEntryLookup {
           acknowledgedUnencryptedUpdates: acknowledgedOf(source, read.state).includes("unencrypted-updates"),
         });
       }
+      const all = await this.installedAll();
       // Every bound package, whatever its source's health: required-ness does not depend on it.
-      const installed = (await this.installedAll())
+      const installed = all
         .filter((item): item is InstalledRecord & { sourceId: string } => item.sourceId !== null && !quarantined.has(item.sourceId))
         .map((item) => ({ sourceId: item.sourceId, kind: item.kind, name: item.name }));
-      return { policy: this.policy.autoUpdate, requiredInstalls: structuredClone([...this.policy.requiredInstalls]), sources, installed };
+      return {
+        policy: this.policy.autoUpdate,
+        requiredInstalls: structuredClone([...this.policy.requiredInstalls]),
+        unmetRequired: await this.unmetRequiredNow(all),
+        sources,
+        installed,
+      };
     }, signal);
+  }
+
+  /** The app has a source of this id it serves: registered and not quarantined (§18.8). */
+  private knownSource(sourceId: string): boolean {
+    const source = this.registry.get(sourceId);
+    return source !== undefined && !this.registry.isQuarantined(source);
+  }
+
+  /**
+   * Each `requiredInstalls` entry not met now (§10.2): not installed from the
+   * source it names, and that source cannot provide it ({@link requirementGap},
+   * the boot pass's judgement too). One the source can provide is not listed:
+   * the boot pass installs it, or the apply queue switches a same-named
+   * install to it. A same-named package installed from another source is
+   * named, since it may stand in the way.
+   */
+  private async unmetRequiredNow(installed: readonly InstalledRecord[]): Promise<UnmetRequirementView[]> {
+    if (this.policy.requiredInstalls.length === 0) return [];
+    const { rows, snapshots } = await this.rows(new Set(this.policy.requiredInstalls.map((key) => key.source)));
+    const label = (sourceId: string) => {
+      const source = this.registry.get(sourceId);
+      return source ? sourceLabel(source, snapshots.get(sourceId) ?? null) : sourceId;
+    };
+    const unmet: UnmetRequirementView[] = [];
+    for (const key of this.policy.requiredInstalls) {
+      const current = installed.find((item) => item.kind === key.kind && item.name === key.name);
+      if (current?.sourceId === key.source) continue;
+      const gap = requirementGap(key, { known: this.knownSource(key.source), synced: snapshots.has(key.source) }, rows);
+      if (!gap) continue;
+      const other = current?.sourceId && this.knownSource(current.sourceId) ? current.sourceId : null;
+      unmet.push({
+        key: { sourceId: key.source, kind: key.kind, name: key.name },
+        sourceLabel: label(key.source),
+        reason: gap.reason,
+        minAppVersion: gap.reason === "incompatible" ? gap.minAppVersion : null,
+        installedFrom: other ? { sourceId: other, label: label(other) } : null,
+      });
+    }
+    return unmet;
   }
 
   /**
@@ -2475,6 +2524,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       defaults,
       rows,
       synced,
+      known: (sourceId) => this.knownSource(sourceId),
       installed: (kind, name) => this.installed(kind, name),
       install: async (row, options) => {
         const plan = await this.planInstall({ sourceId: row.sourceId, kind: row.kind, name: row.name, ...(options.switchSource ? { switchSource: true } : {}) });

@@ -474,6 +474,7 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       escalated: queued.escalated,
       autoUpdate: autoUpdateView(settings),
       packages: shown,
+      unmetRequired: context?.unmetRequired ?? [],
     };
   };
 

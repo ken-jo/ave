@@ -179,9 +179,16 @@ function auth(value: unknown, path: string, url: NormalizedSourceUrl): SourceAut
   return fail(`${path}.kind`, "must be none, token or ssh");
 }
 
-function packageKeys(value: unknown, path: string, sourceIds: ReadonlySet<string>): PackageKey[] {
+/**
+ * A list of package keys. `oneSourcePerPackage` (`requiredInstalls`): a
+ * package can be installed from one source only, so two entries naming the
+ * same kind and name from different sources contradict each other and make
+ * the policy invalid (§12, §18.7.2), naming both.
+ */
+function packageKeys(value: unknown, path: string, sourceIds: ReadonlySet<string>, oneSourcePerPackage = false): PackageKey[] {
   if (!Array.isArray(value)) fail(path, "must be an array");
   const seen = new Set<string>();
+  const byPackage = new Map<string, { at: string; source: string }>();
   return value.map((item, index) => {
     const at = `${path}[${index}]`;
     const entry = record(item, at, PACKAGE_KEY_KEYS);
@@ -195,6 +202,12 @@ function packageKeys(value: unknown, path: string, sourceIds: ReadonlySet<string
     const key = `${entry.kind}/${entry.name}@${entry.source}`;
     if (seen.has(key)) fail(at, `${key} is listed twice`);
     seen.add(key);
+    const named = `${entry.kind}/${entry.name}`;
+    const earlier = byPackage.get(named);
+    if (oneSourcePerPackage && earlier) {
+      fail(at, `requires ${named} from ${entry.source}, but marketplaces${path}[${earlier.at}] requires it from ${earlier.source}; a package is installed from one source`);
+    }
+    byPackage.set(named, { at: String(index), source: entry.source });
     return { kind: entry.kind as PackageKind, name: entry.name, source: entry.source };
   });
 }
@@ -312,7 +325,7 @@ function parseSection(value: unknown, platform: NodeJS.Platform): MarketplacePol
   }
 
   const sourceIds = new Set([OFFICIAL_MARKETPLACE.id, ...additional.map((spec) => spec.id)]);
-  const required = packageKeys(orEmpty(section.requiredInstalls), ".requiredInstalls", sourceIds);
+  const required = packageKeys(orEmpty(section.requiredInstalls), ".requiredInstalls", sourceIds, true);
   const requiredKeys = new Set(required.map((key) => `${key.kind}/${key.name}@${key.source}`));
   const defaults = packageKeys(orEmpty(section.defaultInstalls), ".defaultInstalls", sourceIds).filter(
     (key) => !requiredKeys.has(`${key.kind}/${key.name}@${key.source}`),

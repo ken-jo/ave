@@ -44,6 +44,8 @@ describe("runBootInstalls (design §10.2)", () => {
     policy?: Partial<MarketplacePolicy>;
     rows?: CatalogRow[];
     synced?: Record<string, SourceOrigin>;
+    /** Source ids the app does not have; every other one it has. */
+    unknown?: Set<string>;
     failing?: Set<string>;
     signal?: AbortSignal;
     /** Runs inside each install, before it lands. */
@@ -54,6 +56,7 @@ describe("runBootInstalls (design §10.2)", () => {
       defaults: DEFAULT_INSTALLS,
       rows: options.rows ?? [row("ave", "meeting"), row("ave", "local-indexer")],
       synced: new Map(Object.entries(options.synced ?? { ave: "official" })),
+      known: (sourceId) => !options.unknown?.has(sourceId),
       installed: async (_kind, name) => installedState.get(name) ?? null,
       install: async (target, flags) => {
         calls.push({ name: target.name, source: target.sourceId, ...flags });
@@ -188,6 +191,30 @@ describe("runBootInstalls (design §10.2)", () => {
     expect(lockedByPolicy(policy, "plugin", "wiki", "acme")).toBeUndefined();
     expect(() => assertNotRequiredByPolicy(policy, "plugin", "wiki", "acme", "uninstall")).not.toThrow();
     expect(() => assertNotRequiredByPolicy(policy, "plugin", "wiki", null, "disable")).not.toThrow();
+  });
+
+  it("finds no first match among requiredInstalls: one naming a package from two sources is a broken invariant", () => {
+    const policy = { ...EMPTY_MARKETPLACE_POLICY, requiredInstalls: [key("wiki", "ave"), key("wiki", "skill-only", "skill"), key("wiki", "corp")] };
+    expect(() => requiredByPolicy(policy, "plugin", "wiki")).toThrow("requiredInstalls names plugin wiki from ave and corp; a parsed policy names one source per package");
+    expect(() => lockedByPolicy(policy, "plugin", "wiki", "ave")).toThrow(/from ave and corp/u);
+    expect(requiredByPolicy(policy, "skill", "wiki")).toEqual(key("wiki", "skill-only", "skill"));
+  });
+
+  it("reports why each required install it cannot meet is skipped, also with the same name installed from another source (§10.2)", async () => {
+    installedState.set("meeting", { kind: "plugin", name: "meeting", version: "1.0.0", sourceId: "acme" });
+    const requiredInstalls = [key("meeting", "corp"), key("notes", "team"), key("absent"), key("old")];
+    const report = await boot({
+      policy: { requiredInstalls },
+      rows: [row("ave", "meeting"), row("ave", "local-indexer"), row("ave", "old", { state: "upgrade_required", minAppVersion: "9.0.0" })],
+      unknown: new Set(["corp"]),
+    });
+    expect(report.skipped.filter((item) => requiredInstalls.includes(item.key))).toEqual([
+      { key: key("meeting", "corp"), reason: "source corp is not one of the app's sources" },
+      { key: key("notes", "team"), reason: "source team has no snapshot yet" },
+      { key: key("absent"), reason: "ave does not list plugin absent" },
+      { key: key("old"), reason: "needs Ave 9.0.0" },
+    ]);
+    expect(calls.filter((call) => call.required)).toEqual([]);
   });
 
   it("leaves a default held back by a rollout or as a pre-release unrecorded, to try again next boot", async () => {

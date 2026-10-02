@@ -55,6 +55,7 @@ describe("the update status across the bridge (design §13.1)", () => {
       packages: [{ key: update.key, switch: { effective: true, override: null, lockedByPolicy: false, required: false } }],
     },
     packages,
+    unmetRequired: [],
   });
 
   it("keeps a package with its state, and one an earlier discovery showed, marked stale", () => {
@@ -69,6 +70,22 @@ describe("the update status across the bridge (design §13.1)", () => {
     const base = status([]);
     expect(parseUpdateStatus({ ...base, autoUpdate: { ...base.autoUpdate, sources: [{ ...base.autoUpdate.sources[0], origin: "elsewhere" }] } })).toBeNull();
     expect(parseUpdateStatus({ ...base, autoUpdate: { ...base.autoUpdate, packages: [{ key: update.key }] } })).toBeNull();
+  });
+
+  it("keeps each unmet required install, and drops a status whose rows are malformed or which has none (§10.2)", () => {
+    const base = status([]);
+    const unmet = { key: { sourceId: "corp", kind: "skill", name: "audit" }, sourceLabel: "Corp", reason: "incompatible", minAppVersion: "9.0.0", installedFrom: { sourceId: "team", label: "Team" } };
+    const sent = { ...base, unmetRequired: [unmet, { ...unmet, reason: "source-missing", minAppVersion: null, installedFrom: null }] };
+    expect(parseUpdateStatus(sent)).toEqual(sent);
+    const { unmetRequired: _rows, ...without } = base;
+    expect(parseUpdateStatus(without)).toBeNull();
+    for (const bad of [
+      { ...unmet, reason: "unknown" },
+      { ...unmet, reason: "not-in-catalog" },
+      { ...unmet, minAppVersion: 9 },
+      { ...unmet, installedFrom: { sourceId: "team" } },
+      { ...unmet, key: { ...unmet.key, kind: "widget" } },
+    ]) expect(parseUpdateStatus({ ...base, unmetRequired: [bad] })).toBeNull();
   });
 
   it("keeps a required update and its required switch, and drops a required switch that is not on and locked", () => {

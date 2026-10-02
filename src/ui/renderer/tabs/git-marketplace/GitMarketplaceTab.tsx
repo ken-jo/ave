@@ -660,6 +660,10 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
           }}
           onShowSources={() => setView("sources")}
           onSwitch={persistAutoUpdate}
+          onOpenPackage={(key) => {
+            setView("browse");
+            setSheet({ key, mode: "detail" });
+          }}
           {...(onOpenPluginSettings ? { onOpenPluginSettings } : {})}
         />
         <div className="mt-4 border-t pt-4">

@@ -185,6 +185,7 @@ export function updateStatus(overrides: Partial<UpdateStatusView> = {}): UpdateS
     escalated: false,
     autoUpdate: { enabled: true, lockedByPolicy: null, sources: [], packages: [] },
     packages: [],
+    unmetRequired: [],
     ...overrides,
   };
 }

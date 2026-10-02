@@ -109,6 +109,7 @@ function harness(options: {
       policy: "user" as const,
       requiredInstalls: published.offers.filter((update) => published.facts[update.key.name]?.required === true)
         .map((update) => ({ source: update.key.sourceId, kind: update.key.kind, name: update.key.name })),
+      unmetRequired: [],
       // Every source that publishes reads, with the facts its candidates carry.
       sources: [...new Set(published.offers.map((update) => update.key.sourceId))]
         .map((id) => ({ id, label: id, origin: "official" as const, http: false, acknowledgedUnencryptedUpdates: false })),
@@ -1273,7 +1274,7 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     for (const policy of ["user", "off"] as const) {
       const h = harness({
         settings: { updateNotices: true, autoUpdate: false, autoUpdatePackages: { meeting: "off" } },
-        service: { autoUpdateContext: async () => ({ policy, requiredInstalls: [{ source: "ave", kind: "plugin" as const, name: "meeting" }], sources: [source], installed: [key] }) },
+        service: { autoUpdateContext: async () => ({ policy, requiredInstalls: [{ source: "ave", kind: "plugin" as const, name: "meeting" }], unmetRequired: [], sources: [source], installed: [key] }) },
       });
       h.published.offers = [offer("meeting", "2.0.0")];
       h.published.facts = { meeting: { required: true } };
@@ -1317,7 +1318,7 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
       const h = harness({
         settings: { updateNotices: true, autoUpdate: true, skippedPluginUpdates: { meeting: "2.0.0" } },
         service: {
-          autoUpdateContext: async () => ({ policy: "user", requiredInstalls: [{ source: "ave", kind: "plugin" as const, name: "meeting" }], sources: [source], installed: [key] }),
+          autoUpdateContext: async () => ({ policy: "user", requiredInstalls: [{ source: "ave", kind: "plugin" as const, name: "meeting" }], unmetRequired: [], sources: [source], installed: [key] }),
           applyUpdate: vi.fn(async () => ({ state })),
           appliedState: vi.fn(async () => ({ state, pendingApproval: null })),
         },
@@ -1382,7 +1383,7 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
         history: memoryHistory(pendingHistory()),
         settings: { updateNotices: true, skippedPluginUpdates: { meeting: "2.0.0" } },
         service: {
-          autoUpdateContext: async () => ({ policy: "user", requiredInstalls, sources: readable ? [official] : [], installed: [key] }),
+          autoUpdateContext: async () => ({ policy: "user", requiredInstalls, unmetRequired: [], sources: readable ? [official] : [], installed: [key] }),
           appliedState: async () => ({ state: "approval-pending", pendingApproval: null }),
         },
       });
@@ -1409,7 +1410,7 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
         history: memoryHistory(pendingHistory()),
         settings: { updateNotices: true, skippedPluginUpdates: { meeting: "2.0.0" } },
         service: {
-          autoUpdateContext: async () => ({ policy: "user", requiredInstalls: requiring, sources: readable ? [official] : [], installed: [key] }),
+          autoUpdateContext: async () => ({ policy: "user", requiredInstalls: requiring, unmetRequired: [], sources: readable ? [official] : [], installed: [key] }),
           appliedState: async () => ({ state: "approval-pending", pendingApproval: null }),
         },
       });
@@ -1431,7 +1432,7 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
         settings: { updateNotices: true, skippedPluginUpdates: { meeting: "2.0.0" } },
         service: {
           discover: async () => { throw new Error("discovery unavailable"); },
-          autoUpdateContext: async () => ({ policy: "user", requiredInstalls: requiring, sources: [official], installed: [key] }),
+          autoUpdateContext: async () => ({ policy: "user", requiredInstalls: requiring, unmetRequired: [], sources: [official], installed: [key] }),
         },
       });
       const background = startMarketplaceBackground(h.input);
@@ -1468,7 +1469,7 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
       const h = harness({
         settings: { updateNotices: true, autoUpdate: true },
         service: {
-          autoUpdateContext: async () => ({ policy: "user", requiredInstalls, sources: [official], installed: [key] }),
+          autoUpdateContext: async () => ({ policy: "user", requiredInstalls, unmetRequired: [], sources: [official], installed: [key] }),
           applyUpdate: async () => ({ state: "failed" as const, error: new Error("offline") }),
         },
       });
@@ -1519,7 +1520,7 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     const installed = [{ sourceId: "acme", kind: "skill" as const, name: "notes" }];
     const locked = harness({
       settings: { updateNotices: true, autoUpdate: false, autoUpdatePackages: { "skill:notes": "off" } },
-      service: { autoUpdateContext: async () => ({ policy: "on" as const, requiredInstalls: [], sources: [source], installed }) },
+      service: { autoUpdateContext: async () => ({ policy: "on" as const, requiredInstalls: [], unmetRequired: [], sources: [source], installed }) },
     });
     const background = startMarketplaceBackground(locked.input);
     await background.started;
@@ -1530,11 +1531,35 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
       packages: [{ key: installed[0], switch: { effective: true, override: "off", lockedByPolicy: true, required: false } }],
     });
     background.stop();
-    const off = harness({ settings: { updateNotices: true }, service: { autoUpdateContext: async () => ({ policy: "off" as const, requiredInstalls: [], sources: [source], installed }) } });
+    const off = harness({ settings: { updateNotices: true }, service: { autoUpdateContext: async () => ({ policy: "off" as const, requiredInstalls: [], unmetRequired: [], sources: [source], installed }) } });
     const second = startMarketplaceBackground(off.input);
     await second.started;
     expect((await second.status()).autoUpdate).toMatchObject({ enabled: false, lockedByPolicy: "off" });
     second.stop();
+  });
+
+  it("publishes each unmet required install the service reports, and its change once the catalog changes (§10.2)", async () => {
+    const unmet = {
+      key: { sourceId: "corp", kind: "skill" as const, name: "notes" },
+      sourceLabel: "Corp",
+      reason: "source-unreachable" as const,
+      minAppVersion: null,
+      installedFrom: { sourceId: "acme", label: "Acme" },
+    };
+    let reported = [unmet];
+    const h = harness({
+      settings: { updateNotices: true },
+      service: { autoUpdateContext: async () => ({ policy: "user" as const, requiredInstalls: [{ source: "corp", kind: "skill" as const, name: "notes" }], unmetRequired: reported, sources: [], installed: [] }) },
+    });
+    const background = startMarketplaceBackground(h.input);
+    await background.started;
+    expect((await background.status()).unmetRequired).toEqual([unmet]);
+    expect(h.lastStatus().unmetRequired).toEqual([unmet]);
+    // corp syncs and lists it: the boot pass can install it, and the row goes.
+    reported = [];
+    await background.recheck();
+    expect(h.lastStatus().unmetRequired).toEqual([]);
+    background.stop();
   });
 
   it("does not apply a switched-off update, and applies nothing more once stopped", async () => {

@@ -10,7 +10,7 @@ import "../../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { makeMockAveApi } from "../../../../../../test/renderer/mock-ave-api.js";
-import type { PackageUpdateView, UpdatePlanView } from "../../../../../shared/git-marketplace.js";
+import type { PackageUpdateView, UnmetRequirementView, UpdatePlanView } from "../../../../../shared/git-marketplace.js";
 import type { AveApi } from "../../../types.js";
 import { GitMarketplaceTab } from "../GitMarketplaceTab.js";
 import { requestUpdateReview } from "../update-review-request.js";
@@ -220,6 +220,59 @@ describe("the queue and the rows (§18.7.4, §18.7.5)", () => {
     const row = await screen.findByTestId("git-marketplace:updates:row:team:plugin:meeting");
     fireEvent.click(within(row).getByTestId("git-marketplace:updates:review"));
     expect(onOpenPluginSettings).toHaveBeenCalledWith("meeting");
+  });
+});
+
+describe("required installs not met (§10.2)", () => {
+  const unmet = (reason: UnmetRequirementView["reason"], name: string, extra: Partial<UnmetRequirementView> = {}): UnmetRequirementView => ({
+    key: { sourceId: "corp", kind: "skill", name }, sourceLabel: "Corp tools", reason, minAppVersion: null, installedFrom: null, ...extra,
+  });
+
+  it("says why each is not met, refreshes the source that may since provide it, and opens the install that stands in the way", async () => {
+    const fake = fakeMarketplace({
+      sources: [team],
+      entries: [entry("team", "skill", "notes", { state: { state: "installed", version: "1.0.0" } })],
+      updateStatus: updateStatus({
+        unmetRequired: [
+          unmet("source-missing", "notes", { installedFrom: { sourceId: "team", label: "Team tools" } }),
+          unmet("source-unreachable", "lint"),
+          unmet("not-in-catalog", "audit"),
+          unmet("incompatible", "review", { minAppVersion: "9.0.0" }),
+          unmet("incompatible", "triage"),
+        ],
+      }),
+    });
+    renderTab(fake);
+    const card = await screen.findByTestId("git-marketplace:updates:unmet");
+    expect(card).toHaveTextContent("조직이 필수로 지정했지만 설치되지 않은 패키지");
+    const row = (name: string) => screen.getByTestId(`git-marketplace:updates:unmet:corp:skill:${name}`);
+    const reason = (name: string) => within(row(name)).getByTestId("git-marketplace:updates:unmet:reason");
+    expect(reason("notes")).toHaveTextContent("조직이 Corp tools의 notes을(를) 필수로 지정했지만, 이 마켓플레이스가 Ave에 추가되어 있지 않습니다.");
+    expect(reason("lint")).toHaveTextContent("아직 이 마켓플레이스에 연결하지 못했습니다.");
+    expect(reason("audit")).toHaveTextContent("이 마켓플레이스 목록에 없습니다.");
+    expect(reason("review")).toHaveTextContent("Ave 9.0.0 이상이 필요합니다.");
+    expect(reason("triage")).toHaveTextContent("이 Ave 버전에서 동작하는 릴리스가 없습니다.");
+    for (const name of ["notes", "lint", "audit", "review", "triage"]) expect(row(name)).toHaveTextContent("해결되지 않으면 관리자에게 문의하세요.");
+    // Refresh is offered only where a sync can change the answer.
+    expect(["notes", "lint", "audit", "review", "triage"].filter((name) => within(row(name)).queryByTestId("git-marketplace:updates:unmet:refresh"))).toEqual(["lint", "audit"]);
+    fireEvent.click(within(row("lint")).getByTestId("git-marketplace:updates:unmet:refresh"));
+    await waitFor(() => expect(fake.market.refreshSources).toHaveBeenCalledWith("corp"));
+
+    expect(within(row("notes")).getByTestId("git-marketplace:updates:unmet:installed-from")).toHaveTextContent("notes이(가) 대신 Team tools에서 설치되어 있어");
+    expect(["notes", "lint", "audit", "review", "triage"].filter((name) => within(row(name)).queryByTestId("git-marketplace:updates:unmet:remove"))).toEqual(["notes"]);
+    fireEvent.click(within(row("notes")).getByTestId("git-marketplace:updates:unmet:remove"));
+    await screen.findByTestId("git-marketplace:sheet");
+    await waitFor(() => expect(fake.market.packageDetail).toHaveBeenCalledWith(expect.objectContaining({ sourceId: "team", kind: "skill", name: "notes" })));
+  });
+
+  it("shows why a refresh failed, and nothing at all while every requirement is met", async () => {
+    const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [unmet("not-in-catalog", "audit")] }) });
+    fake.market.refreshSources.mockResolvedValueOnce({ ok: false, code: "SOURCE_UNREACHABLE", message: "network is unreachable", detail: { reason: "offline" } });
+    renderTab(fake);
+    fireEvent.click(await screen.findByTestId("git-marketplace:updates:unmet:refresh"));
+    expect(await screen.findByTestId("git-marketplace:updates:unmet:error")).toBeInTheDocument();
+    act(() => fake.emitUpdateStatus(updateStatus()));
+    await waitFor(() => expect(screen.queryByTestId("git-marketplace:updates:unmet")).toBeNull());
   });
 });
 
