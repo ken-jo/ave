@@ -8,7 +8,7 @@
  * nothing it was queued with authorizes it: the policy, the switches and
  * shutdown are read again when its turn comes.
  */
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -264,5 +264,36 @@ describe("a required update (§18.7.2)", () => {
     await expect(harness.service.applyUpdate(target, automatic)).resolves.toEqual({ state: "superseded" });
     expect(harness.policy.load).toMatchObject({ ok: true, policy: { requiredInstalls: [] } });
     expect(harness.installed.get("alpha")).toBe(before);
+  });
+});
+
+describe("a quarantined source (§18.8)", () => {
+  it("offers no update, applies none, and leaves its id and its packages out of the switches", async () => {
+    // An update waits while the source is healthy.
+    await edit({ "plugins/alpha/dist/index.js": "export default { version: 2 };\n" });
+    expect(await harness.service.updates()).toHaveLength(1);
+    const item = harness.installed.get("alpha")!;
+    harness.service.close();
+    // Then its stored id turns out to have a credential's shape: the registry quarantines the source.
+    const quarantinedId = `glp${"at-"}${"abcd1234".repeat(3)}`;
+    const list = join(root, "marketplaces", "sources.json");
+    writeFileSync(list, readFileSync(list, "utf8").replace('"team"', JSON.stringify(quarantinedId)));
+    const data = join(root, "marketplaces", quarantinedId);
+    renameSync(join(root, "marketplaces", "team"), data);
+    for (const file of readdirSync(join(data, "snapshots"))) {
+      const snapshot = join(data, "snapshots", file);
+      writeFileSync(snapshot, readFileSync(snapshot, "utf8").replace('"sourceId":"team"', `"sourceId":${JSON.stringify(quarantinedId)}`));
+    }
+    harness = await folderService({ root, folders: nodeFolders() });
+    harness.installed.set("alpha", { ...item, sourceId: quarantinedId });
+
+    const context = await harness.service.autoUpdateContext();
+    expect(JSON.stringify(context)).not.toContain(quarantinedId);
+    expect(context.installed).toEqual([]);
+    expect(await harness.service.updates()).toEqual([]);
+    expect(await harness.service.updateCandidates(new Set([quarantinedId]))).toEqual([]);
+    const quarantined = { key: { sourceId: quarantinedId, kind: "plugin" as const, name: "alpha" }, from: "1.0.0", to: "1.0.0", switchSource: false };
+    await expect(harness.service.applyUpdate(quarantined, automatic)).resolves.toEqual({ state: "superseded" });
+    expect(harness.installed.get("alpha")).toEqual({ ...item, sourceId: quarantinedId });
   });
 });

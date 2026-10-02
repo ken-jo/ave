@@ -2387,7 +2387,13 @@ export class MarketplaceService implements RetirementEntryLookup {
   async autoUpdateContext(signal?: AbortSignal): Promise<AutoUpdateContext> {
     return this.operation(async () => {
       const sources: AutoUpdateContext["sources"] = [];
+      const quarantined = new Set<string>();
       for (const source of this.registry.list()) {
+        // A quarantined source (§18.8) is served to no one, its packages and its id included.
+        if (this.registry.isQuarantined(source)) {
+          quarantined.add(source.id);
+          continue;
+        }
         const read = await this.read(source);
         if ("problem" in read) continue;
         sources.push({
@@ -2400,7 +2406,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       }
       // Every bound package, whatever its source's health: required-ness does not depend on it.
       const installed = (await this.installedAll())
-        .filter((item): item is InstalledRecord & { sourceId: string } => item.sourceId !== null)
+        .filter((item): item is InstalledRecord & { sourceId: string } => item.sourceId !== null && !quarantined.has(item.sourceId))
         .map((item) => ({ sourceId: item.sourceId, kind: item.kind, name: item.name }));
       return { policy: this.policy.autoUpdate, requiredInstalls: structuredClone([...this.policy.requiredInstalls]), sources, installed };
     }, signal);

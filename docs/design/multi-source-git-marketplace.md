@@ -1054,7 +1054,9 @@ its source does not read), outcomes that stay after their offer is gone
 (`approval-pending`, `applied-not-running`) and stale offers all call it with
 the policy read at each check; a stale offer keeps its version and state
 but takes its required status and switch from the policy now. Until a
-policy has been read, no update view is built. A change of required status
+policy has been read, no update view is built. A quarantined source
+(§18.8) and the packages bound to it are left out of the switches as they
+are out of the offers, so its id never reaches them. A change of required status
 alone sends the toolbar list again; a policy refresh reaches the scheduler
 as a catalog change.
 
