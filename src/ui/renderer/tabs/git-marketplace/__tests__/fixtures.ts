@@ -183,7 +183,7 @@ export function updateStatus(overrides: Partial<UpdateStatusView> = {}): UpdateS
     historyReset: false,
     waitingSince: null,
     escalated: false,
-    autoUpdate: { enabled: true, lockedByPolicy: null, sources: [] },
+    autoUpdate: { enabled: true, lockedByPolicy: null, sources: [], packages: [] },
     packages: [],
     ...overrides,
   };

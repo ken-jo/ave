@@ -758,6 +758,8 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
     renderTab(fake);
 
     const banner = await screen.findByTestId("git-marketplace:boot-notice");
+    // What the boot pass did is a start-up change.
+    expect(within(banner).getByTestId("git-marketplace:boot-notice:title")).toHaveTextContent("Ave 시작 시 변경됨");
     expect(banner).toHaveTextContent("tokyo-night");
     expect(banner).toHaveTextContent("vpn");
     expect(within(banner).queryByTestId("git-marketplace:boot-notice:uninstall:plugin:vpn")).toBeNull();

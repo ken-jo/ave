@@ -29,7 +29,7 @@ import {
   type UpdateStatusView,
 } from "../../../../shared/git-marketplace.js";
 import { packageUpdateSkipKey } from "../../../../shared/skipped-plugin-updates.js";
-import { kindLabel, OTHER_SUBJECT, relativeTime, shortSha, updateStateLabel } from "./labels.js";
+import { kindLabel, originLabel, OTHER_SUBJECT, relativeTime, shortSha, updateStateLabel } from "./labels.js";
 import { MarketplaceProblem } from "./MarketplaceProblem.js";
 import { ComponentApprovalDialog } from "./UpdateReview.js";
 
@@ -80,7 +80,11 @@ function toggled(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
   return next;
 }
 
-/** A source's or package's switch as a select: the default (and what it gives), on, off. */
+/**
+ * A source's or package's switch as a select: the default (and what it
+ * gives), on, off. Locked by the organization, it shows what takes effect,
+ * never the user's stored choice the policy overrides.
+ */
 function SwitchSelect({ view, label, disabled, onChange, testId }: {
   view: AutoUpdateSwitchView;
   label: string;
@@ -96,7 +100,7 @@ function SwitchSelect({ view, label, disabled, onChange, testId }: {
     <NativeSelect
       size="sm"
       aria-label={label}
-      value={view.override ?? "default"}
+      value={view.lockedByPolicy ? (view.effective ? "on" : "off") : (view.override ?? "default")}
       disabled={disabled || view.lockedByPolicy}
       onChange={(event) => onChange(event.target.value === "on" || event.target.value === "off" ? event.target.value : null)}
       data-testid={testId}
@@ -105,6 +109,69 @@ function SwitchSelect({ view, label, disabled, onChange, testId }: {
       <NativeSelectOption value="on">{t("gitMarketplace.updates.switch.on")}</NativeSelectOption>
       <NativeSelectOption value="off">{t("gitMarketplace.updates.switch.off")}</NativeSelectOption>
     </NativeSelect>
+  );
+}
+
+/**
+ * An installed package's *Automatic updates* select (§18.9), wherever the
+ * package is shown: it can be set before the package has an update. Shown
+ * once the scheduler lists the package; a package from no listed source has
+ * no switch.
+ */
+export function PackageAutoUpdate({ api, packageKey, displayName, onSwitch }: {
+  api: Pick<GitMarketplaceApi, "updateStatus" | "onUpdateStatus">;
+  packageKey: PackageKeyView;
+  displayName: string;
+  onSwitch: (change: AutoUpdateSwitchChange) => Promise<string | null>;
+}) {
+  const { t } = useTranslation();
+  const [status, setStatus] = useState<UpdateStatusView | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const pushed = useRef(false);
+  useEffect(() => {
+    let alive = true;
+    void api.updateStatus().then((result) => {
+      if (alive && !pushed.current && result.ok) setStatus(result.value);
+    });
+    const off = api.onUpdateStatus((next) => {
+      pushed.current = true;
+      setStatus(next);
+    });
+    return () => {
+      alive = false;
+      off();
+    };
+  }, [api]);
+  const entry = status?.autoUpdate.packages.find((item) => item.key.sourceId === packageKey.sourceId
+    && item.key.kind === packageKey.kind && item.key.name === packageKey.name);
+  if (!entry) return null;
+  const id = rowId(packageKey);
+  return (
+    <div className="space-y-1 text-xs" data-testid={`git-marketplace:auto-update:${id}`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="min-w-0 flex-1 font-medium">{t("gitMarketplace.updates.automaticUpdates")}</span>
+        <SwitchSelect
+          view={entry.switch}
+          label={t("gitMarketplace.updates.packageSwitch", { name: displayName })}
+          disabled={saving}
+          onChange={(value) => {
+            setSaving(true);
+            setFailure(null);
+            void onSwitch({ scope: "package", key: packageUpdateSkipKey(packageKey), value })
+              .then(setFailure)
+              .finally(() => setSaving(false));
+          }}
+          testId={`git-marketplace:auto-update:switch:${id}`}
+        />
+      </div>
+      {entry.switch.lockedByPolicy && status?.autoUpdate.lockedByPolicy && (
+        <p className="text-muted-foreground">
+          {status.autoUpdate.lockedByPolicy === "on" ? t("gitMarketplace.updates.policyOn") : t("gitMarketplace.updates.policyOff")}
+        </p>
+      )}
+      {failure && <p className="whitespace-pre-wrap text-destructive" role="alert">{failure}</p>}
+    </div>
   );
 }
 
@@ -404,13 +471,13 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
             <div className="space-y-1" data-testid="git-marketplace:updates:sources">
               <p className="text-xs font-medium">{t("gitMarketplace.updates.bySource")}</p>
               <ul className="divide-y rounded-md border">
-                {autoUpdate.sources.map((source) => (
+                {autoUpdate.sources.map((source) => ({ ...source, name: source.origin === "official" ? originLabel(t, "official") : source.label })).map((source) => (
                   <li key={source.id} className="space-y-1 px-3 py-2 text-xs" data-testid={`git-marketplace:updates:source:${source.id}`}>
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="min-w-0 flex-1 truncate">{source.label}</span>
+                      <span className="min-w-0 flex-1 truncate">{source.name}</span>
                       <SwitchSelect
                         view={source.switch}
-                        label={t("gitMarketplace.updates.sourceSwitch", { source: source.label })}
+                        label={t("gitMarketplace.updates.sourceSwitch", { source: source.name })}
                         disabled={saving}
                         onChange={(value) => {
                           if (value === "on" && source.needsUnencryptedUpdates) setConfirmSource(source.id);
@@ -421,7 +488,7 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
                     </div>
                     {confirmSource === source.id && (
                       <div className="space-y-2 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2" data-testid="git-marketplace:updates:unencrypted">
-                        <p>{t("gitMarketplace.warning.unencryptedUpdates", { source: source.label })}</p>
+                        <p>{t("gitMarketplace.warning.unencryptedUpdates", { source: source.name })}</p>
                         <div className="flex gap-2">
                           <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setConfirmSource(null)}>
                             {t("common.cancel")}

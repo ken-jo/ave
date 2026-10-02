@@ -674,6 +674,8 @@ export const en = {
   "gitMarketplace.updates.turnOnAnyway": "Turn on anyway",
   "gitMarketplace.boot.autoUpdated": "Updated automatically",
   "gitMarketplace.boot.autoUpdatedRequired": "{name} (by your organization)",
+  "gitMarketplace.boot.titleChanges": "Marketplace changes",
+  "gitMarketplace.updates.automaticUpdates": "Automatic updates",
 };
 
 export const ko: Record<keyof typeof en, string> = {
@@ -1348,4 +1350,6 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.updates.turnOnAnyway": "그래도 켜기",
   "gitMarketplace.boot.autoUpdated": "자동으로 업데이트됨",
   "gitMarketplace.boot.autoUpdatedRequired": "{name}(조직이 적용)",
+  "gitMarketplace.boot.titleChanges": "마켓플레이스 변경 사항",
+  "gitMarketplace.updates.automaticUpdates": "자동 업데이트",
 };

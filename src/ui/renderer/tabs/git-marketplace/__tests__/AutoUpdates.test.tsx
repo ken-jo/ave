@@ -42,7 +42,7 @@ describe("the switches (§18.7.2)", () => {
     fireEvent.click(toggle);
     await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ marketplace: { autoUpdate: false } }));
 
-    act(() => fake.emitUpdateStatus(updateStatus({ autoUpdate: { enabled: false, lockedByPolicy: "off", sources: [] } })));
+    act(() => fake.emitUpdateStatus(updateStatus({ autoUpdate: { enabled: false, lockedByPolicy: "off", sources: [], packages: [] } })));
     await waitFor(() => expect(screen.getByTestId("git-marketplace:updates:automatic")).toBeDisabled());
     expect(screen.getByTestId("git-marketplace:updates:automatic:policy")).toHaveTextContent("조직이 설정함: 검토한 업데이트만 설치됩니다.");
   });
@@ -70,9 +70,10 @@ describe("the switches (§18.7.2)", () => {
           enabled: true,
           lockedByPolicy: null,
           sources: [
-            { id: "team", label: "Team tools", switch: switchOn, needsUnencryptedUpdates: false },
-            { id: "lan", label: "LAN tools", switch: { effective: false, override: null, lockedByPolicy: false }, needsUnencryptedUpdates: true },
+            { id: "team", label: "Team tools", origin: "custom", switch: switchOn, needsUnencryptedUpdates: false },
+            { id: "lan", label: "LAN tools", origin: "custom", switch: { effective: false, override: null, lockedByPolicy: false }, needsUnencryptedUpdates: true },
           ],
+          packages: [],
         },
       }),
     });
@@ -94,6 +95,51 @@ describe("the switches (§18.7.2)", () => {
     // An https source needs no confirmation.
     fireEvent.change(within(screen.getByTestId("git-marketplace:updates:source:team")).getByTestId("git-marketplace:updates:source-switch:team"), { target: { value: "off" } });
     await waitFor(() => expect(api.updateSettings).toHaveBeenLastCalledWith({ marketplace: { autoUpdateSources: { team: "off" } } }));
+  });
+});
+
+describe("switches wherever a package or source is shown (§18.7.2, §18.9)", () => {
+  it("an installed package's switch is in its sheet before it has an update, and Off writes its own entry", async () => {
+    const fake = fakeMarketplace({
+      sources: [team],
+      entries: [entry("team", "plugin", "meeting", { state: { state: "installed", version: "1.0.0" } })],
+      updateStatus: updateStatus({ autoUpdate: { enabled: true, lockedByPolicy: null, sources: [], packages: [{ key: meetingKey, switch: switchOn }] } }),
+    });
+    const { api } = renderTab(fake, { getSettings: async () => ({ marketplace: {} }) });
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:meeting")).getByTestId("git-marketplace:card:state"));
+    const select = await screen.findByTestId("git-marketplace:auto-update:switch:team:plugin:meeting");
+    expect(select).toHaveValue("default");
+    expect(within(select).getByRole("option", { name: "기본값(켬)" })).toBeInTheDocument();
+    fireEvent.change(select, { target: { value: "off" } });
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ marketplace: { autoUpdatePackages: { meeting: "off" } } }));
+  });
+
+  it("under the organization's lock a select shows what takes effect, not the stored choice it overrides", async () => {
+    const locked = { effective: true, override: "off" as const, lockedByPolicy: true };
+    const fake = fakeMarketplace({
+      sources: [team],
+      updateStatus: updateStatus({
+        autoUpdate: { enabled: true, lockedByPolicy: "on", sources: [{ id: "team", label: "Team tools", origin: "custom", switch: { ...locked, override: null }, needsUnencryptedUpdates: false }], packages: [] },
+        packages: [pkg({ state: "waiting", autoUpdate: locked })],
+      }),
+    });
+    renderTab(fake);
+    const select = await screen.findByTestId("git-marketplace:updates:package-switch:team:plugin:meeting");
+    expect(select).toHaveValue("on");
+    expect(select).toBeDisabled();
+    expect(screen.getByTestId("git-marketplace:updates:source-switch:team")).toHaveValue("on");
+    expect(screen.getByTestId("git-marketplace:updates:automatic")).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("names the official source by its origin's name, as Sources does", async () => {
+    const fake = fakeMarketplace({
+      sources: [team],
+      updateStatus: updateStatus({ autoUpdate: { enabled: true, lockedByPolicy: null, sources: [{ id: "ave", label: "ave", origin: "official", switch: switchOn, needsUnencryptedUpdates: false }], packages: [] } }),
+    });
+    renderTab(fake);
+    const row = await screen.findByTestId("git-marketplace:updates:source:ave");
+    expect(row).toHaveTextContent("Ave 공식");
+    expect(row).not.toHaveTextContent(/^ave/u);
   });
 });
 
@@ -282,6 +328,8 @@ describe("the boot notice's Updated automatically (§18.7.5)", () => {
     });
     const { onOpenPluginSettings } = renderTab(fake);
     const banner = await screen.findByTestId("git-marketplace:boot-notice");
+    // Automatic updates alone arrive at any time: the title names no time.
+    expect(within(banner).getByTestId("git-marketplace:boot-notice:title")).toHaveTextContent("마켓플레이스 변경 사항");
     const meeting = within(banner).getByTestId("git-marketplace:boot-notice:auto-updated:team:plugin:meeting");
     expect(meeting).toHaveTextContent("Meeting · 1.0.0 → 1.1.0");
     expect(within(meeting).queryByTestId("git-marketplace:boot-notice:review")).toBeNull();
@@ -307,6 +355,11 @@ describe("the update pill's request (§18.7.5)", () => {
 
     act(() => requestUpdateReview([pkg({ state: "applied-not-running" })]));
     await waitFor(() => expect(scroll).toHaveBeenCalledOnce());
+    expect(fake.market.planUpdate).not.toHaveBeenCalled();
+
+    // A wait past 30 minutes: the card, where Apply now is.
+    act(() => requestUpdateReview([pkg({ state: "waiting", escalated: true })]));
+    await waitFor(() => expect(scroll).toHaveBeenCalledTimes(2));
     expect(fake.market.planUpdate).not.toHaveBeenCalled();
 
     act(() => requestUpdateReview([pkg({ state: "needs-review" })]));

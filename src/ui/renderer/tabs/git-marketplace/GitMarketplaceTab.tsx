@@ -438,7 +438,12 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
         {view === "browse" && notice && (
           <div className="mt-3 space-y-2 rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-soft) px-3 py-2 text-xs" data-testid="git-marketplace:boot-notice">
             <div className="flex items-start justify-between gap-2">
-              <p className="font-medium">{t("gitMarketplace.boot.title")}</p>
+              {/* The start-up sections are the boot pass's; revocations and automatic updates also arrive later, so alone they get a title that names no time. */}
+              <p className="font-medium" data-testid="git-marketplace:boot-notice:title">
+                {notice.forYou.length + notice.required.length + notice.unmanaged.length + notice.lostGrants.length > 0
+                  ? t("gitMarketplace.boot.title")
+                  : t("gitMarketplace.boot.titleChanges")}
+              </p>
               <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => void dismissNotice()} data-testid="git-marketplace:boot-notice:dismiss">
                 {t("gitMarketplace.boot.dismiss")}
               </Button>
@@ -749,6 +754,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
           void loadCatalog();
           void loadSources();
         }}
+        onAutoUpdateSwitch={persistAutoUpdate}
       />
     </div>
   );

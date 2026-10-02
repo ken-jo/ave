@@ -36,6 +36,7 @@ import type { AgentPluginComponents } from "../../../../marketplace/catalog/type
 import type { AveApi } from "../../types.js";
 import { InstalledPluginAlerts } from "./InstalledPluginAlerts.js";
 import { UpdateConsentReview, updateConsents } from "./UpdateReview.js";
+import { PackageAutoUpdate, type AutoUpdateSwitchChange } from "./UpdatesCard.js";
 
 type Stage =
   | { stage: "detail" }
@@ -54,6 +55,8 @@ export interface PackageSheetProps {
   onClose: () => void;
   /** Something was installed or removed: the catalog should be read again. */
   onChanged: () => void;
+  /** Save an installed package's automatic-update switch (§18.9); the sheet shows it for an installed package. */
+  onAutoUpdateSwitch: (change: AutoUpdateSwitchChange) => Promise<string | null>;
 }
 
 type PlanOptions = { update?: boolean; version?: string; switchSource?: boolean };
@@ -152,7 +155,7 @@ function ComponentsList({ components }: { components: AgentPluginComponents }) {
   ))}</ul>;
 }
 
-export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, source, onClose, onChanged }: PackageSheetProps) {
+export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, source, onClose, onChanged, onAutoUpdateSwitch }: PackageSheetProps) {
   const { t, locale } = useTranslation();
   const [detail, setDetail] = useState<PackageDetailView | null>(null);
   const [loadFailure, setLoadFailure] = useState<GitMarketplaceFailure | null>(null);
@@ -665,6 +668,10 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
                 };
               })()}
             />
+          )}
+
+          {stage.stage === "detail" && target && installedHere && (
+            <PackageAutoUpdate api={api} packageKey={target.key} displayName={entry?.displayName ?? target.key.name} onSwitch={onAutoUpdateSwitch} />
           )}
         </div>
 
