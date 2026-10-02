@@ -115,7 +115,7 @@ function RungList({ rungs }: { rungs: RungView[] }) {
     <ol className="space-y-0.5">
       {rungs.map((rung, index) => (
         <li key={rung.rung} className={cn(!rung.declared && "text-muted-foreground")}>
-          {index + 1}. {rung.rung === "release" ? t("gitMarketplace.rung.release") : rung.rung === "archive" ? t("gitMarketplace.rung.archive") : t("gitMarketplace.rung.tree")}
+          {index + 1}. {rung.rung === "release" ? t("gitMarketplace.rung.release") : rung.rung === "archive" ? t("gitMarketplace.rung.archive") : rung.rung === "folder" ? t("gitMarketplace.rung.folder") : t("gitMarketplace.rung.tree")}
           {" · "}
           {!rung.declared
             ? t("gitMarketplace.rung.notDeclared")
@@ -314,7 +314,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
                   <dt className="text-muted-foreground">{t("gitMarketplace.detail.source")}</dt>
                   <dd>{detail.provenance.sourceLabel}</dd>
                   <dt className="text-muted-foreground">{t("gitMarketplace.detail.repository")}</dt>
-                  <dd className="break-all font-mono text-xs">{detail.provenance.repository}</dd>
+                  <dd className="break-all font-mono text-xs">{detail.provenance.repository ?? detail.provenance.folder}</dd>
                   <dt className="text-muted-foreground">{t("gitMarketplace.detail.path")}</dt>
                   <dd className="font-mono text-xs">{detail.provenance.path || "/"}</dd>
                   <dt className="text-muted-foreground">{t("gitMarketplace.detail.commit")}</dt>

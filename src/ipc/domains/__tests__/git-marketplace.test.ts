@@ -3,21 +3,27 @@
  * answer an envelope, requests checked before the service sees them, and
  * the service built once, on the first request.
  */
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, isPublicChannel } from "../../../contract/app-contract.js";
-import { MarketplaceError } from "../../../marketplace/errors.js";
+import { MARKETPLACE_ERROR_DETAIL_FIELDS, MarketplaceError } from "../../../marketplace/errors.js";
 import { NetworkGate } from "../../../marketplace/net/network-gate.js";
 import { normalizeSourceUrl } from "../../../marketplace/net/source-url.js";
 import { createPinnedFetch } from "../../../marketplace/net/pinned-fetch.js";
 import { FilePolicySource } from "../../../marketplace/sources/policy.js";
-import { parseGitMarketplaceResult } from "../../../shared/git-marketplace.js";
+import { parseGitMarketplaceResult, type EnteredTargetWarningView } from "../../../shared/git-marketplace.js";
 import { breakDiagnosticScrubberOn, DIAGNOSTIC_KEPT, DIAGNOSTIC_SECRET_PROBES } from "../../../shared/__tests__/fixtures/diagnostic-secret-probes.js";
 import { invokeAppIpcHandlerFromFrame, invokeFileIpcHandler } from "./test-helpers.js";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { latestBootstrapStatus } from "../../../boot/bootstrap-status.js";
 import { revocationRegistry, type RevocationRule } from "../../../plugins/revocation/revocation-registry.js";
+import { FakeVolume, TEST_FOLDER_LIMITS } from "../../../marketplace/__tests__/fixtures/folder-fs.js";
+import { folderService } from "../../../marketplace/__tests__/fixtures/folder-service.js";
+import { policyLoad, policySource } from "../../../marketplace/__tests__/fixtures/policy.js";
+import { translate } from "../../../i18n/translate.js";
+import { ENTRY_SUBJECT, failureText, warningText } from "../../../ui/renderer/tabs/git-marketplace/labels.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -93,7 +99,8 @@ function holdApplyCheckSaves(): () => void {
 
 const channels = CHANNELS.gitMarketplace;
 
-async function setup(overrides: Record<string, unknown> = {}) {
+/** `window` stands for the app window broadcasts reach; none by default. */
+async function setup(overrides: Record<string, unknown> = {}, window: unknown = null) {
   handlers.clear();
   const service = {
     listSources: vi.fn(async () => []),
@@ -135,7 +142,7 @@ async function setup(overrides: Record<string, unknown> = {}) {
   // A lifetime of its own: the app's shared one (`getMarketplaceLifetime`) would outlive this test's shutdown.
   const lifetime = new AbortController();
   const registration = registerGitMarketplaceHandlers(
-    { auditLogger: { log: vi.fn() }, getMainWindow: () => null, settingsService: settings } as never,
+    { auditLogger: { log: vi.fn() }, getMainWindow: () => window, settingsService: settings } as never,
     async () => null,
     create,
     onBuilt,
@@ -268,9 +275,9 @@ describe("git marketplace IPC boundary", () => {
     registration.settingsChanged();
     expect(service.updates).not.toHaveBeenCalled();
 
-    registration.startBackground();
     // The boot's discovery, then the list after the boot installs.
-    await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(2));
+    await registration.startBackground();
+    expect(service.updates).toHaveBeenCalledTimes(2);
     registration.settingsChanged();
     await vi.waitFor(() => expect(service.updates).toHaveBeenCalledTimes(3));
     expect(service.discover).toHaveBeenCalledTimes(1);
@@ -308,8 +315,9 @@ describe("git marketplace IPC boundary", () => {
   it("answers every scheduler request with its declared refusal once the app has stopped the scheduler", async () => {
     shutdownHooks.clear();
     const { registration, service } = await setup();
-    registration.startBackground();
-    await vi.waitFor(() => expect(latestBootstrapStatus()).toMatchObject({ phase: "complete" }));
+    // This scheduler's own boot pass: the recorded bootstrap status is process-wide and may still be an earlier test's.
+    await registration.startBackground();
+    expect(latestBootstrapStatus()).toMatchObject({ phase: "complete" });
     // One hook closes the domain's event boundary and stops the scheduler in the same step.
     await vi.waitFor(() => expect(shutdownHooks.has("git-marketplace-events")).toBe(true));
     shutdownHooks.get("git-marketplace-events")!();
@@ -334,8 +342,7 @@ describe("git marketplace IPC boundary", () => {
     expect(service.discover.mock.calls.length).toBe(discoveries);
     expect(service.applyBootInstalls).toHaveBeenCalledTimes(1);
     // Nor does a scheduler start again after the shutdown.
-    registration.startBackground();
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await registration.startBackground();
     expect(service.discover.mock.calls.length).toBe(discoveries);
   });
 
@@ -395,11 +402,13 @@ describe("git marketplace IPC boundary", () => {
     const { registration, create } = await setup();
     vi.stubEnv("AVE_E2E", "1");
     vi.stubEnv("NODE_ENV", "test");
+    let started: Promise<void>;
     try {
-      registration.startBackground();
+      started = registration.startBackground();
     } finally {
       vi.unstubAllEnvs();
     }
+    await started;
     expect(latestBootstrapStatus()).toEqual({ phase: "complete", installed: [], failed: [], skipped: { reason: "e2e-isolated" } });
     expect(create).not.toHaveBeenCalled();
   });
@@ -442,6 +451,442 @@ describe("git marketplace IPC boundary", () => {
     expect(parseGitMarketplaceResult(answer)).toEqual(answer);
   });
 
+  describe("source refusals the renderer turns into advice (§18.4, §18.8)", () => {
+    /** The renderer's sentence for an envelope, in both catalogs. */
+    const sentences = (answer: unknown) => {
+      const parsed = parseGitMarketplaceResult(answer);
+      if (parsed.ok) throw new Error("expected a failure");
+      return {
+        en: failureText((key, vars) => translate("en", key, vars), parsed, ENTRY_SUBJECT),
+        ko: failureText((key, vars) => translate("ko", key, vars), parsed, ENTRY_SUBJECT),
+      };
+    };
+
+    it("answers a drive whose classifier cannot run with classifier-unavailable, rendered as reinstall advice", async () => {
+      const root = mkdtempSync(join(tmpdir(), "ave-ipc-folder-"));
+      const volume = new FakeVolume("win32").file("C:\\m\\SKILL.md", "---\nname: note\ndescription: d\n---\n");
+      volume.queryDosDevice = async () => {
+        throw new Error("Windows folder classifier is missing: C:\\Ave\\resources\\windows-path-kind\\x64\\ave-path-kind.exe. Reinstall Ave.");
+      };
+      const harness = await folderService({ root, folders: { fs: volume, platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });
+      try {
+        await setup({ previewSource: vi.fn((request: never) => harness.service.previewSource(request)) });
+        const answer = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "C:\\m", auth: "none" });
+        expect(answer).toMatchObject({ ok: false, code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "classifier-unavailable", path: "C:\\m" } });
+        expect((answer as { message: string }).message).toContain("classifier is missing");
+        expect(sentences(answer)).toEqual({
+          en: "Ave cannot tell whether C:\\m is on another computer because its folder classifier is missing or broken. Reinstall Ave.",
+          ko: "Ave의 폴더 분류 도구가 없거나 손상되어 C:\\m이(가) 다른 컴퓨터에 있는지 알 수 없습니다. Ave를 다시 설치하세요.",
+        });
+      } finally {
+        harness.service.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("answers a folder overlapping a source with the relation and the source, rendered as what to do instead of another id", async () => {
+      const root = mkdtempSync(join(tmpdir(), "ave-ipc-folder-"));
+      const skill = "---\nname: note\ndescription: d\n---\n";
+      const volume = new FakeVolume("linux").file("/m/SKILL.md", skill).file("/m/inner/SKILL.md", skill);
+      const harness = await folderService({ root, folders: { fs: volume, platform: "linux", limits: TEST_FOLDER_LIMITS } });
+      try {
+        const outer = await harness.service.previewSource({ input: "/m", auth: "none" });
+        if (outer.type === "confirm") throw new Error("unexpected confirmation");
+        await harness.service.addSource({ previewId: outer.previewId, id: "team" });
+        await setup({
+          previewSource: vi.fn((request: never) => harness.service.previewSource(request)),
+          addSource: vi.fn((request: never) => harness.service.addSource(request)),
+        });
+        const preview = (await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m/inner", auth: "none" })) as { ok: true; value: { previewId: string } };
+        const inside = await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: preview.value.previewId, id: "inner" });
+        expect(inside).toMatchObject({ ok: false, code: "SOURCE_ID_TAKEN", detail: { reason: "folder-inside-source", path: "/m/inner", existingId: "team", existingPath: "/m" } });
+        expect(sentences(inside)).toEqual({
+          en: "Folder sources cannot overlap: /m/inner lies inside /m, which is already added as team. Use team, or remove it and add the folder you want.",
+          ko: "폴더 소스는 서로 겹칠 수 없습니다. /m/inner은(는) 이미 team(으)로 추가된 /m 안에 있습니다. team을(를) 쓰거나, 지운 뒤 원하는 폴더를 추가하세요.",
+        });
+        const again = (await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" })) as { ok: true; value: { previewId: string } };
+        const same = await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: again.value.previewId, id: "again" });
+        expect(same).toMatchObject({ ok: false, code: "SOURCE_ID_TAKEN", detail: { reason: "folder-already-added", path: "/m", existingId: "team" } });
+        expect(sentences(same).en).toBe("/m is already added as team. Use team, or remove it before adding this folder again.");
+        expect(sentences(same).ko).toBe("/m은(는) 이미 team(으)로 추가되어 있습니다. team을(를) 쓰거나, 지운 뒤 이 폴더를 다시 추가하세요.");
+      } finally {
+        harness.service.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    describe("a token in any string main hands the renderer (§18.8)", () => {
+      // Real token shapes, assembled here so no whole token sits in the source.
+      const TOKENS = [`gh${"p_"}${"A1b2C3d4".repeat(5).slice(0, 36)}`, `sk${"-proj-"}${"Z9y8X7w6".repeat(8)}`];
+      const leaks = (text: string) => TOKENS.some((token) => text.toLowerCase().includes(token.toLowerCase()));
+      /** `value` with every string in it, at any depth, replaced by `token`. */
+      const poison = (value: unknown, token: string): unknown =>
+        typeof value === "string" ? token
+          : Array.isArray(value) ? value.map((item) => poison(item, token))
+            : typeof value === "object" && value !== null ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, poison(item, token)]))
+              : value;
+      const fields = Object.entries(MARKETPLACE_ERROR_DETAIL_FIELDS).flatMap(([code, reasons]) =>
+        Object.entries(reasons as Record<string, Record<string, string>>).flatMap(([reason, declared]) =>
+          // A number or an issuer (one of a fixed list) cannot hold a token; every string field can.
+          Object.entries(declared).filter(([, kind]) => kind !== "number" && kind !== "credential-issuer").flatMap(([field]) => TOKENS.map((token) => ({ code, reason, declared, field, token })))));
+
+      it.each(fields)("$code $reason: a token in $field never crosses, identifier or not", async ({ code, reason, declared, field, token }) => {
+        const benign = (kind: string) => (kind === "number" ? 1 : kind === "string[]" ? ["x"] : kind === "credential-issuer" ? "gitlab" : "x");
+        const detail = Object.fromEntries(Object.entries(declared).map(([name, kind]) => [name, name === field ? (kind === "string[]" ? [token] : token) : benign(kind)]));
+        await setup({
+          refresh: vi.fn(async () => {
+            throw new MarketplaceError(code as never, "failed", { detail: { reason, ...detail } as never });
+          }),
+        });
+        const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+        expect(answer).toMatchObject({ ok: false, code, detail: { reason } });
+        const { en, ko } = sentences(answer);
+        expect(leaks(JSON.stringify(answer))).toBe(false);
+        expect(leaks(`${en}\n${ko}`)).toBe(false);
+      });
+
+      it("never lets one cross in an answer of the preview, list, add, sync and update-status channels", async () => {
+        const root = mkdtempSync(join(tmpdir(), "ave-ipc-payload-"));
+        const skill = "---\nname: note\ndescription: d\n---\n";
+        const harness = await folderService({ root, folders: { fs: new FakeVolume("linux").file("/m/SKILL.md", skill), platform: "linux", limits: TEST_FOLDER_LIMITS } });
+        const network = await folderService({ root: mkdtempSync(join(root, "win-")), folders: { fs: new FakeVolume("win32"), platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });
+        try {
+          // Real answers of each shape, every string in them then replaced by a token.
+          const preview = await harness.service.previewSource({ input: "/m", auth: "none" });
+          if (preview.type === "confirm") throw new Error("unexpected confirmation");
+          const confirm = await network.service.previewSource({ input: "\\\\server\\share\\m", auth: "none" });
+          expect(confirm.type).toBe("confirm");
+          const added = await harness.service.addSource({ previewId: preview.previewId, id: "team" });
+          const listed = await harness.service.listSources();
+          const synced = await harness.service.refresh("team");
+          for (const token of TOKENS) {
+            const sent = vi.fn();
+            await setup({
+              previewSource: vi.fn(async (request: { input: string }) => poison(request.input === "c" ? confirm : preview, token)),
+              listSources: vi.fn(async () => poison(listed, token)),
+              addSource: vi.fn(async () => poison(added, token)),
+              acknowledgeSource: vi.fn(async () => poison(added, token)),
+              setEnabled: vi.fn(async () => poison(added, token)),
+              refresh: vi.fn(async () => poison(synced, token)),
+              repairSource: vi.fn(async () => poison(synced, token)),
+              // A key the scheduler can match, so the package and its name reach the status and its broadcasts.
+              updates: vi.fn(async () => [{ key: { sourceId: "ave", kind: "plugin", name: "meeting" }, displayName: `Meeting ${token}`, from: "1.0.0", to: "1.1.0" }]),
+            }, { isDestroyed: () => false, webContents: { send: sent } }).then(async ({ registration }) => {
+              const answers = [
+                await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" }),
+                await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "c", auth: "none" }),
+                await invokeFileIpcHandler(handlers, channels.sourcesList),
+                await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: "p", id: "team" }),
+                await invokeFileIpcHandler(handlers, channels.sourcesAcknowledge, "team", ["network-folder"]),
+                await invokeFileIpcHandler(handlers, channels.sourcesSetEnabled, "team", false),
+                await invokeFileIpcHandler(handlers, channels.sourcesRefresh, "team"),
+                await invokeFileIpcHandler(handlers, channels.sourcesRefresh, "team", "repair"),
+              ];
+              await registration.startBackground();
+              answers.push(await invokeFileIpcHandler(handlers, channels.updatesStatus), await invokeFileIpcHandler(handlers, channels.updatesCheck));
+              for (const answer of answers) {
+                expect(answer).toMatchObject({ ok: true });
+                expect(leaks(JSON.stringify(answer))).toBe(false);
+              }
+              // The scheduler's broadcasts (its status, the boot status and notice) cross scrubbed too.
+              expect(sent.mock.calls.map(([channel]) => channel)).toEqual(expect.arrayContaining([channels.updateStatusChanged, channels.bootInstallsApplied, CHANNELS.bootstrap.status]));
+              expect(leaks(JSON.stringify(sent.mock.calls))).toBe(false);
+            });
+          }
+        } finally {
+          harness.service.close();
+          network.service.close();
+          rmSync(root, { recursive: true, force: true });
+        }
+      });
+
+      it("names a source and a package whose names only look like a credential back to main unchanged: list, disable, catalog, plan", async () => {
+        const root = mkdtempSync(join(tmpdir(), "ave-ipc-roundtrip-"));
+        const name = "test-marketplace2026";
+        const volume = new FakeVolume("linux")
+          .file("/m/marketplace.2.json", JSON.stringify({ schemaVersion: 2, name, displayName: "Test marketplace", packages: [{ kind: "skill", name, path: `skills/${name}` }] }))
+          .file(`/m/skills/${name}/ave-package.json`, JSON.stringify({ schemaVersion: 2, kind: "skill", name, version: "1.0.0", minAppVersion: "0.12.0", payload: { entry: "SKILL.md" } }))
+          .file(`/m/skills/${name}/SKILL.md`, `---\nname: ${name}\ndescription: d\n---\nBody.\n`);
+        const harness = await folderService({ root, folders: { fs: volume, platform: "linux", limits: TEST_FOLDER_LIMITS } });
+        try {
+          const real = harness.service;
+          await setup({
+            previewSource: vi.fn((request: never) => real.previewSource(request)),
+            addSource: vi.fn((request: never) => real.addSource(request)),
+            listSources: vi.fn(() => real.listSources()),
+            setEnabled: vi.fn((id: string, enabled: boolean) => real.setEnabled(id, enabled)),
+            catalog: vi.fn((query: never) => real.catalog(query)),
+            planInstall: vi.fn((request: never) => real.planInstall(request)),
+          });
+          const preview = (await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" })) as { ok: true; value: { previewId: string } };
+          expect(await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: preview.value.previewId, id: name })).toMatchObject({ ok: true, value: { id: name } });
+          // Each request names what the renderer was handed, exactly as a renderer would.
+          const listed = (await invokeFileIpcHandler(handlers, channels.sourcesList)) as { ok: true; value: Array<{ id: string }> };
+          const id = listed.value.find((source) => source.id.startsWith("test-"))!.id;
+          expect(id).toBe(name);
+          expect(await invokeFileIpcHandler(handlers, channels.sourcesSetEnabled, id, false)).toMatchObject({ ok: true });
+          expect(await invokeFileIpcHandler(handlers, channels.sourcesSetEnabled, id, true)).toMatchObject({ ok: true });
+          const catalog = (await invokeFileIpcHandler(handlers, channels.catalogList, { sourceId: id })) as { ok: true; value: { entries: Array<{ key: { sourceId: string; kind: string; name: string } }> } };
+          const [entry] = catalog.value.entries;
+          expect(entry?.key).toEqual({ sourceId: name, kind: "skill", name });
+          expect(await invokeFileIpcHandler(handlers, channels.installPlan, entry!.key)).toMatchObject({ ok: true, value: { planId: expect.any(String) } });
+        } finally {
+          harness.service.close();
+          rmSync(root, { recursive: true, force: true });
+        }
+      });
+
+      describe("an identifier with a credential's shape is refused where it enters, with its reason in both languages", () => {
+        // Assembled here: one fits a source id and a package name, one an MCP server's key.
+        const NAME_TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
+        const KEY_TOKEN = `gh${"p_"}${"A1b2C3d4".repeat(5).slice(0, 36)}`;
+        const refusal = async (volume: FakeVolume, act: (harness: Awaited<ReturnType<typeof folderService>>) => Promise<unknown>) => {
+          const root = mkdtempSync(join(tmpdir(), "ave-ipc-ingress-"));
+          const harness = await folderService({ root, folders: { fs: volume, platform: "linux", limits: TEST_FOLDER_LIMITS } });
+          try {
+            return await act(harness);
+          } finally {
+            harness.service.close();
+            rmSync(root, { recursive: true, force: true });
+          }
+        };
+        const noToken = (answer: unknown) => {
+          const text = JSON.stringify(answer);
+          expect(text).not.toContain(NAME_TOKEN);
+          expect(text).not.toContain(KEY_TOKEN);
+        };
+
+        it.each([
+          ["a token", () => NAME_TOKEN, "glpat-", "a GitLab token", "GitLab 토큰"],
+          // Ordinary words under a reserved prefix are reserved too (§18.8): the sentence says which prefix, and what to do.
+          ["an ordinary name under a GitLab prefix", () => "glpat-rotation-documentation-for-local-marketplaces", "glpat-", "a GitLab token", "GitLab 토큰"],
+          ["a digest under an OpenAI prefix", () => `sk-${createHash("sha224").update("ordinary task inputs").digest("hex")}`, "sk-", "an OpenAI API key", "OpenAI API 키"],
+          ["a reserved part after a word", () => "docs-glpat-rotation-documentation-for-local", "glpat-", "a GitLab token", "GitLab 토큰"],
+        ])("refuses a source id that is %s, naming its reserved prefix", async (_label, id, prefix, enIssuer, koIssuer) => {
+          const answer = await refusal(new FakeVolume("linux").file("/m/SKILL.md", "---\nname: note\ndescription: d\n---\n"), async (harness) => {
+            await setup({
+              previewSource: vi.fn((request: never) => harness.service.previewSource(request)),
+              addSource: vi.fn((request: never) => harness.service.addSource(request)),
+            });
+            const preview = (await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" })) as { ok: true; value: { previewId: string } };
+            return invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: preview.value.previewId, id: id() });
+          });
+          // The prefix crosses unmasked: alone it is no credential.
+          expect(answer).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID", detail: { reason: "reserved-prefix", prefix } });
+          noToken(answer);
+          expect(sentences(answer)).toEqual({
+            en: `Ids starting with “${prefix}”, or with a part after “-” starting with it, are reserved because they look like ${enIssuer}. Choose a different id.`,
+            ko: `“${prefix}”로 시작하거나 “-” 뒤 부분이 그것으로 시작하는 ID는 ${koIssuer}처럼 보여 예약되어 있습니다. 다른 ID를 고르세요.`,
+          });
+        });
+
+        it.each([
+          ["a package name", new FakeVolume("linux").file("/m/SKILL.md", `---\nname: ${NAME_TOKEN}\ndescription: d\n---\n`), { reason: "name-reserved-prefix", prefix: "glpat-", issuer: "gitlab" }, {
+            en: "Package names starting with “glpat-”, or with a part after “-” starting with it, are reserved because they look like a GitLab token, so Ave does not offer this package. Ask the package's author to choose a different name.",
+            ko: "“glpat-”로 시작하거나 “-” 뒤 부분이 그것으로 시작하는 패키지 이름은 GitLab 토큰처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다. 패키지 작성자에게 다른 이름을 골라 달라고 하세요.",
+          }],
+          ["a package version", new FakeVolume("linux").file("/m/SKILL.md", `---\nname: note\nversion: 1.0.0-${NAME_TOKEN}\ndescription: d\n---\n`), { reason: "version-reserved-prefix", prefix: "glpat-", issuer: "gitlab" }, {
+            en: "Versions with a part starting with “glpat-” are reserved because they look like a GitLab token, so Ave does not offer this package. Ask the package's author to change the version.",
+            ko: "“glpat-”로 시작하는 부분이 있는 버전은 GitLab 토큰처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다. 패키지 작성자에게 버전을 바꿔 달라고 하세요.",
+          }],
+          // A key under `sk-ant-` that also carries OpenAI's signature is named by the more specific row (§18.8).
+          ["a package version under an overlapping prefix", new FakeVolume("linux").file("/m/SKILL.md", `---\nname: note\nversion: 1.0.0-sk${"-ant-api03-"}${"a".repeat(12)}T3Blbk${"FJ"}${"b".repeat(12)}\ndescription: d\n---\n`), { reason: "version-reserved-prefix", prefix: "sk-ant-", issuer: "anthropic" }, {
+            en: "Versions with a part starting with “sk-ant-” are reserved because they look like an Anthropic API key, so Ave does not offer this package. Ask the package's author to change the version.",
+            ko: "“sk-ant-”로 시작하는 부분이 있는 버전은 Anthropic API 키처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다. 패키지 작성자에게 버전을 바꿔 달라고 하세요.",
+          }],
+          ["an MCP server's name with a word glued to its token", new FakeVolume("linux")
+            .file("/m/plugin.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer", version: "1.0.0", description: "Writes" }))
+            .file("/m/mcp.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: { [`backup_${KEY_TOKEN}`]: { type: "stdio", command: "./server/editor", args: [] } } }))
+            .file("/m/server/editor", "#!/bin/sh\n"), { reason: "component-reserved-prefix", prefix: "ghp_", issuer: "github" }, {
+            en: "A skill, agent, prompt, routine or MCP server in this package has a name with a part starting with “ghp_”. Such names are reserved because they look like a GitHub token, so Ave does not offer this package. Ask the package's author to choose a different name.",
+            ko: "이 패키지에 든 스킬, 에이전트, 프롬프트, 루틴 또는 MCP 서버의 이름에 “ghp_”로 시작하는 부분이 있습니다. 그런 이름은 GitHub 토큰처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다. 패키지 작성자에게 다른 이름을 골라 달라고 하세요.",
+          }],
+          ["an MCP server's name", new FakeVolume("linux")
+            .file("/m/plugin.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer", version: "1.0.0", description: "Writes" }))
+            .file("/m/mcp.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: { [KEY_TOKEN]: { type: "stdio", command: "./server/editor", args: [] } } }))
+            .file("/m/server/editor", "#!/bin/sh\n"), { reason: "component-reserved-prefix", prefix: "ghp_", issuer: "github" }, {
+            en: "A skill, agent, prompt, routine or MCP server in this package has a name with a part starting with “ghp_”. Such names are reserved because they look like a GitHub token, so Ave does not offer this package. Ask the package's author to choose a different name.",
+            ko: "이 패키지에 든 스킬, 에이전트, 프롬프트, 루틴 또는 MCP 서버의 이름에 “ghp_”로 시작하는 부분이 있습니다. 그런 이름은 GitHub 토큰처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다. 패키지 작성자에게 다른 이름을 골라 달라고 하세요.",
+          }],
+        ])("refuses a direct folder package by %s, naming its reserved prefix", async (_label, volume, detail, expected) => {
+          const answer = await refusal(volume, async (harness) => {
+            await setup({ previewSource: vi.fn((request: never) => harness.service.previewSource(request)) });
+            return invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" });
+          });
+          expect(answer).toMatchObject({ ok: false, code: "SOURCE_INDEX_INVALID", detail });
+          noToken(answer);
+          expect(sentences(answer)).toEqual(expected);
+        });
+
+        it("quarantines a source an earlier build stored under one, and removes it through the handle its row carries", async () => {
+          const root = mkdtempSync(join(tmpdir(), "ave-ipc-legacy-"));
+          const skill = "---\nname: note\ndescription: d\n---\n";
+          const volume = new FakeVolume("linux").file("/m/SKILL.md", skill).file("/n/SKILL.md", skill);
+          try {
+            // An earlier build stored the id as typed: write it the way the registry does, then reopen.
+            const first = await folderService({ root, folders: { fs: volume, platform: "linux", limits: TEST_FOLDER_LIMITS } });
+            const preview = await first.service.previewSource({ input: "/m", auth: "none" });
+            if (preview.type === "confirm") throw new Error("unexpected confirmation");
+            await first.service.addSource({ previewId: preview.previewId, id: "team" });
+            const other = await first.service.previewSource({ input: "/n", auth: "none" });
+            if (other.type === "confirm") throw new Error("unexpected confirmation");
+            await first.service.addSource({ previewId: other.previewId, id: "notes" });
+            first.service.close();
+            const list = join(root, "marketplaces", "sources.json");
+            writeFileSync(list, readFileSync(list, "utf8").replace('"team"', JSON.stringify(NAME_TOKEN)));
+            // Its data moves with it, the snapshot naming it, so the source reads as healthy and holds a package.
+            const data = join(root, "marketplaces", NAME_TOKEN);
+            renameSync(join(root, "marketplaces", "team"), data);
+            for (const file of readdirSync(join(data, "snapshots"))) {
+              const snapshot = join(data, "snapshots", file);
+              writeFileSync(snapshot, readFileSync(snapshot, "utf8").replace('"sourceId":"team"', `"sourceId":${JSON.stringify(NAME_TOKEN)}`));
+            }
+
+            const harness = await folderService({ root, folders: { fs: volume, platform: "linux", limits: TEST_FOLDER_LIMITS } });
+            try {
+              const real = harness.service;
+              await setup({
+                listSources: vi.fn(() => real.listSources()),
+                setEnabled: vi.fn((id: string, enabled: boolean) => real.setEnabled(id, enabled)),
+                refresh: vi.fn((id?: string) => real.refresh(id)),
+                removeSource: vi.fn((id: string) => real.removeSource(id)),
+                catalog: vi.fn((query: never) => real.catalog(query)),
+              });
+              const listed = (await invokeFileIpcHandler(handlers, channels.sourcesList)) as { ok: true; value: Array<{ id: string; status: { state: string }; canRemove: boolean; canDisable: boolean; enabled: boolean }> };
+              noToken(listed);
+              const row = listed.value.find((source) => source.status.state === "id-holds-credential")!;
+              expect(row).toMatchObject({ id: expect.stringMatching(/^ave-legacy-[0-9a-f]{32}$/u), canRemove: true, canDisable: false, enabled: false });
+              expect(await harness.registry.readState(NAME_TOKEN)).toMatchObject({ enabled: true });
+              expect((await harness.syncer.readSnapshot(NAME_TOKEN))?.packages).toHaveLength(1);
+              expect(listed.value.find((source) => source.id === "notes")).toMatchObject({ status: { state: expect.not.stringMatching("id-holds-credential") } });
+              // Served to no one, and named back by nothing but its handle.
+              const catalog = (await invokeFileIpcHandler(handlers, channels.catalogList, {})) as { ok: true; value: { entries: Array<{ key: { sourceId: string } }> } };
+              expect(catalog.value.entries.map((entry) => entry.key.sourceId)).toEqual(["notes"]);
+              for (const answer of [
+                await invokeFileIpcHandler(handlers, channels.sourcesSetEnabled, row.id, true),
+                await invokeFileIpcHandler(handlers, channels.sourcesRefresh, row.id),
+              ]) {
+                expect(answer).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID", detail: { reason: "stored-id-holds-credential" } });
+                noToken(answer);
+                expect(sentences(answer)).toEqual({
+                  en: "This source's id looks like a password or token, so Ave does not sync it or offer its packages. Remove the source and add it again with another id.",
+                  ko: "이 소스의 ID가 비밀번호나 토큰처럼 보여 Ave가 동기화하거나 패키지를 제공하지 않습니다. 소스를 제거한 뒤 다른 ID로 다시 추가하세요.",
+                });
+              }
+              // Refreshing everything syncs the other sources and never this one (the official source's git fails here, as in every folder harness).
+              const synced = vi.spyOn(harness.syncer, "sync");
+              await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+              expect(synced.mock.calls.map(([id]) => id)).toContain("notes");
+              expect(synced.mock.calls.map(([id]) => id)).not.toContain(NAME_TOKEN);
+              // Nor by the stored id itself, were a request to carry it; refused before its state changes.
+              const statePath = join(root, "marketplaces", NAME_TOKEN, "state.json");
+              const stateBefore = readFileSync(statePath, "utf8");
+              expect(await invokeFileIpcHandler(handlers, channels.sourcesSetEnabled, NAME_TOKEN, false)).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID", detail: { reason: "stored-id-holds-credential" } });
+              expect(readFileSync(statePath, "utf8")).toBe(stateBefore);
+              // The masked id it would otherwise have shown names nothing.
+              expect(await invokeFileIpcHandler(handlers, channels.sourcesRemove, "[REDACTED:TOKEN]")).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID" });
+              expect(await invokeFileIpcHandler(handlers, channels.sourcesRemove, row.id)).toMatchObject({ ok: true });
+              const after = (await invokeFileIpcHandler(handlers, channels.sourcesList)) as { ok: true; value: Array<{ id: string }> };
+              expect(after.value.map((source) => source.id)).not.toContain(row.id);
+              expect(after.value.map((source) => source.id)).toContain("notes");
+              expect(readFileSync(list, "utf8")).not.toContain(NAME_TOKEN);
+            } finally {
+              harness.service.close();
+            }
+          } finally {
+            rmSync(root, { recursive: true, force: true });
+          }
+        });
+
+        it("refuses a pasted server.json whose name ends in one", async () => {
+          const answer = await refusal(new FakeVolume("linux"), async (harness) => {
+            await setup({ previewDirectMcp: vi.fn((request: never) => harness.service.previewDirectMcp(request)) });
+            return invokeFileIpcHandler(handlers, channels.directPreview, { serverJson: JSON.stringify({ name: `io.github.acme/${NAME_TOKEN}`, version: "1.0.0" }) });
+          });
+          expect(answer).toMatchObject({ ok: false, code: "SOURCE_INDEX_INVALID", detail: { reason: "name-reserved-prefix", prefix: "glpat-", issuer: "gitlab" } });
+          noToken(answer);
+        });
+      });
+
+      it("answers a folder preview whose path holds a token with the confirmation, the path masked in it and in both sentences", async () => {
+        const root = mkdtempSync(join(tmpdir(), "ave-ipc-folder-"));
+        const harness = await folderService({ root, folders: { fs: new FakeVolume("win32"), platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });
+        try {
+          await setup({ previewSource: vi.fn((request: never) => harness.service.previewSource(request)) });
+          // Each token alone and behind or before a name's separator, and the formats whose edges the detector once missed.
+          const mixed = "A1b2C3d4".repeat(43);
+          const appToken = `gh${"s_"}123456_eyJ${"hbGciOiJSUzI1NiJ9"}.eyJ${"pc3MiOiIxMjM0NTYifQ"}.${mixed.slice(0, 342)}`;
+          const googleDash = `AI${"za"}${mixed.slice(0, 34)}-`;
+          for (const token of [...TOKENS, appToken, googleDash]) {
+            for (const segment of [token, `backup_${token}`, `backup-${token}`, `${token}_old`]) {
+              const answer = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: `//server/share/${segment}`, auth: "none" }) as { ok: true; value: { type: string; warnings: EnteredTargetWarningView[] } };
+              expect(answer).toMatchObject({ ok: true, value: { type: "confirm", warnings: [{ warning: "network-folder", address: expect.stringContaining("[REDACTED:") }] } });
+              expect(JSON.stringify(answer), segment).not.toContain(token);
+              for (const language of ["en", "ko"] as const) {
+                expect(warningText((key, vars) => translate(language, key, vars), answer.value.warnings[0]!)).not.toContain(token);
+              }
+            }
+          }
+        } finally {
+          harness.service.close();
+          rmSync(root, { recursive: true, force: true });
+        }
+      });
+    });
+
+    it("answers a repository that is already a source with that source's id, rendered as what to do instead of another id", async () => {
+      const root = mkdtempSync(join(tmpdir(), "ave-ipc-repository-"));
+      const harness = await folderService({ root, folders: { fs: new FakeVolume("linux"), platform: "linux", limits: TEST_FOLDER_LIMITS } });
+      try {
+        await harness.registry.add({ id: "acme", origin: "custom", url: "https://github.com/acme/market", auth: { kind: "none" } });
+        // The add a held git preview makes (the preview itself fetches): the registry's refusal crosses as it is.
+        await setup({
+          addSource: vi.fn(() => harness.registry.add({ id: "acme-ssh", origin: "custom", url: "git@github.com:Acme/Market.git", auth: { kind: "ssh" } })),
+        });
+        const answer = await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: "p", id: "acme-ssh" });
+        expect(answer).toMatchObject({ ok: false, code: "SOURCE_ID_TAKEN", detail: { reason: "repository-already-added", url: "ssh://git@github.com/Acme/Market", existingId: "acme" } });
+        expect(sentences(answer)).toEqual({
+          en: "ssh://git@github.com/Acme/Market is already added as acme. Use acme, or remove it before adding this repository again.",
+          ko: "ssh://git@github.com/Acme/Market은(는) 이미 acme(으)로 추가되어 있습니다. acme을(를) 쓰거나, 지운 뒤 이 저장소를 다시 추가하세요.",
+        });
+      } finally {
+        harness.service.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("masks a token pasted as the ssh account of an address a refusal names, in the envelope and both sentences", async () => {
+      // Built here, never written out whole: normalization keeps an ssh account name, and this one is token-shaped.
+      const token = `ghp_${"a".repeat(36)}`;
+      const pasted = `ssh://${token}@github.com/acme/market`;
+      const root = mkdtempSync(join(tmpdir(), "ave-ipc-repository-"));
+      const harness = await folderService({ root, folders: { fs: new FakeVolume("linux"), platform: "linux", limits: TEST_FOLDER_LIMITS } });
+      const gate = new NetworkGate({ policy: policySource(policyLoad({ allowDirectInstall: false })), allowLoopback: false, transport: createPinnedFetch() });
+      try {
+        await harness.registry.add({ id: "acme", origin: "custom", url: "https://github.com/acme/market", auth: { kind: "none" } });
+        await setup({
+          addSource: vi.fn(() => harness.registry.add({ id: "acme-ssh", origin: "custom", url: pasted, auth: { kind: "ssh" } })),
+          previewSource: vi.fn(async () => gate.checkDirectInstall(normalizeSourceUrl(pasted).url)),
+        });
+        const duplicate = await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: "p", id: "acme-ssh" });
+        expect(duplicate).toMatchObject({ ok: false, code: "SOURCE_ID_TAKEN", detail: { reason: "repository-already-added", url: "ssh://[REDACTED:TOKEN]@github.com/acme/market", existingId: "acme" } });
+        const direct = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: pasted, auth: "ssh" });
+        expect(direct).toMatchObject({ ok: false, code: "SOURCE_POLICY_BLOCKED", detail: { reason: "direct-install-blocked", target: "ssh://[REDACTED:TOKEN]@github.com/acme/market" } });
+        for (const answer of [duplicate, direct]) {
+          expect(JSON.stringify(answer)).not.toContain(token);
+          const { en, ko } = sentences(answer);
+          // Scrubbed once, in main: the sentence shows the envelope's marker as it arrived.
+          expect(en).toContain("ssh://[REDACTED:TOKEN]@github.com/acme/market");
+          expect(ko).toContain("ssh://[REDACTED:TOKEN]@github.com/acme/market");
+          expect(`${en}\n${ko}`).not.toContain(token);
+        }
+      } finally {
+        harness.service.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("repairs through the refresh channel with the repair intent, and keeps a failed repair's code and detail", async () => {
     const detail = { reason: "repair-failed", sourceId: "ave" } as const;
     const { service } = await setup({
@@ -466,6 +911,144 @@ describe("git marketplace IPC boundary", () => {
     const answer = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "https://alice:verifier-secret@example.com/owner/repo", auth: "none" });
     expect(answer).toMatchObject({ ok: false, code: "SOURCE_URL_REJECTED", detail: { reason: "credentials-in-url" } });
     expect(JSON.stringify(parseGitMarketplaceResult(answer))).not.toContain("verifier-secret");
+  });
+
+  it("masks the whole value of an Authorization header of any scheme in a failure it answers with (§18.8)", async () => {
+    const secret = "opaque-pass-12345";
+    await setup({
+      refresh: vi.fn(async () => {
+        throw new MarketplaceError("SOURCE_UNREACHABLE", `proxy returned Authorization: Custom ${secret}`, { detail: { reason: "proxy", host: "git.example", proxy: `Proxy-Authorization: Weird ${secret}` } });
+      }),
+    });
+    const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+    expect(answer).toMatchObject({ ok: false, code: "SOURCE_UNREACHABLE", message: "proxy returned Authorization: [REDACTED:TOKEN]", detail: { reason: "proxy", proxy: "Proxy-Authorization: [REDACTED:TOKEN]" } });
+    expect(JSON.stringify(answer)).not.toContain(secret);
+  });
+
+  it.each([
+    ["an escaped NBSP", "\\u00a0"],
+    ["an escaped EM SPACE", "\\u2003"],
+    ["an escaped BOM", "\\uFEFF"],
+    ["an escaped vertical tab, two levels deep", "\\\\v"],
+  ])("masks an Authorization value with %s before its colon in a failure it answers with (§18.8)", async (_label, space) => {
+    const secret = "opaque-pass-12345";
+    await setup({
+      refresh: vi.fn(async () => {
+        throw new MarketplaceError("SOURCE_UNREACHABLE", `proxy returned Authorization${space}: Custom ${secret}`, {
+          detail: { reason: "proxy", host: "git.example", proxy: `{"Proxy-Authorization${space}":${space}"Custom ${secret}"}` },
+        });
+      }),
+    });
+    const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+    expect(answer).toMatchObject({
+      ok: false,
+      code: "SOURCE_UNREACHABLE",
+      message: `proxy returned Authorization${space}: [REDACTED:TOKEN]`,
+      detail: { reason: "proxy", proxy: `{"Proxy-Authorization${space}":${space}[REDACTED:TOKEN]` },
+    });
+    expect(JSON.stringify(answer)).not.toContain(secret);
+  });
+
+  it.each([
+    ["a space", "authorization header", '{"authorization header":'],
+    ["an escaped tab", "authorization\\tvalue", '{"authorization\\tvalue":'],
+    ["an NBSP", `authorization${String.fromCharCode(0xa0)}header`, `{"authorization${String.fromCharCode(0xa0)}header":`],
+    // An escaped separator inside the key is the first separator: the value is masked from there.
+    ["an escaped colon", "authorization\\u003aheader", '{"authorization\\u003a'],
+    ["an escaped equals sign", "authorization\\u003dheader", '{"authorization\\u003d'],
+  ])("masks the value of a quoted key with %s after the word in a failure it answers with (§18.8)", async (_label, key, masked) => {
+    const secret = "opaque-pass-12345";
+    const message = `{"${key}":"Custom ${secret}"}`;
+    expect(Object.values(JSON.parse(message))).toEqual([`Custom ${secret}`]);
+    await setup({
+      refresh: vi.fn(async () => {
+        throw new MarketplaceError("SOURCE_UNREACHABLE", message, { detail: { reason: "proxy", host: "git.example", proxy: JSON.stringify({ level: 30, msg: message }) } });
+      }),
+    });
+    const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+    expect(answer).toMatchObject({ ok: false, code: "SOURCE_UNREACHABLE", message: `${masked}[REDACTED:TOKEN]` });
+    expect(JSON.stringify(answer)).not.toContain(secret);
+  });
+
+  it.each([
+    ["an apostrophe", "client's authorization header", 0],
+    ["an apostrophe", "client's authorization header", 2],
+    ["an escaped quote", 'client "authorization header', 0],
+    ["an escaped quote", 'client "authorization header', 2],
+    ["quoted words", 'prefix "quoted" authorization header', 0],
+    ["quoted words", 'prefix "quoted" authorization header', 2],
+  ])("masks the value of a key with %s inside it, serialized %i deep, in a failure it answers with (§18.8)", async (_label, key, depth) => {
+    const secret = "opaque-pass-12345";
+    let message = JSON.stringify({ [key]: `Custom ${secret}` });
+    for (let level = 0; level < depth; level++) message = JSON.stringify({ msg: message });
+    expect(() => JSON.parse(message)).not.toThrow();
+    await setup({ refresh: vi.fn(async () => { throw new MarketplaceError("SOURCE_UNREACHABLE", message); }) });
+    const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+    expect(answer).toMatchObject({ ok: false, code: "SOURCE_UNREACHABLE" });
+    expect(JSON.stringify(answer)).not.toContain(secret);
+  });
+
+  it("masks the value of a key that holds `authorization` as a word in a failure it answers with (§18.8)", async () => {
+    const secret = "opaque-pass-12345";
+    await setup({
+      refresh: vi.fn(async () => {
+        throw new MarketplaceError("SOURCE_UNREACHABLE", `config rejected: authorization_header="Basic ${secret}"`, {
+          detail: { reason: "proxy", host: "git.example", proxy: JSON.stringify({ proxy_authorization: `Basic ${secret}`, safe: "keep" }) },
+        });
+      }),
+    });
+    const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+    expect(answer).toMatchObject({
+      ok: false,
+      code: "SOURCE_UNREACHABLE",
+      message: "config rejected: authorization_header=[REDACTED:TOKEN]",
+      detail: { reason: "proxy", proxy: '{"proxy_authorization":[REDACTED:TOKEN]' },
+    });
+    expect(JSON.stringify(answer)).not.toContain(secret);
+  });
+
+  it("masks an Authorization value whole in a failure it answers with, past a marker already in it (§18.8)", async () => {
+    const secret = "opaque-pass-12345";
+    await setup({
+      refresh: vi.fn(async () => {
+        throw new MarketplaceError("SOURCE_UNREACHABLE", `proxy said: Authorization: [REDACTED:TOKEN] ${secret}\nretry later`, {
+          detail: { reason: "proxy", host: "git.example", proxy: `Proxy-Authorization: [REDACTED:TOKEN]\r\n\t${secret}\r\nVia: proxy.example` },
+        });
+      }),
+    });
+    const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+    expect(answer).toMatchObject({
+      ok: false,
+      code: "SOURCE_UNREACHABLE",
+      message: "proxy said: Authorization: [REDACTED:TOKEN]\nretry later",
+      detail: { reason: "proxy", proxy: "Proxy-Authorization: [REDACTED:TOKEN]\r\nVia: proxy.example" },
+    });
+    expect(JSON.stringify(answer)).not.toContain(secret);
+  });
+
+  it("masks an Authorization value to its line's end in a failure it answers with, past any quote in it (§18.8)", async () => {
+    const secret = "opaque-pass-12345";
+    await setup({
+      refresh: vi.fn(async () => {
+        const body = `{"message":"Couldn't fetch: Authorization: Custom foo' ${secret}","safe":"keep"}`;
+        throw new MarketplaceError("SOURCE_UNREACHABLE", `Couldn't authenticate: Authorization: Digest username="O'Neil", response="${secret}"\nretry later\n${body}`, {
+          detail: {
+            reason: "proxy",
+            host: "git.example",
+            proxy: `Proxy-Authorization: Digest username="O'Neil",\r\n\tresponse="${secret}"\r\nVia: proxy.example`,
+          },
+        });
+      }),
+    });
+    const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+    expect(answer).toMatchObject({
+      ok: false,
+      code: "SOURCE_UNREACHABLE",
+      message: `Couldn't authenticate: Authorization: [REDACTED:TOKEN]\nretry later\n{"message":"Couldn't fetch: Authorization: [REDACTED:TOKEN]`,
+      detail: { reason: "proxy", proxy: "Proxy-Authorization: [REDACTED:TOKEN]\r\nVia: proxy.example" },
+    });
+    expect(JSON.stringify(answer)).not.toContain(secret);
+    expect(JSON.stringify(answer)).not.toContain("Neil");
   });
 
   it("scrubs credentials from every failure message it answers with", async () => {
@@ -615,7 +1198,7 @@ describe("git marketplace IPC boundary", () => {
   it("passes only known confirmations, each once, to a preview and to Allow… (§18.5)", async () => {
     const { service } = await setup();
     const invalid = { ok: false, code: "invalid-request" };
-    await expect(invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "http://x.example/m", auth: "none", acknowledge: ["network-folder"] })).resolves.toMatchObject(invalid);
+    await expect(invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "http://x.example/m", auth: "none", acknowledge: ["not-a-warning"] })).resolves.toMatchObject(invalid);
     await expect(invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "http://x.example/m", auth: "none", acknowledge: ["unencrypted", "unencrypted"] })).resolves.toMatchObject(invalid);
     await expect(invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "http://x.example/m", auth: "none", acknowledge: "unencrypted" })).resolves.toMatchObject(invalid);
     expect(service.previewSource).not.toHaveBeenCalled();

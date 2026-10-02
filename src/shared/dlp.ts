@@ -82,13 +82,14 @@ function overHttp(scheme: string): boolean {
 /** Words that make a key a credential's, matched in the lowercased key. */
 const CREDENTIAL_WORDS = [
   "token", "secret", "password", "passwd", "pwd", "apikey", "api_key", "api-key", "accesskey", "access_key", "access-key",
-  "privatekey", "private_key", "private-key", "credential", "bearer", "authorization",
+  "privatekey", "private_key", "private-key", "credential", "bearer",
 ] as const;
 
 /**
  * Whether `key` names a credential: it holds a credential word in any case
- * (`api_key`, `GH_TOKEN`, `db.password`, `X-Api-Key`), or has `auth` as a
- * whole segment (`x-auth`, `auth_header`; not `author` or `oauth`).
+ * (`api_key`, `GH_TOKEN`, `db.password`, `X-Api-Key`), or has `auth` or
+ * `pat` as a whole segment (`x-auth`, `auth_header`, `AZURE_DEVOPS_EXT_PAT`;
+ * not `author`, `oauth` or `path`).
  */
 function isCredentialKey(key: string): boolean {
   // A redaction marker another pass left in the key (`[REDACTED:CREDENTIALS]`) is never key material,
@@ -96,7 +97,9 @@ function isCredentialKey(key: string): boolean {
   const stripped = key.replace(/\[REDACTED:[A-Z_]+\]/gu, "");
   if (stripped !== key && stripped.trim() === "") return true;
   const lower = stripped.toLowerCase();
-  return CREDENTIAL_WORDS.some((word) => lower.includes(word)) || lower.split(/[^a-z0-9]/u).includes("auth");
+  const segments = lower.split(/[^a-z0-9]/u);
+  // `pat`: a personal access token (`AZURE_DEVOPS_EXT_PAT`, `pat=`), which may have no prefix of its own.
+  return CREDENTIAL_WORDS.some((word) => lower.includes(word)) || segments.includes("auth") || segments.includes("pat");
 }
 
 const JSON_ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
@@ -124,11 +127,6 @@ function decodeQuotedKey(body: string, quote: string): string | null {
     }
   }
   return decoded;
-}
-
-/** Whether `key` names an Authorization header (`Authorization`, `Proxy-Authorization`, `x-authorization`). */
-function isAuthorizationKey(key: string | null): boolean {
-  return key !== null && key.toLowerCase().includes("authorization");
 }
 
 function isKeyChar(code: number): boolean {
@@ -243,8 +241,8 @@ function redactCredentialAssignments(text: string): string {
     const key = pending[pending.length - 1];
     return key !== undefined && at < key.close ? key.close : text.length;
   };
-  /** `authorization` keys a header (`Authorization`, `Proxy-Authorization`), whose value is the rest of its line. */
-  const valueEnd = (start: number, toLineEnd: boolean, limit: number, header = false): number => {
+  // An Authorization header's value is not this scan's: {@link maskAuthorizationValues} took it whole, before.
+  const valueEnd = (start: number, toLineEnd: boolean, limit: number): number => {
     if (start >= limit) return start;
     if (text[start] === '"' || text[start] === "'") {
       const close = closingQuoteOnLine(text, start, limit);
@@ -255,14 +253,12 @@ function redactCredentialAssignments(text: string): string {
       return close === -1 ? limit : close + 2;
     }
     let end = start;
-    if (toLineEnd) while (end < limit && text[end] !== "\n" && text[end] !== "\r") end++;
-    else while (end < limit && !isWhitespace(text[end])) end++;
-    if (!toLineEnd && AUTH_SCHEMES.has(text.slice(start, end).toLowerCase())) {
-      // A header's scheme takes the whole line, every parameter included (Digest's `response=…`).
-      if (header) {
-        while (end < limit && text[end] !== "\n" && text[end] !== "\r") end++;
-        return end;
-      }
+    if (toLineEnd) {
+      while (end < limit && text[end] !== "\n" && text[end] !== "\r") end++;
+      return end;
+    }
+    while (end < limit && !isWhitespace(text[end])) end++;
+    if (AUTH_SCHEMES.has(text.slice(start, end).toLowerCase())) {
       let word = end;
       while (word < limit && isBlank(text[word])) word++;
       let wordEnd = word;
@@ -287,10 +283,11 @@ function redactCredentialAssignments(text: string): string {
     for (let first = true; ; first = false) {
       let start = at + 1;
       while (start < limit && (quoted || !first ? isJsonWhitespace(text[start]) : isBlank(text[start]))) start++;
-      REDACTION_MARKER.lastIndex = start;
-      // A value that is a marker alone was redacted already; one that goes on past a marker is not.
+      // A value that is a marker alone was redacted already; one that goes on past a marker is not. The marker
+      // may stand past separator whitespace, raw or escaped, that the header stage left before it.
+      REDACTION_MARKER.lastIndex = Math.min(skipSeparatorSpace(text, start), limit);
       if (REDACTION_MARKER.test(text) && (REDACTION_MARKER.lastIndex >= limit || isWhitespace(text[REDACTION_MARKER.lastIndex]))) return resumeAt;
-      let stop = valueEnd(start, first && text[at] === "=" && keyStart === lineFirst, limit, first && isAuthorizationKey(key));
+      let stop = valueEnd(start, first && text[at] === "=" && keyStart === lineFirst, limit);
       if (text.slice(at + 1, start).includes("\n")) {
         let lineEnd = start;
         while (lineEnd < limit && text[lineEnd] !== "\n") lineEnd++;
@@ -360,7 +357,7 @@ function redactCredentialAssignments(text: string): string {
       if (end > keyStart && isBlank(text[end]) && isCredentialKey(text.slice(keyStart, end))) {
         let start = end;
         while (start < limit && isBlank(text[start])) start++;
-        const stop = start < limit && text[start] !== "-" && !isWhitespace(text[start]) ? valueEnd(start, false, limit, isAuthorizationKey(text.slice(keyStart, end))) : start;
+        const stop = start < limit && text[start] !== "-" && !isWhitespace(text[start]) ? valueEnd(start, false, limit) : start;
         if (stop > start) i = redact(start, stop);
       }
       backslashes = 0;
@@ -385,8 +382,9 @@ function redactCredentialAssignments(text: string): string {
 
 /** Every userinfo and assignment shape {@link scrubDiagnosticSecrets} redacts; throws on an internal contract violation. */
 export function scrubDiagnosticSecretsStrict(text: string): string {
-  return scrubSecretsForLLM(redactCredentialAssignments(
-    text
+  // Authorization values first, by the stage the model-bound scrubber runs first too (§18.8).
+  return scrubCredentialShapes(redactCredentialAssignments(
+    maskAuthorizationValues(text)
       // A scheme starts after a character no scheme holds, so `a.a.a…` is read once, not from every `a`.
       .replace(/(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*)(:\/\/)([^\s/?#]*)@/gi, (match: string, scheme: string, slashes: string, userinfo: string): string =>
         userinfoHidesCredential(userinfo, scheme) ? `${scheme}${slashes}[REDACTED:CREDENTIALS]@` : match,
@@ -394,7 +392,7 @@ export function scrubDiagnosticSecretsStrict(text: string): string {
       .replace(/(^|[\s'"(<=,;])([^\s'"()<>/?#=,;]+)@(?=[A-Za-z0-9[])/gm, (match: string, before: string, userinfo: string): string =>
         userinfoHidesCredential(userinfo, undefined) ? `${before}[REDACTED:CREDENTIALS]@` : match,
       ),
-  ));
+  ), "precise");
 }
 
 /**
@@ -422,6 +420,11 @@ export function scrubDiagnosticSecrets(text: string): string {
   }
 }
 
+/** Whether a scrubber pass replaced part of `text` with a `[REDACTED:…]` marker. */
+export function hasRedaction(text: string): boolean {
+  return /\[REDACTED:[A-Z_]+\]/u.test(text);
+}
+
 /**
  * Slice-free credential scrubber shared by diagnostics bundles, log-tail IPC,
  * audit/display masking, and MCP error surfacing.
@@ -431,21 +434,351 @@ export function scrubDiagnosticSecrets(text: string): string {
  * and context-labeled cloud secrets. It stays prefix/context driven rather than
  * redacting every high-entropy blob, because diagnostics often contain commit
  * SHAs and artifact hashes.
+ *
+ * Text bound for a model keeps the broad prefix rules: there a name masked by
+ * mistake costs nothing, and a key missed costs a leak.
  */
 export function scrubSecretsForLLM(text: string): string {
-  return text
-    .replace(
-      /(authorization\s*:\s*)digest\s+[A-Za-z][A-Za-z0-9_-]*=(?:\\"[^"]*\\"|"[^"]*"|[^,\s"]+)(?:,\s*[A-Za-z][A-Za-z0-9_-]*=(?:\\"[^"]*\\"|"[^"]*"|[^,\s"]+))*/gi,
-      "$1[REDACTED:TOKEN]",
-    )
-    .replace(
-      /(authorization\s*:\s*)(?:basic|bearer|digest|negotiate|token)\s+[A-Za-z0-9._\-~+/=]+/gi,
-      "$1[REDACTED:TOKEN]",
-    )
-    .replace(
-      /(authorization\s*:\s*)(?!(?:basic|bearer|digest|negotiate|token)\s)[A-Za-z0-9._\-~+/=]+/gi,
-      "$1[REDACTED:TOKEN]",
-    )
+  return scrubCredentialShapes(maskAuthorizationValues(text), "broad");
+}
+
+/**
+ * Real credential formats, each by its issuer's prefix, alphabet and length:
+ * the one detector both scrubber modes apply, and that the marketplace's
+ * ingress uses to refuse an identifier ({@link holdsCredential}). The
+ * contract is design §18.8's table:
+ *   - A format starts at a left boundary: the start of the text, or any
+ *     character that is not an ASCII letter or digit (`_`, `-`, `.`, `/`,
+ *     `:`, `=`, a space, a quote): `backup_<token>`, `x-<token>` and
+ *     `/srv/<token>` are found. A prefix glued to a letter or digit is not
+ *     (`ta` + `sk-proj-…` is the word `task-proj-…`): an accepted residual,
+ *     since refusing ordinary names costs more than it (§18.8).
+ *   - Its body is read greedily over the format's own alphabet and counts
+ *     once it reaches the format's length, whatever follows: `<token>_backup`
+ *     and a body ending in `-` are found, and the whole run is masked.
+ *   - A bare word is no format (`test-`, `live-`, `proj-`), so names that
+ *     start like one pass. Case-sensitive: these tokens are, and a lowercased
+ *     one no longer authenticates.
+ * A credential without a prefix of its own (an Azure DevOps token, a
+ * password) is found only where it stands as one: URL userinfo, an
+ * Authorization or Bearer value, or a credential assignment
+ * (`redactCredentialAssignments`).
+ */
+const FORMAT_ROWS: ReadonlyArray<{ issuer: CredentialIssuer; prefixes: readonly string[]; pattern: RegExp }> = [
+  // GitHub classic, OAuth, user-to-server, server-to-server and refresh tokens.
+  { issuer: "github", prefixes: ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"], pattern: /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{36,}/g },
+  // GitHub App installation tokens in the stateless form `ghs_<app id>_<JWT>` (2026-04-24); the opaque
+  // form is the row above. Not GitHub's looser `ghs_[A-Za-z0-9._-]{36,}`: that also matches an ordinary
+  // name after a boundary (`/media/ghs_compilation-of-the-best-moments.mp4`).
+  { issuer: "github", prefixes: ["ghs_"], pattern: /(?<![A-Za-z0-9])ghs_[A-Za-z0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g },
+  // GitHub fine-grained personal access tokens: 22 and 59 characters around `_`.
+  { issuer: "github", prefixes: ["github_pat_"], pattern: /(?<![A-Za-z0-9])github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59,}/g },
+  // GitLab personal, deploy, runner, pipeline-trigger, CI-build and service-account tokens.
+  { issuer: "gitlab", prefixes: ["glpat-", "gldt-", "glrt-", "glptt-", "glcbt-", "glsoat-"], pattern: /(?<![A-Za-z0-9])gl(?:pat|dt|rt|ptt|cbt|soat)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*/g },
+  // npm access tokens.
+  { issuer: "npm", prefixes: ["npm_"], pattern: /(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36,}/g },
+  // Slack: bot, user, app-level and refresh tokens carry numeric workspace and user ids.
+  { issuer: "slack", prefixes: ["xoxa-", "xoxb-", "xoxp-", "xoxo-", "xoxs-", "xoxr-", "xoxe-"], pattern: /(?<![A-Za-z0-9])xox[abposre]-\d{6,}-[0-9A-Za-z-]{8,}/g },
+  { issuer: "slack", prefixes: ["xapp-"], pattern: /(?<![A-Za-z0-9])xapp-\d-[A-Z0-9]+-\d+-[A-Za-z0-9]+/g },
+  // AWS access key ids, long-term and temporary.
+  { issuer: "aws", prefixes: ["AKIA", "ASIA"], pattern: /(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16,}/g },
+  // Google API keys.
+  { issuer: "google", prefixes: ["AIza"], pattern: /(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35,}/g },
+  // The `sk-` family, specific before general (a row whose prefix extends another's comes first): Anthropic
+  // API, admin and session keys; OpenAI project, service-account and admin keys; OpenAI's legacy 48; and
+  // any key carrying OpenAI's signature, which a more specific key can also carry.
+  { issuer: "anthropic", prefixes: ["sk-ant-"], pattern: /(?<![A-Za-z0-9])sk-ant-(?:api|admin|sid|oat|ort)\d{2}-[A-Za-z0-9_-]{32,}/g },
+  { issuer: "openai", prefixes: ["sk-proj-", "sk-svcacct-", "sk-admin-"], pattern: /(?<![A-Za-z0-9])sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{40,}/g },
+  { issuer: "openai", prefixes: ["sk-"], pattern: /(?<![A-Za-z0-9])sk-[A-Za-z0-9]{48,}/g },
+  { issuer: "openai", prefixes: ["sk-"], pattern: /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]*T3BlbkFJ[A-Za-z0-9_-]*/g },
+  // Stripe secret, publishable and restricted keys.
+  { issuer: "stripe", prefixes: ["sk_live_", "sk_test_", "pk_live_", "pk_test_", "rk_live_", "rk_test_"], pattern: /(?<![A-Za-z0-9])(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}/g },
+  // JSON Web Tokens: three base64url segments (header.payload.signature), the header's `{"` as `eyJ`.
+  { issuer: "jwt", prefixes: ["eyJ"], pattern: /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g },
+];
+
+/** Each row with `lead`, the sticky alternation of its literal prefixes that names a match's prefix. */
+const CREDENTIAL_FORMATS = FORMAT_ROWS.map((row) => ({
+  ...row,
+  lead: new RegExp(row.prefixes.map((prefix) => prefix.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|"), "y"),
+}));
+
+/** The table's literal prefixes, row by row in table order: what the row-order contract is checked against (§18.8). */
+export const CREDENTIAL_FORMAT_PREFIXES: ReadonlyArray<readonly string[]> = FORMAT_ROWS.map((row) => row.prefixes);
+
+/** Whose credential a {@link CREDENTIAL_FORMATS} row's prefix looks like: the issuer a reserved prefix is named by (§18.8). */
+export const CREDENTIAL_ISSUERS = ["github", "gitlab", "npm", "slack", "aws", "google", "openai", "anthropic", "stripe", "jwt"] as const;
+export type CredentialIssuer = (typeof CREDENTIAL_ISSUERS)[number];
+
+/** Each issuer's credential in main's English messages; the renderer has its own sentences for both catalogs. */
+export const CREDENTIAL_ISSUER_NAMES: Readonly<Record<CredentialIssuer, string>> = {
+  github: "a GitHub token",
+  gitlab: "a GitLab token",
+  npm: "an npm token",
+  slack: "a Slack token",
+  aws: "an AWS access key",
+  google: "a Google API key",
+  openai: "an OpenAI API key",
+  anthropic: "an Anthropic API key",
+  stripe: "a Stripe key",
+  jwt: "a JSON Web Token",
+};
+
+/** A reserved prefix found in an identifier, and whose credential it looks like. */
+export interface ReservedPrefix {
+  prefix: string;
+  issuer: CredentialIssuer;
+}
+
+/**
+ * The reserved prefix in `text` (§18.8): the literal prefix of the earliest
+ * credential format {@link holdsCredential} finds in it — at a left boundary,
+ * with a body as long as the row's — and its issuer. Where two rows start
+ * at the same place, the earlier row names it: the table lists every row
+ * whose prefix extends another row's first (`sk-ant-` and `sk-proj-` before
+ * `sk-`), so the most specific issuer is named. An identifier that holds
+ * one is refused with this prefix named, so the user learns what to
+ * change. Null when no format is in `text`: a credential found only by
+ * where it stands (an assignment, URL userinfo) has no prefix to name.
+ */
+export function reservedPrefixIn(text: string): ReservedPrefix | null {
+  let found: (ReservedPrefix & { at: number }) | null = null;
+  for (const format of CREDENTIAL_FORMATS) {
+    format.pattern.lastIndex = 0;
+    const match = format.pattern.exec(text);
+    format.pattern.lastIndex = 0;
+    if (!match) continue;
+    format.lead.lastIndex = match.index;
+    const prefix = format.lead.exec(text)?.[0];
+    if (prefix === undefined) throw new Error(`credential format of ${format.issuer} matched without its prefix`);
+    if (found === null || match.index < found.at) {
+      found = { at: match.index, prefix, issuer: format.issuer };
+    }
+  }
+  return found === null ? null : { prefix: found.prefix, issuer: found.issuer };
+}
+
+/** Whether {@link scrubDiagnosticSecrets} would change `text`: a credential format, URL userinfo or a credential assignment. */
+export function holdsCredential(text: string): boolean {
+  return scrubDiagnosticSecrets(text) !== text;
+}
+
+/**
+ * Where an Authorization header's value starting at `start` ends (§18.8):
+ * the end of its line, or of the text, and past every folded continuation
+ * line (one that starts with a space or a tab). Never at a quote, whether
+ * one opens the value, stands around the header or stands inside it
+ * (`O'Neil`, `Couldn't`): no quote can be told from a delimiter. Masking the
+ * rest of a line costs only display; stopping early leaks the secret.
+ */
+function authorizationValueEnd(text: string, start: number): number {
+  let end = start;
+  for (;;) {
+    while (end < text.length && text[end] !== "\n" && text[end] !== "\r") end++;
+    let next = end;
+    if (text[next] === "\r") next++;
+    if (text[next] === "\n") next++;
+    if (next === end || next >= text.length || !isBlank(text[next])) return end;
+    end = next;
+  }
+}
+
+/**
+ * `name` as a pattern that also reads each character spelled as a JSON
+ * `\\uXXXX` escape, under any number of backslashes (a key in JSON carried
+ * in a JSON string, at any depth). Case-insensitive, like header names.
+ */
+function escapedNamePattern(name: string): string {
+  return [...name].map((char) => {
+    const codes = [...new Set([char.toLowerCase(), char.toUpperCase()])].map((form) => form.charCodeAt(0).toString(16).padStart(4, "0"));
+    // Letters and `-` only: each stands for itself in a pattern. An escape's backslashes are read from the
+    // first of their run only, so a long run of backslashes is scanned once, not from each of them.
+    return `(?:${char}|(?<!\\\\)\\\\+u(?:${codes.join("|")}))`;
+  }).join("");
+}
+
+/**
+ * Whitespace that may stand around a header's separator: what JS `\s`
+ * matches, which by the language's definition holds the line terminators
+ * (LF, CR, U+2028, U+2029), U+FEFF and every Unicode space separator (NBSP,
+ * EM SPACE, IDEOGRAPHIC SPACE, ...). The one predicate both a raw character
+ * and a decoded escape are classified by ({@link skipSeparatorSpace}), so no
+ * list of escaped forms can drift from it.
+ */
+function isSeparatorSpace(char: string): boolean {
+  return /^\s$/u.test(char);
+}
+
+/** The characters JSON and JS escapes spell with one letter, decoded. */
+const LETTER_ESCAPES: Readonly<Record<string, string>> = { n: "\n", r: "\r", t: "\t", f: "\f", v: "\v", b: "\b" };
+
+/**
+ * Where separator whitespace starting at `start` ends: raw whitespace and
+ * escaped whitespace at any backslash depth (`\n`, `\\\t`, `\u00a0`, `\uFEFF`),
+ * each escape decoded and classified by {@link isSeparatorSpace}. Reads
+ * forward only, so a run is scanned once.
+ */
+function skipSeparatorSpace(text: string, start: number): number {
+  let at = start;
+  while (at < text.length) {
+    if (isSeparatorSpace(text[at]!)) {
+      at++;
+      continue;
+    }
+    if (text[at] !== "\\") return at;
+    let letter = at;
+    while (text[letter] === "\\") letter++;
+    const code = text[letter];
+    let decoded: string | undefined;
+    let next = letter + 1;
+    if (code === "u" && /^[0-9A-Fa-f]{4}$/u.test(text.slice(letter + 1, letter + 5))) {
+      decoded = String.fromCharCode(Number.parseInt(text.slice(letter + 1, letter + 5), 16));
+      next = letter + 5;
+    } else if (code !== undefined) {
+      decoded = LETTER_ESCAPES[code];
+    }
+    if (decoded === undefined || !isSeparatorSpace(decoded)) return at;
+    at = next;
+  }
+  return at;
+}
+
+const isAlphanumeric = (char: string): boolean => /^[A-Za-z0-9]$/u.test(char);
+
+/**
+ * The key character at `at`, decoded when it is spelled `\uXXXX` at any
+ * backslash depth (`authorization\u005fheader`), with where the next starts.
+ * A run of backslashes that spells no `\u` escape is one character, `\`,
+ * so a long run is read once.
+ */
+function keyCharAt(text: string, at: number): { char: string; next: number } | undefined {
+  if (at >= text.length) return undefined;
+  if (text[at] !== "\\") return { char: text[at]!, next: at + 1 };
+  let letter = at;
+  while (text[letter] === "\\") letter++;
+  const hex = text.slice(letter + 1, letter + 5);
+  if (text[letter] === "u" && /^[0-9A-Fa-f]{4}$/u.test(hex)) return { char: String.fromCharCode(Number.parseInt(hex, 16)), next: letter + 5 };
+  return { char: "\\", next: letter };
+}
+
+/**
+ * The name `authorization` as a delimited word of a key (§18.8): after the
+ * start, any character but a letter or digit, or right after an escape
+ * sequence (`\nAuthorization` in a JSON string); each letter as itself or
+ * `\u`-escaped at any backslash depth, case-insensitive. So `Authorization`,
+ * `Proxy-Authorization`, `x-authorization`, `proxy_authorization` and
+ * `authorization_header` all hold it. A flag `--authorization `
+ * (`--proxy-authorization `) is the other form, its value after blanks.
+ */
+const AUTHORIZATION_NAME = new RegExp(
+  String.raw`(?<!\S)--(?:proxy-)?authorization[ \t]+` +
+    String.raw`|(?:(?<![A-Za-z0-9])|(?<=\\[nrtbfv])|(?<=\\u[0-9A-Fa-f]{4}))` +
+    escapedNamePattern("authorization"),
+  "giu",
+);
+
+/**
+ * How many reads a key's remainder may take past the name, the separator's
+ * own read included (§18.8). See {@link separatorAfterName} for what one read is.
+ */
+const KEY_WINDOW = 256;
+
+/**
+ * The key's remainder after the name, read forward to its separator
+ * (§18.8): returns where the separator ends, or undefined when the name is
+ * no header key. The word must end at the name (the next character, decoded,
+ * is no letter or digit). Every character up to the first `:` or `=`, raw or
+ * `\u`-escaped, is the key's remainder, whatever it is: a quote at any
+ * escape depth, an apostrophe, a space, other escaped punctuation. No quote
+ * is paired and no depth is tracked, so no quote inside a key can end it
+ * early.
+ *
+ * The read is bounded to {@link KEY_WINDOW} reads, the separator's included.
+ * One read is one UTF-16 code unit (a raw character outside the BMP is two,
+ * as its escaped surrogate pair is), one `\u` escape and four hex digits at
+ * any backslash depth, or one run of backslashes that spells no `\u`
+ * escape. Whitespace before a raw line break takes one read per unit; the
+ * read that meets a raw CR or LF also takes the separator whitespace after
+ * it (raw or escaped, blank lines included), so the whole run after the
+ * break is one read. Only one such break may be crossed. Past either bound
+ * the name is no header key and nothing is masked. The bound is what keeps
+ * the stage linear: each character is read by the windows of the few names
+ * that stand within a window before it.
+ */
+function separatorAfterName(text: string, nameEnd: number): number | undefined {
+  const first = keyCharAt(text, nameEnd);
+  if (first !== undefined && isAlphanumeric(first.char)) return undefined;
+  let at = nameEnd;
+  let lineBreaks = 0;
+  for (let read = 0; read < KEY_WINDOW && at < text.length; read++) {
+    if (text[at] === "\n" || text[at] === "\r") {
+      // One raw line break, with the whitespace (raw or escaped) and blank lines around it, is one crossing.
+      if (++lineBreaks > 1) return undefined;
+      at = skipSeparatorSpace(text, at);
+      continue;
+    }
+    const next = keyCharAt(text, at)!;
+    if (next.char === ":" || next.char === "=") return next.next;
+    at = next.next;
+  }
+  return undefined;
+}
+
+/**
+ * What {@link scrubSecretsForLLM} would mask in `text`, so a refusal can say
+ * why: `authorization-key` when a key holding `authorization` as a word has a
+ * value (§18.8; `authorization_url=https://…` and prose such as
+ * `authorization flow: PKCE` too, accepted over-masks), `credential` for any
+ * other credential shape, null for none.
+ */
+export function modelBoundCredentialKind(text: string): "authorization-key" | "credential" | null {
+  if (maskAuthorizationValues(text) !== text) return "authorization-key";
+  return scrubSecretsForLLM(text) !== text ? "credential" : null;
+}
+
+/**
+ * `text` with every Authorization header's value, of any scheme known or
+ * not, replaced whole by one marker: from past the separator
+ * {@link separatorAfterName} finds and the separator whitespace after it
+ * ({@link skipSeparatorSpace}) to {@link authorizationValueEnd}. A marker
+ * already in the value is not trusted (`[REDACTED:TOKEN] <secret>`, a folded
+ * line after it): the value goes with it, so a value that is one marker
+ * stays one marker.
+ *
+ * The one stage that recognizes an Authorization key or value: both
+ * {@link scrubSecretsForLLM} and {@link scrubDiagnosticSecretsStrict} run it
+ * first and run nothing else that does, so model-bound and diagnostic text
+ * mask the same span. A later pass sees only its marker.
+ */
+function maskAuthorizationValues(text: string): string {
+  let out = "";
+  let copied = 0;
+  AUTHORIZATION_NAME.lastIndex = 0;
+  for (let match = AUTHORIZATION_NAME.exec(text); match !== null; match = AUTHORIZATION_NAME.exec(text)) {
+    const nameEnd = match.index + match[0].length;
+    const flag = match[0].startsWith("--");
+    const separatorEnd = flag ? nameEnd : separatorAfterName(text, nameEnd);
+    if (separatorEnd === undefined) continue;
+    const start = flag ? nameEnd : skipSeparatorSpace(text, separatorEnd);
+    const end = authorizationValueEnd(text, start);
+    if (end === start) continue;
+    out += `${text.slice(copied, start)}[REDACTED:TOKEN]`;
+    copied = end;
+    AUTHORIZATION_NAME.lastIndex = end;
+  }
+  return out + text.slice(copied);
+}
+
+/**
+ * The credential shapes of {@link scrubSecretsForLLM} and
+ * {@link scrubDiagnosticSecrets}: authorization and token contexts, JSON Web
+ * Tokens, private-key blocks and the real formats of {@link CREDENTIAL_FORMATS}.
+ * `broad` (text bound for a model) also counts a vendor prefix alone, as it
+ * always has: there a name masked by mistake costs nothing.
+ */
+function scrubCredentialShapes(text: string, mode: "broad" | "precise"): string {
+  let out = text
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, "[REDACTED:PRIVATE_KEY]")
     .replace(
       /((?:x-api-key|x-auth-token)\s*:\s*)[A-Za-z0-9._\-~+/=]+/gi,
       "$1[REDACTED:TOKEN]",
@@ -456,7 +789,7 @@ export function scrubSecretsForLLM(text: string): string {
       "$1=[REDACTED:TOKEN]",
     )
     .replace(
-      /(["'](?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|authorization|x-api-key|x-auth-token|aws[_-]?secret[_-]?access[_-]?key)["']\s*:\s*["'])[^"']+(["'])/gi,
+      /(["'](?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|x-api-key|x-auth-token|aws[_-]?secret[_-]?access[_-]?key)["']\s*:\s*["'])[^"']+(["'])/gi,
       "$1[REDACTED:TOKEN]$2",
     )
     // JSON Web Tokens: three base64url segments separated by dots (header.payload.sig).
@@ -467,8 +800,11 @@ export function scrubSecretsForLLM(text: string): string {
       /\bAKIA[0-9A-Z]{16}([\s:=,]+)[A-Za-z0-9/+=]{40}(?=$|[^A-Za-z0-9/+=])/gi,
       "[REDACTED:TOKEN]$1[REDACTED:TOKEN]",
     )
-    .replace(/\b(AWS_SECRET_ACCESS_KEY\s*[:=]\s*["']?)[A-Za-z0-9/+=]{40}(["']?)/gi, "$1[REDACTED:TOKEN]$2")
-    // Vendor-prefixed tokens observed in diagnostics probes (#1511).
+    .replace(/\b(AWS_SECRET_ACCESS_KEY\s*[:=]\s*["']?)[A-Za-z0-9/+=]{40}(["']?)/gi, "$1[REDACTED:TOKEN]$2");
+  for (const format of CREDENTIAL_FORMATS) out = out.replace(format.pattern, "[REDACTED:TOKEN]");
+  if (mode === "precise") return out;
+  return out
+    // Vendor-prefixed tokens observed in diagnostics probes (#1511), by prefix alone.
     .replace(/\bgh[opsru]_[A-Za-z0-9_]{20,}\b/gi, "[REDACTED:TOKEN]")
     .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/gi, "[REDACTED:TOKEN]")
     .replace(/\bxox[bp]-[A-Za-z0-9-]{10,}\b/gi, "[REDACTED:TOKEN]")

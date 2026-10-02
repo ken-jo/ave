@@ -8,7 +8,7 @@ import { withResolvedPluginInstallLocks } from "../../plugins/install-lifecycle.
 import { createLogger } from "../../lib/logger.js";
 
 const log = createLogger("alert-predecessor");
-type Marketplace = Pick<GitMarketplacePort, "catalog" | "getRetirementEntry" | "uninstall" | "asOneOperation">;
+type Marketplace = Pick<GitMarketplacePort, "catalog" | "getRetirementEntry" | "uninstallInstalled" | "asOneOperation">;
 
 /** Both the displayed action and the click resolve against main-owned state. */
 export class AlertPredecessorAccess {
@@ -24,8 +24,9 @@ export class AlertPredecessorAccess {
     ]);
     const predecessor = installed.find((entry) => entry.name === pluginId);
     const successor = installed.find((entry) => entry.name === row.pluginId);
-    const catalogEntry = predecessor && catalog.entries.find((entry) => entry.key.kind === "plugin"
-      && entry.key.name === pluginId && entry.key.sourceId === predecessor.sourceId);
+    // The installed-only catalog lists each installed package once, under the id its view carries (a
+    // credential-shaped stored id goes out as a handle, §18.8), so it is matched by name, not by the stored id.
+    const catalogEntry = predecessor && catalog.entries.find((entry) => entry.key.kind === "plugin" && entry.key.name === pluginId);
     const grant = retirement?.successors.plugins.find((entry) => entry.pluginId === row.pluginId);
     const authorized = !!predecessor && !!successor && !!retirement && !!grant
       && (predecessor.sourceId === null || predecessor.sourceId === retirement.sourceId)
@@ -76,7 +77,8 @@ export class AlertPredecessorAccess {
         const resolved = await this.resolve(current, market);
         if (resolved?.state.locked) return { ok: false, error: "predecessor-policy-locked" };
         if (!resolved?.state.removable || !resolved.predecessor) return { ok: false, error: "predecessor-not-removable" };
-        const value = await market.uninstall({ kind: "plugin", name: resolved.predecessor.name, sourceId: resolved.predecessor.sourceId },
+        // The registry's record carries the stored identity: removed by it, never resolved as a view id (§18.8).
+        const value = await market.uninstallInstalled({ kind: "plugin", name: resolved.predecessor.name, sourceId: resolved.predecessor.sourceId },
           { retain: { reason: "superseded" } });
         return { ok: true, value };
       }));

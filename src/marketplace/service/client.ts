@@ -19,11 +19,11 @@
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isMissingPathError, PRIVATE_DIR_MODE, writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
-import { createLogger } from "../../lib/logger.js";
+import { createMarketplaceLogger } from "../log.js";
 import { parseStrictJson } from "../../shared/strict-json.js";
 import { parseMarketplaceAnnouncementRows, type MarketplaceAnnouncement } from "../../shared/marketplace-announcements.js";
 
-const log = createLogger("service-endpoint");
+const log = createMarketplaceLogger("service-endpoint");
 
 /** The build constant: changing it ships with an app update, which drops a move accepted under the old one. */
 export const AVE_SERVICE_BASE_URL = "https://former-site.invalid";

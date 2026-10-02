@@ -295,7 +295,7 @@ function validateRegistryEntry(
 }
 
 const ORIGIN_SOURCE_KINDS = new Set(["official", "managed", "custom", "direct"]);
-const ORIGIN_RUNGS = new Set(["release", "archive", "tree", "legacy"]);
+const ORIGIN_RUNGS = new Set(["release", "archive", "tree", "folder", "legacy"]);
 
 function validateOrigin(value: unknown, pluginId: string): void {
   if (!isRecord(value)) throw new Error(`Invalid plugin registry origin: ${pluginId}`);
@@ -304,12 +304,16 @@ function validateOrigin(value: unknown, pluginId: string): void {
     new Set(["sourceId", "sourceOrigin", "commit", "packagePath", "version", "rung", "artifactSha256", "installedAt"]),
     `origin for '${pluginId}'`,
   );
+  // A folder install's commit is its revision (§18.4.3); every other rung's is a 40-hex commit.
+  const commitOk = typeof value.commit === "string"
+    && (value.rung === "folder" ? /^local-[a-f0-9]{64}$/.test(value.commit) : /^[a-f0-9]{40}$/.test(value.commit));
+  const folderOriginOk = value.rung !== "folder" || value.sourceOrigin !== "official";
   const digestOk = value.rung === "legacy"
     ? value.artifactSha256 === null
     : typeof value.artifactSha256 === "string" && /^[a-f0-9]{64}$/.test(value.artifactSha256);
   if (typeof value.sourceId !== "string" || value.sourceId.length === 0
     || typeof value.sourceOrigin !== "string" || !ORIGIN_SOURCE_KINDS.has(value.sourceOrigin)
-    || typeof value.commit !== "string" || !/^[a-f0-9]{40}$/.test(value.commit)
+    || !commitOk || !folderOriginOk
     || typeof value.packagePath !== "string"
     || typeof value.version !== "string" || value.version.length === 0
     || typeof value.rung !== "string" || !ORIGIN_RUNGS.has(value.rung)

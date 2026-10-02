@@ -33,6 +33,7 @@ import { classifyInstall, type InstallAction } from "../resolve/identity.js";
 import { mcpRuntimeConfig, type ResolvedMcpServer } from "../resolve/mcp.js";
 import type { SourceOrigin } from "../sources/registry.js";
 import type { OriginReader } from "../sources/retained.js";
+import { isSourcePin } from "../sources/source-tree.js";
 import type { InstalledRecord, McpInstallerPort } from "./ports.js";
 
 interface McpOrigin {
@@ -97,7 +98,7 @@ function parseRecords(text: string, path: string): McpRecord[] {
       if (!isRecord(origin) || Object.keys(origin).some((key) => !ORIGIN_KEYS.has(key))
         || typeof origin.sourceId !== "string" || origin.sourceId.length === 0
         || !SOURCE_ORIGINS.has(origin.sourceOrigin as SourceOrigin)
-        || typeof origin.commit !== "string" || !/^[0-9a-f]{40}$/u.test(origin.commit)
+        || !isSourcePin(origin.commit)
         || typeof origin.packagePath !== "string"
         || (origin.from !== "descriptor" && origin.from !== "server.json")
         || (origin.filesDigest !== null && (typeof origin.filesDigest !== "string" || !/^[0-9a-f]{64}$/u.test(origin.filesDigest)))

@@ -172,6 +172,17 @@ describe("parseGitMarketplaceUri", () => {
     expect(JSON.stringify(parseGitMarketplaceUri("ave://marketplace/add?url=%2FUsers%2Fme%2Fsecret"))).not.toContain("secret");
   });
 
+  it("reads no install link whose package or source has a credential's shape, and reads names that only look alike (§18.8)", () => {
+    // Assembled here so no whole token sits in the source.
+    const token = `glp${"at-"}${"abcd1234".repeat(3)}`;
+    expect(parseGitMarketplaceUri(`ave://install/skill/${token}@corp-tools`)).toBeNull();
+    expect(parseGitMarketplaceUri(`ave://install/skill/notes@${token}`)).toBeNull();
+    expect(parseGitMarketplaceUri("ave://install/skill/test-marketplace2026@test-marketplace2026")).toEqual({
+      action: "install",
+      key: { sourceId: "test-marketplace2026", kind: "skill", name: "test-marketplace2026" },
+    });
+  });
+
   it("reads nothing from the server-era slug links it replaces (design §16.2)", () => {
     expect(parseGitMarketplaceUri("ave://install/my-plugin")).toBeNull();
     expect(parseGitMarketplaceUri("ave://install/plugin/my-plugin")).toBeNull();

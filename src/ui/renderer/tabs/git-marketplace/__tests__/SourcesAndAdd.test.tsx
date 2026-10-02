@@ -49,6 +49,24 @@ describe("SourcesView", () => {
     expect(onChanged).toHaveBeenCalled();
   });
 
+  it("explains a source whose stored id looks like a token, and offers only Remove, through the handle main gave the row (§18.8)", async () => {
+    const fake = fakeMarketplace();
+    const handle = "ave-legacy-0123456789abcdef0123456789abcdef";
+    fake.market.removeSource.mockResolvedValue({ ok: true, value: { orphanedPackages: [] } });
+    sourcesView(fake, [source({ id: handle, label: "[REDACTED:TOKEN]", canDisable: false, enabled: false, status: { state: "id-holds-credential" } })]);
+
+    const row = within(screen.getByTestId(`git-marketplace:source:${handle}`));
+    expect(row.getByText("ID가 토큰처럼 보임")).toBeInTheDocument();
+    expect(row.getByTestId(`git-marketplace:source:${handle}:status-detail`)).toHaveTextContent(
+      "이 소스의 ID가 비밀번호나 토큰처럼 보여 Ave가 동기화하거나 패키지를 제공하지 않습니다. 소스를 제거한 뒤 다른 ID로 다시 추가하세요.",
+    );
+    expect(row.getByRole("switch")).toBeDisabled();
+    expect(row.queryByRole("button", { name: "새로 고침" })).toBeNull();
+    fireEvent.click(row.getByTestId(`git-marketplace:source:${handle}:remove`));
+    fireEvent.click(await screen.findByTestId("git-marketplace:sources:confirm"));
+    await waitFor(() => expect(fake.market.removeSource).toHaveBeenCalledWith(handle));
+  });
+
   it("accepts a rewritten history only for the commit it showed", async () => {
     const fake = fakeMarketplace();
     sourcesView(fake, [source({ id: "team", status: { state: "history-rewritten", candidate: COMMIT_B, reviewable: true } })]);
@@ -220,7 +238,10 @@ const marketplacePreview: MarketplacePreviewView = {
   type: "marketplace",
   previewId: "preview-1",
   expiresAt: new Date(Date.now() + 600_000).toISOString(),
+  transport: "git",
   url: "https://github.com/example/team.git",
+  path: null,
+  resolvedFrom: null,
   badges: [],
   ref: null,
   commit: COMMIT_A,
@@ -257,6 +278,40 @@ describe("AddSourceDialog", () => {
     fireEvent.click(screen.getByTestId("git-marketplace:add:confirm"));
     await waitFor(() => expect(fake.market.addSource).toHaveBeenCalledWith({ previewId: "preview-1", id: "team-tools" }));
     expect(onAdded).toHaveBeenCalledWith(expect.objectContaining({ id: "team-tools" }), marketplacePreview);
+  });
+
+  it("names a reserved prefix under the id as it is typed, with what to do, and holds Add until the id changes (§18.8)", async () => {
+    const fake = fakeMarketplace();
+    fake.market.previewSource.mockResolvedValue({ ok: true, value: marketplacePreview });
+    fake.market.addSource.mockResolvedValue({ ok: true, value: source({ id: "team-tools" }) });
+    addDialog(fake);
+
+    const check = await screen.findByTestId("git-marketplace:add:check");
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "example/team" } });
+    await waitFor(() => expect(check).toBeEnabled());
+    fireEvent.click(check);
+    await screen.findByTestId("git-marketplace:add:preview");
+    expect(screen.queryByTestId("git-marketplace:add:id-reserved")).toBeNull();
+
+    const field = screen.getByTestId("git-marketplace:add:id");
+    fireEvent.change(field, { target: { value: "glpat-rotation-documentation-for-local-marketplaces" } });
+    expect(screen.getByTestId("git-marketplace:add:id-reserved")).toHaveTextContent(
+      "“glpat-”로 시작하거나 “-” 뒤 부분이 그것으로 시작하는 ID는 GitLab 토큰처럼 보여 예약되어 있습니다. 다른 ID를 고르세요.",
+    );
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByTestId("git-marketplace:add:confirm")).toBeDisabled();
+
+    fireEvent.change(field, { target: { value: "team-sk-proj-build-the-user-interface-for-the-marketplace" } });
+    expect(screen.getByTestId("git-marketplace:add:id-reserved")).toHaveTextContent("“sk-proj-”");
+    expect(screen.getByTestId("git-marketplace:add:id-reserved")).toHaveTextContent("OpenAI API 키");
+
+    // An ordinary id clears it: the prefix alone, or glued to a word, is not reserved.
+    fireEvent.change(field, { target: { value: "team-tools" } });
+    expect(screen.queryByTestId("git-marketplace:add:id-reserved")).toBeNull();
+    expect(field).toHaveAttribute("aria-invalid", "false");
+    fireEvent.click(screen.getByTestId("git-marketplace:add:confirm"));
+    await waitFor(() => expect(fake.market.addSource).toHaveBeenCalledWith({ previewId: "preview-1", id: "team-tools" }));
+    expect(fake.market.addSource).toHaveBeenCalledOnce();
   });
 
   it("asks for the package folder when installing from a git address", async () => {

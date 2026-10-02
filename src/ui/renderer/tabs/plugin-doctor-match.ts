@@ -49,7 +49,9 @@ export function findPluginProtocolUpdatePath(
     return { kind: "catalog", key: entry.key, version: entry.state.to, from: entry.state.from };
   }
   const source = sources.find((candidate) => candidate.id === entry.key.sourceId);
-  return source ? { kind: "repository", url: source.url, sourceLabel: source.label } : { kind: "unavailable" };
+  if (!source) return { kind: "unavailable" };
+  // A folder source is updated where it lives: its path is shown like a repository's address.
+  return { kind: "repository", url: source.transport === "git" ? source.url : source.path, sourceLabel: source.label };
 }
 
 export async function resolvePluginProtocolUpdatePath(

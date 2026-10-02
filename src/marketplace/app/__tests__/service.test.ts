@@ -4,7 +4,7 @@
  * the user previews is what is added, what a plan shows is what installs,
  * a plan is used once, and every install lands in its kind's installer.
  */
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -40,6 +40,7 @@ import { marketplaceEvents, startMarketplaceBackground, type BackgroundService }
 import { emptyUpdateHistory, type UpdateHistory } from "../../updates/history.js";
 import type { SyncProgressView } from "../../../shared/git-marketplace.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 
 
 /** The preview's id; a confirmation step here is a test failure. */
@@ -185,6 +186,7 @@ describe("MarketplaceService", () => {
       if (wait) await wait();
     };
     const syncer = new SourceSyncer({
+      folders: nodeFolders(),
       registry,
       gate,
       runner,
@@ -267,6 +269,7 @@ describe("MarketplaceService", () => {
       installers,
       ladder: { zip: artifacts, limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS, artifacts: NO_ARTIFACT_CACHE },
       mcpLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
+      folders: { ...nodeFolders(), home: root },
       english: {},
       onCatalogChanged: () => {
         emitted.catalogChanged += 1;
@@ -455,7 +458,7 @@ describe("MarketplaceService", () => {
   it("applies a default install from a managed source through the plan, once", async () => {
     const { url } = market();
     service.close();
-    await build(policyLoad({ additional: [{ id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" } }] }));
+    await build(policyLoad({ additional: [{ transport: "git", id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" } }] }));
     await service.refresh();
     const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
     const defaults = [
@@ -482,7 +485,7 @@ describe("MarketplaceService", () => {
   it("tells how far a discovery got: every source, some, or none because the computer is offline (§18.7.1)", async () => {
     const { url } = market();
     service.close();
-    await build(policyLoad({ additional: [{ id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" } }] }));
+    await build(policyLoad({ additional: [{ transport: "git", id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" } }] }));
     // corp syncs for real once, so that losing its state file later leaves it broken.
     await service.refresh("corp");
     const synced = { status: "ok" as const, pinnedCommit: "a".repeat(40), changed: false };
@@ -975,6 +978,156 @@ describe("MarketplaceService", () => {
     expect(existsSync(previews) ? readdirSync(previews) : []).toEqual([]);
   });
 
+  describe("a source an earlier build stored under a credential-shaped id (§18.8)", () => {
+    // Assembled here so no whole token sits in the source.
+    const TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
+
+    /**
+     * Rename the added `acme-tools` source, its data and (with `ledger` / `mcpRecords`) its content and server
+     * installs to TOKEN, as an earlier build stored them, and reopen. The server manager's configs survive the
+     * reopen, as a running app's would.
+     */
+    async function storeUnderToken(options: {
+      ledger?: boolean;
+      mcpRecords?: boolean;
+      state?: (state: Record<string, unknown>) => Record<string, unknown>;
+      snapshot?: (snapshot: Record<string, unknown>) => Record<string, unknown>;
+    } = {}): Promise<string> {
+      const configs = new Map(manager.configs);
+      service.close();
+      const list = join(root, "marketplaces", "sources.json");
+      writeFileSync(list, readFileSync(list, "utf8").replaceAll('"acme-tools"', JSON.stringify(TOKEN)));
+      const moved = join(root, "marketplaces", TOKEN);
+      renameSync(join(root, "marketplaces", "acme-tools"), moved);
+      for (const file of readdirSync(join(moved, "snapshots"))) {
+        const path = join(moved, "snapshots", file);
+        writeFileSync(path, readFileSync(path, "utf8").replace('"sourceId":"acme-tools"', `"sourceId":${JSON.stringify(TOKEN)}`));
+        if (options.snapshot) writeFileSync(path, JSON.stringify(options.snapshot(JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>)));
+      }
+      if (options.state) {
+        const statePath = join(moved, "state.json");
+        writeFileSync(statePath, JSON.stringify(options.state(JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>)));
+      }
+      if (options.ledger) {
+        const ledger = join(root, "packages", "ledger.json");
+        writeFileSync(ledger, readFileSync(ledger, "utf8").replaceAll('"acme-tools"', JSON.stringify(TOKEN)));
+      }
+      if (options.mcpRecords) {
+        const records = join(root, "packages", "mcp-installs.json");
+        writeFileSync(records, readFileSync(records, "utf8").replaceAll('"acme-tools"', JSON.stringify(TOKEN)));
+      }
+      await build();
+      for (const [id, config] of configs) manager.configs.set(id, config);
+      return moved;
+    }
+
+    /** Every file under `dir`, path to bytes: what a refusal must leave as it was. */
+    function filesUnder(dir: string): Record<string, string> {
+      const files: Record<string, string> = {};
+      for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        const path = join(entry.parentPath, entry.name);
+        files[path.slice(dir.length)] = readFileSync(path).toString("base64");
+      }
+      return files;
+    }
+
+    it("refuses accepting its reviewed history, by handle or by stored id, before the pin, the pending review or a snapshot moves", async () => {
+      const m = market();
+      await addMarket(m.url);
+      const first = JSON.parse(readFileSync(join(root, "marketplaces", "acme-tools", "state.json"), "utf8")).pinnedCommit as string;
+      const second = m.publish("2.0.0");
+      await service.refresh("acme-tools");
+      const moved = await storeUnderToken({ state: (state) => ({ ...state, pinnedCommit: first, pendingRewrite: { candidate: second, seenAt: AT.toISOString() } }) });
+      const handle = (await service.listSources()).find((source) => source.status.state === "id-holds-credential")!.id;
+      const before = filesUnder(moved);
+      for (const id of [handle, TOKEN]) {
+        await expect(service.acceptRewrite(id, second)).rejects.toMatchObject({ code: "SOURCE_ID_INVALID", detail: { reason: "stored-id-holds-credential" } });
+        expect(filesUnder(moved), id).toEqual(before);
+      }
+      const state = JSON.parse(readFileSync(join(moved, "state.json"), "utf8"));
+      expect(state).toMatchObject({ pinnedCommit: first, pendingRewrite: { candidate: second } });
+    });
+
+    it.each(["disable", "uninstall"] as const)("enforces a %s revocation its cached snapshot carries on a server installed from it", async (action) => {
+      const { scrubMarketplaceStrings } = await import("../../errors.js");
+      const m = market();
+      await addMarket(m.url);
+      await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).planId);
+      expect(manager.configs.has("notes")).toBe(true);
+      const records = join(root, "packages", "mcp-installs.json");
+      await storeUnderToken({
+        mcpRecords: true,
+        snapshot: (snapshot) => ({ ...snapshot, revocations: [{ kind: "mcp", name: "notes", versions: "=2.0.0", reason: "unsafe server", at: AT.toISOString(), action }] }),
+      });
+      expect(readFileSync(records, "utf8")).toContain(JSON.stringify(TOKEN));
+      expect(manager.configs.has("notes")).toBe(true);
+      expect((await service.listSources()).some((source) => source.status.state === "id-holds-credential")).toBe(true);
+
+      await service.enforceRevocations();
+
+      // A server has no gate, so either action removes it: the install the stored id names, not a view's handle.
+      expect(manager.configs.has("notes")).toBe(false);
+      expect(readFileSync(records, "utf8")).not.toContain('"notes"');
+      const notice = service.takeRevocationNotice();
+      // The notice is a view: it carries the handle, before any scrubbing, and names nothing left to remove.
+      expect(notice?.revoked).toEqual([{ key: { sourceId: expect.stringMatching(/^ave-legacy-[0-9a-f]{32}$/u), kind: "mcp", name: "notes" }, version: "2.0.0", reason: "unsafe server", outcome: "uninstalled" }]);
+      expect(JSON.stringify(notice)).not.toContain(TOKEN);
+      expect(scrubMarketplaceStrings(notice)).toEqual(notice);
+      await expect(service.uninstall({ ...notice!.revoked[0]!.key, removeData: false })).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+    });
+
+    it("refuses an update plan for a package installed from it, by handle or by stored id, for the declared reason and before reading what is installed", async () => {
+      const m = market();
+      await addMarket(m.url);
+      await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" })).planId);
+      await storeUnderToken({ ledger: true });
+      const handle = (await service.catalog({ installedOnly: true })).entries.find((entry) => entry.key.name === "review")!.key.sourceId!;
+      expect(handle).toMatch(/^ave-legacy-[0-9a-f]{32}$/u);
+      const lists = vi.spyOn(pluginPort, "list");
+      for (const sourceId of [handle, TOKEN]) {
+        await expect(service.planUpdate({ sourceId, kind: "skill", name: "review" })).rejects.toMatchObject({
+          code: "SOURCE_ID_INVALID",
+          detail: { reason: "stored-id-holds-credential" },
+        });
+      }
+      expect(lists).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["while its source is listed", false],
+      ["after its source is removed", true],
+    ])("lets a skill installed from it be uninstalled through the key its row carries, %s", async (_label, removeFirst) => {
+      const { scrubMarketplaceStrings } = await import("../../errors.js");
+      const m = market();
+      await addMarket(m.url);
+      const plan = await service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" });
+      await service.executeInstall(plan.planId);
+      expect(store.list()).toHaveLength(1);
+      const moved = await storeUnderToken({ ledger: true });
+      expect(store.list()[0]!.origin.sourceId).toBe(TOKEN);
+      if (removeFirst) {
+        const row = (await service.listSources()).find((source) => source.status.state === "id-holds-credential")!;
+        await expect(service.removeSource(row.id)).resolves.toMatchObject({ orphanedPackages: [{ sourceId: row.id, kind: "skill", name: "review" }] });
+        expect(existsSync(moved)).toBe(false);
+        expect(store.list()).toHaveLength(1);
+      }
+      // The answer carries no stored id before any scrubbing: its key and its label are the handle.
+      const raw = await service.catalog({ installedOnly: true });
+      expect(JSON.stringify(raw)).not.toContain(TOKEN);
+      // What the renderer holds: the answer as it crosses, scrubbed.
+      const answer = scrubMarketplaceStrings(raw);
+      const entry = answer.entries.find((item) => item.key.name === "review")!;
+      expect(entry.key.sourceId).toMatch(/^ave-legacy-[0-9a-f]{32}$/u);
+      expect(JSON.stringify(answer)).not.toContain(TOKEN);
+      // A masked id names nothing; the handle names the installed record.
+      await expect(service.uninstall({ sourceId: "[REDACTED:TOKEN]", kind: "skill", name: "review" })).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+      expect(store.list()).toHaveLength(1);
+      await expect(service.uninstall({ ...entry.key, sourceId: entry.key.sourceId! })).resolves.toMatchObject({ key: entry.key });
+      expect(store.list()).toHaveLength(0);
+    });
+  });
+
   it("removes a source and lists what it installed as source-removed", async () => {
     const { url } = market();
     await addMarket(url);
@@ -1200,7 +1353,7 @@ describe("MarketplaceService", () => {
     it("runs the update check a sync's snapshot starts as its own operation, though it starts before that sync ends and outlives it", async () => {
       const { url, publish } = market();
       service.close();
-      const corp = { id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" as const } };
+      const corp = { transport: "git" as const, id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" as const } };
       const policy = policySource(policyLoad({ additional: [corp] }));
       await build(policy);
       await service.refresh();

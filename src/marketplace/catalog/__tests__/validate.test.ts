@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { parseStrictJson } from "../strict-json.js";
 import {
+  credentialRefusal,
   validateDescriptorText,
   validateIndexText,
   validateRevocationsText,
 } from "../validate.js";
 import { parseVersionRange, rangeIncludes } from "../version-range.js";
+import { deriveAgentPluginComponents } from "../../content/agent-plugin-components.js";
+import { createHash } from "node:crypto";
+import { holdsCredential, scrubDiagnosticSecrets } from "../../../shared/dlp.js";
+import { isSourceId } from "../../sources/official.js";
 
 const COMMIT = "a".repeat(40);
 const SHA = "b".repeat(64);
@@ -334,6 +339,127 @@ describe("validateIndexText", () => {
     if (!result.ok) return;
     expect(result.value.index.packages.map((entry) => entry.name)).toEqual(["valid-package"]);
     expect(result.value.diagnostics).toHaveLength(1);
+  });
+});
+
+describe("identifiers with a credential's shape (§18.8)", () => {
+  const context = { sourceId: "acme", official: false };
+  // Assembled here so no whole token sits in the source: one fits a package name, one an MCP server's key.
+  const NAME_TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
+  const KEY_TOKEN = `gh${"p_"}${"A1b2C3d4".repeat(5).slice(0, 36)}`;
+  const components = (server: string) => deriveAgentPluginComponents([
+    { path: "plugin.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer", version: "1.0.0", description: "Writes" })) },
+    { path: "mcp.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: { [server]: { type: "stdio", command: "./server/editor", args: [] } } })) },
+    { path: "server/editor", data: Buffer.from("#!/bin/sh\n") },
+  ]);
+
+  it.each([
+    ["a name", { kind: "skill", name: NAME_TOKEN, path: "skills/a" }, "packages[0]", "its name uses the reserved prefix glpat-, which looks like a GitLab token; choose a different one"],
+    ["a version", { kind: "skill", name: "notes", path: "skills/a", latest: `1.0.0-${NAME_TOKEN}`, versions: [version(`1.0.0-${NAME_TOKEN}`)] }, "skill/notes", "a version uses the reserved prefix glpat-, which looks like a GitLab token; choose a different one"],
+    ["an MCP server's name", { kind: "agent-plugin", name: "writer", path: "agent-plugins/writer", versions: [version("1.0.0", { components: components(KEY_TOKEN) })] }, "agent-plugin/writer", "a component name uses the reserved prefix ghp_, which looks like a GitHub token; choose a different one"],
+  ])("drops an index entry whose %s has one, named without it, and keeps the rest", (_label, bad, subject, message) => {
+    const result = validateIndexText(index([bad, { kind: "skill", name: "good-skill", path: "skills/good" }]), context);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.index.packages.map((entry) => entry.name)).toEqual(["good-skill"]);
+    expect(result.value.diagnostics).toEqual([{ subject, message }]);
+  });
+
+  it("names an entry by its position when its name has one, whatever else is wrong with it", () => {
+    const result = validateIndexText(index([{ kind: "skill", name: NAME_TOKEN, path: "skills/a", unknown: true }]), context);
+    expect(result.ok && result.value.diagnostics.map((item) => item.subject)).toEqual(["packages[0]"]);
+  });
+
+  it.each([
+    ["a name", descriptor("skill", { name: NAME_TOKEN }), { reason: "name-reserved-prefix", prefix: "glpat-", issuer: "gitlab" }],
+    ["a version", descriptor("skill", { version: `1.0.0-${NAME_TOKEN}` }), { reason: "version-reserved-prefix", prefix: "glpat-", issuer: "gitlab" }],
+    ["an MCP server's name", descriptor("agent-plugin", { payload: { manifest: "plugin.json", components: components(KEY_TOKEN) } }), { reason: "component-reserved-prefix", prefix: "ghp_", issuer: "github" }],
+  ])("refuses a descriptor whose %s has one, naming its reserved prefix", (_label, value, credential) => {
+    expect(checkDescriptor(value)).toMatchObject({ ok: false, credential });
+  });
+
+  it("refuses a shape with no prefix to name as a credential's shape", () => {
+    expect(credentialRefusal("component", "password=hunter2")).toEqual({ detail: { reason: "component-holds-credential" }, message: "a component name looks like a password or token" });
+    expect(credentialRefusal("version", `1.0.0+${NAME_TOKEN}`)).toMatchObject({ detail: { reason: "version-reserved-prefix", prefix: "glpat-", issuer: "gitlab" } });
+  });
+
+  it("keeps identifiers that only look like a credential's prefix", () => {
+    const alike = ["test-marketplace2026", "live-notifications2026", "sk-proj-tools", "npm-audit-helper", "glpat-rotation-docs"];
+    const result = validateIndexText(index([
+      ...alike.map((name) => ({ kind: "skill", name, path: `skills/${name}` })),
+      { kind: "agent-plugin", name: "writer", path: "agent-plugins/writer", versions: [version("1.0.0-test-marketplace2026", { components: components("test_marketplace2026") })] },
+    ]), context);
+    expect(result).toMatchObject({ ok: true, value: { diagnostics: [] } });
+    for (const name of alike) expect(checkDescriptor(descriptor("skill", { name })).ok, name).toBe(true);
+    expect(checkDescriptor(descriptor("agent-plugin", { version: "1.0.0-test-marketplace2026", payload: { manifest: "plugin.json", components: components("test_marketplace2026") } })).ok).toBe(true);
+  });
+});
+
+describe("one detector for admission and egress (§18.8)", () => {
+  const context = { sourceId: "acme", official: false };
+  // A task id from a digest of ordinary content, not a token renamed: SHA-224 hex after `task-`.
+  const taskDigest = `task-${createHash("sha224").update("ordinary task inputs").digest("hex")}`;
+  const base32Digest = "al62ny3xigdbyafl7irut3jbxlrld5chtn2dxghblz6hml2otyqq";
+  /** Ordinary names an id or package may have. */
+  const ORDINARY_IDS = [
+    "test-marketplace2026", "test-integration123", "live-notifications2026", "live-captions", "npm-audit-helper",
+    "glpat-rotation-docs", "sk-proj-tools", "sk-learn-utils", "akiak-production", "task-sk-learn-utils",
+    "task-prepare-marketplace-folder-source-diagnostics", "task-proj-build-the-user-interface-for-the-marketplace", taskDigest,
+  ];
+  /** Ordinary values that are not ids: names with other characters, commits, digests, build metadata. */
+  const ORDINARY_VALUES = [
+    "npm_scripts", "AKIA-example-not-a-token", "laughs_compilation-of-the-best-moments.mp4",
+    "0123456789abcdef0123456789abcdef01234567", "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    `1.0.0+${base32Digest}`, `1.0.0+${taskDigest}`,
+  ];
+
+  it.each([...ORDINARY_IDS, ...ORDINARY_VALUES])("passes %s through egress unchanged", (value) => {
+    expect(holdsCredential(value)).toBe(false);
+    expect(scrubDiagnosticSecrets(value)).toBe(value);
+  });
+
+  it.each(ORDINARY_IDS)("admits %s as a source id, a package name and an index entry, so egress leaves what admission took", (id) => {
+    expect(isSourceId(id)).toBe(true);
+    expect(checkDescriptor(descriptor("skill", { name: id }))).toMatchObject({ ok: true });
+    expect(checkDescriptor(descriptor("skill", { version: `1.0.0+${id}` }))).toMatchObject({ ok: true });
+    const result = validateIndexText(index([{ kind: "skill", name: id, path: "skills/x" }]), context);
+    expect(result).toMatchObject({ ok: true, value: { diagnostics: [] } });
+    expect(result.ok && result.value.index.packages.map((entry) => entry.name)).toEqual([id]);
+  });
+
+  // Assembled here so no whole token sits in the source: one fits an id's grammar, one does not.
+  const ID_TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
+  const MIXED_TOKEN = `gh${"p_"}${"A1b2C3d4".repeat(5).slice(0, 36)}`;
+  const BOUNDARIES = ["", "x_", "x-", "x.", "x/", "x:", "x=", "x ", 'x"', "x'"];
+
+  it.each(BOUNDARIES)("refuses and masks a credential shape after %j", (before) => {
+    for (const token of [ID_TOKEN, MIXED_TOKEN]) {
+      const text = `${before}${token}`;
+      expect(holdsCredential(text), text).toBe(true);
+      expect(scrubDiagnosticSecrets(text)).not.toContain(token);
+    }
+    // Where the result is an id's grammar, admission refuses it.
+    const id = `${before}${ID_TOKEN}`;
+    if (/^[a-z0-9-]+$/u.test(id)) {
+      expect(isSourceId(id)).toBe(false);
+      expect(checkDescriptor(descriptor("skill", { name: id }))).toMatchObject({ ok: false, credential: { reason: "name-reserved-prefix", prefix: "glpat-", issuer: "gitlab" } });
+    }
+  });
+
+  it.each([
+    ["glpat-rotation-documentation-for-local-marketplaces", "glpat-", "gitlab"],
+    ["docs-glpat-rotation-documentation-for-local-marketplaces", "glpat-", "gitlab"],
+    ["sk-proj-build-the-user-interface-for-the-marketplace", "sk-proj-", "openai"],
+    [`sk-${createHash("sha224").update("ordinary task inputs").digest("hex")}`, "sk-", "openai"],
+  ])("reserves %s: an ordinary name under a reserved prefix is refused, naming the prefix (§18.8)", (id, prefix, issuer) => {
+    expect(isSourceId(id)).toBe(false);
+    expect(checkDescriptor(descriptor("skill", { name: id }))).toMatchObject({ ok: false, credential: { reason: "name-reserved-prefix", prefix, issuer } });
+    expect(checkDescriptor(descriptor("skill", { version: `1.0.0+${id}` }))).toMatchObject({ ok: false, credential: { reason: "version-reserved-prefix", prefix, issuer } });
+  });
+
+  it("leaves a prefix glued to a letter or digit to the documented residual", () => {
+    // `ta` + `sk-proj-…` is the word `task-proj-…`: refusing such names would refuse ordinary ones (§18.8).
+    expect(holdsCredential(`backup${MIXED_TOKEN}`)).toBe(false);
   });
 });
 

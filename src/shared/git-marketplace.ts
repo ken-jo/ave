@@ -57,14 +57,28 @@ export type SourceStatusView =
    * Its downloaded copy (state or snapshot) cannot be used: the row offers
    * Repair (§18.8). `message` is main's scrubbed English, for Copy details.
    */
-  | { state: "broken"; message: string; detail?: MarketplaceErrorDetail<"SOURCE_LOCAL_DATA_DAMAGED"> };
+  | { state: "broken"; message: string; detail?: MarketplaceErrorDetail<"SOURCE_LOCAL_DATA_DAMAGED"> }
+  /**
+   * Its stored id has a credential's shape (§18.8): an earlier build added
+   * it before ids were checked. It is neither synced nor served; the row's
+   * `id` is a handle main issued, and Remove is its only action.
+   */
+  | { state: "id-holds-credential" };
 
-export interface SourceView {
+/**
+ * A source as the Sources view lists it: a git repository at its normalized
+ * address, or a local folder at its canonical path, read in place (§18.4).
+ */
+export type SourceView = SourceViewFields & (
+  | { transport: "git"; url: string; path: null }
+  | { transport: "folder"; url: null; path: string }
+);
+
+interface SourceViewFields {
   id: string;
   origin: SourceOriginKind;
   /** The user's label, else the marketplace's display name, else the id. */
   label: string;
-  url: string;
   ref: string | null;
   /** Direct sources: the package path inside the repository. */
   subdir: string | null;
@@ -89,7 +103,11 @@ export interface SourceView {
 }
 
 export interface SourcePreviewRequest {
-  /** `owner/repo`, an https or ssh URL, or `git@host:path`. */
+  /**
+   * `owner/repo`, an https or ssh URL, or `git@host:path`; or a folder: an
+   * absolute, `~`, drive or UNC path, or a `file:` URL (§18.4.1). A folder
+   * takes no `ref`, `subdir`, `token` or sign-in.
+   */
   input: string;
   ref?: string;
   /** Direct install from a git folder (design §8.1). */
@@ -115,10 +133,16 @@ export interface MarketplacePreviewView {
   type: "marketplace";
   previewId: string;
   expiresAt: string;
-  url: string;
+  transport: "git" | "folder";
+  url: string | null;
+  /** A folder's canonical path (§18.4.1 stage 4). */
+  path: string | null;
+  /** What was typed, when the canonical path differs from it ("resolved from …"). */
+  resolvedFrom: string | null;
   /** What the source will show once added (§18.5 step 4): plain http and each class confirmed. */
   badges: SourceBadge[];
   ref: string | null;
+  /** The commit read, or a folder's revision `local-<sha256>` (§18.4.3). */
   commit: string;
   marketplace: { name: string; displayName: string; description: string | null; owner: string | null };
   counts: Partial<Record<PackageKind, number>>;
@@ -135,7 +159,10 @@ interface DirectPackagePreviewView {
   type: "package";
   previewId: string;
   expiresAt: string;
-  url: string;
+  transport: "git" | "folder";
+  url: string | null;
+  path: string | null;
+  resolvedFrom: string | null;
   /** What the source will show once added (§18.5 step 4): plain http and each class confirmed. */
   badges: SourceBadge[];
   ref: string | null;
@@ -147,7 +174,7 @@ interface DirectPackagePreviewView {
   displayName: string | null;
   description: string | null;
   version: string;
-  /** `0.0.0+g<commit12>`: the file declares no version (design §8.2). */
+  /** `0.0.0+g<commit12>` (git) or `0.0.0+t<digest12>` (folder): the file declares no version (design §8.2, §18.4.7). */
   versionSynthesized: boolean;
   runsCode: boolean;
   credentialHelper: boolean;
@@ -240,7 +267,8 @@ export interface AuthorityView {
   filesystem: Array<{ access: "read" | "write"; target: string; why: string }>;
 }
 
-type RungKindView = "release" | "archive" | "tree";
+/** `folder`: a folder source's one rung, its built tree read in place (§18.4.2). */
+type RungKindView = "release" | "archive" | "tree" | "folder";
 
 export interface RungView {
   rung: RungKindView;
@@ -272,7 +300,10 @@ export interface PackageDetailView {
   entry: CatalogEntryView;
   provenance: {
     sourceLabel: string;
-    repository: string;
+    /** The git source's address, or null for a folder. */
+    repository: string | null;
+    /** The folder source's path, or null for a git source. */
+    folder: string | null;
     path: string;
     snapshotCommit: string;
     versionCommit: string | null;
@@ -312,6 +343,8 @@ export interface InstallPlanView {
   hookConfinement: "sandboxed" | "user-permissions" | "unavailable";
   rungs: RungView[];
   mcp: McpRuntimeView | null;
+  /** A folder package's top-level entries that are not installed (`src/`, `package.json`, §18.4.2); empty for git. */
+  notInstalled: string[];
 }
 
 export interface UpdatePlanView extends InstallPlanView {

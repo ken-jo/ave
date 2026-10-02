@@ -15,11 +15,12 @@ export * from "./public-contract.js";
 export type PluginRegistryEntryInstallSource = "admin" | "user" | "local-dev";
 
 /**
- * Where a git install came from (design §2.3). `commit` is the snapshot
- * commit the plan was bound to, so the source keeps that snapshot while the
- * install references it. Only a git install writes this; every other install
- * path removes it, because it would otherwise describe bytes it did not
- * install.
+ * Where a git or folder install came from (design §2.3, §18.4.2). `commit`
+ * is the snapshot commit the plan was bound to — a folder source's revision
+ * `local-<sha256>` (§18.4.3) — so the source keeps that snapshot while the
+ * install references it. Only a marketplace install writes this; every other
+ * install path removes it, because it would otherwise describe bytes it did
+ * not install.
  */
 export interface PluginRegistryEntryOrigin {
   sourceId: string;
@@ -27,9 +28,9 @@ export interface PluginRegistryEntryOrigin {
   commit: string;
   packagePath: string;
   version: string;
-  /** `legacy`: bound by the §16.3 migration, no digest yet. */
-  rung: "release" | "archive" | "tree" | "legacy";
-  /** Zip sha256 (release, archive), tree digest (tree), null for legacy. */
+  /** `legacy`: bound by the §16.3 migration, no digest yet. `folder`: a folder source's one rung. */
+  rung: "release" | "archive" | "tree" | "folder" | "legacy";
+  /** Zip sha256 (release, archive), tree digest (tree, folder), null for legacy. */
   artifactSha256: string | null;
   installedAt: string;
 }

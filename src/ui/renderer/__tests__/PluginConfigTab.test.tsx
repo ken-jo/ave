@@ -577,7 +577,7 @@ describe("PluginConfigTab", () => {
   it("shows the installed source repository when no compatible catalog version exists", async () => {
     bind("meeting");
     market.listSources.mockResolvedValue({ ok: true, value: [{
-      id: "ave", label: "Plugin source", url: "https://example.invalid/plugins/meeting",
+      id: "ave", label: "Plugin source", transport: "git", url: "https://example.invalid/plugins/meeting", path: null,
     }] });
     Object.defineProperty(window, "ave", {
       value: {

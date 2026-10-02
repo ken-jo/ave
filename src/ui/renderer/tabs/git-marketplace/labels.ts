@@ -4,8 +4,8 @@
  */
 import type { TranslateFn as Translate } from "../../../../i18n/translate.js";
 import type { ClaudeDesktopImportFailure } from "../../../../mcp/claude-desktop-import.js";
-import { scrubDiagnosticSecrets } from "../../../../shared/dlp.js";
 import { packageVocabularyKind } from "../../../../shared/marketplace-package-sections.js";
+import { hasRedaction, type CredentialIssuer, type ReservedPrefix } from "../../../../shared/dlp.js";
 import {
   parseMarketplaceErrorDetail,
   type GitMarketplaceFailure,
@@ -42,6 +42,33 @@ export function kindLabel(t: Translate, kind: PackageKind): string {
     case "provider": return t("gitMarketplace.kind.provider");
     case "messaging-connection": return t("gitMarketplace.kind.messaging");
   }
+}
+
+/** Whose credential a reserved prefix looks like (§18.8), as a sentence names it. */
+function credentialIssuerLabel(t: Translate, issuer: CredentialIssuer): string {
+  switch (issuer) {
+    case "github": return t("gitMarketplace.credentialIssuer.github");
+    case "gitlab": return t("gitMarketplace.credentialIssuer.gitlab");
+    case "npm": return t("gitMarketplace.credentialIssuer.npm");
+    case "slack": return t("gitMarketplace.credentialIssuer.slack");
+    case "aws": return t("gitMarketplace.credentialIssuer.aws");
+    case "google": return t("gitMarketplace.credentialIssuer.google");
+    case "openai": return t("gitMarketplace.credentialIssuer.openai");
+    case "anthropic": return t("gitMarketplace.credentialIssuer.anthropic");
+    case "stripe": return t("gitMarketplace.credentialIssuer.stripe");
+    case "jwt": return t("gitMarketplace.credentialIssuer.jwt");
+  }
+  return unhandled(issuer);
+}
+
+/**
+ * The sentence for a source id that uses a reserved prefix (§18.8): it names
+ * the prefix and what it looks like, and asks for another id. Shown under the
+ * Add dialog's id field as it is typed, and for `SOURCE_ID_INVALID`
+ * `reserved-prefix`.
+ */
+export function reservedIdText(t: Translate, reserved: ReservedPrefix): string {
+  return t("gitMarketplace.error.idInvalid.reservedPrefix", { prefix: reserved.prefix, issuer: credentialIssuerLabel(t, reserved.issuer) });
 }
 
 export function originLabel(t: Translate, origin: SourceOriginKind): string {
@@ -98,6 +125,7 @@ export function sourceStatusLabel(t: Translate, status: SourceStatusView): strin
     case "history-rewritten":
       return status.reviewable ? t("gitMarketplace.sources.status.rewrittenReview") : t("gitMarketplace.sources.status.rewrittenKept");
     case "broken": return t("gitMarketplace.sources.status.broken");
+    case "id-holds-credential": return t("gitMarketplace.sources.status.idHoldsCredential");
   }
 }
 
@@ -125,6 +153,12 @@ function failedSyncLabel(t: Translate, code: Extract<SourceStatusView, { state: 
     case "SOURCE_CONFIRMATION_REQUIRED": return t("gitMarketplace.sources.status.confirmationRequired");
     case "SOURCE_URL_REJECTED": return t("gitMarketplace.sources.status.addressRefused");
     case "SOURCE_LOCAL_DATA_DAMAGED": return t("gitMarketplace.sources.status.broken");
+    case "SOURCE_LOCAL_UNREADABLE": {
+      const reason = parseMarketplaceErrorDetail(code, detail)?.reason;
+      if (reason === "not-found") return t("gitMarketplace.sources.status.folderNotFound");
+      if (reason === "moved") return t("gitMarketplace.sources.status.folderMoved");
+      return t("gitMarketplace.sources.status.folderUnreadable");
+    }
     case "GIT_RUNTIME_MISSING":
     case "GIT_RUNTIME_TOO_OLD":
     case "GIT_RUNTIME_INSTALL_FAILED":
@@ -163,6 +197,8 @@ export function sourceStatusDetail(t: Translate, source: SourceView): string | n
     case "auth-required": return failureText(t, { code: "SOURCE_AUTH_REQUIRED", message: "", ...(status.detail ? { detail: status.detail } : {}) }, subject);
     // The sentence names the Repair the row offers.
     case "broken": return failureText(t, { code: "SOURCE_LOCAL_DATA_DAMAGED", message: "", ...(status.detail ? { detail: status.detail } : {}) }, subject);
+    // The sentence names the Remove the row offers.
+    case "id-holds-credential": return failureText(t, { code: "SOURCE_ID_INVALID", message: "", detail: { reason: "stored-id-holds-credential" } }, subject);
     case "up-to-date":
     case "syncing":
     case "never-synced":
@@ -232,11 +268,15 @@ function knownHostName(host: string, port: number): string {
   return port === 22 ? bare : `[${bare}]:${port}`;
 }
 
-/** The command a failure asks the user to run, for *Copy command*; null when it asks for none. */
+/**
+ * The command a failure asks the user to run, for *Copy command*; null when
+ * it asks for none, or when main masked part of the host (it held a token's
+ * shape), since a command naming a masked host would not run (§18.8).
+ */
 export function failureCommand(failure: GitMarketplaceFailure): string | null {
   if (failure.code !== "SOURCE_SSH_HOST_UNKNOWN") return null;
   const detail = parseMarketplaceErrorDetail(failure.code, failure.detail);
-  return detail ? hostKeyCommand(detail) : null;
+  return detail && !hasRedaction(detail.host) ? hostKeyCommand(detail) : null;
 }
 
 function hostKeyCommand(detail: MarketplaceErrorDetail<"SOURCE_SSH_HOST_UNKNOWN">): string {
@@ -385,6 +425,15 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
             : t("gitMarketplace.error.urlRejected.addressUnroutable.network", { host: detail.host, address: detail.address });
         case "catalog-this-computer":
           return t("gitMarketplace.error.urlRejected.catalogThisComputer", { source: sourceName(t, subject, detail.source), host: detail.host });
+        // The folder forms Ave cannot read (§18.3, §18.4.1 stage 1): each says what to enter instead.
+        case "relative-path": return t("gitMarketplace.error.urlRejected.relativePath");
+        case "device-path": return t("gitMarketplace.error.urlRejected.devicePath");
+        case "windows-path": return t("gitMarketplace.error.urlRejected.windowsPath");
+        case "network-file-url": return t("gitMarketplace.error.urlRejected.networkFileUrl");
+        case "unc-without-share": return t("gitMarketplace.error.urlRejected.uncWithoutShare");
+        case "unc-credentials": return t("gitMarketplace.error.urlRejected.uncCredentials");
+        case "outside-root": return t("gitMarketplace.error.urlRejected.outsideRoot");
+        case "folder-options": return t("gitMarketplace.error.urlRejected.folderOptions");
       }
       return unhandled(detail);
     }
@@ -397,7 +446,9 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
         case "https-required": return t("gitMarketplace.policy.httpsRequired", { target: detail.target, policyPath: detail.policyPath });
         case "private-network-blocked":
           return t("gitMarketplace.policy.privateNetworkBlocked", { target: detail.target, address: detail.address, policyPath: detail.policyPath });
-        case "policy-invalid": return t("gitMarketplace.policy.policyInvalid", { error: scrubDiagnosticSecrets(detail.error) });
+        case "local-sources-blocked": return t("gitMarketplace.policy.localSourcesBlocked", { target: detail.target, policyPath: detail.policyPath });
+        case "direct-install-blocked": return t("gitMarketplace.policy.directInstallBlocked", { target: detail.target, policyPath: detail.policyPath });
+        case "policy-invalid": return t("gitMarketplace.policy.policyInvalid", { error: detail.error });
       }
       return unhandled(detail);
     }
@@ -412,16 +463,46 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
           return warningText(t, { warning: detail.reason, host: detail.host, address: "address" in detail ? detail.address : null });
         case "internal-downloads":
           return t("gitMarketplace.warning.internalDownloads", { source: sourceName(t, subject, detail.source), host: detail.host });
+        case "network-folder":
+          return warningText(t, { warning: "network-folder", host: detail.server === "" ? null : detail.server, address: detail.path });
       }
       return unhandled(detail);
     }
     case "SOURCE_NAME_RESERVED": return t("gitMarketplace.error.nameReserved");
-    case "SOURCE_ID_INVALID": return t("gitMarketplace.error.idInvalid");
-    case "SOURCE_ID_TAKEN": return t("gitMarketplace.error.idTaken");
+    case "SOURCE_ID_INVALID": {
+      const detail = parseMarketplaceErrorDetail(code, failure.detail);
+      if (!detail) return t("gitMarketplace.error.idInvalid");
+      switch (detail.reason) {
+        case "reserved-prefix": return reservedIdText(t, detail);
+        case "holds-credential": return t("gitMarketplace.error.idInvalid.holdsCredential");
+        case "stored-id-holds-credential": return t("gitMarketplace.error.idInvalid.storedIdHoldsCredential");
+      }
+      return unhandled(detail);
+    }
+    case "SOURCE_ID_TAKEN": {
+      const detail = parseMarketplaceErrorDetail(code, failure.detail);
+      if (!detail) return t("gitMarketplace.error.idTaken");
+      switch (detail.reason) {
+        case "repository-already-added": return t("gitMarketplace.error.idTaken.repositoryAlreadyAdded", { url: detail.url, id: detail.existingId });
+        case "folder-already-added": return t("gitMarketplace.error.idTaken.folderAlreadyAdded", { path: detail.path, id: detail.existingId });
+        case "folder-inside-source":
+          return t("gitMarketplace.error.idTaken.folderInsideSource", { path: detail.path, id: detail.existingId, existingPath: detail.existingPath });
+        case "folder-contains-source":
+          return t("gitMarketplace.error.idTaken.folderContainsSource", { path: detail.path, id: detail.existingId, existingPath: detail.existingPath });
+      }
+      return unhandled(detail);
+    }
     case "SOURCE_AUTH_REQUIRED": return authRequiredText(t, parseMarketplaceErrorDetail(code, failure.detail), subject);
     case "SOURCE_SSH_HOST_UNKNOWN": {
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
       if (!detail) return t("gitMarketplace.error.sshHostUnknown");
+      if (hasRedaction(detail.host)) {
+        switch (detail.reason) {
+          case "unknown": return t("gitMarketplace.error.sshHostUnknown.unknown.masked", { host: detail.host });
+          case "changed": return t("gitMarketplace.error.sshHostUnknown.changed.masked", { host: detail.host });
+        }
+        return unhandled(detail);
+      }
       const command = hostKeyCommand(detail);
       switch (detail.reason) {
         case "unknown": return t("gitMarketplace.error.sshHostUnknown.unknown", { host: detail.host, command });
@@ -439,7 +520,20 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
         case "owned": return t("gitMarketplace.error.notAMarketplace.owned");
       }
       return unhandled(audience);
-    case "SOURCE_INDEX_INVALID": return t("gitMarketplace.error.indexInvalid");
+    case "SOURCE_INDEX_INVALID": {
+      const detail = parseMarketplaceErrorDetail(code, failure.detail);
+      if (!detail) return t("gitMarketplace.error.indexInvalid");
+      // An identifier the renderer could only see masked (§18.8): the package is not offered.
+      switch (detail.reason) {
+        case "name-reserved-prefix": return t("gitMarketplace.error.indexInvalid.nameReservedPrefix", { prefix: detail.prefix, issuer: credentialIssuerLabel(t, detail.issuer) });
+        case "version-reserved-prefix": return t("gitMarketplace.error.indexInvalid.versionReservedPrefix", { prefix: detail.prefix, issuer: credentialIssuerLabel(t, detail.issuer) });
+        case "component-reserved-prefix": return t("gitMarketplace.error.indexInvalid.componentReservedPrefix", { prefix: detail.prefix, issuer: credentialIssuerLabel(t, detail.issuer) });
+        case "name-holds-credential": return t("gitMarketplace.error.indexInvalid.nameHoldsCredential");
+        case "version-holds-credential": return t("gitMarketplace.error.indexInvalid.versionHoldsCredential");
+        case "component-holds-credential": return t("gitMarketplace.error.indexInvalid.componentHoldsCredential");
+      }
+      return unhandled(detail);
+    }
     case "SOURCE_HISTORY_REWRITTEN": return t("gitMarketplace.error.historyRewritten");
     case "SOURCE_DISABLED": return t("gitMarketplace.error.sourceDisabled");
     case "SOURCE_LOCAL_DATA_DAMAGED": {
@@ -458,6 +552,33 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
         case "repair-failed": return t("gitMarketplace.error.localDataDamaged.repairFailed", { source });
         case "repair-failed-unpinned": return t("gitMarketplace.error.localDataDamaged.repairFailedUnpinned", { source });
         case "repair-write-failed": return t("gitMarketplace.error.localDataDamaged.repairWriteFailed", { source });
+      }
+      return unhandled(detail);
+    }
+    case "SOURCE_LOCAL_UNREADABLE": {
+      const detail = parseMarketplaceErrorDetail(code, failure.detail);
+      if (!detail) return t("gitMarketplace.error.localUnreadable");
+      switch (detail.reason) {
+        // Only who added the folder can remove it and add another; an organization's folder is the administrator's.
+        case "not-found":
+          switch (audience) {
+            case "entry": return t("gitMarketplace.error.localUnreadable.notFound.entry", { path: detail.path });
+            case "custom": return t("gitMarketplace.error.localUnreadable.notFound", { path: detail.path });
+            case "managed":
+            case "owned":
+              return t("gitMarketplace.error.localUnreadable.notFound.managed", { path: detail.path });
+          }
+          return unhandled(audience);
+        case "permission": return t("gitMarketplace.error.localUnreadable.permission", { path: detail.path, message: detail.message });
+        case "io": return t("gitMarketplace.error.localUnreadable.io", { path: detail.path, message: detail.message });
+        case "moved":
+          return audience === "entry" || audience === "custom"
+            ? t("gitMarketplace.error.localUnreadable.moved", { path: detail.path, target: detail.target })
+            : t("gitMarketplace.error.localUnreadable.moved.managed", { path: detail.path, target: detail.target });
+        case "not-a-directory": return t("gitMarketplace.error.localUnreadable.notADirectory", { path: detail.path });
+        case "ambiguous-case": return t("gitMarketplace.error.localUnreadable.ambiguousCase", { path: detail.path });
+        case "changed-during-read": return t("gitMarketplace.error.localUnreadable.changedDuringRead", { path: detail.path });
+        case "classifier-unavailable": return t("gitMarketplace.error.localUnreadable.classifierUnavailable", { path: detail.path });
       }
       return unhandled(detail);
     }
@@ -499,8 +620,27 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
     case "MANIFEST_MISMATCH": return t("gitMarketplace.error.manifestMismatch");
     case "process-entry-unconfined": return t("formatIpcError.processEntryUnconfined");
     case "process-entry-requires-pinned-artifact": return t("formatIpcError.processEntryRequiresPinnedArtifact");
-    case "NO_INSTALLABLE_ARTIFACT": return t("gitMarketplace.error.noArtifact");
-    case "CONTENT_RULE_VIOLATION": return t("gitMarketplace.error.contentRule");
+    case "NO_INSTALLABLE_ARTIFACT": {
+      const detail = parseMarketplaceErrorDetail(code, failure.detail);
+      if (!detail) return t("gitMarketplace.error.noArtifact");
+      switch (detail.reason) {
+        case "folder-has-no-build": return t("gitMarketplace.error.noArtifact.folderHasNoBuild", { name: detail.name });
+      }
+      return unhandled(detail.reason);
+    }
+    case "CONTENT_RULE_VIOLATION": {
+      const detail = parseMarketplaceErrorDetail(code, failure.detail);
+      if (!detail) return t("gitMarketplace.error.contentRule");
+      switch (detail.reason) {
+        case "link-outside-folder": return t("gitMarketplace.error.contentRule.linkOutsideFolder", { path: detail.path, target: detail.target });
+        case "link-to-network": return t("gitMarketplace.error.contentRule.linkToNetwork", { path: detail.path, target: detail.target });
+        case "link-to-skipped": return t("gitMarketplace.error.contentRule.linkToSkipped", { path: detail.path, target: detail.target });
+        case "special-file": return t("gitMarketplace.error.contentRule.specialFile", { path: detail.path });
+        case "case-collision": return t("gitMarketplace.error.contentRule.caseCollision", { path: detail.path });
+        case "limit": return t("gitMarketplace.error.contentRule.limit", { path: detail.path, limit: detail.limit });
+      }
+      return unhandled(detail);
+    }
     case "invalid-request": return t("gitMarketplace.error.invalidRequest");
     case "unauthorized-frame": return t("gitMarketplace.error.unauthorizedFrame");
     case "unavailable": return t("gitMarketplace.error.unavailable");
@@ -703,8 +843,23 @@ export function warningText(t: Translate, view: EnteredTargetWarningView): strin
         ? t("gitMarketplace.warning.internalNetwork.proxyRange", { host, address })
         : t("gitMarketplace.warning.internalNetwork", { host, address });
     case "this-computer": return t("gitMarketplace.warning.thisComputer", { host, address });
+    case "network-folder": return networkFolderText(t, view.host, address);
   }
   return unhandled(view.warning);
+}
+
+/**
+ * `network-folder` (§18.4.6): a Windows share or mapped drive is read
+ * signed in as the user, to the server the path or the drive's mapping names
+ * (or an unnamed server when the mapping names none); an automount path on
+ * macOS or Linux is read from the server it names.
+ */
+function networkFolderText(t: Translate, server: string | null, path: string): string {
+  const windows = path.startsWith("\\") || /^[A-Za-z]:/u.test(path);
+  if (!windows) return t("gitMarketplace.warning.networkFolder.automount", { server: server ?? "", path });
+  return server === null || server === ""
+    ? t("gitMarketplace.warning.networkFolder.unknownServer", { path })
+    : t("gitMarketplace.warning.networkFolder", { server, path });
 }
 
 /** A source badge's text (§18.5). */
@@ -757,8 +912,9 @@ function unhandled(value: never): never {
   throw new Error(`no sentence for ${JSON.stringify(value)}`);
 }
 
+/** The first seven hex digits of a commit, or of a folder's revision without its `local-` prefix (§18.4.3). */
 export function shortSha(commit: string): string {
-  return commit.slice(0, 7);
+  return commit.replace(/^local-/u, "").slice(0, 7);
 }
 
 /** `62 MB`, `1.1 MB`, `640 KB`. */

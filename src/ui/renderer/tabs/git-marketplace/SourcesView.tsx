@@ -105,7 +105,7 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
 
   /** Set token…: an http source sends no sign-in until the user accepts that it travels unencrypted (§18.2.2). */
   const openToken = (source: SourceView) => {
-    if (source.url.startsWith("http://") && !source.acknowledged.includes("token-unencrypted")) {
+    if (source.url?.startsWith("http://") && !source.acknowledged.includes("token-unencrypted")) {
       setConfirm({ kind: "allow", source, warning: "token-unencrypted", text: warningText(t, { warning: "token-unencrypted", host: source.tokenHost, address: null }), then: "token" });
       return;
     }
@@ -187,7 +187,7 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
           <tbody>
             {sources.map((source) => {
               const status = source.status;
-              const warn = status.state === "unreachable" || status.state === "auth-required" || status.state === "history-rewritten" || status.state === "broken";
+              const warn = status.state === "unreachable" || status.state === "auth-required" || status.state === "history-rewritten" || status.state === "broken" || status.state === "id-holds-credential";
               const statusDetail = sourceStatusDetail(t, source);
               const allowable = statusAllowable(source);
               return (
@@ -206,7 +206,7 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
                       <SourceBadges badges={source.badges} testId={`git-marketplace:source:${source.id}:badge`} />
                     </div>
                     <div className="break-all font-mono text-[11px] text-muted-foreground">
-                      {source.url}
+                      {source.transport === "git" ? source.url : source.path}
                       {source.subdir ? ` · ${source.subdir}` : ""}
                       {source.mirrors > 0 ? ` · ${t("gitMarketplace.sources.mirrors", { count: source.mirrors })}` : ""}
                     </div>
@@ -271,7 +271,7 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
                         >
                           {busy === source.id ? t("gitMarketplace.sources.status.repairing") : t("gitMarketplace.sources.repair")}
                         </Button>
-                      ) : (
+                      ) : status.state === "id-holds-credential" ? null : (
                         <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={busy !== null} onClick={() => void run(source.id, () => api.refreshSources(source.id))}>
                           {busy === source.id ? t("gitMarketplace.sources.status.syncing") : t("gitMarketplace.sources.refresh")}
                         </Button>

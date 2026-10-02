@@ -24,13 +24,17 @@ function changingPolicy() {
   return source;
 }
 
-function harness() {
+/**
+ * `sourceId` is the stored id both plugins are installed from; `viewId` is the id the catalog's view
+ * carries for it — the same id, or the handle a credential-shaped one goes out as (§18.8).
+ */
+function harness(sourceId = "trusted", viewId = sourceId) {
   const installed = [
-    { kind: "plugin", name: "retired-plugin", version: "1.0.0", sourceId: "trusted", originCommit: null },
-    { kind: "plugin", name: "successor", version: "2.0.0", sourceId: "trusted", originCommit: null },
+    { kind: "plugin", name: "retired-plugin", version: "1.0.0", sourceId, originCommit: null },
+    { kind: "plugin", name: "successor", version: "2.0.0", sourceId, originCommit: null },
   ];
   const row = { kindKey: "successor:reply", pluginId: "successor", blockedByPredecessor: "retired-plugin",
-    declaration: { inherits: [{ pluginId: "retired-plugin", sourceId: "trusted" }] } };
+    declaration: { inherits: [{ pluginId: "retired-plugin", sourceId }] } };
   const successors = { plugins: [{ pluginId: "successor", anySource: false }], hostKinds: [] };
   const uninstall = vi.fn(async () => {
     expect(isPluginInstallLockHeld("successor")).toBe(true);
@@ -39,7 +43,7 @@ function harness() {
   });
   const policy = changingPolicy();
   const market = new MarketplaceService({
-    registry: { list: () => [{ id: "trusted" }] },
+    registry: { list: () => [{ id: sourceId }] },
     syncer: { readSnapshot: async () => ({ revocations: [], conditionalRevocations: [
       { kind: "plugin", name: "retired-plugin", versions: "*", appVersions: "0.12.0", action: "uninstall", successors },
     ] }), readRevocations: async () => [] },
@@ -49,13 +53,13 @@ function harness() {
     revocations: { apply: async () => {} }, log: { warn: () => {} },
   } as never);
   const listKinds = vi.fn(async () => [structuredClone(row)]);
-  const catalog = vi.fn(async () => ({ entries: [{ key: { kind: "plugin", name: "retired-plugin", sourceId: "trusted" }, required: false }] }));
+  const catalog = vi.fn(async () => ({ entries: [{ key: { kind: "plugin", name: "retired-plugin", sourceId: viewId }, required: false }] }));
   const access = new AlertPredecessorAccess({
     alertsService: { listKinds }, pluginMarketplace: { listInstalledPackages: async () => structuredClone(installed) },
     pluginRuntime: { getPluginManifest: () => null, listPluginIds: () => [],
       resolvePluginId: (id: string) => id === "successor" ? "successor-alias" : id,
       resolvePluginInstallIdIfKnown: (id: string) => id },
-  } as never, async () => ({ catalog, getRetirementEntry: market.getRetirementEntry.bind(market), uninstall: market.uninstall.bind(market),
+  } as never, async () => ({ catalog, getRetirementEntry: market.getRetirementEntry.bind(market), uninstallInstalled: market.uninstallInstalled.bind(market),
     asOneOperation: market.asOneOperation.bind(market) }) as never);
   return { access, installed, successors, row, uninstall, listKinds, catalog, market, policy };
 }
@@ -73,6 +77,16 @@ describe("predecessor removal authority at the lifecycle boundary", () => {
       reason: "superseded", sourceId: "trusted", successors: h.successors,
     });
     else expect(h.uninstall).not.toHaveBeenCalled();
+  });
+
+  it("removes a predecessor installed from a credential-shaped source id by its stored identity (§18.8)", async () => {
+    // Built at run time, so no whole token sits in the source.
+    const stored = `glp${"at-"}${"abcd1234".repeat(3)}`;
+    const h = harness(stored, "ave-legacy-0123456789abcdef0123456789abcdef");
+    const [presented] = await h.access.present([structuredClone(h.row)] as never);
+    expect((presented as { predecessor: unknown }).predecessor).toMatchObject({ removable: true, locked: false });
+    expect(await h.access.remove(h.row.kindKey)).toMatchObject({ ok: true });
+    expect(h.uninstall).toHaveBeenCalledExactlyOnceWith("retired-plugin", { reason: "superseded", sourceId: stored, successors: h.successors });
   });
 
   it("holds both bindings and aliases across asynchronous checks through the real uninstall", async () => {

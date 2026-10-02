@@ -56,6 +56,36 @@ describe("git runtime IPC boundary", () => {
     await expect(invokeFileIpcHandler(handlers, CHANNELS.gitRuntime.status)).resolves.toEqual({ ok: true, status: STATUS });
   });
 
+  it("scrubs the status and install answers and a failed step's progress, as every marketplace string (§18.8)", async () => {
+    // A real token shape, assembled here so no whole token sits in the source.
+    const token = `gh${"p_"}${"A1b2C3d4".repeat(5).slice(0, 36)}`;
+    const service = await setup();
+    const leaky: GitRuntimeStatus = {
+      ...STATUS,
+      active: { kind: "system", version: "2.45.0", path: `/opt/${token}/bin/git` },
+      lastInstallError: { code: "SOURCE_UNREACHABLE", message: `proxy failed via https://user:${token}@proxy.example/` },
+    };
+    service.status.mockResolvedValue(leaky);
+    service.install.mockResolvedValue(leaky as never);
+    for (const answer of [
+      await invokeFileIpcHandler(handlers, CHANNELS.gitRuntime.status),
+      await invokeFileIpcHandler(handlers, CHANNELS.gitRuntime.install, { intent }),
+    ]) {
+      expect(answer).toMatchObject({ ok: true, status: { active: { path: "/opt/[REDACTED:TOKEN]/bin/git" } } });
+      expect(JSON.stringify(answer)).not.toContain(token);
+    }
+
+    const { getMarketplaceLifetime } = await import("../../../main/app-state.js");
+    const { gitRuntimeProgressSender } = await import("../git-runtime.js");
+    const send = vi.fn();
+    const window = { isDestroyed: () => false, webContents: { send } };
+    gitRuntimeProgressSender({ getMainWindow: () => window, getAppWindows: () => [window] } as never, getMarketplaceLifetime().signal)(
+      { phase: "failed", code: "SOURCE_UNREACHABLE", message: `proxy failed via https://user:${token}@proxy.example/` },
+    );
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(send.mock.calls)).not.toContain(token);
+  });
+
   it("refuses plugin frames on both channels", async () => {
     const service = await setup();
     for (const channel of [CHANNELS.gitRuntime.status, CHANNELS.gitRuntime.install]) {

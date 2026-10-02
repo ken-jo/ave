@@ -37,8 +37,9 @@ import {
   type AddressPolicy,
 } from "../../core/network-guard.js";
 import { ConfirmationRequiredError, MarketplaceError, isMarketplaceError, type EnteredTargetWarningView } from "../errors.js";
-import { policyBlock, type MarketplacePolicy, type PolicySource } from "../sources/policy.js";
+import { folderPolicyBlock, policyBlock, type MarketplacePolicy, type PolicySource } from "../sources/policy.js";
 import type { SourceWarning } from "../sources/warnings.js";
+import type { FolderNetwork } from "./source-input.js";
 import { normalizeDownloadPath, normalizeSourceHost, type NormalizedSourceUrl, type PatternTarget } from "./source-url.js";
 
 export interface NetworkGateOptions {
@@ -108,9 +109,10 @@ const RANK: Record<Exclude<AddressClass, "public">, number> = {
 function hostListedBy(policy: MarketplacePolicy): Set<string> {
   const hosts = new Set(policy.allowHttpHosts);
   for (const pattern of policy.allow ?? []) {
+    if (pattern.kind === "path") continue;
     hosts.add(pattern.kind === "exact" ? pattern.url.host : pattern.host);
   }
-  for (const spec of policy.additional) hosts.add(spec.url.host);
+  for (const spec of policy.additional) if (spec.transport === "git") hosts.add(spec.url.host);
   return hosts;
 }
 
@@ -276,6 +278,62 @@ export class NetworkGate {
   /** Step 2 alone for the policy view of `url`: an add re-checks the policy it was previewed under (§18.6). */
   checkSourcePolicy(url: NormalizedSourceUrl, subject: GateSubject): void {
     this.checkPolicy(url, subject, "repository");
+  }
+
+  /**
+   * A folder's policy (§18.4.1 stage 3, §18.6): `allowLocalSources`, then
+   * the `path:` patterns of `block` and `allow`. Applied to the lexical path
+   * before anything touches it, and to the canonical path after stage 4. An
+   * unreadable policy blocks every folder: the official source is never one.
+   */
+  checkFolderPolicy(path: string): void {
+    const load = this.options.policy.load;
+    if (!load.ok) {
+      throw new MarketplaceError("SOURCE_POLICY_BLOCKED", `the managed marketplace policy is invalid: ${load.error}`, {
+        detail: { reason: "policy-invalid", error: load.error },
+      });
+    }
+    const block = folderPolicyBlock(load.policy, path);
+    if (!block) return;
+    const message = block.reason === "local-sources-blocked" ? `managed policy allows no folder sources: ${path}` : `blocked by managed policy: ${path}`;
+    throw new MarketplaceError("SOURCE_POLICY_BLOCKED", message, {
+      detail: block.reason === "blocked-by-pattern"
+        ? { reason: block.reason, target: path, pattern: block.pattern, policyPath: this.policyPath }
+        : { reason: block.reason, target: path, policyPath: this.policyPath },
+    });
+  }
+
+  /**
+   * Stage 3 for a folder (§18.4.1): policy, then consent. A folder on
+   * another computer needs `network-folder`, which a managed folder holds
+   * through its policy entry; without it this throws
+   * SOURCE_CONFIRMATION_REQUIRED and nothing has touched the path.
+   */
+  checkFolder(path: string, network: FolderNetwork, acknowledged: ReadonlySet<SourceWarning>): void {
+    this.checkFolderPolicy(path);
+    if (network.network && !acknowledged.has("network-folder")) {
+      throw new ConfirmationRequiredError(`${path} is a folder on another computer; the source needs the network-folder confirmation`, [
+        { warning: "network-folder", host: network.server, address: path },
+      ]);
+    }
+  }
+
+  /**
+   * `allowDirectInstall: false` (§12): packages install from marketplaces
+   * only, so no direct source is previewed, added or installed from. Folder
+   * or git alike; an unreadable policy blocks it too.
+   */
+  checkDirectInstall(target: string): void {
+    const load = this.options.policy.load;
+    if (!load.ok) {
+      throw new MarketplaceError("SOURCE_POLICY_BLOCKED", `the managed marketplace policy is invalid: ${load.error}`, {
+        detail: { reason: "policy-invalid", error: load.error },
+      });
+    }
+    if (load.policy.allowDirectInstall) return;
+    throw new MarketplaceError("SOURCE_POLICY_BLOCKED", `managed policy allows installs from marketplaces only: ${target}`, {
+      detail: { reason: "direct-install-blocked", target, policyPath: this.policyPath },
+    });
   }
 
   /**

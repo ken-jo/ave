@@ -26,6 +26,8 @@ import { ContentLedger, contentLedgerOrigins, type LedgerEntry } from "../ledger
 import { ContentStore, stageContentPackage, type ContentActivation } from "../store.js";
 import { deriveAgentPluginComponents } from "../agent-plugin-components.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
+import { gitAccess } from "../../sources/source-tree.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
@@ -100,7 +102,7 @@ describe("content package store", () => {
     const marketplaces = mkdtempSync(join(root, "marketplaces-"));
     const registry = await SourceRegistry.open({ root: marketplaces, policy });
     await registry.add({ id: sourceId, origin: "custom", url: server.url(repoName), auth: { kind: "none" } });
-    const syncer = new SourceSyncer({ registry, gate, runner: git.runner, root: marketplaces, now: () => new Date(AT), retainedCommits: async () => new Set() });
+    const syncer = new SourceSyncer({ registry, gate, runner: git.runner, root: marketplaces, now: () => new Date(AT), retainedCommits: async () => new Set(), folders: nodeFolders() });
     return syncer;
   }
 
@@ -114,7 +116,7 @@ describe("content package store", () => {
   async function stage(syncer: SourceSyncer, row: CatalogRow, sourceId = "acme") {
     const plan = planPackage(row, candidateVersion(row));
     return syncer.withRepository(sourceId, ({ repo, remote }) =>
-      stageContentPackage(plan, { repo, remote, direct: false }, { workRoot: join(root, "work"), english: ENGLISH }));
+      stageContentPackage(plan, gitAccess(repo, remote, false), { workRoot: join(root, "work"), english: ENGLISH }));
   }
 
   const openStore = () => ContentStore.open({ root: join(root, "packages"), english: ENGLISH, activation, now: () => new Date(AT) });

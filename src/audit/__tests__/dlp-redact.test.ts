@@ -13,7 +13,7 @@ import {
   redactHomePathsInText,
   scrubSecretsForLLM,
 } from "../dlp-filter.js";
-import { scrubDiagnosticSecrets, scrubDiagnosticSecretsStrict } from "../../shared/dlp.js";
+import { CREDENTIAL_FORMAT_PREFIXES, holdsCredential, reservedPrefixIn, scrubDiagnosticSecrets, scrubDiagnosticSecretsStrict, type CredentialIssuer } from "../../shared/dlp.js";
 import { fixtureSecret } from "./secret-fixtures.js";
 import { breakDiagnosticScrubberOn, DIAGNOSTIC_KEPT, DIAGNOSTIC_SECRET_PROBES } from "../../shared/__tests__/fixtures/diagnostic-secret-probes.js";
 
@@ -84,6 +84,213 @@ describe("redactForLLM", () => {
   });
 });
 
+describe("scrubDiagnosticSecrets — real credential formats, not prefixes (design §18.8)", () => {
+  // Real token lengths and charsets, assembled here so no whole token sits in the source.
+  const mixed = (length: number) => "A1b2C3d4E5f6G7h8".repeat(Math.ceil(length / 16)).slice(0, length);
+  const TOKENS: ReadonlyArray<readonly [string, string]> = [
+    ["GitHub classic", fixtureSecret("gh", "p_", mixed(36))],
+    ["GitHub OAuth", fixtureSecret("gh", "o_", mixed(36))],
+    ["GitHub user-to-server", fixtureSecret("gh", "u_", mixed(36))],
+    ["GitHub server-to-server", fixtureSecret("gh", "s_", mixed(36))],
+    ["GitHub refresh", fixtureSecret("gh", "r_", mixed(36))],
+    ["GitHub App installation (stateless)", fixtureSecret("gh", "s_", "123456_", "eyJ", "hbGciOiJSUzI1NiJ9", ".", "eyJpc3MiOiIxMjM0NTYifQ", ".", mixed(342))],
+    ["GitHub fine-grained", fixtureSecret("github", "_pat_", mixed(22), "_", mixed(59))],
+    ["GitLab personal", fixtureSecret("gl", "pat-", mixed(20))],
+    ["GitLab deploy", fixtureSecret("gl", "dt-", mixed(20))],
+    ["npm", fixtureSecret("np", "m_", mixed(36))],
+    ["Slack bot", fixtureSecret("xo", "xb-", "123456789012-123456789012-", mixed(24))],
+    ["Slack user", fixtureSecret("xo", "xp-", "123456789012-123456789012-123456789012-", mixed(32))],
+    ["Slack app", fixtureSecret("xa", "pp-", "1-A0123ABC-1234567890123-", mixed(32))],
+    ["AWS key id", fixtureSecret("AK", "IA", "IOSFODNN7EXAMPL3")],
+    ["AWS temporary key id", fixtureSecret("AS", "IA", "IOSFODNN7EXAMPL3")],
+    ["Google API key", fixtureSecret("AI", "za", mixed(35))],
+    ["Google API key ending in -", fixtureSecret("AI", "za", mixed(34), "-")],
+    ["OpenAI", fixtureSecret("sk", "-", mixed(48))],
+    ["OpenAI project", fixtureSecret("sk", "-proj-", mixed(64), "_", mixed(40))],
+    ["OpenAI signed", fixtureSecret("sk", "-", mixed(20), "T3Blbk", "FJ", mixed(20))],
+    ["Anthropic", fixtureSecret("sk", "-ant-api03-", mixed(93), "AA")],
+    ["Stripe secret", fixtureSecret("sk", "_live_", mixed(24))],
+    ["Stripe restricted", fixtureSecret("rk", "_test_", mixed(24))],
+  ];
+
+  /** The reserved prefix each format's token is refused with, and the issuer named (§18.8). */
+  const RESERVED: Readonly<Record<string, readonly [string, CredentialIssuer]>> = {
+    "GitHub classic": ["ghp_", "github"], "GitHub OAuth": ["gho_", "github"], "GitHub user-to-server": ["ghu_", "github"],
+    "GitHub server-to-server": ["ghs_", "github"], "GitHub refresh": ["ghr_", "github"], "GitHub App installation (stateless)": ["ghs_", "github"],
+    "GitHub fine-grained": ["github_pat_", "github"], "GitLab personal": ["glpat-", "gitlab"], "GitLab deploy": ["gldt-", "gitlab"],
+    npm: ["npm_", "npm"], "Slack bot": ["xoxb-", "slack"], "Slack user": ["xoxp-", "slack"], "Slack app": ["xapp-", "slack"],
+    "AWS key id": ["AKIA", "aws"], "AWS temporary key id": ["ASIA", "aws"], "Google API key": ["AIza", "google"], "Google API key ending in -": ["AIza", "google"],
+    OpenAI: ["sk-", "openai"], "OpenAI project": ["sk-proj-", "openai"], "OpenAI signed": ["sk-", "openai"], Anthropic: ["sk-ant-", "anthropic"],
+    "Stripe secret": ["sk_live_", "stripe"], "Stripe restricted": ["rk_test_", "stripe"],
+  };
+
+  it.each(TOKENS)("names the reserved prefix of a %s token, alone or after a word", (kind, token) => {
+    const [prefix, issuer] = RESERVED[kind]!;
+    expect(token.startsWith(prefix)).toBe(true);
+    for (const text of [token, `docs-${token}`, `1.0.0+${token}`]) expect(reservedPrefixIn(text), text).toEqual({ prefix, issuer });
+  });
+
+  it("lists every row whose prefix extends another row's before that row, across the whole table", () => {
+    const rows = CREDENTIAL_FORMAT_PREFIXES;
+    expect(rows.length).toBeGreaterThan(10);
+    for (let general = 0; general < rows.length; general++) {
+      for (let specific = general + 1; specific < rows.length; specific++) {
+        for (const short of rows[general]!) {
+          for (const long of rows[specific]!) {
+            expect(long !== short && long.startsWith(short), `${long} (row ${specific}) extends ${short} (row ${general}) but comes after it`).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
+  it("names the more specific issuer where a key also carries a general row's shape", () => {
+    // `sk-ant-api03-` with a 32-character body holding OpenAI's signature: both rows match at the same place.
+    const overlap = fixtureSecret("sk", "-ant-api03-", "a".repeat(12), "T3Blbk", "FJ", "b".repeat(12));
+    expect(reservedPrefixIn(overlap)).toEqual({ prefix: "sk-ant-", issuer: "anthropic" });
+    expect(reservedPrefixIn(`1.0.0-${overlap}`)).toEqual({ prefix: "sk-ant-", issuer: "anthropic" });
+    const project = fixtureSecret("sk", "-proj-", mixed(40), "T3Blbk", "FJ");
+    expect(reservedPrefixIn(project)).toEqual({ prefix: "sk-proj-", issuer: "openai" });
+  });
+
+  it("names the earliest prefix, the specific row's where two start together, and none where no format is", () => {
+    const gitlab = fixtureSecret("gl", "pat-", mixed(20));
+    const openai = fixtureSecret("sk", "-", mixed(48));
+    expect(reservedPrefixIn(`${openai}-${gitlab}`)).toEqual({ prefix: "sk-", issuer: "openai" });
+    expect(reservedPrefixIn(`${gitlab}-${openai}`)).toEqual({ prefix: "glpat-", issuer: "gitlab" });
+    expect(reservedPrefixIn(fixtureSecret("sk", "-proj-", mixed(40), "T3Blbk", "FJ"))).toEqual({ prefix: "sk-proj-", issuer: "openai" });
+    expect(reservedPrefixIn(`eyJ${mixed(10)}.${mixed(10)}.${mixed(10)}`)).toEqual({ prefix: "eyJ", issuer: "jwt" });
+    // Ordinary names under a prefix, at its row's length, are reserved; shorter ones and glued ones are not.
+    expect(reservedPrefixIn("glpat-rotation-documentation-for-local-marketplaces")).toEqual({ prefix: "glpat-", issuer: "gitlab" });
+    for (const text of ["glpat-rotation-docs", "sk-proj-tools", "task-proj-build-the-user-interface-for-the-marketplace", "password=hunter2", "https://alice:secret@example.com/x"]) {
+      expect(reservedPrefixIn(text), text).toBeNull();
+    }
+    // A credential found by where it stands has no prefix to name, though it is refused.
+    expect(holdsCredential("password=hunter2")).toBe(true);
+  });
+
+  it.each(TOKENS)("masks a %s token in a host, a path, an id, a URL and an ssh account, behind any boundary", (_kind, token) => {
+    for (const text of [
+      token,
+      // The prefix starts a format after any non-alphanumeric character, and the body counts whatever follows it.
+      `backup_${token}`,
+      `backup-${token}`,
+      `x-${token}`,
+      `key:${token}`,
+      `id=${token}`,
+      `"${token}"`,
+      `'${token}'`,
+      `backup.${token}`,
+      `${token}_backup`,
+      `${token}-backup`,
+      `${token}.backup`,
+      `//server/share/backup_${token}`,
+      `${token}.example.com`,
+      `/srv/markets/${token}/plugins`,
+      `C:\\work\\${token}\\market`,
+      `market-${token}`,
+      `https://example.com/acme/${token}/market.git`,
+      `ssh://${token}@git.example/acme/market`,
+    ]) {
+      const scrubbed = scrubDiagnosticSecrets(text);
+      expect(scrubbed, text).not.toContain(token);
+      expect(scrubbed).toContain("[REDACTED:");
+    }
+  });
+
+  it("masks a stateless GitHub App installation token whole, app id included", () => {
+    const token = fixtureSecret("gh", "s_", "123456_", "eyJ", "hbGciOiJSUzI1NiJ9", ".", "eyJpc3MiOiIxMjM0NTYifQ", ".", mixed(342));
+    expect(scrubDiagnosticSecrets(`/srv/${token}/x`)).toBe("/srv/[REDACTED:TOKEN]/x");
+  });
+
+  it("masks a JSON Web Token in a path and a URL, after `_` too, and a private key block", () => {
+    const jwt = fixtureSecret("eyJ", "hbGciOiJIUzI1NiJ9", ".", "eyJzdWIiOiIxMjM0In0", ".", mixed(43));
+    for (const text of [`/srv/${jwt}/x`, `https://example.com/cb?state=${jwt}`, `/srv/backup_${jwt}`, `x-${jwt}`]) {
+      expect(scrubDiagnosticSecrets(text), text).not.toContain(jwt);
+    }
+    const pem = fixtureSecret("-----BEGIN ", "PRIVATE KEY-----\n", mixed(64), "\n-----END ", "PRIVATE KEY-----");
+    expect(scrubDiagnosticSecrets(`key file:\n${pem}\nend`)).toBe("key file:\n[REDACTED:PRIVATE_KEY]\nend");
+  });
+
+  // An Azure DevOps token has no prefix: 52 characters of lowercase base32, which a digest can be too.
+  const azure = fixtureSecret("abcdefgh234567", "abcdefgh234567", "abcdefgh234567", "abcdefgh23");
+
+  it("masks an Azure DevOps token only where it stands as a credential", () => {
+    for (const text of [
+      `https://user:${azure}@dev.azure.com/acme/_git/market`,
+      `https://${azure}@dev.azure.com/acme/_git/market`,
+      `Authorization: Basic ${Buffer.from(`:${azure}`).toString("base64")}`,
+      `Authorization: Bearer ${azure}`,
+      `AZURE_DEVOPS_EXT_PAT=${azure}`,
+      `pat=${azure}`,
+      `https://dev.azure.com/acme?token=${azure}`,
+      `{"pat": "${azure}"}`,
+    ]) {
+      const scrubbed = scrubDiagnosticSecrets(text);
+      expect(scrubbed, text).not.toContain(azure);
+      expect(scrubbed).toContain("[REDACTED:");
+    }
+    // Anywhere else it is indistinguishable from a base32 digest, which identifiers must keep.
+    for (const text of [azure, `1.0.0+${azure}`, `/srv/cache/${azure}/x`]) expect(scrubDiagnosticSecrets(text)).toBe(text);
+  });
+
+  it.each([
+    // Hosts.
+    "test-server01.corp.example",
+    "live-db-replica-0001.internal",
+    "proj-alpha.example.com",
+    "sk-learn.example.org",
+    "aizawa-shop-production-europe-west1.example",
+    "akiaprojectserverab.example",
+    "xapp-launcher.example.com",
+    // Package names and source ids, dated and numbered ones too.
+    "live-captions",
+    "sk-learn-utils",
+    "test-runner",
+    "pk-tools",
+    "rk-deploy-helper",
+    "proj-template-react",
+    "test-marketplace",
+    "test-marketplace2026",
+    "test-integration123",
+    "live-notifications2026",
+    "live-feed-2024",
+    "npm-audit-helper",
+    "glpat-rotation-docs",
+    "sk-proj-tools",
+    // Paths and addresses.
+    "/Users/example/test-fixtures01/market",
+    "C:\\work\\live-dashboard-2024\\plugins",
+    "/opt/sk-learn-utils/v2",
+    "ssh://git@github.com/acme/market",
+    "https://github.com/acme/live-captions",
+    // Names that hold a prefix's letters without its format, or glue it to a letter or digit.
+    "laughs_compilation-of-the-best-moments-2026.mp4",
+    "task-proj-build-the-user-interface-for-the-marketplace",
+    "task-prepare-marketplace-folder-source-diagnostics",
+    "task-sk-learn-utils",
+    "npm_scripts",
+    "akiak-production",
+    "AKIA-example-not-a-token",
+    "/media/backup_test-marketplace2026/notes",
+    "path=/srv/market",
+    "patterns=src/**/*.ts",
+    // Hashes, and base32 build metadata.
+    "0123456789abcdef0123456789abcdef01234567",
+    // SHA-256 of "ordinary package contents", unpadded lowercase base32: 52 characters.
+    "1.0.0+al62ny3xigdbyafl7irut3jbxlrld5chtn2dxghblz6hml2otyqq",
+    "local-9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  ])("keeps %s as it is", (text) => {
+    expect(scrubDiagnosticSecrets(text)).toBe(text);
+  });
+
+  it("leaves the model-bound scrubber's broad prefix rule as it was", () => {
+    // Text bound for a model masks a name by mistake rather than miss a key.
+    expect(scrubSecretsForLLM("endpoint live-captions-service")).toContain("[REDACTED:TOKEN]");
+    expect(scrubSecretsForLLM("host test-server01.corp")).toContain("[REDACTED:TOKEN]");
+  });
+});
+
 describe("scrubSecretsForLLM — credential-class SOT (#1499 E2 M1)", () => {
   it("redacts prefixed API keys (sk-/pk-/live-)", () => {
     expect(scrubSecretsForLLM("key sk-ant-ABCDEFGH1234")).not.toContain("sk-ant-ABCDEFGH1234");
@@ -142,30 +349,23 @@ describe("scrubSecretsForLLM — credential-class SOT (#1499 E2 M1)", () => {
     expect(scrubSecretsForLLM("Bearer abcXYZ12345token")).not.toContain("abcXYZ12345token");
     expect(scrubSecretsForLLM("BEARER abcXYZ12345token")).toBe("Bearer [REDACTED:TOKEN]");
     expect(scrubSecretsForLLM("Authorization: Bearer abcXYZ12345token")).toBe("Authorization: [REDACTED:TOKEN]");
-    expect(scrubSecretsForLLM("Authorization: Bearer [REDACTED:TOKEN] status=200")).toBe(
-      "Authorization: Bearer [REDACTED:TOKEN] status=200",
-    );
+    // An Authorization value runs to its line's end whatever its scheme, and a marker in it is not trusted (§18.8).
+    expect(scrubSecretsForLLM("Authorization: Bearer [REDACTED:TOKEN] status=200")).toBe("Authorization: [REDACTED:TOKEN]");
     expect(scrubSecretsForLLM("x-api-key: myheaderSECRET99")).not.toContain("myheaderSECRET99");
     expect(scrubSecretsForLLM("Authorization: rawSecretHeader42")).not.toContain("rawSecretHeader42");
     const basicSecret = fixtureSecret("Basic ", "QWxhZGRpbjpvcGVuIHNlc2FtZQ==");
     expect(scrubSecretsForLLM(`Authorization: ${basicSecret}`)).toBe("Authorization: [REDACTED:TOKEN]");
-    const embedded = scrubSecretsForLLM(`{"level":30,"msg":"Authorization: ${basicSecret}","status":200}`);
-    expect(embedded).not.toContain(basicSecret);
-    expect(embedded).toContain("Authorization: [REDACTED:TOKEN]");
-    expect(embedded).toContain('"status":200');
+    expect(scrubSecretsForLLM(`{"level":30,"msg":"Authorization: ${basicSecret}","status":200}`)).toBe('{"level":30,"msg":"Authorization: [REDACTED:TOKEN]');
     const digest = scrubSecretsForLLM('Authorization: Digest username="user", response="secret-response-token" status=200');
-    expect(digest).not.toContain('username="user"');
-    expect(digest).not.toContain('response="secret-response-token"');
-    expect(digest).toBe("Authorization: [REDACTED:TOKEN] status=200");
+    expect(digest).toBe("Authorization: [REDACTED:TOKEN]");
     const embeddedDigest = scrubSecretsForLLM(
       '{"level":30,"msg":"Authorization: Digest username=\\"user\\", response=\\"secret-response-token\\"","status":200}',
     );
-    expect(embeddedDigest).not.toContain('response=\\"secret-response-token\\"');
-    expect(embeddedDigest).toContain("Authorization: [REDACTED:TOKEN]");
-    expect(embeddedDigest).toContain('","status":200');
-    expect(scrubSecretsForLLM("Authorization: rawSecretHeader42 status=200")).toBe(
-      "Authorization: [REDACTED:TOKEN] status=200",
-    );
+    expect(embeddedDigest).toBe('{"level":30,"msg":"Authorization: [REDACTED:TOKEN]');
+    // A value with no known scheme may be a scheme of its own (`Custom <secret>`): the rest of the line goes (§18.8).
+    expect(scrubSecretsForLLM("Authorization: rawSecretHeader42 status=200")).toBe("Authorization: [REDACTED:TOKEN]");
+    expect(scrubSecretsForLLM("Couldn't connect: Authorization: Custom foo' opaque-pass-12345\nnext")).toBe("Couldn't connect: Authorization: [REDACTED:TOKEN]\nnext");
+    expect(scrubSecretsForLLM("Proxy-Authorization: Weird a=1, b=opaque-pass-12345")).toBe("Proxy-Authorization: [REDACTED:TOKEN]");
     expect(scrubSecretsForLLM("x-api-key: myheaderSECRET99 status=200")).toBe("x-api-key: [REDACTED:TOKEN] status=200");
     expect(scrubSecretsForLLM("x-auth-token: rawHeaderToken42 status=200")).toBe(
       "x-auth-token: [REDACTED:TOKEN] status=200",
@@ -310,8 +510,9 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
   });
 
   it("redacts an Authorization value quoted or after `=`, through the credentials after its scheme", () => {
-    expect(scrubDiagnosticSecrets('Authorization: "Basic dXNlcjpwYXNz" next')).toBe("Authorization: [REDACTED:TOKEN] next");
-    expect(scrubDiagnosticSecrets("authorization='Basic dXNlcjpwYXNz' next")).toBe("authorization=[REDACTED:TOKEN] next");
+    // Quoted or not, an Authorization value runs to its line's end: a quote never ends it.
+    expect(scrubDiagnosticSecrets('Authorization: "Basic dXNlcjpwYXNz" next')).toBe("Authorization: [REDACTED:TOKEN]");
+    expect(scrubDiagnosticSecrets("authorization='Basic dXNlcjpwYXNz' next")).toBe("authorization=[REDACTED:TOKEN]");
     expect(scrubDiagnosticSecrets("x: Authorization=Basic dXNlcjpwYXNz next\nkept")).toBe("x: Authorization=[REDACTED:TOKEN]\nkept");
     // Opening a line with `=`, it is a credential-protocol line, redacted to the line's end.
     expect(scrubDiagnosticSecrets("Authorization=Basic dXNlcjpwYXNz next\nkept")).toBe("Authorization=[REDACTED:TOKEN]\nkept");
@@ -323,9 +524,313 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
     expect(scrubDiagnosticSecrets("x: Authorization: Bearer abc def\nkept")).toBe("x: Authorization: [REDACTED:TOKEN]\nkept");
     expect(scrubDiagnosticSecrets("helper --authorization Bearer abc def")).toBe("helper --authorization [REDACTED:TOKEN]");
     expect(scrubDiagnosticSecrets("x: token=Basic abc def")).toBe("x: token=[REDACTED:TOKEN] def");
-    expect(scrubDiagnosticSecrets('x: authorization: "Basic abc" kept')).toBe("x: authorization: [REDACTED:TOKEN] kept");
-    // Accepted: a key holding `authorization` takes its value even when it is not a secret.
-    expect(scrubDiagnosticSecrets("x: authorization_url=https://idp.example/x kept")).toBe("x: authorization_url=[REDACTED:TOKEN] kept");
+    expect(scrubDiagnosticSecrets('x: authorization: "Basic abc" kept')).toBe("x: authorization: [REDACTED:TOKEN]");
+    // Any scheme, known or not: the header's whole value goes, never the scheme alone.
+    expect(scrubDiagnosticSecrets("Authorization: Custom opaque-pass-12345")).toBe("Authorization: [REDACTED:TOKEN]");
+    expect(scrubDiagnosticSecrets("Proxy-Authorization: Weird a=1, b=2\nnext")).toBe("Proxy-Authorization: [REDACTED:TOKEN]\nnext");
+    expect(scrubDiagnosticSecrets("proxy returned Authorization: Custom opaque-pass-12345")).toBe("proxy returned Authorization: [REDACTED:TOKEN]");
+    // A header quoted inside a longer text takes the rest of the line too: the quote around it is not its end.
+    expect(scrubDiagnosticSecrets('x {"msg":"Authorization: Custom opaque-pass-12345","status":200}')).toBe('x {"msg":"Authorization: [REDACTED:TOKEN]');
+    expect(scrubDiagnosticSecrets("error: 'Authorization: Custom opaque-pass-12345' failed")).toBe("error: 'Authorization: [REDACTED:TOKEN]");
+    // A key holding `authorization` as a delimited word is a header key (§18.8): its value goes, accepted over-masking for a URL.
+    expect(scrubDiagnosticSecrets("x: authorization_url=https://idp.example/x kept")).toBe("x: authorization_url=[REDACTED:TOKEN]");
+    expect(scrubSecretsForLLM("x: authorization_url=https://idp.example/x kept")).toBe("x: authorization_url=[REDACTED:TOKEN]");
+    // A word that only begins or ends with it is not, nor is prose with no separator after the key.
+    for (const kept of ["xauthorization: keep", "authorizationfoo: keep", "the authorization header was absent", "authorization_flow failed"]) {
+      expect(scrubDiagnosticSecrets(kept)).toBe(kept);
+      expect(scrubSecretsForLLM(kept)).toBe(kept);
+    }
+    // The key's remainder runs forward from the word to the first `:` or `=`, raw or escaped: whitespace, quotes of
+    // any depth, apostrophes and other punctuation are remainder, never its end (§18.8).
+    for (const [key, masked] of [
+      ["authorization header", '{"authorization header":'],
+      ["authorization\\tvalue", '{"authorization\\tvalue":'],
+      [`authorization${String.fromCharCode(0xa0)}header`, `{"authorization${String.fromCharCode(0xa0)}header":`],
+      ["authorization\\u003aheader", '{"authorization\\u003a'],
+      ["authorization\\u003dheader", '{"authorization\\u003d'],
+      ["authorization:header", '{"authorization:'],
+      ["client's authorization header", `{"client's authorization header":`],
+      ['client \\"authorization header', '{"client \\"authorization header":'],
+      ['prefix \\"quoted\\" authorization header', '{"prefix \\"quoted\\" authorization header":'],
+    ]) {
+      const text = `{"${key}":"Custom opaque-pass-12345"}`;
+      expect(scrubDiagnosticSecrets(text), text).toBe(`${masked}[REDACTED:TOKEN]`);
+      expect(scrubSecretsForLLM(text), text).toBe(`${masked}[REDACTED:TOKEN]`);
+      for (let depth = 1; depth < 4; depth++) {
+        let nested = text;
+        for (let level = 0; level < depth; level++) nested = JSON.stringify({ level: 30, msg: nested });
+        expect(scrubDiagnosticSecrets(nested), nested).not.toContain("opaque-pass-12345");
+        expect(scrubSecretsForLLM(nested), nested).toBe(scrubDiagnosticSecrets(nested));
+      }
+    }
+    // A quote far away no longer pairs with anything: the lines between survive (§18.8, round 17).
+    const info = Array.from({ length: 1000 }, (_, line) => `INFO line ${line} kept`).join("\n");
+    const far = `"\nAuthorization: Custom opaque-pass-12345\n${info}\n": late-value\nlast`;
+    expect(scrubDiagnosticSecrets(far)).toBe(`"\nAuthorization: [REDACTED:TOKEN]\n${info}\n": late-value\nlast`);
+    expect(scrubSecretsForLLM(far)).toBe(scrubDiagnosticSecrets(far));
+    // The read is bounded: past one raw line break, or past KEY_WINDOW (256) decoded characters, the word is no key.
+    for (const kept of ["the authorization header\nwas absent\nnext: line", `authorization ${"x".repeat(300)}: value`]) {
+      expect(scrubDiagnosticSecrets(kept)).toBe(kept);
+      expect(scrubSecretsForLLM(kept)).toBe(kept);
+    }
+    // The window's exact count (§18.8): 256 reads, the separator's included; a read is one UTF-16 code unit, one `\u`
+    // escape or one backslash run; the read meeting a raw line break also takes the whitespace run after it.
+    const astral = String.fromCodePoint(0x1f600);
+    for (const [label, text, masked] of [
+      ["255 units, then the separator as the 256th read", `authorization${"_".repeat(255)}: v`, true],
+      ["256 units, the separator a 257th read", `authorization${"_".repeat(256)}: v`, false],
+      ["a space and 127 astral characters (254 units)", `authorization ${astral.repeat(127)}: v`, true],
+      ["a space and 128 astral characters (256 units)", `authorization ${astral.repeat(128)}: v`, false],
+      ["255 `\\u` escapes, one read each", `authorization${"\\u005f".repeat(255)}: v`, true],
+      ["256 `\\u` escapes", `authorization${"\\u005f".repeat(256)}: v`, false],
+      ["254 spaces, the break, the separator", `authorization${" ".repeat(254)}\n: v`, true],
+      ["255 spaces before the break: one read per unit", `authorization${" ".repeat(255)}\n: v`, false],
+      ["300 spaces after the break: one read with it", `authorization\n${" ".repeat(300)}: v`, true],
+    ] as const) {
+      const expected = masked ? `${text.slice(0, -1)}[REDACTED:TOKEN]` : text;
+      expect(scrubSecretsForLLM(text), label).toBe(expected);
+      expect(scrubDiagnosticSecrets(text), label).toBe(expected);
+    }
+    // Prose with a separator after the word within the bound is masked: accepted over-masking (§18.8).
+    expect(scrubSecretsForLLM("authorization flow: PKCE")).toBe("authorization flow: [REDACTED:TOKEN]");
+    expect(scrubSecretsForLLM("the authorization header\n  was absent: retry")).toBe("the authorization header\n  was absent: [REDACTED:TOKEN]");
+    // No separator after the word, or a word that goes on in letters, is no key.
+    for (const kept of ['{"level":30,"msg":"authorization header missing"}', '{"authorizationfoo bar":"keep"}', '{"msg":"see the \'authorization\' docs"}']) {
+      expect(scrubDiagnosticSecrets(kept)).toBe(kept);
+      expect(scrubSecretsForLLM(kept)).toBe(kept);
+    }
+  });
+
+  describe("an Authorization value ends only at its line's end, or the text's (§18.8)", () => {
+    const secret = "opaque-pass-12345";
+    it.each([
+      ["an apostrophe in its Digest parameter", `Authorization: Digest username="O'Neil", response="${secret}"`, "Authorization: [REDACTED:TOKEN]"],
+      ["a contraction before it", `Couldn't authenticate: Authorization: Digest username="O'Neil", response="${secret}"`, "Couldn't authenticate: Authorization: [REDACTED:TOKEN]"],
+      ["a contraction and a stray quote in its value", `Couldn't connect: Authorization: Custom foo' ${secret}`, "Couldn't connect: Authorization: [REDACTED:TOKEN]"],
+      ["a quote opening its value", `Proxy-Authorization: "Digest username="O'Neil", response="${secret}"" next`, "Proxy-Authorization: [REDACTED:TOKEN]"],
+      [
+        "a JSON message with a contraction",
+        String.raw`{"message":"Couldn't fetch: Authorization: Digest username=\"O'Neil\", response=\"${secret}\"","safe":"keep"}`,
+        `{"message":"Couldn't fetch: Authorization: [REDACTED:TOKEN]`,
+      ],
+      ["a JSON value", String.raw`{"Authorization":"Digest username=\"O'Neil\", response=\"${secret}\"","safe":"keep"}`, `{"Authorization":[REDACTED:TOKEN]`],
+      [
+        "JSON carried in a JSON string",
+        String.raw`"{\"message\":\"Couldn't: Authorization: Custom ${secret}\",\"safe\":\"keep\"}"`,
+        String.raw`"{\"message\":\"Couldn't: Authorization: [REDACTED:TOKEN]`,
+      ],
+      [
+        "a value folded onto the lines after it",
+        `Authorization: Digest username="O'Neil",\r\n\trealm="r",\r\n response="${secret}"\r\nHost: git.example\r\n`,
+        "Authorization: [REDACTED:TOKEN]\r\nHost: git.example\r\n",
+      ],
+      ["the last line, with no line break after it", `GET /info/refs\nAuthorization: Custom ${secret}`, "GET /info/refs\nAuthorization: [REDACTED:TOKEN]"],
+    ])("with %s", (_label, input, expected) => {
+      const out = scrubDiagnosticSecrets(input);
+      expect(out).toBe(expected);
+      expect(out).not.toContain(secret);
+      expect(holdsCredential(input)).toBe(true);
+    });
+
+    it.each([
+      ["a marker followed by more of the value", `Authorization: [REDACTED:TOKEN] ${secret}`, "Authorization: [REDACTED:TOKEN]"],
+      ["two markers and more", `Authorization: [REDACTED:TOKEN] [REDACTED:TOKEN] ${secret}`, "Authorization: [REDACTED:TOKEN]"],
+      ["a marker with the value folded after it", `Authorization: [REDACTED:TOKEN]\r\n\t${secret}\r\nHost: git.example`, "Authorization: [REDACTED:TOKEN]\r\nHost: git.example"],
+      ["a scheme, a marker and more", `Proxy-Authorization: Bearer [REDACTED:TOKEN] ${secret}`, "Proxy-Authorization: [REDACTED:TOKEN]"],
+      ["a JSON key whose value starts with a marker", `{"authorization":"[REDACTED:TOKEN] ${secret}","safe":"keep"}`, '{"authorization":[REDACTED:TOKEN]'],
+    ])("never trusts a marker in it: %s", (_label, input, expected) => {
+      expect(scrubDiagnosticSecrets(input)).toBe(expected);
+      expect(scrubSecretsForLLM(input)).toBe(expected);
+      expect(holdsCredential(input)).toBe(true);
+    });
+
+    it("leaves a value that is one marker as it is, in both scrubbers", () => {
+      for (const masked of ["Authorization: [REDACTED:TOKEN]", "x\nProxy-Authorization: [REDACTED:TOKEN]\nnext", '{"Authorization":[REDACTED:TOKEN]']) {
+        expect(scrubDiagnosticSecrets(masked)).toBe(masked);
+        expect(scrubSecretsForLLM(masked)).toBe(masked);
+        expect(holdsCredential(masked)).toBe(false);
+      }
+    });
+
+    describe("JSON whitespace at the separator, any indent and depth (seeded property)", () => {
+      /** A small deterministic generator (mulberry32), so a failure names the case that reproduces it. */
+      const generator = (seed: number) => () => {
+        seed = (seed + 0x6d2b79f5) | 0;
+        let value = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+        return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+      };
+      const KEYS = [
+        "Authorization", "authorization", "Proxy-Authorization", "AUTHORIZATION", "x-authorization",
+        // Compound keys: `authorization` as a delimited word of the key (§18.8).
+        "authorization_header", "proxy_authorization", "x-authorization-token", "authorization.value", "AUTHORIZATION_URL", "upstream authorization",
+        // Quoted keys of several words and punctuation: whitespace, `:` and `=` inside the quotes are key content.
+        "authorization header", "authorization\theader", `authorization${String.fromCharCode(0xa0)}header`, "authorization:header", "authorization=header",
+        "upstream authorization header value",
+        // Quotes inside the key: an apostrophe, an escaped quote, quotes of another depth (§18.8, round 17).
+        "client's authorization header", 'client "authorization header', 'prefix "quoted" authorization header', 'a\\"authorization\\\\" b',
+        "it's 'authorization' here",
+      ];
+      const SCHEMES = ["Custom", "Basic", "Bearer", "[REDACTED:TOKEN]", 'Digest username="O\'Neil", response=', ""];
+      const INDENTS: ReadonlyArray<number | string | undefined> = [undefined, 0, 1, 2, "\t"];
+      const pick = <T,>(random: () => number, items: readonly T[]): T => items[Math.floor(random() * items.length)]!;
+      /**
+       * Every separator whitespace character: what JS `\s` matches, U+FEFF, U+2028 and U+2029 among them. The one set
+       * the raw and the escaped whitespace are both drawn from, as the stage classifies both with one predicate.
+       */
+      const SPACES = Array.from({ length: 0x10000 }, (_, code) => String.fromCharCode(code)).filter((char) => /\s/u.test(char));
+      const LETTERS: Readonly<Record<string, string>> = { "\n": "n", "\r": "r", "\t": "t", "\f": "f", "\v": "v" };
+      /** How a string literal spells `char`: `\u` and four hex digits in either case, and its one-letter escape when it has one. */
+      const escapedForms = (char: string): string[] => {
+        const hex = char.charCodeAt(0).toString(16).padStart(4, "0");
+        return [`\\u${hex}`, `\\u${hex.toUpperCase()}`, ...(LETTERS[char] === undefined ? [] : [`\\${LETTERS[char]}`])];
+      };
+      /** Whitespace written at a key's colon or before its closing quote: none, or up to three characters from {@link SPACES}, each raw or escaped. */
+      const LINE_BREAKS = new Set(["\n", "\r"]);
+      /** As {@link gap}, but a raw line break only escaped: where the stage's bound allows none (§18.8). */
+      const gapWithoutRawBreak = (random: () => number): string =>
+        Array.from({ length: Math.floor(random() * 4) }, () => {
+          const char = pick(random, SPACES);
+          return random() < 0.5 && !LINE_BREAKS.has(char) ? char : pick(random, escapedForms(char));
+        }).join("");
+      const gap = (random: () => number): string =>
+        Array.from({ length: Math.floor(random() * 4) }, () => {
+          const char = pick(random, SPACES);
+          return random() < 0.5 ? char : pick(random, escapedForms(char));
+        }).join("");
+
+      it("draws its whitespace from what JS `\\s` covers, U+FEFF, U+2028 and U+2029", () => {
+        for (const code of [0x20, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0xa0, 0x1680, 0x2000, 0x2003, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff]) {
+          expect(SPACES).toContain(String.fromCharCode(code));
+        }
+      });
+      it.each(["FEFF", "2028", "2029", "00A0", "2003", "3000", "000B"])("reads U+%s between a key's closing quote and its colon as whitespace, raw and escaped", (hex) => {
+        const char = String.fromCharCode(Number.parseInt(hex, 16));
+        for (const form of [char, ...escapedForms(char)]) {
+          for (const text of [`{"Authorization"${form}: "Custom ${secret}"}`, `{"Authorization":${form}"Custom ${secret}"}`]) {
+            const masked = text.slice(0, text.indexOf('"Custom'));
+            expect(scrubDiagnosticSecrets(text), JSON.stringify(text)).toBe(`${masked}[REDACTED:TOKEN]`);
+            expect(scrubSecretsForLLM(text), JSON.stringify(text)).toBe(`${masked}[REDACTED:TOKEN]`);
+          }
+        }
+      });
+      const SHAPES: ReadonlyArray<(key: string, value: string) => unknown> = [
+        (key, value) => ({ [key]: value }),
+        (key, value) => ({ level: 30, headers: { accept: "*/*", [key]: value, host: "git.example" } }),
+        (key, value) => ({ request: { url: "https://git.example/x", headers: [{ name: "accept" }, { [key]: value }] } }),
+      ];
+      const CASES = Array.from({ length: 400 }, (_, seed) => {
+        const random = generator(seed + 1);
+        const key = pick(random, KEYS);
+        let text = JSON.stringify(pick(random, SHAPES)(key, `${pick(random, SCHEMES)} ${secret}`.trim()), null, pick(random, INDENTS));
+        // The key spelled as JSON spells it, each character but a letter or digit raw or escaped (`\u003a`, `\t`); then
+        // whitespace before its closing quote and around its colon, raw or escaped. The stage's bound (§18.8): one raw
+        // line break between the word and its separator, and none at all when the key itself holds `:` or `=`, whose
+        // value then runs from that character to the end of its line.
+        const spelled = [...key].map((char) => (/[A-Za-z0-9]/u.test(char) || random() < 0.5 ? JSON.stringify(char).slice(1, -1) : pick(random, escapedForms(char)))).join("");
+        const separatorInKey = /[:=]/u.test(key);
+        const inQuotes = gapWithoutRawBreak(random);
+        const beforeColon = separatorInKey ? gapWithoutRawBreak(random) : gap(random);
+        const afterColon = separatorInKey ? gapWithoutRawBreak(random) : gap(random);
+        text = text.replace(`${JSON.stringify(key)}:`, () => `"${spelled}${inQuotes}"${beforeColon}:${afterColon}`);
+        const depth = Math.floor(random() * 4);
+        for (let level = 0; level < depth; level++) text = JSON.stringify({ level: 30, msg: text }, null, random() < 0.5 ? undefined : 2);
+        return { seed: seed + 1, depth, text };
+      });
+
+      it.each(CASES)("seed $seed, depth $depth: neither scrubber leaks, both agree, and again is a no-op", ({ text }) => {
+        const diagnostic = scrubDiagnosticSecrets(text);
+        const model = scrubSecretsForLLM(text);
+        expect(diagnostic).not.toContain(secret);
+        expect(model).not.toContain(secret);
+        expect(model).toBe(diagnostic);
+        expect(scrubDiagnosticSecrets(diagnostic)).toBe(diagnostic);
+        expect(scrubSecretsForLLM(model)).toBe(model);
+      });
+    });
+
+    it("has one place in the scrubber that reads `authorization`: the header stage", async () => {
+      const { readFileSync } = await import("node:fs");
+      const source = readFileSync(new URL("../../shared/dlp.ts", import.meta.url), "utf8");
+      // Code only: comments say Authorization a lot.
+      const code = source.replace(/\/\*[\s\S]*?\*\//gu, (block) => block.replace(/[^\n]/gu, " ")).replace(/(^|[^:"'`\\])\/\/.*$/gmu, "$1");
+      const stageStart = code.indexOf("function authorizationValueEnd(");
+      const stageEnd = code.indexOf("\n}\n", code.indexOf("function maskAuthorizationValues(")) + 3;
+      expect(stageStart).toBeGreaterThan(0);
+      expect(stageEnd).toBeGreaterThan(stageStart);
+      const outside = [...code.matchAll(/authorization/giu)].filter((match) => match.index < stageStart || match.index >= stageEnd);
+      // Outside the stage, only the two scrubbers' calls into it, each first.
+      expect(outside.map((match) => code.slice(match.index - 4, match.index + 25))).toEqual(["maskAuthorizationValues(text)", "maskAuthorizationValues(text)"]);
+    });
+
+    describe("one stage for both scrubbers, at any JSON depth (differential)", () => {
+      const SCHEMES = ["Custom", "Basic", "Bearer", "Negotiate", 'Digest username="O\'Neil", response=', "[REDACTED:TOKEN]", ""];
+      /** Each header form with `value` as its value: plain, `=`, proxy, JSON key, flag, x-prefixed, folded, after an escape, `\u`-escaped. */
+      const FORMS: ReadonlyArray<readonly [string, (value: string) => string]> = [
+        ["plain", (value) => `Authorization: ${value}`],
+        ["equals", (value) => `authorization=${value}`],
+        ["proxy", (value) => `Proxy-Authorization: ${value}`],
+        ["JSON key", (value) => JSON.stringify({ Authorization: value, safe: "keep" })],
+        ["flag", (value) => `curl --authorization ${value} --next`],
+        ["x-prefixed", (value) => `x-authorization: ${value}`],
+        ["folded", (value) => `Authorization: Custom\r\n\t${value}\r\nHost: git.example`],
+        ["after a line break", (value) => `request failed\nAuthorization: ${value}`],
+        ["u-escaped JSON key", (value) => `{"\\u0041uthorization":${JSON.stringify(value)}}`],
+        // Escaped whitespace at the separator, classified as its raw form is.
+        ["escaped NBSP", (value) => `Authorization\\u00a0: ${value}`],
+        ["escaped EM SPACE", (value) => `{"Authorization":\\u2003${JSON.stringify(value)}}`],
+        ["escaped BOM", (value) => `{"Authorization\\uFEFF": ${JSON.stringify(value)}}`],
+        ["escaped vertical tab", (value) => `authorization\\v= ${value}`],
+        // Compound keys: `authorization` as a delimited word.
+        ["compound JSON key", (value) => JSON.stringify({ authorization_header: value, safe: "keep" })],
+        ["compound proxy key", (value) => `proxy_authorization: ${value}`],
+        ["compound dotted key", (value) => `authorization.value = ${value}`],
+        ["compound escaped delimiter", (value) => `{"authorization\\u005fheader":${JSON.stringify(value)}}`],
+      ];
+      /** `text` serialized `depth` times as a log record's message, as nested structured logs carry it. */
+      const encode = (text: string, depth: number): string => {
+        let out = text;
+        for (let level = 0; level < depth; level++) out = JSON.stringify({ level: 30, msg: out });
+        return out;
+      };
+      const CASES = FORMS.flatMap(([form, build]) => SCHEMES.flatMap((scheme) => [0, 1, 2, 3].map((depth) => ({ form, scheme, depth, text: encode(build(`${scheme} ${secret}`.trim()), depth) }))));
+
+      it.each(CASES)("$form, $scheme, depth $depth: neither leaks, both mask the same span, and again is a no-op", ({ text }) => {
+        const diagnostic = scrubDiagnosticSecrets(text);
+        const model = scrubSecretsForLLM(text);
+        expect(diagnostic).not.toContain(secret);
+        expect(model).not.toContain(secret);
+        expect(model).toBe(diagnostic);
+        expect(scrubDiagnosticSecrets(diagnostic)).toBe(diagnostic);
+        expect(scrubSecretsForLLM(model)).toBe(model);
+      });
+    });
+
+    it("masks the same span for model-bound and diagnostic text", () => {
+      const inputs = [
+        `Authorization: Custom ${secret}`,
+        `Authorization: Custom foo\r\n\t${secret}\r\nnext`,
+        `Couldn't authenticate: Authorization: Digest username="O'Neil", response="${secret}"\nretry`,
+        `Authorization: Basic ${secret} status=200`,
+        `Authorization: Bearer [REDACTED:TOKEN] ${secret}`,
+        `{"message":"Couldn't fetch: Authorization: Custom foo' ${secret}","safe":"keep"}`,
+        `{"Authorization": "Digest username=\\"O'Neil\\", response=\\"${secret}\\""}`,
+        `curl --authorization Custom ${secret}\n--next`,
+        `x-authorization: Custom ${secret}`,
+        `authorization=Custom ${secret}\nkept`,
+        `Proxy-Authorization:\n ${secret}\nkept`,
+      ];
+      for (const input of inputs) {
+        const diagnostic = scrubDiagnosticSecrets(input);
+        expect(scrubSecretsForLLM(input), input).toBe(diagnostic);
+        expect(diagnostic, input).not.toContain(secret);
+      }
+    });
+
+    it("keeps the lines after it, and a sentence with contractions and no header", () => {
+      expect(scrubDiagnosticSecrets(`Authorization: Custom ${secret}\nCouldn't reach O'Neil's mirror`)).toBe("Authorization: [REDACTED:TOKEN]\nCouldn't reach O'Neil's mirror");
+      expect(holdsCredential("Couldn't reach O'Neil's mirror: the authorization_server isn't up")).toBe(false);
+    });
   });
 
   it("reads JSON carried in a JSON string inside a key, and past a stray \\\" earlier on the line", () => {
@@ -409,6 +914,20 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
     expect(scrubDiagnosticSecrets("mysql -p canarypass")).toBe("mysql -p canarypass");
   });
 
+  it("scrubs 332 KB of quotes at 800 distinct escape depths in linear time (round 17)", () => {
+    // Each name is followed by a quote one level deeper: no closing quote at any depth, no separator anywhere. A
+    // per-depth closing-quote search read this family in N^1.5 (175M visits); the bounded key window reads it once.
+    let text = "";
+    for (let depth = 1; depth <= 800; depth++) text += `${"\\".repeat(depth)}"authorization `;
+    expect(text.length).toBeGreaterThan(330_000);
+    for (const scrub of [scrubDiagnosticSecrets, scrubSecretsForLLM]) {
+      const started = performance.now();
+      expect(scrub(text)).toBe(text);
+      // Generous for a loaded CI host: linear in its 332 KB, about five times the 64 KiB budget below.
+      expect(performance.now() - started).toBeLessThan(1500);
+    }
+  });
+
   it("scrubs 64 KiB of adversarial text in linear time", () => {
     const size = 64 * 1024;
     const fill = (unit: string, tail = "") => unit.repeat(Math.ceil(size / unit.length)).slice(0, size - tail.length) + tail;
@@ -422,12 +941,26 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
       fill('\\"a'), fill('\\"a\\\\\\"'), `\\"${fill('a\\\\\\"')}`, fill('\\"token\\":'), fill('\\"token\\":\\"a\\"'), fill('"token":\n"a"\n:'), fill("token: a :"),
       `"${fill('\\"a')}": 1`, `"\\"${fill('a\\\\\\"')}": 1`, fill('\\"a \\"'), `"${fill('\\"token\\": ')}": 1`, fill("token=Basic "), `token=Basic${fill(" ")}x`,
       `Authorization: Digest ${fill('a="b", ')}`, fill("Authorization: Basic a\n"), fill("x: Authorization: Basic "),
+      // The header stage reads escaped names and quotes: runs of backslashes and of near-names.
+      fill("\\u0041"), fill("\\\\u0041uthorizatio"), fill("Authorizatio"), fill('\\"Authorization\\"'), fill("\\nauthorization"), fill("--authorizatio"),
+      // Separator whitespace, raw and escaped, with no separator after it.
+      `Authorization${fill("\n")}`, `"Authorization"${fill("\\n")}`, `Authorization${fill("\\\\\\t")}`, fill("Authorization \n"), fill('"authorization"\\u000a'), `authorization:${fill(" \r\n")}`,
+      // Compound keys and escaped whitespace: long key runs, near-separators and escapes that decode to no whitespace.
+      fill("authorization_"), `authorization_${fill("a")}`, fill("x-authorization-token "), fill("authorization.x\\u00a0"), `Authorization${fill("\\u00a0")}`,
+      `Authorization${fill("\\\\u2003")}`, fill("authorization\\u005f"), fill("Authorization\\u0041"), `"authorization_x${fill("\\uFEFF")}"`,
+      // Quoted keys: names whose closing quote is far ahead, or never comes, at one depth or alternating depths.
+      `"${fill("authorization ")}`, fill('"authorization '), fill("'a authorization "), fill('"authorization \\"authorization '),
+      `"${fill("authorization\\u003a")}`, `\\"${fill("authorization\n")}\\": x`, fill('"x" authorization '),
+      // Names within one key window of a long backslash run: the run is read once per window, not once per step.
+      `${"authorization ".repeat(18)}${fill("\\")}`, `${"authorization ".repeat(18)}${fill("\\", "u0041")}`,
     ];
     for (const input of inputs) {
-      const started = performance.now();
-      scrubDiagnosticSecrets(input);
-      // Generous for a loaded CI host; the quadratic key regex took seconds on each of the first two.
-      expect(performance.now() - started, input.slice(0, 24)).toBeLessThan(250);
+      for (const scrub of [scrubDiagnosticSecrets, scrubSecretsForLLM]) {
+        const started = performance.now();
+        scrub(input);
+        // Generous for a loaded CI host; the quadratic key regex took seconds on each of the first two.
+        expect(performance.now() - started, input.slice(0, 24)).toBeLessThan(250);
+      }
     }
   });
 

@@ -24,9 +24,12 @@ import revocationsSchema from "../../../schemas/marketplace/revocations.schema.j
 import { RESERVED_ENV_NAMES, RESERVED_HEADERS } from "../../mcp/safe-names.js";
 import { resolveAddFormats, resolveAjv } from "../../plugins/config-schema.js";
 import { ALERT_RESERVED_PACKAGE_ID } from "../../shared/alerts-types.js";
+import { CREDENTIAL_ISSUER_NAMES, holdsCredential, reservedPrefixIn } from "../../shared/dlp.js";
+import type { MarketplaceErrorDetail } from "../errors.js";
 import { compareSemver } from "../../shared/semver-compare.js";
 import { parseStrictJson } from "./strict-json.js";
 import type {
+  AgentPluginComponents,
   IndexPackage,
   MarketplaceIndex,
   PackageDescriptor,
@@ -42,7 +45,68 @@ export interface CatalogDiagnostic {
   message: string;
 }
 
-export type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
+/**
+ * A failure; `credential` is set when the reason is an identifier with a
+ * credential's shape (§18.8), the detail the refusal carries.
+ */
+export type Validation<T> = { ok: true; value: T } | { ok: false; error: string; credential?: CredentialDetail };
+
+/** The refusal detail of a package identifier that has a credential's shape (§18.8). */
+export type CredentialDetail = MarketplaceErrorDetail<"SOURCE_INDEX_INVALID">;
+
+/** The identifier of a package a refusal names: its name, a version, or a component's name. */
+export type IdentifierPart = "name" | "version" | "component";
+
+const PART_TEXT: Readonly<Record<IdentifierPart, string>> = { name: "its name", version: "a version", component: "a component name" };
+
+/**
+ * The refusal of `text`, `part` of a package, which has a credential's shape
+ * (§18.8). A name holding a credential format's prefix at a boundary is in a
+ * reserved namespace, whatever its body says: the refusal names the prefix
+ * and the issuer it looks like, so the author knows what to change. A shape
+ * with no prefix (an assignment, URL userinfo) is refused as one.
+ */
+export function credentialRefusal(part: IdentifierPart, text: string): { detail: CredentialDetail; message: string } {
+  const reserved = reservedPrefixIn(text);
+  if (reserved) {
+    const reason = ({ name: "name-reserved-prefix", version: "version-reserved-prefix", component: "component-reserved-prefix" } as const)[part];
+    return {
+      detail: { reason, prefix: reserved.prefix, issuer: reserved.issuer },
+      message: `${PART_TEXT[part]} uses the reserved prefix ${reserved.prefix}, which looks like ${CREDENTIAL_ISSUER_NAMES[reserved.issuer]}; choose a different one`,
+    };
+  }
+  const reason = ({ name: "name-holds-credential", version: "version-holds-credential", component: "component-holds-credential" } as const)[part];
+  return { detail: { reason }, message: `${PART_TEXT[part]} looks like a password or token` };
+}
+
+/** Every name the renderer can name a component of an agent plugin by. */
+function componentNames(components: AgentPluginComponents | undefined): string[] {
+  if (!components) return [];
+  return [
+    ...components.skills.map((skill) => skill.name),
+    ...Object.keys(components.mcpServers),
+    ...components.prompts.map((prompt) => prompt.name),
+    ...components.agents.map((agent) => agent.name),
+    ...components.routineTemplates.map((routine) => routine.id),
+  ];
+}
+
+/**
+ * The first identifier of a package that has a credential's shape, as the
+ * one detector the scrubber uses (§18.8). The renderer gets every string
+ * from main scrubbed and names a package, a version or a component back by
+ * it, so an identifier the scrubber would change could never be named
+ * again: it is refused here, where it enters, and egress scrubbing leaves
+ * every identifier that passed unchanged.
+ */
+function credentialIn(name: string, versions: readonly string[], components: ReadonlyArray<AgentPluginComponents | undefined>): { detail: CredentialDetail; message: string } | null {
+  if (holdsCredential(name)) return credentialRefusal("name", name);
+  const version = versions.find(holdsCredential);
+  if (version !== undefined) return credentialRefusal("version", version);
+  const component = components.flatMap(componentNames).find(holdsCredential);
+  if (component !== undefined) return credentialRefusal("component", component);
+  return null;
+}
 
 const INDEX_ID = "https://sdk.former-site.invalid/schemas/marketplace/index.2.schema.json";
 const PACKAGE_ID = "https://sdk.former-site.invalid/schemas/marketplace/package.2.schema.json";
@@ -56,6 +120,9 @@ interface Validators {
   conditionalRevocations: ValidateFunction;
   snapshot: ValidateFunction;
 }
+
+/** A cached snapshot's pin: a commit, or a folder source's `local-<sha256>` revision (§18.4.3). */
+const SNAPSHOT_PIN = { anyOf: [{ $ref: PACKAGE_ID + "#/definitions/commit" }, { type: "string", pattern: "^local-[0-9a-f]{64}$" }] };
 
 let compiled: Validators | null = null;
 let legacyIndexValidator: ValidateFunction | null = null;
@@ -106,7 +173,8 @@ function validators(): Validators {
       properties: {
         formatVersion: { const: 2 },
         sourceId: { $ref: PACKAGE_ID + "#/definitions/sourceId" },
-        commit: { $ref: PACKAGE_ID + "#/definitions/commit" },
+        // A folder source's pin is its revision (§18.4.3); only a cached snapshot names one, never an index.
+        commit: SNAPSHOT_PIN,
         fetchedAt: { type: "string", format: "date-time" },
         marketplace: {
           type: "object", additionalProperties: false, required: ["name", "displayName"],
@@ -120,6 +188,7 @@ function validators(): Validators {
               [key, { $ref: INDEX_ID + "#/definitions/indexPackage/properties/" + key }])),
             // Direct sources can install a package from the repository root.
             path: { anyOf: [{ const: "" }, { $ref: PACKAGE_ID + "#/definitions/repoPath" }] },
+            treeSha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
             versions: {
               ...indexSchema.definitions.indexPackage.properties.versions,
               items: {
@@ -127,6 +196,7 @@ function validators(): Validators {
                 properties: {
                   ...Object.fromEntries(Object.keys(indexSchema.definitions.indexVersion.properties).map((key) =>
                     [key, { $ref: INDEX_ID + "#/definitions/indexVersion/properties/" + key }])),
+                  commit: SNAPSHOT_PIN,
                   // An implicit tree install synthesized at the root has no artifact pins.
                   artifact: { anyOf: [{ type: "object", maxProperties: 0 }, { $ref: PACKAGE_ID + "#/definitions/pluginArtifactPins" }] },
                 },
@@ -289,13 +359,25 @@ export function validateIndexText(text: string, context: IndexContext): Validati
   const claim = (counts: Map<string, number>, key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
   root.packages.forEach((raw, position) => {
     const entry = raw as Partial<IndexPackage>;
-    const subject = typeof entry.kind === "string" && typeof entry.name === "string" ? `${entry.kind}/${entry.name}` : `packages[${position}]`;
+    // A name with a credential's shape is named by its position, never by itself.
+    const named = typeof entry.kind === "string" && typeof entry.name === "string" && !holdsCredential(entry.name);
+    const subject = named ? `${entry.kind}/${entry.name}` : `packages[${position}]`;
     if (typeof entry.kind === "string" && typeof entry.name === "string") claim(byName, `${entry.kind}/${entry.name}`);
     if (!indexPackage(raw)) {
       diagnostics.push({ subject, message: describeErrors(indexPackage.errors) });
       return;
     }
-    const rule = indexPackageRules(raw as IndexPackage);
+    const listed = raw as IndexPackage;
+    const credential = credentialIn(
+      listed.name,
+      [...(listed.latest !== undefined ? [listed.latest] : []), ...(listed.versions ?? []).map((version) => version.version)],
+      (listed.versions ?? []).map((version) => version.components),
+    );
+    if (credential) {
+      diagnostics.push({ subject, message: credential.message });
+      return;
+    }
+    const rule = indexPackageRules(listed);
     if (rule) {
       diagnostics.push({ subject, message: rule });
       return;
@@ -345,6 +427,8 @@ function validateDescriptorValue(document: unknown, context: DescriptorContext, 
       error: `${file} declares ${value.kind}/${value.name} but the index lists ${context.expected.kind}/${context.expected.name}`,
     };
   }
+  const credential = credentialIn(value.name, [value.version], value.kind === "agent-plugin" ? [(value.payload as { components?: AgentPluginComponents }).components] : []);
+  if (credential) return { ok: false, error: `${file}: ${credential.message}`, credential: credential.detail };
   const reserved = reservedPluginName(value.kind, value.name);
   if (reserved) return { ok: false, error: `${file}: ${reserved}` };
   if (value.kind === "plugin") {
@@ -422,6 +506,29 @@ export function validateConditionalRevocationsText(text: string): Validation<Con
 }
 
 /** A same-pin sync may reuse only a complete, current and readable cache. */
+/**
+ * A stored snapshot as it is served: its packages held to the identifier
+ * admission a fresh read applies (§18.8). A snapshot written before that
+ * rule, or at a commit a refresh does not rebuild, can still list a package
+ * whose name, version or component name has a credential's shape; it is
+ * left out here, with the diagnostic a fresh read gives, on every read
+ * (offline ones included). The file, and its revocations, stay as stored.
+ */
+export function admitSnapshotPackages(snapshot: SourceSnapshot): SourceSnapshot {
+  const diagnostics: CatalogDiagnostic[] = [];
+  const packages = snapshot.packages.filter((entry, position) => {
+    const credential = credentialIn(
+      entry.name,
+      [...(entry.latest !== undefined ? [entry.latest] : []), ...entry.versions.map((version) => version.version)],
+      entry.versions.map((version) => version.components),
+    );
+    if (!credential) return true;
+    diagnostics.push({ subject: holdsCredential(entry.name) ? `packages[${position}]` : `${entry.kind}/${entry.name}`, message: credential.message });
+    return false;
+  });
+  return diagnostics.length === 0 ? snapshot : { ...snapshot, packages, diagnostics: [...snapshot.diagnostics, ...diagnostics] };
+}
+
 export function validateCachedSnapshotText(text: string): Validation<SourceSnapshot> {
   const parsed = parse(text);
   if (!parsed.ok) return parsed;

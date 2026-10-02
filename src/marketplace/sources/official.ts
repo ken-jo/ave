@@ -10,6 +10,8 @@
  * design the repository becomes publicly readable or moves, and that
  * release's constant carries the public URL with `auth: { kind: "none" }`.
  */
+import { holdsCredential } from "../../shared/dlp.js";
+
 export type SourceAuth = { kind: "none" } | { kind: "token"; host: string } | { kind: "ssh" };
 
 export interface OfficialMarketplace {
@@ -30,6 +32,15 @@ export const OFFICIAL_MARKETPLACE: OfficialMarketplace = Object.freeze({
 });
 
 export const SOURCE_ID_RE = /^[a-z0-9][a-z0-9-]{1,62}$/u;
+
+/**
+ * A source id: the grammar, and no credential's shape. The renderer gets an
+ * id through the scrubber and sends it back (§18.8), so an id the scrubber
+ * would change could never be named again: it is refused where it enters.
+ */
+export function isSourceId(id: string): boolean {
+  return SOURCE_ID_RE.test(id) && !holdsCredential(id);
+}
 
 /** `ave`, `official`, `ave-official` and every `ave-*` id; re-checked on every load. */
 export function isReservedSourceId(id: string): boolean {

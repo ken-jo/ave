@@ -256,13 +256,68 @@ export function sameSourceRepository(a: NormalizedSourceUrl, b: NormalizedSource
  *   - a URL ending in `*` matches the host and any path that starts with the
  *     text before the `*`, without case, on any scheme and port.
  * The pattern's own scheme and port only have to be valid.
+ *
+ * `path:` patterns name folders (§18.6) and match folders only; host and URL
+ * patterns match git sources only.
  */
 export type SourcePattern =
   | { kind: "host"; host: string; text: string }
   | { kind: "exact"; url: NormalizedSourceUrl; text: string }
-  | { kind: "prefix"; host: string; pathPrefix: string; text: string };
+  | { kind: "prefix"; host: string; pathPrefix: string; text: string }
+  | FolderPattern;
+
+/**
+ * A `path:` pattern (§18.6): `path:<folder>` that folder, `path:<prefix>*`
+ * every folder whose path starts with the prefix, `path:*` every folder.
+ * `folder` is the comparison form of {@link folderPatternKey}.
+ */
+export interface FolderPattern {
+  kind: "path";
+  folder: string;
+  prefix: boolean;
+  text: string;
+}
+
+/**
+ * The form a folder path and a `path:` pattern are compared in: `\` and `/`
+ * are equal, and a drive letter is upper case (stage 1 writes it so).
+ */
+export function folderPatternKey(path: string): string {
+  const slashed = path.replace(/\\/gu, "/");
+  return /^[a-z]:/u.test(slashed) ? `${slashed[0]!.toUpperCase()}${slashed.slice(1)}` : slashed;
+}
+
+function parseFolderPattern(text: string): FolderPattern {
+  const body = text.slice("path:".length);
+  if (body.slice(0, -1).includes("*")) reject(text, "only a trailing * is allowed");
+  const prefix = body.endsWith("*");
+  const folder = folderPatternKey(prefix ? body.slice(0, -1) : body);
+  if (prefix && folder === "") return { kind: "path", folder, prefix, text };
+  // An absolute path: `/…`, a drive `X:/…`, or a share `//server/share…`.
+  if (!/^(?:\/|[A-Za-z]:\/)/u.test(folder)) reject(text, "a path: pattern names an absolute folder");
+  const rest = folder.replace(/^(?:\/\/|[A-Za-z]:\/|\/)/u, "");
+  const segments = rest === "" ? [] : rest.split("/");
+  // A prefix may end in a separator (`/opt/a/*` is everything under `/opt/a`); nothing else is empty, `.` or `..`.
+  const named = prefix && segments[segments.length - 1] === "" ? segments.slice(0, -1) : segments;
+  if (named.some((segment) => segment === "" || segment === "." || segment === "..")) reject(text, "ambiguous path segment");
+  return { kind: "path", folder, prefix, text };
+}
+
+/**
+ * Whether a folder matches a `path:` pattern (§18.6). The case rule is
+ * conservative: an `allow` pattern matches only with exact case, a `block`
+ * pattern ignoring case, since a rule is written without knowing the
+ * volume's case sensitivity.
+ */
+export function matchesFolderPattern(path: string, pattern: FolderPattern, list: "allow" | "block"): boolean {
+  const fold = (text: string) => (list === "block" ? text.normalize("NFC").toLowerCase() : text.normalize("NFC"));
+  const folder = fold(folderPatternKey(path));
+  const wanted = fold(pattern.folder);
+  return pattern.prefix ? folder.startsWith(wanted) : folder === wanted;
+}
 
 export function parseSourcePattern(text: string): SourcePattern {
+  if (text.startsWith("path:")) return parseFolderPattern(text);
   if (text.startsWith("host:")) {
     return { kind: "host", host: normalizeSourceHost(text, text.slice("host:".length)), text };
   }
@@ -297,6 +352,8 @@ export type PatternTarget = "repository" | "download";
 
 export function matchesSourcePattern(url: NormalizedSourceUrl, pattern: SourcePattern, target: PatternTarget = "repository"): boolean {
   switch (pattern.kind) {
+    case "path":
+      return false;
     case "host":
       return url.host === pattern.host;
     case "exact":

@@ -7,6 +7,7 @@ import { normalizeSourceUrl } from "../../net/source-url.js";
 import {
   EMPTY_MARKETPLACE_POLICY,
   FilePolicySource,
+  folderPolicyBlock,
   isBlockedByPolicy,
   loadMarketplacePolicy,
   type MarketplacePolicy,
@@ -29,16 +30,16 @@ function writePolicy(marketplaces: unknown): void {
   writeFileSync(path, JSON.stringify({ version: 1, requireExplicitApproval: true, managed: true, updatedAt: "2026-09-23T00:00:00Z", marketplaces }));
 }
 
-async function loaded(marketplaces: unknown): Promise<MarketplacePolicy> {
+async function loaded(marketplaces: unknown, platform: NodeJS.Platform = process.platform): Promise<MarketplacePolicy> {
   writePolicy(marketplaces);
-  const result = await loadMarketplacePolicy(path);
+  const result = await loadMarketplacePolicy(path, platform);
   if (!result.ok) throw new Error(`expected a valid policy, got: ${result.error}`);
   return result.policy;
 }
 
-async function rejected(marketplaces: unknown): Promise<string> {
+async function rejected(marketplaces: unknown, platform: NodeJS.Platform = process.platform): Promise<string> {
   writePolicy(marketplaces);
-  const result = await loadMarketplacePolicy(path);
+  const result = await loadMarketplacePolicy(path, platform);
   if (result.ok) throw new Error("expected the policy to be rejected");
   return result.error;
 }
@@ -70,6 +71,7 @@ describe("loadMarketplacePolicy", () => {
     expect([...policy.allowHttpHosts]).toEqual(["git.corp.example"]);
     expect(policy.additional).toEqual([
       {
+        transport: "git",
         id: "corp",
         url: normalizeSourceUrl("https://git.corp.example/ave/marketplace"),
         auth: { kind: "none" },
@@ -106,7 +108,7 @@ describe("loadMarketplacePolicy", () => {
         { id: "corp-web", url: "https://git.corp.example/ave/other", auth: { kind: "token", host: "GIT.Corp.Example." }, ref: "release/v1", label: "Corp" },
       ],
     });
-    expect(policy.additional[0]!.auth).toEqual({ kind: "ssh" });
+    expect(policy.additional[0]).toMatchObject({ transport: "git", auth: { kind: "ssh" } });
     expect(policy.additional[1]).toMatchObject({ auth: { kind: "token", host: "git.corp.example" }, ref: "release/v1", label: "Corp" });
   });
 
@@ -136,7 +138,7 @@ describe("loadMarketplacePolicy", () => {
 
   it("takes an http additional source as its own listing, and under requireHttps with its host in allowHttpHosts (§18.2.2)", async () => {
     const plain = await loaded({ requireHttps: false, additional: [{ id: "team-tools", url: "http://git.example.test/catalog" }] });
-    expect(plain.additional.map((spec) => spec.url.url)).toEqual(["http://git.example.test/catalog"]);
+    expect(plain.additional.map((spec) => (spec.transport === "git" ? spec.url.url : spec.path))).toEqual(["http://git.example.test/catalog"]);
     const excepted = await loaded({ requireHttps: true, allowHttpHosts: ["git.example.test"], additional: [{ id: "team-tools", url: "http://git.example.test/catalog" }] });
     expect(excepted.additional).toHaveLength(1);
   });
@@ -363,5 +365,72 @@ describe("FilePolicySource (§18.6)", () => {
     expect(source.digest).toBe("absent");
     writeFileSync(join(dir, "absent.json"), JSON.stringify({ version: 1, marketplaces: { requireHttps: true } }));
     expect((await source.check())?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+  });
+});
+
+describe("folder sources in the policy (§18.6)", () => {
+  it("blocks every folder under allowLocalSources: false, and allows folders by default", async () => {
+    expect(EMPTY_MARKETPLACE_POLICY.allowLocalSources).toBe(true);
+    expect(folderPolicyBlock(await loaded({}), "/opt/market")).toBeNull();
+    const closed = await loaded({ allowLocalSources: false }, "linux");
+    expect(folderPolicyBlock(closed, "/opt/market")).toEqual({ reason: "local-sources-blocked" });
+    expect(await rejected({ allowLocalSources: "no" }, "linux")).toContain("allowLocalSources");
+  });
+
+  it("blocks a folder under an allow list with no path: pattern, and admits one under a path: prefix", async () => {
+    const gitOnly = await loaded({ allow: ["host:git.corp.example"] }, "linux");
+    expect(folderPolicyBlock(gitOnly, "/opt/a/b")).toEqual({ reason: "not-in-allow-list" });
+    const folders = await loaded({ allow: ["path:/opt/a/*"] }, "linux");
+    expect(folderPolicyBlock(folders, "/opt/a/b")).toBeNull();
+    expect(folderPolicyBlock(folders, "/opt/a")).toEqual({ reason: "not-in-allow-list" });
+    expect(folderPolicyBlock(folders, "/opt/ab")).toEqual({ reason: "not-in-allow-list" });
+    expect(folderPolicyBlock(await loaded({ allow: ["path:*"] }), "/anything")).toBeNull();
+  });
+
+  it("keeps path: patterns to folders and host or URL patterns to git", async () => {
+    const policy = await loaded({ block: ["path:*", "host:git.example.org"], allow: ["path:/opt/*", "https://github.com/acme/*"] }, "linux");
+    // A folder pattern never matches a git address, and a git pattern never matches a folder.
+    expect(isBlockedByPolicy(policy, normalizeSourceUrl("acme/market"))).toBe(false);
+    expect(isBlockedByPolicy(policy, normalizeSourceUrl("https://git.example.org/a/b"))).toBe(true);
+    expect(folderPolicyBlock(policy, "/opt/market")).toEqual({ reason: "blocked-by-pattern", pattern: "path:*" });
+    expect(folderPolicyBlock(await loaded({ block: ["host:git.example.org"] }), "/git.example.org")).toBeNull();
+  });
+
+  it("reads Windows path: patterns with either separator and any drive-letter case", async () => {
+    writePolicy({ block: ["path:c:/Shared/*"] });
+    const result = await loadMarketplacePolicy(path, "win32");
+    if (!result.ok) throw new Error(result.error);
+    expect(folderPolicyBlock(result.policy, "C:\\shared\\tools")).toEqual({ reason: "blocked-by-pattern", pattern: "path:c:/Shared/*" });
+    expect(folderPolicyBlock(result.policy, "D:\\shared\\tools")).toBeNull();
+  });
+
+  it("refuses an additional source whose id has a credential's shape, and reads one that only looks alike (§18.8)", async () => {
+    // Assembled here so no whole token sits in the source.
+    const token = `glp${"at-"}${"abcd1234".repeat(3)}`;
+    const error = await rejected({ additional: [{ id: token, path: "/srv/team" }] }, "linux");
+    expect(error).toContain("additional[0].id: looks like a password or token");
+    expect(error).not.toContain(token);
+    const policy = await loaded({ additional: [{ id: "test-marketplace2026", path: "/srv/team" }] }, "linux");
+    expect(policy.additional).toMatchObject([{ id: "test-marketplace2026" }]);
+  });
+
+  it("reads an additional folder with path and refuses what a folder cannot have", async () => {
+    const policy = await loaded({ additional: [{ id: "team", path: "/srv/team/market", label: "Team" }] }, "linux");
+    expect(policy.additional).toEqual([{ transport: "folder", id: "team", path: "/srv/team/market", label: "Team" }]);
+    expect(await rejected({ additional: [{ id: "team", path: "/srv/team", url: "https://git.corp.example/a/b" }] }, "linux")).toContain("url or path, not both");
+    expect(await rejected({ additional: [{ id: "team", path: "/srv/team", ref: "main" }] }, "linux")).toContain("no branch or tag");
+    expect(await rejected({ additional: [{ id: "team", path: "/srv/team", auth: "ssh" }] }, "linux")).toContain("no sign-in");
+    expect(await rejected({ additional: [{ id: "team", path: "~/market" }] }, "linux")).toContain("~ names no home");
+    expect(await rejected({ additional: [{ id: "team", path: "market" }] }, "linux")).toContain("additional[0].path");
+  });
+
+  it("refuses an additional folder under allowLocalSources: false, blocked by its own lists, or nested in another", async () => {
+    expect(await rejected({ allowLocalSources: false, additional: [{ id: "team", path: "/srv/team" }] }, "linux")).toContain("allowLocalSources is false");
+    expect(await rejected({ block: ["path:/srv/*"], additional: [{ id: "team", path: "/srv/team" }] }, "linux")).toContain("blocked by this policy's own allow/block lists");
+    const nested = await rejected({ additional: [{ id: "outer", path: "/srv/team" }, { id: "inner", path: "/srv/team/market" }] }, "linux");
+    expect(nested).toContain("lies inside the folder of outer");
+    expect(await rejected({ additional: [{ id: "alpha", path: "/srv/team/market" }, { id: "beta", path: "/srv/team" }] }, "linux")).toContain("folder of alpha");
+    // Siblings that share a prefix are not nested.
+    expect((await loaded({ additional: [{ id: "alpha", path: "/srv/team" }, { id: "beta", path: "/srv/teams" }] }, "linux")).additional).toHaveLength(2);
   });
 });

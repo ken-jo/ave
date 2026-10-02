@@ -1,6 +1,7 @@
 import { PACKAGE_KINDS, isPackageName, type PackageKind } from "../marketplace/catalog/types.js";
 import { isFolderPathInput } from "../marketplace/net/source-url.js";
-import { SOURCE_ID_RE } from "../marketplace/sources/official.js";
+import { isSourceId } from "../marketplace/sources/official.js";
+import { holdsCredential } from "../shared/dlp.js";
 import type { GitMarketplaceDeepLink } from "../shared/git-marketplace.js";
 
 export function findAveProtocolUri(argv: readonly string[]): string | null {
@@ -51,7 +52,8 @@ export function parseGitMarketplaceUri(url: string): GitMarketplaceDeepLink | nu
   if (at < 0) return null;
   const name = qualified.slice(0, at);
   const sourceId = qualified.slice(at + 1);
-  if (!(PACKAGE_KINDS as readonly string[]).includes(kind) || !isPackageName(name) || !SOURCE_ID_RE.test(sourceId)) return null;
+  // The tab gets the key scrubbed and names it back (§18.8): a key with a credential's shape is no link.
+  if (!(PACKAGE_KINDS as readonly string[]).includes(kind) || !isPackageName(name) || holdsCredential(name) || !isSourceId(sourceId)) return null;
   return { action: host, key: { sourceId, kind: kind as PackageKind, name } };
 }
 

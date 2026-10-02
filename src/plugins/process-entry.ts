@@ -16,7 +16,7 @@
  */
 import { realpathSync } from "node:fs";
 import { isSafeMcpEnvironmentName } from "../mcp/safe-names.js";
-import type { ArtifactRung, GitInstallRecord, PluginInstallReceipt } from "./plugin-install-receipt.js";
+import type { GitInstallRecord, PluginInstallReceipt, PluginRung } from "./plugin-install-receipt.js";
 import { AVE_EXTENSION_NAMESPACE, type PluginManifest } from "./public-contract.js";
 import { resolveBundledArgv, resolveProcessEntryEnvironmentValue } from "./resolve-bundled-argv.js";
 
@@ -76,9 +76,10 @@ export function hasProcessEntry(document: unknown): boolean {
  * the artifact came through. `undefined` when the path verified nothing.
  */
 export interface ProcessEntryProvenance {
-  readonly installSource: "marketplace" | "local-dev" | "git";
+  readonly installSource: "marketplace" | "local-dev" | "git" | "folder";
   readonly artifactSha256: string | null;
-  readonly rung: ArtifactRung | null;
+  /** A folder install's is `folder`, which no rule admits (§18.4.9). */
+  readonly rung: PluginRung | null;
   /** The kind of git source the install came from; `null` for any other install. */
   readonly sourceOrigin: GitInstallRecord["sourceOrigin"] | null;
 }
@@ -88,7 +89,7 @@ export function processEntryProvenance(receipt: PluginInstallReceipt): ProcessEn
   return {
     installSource: receipt.installSource,
     artifactSha256: receipt.artifactSha256,
-    rung: receipt.installSource === "git" ? receipt.git.rung : null,
+    rung: receipt.installSource === "git" ? receipt.git.rung : receipt.installSource === "folder" ? "folder" : null,
     sourceOrigin: receipt.installSource === "git" ? receipt.git.sourceOrigin : null,
   };
 }
@@ -104,8 +105,9 @@ const MARKETPLACE_SOURCE_ORIGINS: ReadonlySet<GitInstallRecord["sourceOrigin"]> 
  * `process` manifest passes only with a verified `git` receipt from a
  * marketplace source whose artifact came through the `release` or `archive`
  * rung with a sha256 pin. Everything else that reaches it — a tree-rung
- * install, a direct source, a v3 receipt, a `local-dev` receipt under dev
- * unlock, a valid receipt the path did not verify — is refused.
+ * install, a direct source, a folder install (categorically, §18.4.9), a v3
+ * receipt, a `local-dev` receipt under dev unlock, a valid receipt the path
+ * did not verify — is refused.
  */
 export function assertProcessEntryAdmitted(
   manifest: PluginManifest,

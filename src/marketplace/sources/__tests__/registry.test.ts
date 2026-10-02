@@ -8,11 +8,17 @@ import { normalizeSourceUrl } from "../../net/source-url.js";
 import { OFFICIAL_MARKETPLACE } from "../official.js";
 import { policyLoad as policy, policySource } from "../../__tests__/fixtures/policy.js";
 import type { PolicyLoad } from "../policy.js";
-import { SourceRegistry, type NewSource } from "../registry.js";
+import { confirmationsFor, SourceRegistry, type GitSource, type NewFolderSource, type NewSource, type ResolvedSource } from "../registry.js";
 
 let root: string;
 const NOW = new Date("2026-09-23T08:00:00.000Z");
 const COMMIT_A = "a".repeat(40);
+
+/** A source the test expects to be a git source. */
+function gitSource(source: ResolvedSource | undefined): GitSource {
+  if (source?.transport !== "git") throw new Error(`expected a git source, got ${JSON.stringify(source)}`);
+  return source;
+}
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "ave-mkt-registry-"));
@@ -23,11 +29,11 @@ afterEach(() => {
 });
 
 const CORP_POLICY = policy({
-  additional: [{ id: "corp", url: normalizeSourceUrl("https://git.corp.example/ave/market"), auth: { kind: "none" }, label: "Corp" }],
+  additional: [{ transport: "git", id: "corp", url: normalizeSourceUrl("https://git.corp.example/ave/market"), auth: { kind: "none" }, label: "Corp" }],
 });
 
-function open(load: PolicyLoad = policy()): Promise<SourceRegistry> {
-  return SourceRegistry.open({ root, policy: policySource(load), now: () => NOW });
+function open(load: PolicyLoad = policy(), platform: NodeJS.Platform = process.platform): Promise<SourceRegistry> {
+  return SourceRegistry.open({ root, policy: policySource(load), now: () => NOW, platform });
 }
 
 const custom = (overrides: Partial<NewSource> = {}): NewSource => ({
@@ -69,7 +75,7 @@ describe("SourceRegistry listing", () => {
       ["ave", "official"],
       ["corp", "managed"],
     ]);
-    const official = registry.get("ave")!;
+    const official = gitSource(registry.get("ave"));
     expect(official.url.url).toBe(normalizeSourceUrl(OFFICIAL_MARKETPLACE.url).url);
     expect(official.auth).toEqual({ kind: "token", host: "github.com" });
     expect(registry.get("corp")!.label).toBe("Corp");
@@ -86,7 +92,7 @@ describe("SourceRegistry.add", () => {
     const registry = await open();
     const added = await registry.add(custom({ label: "Acme tools" }));
     expect(added).toMatchObject({ id: "acme", origin: "custom", label: "Acme tools" });
-    expect(added.url.url).toBe("https://github.com/Acme/Market");
+    expect(gitSource(added).url.url).toBe("https://github.com/Acme/Market");
     const file = JSON.parse(readFileSync(join(root, "sources.json"), "utf8"));
     expect(file).toEqual({
       version: 1,
@@ -94,7 +100,7 @@ describe("SourceRegistry.add", () => {
     });
     if (process.platform !== "win32") expect(statSync(join(root, "sources.json")).mode & 0o777).toBe(0o600);
     const reopened = await open();
-    expect(reopened.get("acme")?.url.url).toBe("https://github.com/Acme/Market");
+    expect(gitSource(reopened.get("acme")).url.url).toBe("https://github.com/Acme/Market");
     expect(reopened.diagnostics()).toEqual([]);
   });
 
@@ -118,6 +124,12 @@ describe("SourceRegistry.add", () => {
     expect(await code(registry.add(custom({ id: "acme-4", url: "acme/market-2" })))).toBe("passed");
     expect(await code(registry.add(custom({ id: "corp-2", url: "https://git.corp.example/ave/market/" })))).toBe("SOURCE_ID_TAKEN");
     expect(await code(registry.add(custom({ id: "mine", url: "ken-jo/agent-marketplace" })))).toBe("SOURCE_ID_TAKEN");
+    // The refusal names the source it duplicates and the address as added, so the tab can offer *Show acme* (§18.8).
+    const taken = await failure(registry.add(custom({ id: "acme-5", url: "https://github.com/ACME/market/" })));
+    expect(taken.code).toBe("SOURCE_ID_TAKEN");
+    expect(taken.detail).toEqual({ reason: "repository-already-added", url: "https://github.com/ACME/market", existingId: "acme" });
+    // A taken id alone carries no detail: another id resolves it.
+    expect((await failure(registry.add(custom({ url: "acme/other" })))).detail).toBeUndefined();
   });
 
   it("allows two direct sources from one repository with different subdirs", async () => {
@@ -284,7 +296,7 @@ describe("SourceRegistry state", () => {
     writeFileSync(join(root, "ave", "state.json"), JSON.stringify({ pinnedCommit: "main", enabled: true }));
     await expect(registry.readState("ave")).rejects.toMatchObject({
       code: "SOURCE_LOCAL_DATA_DAMAGED",
-      message: "state.json of source ave is invalid: pinnedCommit must be null or a commit id",
+      message: "state.json of source ave is invalid: pinnedCommit must be null, a commit id or a folder revision",
       detail: { reason: "state-invalid", sourceId: "ave" },
     });
     expect(await code(registry.writeState("ave", { pinnedCommit: null, enabled: true, lastSync: { at: "x", result: "ok" } }))).toContain(
@@ -311,7 +323,7 @@ describe("SourceRegistry state", () => {
 });
 
 describe("confirmations are bound to the source's address (§18.5)", () => {
-  const at = (url: string) => policy({ additional: [{ id: "team", url: normalizeSourceUrl(url), auth: { kind: "token", host: "git.example.test" } }] });
+  const at = (url: string) => policy({ additional: [{ transport: "git", id: "team", url: normalizeSourceUrl(url), auth: { kind: "token", host: "git.example.test" } }] });
 
   it("drops a managed source's confirmations when its policy entry moves to another address, also after a restart", async () => {
     const moving = policySource(at("http://git.example.test:8000/old"));
@@ -322,7 +334,7 @@ describe("confirmations are bound to the source's address (§18.5)", () => {
     // The administrator points the same id at another service.
     moving.change(at("http://git.example.test:9000/new"));
     moving.apply((await moving.check())!);
-    const moved = registry.get("team")!;
+    const moved = gitSource(registry.get("team"));
     expect(moved.url.url).toBe("http://git.example.test:9000/new");
     const held = await registry.acknowledged(moved);
     expect([...held]).toEqual([]);
@@ -347,5 +359,85 @@ describe("confirmations are bound to the source's address (§18.5)", () => {
     writeSources([{ ...stored.sources[0], url: "http://git.example.test:9000/a" }]);
     const reopened = await open();
     expect([...(await reopened.acknowledged(reopened.get("acme")!))]).toEqual([]);
+  });
+});
+
+describe("folder sources in the registry (§18.4.3, §18.4.4, §18.5)", () => {
+  const LOCAL = `local-${"b".repeat(64)}`;
+  const folder = (overrides: Partial<NewFolderSource> = {}): NewFolderSource => ({ id: "team", origin: "custom", path: "/srv/team", dev: 7n, ino: 42n, ancestors: [{ dev: 7n, ino: 2n }, { dev: 7n, ino: 30n }], ...overrides });
+
+  it("stores a folder entry with its path and the confirmations bound to that path, and its identity in the state", async () => {
+    const registry = await open(policy(), "linux");
+    const added = await registry.addFolder(folder({ label: "Team", acknowledged: ["network-folder"] }));
+    expect(added).toEqual({ transport: "folder", id: "team", origin: "custom", path: "/srv/team", auth: { kind: "none" }, label: "Team", acknowledged: ["network-folder"] });
+    const file = JSON.parse(readFileSync(join(root, "sources.json"), "utf8"));
+    expect(file.sources).toEqual([
+      { id: "team", origin: "custom", path: "/srv/team", auth: { kind: "none" }, addedAt: NOW.toISOString(), label: "Team", acknowledged: { path: "/srv/team", warnings: ["network-folder"] } },
+    ]);
+    expect(await registry.readState("team")).toEqual({
+      pinnedCommit: null,
+      enabled: true,
+      folder: { dev: "7", ino: "42", ancestors: [{ dev: "7", ino: "2" }, { dev: "7", ino: "30" }] },
+    });
+    const reopened = await open(policy(), "linux");
+    expect(reopened.get("team")).toEqual(added);
+    expect([...(await reopened.acknowledged(reopened.get("team")!))]).toEqual(["network-folder"]);
+    expect(reopened.diagnostics()).toEqual([]);
+  });
+
+  it("holds no confirmation given for another path: confirmations are bound to the canonical path", async () => {
+    writeSources([{ id: "team", origin: "custom", path: "/srv/team", auth: { kind: "none" }, addedAt: NOW.toISOString(), acknowledged: { path: "/srv/other", warnings: ["network-folder"] } }]);
+    const registry = await open(policy(), "linux");
+    expect(registry.get("team")).toMatchObject({ transport: "folder", acknowledged: [] });
+    expect(registry.diagnostics()).toEqual([]);
+  });
+
+  it.each([
+    ["/srv/Team", "/srv/team"],
+    ["/srv/team", "/srv/team/"],
+    ["/srv/Caf\u00e9", "/srv/Cafe\u0301"],
+    ["C:\\Program Files\\m", "C:\\PROGRA~1\\m"],
+    ["C:\\m", "X:\\m"],
+    ["Z:\\m", "\\\\server\\share\\m"],
+  ])("holds no confirmation given under %s for %s: another spelling is another path", (given, now) => {
+    expect(confirmationsFor({ path: given, warnings: ["network-folder"] }, { path: now })).toEqual([]);
+  });
+
+  it("refuses a folder entry that carries git fields, and an acknowledged url on a folder", async () => {
+    writeSources([
+      { id: "refd", origin: "custom", path: "/srv/a", ref: "main", auth: { kind: "none" }, addedAt: NOW.toISOString() },
+      { id: "both", origin: "custom", path: "/srv/b", url: "https://github.com/acme/market", auth: { kind: "none" }, addedAt: NOW.toISOString() },
+      { id: "relative", origin: "custom", path: "srv/c", auth: { kind: "none" }, addedAt: NOW.toISOString() },
+    ]);
+    const registry = await open(policy(), "linux");
+    expect(registry.list().map((source) => source.id)).toEqual(["ave"]);
+    expect(registry.diagnostics().map((item) => item.subject)).toEqual(["refd", "both", "relative"]);
+  });
+
+  it("pairs a pin with its transport: a folder holds a folder revision, a git source a commit (§18.4.3)", async () => {
+    const registry = await open(policy(), "linux");
+    await registry.addFolder(folder());
+    await registry.add(custom());
+    await registry.writeState("team", { pinnedCommit: LOCAL, enabled: true, folder: { dev: "7", ino: "42", ancestors: [] } });
+    expect((await registry.readState("team")).pinnedCommit).toBe(LOCAL);
+    expect(await code(registry.writeState("team", { pinnedCommit: COMMIT_A, enabled: true }))).toContain("a folder source's pin must be a folder revision");
+    expect(await code(registry.writeState("acme", { pinnedCommit: LOCAL, enabled: true }))).toContain("a git source's pin must be a commit id");
+    expect(await code(registry.writeState("acme", { pinnedCommit: COMMIT_A, enabled: true, folder: { dev: "1", ino: "2", ancestors: [] } }))).toContain("a git source has no folder identity");
+    // A folder identity without the directories above it is not one this version wrote.
+    mkdirSync(join(root, "team"), { recursive: true });
+    writeFileSync(join(root, "team", "state.json"), JSON.stringify({ pinnedCommit: LOCAL, enabled: true, folder: { dev: "7", ino: "42" } }));
+    await expect(registry.readState("team")).rejects.toMatchObject({ code: "SOURCE_LOCAL_DATA_DAMAGED", detail: { reason: "state-invalid", sourceId: "team" } });
+
+    // A state written by hand with the wrong pairing reads as damaged, not as a pin.
+    mkdirSync(join(root, "acme"), { recursive: true });
+    writeFileSync(join(root, "acme", "state.json"), JSON.stringify({ pinnedCommit: LOCAL, enabled: true }));
+    await expect(registry.readState("acme")).rejects.toMatchObject({ code: "SOURCE_LOCAL_DATA_DAMAGED", detail: { reason: "state-invalid", sourceId: "acme" } });
+  });
+
+  it("gives a managed folder network-folder through its policy entry", async () => {
+    const registry = await open(policy({ additional: [{ transport: "folder", id: "share", path: "/Volumes/share/market" }] }), "linux");
+    const share = registry.get("share")!;
+    expect(share).toMatchObject({ transport: "folder", origin: "managed", path: "/Volumes/share/market" });
+    expect([...(await registry.acknowledged(share))]).toEqual(["network-folder"]);
   });
 });

@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
-import { createLogger } from "../../lib/logger.js";
+import { createMarketplaceLogger } from "../log.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { assertNotRequiredByPolicy } from "../boot-installs/run.js";
 import type { PackageDescriptor } from "../catalog/types.js";
@@ -32,7 +32,7 @@ import { isDataContentKind, parseContent, type ContentFile, type DataContentKind
 import { ContentLedger, type LedgerEntry } from "./ledger.js";
 import { CONTENT_RULES, DESCRIPTOR_ALLOWANCE_BYTES, checkContentFiles, isContentKind, type ContentKind } from "./rules.js";
 
-const log = createLogger("marketplace-content-store");
+const log = createMarketplaceLogger("marketplace-content-store");
 
 interface DataContentPlan extends PackagePlan {
   kind: DataContentKind;
@@ -91,7 +91,8 @@ function digestOf(files: readonly ContentFile[]): string {
 }
 
 /**
- * Read `plan`'s package at its version commit: the descriptor must match
+ * Read `plan`'s package at its version's revision (a commit, or the copy a
+ * folder plan captured): the descriptor must match
  * the index (MANIFEST_MISMATCH), every file must fit the kind's rules and
  * the entry files must parse (CONTENT_RULE_VIOLATION).
  */
@@ -102,13 +103,10 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
   await mkdir(options.workRoot, { recursive: true });
   const dest = await mkdtemp(join(options.workRoot, "content-"));
   try {
-    const exported = await access.repo.exportPath(
-      access.remote,
-      dataPlan.versionCommit,
+    const exported = await access.treeAt(dataPlan.versionCommit).exportPath(
       dataPlan.packagePath,
       dest,
       { maxFiles: rule.maxFiles + 1, maxBytes: rule.maxBytes + DESCRIPTOR_ALLOWANCE_BYTES },
-      access.signal,
     );
     const files: ContentFile[] = [];
     for (const file of exported) {

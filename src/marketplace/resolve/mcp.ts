@@ -366,13 +366,10 @@ function usesToken(spec: McpRuntimeSpec, token: string): boolean {
 async function exportServerFiles(plan: McpInstallPlan, deps: McpResolveDeps): Promise<{ zipBuffer: Buffer; digest: string }> {
   const dest = await mkdtemp(join(deps.workRoot, "mcp-"));
   try {
-    const exported = await deps.repo.exportPath(
-      deps.remote,
-      plan.versionCommit,
+    const exported = await deps.treeAt(plan.versionCommit).exportPath(
       repoPath(plan.packagePath, "server"),
       dest,
       { maxFiles: deps.limits.maxEntryCount, maxBytes: deps.limits.maxTotalUncompressedBytes },
-      deps.signal,
     );
     const files = [];
     for (const file of exported) {
@@ -445,8 +442,9 @@ export async function resolveMcpPackage(plan: McpInstallPlan, deps: McpResolveDe
   let serverJson: unknown;
   if (mcpPayloadReadsServerJson(payload)) {
     const path = repoPath(plan.packagePath, "server.json");
-    await deps.repo.ensureBlobs(deps.remote, plan.versionCommit, [path], deps.signal);
-    const bytes = await deps.repo.readFile(plan.versionCommit, path, SERVER_JSON_LIMIT);
+    const tree = deps.treeAt(plan.versionCommit);
+    await tree.ensure([path]);
+    const bytes = await tree.readFile(path, SERVER_JSON_LIMIT);
     if (!bytes) throw refuse(`${path} is missing at ${plan.versionCommit}`);
     serverJson = parseServerJson(path, bytes);
   }

@@ -100,7 +100,7 @@ describe("retaining predecessor removal", () => {
     const marketplace = {
       catalog: vi.fn(async () => ({ entries: [entry] })),
       getRetirementEntry: vi.fn(async () => retirement),
-      uninstall: vi.fn(async (request: unknown) => ({ key: request, keptDataDir: null })),
+      uninstallInstalled: vi.fn(async (request: unknown) => ({ key: request, keptDataDir: null })),
       // Removal enters one marketplace operation before its plugin locks (lock order: alert-predecessor.test.ts).
       asOneOperation: vi.fn(async <T,>(fn: () => Promise<T>) => fn()),
     };
@@ -116,7 +116,7 @@ describe("retaining predecessor removal", () => {
       pluginId: "retired-plugin", label: "Retired helper", locked: false, restartRequired: false, removable: true,
     } }]);
     expect(await h.invoke(ALERTS.removePredecessor, "successor:reply")).toMatchObject({ ok: true });
-    expect(h.marketplace.uninstall).toHaveBeenCalledExactlyOnceWith(
+    expect(h.marketplace.uninstallInstalled).toHaveBeenCalledExactlyOnceWith(
       { kind: "plugin", name: "retired-plugin", sourceId: "trusted" }, { retain: { reason: "superseded" } },
     );
   });
@@ -126,7 +126,7 @@ describe("retaining predecessor removal", () => {
       const h = setup();
       expect(await h.invoke(ALERTS.removePredecessor, input)).toMatchObject({ ok: false });
       expect(h.marketplace.getRetirementEntry).not.toHaveBeenCalled();
-      expect(h.marketplace.uninstall).not.toHaveBeenCalled();
+      expect(h.marketplace.uninstallInstalled).not.toHaveBeenCalled();
     },
   );
 
@@ -134,14 +134,14 @@ describe("retaining predecessor removal", () => {
     const h = setup();
     expect(await h.invoke(ALERTS.removePredecessor, "successor:reply", { retain: false, sourceId: "other" }))
       .toEqual({ ok: false, error: "invalid-arguments" });
-    expect(h.marketplace.uninstall).not.toHaveBeenCalled();
+    expect(h.marketplace.uninstallInstalled).not.toHaveBeenCalled();
   });
 
   it("cannot remove a policy-locked predecessor and publishes its locked state", async () => {
     const h = setup(); h.entry.required = true;
     expect(await h.invoke(ALERTS.listKinds)).toMatchObject([{ predecessor: { locked: true, removable: false } }]);
     expect(await h.invoke(ALERTS.removePredecessor, "successor:reply")).toEqual({ ok: false, error: "predecessor-policy-locked" });
-    expect(h.marketplace.uninstall).not.toHaveBeenCalled();
+    expect(h.marketplace.uninstallInstalled).not.toHaveBeenCalled();
   });
 
   it.each(["unnamed", "foreign-successor", "foreign-predecessor", "missing", "unblocked"])("refuses %s predecessor authority", async (reason) => {
@@ -152,19 +152,19 @@ describe("retaining predecessor removal", () => {
     if (reason === "missing") h.installed.splice(0, 1);
     if (reason === "unblocked") h.row.blockedByPredecessor = "";
     expect(await h.invoke(ALERTS.removePredecessor, "successor:reply")).toEqual({ ok: false, error: "predecessor-not-removable" });
-    expect(h.marketplace.uninstall).not.toHaveBeenCalled();
+    expect(h.marketplace.uninstallInstalled).not.toHaveBeenCalled();
   });
 
   it("rechecks the registered declaration after asynchronous metadata reads", async () => {
     const h = setup();
     h.listKinds.mockResolvedValueOnce([h.row]).mockResolvedValueOnce([{ ...h.row, blockedByPredecessor: "other" }]);
     expect(await h.invoke(ALERTS.removePredecessor, "successor:reply")).toEqual({ ok: false, error: "predecessor-not-removable" });
-    expect(h.marketplace.uninstall).not.toHaveBeenCalled();
+    expect(h.marketplace.uninstallInstalled).not.toHaveBeenCalled();
   });
 
   it("maps a policy change during uninstall to a stable error", async () => {
     const { MarketplaceError } = await import("../../../marketplace/errors.js");
-    const h = setup(); h.marketplace.uninstall.mockRejectedValueOnce(new MarketplaceError("PACKAGE_REQUIRED_BY_POLICY", "locked"));
+    const h = setup(); h.marketplace.uninstallInstalled.mockRejectedValueOnce(new MarketplaceError("PACKAGE_REQUIRED_BY_POLICY", "locked"));
     expect(await h.invoke(ALERTS.removePredecessor, "successor:reply")).toEqual({ ok: false, error: "predecessor-policy-locked" });
   });
 

@@ -427,6 +427,10 @@
         {
           "from": "resources/windows-job/${arch}/ave-job.exe",
           "to": "windows-job/${arch}/ave-job.exe"
+        },
+        {
+          "from": "resources/windows-path-kind/${arch}/ave-path-kind.exe",
+          "to": "windows-path-kind/${arch}/ave-path-kind.exe"
         }
       ]
     },

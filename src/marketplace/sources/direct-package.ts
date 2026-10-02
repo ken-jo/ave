@@ -8,8 +8,10 @@
  * snapshot and every install read the package through here, at the same
  * commit, so both see the same descriptor.
  *
- * A file that declares no version gets `0.0.0+g<commit12>`: the commit names
- * it, and any new commit is an update (`isSynthesizedVersion`).
+ * A file that declares no version gets one its tree names
+ * (`isSynthesizedVersion`): `0.0.0+g<commit12>` at a git commit, so any new
+ * commit is an update, and `0.0.0+t<digest12>` in a folder, from the
+ * package's tree digest, so any edit is (§18.4.7).
  */
 import { parse as parseYaml } from "yaml";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -25,10 +27,10 @@ import {
 } from "../../plugins/process-entry.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { isPackageName, type PackageDescriptor } from "../catalog/types.js";
-import { validateDescriptorText, validateSynthesizedDescriptor } from "../catalog/validate.js";
-import type { MarketplaceErrorCode } from "../errors.js";
-import { assertRepoPath, type BareRepo } from "../git/repo.js";
-import type { GitRemote } from "../git/run-git.js";
+import { validateDescriptorText, validateSynthesizedDescriptor, type CredentialDetail } from "../catalog/validate.js";
+import type { MarketplaceErrorCode, MarketplaceErrorDetail } from "../errors.js";
+import { assertRepoPath } from "../git/repo.js";
+import type { SourceTree } from "./source-tree.js";
 import { manifestAuthority } from "../resolve/manifest-rules.js";
 import { deriveAgentPluginComponents } from "../content/agent-plugin-components.js";
 import { checkContentFiles, CONTENT_RULES } from "../content/rules.js";
@@ -46,7 +48,7 @@ const LIMITS: Readonly<Record<DirectDetectedFile, number>> = {
   "server.json": 256 * 1024,
 };
 
-const SYNTHESIZED = /^0\.0\.0\+g[0-9a-f]{12}$/u;
+const SYNTHESIZED = /^0\.0\.0\+[gt][0-9a-f]{12}$/u;
 const DESCRIPTION_MAX = 1000;
 const LABEL_MAX = 100;
 
@@ -58,18 +60,18 @@ interface DirectPackage {
 
 export type DirectRead =
   | { ok: true; found: DirectPackage }
-  | { ok: false; code: MarketplaceErrorCode; error: string };
+  | { ok: false; code: MarketplaceErrorCode; error: string; detail?: MarketplaceErrorDetail };
 
 export interface DirectReadInput {
-  repo: BareRepo;
-  remote: GitRemote;
-  commit: string;
-  /** The package path in the repository; "" is the root. */
+  /** The source's files at the revision being read. */
+  tree: SourceTree;
+  /** The package path in the source; "" is the root. */
   path: string;
-  signal?: AbortSignal;
+  /** The repository's or folder's own name, which names a package at the root that names none. */
+  rootName: string;
 }
 
-/** A version the commit names because the package declares none (design §8.2). */
+/** A version the tree names because the package declares none (design §8.2, §18.4.7). */
 export function isSynthesizedVersion(version: string): boolean {
   return SYNTHESIZED.test(version);
 }
@@ -88,9 +90,9 @@ function nameFrom(raw: string): string | null {
   return isPackageName(name) ? name : null;
 }
 
-/** The package directory's own name, or the repository's at the root. */
-function placeName(path: string, remote: GitRemote): string | null {
-  const segments = (path || remote.url.path).split("/").filter(Boolean);
+/** The package directory's own name, or the repository's or folder's at the root. */
+function placeName(path: string, rootName: string): string | null {
+  const segments = (path || rootName).split("/").filter(Boolean);
   const last = segments[segments.length - 1];
   return last ? nameFrom(last) : null;
 }
@@ -130,12 +132,19 @@ async function fromPluginManifest(source: string, input: DirectReadInput): Promi
     const rule = CONTENT_RULES["agent-plugin"];
     const dest = await mkdtemp(join(tmpdir(), "ave-agent-plugin-direct-"));
     try {
-      const exported = await input.repo.exportPath(input.remote, input.commit, input.path, dest,
-        { maxFiles: rule.maxFiles + 1, maxBytes: rule.maxBytes + 256 * 1024 }, input.signal);
+      // Reading the tree fails with its own reason (a folder's link rule, an
+      // unreadable folder, a broken classifier), which reaches the caller
+      // unchanged; only what the tree holds is this package's fault.
+      const exported = await input.tree.exportPath(input.path, dest, { maxFiles: rule.maxFiles + 1, maxBytes: rule.maxBytes + 256 * 1024 });
       const files = await Promise.all(exported.filter((file) => file.path !== "ave-package.json")
         .map(async (file) => ({ path: file.path, data: await readFile(join(dest, ...file.path.split("/"))) })));
-      checkContentFiles("agent-plugin", files);
-      const components = deriveAgentPluginComponents(files);
+      let components: ReturnType<typeof deriveAgentPluginComponents>;
+      try {
+        checkContentFiles("agent-plugin", files);
+        components = deriveAgentPluginComponents(files);
+      } catch (error) {
+        return { ok: false, code: "SOURCE_INDEX_INVALID", error: `agent-plugin tree is invalid: ${(error as Error).message}` };
+      }
       const requires = isRecord(ave) && isRecord(ave.requires) ? ave.requires : undefined;
       return { ok: true, versionSynthesized: false, descriptor: {
         schemaVersion: 2, kind: "agent-plugin", name: manifest.name, version: manifest.version,
@@ -143,8 +152,6 @@ async function fromPluginManifest(source: string, input: DirectReadInput): Promi
         ...presentation(isRecord(ave) ? ave.displayName : undefined, manifest.description),
         payload: { manifest: "plugin.json", components },
       } };
-    } catch (error) {
-      return { ok: false, code: "SOURCE_INDEX_INVALID", error: `agent-plugin tree is invalid: ${(error as Error).message}` };
     } finally {
       await rm(dest, { recursive: true, force: true });
     }
@@ -172,7 +179,7 @@ async function fromPluginManifest(source: string, input: DirectReadInput): Promi
   };
 }
 
-function fromMarkdown(kind: "skill" | "agent", entry: "SKILL.md" | "AGENTS.md", source: string, fallbackName: string | null, commit: string): Synthesis {
+async function fromMarkdown(kind: "skill" | "agent", entry: "SKILL.md" | "AGENTS.md", source: string, fallbackName: string | null, input: DirectReadInput): Promise<Synthesis> {
   let header: Record<string, unknown> = {};
   const { block } = parseFrontmatterBlock(source);
   if (block.length > 0) {
@@ -193,7 +200,7 @@ function fromMarkdown(kind: "skill" | "agent", entry: "SKILL.md" | "AGENTS.md", 
       schemaVersion: 2,
       kind,
       name,
-      version: declared ?? `0.0.0+g${commit.slice(0, 12)}`,
+      version: declared ?? (await input.tree.synthesizedVersion(input.path, kind)),
       // These kinds run no code; any Ave reads them (design §8.2).
       minAppVersion: "0.0.0",
       ...presentation(undefined, header.description),
@@ -230,6 +237,16 @@ function fromServerJson(source: string): Synthesis {
   };
 }
 
+/** A descriptor the catalog rules refuse; an identifier with a credential's shape keeps its reason (§18.8). */
+function refused(checked: { error: string; credential?: CredentialDetail }): DirectRead {
+  return {
+    ok: false,
+    code: "SOURCE_INDEX_INVALID",
+    error: checked.error,
+    ...(checked.credential ? { detail: checked.credential } : {}),
+  };
+}
+
 /**
  * Read the direct package at `path` and `commit`. `null` when none of the
  * files is there (SOURCE_NOT_A_MARKETPLACE for the caller); a failure names
@@ -238,29 +255,29 @@ function fromServerJson(source: string): Synthesis {
 export async function readDirectPackage(input: DirectReadInput): Promise<DirectRead | null> {
   if (input.path) assertRepoPath(input.path);
   const paths = DIRECT_FILES.map((file) => filePath(input.path, file));
-  await input.repo.ensureBlobs(input.remote, input.commit, paths, input.signal);
+  await input.tree.ensure(paths);
   for (const file of DIRECT_FILES) {
-    const bytes = await input.repo.readFile(input.commit, filePath(input.path, file), LIMITS[file]);
+    const bytes = await input.tree.readFile(filePath(input.path, file), LIMITS[file]);
     if (bytes === null) continue;
     const source = bytes.toString("utf8");
     if (file === "ave-package.json") {
       const checked = validateDescriptorText(source, { direct: true });
       return checked.ok
         ? { ok: true, found: { descriptor: checked.value, detectedFrom: file, versionSynthesized: false } }
-        : { ok: false, code: "SOURCE_INDEX_INVALID", error: checked.error };
+        : refused(checked);
     }
     const synthesized: Synthesis = file === "plugin.json"
       ? await fromPluginManifest(source, input)
       : file === "SKILL.md"
-        ? fromMarkdown("skill", file, source, placeName(input.path, input.remote), input.commit)
+        ? await fromMarkdown("skill", file, source, placeName(input.path, input.rootName), input)
         : file === "AGENTS.md"
-          ? fromMarkdown("agent", file, source, placeName(input.path, input.remote), input.commit)
+          ? await fromMarkdown("agent", file, source, placeName(input.path, input.rootName), input)
           : fromServerJson(source);
     if (!synthesized.ok) return synthesized;
     const checked = validateSynthesizedDescriptor(synthesized.descriptor, file);
     return checked.ok
       ? { ok: true, found: { descriptor: checked.value, detectedFrom: file, versionSynthesized: synthesized.versionSynthesized } }
-      : { ok: false, code: "SOURCE_INDEX_INVALID", error: checked.error };
+      : refused(checked);
   }
   return null;
 }

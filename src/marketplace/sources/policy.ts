@@ -17,7 +17,10 @@ import { getAdminPolicyPath } from "../../permissions/policy-store.js";
 import { parseStrictJson, StrictJsonError } from "../catalog/strict-json.js";
 import { PACKAGE_KINDS, isPackageName, type PackageKind } from "../catalog/types.js";
 import { isMarketplaceError } from "../errors.js";
+import { normalizeFolderPath } from "../net/source-input.js";
 import {
+  folderPatternKey,
+  matchesFolderPattern,
   matchesSourcePattern,
   normalizeSourceHost,
   normalizeSourceUrl,
@@ -31,6 +34,7 @@ import {
   OFFICIAL_MARKETPLACE,
   SOURCE_ID_RE,
   isReservedSourceId,
+  isSourceId,
   isSourceLabel,
   isSourceRef,
   type SourceAuth,
@@ -42,14 +46,14 @@ export interface PackageKey {
   source: string;
 }
 
-/** A source pre-registered by `marketplaces.additional` (origin `managed`). */
-interface ManagedSourceSpec {
-  id: string;
-  url: NormalizedSourceUrl;
-  ref?: string;
-  auth: SourceAuth;
-  label?: string;
-}
+/**
+ * A source pre-registered by `marketplaces.additional` (origin `managed`): a
+ * git repository, or a folder (§18.6), which holds `network-folder` through
+ * this entry.
+ */
+type ManagedSourceSpec =
+  | { transport: "git"; id: string; url: NormalizedSourceUrl; ref?: string; auth: SourceAuth; label?: string }
+  | { transport: "folder"; id: string; path: string; label?: string };
 
 export interface MarketplacePolicy {
   /** null = no allow list, every target not blocked is allowed. */
@@ -62,6 +66,8 @@ export interface MarketplacePolicy {
   /** Internal and this-computer targets are a policy block, policy-listed hosts excepted (§18.6). */
   blockPrivateNetworks: boolean;
   allowDirectInstall: boolean;
+  /** Folder sources and folder installs are allowed (§18.6); false is a policy block. */
+  allowLocalSources: boolean;
   allowDisablingOfficial: boolean;
   additional: readonly ManagedSourceSpec[];
   defaultInstalls: readonly PackageKey[];
@@ -79,6 +85,7 @@ export const EMPTY_MARKETPLACE_POLICY: MarketplacePolicy = Object.freeze({
   requireHttps: false,
   blockPrivateNetworks: false,
   allowDirectInstall: true,
+  allowLocalSources: true,
   allowDisablingOfficial: false,
   additional: Object.freeze([]),
   defaultInstalls: Object.freeze([]),
@@ -92,12 +99,13 @@ const SECTION_KEYS = new Set([
   "requireHttps",
   "blockPrivateNetworks",
   "allowDirectInstall",
+  "allowLocalSources",
   "allowDisablingOfficial",
   "additional",
   "defaultInstalls",
   "requiredInstalls",
 ]);
-const ADDITIONAL_KEYS = new Set(["id", "url", "ref", "auth", "label"]);
+const ADDITIONAL_KEYS = new Set(["id", "url", "path", "ref", "auth", "label"]);
 const PACKAGE_KEY_KEYS = new Set(["kind", "name", "source"]);
 
 class PolicyShapeError extends Error {}
@@ -199,13 +207,32 @@ export function isBlockedByPolicy(policy: MarketplacePolicy, url: NormalizedSour
   return policyBlock(policy, url, target) !== null;
 }
 
+/**
+ * Why the policy blocks a folder (§18.6): `allowLocalSources: false`, the
+ * first `block` `path:` pattern it matches ignoring case, or an `allow` list
+ * none of whose `path:` patterns it matches with exact case. Null when it
+ * does not. Applied to the lexical path, and again to the canonical one.
+ */
+export function folderPolicyBlock(
+  policy: MarketplacePolicy,
+  path: string,
+): { reason: "local-sources-blocked" } | { reason: "blocked-by-pattern"; pattern: string } | { reason: "not-in-allow-list" } | null {
+  if (!policy.allowLocalSources) return { reason: "local-sources-blocked" };
+  const blocked = policy.block.find((pattern) => pattern.kind === "path" && matchesFolderPattern(path, pattern, "block"));
+  if (blocked) return { reason: "blocked-by-pattern", pattern: blocked.text };
+  if (policy.allow !== null && !policy.allow.some((pattern) => pattern.kind === "path" && matchesFolderPattern(path, pattern, "allow"))) {
+    return { reason: "not-in-allow-list" };
+  }
+  return null;
+}
+
 /** An absent key is the empty list; `null` is a typo, not "nothing". */
 function orEmpty(value: unknown): unknown {
   return value === undefined ? [] : value;
 }
 
-/** Parse the `marketplaces` value (not the whole file); throws on anything it cannot read exactly. */
-function parseSection(value: unknown): MarketplacePolicy {
+/** Parse the `marketplaces` value (not the whole file); throws on anything it cannot read exactly. A folder path is read for `platform`. */
+function parseSection(value: unknown, platform: NodeJS.Platform): MarketplacePolicy {
   const section = record(value, "", SECTION_KEYS);
   const allowHttpHosts = new Set(
     stringList(orEmpty(section.allowHttpHosts), ".allowHttpHosts").map((host, index) =>
@@ -219,6 +246,7 @@ function parseSection(value: unknown): MarketplacePolicy {
     requireHttps: bool(section.requireHttps, ".requireHttps", false),
     blockPrivateNetworks: bool(section.blockPrivateNetworks, ".blockPrivateNetworks", false),
     allowDirectInstall: bool(section.allowDirectInstall, ".allowDirectInstall", true),
+    allowLocalSources: bool(section.allowLocalSources, ".allowLocalSources", true),
     allowDisablingOfficial: bool(section.allowDisablingOfficial, ".allowDisablingOfficial", false),
     additional: [],
     defaultInstalls: [],
@@ -232,8 +260,17 @@ function parseSection(value: unknown): MarketplacePolicy {
     const at = `.additional[${index}]`;
     const entry = record(item, at, ADDITIONAL_KEYS);
     if (typeof entry.id !== "string" || !SOURCE_ID_RE.test(entry.id)) fail(`${at}.id`, "is not a source id");
+    // The tab names a source back by the id it was handed scrubbed (§18.8).
+    if (!isSourceId(entry.id)) fail(`${at}.id`, "looks like a password or token; choose another id");
     if (isReservedSourceId(entry.id)) fail(`${at}.id`, `${entry.id} is reserved`);
     if (additional.some((other) => other.id === entry.id)) fail(`${at}.id`, `${entry.id} is used twice`);
+    if (entry.label !== undefined && !isSourceLabel(entry.label)) {
+      fail(`${at}.label`, "must be 1-100 printable characters");
+    }
+    if (entry.path !== undefined) {
+      additional.push(managedFolder(entry, at, policy, additional, platform));
+      continue;
+    }
     if (typeof entry.url !== "string") fail(`${at}.url`, "must be a string");
     const url = parsed(`${at}.url`, () => normalizeSourceUrl(entry.url as string));
     // An additional source is itself a listing (§18.2.2): plain http needs no other entry, unless the
@@ -242,16 +279,14 @@ function parseSection(value: unknown): MarketplacePolicy {
       fail(`${at}.url`, `plain http while requireHttps is true needs ${url.host} in allowHttpHosts`);
     }
     if (isBlockedByPolicy(policy, url)) fail(`${at}.url`, "is blocked by this policy's own allow/block lists");
-    if (sameSourceRepository(url, official) || additional.some((other) => sameSourceRepository(url, other.url))) {
+    if (sameSourceRepository(url, official) || additional.some((other) => other.transport === "git" && sameSourceRepository(url, other.url))) {
       fail(`${at}.url`, "names a repository that is already a source");
     }
     if (entry.ref !== undefined && !isSourceRef(entry.ref)) {
       fail(`${at}.ref`, "is not a branch or tag name");
     }
-    if (entry.label !== undefined && !isSourceLabel(entry.label)) {
-      fail(`${at}.label`, "must be 1-100 printable characters");
-    }
     additional.push({
+      transport: "git",
       id: entry.id,
       url,
       ...(entry.ref !== undefined ? { ref: entry.ref as string } : {}),
@@ -269,13 +304,46 @@ function parseSection(value: unknown): MarketplacePolicy {
   return { ...policy, additional, defaultInstalls: defaults, requiredInstalls: required };
 }
 
+/**
+ * An `additional` folder (§18.6): `path` instead of `url`, no `ref` or
+ * `auth`. It is invalid under `allowLocalSources: false`, when the policy's
+ * own lists block it, or when it is, contains or lies inside another
+ * additional folder. The path is read as stage 1 reads typed input, except
+ * that `~` names no home here.
+ */
+function managedFolder(
+  entry: Record<string, unknown>,
+  at: string,
+  policy: MarketplacePolicy,
+  additional: readonly ManagedSourceSpec[],
+  platform: NodeJS.Platform,
+): ManagedSourceSpec {
+  if (entry.url !== undefined) fail(at, "takes url or path, not both");
+  if (entry.ref !== undefined) fail(`${at}.ref`, "a folder has no branch or tag");
+  if (entry.auth !== undefined) fail(`${at}.auth`, "a folder has no sign-in");
+  if (!policy.allowLocalSources) fail(`${at}.path`, "a folder source while allowLocalSources is false");
+  if (typeof entry.path !== "string") fail(`${at}.path`, "must be a string");
+  if (entry.path.trim().startsWith("~")) fail(`${at}.path`, "must be an absolute path; ~ names no home in the system policy");
+  const path = parsed(`${at}.path`, () => normalizeFolderPath(entry.path as string, platform, ""));
+  if (folderPolicyBlock(policy, path)) fail(`${at}.path`, "is blocked by this policy's own allow/block lists");
+  const key = folderPatternKey(path);
+  for (const other of additional) {
+    if (other.transport !== "folder") continue;
+    const otherKey = folderPatternKey(other.path);
+    if (key === otherKey || key.startsWith(`${otherKey.replace(/\/$/u, "")}/`) || otherKey.startsWith(`${key.replace(/\/$/u, "")}/`)) {
+      fail(`${at}.path`, `is, contains or lies inside the folder of ${other.id}`);
+    }
+  }
+  return { transport: "folder", id: entry.id as string, path, ...(entry.label !== undefined ? { label: entry.label as string } : {}) };
+}
+
 /** The `marketplaces` section of a policy file's text; a file problem is a result, only a bug throws. */
-function parsePolicyText(path: string, text: string): PolicyLoad {
+function parsePolicyText(path: string, text: string, platform: NodeJS.Platform): PolicyLoad {
   try {
     const file = parseStrictJson(text);
     if (!isRecord(file)) return { ok: false, error: `${path}: the policy file must be a JSON object`, path };
     if (file.marketplaces === undefined) return { ok: true, policy: EMPTY_MARKETPLACE_POLICY, path };
-    return { ok: true, policy: parseSection(file.marketplaces), path };
+    return { ok: true, policy: parseSection(file.marketplaces, platform), path };
   } catch (error) {
     if (error instanceof PolicyShapeError || error instanceof StrictJsonError) {
       return { ok: false, error: `${path}: ${error.message}`, path };
@@ -371,7 +439,7 @@ async function policyStat(path: string, access: PolicyFileAccess): Promise<strin
   }
 }
 
-async function readPolicy(path: string, access: PolicyFileAccess = NODE_FILE_ACCESS): Promise<PolicyRead> {
+async function readPolicy(path: string, platform: NodeJS.Platform, access: PolicyFileAccess = NODE_FILE_ACCESS): Promise<PolicyRead> {
   const began = access.now();
   let text: string;
   let info: PolicyFileStat;
@@ -387,15 +455,15 @@ async function readPolicy(path: string, access: PolicyFileAccess = NODE_FILE_ACC
     return { load: { ok: false, error: `cannot read ${path}: ${(error as Error).message}`, path }, digest: `unreadable:${code}`, stat: null };
   }
   return {
-    load: parsePolicyText(path, text),
+    load: parsePolicyText(path, text, platform),
     digest: createHash("sha256").update(text, "utf8").digest("hex"),
     stat: isRacy(info, began) ? null : { key: statKey(info), readBegan: began },
   };
 }
 
 /** Read the system policy file's `marketplaces` section. A file problem is a result; only a bug throws. */
-export async function loadMarketplacePolicy(path: string = getAdminPolicyPath()): Promise<PolicyLoad> {
-  return (await readPolicy(path)).load;
+export async function loadMarketplacePolicy(path: string = getAdminPolicyPath(), platform: NodeJS.Platform = process.platform): Promise<PolicyLoad> {
+  return (await readPolicy(path, platform)).load;
 }
 
 /** A newer read of the policy, not yet in force. */
@@ -435,13 +503,19 @@ export class FilePolicySource implements PolicySource {
   private constructor(
     private readonly path: string,
     private readonly access: PolicyFileAccess,
+    private readonly platform: NodeJS.Platform,
     first: PolicyRead,
   ) {
     this.current = first;
   }
 
-  static async open(path: string = getAdminPolicyPath(), access: PolicyFileAccess = NODE_FILE_ACCESS): Promise<FilePolicySource> {
-    return new FilePolicySource(path, access, await readPolicy(path, access));
+  /** `platform` is the one folder paths in the file are read for: the running one, or a test's. */
+  static async open(
+    path: string = getAdminPolicyPath(),
+    access: PolicyFileAccess = NODE_FILE_ACCESS,
+    platform: NodeJS.Platform = process.platform,
+  ): Promise<FilePolicySource> {
+    return new FilePolicySource(path, access, platform, await readPolicy(path, platform, access));
   }
 
   get load(): PolicyLoad {
@@ -461,7 +535,7 @@ export class FilePolicySource implements PolicySource {
     if (recorded !== null && this.access.now() >= recorded.readBegan && (await policyStat(this.path, this.access)) === recorded.key) {
       return null;
     }
-    const next = await readPolicy(this.path, this.access);
+    const next = await readPolicy(this.path, this.platform, this.access);
     if (next.digest === base.digest) {
       // Same content, perhaps touched: nothing to apply; the next check compares against these times.
       this.current = { ...base, stat: next.stat };

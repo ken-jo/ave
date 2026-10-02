@@ -30,6 +30,8 @@ import { LadderError, planPluginInstall, runPluginLadder, treeDigest, type Ladde
 import { sha256Hex as sha } from "../../__tests__/fixtures/package-files.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import type { ExpectedPlugin } from "../manifest-rules.js";
+import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
+import { gitAccess } from "../../sources/source-tree.js";
 
 /** Every expected input the ladder hands the manifest rules, observed rather than replaced. */
 const checkedAgainst = vi.hoisted(() => [] as unknown[]);
@@ -133,6 +135,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
     const registry = await SourceRegistry.open({ root: marketplaces, policy });
     await registry.add({ id: "acme", origin, url: server.url(name), auth: { kind: "none" } });
     const syncer = new SourceSyncer({
+      folders: nodeFolders(),
       registry,
       gate,
       runner: git.runner,
@@ -160,10 +163,10 @@ describe("plugin artifact ladder (design §6.2)", () => {
   function ladder(syncer: SourceSyncer, gate: NetworkGate, plan: PluginInstallPlan, direct = false, patch: Partial<LadderDeps> = {}) {
     return syncer.withRepository("acme", ({ repo, remote, source }) =>
       runPluginLadder(plan, {
+        ...gitAccess(repo, remote, direct),
         repo,
         remote,
         sourceUrl: source.url,
-        direct,
         gate,
         catalog: catalogOf(source.url),
         sourceToken: null,
@@ -480,6 +483,25 @@ describe("plugin artifact ladder (design §6.2)", () => {
     server.file(releasePath, null);
   });
 
+  it("keeps the git tree rung strict: a tree with src/ fails the rung, where a folder lists src/ as not installed (§18.4.2)", async () => {
+    const { repo, name } = fixture();
+    market(repo, { tree: "plugins/alpha" }, {
+      "plugins/alpha/plugin.json": pluginJson("alpha", "1.0.0"),
+      "plugins/alpha/dist/index.js": ENTRY_JS,
+      "plugins/alpha/src/index.ts": "export default {};\n",
+    });
+    const { gate, syncer } = await open(name);
+    const error = await ladder(syncer, gate, planPluginInstall(await row(syncer))).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      code: "NO_INSTALLABLE_ARTIFACT",
+      rungs: [
+        { rung: "release", outcome: "skipped", reason: "NOT_DECLARED" },
+        { rung: "archive", outcome: "skipped", reason: "NOT_DECLARED" },
+        { rung: "tree", outcome: "failed", code: "CONTENT_RULE_VIOLATION", message: expect.stringContaining("src/index.ts") },
+      ],
+    });
+  });
+
   it("reports NO_INSTALLABLE_ARTIFACT with every rung when none yields an artifact", async () => {
     const { repo, name } = fixture();
     market(repo, { release: { repo: "acme/alpha", sha256: "0".repeat(64) }, tree: "plugins/alpha/build" }, {
@@ -611,10 +633,10 @@ describe("plugin artifact ladder (design §6.2)", () => {
     const plan = planPluginInstall(await row(syncer));
     const staged = await syncer.withRepository("acme", ({ repo: bare, remote }) =>
       runPluginLadder(plan, {
+        ...gitAccess(bare, remote, false),
         repo: bare,
         remote,
         sourceUrl: normalizeSourceUrl("https://github.com/acme/market"),
-        direct: false,
         gate: fakeGate,
         catalog: catalogOf(normalizeSourceUrl("https://github.com/acme/market")),
         sourceToken: "ghp_test",
@@ -645,10 +667,10 @@ describe("plugin artifact ladder (design §6.2)", () => {
       const plan = planPluginInstall(await row(syncer));
       return syncer.withRepository("acme", ({ repo: bare, remote }) =>
         runPluginLadder(plan, {
+          ...gitAccess(bare, remote, false),
           repo: bare,
           remote,
           sourceUrl: normalizeSourceUrl("https://github.com/acme/market"),
-          direct: false,
           gate: hiding,
           catalog: catalogOf(normalizeSourceUrl("https://github.com/acme/market")),
           sourceToken: null,
@@ -706,10 +728,10 @@ describe("plugin artifact ladder (design §6.2)", () => {
     };
     const run = ({ syncer, plan: forPlan }: { syncer: SourceSyncer; plan: PluginInstallPlan }) => syncer.withRepository("acme", ({ repo: bare, remote }) =>
       runPluginLadder(forPlan, {
+        ...gitAccess(bare, remote, false),
         repo: bare,
         remote,
         sourceUrl: normalizeSourceUrl("ssh://git@git.acme.example:2222/acme/market.git"),
-        direct: false,
         gate: fakeGate,
         catalog: catalogOf(normalizeSourceUrl("ssh://git@git.acme.example:2222/acme/market.git")),
         sourceToken: null,

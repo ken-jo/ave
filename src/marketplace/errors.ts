@@ -11,7 +11,7 @@
  * keys of {@link MARKETPLACE_ERROR_DETAIL_FIELDS}; a failure without a detail
  * renders its code's reason-less sentence.
  */
-import { scrubDiagnosticSecrets } from "../shared/dlp.js";
+import { CREDENTIAL_ISSUERS, scrubDiagnosticSecrets, type CredentialIssuer } from "../shared/dlp.js";
 import type { SourceWarningView } from "./sources/warnings.js";
 
 export const MARKETPLACE_ERROR_CODES = [
@@ -34,6 +34,7 @@ export const MARKETPLACE_ERROR_CODES = [
   "SOURCE_DISABLED",
   "SOURCE_LOCAL_DATA_DAMAGED",
   "SOURCE_LIST_UNREADABLE",
+  "SOURCE_LOCAL_UNREADABLE",
   "PLAN_EXPIRED",
   "PACKAGE_INCOMPATIBLE",
   "PACKAGE_COMPAT_UNDECLARED",
@@ -54,13 +55,14 @@ export const MARKETPLACE_ERROR_CODES = [
 export type MarketplaceErrorCode = (typeof MARKETPLACE_ERROR_CODES)[number];
 
 /**
- * A detail field's type. `string` is a structured identifier the code built
- * (a host, a ref, a rule, a path); `text` is diagnostic text from elsewhere
- * (a parser's or a proxy configuration's own words), which may quote a
- * secret and is scrubbed wherever a detail leaves main or is stored
- * ({@link scrubMarketplaceErrorDetail}).
+ * A detail field's type. Every string in a detail, an identifier as much as
+ * a person's or a remote's text, is scrubbed wherever a detail leaves main or
+ * is stored ({@link scrubMarketplaceStrings}): a grammar that admits a name
+ * admits a token of the same shape, so no field is exempt. The scrubber
+ * matches token shapes, not prefixes alone, so real names pass unchanged.
  */
-type DetailFieldKind = "string" | "text" | "number" | "string[]";
+/** `credential-issuer`: one of {@link CREDENTIAL_ISSUERS}, the issuer a reserved prefix looks like (§18.8). */
+type DetailFieldKind = "string" | "number" | "string[]" | "credential-issuer";
 
 /**
  * The reasons each code can carry, and the fields of each reason's detail
@@ -85,6 +87,13 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
    * named by a catalog, on the address the connection would use), a
    * catalog download to another service on this computer, and a folder in a
    * deep link. None has a confirmation.
+   *
+   * The folder forms Ave cannot read (§18.3, §18.4.1 stage 1), each with
+   * what to enter instead: a relative path (`./x`, `C:foo`, `~user`), a
+   * Windows device path, a drive or UNC path on macOS or Linux, a `file:`
+   * URL naming another computer there, a UNC path without its share, a `..`
+   * that climbs above the drive, share or `/`, and a branch, folder field or
+   * sign-in given with a folder, which has none of them.
    */
   SOURCE_URL_REJECTED: {
     "credentials-in-url": {},
@@ -95,13 +104,55 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "address-unroutable": { host: "string", address: "string" },
     "catalog-this-computer": { source: "string", host: "string" },
     "deep-link-path": {},
+    "relative-path": {},
+    "device-path": {},
+    "windows-path": {},
+    "network-file-url": {},
+    "unc-without-share": {},
+    /** A UNC server spelled with an account (`\\user:secret@server\share`): credentials never belong in a folder path. */
+    "unc-credentials": {},
+    "outside-root": {},
+    "folder-options": {},
+  },
+  /**
+   * An id the user entered that has a credential's shape (§18.8): the
+   * renderer only ever sees it masked, so it could never be named again.
+   * `reserved-prefix`: it holds a credential format's prefix at a boundary
+   * (`glpat-…`), named with the issuer it looks like so the user knows what
+   * to change; `holds-credential`: a shape with no prefix to name.
+   * `stored-id-holds-credential`: a source an earlier build stored under
+   * such an id, named by its row's handle for anything but Remove.
+   */
+  SOURCE_ID_INVALID: {
+    "reserved-prefix": { prefix: "string", issuer: "credential-issuer" },
+    "holds-credential": {},
+    "stored-id-holds-credential": {},
+  },
+  /**
+   * A package whose name, version or component name has a credential's
+   * shape (§18.8): `*-reserved-prefix` when it holds a credential format's
+   * prefix, named with its issuer, `*-holds-credential` for a shape with no
+   * prefix to name. A marketplace drops such a package with a diagnostic; a
+   * direct package, which is the whole source, fails with this reason.
+   */
+  SOURCE_INDEX_INVALID: {
+    "name-reserved-prefix": { prefix: "string", issuer: "credential-issuer" },
+    "version-reserved-prefix": { prefix: "string", issuer: "credential-issuer" },
+    "component-reserved-prefix": { prefix: "string", issuer: "credential-issuer" },
+    "name-holds-credential": {},
+    "version-holds-credential": {},
+    "component-holds-credential": {},
   },
   SOURCE_POLICY_BLOCKED: {
     "blocked-by-pattern": { target: "string", pattern: "string", policyPath: "string" },
     "not-in-allow-list": { target: "string", policyPath: "string" },
     "https-required": { target: "string", policyPath: "string" },
     "private-network-blocked": { target: "string", address: "string", policyPath: "string" },
-    "policy-invalid": { error: "text" },
+    /** `allowLocalSources: false`: no folder is a source or a direct install (§18.6). */
+    "local-sources-blocked": { target: "string", policyPath: "string" },
+    /** `allowDirectInstall: false`: packages install from marketplaces only (§12). */
+    "direct-install-blocked": { target: "string", policyPath: "string" },
+    "policy-invalid": { error: "string" },
   },
   /**
    * A target needs a confirmation the source does not hold (§18.2, §18.5):
@@ -114,6 +165,8 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "internal-network": { host: "string", address: "string" },
     "this-computer": { host: "string", address: "string" },
     "internal-downloads": { source: "string", host: "string" },
+    /** A folder on another computer (§18.4.1 stage 2): the server, empty when the drive's mapping names none, and the folder. */
+    "network-folder": { server: "string", path: "string" },
   },
   /**
    * `token-no-access`: the host answered "repository not found" after Ave
@@ -145,7 +198,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     timeout: { host: "string" },
     "http-status": { host: "string", status: "number" },
     tls: { host: "string" },
-    proxy: { host: "string", proxy: "text" },
+    proxy: { host: "string", proxy: "string" },
     "not-found": { host: "string" },
     "not-found-ssh": { host: "string" },
   },
@@ -179,6 +232,57 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     unreadable: { fsCode: "string" },
     invalid: {},
   },
+  /**
+   * A folder source, or a folder being added, cannot be read (§18.4): gone
+   * (`not-found`), refused by the system (`permission`, `io`, with the
+   * system's message), now pointing elsewhere than the folder that was
+   * added (`moved`), not a folder, spelled ambiguously on a case-sensitive
+   * volume, or changed while it was read. The last good snapshot stays
+   * served, and the next read tries again.
+   */
+  /**
+   * A repository that is already a source under any spelling of its address
+   * (`url` is the address being added, normalized), or a folder that
+   * overlaps a folder source (§18.4.4): the same directory, one inside it,
+   * or one containing it, by path or through an alias. A new id cannot
+   * resolve these; the sentence says which source and what to do. A taken
+   * id alone has no detail: choosing another id resolves it.
+   */
+  SOURCE_ID_TAKEN: {
+    "repository-already-added": { url: "string", existingId: "string" },
+    "folder-already-added": { path: "string", existingId: "string" },
+    "folder-inside-source": { path: "string", existingId: "string", existingPath: "string" },
+    "folder-contains-source": { path: "string", existingId: "string", existingPath: "string" },
+  },
+  SOURCE_LOCAL_UNREADABLE: {
+    "not-found": { path: "string" },
+    permission: { path: "string", message: "string" },
+    io: { path: "string", message: "string" },
+    moved: { path: "string", target: "string" },
+    "not-a-directory": { path: "string" },
+    "ambiguous-case": { path: "string" },
+    "changed-during-read": { path: "string" },
+    /** The Windows folder classifier is missing or broken (§18.4.1 stage 2): Ave cannot tell whether `path` is on another computer. */
+    "classifier-unavailable": { path: "string" },
+  },
+  /**
+   * A folder's file breaks a reading rule (§18.4.5, §5.4, §5.5): a link that
+   * leaves the folder or names another computer (never followed), a device,
+   * socket or FIFO, two names equal after NFC or ignoring case, or a limit.
+   * `path` is relative to the folder; `target` is the link's own text.
+   */
+  CONTENT_RULE_VIOLATION: {
+    "link-outside-folder": { path: "string", target: "string" },
+    "link-to-network": { path: "string", target: "string" },
+    "link-to-skipped": { path: "string", target: "string" },
+    "special-file": { path: "string" },
+    "case-collision": { path: "string" },
+    limit: { path: "string", limit: "string" },
+  },
+  /** A folder plugin without a built tree (`plugin.json` and `dist/`, §18.4.2). */
+  NO_INSTALLABLE_ARTIFACT: {
+    "folder-has-no-build": { name: "string" },
+  },
   /** `policy-changed`: the plan was made under another managed policy (§18.6). */
   PLAN_EXPIRED: {
     "policy-changed": {},
@@ -191,7 +295,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
 } as const satisfies Partial<Record<MarketplaceErrorCode, Record<string, Record<string, DetailFieldKind>>>>;
 
 type DetailFields = typeof MARKETPLACE_ERROR_DETAIL_FIELDS;
-type FieldValue<K> = K extends "string" | "text" ? string : K extends "number" ? number : K extends "string[]" ? readonly string[] : never;
+type FieldValue<K> = K extends "string" ? string : K extends "number" ? number : K extends "string[]" ? readonly string[] : K extends "credential-issuer" ? CredentialIssuer : never;
 type DetailOf<C extends keyof DetailFields> = {
   [R in keyof DetailFields[C]]: { reason: R } & { -readonly [F in keyof DetailFields[C][R]]: FieldValue<DetailFields[C][R][F]> };
 }[keyof DetailFields[C]];
@@ -205,8 +309,9 @@ export const MARKETPLACE_ERROR_REASONS: ReadonlyArray<readonly [MarketplaceError
 );
 
 function fieldMatches(value: unknown, kind: DetailFieldKind): boolean {
-  if (kind === "string" || kind === "text") return typeof value === "string";
+  if (kind === "string") return typeof value === "string";
   if (kind === "number") return typeof value === "number" && Number.isFinite(value);
+  if (kind === "credential-issuer") return typeof value === "string" && (CREDENTIAL_ISSUERS as readonly string[]).includes(value);
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
@@ -234,19 +339,33 @@ export function parseMarketplaceErrorDetail(code: string, value: unknown): Marke
 }
 
 /**
- * `detail` with every `text` field scrubbed of credentials; identifiers are
- * kept as they are. Called once at each boundary a detail crosses: the IPC
- * envelope, the source status view, the stored `lastSync.detail` and the git
- * runtime status.
+ * `value` with every string in it, keys included, at any depth, scrubbed of credentials by
+ * the one diagnostic scrubber (`scrubDiagnosticSecrets`). Main calls it on
+ * everything the marketplace hands the renderer (each request's answer, each
+ * broadcast, each failure's detail) and on a detail before it is stored, so
+ * no string crosses unscrubbed and the renderer never scrubs.
  */
+export function scrubMarketplaceStrings<T>(value: T): T {
+  if (typeof value === "string") return scrubDiagnosticSecrets(value) as T;
+  if (Array.isArray(value)) return value.map((item: unknown) => scrubMarketplaceStrings(item)) as T;
+  if (typeof value === "object" && value !== null && [Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    // Keys are strings too (an MCP server's name keys its consent): two masked alike stay two entries.
+    const scrubbed: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      const masked = scrubDiagnosticSecrets(key);
+      let name = masked;
+      for (let n = 2; Object.hasOwn(scrubbed, name); n += 1) name = `${masked} (${n})`;
+      Object.defineProperty(scrubbed, name, { value: scrubMarketplaceStrings(item), enumerable: true, writable: true, configurable: true });
+    }
+    return scrubbed as T;
+  }
+  return value;
+}
+
+/** `detail`, checked to belong to `code`, with every string scrubbed ({@link scrubMarketplaceStrings}). */
 export function scrubMarketplaceErrorDetail<D extends MarketplaceErrorDetail>(code: MarketplaceErrorCode, detail: D): D {
   if (parseMarketplaceErrorDetail(code, detail) === undefined) throw new TypeError(`${JSON.stringify(detail)} is not a detail of ${code}`);
-  const fields: Readonly<Record<string, DetailFieldKind>> = (MARKETPLACE_ERROR_DETAIL_FIELDS[code as keyof DetailFields] as Readonly<Record<string, Readonly<Record<string, DetailFieldKind>>>>)[detail.reason]!;
-  const scrubbed: Record<string, unknown> = { ...detail };
-  for (const [field, kind] of Object.entries(fields)) {
-    if (kind === "text") scrubbed[field] = scrubDiagnosticSecrets(scrubbed[field] as string);
-  }
-  return scrubbed as D;
+  return scrubMarketplaceStrings(detail);
 }
 
 export class MarketplaceError extends Error {
@@ -298,6 +417,8 @@ function confirmationDetail(view: EnteredTargetWarningView): MarketplaceErrorDet
     case "internal-network":
     case "this-computer":
       return { reason: view.warning, host, address: view.address ?? "" };
+    case "network-folder":
+      return { reason: view.warning, server: host, path: view.address ?? "" };
   }
 }
 
