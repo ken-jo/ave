@@ -692,7 +692,7 @@ describe("git marketplace IPC boundary", () => {
                   sourceLabel: `Corp ${token}`,
                   reason: "source-unreachable",
                   minAppVersion: null,
-                  installedFrom: { sourceId: "team", label: `Team ${token}` },
+                  installedFrom: { sourceId: "team", label: `Team ${token}`, removal: "confirm" },
                 }],
                 sources: [],
                 installed: [],

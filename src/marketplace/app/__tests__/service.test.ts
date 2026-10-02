@@ -883,7 +883,7 @@ describe("MarketplaceService", () => {
     }));
     const unmet = (await service.autoUpdateContext()).unmetRequired;
     expect(unmet).toEqual([
-      { key: { sourceId: "nowhere", kind: "mcp", name: "notes" }, sourceLabel: "nowhere", reason: "source-missing", minAppVersion: null, installedFrom: { sourceId: "acme-tools", label: "Acme Tools" } },
+      { key: { sourceId: "nowhere", kind: "mcp", name: "notes" }, sourceLabel: "nowhere", reason: "source-missing", minAppVersion: null, installedFrom: { sourceId: "acme-tools", label: "Acme Tools", removal: "sheet" } },
       { key: { sourceId: "corp", kind: "theme", name: "harbor" }, sourceLabel: "corp", reason: "source-unreachable", minAppVersion: null, installedFrom: null },
       { key: { sourceId: "acme-tools", kind: "plugin", name: "absent" }, sourceLabel: "Acme Tools", reason: "not-in-catalog", minAppVersion: null, installedFrom: null },
       { key: { sourceId: "beta-tools", kind: "skill", name: "review" }, sourceLabel: "Acme Tools", reason: "incompatible", minAppVersion: "9.0.0", installedFrom: null },
@@ -910,6 +910,30 @@ describe("MarketplaceService", () => {
     expect((await service.autoUpdateContext()).unmetRequired).toEqual([]);
     const installed = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
     expect(installed.report).toMatchObject({ installed: [{ kind: "theme", name: "harbor", source: "acme-tools" }], skipped: [], failed: [] });
+  });
+
+  it("lists a requirement on a hidden source as unmet, and the boot pass skips it for the same reason (§10.2, §7.3)", async () => {
+    const official = market("1.0.0", "ave");
+    service.close();
+    await build(
+      policyLoad({ allowDisablingOfficial: true, requiredInstalls: [{ source: "ave", kind: "skill", name: "review" }] }),
+      { id: "ave", url: official.url, mirrors: [], auth: { kind: "none" } },
+    );
+    await service.refresh("ave");
+    // Shown, it can provide the package: nothing is unmet, the boot pass installs it.
+    expect((await service.autoUpdateContext()).unmetRequired).toEqual([]);
+    await service.setEnabled("ave", false);
+    // Hidden before the requirement is met: a cached candidate is no proof it can be met.
+    expect((await service.autoUpdateContext()).unmetRequired).toEqual([
+      { key: { sourceId: "ave", kind: "skill", name: "review" }, sourceLabel: "Acme Tools", reason: "source-hidden", minAppVersion: null, installedFrom: null },
+    ]);
+    const boot = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
+    expect(boot.report).toEqual({ installed: [], skipped: [{ key: { source: "ave", kind: "skill", name: "review" }, reason: "source ave is hidden" }], failed: [] });
+    // Shown again: met at the next boot pass, and no longer listed.
+    await service.setEnabled("ave", true);
+    const shown = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
+    expect(shown.report.installed).toEqual([{ source: "ave", kind: "skill", name: "review" }]);
+    expect((await service.autoUpdateContext()).unmetRequired).toEqual([]);
   });
 
   it("judges a package mid-switch by the source it moves to, in every feed while it moves", async () => {

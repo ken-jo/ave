@@ -267,6 +267,35 @@ describe("a required update (§18.7.2)", () => {
   });
 });
 
+describe("an install in a requirement's way whose package sheet cannot load (§10.2)", () => {
+  // The organization requires alpha from the official source, which this harness never reaches.
+  const requireOfficial = () => harness.policy.change(policyLoad({ requiredInstalls: [{ source: "ave", kind: "plugin", name: "alpha" }] }));
+  const unmet = async () => (await harness.service.autoUpdateContext()).unmetRequired;
+
+  it("names an install whose source still lists it for its sheet, and one whose source stopped listing it for a direct uninstall", async () => {
+    requireOfficial();
+    expect(await unmet()).toEqual([
+      expect.objectContaining({ key: { sourceId: "ave", kind: "plugin", name: "alpha" }, reason: "source-unreachable", installedFrom: { sourceId: "team", label: "Team tools", removal: "sheet" } }),
+    ]);
+    await expect(harness.service.detail(KEY)).resolves.toMatchObject({ entry: { key: KEY } });
+    // team no longer lists alpha: no sheet can load for it, and the row offers the uninstall itself.
+    await edit({ "marketplace.2.json": `${JSON.stringify({ schemaVersion: 2, name: "team", displayName: "Team tools", packages: [] })}\n` });
+    expect((await unmet())[0]!.installedFrom).toEqual({ sourceId: "team", label: "Team tools", removal: "confirm" });
+    await expect(harness.service.detail(KEY)).rejects.toMatchObject({ code: "PACKAGE_INCOMPATIBLE" });
+    await expect(harness.service.uninstall(KEY)).resolves.toEqual({ key: KEY, keptDataDir: null });
+    expect(harness.installed.has("alpha")).toBe(false);
+    expect((await unmet())[0]!.installedFrom).toBeNull();
+  });
+
+  it("names an install whose source was removed by the id its receipt holds, and uninstalls it by that id", async () => {
+    expect(await harness.service.removeSource("team")).toEqual({ orphanedPackages: [KEY] });
+    requireOfficial();
+    expect((await unmet())[0]!.installedFrom).toEqual({ sourceId: "team", label: "team", removal: "confirm" });
+    await expect(harness.service.uninstall(KEY)).resolves.toEqual({ key: KEY, keptDataDir: null });
+    expect(harness.installed.has("alpha")).toBe(false);
+  });
+});
+
 describe("a quarantined source (§18.8)", () => {
   it("offers no update, applies none, and leaves its id and its packages out of the switches", async () => {
     // An update waits while the source is healthy.
@@ -295,5 +324,25 @@ describe("a quarantined source (§18.8)", () => {
     const quarantined = { key: { sourceId: quarantinedId, kind: "plugin" as const, name: "alpha" }, from: "1.0.0", to: "1.0.0", switchSource: false };
     await expect(harness.service.applyUpdate(quarantined, automatic)).resolves.toEqual({ state: "superseded" });
     expect(harness.installed.get("alpha")).toEqual({ ...item, sourceId: quarantinedId });
+  });
+  it("names an install bound to it in a requirement's way by the handle its Sources row carries, and uninstalls it by that handle", async () => {
+    const item = harness.installed.get("alpha")!;
+    harness.service.close();
+    const quarantinedId = `glp${"at-"}${"abcd1234".repeat(3)}`;
+    const list = join(root, "marketplaces", "sources.json");
+    writeFileSync(list, readFileSync(list, "utf8").replace('"team"', JSON.stringify(quarantinedId)));
+    renameSync(join(root, "marketplaces", "team"), join(root, "marketplaces", quarantinedId));
+    harness = await folderService({ root, folders: nodeFolders(), policy: policySource({ requiredInstalls: [{ source: "ave", kind: "plugin", name: "alpha" }] }) });
+    harness.installed.set("alpha", { ...item, sourceId: quarantinedId });
+
+    const [unmet] = (await harness.service.autoUpdateContext()).unmetRequired;
+    const handle = (await harness.service.listSources()).find((source) => source.status.state === "id-holds-credential")!.id;
+    expect(handle).toMatch(/^ave-legacy-[0-9a-f]{32}$/u);
+    expect(unmet!.installedFrom).toEqual({ sourceId: handle, label: quarantinedId, removal: "confirm" });
+    // The stored id never leaves main as a key; its label is masked where every string crosses (§18.8).
+    expect(JSON.stringify(unmet!.key)).not.toContain(quarantinedId);
+    const key = { sourceId: handle, kind: "plugin" as const, name: "alpha" };
+    await expect(harness.service.uninstall(key)).resolves.toEqual({ key, keptDataDir: null });
+    expect(harness.installed.has("alpha")).toBe(false);
   });
 });

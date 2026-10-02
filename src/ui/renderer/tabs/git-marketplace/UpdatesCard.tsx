@@ -26,12 +26,13 @@ import {
   type GitMarketplaceResult,
   type PackageKeyView,
   type PackageUpdateView,
+  type SourceView,
   type UpdateReason,
   type UnmetRequirementView,
   type UpdateStatusView,
 } from "../../../../shared/git-marketplace.js";
 import { packageUpdateSkipKey } from "../../../../shared/skipped-plugin-updates.js";
-import { kindLabel, originLabel, OTHER_SUBJECT, relativeTime, shortSha, updateStateLabel } from "./labels.js";
+import { kindLabel, originLabel, OTHER_SUBJECT, relativeTime, shortSha, sourceStatusDetail, sourceStatusLabel, updateStateLabel } from "./labels.js";
 import { MarketplaceProblem } from "./MarketplaceProblem.js";
 import { ComponentApprovalDialog } from "./UpdateReview.js";
 
@@ -42,7 +43,7 @@ export type AutoUpdateSwitchChange =
   | { scope: "package"; key: string; value: "on" | "off" | null };
 
 export interface UpdatesCardProps {
-  api: Pick<GitMarketplaceApi, "updateStatus" | "checkUpdates" | "applyUpdatesNow" | "approveComponents" | "acknowledgeSource" | "onUpdateStatus" | "refreshSources">;
+  api: Pick<GitMarketplaceApi, "updateStatus" | "checkUpdates" | "applyUpdatesNow" | "approveComponents" | "acknowledgeSource" | "onUpdateStatus" | "refreshSources" | "uninstall">;
   /** Open a package's update review (§15.6). */
   onReview: (key: PackageKeyView) => void;
   /** Open the Sources view, where each unreachable source says why. */
@@ -55,16 +56,24 @@ export interface UpdatesCardProps {
   onOpenPackage: (key: PackageKeyView) => void;
 }
 
+/** A source status that says its last sync failed: what a refresh of it can end in (§18.8). */
+const SOURCE_FAILURE_STATES: ReadonlySet<SourceView["status"]["state"]> = new Set(["unreachable", "auth-required", "history-rewritten", "broken", "id-holds-credential"]);
+
 /** Why a required install is not met (§10.2), as the user reads it. */
 function unmetReasonLabel(t: Translate, unmet: UnmetRequirementView): string {
   const at = { name: unmet.key.name, source: unmet.sourceLabel };
   switch (unmet.reason) {
     case "source-missing": return t("gitMarketplace.updates.unmet.sourceMissing", at);
+    case "source-hidden": return t("gitMarketplace.updates.unmet.sourceHidden", at);
     case "source-unreachable": return t("gitMarketplace.updates.unmet.sourceUnreachable", at);
     case "not-in-catalog": return t("gitMarketplace.updates.unmet.notInCatalog", at);
-    case "incompatible": return unmet.minAppVersion === null
-      ? t("gitMarketplace.updates.unmet.incompatibleUnknown", at)
-      : t("gitMarketplace.updates.unmet.incompatible", { ...at, version: unmet.minAppVersion });
+    case "incompatible": {
+      // parseUpdateStatus admits an incompatible row only with the version it needs.
+      if (unmet.minAppVersion === null) throw new Error("an incompatible requirement names the Ave version it needs");
+      return t("gitMarketplace.updates.unmet.incompatible", { ...at, version: unmet.minAppVersion });
+    }
+    case "rollout-held": return t("gitMarketplace.updates.unmet.rolloutHeld", at);
+    case "not-offered": return t("gitMarketplace.updates.unmet.notOffered", at);
   }
 }
 
@@ -207,9 +216,11 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
   const [details, setDetails] = useState<ReadonlySet<string>>(new Set());
   const [whatChanged, setWhatChanged] = useState<ReadonlySet<string>>(new Set());
   const [approving, setApproving] = useState<PackageKeyView | null>(null);
-  /** The source a required install's *Refresh source* is syncing, and the last refresh's failure. */
+  /** The source a required install's *Refresh source* is syncing, and how the last refresh ended for its source. */
   const [refreshing, setRefreshing] = useState<string | null>(null);
-  const [refreshFailure, setRefreshFailure] = useState<GitMarketplaceFailure | null>(null);
+  const [refreshed, setRefreshed] = useState<{ sourceId: string; failure: GitMarketplaceFailure } | { sourceId: string; source: SourceView } | null>(null);
+  /** The install in the way a row asks to uninstall directly, and how that ended. */
+  const [removing, setRemoving] = useState<{ id: string; busy: boolean; failure: GitMarketplaceFailure | null } | null>(null);
   // A pushed status is newer than an answer still on its way.
   const pushed = useRef(false);
 
@@ -283,23 +294,60 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
     await save({ scope: "source", id, value: "on" });
   };
 
-  /** Sync the source a required install comes from; a changed catalog re-reads the status. */
+  /**
+   * Sync the source a required install comes from; a changed catalog
+   * re-reads the status. A sync that fails answers inside a successful
+   * reply, as the source's status: that is what the row shows.
+   */
   const refreshSource = async (id: string) => {
     setRefreshing(id);
-    setRefreshFailure(null);
+    setRefreshed(null);
     try {
       const result = await api.refreshSources(id);
-      if (!result.ok) setRefreshFailure(result);
+      if (!result.ok) {
+        setRefreshed({ sourceId: id, failure: result });
+        return;
+      }
+      const source = result.value.find((item) => item.id === id);
+      if (source) setRefreshed({ sourceId: id, source });
     } finally {
       setRefreshing(null);
     }
+  };
+
+  /** Uninstall the same-named install in a requirement's way, when no package sheet can load for it. */
+  const removeInstalled = async (id: string, key: PackageKeyView) => {
+    setRemoving({ id, busy: true, failure: null });
+    const result = await api.uninstall({ ...key, ...(key.kind === "mcp" || key.kind === "agent-plugin" ? { removeData: false } : {}) });
+    setRemoving(result.ok ? null : { id, busy: false, failure: result });
+  };
+
+  /** How the last refresh of this row's source ended, when it did not end well. */
+  const refreshProblem = (unmet: UnmetRequirementView) => {
+    if (refreshed?.sourceId !== unmet.key.sourceId) return null;
+    if ("failure" in refreshed) {
+      return <MarketplaceProblem failure={refreshed.failure} subject={OTHER_SUBJECT} testId="git-marketplace:updates:unmet:error" />;
+    }
+    const { source } = refreshed;
+    if (!SOURCE_FAILURE_STATES.has(source.status.state)) return null;
+    const detail = sourceStatusDetail(t, source);
+    return (
+      <span className="block text-warning" data-testid="git-marketplace:updates:unmet:refresh-failed">
+        {t("gitMarketplace.updates.unmet.refreshFailed", { source: unmet.sourceLabel, status: sourceStatusLabel(t, source.status) })}
+        {detail !== null && ` ${detail}`}
+      </span>
+    );
   };
 
   const unmetRow = (unmet: UnmetRequirementView) => {
     const id = rowId(unmet.key);
     // Refreshing helps only a source that is there: one not reached, or one whose catalog may since list the package.
     const refreshable = unmet.reason === "source-unreachable" || unmet.reason === "not-in-catalog";
+    // What the user does, not the administrator: show a hidden source; wait for a rollout.
+    const userAction = unmet.reason === "source-hidden" || unmet.reason === "rollout-held";
     const other = unmet.installedFrom;
+    const otherKey = other ? { sourceId: other.sourceId, kind: unmet.key.kind, name: unmet.key.name } : null;
+    const confirming = removing?.id === id;
     return (
       <li key={id} className="space-y-1 px-3 py-2 text-xs" data-testid={`git-marketplace:updates:unmet:${id}`}>
         <div className="flex flex-wrap items-center gap-2">
@@ -312,8 +360,20 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
               {refreshing === unmet.key.sourceId ? t("gitMarketplace.updates.unmet.refreshing") : t("gitMarketplace.updates.unmet.refresh")}
             </Button>
           )}
-          {other && (
-            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => onOpenPackage({ sourceId: other.sourceId, kind: unmet.key.kind, name: unmet.key.name })} data-testid="git-marketplace:updates:unmet:remove">
+          {unmet.reason === "source-hidden" && (
+            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={onShowSources} data-testid="git-marketplace:updates:unmet:show-sources">
+              {t("gitMarketplace.updates.showSources")}
+            </Button>
+          )}
+          {other && otherKey && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              disabled={confirming}
+              onClick={() => (other.removal === "sheet" ? onOpenPackage(otherKey) : setRemoving({ id, busy: false, failure: null }))}
+              data-testid="git-marketplace:updates:unmet:remove"
+            >
               {t("gitMarketplace.updates.unmet.remove", { source: other.label })}
             </Button>
           )}
@@ -324,7 +384,22 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
             {t("gitMarketplace.updates.unmet.installedFrom", { name: unmet.key.name, source: other.label })}
           </span>
         )}
-        <span className="block text-muted-foreground">{t("gitMarketplace.updates.unmet.contactAdmin")}</span>
+        {other && otherKey && confirming && (
+          <div className="space-y-2 rounded-md border bg-background px-3 py-2" data-testid="git-marketplace:updates:unmet:confirm-remove">
+            <p>{t("gitMarketplace.updates.unmet.confirmRemove", { name: unmet.key.name, source: other.label, required: unmet.sourceLabel })}</p>
+            {removing.failure && <MarketplaceProblem failure={removing.failure} subject={OTHER_SUBJECT} testId="git-marketplace:updates:unmet:remove-error" />}
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={removing.busy} onClick={() => setRemoving(null)}>
+                {t("common.cancel")}
+              </Button>
+              <Button size="sm" variant="destructive" className="h-6 px-2 text-[11px]" disabled={removing.busy} onClick={() => void removeInstalled(id, otherKey)} data-testid="git-marketplace:updates:unmet:confirm-uninstall">
+                {t("gitMarketplace.uninstall.button")}
+              </Button>
+            </div>
+          </div>
+        )}
+        {refreshProblem(unmet)}
+        {!userAction && <span className="block text-muted-foreground">{t("gitMarketplace.updates.unmet.contactAdmin")}</span>}
       </li>
     );
   };
@@ -503,9 +578,6 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
           {status.unmetRequired.length > 0 && (
             <div className="space-y-1" data-testid="git-marketplace:updates:unmet">
               <p className="text-xs font-medium">{t("gitMarketplace.updates.unmet.title")}</p>
-              {refreshFailure && (
-                <MarketplaceProblem failure={refreshFailure} subject={OTHER_SUBJECT} testId="git-marketplace:updates:unmet:error" />
-              )}
               <ul className="divide-y rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft)">
                 {status.unmetRequired.map(unmetRow)}
               </ul>

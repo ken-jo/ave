@@ -74,16 +74,21 @@ describe("the update status across the bridge (design §13.1)", () => {
 
   it("keeps each unmet required install, and drops a status whose rows are malformed or which has none (§10.2)", () => {
     const base = status([]);
-    const unmet = { key: { sourceId: "corp", kind: "skill", name: "audit" }, sourceLabel: "Corp", reason: "incompatible", minAppVersion: "9.0.0", installedFrom: { sourceId: "team", label: "Team" } };
-    const sent = { ...base, unmetRequired: [unmet, { ...unmet, reason: "source-missing", minAppVersion: null, installedFrom: null }] };
+    const unmet = { key: { sourceId: "corp", kind: "skill", name: "audit" }, sourceLabel: "Corp", reason: "incompatible", minAppVersion: "9.0.0", installedFrom: { sourceId: "team", label: "Team", removal: "sheet" } };
+    const others = ["source-missing", "source-hidden", "source-unreachable", "not-in-catalog", "rollout-held", "not-offered"]
+      .map((reason) => ({ ...unmet, reason, minAppVersion: null, installedFrom: reason === "not-in-catalog" ? { sourceId: "team", label: "Team", removal: "confirm" } : null }));
+    const sent = { ...base, unmetRequired: [unmet, ...others] };
     expect(parseUpdateStatus(sent)).toEqual(sent);
     const { unmetRequired: _rows, ...without } = base;
     expect(parseUpdateStatus(without)).toBeNull();
     for (const bad of [
       { ...unmet, reason: "unknown" },
+      // Exactly an incompatible row names the Ave version it needs.
       { ...unmet, reason: "not-in-catalog" },
+      { ...unmet, minAppVersion: null },
       { ...unmet, minAppVersion: 9 },
-      { ...unmet, installedFrom: { sourceId: "team" } },
+      { ...unmet, installedFrom: { sourceId: "team", label: "Team" } },
+      { ...unmet, installedFrom: { sourceId: "team", label: "Team", removal: "sheet-or-not" } },
       { ...unmet, key: { ...unmet.key, kind: "widget" } },
     ]) expect(parseUpdateStatus({ ...base, unmetRequired: [bad] })).toBeNull();
   });

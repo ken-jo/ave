@@ -687,27 +687,53 @@ export interface UpdateStatusView {
 
 /**
  * Why a required install cannot be met from the source the policy names
- * (§10.2): the source is not among the app's sources (`source-missing`), it
- * has no readable copy of its catalog (`source-unreachable`), its catalog
- * does not list the package (`not-in-catalog`), or it offers no version this
- * app can install (`incompatible`).
+ * (§10.2): the source is not among the app's sources (`source-missing`),
+ * the user hid it (`source-hidden`), it has no readable copy of its catalog
+ * (`source-unreachable`), its catalog does not list the package
+ * (`not-in-catalog`), every listed version needs a newer Ave
+ * (`incompatible`), a version is held back only by its rollout or as a
+ * pre-release (`rollout-held`), or no version is offered for another reason
+ * — platform, plugin protocol, yanked or revoked (`not-offered`).
  */
-const UNMET_REQUIREMENT_REASONS = ["source-missing", "source-unreachable", "not-in-catalog", "incompatible"] as const;
+const UNMET_REQUIREMENT_REASONS = [
+  "source-missing",
+  "source-hidden",
+  "source-unreachable",
+  "not-in-catalog",
+  "incompatible",
+  "rollout-held",
+  "not-offered",
+] as const;
 export type UnmetRequirementReason = (typeof UNMET_REQUIREMENT_REASONS)[number];
 
 /**
  * A required install not met (§10.2): the package the policy requires from
  * its source, that source's name, the reason, the app version an
- * `incompatible` package needs (null when it needs none this app can reach),
- * and the same-named package installed from another source, which does not
- * meet the requirement and may stand in its way.
+ * `incompatible` package needs (set exactly then), and the same-named
+ * package installed from another source, which does not meet the
+ * requirement and may stand in its way.
  */
 export interface UnmetRequirementView {
   key: PackageKeyView;
   sourceLabel: string;
   reason: UnmetRequirementReason;
   minAppVersion: string | null;
-  installedFrom: { sourceId: string; label: string } | null;
+  installedFrom: UnmetRequirementInstall | null;
+}
+
+/**
+ * The same-named install from another source, as its receipt binds it.
+ * `sourceId` is what `uninstall` takes for it: the source's id, or for a
+ * quarantined source the handle its Sources row carries (§18.8). `removal`
+ * says where it is removed: its package sheet, when that source's catalog
+ * still lists it; otherwise (the source removed, quarantined, unreadable,
+ * or no longer listing it) no sheet can load, and the row asks to
+ * uninstall it directly.
+ */
+export interface UnmetRequirementInstall {
+  sourceId: string;
+  label: string;
+  removal: "sheet" | "confirm";
 }
 
 /** What the boot pass installed, moved or migrated (design §10.2, §16.3), shown once until dismissed. */
@@ -962,9 +988,9 @@ function isUnmetRequirement(value: unknown): boolean {
   return isRecord(value) && isRecord(value.key) && typeof value.key.sourceId === "string" && isPackageKind(value.key.kind)
     && typeof value.key.name === "string" && typeof value.sourceLabel === "string"
     && (UNMET_REQUIREMENT_REASONS as readonly unknown[]).includes(value.reason)
-    && (value.minAppVersion === null || (value.reason === "incompatible" && typeof value.minAppVersion === "string"))
+    && (value.reason === "incompatible" ? typeof value.minAppVersion === "string" : value.minAppVersion === null)
     && (value.installedFrom === null || (isRecord(value.installedFrom) && typeof value.installedFrom.sourceId === "string"
-      && typeof value.installedFrom.label === "string"));
+      && typeof value.installedFrom.label === "string" && (value.installedFrom.removal === "sheet" || value.installedFrom.removal === "confirm")));
 }
 
 /** Shape check for a `marketplace:update-status` payload; anything else is dropped. */

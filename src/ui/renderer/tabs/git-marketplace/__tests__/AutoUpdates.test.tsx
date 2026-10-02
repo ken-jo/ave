@@ -228,48 +228,104 @@ describe("required installs not met (§10.2)", () => {
     key: { sourceId: "corp", kind: "skill", name }, sourceLabel: "Corp tools", reason, minAppVersion: null, installedFrom: null, ...extra,
   });
 
-  it("says why each is not met, refreshes the source that may since provide it, and opens the install that stands in the way", async () => {
+  it("says why each is not met, with the action each reason has, and opens the install in the way in its sheet", async () => {
     const fake = fakeMarketplace({
       sources: [team],
       entries: [entry("team", "skill", "notes", { state: { state: "installed", version: "1.0.0" } })],
       updateStatus: updateStatus({
         unmetRequired: [
-          unmet("source-missing", "notes", { installedFrom: { sourceId: "team", label: "Team tools" } }),
+          unmet("source-missing", "notes", { installedFrom: { sourceId: "team", label: "Team tools", removal: "sheet" } }),
+          unmet("source-hidden", "draft"),
           unmet("source-unreachable", "lint"),
           unmet("not-in-catalog", "audit"),
           unmet("incompatible", "review", { minAppVersion: "9.0.0" }),
-          unmet("incompatible", "triage"),
+          unmet("rollout-held", "beta"),
+          unmet("not-offered", "triage"),
         ],
       }),
     });
     renderTab(fake);
     const card = await screen.findByTestId("git-marketplace:updates:unmet");
     expect(card).toHaveTextContent("조직이 필수로 지정했지만 설치되지 않은 패키지");
+    const names = ["notes", "draft", "lint", "audit", "review", "beta", "triage"];
     const row = (name: string) => screen.getByTestId(`git-marketplace:updates:unmet:corp:skill:${name}`);
     const reason = (name: string) => within(row(name)).getByTestId("git-marketplace:updates:unmet:reason");
+    const having = (testId: string) => names.filter((name) => within(row(name)).queryByTestId(`git-marketplace:updates:unmet:${testId}`));
     expect(reason("notes")).toHaveTextContent("조직이 Corp tools의 notes을(를) 필수로 지정했지만, 이 마켓플레이스가 Ave에 추가되어 있지 않습니다.");
+    expect(reason("draft")).toHaveTextContent("이 마켓플레이스가 숨겨져 있어 아무것도 설치되지 않습니다. 소스에서 다시 표시하세요.");
     expect(reason("lint")).toHaveTextContent("아직 이 마켓플레이스에 연결하지 못했습니다.");
     expect(reason("audit")).toHaveTextContent("이 마켓플레이스 목록에 없습니다.");
     expect(reason("review")).toHaveTextContent("Ave 9.0.0 이상이 필요합니다.");
-    expect(reason("triage")).toHaveTextContent("이 Ave 버전에서 동작하는 릴리스가 없습니다.");
-    for (const name of ["notes", "lint", "audit", "review", "triage"]) expect(row(name)).toHaveTextContent("해결되지 않으면 관리자에게 문의하세요.");
-    // Refresh is offered only where a sync can change the answer.
-    expect(["notes", "lint", "audit", "review", "triage"].filter((name) => within(row(name)).queryByTestId("git-marketplace:updates:unmet:refresh"))).toEqual(["lint", "audit"]);
+    // A rollout hold is availability, not this app's version.
+    expect(reason("beta")).toHaveTextContent("아직 이 기기에 제공되지 않습니다: 단계적으로 배포 중이거나 사전 릴리스만 있습니다. 배포가 이 기기에 닿으면 설치됩니다.");
+    expect(reason("beta")).not.toHaveTextContent("Ave");
+    expect(reason("triage")).toHaveTextContent("이 마켓플레이스가 이 설치에 제공하는 릴리스가 없습니다.");
+    // The administrator is the next step except where the user acts (a hidden source) or waits (a rollout).
+    expect(names.filter((name) => row(name).textContent!.includes("해결되지 않으면 관리자에게 문의하세요."))).toEqual(["notes", "lint", "audit", "review", "triage"]);
+    // Refresh is offered only where a sync can change the answer; Show sources only for a hidden source.
+    expect(having("refresh")).toEqual(["lint", "audit"]);
+    expect(having("show-sources")).toEqual(["draft"]);
     fireEvent.click(within(row("lint")).getByTestId("git-marketplace:updates:unmet:refresh"));
     await waitFor(() => expect(fake.market.refreshSources).toHaveBeenCalledWith("corp"));
 
     expect(within(row("notes")).getByTestId("git-marketplace:updates:unmet:installed-from")).toHaveTextContent("notes이(가) 대신 Team tools에서 설치되어 있어");
-    expect(["notes", "lint", "audit", "review", "triage"].filter((name) => within(row(name)).queryByTestId("git-marketplace:updates:unmet:remove"))).toEqual(["notes"]);
+    expect(having("remove")).toEqual(["notes"]);
     fireEvent.click(within(row("notes")).getByTestId("git-marketplace:updates:unmet:remove"));
     await screen.findByTestId("git-marketplace:sheet");
     await waitFor(() => expect(fake.market.packageDetail).toHaveBeenCalledWith(expect.objectContaining({ sourceId: "team", kind: "skill", name: "notes" })));
+    expect(screen.queryByTestId("git-marketplace:updates:unmet:confirm-remove")).toBeNull();
   });
 
-  it("shows why a refresh failed, and nothing at all while every requirement is met", async () => {
-    const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [unmet("not-in-catalog", "audit")] }) });
-    fake.market.refreshSources.mockResolvedValueOnce({ ok: false, code: "SOURCE_UNREACHABLE", message: "network is unreachable", detail: { reason: "offline" } });
+  it("opens Sources for a hidden source", async () => {
+    const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [unmet("source-hidden", "draft")] }) });
     renderTab(fake);
-    fireEvent.click(await screen.findByTestId("git-marketplace:updates:unmet:refresh"));
+    fireEvent.click(await screen.findByTestId("git-marketplace:updates:unmet:show-sources"));
+    expect(await screen.findByTestId("git-marketplace:sources")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["a source that no longer lists it", { sourceId: "team", label: "Team tools" }],
+    ["a removed source", { sourceId: "gone-tools", label: "gone-tools" }],
+    ["a quarantined source, by its handle", { sourceId: `ave-legacy-${"0f".repeat(16)}`, label: "[REDACTED:TOKEN]" }],
+  ])("uninstalls an install in the way from %s after asking, without a sheet that cannot load", async (_label, from) => {
+    const fake = fakeMarketplace({
+      sources: [team],
+      updateStatus: updateStatus({ unmetRequired: [unmet("not-in-catalog", "notes", { key: { sourceId: "corp", kind: "mcp", name: "notes" }, installedFrom: { ...from, removal: "confirm" } })] }),
+    });
+    fake.market.uninstall.mockResolvedValueOnce({ ok: false, code: "PACKAGE_ID_CONFLICT", message: "mcp notes is not installed from it" });
+    renderTab(fake);
+    const row = await screen.findByTestId("git-marketplace:updates:unmet:corp:mcp:notes");
+    fireEvent.click(within(row).getByTestId("git-marketplace:updates:unmet:remove"));
+    const confirm = within(row).getByTestId("git-marketplace:updates:unmet:confirm-remove");
+    expect(confirm).toHaveTextContent(`${from.label}에서 설치된 notes을(를) 제거할까요? 그러면 Ave가 Corp tools의 패키지를 설치할 수 있습니다.`);
+    expect(screen.queryByTestId("git-marketplace:sheet")).toBeNull();
+    expect(fake.market.packageDetail).not.toHaveBeenCalled();
+    // A failed uninstall says why and keeps the question open.
+    fireEvent.click(within(confirm).getByTestId("git-marketplace:updates:unmet:confirm-uninstall"));
+    expect(await within(row).findByTestId("git-marketplace:updates:unmet:remove-error")).toBeInTheDocument();
+    fireEvent.click(within(confirm).getByTestId("git-marketplace:updates:unmet:confirm-uninstall"));
+    await waitFor(() => expect(within(row).queryByTestId("git-marketplace:updates:unmet:confirm-remove")).toBeNull());
+    expect(fake.market.uninstall).toHaveBeenLastCalledWith({ sourceId: from.sourceId, kind: "mcp", name: "notes", removeData: false });
+  });
+
+  it("shows a refresh that failed, whether the reply failed or the source's sync did, and nothing once every requirement is met", async () => {
+    const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [unmet("not-in-catalog", "audit")] }) });
+    renderTab(fake);
+    const refresh = await screen.findByTestId("git-marketplace:updates:unmet:refresh");
+    // An ordinary sync failure arrives inside a successful reply, as the source's status.
+    const unreachable = source({ id: "corp", label: "Corp tools", status: { state: "unreachable", code: "SOURCE_UNREACHABLE", detail: { reason: "offline" }, cached: true } });
+    fake.market.refreshSources.mockResolvedValueOnce({ ok: true, value: [team, unreachable] });
+    fireEvent.click(refresh);
+    const failed = await screen.findByTestId("git-marketplace:updates:unmet:refresh-failed");
+    expect(failed).toHaveTextContent("Corp tools 새로 고침을 마치지 못했습니다:");
+    expect(failed).toHaveTextContent("연결할 수 없음");
+    // A sync that succeeds clears it.
+    fake.market.refreshSources.mockResolvedValueOnce({ ok: true, value: [team, source({ id: "corp", label: "Corp tools" })] });
+    fireEvent.click(refresh);
+    await waitFor(() => expect(screen.queryByTestId("git-marketplace:updates:unmet:refresh-failed")).toBeNull());
+    // The reply itself failing.
+    fake.market.refreshSources.mockResolvedValueOnce({ ok: false, code: "SOURCE_UNREACHABLE", message: "network is unreachable", detail: { reason: "offline" } });
+    fireEvent.click(refresh);
     expect(await screen.findByTestId("git-marketplace:updates:unmet:error")).toBeInTheDocument();
     act(() => fake.emitUpdateStatus(updateStatus()));
     await waitFor(() => expect(screen.queryByTestId("git-marketplace:updates:unmet")).toBeNull());

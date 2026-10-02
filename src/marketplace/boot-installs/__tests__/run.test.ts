@@ -10,7 +10,16 @@ import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PackageKey } fro
 import type { SourceOrigin } from "../../sources/registry.js";
 import { AppliedDefaults } from "../applied.js";
 import { DEFAULT_INSTALLS } from "../default-installs.js";
-import { assertNotRequiredByPolicy, bootInstallNoticeFrom, lockedByPolicy, requiredByPolicy, runBootInstalls, type BootInstallInput } from "../run.js";
+import {
+  assertNotRequiredByPolicy,
+  bootInstallNoticeFrom,
+  lockedByPolicy,
+  requiredByPolicy,
+  requirementGap,
+  runBootInstalls,
+  type BootInstallInput,
+  type RequirementSourceState,
+} from "../run.js";
 
 const AT = new Date("2026-09-23T00:00:00.000Z");
 
@@ -44,8 +53,8 @@ describe("runBootInstalls (design §10.2)", () => {
     policy?: Partial<MarketplacePolicy>;
     rows?: CatalogRow[];
     synced?: Record<string, SourceOrigin>;
-    /** Source ids the app does not have; every other one it has. */
-    unknown?: Set<string>;
+    /** How a required source stands where it is not readable or unreachable as `synced` says. */
+    sourceStates?: Record<string, RequirementSourceState>;
     failing?: Set<string>;
     signal?: AbortSignal;
     /** Runs inside each install, before it lands. */
@@ -56,7 +65,9 @@ describe("runBootInstalls (design §10.2)", () => {
       defaults: DEFAULT_INSTALLS,
       rows: options.rows ?? [row("ave", "meeting"), row("ave", "local-indexer")],
       synced: new Map(Object.entries(options.synced ?? { ave: "official" })),
-      known: (sourceId) => !options.unknown?.has(sourceId),
+      // As the service reads them: each required source is readable while it has a snapshot, unreachable otherwise.
+      requiredSources: new Map((options.policy?.requiredInstalls ?? []).map((item): [string, RequirementSourceState] => [item.source,
+        options.sourceStates?.[item.source] ?? (Object.hasOwn(options.synced ?? { ave: "official" }, item.source) ? "readable" : "unreachable")])),
       installed: async (_kind, name) => installedState.get(name) ?? null,
       install: async (target, flags) => {
         calls.push({ name: target.name, source: target.sourceId, ...flags });
@@ -206,7 +217,7 @@ describe("runBootInstalls (design §10.2)", () => {
     const report = await boot({
       policy: { requiredInstalls },
       rows: [row("ave", "meeting"), row("ave", "local-indexer"), row("ave", "old", { state: "upgrade_required", minAppVersion: "9.0.0" })],
-      unknown: new Set(["corp"]),
+      sourceStates: { corp: "missing" },
     });
     expect(report.skipped.filter((item) => requiredInstalls.includes(item.key))).toEqual([
       { key: key("meeting", "corp"), reason: "source corp is not one of the app's sources" },
@@ -215,6 +226,50 @@ describe("runBootInstalls (design §10.2)", () => {
       { key: key("old"), reason: "needs Ave 9.0.0" },
     ]);
     expect(calls.filter((call) => call.required)).toEqual([]);
+  });
+
+  it("tells a rollout or pre-release hold, a newer Ave and no offered version apart, and a hidden source, in its skips (§10.2)", async () => {
+    const requiredInstalls = [key("held"), key("newer"), key("withdrawn"), key("yanked"), key("hidden-one", "team")];
+    const report = await boot({
+      policy: { requiredInstalls },
+      rows: [
+        row("ave", "meeting"),
+        row("ave", "local-indexer"),
+        row("ave", "held", { state: "unavailable", reason: "pending" }),
+        row("ave", "newer", { state: "upgrade_required", minAppVersion: "9.0.0" }),
+        row("ave", "withdrawn", { state: "unavailable", reason: "withheld" }),
+        row("ave", "yanked", { state: "unavailable", reason: "yanked" }),
+      ],
+      sourceStates: { team: "hidden" },
+    });
+    expect(report.skipped.filter((item) => requiredInstalls.includes(item.key))).toEqual([
+      { key: key("held"), reason: "not offered to this installation yet (rollout or pre-release)" },
+      { key: key("newer"), reason: "needs Ave 9.0.0" },
+      { key: key("withdrawn"), reason: "no version is offered to this installation" },
+      { key: key("yanked"), reason: "no version is offered to this installation" },
+      { key: key("hidden-one", "team"), reason: "source team is hidden" },
+    ]);
+    // The card reads the same reasons from the same judgement.
+    const rows = [row("ave", "held", { state: "unavailable", reason: "pending" }), row("ave", "newer", { state: "upgrade_required", minAppVersion: "9.0.0" })];
+    expect(requirementGap(key("held"), "readable", rows)).toEqual({ reason: "rollout-held" });
+    expect(requirementGap(key("newer"), "readable", rows)).toEqual({ reason: "incompatible", minAppVersion: "9.0.0" });
+    // The source's state is judged before its rows: a hidden source's cached candidate is no proof it can be met.
+    expect(requirementGap(key("meeting"), "hidden", [row("ave", "meeting")])).toEqual({ reason: "source-hidden" });
+  });
+
+  it("refuses to judge a requirement on a source it was given no state for", async () => {
+    const input = await AppliedDefaults.open(file);
+    await expect(runBootInstalls({
+      policy: { ...EMPTY_MARKETPLACE_POLICY, requiredInstalls: [key("meeting", "corp")] },
+      defaults: [],
+      rows: [],
+      synced: new Map(),
+      requiredSources: new Map(),
+      installed: async () => null,
+      install: async () => {},
+      applied: input,
+      now: () => AT,
+    })).rejects.toThrow("no state was given for required source corp");
   });
 
   it("leaves a default held back by a rollout or as a pre-release unrecorded, to try again next boot", async () => {

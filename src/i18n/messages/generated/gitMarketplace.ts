@@ -682,12 +682,16 @@ export const en = {
   "gitMarketplace.updates.unmet.sourceUnreachable": "Your organization requires {name} from {source}, but that marketplace has not been reached yet.",
   "gitMarketplace.updates.unmet.notInCatalog": "Your organization requires {name} from {source}, but that marketplace does not list it.",
   "gitMarketplace.updates.unmet.incompatible": "Your organization requires {name} from {source}, but it needs Ave {version} or later.",
-  "gitMarketplace.updates.unmet.incompatibleUnknown": "Your organization requires {name} from {source}, but no release of it works with this version of Ave.",
   "gitMarketplace.updates.unmet.installedFrom": "{name} is installed from {source} instead; it may stand in the way.",
   "gitMarketplace.updates.unmet.contactAdmin": "If this does not resolve itself, contact your administrator.",
   "gitMarketplace.updates.unmet.refresh": "Refresh source",
   "gitMarketplace.updates.unmet.refreshing": "Refreshing…",
   "gitMarketplace.updates.unmet.remove": "Remove from {source}…",
+  "gitMarketplace.updates.unmet.sourceHidden": "Your organization requires {name} from {source}, but that marketplace is hidden, so nothing installs from it. Show it again in Sources.",
+  "gitMarketplace.updates.unmet.rolloutHeld": "Your organization requires {name} from {source}, but it is not offered to this device yet: it is rolling out gradually, or only a pre-release exists. It installs once the rollout reaches this device.",
+  "gitMarketplace.updates.unmet.notOffered": "Your organization requires {name} from {source}, but that marketplace offers no release of it to this installation.",
+  "gitMarketplace.updates.unmet.refreshFailed": "Refreshing {source} did not finish: {status}.",
+  "gitMarketplace.updates.unmet.confirmRemove": "Uninstall {name}, installed from {source}? Then Ave can install the one {required} provides.",
 };
 
 export const ko: Record<keyof typeof en, string> = {
@@ -1370,10 +1374,14 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.updates.unmet.sourceUnreachable": "조직이 {source}의 {name}을(를) 필수로 지정했지만, 아직 이 마켓플레이스에 연결하지 못했습니다.",
   "gitMarketplace.updates.unmet.notInCatalog": "조직이 {source}의 {name}을(를) 필수로 지정했지만, 이 마켓플레이스 목록에 없습니다.",
   "gitMarketplace.updates.unmet.incompatible": "조직이 {source}의 {name}을(를) 필수로 지정했지만, Ave {version} 이상이 필요합니다.",
-  "gitMarketplace.updates.unmet.incompatibleUnknown": "조직이 {source}의 {name}을(를) 필수로 지정했지만, 이 Ave 버전에서 동작하는 릴리스가 없습니다.",
   "gitMarketplace.updates.unmet.installedFrom": "{name}이(가) 대신 {source}에서 설치되어 있어 필수 패키지 설치를 막을 수 있습니다.",
   "gitMarketplace.updates.unmet.contactAdmin": "해결되지 않으면 관리자에게 문의하세요.",
   "gitMarketplace.updates.unmet.refresh": "소스 새로 고침",
   "gitMarketplace.updates.unmet.refreshing": "새로 고치는 중…",
   "gitMarketplace.updates.unmet.remove": "{source}에서 제거…",
+  "gitMarketplace.updates.unmet.sourceHidden": "조직이 {source}의 {name}을(를) 필수로 지정했지만, 이 마켓플레이스가 숨겨져 있어 아무것도 설치되지 않습니다. 소스에서 다시 표시하세요.",
+  "gitMarketplace.updates.unmet.rolloutHeld": "조직이 {source}의 {name}을(를) 필수로 지정했지만, 아직 이 기기에 제공되지 않습니다: 단계적으로 배포 중이거나 사전 릴리스만 있습니다. 배포가 이 기기에 닿으면 설치됩니다.",
+  "gitMarketplace.updates.unmet.notOffered": "조직이 {source}의 {name}을(를) 필수로 지정했지만, 이 마켓플레이스가 이 설치에 제공하는 릴리스가 없습니다.",
+  "gitMarketplace.updates.unmet.refreshFailed": "{source} 새로 고침을 마치지 못했습니다: {status}.",
+  "gitMarketplace.updates.unmet.confirmRemove": "{source}에서 설치된 {name}을(를) 제거할까요? 그러면 Ave가 {required}의 패키지를 설치할 수 있습니다.",
 };

@@ -52,6 +52,7 @@ import type {
   ReviewedComponentConsent,
   ExtensionComponentConsent,
   ConsentDelta,
+  UnmetRequirementInstall,
   UnmetRequirementView,
 } from "../../shared/git-marketplace.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
@@ -76,7 +77,16 @@ import { classifyInstall, compareVersions, updateFor, type InstalledPackage } fr
 import { assertMcpRuntimePinned, resolveMcpPackage, runtimeFromServerJson, type ResolvedMcpServer } from "../resolve/mcp.js";
 import { planPluginVersion, runFolderRung, runPluginLadder, type LadderDeps, type PluginInstallPlan, type StagedPluginArtifact } from "../resolve/plugin-ladder.js";
 import type { AppliedDefaults } from "../boot-installs/applied.js";
-import { assertNotRequiredByPolicy, bootInstallNoticeFrom, lockedByPolicy, requiredByPolicy, requirementGap, runBootInstalls, type BootInstallReport } from "../boot-installs/run.js";
+import {
+  assertNotRequiredByPolicy,
+  bootInstallNoticeFrom,
+  lockedByPolicy,
+  requiredByPolicy,
+  requirementGap,
+  runBootInstalls,
+  type BootInstallReport,
+  type RequirementSourceState,
+} from "../boot-installs/run.js";
 import type { LegacyContentKind, LegacyContentReport } from "../migration/legacy-content.js";
 import type { LegacyPluginReport, OfficialPlugin } from "../migration/legacy-plugins.js";
 import { runLegacyMigration } from "../migration/run.js";
@@ -2422,43 +2432,85 @@ export class MarketplaceService implements RetirementEntryLookup {
     }, signal);
   }
 
-  /** The app has a source of this id it serves: registered and not quarantined (§18.8). */
-  private knownSource(sourceId: string): boolean {
-    const source = this.registry.get(sourceId);
-    return source !== undefined && !this.registry.isQuarantined(source);
+  /**
+   * How each source a `requiredInstalls` entry names stands now
+   * ({@link RequirementSourceState}): what its registry entry and its files
+   * say, whatever a view shows. The boot pass and the Updates card judge
+   * every requirement by this, so hiding a source never hides that a
+   * requirement on it is not met.
+   */
+  private async requiredSourceStates(): Promise<Map<string, RequirementSourceState>> {
+    const states = new Map<string, RequirementSourceState>();
+    for (const id of new Set(this.policy.requiredInstalls.map((key) => key.source))) {
+      const source = this.registry.get(id);
+      if (!source || this.registry.isQuarantined(source)) {
+        states.set(id, "missing");
+        continue;
+      }
+      const read = await this.read(source);
+      if ("problem" in read) states.set(id, "unreachable");
+      else if (!this.registry.isEnabled(source, read.state)) states.set(id, "hidden");
+      else states.set(id, read.snapshot ? "readable" : "unreachable");
+    }
+    return states;
   }
 
   /**
    * Each `requiredInstalls` entry not met now (§10.2): not installed from the
-   * source it names, and that source cannot provide it ({@link requirementGap},
-   * the boot pass's judgement too). One the source can provide is not listed:
-   * the boot pass installs it, or the apply queue switches a same-named
-   * install to it. A same-named package installed from another source is
-   * named, since it may stand in the way.
+   * source it names, and that source cannot provide it. The judgement is the
+   * boot pass's, over the same inputs: {@link requirementGap} with
+   * {@link requiredSourceStates} and the rows of the sources the user sees.
+   * One the source can provide is not listed: the boot pass installs it, or
+   * the apply queue switches a same-named install to it.
+   *
+   * A same-named package installed from another source may stand in the
+   * way, so it is named as its receipt binds it, whatever became of that
+   * source: removed (its id), quarantined (the handle its Sources row
+   * carries, §18.8), or still there. Its package sheet can open only while
+   * that source's catalog lists it; otherwise the row uninstalls it directly.
    */
   private async unmetRequiredNow(installed: readonly InstalledRecord[]): Promise<UnmetRequirementView[]> {
     if (this.policy.requiredInstalls.length === 0) return [];
-    const { rows, snapshots } = await this.rows(new Set(this.policy.requiredInstalls.map((key) => key.source)));
-    const label = (sourceId: string) => {
+    const states = await this.requiredSourceStates();
+    const { rows } = await this.rows();
+    const others = installed.filter((item): item is InstalledRecord & { sourceId: string } => item.sourceId !== null
+      && this.policy.requiredInstalls.some((key) => key.kind === item.kind && key.name === item.name && key.source !== item.sourceId));
+    // The other sources' rows as a package sheet reads them: an installed package's hidden source included.
+    const listed = await this.rows(new Set(others.map((item) => item.sourceId)));
+    // A source's name as Sources shows it, whether it is shown or hidden; a removed one has only its id.
+    const label = async (sourceId: string) => {
       const source = this.registry.get(sourceId);
-      return source ? sourceLabel(source, snapshots.get(sourceId) ?? null) : sourceId;
+      if (!source) return sourceId;
+      const read = await this.read(source);
+      return sourceLabel(source, "problem" in read ? null : read.snapshot);
     };
     const unmet: UnmetRequirementView[] = [];
     for (const key of this.policy.requiredInstalls) {
       const current = installed.find((item) => item.kind === key.kind && item.name === key.name);
       if (current?.sourceId === key.source) continue;
-      const gap = requirementGap(key, { known: this.knownSource(key.source), synced: snapshots.has(key.source) }, rows);
+      const state = states.get(key.source);
+      if (state === undefined) throw new Error(`no state was read for required source ${key.source}`);
+      const gap = requirementGap(key, state, rows);
       if (!gap) continue;
-      const other = current?.sourceId && this.knownSource(current.sourceId) ? current.sourceId : null;
       unmet.push({
         key: { sourceId: key.source, kind: key.kind, name: key.name },
-        sourceLabel: label(key.source),
+        sourceLabel: await label(key.source),
         reason: gap.reason,
         minAppVersion: gap.reason === "incompatible" ? gap.minAppVersion : null,
-        installedFrom: other ? { sourceId: other, label: label(other) } : null,
+        installedFrom: current?.sourceId ? await this.installedFromView(current.sourceId, key, listed.rows, label) : null,
       });
     }
     return unmet;
+  }
+
+  /** A same-named install from another source, as {@link UnmetRequirementInstall} describes it. */
+  private async installedFromView(sourceId: string, key: PackageKey, rows: readonly CatalogRow[], label: (sourceId: string) => Promise<string>): Promise<UnmetRequirementInstall> {
+    const source = this.registry.get(sourceId);
+    if (source && this.registry.isQuarantined(source)) {
+      return { sourceId: this.handleOf(sourceId), label: sourceLabel(source, null), removal: "confirm" };
+    }
+    const sheet = source !== undefined && rows.some((row) => row.sourceId === sourceId && row.kind === key.kind && row.name === key.name);
+    return { sourceId, label: await label(sourceId), removal: sheet ? "sheet" : "confirm" };
   }
 
   /**
@@ -2524,7 +2576,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       defaults,
       rows,
       synced,
-      known: (sourceId) => this.knownSource(sourceId),
+      requiredSources: await this.requiredSourceStates(),
       installed: (kind, name) => this.installed(kind, name),
       install: async (row, options) => {
         const plan = await this.planInstall({ sourceId: row.sourceId, kind: row.kind, name: row.name, ...(options.switchSource ? { switchSource: true } : {}) });

@@ -1544,7 +1544,7 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
       sourceLabel: "Corp",
       reason: "source-unreachable" as const,
       minAppVersion: null,
-      installedFrom: { sourceId: "acme", label: "Acme" },
+      installedFrom: { sourceId: "acme", label: "Acme", removal: "sheet" as const },
     };
     let reported = [unmet];
     const h = harness({

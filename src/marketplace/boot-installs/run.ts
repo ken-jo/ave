@@ -38,8 +38,8 @@ export interface BootInstallInput {
   rows: readonly CatalogRow[];
   /** Sources that have a snapshot now, with their origin. */
   synced: ReadonlyMap<string, SourceOrigin>;
-  /** Whether the app has a source of this id at all. */
-  known(sourceId: string): boolean;
+  /** How each source a `requiredInstalls` entry names stands now ({@link RequirementSourceState}). */
+  requiredSources: ReadonlyMap<string, RequirementSourceState>;
   installed(kind: PackageKind, name: string): Promise<InstalledPackage | null>;
   install(row: CatalogRow, options: { switchSource: boolean; required: boolean }): Promise<void>;
   applied: AppliedDefaults;
@@ -128,33 +128,58 @@ function rowFor(rows: readonly CatalogRow[], key: PackageKey): CatalogRow | unde
   return rows.find((row) => row.sourceId === key.source && row.kind === key.kind && row.name === key.name);
 }
 
+/**
+ * How a source a requirement names stands, whatever any view shows of it:
+ * `missing` (not one of the app's sources, or quarantined, §18.8), `hidden`
+ * (the user hid it: nothing installs from it until it is shown),
+ * `unreachable` (no usable copy of its catalog) or `readable`.
+ */
+export type RequirementSourceState = "missing" | "hidden" | "unreachable" | "readable";
+
 /** Why a required install cannot be had from its source now (§10.2); see {@link requirementGap}. */
 export type RequirementGap =
   | { reason: Exclude<UnmetRequirementReason, "incompatible"> }
-  | { reason: "incompatible"; minAppVersion: string | null };
+  | { reason: "incompatible"; minAppVersion: string };
 
 /**
  * Why `key`, which the policy requires, cannot be installed from its source
  * now, or null when the source's catalog offers a version of it: the one
- * judgement the boot pass and the Updates card share. `source` says whether
- * the app has the source at all, and whether a copy of its catalog reads.
+ * judgement the boot pass and the Updates card share, over the same inputs —
+ * the source's state and the catalog rows of the sources the user sees.
  */
-export function requirementGap(key: PackageKey, source: { known: boolean; synced: boolean }, rows: readonly CatalogRow[]): RequirementGap | null {
-  if (!source.known) return { reason: "source-missing" };
-  if (!source.synced) return { reason: "source-unreachable" };
+export function requirementGap(key: PackageKey, source: RequirementSourceState, rows: readonly CatalogRow[]): RequirementGap | null {
+  switch (source) {
+    case "missing": return { reason: "source-missing" };
+    case "hidden": return { reason: "source-hidden" };
+    case "unreachable": return { reason: "source-unreachable" };
+    case "readable": break;
+  }
   const row = rowFor(rows, key);
   if (!row) return { reason: "not-in-catalog" };
-  if (row.choice.state === "candidate") return null;
-  return { reason: "incompatible", minAppVersion: row.choice.state === "upgrade_required" ? row.choice.minAppVersion : null };
+  switch (row.choice.state) {
+    case "candidate": return null;
+    case "upgrade_required": return { reason: "incompatible", minAppVersion: row.choice.minAppVersion };
+    case "unavailable": return { reason: row.choice.reason === "pending" ? "rollout-held" : "not-offered" };
+  }
 }
 
 function gapText(key: PackageKey, gap: RequirementGap): string {
   switch (gap.reason) {
     case "source-missing": return `source ${key.source} is not one of the app's sources`;
+    case "source-hidden": return `source ${key.source} is hidden`;
     case "source-unreachable": return `source ${key.source} has no snapshot yet`;
     case "not-in-catalog": return `${key.source} does not list ${key.kind} ${key.name}`;
-    case "incompatible": return gap.minAppVersion ? `needs Ave ${gap.minAppVersion}` : "no version is offered to this installation";
+    case "incompatible": return `needs Ave ${gap.minAppVersion}`;
+    case "rollout-held": return "not offered to this installation yet (rollout or pre-release)";
+    case "not-offered": return "no version is offered to this installation";
   }
+}
+
+/** The state of a source a requirement names; the caller gives one for each, so a missing one is a broken contract. */
+function requiredSourceState(input: BootInstallInput, sourceId: string): RequirementSourceState {
+  const state = input.requiredSources.get(sourceId);
+  if (state === undefined) throw new Error(`no state was given for required source ${sourceId}`);
+  return state;
 }
 
 async function required(key: PackageKey, input: BootInstallInput, report: BootInstallReport): Promise<void> {
@@ -166,7 +191,7 @@ async function required(key: PackageKey, input: BootInstallInput, report: BootIn
   // Installed from this source: its update is the apply queue's (§18.7.2).
   const current = await input.installed(key.kind, key.name);
   if (current?.sourceId === key.source) return;
-  const gap = requirementGap(key, { known: input.known(key.source), synced: origin !== undefined }, input.rows);
+  const gap = requirementGap(key, requiredSourceState(input, key.source), input.rows);
   if (gap) {
     report.skipped.push({ key, reason: gapText(key, gap) });
     return;
