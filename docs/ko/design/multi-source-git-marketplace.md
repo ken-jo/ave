@@ -2029,14 +2029,14 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 | `SOURCE_POLICY_BLOCKED` | 관리 정책 allow/block, `requireHttps`, `blockPrivateNetworks`, `allowLocalSources`, `allowDirectInstall`, 또는 공식이 아닌 대상에 대해 읽을 수 없는 정책 | `blocked-by-pattern`(target, pattern, policyPath), `not-in-allow-list`(target, policyPath), `https-required`(target, policyPath), `private-network-blocked`(target, address, policyPath), `local-sources-blocked`(target, policyPath), `direct-install-blocked`(target, policyPath), `policy-invalid`(error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.httpsRequired`, `.privateNetworkBlocked`, `.localSourcesBlocked`, `.directInstallBlocked`, `.policyInvalid` |
 | `SOURCE_CONFIRMATION_REQUIRED` | 대상이 소스에 없는 확인을 요구함(§7.4): 동기화, 계획, 설치 때, 또는 어느 소스도 지정하지 않은 다운로드 | 경고: `unencrypted`(host), `token-unencrypted`(host), `internal-network`(host, address), `this-computer`(host, address), `internal-downloads`(source, host), `network-folder`(server, path: 다른 컴퓨터의 폴더, 그 확인이 없는 폴더 소스를 읽을 때) | `.confirmationRequired`. 사유가 있으면 `gitMarketplace.warning.<warning>`(그 확인 자신의 질문, `198.18.0.0/15` 주소는 `internalNetwork.proxyRange`, 드라이브 매핑이 서버를 밝히지 않으면 `networkFolder.unknownServer`, macOS·Linux에서는 `networkFolder.automount`) |
 | `SOURCE_NAME_RESERVED` | 예약된 id | — | `.nameReserved` |
-| `SOURCE_ID_INVALID` | id가 2–63자의 소문자·숫자·`-`가 아니거나, 그런 소스가 없음. 또는 추가하려는 id가 자격 증명의 모양이거나, 제거가 아닌 요청이 격리된 소스를 가리킴(§18.8) | `holds-credential`, `stored-id-holds-credential` | `.idInvalid`, `.idInvalid.holdsCredential`, `.idInvalid.storedIdHoldsCredential` |
+| `SOURCE_ID_INVALID` | id가 2–63자의 소문자·숫자·`-`가 아니거나, 그런 소스가 없음. 또는 추가하려는 id가 자격 증명의 모양이거나, 제거가 아닌 요청이 격리된 소스를 가리킴(§18.8) | `reserved-prefix`(`prefix`, `issuer`), `holds-credential`, `stored-id-holds-credential` | `.idInvalid`, `.idInvalid.reservedPrefix`, `.idInvalid.holdsCredential`, `.idInvalid.storedIdHoldsCredential` |
 | `SOURCE_ID_TAKEN` | 이미 쓰는 id나 이미 추가된 저장소. 이미 소스인 폴더, 또는 소스를 포함하거나 그 안에 있는 폴더(§7.7) | 저장소나 폴더: `repository-already-added`(url, existingId) — 주소의 어떤 표기로든, `url`은 추가하려던 주소를 정규화한 것. `folder-already-added`(path, existingId), `folder-inside-source`(path, existingId, existingPath), `folder-contains-source`(path, existingId, existingPath) — 경로로 또는 별칭을 거쳐. id만 겹치면 detail 없음 | `.idTaken`(id: 다른 id를 고름). `.idTaken.repositoryAlreadyAdded`, `.folderAlreadyAdded`, `.folderInsideSource`, `.folderContainsSource`는 다른 id가 아니라 겹치는 소스를 쓰거나 지우라고 안내 |
 | `SOURCE_AUTH_REQUIRED` | 401/403, ssh 거부. Ave가 저장된 토큰을 건넸는데 "저장소 없음"이 돌아올 때 | `token`(host), `token-no-access`(host: 저장된 토큰에 호스트가 "저장소 없음"으로 답함, 토큰에 권한이 없을 수 있음), `token-unencrypted`(host: 호스트가 평문 http로 로그인을 요구하는데 소스에 `token-unencrypted`가 없어 자격 증명을 내주지 않음), `ssh`(host) — git 메시지에서. 다운로드 거부는 담지 않음(다운로드 호스트가 토큰의 호스트와 다를 수 있음) | `.authRequired`, `.authRequired.token`, `.authRequired.tokenNoAccess`, `.authRequired.ssh`와 아래 변형. `.authRequired.tokenUnencrypted`와 `.entry`, `.setToken` |
 | `SOURCE_SSH_HOST_UNKNOWN` | known_hosts에 없거나 다른 호스트 키 | `unknown`(host, port), `changed`(host, port) — ssh가 "remote host identification has changed"를 출력하면 `changed`. 문장에 `ssh-keyscan`이나 `ssh-keygen -R` 명령이 들어가고 *명령 복사*가 그것을 복사함 | `.sshHostUnknown`, `.sshHostUnknown.unknown`, `.sshHostUnknown.changed` |
 | `SOURCE_REF_NOT_FOUND` | 브랜치나 태그 없음 | `missing`(ref, repository, available) — fetch가 실패한 뒤 `ls-remote`로 브랜치, 그다음 태그를 최대 10개 나열 | `.refNotFound`, `.refNotFound.missing` |
 | `SOURCE_UNREACHABLE` | 네트워크, DNS, 타임아웃, 저장소가 없다고 답하는 호스트 | `offline`, `dns`, `refused`, `timeout`, `http-status`(status), `tls`, `proxy`(proxy), `not-found`와 `not-found-ssh`(Ave 토큰 없이 호스트가 "저장소 없음"으로 답함. 비공개 저장소에도 같은 답을 하므로 어느 쪽이라고 단정하지 않음) — `offline` 외에는 host 포함. git 메시지, 게이트의 이름 풀이 오류, 실행 자체의 타임아웃, 쓸 수 없는 PAC 항목, 다운로드 상태 코드에서 | `.unreachable`, `.unreachable.<reason>` |
 | `SOURCE_NOT_A_MARKETPLACE` | 인식할 수 있는 것이 없음 | — | `.notAMarketplace`와 그 변형 |
-| `SOURCE_INDEX_INVALID` | 인덱스 검증 실패. 또는 직접 패키지(나 붙여넣은 `server.json`)의 이름·버전·구성 요소 이름이 자격 증명의 모양임(§18.8). 마켓플레이스의 그런 패키지는 대신 진단과 함께 빠짐 | `name-holds-credential`, `version-holds-credential`, `component-holds-credential` | `.indexInvalid`, `.indexInvalid.<reason>` |
+| `SOURCE_INDEX_INVALID` | 인덱스 검증 실패. 또는 직접 패키지(나 붙여넣은 `server.json`)의 이름·버전·구성 요소 이름이 자격 증명의 모양임(§18.8). 마켓플레이스의 그런 패키지는 대신 진단과 함께 빠짐 | `name-reserved-prefix`, `version-reserved-prefix`, `component-reserved-prefix`(각각 `prefix`, `issuer`), `name-holds-credential`, `version-holds-credential`, `component-holds-credential` | `.indexInvalid`, `.indexInvalid.<reason>` |
 | `SOURCE_HISTORY_REWRITTEN` | 후손이 아닌 후보 | — | `.historyRewritten` |
 | `SOURCE_DISABLED` | 숨긴 소스에서 설치·업데이트 요청(그 소스에 묶인 패키지를 위해 동기화는 계속함, §7.3) | — | `.sourceDisabled` |
 | `SOURCE_LOCAL_DATA_DAMAGED` | 소스의 다운로드한 사본을 쓸 수 없음(§2.1), 또는 복구가 그것을 옮기거나 유지한 핀을 되쓰지 못함 | 핀 잃음: `state-missing`, `state-invalid`, `state-unreadable`; 핀 유지: `snapshot-invalid`, `snapshot-unreadable`, `repository-damaged`; 복구: `repair-failed`(유지한 핀 있음), `repair-failed-unpinned`(유지할 핀 없음), `repair-write-failed`(sourceId) — 메시지는 파일을 소스 기준 상대 이름으로, fs 오류는 코드로만 밝히며 홈 경로를 쓰지 않음. 문장은 소스를 행과 같은 이름으로 부름(공식 소스는 출처 이름, 그 밖은 라벨, 목록의 소스를 모를 때만 id) | `.localDataDamaged`, `.localDataDamaged.<reason>` |
@@ -2123,8 +2123,12 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
 - URL userinfo: `http(s)` 주소의 `@` 앞 전부, 그 밖의 주소나 scp 형태에서는
   `user:password`(또는 ssh 계정 이름이 아닌 userinfo)
 - 알려진 것이든 아니든(`Custom <비밀>`) 모든 방식의 `Authorization`·`Proxy-Authorization`
-  헤더 값: 헤더 이름 뒤부터 그 줄 끝까지, 헤더가 더 긴 텍스트 안에 따옴표로 묶여 있으면 그
-  따옴표까지. 그리고 `Bearer` 값, `x-api-key`·`x-auth-token` 값
+  헤더 값: 헤더 이름 뒤부터 그 줄 끝(또는 텍스트 끝)까지, 그리고 이어지는 접힌 줄(공백이나
+  탭으로 시작하는 줄)까지. 따옴표는 어디에 있든 값을 끝내지 않습니다. 값을 여는 따옴표,
+  더 긴 텍스트(JSON 메시지, 따옴표로 묶인 오류) 안에서 헤더를 감싼 따옴표, 값 안의
+  따옴표(`O'Neil`, `Couldn't`) 모두 그렇습니다. 어떤 따옴표가 구분자인지 가릴 수 없고, 줄의
+  나머지를 가리는 비용은 표시뿐이지만 일찍 멈추면 비밀이 샙니다. 그리고 `Bearer` 값,
+  `x-api-key`·`x-auth-token` 값
 - 키에 `token`, `secret`, `password`, `passwd`, `pwd`, `apikey`, `accesskey`, `privatekey`,
   `credential`, `bearer`, `authorization`이 들었거나 `auth`·`pat`이 온전한 조각인
   자격 증명 할당(`key=value`, `key: value`, JSON `"key": "value"`, `--key value`)의 값
@@ -2141,6 +2145,24 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
 `task-<SHA-224 16진수>`, `npm_scripts`, `akiak-production`)도 그대로 둡니다. 커밋(16진수
 40자), SHA-256 다이제스트(16진수 64자), 폴더 리비전(`local-<16진수 64자>`)도 그대로 둡니다.
 
+**예약된 이름.** 왼쪽 경계에서 어떤 행의 접두사를 담고 그 행의 길이만큼 본문이 이어지는
+이름은, 본문이 무슨 뜻이든 예약된 이름공간에 속합니다.
+`glpat-rotation-documentation-for-local-marketplaces`,
+`docs-glpat-rotation-documentation-for-local-marketplaces`,
+`sk-proj-build-the-user-interface-for-the-marketplace`, `sk-<SHA-224 16진수>`, 빌드 메타데이터
+`1.0.0+sk-<SHA-224 16진수>`는 닮은 토큰처럼 거부됩니다. "평범한 이름은 통과한다"의 명시된
+예외입니다. 탐지기는 뜻이 아니라 모양을 읽고, 접두사 뒤의 문장이나 다이제스트 본문은 진짜
+토큰의 모양이기 때문입니다. 이 거부는 "왜 안 되지?" 하는 순간이 되지 않습니다. 접두사와 닮은
+발급자를 밝히고 무엇을 할지 알려 줍니다. main은 `reservedPrefixIn(text)`(텍스트에서 가장 먼저
+나오는 행, 둘이 같은 자리에서 시작하면 표에서 앞선 행)로 찾고, 세부 정보에 접두사와 발급자를
+담아 거부합니다. 소스 ID는 `SOURCE_ID_INVALID` `reserved-prefix`, 패키지의 이름·버전·구성
+요소 이름은 `SOURCE_INDEX_INVALID` `name-`·`version-`·`component-reserved-prefix`, 인덱스
+항목은 접두사를 밝힌 진단입니다. ID의 문장은 "“glpat-”로 시작하거나 “-” 뒤 부분이 그것으로
+시작하는 ID는 GitLab 토큰처럼 보여 예약되어 있습니다. 다른 ID를 고르세요."입니다. 추가
+대화상자는 ID를 입력하는 동안 같은 문장을 ID 아래에 보이고, ID가 바뀔 때까지 추가를 막습니다.
+자격 증명 모양이지만 접두사가 없는 이름(할당, URL userinfo)은 `*-holds-credential` 사유와 그
+문장으로 거부됩니다.
+
 **탐지기 하나, 그래서 받아들이기와 내보내기가 일치합니다.** 내보낼 때의 가리기, 들어올 때의
 거부, 격리가 모두 같은 탐지기에 묻습니다. 받아들인 것은 내보낼 때 그대로 나가고, 렌더러는 받은
 그대로 돌려보냅니다. 애매한 경우는 소유자의 원칙이 정합니다. 평범한 이름을 거부하는 것("왜
@@ -2156,10 +2178,11 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
 - 표에 없는 형식
 
 모델로 가는 텍스트(`scrubSecretsForLLM`)는 같은 표를 쓰고, 예전의 넓은 접두사 규칙을 그 위에
-그대로 둡니다. 거기서는 이름을 잘못 가려도 잃는 것이 없습니다.
+그대로 둡니다. 거기서는 이름을 잘못 가려도 잃는 것이 없습니다. 그 Authorization 규칙도 알 수
+없는 방식의 값이나 방식 없는 값을 그 줄 끝까지 가립니다(`Custom <비밀>`).
 
 **들어오는 곳에서의 적용.** 렌더러가 돌려보내는 모든 식별자를 들어오는 곳에서 검사합니다.
-추가하려는 소스 id(`SOURCE_ID_INVALID` `holds-credential`)와 정책이 적은 소스 id(정책이
+추가하려는 소스 id(`SOURCE_ID_INVALID` `reserved-prefix` 또는 `holds-credential`)와 정책이 적은 소스 id(정책이
 거부됨, §18.6), 인덱스 항목이나 디스크립터(합성된 것 포함)의 패키지 이름·버전·구성 요소
 이름(스킬, MCP 서버, 프롬프트, 에이전트, 루틴), 그리고 저장된 스냅숏을 읽을 때마다(오프라인이든,
 커밋이 그대로인 새로 고침 뒤든)입니다. 이 규칙 이전에 쓴 스냅숏은 그런 패키지를 아직 담고
@@ -2176,7 +2199,10 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
 행의 `id`는 가려진 id가 아니라 main이 발급한 핸들(`ave-legacy-`와, 서비스가 시작할 때 뽑은
 키로 저장된 id를 HMAC한 값)입니다. 제거는 그 핸들을 저장된 항목과 대조해 풀고, 그 핸들을
 가리키는 다른 요청은 `SOURCE_ID_INVALID` `stored-id-holds-credential`과 같은 문장으로
-실패합니다.
+실패합니다. 거기서 설치한 패키지도 같은 핸들로 나열되고, 제거(Uninstall)는 그 핸들을 다시
+받습니다. 핸들은 보기의 이름일 뿐입니다. 보기에서 온 요청은 입구에서 한 번 설치 기록의 저장된
+식별자로 풀리고, 제거 자체는 main의 모든 호출자(철회 집행, 이전 플러그인 제거)처럼 그 저장된
+식별자로 패키지를 가리킵니다.
 
 백그라운드 동기화의 실패는 `sources:list`로 소스 화면에 닿습니다. `SyncResult`가
 detail을 담고, 동기화기가 그것을 `state.json`의 `lastSync.detail`에 저장하고, 상태
@@ -3780,6 +3806,7 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 | `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "<위치>에서 marketplace.2.json도, 패키지 폴더도, 단일 패키지도 찾지 못했습니다." | 입력 중인 주소: "주소와 브랜치, 저장소 안의 패키지라면 폴더 칸을 확인하세요."; 직접 추가한 소스: 같은 안내를 *소스 제거* 후 다시 추가로; 공식: 나중에 *새로 고침*, 그다음 마켓플레이스 운영자; 조직: "관리자에게 알리세요" |
 | · `other-app-plugin` | E | "다른 앱용 플러그인입니다(`.claude-plugin/`나 `.codex-plugin/`)." | "플러그인 스튜디오의 *플러그인 가져오기*를 쓰세요(`extensions-and-plugins.md` §2.4)." |
 | `SOURCE_INDEX_INVALID` | E | "<소스>의 인덱스가 올바르지 않습니다(<파일>: <문제>). 마지막 정상 버전을 계속 씁니다." | "마켓플레이스 소유자에게 알리세요." *세부 정보 복사* |
+| · `name-reserved-prefix`, `version-reserved-prefix`, `component-reserved-prefix` | E | "“<접두사>”로 시작하거나 “-” 뒤 부분이 그것으로 시작하는 패키지 이름은 <발급자>처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다." / "“<접두사>”로 시작하는 부분이 있는 버전은…" / "이 패키지에 든 스킬, 에이전트, 프롬프트, 루틴 또는 MCP 서버의 이름에 “<접두사>”로 시작하는 부분이 있습니다. 그런 이름은…" | "패키지 작성자에게 다른 이름을 골라 / 버전을 바꿔 달라고 하세요." |
 | · `name-holds-credential`, `version-holds-credential`, `component-holds-credential` | E | "이 패키지의 <이름 / 버전>이 비밀번호나 토큰처럼 보여 Ave가 제공하지 않습니다." / "이 패키지에 든 스킬, 에이전트, 프롬프트, 루틴 또는 MCP 서버의 이름이 비밀번호나 토큰처럼 보여 Ave가 제공하지 않습니다." | "패키지 작성자에게 <이름 / 버전>을 바꿔 달라고 하세요." |
 | `SOURCE_HISTORY_REWRITTEN` | E | 공식·관리: "<소스>의 이력이 다시 쓰여 마지막 정상 버전을 유지합니다." 커스텀·직접: "…새 이력을 검토한 뒤 쓰세요." | 커스텀·직접: *검토* |
 | `SOURCE_LOCAL_DATA_DAMAGED` · `state-missing`, `state-invalid`, `state-unreadable` | W | "<id> 소스의 다운로드한 사본이 손상되었습니다. Ave가 신뢰하는 버전의 기록이 없거나 읽을 수 없습니다." | "복구하면 소스를 다시 다운로드하고, 이전 버전과 대조하지 않은 채 지금 제공되는 버전을 신뢰합니다." 행의 *복구*(모든 출처, 새로 고침과 스위치 대신). `state-unreadable`은 폴더 권한을 고치면 대조가 유지됨; *세부 정보 복사* |
@@ -3789,6 +3816,7 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 | `SOURCE_LIST_UNREADABLE` · `unreadable`, `invalid` | E | "Ave가 직접 추가한 소스 목록인 Ave 데이터 폴더의 `marketplaces/sources.json`을 읽을 수 없어(<fsCode>, 또는 Ave 형식이 아님), 고쳐질 때까지 어떤 소스도 바꾸지 않습니다." | "파일을 고치거나 지운 뒤 Ave를 다시 시작하세요. 지우면 직접 추가한 소스만 사라지고, 공식·조직 소스와 설치한 패키지는 그대로 남습니다." 형식 오류는 *세부 정보 복사* |
 | `SOURCE_DISABLED` | E | 지금 문장 | *소스 보이기* |
 | `SOURCE_NAME_RESERVED`, `SOURCE_ID_INVALID` | E | "<id>는 예약되었거나 올바른 ID가 아닙니다(소문자·숫자·`-` 2–63자)." | "다른 ID를 고르세요." |
+| · `reserved-prefix` | E | "“<접두사>”로 시작하거나 “-” 뒤 부분이 그것으로 시작하는 ID는 <발급자>처럼 보여 예약되어 있습니다."(추가 대화상자에서 ID를 입력하는 동안 ID 아래에도) | "다른 ID를 고르세요." |
 | · `holds-credential` | E | "이 ID는 비밀번호나 토큰처럼 보여 쓸 수 없습니다." | "다른 ID를 고르세요." |
 | · `stored-id-holds-credential` | E | "이 소스의 ID가 비밀번호나 토큰처럼 보여 Ave가 동기화하거나 패키지를 제공하지 않습니다." | "소스를 제거한 뒤 다른 ID로 다시 추가하세요."(행에는 제거만 있음) |
 | `SOURCE_ID_TAKEN` | E | "<id>는 이미 쓰입니다" | "다른 ID를 고르세요." |

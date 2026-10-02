@@ -27,6 +27,7 @@ import { isMissingPathError } from "../../lib/atomic-file.js";
 import { createMarketplaceLogger } from "../log.js";
 import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
+import { CREDENTIAL_ISSUER_NAMES, reservedPrefixIn } from "../../shared/dlp.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import {
@@ -722,6 +723,13 @@ export class SourceRegistry {
       throw new MarketplaceError("SOURCE_ID_INVALID", `${id} is not a valid source id (2-63 lowercase letters, digits or -)`);
     }
     if (!isSourceId(id)) {
+      // A reserved prefix is named, so the user learns what to change (§18.8).
+      const reserved = reservedPrefixIn(id);
+      if (reserved) {
+        throw new MarketplaceError("SOURCE_ID_INVALID", `${reserved.prefix} is a reserved prefix: an id using it looks like ${CREDENTIAL_ISSUER_NAMES[reserved.issuer]}; choose a different id`, {
+          detail: { reason: "reserved-prefix", prefix: reserved.prefix, issuer: reserved.issuer },
+        });
+      }
       throw new MarketplaceError("SOURCE_ID_INVALID", "this source id looks like a password or token", { detail: { reason: "holds-credential" } });
     }
     if (isReservedSourceId(id)) {

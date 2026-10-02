@@ -982,8 +982,18 @@ describe("MarketplaceService", () => {
     // Assembled here so no whole token sits in the source.
     const TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
 
-    /** Rename the added `acme-tools` source, its data and (with `ledger`) its installs to TOKEN, as an earlier build stored them, and reopen. */
-    async function storeUnderToken(options: { ledger?: boolean; state?: (state: Record<string, unknown>) => Record<string, unknown> } = {}): Promise<string> {
+    /**
+     * Rename the added `acme-tools` source, its data and (with `ledger` / `mcpRecords`) its content and server
+     * installs to TOKEN, as an earlier build stored them, and reopen. The server manager's configs survive the
+     * reopen, as a running app's would.
+     */
+    async function storeUnderToken(options: {
+      ledger?: boolean;
+      mcpRecords?: boolean;
+      state?: (state: Record<string, unknown>) => Record<string, unknown>;
+      snapshot?: (snapshot: Record<string, unknown>) => Record<string, unknown>;
+    } = {}): Promise<string> {
+      const configs = new Map(manager.configs);
       service.close();
       const list = join(root, "marketplaces", "sources.json");
       writeFileSync(list, readFileSync(list, "utf8").replaceAll('"acme-tools"', JSON.stringify(TOKEN)));
@@ -992,6 +1002,7 @@ describe("MarketplaceService", () => {
       for (const file of readdirSync(join(moved, "snapshots"))) {
         const path = join(moved, "snapshots", file);
         writeFileSync(path, readFileSync(path, "utf8").replace('"sourceId":"acme-tools"', `"sourceId":${JSON.stringify(TOKEN)}`));
+        if (options.snapshot) writeFileSync(path, JSON.stringify(options.snapshot(JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>)));
       }
       if (options.state) {
         const statePath = join(moved, "state.json");
@@ -1001,7 +1012,12 @@ describe("MarketplaceService", () => {
         const ledger = join(root, "packages", "ledger.json");
         writeFileSync(ledger, readFileSync(ledger, "utf8").replaceAll('"acme-tools"', JSON.stringify(TOKEN)));
       }
+      if (options.mcpRecords) {
+        const records = join(root, "packages", "mcp-installs.json");
+        writeFileSync(records, readFileSync(records, "utf8").replaceAll('"acme-tools"', JSON.stringify(TOKEN)));
+      }
       await build();
+      for (const [id, config] of configs) manager.configs.set(id, config);
       return moved;
     }
 
@@ -1033,6 +1049,51 @@ describe("MarketplaceService", () => {
       expect(state).toMatchObject({ pinnedCommit: first, pendingRewrite: { candidate: second } });
     });
 
+    it.each(["disable", "uninstall"] as const)("enforces a %s revocation its cached snapshot carries on a server installed from it", async (action) => {
+      const { scrubMarketplaceStrings } = await import("../../errors.js");
+      const m = market();
+      await addMarket(m.url);
+      await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).planId);
+      expect(manager.configs.has("notes")).toBe(true);
+      const records = join(root, "packages", "mcp-installs.json");
+      await storeUnderToken({
+        mcpRecords: true,
+        snapshot: (snapshot) => ({ ...snapshot, revocations: [{ kind: "mcp", name: "notes", versions: "=2.0.0", reason: "unsafe server", at: AT.toISOString(), action }] }),
+      });
+      expect(readFileSync(records, "utf8")).toContain(JSON.stringify(TOKEN));
+      expect(manager.configs.has("notes")).toBe(true);
+      expect((await service.listSources()).some((source) => source.status.state === "id-holds-credential")).toBe(true);
+
+      await service.enforceRevocations();
+
+      // A server has no gate, so either action removes it: the install the stored id names, not a view's handle.
+      expect(manager.configs.has("notes")).toBe(false);
+      expect(readFileSync(records, "utf8")).not.toContain('"notes"');
+      const notice = service.takeRevocationNotice();
+      // The notice is a view: it carries the handle, before any scrubbing, and names nothing left to remove.
+      expect(notice?.revoked).toEqual([{ key: { sourceId: expect.stringMatching(/^ave-legacy-[0-9a-f]{32}$/u), kind: "mcp", name: "notes" }, version: "2.0.0", reason: "unsafe server", outcome: "uninstalled" }]);
+      expect(JSON.stringify(notice)).not.toContain(TOKEN);
+      expect(scrubMarketplaceStrings(notice)).toEqual(notice);
+      await expect(service.uninstall({ ...notice!.revoked[0]!.key, removeData: false })).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+    });
+
+    it("refuses an update plan for a package installed from it, by handle or by stored id, for the declared reason and before reading what is installed", async () => {
+      const m = market();
+      await addMarket(m.url);
+      await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" })).planId);
+      await storeUnderToken({ ledger: true });
+      const handle = (await service.catalog({ installedOnly: true })).entries.find((entry) => entry.key.name === "review")!.key.sourceId!;
+      expect(handle).toMatch(/^ave-legacy-[0-9a-f]{32}$/u);
+      const lists = vi.spyOn(pluginPort, "list");
+      for (const sourceId of [handle, TOKEN]) {
+        await expect(service.planUpdate({ sourceId, kind: "skill", name: "review" })).rejects.toMatchObject({
+          code: "SOURCE_ID_INVALID",
+          detail: { reason: "stored-id-holds-credential" },
+        });
+      }
+      expect(lists).not.toHaveBeenCalled();
+    });
+
     it.each([
       ["while its source is listed", false],
       ["after its source is removed", true],
@@ -1051,8 +1112,11 @@ describe("MarketplaceService", () => {
         expect(existsSync(moved)).toBe(false);
         expect(store.list()).toHaveLength(1);
       }
+      // The answer carries no stored id before any scrubbing: its key and its label are the handle.
+      const raw = await service.catalog({ installedOnly: true });
+      expect(JSON.stringify(raw)).not.toContain(TOKEN);
       // What the renderer holds: the answer as it crosses, scrubbed.
-      const answer = scrubMarketplaceStrings(await service.catalog({ installedOnly: true }));
+      const answer = scrubMarketplaceStrings(raw);
       const entry = answer.entries.find((item) => item.key.name === "review")!;
       expect(entry.key.sourceId).toMatch(/^ave-legacy-[0-9a-f]{32}$/u);
       expect(JSON.stringify(answer)).not.toContain(TOKEN);

@@ -53,6 +53,7 @@ import type { McpRuntimeSpec } from "../../plugins/types.js";
 import { aggregateCatalog, findRevocation, versionExclusions, type CatalogRow, type VersionChoiceContext } from "../catalog/aggregate.js";
 import { PACKAGE_KINDS, type IndexVersion, type PackageKind, type PluginAuthority } from "../catalog/types.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
+import { credentialRefusal } from "../catalog/validate.js";
 import { stageContentPackage } from "../content/store.js";
 import { componentDelta } from "./component-delta.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -103,6 +104,13 @@ import {
   versionViews,
   widensAuthority,
 } from "./views.js";
+
+/** An installed package named by its stored identity: the source id its install record holds, never a view's handle (§18.8). */
+export interface StoredInstallKey {
+  sourceId: string | null;
+  kind: PackageKind;
+  name: string;
+}
 
 type ContentPlan = PackagePlan & { kind: Exclude<PackageKind, "plugin" | "mcp"> };
 
@@ -1173,7 +1181,7 @@ export class MarketplaceService implements RetirementEntryLookup {
           // A source id with a credential's shape goes out as its handle, which Uninstall takes back (§18.8).
           key: { sourceId: this.viewSourceId(item.sourceId), kind: item.kind, name: item.name },
           sourceOrigin: this.registry.get(item.sourceId)?.origin ?? "custom",
-          sourceLabel: labels.get(item.sourceId) ?? item.sourceId,
+          sourceLabel: labels.get(item.sourceId) ?? this.viewSourceId(item.sourceId),
           displayName: item.name,
           description: "",
           keywords: [],
@@ -1408,11 +1416,12 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   private async planUpdateNow(key: PackageKeyView): Promise<UpdatePlanView> {
-    const installed = await this.installed(key.kind, key.name);
-    if (!installed || installed.sourceId !== key.sourceId) {
-      throw new MarketplaceError("PACKAGE_ID_CONFLICT", `${key.kind} ${key.name} is not installed from ${key.sourceId}`);
-    }
+    // The source first (§18.8): a handle or a quarantined id is refused for what it is, before any install list is read.
     const source = this.source(key.sourceId);
+    const installed = await this.installed(key.kind, key.name);
+    if (!installed || installed.sourceId !== source.id) {
+      throw new MarketplaceError("PACKAGE_ID_CONFLICT", `${key.kind} ${key.name} is not installed from ${source.id}`);
+    }
     const state = await this.registry.readState(source.id);
     const historyRewritten =
       state.pendingRewrite && (source.origin === "custom" || source.origin === "direct")
@@ -1593,6 +1602,14 @@ export class MarketplaceService implements RetirementEntryLookup {
     return found;
   }
 
+  /**
+   * Uninstall from a view (IPC): `request.sourceId` is the id the view
+   * carried — the stored id, or the handle a credential-shaped one is shown
+   * under (§18.8). It is resolved to the installed record's stored identity
+   * here, once; the removal itself ({@link uninstallStoredNow}) only ever
+   * sees that identity. Main-process callers that hold a stored identity
+   * call {@link uninstallInstalled} instead.
+   */
   async uninstall(request: UninstallRequest, options?: { retain: { reason: PluginConfigRetention["reason"] } }): Promise<UninstallResultView> {
     return this.operation(() => this.uninstallNow(request, options));
   }
@@ -1602,29 +1619,51 @@ export class MarketplaceService implements RetirementEntryLookup {
       throw new Error("removeData applies only to server or agent plugin packages");
     }
     const installed = await this.installed(request.kind, request.name);
-    // The key names the installed record by the id its view carried: the stored id, or its handle (§18.8).
-    // Resolved against that record before any policy or removal, whether or not the source still exists.
     const named = installed === null ? undefined : installed.sourceId === null ? null : this.viewSourceId(installed.sourceId);
     if (!installed || named !== request.sourceId) {
       const from = request.sourceId === null ? "without a source" : `from ${request.sourceId}`;
       throw new MarketplaceError("PACKAGE_ID_CONFLICT", `${request.kind} ${request.name} is not installed ${from}`);
     }
-    const sourceId = installed.sourceId;
-    assertNotRequiredByPolicy(this.policy, request.kind, request.name, sourceId, "uninstall");
+    return this.uninstallStoredNow({ sourceId: installed.sourceId, kind: request.kind, name: request.name }, request.removeData === true, options);
+  }
+
+  /**
+   * Uninstall by stored identity (§18.8): `key.sourceId` is the source id the
+   * install record holds, as main-process state (the plugin registry, a
+   * revocation feed) carries it — never a view's handle. Not an IPC entry.
+   */
+  async uninstallInstalled(key: StoredInstallKey, options?: { retain: { reason: PluginConfigRetention["reason"] } }): Promise<UninstallResultView> {
+    return this.operation(() => this.uninstallStoredNow(key, false, options));
+  }
+
+  /** The removal both entries share; `key` is a stored identity, checked against the install record. */
+  private async uninstallStoredNow(
+    key: StoredInstallKey,
+    removeData: boolean,
+    options?: { retain: { reason: PluginConfigRetention["reason"] } },
+  ): Promise<UninstallResultView> {
+    const installed = await this.installed(key.kind, key.name);
+    const viewed = key.sourceId === null ? null : this.viewSourceId(key.sourceId);
+    if (!installed || installed.sourceId !== key.sourceId) {
+      const from = viewed === null ? "without a source" : `from ${viewed}`;
+      throw new MarketplaceError("PACKAGE_ID_CONFLICT", `${key.kind} ${key.name} is not installed ${from}`);
+    }
+    const sourceId = key.sourceId;
+    assertNotRequiredByPolicy(this.policy, key.kind, key.name, sourceId, "uninstall");
     let keptDataDir: string | null = null;
-    if (request.kind === "plugin") {
+    if (key.kind === "plugin") {
       let retain: PluginConfigRetention | undefined;
       if (options?.retain) {
-        const entry = await this.getRetirementEntry(request.name);
+        const entry = await this.getRetirementEntry(key.name);
         if (!entry || (sourceId !== null && entry.sourceId !== sourceId)) throw new Error("Plugin retirement entry is unavailable");
         retain = { reason: options.retain.reason, sourceId, successors: entry.successors };
       }
-      await this.options.installers.plugin.uninstall(request.name, retain);
-    } else if (request.kind === "mcp") ({ keptDataDir } = await this.options.installers.mcp.uninstall(request.name, { removeData: request.removeData === true }));
-    else await this.options.installers.content.uninstall(request.kind, request.name, { removeData: request.removeData === true });
-    await this.refeedAfter(`${request.kind} ${request.name} uninstall`);
+      await this.options.installers.plugin.uninstall(key.name, retain);
+    } else if (key.kind === "mcp") ({ keptDataDir } = await this.options.installers.mcp.uninstall(key.name, { removeData }));
+    else await this.options.installers.content.uninstall(key.kind, key.name, { removeData });
+    await this.refeedAfter(`${key.kind} ${key.name} uninstall`);
     this.catalogChanged();
-    return { key: { sourceId: request.sourceId, kind: request.kind, name: request.name }, keptDataDir };
+    return { key: { sourceId: viewed, kind: key.kind, name: key.name }, keptDataDir };
   }
 
   // ─── direct MCP input (§8.1) ─────────────────────────────────────────────
@@ -1643,7 +1682,8 @@ export class MarketplaceService implements RetirementEntryLookup {
     const last = record.name.slice(record.name.lastIndexOf("/") + 1);
     // The name is how the installed server is named back (§18.8); `idFrom` refuses that shape too.
     if (holdsCredential(last)) {
-      throw new MarketplaceError("SOURCE_INDEX_INVALID", "server.json: its name looks like a password or token", { detail: { reason: "name-holds-credential" } });
+      const refusal = credentialRefusal("name", last);
+      throw new MarketplaceError("SOURCE_INDEX_INVALID", `server.json: ${refusal.message}`, { detail: refusal.detail });
     }
     const name = idFrom(last);
     if (!name) throw new MarketplaceError("CONTENT_RULE_VIOLATION", `server.json name ${record.name} does not end in a usable name`);
@@ -1843,7 +1883,8 @@ export class MarketplaceService implements RetirementEntryLookup {
     const report: RevokedPackageView[] = [];
     for (const { record, revocation } of await this.feedRevocations()) {
       if (revocation.action === "disable" && GATED_KINDS.has(record.kind)) continue;
-      const item = { key: { sourceId: record.sourceId, kind: record.kind, name: record.name }, version: record.version!, reason: revocation.reason };
+      // The report is a view (the boot notice, its Uninstall button): it carries the view id (§18.8).
+      const item = { key: { sourceId: this.viewSourceId(record.sourceId), kind: record.kind, name: record.name }, version: record.version!, reason: revocation.reason };
       try {
         const retaining = record.kind === "plugin" && revocation.action === "uninstall" && revocation.successors !== undefined;
         if (retaining) {
@@ -1855,7 +1896,8 @@ export class MarketplaceService implements RetirementEntryLookup {
           report.push({ ...item, outcome: "required" });
           continue;
         }
-        await this.uninstall({ sourceId: record.sourceId, kind: record.kind, name: record.name },
+        // Stored identity: the record's source id as stored, never resolved as a view id (§18.8).
+        await this.uninstallStoredNow({ sourceId: record.sourceId, kind: record.kind, name: record.name }, false,
           retaining ? { retain: { reason: "revoked" } } : undefined);
         report.push({ ...item, outcome: "uninstalled" });
       } catch (error) {

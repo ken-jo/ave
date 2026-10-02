@@ -3,6 +3,7 @@
  * answer an envelope, requests checked before the service sees them, and
  * the service built once, on the first request.
  */
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, isPublicChannel } from "../../../contract/app-contract.js";
 import { MARKETPLACE_ERROR_DETAIL_FIELDS, MarketplaceError } from "../../../marketplace/errors.js";
@@ -526,10 +527,11 @@ describe("git marketplace IPC boundary", () => {
               : value;
       const fields = Object.entries(MARKETPLACE_ERROR_DETAIL_FIELDS).flatMap(([code, reasons]) =>
         Object.entries(reasons as Record<string, Record<string, string>>).flatMap(([reason, declared]) =>
-          Object.entries(declared).filter(([, kind]) => kind !== "number").flatMap(([field]) => TOKENS.map((token) => ({ code, reason, declared, field, token })))));
+          // A number or an issuer (one of a fixed list) cannot hold a token; every string field can.
+          Object.entries(declared).filter(([, kind]) => kind !== "number" && kind !== "credential-issuer").flatMap(([field]) => TOKENS.map((token) => ({ code, reason, declared, field, token })))));
 
       it.each(fields)("$code $reason: a token in $field never crosses, identifier or not", async ({ code, reason, declared, field, token }) => {
-        const benign = (kind: string) => (kind === "number" ? 1 : kind === "string[]" ? ["x"] : "x");
+        const benign = (kind: string) => (kind === "number" ? 1 : kind === "string[]" ? ["x"] : kind === "credential-issuer" ? "gitlab" : "x");
         const detail = Object.fromEntries(Object.entries(declared).map(([name, kind]) => [name, name === field ? (kind === "string[]" ? [token] : token) : benign(kind)]));
         await setup({
           refresh: vi.fn(async () => {
@@ -654,52 +656,59 @@ describe("git marketplace IPC boundary", () => {
           expect(text).not.toContain(KEY_TOKEN);
         };
 
-        it("refuses a source id", async () => {
+        it.each([
+          ["a token", () => NAME_TOKEN, "glpat-", "a GitLab token", "GitLab 토큰"],
+          // Ordinary words under a reserved prefix are reserved too (§18.8): the sentence says which prefix, and what to do.
+          ["an ordinary name under a GitLab prefix", () => "glpat-rotation-documentation-for-local-marketplaces", "glpat-", "a GitLab token", "GitLab 토큰"],
+          ["a digest under an OpenAI prefix", () => `sk-${createHash("sha224").update("ordinary task inputs").digest("hex")}`, "sk-", "an OpenAI API key", "OpenAI API 키"],
+          ["a reserved part after a word", () => "docs-glpat-rotation-documentation-for-local", "glpat-", "a GitLab token", "GitLab 토큰"],
+        ])("refuses a source id that is %s, naming its reserved prefix", async (_label, id, prefix, enIssuer, koIssuer) => {
           const answer = await refusal(new FakeVolume("linux").file("/m/SKILL.md", "---\nname: note\ndescription: d\n---\n"), async (harness) => {
             await setup({
               previewSource: vi.fn((request: never) => harness.service.previewSource(request)),
               addSource: vi.fn((request: never) => harness.service.addSource(request)),
             });
             const preview = (await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" })) as { ok: true; value: { previewId: string } };
-            return invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: preview.value.previewId, id: NAME_TOKEN });
+            return invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: preview.value.previewId, id: id() });
           });
-          expect(answer).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID", detail: { reason: "holds-credential" } });
+          // The prefix crosses unmasked: alone it is no credential.
+          expect(answer).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID", detail: { reason: "reserved-prefix", prefix } });
           noToken(answer);
           expect(sentences(answer)).toEqual({
-            en: "This id looks like a password or token, so it cannot be used. Choose another id.",
-            ko: "이 ID는 비밀번호나 토큰처럼 보여 쓸 수 없습니다. 다른 ID를 고르세요.",
+            en: `Ids starting with “${prefix}”, or with a part after “-” starting with it, are reserved because they look like ${enIssuer}. Choose a different id.`,
+            ko: `“${prefix}”로 시작하거나 “-” 뒤 부분이 그것으로 시작하는 ID는 ${koIssuer}처럼 보여 예약되어 있습니다. 다른 ID를 고르세요.`,
           });
         });
 
         it.each([
-          ["a package name", new FakeVolume("linux").file("/m/SKILL.md", `---\nname: ${NAME_TOKEN}\ndescription: d\n---\n`), "name-holds-credential", {
-            en: "This package's name looks like a password or token, so Ave does not offer it. Ask the package's author to rename it.",
-            ko: "이 패키지의 이름이 비밀번호나 토큰처럼 보여 Ave가 제공하지 않습니다. 패키지 작성자에게 이름을 바꿔 달라고 하세요.",
+          ["a package name", new FakeVolume("linux").file("/m/SKILL.md", `---\nname: ${NAME_TOKEN}\ndescription: d\n---\n`), { reason: "name-reserved-prefix", prefix: "glpat-", issuer: "gitlab" }, {
+            en: "Package names starting with “glpat-”, or with a part after “-” starting with it, are reserved because they look like a GitLab token, so Ave does not offer this package. Ask the package's author to choose a different name.",
+            ko: "“glpat-”로 시작하거나 “-” 뒤 부분이 그것으로 시작하는 패키지 이름은 GitLab 토큰처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다. 패키지 작성자에게 다른 이름을 골라 달라고 하세요.",
           }],
-          ["a package version", new FakeVolume("linux").file("/m/SKILL.md", `---\nname: note\nversion: 1.0.0-${NAME_TOKEN}\ndescription: d\n---\n`), "version-holds-credential", {
-            en: "This package's version looks like a password or token, so Ave does not offer it. Ask the package's author to change it.",
-            ko: "이 패키지의 버전이 비밀번호나 토큰처럼 보여 Ave가 제공하지 않습니다. 패키지 작성자에게 버전을 바꿔 달라고 하세요.",
+          ["a package version", new FakeVolume("linux").file("/m/SKILL.md", `---\nname: note\nversion: 1.0.0-${NAME_TOKEN}\ndescription: d\n---\n`), { reason: "version-reserved-prefix", prefix: "glpat-", issuer: "gitlab" }, {
+            en: "Versions with a part starting with “glpat-” are reserved because they look like a GitLab token, so Ave does not offer this package. Ask the package's author to change the version.",
+            ko: "“glpat-”로 시작하는 부분이 있는 버전은 GitLab 토큰처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다. 패키지 작성자에게 버전을 바꿔 달라고 하세요.",
           }],
           ["an MCP server's name with a word glued to its token", new FakeVolume("linux")
             .file("/m/plugin.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer", version: "1.0.0", description: "Writes" }))
             .file("/m/mcp.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: { [`backup_${KEY_TOKEN}`]: { type: "stdio", command: "./server/editor", args: [] } } }))
-            .file("/m/server/editor", "#!/bin/sh\n"), "component-holds-credential", {
-            en: "A skill, agent, prompt, routine or MCP server in this package has a name that looks like a password or token, so Ave does not offer it. Ask the package's author to rename it.",
-            ko: "이 패키지에 든 스킬, 에이전트, 프롬프트, 루틴 또는 MCP 서버의 이름이 비밀번호나 토큰처럼 보여 Ave가 제공하지 않습니다. 패키지 작성자에게 이름을 바꿔 달라고 하세요.",
+            .file("/m/server/editor", "#!/bin/sh\n"), { reason: "component-reserved-prefix", prefix: "ghp_", issuer: "github" }, {
+            en: "A skill, agent, prompt, routine or MCP server in this package has a name with a part starting with “ghp_”. Such names are reserved because they look like a GitHub token, so Ave does not offer this package. Ask the package's author to choose a different name.",
+            ko: "이 패키지에 든 스킬, 에이전트, 프롬프트, 루틴 또는 MCP 서버의 이름에 “ghp_”로 시작하는 부분이 있습니다. 그런 이름은 GitHub 토큰처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다. 패키지 작성자에게 다른 이름을 골라 달라고 하세요.",
           }],
           ["an MCP server's name", new FakeVolume("linux")
             .file("/m/plugin.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer", version: "1.0.0", description: "Writes" }))
             .file("/m/mcp.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: { [KEY_TOKEN]: { type: "stdio", command: "./server/editor", args: [] } } }))
-            .file("/m/server/editor", "#!/bin/sh\n"), "component-holds-credential", {
-            en: "A skill, agent, prompt, routine or MCP server in this package has a name that looks like a password or token, so Ave does not offer it. Ask the package's author to rename it.",
-            ko: "이 패키지에 든 스킬, 에이전트, 프롬프트, 루틴 또는 MCP 서버의 이름이 비밀번호나 토큰처럼 보여 Ave가 제공하지 않습니다. 패키지 작성자에게 이름을 바꿔 달라고 하세요.",
+            .file("/m/server/editor", "#!/bin/sh\n"), { reason: "component-reserved-prefix", prefix: "ghp_", issuer: "github" }, {
+            en: "A skill, agent, prompt, routine or MCP server in this package has a name with a part starting with “ghp_”. Such names are reserved because they look like a GitHub token, so Ave does not offer this package. Ask the package's author to choose a different name.",
+            ko: "이 패키지에 든 스킬, 에이전트, 프롬프트, 루틴 또는 MCP 서버의 이름에 “ghp_”로 시작하는 부분이 있습니다. 그런 이름은 GitHub 토큰처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다. 패키지 작성자에게 다른 이름을 골라 달라고 하세요.",
           }],
-        ])("refuses a direct folder package by %s", async (_label, volume, reason, expected) => {
+        ])("refuses a direct folder package by %s, naming its reserved prefix", async (_label, volume, detail, expected) => {
           const answer = await refusal(volume, async (harness) => {
             await setup({ previewSource: vi.fn((request: never) => harness.service.previewSource(request)) });
             return invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" });
           });
-          expect(answer).toMatchObject({ ok: false, code: "SOURCE_INDEX_INVALID", detail: { reason } });
+          expect(answer).toMatchObject({ ok: false, code: "SOURCE_INDEX_INVALID", detail });
           noToken(answer);
           expect(sentences(answer)).toEqual(expected);
         });
@@ -789,7 +798,7 @@ describe("git marketplace IPC boundary", () => {
             await setup({ previewDirectMcp: vi.fn((request: never) => harness.service.previewDirectMcp(request)) });
             return invokeFileIpcHandler(handlers, channels.directPreview, { serverJson: JSON.stringify({ name: `io.github.acme/${NAME_TOKEN}`, version: "1.0.0" }) });
           });
-          expect(answer).toMatchObject({ ok: false, code: "SOURCE_INDEX_INVALID", detail: { reason: "name-holds-credential" } });
+          expect(answer).toMatchObject({ ok: false, code: "SOURCE_INDEX_INVALID", detail: { reason: "name-reserved-prefix", prefix: "glpat-", issuer: "gitlab" } });
           noToken(answer);
         });
       });
@@ -909,6 +918,31 @@ describe("git marketplace IPC boundary", () => {
     const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
     expect(answer).toMatchObject({ ok: false, code: "SOURCE_UNREACHABLE", message: "proxy returned Authorization: [REDACTED:TOKEN]", detail: { reason: "proxy", proxy: "Proxy-Authorization: [REDACTED:TOKEN]" } });
     expect(JSON.stringify(answer)).not.toContain(secret);
+  });
+
+  it("masks an Authorization value to its line's end in a failure it answers with, past any quote in it (§18.8)", async () => {
+    const secret = "opaque-pass-12345";
+    await setup({
+      refresh: vi.fn(async () => {
+        const body = `{"message":"Couldn't fetch: Authorization: Custom foo' ${secret}","safe":"keep"}`;
+        throw new MarketplaceError("SOURCE_UNREACHABLE", `Couldn't authenticate: Authorization: Digest username="O'Neil", response="${secret}"\nretry later\n${body}`, {
+          detail: {
+            reason: "proxy",
+            host: "git.example",
+            proxy: `Proxy-Authorization: Digest username="O'Neil",\r\n\tresponse="${secret}"\r\nVia: proxy.example`,
+          },
+        });
+      }),
+    });
+    const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+    expect(answer).toMatchObject({
+      ok: false,
+      code: "SOURCE_UNREACHABLE",
+      message: `Couldn't authenticate: Authorization: [REDACTED:TOKEN]\nretry later\n{"message":"Couldn't fetch: Authorization: [REDACTED:TOKEN]`,
+      detail: { reason: "proxy", proxy: "Proxy-Authorization: [REDACTED:TOKEN]\r\nVia: proxy.example" },
+    });
+    expect(JSON.stringify(answer)).not.toContain(secret);
+    expect(JSON.stringify(answer)).not.toContain("Neil");
   });
 
   it("scrubs credentials from every failure message it answers with", async () => {

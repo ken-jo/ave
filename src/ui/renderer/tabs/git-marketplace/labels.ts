@@ -5,7 +5,7 @@
 import type { TranslateFn as Translate } from "../../../../i18n/translate.js";
 import type { ClaudeDesktopImportFailure } from "../../../../mcp/claude-desktop-import.js";
 import { packageVocabularyKind } from "../../../../shared/marketplace-package-sections.js";
-import { hasRedaction } from "../../../../shared/dlp.js";
+import { hasRedaction, type CredentialIssuer, type ReservedPrefix } from "../../../../shared/dlp.js";
 import {
   parseMarketplaceErrorDetail,
   type GitMarketplaceFailure,
@@ -42,6 +42,33 @@ export function kindLabel(t: Translate, kind: PackageKind): string {
     case "provider": return t("gitMarketplace.kind.provider");
     case "messaging-connection": return t("gitMarketplace.kind.messaging");
   }
+}
+
+/** Whose credential a reserved prefix looks like (§18.8), as a sentence names it. */
+function credentialIssuerLabel(t: Translate, issuer: CredentialIssuer): string {
+  switch (issuer) {
+    case "github": return t("gitMarketplace.credentialIssuer.github");
+    case "gitlab": return t("gitMarketplace.credentialIssuer.gitlab");
+    case "npm": return t("gitMarketplace.credentialIssuer.npm");
+    case "slack": return t("gitMarketplace.credentialIssuer.slack");
+    case "aws": return t("gitMarketplace.credentialIssuer.aws");
+    case "google": return t("gitMarketplace.credentialIssuer.google");
+    case "openai": return t("gitMarketplace.credentialIssuer.openai");
+    case "anthropic": return t("gitMarketplace.credentialIssuer.anthropic");
+    case "stripe": return t("gitMarketplace.credentialIssuer.stripe");
+    case "jwt": return t("gitMarketplace.credentialIssuer.jwt");
+  }
+  return unhandled(issuer);
+}
+
+/**
+ * The sentence for a source id that uses a reserved prefix (§18.8): it names
+ * the prefix and what it looks like, and asks for another id. Shown under the
+ * Add dialog's id field as it is typed, and for `SOURCE_ID_INVALID`
+ * `reserved-prefix`.
+ */
+export function reservedIdText(t: Translate, reserved: ReservedPrefix): string {
+  return t("gitMarketplace.error.idInvalid.reservedPrefix", { prefix: reserved.prefix, issuer: credentialIssuerLabel(t, reserved.issuer) });
 }
 
 export function originLabel(t: Translate, origin: SourceOriginKind): string {
@@ -446,6 +473,7 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
       if (!detail) return t("gitMarketplace.error.idInvalid");
       switch (detail.reason) {
+        case "reserved-prefix": return reservedIdText(t, detail);
         case "holds-credential": return t("gitMarketplace.error.idInvalid.holdsCredential");
         case "stored-id-holds-credential": return t("gitMarketplace.error.idInvalid.storedIdHoldsCredential");
       }
@@ -497,6 +525,9 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       if (!detail) return t("gitMarketplace.error.indexInvalid");
       // An identifier the renderer could only see masked (§18.8): the package is not offered.
       switch (detail.reason) {
+        case "name-reserved-prefix": return t("gitMarketplace.error.indexInvalid.nameReservedPrefix", { prefix: detail.prefix, issuer: credentialIssuerLabel(t, detail.issuer) });
+        case "version-reserved-prefix": return t("gitMarketplace.error.indexInvalid.versionReservedPrefix", { prefix: detail.prefix, issuer: credentialIssuerLabel(t, detail.issuer) });
+        case "component-reserved-prefix": return t("gitMarketplace.error.indexInvalid.componentReservedPrefix", { prefix: detail.prefix, issuer: credentialIssuerLabel(t, detail.issuer) });
         case "name-holds-credential": return t("gitMarketplace.error.indexInvalid.nameHoldsCredential");
         case "version-holds-credential": return t("gitMarketplace.error.indexInvalid.versionHoldsCredential");
         case "component-holds-credential": return t("gitMarketplace.error.indexInvalid.componentHoldsCredential");

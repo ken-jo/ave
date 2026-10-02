@@ -31,8 +31,8 @@ const SHARED_INSTALL_REFUSAL_KEYS: Readonly<Partial<Record<GitMarketplaceErrorCo
 function render(failure: GitMarketplaceFailure, subject: FailureSubject = ENTRY_SUBJECT): { key: string; en: string; ko: string } {
   const keys: string[] = [];
   const en = failureText((key: string, vars?: TranslationVars) => {
-    // An origin's name read for a sentence's value is not the sentence's key.
-    if (!key.startsWith("gitMarketplace.origin.")) keys.push(key);
+    // An origin's or a credential issuer's name read for a sentence's value is not the sentence's key.
+    if (!key.startsWith("gitMarketplace.origin.") && !key.startsWith("gitMarketplace.credentialIssuer.")) keys.push(key);
     return translate("en", key, vars);
   }, failure, subject);
   const ko = failureText((key: string, vars?: TranslationVars) => translate("ko", key, vars), failure, subject);
@@ -52,6 +52,10 @@ function sampleDetail(code: keyof typeof MARKETPLACE_ERROR_DETAIL_FIELDS, reason
     } else if (kind === "string[]") {
       detail[field] = ["main", "v1.0.0"];
       values.push("main, v1.0.0");
+    } else if (kind === "credential-issuer") {
+      // Named in both catalogs by the issuer's own name.
+      detail[field] = "gitlab";
+      values.push("GitLab");
     } else {
       detail[field] = `${field}-sample`;
       values.push(`${field}-sample`);

@@ -13,7 +13,7 @@ import {
   redactHomePathsInText,
   scrubSecretsForLLM,
 } from "../dlp-filter.js";
-import { scrubDiagnosticSecrets, scrubDiagnosticSecretsStrict } from "../../shared/dlp.js";
+import { holdsCredential, reservedPrefixIn, scrubDiagnosticSecrets, scrubDiagnosticSecretsStrict, type CredentialIssuer } from "../../shared/dlp.js";
 import { fixtureSecret } from "./secret-fixtures.js";
 import { breakDiagnosticScrubberOn, DIAGNOSTIC_KEPT, DIAGNOSTIC_SECRET_PROBES } from "../../shared/__tests__/fixtures/diagnostic-secret-probes.js";
 
@@ -112,6 +112,39 @@ describe("scrubDiagnosticSecrets — real credential formats, not prefixes (desi
     ["Stripe secret", fixtureSecret("sk", "_live_", mixed(24))],
     ["Stripe restricted", fixtureSecret("rk", "_test_", mixed(24))],
   ];
+
+  /** The reserved prefix each format's token is refused with, and the issuer named (§18.8). */
+  const RESERVED: Readonly<Record<string, readonly [string, CredentialIssuer]>> = {
+    "GitHub classic": ["ghp_", "github"], "GitHub OAuth": ["gho_", "github"], "GitHub user-to-server": ["ghu_", "github"],
+    "GitHub server-to-server": ["ghs_", "github"], "GitHub refresh": ["ghr_", "github"], "GitHub App installation (stateless)": ["ghs_", "github"],
+    "GitHub fine-grained": ["github_pat_", "github"], "GitLab personal": ["glpat-", "gitlab"], "GitLab deploy": ["gldt-", "gitlab"],
+    npm: ["npm_", "npm"], "Slack bot": ["xoxb-", "slack"], "Slack user": ["xoxp-", "slack"], "Slack app": ["xapp-", "slack"],
+    "AWS key id": ["AKIA", "aws"], "AWS temporary key id": ["ASIA", "aws"], "Google API key": ["AIza", "google"], "Google API key ending in -": ["AIza", "google"],
+    OpenAI: ["sk-", "openai"], "OpenAI project": ["sk-proj-", "openai"], "OpenAI signed": ["sk-", "openai"], Anthropic: ["sk-ant-", "anthropic"],
+    "Stripe secret": ["sk_live_", "stripe"], "Stripe restricted": ["rk_test_", "stripe"],
+  };
+
+  it.each(TOKENS)("names the reserved prefix of a %s token, alone or after a word", (kind, token) => {
+    const [prefix, issuer] = RESERVED[kind]!;
+    expect(token.startsWith(prefix)).toBe(true);
+    for (const text of [token, `docs-${token}`, `1.0.0+${token}`]) expect(reservedPrefixIn(text), text).toEqual({ prefix, issuer });
+  });
+
+  it("names the earliest prefix, the specific row's where two start together, and none where no format is", () => {
+    const gitlab = fixtureSecret("gl", "pat-", mixed(20));
+    const openai = fixtureSecret("sk", "-", mixed(48));
+    expect(reservedPrefixIn(`${openai}-${gitlab}`)).toEqual({ prefix: "sk-", issuer: "openai" });
+    expect(reservedPrefixIn(`${gitlab}-${openai}`)).toEqual({ prefix: "glpat-", issuer: "gitlab" });
+    expect(reservedPrefixIn(fixtureSecret("sk", "-proj-", mixed(40), "T3Blbk", "FJ"))).toEqual({ prefix: "sk-proj-", issuer: "openai" });
+    expect(reservedPrefixIn(`eyJ${mixed(10)}.${mixed(10)}.${mixed(10)}`)).toEqual({ prefix: "eyJ", issuer: "jwt" });
+    // Ordinary names under a prefix, at its row's length, are reserved; shorter ones and glued ones are not.
+    expect(reservedPrefixIn("glpat-rotation-documentation-for-local-marketplaces")).toEqual({ prefix: "glpat-", issuer: "gitlab" });
+    for (const text of ["glpat-rotation-docs", "sk-proj-tools", "task-proj-build-the-user-interface-for-the-marketplace", "password=hunter2", "https://alice:secret@example.com/x"]) {
+      expect(reservedPrefixIn(text), text).toBeNull();
+    }
+    // A credential found by where it stands has no prefix to name, though it is refused.
+    expect(holdsCredential("password=hunter2")).toBe(true);
+  });
 
   it.each(TOKENS)("masks a %s token in a host, a path, an id, a URL and an ssh account, behind any boundary", (_kind, token) => {
     for (const text of [
@@ -314,9 +347,10 @@ describe("scrubSecretsForLLM — credential-class SOT (#1499 E2 M1)", () => {
     expect(embeddedDigest).not.toContain('response=\\"secret-response-token\\"');
     expect(embeddedDigest).toContain("Authorization: [REDACTED:TOKEN]");
     expect(embeddedDigest).toContain('","status":200');
-    expect(scrubSecretsForLLM("Authorization: rawSecretHeader42 status=200")).toBe(
-      "Authorization: [REDACTED:TOKEN] status=200",
-    );
+    // A value with no known scheme may be a scheme of its own (`Custom <secret>`): the rest of the line goes (§18.8).
+    expect(scrubSecretsForLLM("Authorization: rawSecretHeader42 status=200")).toBe("Authorization: [REDACTED:TOKEN]");
+    expect(scrubSecretsForLLM("Couldn't connect: Authorization: Custom foo' opaque-pass-12345\nnext")).toBe("Couldn't connect: Authorization: [REDACTED:TOKEN]\nnext");
+    expect(scrubSecretsForLLM("Proxy-Authorization: Weird a=1, b=opaque-pass-12345")).toBe("Proxy-Authorization: [REDACTED:TOKEN]");
     expect(scrubSecretsForLLM("x-api-key: myheaderSECRET99 status=200")).toBe("x-api-key: [REDACTED:TOKEN] status=200");
     expect(scrubSecretsForLLM("x-auth-token: rawHeaderToken42 status=200")).toBe(
       "x-auth-token: [REDACTED:TOKEN] status=200",
@@ -461,8 +495,9 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
   });
 
   it("redacts an Authorization value quoted or after `=`, through the credentials after its scheme", () => {
-    expect(scrubDiagnosticSecrets('Authorization: "Basic dXNlcjpwYXNz" next')).toBe("Authorization: [REDACTED:TOKEN] next");
-    expect(scrubDiagnosticSecrets("authorization='Basic dXNlcjpwYXNz' next")).toBe("authorization=[REDACTED:TOKEN] next");
+    // Quoted or not, an Authorization value runs to its line's end: a quote never ends it.
+    expect(scrubDiagnosticSecrets('Authorization: "Basic dXNlcjpwYXNz" next')).toBe("Authorization: [REDACTED:TOKEN]");
+    expect(scrubDiagnosticSecrets("authorization='Basic dXNlcjpwYXNz' next")).toBe("authorization=[REDACTED:TOKEN]");
     expect(scrubDiagnosticSecrets("x: Authorization=Basic dXNlcjpwYXNz next\nkept")).toBe("x: Authorization=[REDACTED:TOKEN]\nkept");
     // Opening a line with `=`, it is a credential-protocol line, redacted to the line's end.
     expect(scrubDiagnosticSecrets("Authorization=Basic dXNlcjpwYXNz next\nkept")).toBe("Authorization=[REDACTED:TOKEN]\nkept");
@@ -474,16 +509,53 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
     expect(scrubDiagnosticSecrets("x: Authorization: Bearer abc def\nkept")).toBe("x: Authorization: [REDACTED:TOKEN]\nkept");
     expect(scrubDiagnosticSecrets("helper --authorization Bearer abc def")).toBe("helper --authorization [REDACTED:TOKEN]");
     expect(scrubDiagnosticSecrets("x: token=Basic abc def")).toBe("x: token=[REDACTED:TOKEN] def");
-    expect(scrubDiagnosticSecrets('x: authorization: "Basic abc" kept')).toBe("x: authorization: [REDACTED:TOKEN] kept");
+    expect(scrubDiagnosticSecrets('x: authorization: "Basic abc" kept')).toBe("x: authorization: [REDACTED:TOKEN]");
     // Any scheme, known or not: the header's whole value goes, never the scheme alone.
     expect(scrubDiagnosticSecrets("Authorization: Custom opaque-pass-12345")).toBe("Authorization: [REDACTED:TOKEN]");
     expect(scrubDiagnosticSecrets("Proxy-Authorization: Weird a=1, b=2\nnext")).toBe("Proxy-Authorization: [REDACTED:TOKEN]\nnext");
     expect(scrubDiagnosticSecrets("proxy returned Authorization: Custom opaque-pass-12345")).toBe("proxy returned Authorization: [REDACTED:TOKEN]");
-    // A header quoted inside a longer text ends at that quote.
-    expect(scrubDiagnosticSecrets('x {"msg":"Authorization: Custom opaque-pass-12345","status":200}')).toBe('x {"msg":"Authorization: [REDACTED:TOKEN]","status":200}');
-    expect(scrubDiagnosticSecrets("error: 'Authorization: Custom opaque-pass-12345' failed")).toBe("error: 'Authorization: [REDACTED:TOKEN]' failed");
+    // A header quoted inside a longer text takes the rest of the line too: the quote around it is not its end.
+    expect(scrubDiagnosticSecrets('x {"msg":"Authorization: Custom opaque-pass-12345","status":200}')).toBe('x {"msg":"Authorization: [REDACTED:TOKEN]');
+    expect(scrubDiagnosticSecrets("error: 'Authorization: Custom opaque-pass-12345' failed")).toBe("error: 'Authorization: [REDACTED:TOKEN]");
     // Accepted: a key holding `authorization` takes its value even when it is not a secret.
     expect(scrubDiagnosticSecrets("x: authorization_url=https://idp.example/x kept")).toBe("x: authorization_url=[REDACTED:TOKEN] kept");
+  });
+
+  describe("an Authorization value ends only at its line's end, or the text's (§18.8)", () => {
+    const secret = "opaque-pass-12345";
+    it.each([
+      ["an apostrophe in its Digest parameter", `Authorization: Digest username="O'Neil", response="${secret}"`, "Authorization: [REDACTED:TOKEN]"],
+      ["a contraction before it", `Couldn't authenticate: Authorization: Digest username="O'Neil", response="${secret}"`, "Couldn't authenticate: Authorization: [REDACTED:TOKEN]"],
+      ["a contraction and a stray quote in its value", `Couldn't connect: Authorization: Custom foo' ${secret}`, "Couldn't connect: Authorization: [REDACTED:TOKEN]"],
+      ["a quote opening its value", `Proxy-Authorization: "Digest username="O'Neil", response="${secret}"" next`, "Proxy-Authorization: [REDACTED:TOKEN]"],
+      [
+        "a JSON message with a contraction",
+        String.raw`{"message":"Couldn't fetch: Authorization: Digest username=\"O'Neil\", response=\"${secret}\"","safe":"keep"}`,
+        `{"message":"Couldn't fetch: Authorization: [REDACTED:TOKEN]`,
+      ],
+      ["a JSON value", String.raw`{"Authorization":"Digest username=\"O'Neil\", response=\"${secret}\"","safe":"keep"}`, `{"Authorization":[REDACTED:TOKEN]`],
+      [
+        "JSON carried in a JSON string",
+        String.raw`"{\"message\":\"Couldn't: Authorization: Custom ${secret}\",\"safe\":\"keep\"}"`,
+        String.raw`"{\"message\":\"Couldn't: Authorization: [REDACTED:TOKEN]`,
+      ],
+      [
+        "a value folded onto the lines after it",
+        `Authorization: Digest username="O'Neil",\r\n\trealm="r",\r\n response="${secret}"\r\nHost: git.example\r\n`,
+        "Authorization: [REDACTED:TOKEN]\r\nHost: git.example\r\n",
+      ],
+      ["the last line, with no line break after it", `GET /info/refs\nAuthorization: Custom ${secret}`, "GET /info/refs\nAuthorization: [REDACTED:TOKEN]"],
+    ])("with %s", (_label, input, expected) => {
+      const out = scrubDiagnosticSecrets(input);
+      expect(out).toBe(expected);
+      expect(out).not.toContain(secret);
+      expect(holdsCredential(input)).toBe(true);
+    });
+
+    it("keeps the lines after it, and a sentence with contractions and no header", () => {
+      expect(scrubDiagnosticSecrets(`Authorization: Custom ${secret}\nCouldn't reach O'Neil's mirror`)).toBe("Authorization: [REDACTED:TOKEN]\nCouldn't reach O'Neil's mirror");
+      expect(holdsCredential("Couldn't reach O'Neil's mirror: the authorization_server isn't up")).toBe(false);
+    });
   });
 
   it("reads JSON carried in a JSON string inside a key, and past a stray \\\" earlier on the line", () => {

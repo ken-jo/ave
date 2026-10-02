@@ -14,10 +14,11 @@ import { Input } from "../../../../components/ui/input.js";
 import { Label } from "../../../../components/ui/label.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
+import { reservedPrefixIn } from "../../../../shared/dlp.js";
 import type { EnteredTargetWarningView, GitMarketplaceFailure, SourcePreviewRequest, SourcePreviewView, SourceView, SourceWarning } from "../../../../shared/git-marketplace.js";
 import type { AveApi } from "../../types.js";
 import { GitRuntimeCard } from "./GitRuntimeCard.js";
-import { ENTRY_SUBJECT, KIND_ORDER, kindLabel, shortSha, warningText } from "./labels.js";
+import { ENTRY_SUBJECT, KIND_ORDER, kindLabel, reservedIdText, shortSha, warningText } from "./labels.js";
 import { MarketplaceProblem } from "./MarketplaceProblem.js";
 import { SourceBadges } from "./SourcesView.js";
 
@@ -155,6 +156,8 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
   };
 
   const step = gitReady === false ? 0 : preview ? 2 : 1;
+  // An id using a reserved prefix (§18.8) is named as it is typed, with what to do, before Add is asked.
+  const reservedId = reservedPrefixIn(id.trim());
   const title = direct ? t("gitMarketplace.add.directTitle") : t("gitMarketplace.add.title");
 
   return (
@@ -274,8 +277,22 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
             {preview.credentialHelper && <p className="text-xs text-muted-foreground">{t("gitMarketplace.add.credentialHelper")}</p>}
             <div className="space-y-1">
               <Label htmlFor="git-marketplace-add-id">{t("gitMarketplace.add.sourceName")}</Label>
-              <Input id="git-marketplace-add-id" className="font-mono" value={id} onChange={(event) => setId(event.target.value)} data-testid="git-marketplace:add:id" />
-              <p className="text-[11px] text-muted-foreground">{t("gitMarketplace.add.sourceNameHelp")}</p>
+              <Input
+                id="git-marketplace-add-id"
+                className="font-mono"
+                value={id}
+                onChange={(event) => setId(event.target.value)}
+                aria-invalid={reservedId !== null}
+                aria-describedby={reservedId ? "git-marketplace-add-id-reserved" : undefined}
+                data-testid="git-marketplace:add:id"
+              />
+              {reservedId ? (
+                <p id="git-marketplace-add-id-reserved" className="text-[11px] text-destructive" role="alert" data-testid="git-marketplace:add:id-reserved">
+                  {reservedIdText(t, reservedId)}
+                </p>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">{t("gitMarketplace.add.sourceNameHelp")}</p>
+              )}
             </div>
           </div>
         )}
@@ -295,7 +312,7 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
             </Button>
           )}
           {step === 2 && preview && (
-            <Button onClick={() => void add()} disabled={busy} data-testid="git-marketplace:add:confirm">
+            <Button onClick={() => void add()} disabled={busy || reservedId !== null} data-testid="git-marketplace:add:confirm">
               {preview.type === "marketplace" ? t("gitMarketplace.add.confirm") : t("gitMarketplace.direct.confirm", { kind: kindLabel(t, preview.kind) })}
             </Button>
           )}

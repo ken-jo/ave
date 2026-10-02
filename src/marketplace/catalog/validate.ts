@@ -24,7 +24,8 @@ import revocationsSchema from "../../../schemas/marketplace/revocations.schema.j
 import { RESERVED_ENV_NAMES, RESERVED_HEADERS } from "../../mcp/safe-names.js";
 import { resolveAddFormats, resolveAjv } from "../../plugins/config-schema.js";
 import { ALERT_RESERVED_PACKAGE_ID } from "../../shared/alerts-types.js";
-import { holdsCredential } from "../../shared/dlp.js";
+import { CREDENTIAL_ISSUER_NAMES, holdsCredential, reservedPrefixIn } from "../../shared/dlp.js";
+import type { MarketplaceErrorDetail } from "../errors.js";
 import { compareSemver } from "../../shared/semver-compare.js";
 import { parseStrictJson } from "./strict-json.js";
 import type {
@@ -46,12 +47,37 @@ export interface CatalogDiagnostic {
 
 /**
  * A failure; `credential` is set when the reason is an identifier with a
- * credential's shape (§18.8), the detail reason the refusal carries.
+ * credential's shape (§18.8), the detail the refusal carries.
  */
-export type Validation<T> = { ok: true; value: T } | { ok: false; error: string; credential?: CredentialReason };
+export type Validation<T> = { ok: true; value: T } | { ok: false; error: string; credential?: CredentialDetail };
 
-/** The identifier of a package that has a credential's shape (§18.8). */
-export type CredentialReason = "name-holds-credential" | "version-holds-credential" | "component-holds-credential";
+/** The refusal detail of a package identifier that has a credential's shape (§18.8). */
+export type CredentialDetail = MarketplaceErrorDetail<"SOURCE_INDEX_INVALID">;
+
+/** The identifier of a package a refusal names: its name, a version, or a component's name. */
+export type IdentifierPart = "name" | "version" | "component";
+
+const PART_TEXT: Readonly<Record<IdentifierPart, string>> = { name: "its name", version: "a version", component: "a component name" };
+
+/**
+ * The refusal of `text`, `part` of a package, which has a credential's shape
+ * (§18.8). A name holding a credential format's prefix at a boundary is in a
+ * reserved namespace, whatever its body says: the refusal names the prefix
+ * and the issuer it looks like, so the author knows what to change. A shape
+ * with no prefix (an assignment, URL userinfo) is refused as one.
+ */
+export function credentialRefusal(part: IdentifierPart, text: string): { detail: CredentialDetail; message: string } {
+  const reserved = reservedPrefixIn(text);
+  if (reserved) {
+    const reason = ({ name: "name-reserved-prefix", version: "version-reserved-prefix", component: "component-reserved-prefix" } as const)[part];
+    return {
+      detail: { reason, prefix: reserved.prefix, issuer: reserved.issuer },
+      message: `${PART_TEXT[part]} uses the reserved prefix ${reserved.prefix}, which looks like ${CREDENTIAL_ISSUER_NAMES[reserved.issuer]}; choose a different one`,
+    };
+  }
+  const reason = ({ name: "name-holds-credential", version: "version-holds-credential", component: "component-holds-credential" } as const)[part];
+  return { detail: { reason }, message: `${PART_TEXT[part]} looks like a password or token` };
+}
 
 /** Every name the renderer can name a component of an agent plugin by. */
 function componentNames(components: AgentPluginComponents | undefined): string[] {
@@ -73,12 +99,12 @@ function componentNames(components: AgentPluginComponents | undefined): string[]
  * again: it is refused here, where it enters, and egress scrubbing leaves
  * every identifier that passed unchanged.
  */
-function credentialIn(name: string, versions: readonly string[], components: ReadonlyArray<AgentPluginComponents | undefined>): { reason: CredentialReason; message: string } | null {
-  if (holdsCredential(name)) return { reason: "name-holds-credential", message: "its name looks like a password or token" };
-  if (versions.some(holdsCredential)) return { reason: "version-holds-credential", message: "a version looks like a password or token" };
-  if (components.some((item) => componentNames(item).some(holdsCredential))) {
-    return { reason: "component-holds-credential", message: "a component name looks like a password or token" };
-  }
+function credentialIn(name: string, versions: readonly string[], components: ReadonlyArray<AgentPluginComponents | undefined>): { detail: CredentialDetail; message: string } | null {
+  if (holdsCredential(name)) return credentialRefusal("name", name);
+  const version = versions.find(holdsCredential);
+  if (version !== undefined) return credentialRefusal("version", version);
+  const component = components.flatMap(componentNames).find(holdsCredential);
+  if (component !== undefined) return credentialRefusal("component", component);
   return null;
 }
 
@@ -402,7 +428,7 @@ function validateDescriptorValue(document: unknown, context: DescriptorContext, 
     };
   }
   const credential = credentialIn(value.name, [value.version], value.kind === "agent-plugin" ? [(value.payload as { components?: AgentPluginComponents }).components] : []);
-  if (credential) return { ok: false, error: `${file}: ${credential.message}`, credential: credential.reason };
+  if (credential) return { ok: false, error: `${file}: ${credential.message}`, credential: credential.detail };
   const reserved = reservedPluginName(value.kind, value.name);
   if (reserved) return { ok: false, error: `${file}: ${reserved}` };
   if (value.kind === "plugin") {

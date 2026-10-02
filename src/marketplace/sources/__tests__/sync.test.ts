@@ -520,7 +520,7 @@ describe("SourceSyncer", () => {
       if (step === "refresh") expect(await syncer.sync("acme")).toEqual({ status: "ok", pinnedCommit: commit, changed: false });
       const served = (await syncer.readSnapshot("acme"))!;
       expect(served.packages.map((item) => item.name), step).toEqual(["alpha"]);
-      expect(served.diagnostics).toEqual([{ subject: "packages[1]", message: "its name looks like a password or token" }]);
+      expect(served.diagnostics).toEqual([{ subject: "packages[1]", message: "its name uses the reserved prefix glpat-, which looks like a GitLab token; choose a different one" }]);
       expect(JSON.stringify(served)).not.toContain(token);
       expect(await syncer.readRevocations("acme", "0.12.0")).toEqual([entry]);
     }

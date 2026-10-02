@@ -129,30 +129,6 @@ function decodeQuotedKey(body: string, quote: string): string | null {
   return decoded;
 }
 
-/** Whether `key` names an Authorization header (`Authorization`, `Proxy-Authorization`, `x-authorization`). */
-/** Whether the character at `at` follows an odd run of backslashes. */
-function isEscapedAt(text: string, at: number): boolean {
-  let slashes = 0;
-  for (let i = at - 1; i >= 0 && text[i] === "\\"; i--) slashes++;
-  return slashes % 2 === 1;
-}
-
-/**
- * The quote left open on `start`'s line before `start` (`"` or `'`, unescaped),
- * the later one when both are; null when none is. A header found inside it
- * ends where it closes.
- */
-function enclosingQuote(text: string, start: number): '"' | "'" | null {
-  const lineStart = Math.max(text.lastIndexOf("\n", start - 1), text.lastIndexOf("\r", start - 1)) + 1;
-  const open: Record<'"' | "'", number> = { '"': -1, "'": -1 };
-  for (let i = lineStart; i < start; i++) {
-    const char = text[i];
-    if ((char === '"' || char === "'") && !isEscapedAt(text, i)) open[char] = open[char] === -1 ? i : -1;
-  }
-  if (open['"'] === -1 && open["'"] === -1) return null;
-  return open['"'] > open["'"] ? '"' : "'";
-}
-
 /** An `Authorization` or `Proxy-Authorization` header name: its value is the rest of its line, whatever the scheme. */
 function isAuthorizationKey(key: string | null): boolean {
   if (key === null) return false;
@@ -272,9 +248,29 @@ function redactCredentialAssignments(text: string): string {
     const key = pending[pending.length - 1];
     return key !== undefined && at < key.close ? key.close : text.length;
   };
-  /** `authorization` keys a header (`Authorization`, `Proxy-Authorization`), whose value is the rest of its line. */
+  /**
+   * Where an Authorization header's value ends: the end of its line, or of
+   * the text, and past every folded continuation line (one that starts with
+   * a blank). Always — never at a quote, whether one opens the value or
+   * stands around it: a quote in a value (`O'Neil`, `Couldn't`) is no
+   * delimiter anyone can tell from one. Masking the rest of a line costs
+   * only display; stopping early leaks the secret (§18.8).
+   */
+  const headerEnd = (start: number, limit: number): number => {
+    let end = start;
+    for (;;) {
+      while (end < limit && text[end] !== "\n" && text[end] !== "\r") end++;
+      let next = end;
+      if (text[next] === "\r") next++;
+      if (text[next] === "\n") next++;
+      if (next === end || next >= limit || !isBlank(text[next])) return end;
+      end = next;
+    }
+  };
+  /** `authorization` keys a header (`Authorization`, `Proxy-Authorization`), whose value is the rest of its line ({@link headerEnd}). */
   const valueEnd = (start: number, toLineEnd: boolean, limit: number, header = false): number => {
     if (start >= limit) return start;
+    if (header) return headerEnd(start, limit);
     if (text[start] === '"' || text[start] === "'") {
       const close = closingQuoteOnLine(text, start, limit);
       return close === -1 ? limit : close + 1;
@@ -284,15 +280,8 @@ function redactCredentialAssignments(text: string): string {
       return close === -1 ? limit : close + 2;
     }
     let end = start;
-    // A header's value is the rest of its line, whatever its scheme, known or not
-    // (`Custom <secret>`, Digest's `response=…`): the scheme alone never stands for it.
-    // A header quoted inside a longer text (a JSON message, a quoted error) ends at that quote.
-    if (toLineEnd || header) {
-      const quote = header ? enclosingQuote(text, start) : null;
-      while (end < limit && text[end] !== "\n" && text[end] !== "\r") {
-        if (quote !== null && text[end] === quote && !isEscapedAt(text, end)) return end;
-        end++;
-      }
+    if (toLineEnd) {
+      while (end < limit && text[end] !== "\n" && text[end] !== "\r") end++;
       return end;
     }
     while (end < limit && !isWhitespace(text[end])) end++;
@@ -500,37 +489,89 @@ export function scrubSecretsForLLM(text: string): string {
  * Authorization or Bearer value, or a credential assignment
  * (`redactCredentialAssignments`).
  */
-const CREDENTIAL_FORMATS: ReadonlyArray<{ pattern: RegExp }> = [
+const CREDENTIAL_FORMATS: ReadonlyArray<{ issuer: CredentialIssuer; lead: RegExp; pattern: RegExp }> = [
   // GitHub classic, OAuth, user-to-server, server-to-server and refresh tokens.
-  { pattern: /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{36,}/g },
+  { issuer: "github", lead: /gh[pousr]_/y, pattern: /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{36,}/g },
   // GitHub App installation tokens in the stateless form `ghs_<app id>_<JWT>` (2026-04-24); the opaque
   // form is the row above. Not GitHub's looser `ghs_[A-Za-z0-9._-]{36,}`: that also matches an ordinary
   // name after a boundary (`/media/ghs_compilation-of-the-best-moments.mp4`).
-  { pattern: /(?<![A-Za-z0-9])ghs_[A-Za-z0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g },
+  { issuer: "github", lead: /ghs_/y, pattern: /(?<![A-Za-z0-9])ghs_[A-Za-z0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g },
   // GitHub fine-grained personal access tokens: 22 and 59 characters around `_`.
-  { pattern: /(?<![A-Za-z0-9])github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59,}/g },
+  { issuer: "github", lead: /github_pat_/y, pattern: /(?<![A-Za-z0-9])github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59,}/g },
   // GitLab personal, deploy, runner, pipeline-trigger, CI-build and service-account tokens.
-  { pattern: /(?<![A-Za-z0-9])gl(?:pat|dt|rt|ptt|cbt|soat)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*/g },
+  { issuer: "gitlab", lead: /gl(?:pat|dt|rt|ptt|cbt|soat)-/y, pattern: /(?<![A-Za-z0-9])gl(?:pat|dt|rt|ptt|cbt|soat)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*/g },
   // npm access tokens.
-  { pattern: /(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36,}/g },
+  { issuer: "npm", lead: /npm_/y, pattern: /(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36,}/g },
   // Slack: bot, user, app-level and refresh tokens carry numeric workspace and user ids.
-  { pattern: /(?<![A-Za-z0-9])xox[abposre]-\d{6,}-[0-9A-Za-z-]{8,}/g },
-  { pattern: /(?<![A-Za-z0-9])xapp-\d-[A-Z0-9]+-\d+-[A-Za-z0-9]+/g },
+  { issuer: "slack", lead: /xox[abposre]-/y, pattern: /(?<![A-Za-z0-9])xox[abposre]-\d{6,}-[0-9A-Za-z-]{8,}/g },
+  { issuer: "slack", lead: /xapp-/y, pattern: /(?<![A-Za-z0-9])xapp-\d-[A-Z0-9]+-\d+-[A-Za-z0-9]+/g },
   // AWS access key ids, long-term and temporary.
-  { pattern: /(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16,}/g },
+  { issuer: "aws", lead: /AKIA|ASIA/y, pattern: /(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16,}/g },
   // Google API keys.
-  { pattern: /(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35,}/g },
+  { issuer: "google", lead: /AIza/y, pattern: /(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35,}/g },
   // OpenAI: legacy 48, project/service-account/admin keys, and any carrying the issuer's signature.
-  { pattern: /(?<![A-Za-z0-9])sk-[A-Za-z0-9]{48,}/g },
-  { pattern: /(?<![A-Za-z0-9])sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{40,}/g },
-  { pattern: /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]*T3BlbkFJ[A-Za-z0-9_-]*/g },
+  { issuer: "openai", lead: /sk-/y, pattern: /(?<![A-Za-z0-9])sk-[A-Za-z0-9]{48,}/g },
+  { issuer: "openai", lead: /sk-(?:proj|svcacct|admin)-/y, pattern: /(?<![A-Za-z0-9])sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{40,}/g },
+  { issuer: "openai", lead: /sk-/y, pattern: /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]*T3BlbkFJ[A-Za-z0-9_-]*/g },
   // Anthropic API, admin and session keys.
-  { pattern: /(?<![A-Za-z0-9])sk-ant-(?:api|admin|sid|oat|ort)\d{2}-[A-Za-z0-9_-]{32,}/g },
+  { issuer: "anthropic", lead: /sk-ant-/y, pattern: /(?<![A-Za-z0-9])sk-ant-(?:api|admin|sid|oat|ort)\d{2}-[A-Za-z0-9_-]{32,}/g },
   // Stripe secret, publishable and restricted keys.
-  { pattern: /(?<![A-Za-z0-9])(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}/g },
+  { issuer: "stripe", lead: /(?:sk|pk|rk)_(?:live|test)_/y, pattern: /(?<![A-Za-z0-9])(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}/g },
   // JSON Web Tokens: three base64url segments (header.payload.signature), the header's `{"` as `eyJ`.
-  { pattern: /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g },
+  { issuer: "jwt", lead: /eyJ/y, pattern: /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g },
 ];
+
+/** Whose credential a {@link CREDENTIAL_FORMATS} row's prefix looks like: the issuer a reserved prefix is named by (§18.8). */
+export const CREDENTIAL_ISSUERS = ["github", "gitlab", "npm", "slack", "aws", "google", "openai", "anthropic", "stripe", "jwt"] as const;
+export type CredentialIssuer = (typeof CREDENTIAL_ISSUERS)[number];
+
+/** Each issuer's credential in main's English messages; the renderer has its own sentences for both catalogs. */
+export const CREDENTIAL_ISSUER_NAMES: Readonly<Record<CredentialIssuer, string>> = {
+  github: "a GitHub token",
+  gitlab: "a GitLab token",
+  npm: "an npm token",
+  slack: "a Slack token",
+  aws: "an AWS access key",
+  google: "a Google API key",
+  openai: "an OpenAI API key",
+  anthropic: "an Anthropic API key",
+  stripe: "a Stripe key",
+  jwt: "a JSON Web Token",
+};
+
+/** A reserved prefix found in an identifier, and whose credential it looks like. */
+export interface ReservedPrefix {
+  prefix: string;
+  issuer: CredentialIssuer;
+}
+
+/**
+ * The reserved prefix in `text` (§18.8): the literal prefix of the earliest
+ * credential format {@link holdsCredential} finds in it — at a left boundary,
+ * with a body as long as the row's — and its issuer. Where two rows start
+ * at the same place, the earlier row names it: the table lists a specific
+ * row before a general one that can share its start (`sk-proj-` before the
+ * signed `sk-`). An identifier that holds one is refused with this prefix
+ * named, so the user learns what to change. Null when no format is in
+ * `text`: a credential found only by where it stands (an assignment, URL
+ * userinfo) has no prefix to name.
+ */
+export function reservedPrefixIn(text: string): ReservedPrefix | null {
+  let found: (ReservedPrefix & { at: number }) | null = null;
+  for (const format of CREDENTIAL_FORMATS) {
+    format.pattern.lastIndex = 0;
+    const match = format.pattern.exec(text);
+    format.pattern.lastIndex = 0;
+    if (!match) continue;
+    format.lead.lastIndex = match.index;
+    const prefix = format.lead.exec(text)?.[0];
+    if (prefix === undefined) throw new Error(`credential format of ${format.issuer} matched without its prefix`);
+    if (found === null || match.index < found.at) {
+      found = { at: match.index, prefix, issuer: format.issuer };
+    }
+  }
+  return found === null ? null : { prefix: found.prefix, issuer: found.issuer };
+}
 
 /** Whether {@link scrubDiagnosticSecrets} would change `text`: a credential format, URL userinfo or a credential assignment. */
 export function holdsCredential(text: string): boolean {
@@ -555,8 +596,10 @@ function scrubCredentialShapes(text: string, mode: "broad" | "precise"): string 
       /(authorization\s*:\s*)(?:basic|bearer|digest|negotiate|token)\s+[A-Za-z0-9._\-~+/=]+/gi,
       "$1[REDACTED:TOKEN]",
     )
+    // Any other scheme, or a bare value: the rest of the line, since what follows an unknown scheme is
+    // its credential (`Custom <secret>`); a value a pass above already redacted stays as it is (§18.8).
     .replace(
-      /(authorization\s*:\s*)(?!(?:basic|bearer|digest|negotiate|token)\s)[A-Za-z0-9._\-~+/=]+/gi,
+      /(authorization\s*:\s*)(?!(?:basic|bearer|digest|negotiate|token)\s|\[REDACTED:)(?=[^\s])[^\r\n]+/gi,
       "$1[REDACTED:TOKEN]",
     )
     .replace(

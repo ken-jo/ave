@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseStrictJson } from "../strict-json.js";
 import {
+  credentialRefusal,
   validateDescriptorText,
   validateIndexText,
   validateRevocationsText,
@@ -353,9 +354,9 @@ describe("identifiers with a credential's shape (§18.8)", () => {
   ]);
 
   it.each([
-    ["a name", { kind: "skill", name: NAME_TOKEN, path: "skills/a" }, "packages[0]", "its name looks like a password or token"],
-    ["a version", { kind: "skill", name: "notes", path: "skills/a", latest: `1.0.0-${NAME_TOKEN}`, versions: [version(`1.0.0-${NAME_TOKEN}`)] }, "skill/notes", "a version looks like a password or token"],
-    ["an MCP server's name", { kind: "agent-plugin", name: "writer", path: "agent-plugins/writer", versions: [version("1.0.0", { components: components(KEY_TOKEN) })] }, "agent-plugin/writer", "a component name looks like a password or token"],
+    ["a name", { kind: "skill", name: NAME_TOKEN, path: "skills/a" }, "packages[0]", "its name uses the reserved prefix glpat-, which looks like a GitLab token; choose a different one"],
+    ["a version", { kind: "skill", name: "notes", path: "skills/a", latest: `1.0.0-${NAME_TOKEN}`, versions: [version(`1.0.0-${NAME_TOKEN}`)] }, "skill/notes", "a version uses the reserved prefix glpat-, which looks like a GitLab token; choose a different one"],
+    ["an MCP server's name", { kind: "agent-plugin", name: "writer", path: "agent-plugins/writer", versions: [version("1.0.0", { components: components(KEY_TOKEN) })] }, "agent-plugin/writer", "a component name uses the reserved prefix ghp_, which looks like a GitHub token; choose a different one"],
   ])("drops an index entry whose %s has one, named without it, and keeps the rest", (_label, bad, subject, message) => {
     const result = validateIndexText(index([bad, { kind: "skill", name: "good-skill", path: "skills/good" }]), context);
     expect(result.ok).toBe(true);
@@ -370,11 +371,16 @@ describe("identifiers with a credential's shape (§18.8)", () => {
   });
 
   it.each([
-    ["a name", descriptor("skill", { name: NAME_TOKEN }), "name-holds-credential"],
-    ["a version", descriptor("skill", { version: `1.0.0-${NAME_TOKEN}` }), "version-holds-credential"],
-    ["an MCP server's name", descriptor("agent-plugin", { payload: { manifest: "plugin.json", components: components(KEY_TOKEN) } }), "component-holds-credential"],
-  ])("refuses a descriptor whose %s has one, with the reason", (_label, value, credential) => {
+    ["a name", descriptor("skill", { name: NAME_TOKEN }), { reason: "name-reserved-prefix", prefix: "glpat-", issuer: "gitlab" }],
+    ["a version", descriptor("skill", { version: `1.0.0-${NAME_TOKEN}` }), { reason: "version-reserved-prefix", prefix: "glpat-", issuer: "gitlab" }],
+    ["an MCP server's name", descriptor("agent-plugin", { payload: { manifest: "plugin.json", components: components(KEY_TOKEN) } }), { reason: "component-reserved-prefix", prefix: "ghp_", issuer: "github" }],
+  ])("refuses a descriptor whose %s has one, naming its reserved prefix", (_label, value, credential) => {
     expect(checkDescriptor(value)).toMatchObject({ ok: false, credential });
+  });
+
+  it("refuses a shape with no prefix to name as a credential's shape", () => {
+    expect(credentialRefusal("component", "password=hunter2")).toEqual({ detail: { reason: "component-holds-credential" }, message: "a component name looks like a password or token" });
+    expect(credentialRefusal("version", `1.0.0+${NAME_TOKEN}`)).toMatchObject({ detail: { reason: "version-reserved-prefix", prefix: "glpat-", issuer: "gitlab" } });
   });
 
   it("keeps identifiers that only look like a credential's prefix", () => {
@@ -436,8 +442,19 @@ describe("one detector for admission and egress (§18.8)", () => {
     const id = `${before}${ID_TOKEN}`;
     if (/^[a-z0-9-]+$/u.test(id)) {
       expect(isSourceId(id)).toBe(false);
-      expect(checkDescriptor(descriptor("skill", { name: id }))).toMatchObject({ ok: false, credential: "name-holds-credential" });
+      expect(checkDescriptor(descriptor("skill", { name: id }))).toMatchObject({ ok: false, credential: { reason: "name-reserved-prefix", prefix: "glpat-", issuer: "gitlab" } });
     }
+  });
+
+  it.each([
+    ["glpat-rotation-documentation-for-local-marketplaces", "glpat-", "gitlab"],
+    ["docs-glpat-rotation-documentation-for-local-marketplaces", "glpat-", "gitlab"],
+    ["sk-proj-build-the-user-interface-for-the-marketplace", "sk-proj-", "openai"],
+    [`sk-${createHash("sha224").update("ordinary task inputs").digest("hex")}`, "sk-", "openai"],
+  ])("reserves %s: an ordinary name under a reserved prefix is refused, naming the prefix (§18.8)", (id, prefix, issuer) => {
+    expect(isSourceId(id)).toBe(false);
+    expect(checkDescriptor(descriptor("skill", { name: id }))).toMatchObject({ ok: false, credential: { reason: "name-reserved-prefix", prefix, issuer } });
+    expect(checkDescriptor(descriptor("skill", { version: `1.0.0+${id}` }))).toMatchObject({ ok: false, credential: { reason: "version-reserved-prefix", prefix, issuer } });
   });
 
   it("leaves a prefix glued to a letter or digit to the documented residual", () => {

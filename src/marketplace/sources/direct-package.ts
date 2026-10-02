@@ -27,7 +27,7 @@ import {
 } from "../../plugins/process-entry.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { isPackageName, type PackageDescriptor } from "../catalog/types.js";
-import { validateDescriptorText, validateSynthesizedDescriptor, type CredentialReason } from "../catalog/validate.js";
+import { validateDescriptorText, validateSynthesizedDescriptor, type CredentialDetail } from "../catalog/validate.js";
 import type { MarketplaceErrorCode, MarketplaceErrorDetail } from "../errors.js";
 import { assertRepoPath } from "../git/repo.js";
 import type { SourceTree } from "./source-tree.js";
@@ -238,12 +238,12 @@ function fromServerJson(source: string): Synthesis {
 }
 
 /** A descriptor the catalog rules refuse; an identifier with a credential's shape keeps its reason (§18.8). */
-function refused(checked: { error: string; credential?: CredentialReason }): DirectRead {
+function refused(checked: { error: string; credential?: CredentialDetail }): DirectRead {
   return {
     ok: false,
     code: "SOURCE_INDEX_INVALID",
     error: checked.error,
-    ...(checked.credential ? { detail: { reason: checked.credential } as MarketplaceErrorDetail } : {}),
+    ...(checked.credential ? { detail: checked.credential } : {}),
   };
 }
 

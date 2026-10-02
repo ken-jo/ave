@@ -11,7 +11,7 @@
  * keys of {@link MARKETPLACE_ERROR_DETAIL_FIELDS}; a failure without a detail
  * renders its code's reason-less sentence.
  */
-import { scrubDiagnosticSecrets } from "../shared/dlp.js";
+import { CREDENTIAL_ISSUERS, scrubDiagnosticSecrets, type CredentialIssuer } from "../shared/dlp.js";
 import type { SourceWarningView } from "./sources/warnings.js";
 
 export const MARKETPLACE_ERROR_CODES = [
@@ -61,7 +61,8 @@ export type MarketplaceErrorCode = (typeof MARKETPLACE_ERROR_CODES)[number];
  * admits a token of the same shape, so no field is exempt. The scrubber
  * matches token shapes, not prefixes alone, so real names pass unchanged.
  */
-type DetailFieldKind = "string" | "number" | "string[]";
+/** `credential-issuer`: one of {@link CREDENTIAL_ISSUERS}, the issuer a reserved prefix looks like (§18.8). */
+type DetailFieldKind = "string" | "number" | "string[]" | "credential-issuer";
 
 /**
  * The reasons each code can carry, and the fields of each reason's detail
@@ -116,19 +117,28 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
   /**
    * An id the user entered that has a credential's shape (§18.8): the
    * renderer only ever sees it masked, so it could never be named again.
+   * `reserved-prefix`: it holds a credential format's prefix at a boundary
+   * (`glpat-…`), named with the issuer it looks like so the user knows what
+   * to change; `holds-credential`: a shape with no prefix to name.
    * `stored-id-holds-credential`: a source an earlier build stored under
    * such an id, named by its row's handle for anything but Remove.
    */
   SOURCE_ID_INVALID: {
+    "reserved-prefix": { prefix: "string", issuer: "credential-issuer" },
     "holds-credential": {},
     "stored-id-holds-credential": {},
   },
   /**
    * A package whose name, version or component name has a credential's
-   * shape (§18.8). A marketplace drops such a package with a diagnostic; a
+   * shape (§18.8): `*-reserved-prefix` when it holds a credential format's
+   * prefix, named with its issuer, `*-holds-credential` for a shape with no
+   * prefix to name. A marketplace drops such a package with a diagnostic; a
    * direct package, which is the whole source, fails with this reason.
    */
   SOURCE_INDEX_INVALID: {
+    "name-reserved-prefix": { prefix: "string", issuer: "credential-issuer" },
+    "version-reserved-prefix": { prefix: "string", issuer: "credential-issuer" },
+    "component-reserved-prefix": { prefix: "string", issuer: "credential-issuer" },
     "name-holds-credential": {},
     "version-holds-credential": {},
     "component-holds-credential": {},
@@ -285,7 +295,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
 } as const satisfies Partial<Record<MarketplaceErrorCode, Record<string, Record<string, DetailFieldKind>>>>;
 
 type DetailFields = typeof MARKETPLACE_ERROR_DETAIL_FIELDS;
-type FieldValue<K> = K extends "string" ? string : K extends "number" ? number : K extends "string[]" ? readonly string[] : never;
+type FieldValue<K> = K extends "string" ? string : K extends "number" ? number : K extends "string[]" ? readonly string[] : K extends "credential-issuer" ? CredentialIssuer : never;
 type DetailOf<C extends keyof DetailFields> = {
   [R in keyof DetailFields[C]]: { reason: R } & { -readonly [F in keyof DetailFields[C][R]]: FieldValue<DetailFields[C][R][F]> };
 }[keyof DetailFields[C]];
@@ -301,6 +311,7 @@ export const MARKETPLACE_ERROR_REASONS: ReadonlyArray<readonly [MarketplaceError
 function fieldMatches(value: unknown, kind: DetailFieldKind): boolean {
   if (kind === "string") return typeof value === "string";
   if (kind === "number") return typeof value === "number" && Number.isFinite(value);
+  if (kind === "credential-issuer") return typeof value === "string" && (CREDENTIAL_ISSUERS as readonly string[]).includes(value);
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
