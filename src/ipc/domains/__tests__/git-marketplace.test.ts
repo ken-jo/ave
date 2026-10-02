@@ -139,7 +139,7 @@ async function setup(overrides: Record<string, unknown> = {}, window: unknown = 
     takeRevocationNotice: vi.fn(() => null),
     revealFolder: vi.fn(async (): Promise<string | null> => null),
     updateCandidates: vi.fn(async () => []),
-    autoUpdateContext: vi.fn(async () => ({ policy: "user", sources: [] })),
+    autoUpdateContext: vi.fn(async () => ({ policy: "user", requiredInstalls: [], sources: [], installed: [] })),
     applyUpdate: vi.fn(async () => ({ state: "applied" })),
     appliedState: vi.fn(async () => null),
     callsInFlight: vi.fn(async () => false),

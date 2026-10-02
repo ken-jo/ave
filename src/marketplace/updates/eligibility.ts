@@ -19,6 +19,9 @@
  */
 import type { ConsentDelta, UpdateReason, AutoUpdateSwitchView } from "../../shared/git-marketplace.js";
 import type { SourceOrigin } from "../sources/registry.js";
+import type { MarketplacePolicy } from "../sources/policy.js";
+import type { PackageKind } from "../catalog/types.js";
+import { lockedByPolicy } from "../boot-installs/run.js";
 
 /** The number of failed attempts at one version after which automatic attempts stop (§18.7.5). */
 export const MAX_AUTOMATIC_ATTEMPTS = 3;
@@ -86,6 +89,18 @@ export type UpdateClassification =
   | { state: "automatic"; reasons: [] }
   | { state: "needs-review" | "manual" | "failed"; reasons: UpdateReason[] };
 
+/**
+ * Whether the policy in force requires this package from this source
+ * (`requiredInstalls`, §10.2): the one test of required-ness for an update,
+ * an installed package's switch and every update view. It reads only the
+ * policy and the package's identity, never a source's health or an offer,
+ * so a source whose metadata cannot be read does not make a required
+ * package optional, and a withdrawn entry stops counting at once.
+ */
+export function requiresPackage(policy: Pick<MarketplacePolicy, "requiredInstalls">, key: { sourceId: string | null; kind: PackageKind; name: string }): boolean {
+  return lockedByPolicy(policy, key.kind, key.name, key.sourceId) !== undefined;
+}
+
 /** The default of a source's origin (§18.7.2): every origin is on, but custom or direct sources over http are off. */
 export function originDefault(source: Pick<SourceFacts, "origin" | "http">): boolean {
   return !(source.http && (source.origin === "custom" || source.origin === "direct"));
@@ -101,11 +116,13 @@ export function resolvePackageSwitch(
   policy: AutoUpdatePolicy,
   settings: AutoUpdateSettings,
   switchKey: string,
-  source: Pick<SourceFacts, "id" | "origin" | "http">,
+  source: Pick<SourceFacts, "id" | "origin" | "http"> | null,
   required: boolean,
 ): AutoUpdateSwitchView {
   const override = lookup(settings.autoUpdatePackages, switchKey);
   if (required) return { effective: true, override, lockedByPolicy: true, required: true };
+  // Only a required package's switch resolves without its source: nothing below it is read.
+  if (!source) throw new Error(`the switch of ${switchKey} needs its source's facts unless the package is required`);
   if (policy !== "user") return { effective: policy === "on", override, lockedByPolicy: true, required: false };
   if (override) return { effective: override === "on", override, lockedByPolicy: false, required: false };
   return { effective: sourceEffective(settings, source), override, lockedByPolicy: false, required: false };

@@ -104,7 +104,16 @@ function harness(options: {
     }),
     updateCandidates: vi.fn(async (reached: ReadonlySet<string>) =>
       published.offers.filter((update) => reached.has(update.key.sourceId)).map((update) => candidateOf(update, published.facts[update.key.name]))),
-    autoUpdateContext: vi.fn(async () => ({ policy: "user" as const, sources: [], installed: [] })),
+    // The policy requires what the published facts call required, as the service computes both from it.
+    autoUpdateContext: vi.fn(async () => ({
+      policy: "user" as const,
+      requiredInstalls: published.offers.filter((update) => published.facts[update.key.name]?.required === true)
+        .map((update) => ({ source: update.key.sourceId, kind: update.key.kind, name: update.key.name })),
+      // Every source that publishes reads, with the facts its candidates carry.
+      sources: [...new Set(published.offers.map((update) => update.key.sourceId))]
+        .map((id) => ({ id, label: id, origin: "official" as const, http: false, acknowledgedUnencryptedUpdates: false })),
+      installed: [],
+    })),
     applyUpdate: vi.fn(async () => ({ state: "applied" as const })),
     appliedState: vi.fn(async () => ({ state: "applied" as const })),
     callsInFlight: vi.fn(async () => false),
@@ -1264,7 +1273,7 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     for (const policy of ["user", "off"] as const) {
       const h = harness({
         settings: { updateNotices: true, autoUpdate: false, autoUpdatePackages: { meeting: "off" } },
-        service: { autoUpdateContext: async () => ({ policy, sources: [source], installed: [{ key, required: true }] }) },
+        service: { autoUpdateContext: async () => ({ policy, requiredInstalls: [{ source: "ave", kind: "plugin" as const, name: "meeting" }], sources: [source], installed: [key] }) },
       });
       h.published.offers = [offer("meeting", "2.0.0")];
       h.published.facts = { meeting: { required: true } };
@@ -1308,7 +1317,7 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
       const h = harness({
         settings: { updateNotices: true, autoUpdate: true, skippedPluginUpdates: { meeting: "2.0.0" } },
         service: {
-          autoUpdateContext: async () => ({ policy: "user", sources: [source], installed: [{ key, required: true }] }),
+          autoUpdateContext: async () => ({ policy: "user", requiredInstalls: [{ source: "ave", kind: "plugin" as const, name: "meeting" }], sources: [source], installed: [key] }),
           applyUpdate: vi.fn(async () => ({ state })),
           appliedState: vi.fn(async () => ({ state, pendingApproval: null })),
         },
@@ -1354,6 +1363,141 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     }
   });
 
+  describe("required status follows the policy and the package's identity alone", () => {
+    const key = offer("meeting", "2.0.0").key;
+    const official = { id: "ave", label: "Ave Official", origin: "official" as const, http: false, acknowledgedUnencryptedUpdates: false };
+    const requiring = [{ source: "ave", kind: "plugin" as const, name: "meeting" }];
+    const pendingHistory = () => {
+      const history = emptyUpdateHistory();
+      history.packages["ave:plugin:meeting"] = { to: "2.0.0", from: "1.0.0", displayName: "Meeting", state: "approval-pending", attempts: 0, appliedAt: new Date(T0).toISOString() };
+      return history;
+    };
+
+    it.each([
+      ["readable", true],
+      ["unreadable", false],
+    ])("keeps a required outcome required while its source is %s, and drops it once the policy withdraws it", async (_health, readable) => {
+      let requiredInstalls = requiring;
+      const h = harness({
+        history: memoryHistory(pendingHistory()),
+        settings: { updateNotices: true, skippedPluginUpdates: { meeting: "2.0.0" } },
+        service: {
+          autoUpdateContext: async () => ({ policy: "user", requiredInstalls, sources: readable ? [official] : [], installed: [key] }),
+          appliedState: async () => ({ state: "approval-pending", pendingApproval: null }),
+        },
+      });
+      const background = startMarketplaceBackground(h.input);
+      try {
+        await background.started;
+        await settle();
+        expect(h.lastStatus().packages).toEqual([expect.objectContaining({ key, state: "approval-pending", required: true })]);
+        // The source's health does not decide whether its package is required: the switch is required and locked either way.
+        expect(h.lastStatus().autoUpdate.packages).toEqual([{ key, switch: { effective: true, override: null, lockedByPolicy: true, required: true } }]);
+        requiredInstalls = [];
+        await background.recheck();
+        expect(h.lastStatus().packages[0]).not.toHaveProperty("required");
+        // Optional again: its switch follows the user's (automatic updates off here), and needs a readable source.
+        expect(h.lastStatus().autoUpdate.packages).toEqual(readable ? [{ key, switch: { effective: false, override: null, lockedByPolicy: false, required: false } }] : []);
+      } finally {
+        background.stop();
+      }
+    });
+
+    it("keeps a required outcome required when its source's metadata stops reading", async () => {
+      let readable = true;
+      const h = harness({
+        history: memoryHistory(pendingHistory()),
+        settings: { updateNotices: true, skippedPluginUpdates: { meeting: "2.0.0" } },
+        service: {
+          autoUpdateContext: async () => ({ policy: "user", requiredInstalls: requiring, sources: readable ? [official] : [], installed: [key] }),
+          appliedState: async () => ({ state: "approval-pending", pendingApproval: null }),
+        },
+      });
+      const background = startMarketplaceBackground(h.input);
+      try {
+        await background.started;
+        await settle();
+        readable = false;
+        await background.recheck();
+        expect(vi.mocked(h.input.publishUpdates).mock.calls.at(-1)![0]).toEqual([expect.objectContaining({ key, state: "approval-pending", required: true })]);
+      } finally {
+        background.stop();
+      }
+    });
+
+    it("does not send a required outcome as optional at boot when the discovery fails before the update list is read", async () => {
+      const h = harness({
+        history: memoryHistory(pendingHistory()),
+        settings: { updateNotices: true, skippedPluginUpdates: { meeting: "2.0.0" } },
+        service: {
+          discover: async () => { throw new Error("discovery unavailable"); },
+          autoUpdateContext: async () => ({ policy: "user", requiredInstalls: requiring, sources: [official], installed: [key] }),
+        },
+      });
+      const background = startMarketplaceBackground(h.input);
+      try {
+        await background.started;
+        const sent = vi.mocked(h.input.publishUpdates).mock.calls.flatMap(([updates]) => updates);
+        expect(sent.at(-1)).toMatchObject({ key, required: true });
+        expect(sent.filter((update) => update.required !== true)).toEqual([]);
+      } finally {
+        background.stop();
+      }
+    });
+
+    it("sends nothing about a required outcome while the policy cannot be read at all", async () => {
+      const h = harness({
+        history: memoryHistory(pendingHistory()),
+        settings: { updateNotices: true, skippedPluginUpdates: { meeting: "2.0.0" } },
+        service: {
+          discover: async () => { throw new Error("discovery unavailable"); },
+          autoUpdateContext: async () => { throw new Error("policy unreadable"); },
+        },
+      });
+      const background = startMarketplaceBackground(h.input);
+      try {
+        await background.started;
+        expect(vi.mocked(h.input.publishUpdates).mock.calls.flatMap(([updates]) => updates)).toEqual([]);
+      } finally {
+        background.stop();
+      }
+    });
+
+    it("recomputes a stale offer's required status and switch from the policy now, so a withdrawn requirement lets its skip apply", async () => {
+      let requiredInstalls = requiring;
+      const h = harness({
+        settings: { updateNotices: true, autoUpdate: true },
+        service: {
+          autoUpdateContext: async () => ({ policy: "user", requiredInstalls, sources: [official], installed: [key] }),
+          applyUpdate: async () => ({ state: "failed" as const, error: new Error("offline") }),
+        },
+      });
+      h.published.offers = [offer("meeting", "2.0.0")];
+      h.published.facts = { meeting: { required: true } };
+      const background = startMarketplaceBackground(h.input);
+      try {
+        await background.started;
+        await settle();
+        expect(h.lastStatus().packages[0]).toMatchObject({ required: true, state: "failed" });
+        h.discoveries.push(OFFLINE);
+        await background.checkNow();
+        expect(h.lastStatus().packages[0]).toMatchObject({ stale: true, required: true, autoUpdate: { required: true } });
+        requiredInstalls = [];
+        h.published.facts = { meeting: { required: false } };
+        await background.recheck();
+        expect(h.lastStatus().packages[0]).toMatchObject({ stale: true, state: "failed", autoUpdate: { required: false, lockedByPolicy: false } });
+        expect(h.lastStatus().packages[0]).not.toHaveProperty("required");
+        expect(vi.mocked(h.input.publishUpdates).mock.calls.at(-1)![0][0]).not.toHaveProperty("required");
+        // Optional now, so skipping its version hides it.
+        h.settings.current = { ...h.settings.current, skippedPluginUpdates: { meeting: "2.0.0" } };
+        await background.settingsChanged();
+        expect(h.lastStatus().packages).toEqual([]);
+      } finally {
+        background.stop();
+      }
+    });
+  });
+
   it("a wait past 30 minutes reaches the toolbar: the waiting update is sent as escalated, whatever the notice setting", async () => {
     const h = applying();
     h.settings.current = { updateNotices: false, autoUpdate: true };
@@ -1372,10 +1516,10 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
 
   it("shows the switches as they take effect under a policy, for every installed package", async () => {
     const source = { id: "acme", label: "Acme", origin: "custom" as const, http: false, acknowledgedUnencryptedUpdates: false };
-    const installed = [{ key: { sourceId: "acme", kind: "skill" as const, name: "notes" }, required: false }];
+    const installed = [{ sourceId: "acme", kind: "skill" as const, name: "notes" }];
     const locked = harness({
       settings: { updateNotices: true, autoUpdate: false, autoUpdatePackages: { "skill:notes": "off" } },
-      service: { autoUpdateContext: async () => ({ policy: "on" as const, sources: [source], installed }) },
+      service: { autoUpdateContext: async () => ({ policy: "on" as const, requiredInstalls: [], sources: [source], installed }) },
     });
     const background = startMarketplaceBackground(locked.input);
     await background.started;
@@ -1383,10 +1527,10 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
       enabled: true,
       lockedByPolicy: "on",
       sources: [{ id: "acme", label: "Acme", origin: "custom", switch: { effective: true, override: null, lockedByPolicy: true, required: false }, needsUnencryptedUpdates: false }],
-      packages: [{ key: installed[0]!.key, switch: { effective: true, override: "off", lockedByPolicy: true, required: false } }],
+      packages: [{ key: installed[0], switch: { effective: true, override: "off", lockedByPolicy: true, required: false } }],
     });
     background.stop();
-    const off = harness({ settings: { updateNotices: true }, service: { autoUpdateContext: async () => ({ policy: "off" as const, sources: [source], installed }) } });
+    const off = harness({ settings: { updateNotices: true }, service: { autoUpdateContext: async () => ({ policy: "off" as const, requiredInstalls: [], sources: [source], installed }) } });
     const second = startMarketplaceBackground(off.input);
     await second.started;
     expect((await second.status()).autoUpdate).toMatchObject({ enabled: false, lockedByPolicy: "off" });

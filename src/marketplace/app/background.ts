@@ -54,7 +54,7 @@ import {
 import { isSkippedPackageUpdate, packageUpdateSkipKey, readSkippedPluginUpdates } from "../../shared/skipped-plugin-updates.js";
 import { isMarketplaceError, scrubMarketplaceErrorDetail } from "../errors.js";
 import { ApplyQueue, type ApplyItem, type ApplyOutcome } from "../updates/apply.js";
-import { classifyUpdate, resolvePackageSwitch, resolveSourceSwitch, type AutoUpdateSettings, type UpdateClassification } from "../updates/eligibility.js";
+import { classifyUpdate, requiresPackage, resolvePackageSwitch, resolveSourceSwitch, type AutoUpdateSettings, type UpdateClassification } from "../updates/eligibility.js";
 import type { AppliedState, ApplyDecision, ApplyTarget, AutoUpdateContext, UpdateCandidate } from "./service.js";
 import type { AppliedDefaults } from "../boot-installs/applied.js";
 import { packageKeyId } from "../boot-installs/default-installs.js";
@@ -345,6 +345,12 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
    * what the last attempt at this version recorded (a failure, a deferral at
    * checkpoint two), then the classification.
    */
+  /** {@link requiresPackage} under the policy last read; only asked once one was read. */
+  const requiredNow = (key: PackageKeyView): boolean => {
+    if (!context) throw new Error("required status asked for before the policy was read");
+    return requiresPackage({ requiredInstalls: context.requiredInstalls }, key);
+  };
+
   const packageView = (candidate: UpdateCandidate, classification: UpdateClassification, settings: AutoUpdateSettings): PackageUpdateView => {
     const id = updateRecordKey(candidate.key);
     const record = history.packages[id];
@@ -382,7 +388,7 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
     const pending = pendingApprovals.get(id);
     // Required by the policy in force now, not when it applied: a required package's
     // attention states ignore skipped versions (§18.7.2) for as long as it stays required.
-    const required = context?.installed.some((item) => item.required && updateRecordKey(item.key) === id) === true;
+    const required = requiredNow(parseUpdateRecordKey(id));
     return {
       key: parseUpdateRecordKey(id),
       displayName: record.displayName!,
@@ -404,13 +410,16 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
    * versions are neither. Applied updates follow.
    */
   const classifyShown = () => {
+    // No authority read yet: a view built now could not say which updates are required, and
+    // calling them optional would let a skipped version hide one. What was shown stays.
+    if (!context) return;
     const settings = input.settings();
     const skipped = readSkippedPluginUpdates(settings.skippedPluginUpdates);
     const prior = new Map(shown.map((update) => [updateRecordKey(update.key), update]));
     const next: PackageUpdateView[] = [];
     const listed = new Set<string>();
     for (const [id, candidate] of candidates) {
-      if (!context || !reached?.has(candidate.key.sourceId)) continue;
+      if (!reached?.has(candidate.key.sourceId)) continue;
       const classification = classifyUpdate(candidate.facts, {
         policy: context.policy,
         settings,
@@ -425,11 +434,20 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       const id = updateRecordKey(update.key);
       if (reached?.has(update.key.sourceId) || listed.has(id)) continue;
       const before = prior.get(id);
-      // A required update ignores a skipped version (§18.7.2), stale or not.
-      if (before && before.to === update.to && (before.required === true || !isSkippedPackageUpdate(update, skipped))) {
-        next.push({ ...before, stale: true });
-        listed.add(id);
-      }
+      if (!before || before.to !== update.to) continue;
+      // The version and its state are an earlier discovery's; whether it is required, and so
+      // its switch and whether a skipped version hides it (§18.7.2), is the policy's now.
+      const required = requiredNow(update.key);
+      if (!required && isSkippedPackageUpdate(update, skipped)) continue;
+      const { required: _was, autoUpdate: _switch, ...kept } = before;
+      const source = context.sources.find((item) => item.id === update.key.sourceId) ?? null;
+      next.push({
+        ...kept,
+        stale: true,
+        ...(required || source ? { autoUpdate: resolvePackageSwitch(context.policy, settings, packageUpdateSkipKey(update.key), source, required) } : {}),
+        ...(required ? { required: true as const } : {}),
+      });
+      listed.add(id);
     }
     for (const [id, record] of Object.entries(history.packages)) {
       if (APPLIED_STATES.has(record.state) && !listed.has(id)) next.push(appliedView(id, record));
@@ -478,9 +496,11 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
         switch: resolveSourceSwitch(context!.policy, settings, source),
         needsUnencryptedUpdates: source.http && !source.acknowledgedUnencryptedUpdates,
       })),
-      packages: (context?.installed ?? []).flatMap(({ key, required }) => {
-        const source = byId.get(key.sourceId);
-        return source ? [{ key, switch: resolvePackageSwitch(context!.policy, settings, packageUpdateSkipKey(key), source, required) }] : [];
+      packages: (context?.installed ?? []).flatMap((key) => {
+        const source = byId.get(key.sourceId) ?? null;
+        const required = requiredNow(key);
+        // A source whose metadata cannot be read leaves an optional package without a switch, never a required one.
+        return source || required ? [{ key, switch: resolvePackageSwitch(context!.policy, settings, packageUpdateSkipKey(key), source, required) }] : [];
       }),
     };
   };

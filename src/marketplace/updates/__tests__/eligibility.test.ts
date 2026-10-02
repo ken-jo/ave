@@ -10,6 +10,7 @@ import {
   classifyUpdate,
   MAX_AUTOMATIC_ATTEMPTS,
   originDefault,
+  requiresPackage,
   resolvePackageSwitch,
   resolveSourceSwitch,
   type AutoUpdatePolicy,
@@ -121,6 +122,21 @@ describe("the switches (§18.7.2)", () => {
     expect(classify(facts(), { policy: "on", settings: { autoUpdatePackages: { notes: "off" }, autoUpdate: false } })).toEqual({ state: "automatic", reasons: [] });
     expect(resolvePackageSwitch("on", { autoUpdatePackages: { notes: "off" } }, "notes", { id: "acme", origin: "custom", http: false }, false))
       .toEqual({ effective: true, override: "off", lockedByPolicy: true, required: false });
+  });
+
+  it("required-ness is the policy's entries and the package's identity: that kind and name from that source", () => {
+    const policy = { requiredInstalls: [{ source: "acme", kind: "plugin" as const, name: "notes" }] };
+    expect(requiresPackage(policy, { sourceId: "acme", kind: "plugin", name: "notes" })).toBe(true);
+    // The same name from another source is not the required one: the policy's update replaces it.
+    expect(requiresPackage(policy, { sourceId: "other", kind: "plugin", name: "notes" })).toBe(false);
+    expect(requiresPackage(policy, { sourceId: "acme", kind: "skill", name: "notes" })).toBe(false);
+    expect(requiresPackage(policy, { sourceId: null, kind: "plugin", name: "notes" })).toBe(false);
+    expect(requiresPackage({ requiredInstalls: [] }, { sourceId: "acme", kind: "plugin", name: "notes" })).toBe(false);
+  });
+
+  it("resolves a required package's switch without its source, and refuses an optional one's", () => {
+    expect(resolvePackageSwitch("user", {}, "notes", null, true)).toEqual({ effective: true, override: null, lockedByPolicy: true, required: true });
+    expect(() => resolvePackageSwitch("user", {}, "notes", null, false)).toThrow(/the switch of notes needs its source's facts unless the package is required/u);
   });
 
   it("a required package's switch is on and locked whatever the policy and every switch say", () => {

@@ -91,7 +91,7 @@ import { openStoredFolder, shouldSyncSource, type SourceSyncer, type SyncResult 
 import type { SyncDiscovery } from "../updates/history.js";
 import { catalogDelta, isCodeFreeChange, mcpConsent, pluginConsent, requireConsentEqual, stagedDelta, withChangedFiles, type ConsentFingerprint } from "../updates/consent.js";
 import { classifyApplyError, type ApplyOutcome } from "../updates/apply.js";
-import type { UpdateChange, UpdateFacts } from "../updates/eligibility.js";
+import { requiresPackage, type UpdateChange, type UpdateFacts } from "../updates/eligibility.js";
 import type { PluginConfigRetention } from "../../plugins/retired-config.js";
 import { holdsAnyPluginInstallLock } from "../../plugins/install-lifecycle.js";
 import type { RetirementEntry, RetirementEntryLookup } from "./retirement-entry.js";
@@ -212,15 +212,18 @@ export interface UpdateCandidate extends PackageUpdateOffer {
 }
 
 /**
- * What the switches resolve with (§18.7.2): the policy's `autoUpdate`, each
- * source's facts, and every installed package bound to one of those sources,
- * so its switch can be set before it has an update, with whether a
- * `requiredInstalls` entry names it (its updates then apply whatever the switch).
+ * What the switches and every view's required status resolve with
+ * (§18.7.2): the policy's `autoUpdate` and `requiredInstalls`, the facts of
+ * each source whose metadata reads, and every installed package bound to a
+ * source, readable or not, so its switch can be set before it has an
+ * update. Required-ness is {@link requiresPackage} of the policy's entries
+ * and a package's identity alone.
  */
 export interface AutoUpdateContext {
   policy: MarketplacePolicy["autoUpdate"];
+  requiredInstalls: PackageKey[];
   sources: Array<{ id: string; label: string; origin: SourceOrigin; http: boolean; acknowledgedUnencryptedUpdates: boolean }>;
-  installed: Array<{ key: PackageKeyView; required: boolean }>;
+  installed: PackageKeyView[];
 }
 
 /**
@@ -2177,7 +2180,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       change: item.change,
       row: item.row,
       record: item.installed,
-      required: lockedByPolicy(this.policy, item.offer.key.kind, item.offer.key.name, item.offer.key.sourceId) !== undefined,
+      required: requiresPackage(this.policy, item.offer.key),
     }));
     for (const key of this.policy.requiredInstalls) {
       const record = installed.find((item) => item.kind === key.kind && item.name === key.name);
@@ -2190,7 +2193,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         change: "switch",
         row,
         record,
-        required: true,
+        required: requiresPackage(this.policy, { sourceId: key.source, kind: key.kind, name: key.name }),
       });
     }
     const candidates: UpdateCandidate[] = [];
@@ -2395,15 +2398,11 @@ export class MarketplaceService implements RetirementEntryLookup {
           acknowledgedUnencryptedUpdates: acknowledgedOf(source, read.state).includes("unencrypted-updates"),
         });
       }
-      const listed = new Set(sources.map((source) => source.id));
+      // Every bound package, whatever its source's health: required-ness does not depend on it.
       const installed = (await this.installedAll())
-        .filter((item): item is InstalledRecord & { sourceId: string } => item.sourceId !== null && listed.has(item.sourceId))
-        .map((item) => ({
-          key: { sourceId: item.sourceId, kind: item.kind, name: item.name },
-          // Required from this source or another: the policy's update replaces it either way (§10.2).
-          required: requiredByPolicy(this.policy, item.kind, item.name) !== undefined,
-        }));
-      return { policy: this.policy.autoUpdate, sources, installed };
+        .filter((item): item is InstalledRecord & { sourceId: string } => item.sourceId !== null)
+        .map((item) => ({ sourceId: item.sourceId, kind: item.kind, name: item.name }));
+      return { policy: this.policy.autoUpdate, requiredInstalls: structuredClone([...this.policy.requiredInstalls]), sources, installed };
     }, signal);
   }
 

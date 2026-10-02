@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readPayloadFiles } from "../../../plugins/contribution-approval-digest.js";
+import { requiresPackage } from "../../updates/eligibility.js";
 import { descriptorText as descriptor, jsonText as text } from "../../__tests__/fixtures/package-files.js";
 import type { McpServerConfig } from "../../../mcp/types.js";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
@@ -821,19 +822,36 @@ describe("MarketplaceService", () => {
     expect(manager.configs.has("notes")).toBe(true);
   });
 
-  it("lists each installed package for the switches with whether a requiredInstalls entry names it", async () => {
+  it("tells the switches which installed packages are required from the policy and their identity alone, whatever their source's health", async () => {
     const acme = market();
+    const required = policyLoad({ requiredInstalls: [{ kind: "mcp", name: "notes", source: "acme-tools" }] });
     service.close();
-    await build(policyLoad({ requiredInstalls: [{ kind: "mcp", name: "notes", source: "acme-tools" }] }));
+    await build(required);
     await addMarket(acme.url);
-    for (const key of [{ sourceId: "acme-tools", kind: "mcp" as const, name: "notes" }, { sourceId: "acme-tools", kind: "skill" as const, name: "review" }]) {
-      await service.executeInstall((await service.planInstall(key)).planId);
-    }
-    const context = await service.autoUpdateContext();
-    expect(context.installed.sort((a, b) => a.key.name.localeCompare(b.key.name))).toEqual([
-      { key: { sourceId: "acme-tools", kind: "mcp", name: "notes" }, required: true },
-      { key: { sourceId: "acme-tools", kind: "skill", name: "review" }, required: false },
-    ]);
+    const notes = { sourceId: "acme-tools", kind: "mcp" as const, name: "notes" };
+    const review = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    for (const key of [notes, review]) await service.executeInstall((await service.planInstall(key)).planId);
+    const requiredNames = async () => {
+      const context = await service.autoUpdateContext();
+      return {
+        acmeReads: context.sources.some((source) => source.id === "acme-tools"),
+        installed: context.installed.map((key) => key.name).sort(),
+        required: context.installed.filter((key) => requiresPackage(context, key)).map((key) => key.name),
+      };
+    };
+    const withdrawn = policyLoad({});
+    const healthy = { acmeReads: true, installed: ["notes", "review"] };
+    expect(await requiredNames()).toEqual({ ...healthy, required: ["notes"] });
+    service.close();
+    await build(withdrawn);
+    expect(await requiredNames()).toEqual({ ...healthy, required: [] });
+    // The source's metadata breaks: the installs and the policy are untouched.
+    writeFileSync(join(root, "marketplaces", "acme-tools", "state.json"), "{broken");
+    const damaged = { acmeReads: false, installed: ["notes", "review"] };
+    expect(await requiredNames()).toEqual({ ...damaged, required: [] });
+    service.close();
+    await build(required);
+    expect(await requiredNames()).toEqual({ ...damaged, required: ["notes"] });
   });
 
   it("judges a package mid-switch by the source it moves to, in every feed while it moves", async () => {
