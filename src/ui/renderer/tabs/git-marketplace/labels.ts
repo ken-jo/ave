@@ -439,7 +439,13 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       return unhandled(detail);
     }
     case "SOURCE_NAME_RESERVED": return t("gitMarketplace.error.nameReserved");
-    case "SOURCE_ID_INVALID": return t("gitMarketplace.error.idInvalid");
+    case "SOURCE_ID_INVALID": {
+      const detail = parseMarketplaceErrorDetail(code, failure.detail);
+      if (!detail) return t("gitMarketplace.error.idInvalid");
+      // The one reason; a second one fails this line until it has a sentence.
+      const reason: "holds-credential" = detail.reason;
+      return reason === "holds-credential" ? t("gitMarketplace.error.idInvalid.holdsCredential") : unhandled(reason);
+    }
     case "SOURCE_ID_TAKEN": {
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
       if (!detail) return t("gitMarketplace.error.idTaken");
@@ -481,7 +487,17 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
         case "owned": return t("gitMarketplace.error.notAMarketplace.owned");
       }
       return unhandled(audience);
-    case "SOURCE_INDEX_INVALID": return t("gitMarketplace.error.indexInvalid");
+    case "SOURCE_INDEX_INVALID": {
+      const detail = parseMarketplaceErrorDetail(code, failure.detail);
+      if (!detail) return t("gitMarketplace.error.indexInvalid");
+      // An identifier the renderer could only see masked (§18.8): the package is not offered.
+      switch (detail.reason) {
+        case "name-holds-credential": return t("gitMarketplace.error.indexInvalid.nameHoldsCredential");
+        case "version-holds-credential": return t("gitMarketplace.error.indexInvalid.versionHoldsCredential");
+        case "component-holds-credential": return t("gitMarketplace.error.indexInvalid.componentHoldsCredential");
+      }
+      return unhandled(detail);
+    }
     case "SOURCE_HISTORY_REWRITTEN": return t("gitMarketplace.error.historyRewritten");
     case "SOURCE_DISABLED": return t("gitMarketplace.error.sourceDisabled");
     case "SOURCE_LOCAL_DATA_DAMAGED": {

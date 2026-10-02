@@ -56,6 +56,7 @@ import { parseStrictJson } from "../catalog/strict-json.js";
 import { stageContentPackage } from "../content/store.js";
 import { componentDelta } from "./component-delta.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { holdsCredential } from "../../shared/dlp.js";
 import { ConfirmationRequiredError, MarketplaceError, isMarketplaceError, type EnteredTargetWarningView, type MarketplaceErrorDetail } from "../errors.js";
 import { BareRepo, type ExportLimits } from "../git/repo.js";
 import type { GitCommands, GitRemote } from "../git/run-git.js";
@@ -72,7 +73,7 @@ import type { LegacyContentKind, LegacyContentReport } from "../migration/legacy
 import type { LegacyPluginReport, OfficialPlugin } from "../migration/legacy-plugins.js";
 import { runLegacyMigration } from "../migration/run.js";
 import { readDirectPackage } from "../sources/direct-package.js";
-import { isReservedSourceId, OFFICIAL_MARKETPLACE, SOURCE_ID_RE, type SourceAuth } from "../sources/official.js";
+import { isReservedSourceId, isSourceId, OFFICIAL_MARKETPLACE, type SourceAuth } from "../sources/official.js";
 import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PackageKey, type PolicySource, type PolicyUpdate } from "../sources/policy.js";
 import type { FolderFs } from "../sources/folder-fs.js";
 import { FolderTree } from "../sources/folder-tree.js";
@@ -260,7 +261,7 @@ function mcpRuntimeView(runtime: McpRuntimeSpec): McpRuntimeView {
 /** A source id from a name: lowercase, `-` for anything else, never reserved. */
 function idFrom(raw: string): string | null {
   const id = raw.toLowerCase().replace(/\.git$/u, "").replace(/[^a-z0-9-]+/gu, "-").replace(/-{2,}/gu, "-").replace(/^-+|-+$/gu, "");
-  return SOURCE_ID_RE.test(id) && !isReservedSourceId(id) ? id : null;
+  return isSourceId(id) && !isReservedSourceId(id) ? id : null;
 }
 
 /**
@@ -833,7 +834,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       // A single package at the root or the given folder: a direct source (§7.2 step 4, §8.1).
       const read = await readDirectPackage({ tree, path: subdir ?? "", rootName: rootNameOf(url.path) });
       if (!read) throw new MarketplaceError("SOURCE_NOT_A_MARKETPLACE", `no marketplace and no package at ${subdir ?? "the repository root"}`);
-      if (!read.ok) throw new MarketplaceError(read.code, read.error);
+      if (!read.ok) throw new MarketplaceError(read.code, read.error, read.detail ? { detail: read.detail } : undefined);
       // `allowDirectInstall: false`: packages install from marketplaces only (§12).
       this.options.gate.checkDirectInstall(url.url);
       const { descriptor, detectedFrom, versionSynthesized } = read.found;
@@ -927,7 +928,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     if (built.code !== "SOURCE_NOT_A_MARKETPLACE") throw new MarketplaceError(built.code, built.message, built.detail ? { detail: built.detail } : undefined);
     const read = await readDirectPackage({ tree, path: "", rootName });
     if (!read) throw new MarketplaceError("SOURCE_NOT_A_MARKETPLACE", `no marketplace and no package in ${root.path}`);
-    if (!read.ok) throw new MarketplaceError(read.code, read.error);
+    if (!read.ok) throw new MarketplaceError(read.code, read.error, read.detail ? { detail: read.detail } : undefined);
     // A direct folder install is refused by `allowDirectInstall: false` too (§18.4.7).
     this.options.gate.checkDirectInstall(root.path);
     // The folder is its one package: a reading rule it breaks fails the preview with its reason,
@@ -1587,7 +1588,12 @@ export class MarketplaceService implements RetirementEntryLookup {
     if (!record || typeof record.name !== "string" || typeof record.version !== "string") {
       throw new MarketplaceError("CONTENT_RULE_VIOLATION", "server.json needs a name and a version");
     }
-    const name = idFrom(record.name.slice(record.name.lastIndexOf("/") + 1));
+    const last = record.name.slice(record.name.lastIndexOf("/") + 1);
+    // The name is how the installed server is named back (§18.8); `idFrom` refuses that shape too.
+    if (holdsCredential(last)) {
+      throw new MarketplaceError("SOURCE_INDEX_INVALID", "server.json: its name looks like a password or token", { detail: { reason: "name-holds-credential" } });
+    }
+    const name = idFrom(last);
     if (!name) throw new MarketplaceError("CONTENT_RULE_VIOLATION", `server.json name ${record.name} does not end in a usable name`);
     const runtime = runtimeFromServerJson(document, request.select);
     assertMcpRuntimePinned(name, runtime);

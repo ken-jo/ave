@@ -424,21 +424,7 @@ export function scrubDiagnosticSecrets(text: string): string {
 
 /** Whether a scrubber pass replaced part of `text` with a `[REDACTED:…]` marker. */
 export function hasRedaction(text: string): boolean {
-  return /\[REDACTED:[A-Z]+\]/u.test(text);
-}
-
-/**
- * Whether `text` holds a key's random run: one segment between `-`/`_` of at
- * least 12 characters mixing letters and digits. A name's segments are words
- * (`captions`, `server01`); a key's are not.
- */
-function hasKeyRun(text: string): boolean {
-  return text.split(/[-_]/u).some((segment) => segment.length >= 12 && /[A-Za-z]/u.test(segment) && /\d/u.test(segment));
-}
-
-/** Whether `text` holds a run of 8 or more digits, as a Slack token's workspace and user ids. */
-function hasDigitRun(text: string): boolean {
-  return /\d{8,}/u.test(text);
+  return /\[REDACTED:[A-Z_]+\]/u.test(text);
 }
 
 /**
@@ -459,15 +445,55 @@ export function scrubSecretsForLLM(text: string): string {
 }
 
 /**
- * The credential shapes of {@link scrubSecretsForLLM}. `precise` (the
- * diagnostic scrubber's mode, for text shown to a person: paths, hosts, ids
- * and package names in the marketplace) counts a vendor prefix only with the
- * token's own random run after it, so real names pass unchanged; `broad`
- * counts the prefix alone.
+ * Real credential formats, each by its issuer's prefix, charset and length:
+ * the one detector both scrubber modes apply, and that the marketplace's
+ * ingress uses to refuse an identifier ({@link holdsCredential}). A bare
+ * prefix is no format (`test-`, `live-`, `proj-`), so names that start like
+ * one pass. Case-sensitive: these tokens are, and a lowercased one no longer
+ * authenticates.
+ */
+const CREDENTIAL_FORMATS: ReadonlyArray<{ pattern: RegExp; holds?: (match: string) => boolean }> = [
+  // GitHub classic, OAuth, user-to-server, server-to-server and refresh tokens; fine-grained PATs.
+  { pattern: /\bgh[pousr]_[A-Za-z0-9]{36,251}\b/g },
+  { pattern: /\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}\b/g },
+  // GitLab personal, deploy, runner, pipeline-trigger, CI-build and service-account tokens.
+  { pattern: /\bgl(?:pat|dt|rt|ptt|cbt|soat)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*/g },
+  // npm access tokens.
+  { pattern: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  // Slack: bot, user, app-level and refresh tokens carry numeric workspace and user ids.
+  { pattern: /\bxox[abposre]-\d{6,}-[0-9A-Za-z-]{8,}\b/g },
+  { pattern: /\bxapp-\d-[A-Z0-9]+-\d+-[A-Za-z0-9]+\b/g },
+  // AWS access key ids, long-term and temporary.
+  { pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g },
+  // Google API keys.
+  { pattern: /\bAIza[0-9A-Za-z_-]{35}\b/g },
+  // OpenAI: legacy 48, project/service-account/admin keys, and any carrying the issuer's signature.
+  { pattern: /\bsk-[A-Za-z0-9]{48}\b/g },
+  { pattern: /\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{40,}/g },
+  { pattern: /\bsk-[A-Za-z0-9_-]*T3BlbkFJ[A-Za-z0-9_-]*/g },
+  // Anthropic API, admin and session keys.
+  { pattern: /\bsk-ant-(?:api|admin|sid|oat|ort)\d{2}-[A-Za-z0-9_-]{32,}/g },
+  // Stripe secret, publishable and restricted keys.
+  { pattern: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g },
+  // Azure DevOps personal access tokens (the 52-character base32 form): letters and digits both.
+  { pattern: /\b[a-z2-7]{52}\b/g, holds: (match) => /[a-z]/u.test(match) && /[2-7]/u.test(match) },
+];
+
+/** Whether {@link scrubDiagnosticSecrets} would change `text`: a credential format, URL userinfo or a credential assignment. */
+export function holdsCredential(text: string): boolean {
+  return scrubDiagnosticSecrets(text) !== text;
+}
+
+/**
+ * The credential shapes of {@link scrubSecretsForLLM} and
+ * {@link scrubDiagnosticSecrets}: authorization and token contexts, JSON Web
+ * Tokens, private-key blocks and the real formats of {@link CREDENTIAL_FORMATS}.
+ * `broad` (text bound for a model) also counts a vendor prefix alone, as it
+ * always has: there a name masked by mistake costs nothing.
  */
 function scrubCredentialShapes(text: string, mode: "broad" | "precise"): string {
-  const tokenUnless = (keep: (match: string) => boolean) => (match: string): string => (mode === "precise" && keep(match) ? match : "[REDACTED:TOKEN]");
-  return text
+  let out = text
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, "[REDACTED:PRIVATE_KEY]")
     .replace(
       /(authorization\s*:\s*)digest\s+[A-Za-z][A-Za-z0-9_-]*=(?:\\"[^"]*\\"|"[^"]*"|[^,\s"]+)(?:,\s*[A-Za-z][A-Za-z0-9_-]*=(?:\\"[^"]*\\"|"[^"]*"|[^,\s"]+))*/gi,
       "$1[REDACTED:TOKEN]",
@@ -501,20 +527,21 @@ function scrubCredentialShapes(text: string, mode: "broad" | "precise"): string 
       /\bAKIA[0-9A-Z]{16}([\s:=,]+)[A-Za-z0-9/+=]{40}(?=$|[^A-Za-z0-9/+=])/gi,
       "[REDACTED:TOKEN]$1[REDACTED:TOKEN]",
     )
-    .replace(/\b(AWS_SECRET_ACCESS_KEY\s*[:=]\s*["']?)[A-Za-z0-9/+=]{40}(["']?)/gi, "$1[REDACTED:TOKEN]$2")
-    // Vendor-prefixed tokens observed in diagnostics probes (#1511).
+    .replace(/\b(AWS_SECRET_ACCESS_KEY\s*[:=]\s*["']?)[A-Za-z0-9/+=]{40}(["']?)/gi, "$1[REDACTED:TOKEN]$2");
+  for (const format of CREDENTIAL_FORMATS) {
+    out = out.replace(format.pattern, (match) => (format.holds === undefined || format.holds(match) ? "[REDACTED:TOKEN]" : match));
+  }
+  if (mode === "precise") return out;
+  return out
+    // Vendor-prefixed tokens observed in diagnostics probes (#1511), by prefix alone.
     .replace(/\bgh[opsru]_[A-Za-z0-9_]{20,}\b/gi, "[REDACTED:TOKEN]")
     .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/gi, "[REDACTED:TOKEN]")
-    // A prefix alone also starts ordinary names (`xapp-launcher`, `aizawa-…`, `test-server01`,
-    // `live-captions`, `sk-learn-utils`): precisely, each of these needs the token's own random run too.
-    // Slack tokens carry numeric workspace and user ids.
-    .replace(/\bxox[bp]-[A-Za-z0-9-]{10,}\b/gi, tokenUnless((match) => !hasDigitRun(match)))
-    .replace(/\bxapp-[A-Za-z0-9-]{10,}\b/gi, tokenUnless((match) => !hasDigitRun(match)))
-    // AWS key ids are base32: a run of 16 with no digit is a word.
-    .replace(/\bAKIA[0-9A-Z]{16}\b/gi, tokenUnless((match) => !/\d/u.test(match.slice(4))))
-    .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/gi, tokenUnless((match) => !hasKeyRun(match.slice(4))))
-    // Prefixed API keys: sk-/pk-/rk-/proj-/test-/live- followed by >=8 key chars (precisely: a random run among them).
-    .replace(/\b(?:sk|pk|rk|proj|test|live)-[A-Za-z0-9_-]{8,}\b/gi, tokenUnless((match) => !hasKeyRun(match.slice(match.indexOf("-") + 1))));
+    .replace(/\bxox[bp]-[A-Za-z0-9-]{10,}\b/gi, "[REDACTED:TOKEN]")
+    .replace(/\bxapp-[A-Za-z0-9-]{10,}\b/gi, "[REDACTED:TOKEN]")
+    .replace(/\bAKIA[0-9A-Z]{16}\b/gi, "[REDACTED:TOKEN]")
+    .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/gi, "[REDACTED:TOKEN]")
+    // Prefixed API keys: sk-/pk-/rk-/proj-/test-/live- followed by >=8 key chars.
+    .replace(/\b(?:sk|pk|rk|proj|test|live)-[A-Za-z0-9_-]{8,}\b/gi, "[REDACTED:TOKEN]");
 }
 
 /**

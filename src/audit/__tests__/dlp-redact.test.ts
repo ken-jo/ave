@@ -84,42 +84,55 @@ describe("redactForLLM", () => {
   });
 });
 
-describe("scrubDiagnosticSecrets — token shapes, not prefixes (design §18.8)", () => {
+describe("scrubDiagnosticSecrets — real credential formats, not prefixes (design §18.8)", () => {
   // Real token lengths and charsets, assembled here so no whole token sits in the source.
   const mixed = (length: number) => "A1b2C3d4E5f6G7h8".repeat(Math.ceil(length / 16)).slice(0, length);
   const TOKENS: ReadonlyArray<readonly [string, string]> = [
     ["GitHub classic", fixtureSecret("gh", "p_", mixed(36))],
     ["GitHub OAuth", fixtureSecret("gh", "o_", mixed(36))],
+    ["GitHub user-to-server", fixtureSecret("gh", "u_", mixed(36))],
+    ["GitHub server-to-server", fixtureSecret("gh", "s_", mixed(36))],
+    ["GitHub refresh", fixtureSecret("gh", "r_", mixed(36))],
     ["GitHub fine-grained", fixtureSecret("github", "_pat_", mixed(22), "_", mixed(59))],
+    ["GitLab personal", fixtureSecret("gl", "pat-", mixed(20))],
+    ["GitLab deploy", fixtureSecret("gl", "dt-", mixed(20))],
+    ["npm", fixtureSecret("np", "m_", mixed(36))],
     ["Slack bot", fixtureSecret("xo", "xb-", "123456789012-123456789012-", mixed(24))],
+    ["Slack user", fixtureSecret("xo", "xp-", "123456789012-123456789012-123456789012-", mixed(32))],
     ["Slack app", fixtureSecret("xa", "pp-", "1-A0123ABC-1234567890123-", mixed(32))],
     ["AWS key id", fixtureSecret("AK", "IA", "IOSFODNN7EXAMPL3")],
+    ["AWS temporary key id", fixtureSecret("AS", "IA", "IOSFODNN7EXAMPL3")],
     ["Google API key", fixtureSecret("AI", "za", mixed(35))],
     ["OpenAI", fixtureSecret("sk", "-", mixed(48))],
     ["OpenAI project", fixtureSecret("sk", "-proj-", mixed(64), "_", mixed(40))],
+    ["OpenAI signed", fixtureSecret("sk", "-", mixed(20), "T3Blbk", "FJ", mixed(20))],
     ["Anthropic", fixtureSecret("sk", "-ant-api03-", mixed(93), "AA")],
+    ["Stripe secret", fixtureSecret("sk", "_live_", mixed(24))],
+    ["Stripe restricted", fixtureSecret("rk", "_test_", mixed(24))],
+    ["Azure DevOps", fixtureSecret("abcdefgh234567", "abcdefgh234567", "abcdefgh234567", "abcdefgh23")],
   ];
 
-  it.each(TOKENS)("masks a %s token in a host, a path, an id and a URL", (_kind, token) => {
+  it.each(TOKENS)("masks a %s token in a host, a path, an id, a URL and an ssh account", (_kind, token) => {
     for (const text of [
+      token,
       `${token}.example.com`,
-      `${token.toLowerCase()}.example.com`,
       `/srv/markets/${token}/plugins`,
       `C:\\work\\${token}\\market`,
       `market-${token}`,
       `https://example.com/acme/${token}/market.git`,
-      `ssh://git@${token.toLowerCase()}.example/acme/market`,
+      `ssh://${token}@git.example/acme/market`,
     ]) {
       const scrubbed = scrubDiagnosticSecrets(text);
       expect(scrubbed, text).not.toContain(token);
-      expect(scrubbed.toLowerCase(), text).not.toContain(token.toLowerCase());
       expect(scrubbed).toContain("[REDACTED:");
     }
   });
 
-  it("masks a JSON Web Token in a path and a URL", () => {
+  it("masks a JSON Web Token in a path and a URL, and a private key block", () => {
     const jwt = fixtureSecret("eyJ", "hbGciOiJIUzI1NiJ9", ".", "eyJzdWIiOiIxMjM0In0", ".", mixed(43));
     for (const text of [`/srv/${jwt}/x`, `https://example.com/cb?state=${jwt}`]) expect(scrubDiagnosticSecrets(text)).not.toContain(jwt);
+    const pem = fixtureSecret("-----BEGIN ", "PRIVATE KEY-----\n", mixed(64), "\n-----END ", "PRIVATE KEY-----");
+    expect(scrubDiagnosticSecrets(`key file:\n${pem}\nend`)).toBe("key file:\n[REDACTED:PRIVATE_KEY]\nend");
   });
 
   it.each([
@@ -131,7 +144,7 @@ describe("scrubDiagnosticSecrets — token shapes, not prefixes (design §18.8)"
     "aizawa-shop-production-europe-west1.example",
     "akiaprojectserverab.example",
     "xapp-launcher.example.com",
-    // Package names and source ids.
+    // Package names and source ids, dated and numbered ones too.
     "live-captions",
     "sk-learn-utils",
     "test-runner",
@@ -139,7 +152,13 @@ describe("scrubDiagnosticSecrets — token shapes, not prefixes (design §18.8)"
     "rk-deploy-helper",
     "proj-template-react",
     "test-marketplace",
+    "test-marketplace2026",
+    "test-integration123",
+    "live-notifications2026",
     "live-feed-2024",
+    "npm-audit-helper",
+    "glpat-rotation-docs",
+    "sk-proj-tools",
     // Paths and addresses.
     "/Users/example/test-fixtures01/market",
     "C:\\work\\live-dashboard-2024\\plugins",

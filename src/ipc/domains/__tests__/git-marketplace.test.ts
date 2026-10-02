@@ -598,6 +598,115 @@ describe("git marketplace IPC boundary", () => {
         }
       });
 
+      it("names a source and a package whose names only look like a credential back to main unchanged: list, disable, catalog, plan", async () => {
+        const root = mkdtempSync(join(tmpdir(), "ave-ipc-roundtrip-"));
+        const name = "test-marketplace2026";
+        const volume = new FakeVolume("linux")
+          .file("/m/marketplace.2.json", JSON.stringify({ schemaVersion: 2, name, displayName: "Test marketplace", packages: [{ kind: "skill", name, path: `skills/${name}` }] }))
+          .file(`/m/skills/${name}/ave-package.json`, JSON.stringify({ schemaVersion: 2, kind: "skill", name, version: "1.0.0", minAppVersion: "0.12.0", payload: { entry: "SKILL.md" } }))
+          .file(`/m/skills/${name}/SKILL.md`, `---\nname: ${name}\ndescription: d\n---\nBody.\n`);
+        const harness = await folderService({ root, folders: { fs: volume, platform: "linux", limits: TEST_FOLDER_LIMITS } });
+        try {
+          const real = harness.service;
+          await setup({
+            previewSource: vi.fn((request: never) => real.previewSource(request)),
+            addSource: vi.fn((request: never) => real.addSource(request)),
+            listSources: vi.fn(() => real.listSources()),
+            setEnabled: vi.fn((id: string, enabled: boolean) => real.setEnabled(id, enabled)),
+            catalog: vi.fn((query: never) => real.catalog(query)),
+            planInstall: vi.fn((request: never) => real.planInstall(request)),
+          });
+          const preview = (await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" })) as { ok: true; value: { previewId: string } };
+          expect(await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: preview.value.previewId, id: name })).toMatchObject({ ok: true, value: { id: name } });
+          // Each request names what the renderer was handed, exactly as a renderer would.
+          const listed = (await invokeFileIpcHandler(handlers, channels.sourcesList)) as { ok: true; value: Array<{ id: string }> };
+          const id = listed.value.find((source) => source.id.startsWith("test-"))!.id;
+          expect(id).toBe(name);
+          expect(await invokeFileIpcHandler(handlers, channels.sourcesSetEnabled, id, false)).toMatchObject({ ok: true });
+          expect(await invokeFileIpcHandler(handlers, channels.sourcesSetEnabled, id, true)).toMatchObject({ ok: true });
+          const catalog = (await invokeFileIpcHandler(handlers, channels.catalogList, { sourceId: id })) as { ok: true; value: { entries: Array<{ key: { sourceId: string; kind: string; name: string } }> } };
+          const [entry] = catalog.value.entries;
+          expect(entry?.key).toEqual({ sourceId: name, kind: "skill", name });
+          expect(await invokeFileIpcHandler(handlers, channels.installPlan, entry!.key)).toMatchObject({ ok: true, value: { planId: expect.any(String) } });
+        } finally {
+          harness.service.close();
+          rmSync(root, { recursive: true, force: true });
+        }
+      });
+
+      describe("an identifier with a credential's shape is refused where it enters, with its reason in both languages", () => {
+        // Assembled here: one fits a source id and a package name, one an MCP server's key.
+        const NAME_TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
+        const KEY_TOKEN = `gh${"p_"}${"A1b2C3d4".repeat(5).slice(0, 36)}`;
+        const refusal = async (volume: FakeVolume, act: (harness: Awaited<ReturnType<typeof folderService>>) => Promise<unknown>) => {
+          const root = mkdtempSync(join(tmpdir(), "ave-ipc-ingress-"));
+          const harness = await folderService({ root, folders: { fs: volume, platform: "linux", limits: TEST_FOLDER_LIMITS } });
+          try {
+            return await act(harness);
+          } finally {
+            harness.service.close();
+            rmSync(root, { recursive: true, force: true });
+          }
+        };
+        const noToken = (answer: unknown) => {
+          const text = JSON.stringify(answer);
+          expect(text).not.toContain(NAME_TOKEN);
+          expect(text).not.toContain(KEY_TOKEN);
+        };
+
+        it("refuses a source id", async () => {
+          const answer = await refusal(new FakeVolume("linux").file("/m/SKILL.md", "---\nname: note\ndescription: d\n---\n"), async (harness) => {
+            await setup({
+              previewSource: vi.fn((request: never) => harness.service.previewSource(request)),
+              addSource: vi.fn((request: never) => harness.service.addSource(request)),
+            });
+            const preview = (await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" })) as { ok: true; value: { previewId: string } };
+            return invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: preview.value.previewId, id: NAME_TOKEN });
+          });
+          expect(answer).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID", detail: { reason: "holds-credential" } });
+          noToken(answer);
+          expect(sentences(answer)).toEqual({
+            en: "This id looks like a password or token, so it cannot be used. Choose another id.",
+            ko: "이 ID는 비밀번호나 토큰처럼 보여 쓸 수 없습니다. 다른 ID를 고르세요.",
+          });
+        });
+
+        it.each([
+          ["a package name", new FakeVolume("linux").file("/m/SKILL.md", `---\nname: ${NAME_TOKEN}\ndescription: d\n---\n`), "name-holds-credential", {
+            en: "This package's name looks like a password or token, so Ave does not offer it. Ask the package's author to rename it.",
+            ko: "이 패키지의 이름이 비밀번호나 토큰처럼 보여 Ave가 제공하지 않습니다. 패키지 작성자에게 이름을 바꿔 달라고 하세요.",
+          }],
+          ["a package version", new FakeVolume("linux").file("/m/SKILL.md", `---\nname: note\nversion: 1.0.0-${NAME_TOKEN}\ndescription: d\n---\n`), "version-holds-credential", {
+            en: "This package's version looks like a password or token, so Ave does not offer it. Ask the package's author to change it.",
+            ko: "이 패키지의 버전이 비밀번호나 토큰처럼 보여 Ave가 제공하지 않습니다. 패키지 작성자에게 버전을 바꿔 달라고 하세요.",
+          }],
+          ["an MCP server's name", new FakeVolume("linux")
+            .file("/m/plugin.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer", version: "1.0.0", description: "Writes" }))
+            .file("/m/mcp.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: { [KEY_TOKEN]: { type: "stdio", command: "./server/editor", args: [] } } }))
+            .file("/m/server/editor", "#!/bin/sh\n"), "component-holds-credential", {
+            en: "A skill, agent, prompt, routine or MCP server in this package has a name that looks like a password or token, so Ave does not offer it. Ask the package's author to rename it.",
+            ko: "이 패키지에 든 스킬, 에이전트, 프롬프트, 루틴 또는 MCP 서버의 이름이 비밀번호나 토큰처럼 보여 Ave가 제공하지 않습니다. 패키지 작성자에게 이름을 바꿔 달라고 하세요.",
+          }],
+        ])("refuses a direct folder package by %s", async (_label, volume, reason, expected) => {
+          const answer = await refusal(volume, async (harness) => {
+            await setup({ previewSource: vi.fn((request: never) => harness.service.previewSource(request)) });
+            return invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" });
+          });
+          expect(answer).toMatchObject({ ok: false, code: "SOURCE_INDEX_INVALID", detail: { reason } });
+          noToken(answer);
+          expect(sentences(answer)).toEqual(expected);
+        });
+
+        it("refuses a pasted server.json whose name ends in one", async () => {
+          const answer = await refusal(new FakeVolume("linux"), async (harness) => {
+            await setup({ previewDirectMcp: vi.fn((request: never) => harness.service.previewDirectMcp(request)) });
+            return invokeFileIpcHandler(handlers, channels.directPreview, { serverJson: JSON.stringify({ name: `io.github.acme/${NAME_TOKEN}`, version: "1.0.0" }) });
+          });
+          expect(answer).toMatchObject({ ok: false, code: "SOURCE_INDEX_INVALID", detail: { reason: "name-holds-credential" } });
+          noToken(answer);
+        });
+      });
+
       it("answers a folder preview whose path holds a token with the confirmation, the path masked in it and in both sentences", async () => {
         const root = mkdtempSync(join(tmpdir(), "ave-ipc-folder-"));
         const harness = await folderService({ root, folders: { fs: new FakeVolume("win32"), platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });

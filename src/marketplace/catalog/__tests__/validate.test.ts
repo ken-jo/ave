@@ -6,6 +6,7 @@ import {
   validateRevocationsText,
 } from "../validate.js";
 import { parseVersionRange, rangeIncludes } from "../version-range.js";
+import { deriveAgentPluginComponents } from "../../content/agent-plugin-components.js";
 
 const COMMIT = "a".repeat(40);
 const SHA = "b".repeat(64);
@@ -334,6 +335,54 @@ describe("validateIndexText", () => {
     if (!result.ok) return;
     expect(result.value.index.packages.map((entry) => entry.name)).toEqual(["valid-package"]);
     expect(result.value.diagnostics).toHaveLength(1);
+  });
+});
+
+describe("identifiers with a credential's shape (§18.8)", () => {
+  const context = { sourceId: "acme", official: false };
+  // Assembled here so no whole token sits in the source: one fits a package name, one an MCP server's key.
+  const NAME_TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
+  const KEY_TOKEN = `gh${"p_"}${"A1b2C3d4".repeat(5).slice(0, 36)}`;
+  const components = (server: string) => deriveAgentPluginComponents([
+    { path: "plugin.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer", version: "1.0.0", description: "Writes" })) },
+    { path: "mcp.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: { [server]: { type: "stdio", command: "./server/editor", args: [] } } })) },
+    { path: "server/editor", data: Buffer.from("#!/bin/sh\n") },
+  ]);
+
+  it.each([
+    ["a name", { kind: "skill", name: NAME_TOKEN, path: "skills/a" }, "packages[0]", "its name looks like a password or token"],
+    ["a version", { kind: "skill", name: "notes", path: "skills/a", latest: `1.0.0-${NAME_TOKEN}`, versions: [version(`1.0.0-${NAME_TOKEN}`)] }, "skill/notes", "a version looks like a password or token"],
+    ["an MCP server's name", { kind: "agent-plugin", name: "writer", path: "agent-plugins/writer", versions: [version("1.0.0", { components: components(KEY_TOKEN) })] }, "agent-plugin/writer", "a component name looks like a password or token"],
+  ])("drops an index entry whose %s has one, named without it, and keeps the rest", (_label, bad, subject, message) => {
+    const result = validateIndexText(index([bad, { kind: "skill", name: "good-skill", path: "skills/good" }]), context);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.index.packages.map((entry) => entry.name)).toEqual(["good-skill"]);
+    expect(result.value.diagnostics).toEqual([{ subject, message }]);
+  });
+
+  it("names an entry by its position when its name has one, whatever else is wrong with it", () => {
+    const result = validateIndexText(index([{ kind: "skill", name: NAME_TOKEN, path: "skills/a", unknown: true }]), context);
+    expect(result.ok && result.value.diagnostics.map((item) => item.subject)).toEqual(["packages[0]"]);
+  });
+
+  it.each([
+    ["a name", descriptor("skill", { name: NAME_TOKEN }), "name-holds-credential"],
+    ["a version", descriptor("skill", { version: `1.0.0-${NAME_TOKEN}` }), "version-holds-credential"],
+    ["an MCP server's name", descriptor("agent-plugin", { payload: { manifest: "plugin.json", components: components(KEY_TOKEN) } }), "component-holds-credential"],
+  ])("refuses a descriptor whose %s has one, with the reason", (_label, value, credential) => {
+    expect(checkDescriptor(value)).toMatchObject({ ok: false, credential });
+  });
+
+  it("keeps identifiers that only look like a credential's prefix", () => {
+    const alike = ["test-marketplace2026", "live-notifications2026", "sk-proj-tools", "npm-audit-helper", "glpat-rotation-docs"];
+    const result = validateIndexText(index([
+      ...alike.map((name) => ({ kind: "skill", name, path: `skills/${name}` })),
+      { kind: "agent-plugin", name: "writer", path: "agent-plugins/writer", versions: [version("1.0.0-test-marketplace2026", { components: components("test_marketplace2026") })] },
+    ]), context);
+    expect(result).toMatchObject({ ok: true, value: { diagnostics: [] } });
+    for (const name of alike) expect(checkDescriptor(descriptor("skill", { name })).ok, name).toBe(true);
+    expect(checkDescriptor(descriptor("agent-plugin", { version: "1.0.0-test-marketplace2026", payload: { manifest: "plugin.json", components: components("test_marketplace2026") } })).ok).toBe(true);
   });
 });
 

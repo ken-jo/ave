@@ -24,9 +24,11 @@ import revocationsSchema from "../../../schemas/marketplace/revocations.schema.j
 import { RESERVED_ENV_NAMES, RESERVED_HEADERS } from "../../mcp/safe-names.js";
 import { resolveAddFormats, resolveAjv } from "../../plugins/config-schema.js";
 import { ALERT_RESERVED_PACKAGE_ID } from "../../shared/alerts-types.js";
+import { holdsCredential } from "../../shared/dlp.js";
 import { compareSemver } from "../../shared/semver-compare.js";
 import { parseStrictJson } from "./strict-json.js";
 import type {
+  AgentPluginComponents,
   IndexPackage,
   MarketplaceIndex,
   PackageDescriptor,
@@ -42,7 +44,43 @@ export interface CatalogDiagnostic {
   message: string;
 }
 
-export type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
+/**
+ * A failure; `credential` is set when the reason is an identifier with a
+ * credential's shape (§18.8), the detail reason the refusal carries.
+ */
+export type Validation<T> = { ok: true; value: T } | { ok: false; error: string; credential?: CredentialReason };
+
+/** The identifier of a package that has a credential's shape (§18.8). */
+export type CredentialReason = "name-holds-credential" | "version-holds-credential" | "component-holds-credential";
+
+/** Every name the renderer can name a component of an agent plugin by. */
+function componentNames(components: AgentPluginComponents | undefined): string[] {
+  if (!components) return [];
+  return [
+    ...components.skills.map((skill) => skill.name),
+    ...Object.keys(components.mcpServers),
+    ...components.prompts.map((prompt) => prompt.name),
+    ...components.agents.map((agent) => agent.name),
+    ...components.routineTemplates.map((routine) => routine.id),
+  ];
+}
+
+/**
+ * The first identifier of a package that has a credential's shape, as the
+ * one detector the scrubber uses (§18.8). The renderer gets every string
+ * from main scrubbed and names a package, a version or a component back by
+ * it, so an identifier the scrubber would change could never be named
+ * again: it is refused here, where it enters, and egress scrubbing leaves
+ * every identifier that passed unchanged.
+ */
+function credentialIn(name: string, versions: readonly string[], components: ReadonlyArray<AgentPluginComponents | undefined>): { reason: CredentialReason; message: string } | null {
+  if (holdsCredential(name)) return { reason: "name-holds-credential", message: "its name looks like a password or token" };
+  if (versions.some(holdsCredential)) return { reason: "version-holds-credential", message: "a version looks like a password or token" };
+  if (components.some((item) => componentNames(item).some(holdsCredential))) {
+    return { reason: "component-holds-credential", message: "a component name looks like a password or token" };
+  }
+  return null;
+}
 
 const INDEX_ID = "https://sdk.former-site.invalid/schemas/marketplace/index.2.schema.json";
 const PACKAGE_ID = "https://sdk.former-site.invalid/schemas/marketplace/package.2.schema.json";
@@ -295,13 +333,25 @@ export function validateIndexText(text: string, context: IndexContext): Validati
   const claim = (counts: Map<string, number>, key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
   root.packages.forEach((raw, position) => {
     const entry = raw as Partial<IndexPackage>;
-    const subject = typeof entry.kind === "string" && typeof entry.name === "string" ? `${entry.kind}/${entry.name}` : `packages[${position}]`;
+    // A name with a credential's shape is named by its position, never by itself.
+    const named = typeof entry.kind === "string" && typeof entry.name === "string" && !holdsCredential(entry.name);
+    const subject = named ? `${entry.kind}/${entry.name}` : `packages[${position}]`;
     if (typeof entry.kind === "string" && typeof entry.name === "string") claim(byName, `${entry.kind}/${entry.name}`);
     if (!indexPackage(raw)) {
       diagnostics.push({ subject, message: describeErrors(indexPackage.errors) });
       return;
     }
-    const rule = indexPackageRules(raw as IndexPackage);
+    const listed = raw as IndexPackage;
+    const credential = credentialIn(
+      listed.name,
+      [...(listed.latest !== undefined ? [listed.latest] : []), ...(listed.versions ?? []).map((version) => version.version)],
+      (listed.versions ?? []).map((version) => version.components),
+    );
+    if (credential) {
+      diagnostics.push({ subject, message: credential.message });
+      return;
+    }
+    const rule = indexPackageRules(listed);
     if (rule) {
       diagnostics.push({ subject, message: rule });
       return;
@@ -351,6 +401,8 @@ function validateDescriptorValue(document: unknown, context: DescriptorContext, 
       error: `${file} declares ${value.kind}/${value.name} but the index lists ${context.expected.kind}/${context.expected.name}`,
     };
   }
+  const credential = credentialIn(value.name, [value.version], value.kind === "agent-plugin" ? [(value.payload as { components?: AgentPluginComponents }).components] : []);
+  if (credential) return { ok: false, error: `${file}: ${credential.message}`, credential: credential.reason };
   const reserved = reservedPluginName(value.kind, value.name);
   if (reserved) return { ok: false, error: `${file}: ${reserved}` };
   if (value.kind === "plugin") {

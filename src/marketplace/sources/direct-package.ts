@@ -27,8 +27,8 @@ import {
 } from "../../plugins/process-entry.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { isPackageName, type PackageDescriptor } from "../catalog/types.js";
-import { validateDescriptorText, validateSynthesizedDescriptor } from "../catalog/validate.js";
-import type { MarketplaceErrorCode } from "../errors.js";
+import { validateDescriptorText, validateSynthesizedDescriptor, type CredentialReason } from "../catalog/validate.js";
+import type { MarketplaceErrorCode, MarketplaceErrorDetail } from "../errors.js";
 import { assertRepoPath } from "../git/repo.js";
 import type { SourceTree } from "./source-tree.js";
 import { manifestAuthority } from "../resolve/manifest-rules.js";
@@ -60,7 +60,7 @@ interface DirectPackage {
 
 export type DirectRead =
   | { ok: true; found: DirectPackage }
-  | { ok: false; code: MarketplaceErrorCode; error: string };
+  | { ok: false; code: MarketplaceErrorCode; error: string; detail?: MarketplaceErrorDetail };
 
 export interface DirectReadInput {
   /** The source's files at the revision being read. */
@@ -237,6 +237,16 @@ function fromServerJson(source: string): Synthesis {
   };
 }
 
+/** A descriptor the catalog rules refuse; an identifier with a credential's shape keeps its reason (§18.8). */
+function refused(checked: { error: string; credential?: CredentialReason }): DirectRead {
+  return {
+    ok: false,
+    code: "SOURCE_INDEX_INVALID",
+    error: checked.error,
+    ...(checked.credential ? { detail: { reason: checked.credential } as MarketplaceErrorDetail } : {}),
+  };
+}
+
 /**
  * Read the direct package at `path` and `commit`. `null` when none of the
  * files is there (SOURCE_NOT_A_MARKETPLACE for the caller); a failure names
@@ -254,7 +264,7 @@ export async function readDirectPackage(input: DirectReadInput): Promise<DirectR
       const checked = validateDescriptorText(source, { direct: true });
       return checked.ok
         ? { ok: true, found: { descriptor: checked.value, detectedFrom: file, versionSynthesized: false } }
-        : { ok: false, code: "SOURCE_INDEX_INVALID", error: checked.error };
+        : refused(checked);
     }
     const synthesized: Synthesis = file === "plugin.json"
       ? await fromPluginManifest(source, input)
@@ -267,7 +277,7 @@ export async function readDirectPackage(input: DirectReadInput): Promise<DirectR
     const checked = validateSynthesizedDescriptor(synthesized.descriptor, file);
     return checked.ok
       ? { ok: true, found: { descriptor: checked.value, detectedFrom: file, versionSynthesized: synthesized.versionSynthesized } }
-      : { ok: false, code: "SOURCE_INDEX_INVALID", error: checked.error };
+      : refused(checked);
   }
   return null;
 }

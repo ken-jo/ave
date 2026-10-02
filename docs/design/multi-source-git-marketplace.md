@@ -2071,17 +2071,25 @@ wins:
   declared types, and drops any other while keeping code and message.
   `message` is main's English text, shown only behind *Copy details*.
 - Main scrubs every string it hands the renderer (§18.8): each answer's
-  `value` at any depth, each failure's `message` and `detail`, each
+  `value` at any depth, object keys included (an MCP server's name keys
+  `components.mcpServers`), each failure's `message` and `detail`, each
   broadcast (`sync-progress`, `install-progress`, `update-status`,
-  `updates-available`, the bootstrap status) and each held answer (the deep
-  link, the boot-install notice), with the one scrubber
+  `updates-available`, the bootstrap status, the git runtime's progress) and
+  each held answer (the deep link, the boot-install notice), and the git
+  runtime's `status` and `install` answers, with the one scrubber
   (`scrubMarketplaceStrings` over `scrubDiagnosticSecrets`). The marketplace's
   log lines pass it too (`createMarketplaceLogger`). The renderer never
-  scrubs. What it sends back is what main can check (`previewId`, `planId`,
-  a source id, a package key, a commit, a component's name and digest): a
-  value that held a token's shape comes back masked, matches nothing, and is
-  refused, never taken for another. A deep link's `add` address that held
-  one prefills the Add dialog masked, for the user to correct.
+  scrubs an answer or a detail field; it scrubs again only main's `message`
+  it shows or copies behind *Copy details*. What it sends back is what main
+  can check (`previewId`, `planId`, a source id, a package key, a version, a
+  commit, a component's name and digest). Each of those identifiers is
+  refused where it enters when the same detector flags it (§18.8), so the
+  scrubber leaves every identifier main accepted unchanged and the renderer
+  names it back as it was handed. A value that still came back masked (an
+  id stored before that rule) matches nothing and is refused, never taken
+  for another. A deep link's `add` address that held a token's shape
+  prefills the Add dialog masked, for the user to correct; an `install` or
+  `uninstall` link whose package or source has one is not read as a link.
 - `sources:preview` takes `{ input; ref?; subdir?; auth: "none" | "token" |
   "ssh"; token?; acknowledge? }`. It answers a marketplace preview, a
   direct-package preview (each with `badges`), or `{ type: "confirm";
@@ -2212,14 +2220,14 @@ subject in both catalogs.
 | `SOURCE_POLICY_BLOCKED` | managed policy allow/block, `requireHttps`, `blockPrivateNetworks`, `allowLocalSources`, `allowDirectInstall`, or an unreadable policy for a non-official target | `blocked-by-pattern` (target, pattern, policyPath), `not-in-allow-list` (target, policyPath), `https-required` (target, policyPath), `private-network-blocked` (target, address, policyPath), `local-sources-blocked` (target, policyPath), `direct-install-blocked` (target, policyPath), `policy-invalid` (error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.httpsRequired`, `.privateNetworkBlocked`, `.localSourcesBlocked`, `.directInstallBlocked`, `.policyInvalid` |
 | `SOURCE_CONFIRMATION_REQUIRED` | a target needs a confirmation the source does not hold (§7.4): at a sync, plan or install, or a download that no source names | the warning: `unencrypted` (host), `token-unencrypted` (host), `internal-network` (host, address), `this-computer` (host, address), `internal-downloads` (source, host), `network-folder` (server, path: a folder on another computer, at a read of a folder source that does not hold it) | `.confirmationRequired`; with a reason, `gitMarketplace.warning.<warning>` (the confirmation's own question; `internalNetwork.proxyRange` for a `198.18.0.0/15` address; `networkFolder.unknownServer` when the drive's mapping names no server and `networkFolder.automount` on macOS and Linux) |
 | `SOURCE_NAME_RESERVED` | reserved id | — | `.nameReserved` |
-| `SOURCE_ID_INVALID` | id is not 2–63 lowercase letters, digits or `-`, or names no source | — | `.idInvalid` |
+| `SOURCE_ID_INVALID` | id is not 2–63 lowercase letters, digits or `-`, or names no source; or the id being added has a credential's shape (§18.8) | `holds-credential` | `.idInvalid`, `.idInvalid.holdsCredential` |
 | `SOURCE_ID_TAKEN` | id or repository already added; a folder that is a source, or contains or lies inside one (§7.7) | a repository or a folder: `repository-already-added` (url, existingId) — any spelling of its address, `url` the one being added, normalized; `folder-already-added` (path, existingId), `folder-inside-source` (path, existingId, existingPath), `folder-contains-source` (path, existingId, existingPath) — by path or through an alias. A taken id alone has none | `.idTaken` (the id: choose another); `.idTaken.repositoryAlreadyAdded`, `.folderAlreadyAdded`, `.folderInsideSource`, `.folderContainsSource`, which say to use or remove the other source, never to choose another id |
 | `SOURCE_AUTH_REQUIRED` | 401/403, ssh denied; a "repository not found" after Ave offered the stored token | `token` (host), `token-no-access` (host: the host answered "repository not found" to the stored token, which may lack access), `token-unencrypted` (host: the host wants sign-in over plain http and the source does not hold `token-unencrypted`, so no credential was offered), `ssh` (host) — from git's message; a download's refusal carries none, since its host need not be the token's | `.authRequired`, `.authRequired.token`, `.authRequired.tokenNoAccess`, `.authRequired.ssh`, each with the variants below; `.authRequired.tokenUnencrypted` with `.entry` and `.setToken` |
 | `SOURCE_SSH_HOST_UNKNOWN` | host key not in known_hosts, or different from it | `unknown` (host, port), `changed` (host, port) — `changed` when ssh prints "remote host identification has changed"; the sentence carries the `ssh-keyscan` or `ssh-keygen -R` command, which *Copy command* copies | `.sshHostUnknown`, `.sshHostUnknown.unknown`, `.sshHostUnknown.changed` |
 | `SOURCE_REF_NOT_FOUND` | branch or tag missing | `missing` (ref, repository, available) — after the fetch fails, `ls-remote` lists up to 10 branches, then tags | `.refNotFound`, `.refNotFound.missing` |
 | `SOURCE_UNREACHABLE` | network, DNS, timeout, a host that reports no repository | `offline`, `dns`, `refused`, `timeout`, `http-status` (status), `tls`, `proxy` (proxy), `not-found` and `not-found-ssh` (the host answered "repository not found" without a token from Ave, which hosts also answer for a private repository, so neither is claimed) — each with host but `offline`; from git's message, the gate's resolver error, the run's own timeout, an unusable PAC entry, or a download's status | `.unreachable`, `.unreachable.<reason>` |
 | `SOURCE_NOT_A_MARKETPLACE` | nothing recognizable | — | `.notAMarketplace` and its variants |
-| `SOURCE_INDEX_INVALID` | index failed validation | — | `.indexInvalid` |
+| `SOURCE_INDEX_INVALID` | index failed validation; or a direct package (or a pasted `server.json`) has a name, version or component name with a credential's shape (§18.8). A marketplace's package with one is dropped with a diagnostic instead | `name-holds-credential`, `version-holds-credential`, `component-holds-credential` | `.indexInvalid`, `.indexInvalid.<reason>` |
 | `SOURCE_HISTORY_REWRITTEN` | non-descendant candidate | — | `.historyRewritten` |
 | `SOURCE_DISABLED` | install or update requested from a hidden source (it still syncs for packages bound to it, §7.3) | — | `.sourceDisabled` |
 | `SOURCE_LOCAL_DATA_DAMAGED` | the source's downloaded copy cannot be used (§2.1); a Repair that could not move it aside or write the kept pin back | pin lost: `state-missing`, `state-invalid`, `state-unreadable`; pin kept: `snapshot-invalid`, `snapshot-unreadable`, `repository-damaged`; Repair: `repair-failed` (a pin was kept), `repair-failed-unpinned` (none to keep), `repair-write-failed` (sourceId) — a message names files relative to the source and an fs error by its code, never a home path; a sentence names the source as its row does (the official source by its origin's name, another by its label, the id only when no listed source is known) | `.localDataDamaged`, `.localDataDamaged.<reason>` |
@@ -2264,16 +2272,42 @@ the host of an unknown or changed SSH host key came back masked, the sentence
 says part of the server name looked like a token and offers no command, since
 a command naming a masked host would not run.
 
-The diagnostic scrubber matches token shapes, not prefixes alone, so this
-costs real names nothing (text bound for a model, `scrubSecretsForLLM`, keeps
-its broad prefix rule, where a name masked by mistake costs nothing): a vendor prefix (`ghp_`, `github_pat_`, `xoxb-`, `xapp-`,
-`AKIA`, `AIza`, `sk-`, `pk-`, `rk-`, `proj-`, `test-`, `live-`) counts only
-with the token's own random run after it (a segment of 12 or more characters
-mixing letters and digits, a Slack token's numeric ids, an AWS id's digits),
-so `test-server01.corp`, `live-captions`, `sk-learn-utils` and
-`aizawa-shop-…` pass unchanged while each token format is masked inside a
-host, a path, an id or a URL. A JSON Web Token is matched as written; a
-lowercased one is no longer a credential.
+The diagnostic scrubber is a table of real credential formats, each with its
+issuer's prefix, alphabet and length: GitHub (`ghp_`, `gho_`, `ghu_`, `ghs_`,
+`ghr_` and 36 or more letters and digits; `github_pat_` with its 22- and
+59-character parts), GitLab (`glpat-` and its sibling prefixes, 20 or more
+characters), npm (`npm_` and 36), Slack (`xox?-` with its numeric ids,
+`xapp-`), AWS (`AKIA`/`ASIA` and 16 capitals or digits), Google (`AIza` and
+35), OpenAI (`sk-` and 48, `sk-proj-`/`sk-svcacct-`/`sk-admin-` and 40 or
+more, any `sk-` key carrying the `T3BlbkFJ` marker), Anthropic
+(`sk-ant-api03-` and its siblings), Stripe (`sk_`, `pk_`, `rk_` with
+`live_`/`test_` and 24 or more), and an Azure DevOps token (52 characters of
+lowercase base32 mixing letters and `2`–`7`); plus a JSON Web Token as
+written, a PEM private-key block, URL userinfo and an `Authorization`,
+`Bearer` or `x-api-key` value. A bare word such as `test-`, `live-` or
+`proj-` is no credential format and masks nothing, so `test-marketplace2026`,
+`live-notifications2026`, `sk-proj-tools` and `glpat-rotation-docs` pass
+unchanged while each format is masked inside a host, a path, an id, a URL or
+an ssh account. Text bound for a model (`scrubSecretsForLLM`) keeps the
+older broad prefix rules, where a name masked by mistake costs nothing.
+
+The same detector (`holdsCredential`: the scrubber would change the text)
+guards every identifier the renderer names back, where it enters: a source id
+being added (`SOURCE_ID_INVALID` `holds-credential`) or listed by the policy
+(the policy is refused, §18.6); a package's name, version or component name
+(skill, MCP server, prompt, agent, routine) in an index entry or a descriptor,
+synthesized ones included. A marketplace drops that package with a diagnostic
+that names it by its position; a direct package or a pasted `server.json`
+fails with `SOURCE_INDEX_INVALID` and the reason. An `install` or `uninstall`
+deep link naming one is not read. Egress scrubbing stays universal, and for
+every identifier that passed this check it changes nothing, so a source and a
+package keep working through every request the renderer makes. A source id
+stored by an earlier build is still read; if the detector flags it, the
+renderer sees it masked and requests naming it are refused as a missing
+source. The detector does not see three things: a token lowercased (no
+longer a credential), a bare 40-hex GitHub token of the old format (the shape
+of a commit, which identifiers must keep), and an Azure DevOps token in its
+84-character format.
 
 A background sync's failure reaches the Sources view through `sources:list`:
 `SyncResult` carries the detail, the syncer stores it in
@@ -4160,6 +4194,7 @@ the slice that adds the code or reason.
 | `SOURCE_NOT_A_MARKETPLACE` · `nothing-found` | E | "No marketplace.2.json, no package folders and no single package at <location>." | an address being typed: "Check the address, the branch and, for a package inside a repository, the folder field."; a source the user added: the same, through *Remove source* and adding it again; official: *Refresh* later, then the marketplace's owner; organization: "Tell your administrator" | today's key, with the location |
 | · `other-app-plugin` | E | "This is a plugin written for another app (`.claude-plugin/` or `.codex-plugin/`)." | "Use *Import a plugin* in the plugin studio (`extensions-and-plugins.md` §2.4)." | "다른 앱용 플러그인입니다. 플러그인 스튜디오에서 가져오세요." |
 | `SOURCE_INDEX_INVALID` | E | "<source>'s index is invalid (<file>: <problem>); the last good version stays in use." | "Tell the marketplace's owner." *Copy details* | "마지막 정상 버전을 계속 씁니다." |
+| · `name-holds-credential`, `version-holds-credential`, `component-holds-credential` | E | "This package's <name / version> looks like a password or token, so Ave does not offer it." / "A skill, agent, prompt, routine or MCP server in this package has a name that looks like a password or token, so Ave does not offer it." | "Ask the package's author to <rename / change> it." | "이 패키지의 이름이 비밀번호나 토큰처럼 보여 Ave가 제공하지 않습니다." |
 | `SOURCE_HISTORY_REWRITTEN` | E | official, managed: "<source>'s history was rewritten; Ave keeps its last good version." custom, direct: "…Review the new history before using it." | custom, direct: *Review* | "기록이 다시 쓰였습니다." |
 | `SOURCE_DISABLED` | E | today's sentence | *Show source* | today's |
 | `SOURCE_LOCAL_DATA_DAMAGED` · `state-missing`, `state-invalid`, `state-unreadable` | W | "The downloaded copy of source <id> is damaged: <its record of the trusted version is missing, unreadable, or cannot be opened>." | "Repair downloads it again and trusts the version the source serves now, without checking it against the one you had." *Repair* on the row (every origin), in place of Refresh and the switch; for `state-unreadable`, fixing the folder's permissions keeps the check; *Copy details* | "복구하면 이전 버전과 대조하지 않은 채 지금 제공되는 버전을 신뢰합니다. 소스에서 복구를 누르세요." |
@@ -4168,6 +4203,7 @@ the slice that adds the code or reason.
 | · `repair-write-failed` | E | "Ave could not save the <source> source's record of the version it trusts, so the source was not downloaded again." | "Check the free disk space and that your account can write the Ave data folder, then choose Repair again." | "디스크 공간과 쓰기 권한을 확인한 뒤 복구를 다시 누르세요." |
 | `SOURCE_LIST_UNREADABLE` · `unreadable`, `invalid` | E | "Ave cannot read the list of sources you added, `marketplaces/sources.json` in the Ave data folder (<fsCode>, or not in the format Ave writes), so it changes no source until it is fixed." | "Fix the file or delete it, then restart Ave. Deleting it removes only the sources you added: the official and organization sources and your installed packages stay." *Copy details* for an invalid file | "직접 추가한 소스 목록(Ave 데이터 폴더의 marketplaces/sources.json)을 읽을 수 없습니다. 고치거나 지운 뒤 Ave를 다시 시작하세요. 지우면 직접 추가한 소스만 사라집니다." |
 | `SOURCE_NAME_RESERVED`, `SOURCE_ID_INVALID` | E | "<id> is reserved or not a valid id (2–63 lowercase letters, digits and `-`)." | "Choose another id." | "다른 ID를 고르세요." |
+| · `holds-credential` | E | "This id looks like a password or token, so it cannot be used." | "Choose another id." | "이 ID는 비밀번호나 토큰처럼 보여 쓸 수 없습니다." |
 | `SOURCE_ID_TAKEN` | E | "<id> is taken" | "Choose another id." | "다른 소스가 이미 쓰는 ID입니다." |
 | · `repository-already-added` | E | "<url> is already added as <id>" | "Use <id>, or remove it" (before adding the repository again); *Show <id>* (slice D2) | "<url>은(는) 이미 <id>(으)로 추가되어 있습니다." |
 | · `folder-already-added`, `folder-inside-source`, `folder-contains-source` | E | "<path> is already added as <id>" / "<path> lies inside <existing path>, which is already added as <id>" / "<path> contains <existing path>, which is already added as <id>" | "Use <id>, or remove it" (and add the folder you want, or one that does not contain it); *Show <id>* (slice D2) | "이미 <id>(으)로 추가된 폴더와 겹칩니다. <id>을(를) 쓰거나 지우세요." |

@@ -12,6 +12,7 @@ import { ipcMain, session } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { getMarketplaceLifetime } from "../../main/app-state.js";
 import { whileRunning } from "../../marketplace/app/background.js";
+import { scrubMarketplaceStrings } from "../../marketplace/errors.js";
 import { GitRuntimeService, gitRuntimeRoot } from "../../marketplace/git/runtime-service.js";
 import { NetworkGate } from "../../marketplace/net/network-gate.js";
 import { createPinnedFetch } from "../../marketplace/net/pinned-fetch.js";
@@ -32,7 +33,8 @@ type GitRuntimePort = Pick<GitRuntimeService, "status" | "install">;
 export function gitRuntimeProgressSender(deps: IpcDeps, shutdown: AbortSignal): (progress: GitRuntimeProgress) => void {
   return whileRunning(shutdown)((progress: GitRuntimeProgress) => {
     for (const window of deps.getAppWindows?.() ?? [deps.getMainWindow()]) {
-      if (window && !window.isDestroyed()) window.webContents.send(CHANNELS.gitRuntime.progress, progress);
+      // A failed step's message can quote a proxy or a download address: it crosses scrubbed, like every marketplace string (§18.8).
+      if (window && !window.isDestroyed()) window.webContents.send(CHANNELS.gitRuntime.progress, scrubMarketplaceStrings(progress));
     }
   });
 }
@@ -57,7 +59,8 @@ export function registerGitRuntimeHandlers(deps: IpcDeps, service: GitRuntimePor
       auditUnauthorized(deps.auditLogger, CHANNELS.gitRuntime.status, event);
       return UNAUTHORIZED_FRAME;
     }
-    return { ok: true, status: await service.status() };
+    // The status names executable paths and its last failure: scrubbed in main, as the marketplace's answers are (§18.8).
+    return { ok: true, status: scrubMarketplaceStrings(await service.status()) };
   });
 
   ipcMain.handle(CHANNELS.gitRuntime.install, async (event, payload: unknown) => {
@@ -66,6 +69,6 @@ export function registerGitRuntimeHandlers(deps: IpcDeps, service: GitRuntimePor
       return UNAUTHORIZED_FRAME;
     }
     if (!hasUserKeyboardIntentPayload(payload)) return USER_KEYBOARD_REQUIRED;
-    return { ok: true, status: await service.install() } satisfies GitRuntimeResult;
+    return { ok: true, status: scrubMarketplaceStrings(await service.install()) } satisfies GitRuntimeResult;
   });
 }

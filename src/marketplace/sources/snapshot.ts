@@ -90,6 +90,7 @@ class Rejection extends Error {
   constructor(
     readonly code: MarketplaceErrorCode,
     message: string,
+    readonly detail?: MarketplaceErrorDetail,
   ) {
     super(message);
   }
@@ -281,7 +282,7 @@ export class SnapshotBuilder {
     if (!read) {
       throw new Rejection("SOURCE_NOT_A_MARKETPLACE", `no ${DIRECT_FILES.join(", ")} at ${path || (this.folder ? "the folder" : "the repository root")}`);
     }
-    if (!read.ok) throw new Rejection(read.code, read.error);
+    if (!read.ok) throw new Rejection(read.code, read.error, read.detail);
     return [packageFromDescriptor(read.found.descriptor, path, this.versionCommit, await this.reader.revisionTime())];
   }
 
@@ -374,7 +375,7 @@ export class SnapshotBuilder {
         },
       };
     } catch (error) {
-      if (error instanceof Rejection) return { ok: false, code: error.code, message: error.message };
+      if (error instanceof Rejection) return { ok: false, code: error.code, message: error.message, ...(error.detail ? { detail: error.detail } : {}) };
       if (isMarketplaceError(error)) {
         // A blob fetch can still fail on the network, auth or a timeout; that
         // is the sync's result, not an exception past it. A folder's link or

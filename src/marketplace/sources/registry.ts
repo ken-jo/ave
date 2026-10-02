@@ -44,6 +44,7 @@ import {
   OFFICIAL_MARKETPLACE,
   SOURCE_ID_RE,
   isReservedSourceId,
+  isSourceId,
   isSourceLabel,
   isSourceRef,
   type OfficialMarketplace,
@@ -719,6 +720,9 @@ export class SourceRegistry {
   private checkNewId(id: string): void {
     if (!SOURCE_ID_RE.test(id)) {
       throw new MarketplaceError("SOURCE_ID_INVALID", `${id} is not a valid source id (2-63 lowercase letters, digits or -)`);
+    }
+    if (!isSourceId(id)) {
+      throw new MarketplaceError("SOURCE_ID_INVALID", "this source id looks like a password or token", { detail: { reason: "holds-credential" } });
     }
     if (isReservedSourceId(id)) {
       throw new MarketplaceError("SOURCE_NAME_RESERVED", `${id} is a reserved source id`);

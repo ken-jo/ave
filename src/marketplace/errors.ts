@@ -113,6 +113,23 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "outside-root": {},
     "folder-options": {},
   },
+  /**
+   * An id the user entered that has a credential's shape (§18.8): the
+   * renderer only ever sees it masked, so it could never be named again.
+   */
+  SOURCE_ID_INVALID: {
+    "holds-credential": {},
+  },
+  /**
+   * A package whose name, version or component name has a credential's
+   * shape (§18.8). A marketplace drops such a package with a diagnostic; a
+   * direct package, which is the whole source, fails with this reason.
+   */
+  SOURCE_INDEX_INVALID: {
+    "name-holds-credential": {},
+    "version-holds-credential": {},
+    "component-holds-credential": {},
+  },
   SOURCE_POLICY_BLOCKED: {
     "blocked-by-pattern": { target: "string", pattern: "string", policyPath: "string" },
     "not-in-allow-list": { target: "string", policyPath: "string" },
@@ -308,7 +325,7 @@ export function parseMarketplaceErrorDetail(code: string, value: unknown): Marke
 }
 
 /**
- * `value` with every string in it, at any depth, scrubbed of credentials by
+ * `value` with every string in it, keys included, at any depth, scrubbed of credentials by
  * the one diagnostic scrubber (`scrubDiagnosticSecrets`). Main calls it on
  * everything the marketplace hands the renderer (each request's answer, each
  * broadcast, each failure's detail) and on a detail before it is stored, so
@@ -318,7 +335,15 @@ export function scrubMarketplaceStrings<T>(value: T): T {
   if (typeof value === "string") return scrubDiagnosticSecrets(value) as T;
   if (Array.isArray(value)) return value.map((item: unknown) => scrubMarketplaceStrings(item)) as T;
   if (typeof value === "object" && value !== null && [Object.prototype, null].includes(Object.getPrototypeOf(value))) {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scrubMarketplaceStrings(item)])) as T;
+    // Keys are strings too (an MCP server's name keys its consent): two masked alike stay two entries.
+    const scrubbed: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      const masked = scrubDiagnosticSecrets(key);
+      let name = masked;
+      for (let n = 2; Object.hasOwn(scrubbed, name); n += 1) name = `${masked} (${n})`;
+      Object.defineProperty(scrubbed, name, { value: scrubMarketplaceStrings(item), enumerable: true, writable: true, configurable: true });
+    }
+    return scrubbed as T;
   }
   return value;
 }

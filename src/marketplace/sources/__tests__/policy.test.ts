@@ -404,6 +404,16 @@ describe("folder sources in the policy (§18.6)", () => {
     expect(folderPolicyBlock(result.policy, "D:\\shared\\tools")).toBeNull();
   });
 
+  it("refuses an additional source whose id has a credential's shape, and reads one that only looks alike (§18.8)", async () => {
+    // Assembled here so no whole token sits in the source.
+    const token = `glp${"at-"}${"abcd1234".repeat(3)}`;
+    const error = await rejected({ additional: [{ id: token, path: "/srv/team" }] }, "linux");
+    expect(error).toContain("additional[0].id: looks like a password or token");
+    expect(error).not.toContain(token);
+    const policy = await loaded({ additional: [{ id: "test-marketplace2026", path: "/srv/team" }] }, "linux");
+    expect(policy.additional).toMatchObject([{ id: "test-marketplace2026" }]);
+  });
+
   it("reads an additional folder with path and refuses what a folder cannot have", async () => {
     const policy = await loaded({ additional: [{ id: "team", path: "/srv/team/market", label: "Team" }] }, "linux");
     expect(policy.additional).toEqual([{ transport: "folder", id: "team", path: "/srv/team/market", label: "Team" }]);

@@ -34,6 +34,7 @@ import {
   OFFICIAL_MARKETPLACE,
   SOURCE_ID_RE,
   isReservedSourceId,
+  isSourceId,
   isSourceLabel,
   isSourceRef,
   type SourceAuth,
@@ -259,6 +260,8 @@ function parseSection(value: unknown, platform: NodeJS.Platform): MarketplacePol
     const at = `.additional[${index}]`;
     const entry = record(item, at, ADDITIONAL_KEYS);
     if (typeof entry.id !== "string" || !SOURCE_ID_RE.test(entry.id)) fail(`${at}.id`, "is not a source id");
+    // The tab names a source back by the id it was handed scrubbed (§18.8).
+    if (!isSourceId(entry.id)) fail(`${at}.id`, "looks like a password or token; choose another id");
     if (isReservedSourceId(entry.id)) fail(`${at}.id`, `${entry.id} is reserved`);
     if (additional.some((other) => other.id === entry.id)) fail(`${at}.id`, `${entry.id} is used twice`);
     if (entry.label !== undefined && !isSourceLabel(entry.label)) {
