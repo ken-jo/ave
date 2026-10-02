@@ -2127,8 +2127,12 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
   탭으로 시작하는 줄)까지. 따옴표는 어디에 있든 값을 끝내지 않습니다. 값을 여는 따옴표,
   더 긴 텍스트(JSON 메시지, 따옴표로 묶인 오류) 안에서 헤더를 감싼 따옴표, 값 안의
   따옴표(`O'Neil`, `Couldn't`) 모두 그렇습니다. 어떤 따옴표가 구분자인지 가릴 수 없고, 줄의
-  나머지를 가리는 비용은 표시뿐이지만 일찍 멈추면 비밀이 샙니다. 그리고 `Bearer` 값,
-  `x-api-key`·`x-auth-token` 값
+  나머지를 가리는 비용은 표시뿐이지만 일찍 멈추면 비밀이 샙니다. 값 안에 이미 있는 가림
+  표시도 믿지 않습니다(`[REDACTED:TOKEN] <비밀>`, 그 뒤의 접힌 줄). 값 전체가 표시 하나가
+  되므로, 이미 표시 하나인 값은 표시 하나로 남습니다. 헤더 이름은 글자·숫자가 아닌 문자 뒤의
+  `Authorization`·`Proxy-Authorization`(`x-authorization:`도 포함)이고, `:`나 `=`, JSON 키,
+  `--authorization` 플래그 형태입니다. 두 스크러버가 값 범위 함수 하나를 쓰는 같은 단계로
+  이를 적용합니다. 그리고 `Bearer` 값, `x-api-key`·`x-auth-token` 값
 - 키에 `token`, `secret`, `password`, `passwd`, `pwd`, `apikey`, `accesskey`, `privatekey`,
   `credential`, `bearer`, `authorization`이 들었거나 `auth`·`pat`이 온전한 조각인
   자격 증명 할당(`key=value`, `key: value`, JSON `"key": "value"`, `--key value`)의 값
@@ -2154,7 +2158,9 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
 예외입니다. 탐지기는 뜻이 아니라 모양을 읽고, 접두사 뒤의 문장이나 다이제스트 본문은 진짜
 토큰의 모양이기 때문입니다. 이 거부는 "왜 안 되지?" 하는 순간이 되지 않습니다. 접두사와 닮은
 발급자를 밝히고 무엇을 할지 알려 줍니다. main은 `reservedPrefixIn(text)`(텍스트에서 가장 먼저
-나오는 행, 둘이 같은 자리에서 시작하면 표에서 앞선 행)로 찾고, 세부 정보에 접두사와 발급자를
+나오는 행, 둘이 같은 자리에서 시작하면 표에서 앞선 행. 표는 다른 행의 접두사를 늘인 접두사의
+행을 언제나 먼저 두므로 `sk-ant-`와 `sk-proj-`가 `sk-`보다 앞서고, OpenAI 서명을 함께 담은
+키도 Anthropic 키로 밝힙니다)로 찾고, 세부 정보에 접두사와 발급자를
 담아 거부합니다. 소스 ID는 `SOURCE_ID_INVALID` `reserved-prefix`, 패키지의 이름·버전·구성
 요소 이름은 `SOURCE_INDEX_INVALID` `name-`·`version-`·`component-reserved-prefix`, 인덱스
 항목은 접두사를 밝힌 진단입니다. ID의 문장은 "“glpat-”로 시작하거나 “-” 뒤 부분이 그것으로
@@ -2178,8 +2184,8 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
 - 표에 없는 형식
 
 모델로 가는 텍스트(`scrubSecretsForLLM`)는 같은 표를 쓰고, 예전의 넓은 접두사 규칙을 그 위에
-그대로 둡니다. 거기서는 이름을 잘못 가려도 잃는 것이 없습니다. 그 Authorization 규칙도 알 수
-없는 방식의 값이나 방식 없는 값을 그 줄 끝까지 가립니다(`Custom <비밀>`).
+그대로 둡니다. 거기서는 이름을 잘못 가려도 잃는 것이 없습니다. Authorization 값은 진단과 같은
+단계로 가리므로 두 쪽이 같은 범위를 가립니다.
 
 **들어오는 곳에서의 적용.** 렌더러가 돌려보내는 모든 식별자를 들어오는 곳에서 검사합니다.
 추가하려는 소스 id(`SOURCE_ID_INVALID` `reserved-prefix` 또는 `holds-credential`)와 정책이 적은 소스 id(정책이

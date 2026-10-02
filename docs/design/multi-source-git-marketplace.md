@@ -2333,7 +2333,14 @@ other opaque secret) is masked only in these positions:
   a longer text (a JSON message, a quoted error) or stands inside it
   (`O'Neil`, `Couldn't`): no quote can be told from a delimiter, and
   masking the rest of a line costs only display while stopping early leaks
-  the secret. A `Bearer` value; an `x-api-key` or `x-auth-token` value;
+  the secret. A redaction marker already in the value is not trusted
+  (`[REDACTED:TOKEN] <secret>`, or a folded line after it): the whole value
+  becomes one marker, so a value that is one marker stays one marker. The
+  header names are `Authorization` and `Proxy-Authorization` after any
+  character but a letter or digit (`x-authorization:` too), with `:` or
+  `=`, as a JSON key, or as a `--authorization` flag. One pass, with one
+  value-span function, applies this in both scrubbers. A `Bearer` value; an
+  `x-api-key` or `x-auth-token` value;
 - the value of a credential assignment (`key=value`, `key: value`, JSON
   `"key": "value"`, `--key value`) whose key holds `token`, `secret`,
   `password`, `passwd`, `pwd`, `apikey`, `accesskey`, `privatekey`,
@@ -2363,7 +2370,10 @@ detector reads shape, not meaning, and a prose or digest body under a
 prefix has a real token's shape. The refusal is never a "why won't this
 work" moment: it names the prefix and the issuer it looks like, and says
 what to do. Main finds them with `reservedPrefixIn(text)` (the earliest
-row in `text`, the table's earlier row where two start together) and
+row in `text`, the table's earlier row where two start together; the table
+lists every row whose prefix extends another row's first, so `sk-ant-` and
+`sk-proj-` come before `sk-` and a key that also carries OpenAI's signature
+is still named an Anthropic key) and
 refuses with the prefix and the issuer in the detail: a source id with
 `SOURCE_ID_INVALID` `reserved-prefix`, a package's name, version or
 component name with `SOURCE_INDEX_INVALID` `name-`, `version-` or
@@ -2398,8 +2408,8 @@ so a boundary is required on the left.
 
 Text bound for a model (`scrubSecretsForLLM`) applies the same table and
 keeps its older broad prefix rules on top, where a name masked by mistake
-costs nothing. Its Authorization rule masks an unknown scheme's value, or a
-bare one, to the end of its line as well (`Custom <secret>`).
+costs nothing. Its Authorization values are masked by the same pass as
+diagnostics, so both mask the same span.
 
 **Where ingress applies it.** Every identifier the renderer names back is
 checked where it enters: a source id being added (`SOURCE_ID_INVALID`

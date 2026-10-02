@@ -13,7 +13,7 @@ import {
   redactHomePathsInText,
   scrubSecretsForLLM,
 } from "../dlp-filter.js";
-import { holdsCredential, reservedPrefixIn, scrubDiagnosticSecrets, scrubDiagnosticSecretsStrict, type CredentialIssuer } from "../../shared/dlp.js";
+import { CREDENTIAL_FORMAT_PREFIXES, holdsCredential, reservedPrefixIn, scrubDiagnosticSecrets, scrubDiagnosticSecretsStrict, type CredentialIssuer } from "../../shared/dlp.js";
 import { fixtureSecret } from "./secret-fixtures.js";
 import { breakDiagnosticScrubberOn, DIAGNOSTIC_KEPT, DIAGNOSTIC_SECRET_PROBES } from "../../shared/__tests__/fixtures/diagnostic-secret-probes.js";
 
@@ -128,6 +128,29 @@ describe("scrubDiagnosticSecrets — real credential formats, not prefixes (desi
     const [prefix, issuer] = RESERVED[kind]!;
     expect(token.startsWith(prefix)).toBe(true);
     for (const text of [token, `docs-${token}`, `1.0.0+${token}`]) expect(reservedPrefixIn(text), text).toEqual({ prefix, issuer });
+  });
+
+  it("lists every row whose prefix extends another row's before that row, across the whole table", () => {
+    const rows = CREDENTIAL_FORMAT_PREFIXES;
+    expect(rows.length).toBeGreaterThan(10);
+    for (let general = 0; general < rows.length; general++) {
+      for (let specific = general + 1; specific < rows.length; specific++) {
+        for (const short of rows[general]!) {
+          for (const long of rows[specific]!) {
+            expect(long !== short && long.startsWith(short), `${long} (row ${specific}) extends ${short} (row ${general}) but comes after it`).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
+  it("names the more specific issuer where a key also carries a general row's shape", () => {
+    // `sk-ant-api03-` with a 32-character body holding OpenAI's signature: both rows match at the same place.
+    const overlap = fixtureSecret("sk", "-ant-api03-", "a".repeat(12), "T3Blbk", "FJ", "b".repeat(12));
+    expect(reservedPrefixIn(overlap)).toEqual({ prefix: "sk-ant-", issuer: "anthropic" });
+    expect(reservedPrefixIn(`1.0.0-${overlap}`)).toEqual({ prefix: "sk-ant-", issuer: "anthropic" });
+    const project = fixtureSecret("sk", "-proj-", mixed(40), "T3Blbk", "FJ");
+    expect(reservedPrefixIn(project)).toEqual({ prefix: "sk-proj-", issuer: "openai" });
   });
 
   it("names the earliest prefix, the specific row's where two start together, and none where no format is", () => {
@@ -326,27 +349,19 @@ describe("scrubSecretsForLLM — credential-class SOT (#1499 E2 M1)", () => {
     expect(scrubSecretsForLLM("Bearer abcXYZ12345token")).not.toContain("abcXYZ12345token");
     expect(scrubSecretsForLLM("BEARER abcXYZ12345token")).toBe("Bearer [REDACTED:TOKEN]");
     expect(scrubSecretsForLLM("Authorization: Bearer abcXYZ12345token")).toBe("Authorization: [REDACTED:TOKEN]");
-    expect(scrubSecretsForLLM("Authorization: Bearer [REDACTED:TOKEN] status=200")).toBe(
-      "Authorization: Bearer [REDACTED:TOKEN] status=200",
-    );
+    // An Authorization value runs to its line's end whatever its scheme, and a marker in it is not trusted (§18.8).
+    expect(scrubSecretsForLLM("Authorization: Bearer [REDACTED:TOKEN] status=200")).toBe("Authorization: [REDACTED:TOKEN]");
     expect(scrubSecretsForLLM("x-api-key: myheaderSECRET99")).not.toContain("myheaderSECRET99");
     expect(scrubSecretsForLLM("Authorization: rawSecretHeader42")).not.toContain("rawSecretHeader42");
     const basicSecret = fixtureSecret("Basic ", "QWxhZGRpbjpvcGVuIHNlc2FtZQ==");
     expect(scrubSecretsForLLM(`Authorization: ${basicSecret}`)).toBe("Authorization: [REDACTED:TOKEN]");
-    const embedded = scrubSecretsForLLM(`{"level":30,"msg":"Authorization: ${basicSecret}","status":200}`);
-    expect(embedded).not.toContain(basicSecret);
-    expect(embedded).toContain("Authorization: [REDACTED:TOKEN]");
-    expect(embedded).toContain('"status":200');
+    expect(scrubSecretsForLLM(`{"level":30,"msg":"Authorization: ${basicSecret}","status":200}`)).toBe('{"level":30,"msg":"Authorization: [REDACTED:TOKEN]');
     const digest = scrubSecretsForLLM('Authorization: Digest username="user", response="secret-response-token" status=200');
-    expect(digest).not.toContain('username="user"');
-    expect(digest).not.toContain('response="secret-response-token"');
-    expect(digest).toBe("Authorization: [REDACTED:TOKEN] status=200");
+    expect(digest).toBe("Authorization: [REDACTED:TOKEN]");
     const embeddedDigest = scrubSecretsForLLM(
       '{"level":30,"msg":"Authorization: Digest username=\\"user\\", response=\\"secret-response-token\\"","status":200}',
     );
-    expect(embeddedDigest).not.toContain('response=\\"secret-response-token\\"');
-    expect(embeddedDigest).toContain("Authorization: [REDACTED:TOKEN]");
-    expect(embeddedDigest).toContain('","status":200');
+    expect(embeddedDigest).toBe('{"level":30,"msg":"Authorization: [REDACTED:TOKEN]');
     // A value with no known scheme may be a scheme of its own (`Custom <secret>`): the rest of the line goes (§18.8).
     expect(scrubSecretsForLLM("Authorization: rawSecretHeader42 status=200")).toBe("Authorization: [REDACTED:TOKEN]");
     expect(scrubSecretsForLLM("Couldn't connect: Authorization: Custom foo' opaque-pass-12345\nnext")).toBe("Couldn't connect: Authorization: [REDACTED:TOKEN]\nnext");
@@ -550,6 +565,47 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
       expect(out).toBe(expected);
       expect(out).not.toContain(secret);
       expect(holdsCredential(input)).toBe(true);
+    });
+
+    it.each([
+      ["a marker followed by more of the value", `Authorization: [REDACTED:TOKEN] ${secret}`, "Authorization: [REDACTED:TOKEN]"],
+      ["two markers and more", `Authorization: [REDACTED:TOKEN] [REDACTED:TOKEN] ${secret}`, "Authorization: [REDACTED:TOKEN]"],
+      ["a marker with the value folded after it", `Authorization: [REDACTED:TOKEN]\r\n\t${secret}\r\nHost: git.example`, "Authorization: [REDACTED:TOKEN]\r\nHost: git.example"],
+      ["a scheme, a marker and more", `Proxy-Authorization: Bearer [REDACTED:TOKEN] ${secret}`, "Proxy-Authorization: [REDACTED:TOKEN]"],
+      ["a JSON key whose value starts with a marker", `{"authorization":"[REDACTED:TOKEN] ${secret}","safe":"keep"}`, '{"authorization":[REDACTED:TOKEN]'],
+    ])("never trusts a marker in it: %s", (_label, input, expected) => {
+      expect(scrubDiagnosticSecrets(input)).toBe(expected);
+      expect(scrubSecretsForLLM(input)).toBe(expected);
+      expect(holdsCredential(input)).toBe(true);
+    });
+
+    it("leaves a value that is one marker as it is, in both scrubbers", () => {
+      for (const masked of ["Authorization: [REDACTED:TOKEN]", "x\nProxy-Authorization: [REDACTED:TOKEN]\nnext", '{"Authorization":[REDACTED:TOKEN]']) {
+        expect(scrubDiagnosticSecrets(masked)).toBe(masked);
+        expect(scrubSecretsForLLM(masked)).toBe(masked);
+        expect(holdsCredential(masked)).toBe(false);
+      }
+    });
+
+    it("masks the same span for model-bound and diagnostic text", () => {
+      const inputs = [
+        `Authorization: Custom ${secret}`,
+        `Authorization: Custom foo\r\n\t${secret}\r\nnext`,
+        `Couldn't authenticate: Authorization: Digest username="O'Neil", response="${secret}"\nretry`,
+        `Authorization: Basic ${secret} status=200`,
+        `Authorization: Bearer [REDACTED:TOKEN] ${secret}`,
+        `{"message":"Couldn't fetch: Authorization: Custom foo' ${secret}","safe":"keep"}`,
+        `{"Authorization": "Digest username=\\"O'Neil\\", response=\\"${secret}\\""}`,
+        `curl --authorization Custom ${secret}\n--next`,
+        `x-authorization: Custom ${secret}`,
+        `authorization=Custom ${secret}\nkept`,
+        `Proxy-Authorization:\n ${secret}\nkept`,
+      ];
+      for (const input of inputs) {
+        const diagnostic = scrubDiagnosticSecrets(input);
+        expect(scrubSecretsForLLM(input), input).toBe(diagnostic);
+        expect(diagnostic, input).not.toContain(secret);
+      }
     });
 
     it("keeps the lines after it, and a sentence with contractions and no header", () => {

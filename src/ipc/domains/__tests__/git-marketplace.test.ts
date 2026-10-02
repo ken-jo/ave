@@ -689,6 +689,11 @@ describe("git marketplace IPC boundary", () => {
             en: "Versions with a part starting with “glpat-” are reserved because they look like a GitLab token, so Ave does not offer this package. Ask the package's author to change the version.",
             ko: "“glpat-”로 시작하는 부분이 있는 버전은 GitLab 토큰처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다. 패키지 작성자에게 버전을 바꿔 달라고 하세요.",
           }],
+          // A key under `sk-ant-` that also carries OpenAI's signature is named by the more specific row (§18.8).
+          ["a package version under an overlapping prefix", new FakeVolume("linux").file("/m/SKILL.md", `---\nname: note\nversion: 1.0.0-sk${"-ant-api03-"}${"a".repeat(12)}T3Blbk${"FJ"}${"b".repeat(12)}\ndescription: d\n---\n`), { reason: "version-reserved-prefix", prefix: "sk-ant-", issuer: "anthropic" }, {
+            en: "Versions with a part starting with “sk-ant-” are reserved because they look like an Anthropic API key, so Ave does not offer this package. Ask the package's author to change the version.",
+            ko: "“sk-ant-”로 시작하는 부분이 있는 버전은 Anthropic API 키처럼 보여 예약되어 있으므로 Ave가 이 패키지를 제공하지 않습니다. 패키지 작성자에게 버전을 바꿔 달라고 하세요.",
+          }],
           ["an MCP server's name with a word glued to its token", new FakeVolume("linux")
             .file("/m/plugin.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer", version: "1.0.0", description: "Writes" }))
             .file("/m/mcp.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: { [`backup_${KEY_TOKEN}`]: { type: "stdio", command: "./server/editor", args: [] } } }))
@@ -917,6 +922,25 @@ describe("git marketplace IPC boundary", () => {
     });
     const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
     expect(answer).toMatchObject({ ok: false, code: "SOURCE_UNREACHABLE", message: "proxy returned Authorization: [REDACTED:TOKEN]", detail: { reason: "proxy", proxy: "Proxy-Authorization: [REDACTED:TOKEN]" } });
+    expect(JSON.stringify(answer)).not.toContain(secret);
+  });
+
+  it("masks an Authorization value whole in a failure it answers with, past a marker already in it (§18.8)", async () => {
+    const secret = "opaque-pass-12345";
+    await setup({
+      refresh: vi.fn(async () => {
+        throw new MarketplaceError("SOURCE_UNREACHABLE", `proxy said: Authorization: [REDACTED:TOKEN] ${secret}\nretry later`, {
+          detail: { reason: "proxy", host: "git.example", proxy: `Proxy-Authorization: [REDACTED:TOKEN]\r\n\t${secret}\r\nVia: proxy.example` },
+        });
+      }),
+    });
+    const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+    expect(answer).toMatchObject({
+      ok: false,
+      code: "SOURCE_UNREACHABLE",
+      message: "proxy said: Authorization: [REDACTED:TOKEN]\nretry later",
+      detail: { reason: "proxy", proxy: "Proxy-Authorization: [REDACTED:TOKEN]\r\nVia: proxy.example" },
+    });
     expect(JSON.stringify(answer)).not.toContain(secret);
   });
 
