@@ -304,6 +304,8 @@ export const CHANNELS = {
     sourcesPreview: "ave:marketplace:sources:preview",
     sourcesAdd: "ave:marketplace:sources:add",
     sourcesAcknowledge: "ave:marketplace:sources:acknowledge",
+    sourcesPickFolder: "ave:marketplace:sources:pick-folder",
+    sourcesReveal: "ave:marketplace:sources:reveal",
     sourcesRemove: "ave:marketplace:sources:remove",
     sourcesSetEnabled: "ave:marketplace:sources:set-enabled",
     sourcesRefresh: "ave:marketplace:sources:refresh",

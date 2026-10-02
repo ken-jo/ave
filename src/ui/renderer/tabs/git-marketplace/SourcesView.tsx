@@ -6,9 +6,13 @@
  * switch (§18.8), for every origin. A source that needs a confirmation it
  * does not hold (an address that changed class, sign-in over http) offers
  * *Allow…*, which states the risk once more and syncs again (§18.5); its
- * badges say what it was allowed.
+ * badges say what it was allowed. A folder source (§18.4.8) shows its
+ * path, its contents revision and when it was read, the *Local folder* or
+ * *Network folder* badge, and *Show in Finder* (Explorer, file manager) in
+ * place of Set token.
  */
-import { useState } from "react";
+import { Folder } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../../components/ui/dialog.js";
@@ -25,9 +29,11 @@ import {
   badgeTooltip,
   failureText,
   kindLabel,
+  middleTruncate,
   originLabel,
   OTHER_SUBJECT,
   relativeTime,
+  revealLabel,
   shortSha,
   sourceStatusDetail,
   sourceStatusLabel,
@@ -42,6 +48,8 @@ export interface SourcesViewProps {
   sources: SourceView[];
   onChanged: () => void;
   onAdd: () => void;
+  /** A source to bring into view and mark (*Show <id>* from a refused add, §18.8); null for none. */
+  highlightId?: string | null;
 }
 
 type Confirm =
@@ -52,6 +60,10 @@ type Confirm =
   | { kind: "allow"; source: SourceView; warning: SourceWarning; text: string; then: "token" | null };
 
 /** A source's badges (§18.5): text plus tooltip, never colour alone. */
+/** Badges that name a risk or a state to fix, in the warning tone (their text says which). */
+const WARNING_BADGES: ReadonlySet<SourceBadge> = new Set(["unencrypted", "network-folder-unconfirmed", "folder-unclassified"]);
+
+// A badge is one line high (h-5): its label must not wrap out of it in a narrow column.
 export function SourceBadges({ badges, testId }: { badges: readonly SourceBadge[]; testId?: string }) {
   const { t } = useTranslation();
   if (badges.length === 0) return null;
@@ -61,7 +73,7 @@ export function SourceBadges({ badges, testId }: { badges: readonly SourceBadge[
         <Badge
           key={badge}
           variant="outline"
-          className={cn("h-5 px-1.5 text-[10px]", badge === "unencrypted" && "border-warning/(--opacity-medium) text-warning")}
+          className={cn("h-5 whitespace-nowrap px-1.5 text-[10px]", WARNING_BADGES.has(badge) && "border-warning/(--opacity-medium) text-warning")}
           title={badgeTooltip(t, badge)}
           data-testid={testId ? `${testId}:${badge}` : undefined}
         >
@@ -80,7 +92,7 @@ function statusAllowable(source: SourceView): SourceWarning | null {
   return null;
 }
 
-export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps) {
+export function SourcesView({ api, sources, onChanged, onAdd, highlightId = null }: SourcesViewProps) {
   const { t, locale } = useTranslation();
   const [busy, setBusy] = useState<string | null>(null);
   /** The last action's failure, with the source it acted on (none for Refresh all), so its sentence names only that row's actions. */
@@ -94,6 +106,12 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
     setConfirmState(next);
   };
   const [orphaned, setOrphaned] = useState<PackageKeyView[] | null>(null);
+  // Bring the marked row into view once it is listed (the list may load after the view opens).
+  const highlightListed = highlightId !== null && sources.some((source) => source.id === highlightId);
+  useEffect(() => {
+    if (!highlightListed || highlightId === null || typeof document === "undefined") return;
+    document.querySelector(`[data-testid="git-marketplace:source:${CSS.escape(highlightId)}"]`)?.scrollIntoView?.({ block: "center" });
+  }, [highlightId, highlightListed]);
 
   /** *Allow…* for a failure on `source`: the question names the risk accepted (`allowRisk`), else the failure's sentence is that question. */
   const allowFor = (source: SourceView, failure: Pick<GitMarketplaceFailure, "code" | "detail">) => {
@@ -191,7 +209,13 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
               const statusDetail = sourceStatusDetail(t, source);
               const allowable = statusAllowable(source);
               return (
-                <tr key={source.id} className="border-t align-top" data-testid={`git-marketplace:source:${source.id}`}>
+                <tr
+                  key={source.id}
+                  // Marked by background, not a ring: a ring on a table row is clipped by the scrolling wrapper.
+                  className={cn("border-t align-top", source.id === highlightId && "bg-accent")}
+                  aria-current={source.id === highlightId ? "true" : undefined}
+                  data-testid={`git-marketplace:source:${source.id}`}
+                >
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap items-center gap-1.5">
                       {/* The official source goes by its origin's name everywhere in the tab, so a badge would repeat it. */}
@@ -200,20 +224,42 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
                       ) : (
                         <>
                           <span className="font-medium">{source.label}</span>
-                          <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{originLabel(t, source.origin)}</Badge>
+                          <Badge variant="outline" className="h-5 whitespace-nowrap px-1.5 text-[10px]">{originLabel(t, source.origin)}</Badge>
                         </>
                       )}
                       <SourceBadges badges={source.badges} testId={`git-marketplace:source:${source.id}:badge`} />
                     </div>
-                    <div className="break-all font-mono text-[11px] text-muted-foreground">
-                      {source.transport === "git" ? source.url : source.path}
-                      {source.subdir ? ` · ${source.subdir}` : ""}
-                      {source.mirrors > 0 ? ` · ${t("gitMarketplace.sources.mirrors", { count: source.mirrors })}` : ""}
-                    </div>
+                    {source.transport === "git" ? (
+                      <div className="break-all font-mono text-[11px] text-muted-foreground">
+                        {source.url}
+                        {source.subdir ? ` · ${source.subdir}` : ""}
+                        {source.mirrors > 0 ? ` · ${t("gitMarketplace.sources.mirrors", { count: source.mirrors })}` : ""}
+                      </div>
+                    ) : (
+                      // Cut in the middle, and still free to wrap: a path must never widen the table past its pane.
+                      <div className="break-all text-[11px] text-muted-foreground" data-testid={`git-marketplace:source:${source.id}:folder`}>
+                        <Folder className="mr-1 inline h-3 w-3 align-[-2px]" aria-hidden="true" />
+                        <span className="mr-1">{t("gitMarketplace.sources.folderKind")}</span>
+                        <span className="font-mono" title={source.path} data-testid={`git-marketplace:source:${source.id}:path`}>
+                          {middleTruncate(source.path)}
+                        </span>
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-xs">
-                    {source.pinnedCommit ? <code className="font-mono" title={source.pinnedCommit}>{shortSha(source.pinnedCommit)}</code> : "—"}
-                    {source.lastSyncAt && <div className="text-muted-foreground">{relativeTime(source.lastSyncAt, locale)}</div>}
+                    {source.pinnedCommit ? (
+                      <code className="whitespace-nowrap font-mono" title={source.pinnedCommit}>
+                        {source.transport === "folder" ? t("gitMarketplace.sources.folderRevision", { revision: shortSha(source.pinnedCommit) }) : shortSha(source.pinnedCommit)}
+                      </code>
+                    ) : "—"}
+                    {source.lastSyncAt && (
+                      <div className="text-muted-foreground">
+                        {/* "read" only when that read succeeded: after a failed one the cached contents are older. */}
+                        {source.transport === "folder" && status.state === "up-to-date"
+                          ? t("gitMarketplace.sources.readAt", { time: relativeTime(source.lastSyncAt, locale) })
+                          : relativeTime(source.lastSyncAt, locale)}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-xs">{source.packageCount}</td>
                   <td className={cn("px-3 py-2 text-xs", warn && "text-warning", status.state === "broken" && "text-destructive")}>
@@ -229,8 +275,9 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
                         {t("gitMarketplace.action.copyDetails")}
                       </Button>
                     )}
+                    {/* A floor under the sentence: breaking anywhere lets a long path wrap, but alone it let the column shrink to a word. */}
                     {statusDetail !== null && (
-                      <p className="mt-0.5 max-w-xs break-words text-muted-foreground" data-testid={`git-marketplace:source:${source.id}:status-detail`}>{statusDetail}</p>
+                      <p className="mt-0.5 min-w-48 max-w-xs text-muted-foreground [overflow-wrap:anywhere]" data-testid={`git-marketplace:source:${source.id}:status-detail`}>{statusDetail}</p>
                     )}
                     {allowable !== null && (status.state === "unreachable" || status.state === "auth-required") && (
                       <Button
@@ -276,7 +323,20 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
                           {busy === source.id ? t("gitMarketplace.sources.status.syncing") : t("gitMarketplace.sources.refresh")}
                         </Button>
                       )}
-                      {source.auth === "token" && source.tokenHost && (
+                      {/* A quarantined source is only removed (§18.8): its folder is not shown either. */}
+                      {source.transport === "folder" && status.state !== "id-holds-credential" && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-xs"
+                          disabled={busy !== null}
+                          onClick={() => void run(source.id, () => api.revealSource(source.id))}
+                          data-testid={`git-marketplace:source:${source.id}:reveal`}
+                        >
+                          {revealLabel(t)}
+                        </Button>
+                      )}
+                      {source.transport === "git" && source.auth === "token" && source.tokenHost && (
                         <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => openToken(source)} data-testid={`git-marketplace:source:${source.id}:set-token`}>
                           {t("gitMarketplace.sources.setToken")}
                         </Button>

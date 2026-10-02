@@ -27,6 +27,7 @@ const SRC = fileURLToPath(new URL("../..", import.meta.url));
 const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["ipc/domains/attach.ts", ["mainDialog."]], // file picker title
   ["ipc/domains/chat.ts", ["mainDialog."]], // delete / import / export dialogs
+  ["ipc/domains/git-marketplace.ts", ["mainDialog."]], // marketplace folder picker
   ["ipc/domains/plugins.ts", ["mainDialog."]], // local plugin install dialogs
   ["ipc/domains/ui.ts", ["chatPreviewRail.", "chatView.", "mainToolbar.", "sidebar.", "toolActivity.", "turnActionBar."]], // native context menus
   ["ipc/domains/workspace.ts", ["chatPreviewRail."]], // folder picker

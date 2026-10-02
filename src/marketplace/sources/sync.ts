@@ -34,7 +34,7 @@ import { MarketplaceError, isMarketplaceError, scrubMarketplaceErrorDetail, type
 import { BareRepo, type ExportLimits } from "../git/repo.js";
 import { LocalRepositoryDamagedError, type GitCommands, type GitRemote } from "../git/run-git.js";
 import type { NetworkGate } from "../net/network-gate.js";
-import { classifyFolder, folderMoved, resolveFolderRoot } from "../net/source-input.js";
+import { classifyFolder, folderMoved, resolveFolderRoot, type FolderRoot } from "../net/source-input.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { PackageKind } from "../catalog/types.js";
 import type { FolderFs } from "./folder-fs.js";
@@ -70,6 +70,36 @@ export type SyncResult =
 /** A snapshot is named by its pin: a commit, or a folder's revision (§18.4.3). */
 const SNAPSHOT_FILE = /^(?:[0-9a-f]{40}|local-[0-9a-f]{64})\.json$/u;
 const CANDIDATE_REF = "candidate";
+
+/**
+ * Stages 2–4 of §18.4.1 for a stored folder, before anything reads it:
+ * network classification, the policy and `network-folder`, then the walk,
+ * fenced as the read is: a path on another computer without the
+ * confirmation is never touched. A walk that ends at another path, or at a
+ * directory whose recorded identity differs, is `moved`, and the new target
+ * is never read (§18.4.4). The canonical path is judged by the policy again.
+ * A read (`openFolder`) and *Show in Finder* (`revealFolder`) both judge the
+ * folder here, so neither accepts a folder the other refuses.
+ */
+export async function openStoredFolder(
+  source: FolderSource,
+  state: SourceState,
+  options: Pick<SourceSyncOptions, "registry" | "gate"> & { folders: Pick<SourceSyncOptions["folders"], "fs" | "platform"> },
+): Promise<{ root: FolderRoot; networkConsented: boolean }> {
+  const { fs, platform } = options.folders;
+  options.gate.checkFolderPolicy(source.path);
+  const network = await classifyFolder(source.path, platform, fs);
+  const acknowledged = await options.registry.acknowledged(source);
+  options.gate.checkFolder(source.path, network, acknowledged);
+  const networkConsented = acknowledged.has("network-folder");
+  const root = await resolveFolderRoot(source.path, platform, fs, networkConsented);
+  if (root.path !== source.path) throw folderMoved(source.path, root.path);
+  const recorded = state.folder;
+  const known = recorded !== undefined && recorded.dev !== "0" && recorded.ino !== "0" && root.dev !== 0n && root.ino !== 0n;
+  if (known && (recorded.dev !== root.dev.toString() || recorded.ino !== root.ino.toString())) throw folderMoved(source.path, root.path);
+  options.gate.checkFolderPolicy(root.path);
+  return { root, networkConsented };
+}
 
 /**
  * A source syncs while it is shown, or while an installed package is still
@@ -201,28 +231,10 @@ export class SourceSyncer {
     return { status: "ok", pinnedCommit: commit, changed: true };
   }
 
-  /**
-   * Stages 2–4 of §18.4.1 for a stored folder, before anything reads it:
-   * network classification, the policy and `network-folder`, then the walk,
-   * fenced as the read is: a path on another computer without the
-   * confirmation is never touched. A walk that ends at another path, or at a
-   * directory whose recorded identity differs, is `moved`, and the new
-   * target is never read (§18.4.4). The canonical path is judged by the
-   * policy again.
-   */
+  /** A stored folder opened for a read, judged by {@link openStoredFolder}. */
   private async openFolder(source: FolderSource, state: SourceState): Promise<FolderTree> {
     const { fs, platform, limits } = this.options.folders;
-    this.options.gate.checkFolderPolicy(source.path);
-    const network = await classifyFolder(source.path, platform, fs);
-    const acknowledged = await this.options.registry.acknowledged(source);
-    this.options.gate.checkFolder(source.path, network, acknowledged);
-    const networkConsented = acknowledged.has("network-folder");
-    const root = await resolveFolderRoot(source.path, platform, fs, networkConsented);
-    if (root.path !== source.path) throw folderMoved(source.path, root.path);
-    const recorded = state.folder;
-    const known = recorded !== undefined && recorded.dev !== "0" && recorded.ino !== "0" && root.dev !== 0n && root.ino !== 0n;
-    if (known && (recorded.dev !== root.dev.toString() || recorded.ino !== root.ino.toString())) throw folderMoved(source.path, root.path);
-    this.options.gate.checkFolderPolicy(root.path);
+    const { root, networkConsented } = await openStoredFolder(source, state, this.options);
     return new FolderTree({ fs, platform, root, readAt: this.now(), limits, networkConsented });
   }
 

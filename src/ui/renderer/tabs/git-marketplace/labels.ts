@@ -434,6 +434,7 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
         case "unc-credentials": return t("gitMarketplace.error.urlRejected.uncCredentials");
         case "outside-root": return t("gitMarketplace.error.urlRejected.outsideRoot");
         case "folder-options": return t("gitMarketplace.error.urlRejected.folderOptions");
+        case "folder-pick-unknown": return t("gitMarketplace.error.urlRejected.folderPickUnknown");
       }
       return unhandled(detail);
     }
@@ -572,6 +573,12 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
         case "permission": return t("gitMarketplace.error.localUnreadable.permission", { path: detail.path, message: detail.message });
         case "io": return t("gitMarketplace.error.localUnreadable.io", { path: detail.path, message: detail.message });
         case "moved":
+          // The same path, another directory (its identity changed): "now leads to itself" would say nothing.
+          if (detail.target === detail.path) {
+            return audience === "entry" || audience === "custom"
+              ? t("gitMarketplace.error.localUnreadable.replaced", { path: detail.path })
+              : t("gitMarketplace.error.localUnreadable.replaced.managed", { path: detail.path });
+          }
           return audience === "entry" || audience === "custom"
             ? t("gitMarketplace.error.localUnreadable.moved", { path: detail.path, target: detail.target })
             : t("gitMarketplace.error.localUnreadable.moved.managed", { path: detail.path, target: detail.target });
@@ -869,6 +876,10 @@ export function badgeLabel(t: Translate, badge: SourceBadge): string {
     case "internal-network": return t("gitMarketplace.badge.internalNetwork");
     case "this-computer": return t("gitMarketplace.badge.thisComputer");
     case "internal-downloads": return t("gitMarketplace.badge.internalDownloads");
+    case "local-folder": return t("gitMarketplace.badge.localFolder");
+    case "network-folder": return t("gitMarketplace.badge.networkFolder");
+    case "network-folder-unconfirmed": return t("gitMarketplace.badge.networkFolderUnconfirmed");
+    case "folder-unclassified": return t("gitMarketplace.badge.folderUnclassified");
   }
   return unhandled(badge);
 }
@@ -880,6 +891,10 @@ export function badgeTooltip(t: Translate, badge: SourceBadge): string {
     case "internal-network": return t("gitMarketplace.badge.internalNetwork.tooltip");
     case "this-computer": return t("gitMarketplace.badge.thisComputer.tooltip");
     case "internal-downloads": return t("gitMarketplace.badge.internalDownloads.tooltip");
+    case "local-folder": return t("gitMarketplace.badge.localFolder.tooltip");
+    case "network-folder": return t("gitMarketplace.badge.networkFolder.tooltip");
+    case "network-folder-unconfirmed": return t("gitMarketplace.badge.networkFolderUnconfirmed.tooltip");
+    case "folder-unclassified": return t("gitMarketplace.badge.folderUnclassified.tooltip");
   }
   return unhandled(badge);
 }
@@ -910,6 +925,49 @@ export function allowRisk(t: Translate, failure: Pick<GitMarketplaceFailure, "co
 /** Exhaustiveness, after each switch: a code or reason added without a sentence fails to compile here. */
 function unhandled(value: never): never {
   throw new Error(`no sentence for ${JSON.stringify(value)}`);
+}
+
+/**
+ * Whether the typed address is a folder rather than a git address, by the
+ * same first characters main's lexical parse reads (§18.4.1 stage 1): `/`,
+ * `~`, `\\`, `//`, a drive, a `file:` URL, or a relative `./` or `../` (which
+ * main refuses with its reason). The Add dialog then asks no branch, package
+ * folder or sign-in, which a folder does not take. Main decides; this only
+ * shapes the form.
+ */
+export function looksLikeFolder(input: string): boolean {
+  return /^(?:[/~\\]|\.{1,2}[/\\]|[A-Za-z]:|file:)/iu.test(input.trim());
+}
+
+/**
+ * The source an add was refused for duplicating (§18.8: SOURCE_ID_TAKEN
+ * `repository-already-added`, or a folder that is, lies inside or contains a
+ * folder source), whose row *Show <id>* opens; null for any other failure, a
+ * taken id included.
+ */
+export function duplicatedSourceId(failure: GitMarketplaceFailure): string | null {
+  if (failure.code !== "SOURCE_ID_TAKEN") return null;
+  return parseMarketplaceErrorDetail(failure.code, failure.detail)?.existingId ?? null;
+}
+
+/** The file manager *Reveal* opens on this computer, by the platform the renderer runs on. */
+export function revealLabel(t: Translate, userAgent: string = globalThis.navigator?.userAgent ?? ""): string {
+  if (/Macintosh|Mac OS X|darwin/iu.test(userAgent)) return t("gitMarketplace.sources.revealFinder");
+  if (/Windows|win32/iu.test(userAgent)) return t("gitMarketplace.sources.revealExplorer");
+  return t("gitMarketplace.sources.revealFileManager");
+}
+
+/**
+ * A long path cut in the middle, keeping its start (the volume or share) and
+ * its end (the folder's own name): `/Users/example/…/team/market`. The full path
+ * belongs in the tooltip beside it.
+ */
+export function middleTruncate(text: string, max: number = 48): string {
+  const chars = [...text];
+  if (chars.length <= max) return text;
+  const tail = Math.ceil((max - 1) * 0.6);
+  const head = max - 1 - tail;
+  return `${chars.slice(0, head).join("")}…${chars.slice(chars.length - tail).join("")}`;
 }
 
 /** The first seven hex digits of a commit, or of a folder's revision without its `local-` prefix (§18.4.3). */

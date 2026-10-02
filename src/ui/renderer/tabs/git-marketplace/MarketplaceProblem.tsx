@@ -18,7 +18,7 @@ import { useTranslation } from "../../../../i18n/react.js";
 import { cn } from "../../../../lib/utils.js";
 import { scrubDiagnosticSecrets } from "../../../../shared/dlp.js";
 import type { GitMarketplaceErrorCode, GitMarketplaceFailure } from "../../../../shared/git-marketplace.js";
-import { allowableWarning, allowRisk, failureCommand, failureText, type FailureSubject } from "./labels.js";
+import { allowableWarning, allowRisk, duplicatedSourceId, failureCommand, failureText, type FailureSubject } from "./labels.js";
 
 /** Codes the organization decided: shown as policy, never as the user's mistake. */
 const POLICY_CODES: ReadonlySet<GitMarketplaceErrorCode> = new Set(["SOURCE_POLICY_BLOCKED", "PACKAGE_POLICY_BLOCKED", "PACKAGE_REQUIRED_BY_POLICY"]);
@@ -35,6 +35,8 @@ export type MarketplaceProblemProps =
       onAllow?: () => void;
       /** The *Allow…* button's text, when the place names it more exactly. */
       allowLabel?: string;
+      /** Open the source a refused add duplicates (*Show <id>*, §18.8); shown only for such a refusal. */
+      onShowSource?: (id: string) => void;
       className?: string;
       testId?: string;
     }
@@ -97,6 +99,8 @@ export function MarketplaceProblem(props: MarketplaceProblemProps) {
   // Where Allow… is offered here, the risk it accepts is said here too.
   const risk = allowable && props.tone !== "error" && props.onAllow ? allowRisk(t, failure!) : null;
   const command = failure === null ? null : failureCommand(failure);
+  const duplicated = failure === null ? null : duplicatedSourceId(failure);
+  const showSource = duplicated !== null && props.tone !== "error" ? props.onShowSource : undefined;
   const text = props.tone === "error" ? props.text : failureText(t, props.failure, props.subject);
   const details = scrubDiagnosticSecrets(props.tone === "error" ? props.details : (props.details ?? failureDetails(props.failure)));
   return (
@@ -130,6 +134,11 @@ export function MarketplaceProblem(props: MarketplaceProblemProps) {
         </p>
       )}
       <div className="flex flex-wrap gap-2">
+        {showSource && duplicated !== null && (
+          <Button size="sm" className="max-w-full" title={duplicated} onClick={() => showSource(duplicated)} data-testid={props.testId ? `${props.testId}:show-source` : undefined}>
+            <span className="truncate">{t("gitMarketplace.action.showSource", { id: duplicated })}</span>
+          </Button>
+        )}
         {allowable && props.tone !== "error" && props.onAllow && (
           <Button size="sm" onClick={props.onAllow} data-testid={props.testId ? `${props.testId}:allow` : undefined}>
             {props.allowLabel ?? t("gitMarketplace.action.allow")}

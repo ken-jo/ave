@@ -21,6 +21,7 @@ const TECHNICAL_LITERALS: Record<string, readonly string[]> = {
   "defaultTourScenarios.meetingSummaryStep3Body": ["~/.ave/plugins/"],
   "gitMarketplace.direct.gitHelp": ["plugin.json"],
   "gitMarketplace.error.noArtifact.folderHasNoBuild": ["plugin.json"],
+  "gitMarketplace.review.notInstalled": ["plugin.json"],
 };
 
 // Agent-plugin-only views intentionally use Plugin/플러그인. Strip only the

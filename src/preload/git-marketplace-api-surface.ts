@@ -42,6 +42,8 @@ export function buildGitMarketplaceApiSurface(): GitMarketplaceApi {
     previewSource: (request) => call(channels.sourcesPreview, request),
     addSource: (request) => call(channels.sourcesAdd, request),
     acknowledgeSource: (id, warnings) => call(channels.sourcesAcknowledge, id, warnings),
+    pickFolder: () => call(channels.sourcesPickFolder),
+    revealSource: (id) => call(channels.sourcesReveal, id),
     removeSource: (id) => call(channels.sourcesRemove, id),
     setSourceEnabled: (id, enabled) => call(channels.sourcesSetEnabled, id, enabled),
     refreshSources: (id) => (id === undefined ? call(channels.sourcesRefresh) : call(channels.sourcesRefresh, id)),

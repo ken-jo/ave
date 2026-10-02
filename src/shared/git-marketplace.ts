@@ -18,10 +18,21 @@ export { parseMarketplaceErrorDetail };
 
 /**
  * What a source's row and its package cards show while it applies (design
- * §18.5): plain http, and each address class the user confirmed. Text plus
- * a tooltip, never colour alone.
+ * §18.5): plain http, and each address class the user confirmed; for a
+ * folder, whether it is on this computer or read from another one — with
+ * or without the source's `network-folder` confirmation — or that Ave
+ * cannot tell, because its folder classifier does not run (§18.4.8). Text
+ * plus a tooltip, never colour alone.
  */
-export type SourceBadge = "unencrypted" | "internal-network" | "this-computer" | "internal-downloads";
+export type SourceBadge =
+  | "unencrypted"
+  | "internal-network"
+  | "this-computer"
+  | "internal-downloads"
+  | "local-folder"
+  | "network-folder"
+  | "network-folder-unconfirmed"
+  | "folder-unclassified";
 
 export type SourceOriginKind = "official" | "managed" | "custom" | "direct";
 
@@ -122,6 +133,23 @@ export interface SourcePreviewRequest {
    */
   acknowledge?: SourceWarning[];
 }
+
+/**
+ * A folder chosen with *Choose folder…* (§18.9). Main keeps the folder it
+ * chose; `pick` names that selection, and `display` is its path as the tab
+ * may show it — scrubbed (§18.8), so text to read, never an address to send.
+ */
+export interface FolderPickView {
+  pick: string;
+  display: string;
+}
+
+/**
+ * What the tab previews: an address as typed, or a *Choose folder…*
+ * selection by its `pick` (§18.9), which main resolves to the folder it
+ * chose. A folder takes no branch, package folder or sign-in.
+ */
+export type SourcePreviewAsk = SourcePreviewRequest | { pick: string; auth: "none"; acknowledge?: SourceWarning[] };
 
 /** The address needs confirmations before Ave contacts it (§18.5 step 3); *Continue* previews again with them. */
 interface SourceConfirmView {
@@ -302,8 +330,11 @@ export interface PackageDetailView {
     sourceLabel: string;
     /** The git source's address, or null for a folder. */
     repository: string | null;
-    /** The folder source's path, or null for a git source. */
-    folder: string | null;
+    /**
+     * A folder source (§18.4.8): its path, when Ave last read it, and the
+     * tree digest of what this package installs; null for a git source.
+     */
+    folder: { path: string; readAt: string; contents: string | null } | null;
     path: string;
     snapshotCommit: string;
     versionCommit: string | null;
@@ -575,10 +606,14 @@ export type ComponentConsent = McpComponentConsent | HookComponentConsent;
 
 export interface GitMarketplaceApi {
   listSources(): Promise<GitMarketplaceResult<SourceView[]>>;
-  previewSource(request: SourcePreviewRequest): Promise<GitMarketplaceResult<SourcePreviewResultView>>;
+  previewSource(request: SourcePreviewAsk): Promise<GitMarketplaceResult<SourcePreviewResultView>>;
   addSource(request: SourceAddRequest): Promise<GitMarketplaceResult<SourceView>>;
   /** Add confirmations to a source (*Allow…*, §18.5) and sync it again. */
   acknowledgeSource(id: string, warnings: readonly SourceWarning[]): Promise<GitMarketplaceResult<SourceView>>;
+  /** *Choose folder…*: main's folder dialog, answering the selection main holds; null when it was cancelled (§18.9). */
+  pickFolder(): Promise<GitMarketplaceResult<FolderPickView | null>>;
+  /** *Show in Finder / Explorer / file manager* for a folder source, by id (§18.4.8). */
+  revealSource(id: string): Promise<GitMarketplaceResult<null>>;
   removeSource(id: string): Promise<GitMarketplaceResult<{ orphanedPackages: PackageKeyView[] }>>;
   setSourceEnabled(id: string, enabled: boolean): Promise<GitMarketplaceResult<SourceView>>;
   refreshSources(id?: string): Promise<GitMarketplaceResult<SourceView[]>>;

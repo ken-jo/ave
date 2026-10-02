@@ -12,6 +12,7 @@ import type {
   GitMarketplaceDeepLink,
   InstallPlanView,
   InstallProgressView,
+  MarketplacePreviewView,
   PackageDetailView,
   PackageKind,
   SourceView,
@@ -23,7 +24,7 @@ import type { GitRuntimeApi, GitRuntimeStatus } from "../../../../../shared/git-
 export const COMMIT_A = "a".repeat(40);
 export const COMMIT_B = "b".repeat(40);
 
-/** A git source row; folder rows are slice D2's. */
+/** A git source row. */
 export function source(overrides: Partial<Extract<SourceView, { transport: "git" }>> & Pick<SourceView, "id">): SourceView {
   return {
     origin: "custom",
@@ -48,6 +49,35 @@ export function source(overrides: Partial<Extract<SourceView, { transport: "git"
     diagnostics: [],
     acknowledged: [],
     badges: [],
+    ...overrides,
+  };
+}
+
+/** A folder source row (§18.4.8): read in place at `path`, pinned at its contents revision. */
+export function folderSource(overrides: Partial<Extract<SourceView, { transport: "folder" }>> & Pick<SourceView, "id">): SourceView {
+  return {
+    origin: "custom",
+    label: overrides.id,
+    transport: "folder",
+    url: null,
+    path: `/Users/example/marketplaces/${overrides.id}`,
+    ref: null,
+    subdir: null,
+    mirrors: 0,
+    auth: "none",
+    tokenHost: null,
+    tokenStored: false,
+    pinnedCommit: `local-${"c".repeat(64)}`,
+    lastSyncAt: "2026-09-24T00:00:00.000Z",
+    marketplace: null,
+    packageCount: 1,
+    status: { state: "up-to-date" },
+    enabled: true,
+    canDisable: true,
+    canRemove: true,
+    diagnostics: [],
+    acknowledged: [],
+    badges: ["local-folder"],
     ...overrides,
   };
 }
@@ -187,6 +217,8 @@ export function fakeMarketplace(
     previewSource: vi.fn(),
     addSource: vi.fn(),
     acknowledgeSource: vi.fn(),
+    pickFolder: vi.fn(async () => ok(null)),
+    revealSource: vi.fn(async () => ok(null)),
     removeSource: vi.fn(async () => ok({ orphanedPackages: [] })),
     setSourceEnabled: vi.fn(async (id: string) => ok(sources.find((item) => item.id === id))),
     refreshSources: vi.fn(async () => ok(sources)),
@@ -247,3 +279,23 @@ export function fakeMarketplace(
     emitUpdateStatus: (status) => updateStatusListeners.forEach((listener) => listener(status)),
   };
 }
+
+/** A git marketplace's preview: two extensions and three skills, one broken entry. */
+export const marketplacePreview: MarketplacePreviewView = {
+  type: "marketplace",
+  previewId: "preview-1",
+  expiresAt: new Date(Date.now() + 600_000).toISOString(),
+  transport: "git",
+  url: "https://github.com/example/team.git",
+  path: null,
+  resolvedFrom: null,
+  badges: [],
+  ref: null,
+  commit: COMMIT_A,
+  marketplace: { name: "team", displayName: "Team tools", description: null, owner: "example" },
+  counts: { plugin: 2, skill: 3 },
+  codeRunning: 2,
+  diagnostics: ["plugins/broken: missing plugin.json"],
+  credentialHelper: false,
+  suggestedId: "team",
+};

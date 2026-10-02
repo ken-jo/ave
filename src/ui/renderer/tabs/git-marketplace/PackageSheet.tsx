@@ -3,7 +3,7 @@
  * the reviewed plan, the install progress and the result, all in place. What
  * the plan shows is what installs: the plan id is single use and expires.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
 import { Checkbox } from "../../../../components/ui/checkbox.js";
@@ -13,6 +13,7 @@ import { cn } from "../../../../lib/utils.js";
 import { scrubDiagnosticSecrets } from "../../../../shared/dlp.js";
 import type {
   AuthorityView,
+  CatalogEntryView,
   ComponentConsent,
   GitMarketplaceApi,
   GitMarketplaceFailure,
@@ -27,7 +28,7 @@ import type {
   UpdatePlanView,
 } from "../../../../shared/git-marketplace.js";
 import { MarketplaceProblem } from "./MarketplaceProblem.js";
-import { actionLabel, allowableWarning, exclusionLabel, kindLabel, originLabel, OTHER_SUBJECT, shortSha, sourceSubject, stateLabel } from "./labels.js";
+import { actionLabel, allowableWarning, exclusionLabel, kindLabel, originLabel, OTHER_SUBJECT, relativeTime, shortSha, sourceSubject, stateLabel } from "./labels.js";
 import { McpRuntimeSummary } from "./McpRuntimeSummary.js";
 import { componentInventory } from "../../../../marketplace/app/component-delta.js";
 import type { AgentPluginComponents } from "../../../../marketplace/catalog/types.js";
@@ -55,6 +56,13 @@ export interface PackageSheetProps {
 }
 
 type PlanOptions = { update?: boolean; version?: string; switchSource?: boolean };
+
+/** Installed states of a row whose package is installed from that row's key. */
+const INSTALLED_HERE: ReadonlySet<CatalogEntryView["state"]["state"]> = new Set(["installed", "update", "source-removed"]);
+
+function sameKey(a: Pick<CatalogEntryView["key"], "sourceId" | "kind" | "name">, b: PackageKeyView): boolean {
+  return a.sourceId === b.sourceId && a.kind === b.kind && a.name === b.name;
+}
 
 function isUpdatePlan(plan: InstallPlanView | UpdatePlanView): plan is UpdatePlanView {
   return "commitRange" in plan;
@@ -119,7 +127,7 @@ function RungList({ rungs }: { rungs: RungView[] }) {
           {" · "}
           {!rung.declared
             ? t("gitMarketplace.rung.notDeclared")
-            : rung.rung !== "tree" && !rung.pinned
+            : rung.rung !== "tree" && rung.rung !== "folder" && !rung.pinned
               ? t("gitMarketplace.rung.notPinned")
               : rung.detail ?? t("gitMarketplace.rung.declared")}
           {rung.declared && rung.unencrypted && (
@@ -158,12 +166,58 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
   const [approvedHooks, setApprovedHooks] = useState<Record<number, boolean>>({});
   const [now, setNow] = useState(() => Date.now());
 
-  const load = useCallback(async (key: PackageKeyView) => {
-    setLoadFailure(null);
-    const result = await api.packageDetail(key);
-    if (result.ok) setDetail(result.value);
-    else setLoadFailure(result);
+  /**
+   * The Installed row for the shown key, read when its detail is refused (a quarantined or removed
+   * source, §18.8): what is installed from that key stays removable — or says the policy requires it —
+   * however the sheet was opened (a card, a review, a deep link). Null when nothing is installed from it.
+   */
+  const [installedRow, setInstalledRow] = useState<{ key: PackageKeyView; entry: CatalogEntryView } | null>(null);
+
+  /**
+   * Which answers may still change the sheet. A load, and an Installed lookup, each take the next
+   * generation; opening, reopening and closing the sheet move both on. An answer to an earlier one is
+   * dropped, so a lookup for an earlier opening never decides this one, even for the same key.
+   */
+  const detailGeneration = useRef(0);
+  const lookupGeneration = useRef(0);
+  /** The key whose detail the current load was refused: the Installed lookup follows the catalog for it. */
+  const refusedKey = useRef<PackageKeyView | null>(null);
+
+  /** The Installed row for `key`, now: null while it is asked, and when the list fails or names no install from `key`. */
+  const lookupInstalled = useCallback(async (key: PackageKeyView) => {
+    const mine = ++lookupGeneration.current;
+    setInstalledRow(null);
+    const installed = await api.listCatalog({ installedOnly: true });
+    if (mine !== lookupGeneration.current) return;
+    const row = installed.ok ? installed.value.entries.find((item) => sameKey(item.key, key) && INSTALLED_HERE.has(item.state.state)) : undefined;
+    setInstalledRow(row ? { key, entry: row } : null);
   }, [api]);
+
+  const load = useCallback(async (key: PackageKeyView) => {
+    const mine = ++detailGeneration.current;
+    lookupGeneration.current += 1;
+    refusedKey.current = null;
+    setLoadFailure(null);
+    setInstalledRow(null);
+    const result = await api.packageDetail(key);
+    if (mine !== detailGeneration.current) return;
+    if (result.ok) {
+      setDetail(result.value);
+      return;
+    }
+    setLoadFailure(result);
+    refusedKey.current = key;
+    await lookupInstalled(key);
+  }, [api, lookupInstalled]);
+
+  // What is installed changes under an open sheet (§18.8): the lookup follows the same event the cards do.
+  const sheetOpen = target !== null;
+  useEffect(() => {
+    if (!sheetOpen) return;
+    return api.onCatalogChanged(() => {
+      if (refusedKey.current) void lookupInstalled(refusedKey.current);
+    });
+  }, [api, lookupInstalled, sheetOpen]);
 
   /** The last plan asked for, so a review can be asked again after *Allow…* or an expired plan. */
   const [lastPlan, setLastPlan] = useState<{ key: PackageKeyView; options: PlanOptions } | null>(null);
@@ -185,6 +239,12 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
   }, [api]);
 
   useEffect(() => {
+    // A new opening, or none: nothing asked for an earlier one may change the sheet.
+    detailGeneration.current += 1;
+    lookupGeneration.current += 1;
+    refusedKey.current = null;
+    setInstalledRow(null);
+    setLoadFailure(null);
     setDetail(null);
     setStage({ stage: "detail" });
     setTrustRewrite(false);
@@ -271,6 +331,11 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
   const entry = detail?.entry ?? null;
   const state = entry?.state ?? null;
   const installedHere = state?.state === "installed" || state?.state === "update";
+  // What is installed from this key when its detail is refused: removable by that key beside the refusal's reason, unless required.
+  const installedWithoutDetail = detail === null && loadFailure !== null && target !== null && installedRow !== null && sameKey(installedRow.key, target.key)
+    ? installedRow.entry
+    : null;
+  const required = entry?.required ?? installedWithoutDetail?.required ?? false;
   const expiresIn = stage.stage === "review" ? Math.max(0, Math.round((new Date(stage.plan.expiresAt).getTime() - now) / 1000)) : 0;
   const reviewPlan = stage.stage === "review" ? stage.plan : null;
   const needsRewriteTrust = reviewPlan !== null && isUpdatePlan(reviewPlan) && reviewPlan.historyRewritten !== null;
@@ -313,12 +378,32 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
                 <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-0.5 text-sm">
                   <dt className="text-muted-foreground">{t("gitMarketplace.detail.source")}</dt>
                   <dd>{detail.provenance.sourceLabel}</dd>
-                  <dt className="text-muted-foreground">{t("gitMarketplace.detail.repository")}</dt>
-                  <dd className="break-all font-mono text-xs">{detail.provenance.repository ?? detail.provenance.folder}</dd>
-                  <dt className="text-muted-foreground">{t("gitMarketplace.detail.path")}</dt>
-                  <dd className="font-mono text-xs">{detail.provenance.path || "/"}</dd>
-                  <dt className="text-muted-foreground">{t("gitMarketplace.detail.commit")}</dt>
-                  <dd><Sha commit={detail.provenance.versionCommit ?? detail.provenance.snapshotCommit} /></dd>
+                  {detail.provenance.folder === null ? (
+                    <>
+                      <dt className="text-muted-foreground">{t("gitMarketplace.detail.repository")}</dt>
+                      <dd className="break-all font-mono text-xs">{detail.provenance.repository}</dd>
+                      <dt className="text-muted-foreground">{t("gitMarketplace.detail.path")}</dt>
+                      <dd className="font-mono text-xs">{detail.provenance.path || "/"}</dd>
+                      <dt className="text-muted-foreground">{t("gitMarketplace.detail.commit")}</dt>
+                      <dd><Sha commit={detail.provenance.versionCommit ?? detail.provenance.snapshotCommit} /></dd>
+                    </>
+                  ) : (
+                    // A folder's provenance (§18.4.8): where it is read, when, and the digest of what this package installs.
+                    <>
+                      <dt className="text-muted-foreground">{t("gitMarketplace.detail.folder")}</dt>
+                      <dd className="break-all font-mono text-xs" data-testid="git-marketplace:provenance:folder">{detail.provenance.folder.path}</dd>
+                      <dt className="text-muted-foreground">{t("gitMarketplace.detail.path")}</dt>
+                      <dd className="font-mono text-xs">{detail.provenance.path || "/"}</dd>
+                      <dt className="text-muted-foreground">{t("gitMarketplace.detail.folderRead")}</dt>
+                      <dd title={new Date(detail.provenance.folder.readAt).toLocaleString(locale)} data-testid="git-marketplace:provenance:read">{relativeTime(detail.provenance.folder.readAt, locale)}</dd>
+                      {detail.provenance.folder.contents !== null && (
+                        <>
+                          <dt className="text-muted-foreground">{t("gitMarketplace.detail.contents")}</dt>
+                          <dd><code className="font-mono text-xs" title={detail.provenance.folder.contents} data-testid="git-marketplace:provenance:contents">{detail.provenance.folder.contents.slice(0, 12)}</code></dd>
+                        </>
+                      )}
+                    </>
+                  )}
                   {detail.provenance.publishedAt && (
                     <>
                       <dt className="text-muted-foreground">{t("gitMarketplace.detail.published")}</dt>
@@ -352,13 +437,19 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
               {detail.rungs.length > 0 && (
                 <Section title={t("gitMarketplace.detail.delivery")}>
                   <RungList rungs={detail.rungs} />
-                  <p className="mt-1 text-xs text-muted-foreground">{t("gitMarketplace.detail.deliveryHelp")}</p>
+                  <p className="mt-1 text-xs text-muted-foreground" data-testid="git-marketplace:delivery-help">
+                    {detail.provenance.folder !== null ? t("gitMarketplace.detail.deliveryHelpFolder") : t("gitMarketplace.detail.deliveryHelp")}
+                  </p>
                 </Section>
               )}
               <Section title={t("gitMarketplace.detail.versions")}>
+                {detail.provenance.folder !== null && (
+                  <p className="mb-1 text-xs text-muted-foreground" data-testid="git-marketplace:versions:folder">{t("gitMarketplace.detail.versionsFolder")}</p>
+                )}
                 <ul className="space-y-1">
                   {detail.versions.map((version) => {
-                    const choosable = !version.candidate && !version.installed
+                    // A folder holds one version, its own: no other is offered (§18.4.3).
+                    const choosable = detail.provenance.folder === null && !version.candidate && !version.installed
                       && version.excluded.every((reason) => reason === "rollout" || reason === "prerelease");
                     return (
                       <li key={version.version} className="flex flex-wrap items-center gap-1.5" data-testid={`git-marketplace:version:${version.version}`}>
@@ -389,7 +480,10 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
                 {actionLabel(t, reviewPlan.action)} · <span className="font-mono">{reviewPlan.displayName} {reviewPlan.version}</span>
               </p>
               <p className="text-xs text-muted-foreground">
-                {t("gitMarketplace.review.boundTo", { commit: shortSha(reviewPlan.versionCommit) })} ·{" "}
+                {/* A folder's pin is its contents revision (`local-…`, §18.4.3), not a commit. */}
+                {reviewPlan.versionCommit.startsWith("local-")
+                  ? t("gitMarketplace.review.boundToFolder", { revision: shortSha(reviewPlan.versionCommit) })
+                  : t("gitMarketplace.review.boundTo", { commit: shortSha(reviewPlan.versionCommit) })} ·{" "}
                 {t("gitMarketplace.review.expiresIn", { time: `${Math.floor(expiresIn / 60)}:${String(expiresIn % 60).padStart(2, "0")}` })}
               </p>
               {isUpdatePlan(reviewPlan) && (
@@ -481,6 +575,11 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
               {reviewPlan.rungs.length > 0 && (
                 <Section title={t("gitMarketplace.detail.delivery")}>
                   <RungList rungs={reviewPlan.rungs} />
+                  {reviewPlan.notInstalled.length > 0 && (
+                    <p className="mt-1 break-words text-xs text-muted-foreground" data-testid="git-marketplace:review:not-installed">
+                      {t("gitMarketplace.review.notInstalled", { entries: reviewPlan.notInstalled.join(", ") })}
+                    </p>
+                  )}
                 </Section>
               )}
               {isSwitch && reviewPlan.action.action === "switch" && (
@@ -560,7 +659,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
         </div>
 
         <DialogFooter className="flex-wrap gap-2">
-          {stage.stage === "detail" && target && state && !entry?.required && installedHere && (
+          {stage.stage === "detail" && target && !required && ((state && installedHere) || installedWithoutDetail !== null) && (
             <div className="mr-auto flex items-center gap-2">
               {(target.key.kind === "mcp" || target.key.kind === "agent-plugin") && (
                 <label className="flex items-center gap-1.5 text-xs">
@@ -573,7 +672,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
               </Button>
             </div>
           )}
-          {entry?.required && <span className="mr-auto text-xs text-muted-foreground">{t("gitMarketplace.state.required")}</span>}
+          {required && <span className="mr-auto text-xs text-muted-foreground" data-testid="git-marketplace:sheet:required">{t("gitMarketplace.state.required")}</span>}
           {stage.stage === "detail" && target && state && (state.state === "install" || state.state === "update" || state.state === "installed-elsewhere") && (
             <Button
               size="sm"

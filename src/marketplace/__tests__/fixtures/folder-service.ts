@@ -8,7 +8,7 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
-import type { InstallerPorts } from "../../app/ports.js";
+import type { InstalledRecord, InstallerPorts } from "../../app/ports.js";
 import { MarketplaceService } from "../../app/service.js";
 import type { StagedContent } from "../../content/store.js";
 import type { ExportLimits } from "../../git/repo.js";
@@ -43,6 +43,11 @@ export async function folderService(options: {
   home?: string;
   policy?: TestPolicySource;
   now?: () => Date;
+  /**
+   * Content packages already installed, as the content store lists them: the
+   * service reads this array, and an uninstall removes its entry.
+   */
+  installed?: InstalledRecord[];
 }): Promise<FolderServiceHarness> {
   const policy = options.policy ?? policySource();
   const gitCalls: string[] = [];
@@ -80,7 +85,7 @@ export async function folderService(options: {
       uninstall: async () => {},
     },
     content: {
-      list: async () => [],
+      list: async () => [...(options.installed ?? [])],
       installedComponents: async () => {
         throw new Error("no installed components in folder tests");
       },
@@ -88,7 +93,11 @@ export async function folderService(options: {
         content.push(staged);
         return { action: { action: "install" } };
       },
-      uninstall: async () => {},
+      uninstall: async (kind, name) => {
+        const installed = options.installed ?? [];
+        const at = installed.findIndex((item) => item.kind === kind && item.name === name);
+        if (at >= 0) installed.splice(at, 1);
+      },
     },
     mcp: {
       list: async () => [],
