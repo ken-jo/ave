@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { checkResolvedAveHome } from "./ave-home-test-guard.js";
 
 /**
  * Single source of truth for the Ave user-data root.
@@ -16,13 +17,18 @@ import { join, resolve } from "node:path";
  * `homedir()` directly, otherwise the env override leaks past one feature.
  */
 export function aveHome(): string {
-  return resolve(process.env.AVE_HOME ?? defaultAveHome());
+  const home = resolve(process.env.AVE_HOME ?? defaultAveHome());
+  // Every store resolves its directory here, so this is where the test runner
+  // stops a test that would reach the person's real data (an audit log, a
+  // session, a secret). A no-op in the app: see ave-home-test-guard.ts.
+  checkResolvedAveHome(home);
+  return home;
 }
 
 /**
  * The default root, `~/.ave`, whatever `AVE_HOME` says. For the few callers
  * that must recognise the person's real data even while a test or an e2e run
- * points `AVE_HOME` elsewhere (the sandbox sweep's test guard).
+ * points `AVE_HOME` elsewhere.
  */
 export function defaultAveHome(): string {
   return resolve(join(homedir(), ".ave"));

@@ -137,7 +137,7 @@ export interface RoutinesFile {
 // Consolidated under ~/.ave/routine/ namespace (single directory for all
 // routine data). Resolved through the feature-namespace helper so the
 // `~/.ave/<feature>/` location stays the single source of truth.
-const DEFAULT_PATH = join(openFeatureNamespace("routine").dir, "routines.json");
+const defaultPath = (): string => join(openFeatureNamespace("routine").dir, "routines.json");
 
 function workspaceRootKey(root: string): string | null {
   try {
@@ -213,7 +213,7 @@ export class RoutinesStore {
   private loaded = false;
   private readonly filePath: string;
 
-  constructor(filePath: string = DEFAULT_PATH) {
+  constructor(filePath: string = defaultPath()) {
     this.filePath = filePath;
   }
 

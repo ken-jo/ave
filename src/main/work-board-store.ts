@@ -109,7 +109,7 @@ const MAX_PROJECT_NAME_LENGTH = 120;
 
 // Resolved through the feature-namespace helper so `~/.ave/work-board/` stays
 // the single source of truth for the board file location.
-const DEFAULT_PATH = join(openFeatureNamespace("work-board").dir, "board.json");
+const defaultPath = (): string => join(openFeatureNamespace("work-board").dir, "board.json");
 
 const VALID_STATUSES: readonly WorkItemStatusStored[] = [
   "planned",
@@ -295,7 +295,7 @@ export class WorkBoardStore {
    *   `~/.ave/work-board/board.json` namespace path; tests inject a temp path.
    * @param now injectable clock for deterministic overdue/timestamp tests.
    */
-  constructor(filePath: string = DEFAULT_PATH, now: () => number = () => Date.now()) {
+  constructor(filePath: string = defaultPath(), now: () => number = () => Date.now()) {
     this.filePath = filePath;
     this.activity = createDirStorage(dirname(filePath));
     this.now = now;

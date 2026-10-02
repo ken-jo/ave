@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
+import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
@@ -1570,20 +1571,11 @@ export function appOwnedSandboxTempRoot(): string {
  * so a test resolving them to the developer's real `~/.ave` would put its
  * directories where a running app's boot deletes them — and a test that swept
  * would delete the running app's. A test process without that directory is
- * refused rather than defaulted to the real one.
+ * refused rather than defaulted to the real one. The app's seam answers
+ * nothing (`ave-home-test-guard.ts`); only the test runner's guard does.
  */
 function sandboxPrivateBase(): string {
-  if (process.env.VITEST !== undefined && process.env.AVE_HOME === undefined) {
-    const base = process.env.AVE_TEST_SANDBOX_BASE;
-    if (base === undefined || base === "") {
-      throw new Error(
-        "sandbox: a test process with no AVE_HOME needs AVE_TEST_SANDBOX_BASE, which vitest.globalSetup.ts sets, "
-          + "so no test resolves the real ~/.ave/sandbox",
-      );
-    }
-    return base;
-  }
-  return join(aveHome(), "sandbox");
+  return testSandboxPrivateBase() ?? join(aveHome(), "sandbox");
 }
 
 /**

@@ -1,5 +1,7 @@
+import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizePath } from "vite";
 import { defineConfig } from "vitest/config";
 import { electronNodeNormalizerArgument } from "./scripts/run-vitest-under-electron.mjs";
 import { documentGuardImportArgument } from "./scripts/lib/document-consumer-node-options.mjs";
@@ -35,12 +37,48 @@ const rendererTestGlobs = [
  * All other tests (main/boot/ipc-bridge) continue to run under the default
  * node environment.
  */
+// The app's no-op seam and the test runner's guard that takes its place (see
+// both files). Matched on the file itself — device and inode — when a module
+// loads, so every way of reaching the seam (a relative or absolute specifier,
+// a link of another name, `vi.importActual`) loads the guard, and no build,
+// which never runs this configuration, ever bundles it.
+const AVE_HOME_GUARD_SEAM_PATH = rootPath("src/shared/ave-home-test-guard.ts");
+const AVE_HOME_GUARD_SEAM = statSync(AVE_HOME_GUARD_SEAM_PATH, { bigint: true });
+const AVE_HOME_GUARD_SEAM_REAL = realpathSync.native(AVE_HOME_GUARD_SEAM_PATH);
+const AVE_HOME_GUARD = normalizePath(rootPath("src/__tests__/support/ave-home-isolation-guard.ts"));
+
+function isAveHomeGuardSeam(id: string): boolean {
+  const file = id.split("?")[0];
+  if (!path.isAbsolute(file)) return false;
+  try {
+    // A file system without inode numbers reports 0 for every file; the real
+    // path is the identity there.
+    if (AVE_HOME_GUARD_SEAM.ino === 0n) return realpathSync.native(file) === AVE_HOME_GUARD_SEAM_REAL;
+    const stat = statSync(file, { bigint: true });
+    return stat.ino === AVE_HOME_GUARD_SEAM.ino && stat.dev === AVE_HOME_GUARD_SEAM.dev;
+  } catch (error) {
+    // Not a file on disk (a virtual module): not the seam.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    throw error;
+  }
+}
+
 export default defineConfig({
   plugins: [{
     name: "document-input-guard",
     enforce: "pre",
     load(id) {
       assertAllowedDocumentRead(id.split("?")[0]);
+    },
+  }, {
+    name: "ave-home-isolation-guard",
+    enforce: "pre",
+    load(id) {
+      // The seam's module becomes the guard's exports, so the guard stays one
+      // module with its own imports resolved from where it lives.
+      if (isAveHomeGuardSeam(id)) return `export * from ${JSON.stringify(AVE_HOME_GUARD)};\n`;
+      return null;
     },
   }],
   test: {
@@ -107,7 +145,7 @@ export default defineConfig({
           // pins the runtime locale to Korean for node tests so the existing
           // Korean assertions stay valid. Tests that specifically exercise the
           // i18n default (English) set the locale explicitly themselves.
-          setupFiles: ["./src/i18n/testing/vitest-ambient-intl.ts"],
+          setupFiles: ["./src/i18n/testing/vitest-ambient-intl.ts", "./src/__tests__/vitest-ave-home.ts"],
           include: [
             `src/**/__tests__/${testFileGlob}`,
             `test/${testFileGlob}`,
@@ -128,7 +166,7 @@ export default defineConfig({
           // t() with English as the default; this setup pins the runtime
           // locale to Korean for renderer tests so the existing Korean
           // assertions stay valid (and also verify the Korean catalog wiring).
-          setupFiles: ["./src/i18n/testing/vitest-ambient-intl.ts"],
+          setupFiles: ["./src/i18n/testing/vitest-ambient-intl.ts", "./src/__tests__/vitest-ave-home.ts"],
           include: rendererTestGlobs,
           exclude: baseExclude,
         },
