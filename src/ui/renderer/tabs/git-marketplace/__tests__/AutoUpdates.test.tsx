@@ -20,8 +20,8 @@ function renderTab(fake: ReturnType<typeof fakeMarketplace>, overrides: Paramete
   const { api } = makeMockAveApi(overrides);
   Object.assign(api, { gitMarketplace: fake.market, gitRuntime: fake.gitRuntime });
   const onOpenPluginSettings = vi.fn();
-  render(<GitMarketplaceTab api={api as unknown as AveApi} onOpenMcpSettings={vi.fn()} onOpenPluginSettings={onOpenPluginSettings} />);
-  return { api, onOpenPluginSettings };
+  const view = render(<GitMarketplaceTab api={api as unknown as AveApi} onOpenMcpSettings={vi.fn()} onOpenPluginSettings={onOpenPluginSettings} />);
+  return { api, onOpenPluginSettings, unmount: view.unmount };
 }
 
 const team = source({ id: "team", label: "Team tools" });
@@ -343,6 +343,176 @@ describe("required installs not met (§10.2)", () => {
     await screen.findByTestId("git-marketplace:updates:unmet:corp:mcp:notes");
     expect(screen.queryByTestId("git-marketplace:updates:unmet:confirm-remove")).toBeNull();
     expect(fake.market.uninstall).not.toHaveBeenCalled();
+  });
+
+  describe("each Remove click is its own question (§10.2)", () => {
+    const row = (from: string | null) => unmet("not-in-catalog", "notes", {
+      key: { sourceId: "corp", kind: "mcp", name: "notes" },
+      installedFrom: from === null ? null : { sourceId: from, label: from, removal: "confirm" },
+    });
+    const push = (fake: ReturnType<typeof fakeMarketplace>, ...rows: UnmetRequirementView[]) => fake.emitUpdateStatus(updateStatus({ unmetRequired: rows }));
+    const id = (name: string) => `git-marketplace:updates:unmet:${name}`;
+    type Reply = Parameters<ReturnType<typeof fakeMarketplace>["market"]["uninstall"]["mockResolvedValueOnce"]>[0];
+    /** The uninstall replies the test sends when it chooses, in call order. */
+    function heldReplies(fake: ReturnType<typeof fakeMarketplace>) {
+      const replies: Array<(reply: Reply) => void> = [];
+      fake.market.uninstall.mockImplementation(() => new Promise<Reply>((resolve) => { replies.push(resolve); }));
+      return replies;
+    }
+    const removed = (from: string) => ({ ok: true as const, value: { key: { sourceId: from, kind: "mcp" as const, name: "notes" }, keptDataDir: null } });
+    const conflict = { ok: false as const, code: "PACKAGE_ID_CONFLICT" as const, message: "mcp notes is not installed from team" };
+    async function opened(fake: ReturnType<typeof fakeMarketplace>) {
+      const result = renderTab(fake);
+      fireEvent.click(await screen.findByTestId(id("remove")));
+      expect(screen.getByTestId(id("confirm-remove"))).toHaveTextContent("team에서 설치된 notes");
+      return result;
+    }
+
+    it("is invalidated by every status it receives: one naming another install and the next naming its own again, before a frame, still remove nothing", async () => {
+      const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row("team")] }) });
+      await opened(fake);
+      act(() => {
+        push(fake, row("replacement"));
+        push(fake, row("team"));
+      });
+      expect(screen.getByTestId(id("remove-changed"))).toBeInTheDocument();
+      expect(screen.queryByTestId(id("confirm-uninstall"))).toBeNull();
+      expect(fake.market.uninstall).not.toHaveBeenCalled();
+    });
+
+    it("ends when its row goes, also when the row comes back before a frame", async () => {
+      const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row("team")] }) });
+      await opened(fake);
+      act(() => {
+        push(fake);
+        push(fake, row("team"));
+      });
+      expect(screen.getByTestId("git-marketplace:updates:unmet:corp:mcp:notes")).toBeInTheDocument();
+      expect(screen.queryByTestId(id("confirm-remove"))).toBeNull();
+      expect(fake.market.uninstall).not.toHaveBeenCalled();
+    });
+
+    it("judges a click by what is true when it lands: a confirmation drawn before a status that changed the install, or before Cancel, sends nothing", async () => {
+      const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row("team")] }) });
+      await opened(fake);
+      const confirm = screen.getByTestId(id("confirm-uninstall"));
+      act(() => {
+        push(fake, row("replacement"));
+        fireEvent.click(confirm);
+      });
+      expect(fake.market.uninstall).not.toHaveBeenCalled();
+      // A new question, cancelled, and its confirmation clicked before the frame that drops it.
+      fireEvent.click(screen.getByTestId(id("remove")));
+      const cancel = within(screen.getByTestId(id("confirm-remove"))).getByText("취소");
+      const again = screen.getByTestId(id("confirm-uninstall"));
+      act(() => {
+        fireEvent.click(cancel);
+        fireEvent.click(again);
+      });
+      expect(screen.queryByTestId(id("confirm-remove"))).toBeNull();
+      expect(fake.market.uninstall).not.toHaveBeenCalled();
+    });
+
+    it("sends once for a double click", async () => {
+      const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row("team")] }) });
+      const replies = heldReplies(fake);
+      await opened(fake);
+      const confirm = screen.getByTestId(id("confirm-uninstall"));
+      act(() => {
+        fireEvent.click(confirm);
+        fireEvent.click(confirm);
+      });
+      expect(fake.market.uninstall).toHaveBeenCalledOnce();
+      expect(screen.getByTestId(id("confirm-uninstall"))).toBeDisabled();
+      await act(async () => replies[0]!(removed("team")));
+      expect(screen.queryByTestId(id("confirm-remove"))).toBeNull();
+    });
+
+    it("takes a reply only for the question that sent it: an earlier request's failure neither frees nor fails the new one, and shows as its own", async () => {
+      const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row("team")] }) });
+      const replies = heldReplies(fake);
+      await opened(fake);
+      fireEvent.click(screen.getByTestId(id("confirm-uninstall")));
+      act(() => push(fake, row("replacement")));
+      expect(screen.getByTestId(id("remove-changed"))).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId(id("remove")));
+      expect(screen.getByTestId(id("confirm-remove"))).toHaveTextContent("replacement에서 설치된 notes");
+      fireEvent.click(screen.getByTestId(id("confirm-uninstall")));
+      expect(fake.market.uninstall.mock.calls.map(([request]) => request.sourceId)).toEqual(["team", "replacement"]);
+      await act(async () => replies[0]!(conflict));
+      // The new request is still running, and its question shows no failure of its own.
+      expect(screen.getByTestId(id("confirm-uninstall"))).toBeDisabled();
+      expect(screen.queryByTestId(id("remove-error"))).toBeNull();
+      expect(within(screen.getByTestId(id("earlier-remove"))).getByTestId(id("earlier-remove-error"))).toBeInTheDocument();
+      expect(screen.getByTestId(id("earlier-remove"))).toHaveTextContent("앞서 요청한 team의 notes 제거를 마치지 못했습니다:");
+      // Its own reply ends it; the earlier failure stays until Remove is chosen again.
+      await act(async () => replies[1]!(removed("replacement")));
+      expect(screen.queryByTestId(id("confirm-remove"))).toBeNull();
+      expect(screen.getByTestId(id("earlier-remove"))).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId(id("remove")));
+      expect(screen.queryByTestId(id("earlier-remove"))).toBeNull();
+    });
+
+    it("drops an earlier request's failure with its row, also when the row comes back before a frame", async () => {
+      const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row("team")] }) });
+      const replies = heldReplies(fake);
+      await opened(fake);
+      fireEvent.click(screen.getByTestId(id("confirm-uninstall")));
+      act(() => push(fake, row("replacement")));
+      fireEvent.click(screen.getByTestId(id("remove")));
+      await act(async () => replies[0]!(conflict));
+      expect(screen.getByTestId(id("earlier-remove"))).toBeInTheDocument();
+      act(() => {
+        push(fake);
+        push(fake, row(null));
+      });
+      expect(screen.getByTestId("git-marketplace:updates:unmet:corp:mcp:notes")).toBeInTheDocument();
+      expect(screen.queryByTestId(id("earlier-remove"))).toBeNull();
+      expect(screen.queryByTestId(id("confirm-remove"))).toBeNull();
+    });
+
+    it("takes a reply only for the question that sent it: an earlier request's success does not close the new question", async () => {
+      const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row("team")] }) });
+      const replies = heldReplies(fake);
+      await opened(fake);
+      fireEvent.click(screen.getByTestId(id("confirm-uninstall")));
+      act(() => push(fake, row("replacement")));
+      fireEvent.click(screen.getByTestId(id("remove")));
+      await act(async () => replies[0]!(removed("team")));
+      expect(screen.getByTestId(id("confirm-remove"))).toHaveTextContent("replacement에서 설치된 notes");
+      expect(screen.getByTestId(id("confirm-uninstall"))).toBeEnabled();
+      expect(screen.queryByTestId(id("earlier-remove"))).toBeNull();
+    });
+
+    it("keeps a newer question open against a Close drawn for the one it replaced", async () => {
+      const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row("team")] }) });
+      await opened(fake);
+      act(() => push(fake, row("replacement")));
+      const close = within(screen.getByTestId(id("confirm-remove"))).getByText("닫기");
+      const remove = screen.getByTestId(id("remove"));
+      act(() => {
+        fireEvent.click(remove);
+        fireEvent.click(close);
+      });
+      expect(screen.getByTestId(id("confirm-remove"))).toHaveTextContent("replacement에서 설치된 notes");
+    });
+
+    it("lets a request finish after the card is gone", async () => {
+      const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row("team")] }) });
+      const replies = heldReplies(fake);
+      const errors = vi.spyOn(console, "error");
+      try {
+        const { unmount } = await opened(fake);
+        fireEvent.click(screen.getByTestId(id("confirm-uninstall")));
+        unmount();
+        await act(async () => replies[0]!(conflict));
+        await act(async () => push(fake, row(null)));
+        expect(errors).not.toHaveBeenCalled();
+        expect(fake.market.uninstall).toHaveBeenCalledOnce();
+      } finally {
+        errors.mockRestore();
+      }
+    });
   });
 
   it("shows a refresh that failed, whether the reply failed or the source's sync did, and nothing once every requirement is met", async () => {

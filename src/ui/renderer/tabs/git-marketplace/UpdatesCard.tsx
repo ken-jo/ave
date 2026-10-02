@@ -12,7 +12,7 @@
  *
  * It reads `updates:status` once and then follows `marketplace:update-status`.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { NativeSelect, NativeSelectOption } from "../../../../components/ui/native-select.js";
 import { Switch } from "../../../../components/ui/switch.js";
@@ -97,6 +97,80 @@ function updateReasonLabel(t: Translate, reason: UpdateReason): string {
 
 function rowId(key: PackageKeyView): string {
   return `${key.sourceId}:${key.kind}:${key.name}`;
+}
+
+/**
+ * One Remove click's question (§10.2): which row, and the exact install the
+ * row named then (`target`, by the id its view carried). The confirmation
+ * removes that install and nothing else; `generation` tells this question
+ * from every other, so a reply answers only the question that sent it.
+ * `invalidated` once any status received since the click named another
+ * install for the row, even if a later one names this one again: the
+ * question then removes nothing.
+ */
+type RemovalQuestion = {
+  generation: number;
+  rowId: string;
+  target: PackageKeyView;
+  label: string;
+  busy: boolean;
+  failure: GitMarketplaceFailure | null;
+  invalidated: boolean;
+};
+
+/** The open question, and how a request of an earlier question that no longer is open failed. */
+type Removal = {
+  question: RemovalQuestion | null;
+  earlier: { rowId: string; label: string; failure: GitMarketplaceFailure } | null;
+  generations: number;
+};
+
+type RemovalEvent =
+  | { type: "status"; status: UpdateStatusView }
+  | { type: "open"; rowId: string; target: PackageKeyView; label: string }
+  | { type: "close"; generation: number }
+  | { type: "send"; question: RemovalQuestion }
+  | { type: "reply"; generation: number; rowId: string; label: string; result: GitMarketplaceResult<unknown> };
+
+/**
+ * The removal after one event. Every status the card receives is applied,
+ * one at a time, also those received together before the next frame: a
+ * status without the row ends its question (a row coming back asks afresh);
+ * one that names another install for it invalidates it.
+ */
+function stepRemoval(state: Removal, event: RemovalEvent): Removal {
+  const { question } = state;
+  switch (event.type) {
+    case "status": {
+      const row = (id: string) => event.status.unmetRequired.find((item) => rowId(item.key) === id);
+      let next = question;
+      if (question) {
+        const now = row(question.rowId);
+        if (!now) next = null;
+        else if (now.installedFrom?.sourceId !== question.target.sourceId) next = { ...question, invalidated: true };
+      }
+      return { ...state, question: next, earlier: state.earlier && row(state.earlier.rowId) ? state.earlier : null };
+    }
+    case "open": {
+      // Choosing Remove again starts afresh: an earlier request's failure has been seen.
+      const generation = state.generations + 1;
+      return {
+        generations: generation,
+        question: { generation, rowId: event.rowId, target: event.target, label: event.label, busy: false, failure: null, invalidated: false },
+        earlier: null,
+      };
+    }
+    case "close":
+      return question?.generation === event.generation ? { ...state, question: null } : state;
+    case "send":
+      return { ...state, question: { ...event.question, busy: true, failure: null } };
+    case "reply":
+      if (question?.generation === event.generation) {
+        return { ...state, question: event.result.ok ? null : { ...question, busy: false, failure: event.result } };
+      }
+      // A reply to a question since replaced or ended: it changes no open question. Its failure is still shown, as its own.
+      return event.result.ok ? state : { ...state, earlier: { rowId: event.rowId, label: event.label, failure: event.result } };
+  }
 }
 
 function toggled(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
@@ -219,44 +293,48 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
   /** The source a required install's *Refresh source* is syncing, and how the last refresh ended for its source. */
   const [refreshing, setRefreshing] = useState<string | null>(null);
   const [refreshed, setRefreshed] = useState<{ sourceId: string; failure: GitMarketplaceFailure } | { sourceId: string; source: SourceView } | null>(null);
-  /** The install in the way a row asks to uninstall directly, and how that ended. */
   /**
-   * The removal the user chose: the row, and the exact install it named when
-   * Remove was clicked — never re-read from a later status. `changed` once a
-   * status names another install (or none) there: the question then removes
-   * nothing until Remove is chosen again.
+   * The install in the way a row asks to uninstall directly ({@link Removal}).
+   * Kept outside React's batching: each status, click and reply steps it the
+   * moment it happens, so a click from a frame drawn before the latest status
+   * or a second click before the next frame is judged by what is true now.
    */
-  const [removing, setRemoving] = useState<{
-    rowId: string;
-    target: PackageKeyView;
-    label: string;
-    busy: boolean;
-    failure: GitMarketplaceFailure | null;
-    changed: boolean;
-  } | null>(null);
+  const removal = useRef<Removal>({ question: null, earlier: null, generations: 0 });
+  const [, redraw] = useReducer((frame: number) => frame + 1, 0);
+  const step = (event: RemovalEvent) => {
+    removal.current = stepRemoval(removal.current, event);
+    redraw();
+  };
   // A pushed status is newer than an answer still on its way.
   const pushed = useRef(false);
+
+  /** Every status the card is given: shown, and applied to the open removal. */
+  const receive = (next: UpdateStatusView) => {
+    setStatus(next);
+    step({ type: "status", status: next });
+  };
 
   useEffect(() => {
     let alive = true;
     void api.updateStatus().then((result) => {
       if (!alive || pushed.current) return;
-      if (result.ok) setStatus(result.value);
+      if (result.ok) receive(result.value);
       else setFailure(result);
     });
     const off = api.onUpdateStatus((next) => {
       pushed.current = true;
-      setStatus(next);
+      receive(next);
       setFailure(null);
     });
     return () => {
       alive = false;
       off();
     };
+    // `receive` only sets state and steps a ref: the subscription follows the api alone.
   }, [api]);
 
   const answer = (result: GitMarketplaceResult<UpdateStatusView>) => {
-    if (result.ok) setStatus(result.value);
+    if (result.ok) receive(result.value);
     else setFailure(result);
   };
 
@@ -328,29 +406,20 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
     }
   };
 
-  // A status that drops the row ends its question (a row coming back asks afresh); one that names another install marks it changed.
-  useEffect(() => {
-    if (!removing || status === null) return;
-    const row = status.unmetRequired.find((item) => rowId(item.key) === removing.rowId);
-    if (!row) {
-      setRemoving(null);
-      return;
-    }
-    const changed = row.installedFrom?.sourceId !== removing.target.sourceId;
-    if (changed && !removing.changed) setRemoving({ ...removing, changed: true });
-  }, [status, removing]);
-
   /**
-   * Uninstall the install the user chose, when no package sheet can load
-   * for it: by the key it had then, which main checks against the install
-   * record, so an install that changed meanwhile is refused, not removed.
+   * Uninstall the install question `generation` named, when no package sheet
+   * can load for it: by the key it had then, which main checks against the
+   * install record, so an install that changed meanwhile is refused, not
+   * removed. Only that question, still open, unchanged and not already
+   * sending, sends; its reply answers it alone.
    */
-  const removeInstalled = async () => {
-    if (!removing || removing.changed) return;
-    const { target } = removing;
-    setRemoving({ ...removing, busy: true, failure: null });
+  const removeInstalled = async (generation: number) => {
+    const question = removal.current.question;
+    if (question?.generation !== generation || question.busy || question.invalidated) return;
+    const { target, rowId: id, label } = question;
+    step({ type: "send", question });
     const result = await api.uninstall({ ...target, ...(target.kind === "mcp" || target.kind === "agent-plugin" ? { removeData: false } : {}) });
-    setRemoving((current) => (current?.rowId !== removing.rowId ? current : result.ok ? null : { ...current, busy: false, failure: result }));
+    step({ type: "reply", generation, rowId: id, label, result });
   };
 
   /** How the last refresh of this row's source ended, when it did not end well. */
@@ -378,7 +447,8 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
     const userAction = unmet.reason === "source-hidden" || unmet.reason === "rollout-held";
     const other = unmet.installedFrom;
     const otherKey = other ? { sourceId: other.sourceId, kind: unmet.key.kind, name: unmet.key.name } : null;
-    const confirming = removing !== null && removing.rowId === id ? removing : null;
+    const { question, earlier } = removal.current;
+    const confirming = question?.rowId === id ? question : null;
     return (
       <li key={id} className="space-y-1 px-3 py-2 text-xs" data-testid={`git-marketplace:updates:unmet:${id}`}>
         <div className="flex flex-wrap items-center gap-2">
@@ -401,10 +471,10 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
               size="sm"
               variant="outline"
               className="h-6 px-2 text-[11px]"
-              disabled={confirming !== null && !confirming.changed}
+              disabled={confirming !== null && !confirming.invalidated}
               onClick={() => (other.removal === "sheet"
                 ? onOpenPackage(otherKey)
-                : setRemoving({ rowId: id, target: otherKey, label: other.label, busy: false, failure: null, changed: false }))}
+                : step({ type: "open", rowId: id, target: otherKey, label: other.label }))}
               data-testid="git-marketplace:updates:unmet:remove"
             >
               {t("gitMarketplace.updates.unmet.remove", { source: other.label })}
@@ -419,7 +489,7 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
         )}
         {confirming && (
           <div className="space-y-2 rounded-md border bg-background px-3 py-2" data-testid="git-marketplace:updates:unmet:confirm-remove">
-            {confirming.changed ? (
+            {confirming.invalidated ? (
               <p role="alert" data-testid="git-marketplace:updates:unmet:remove-changed">
                 {t("gitMarketplace.updates.unmet.removeChanged", { name: unmet.key.name, source: confirming.label })}
               </p>
@@ -428,15 +498,21 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
             )}
             {confirming.failure && <MarketplaceProblem failure={confirming.failure} subject={OTHER_SUBJECT} testId="git-marketplace:updates:unmet:remove-error" />}
             <div className="flex gap-2">
-              <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={confirming.busy} onClick={() => setRemoving(null)}>
-                {confirming.changed ? t("common.close") : t("common.cancel")}
+              <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={confirming.busy} onClick={() => step({ type: "close", generation: confirming.generation })}>
+                {confirming.invalidated ? t("common.close") : t("common.cancel")}
               </Button>
-              {!confirming.changed && (
-                <Button size="sm" variant="destructive" className="h-6 px-2 text-[11px]" disabled={confirming.busy} onClick={() => void removeInstalled()} data-testid="git-marketplace:updates:unmet:confirm-uninstall">
+              {!confirming.invalidated && (
+                <Button size="sm" variant="destructive" className="h-6 px-2 text-[11px]" disabled={confirming.busy} onClick={() => void removeInstalled(confirming.generation)} data-testid="git-marketplace:updates:unmet:confirm-uninstall">
                   {t("gitMarketplace.uninstall.button")}
                 </Button>
               )}
             </div>
+          </div>
+        )}
+        {earlier?.rowId === id && (
+          <div className="space-y-1" data-testid="git-marketplace:updates:unmet:earlier-remove">
+            <span className="block text-warning">{t("gitMarketplace.updates.unmet.earlierRemoveFailed", { name: unmet.key.name, source: earlier.label })}</span>
+            <MarketplaceProblem failure={earlier.failure} subject={OTHER_SUBJECT} testId="git-marketplace:updates:unmet:earlier-remove-error" />
           </div>
         )}
         {refreshProblem(unmet)}

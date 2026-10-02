@@ -693,6 +693,7 @@ export const en = {
   "gitMarketplace.updates.unmet.refreshFailed": "Refreshing {source} did not finish: {status}.",
   "gitMarketplace.updates.unmet.confirmRemove": "Uninstall {name}, installed from {source}? It is not the one your organization requires. Removing it does not install that one: the requirement stays unmet until {required} can provide it.",
   "gitMarketplace.updates.unmet.removeChanged": "{name} is no longer installed from {source} as it was when you chose Remove, so nothing was removed. Choose Remove again if a package is still in the way.",
+  "gitMarketplace.updates.unmet.earlierRemoveFailed": "Removing {name} from {source}, asked for earlier, did not finish:",
 };
 
 export const ko: Record<keyof typeof en, string> = {
@@ -1386,4 +1387,5 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.updates.unmet.refreshFailed": "{source} 새로 고침을 마치지 못했습니다: {status}.",
   "gitMarketplace.updates.unmet.confirmRemove": "{source}에서 설치된 {name}을(를) 제거할까요? 조직이 요구하는 패키지가 아닙니다. 제거해도 그 패키지가 설치되지는 않으며, {required}에서 받을 수 있을 때까지 필수 요건은 충족되지 않은 채로 남습니다.",
   "gitMarketplace.updates.unmet.removeChanged": "제거를 고를 때와 달리 {name}이(가) 더는 {source}에서 설치되어 있지 않아 아무것도 제거하지 않았습니다. 여전히 가로막는 패키지가 있으면 다시 제거를 고르세요.",
+  "gitMarketplace.updates.unmet.earlierRemoveFailed": "앞서 요청한 {source}의 {name} 제거를 마치지 못했습니다:",
 };

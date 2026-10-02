@@ -148,14 +148,29 @@ interface CapturedFolder {
 }
 
 /**
+ * The install a decision was made for (§18.6): the installed receipt's
+ * stored source, version, origin commit and digest, or null when nothing is
+ * installed. A decision made before its package lock holds under the lock
+ * only while the package is still installed with this identity.
+ */
+type InstallIdentity = { sourceId: string | null; version: string | null; originCommit: string | null; digest: string | null } | null;
+
+function installIdentity(record: InstalledRecord | null): InstallIdentity {
+  return record ? { sourceId: record.sourceId, version: record.version, originCommit: record.originCommit, digest: record.digest ?? null } : null;
+}
+
+/**
  * A plan, and the digest of the policy it was made under (§18.6): executed
- * under another, it expires. `folder` is set for a plan from a folder source.
+ * under another, it expires. So does a plan from a source whose package is
+ * no longer installed as it was when the plan was made (`installed`): a
+ * direct server.json binds nothing and replaces only an unbound server
+ * (§8.1). `folder` is set for a plan from a folder source.
  */
 type HeldPlan = { policyDigest: string; folder: CapturedFolder | null } & (
   /** `staged`: an update review staged the artifact (§18.7.3); execution installs exactly it and downloads nothing. */
-  | { kind: "plugin"; plan: PluginInstallPlan; switchSource: boolean; staged?: StagedPluginArtifact }
-  | { kind: "content"; plan: ContentPlan; switchSource: boolean; adopt: boolean; staged?: StagedContent }
-  | { kind: "mcp"; resolved: ResolvedMcpServer; switchSource: boolean }
+  | { kind: "plugin"; plan: PluginInstallPlan; switchSource: boolean; installed: InstallIdentity; staged?: StagedPluginArtifact }
+  | { kind: "content"; plan: ContentPlan; switchSource: boolean; adopt: boolean; installed: InstallIdentity; staged?: StagedContent }
+  | { kind: "mcp"; resolved: ResolvedMcpServer; switchSource: boolean; installed: InstallIdentity }
   | { kind: "mcp-unbound"; name: string; runtime: McpRuntimeSpec }
 );
 
@@ -269,6 +284,21 @@ export type AppliedState =
 
 /** An installed version its own source revokes. */
 type RevokedInstall = { record: InstalledRecord & { sourceId: string }; revocation: RevocationFeed["rules"][number] };
+
+/** The sources installs are bound to, as a revocation feed reads them (§10.4): an install without one has none to read. */
+function boundOf(records: readonly InstalledRecord[]): BoundInstall[] {
+  return records.flatMap((item) => (item.sourceId !== null ? [{ kind: item.kind, name: item.name, sourceId: item.sourceId }] : []));
+}
+
+/** The installs whose installed version their own source's rules revoke (§10.4); one without a source or a readable version is revoked by none. */
+function revokedAmong(records: readonly InstalledRecord[], rules: RevocationFeed["rules"]): RevokedInstall[] {
+  return records.flatMap((record) => {
+    if (record.sourceId === null || record.version === null) return [];
+    const sourceId = record.sourceId;
+    const revocation = findRevocation(record.kind, record.name, record.version, rules.filter((rule) => rule.sourceId === sourceId));
+    return revocation ? [{ record: { ...record, sourceId }, revocation }] : [];
+  });
+}
 
 type HeldPreview = {
   sourceId: string;
@@ -1693,7 +1723,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     let rungs: InstallPlanView["rungs"] = [];
     if (row.kind === "plugin") {
       const plan = planPluginVersion(row, version);
-      held = { kind: "plugin", plan, switchSource, policyDigest, folder: captured };
+      held = { kind: "plugin", plan, switchSource, policyDigest, folder: captured, installed: installIdentity(installed) };
       rungs = await this.pluginRungViews(source, version, row.package.path);
     } else if (row.kind === "mcp") {
       const plan = { ...base, kind: "mcp" as const };
@@ -1701,10 +1731,10 @@ export class MarketplaceService implements RetirementEntryLookup {
       const resolve = (access: RepositoryAccess) => resolveMcpPackage(plan, { ...access, limits: this.options.mcpLimits, workRoot: this.options.workRoot });
       const resolved = captured ? await resolve(captured.access) : await this.repositoryAccess(row.sourceId, resolve);
       this.options.installers.mcp.admit(row.name, resolved.runtime);
-      held = { kind: "mcp", resolved, switchSource, policyDigest, folder: captured };
+      held = { kind: "mcp", resolved, switchSource, policyDigest, folder: captured, installed: installIdentity(installed) };
       mcp = mcpRuntimeView(resolved.runtime);
     } else {
-      held = { kind: "content", plan: base as ContentPlan, switchSource, adopt, policyDigest, folder: captured };
+      held = { kind: "content", plan: base as ContentPlan, switchSource, adopt, policyDigest, folder: captured, installed: installIdentity(installed) };
     }
     // One live plan per package: planning again (another version, a source switch) drops the older one and its files.
     const ticket = this.plans.issue(held, `${row.sourceId}:${row.kind}:${row.name}`);
@@ -1840,6 +1870,11 @@ export class MarketplaceService implements RetirementEntryLookup {
     }
     // The gates must judge the new install by the source it is about to be bound to, not the one it leaves.
     const target = heldTarget(held);
+    // Made before this package's lock (a review, a boot pass's required switch): what it decided, and what a
+    // review showed, was judged against the install then. Another install or removal since leaves it stale (§18.6).
+    if (held.kind !== "mcp-unbound" && !isDeepStrictEqual(installIdentity(await this.installed(target.kind, target.name)), held.installed)) {
+      throw new MarketplaceError("PLAN_EXPIRED", `${target.kind} ${target.name} changed since plan ${planId} was made`, { detail: { reason: "package-changed" } });
+    }
     const key = keyOf(target.kind, target.name);
     this.pendingBindings.set(key, target);
     try {
@@ -2254,15 +2289,8 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   /** The installed packages whose installed version their own source revokes (§10.4), by kind and name; read only. */
   private async revokedInstalls(installed: readonly InstalledRecord[]): Promise<Set<string>> {
-    const bound: BoundInstall[] = installed.flatMap((item) => (item.sourceId !== null ? [{ kind: item.kind, name: item.name, sourceId: item.sourceId }] : []));
-    const feed = await revocationFeed(bound, (sourceId) => this.options.syncer.readRevocations(sourceId, this.options.versionContext().appVersion));
-    const revoked = new Set<string>();
-    for (const record of installed) {
-      if (record.sourceId === null || record.version === null) continue;
-      const sourceId = record.sourceId;
-      if (findRevocation(record.kind, record.name, record.version, feed.rules.filter((rule) => rule.sourceId === sourceId))) revoked.add(keyOf(record.kind, record.name));
-    }
-    return revoked;
+    const feed = await revocationFeed(boundOf(installed), (sourceId) => this.options.syncer.readRevocations(sourceId, this.options.versionContext().appVersion));
+    return new Set(revokedAmong(installed, feed.rules).map(({ record }) => keyOf(record.kind, record.name)));
   }
 
   /** Whether the managed policy refuses installs from this source now: a direct source under `allowDirectInstall: false`, a folder it blocks (§18.6). */
@@ -2652,25 +2680,16 @@ export class MarketplaceService implements RetirementEntryLookup {
    * never returned: what it replaces is judged once it lands.
    */
   private async feedOnce(): Promise<RevokedInstall[]> {
-    const installed = await this.installedAll();
     const pending = [...this.pendingBindings.entries()];
     const inFlight = new Set(pending.map(([key]) => key));
-    const bound: BoundInstall[] = installed.flatMap((item) =>
-      item.sourceId !== null && !inFlight.has(keyOf(item.kind, item.name)) ? [{ kind: item.kind, name: item.name, sourceId: item.sourceId }] : [],
-    );
+    const settled = (await this.installedAll()).filter((item) => !inFlight.has(keyOf(item.kind, item.name)));
+    const bound = boundOf(settled);
     for (const [, binding] of pending) {
       if (binding.sourceId !== null) bound.push({ kind: binding.kind, name: binding.name, sourceId: binding.sourceId });
     }
     const feed = await revocationFeed(bound, (sourceId) => this.options.syncer.readRevocations(sourceId, this.options.versionContext().appVersion));
     await this.options.revocations.apply(feed);
-    const revoked: RevokedInstall[] = [];
-    for (const record of installed) {
-      if (record.sourceId === null || record.version === null || inFlight.has(keyOf(record.kind, record.name))) continue;
-      const sourceId = record.sourceId;
-      const revocation = findRevocation(record.kind, record.name, record.version, feed.rules.filter((rule) => rule.sourceId === sourceId));
-      if (revocation) revoked.push({ record: { ...record, sourceId }, revocation });
-    }
-    return revoked;
+    return revokedAmong(settled, feed.rules);
   }
 
   /**
@@ -2678,34 +2697,64 @@ export class MarketplaceService implements RetirementEntryLookup {
    * revocation, and a `disable` one for a kind outside {@link GATED_KINDS}.
    * A package a `requiredInstalls` entry locks ({@link lockedByPolicy}) stays
    * (gated where its kind has a gate) and is reported.
+   *
+   * The feed judged each install before its package lock: under the lock
+   * (§18.6) the decision holds only for the install it was made for
+   * ({@link InstallIdentity}). One installed otherwise meanwhile (an update,
+   * a reinstall) is judged again, by its own source's revocations as they
+   * are now, and is removed only if they revoke it too; otherwise it stays
+   * and the log says why.
    */
   private async applyRevocations(): Promise<RevokedPackageView[]> {
     const report: RevokedPackageView[] = [];
-    for (const { record, revocation } of await this.feedRevocations()) {
-      if (revocation.action === "disable" && GATED_KINDS.has(record.kind)) continue;
-      // The report is a view (the boot notice, its Uninstall button): it carries the view id (§18.8).
-      const item = { key: { sourceId: this.viewSourceId(record.sourceId), kind: record.kind, name: record.name }, version: record.version!, reason: revocation.reason };
-      try {
-        const retaining = record.kind === "plugin" && revocation.action === "uninstall" && revocation.successors !== undefined;
-        if (retaining) {
-          await this.options.installers.plugin.retire(record.name, {
-            reason: "revoked", sourceId: record.sourceId, successors: revocation.successors!,
-          });
+    for (const decided of await this.feedRevocations()) {
+      const { kind, name } = decided.record;
+      await this.withPackage(kind, name, async () => {
+        const now = await this.installed(kind, name);
+        const current = isDeepStrictEqual(installIdentity(now), installIdentity(decided.record)) ? decided : await this.revocationNow(now);
+        if (typeof current === "string") {
+          this.options.log.warn(`revocation of ${this.viewSourceId(decided.record.sourceId)}/${kind}/${name}@${decided.record.version} skipped: ${current}`);
+          return;
         }
-        if (lockedByPolicy(this.policy, record.kind, record.name, record.sourceId)) {
-          report.push({ ...item, outcome: "required" });
-          continue;
-        }
-        // Stored identity: the record's source id as stored, never resolved as a view id (§18.8).
-        // Under the package's lock (§18.6), as every uninstall: an update of the same package waits for it.
-        await this.withPackage(record.kind, record.name, () => this.uninstallStoredNow({ sourceId: record.sourceId, kind: record.kind, name: record.name }, false,
-          retaining ? { retain: { reason: "revoked" } } : undefined));
-        report.push({ ...item, outcome: "uninstalled" });
-      } catch (error) {
-        report.push({ ...item, outcome: "failed", message: errorMessage(error) });
-      }
+        const entry = await this.enforceRevocation(current);
+        if (entry) report.push(entry);
+      });
     }
     return report;
+  }
+
+  /**
+   * The revocation an install's own source carries for its version now
+   * (§10.4), or why there is none to enforce: the reason a revocation
+   * decided for an earlier install is skipped.
+   */
+  private async revocationNow(record: InstalledRecord | null): Promise<RevokedInstall | string> {
+    if (!record) return "it was removed before its turn";
+    const feed = await revocationFeed(boundOf([record]), (sourceId) => this.options.syncer.readRevocations(sourceId, this.options.versionContext().appVersion));
+    const [revoked] = revokedAmong([record], feed.rules);
+    return revoked ?? `it was replaced by ${record.version} ${record.sourceId === null ? "without a source" : `from ${this.viewSourceId(record.sourceId)}`}, which its own source's revocations do not cover`;
+  }
+
+  /** Enforce one revocation under its package's lock; null when a gate holds it (nothing to report). */
+  private async enforceRevocation({ record, revocation }: RevokedInstall): Promise<RevokedPackageView | null> {
+    if (revocation.action === "disable" && GATED_KINDS.has(record.kind)) return null;
+    // The report is a view (the boot notice, its Uninstall button): it carries the view id (§18.8).
+    const item = { key: { sourceId: this.viewSourceId(record.sourceId), kind: record.kind, name: record.name }, version: record.version!, reason: revocation.reason };
+    try {
+      const retaining = record.kind === "plugin" && revocation.action === "uninstall" && revocation.successors !== undefined;
+      if (retaining) {
+        await this.options.installers.plugin.retire(record.name, {
+          reason: "revoked", sourceId: record.sourceId, successors: revocation.successors!,
+        });
+      }
+      if (lockedByPolicy(this.policy, record.kind, record.name, record.sourceId)) return { ...item, outcome: "required" };
+      // Stored identity: the record's source id as stored, never resolved as a view id (§18.8).
+      await this.uninstallStoredNow({ sourceId: record.sourceId, kind: record.kind, name: record.name }, false,
+        retaining ? { retain: { reason: "revoked" } } : undefined);
+      return { ...item, outcome: "uninstalled" };
+    } catch (error) {
+      return { ...item, outcome: "failed", message: errorMessage(error) };
+    }
   }
 
   /** Drop every preview clone and plan (shutdown). */

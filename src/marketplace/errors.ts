@@ -290,7 +290,9 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
   /**
    * `policy-changed`: the plan was made under another managed policy (§18.6).
    * `package-changed`: an approval of an installed package's components named
-   * a generation, or digests, that are no longer installed (§18.7.5).
+   * a generation, or digests, that are no longer installed (§18.7.5); or a
+   * plan's package is no longer installed as it was when the plan was made
+   * (§18.6).
    */
   PLAN_EXPIRED: {
     "policy-changed": {},
