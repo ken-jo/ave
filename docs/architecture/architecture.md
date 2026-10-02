@@ -292,8 +292,14 @@ resolve from disk, such as the dock's plugin shell and preload URLs, is resolved
 by main and passed as window arguments. Each preload's file and sandbox mode
 come from one table, `src/shared/preload-bundles.json`: windows spread
 `preloadPreferences(id)`, sessions register `preloadBundlePath(id)`, and webpack
-builds a preload config per row (`test/scripts/preload-sites.test.ts` holds
-the window and session sites to the table). The `build` composite's
+builds a preload config per row. `test/scripts/preload-sites.test.ts` reads
+`src` with the TypeScript compiler and holds every window, session preload,
+guest `sandbox` assignment and `<webview>` creation to the table; a form it
+cannot prove, such as a computed key or a helper-built `webPreferences`, fails.
+Each window that hosts `<webview>`s sets its guests' preferences in main: the
+main window routes plugin, MCP app and side-browser partitions to their guards
+(`configureMainWindowWebviewAttach`) and refuses any other partition. The
+`build` composite's
 `check-sandboxed-preloads` fails when webpack builds a preload the table does
 not classify, or when a row has no webpack config or asset copy behind it. It
 then checks the built file of each table row: a sandboxed one may require only

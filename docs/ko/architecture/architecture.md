@@ -2436,8 +2436,12 @@ MCP 앱 webview 다. 독의 plugin shell / preload URL 처럼 디스크에서 �
 main 이 풀어 창 인자(`additionalArguments`, `src/shared/floating-dock-args.ts`)로 넘긴다.
 preload 마다 파일과 sandbox 모드는 표 하나(`src/shared/preload-bundles.json`)에서 온다.
 창은 `preloadPreferences(id)` 를 펼치고, session 은 `preloadBundlePath(id)` 를 등록하며,
-webpack 은 행마다 preload config 를 만든다(`test/scripts/preload-sites.test.ts` 가 창·session
-지점을 표에 묶는다). `build` 안의 `check-sandboxed-preloads` 는 표가 분류하지 않은 preload 를
+webpack 은 행마다 preload config 를 만든다. `test/scripts/preload-sites.test.ts` 는 `src` 를
+TypeScript 컴파일러로 읽어 모든 창, session preload, guest `sandbox` 대입, `<webview>` 생성을 표에
+묶는다. 계산된 키나 helper 가 만든 `webPreferences` 처럼 증명할 수 없는 형태는 실패한다.
+`<webview>` 를 품는 창은 guest 설정을 main 에서 정한다. 메인 창은 plugin, MCP 앱, side browser
+partition 을 각자의 guard 로 넘기고(`configureMainWindowWebviewAttach`) 그 밖의 partition 은
+거부한다. `build` 안의 `check-sandboxed-preloads` 는 표가 분류하지 않은 preload 를
 webpack 이 빌드하거나, 어떤 행 뒤에 webpack config 나 asset 복사가 없으면 실패한다. 그다음 표의
 각 행이 빌드한 파일을 검사한다. sandboxed preload 는 위 모듈만 require 할 수 있고 chunk 를
 가질 수 없다. `dist/src` 의 다른 파일은 훑지 않는다.

@@ -150,6 +150,9 @@ async function mountSlot({ panelId, pluginId, entryUrl, partition, title, height
   const view = document.createElement("webview");
   view.setAttribute("src", dock.pluginShellUrl);
   view.setAttribute("preload", dock.pluginPreloadUrl);
+  // A request, as in the main window's plugin host: main's attach guard sets
+  // these anyway, from the preload table.
+  view.setAttribute("webpreferences", "contextIsolation=yes,nodeIntegration=no,sandbox=yes");
   // Main's, verbatim. The name is a hash of the plugin id and this file
   // deliberately does not know the rule — see the surface's comment.
   view.setAttribute("partition", partition);
