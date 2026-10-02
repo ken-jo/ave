@@ -550,7 +550,8 @@ describe("content package store", () => {
       const files = [
         { path: "plugin.json", data: Buffer.from(pluginJson(version)) },
         { path: `ai.agent-connector.ave/${component}s.json`, data: Buffer.from(hooksJson) },
-        { path: "server/hook.sh", data: Buffer.from(program), executable: true },
+        // Not executable: an executable bit does not survive install on Windows (see the hook test above), and the binding does not need it.
+        { path: "server/hook.sh", data: Buffer.from(program) },
         { path: "skills/helper/assets/rules.txt", data: Buffer.from(rules) },
         { path: "skills/helper/SKILL.md", data: Buffer.from("---\nname: helper\ndescription: Helper\n---\nHelp.\n") },
       ];
@@ -562,7 +563,7 @@ describe("content package store", () => {
       repo.commitEntries([
         { path: "marketplace.2.json", mode: "100644", content: text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "agent-plugin", name: "review-plugin", path: packagePath }] }) },
         { path: `${packagePath}/ave-package.json`, mode: "100644", content: descriptor("agent-plugin", "review-plugin", version, { manifest: "plugin.json", components }) },
-        ...files.map((file) => ({ path: `${packagePath}/${file.path}`, mode: file.executable ? "100755" : "100644", content: file.data.toString("utf8") })),
+        ...files.map((file) => ({ path: `${packagePath}/${file.path}`, mode: "100644", content: file.data.toString("utf8") })),
       ], "publish");
       const syncer = await open(name);
       const staged = await stage(syncer, (await rows(syncer))[0]!);

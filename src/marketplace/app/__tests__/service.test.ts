@@ -1038,7 +1038,8 @@ describe("MarketplaceService", () => {
     const before = feeds.length;
     // This sync's feed revokes the installed 1.0.0; its enforcement waits for the lock.
     const first = service.refresh("acme-tools");
-    await vi.waitFor(() => expect(feeds.length).toBeGreaterThan(before));
+    // A sync takes longer than waitFor's one-second default on a slow disk (Windows).
+    await vi.waitFor(() => expect(feeds.length).toBeGreaterThan(before), { timeout: 20_000 });
     // The source withdraws the rule, and a second sync publishes that snapshot while the first still waits.
     createRevocations(acme, []);
     let published!: () => void;
@@ -1070,7 +1071,8 @@ describe("MarketplaceService", () => {
     const before = feeds.length;
     // This sync's feed revokes 1.0.0; its enforcement waits for the lock.
     const refresh = service.refresh("acme-tools");
-    await vi.waitFor(() => expect(feeds.length).toBeGreaterThan(before));
+    // A sync takes longer than waitFor's one-second default on a slow disk (Windows).
+    await vi.waitFor(() => expect(feeds.length).toBeGreaterThan(before), { timeout: 20_000 });
     // The next read of the source's revocations, the one under the lock, fails.
     const syncer = (service as unknown as { options: { syncer: { readRevocations: (...args: unknown[]) => Promise<unknown> } } }).options.syncer;
     vi.spyOn(syncer, "readRevocations").mockRejectedValueOnce(new Error("snapshot is not valid JSON"));
