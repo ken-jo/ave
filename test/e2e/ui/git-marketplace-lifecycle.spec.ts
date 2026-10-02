@@ -639,8 +639,11 @@ test.describe('git marketplace folder source (design §18.4)', () => {
     const chosen = join(parent, token);
     const sibling = join(parent, scrubDiagnosticSecrets(token));
     cpSync(folder, chosen, { recursive: true });
-    cpSync(folder, sibling, { recursive: true });
-    writeFileSync(join(sibling, 'marketplace.2.json'), readFileSync(join(sibling, 'marketplace.2.json'), 'utf8').replace('Team Folder', 'Different Folder'));
+    // A Windows name cannot hold the mask's `:`: there the masked text names no folder, and only the chosen one is read.
+    if (process.platform !== 'win32') {
+      cpSync(folder, sibling, { recursive: true });
+      writeFileSync(join(sibling, 'marketplace.2.json'), readFileSync(join(sibling, 'marketplace.2.json'), 'utf8').replace('Team Folder', 'Different Folder'));
+    }
     try {
       await app.evaluate(({ dialog }, path) => {
         dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [path] })) as typeof dialog.showOpenDialog;

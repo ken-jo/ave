@@ -1354,22 +1354,26 @@ describe("folder dialogs (§18.9)", () => {
     const marketplace = (displayName: string) => ({
       "marketplace.2.json": `${JSON.stringify({ schemaVersion: 2, name: "team", displayName, packages: [] })}\n`,
     });
+    // A Windows name cannot hold the mask's `:`, so there the masked text names no folder at all.
+    const SIBLING_POSSIBLE = process.platform !== "win32";
     let root: string;
     let parent: string;
-    let harness: Awaited<ReturnType<typeof folderService>>;
+    let harness: Awaited<ReturnType<typeof folderService>> | undefined;
     beforeEach(async () => {
+      harness = undefined;
       root = mkdtempSync(join(tmpdir(), "ave-git-marketplace-pick-"));
       parent = mkdtempSync(join(tmpdir(), "ave-git-marketplace-pick-parent-"));
-      // The chosen folder, named like a token, and a sibling literally named as its masked text.
+      // The chosen folder, named like a token, and (where a name can hold it) a sibling literally named as its masked text.
       writeFolderFiles(join(parent, TOKEN), marketplace("Team Folder"));
-      writeFolderFiles(join(parent, scrubDiagnosticSecrets(TOKEN)), marketplace("Different Folder"));
-      harness = await folderService({ root, folders: nodeFolders() });
+      if (SIBLING_POSSIBLE) writeFolderFiles(join(parent, scrubDiagnosticSecrets(TOKEN)), marketplace("Different Folder"));
+      const built = await folderService({ root, folders: nodeFolders() });
+      harness = built;
       handlers.clear();
       const { registerGitMarketplaceHandlers } = await import("../git-marketplace.js");
       registerGitMarketplaceHandlers(
         { auditLogger: { log: vi.fn() }, getMainWindow: () => null, settingsService: { get: () => ({}) } } as never,
         async () => null,
-        async () => ({ service: harness.service as never, close: async () => {} }),
+        async () => ({ service: built.service as never, close: async () => {} }),
         async () => {},
         root,
         new AbortController(),
@@ -1377,7 +1381,7 @@ describe("folder dialogs (§18.9)", () => {
     });
     afterEach(() => {
       vi.restoreAllMocks();
-      harness.service.close();
+      harness?.service.close();
       rmSync(root, { recursive: true, force: true });
       rmSync(parent, { recursive: true, force: true });
     });
@@ -1398,10 +1402,11 @@ describe("folder dialogs (§18.9)", () => {
       const added = await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: (preview as { value: { previewId: string } }).value.previewId, id: "team" });
       expect(added).toMatchObject({ ok: true, value: { id: "team", transport: "folder" } });
       // Main stored the folder it chose.
-      expect(harness.registry.get("team")).toMatchObject({ transport: "folder", path: realpathSync(join(parent, TOKEN)) });
-      // The masked text typed as an address is the user's text: it names the sibling.
+      expect(harness!.registry.get("team")).toMatchObject({ transport: "folder", path: realpathSync.native(join(parent, TOKEN)) });
+      // The masked text typed as an address is the user's text: it names the sibling, or (on Windows) no folder.
       const typed = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: chosen.display, auth: "none" });
-      expect(typed).toMatchObject({ ok: true, value: { marketplace: { displayName: "Different Folder" } } });
+      if (SIBLING_POSSIBLE) expect(typed).toMatchObject({ ok: true, value: { marketplace: { displayName: "Different Folder" } } });
+      else expect(typed).toMatchObject({ ok: false });
     });
 
     it.each([
