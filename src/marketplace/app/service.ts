@@ -2478,9 +2478,10 @@ export class MarketplaceService implements RetirementEntryLookup {
     // The other sources' rows as a package sheet reads them: an installed package's hidden source included.
     const listed = await this.rows(new Set(others.map((item) => item.sourceId)));
     // A source's name as Sources shows it, whether it is shown or hidden; a removed one has only its id.
+    // A source's name as Sources shows it, shown or hidden; a removed or quarantined one goes by the id its view carries.
     const label = async (sourceId: string) => {
       const source = this.registry.get(sourceId);
-      if (!source) return sourceId;
+      if (!source || this.registry.isQuarantined(source)) return this.viewSourceId(sourceId);
       const read = await this.read(source);
       return sourceLabel(source, "problem" in read ? null : read.snapshot);
     };
@@ -2505,12 +2506,11 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   /** A same-named install from another source, as {@link UnmetRequirementInstall} describes it. */
   private async installedFromView(sourceId: string, key: PackageKey, rows: readonly CatalogRow[], label: (sourceId: string) => Promise<string>): Promise<UnmetRequirementInstall> {
-    const source = this.registry.get(sourceId);
-    if (source && this.registry.isQuarantined(source)) {
-      return { sourceId: this.handleOf(sourceId), label: sourceLabel(source, null), removal: "confirm" };
-    }
-    const sheet = source !== undefined && rows.some((row) => row.sourceId === sourceId && row.kind === key.kind && row.name === key.name);
-    return { sourceId, label: await label(sourceId), removal: sheet ? "sheet" : "confirm" };
+    // `rows` hold no quarantined source's (§18.8), so a sheet opens only for a served source that lists the package.
+    const sheet = rows.some((row) => row.sourceId === sourceId && row.kind === key.kind && row.name === key.name);
+    // The id the receipt's stored id is viewed as, derived from that id alone: uninstall takes it back whether
+    // the source is still there, quarantined or removed (§18.8).
+    return { sourceId: this.viewSourceId(sourceId), label: await label(sourceId), removal: sheet ? "sheet" : "confirm" };
   }
 
   /**

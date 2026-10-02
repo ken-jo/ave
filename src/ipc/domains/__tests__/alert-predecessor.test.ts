@@ -270,7 +270,7 @@ describe("the service's package locks (§18.6)", () => {
     let child!: Promise<unknown>;
     const holder = h.market.asOneOperation(async (lease) => {
       // Not awaited: the holder returns while the uninstall runs under its lease.
-      child = h.market.uninstall({ kind: "plugin", name: "retired-plugin", sourceId: "trusted" }, { lease }).then(() => order.push("uninstall"));
+      child = h.market.uninstallInstalled({ kind: "plugin", name: "retired-plugin", sourceId: "trusted" }, { lease }).then(() => order.push("uninstall"));
       await inside;
     }, packageOf("retired-plugin"));
     const later = h.market.asOneOperation(async () => { order.push("later caller"); }, packageOf("retired-plugin"));
@@ -289,11 +289,11 @@ describe("the service's package locks (§18.6)", () => {
 
   it("refuses an uninstall under a lease that does not hold its package: every package is declared up front", async () => {
     const h = harness();
-    await expect(h.market.asOneOperation((lease) => h.market.uninstall({ kind: "plugin", name: "retired-plugin", sourceId: "trusted" }, { lease }), packageOf("successor")))
+    await expect(h.market.asOneOperation((lease) => h.market.uninstallInstalled({ kind: "plugin", name: "retired-plugin", sourceId: "trusted" }, { lease }), packageOf("successor")))
       .rejects.toThrow(/lock contract: plugin:retired-plugin asked for under the lease of plugin:successor; a lease runs work only under keys it holds/u);
     let kept!: Parameters<Parameters<typeof h.market.asOneOperation>[0]>[0];
     await h.market.asOneOperation(async (lease) => { kept = lease; }, packageOf("retired-plugin"));
-    await expect(h.market.uninstall({ kind: "plugin", name: "retired-plugin", sourceId: "trusted" }, { lease: kept }))
+    await expect(h.market.uninstallInstalled({ kind: "plugin", name: "retired-plugin", sourceId: "trusted" }, { lease: kept }))
       .rejects.toThrow(/lock contract: the lease of plugin:retired-plugin was passed after its holder returned/u);
     await expect(h.market.asOneOperation(async () => {}, [])).rejects.toThrow(/lock contract: a lock request names no key/u);
     expect(h.uninstall).not.toHaveBeenCalled();

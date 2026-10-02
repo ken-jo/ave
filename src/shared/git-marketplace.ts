@@ -723,8 +723,10 @@ export interface UnmetRequirementView {
 
 /**
  * The same-named install from another source, as its receipt binds it.
- * `sourceId` is what `uninstall` takes for it: the source's id, or for a
- * quarantined source the handle its Sources row carries (§18.8). `removal`
+ * `sourceId` is what `uninstall` takes for it: the id the receipt's stored
+ * source id is viewed as — itself, or the handle of a credential-shaped one
+ * (§18.8), derived from that id alone, so it stays valid after the source
+ * is removed. `removal`
  * says where it is removed: its package sheet, when that source's catalog
  * still lists it; otherwise (the source removed, quarantined, unreadable,
  * or no longer listing it) no sheet can load, and the row asks to

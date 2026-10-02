@@ -220,7 +220,20 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
   const [refreshing, setRefreshing] = useState<string | null>(null);
   const [refreshed, setRefreshed] = useState<{ sourceId: string; failure: GitMarketplaceFailure } | { sourceId: string; source: SourceView } | null>(null);
   /** The install in the way a row asks to uninstall directly, and how that ended. */
-  const [removing, setRemoving] = useState<{ id: string; busy: boolean; failure: GitMarketplaceFailure | null } | null>(null);
+  /**
+   * The removal the user chose: the row, and the exact install it named when
+   * Remove was clicked — never re-read from a later status. `changed` once a
+   * status names another install (or none) there: the question then removes
+   * nothing until Remove is chosen again.
+   */
+  const [removing, setRemoving] = useState<{
+    rowId: string;
+    target: PackageKeyView;
+    label: string;
+    busy: boolean;
+    failure: GitMarketplaceFailure | null;
+    changed: boolean;
+  } | null>(null);
   // A pushed status is newer than an answer still on its way.
   const pushed = useRef(false);
 
@@ -315,11 +328,29 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
     }
   };
 
-  /** Uninstall the same-named install in a requirement's way, when no package sheet can load for it. */
-  const removeInstalled = async (id: string, key: PackageKeyView) => {
-    setRemoving({ id, busy: true, failure: null });
-    const result = await api.uninstall({ ...key, ...(key.kind === "mcp" || key.kind === "agent-plugin" ? { removeData: false } : {}) });
-    setRemoving(result.ok ? null : { id, busy: false, failure: result });
+  // A status that drops the row ends its question (a row coming back asks afresh); one that names another install marks it changed.
+  useEffect(() => {
+    if (!removing || status === null) return;
+    const row = status.unmetRequired.find((item) => rowId(item.key) === removing.rowId);
+    if (!row) {
+      setRemoving(null);
+      return;
+    }
+    const changed = row.installedFrom?.sourceId !== removing.target.sourceId;
+    if (changed && !removing.changed) setRemoving({ ...removing, changed: true });
+  }, [status, removing]);
+
+  /**
+   * Uninstall the install the user chose, when no package sheet can load
+   * for it: by the key it had then, which main checks against the install
+   * record, so an install that changed meanwhile is refused, not removed.
+   */
+  const removeInstalled = async () => {
+    if (!removing || removing.changed) return;
+    const { target } = removing;
+    setRemoving({ ...removing, busy: true, failure: null });
+    const result = await api.uninstall({ ...target, ...(target.kind === "mcp" || target.kind === "agent-plugin" ? { removeData: false } : {}) });
+    setRemoving((current) => (current?.rowId !== removing.rowId ? current : result.ok ? null : { ...current, busy: false, failure: result }));
   };
 
   /** How the last refresh of this row's source ended, when it did not end well. */
@@ -347,7 +378,7 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
     const userAction = unmet.reason === "source-hidden" || unmet.reason === "rollout-held";
     const other = unmet.installedFrom;
     const otherKey = other ? { sourceId: other.sourceId, kind: unmet.key.kind, name: unmet.key.name } : null;
-    const confirming = removing?.id === id;
+    const confirming = removing !== null && removing.rowId === id ? removing : null;
     return (
       <li key={id} className="space-y-1 px-3 py-2 text-xs" data-testid={`git-marketplace:updates:unmet:${id}`}>
         <div className="flex flex-wrap items-center gap-2">
@@ -370,8 +401,10 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
               size="sm"
               variant="outline"
               className="h-6 px-2 text-[11px]"
-              disabled={confirming}
-              onClick={() => (other.removal === "sheet" ? onOpenPackage(otherKey) : setRemoving({ id, busy: false, failure: null }))}
+              disabled={confirming !== null && !confirming.changed}
+              onClick={() => (other.removal === "sheet"
+                ? onOpenPackage(otherKey)
+                : setRemoving({ rowId: id, target: otherKey, label: other.label, busy: false, failure: null, changed: false }))}
               data-testid="git-marketplace:updates:unmet:remove"
             >
               {t("gitMarketplace.updates.unmet.remove", { source: other.label })}
@@ -384,17 +417,25 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
             {t("gitMarketplace.updates.unmet.installedFrom", { name: unmet.key.name, source: other.label })}
           </span>
         )}
-        {other && otherKey && confirming && (
+        {confirming && (
           <div className="space-y-2 rounded-md border bg-background px-3 py-2" data-testid="git-marketplace:updates:unmet:confirm-remove">
-            <p>{t("gitMarketplace.updates.unmet.confirmRemove", { name: unmet.key.name, source: other.label, required: unmet.sourceLabel })}</p>
-            {removing.failure && <MarketplaceProblem failure={removing.failure} subject={OTHER_SUBJECT} testId="git-marketplace:updates:unmet:remove-error" />}
+            {confirming.changed ? (
+              <p role="alert" data-testid="git-marketplace:updates:unmet:remove-changed">
+                {t("gitMarketplace.updates.unmet.removeChanged", { name: unmet.key.name, source: confirming.label })}
+              </p>
+            ) : (
+              <p>{t("gitMarketplace.updates.unmet.confirmRemove", { name: unmet.key.name, source: confirming.label, required: unmet.sourceLabel })}</p>
+            )}
+            {confirming.failure && <MarketplaceProblem failure={confirming.failure} subject={OTHER_SUBJECT} testId="git-marketplace:updates:unmet:remove-error" />}
             <div className="flex gap-2">
-              <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={removing.busy} onClick={() => setRemoving(null)}>
-                {t("common.cancel")}
+              <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={confirming.busy} onClick={() => setRemoving(null)}>
+                {confirming.changed ? t("common.close") : t("common.cancel")}
               </Button>
-              <Button size="sm" variant="destructive" className="h-6 px-2 text-[11px]" disabled={removing.busy} onClick={() => void removeInstalled(id, otherKey)} data-testid="git-marketplace:updates:unmet:confirm-uninstall">
-                {t("gitMarketplace.uninstall.button")}
-              </Button>
+              {!confirming.changed && (
+                <Button size="sm" variant="destructive" className="h-6 px-2 text-[11px]" disabled={confirming.busy} onClick={() => void removeInstalled()} data-testid="git-marketplace:updates:unmet:confirm-uninstall">
+                  {t("gitMarketplace.uninstall.button")}
+                </Button>
+              )}
             </div>
           </div>
         )}

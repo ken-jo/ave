@@ -688,10 +688,11 @@ export const en = {
   "gitMarketplace.updates.unmet.refreshing": "Refreshing…",
   "gitMarketplace.updates.unmet.remove": "Remove from {source}…",
   "gitMarketplace.updates.unmet.sourceHidden": "Your organization requires {name} from {source}, but that marketplace is hidden, so nothing installs from it. Show it again in Sources.",
-  "gitMarketplace.updates.unmet.rolloutHeld": "Your organization requires {name} from {source}, but it is not offered to this device yet: it is rolling out gradually, or only a pre-release exists. It installs once the rollout reaches this device.",
+  "gitMarketplace.updates.unmet.rolloutHeld": "Your organization requires {name} from {source}, but no release of it is offered to this device yet: its releases are held back by a gradual rollout, or are pre-releases. It can install once a release is offered to this device.",
   "gitMarketplace.updates.unmet.notOffered": "Your organization requires {name} from {source}, but that marketplace offers no release of it to this installation.",
   "gitMarketplace.updates.unmet.refreshFailed": "Refreshing {source} did not finish: {status}.",
-  "gitMarketplace.updates.unmet.confirmRemove": "Uninstall {name}, installed from {source}? Then Ave can install the one {required} provides.",
+  "gitMarketplace.updates.unmet.confirmRemove": "Uninstall {name}, installed from {source}? It is not the one your organization requires. Removing it does not install that one: the requirement stays unmet until {required} can provide it.",
+  "gitMarketplace.updates.unmet.removeChanged": "{name} is no longer installed from {source} as it was when you chose Remove, so nothing was removed. Choose Remove again if a package is still in the way.",
 };
 
 export const ko: Record<keyof typeof en, string> = {
@@ -1380,8 +1381,9 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.updates.unmet.refreshing": "새로 고치는 중…",
   "gitMarketplace.updates.unmet.remove": "{source}에서 제거…",
   "gitMarketplace.updates.unmet.sourceHidden": "조직이 {source}의 {name}을(를) 필수로 지정했지만, 이 마켓플레이스가 숨겨져 있어 아무것도 설치되지 않습니다. 소스에서 다시 표시하세요.",
-  "gitMarketplace.updates.unmet.rolloutHeld": "조직이 {source}의 {name}을(를) 필수로 지정했지만, 아직 이 기기에 제공되지 않습니다: 단계적으로 배포 중이거나 사전 릴리스만 있습니다. 배포가 이 기기에 닿으면 설치됩니다.",
+  "gitMarketplace.updates.unmet.rolloutHeld": "조직이 {source}의 {name}을(를) 필수로 지정했지만, 아직 이 기기에 제공되는 릴리스가 없습니다: 릴리스가 단계적 배포로 보류되었거나 사전 릴리스뿐입니다. 이 기기에 릴리스가 제공되면 설치할 수 있습니다.",
   "gitMarketplace.updates.unmet.notOffered": "조직이 {source}의 {name}을(를) 필수로 지정했지만, 이 마켓플레이스가 이 설치에 제공하는 릴리스가 없습니다.",
   "gitMarketplace.updates.unmet.refreshFailed": "{source} 새로 고침을 마치지 못했습니다: {status}.",
-  "gitMarketplace.updates.unmet.confirmRemove": "{source}에서 설치된 {name}을(를) 제거할까요? 그러면 Ave가 {required}의 패키지를 설치할 수 있습니다.",
+  "gitMarketplace.updates.unmet.confirmRemove": "{source}에서 설치된 {name}을(를) 제거할까요? 조직이 요구하는 패키지가 아닙니다. 제거해도 그 패키지가 설치되지는 않으며, {required}에서 받을 수 있을 때까지 필수 요건은 충족되지 않은 채로 남습니다.",
+  "gitMarketplace.updates.unmet.removeChanged": "제거를 고를 때와 달리 {name}이(가) 더는 {source}에서 설치되어 있지 않아 아무것도 제거하지 않았습니다. 여전히 가로막는 패키지가 있으면 다시 제거를 고르세요.",
 };

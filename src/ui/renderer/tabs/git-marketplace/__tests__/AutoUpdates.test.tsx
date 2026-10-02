@@ -257,7 +257,8 @@ describe("required installs not met (§10.2)", () => {
     expect(reason("audit")).toHaveTextContent("이 마켓플레이스 목록에 없습니다.");
     expect(reason("review")).toHaveTextContent("Ave 9.0.0 이상이 필요합니다.");
     // A rollout hold is availability, not this app's version.
-    expect(reason("beta")).toHaveTextContent("아직 이 기기에 제공되지 않습니다: 단계적으로 배포 중이거나 사전 릴리스만 있습니다. 배포가 이 기기에 닿으면 설치됩니다.");
+    // Waiting alone is not promised to help: a pre-release-only catalog needs a release offered to this device.
+    expect(reason("beta")).toHaveTextContent("아직 이 기기에 제공되는 릴리스가 없습니다: 릴리스가 단계적 배포로 보류되었거나 사전 릴리스뿐입니다. 이 기기에 릴리스가 제공되면 설치할 수 있습니다.");
     expect(reason("beta")).not.toHaveTextContent("Ave");
     expect(reason("triage")).toHaveTextContent("이 마켓플레이스가 이 설치에 제공하는 릴리스가 없습니다.");
     // The administrator is the next step except where the user acts (a hidden source) or waits (a rollout).
@@ -297,7 +298,8 @@ describe("required installs not met (§10.2)", () => {
     const row = await screen.findByTestId("git-marketplace:updates:unmet:corp:mcp:notes");
     fireEvent.click(within(row).getByTestId("git-marketplace:updates:unmet:remove"));
     const confirm = within(row).getByTestId("git-marketplace:updates:unmet:confirm-remove");
-    expect(confirm).toHaveTextContent(`${from.label}에서 설치된 notes을(를) 제거할까요? 그러면 Ave가 Corp tools의 패키지를 설치할 수 있습니다.`);
+    // Removing it does not make the required source able to provide the package: the copy promises no install.
+    expect(confirm).toHaveTextContent(`${from.label}에서 설치된 notes을(를) 제거할까요? 조직이 요구하는 패키지가 아닙니다. 제거해도 그 패키지가 설치되지는 않으며, Corp tools에서 받을 수 있을 때까지 필수 요건은 충족되지 않은 채로 남습니다.`);
     expect(screen.queryByTestId("git-marketplace:sheet")).toBeNull();
     expect(fake.market.packageDetail).not.toHaveBeenCalled();
     // A failed uninstall says why and keeps the question open.
@@ -306,6 +308,41 @@ describe("required installs not met (§10.2)", () => {
     fireEvent.click(within(confirm).getByTestId("git-marketplace:updates:unmet:confirm-uninstall"));
     await waitFor(() => expect(within(row).queryByTestId("git-marketplace:updates:unmet:confirm-remove")).toBeNull());
     expect(fake.market.uninstall).toHaveBeenLastCalledWith({ sourceId: from.sourceId, kind: "mcp", name: "notes", removeData: false });
+  });
+
+  it("binds an open removal to the install it named: a status naming another install changes it into a notice, and nothing is removed", async () => {
+    const row = (from: string) => unmet("not-in-catalog", "notes", { key: { sourceId: "corp", kind: "mcp", name: "notes" }, installedFrom: { sourceId: from, label: from, removal: "confirm" } });
+    const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row("team")] }) });
+    renderTab(fake);
+    const card = await screen.findByTestId("git-marketplace:updates:unmet:corp:mcp:notes");
+    fireEvent.click(within(card).getByTestId("git-marketplace:updates:unmet:remove"));
+    expect(within(card).getByTestId("git-marketplace:updates:unmet:confirm-remove")).toHaveTextContent("team에서 설치된 notes");
+    // notes is installed from another source now: the open question is not carried over to it.
+    act(() => fake.emitUpdateStatus(updateStatus({ unmetRequired: [row("replacement")] })));
+    const changed = await within(card).findByTestId("git-marketplace:updates:unmet:remove-changed");
+    expect(changed).toHaveTextContent("제거를 고를 때와 달리 notes이(가) 더는 team에서 설치되어 있지 않아 아무것도 제거하지 않았습니다.");
+    expect(within(card).queryByTestId("git-marketplace:updates:unmet:confirm-uninstall")).toBeNull();
+    expect(fake.market.uninstall).not.toHaveBeenCalled();
+    // Choosing Remove again asks about the install named now, and removes that one.
+    fireEvent.click(within(card).getByTestId("git-marketplace:updates:unmet:remove"));
+    expect(within(card).getByTestId("git-marketplace:updates:unmet:confirm-remove")).toHaveTextContent("replacement에서 설치된 notes");
+    fireEvent.click(within(card).getByTestId("git-marketplace:updates:unmet:confirm-uninstall"));
+    await waitFor(() => expect(fake.market.uninstall).toHaveBeenCalledTimes(1));
+    expect(fake.market.uninstall).toHaveBeenCalledWith({ sourceId: "replacement", kind: "mcp", name: "notes", removeData: false });
+  });
+
+  it("ends an open removal when its row goes, so the row coming back asks afresh", async () => {
+    const row = unmet("not-in-catalog", "notes", { key: { sourceId: "corp", kind: "mcp", name: "notes" }, installedFrom: { sourceId: "team", label: "team", removal: "confirm" } });
+    const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row] }) });
+    renderTab(fake);
+    fireEvent.click(await screen.findByTestId("git-marketplace:updates:unmet:remove"));
+    expect(screen.getByTestId("git-marketplace:updates:unmet:confirm-remove")).toBeInTheDocument();
+    act(() => fake.emitUpdateStatus(updateStatus()));
+    await waitFor(() => expect(screen.queryByTestId("git-marketplace:updates:unmet")).toBeNull());
+    act(() => fake.emitUpdateStatus(updateStatus({ unmetRequired: [row] })));
+    await screen.findByTestId("git-marketplace:updates:unmet:corp:mcp:notes");
+    expect(screen.queryByTestId("git-marketplace:updates:unmet:confirm-remove")).toBeNull();
+    expect(fake.market.uninstall).not.toHaveBeenCalled();
   });
 
   it("shows a refresh that failed, whether the reply failed or the source's sync did, and nothing once every requirement is met", async () => {

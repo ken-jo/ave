@@ -936,6 +936,37 @@ describe("MarketplaceService", () => {
     expect((await service.autoUpdateContext()).unmetRequired).toEqual([]);
   });
 
+  it("removes a revoked package under its package lock: a holder of that package finishes first (§10.4, §18.6)", async () => {
+    const acme = market();
+    await addMarket(acme.url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    await service.executeInstall((await service.planInstall(key)).planId);
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "*", reason: "prompt injection", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    // An update of review holds its package lock.
+    const holder = service.asOneOperation(async () => {
+      entered();
+      await held;
+    }, [{ kind: "skill", name: "review" }]);
+    await inside;
+    const removal = vi.spyOn(store, "uninstall");
+    const fed = feeds.length;
+    const refresh = service.refresh();
+    // The sync fed the revocation: enforcement has reached the uninstall, which waits for the lock.
+    while (feeds.length === fed) await new Promise<void>((resolve) => setImmediate(resolve));
+    for (let i = 0; i < 50; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(removal).not.toHaveBeenCalled();
+    expect(store.list().map((entry) => entry.name)).toEqual(["review"]);
+    release();
+    await holder;
+    await refresh;
+    expect(removal).toHaveBeenCalledOnce();
+    expect(store.list()).toEqual([]);
+  });
+
   it("judges a package mid-switch by the source it moves to, in every feed while it moves", async () => {
     const acme = market();
     const other = market("1.1.0", "other-tools");
@@ -1535,7 +1566,8 @@ describe("MarketplaceService", () => {
       };
       // The uninstall runs under a caller's lease, which holds the package a while after it.
       await service.asOneOperation(async (lease) => {
-        await service.uninstall(key, { lease });
+        // A main-side caller holding the lease names the install by its stored identity.
+        await service.uninstallInstalled(key, { lease });
         for (let i = 0; i < 20; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
         order.push("holder returns");
       }, [{ kind: "skill", name: "review" }]);

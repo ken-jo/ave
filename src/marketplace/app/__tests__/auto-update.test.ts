@@ -17,6 +17,7 @@ import { nodeFolders, writeFolderFiles } from "../../__tests__/fixtures/folder-f
 import { folderService, type FolderServiceHarness } from "../../__tests__/fixtures/folder-service.js";
 import { sha256Hex as sha } from "../../__tests__/fixtures/package-files.js";
 import { policyLoad, policySource } from "../../__tests__/fixtures/policy.js";
+import { scrubMarketplaceStrings } from "../../errors.js";
 import { classifyUpdate, type AutoUpdateSettings } from "../../updates/eligibility.js";
 import type { ApplyDecision } from "../service.js";
 
@@ -287,6 +288,23 @@ describe("an install in a requirement's way whose package sheet cannot load (§1
     expect((await unmet())[0]!.installedFrom).toBeNull();
   });
 
+  it("refuses a removal whose install changed since the row named it, and removes nothing else", async () => {
+    requireOfficial();
+    const shown = (await unmet())[0]!.installedFrom!;
+    expect(shown).toMatchObject({ sourceId: "team" });
+    // Before the confirmation, alpha is installed from another source instead.
+    const item = harness.installed.get("alpha")!;
+    harness.installed.set("alpha", { ...item, sourceId: "other-tools" });
+    await expect(harness.service.uninstall({ sourceId: shown.sourceId, kind: "plugin", name: "alpha" })).rejects.toMatchObject({
+      code: "PACKAGE_ID_CONFLICT",
+      message: "plugin alpha is not installed from team",
+    });
+    expect(harness.installed.get("alpha")).toEqual({ ...item, sourceId: "other-tools" });
+    // Gone altogether: refused too.
+    harness.installed.delete("alpha");
+    await expect(harness.service.uninstall({ sourceId: shown.sourceId, kind: "plugin", name: "alpha" })).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
+  });
+
   it("names an install whose source was removed by the id its receipt holds, and uninstalls it by that id", async () => {
     expect(await harness.service.removeSource("team")).toEqual({ orphanedPackages: [KEY] });
     requireOfficial();
@@ -325,7 +343,8 @@ describe("a quarantined source (§18.8)", () => {
     await expect(harness.service.applyUpdate(quarantined, automatic)).resolves.toEqual({ state: "superseded" });
     expect(harness.installed.get("alpha")).toEqual({ ...item, sourceId: quarantinedId });
   });
-  it("names an install bound to it in a requirement's way by the handle its Sources row carries, and uninstalls it by that handle", async () => {
+  /** alpha installed from "team", whose stored id then turns out to have a credential's shape; the official source is required instead. */
+  async function quarantineTeam(): Promise<string> {
     const item = harness.installed.get("alpha")!;
     harness.service.close();
     const quarantinedId = `glp${"at-"}${"abcd1234".repeat(3)}`;
@@ -334,15 +353,36 @@ describe("a quarantined source (§18.8)", () => {
     renameSync(join(root, "marketplaces", "team"), join(root, "marketplaces", quarantinedId));
     harness = await folderService({ root, folders: nodeFolders(), policy: policySource({ requiredInstalls: [{ source: "ave", kind: "plugin", name: "alpha" }] }) });
     harness.installed.set("alpha", { ...item, sourceId: quarantinedId });
+    return quarantinedId;
+  }
 
-    const [unmet] = (await harness.service.autoUpdateContext()).unmetRequired;
+  /** The unmet row as the renderer receives it: through the scrub every status crosses (§18.8). */
+  const published = async () => scrubMarketplaceStrings((await harness.service.autoUpdateContext()).unmetRequired);
+
+  it("names an install bound to it in a requirement's way by the handle its Sources row carries, and uninstalls it by that handle", async () => {
+    const quarantinedId = await quarantineTeam();
+    const [unmet] = await published();
     const handle = (await harness.service.listSources()).find((source) => source.status.state === "id-holds-credential")!.id;
     expect(handle).toMatch(/^ave-legacy-[0-9a-f]{32}$/u);
-    expect(unmet!.installedFrom).toEqual({ sourceId: handle, label: quarantinedId, removal: "confirm" });
-    // The stored id never leaves main as a key; its label is masked where every string crosses (§18.8).
-    expect(JSON.stringify(unmet!.key)).not.toContain(quarantinedId);
+    expect(unmet!.installedFrom).toEqual({ sourceId: handle, label: handle, removal: "confirm" });
+    expect(JSON.stringify(unmet)).not.toContain(quarantinedId);
     const key = { sourceId: handle, kind: "plugin" as const, name: "alpha" };
     await expect(harness.service.uninstall(key)).resolves.toEqual({ key, keptDataDir: null });
     expect(harness.installed.has("alpha")).toBe(false);
+  });
+
+  it("keeps that handle usable once the quarantined source is removed, so the published row still uninstalls the package", async () => {
+    const quarantinedId = await quarantineTeam();
+    const [before] = await published();
+    const handle = before!.installedFrom!.sourceId;
+    expect(await harness.service.removeSource(handle)).toEqual({ orphanedPackages: [{ sourceId: handle, kind: "plugin", name: "alpha" }] });
+    expect(harness.installed.get("alpha")?.sourceId).toBe(quarantinedId);
+    // The receipt still names the removed source: its view id is derived from the stored id alone.
+    const [after] = await published();
+    expect(after!.installedFrom).toEqual({ sourceId: handle, label: handle, removal: "confirm" });
+    const key = { sourceId: after!.installedFrom!.sourceId, kind: "plugin" as const, name: "alpha" };
+    await expect(harness.service.uninstall(key)).resolves.toEqual({ key, keptDataDir: null });
+    expect(harness.installed.has("alpha")).toBe(false);
+    expect((await published())[0]!.installedFrom).toBeNull();
   });
 });
