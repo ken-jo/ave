@@ -676,6 +676,7 @@ export const en = {
   "gitMarketplace.boot.autoUpdatedRequired": "{name} (by your organization)",
   "gitMarketplace.boot.titleChanges": "Marketplace changes",
   "gitMarketplace.updates.automaticUpdates": "Automatic updates",
+  "gitMarketplace.updates.requiredOn": "Required by your organization: it updates automatically, whatever this switch is set to.",
 };
 
 export const ko: Record<keyof typeof en, string> = {
@@ -1352,4 +1353,5 @@ export const ko: Record<keyof typeof en, string> = {
   "gitMarketplace.boot.autoUpdatedRequired": "{name}(조직이 적용)",
   "gitMarketplace.boot.titleChanges": "마켓플레이스 변경 사항",
   "gitMarketplace.updates.automaticUpdates": "자동 업데이트",
+  "gitMarketplace.updates.requiredOn": "조직이 필수로 지정한 패키지입니다. 이 스위치와 상관없이 자동으로 업데이트됩니다.",
 };

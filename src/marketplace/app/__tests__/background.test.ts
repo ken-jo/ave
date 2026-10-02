@@ -37,7 +37,7 @@ function offer(name: string, to: string, sourceId = "ave"): PackageUpdateOffer {
 
 /** The harness turns automatic updates off (`autoUpdate: false`), so every update waits for the user. */
 function manual(name: string, to: string, sourceId = "ave"): PackageUpdateView {
-  return { ...offer(name, to, sourceId), state: "manual", reasons: ["switched-off"], autoUpdate: { effective: false, override: null, lockedByPolicy: false } };
+  return { ...offer(name, to, sourceId), state: "manual", reasons: ["switched-off"], autoUpdate: { effective: false, override: null, lockedByPolicy: false, required: false } };
 }
 
 /** An offer as the service's candidate: an upgrade from an official source with nothing to review. */
@@ -1258,6 +1258,48 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     background.stop();
   });
 
+  it("shows a required package's switch as on and locked, whatever the switches and the policy's autoUpdate say", async () => {
+    const key = { sourceId: "ave", kind: "plugin" as const, name: "meeting" };
+    const source = { id: "ave", label: "Ave Official", origin: "official" as const, http: false, acknowledgedUnencryptedUpdates: false };
+    for (const policy of ["user", "off"] as const) {
+      const h = harness({
+        settings: { updateNotices: true, autoUpdate: false, autoUpdatePackages: { meeting: "off" } },
+        service: { autoUpdateContext: async () => ({ policy, sources: [source], installed: [{ key, required: true }] }) },
+      });
+      h.published.offers = [offer("meeting", "2.0.0")];
+      h.published.facts = { meeting: { required: true } };
+      h.activity.busy = true;
+      const background = startMarketplaceBackground(h.input);
+      try {
+        await background.started;
+        const status = await background.status();
+        const required = { effective: true, override: "off", lockedByPolicy: true, required: true };
+        expect(status.packages).toEqual([expect.objectContaining({ key, state: "waiting", required: true, autoUpdate: required })]);
+        expect(status.autoUpdate.packages).toEqual([{ key, switch: required }]);
+      } finally {
+        background.stop();
+      }
+    }
+  });
+
+  it("keeps showing a required update the user skipped, also once its source goes unreached and it is shown stale", async () => {
+    const UNREACHED: SyncDiscovery = { result: "partial", reached: ["acme"] };
+    const h = harness({ settings: { updateNotices: true, autoUpdate: false, skippedPluginUpdates: { meeting: "2.0.0" } } });
+    h.published.offers = [offer("meeting", "2.0.0")];
+    h.published.facts = { meeting: { required: true } };
+    h.activity.busy = true;
+    const background = startMarketplaceBackground(h.input);
+    try {
+      await background.started;
+      expect(h.lastStatus().packages).toEqual([expect.objectContaining({ to: "2.0.0", state: "waiting", required: true })]);
+      h.discoveries.push(UNREACHED);
+      await background.checkNow();
+      expect(h.lastStatus().packages).toEqual([expect.objectContaining({ to: "2.0.0", required: true, stale: true })]);
+    } finally {
+      background.stop();
+    }
+  });
+
   it("a wait past 30 minutes reaches the toolbar: the waiting update is sent as escalated, whatever the notice setting", async () => {
     const h = applying();
     h.settings.current = { updateNotices: false, autoUpdate: true };
@@ -1276,7 +1318,7 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
 
   it("shows the switches as they take effect under a policy, for every installed package", async () => {
     const source = { id: "acme", label: "Acme", origin: "custom" as const, http: false, acknowledgedUnencryptedUpdates: false };
-    const installed = [{ sourceId: "acme", kind: "skill" as const, name: "notes" }];
+    const installed = [{ key: { sourceId: "acme", kind: "skill" as const, name: "notes" }, required: false }];
     const locked = harness({
       settings: { updateNotices: true, autoUpdate: false, autoUpdatePackages: { "skill:notes": "off" } },
       service: { autoUpdateContext: async () => ({ policy: "on" as const, sources: [source], installed }) },
@@ -1286,8 +1328,8 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     expect((await background.status()).autoUpdate).toEqual({
       enabled: true,
       lockedByPolicy: "on",
-      sources: [{ id: "acme", label: "Acme", origin: "custom", switch: { effective: true, override: null, lockedByPolicy: true }, needsUnencryptedUpdates: false }],
-      packages: [{ key: installed[0], switch: { effective: true, override: "off", lockedByPolicy: true } }],
+      sources: [{ id: "acme", label: "Acme", origin: "custom", switch: { effective: true, override: null, lockedByPolicy: true, required: false }, needsUnencryptedUpdates: false }],
+      packages: [{ key: installed[0]!.key, switch: { effective: true, override: "off", lockedByPolicy: true, required: false } }],
     });
     background.stop();
     const off = harness({ settings: { updateNotices: true }, service: { autoUpdateContext: async () => ({ policy: "off" as const, sources: [source], installed }) } });

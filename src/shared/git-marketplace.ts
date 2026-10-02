@@ -577,6 +577,12 @@ export interface PackageUpdateView {
    * Updates card offers *Apply now*.
    */
   escalated?: true;
+  /**
+   * A `requiredInstalls` entry (§10.2) names this update: it applies by
+   * itself whatever the switches, and a skipped version does not hold it
+   * (§18.7.2), so a surface that hides skipped versions shows it all the same.
+   */
+  required?: true;
 }
 
 /**
@@ -625,10 +631,16 @@ export interface AutoUpdateSwitchView {
   effective: boolean;
   override: "on" | "off" | null;
   lockedByPolicy: boolean;
+  /**
+   * A `requiredInstalls` entry names the package (§18.7.2): its updates
+   * apply by themselves whatever the switches, so it is on and locked. A
+   * source's switch is never required.
+   */
+  required: boolean;
 }
 
 /** An update as the service computes it, before the scheduler gives it a state. */
-export type PackageUpdateOffer = Omit<PackageUpdateView, "state" | "stale" | "reasons" | "failure" | "appliedAt" | "commitRange" | "pendingApproval" | "autoUpdate" | "escalated">;
+export type PackageUpdateOffer = Omit<PackageUpdateView, "state" | "stale" | "reasons" | "failure" | "appliedAt" | "commitRange" | "pendingApproval" | "autoUpdate" | "escalated" | "required">;
 
 /** How the last discovery ended (§18.7.1): every source synced, some, none because offline, or it threw. */
 export type UpdateDiscoveryResult = "ok" | "partial" | "offline" | "error";
@@ -896,12 +908,14 @@ function isUpdatePackage(value: unknown): value is PackageUpdateView {
       && typeof value.commitRange.to === "string"))
     && (value.autoUpdate === undefined || isSwitchView(value.autoUpdate))
     && (value.escalated === undefined || value.escalated === true)
+    && (value.required === undefined || value.required === true)
     && (value.pendingApproval === undefined || (isRecord(value.pendingApproval) && typeof value.pendingApproval.installId === "string"
       && Array.isArray(value.pendingApproval.consentDelta) && Array.isArray(value.pendingApproval.components)));
 }
 
 function isSwitchView(value: unknown): value is AutoUpdateSwitchView {
   return isRecord(value) && typeof value.effective === "boolean" && typeof value.lockedByPolicy === "boolean"
+    && typeof value.required === "boolean" && (!value.required || (value.effective && value.lockedByPolicy))
     && (value.override === null || value.override === "on" || value.override === "off");
 }
 

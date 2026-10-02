@@ -241,3 +241,37 @@ function defineSkippedSetting(
     configurable: true,
   });
 }
+
+describe("required updates (§18.7.2)", () => {
+  it("shows a required escalation main sent although its version is skipped, on every mount", async () => {
+    const { api, emit } = marketplaceUpdatesApi({ settings: { marketplace: { skippedPluginUpdates: { meeting: "2.0.0" } } } });
+    const notice: PackageUpdateView = { ...update("meeting", "2.0.0"), state: "waiting", escalated: true, required: true };
+    const observed: PackageUpdateView[][] = [];
+    for (let mount = 0; mount < 2; mount += 1) {
+      const rendered = renderHook(() => useMarketplaceUpdates(api));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      act(() => emit([notice]));
+      observed.push(rendered.result.current.updates);
+      rendered.unmount();
+    }
+    expect(observed).toEqual([[notice], [notice]]);
+  });
+
+  it("records no skipped version for a required update, and keeps showing it", async () => {
+    const { api, rawApi, emit } = marketplaceUpdatesApi({ settings: { marketplace: {} } });
+    const required: PackageUpdateView = { ...update("meeting", "2.0.0"), state: "waiting", escalated: true, required: true };
+    const ordinary = update("notes", "3.0.0", "skill");
+    const { result } = renderHook(() => useMarketplaceUpdates(api));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => emit([required, ordinary]));
+    await act(async () => {
+      await result.current.skip();
+    });
+    expect(rawApi.updateSettings).toHaveBeenCalledExactlyOnceWith({ marketplace: { skippedPluginUpdates: { "skill:notes": "3.0.0" } } });
+    expect(result.current.updates).toEqual([required]);
+  });
+});

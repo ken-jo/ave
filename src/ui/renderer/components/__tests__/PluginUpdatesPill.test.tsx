@@ -85,6 +85,13 @@ describe("PluginUpdatesPill", () => {
     expect(screen.getByTestId("marketplace-update-action").getAttribute("aria-label")).toBe("사용 가능한 업데이트 검토");
   });
 
+  it("offers no skip when every update it counts is required, since a required update ignores skips", () => {
+    const required: PackageUpdateView = { ...update("plugin", "meeting", "Ave Meeting", "2.0.0"), state: "waiting", escalated: true, required: true };
+    renderPill({ updates: [required] });
+    expect(screen.getByTestId("marketplace-update-action")).toBeInTheDocument();
+    expect(screen.queryByLabelText("이 업데이트를 다음 버전까지 건너뛰기")).toBeNull();
+  });
+
   it("uses the close control as a skip-until-next-version action", () => {
     const onSkip = vi.fn();
     const onReview = vi.fn();

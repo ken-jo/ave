@@ -119,8 +119,17 @@ describe("the switches (§18.7.2)", () => {
   it("policy off beats a package on, and policy on beats a package off", () => {
     expect(classify(facts(), { policy: "off", settings: { autoUpdatePackages: { notes: "on" } } })).toEqual({ state: "manual", reasons: ["switched-off"] });
     expect(classify(facts(), { policy: "on", settings: { autoUpdatePackages: { notes: "off" }, autoUpdate: false } })).toEqual({ state: "automatic", reasons: [] });
-    expect(resolvePackageSwitch("on", { autoUpdatePackages: { notes: "off" } }, "notes", { id: "acme", origin: "custom", http: false }))
-      .toEqual({ effective: true, override: "off", lockedByPolicy: true });
+    expect(resolvePackageSwitch("on", { autoUpdatePackages: { notes: "off" } }, "notes", { id: "acme", origin: "custom", http: false }, false))
+      .toEqual({ effective: true, override: "off", lockedByPolicy: true, required: false });
+  });
+
+  it("a required package's switch is on and locked whatever the policy and every switch say", () => {
+    const off = { autoUpdate: false, autoUpdateSources: { acme: "off" as const }, autoUpdatePackages: { notes: "off" as const } };
+    for (const policy of ["user", "off", "on"] as const) {
+      expect(resolvePackageSwitch(policy, off, "notes", { id: "acme", origin: "custom", http: true }, true))
+        .toEqual({ effective: true, override: "off", lockedByPolicy: true, required: true });
+      expect(classify(facts({ required: true }), { policy, settings: off })).toEqual({ state: "automatic", reasons: [] });
+    }
   });
 
   it("defaults every origin on, but a custom or direct source over http off until the user turns it on", () => {
@@ -128,7 +137,7 @@ describe("the switches (§18.7.2)", () => {
     expect(originDefault({ origin: "managed", http: true })).toBe(true);
     expect(originDefault({ origin: "custom", http: true })).toBe(false);
     expect(originDefault({ origin: "direct", http: true })).toBe(false);
-    expect(resolveSourceSwitch("user", {}, { id: "lan", origin: "custom", http: true })).toEqual({ effective: false, override: null, lockedByPolicy: false });
+    expect(resolveSourceSwitch("user", {}, { id: "lan", origin: "custom", http: true })).toEqual({ effective: false, override: null, lockedByPolicy: false, required: false });
     // Turned on, it still needs `unencrypted-updates` (the precondition above).
     const http = facts({}, { http: true });
     expect(classify(http, { settings: { autoUpdateSources: { acme: "on" } } })).toEqual({ state: "manual", reasons: ["unencrypted-updates"] });

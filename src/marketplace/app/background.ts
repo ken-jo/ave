@@ -369,8 +369,9 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       state,
       ...(reasons.length > 0 ? { reasons } : {}),
       ...(memory?.lastError ? { failure: failureView({ ...memory, lastError: memory.lastError }) } : {}),
-      ...(context ? { autoUpdate: resolvePackageSwitch(context.policy, settings, candidate.facts.switchKey, candidate.facts.source) } : {}),
+      ...(context ? { autoUpdate: resolvePackageSwitch(context.policy, settings, candidate.facts.switchKey, candidate.facts.source, candidate.facts.required) } : {}),
       ...(escalated ? { escalated: true as const } : {}),
+      ...(candidate.facts.required ? { required: true as const } : {}),
     };
   };
 
@@ -418,7 +419,8 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       const id = updateRecordKey(update.key);
       if (reached?.has(update.key.sourceId) || listed.has(id)) continue;
       const before = prior.get(id);
-      if (before && before.to === update.to && !isSkippedPackageUpdate(update, skipped)) {
+      // A required update ignores a skipped version (§18.7.2), stale or not.
+      if (before && before.to === update.to && (before.required === true || !isSkippedPackageUpdate(update, skipped))) {
         next.push({ ...before, stale: true });
         listed.add(id);
       }
@@ -470,9 +472,9 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
         switch: resolveSourceSwitch(context!.policy, settings, source),
         needsUnencryptedUpdates: source.http && !source.acknowledgedUnencryptedUpdates,
       })),
-      packages: (context?.installed ?? []).flatMap((key) => {
+      packages: (context?.installed ?? []).flatMap(({ key, required }) => {
         const source = byId.get(key.sourceId);
-        return source ? [{ key, switch: resolvePackageSwitch(context!.policy, settings, packageUpdateSkipKey(key), source) }] : [];
+        return source ? [{ key, switch: resolvePackageSwitch(context!.policy, settings, packageUpdateSkipKey(key), source, required) }] : [];
       }),
     };
   };

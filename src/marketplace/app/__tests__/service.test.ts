@@ -821,6 +821,21 @@ describe("MarketplaceService", () => {
     expect(manager.configs.has("notes")).toBe(true);
   });
 
+  it("lists each installed package for the switches with whether a requiredInstalls entry names it", async () => {
+    const acme = market();
+    service.close();
+    await build(policyLoad({ requiredInstalls: [{ kind: "mcp", name: "notes", source: "acme-tools" }] }));
+    await addMarket(acme.url);
+    for (const key of [{ sourceId: "acme-tools", kind: "mcp" as const, name: "notes" }, { sourceId: "acme-tools", kind: "skill" as const, name: "review" }]) {
+      await service.executeInstall((await service.planInstall(key)).planId);
+    }
+    const context = await service.autoUpdateContext();
+    expect(context.installed.sort((a, b) => a.key.name.localeCompare(b.key.name))).toEqual([
+      { key: { sourceId: "acme-tools", kind: "mcp", name: "notes" }, required: true },
+      { key: { sourceId: "acme-tools", kind: "skill", name: "review" }, required: false },
+    ]);
+  });
+
   it("judges a package mid-switch by the source it moves to, in every feed while it moves", async () => {
     const acme = market();
     const other = market("1.1.0", "other-tools");

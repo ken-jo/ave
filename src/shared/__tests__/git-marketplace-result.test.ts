@@ -51,8 +51,8 @@ describe("the update status across the bridge (design §13.1)", () => {
     autoUpdate: {
       enabled: true,
       lockedByPolicy: null,
-      sources: [{ id: "ave", label: "ave", origin: "official", switch: { effective: true, override: null, lockedByPolicy: false }, needsUnencryptedUpdates: false }],
-      packages: [{ key: update.key, switch: { effective: true, override: null, lockedByPolicy: false } }],
+      sources: [{ id: "ave", label: "ave", origin: "official", switch: { effective: true, override: null, lockedByPolicy: false, required: false }, needsUnencryptedUpdates: false }],
+      packages: [{ key: update.key, switch: { effective: true, override: null, lockedByPolicy: false, required: false } }],
     },
     packages,
   });
@@ -69,6 +69,17 @@ describe("the update status across the bridge (design §13.1)", () => {
     const base = status([]);
     expect(parseUpdateStatus({ ...base, autoUpdate: { ...base.autoUpdate, sources: [{ ...base.autoUpdate.sources[0], origin: "elsewhere" }] } })).toBeNull();
     expect(parseUpdateStatus({ ...base, autoUpdate: { ...base.autoUpdate, packages: [{ key: update.key }] } })).toBeNull();
+  });
+
+  it("keeps a required update and its required switch, and drops a required switch that is not on and locked", () => {
+    const required = { effective: true, override: "off", lockedByPolicy: true, required: true };
+    const sent = status([{ ...update, state: "waiting", required: true, autoUpdate: required }]);
+    expect(parseUpdateStatus(sent)).toEqual(sent);
+    expect(parseUpdateStatus(status([{ ...update, required: false }]))).toBeNull();
+    expect(parseUpdateStatus(status([{ ...update, autoUpdate: { ...required, effective: false } }]))).toBeNull();
+    expect(parseUpdateStatus(status([{ ...update, autoUpdate: { ...required, lockedByPolicy: false } }]))).toBeNull();
+    const { required: _missing, ...unmarked } = required;
+    expect(parseUpdateStatus(status([{ ...update, autoUpdate: unmarked }]))).toBeNull();
   });
 
   it.each([

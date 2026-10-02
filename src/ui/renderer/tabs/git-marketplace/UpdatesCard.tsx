@@ -165,7 +165,9 @@ export function PackageAutoUpdate({ api, packageKey, displayName, onSwitch }: {
           testId={`git-marketplace:auto-update:switch:${id}`}
         />
       </div>
-      {entry.switch.lockedByPolicy && status?.autoUpdate.lockedByPolicy && (
+      {entry.switch.required ? (
+        <p className="text-muted-foreground" data-testid={`git-marketplace:auto-update:required:${id}`}>{t("gitMarketplace.updates.requiredOn")}</p>
+      ) : entry.switch.lockedByPolicy && status?.autoUpdate.lockedByPolicy && (
         <p className="text-muted-foreground">
           {status.autoUpdate.lockedByPolicy === "on" ? t("gitMarketplace.updates.policyOn") : t("gitMarketplace.updates.policyOff")}
         </p>
@@ -325,6 +327,11 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
         {update.stale && (
           <span className="block text-muted-foreground" data-testid="git-marketplace:updates:stale">
             {t("gitMarketplace.updates.stale")}
+          </span>
+        )}
+        {update.autoUpdate?.required && (
+          <span className="block text-muted-foreground" data-testid="git-marketplace:updates:required">
+            {t("gitMarketplace.updates.requiredOn")}
           </span>
         )}
         {update.reasons && update.reasons.length > 0 && (

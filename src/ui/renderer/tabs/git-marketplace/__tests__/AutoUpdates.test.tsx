@@ -31,7 +31,7 @@ const notesKey = { sourceId: "team", kind: "agent-plugin" as const, name: "notes
 const pkg = (overrides: Partial<PackageUpdateView> & Pick<PackageUpdateView, "state">): PackageUpdateView => ({
   key: meetingKey, displayName: "Meeting", from: "1.0.0", to: "1.1.0", ...overrides,
 });
-const switchOn = { effective: true, override: null, lockedByPolicy: false };
+const switchOn = { effective: true, override: null, lockedByPolicy: false, required: false };
 
 describe("the switches (§18.7.2)", () => {
   it("writes the global switch, and shows the organization's lock instead of letting it change", async () => {
@@ -50,7 +50,7 @@ describe("the switches (§18.7.2)", () => {
   it("rewrites a package's switch map from the saved settings, and Default removes the package's own switch", async () => {
     const fake = fakeMarketplace({
       sources: [team],
-      updateStatus: updateStatus({ packages: [pkg({ state: "manual", reasons: ["switched-off"], autoUpdate: { effective: false, override: "off", lockedByPolicy: false } })] }),
+      updateStatus: updateStatus({ packages: [pkg({ state: "manual", reasons: ["switched-off"], autoUpdate: { effective: false, override: "off", lockedByPolicy: false, required: false } })] }),
     });
     const { api } = renderTab(fake, { getSettings: async () => ({ marketplace: { autoUpdatePackages: { "plugin:other": "on", meeting: "off" } } }) });
     const row = await screen.findByTestId("git-marketplace:updates:row:team:plugin:meeting");
@@ -71,7 +71,7 @@ describe("the switches (§18.7.2)", () => {
           lockedByPolicy: null,
           sources: [
             { id: "team", label: "Team tools", origin: "custom", switch: switchOn, needsUnencryptedUpdates: false },
-            { id: "lan", label: "LAN tools", origin: "custom", switch: { effective: false, override: null, lockedByPolicy: false }, needsUnencryptedUpdates: true },
+            { id: "lan", label: "LAN tools", origin: "custom", switch: { effective: false, override: null, lockedByPolicy: false, required: false }, needsUnencryptedUpdates: true },
           ],
           packages: [],
         },
@@ -115,7 +115,7 @@ describe("switches wherever a package or source is shown (§18.7.2, §18.9)", ()
   });
 
   it("under the organization's lock a select shows what takes effect, not the stored choice it overrides", async () => {
-    const locked = { effective: true, override: "off" as const, lockedByPolicy: true };
+    const locked = { effective: true, override: "off" as const, lockedByPolicy: true, required: false };
     const fake = fakeMarketplace({
       sources: [team],
       updateStatus: updateStatus({
@@ -129,6 +129,30 @@ describe("switches wherever a package or source is shown (§18.7.2, §18.9)", ()
     expect(select).toBeDisabled();
     expect(screen.getByTestId("git-marketplace:updates:source-switch:team")).toHaveValue("on");
     expect(screen.getByTestId("git-marketplace:updates:automatic")).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("shows a required package's switch on and locked, with why, in its row and in its sheet, though its own switch and the policy say off", async () => {
+    const required = { effective: true, override: "off" as const, lockedByPolicy: true, required: true };
+    const fake = fakeMarketplace({
+      sources: [team],
+      entries: [entry("team", "plugin", "meeting", { state: { state: "installed", version: "1.0.0" } })],
+      updateStatus: updateStatus({
+        autoUpdate: { enabled: false, lockedByPolicy: "off", sources: [], packages: [{ key: meetingKey, switch: required }] },
+        packages: [pkg({ state: "waiting", required: true, autoUpdate: required })],
+      }),
+    });
+    renderTab(fake, { getSettings: async () => ({ marketplace: {} }) });
+    const row = await screen.findByTestId("git-marketplace:updates:package-switch:team:plugin:meeting");
+    expect(row).toHaveValue("on");
+    expect(row).toBeDisabled();
+    expect(screen.getByTestId("git-marketplace:updates:required")).toHaveTextContent("조직이 필수로 지정한 패키지입니다. 이 스위치와 상관없이 자동으로 업데이트됩니다.");
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:meeting")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:auto-update:switch:team:plugin:meeting");
+    expect(sheet).toHaveValue("on");
+    expect(sheet).toBeDisabled();
+    expect(screen.getByTestId("git-marketplace:auto-update:required:team:plugin:meeting")).toHaveTextContent("조직이 필수로 지정한 패키지입니다.");
+    // The policy's own sentence would say the opposite of what happens to this package.
+    expect(within(screen.getByTestId("git-marketplace:auto-update:team:plugin:meeting")).queryByText(/조직이 설정함/u)).toBeNull();
   });
 
   it("names the official source by its origin's name, as Sources does", async () => {

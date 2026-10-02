@@ -31,6 +31,8 @@ export function PluginUpdatesPill({ updates: offered, onReview, onSkip }: Plugin
       ? t("pluginUpdatesPill.summaryOne")
       : t("pluginUpdatesPill.summaryMany", { count: updates.length });
   const details = updates.map((update) => `${update.displayName} → ${update.to}`).join(", ");
+  // A required update ignores a skipped version (§18.7.2): with only those shown there is nothing to skip.
+  const skippable = updates.some((update) => update.required !== true);
 
   return (
     <ToolbarStatusPill
@@ -45,13 +47,17 @@ export function PluginUpdatesPill({ updates: offered, onReview, onSkip }: Plugin
       ariaLabel={t("pluginUpdatesPill.pillAriaLabel")}
       onClick={() => onReview(updates)}
       testId="marketplace-update-action"
-      secondaryAction={{
-        icon: X,
-        title: t("pluginUpdatesPill.skipTitle"),
-        ariaLabel: t("pluginUpdatesPill.skipAriaLabel"),
-        onClick: () => void onSkip(),
-        testId: "marketplace-update-skip",
-      }}
+      {...(skippable
+        ? {
+            secondaryAction: {
+              icon: X,
+              title: t("pluginUpdatesPill.skipTitle"),
+              ariaLabel: t("pluginUpdatesPill.skipAriaLabel"),
+              onClick: () => void onSkip(),
+              testId: "marketplace-update-skip",
+            },
+          }
+        : {})}
     />
   );
 }

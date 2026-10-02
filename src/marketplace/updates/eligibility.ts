@@ -92,7 +92,8 @@ export function originDefault(source: Pick<SourceFacts, "origin" | "http">): boo
 }
 
 /**
- * A package's switch resolved (§18.7.2): policy `autoUpdate`, then the
+ * A package's switch resolved (§18.7.2): a `requiredInstalls` entry
+ * (`required`) makes it on whatever is set; then policy `autoUpdate`, the
  * package's switch, the source's, the global one, the origin's default.
  * `override` is the package's own switch.
  */
@@ -101,18 +102,20 @@ export function resolvePackageSwitch(
   settings: AutoUpdateSettings,
   switchKey: string,
   source: Pick<SourceFacts, "id" | "origin" | "http">,
+  required: boolean,
 ): AutoUpdateSwitchView {
   const override = lookup(settings.autoUpdatePackages, switchKey);
-  if (policy !== "user") return { effective: policy === "on", override, lockedByPolicy: true };
-  if (override) return { effective: override === "on", override, lockedByPolicy: false };
-  return { effective: sourceEffective(settings, source), override, lockedByPolicy: false };
+  if (required) return { effective: true, override, lockedByPolicy: true, required: true };
+  if (policy !== "user") return { effective: policy === "on", override, lockedByPolicy: true, required: false };
+  if (override) return { effective: override === "on", override, lockedByPolicy: false, required: false };
+  return { effective: sourceEffective(settings, source), override, lockedByPolicy: false, required: false };
 }
 
 /** A source's switch resolved: policy, the source's switch, the global one, the origin's default. */
 export function resolveSourceSwitch(policy: AutoUpdatePolicy, settings: AutoUpdateSettings, source: Pick<SourceFacts, "id" | "origin" | "http">): AutoUpdateSwitchView {
   const override = lookup(settings.autoUpdateSources, source.id);
-  if (policy !== "user") return { effective: policy === "on", override, lockedByPolicy: true };
-  return { effective: sourceEffective(settings, source), override, lockedByPolicy: false };
+  if (policy !== "user") return { effective: policy === "on", override, lockedByPolicy: true, required: false };
+  return { effective: sourceEffective(settings, source), override, lockedByPolicy: false, required: false };
 }
 
 function sourceEffective(settings: AutoUpdateSettings, source: Pick<SourceFacts, "id" | "origin" | "http">): boolean {
@@ -156,7 +159,7 @@ export function classifyUpdate(
   // What the user must review comes first: a manual action would show the same review.
   if (review.length > 0) return { state: "needs-review", reasons: [...review, ...manual] };
   if (manual.length > 0) return { state: "manual", reasons: manual };
-  const decided = resolvePackageSwitch(input.policy, input.settings, facts.switchKey, facts.source);
+  const decided = resolvePackageSwitch(input.policy, input.settings, facts.switchKey, facts.source, facts.required);
   if (!decided.effective) return { state: "manual", reasons: ["switched-off"] };
   return { state: "automatic", reasons: [] };
 }

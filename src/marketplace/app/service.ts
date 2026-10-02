@@ -214,12 +214,13 @@ export interface UpdateCandidate extends PackageUpdateOffer {
 /**
  * What the switches resolve with (§18.7.2): the policy's `autoUpdate`, each
  * source's facts, and every installed package bound to one of those sources,
- * so its switch can be set before it has an update.
+ * so its switch can be set before it has an update, with whether a
+ * `requiredInstalls` entry names it (its updates then apply whatever the switch).
  */
 export interface AutoUpdateContext {
   policy: MarketplacePolicy["autoUpdate"];
   sources: Array<{ id: string; label: string; origin: SourceOrigin; http: boolean; acknowledgedUnencryptedUpdates: boolean }>;
-  installed: PackageKeyView[];
+  installed: Array<{ key: PackageKeyView; required: boolean }>;
 }
 
 /**
@@ -2391,7 +2392,11 @@ export class MarketplaceService implements RetirementEntryLookup {
       const listed = new Set(sources.map((source) => source.id));
       const installed = (await this.installedAll())
         .filter((item): item is InstalledRecord & { sourceId: string } => item.sourceId !== null && listed.has(item.sourceId))
-        .map((item) => ({ sourceId: item.sourceId, kind: item.kind, name: item.name }));
+        .map((item) => ({
+          key: { sourceId: item.sourceId, kind: item.kind, name: item.name },
+          // Required from this source or another: the policy's update replaces it either way (§10.2).
+          required: requiredByPolicy(this.policy, item.kind, item.name) !== undefined,
+        }));
       return { policy: this.policy.autoUpdate, sources, installed };
     }, signal);
   }
