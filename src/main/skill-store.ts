@@ -312,7 +312,7 @@ interface SkillCatalogRecord extends SkillCatalogEntry {
   filePath: string;
 }
 
-const USER_SKILLS_DIR = resolve(aveHome(), "skills");
+const userSkillsDir = (): string => resolve(aveHome(), "skills");
 const SKILL_CATALOG_SCAN_LIMIT = 256;
 const SKILL_FRONTMATTER_READ_BYTES = 16 * 1024;
 const SKILL_CATALOG_DESCRIPTION_MAX_CHARS = 1024;
@@ -483,7 +483,7 @@ export class SkillStore {
   private packageDirs = new Map<string, string>();
 
   constructor(opts: SkillStoreOptions = {}) {
-    this.userDir = opts.userDir ?? USER_SKILLS_DIR;
+    this.userDir = opts.userDir ?? userSkillsDir();
   }
 
   /** Replace the installed skill packages; the installed-content service calls this after each load. */

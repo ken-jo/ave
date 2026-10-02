@@ -70,7 +70,11 @@
         "src/plugins/validate/cli.ts",
         // Loaded by `plugin:validate` with `--import`, in the CLI and its child;
         // nothing imports it.
-        "scripts/lib/stub-app-logger-hook.mjs"
+        "scripts/lib/stub-app-logger-hook.mjs",
+        // The test runner's Ave home guard: vitest.analysis.config.ts resolves
+        // src/shared/ave-home-test-guard.ts to it, so its exports are used
+        // through the seam's imports, which Knip reads as the seam.
+        "src/__tests__/support/ave-home-isolation-guard.ts"
       ]
     },
     "web": {

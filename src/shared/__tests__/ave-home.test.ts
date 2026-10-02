@@ -1,30 +1,16 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { tmpdir, userInfo } from "node:os";
-import {
-  defaultAveHome,
-  ensureAveHomePrivate,
-  aveHome,
-  refuseRealAveHomeUnderTest,
-  win32SystemBinary,
-} from "../ave-home.js";
-import { useTempDirs, useTempPaths } from "../../__tests__/test-helpers.js";
-import { removeLinkOnly } from "../../__tests__/support/tmp-dir-teardown.js";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { ensureAveHomePrivate, aveHome, win32SystemBinary } from "../ave-home.js";
+import { useTempPaths } from "../../__tests__/test-helpers.js";
 
-const originalEnv = {
-  AVE_HOME: process.env.AVE_HOME,
-  HOME: process.env.HOME,
-  USERPROFILE: process.env.USERPROFILE,
-  VITEST: process.env.VITEST,
-};
+const originalAveHome = process.env.AVE_HOME;
 
 afterEach(() => {
-  for (const [name, value] of Object.entries(originalEnv)) {
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
-  }
+  if (originalAveHome === undefined) delete process.env.AVE_HOME;
+  else process.env.AVE_HOME = originalAveHome;
 });
 
 describe("aveHome", () => {
@@ -36,95 +22,6 @@ describe("aveHome", () => {
   it("normalizes an absolute AVE_HOME override", () => {
     process.env.AVE_HOME = join(tmpdir(), "ave-parent", "..", "ave-state");
     expect(aveHome()).toBe(resolve(tmpdir(), "ave-state"));
-  });
-});
-
-describe("the test process's Ave home", () => {
-  const refusal = /refusing to resolve AVE_HOME to .* from a test process; it is under the real /;
-  const scratch = useTempDirs("ave-home-guard-");
-  // The person's own home, from the account database: what HOME or a mocked
-  // `homedir()` says does not move it.
-  const accountAve = join(userInfo().homedir, ".ave");
-
-  it("starts this file in its own home inside the run's, under test-tmp", () => {
-    const runHome = process.env.AVE_TEST_RUN_HOME;
-    expect(runHome).toBeDefined();
-    expect(originalEnv.AVE_HOME).toBeDefined();
-    expect(dirname(originalEnv.AVE_HOME!)).toBe(runHome);
-    expect(dirname(runHome!)).toBe(join(defaultAveHome(), "test-tmp"));
-    expect(aveHome()).toBe(originalEnv.AVE_HOME);
-  });
-
-  it("refuses a test that lost its AVE_HOME instead of handing it the real one", () => {
-    delete process.env.AVE_HOME;
-    expect(() => aveHome()).toThrow(refusal);
-  });
-
-  it("refuses the real home and anything in it other than test-tmp", () => {
-    for (const home of [
-      accountAve,
-      join(accountAve, "audit"),
-      join(accountAve, "test-tmp-but-not-really"),
-      join(accountAve, "test-tmp", "..", "sessions"),
-    ]) {
-      process.env.AVE_HOME = home;
-      expect(() => aveHome(), home).toThrow(refusal);
-    }
-  });
-
-  it("refuses the real home spelled through a link or, off Linux, in another case", () => {
-    const link = join(scratch(), "ave-link");
-    symlinkSync(accountAve, link, "junction");
-    try {
-      process.env.AVE_HOME = join(link, "audit");
-      expect(() => aveHome()).toThrow(refusal);
-    } finally {
-      // Before the scratch directory's recursive removal, which on Windows
-      // would walk a junction into the real home.
-      removeLinkOnly(link);
-    }
-
-    if (process.platform !== "linux") {
-      process.env.AVE_HOME = join(accountAve.toUpperCase(), "audit");
-      expect(() => aveHome()).toThrow(refusal);
-    }
-  });
-
-  it("refuses the account's own home when HOME points somewhere else", () => {
-    const elsewhere = scratch();
-    process.env.HOME = elsewhere;
-    process.env.USERPROFILE = elsewhere;
-    expect(defaultAveHome()).toBe(join(elsewhere, ".ave"));
-    process.env.AVE_HOME = join(accountAve, "audit");
-    expect(() => aveHome()).toThrow(refusal);
-  });
-
-  it("allows test-tmp, and the scratch home a test pointed HOME at", () => {
-    process.env.AVE_HOME = join(accountAve, "test-tmp", "elsewhere");
-    expect(aveHome()).toBe(join(accountAve, "test-tmp", "elsewhere"));
-
-    const elsewhere = scratch();
-    process.env.HOME = elsewhere;
-    process.env.USERPROFILE = elsewhere;
-    process.env.AVE_HOME = join(elsewhere, ".ave");
-    expect(aveHome()).toBe(join(elsewhere, ".ave"));
-  });
-
-  it("guards a sweep against the HOME a test points elsewhere too, and names the action", () => {
-    const elsewhere = scratch();
-    process.env.HOME = elsewhere;
-    process.env.USERPROFILE = elsewhere;
-    expect(() => refuseRealAveHomeUnderTest(join(elsewhere, ".ave", "sandbox"), "sweep"))
-      .toThrow(/refusing to sweep .* from a test process/);
-    expect(() => refuseRealAveHomeUnderTest(join(accountAve, "sandbox"), "sweep"))
-      .toThrow(/refusing to sweep .* from a test process/);
-  });
-
-  it("guards nothing outside the test runner", () => {
-    delete process.env.VITEST;
-    expect(() => refuseRealAveHomeUnderTest(join(accountAve, "audit"), "sweep")).not.toThrow();
-    delete process.env.AVE_HOME;
-    expect(aveHome()).toBe(defaultAveHome());
   });
 });
 

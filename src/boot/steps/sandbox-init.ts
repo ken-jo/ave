@@ -9,7 +9,7 @@ import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 import type { SandboxGateAction, SandboxGateReason } from "./sandbox-gate.js";
 import { errorMessage } from "../../shared/error-message.js";
-import { refuseRealAveHomeUnderTest } from "../../shared/ave-home.js";
+import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/plugin-removal-transaction.js";
 
 const log = createLogger("ave");
@@ -387,7 +387,7 @@ export async function sweepSandboxPrivateRoots(): Promise<void> {
   ] as const;
   // Ahead of the loop, and not caught by it: a test naming the real home must
   // fail, with neither root touched.
-  for (const [root] of roots) refuseRealAveHomeUnderTest(root, "sweep");
+  for (const [root] of roots) checkSandboxSweepRoot(root);
   for (const [root, inUse] of roots) {
     await sweepSandboxPrivateRoot(root, inUse).catch((error: unknown) => {
       log.warn("boot: could not empty the sandbox root %s: %s", root, errorMessage(error));
@@ -410,7 +410,7 @@ export async function sweepSandboxPrivateRoots(): Promise<void> {
  * confined process could have set inside its own directory.
  */
 export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<string>): Promise<void> {
-  refuseRealAveHomeUnderTest(root, "sweep");
+  checkSandboxSweepRoot(root);
   let entry;
   try {
     entry = await lstat(root);
@@ -425,7 +425,7 @@ export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<s
   const canonicalRoot = await realpath(root);
   // What is there belongs to a running app: the HOMEs and temp directories of
   // its confined processes, which a sweep deletes.
-  refuseRealAveHomeUnderTest(canonicalRoot, "sweep");
+  checkSandboxSweepRoot(canonicalRoot);
   for (const name of await readdir(root)) {
     if (inUse.has(join(root, name)) || inUse.has(join(canonicalRoot, name))) continue;
     await removeOwnedPluginTree(join(root, name));

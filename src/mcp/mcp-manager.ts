@@ -60,7 +60,7 @@ export interface BundledSecretStore {
   deleteSecret(key: string): Promise<void>;
 }
 
-const DEFAULT_CONFIG_PATH = join(aveHome(), "mcp", "servers.json");
+const defaultConfigPath = (): string => join(aveHome(), "mcp", "servers.json");
 
 function validatedApiKey(value: string): string {
   if (typeof value !== "string") throw new Error("MCP credential must be text");
@@ -170,7 +170,7 @@ export class McpManager {
     private readonly onServerDisconnected?: (serverId: string) => void,
     private readonly bundledSecrets?: BundledSecretStore,
   ) {
-    this.configPath = configPath ?? DEFAULT_CONFIG_PATH;
+    this.configPath = configPath ?? defaultConfigPath();
     this.configLockPath = `${this.configPath}.guard`;
   }
 

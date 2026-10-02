@@ -16,6 +16,15 @@
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 
+// Nothing here loads the isolation guard (or anything that imports it): a
+// module loaded by a setup file is already evaluated when the test file's
+// `vi.mock` calls register, so the guard would keep the real `node:os` that a
+// suite standing in a scratch account for the person's has mocked.
+// `vitest.globalSetup.ts` checks the guard is in place.
+//
+// Each file's stores take this file's home only because each file loads its
+// own modules; `vitest.globalSetup.ts` refuses a run with isolate: false.
+
 const runHome = process.env.AVE_TEST_RUN_HOME;
 if (runHome === undefined) {
   throw new Error(

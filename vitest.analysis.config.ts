@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizePath } from "vite";
 import { defineConfig } from "vitest/config";
 import { electronNodeNormalizerArgument } from "./scripts/run-vitest-under-electron.mjs";
 import { documentGuardImportArgument } from "./scripts/lib/document-consumer-node-options.mjs";
@@ -35,12 +36,27 @@ const rendererTestGlobs = [
  * All other tests (main/boot/ipc-bridge) continue to run under the default
  * node environment.
  */
+// The app's no-op seam and the test runner's guard that takes its place (see
+// both files). Swapped by resolved path, so every importer gets the guard and
+// no build ever bundles it.
+const AVE_HOME_GUARD_SEAM = normalizePath(rootPath("src/shared/ave-home-test-guard.ts"));
+const AVE_HOME_GUARD = normalizePath(rootPath("src/__tests__/support/ave-home-isolation-guard.ts"));
+
 export default defineConfig({
   plugins: [{
     name: "document-input-guard",
     enforce: "pre",
     load(id) {
       assertAllowedDocumentRead(id.split("?")[0]);
+    },
+  }, {
+    name: "ave-home-isolation-guard",
+    enforce: "pre",
+    async resolveId(source, importer, options) {
+      if (!source.includes("ave-home-test-guard")) return null;
+      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
+      if (resolved === null) return null;
+      return normalizePath(resolved.id.split("?")[0]) === AVE_HOME_GUARD_SEAM ? AVE_HOME_GUARD : resolved;
     },
   }],
   test: {

@@ -69,7 +69,7 @@ interface ReadySentinel {
 
 
 
-const AVE_RUNTIME_DIR = path.join(aveHome(), "runtime");
+const aveRuntimeDir = (): string => path.join(aveHome(), "runtime");
 const UV_STDERR_TAIL_LIMIT_CHARS = 12_000;
 // Co-locate uv cache with the venv so hardlinks from cache → site-packages stay
 // on the same physical volume. NTFS hardlinks fail cross-volume with EXDEV
@@ -207,7 +207,7 @@ export class PythonRuntimeBootstrapper {
   constructor(private readonly options: PythonRuntimeBootstrapperOptions = {}) {}
 
   private runtimeDir(): string {
-    return this.options.runtimeDir ?? AVE_RUNTIME_DIR;
+    return this.options.runtimeDir ?? aveRuntimeDir();
   }
 
   private venvDir(): string {
@@ -516,7 +516,7 @@ export class PythonRuntimeBootstrapper {
     const lockBytes = Buffer.isBuffer(lockFile) ? lockFile : Buffer.from(lockFile);
     const lockHash = sha256Hex(lockBytes).slice(0, 24);
     const uvTarget = this.getCurrentUvTarget();
-    return path.join(AVE_RUNTIME_DIR, "python-envs", `${uvTarget.dir}-py312-${lockHash}`);
+    return path.join(aveRuntimeDir(), "python-envs", `${uvTarget.dir}-py312-${lockHash}`);
   }
 
   // ─── private: 실행 헬퍼 ──────────────────────────

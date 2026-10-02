@@ -50,7 +50,7 @@ export interface AgentProfileStoreOptions {
   userDir?: string;
 }
 
-const USER_AGENTS_DIR = resolve(aveHome(), "agents");
+const userAgentsDir = (): string => resolve(aveHome(), "agents");
 
 export function parseAgentFrontmatter(raw: string): {
   fm: AgentProfileFrontmatter;
@@ -77,7 +77,7 @@ export class AgentProfileStore {
   private agentPluginProfiles = new Map<string, LoadedAgentProfile>();
 
   constructor(opts: AgentProfileStoreOptions = {}) {
-    this.userDir = opts.userDir ?? USER_AGENTS_DIR;
+    this.userDir = opts.userDir ?? userAgentsDir();
   }
 
   /** Replace the installed agent packages; the installed-content service calls this after each load. */

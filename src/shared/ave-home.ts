@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, realpathSync } from "node:fs";
-import { homedir, userInfo } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { checkResolvedAveHome } from "./ave-home-test-guard.js";
 
 /**
  * Single source of truth for the Ave user-data root.
@@ -17,90 +18,20 @@ import { join, resolve, sep } from "node:path";
  */
 export function aveHome(): string {
   const home = resolve(process.env.AVE_HOME ?? defaultAveHome());
-  // Under the test runner every store resolves its directory here, so this is
-  // where a test that lost its AVE_HOME would reach the person's real data
-  // (an audit log, a session, a secret). Each test file starts with its own
-  // home under `test-tmp` (`vitest.globalSetup.ts`); this stops one that
-  // resolves past it. Only the account's own home counts here: a test that
-  // points HOME or a mocked `homedir()` at a scratch directory and keeps its
-  // Ave home there is isolated.
-  if (process.env.VITEST !== undefined) {
-    refuseUnderTest(home, "resolve AVE_HOME to", accountAveHomeSpellings());
-  }
+  // Every store resolves its directory here, so this is where the test runner
+  // stops a test that would reach the person's real data (an audit log, a
+  // session, a secret). A no-op in the app: see ave-home-test-guard.ts.
+  checkResolvedAveHome(home);
   return home;
 }
 
 /**
  * The default root, `~/.ave`, whatever `AVE_HOME` says. For the few callers
  * that must recognise the person's real data even while a test or an e2e run
- * points `AVE_HOME` elsewhere (the sandbox sweep's test guard).
+ * points `AVE_HOME` elsewhere.
  */
 export function defaultAveHome(): string {
   return resolve(join(homedir(), ".ave"));
-}
-
-/**
- * Under the test runner, refuse `path` when it is inside the developer's real
- * `~/.ave` other than its `test-tmp`: what is there belongs to the person and
- * to a running app (its audit logs, sessions, secrets, and the HOMEs of its
- * confined processes). No-op outside the test runner.
- *
- * "Real" is both `~/.ave` from `os.homedir()` and from the account database
- * (`os.userInfo()`): stricter than {@link aveHome}, for an action as
- * destructive as a sweep, so a test that points HOME or a mocked `homedir()`
- * somewhere else still cannot reach the person's own directory, and the
- * guard's own tests can stand a scratch directory in for it.
- */
-export function refuseRealAveHomeUnderTest(path: string, action: string): void {
-  if (process.env.VITEST === undefined) return;
-  refuseUnderTest(path, action, [...spellings(defaultAveHome()), ...accountAveHomeSpellings()]);
-}
-
-function refuseUnderTest(path: string, action: string, realHomes: readonly string[]): void {
-  // Both spellings of each side: HOME may be reached through a link (`/tmp`
-  // is `/private/tmp` on macOS), and the path may be named either way.
-  const homes = [...new Set(realHomes)];
-  const paths = spellings(resolve(path));
-  // macOS and Windows file systems ignore case by default: `/Users/Me/.AVE`
-  // is the same directory.
-  const fold = (p: string) => (process.platform === "linux" ? p : p.toLowerCase());
-  const inside = (candidate: string, dir: string) => fold(candidate) === fold(dir) || fold(candidate).startsWith(fold(dir) + sep);
-  for (const real of homes) {
-    const sanctioned = join(real, "test-tmp");
-    for (const candidate of paths) {
-      if (inside(candidate, real) && !inside(candidate, sanctioned)) {
-        throw new Error(`refusing to ${action} ${path} from a test process; it is under the real ${real}`);
-      }
-    }
-  }
-}
-
-let accountAveHomeCache: string[] | undefined;
-
-/** The account's own `~/.ave`, both spellings; read once, it does not move. */
-function accountAveHomeSpellings(): string[] {
-  if (accountAveHomeCache === undefined) {
-    let accountHome: string | undefined;
-    try {
-      accountHome = userInfo().homedir;
-    } catch (error) {
-      // A container user with no passwd entry has no account record; HOME
-      // is then the only home there is.
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    accountAveHomeCache = spellings(resolve(join(accountHome ?? homedir(), ".ave")));
-  }
-  return accountAveHomeCache;
-}
-
-/** A path as given and, when it exists, as the file system resolves it. */
-function spellings(path: string): string[] {
-  try {
-    return [path, realpathSync.native(path)];
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [path];
-    throw error;
-  }
 }
 
 /**
