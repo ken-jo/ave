@@ -205,6 +205,58 @@ describe("Apply now and the waits it does not end", () => {
   });
 });
 
+describe("changes to what is queued during an agent plugin's call check", () => {
+  /** A queue whose first call check waits for the test; every later one answers at once with `later`. */
+  function checkedQueue(later: boolean) {
+    let finishCheck!: (value: boolean) => void;
+    const first = new Promise<boolean>((resolve) => { finishCheck = resolve; });
+    const callsInFlight = vi.fn(async (_next: ApplyItem) => false);
+    callsInFlight.mockImplementationOnce(() => first).mockImplementation(async () => later);
+    const attempted: string[] = [];
+    const shutdown = new AbortController();
+    const queue = new ApplyQueue<ApplyItem>({
+      activity: createConversationActivityCoordinator(),
+      apply: async (next) => { attempted.push(next.name); return { state: "applied" }; },
+      callsInFlight, settled: async () => undefined, changed: vi.fn(),
+      signal: shutdown.signal, now: () => Date.now(), log: { warn: vi.fn() },
+    });
+    return { queue, attempted, callsInFlight, finishCheck, shutdown };
+  }
+
+  it("keeps the others when retain drops the agent plugin being checked", async () => {
+    const { queue, attempted, finishCheck } = checkedQueue(false);
+    queue.replace([item("assist", { kind: "agent-plugin" }), item("dark", { kind: "theme" }), item("light", { kind: "theme" })]);
+    await flush();
+    queue.retain((next) => next.name !== "assist");
+    expect(queue.state().queued).toEqual(["acme:theme:dark", "acme:theme:light"]);
+    finishCheck(false);
+    await queue.drained();
+    expect(attempted).toEqual(["dark", "light"]);
+  });
+
+  it("does not start what the check found ready once retain changed the queue: it checks again, and what retain dropped never starts", async () => {
+    const { queue, attempted, callsInFlight, finishCheck } = checkedQueue(false);
+    queue.replace([item("assist", { kind: "agent-plugin" }), item("dark", { kind: "theme" }), item("light", { kind: "theme" })]);
+    await flush();
+    queue.retain((next) => next.name !== "light");
+    finishCheck(false);
+    await queue.drained();
+    expect(attempted).toEqual(["assist", "dark"]);
+    expect(callsInFlight).toHaveBeenCalledTimes(2);
+  });
+
+  it("forgets a call wait that a replacement during the check made stale", async () => {
+    const { queue, attempted, finishCheck } = checkedQueue(true);
+    queue.replace([item("assist", { kind: "agent-plugin" }), item("dark", { kind: "theme" })]);
+    await flush();
+    queue.replace([item("dark", { kind: "theme" })]);
+    finishCheck(true);
+    await queue.drained();
+    expect(attempted).toEqual(["dark"]);
+    expect(queue.state().waitingForCalls).toEqual([]);
+  });
+});
+
 describe("the queue", () => {
   it("waits for an agent plugin's calls, applying the others first, and tries it again", async () => {
     let calls = true;

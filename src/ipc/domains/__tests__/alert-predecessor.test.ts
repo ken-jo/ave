@@ -194,3 +194,113 @@ describe("lock order between predecessor removal and installation (§18.6)", () 
     expect(h.uninstall).not.toHaveBeenCalled();
   });
 });
+
+describe("the service's package locks (§18.6)", () => {
+  const settle = async (count = 20) => {
+    for (let i = 0; i < count; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+  const packageOf = (name: string) => [{ kind: "plugin" as const, name }];
+
+  it("keeps a holder's package locked when an update waiting behind it is cancelled (shutdown)", async () => {
+    const h = harness();
+    let releaseA!: () => void;
+    let enteredA!: () => void;
+    const insideA = new Promise<void>((resolve) => { enteredA = resolve; });
+    const a = h.market.asOneOperation(async () => { enteredA(); await new Promise<void>((resolve) => { releaseA = resolve; }); }, packageOf("retired-plugin"));
+    await insideA;
+    const abort = new AbortController();
+    const applyBody = vi.fn(async () => ({ state: "applied" as const }));
+    Object.assign(h.market, { applyUpdateNow: applyBody });
+    const b = h.market.applyUpdate({ key: { sourceId: "trusted", kind: "plugin", name: "retired-plugin" }, from: "1.0.0", to: "2.0.0", switchSource: false },
+      () => true, abort.signal).catch((error: unknown) => error);
+    await settle();
+    abort.abort(new Error("cancel queued waiter"));
+    expect(await b).toMatchObject({ message: "cancel queued waiter" });
+    let enteredC = false;
+    const c = h.market.asOneOperation(async () => { enteredC = true; }, packageOf("retired-plugin"));
+    await settle();
+    const overlapped = enteredC;
+    releaseA();
+    await Promise.all([a, c]);
+    expect(applyBody).not.toHaveBeenCalled();
+    expect(overlapped).toBe(false);
+    expect(enteredC).toBe(true);
+  });
+
+  it("refuses a nested package lock asked for without the holder's lease, so no work it started inherits its ownership", async () => {
+    const h = harness();
+    let releaseB!: () => void;
+    let enteredB!: () => void;
+    const insideB = new Promise<void>((resolve) => { enteredB = resolve; });
+    const b = h.market.asOneOperation(async () => { enteredB(); await new Promise<void>((resolve) => { releaseB = resolve; }); }, packageOf("b"));
+    await insideB;
+    let nested!: Promise<unknown>;
+    let nestedInnerA = false;
+    await h.market.asOneOperation(async () => {
+      nested = h.market.asOneOperation(async () => {
+        await h.market.asOneOperation(async () => { nestedInnerA = true; }, packageOf("a"));
+      }, packageOf("b")).catch((error: unknown) => error);
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    }, packageOf("a"));
+    let releaseC!: () => void;
+    let enteredC!: () => void;
+    const insideC = new Promise<void>((resolve) => { enteredC = resolve; });
+    const c = h.market.asOneOperation(async () => { enteredC(); await new Promise<void>((resolve) => { releaseC = resolve; }); }, packageOf("a"));
+    await insideC;
+    releaseB();
+    await b;
+    await settle();
+    const overlapped = nestedInnerA;
+    releaseC();
+    await c;
+    expect(overlapped).toBe(false);
+    expect(await nested).toMatchObject({ message: expect.stringMatching(/lock contract: plugin:b asked for without the lease of a caller holding plugin:a; pass it down/u) });
+  });
+
+  it("keeps the holder's package locked for a nested lease that outlives it, and re-enters only through that lease", async () => {
+    const h = harness();
+    let releaseB!: () => void;
+    let enteredB!: () => void;
+    const insideB = new Promise<void>((resolve) => { enteredB = resolve; });
+    const b = h.market.asOneOperation(async () => { enteredB(); await new Promise<void>((resolve) => { releaseB = resolve; }); }, packageOf("b"));
+    await insideB;
+    let nested!: Promise<void>;
+    const order: string[] = [];
+    await h.market.asOneOperation(async (lease) => {
+      nested = h.market.asOneOperation(async (inner) => {
+        await h.market.asOneOperation(async () => { order.push("nested holds a and b"); }, packageOf("a"), inner);
+      }, packageOf("b"), lease);
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    }, packageOf("a"));
+    const c = h.market.asOneOperation(async () => { order.push("later caller holds a"); }, packageOf("a"));
+    await settle();
+    expect(order).toEqual([]);
+    releaseB();
+    await Promise.all([b, nested, c]);
+    expect(order).toEqual(["nested holds a and b", "later caller holds a"]);
+  });
+
+  it("refuses a nested package lock below one the lease holds instead of waiting in a cycle", async () => {
+    const h = harness();
+    let firstReady!: () => void; let secondReady!: () => void;
+    const firstHeld = new Promise<void>((resolve) => { firstReady = resolve; });
+    const secondHeld = new Promise<void>((resolve) => { secondReady = resolve; });
+    const first = h.market.asOneOperation(async (lease) => {
+      firstReady(); await secondHeld;
+      return h.market.asOneOperation(async () => "first extended", packageOf("b"), lease);
+    }, packageOf("a"));
+    const second = h.market.asOneOperation(async (lease) => {
+      secondReady(); await firstHeld;
+      return h.market.asOneOperation(async () => "second extended", packageOf("a"), lease);
+    }, packageOf("b"));
+    const outcome = await Promise.race([
+      Promise.allSettled([first, second]),
+      new Promise<"deadlocked">((resolve) => setTimeout(() => resolve("deadlocked"), 2_000)),
+    ]);
+    expect(outcome).not.toBe("deadlocked");
+    expect(outcome).toEqual([
+      { status: "fulfilled", value: "first extended" },
+      { status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/lock order: plugin:a asked for while holding plugin:b/u) }) },
+    ]);
+  });
+});

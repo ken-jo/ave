@@ -1384,6 +1384,33 @@ describe("MarketplaceService", () => {
       await expect(recheck).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "blocked-by-pattern" } });
     });
 
+    it("starts that work as another caller of the package locks, so a package lock it takes waits for the holder whose uninstall reported the change", async () => {
+      const { url } = market();
+      await addMarket(url);
+      const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+      await service.executeInstall((await service.planInstall(key)).planId);
+      const order: string[] = [];
+      let recheck: Promise<unknown> | null = null;
+      afterCatalogChanged = () => {
+        // Started at once, while the uninstall that reported the change still holds the package lock:
+        // it is not that uninstall's work, so it is neither refused nor let in beside it.
+        recheck ??= service.asOneOperation(async () => {
+          order.push("recheck holds the package");
+          return store.list().length;
+        }, [{ kind: "skill", name: "review" }]);
+        order.push("change reported");
+      };
+      // The uninstall runs under a caller's lease, which holds the package a while after it.
+      await service.asOneOperation(async (lease) => {
+        await service.uninstall(key, { lease });
+        for (let i = 0; i < 20; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+        order.push("holder returns");
+      }, [{ kind: "skill", name: "review" }]);
+      expect(recheck).not.toBeNull();
+      await expect(recheck).resolves.toBe(0);
+      expect(order).toEqual(["change reported", "holder returns", "recheck holds the package"]);
+    });
+
     it("runs the update check a sync's snapshot starts as its own operation, though it starts before that sync ends and outlives it", async () => {
       const { url, publish } = market();
       service.close();

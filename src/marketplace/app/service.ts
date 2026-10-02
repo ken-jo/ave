@@ -98,6 +98,7 @@ import type { RetirementEntry, RetirementEntryLookup } from "./retirement-entry.
 import { effectiveRevocations } from "../catalog/effective-revocations.js";
 import { revocationFeed, type BoundInstall, type RevocationFeed } from "./revocations.js";
 import { OperationLock } from "./operation-lock.js";
+import { KeyedMutex, type MutexLease } from "./keyed-mutex.js";
 import { Tickets } from "./tickets.js";
 import type { ComponentApprovalState, InstallerPorts, InstalledRecord, TokenStore } from "./ports.js";
 import {
@@ -239,6 +240,9 @@ export interface ApplyTarget {
  * organization's `autoUpdate` now, with the user's switches, skips and
  * failures as the caller reads them now (§18.7.2).
  */
+/** A caller's hold of package locks (§18.6), passed down to an install or uninstall that runs under them. */
+export type PackageLease = MutexLease;
+
 export type ApplyDecision = (facts: UpdateFacts, policy: MarketplacePolicy["autoUpdate"]) => boolean;
 
 /** An applied update re-read: still installed at its version, and in which state; null when it no longer is. */
@@ -383,23 +387,6 @@ function reviewComponentsOf(kind: PackageKind, delta: ConsentDelta, staged: Cons
     }
   }
   return views;
-}
-
-/** `wait`, or the rejection of `signal`'s reason once it aborts, whichever comes first. */
-async function untilAborted(wait: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
-  if (!signal) return wait;
-  signal.throwIfAborted();
-  let off = () => {};
-  const aborted = new Promise<never>((_, reject) => {
-    const onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    off = () => signal.removeEventListener("abort", onAbort);
-  });
-  try {
-    await Promise.race([wait, aborted]);
-  } finally {
-    off();
-  }
 }
 
 function keyOf(kind: PackageKind, name: string): string {
@@ -547,15 +534,10 @@ export class MarketplaceService implements RetirementEntryLookup {
    * (§18.7.4), taken inside the operation and before any plugin lock. An
    * automatic update reads what is installed under it, so a user install or
    * uninstall of the same package is either done before it, and the update
-   * is `superseded`, or waits for it.
+   * is `superseded`, or waits for it. A caller that holds a package lock and
+   * runs another install or uninstall of it passes its lease down (§18.6).
    */
-  private readonly packageTails = new Map<string, Promise<void>>();
-  /**
-   * The package locks the current call holds, so its own nested install or
-   * uninstall of one of them does not wait for itself. Open only while the
-   * holder runs, like {@link inOperation}.
-   */
-  private readonly heldPackages = new AsyncLocalStorage<{ keys: ReadonlySet<string>; open: boolean }>();
+  private readonly packageLocks = new KeyedMutex();
   /** The policy refresh now reading or applying; refreshes run one at a time, in order (§12). */
   private refreshRunning: Promise<void> | null = null;
   /**
@@ -603,53 +585,28 @@ export class MarketplaceService implements RetirementEntryLookup {
    */
   /**
    * Run `fn` as the only install, uninstall or update of `kind`/`name` (see
-   * {@link packageTails}). The lock comes after the operation and before any
+   * {@link packageLocks}). The lock comes after the operation and before any
    * plugin lock (§18.6): taking it while this context holds a plugin lock
    * could wait for an install that holds it and waits for that plugin lock,
-   * so it throws instead. A caller that already holds it runs `fn` at once.
-   * `signal` (the scheduler's shutdown) cancels the wait: aborted before the
-   * lock is free, `fn` never starts and the call rejects with its reason.
+   * so it throws instead. A caller that holds it passes its `lease` and runs
+   * `fn` at once. `signal` (the scheduler's shutdown) cancels the wait:
+   * aborted before the lock is free, `fn` never starts and the call rejects
+   * with its reason.
    */
-  private async withPackage<T>(kind: PackageKind, name: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    return this.withPackages([keyOf(kind, name)], fn, signal);
+  private async withPackage<T>(kind: PackageKind, name: string, fn: () => Promise<T>, options: { signal?: AbortSignal; lease?: PackageLease } = {}): Promise<T> {
+    return this.withPackages([keyOf(kind, name)], () => fn(), options);
   }
 
-  private async withPackages<T>(keys: readonly string[], fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const held = this.heldPackages.getStore();
-    const owned = held?.open ? held.keys : new Set<string>();
-    // One order among packages too: sorted, so two callers taking several never wait for each other in a cycle.
-    const wanted = [...new Set(keys)].filter((key) => !owned.has(key)).sort();
-    if (wanted.length === 0) return fn();
-    if (holdsAnyPluginInstallLock()) {
-      throw new Error(`lock order: the package lock of ${wanted.join(", ")} was asked for while a plugin lock is held; the package lock comes first (§18.6)`);
-    }
-    const releases: Array<() => void> = [];
-    try {
-      for (const key of wanted) {
-        const prior = this.packageTails.get(key) ?? Promise.resolve();
-        let release!: () => void;
-        const tail = new Promise<void>((resolve) => {
-          release = resolve;
-        });
-        const mine = prior.then(() => tail);
-        this.packageTails.set(key, mine);
-        releases.push(() => {
-          release();
-          if (this.packageTails.get(key) === mine) this.packageTails.delete(key);
-        });
-        await untilAborted(prior, signal);
-      }
-      // Cancelled while it waited, or the lock came free in the same turn as the abort.
-      signal?.throwIfAborted();
-      const scope = { keys: new Set([...owned, ...wanted]), open: true };
-      try {
-        return await this.heldPackages.run(scope, fn);
-      } finally {
-        scope.open = false;
-      }
-    } finally {
-      for (const release of releases.reverse()) release();
-    }
+  private async withPackages<T>(keys: readonly string[], fn: (lease: PackageLease) => Promise<T>, options: { signal?: AbortSignal; lease?: PackageLease } = {}): Promise<T> {
+    return this.packageLocks.run(keys, fn, {
+      ...(options.lease ? { within: options.lease } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+      beforeAcquire: (wanted) => {
+        if (holdsAnyPluginInstallLock()) {
+          throw new Error(`lock order: the package lock of ${wanted.join(", ")} was asked for while a plugin lock is held; the package lock comes first (§18.6)`);
+        }
+      },
+    });
   }
 
   private async operation<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -675,8 +632,12 @@ export class MarketplaceService implements RetirementEntryLookup {
    * and then calling the service could wait for a policy change's exclusive
    * lock while an install holds the shared lock and waits for that plugin lock.
    */
-  async asOneOperation<T>(fn: () => Promise<T>, packages: ReadonlyArray<{ kind: PackageKind; name: string }> = []): Promise<T> {
-    return this.operation(() => (packages.length > 0 ? this.withPackages(packages.map((item) => keyOf(item.kind, item.name)), fn) : fn()));
+  async asOneOperation<T>(
+    fn: (lease: PackageLease) => Promise<T>,
+    packages: ReadonlyArray<{ kind: PackageKind; name: string }> = [],
+    lease?: PackageLease,
+  ): Promise<T> {
+    return this.operation(() => this.withPackages(packages.map((item) => keyOf(item.kind, item.name)), fn, lease ? { lease } : {}));
   }
 
   /**
@@ -686,7 +647,7 @@ export class MarketplaceService implements RetirementEntryLookup {
    */
   private catalogChanged(): void {
     const notify = this.options.onCatalogChanged;
-    if (notify) this.inOperation.exit(notify);
+    if (notify) this.inOperation.exit(() => this.packageLocks.detached(notify));
   }
 
   /**
@@ -2036,8 +1997,13 @@ export class MarketplaceService implements RetirementEntryLookup {
    * install record holds, as main-process state (the plugin registry, a
    * revocation feed) carries it — never a view's handle. Not an IPC entry.
    */
-  async uninstallInstalled(key: StoredInstallKey, options?: { retain: { reason: PluginConfigRetention["reason"] } }): Promise<UninstallResultView> {
-    return this.operation(() => this.uninstallStoredNow(key, false, options));
+  async uninstallInstalled(
+    key: StoredInstallKey,
+    options?: { retain?: { reason: PluginConfigRetention["reason"] }; lease?: PackageLease },
+  ): Promise<UninstallResultView> {
+    // `lease`: the package lock of a caller that already holds it (§18.6), which this uninstall then runs under.
+    const retain = options?.retain ? { retain: options.retain } : undefined;
+    return this.operation(() => this.withPackage(key.kind, key.name, () => this.uninstallStoredNow(key, false, retain), options?.lease ? { lease: options.lease } : {}));
   }
 
   /** The removal both entries share; `key` is a stored identity, checked against the install record. */
@@ -2303,7 +2269,7 @@ export class MarketplaceService implements RetirementEntryLookup {
    * What the install throws is classified (§18.7.4's table).
    */
   async applyUpdate(target: ApplyTarget, decide: ApplyDecision, signal?: AbortSignal): Promise<ApplyOutcome> {
-    return this.operation(() => this.withPackage(target.key.kind, target.key.name, () => this.applyUpdateNow(target, decide), signal), signal);
+    return this.operation(() => this.withPackage(target.key.kind, target.key.name, () => this.applyUpdateNow(target, decide), signal ? { signal } : {}), signal);
   }
 
   private async applyUpdateNow(target: ApplyTarget, decide: ApplyDecision): Promise<ApplyOutcome> {
@@ -2613,8 +2579,9 @@ export class MarketplaceService implements RetirementEntryLookup {
           continue;
         }
         // Stored identity: the record's source id as stored, never resolved as a view id (§18.8).
-        await this.uninstallStoredNow({ sourceId: record.sourceId, kind: record.kind, name: record.name }, false,
-          retaining ? { retain: { reason: "revoked" } } : undefined);
+        // Under the package's lock (§18.6), as every uninstall: an update of the same package waits for it.
+        await this.withPackage(record.kind, record.name, () => this.uninstallStoredNow({ sourceId: record.sourceId, kind: record.kind, name: record.name }, false,
+          retaining ? { retain: { reason: "revoked" } } : undefined));
         report.push({ ...item, outcome: "uninstalled" });
       } catch (error) {
         report.push({ ...item, outcome: "failed", message: errorMessage(error) });

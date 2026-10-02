@@ -153,9 +153,17 @@ export class ApplyQueue<T extends ApplyItem> {
    * or shutdown for either.
    */
   private waiting: { wake: () => void; idle: boolean } | null = null;
+  /**
+   * Counts the changes made to what is queued from outside the work loop
+   * (replace, retain, shutdown). The loop's readiness check awaits an agent
+   * plugin's call check; what it finds is used only while this is unchanged,
+   * so the loop alone removes items and only ones still queued.
+   */
+  private revision = 0;
 
   constructor(private readonly options: ApplyQueueOptions<T>) {
     options.signal.addEventListener("abort", () => {
+      this.revision += 1;
       this.items = [];
       this.clearWait();
       this.waiting?.wake();
@@ -169,6 +177,7 @@ export class ApplyQueue<T extends ApplyItem> {
   replace(items: readonly T[]): void {
     if (this.options.signal.aborted) return;
     const applying = this.applying?.id;
+    this.revision += 1;
     this.items = applyOrder(items.filter((item) => item.id !== applying));
     for (const id of [...this.waitingForCalls]) if (!this.items.some((item) => item.id === id)) this.waitingForCalls.delete(id);
     this.options.changed();
@@ -185,6 +194,7 @@ export class ApplyQueue<T extends ApplyItem> {
     const before = this.items.length;
     this.items = this.items.filter(keep);
     if (this.items.length === before) return;
+    this.revision += 1;
     for (const id of [...this.waitingForCalls]) if (!this.items.some((item) => item.id === id)) this.waitingForCalls.delete(id);
     this.options.changed();
     if (this.items.length === 0) this.waiting?.wake();
@@ -233,8 +243,11 @@ export class ApplyQueue<T extends ApplyItem> {
         await this.waitFor((wake) => this.options.activity.onIdle(wake));
         continue;
       }
-      const next = await this.nextReady();
+      const revision = this.revision;
+      const next = await this.nextReady(revision);
       if (this.options.signal.aborted) return;
+      // What is queued changed during the check: what it found may be gone, so check again.
+      if (this.revision !== revision) continue;
       if (!next) {
         // Every package left is an agent plugin whose calls run: try again on the next idle moment or shortly.
         await this.waitFor((wake) => {
@@ -251,7 +264,9 @@ export class ApplyQueue<T extends ApplyItem> {
       // The call check awaited: a conversation may have started meanwhile. Read the gate again before starting.
       if (!this.forced && this.options.activity.isBusy()) continue;
       this.clearWait();
-      this.items.splice(this.items.indexOf(next), 1);
+      const at = this.items.indexOf(next);
+      if (at < 0) throw new Error(`apply queue: ${next.id} was to start but is no longer queued`);
+      this.items.splice(at, 1);
       this.waitingForCalls.delete(next.id);
       this.applying = next;
       this.options.changed();
@@ -267,11 +282,17 @@ export class ApplyQueue<T extends ApplyItem> {
     }
   }
 
-  /** The first queued package that may start: an agent plugin only while none of its calls runs. */
-  private async nextReady(): Promise<T | null> {
+  /**
+   * The first queued package that may start: an agent plugin only while none
+   * of its calls runs. Stops at once when what is queued changes from
+   * `revision` during a call check; the caller then checks again.
+   */
+  private async nextReady(revision: number): Promise<T | null> {
     for (const item of this.items) {
       if (item.kind !== "agent-plugin") return item;
-      if (!(await this.options.callsInFlight(item))) return item;
+      const busy = await this.options.callsInFlight(item);
+      if (this.revision !== revision) return null;
+      if (!busy) return item;
       if (!this.waitingForCalls.has(item.id)) {
         this.waitingForCalls.add(item.id);
         this.options.changed();
