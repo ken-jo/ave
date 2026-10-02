@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { getLocale, setLocale, type Locale } from "../../i18n/index.js";
 import {
   createMemoryWriteTool,
   MEMORY_WRITE_MAX_TITLE_CHARS,
@@ -243,13 +244,54 @@ describe("memory_write — cross-field marker-split / control-char guard", () =>
 });
 
 describe("memory_write — credential guard", () => {
+  let previousLocale: Locale;
+  beforeEach(() => {
+    previousLocale = getLocale();
+    setLocale("en");
+  });
+  afterEach(() => setLocale(previousLocale));
+
   it("rejects credential-like content before persistence", async () => {
     const { store, saveMemory } = makeStore();
     const result = await run({ title: "credential", content: "temporary token sk-ant-ABCDEFGH1234" }, store);
 
     expect(result.isError).toBe(true);
     expect(result.output).toContain("credentials");
+    expect(result.output).not.toContain("Authorization-like");
     expect(saveMemory).not.toHaveBeenCalled();
+  });
+
+  describe.each([
+    ["en", "Authorization-like key"],
+    ["ko", "Authorization 류 키"],
+  ] as const)("in %s", (locale, reason) => {
+    beforeEach(() => setLocale(locale));
+
+    it.each([
+      ["a configuration URL", "authorization_url=https://idp.example/login"],
+      ["a compound header key", 'authorization_header="Basic opaque-pass-12345"'],
+      ["a quoted key of two words", '{"authorization header":"Custom opaque-pass-12345"}'],
+    ])("rejects %s under an Authorization-like key and says that is why (§18.8)", async (_label, content) => {
+      const { store, saveMemory } = makeStore();
+      const result = await run({ title: "HTTP configuration", content }, store);
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain(reason);
+      expect(result.output).toContain("authorization_url=");
+      expect(saveMemory).not.toHaveBeenCalled();
+    });
+
+    it("names no Authorization-like key for another credential", async () => {
+      const result = await run({ title: "credential", content: `temporary token sk-ant-${"ABCDEFGH1234"}` });
+      expect(result.isError).toBe(true);
+      expect(result.output).not.toContain(reason);
+    });
+  });
+
+  it("stores a fact that only mentions the word", async () => {
+    const { store, saveMemory } = makeStore();
+    const result = await run({ title: "Login flow", content: "The authorization step happens in the browser before the app starts." }, store);
+    expect(result.isError).toBe(false);
+    expect(saveMemory).toHaveBeenCalledTimes(1);
   });
 
   it.each(["\n", "\r", "\r\n"])("rejects a JSON Authorization value after a line break %j at its colon (§18.8)", async (gap) => {

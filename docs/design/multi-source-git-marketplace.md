@@ -2346,11 +2346,26 @@ other opaque secret) is masked only in these positions:
   `Proxy-Authorization`, `authorization_header`, `x-authorization-token`,
   `authorization.value` and `AUTHORIZATION_URL` are all header keys, and
   `xauthorization` and `authorizationfoo` are not. A key such as
-  `authorization_url=https://…` is masked too: over-masking a URL costs only
-  display, while a key the grammar skipped (`authorization_header="Basic …"`)
-  leaked its value. After the key: separator whitespace, an optional closing
-  quote escaped by any number of backslashes, separator whitespace, `:` or
-  `=`, separator whitespace. Separator whitespace is classified by one
+  `authorization_url=https://…` is masked too, an accepted over-mask: a key
+  the grammar skipped (`authorization_header="Basic …"`) leaked its value.
+  The cost is not display alone. Model-bound text loses that configuration
+  value, and `memory_write` refuses a memory holding it
+  (`authorization_url=https://…/login`); its refusal names the reason, a
+  value under an Authorization-like key, in English and Korean, so the user
+  can rephrase the fact without it. A quoted key, opened by `"` or `'` at
+  any escape depth, runs from that quote to the closing quote of the same
+  depth: every character in between is key content, an escape too, whatever
+  it decodes to, so `{"authorization header":…}`,
+  `{"authorization\tvalue":…}` and `{"authorization\u003aheader":…}` are
+  whole keys, and a decoded `:`, `=` or whitespace inside the quotes never
+  ends the key. The separator grammar then starts after the closing quote.
+  Both readings of a name are tried, the quoted key's and the bare key's;
+  when both find a value, it runs from the earlier start through the later
+  one's line, so a stray quote never hides a bare header after it and a raw
+  `:` inside quotes masks from there. A bare key keeps the rule above: it ends at the first whitespace, quote,
+  backslash, `:` or `=`. After a bare key: separator whitespace, an optional
+  closing quote escaped by any number of backslashes, separator whitespace,
+  `:` or `=`, separator whitespace. Separator whitespace is classified by one
   predicate, JS `\s`, which by the language's definition holds the line
   terminators (CR, LF, U+2028, U+2029), U+FEFF and every Unicode space
   separator (NBSP, EM SPACE, …). A raw character is classified by it

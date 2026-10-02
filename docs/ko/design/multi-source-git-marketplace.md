@@ -2137,9 +2137,19 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
   이스케이프)가 뒤따르며, 그 구분자부터 키 끝까지가 키의 나머지입니다. 그래서
   `Authorization`, `Proxy-Authorization`, `authorization_header`, `x-authorization-token`,
   `authorization.value`, `AUTHORIZATION_URL`은 모두 헤더 키이고, `xauthorization`과
-  `authorizationfoo`는 아닙니다. `authorization_url=https://…` 같은 키도 가립니다. URL을
-  더 가리는 비용은 표시뿐이지만, 문법이 건너뛴 키(`authorization_header="Basic …"`)는 값이
-  샜습니다. 키 다음은 구분자 공백, 백슬래시 몇 개로든 이스케이프된 닫는 따옴표(선택), 구분자
+  `authorizationfoo`는 아닙니다. `authorization_url=https://…` 같은 키도 가립니다. 받아들인
+  과잉 가림입니다. 문법이 건너뛴 키(`authorization_header="Basic …"`)는 값이 샜습니다. 비용은
+  표시만이 아닙니다. 모델로 가는 텍스트에서 그 설정 값이 사라지고, `memory_write`는 그 값을
+  담은 기억(`authorization_url=https://…/login`)을 거부합니다. 거부 메시지는 이유(Authorization
+  류 키의 값)를 영어와 한국어로 밝히므로, 사용자는 그 키 없이 사실을 다시 적을 수 있습니다.
+  따옴표로 연 키(어떤 이스케이프 깊이의 `"`·`'`)는 그 따옴표부터 같은 깊이의 닫는 따옴표까지입니다.
+  그 사이 모든 문자는 키 내용이고, 이스케이프도 무엇으로 디코딩되든 키 내용입니다. 그래서
+  `{"authorization header":…}`, `{"authorization\tvalue":…}`, `{"authorization\u003aheader":…}`는
+  온전한 키이고, 따옴표 안에서 디코딩된 `:`·`=`·공백은 키를 끝내지 않습니다. 구분자 문법은 닫는
+  따옴표 뒤에서 시작합니다. 이름 하나를 따옴표 키로도, 따옴표 없는 키로도 읽어 봅니다. 둘 다 값을
+  찾으면 값은 앞선 시작점부터 뒤의 것이 있는 줄 끝까지입니다. 그래서 떠도는 따옴표가 그 뒤의 따옴표
+  없는 헤더를 가리지 못하고, 따옴표 안의 원시 `:`는 거기서부터 가립니다. 따옴표 없는 키는 위 규칙 그대로, 첫 공백·따옴표·백슬래시·`:`·`=`에서
+  끝납니다. 따옴표 없는 키 다음은 구분자 공백, 백슬래시 몇 개로든 이스케이프된 닫는 따옴표(선택), 구분자
   공백, `:`나 `=`, 구분자 공백입니다. 구분자 공백은 술어 하나, JS `\s`로 가립니다. 언어
   정의상 이것은 줄 끝 문자(CR, LF, U+2028, U+2029), U+FEFF, 모든 유니코드 공백 구분자(NBSP,
   EM SPACE 등)를 담습니다. 원시 문자는 이 술어로 바로 가리고, 깊이와 상관없는 이스케이프

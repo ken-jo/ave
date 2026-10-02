@@ -949,6 +949,26 @@ describe("git marketplace IPC boundary", () => {
     expect(JSON.stringify(answer)).not.toContain(secret);
   });
 
+  it.each([
+    ["a space", "authorization header"],
+    ["an escaped tab", "authorization\\tvalue"],
+    ["an NBSP", `authorization${String.fromCharCode(0xa0)}header`],
+    ["an escaped colon", "authorization\\u003aheader"],
+    ["an escaped equals sign", "authorization\\u003dheader"],
+  ])("masks the value of a quoted key with %s after the word in a failure it answers with (§18.8)", async (_label, key) => {
+    const secret = "opaque-pass-12345";
+    const message = `{"${key}":"Custom ${secret}"}`;
+    expect(Object.values(JSON.parse(message))).toEqual([`Custom ${secret}`]);
+    await setup({
+      refresh: vi.fn(async () => {
+        throw new MarketplaceError("SOURCE_UNREACHABLE", message, { detail: { reason: "proxy", host: "git.example", proxy: JSON.stringify({ level: 30, msg: message }) } });
+      }),
+    });
+    const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+    expect(answer).toMatchObject({ ok: false, code: "SOURCE_UNREACHABLE", message: `{"${key}":[REDACTED:TOKEN]` });
+    expect(JSON.stringify(answer)).not.toContain(secret);
+  });
+
   it("masks the value of a key that holds `authorization` as a word in a failure it answers with (§18.8)", async () => {
     const secret = "opaque-pass-12345";
     await setup({

@@ -704,10 +704,90 @@ function headerValueStart(text: string, nameEnd: number): { value: number } | { 
   return { value: skipSeparatorSpace(text, at + 1) };
 }
 
+/** How many backslashes stand right before `at`: the escape depth of a quote there. */
+function backslashesBefore(text: string, at: number): number {
+  let count = 0;
+  while (at - count > 0 && text[at - count - 1] === "\\") count++;
+  return count;
+}
+
+/**
+ * The quoted-key form of the grammar (§18.8), for one text read left to
+ * right. A name inside a quoted key belongs to that key up to its closing
+ * quote: the nearest `"` or `'` before the name opens the key, at the escape
+ * depth of the backslashes before it, and the first same quote of the same
+ * depth after the name closes it. Everything in between is key content, an
+ * escape too, whatever it decodes to (a space, a tab, a line break, `:`,
+ * `=`), so `"authorization header"` and `"authorization\u003aheader"`
+ * are whole keys. The name must still end its word: the character after it,
+ * decoded, is no letter or digit. The separator grammar starts after the
+ * closing quote. Returns where the value starts, or undefined when the name
+ * stands in no quoted key that a separator follows; the bare-key grammar
+ * ({@link headerValueStart}) then decides.
+ *
+ * Names are read in the order they stand, so the look back reads each
+ * character once, and each look ahead for a closing quote of one depth is
+ * kept and reused while the next name stands before that quote.
+ */
+function quotedKeyReader(text: string): (nameStart: number, nameEnd: number) => number | undefined {
+  let readBackTo = 0;
+  let opening: { quote: string; depth: number } | undefined;
+  const closings = new Map<string, { from: number; close: number }>();
+  const openingBefore = (at: number): { quote: string; depth: number } | undefined => {
+    for (let back = at - 1; back >= readBackTo; back--) {
+      const char = text[back]!;
+      if (char === '"' || char === "'") {
+        opening = { quote: char, depth: backslashesBefore(text, back) };
+        break;
+      }
+    }
+    readBackTo = Math.max(readBackTo, at);
+    return opening;
+  };
+  const closingAfter = (quote: string, depth: number, from: number): number => {
+    const key = `${quote}${depth}`;
+    const known = closings.get(key);
+    if (known !== undefined && known.from <= from && (known.close === -1 || from <= known.close)) return known.close;
+    let close = -1;
+    for (let at = from; at < text.length; at++) {
+      if (text[at] === quote && backslashesBefore(text, at) === depth) {
+        close = at;
+        break;
+      }
+    }
+    closings.set(key, { from, close });
+    return close;
+  };
+  return (nameStart, nameEnd) => {
+    const open = openingBefore(nameStart);
+    if (open === undefined) return undefined;
+    const after = keyCharAt(text, nameEnd);
+    if (after !== undefined && isAlphanumeric(after.char)) return undefined;
+    const close = closingAfter(open.quote, open.depth, nameEnd);
+    if (close === -1) return undefined;
+    const separator = skipSeparatorSpace(text, close + 1);
+    if (text[separator] !== ":" && text[separator] !== "=") return undefined;
+    return skipSeparatorSpace(text, separator + 1);
+  };
+}
+
+/**
+ * What {@link scrubSecretsForLLM} would mask in `text`, so a refusal can say
+ * why: `authorization-key` when a key holding `authorization` as a word has a
+ * value (§18.8; `authorization_url=https://…` too, an accepted over-mask),
+ * `credential` for any other credential shape, null for none.
+ */
+export function modelBoundCredentialKind(text: string): "authorization-key" | "credential" | null {
+  if (maskAuthorizationValues(text) !== text) return "authorization-key";
+  return scrubSecretsForLLM(text) !== text ? "credential" : null;
+}
+
 /**
  * `text` with every Authorization header's value, of any scheme known or
- * not, replaced whole by one marker: from where {@link headerValueStart}
- * says it starts to {@link authorizationValueEnd}. A marker already in the
+ * not, replaced whole by one marker: from where the grammar says it starts
+ * (by a quoted key's reading, {@link quotedKeyReader}, or a bare key's,
+ * {@link headerValueStart}, the earlier of the two) to
+ * {@link authorizationValueEnd}. A marker already in the
  * value is not trusted (`[REDACTED:TOKEN] <secret>`, a folded line after
  * it): the value goes with it, so a value that is one marker stays one marker.
  *
@@ -719,16 +799,21 @@ function headerValueStart(text: string, nameEnd: number): { value: number } | { 
 function maskAuthorizationValues(text: string): string {
   let out = "";
   let copied = 0;
+  const quotedValueStart = quotedKeyReader(text);
   AUTHORIZATION_NAME.lastIndex = 0;
   for (let match = AUTHORIZATION_NAME.exec(text); match !== null; match = AUTHORIZATION_NAME.exec(text)) {
     const nameEnd = match.index + match[0].length;
-    const found = match[0].startsWith("--") ? { value: nameEnd } : headerValueStart(text, nameEnd);
-    if ("resume" in found) {
-      AUTHORIZATION_NAME.lastIndex = Math.max(found.resume, AUTHORIZATION_NAME.lastIndex);
+    // Both readings of a key are tried: a quoted key's and a bare key's. When both find a value, it runs from the
+    // earlier start through the later one's line, so neither reading leaves a value behind.
+    const quoted = match[0].startsWith("--") ? nameEnd : quotedValueStart(match.index, nameEnd);
+    const bare = match[0].startsWith("--") ? undefined : headerValueStart(text, nameEnd);
+    const starts = [quoted, bare !== undefined && "value" in bare ? bare.value : undefined].filter((at) => at !== undefined);
+    if (starts.length === 0) {
+      AUTHORIZATION_NAME.lastIndex = Math.max(bare !== undefined && "resume" in bare ? bare.resume : nameEnd, AUTHORIZATION_NAME.lastIndex);
       continue;
     }
-    const start = found.value;
-    const end = authorizationValueEnd(text, start);
+    const start = Math.min(...starts);
+    const end = authorizationValueEnd(text, Math.max(...starts));
     if (end === start) {
       AUTHORIZATION_NAME.lastIndex = Math.max(start, AUTHORIZATION_NAME.lastIndex);
       continue;
