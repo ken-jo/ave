@@ -13,6 +13,7 @@ import { cn } from "../../../../lib/utils.js";
 import { scrubDiagnosticSecrets } from "../../../../shared/dlp.js";
 import type {
   AuthorityView,
+  CatalogEntryView,
   ComponentConsent,
   GitMarketplaceApi,
   GitMarketplaceFailure,
@@ -46,11 +47,7 @@ export interface PackageSheetProps {
   api: GitMarketplaceApi;
   alertsApi?: AveApi;
   onOpenPluginSettings?: (pluginId: string) => void;
-  /**
-   * The package to show. `installed`: the row that opened it says the package is installed from
-   * `key`, so Uninstall stays offered when its detail cannot be read (a quarantined or removed source, §18.8).
-   */
-  target: { key: PackageKeyView; mode: "detail" | "update"; installed?: boolean } | null;
+  target: { key: PackageKeyView; mode: "detail" | "update" } | null;
   /** The target's source as Sources lists it, so a failure names only what its row offers; null when it is not listed. */
   source: SourceView | null;
   onClose: () => void;
@@ -59,6 +56,13 @@ export interface PackageSheetProps {
 }
 
 type PlanOptions = { update?: boolean; version?: string; switchSource?: boolean };
+
+/** Installed states of a row whose package is installed from that row's key. */
+const INSTALLED_HERE: ReadonlySet<CatalogEntryView["state"]["state"]> = new Set(["installed", "update", "source-removed"]);
+
+function sameKey(a: PackageKeyView, b: PackageKeyView): boolean {
+  return a.sourceId === b.sourceId && a.kind === b.kind && a.name === b.name;
+}
 
 function isUpdatePlan(plan: InstallPlanView | UpdatePlanView): plan is UpdatePlanView {
   return "commitRange" in plan;
@@ -162,11 +166,27 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
   const [approvedHooks, setApprovedHooks] = useState<Record<number, boolean>>({});
   const [now, setNow] = useState(() => Date.now());
 
+  /**
+   * The Installed row for the shown key, read when its detail is refused (a quarantined or removed
+   * source, §18.8): what is installed from that key stays removable — or says the policy requires it —
+   * however the sheet was opened (a card, a review, a deep link). Null when nothing is installed from it.
+   */
+  const [installedRow, setInstalledRow] = useState<{ key: PackageKeyView; entry: CatalogEntryView } | null>(null);
+
   const load = useCallback(async (key: PackageKeyView) => {
     setLoadFailure(null);
+    setInstalledRow(null);
     const result = await api.packageDetail(key);
-    if (result.ok) setDetail(result.value);
-    else setLoadFailure(result);
+    if (result.ok) {
+      setDetail(result.value);
+      return;
+    }
+    setLoadFailure(result);
+    const installed = await api.listCatalog({ installedOnly: true });
+    const row = installed.ok
+      ? installed.value.entries.find((item) => item.key.sourceId === key.sourceId && item.key.kind === key.kind && item.key.name === key.name && INSTALLED_HERE.has(item.state.state))
+      : undefined;
+    if (row) setInstalledRow({ key, entry: row });
   }, [api]);
 
   /** The last plan asked for, so a review can be asked again after *Allow…* or an expired plan. */
@@ -275,8 +295,11 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
   const entry = detail?.entry ?? null;
   const state = entry?.state ?? null;
   const installedHere = state?.state === "installed" || state?.state === "update";
-  // What is installed stays removable when its detail is refused: by the key its row carries, beside the refusal's reason.
-  const uninstallWithoutDetail = detail === null && loadFailure !== null && target?.installed === true;
+  // What is installed from this key when its detail is refused: removable by that key beside the refusal's reason, unless required.
+  const installedWithoutDetail = detail === null && loadFailure !== null && target !== null && installedRow !== null && sameKey(installedRow.key, target.key)
+    ? installedRow.entry
+    : null;
+  const required = entry?.required ?? installedWithoutDetail?.required ?? false;
   const expiresIn = stage.stage === "review" ? Math.max(0, Math.round((new Date(stage.plan.expiresAt).getTime() - now) / 1000)) : 0;
   const reviewPlan = stage.stage === "review" ? stage.plan : null;
   const needsRewriteTrust = reviewPlan !== null && isUpdatePlan(reviewPlan) && reviewPlan.historyRewritten !== null;
@@ -600,7 +623,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
         </div>
 
         <DialogFooter className="flex-wrap gap-2">
-          {stage.stage === "detail" && target && ((state && !entry?.required && installedHere) || uninstallWithoutDetail) && (
+          {stage.stage === "detail" && target && !required && ((state && installedHere) || installedWithoutDetail !== null) && (
             <div className="mr-auto flex items-center gap-2">
               {(target.key.kind === "mcp" || target.key.kind === "agent-plugin") && (
                 <label className="flex items-center gap-1.5 text-xs">
@@ -613,7 +636,7 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
               </Button>
             </div>
           )}
-          {entry?.required && <span className="mr-auto text-xs text-muted-foreground">{t("gitMarketplace.state.required")}</span>}
+          {required && <span className="mr-auto text-xs text-muted-foreground" data-testid="git-marketplace:sheet:required">{t("gitMarketplace.state.required")}</span>}
           {stage.stage === "detail" && target && state && (state.state === "install" || state.state === "update" || state.state === "installed-elsewhere") && (
             <Button
               size="sm"

@@ -2565,9 +2565,12 @@ not classified: its row has no badge and no *Show in Finder*, and
 whose detail is refused with that reason, before and after the source is
 removed (the handle still names the install record); the sheet shows the
 sentence and keeps *Uninstall*, keyed by the row's handle. More generally,
-a sheet opened from a card whose package is installed from that key
-(*Installed*, *Update*, *Source removed*) keeps *Uninstall* whenever its
-detail is refused.
+whenever a sheet's detail is refused it reads the Installed list
+(`catalog:list` with `installedOnly`) for its exact key, however it was
+opened (a card, an update review, a deep link): a package installed from
+that key (*Installed*, *Update*, *Source removed*) keeps *Uninstall*, one
+the policy requires says *Required by your organization* and has none, and
+a key nothing is installed from has none.
 
 A background sync's failure reaches the Sources view through `sources:list`:
 `SyncResult` carries the detail, the syncer stores it in

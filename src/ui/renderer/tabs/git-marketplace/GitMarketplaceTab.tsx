@@ -21,7 +21,6 @@ import {
   type GitMarketplaceFailure,
   type PackageKeyView,
   type PackageKind,
-  type PackageStateView,
   type RevokedPackageView,
   type SourcePreviewView,
   type SourceView,
@@ -34,7 +33,7 @@ import { DirectInstallView } from "./DirectInstallView.js";
 import { GitRuntimeCard } from "./GitRuntimeCard.js";
 import { KIND_ORDER, kindLabel, originLabel, OTHER_SUBJECT, relativeTime, stateLabel } from "./labels.js";
 import { MarketplaceProblem } from "./MarketplaceProblem.js";
-import { PackageSheet, type PackageSheetProps } from "./PackageSheet.js";
+import { PackageSheet } from "./PackageSheet.js";
 import { LocalPluginPackageSheet, PluginStudioView } from "./PluginStudioView.js";
 import type { StudioLocalPreview } from "../../../../shared/plugin-studio.js";
 import { SourceBadges, SourcesView } from "./SourcesView.js";
@@ -74,9 +73,6 @@ function stateTone(entry: CatalogEntryView): string {
       return "bg-muted text-muted-foreground";
   }
 }
-
-/** States of a card whose package is installed from that card's key: its sheet keeps Uninstall when detail is refused. */
-const INSTALLED_HERE: ReadonlySet<PackageStateView["state"]> = new Set(["installed", "update", "source-removed"]);
 
 function PackageCard({ entry, onOpen, onUninstallUnbound, onExport }: { entry: CatalogEntryView; onOpen: () => void;
   onUninstallUnbound: () => void; onExport: (projection: boolean) => void }) {
@@ -143,7 +139,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [installedOnly, setInstalledOnly] = useState(false);
   const [query, setQuery] = useState("");
-  const [sheet, setSheet] = useState<PackageSheetProps["target"]>(null);
+  const [sheet, setSheet] = useState<{ key: PackageKeyView; mode: "detail" | "update" } | null>(null);
   const [localPreview, setLocalPreview] = useState<StudioLocalPreview | null>(null);
   const [addOpen, setAddOpen] = useState<"marketplace" | "direct" | null>(null);
   const [addInput, setAddInput] = useState("");
@@ -530,11 +526,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
                   <PackageCard
                     key={`${entry.key.sourceId ?? "unbound"}:${entry.key.kind}:${entry.key.name}`}
                     entry={entry}
-                    onOpen={() => entry.key.sourceId !== null && setSheet({
-                      key: { ...entry.key, sourceId: entry.key.sourceId },
-                      mode: entry.state.state === "update" ? "update" : "detail",
-                      installed: INSTALLED_HERE.has(entry.state.state),
-                    })}
+                    onOpen={() => entry.key.sourceId !== null && setSheet({ key: { ...entry.key, sourceId: entry.key.sourceId }, mode: entry.state.state === "update" ? "update" : "detail" })}
                     onUninstallUnbound={() => void uninstallUnbound(entry)}
                     onExport={(projection) => void exportInstalled(entry.key.name, projection)}
                   />
@@ -579,7 +571,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
           api={market}
           onReview={(key) => {
             setView("browse");
-            setSheet({ key, mode: "update", installed: true });
+            setSheet({ key, mode: "update" });
           }}
           onShowSources={() => setView("sources")}
         />

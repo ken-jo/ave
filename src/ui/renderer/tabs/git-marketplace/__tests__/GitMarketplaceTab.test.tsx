@@ -494,6 +494,56 @@ describe("GitMarketplaceTab package sheet", () => {
       await waitFor(() => expect(fake.market.uninstall).toHaveBeenCalledWith({ sourceId: HANDLE, kind: "skill", name: "note" }));
     });
 
+    it("shows a required package as required, with no Uninstall, when its detail is refused", async () => {
+      const note = entry(HANDLE, "skill", "note", { sourceLabel: HANDLE, state: { state: "installed", version: "1.0.0" }, required: true });
+      const fake = fakeMarketplace({ entries: [note] });
+      fake.market.packageDetail.mockResolvedValue(QUARANTINE);
+      renderTab(fake);
+
+      const card = await screen.findByTestId(`git-marketplace:card:${HANDLE}:skill:note`);
+      fireEvent.click(within(card).getAllByRole("button")[0]!);
+      const sheet = await screen.findByTestId("git-marketplace:sheet");
+      await within(sheet).findByText(/이 소스의 ID가 비밀번호나 토큰처럼 보여/u);
+      expect(await within(sheet).findByTestId("git-marketplace:sheet:required")).toHaveTextContent("조직에서 필수로 지정");
+      expect(within(sheet).queryByTestId("git-marketplace:uninstall")).toBeNull();
+    });
+
+    it.each([
+      ["installed from the link's key", { state: "installed", version: "1.0.0" }, false, true],
+      ["required by the policy", { state: "installed", version: "1.0.0" }, true, false],
+      ["not installed from the link's key", { state: "install", version: "1.0.0" }, false, false],
+    ] as const)("offers Uninstall to an uninstall link only for a package %s, from the Installed list", async (_label, state, required, offered) => {
+      const note = entry(HANDLE, "skill", "note", { sourceLabel: HANDLE, state, required });
+      const key = { sourceId: HANDLE, kind: "skill" as const, name: "note" };
+      const fake = fakeMarketplace({ entries: [note], deepLink: { action: "uninstall", key } });
+      fake.market.packageDetail.mockResolvedValue(QUARANTINE);
+      renderTab(fake);
+
+      const sheet = await screen.findByTestId("git-marketplace:sheet");
+      await within(sheet).findByText(/이 소스의 ID가 비밀번호나 토큰처럼 보여/u);
+      await waitFor(() => expect(fake.market.listCatalog).toHaveBeenCalledWith({ installedOnly: true }));
+      if (offered) {
+        fireEvent.click(await within(sheet).findByTestId("git-marketplace:uninstall"));
+        await waitFor(() => expect(fake.market.uninstall).toHaveBeenCalledWith(key));
+      } else {
+        if (required) expect(await within(sheet).findByTestId("git-marketplace:sheet:required")).toBeInTheDocument();
+        expect(within(sheet).queryByTestId("git-marketplace:uninstall")).toBeNull();
+        expect(fake.market.uninstall).not.toHaveBeenCalled();
+      }
+    });
+
+    it("offers no Uninstall for a key nothing is installed from, even when a same-named package is installed from another source", async () => {
+      const elsewhere = entry("team", "skill", "note", { state: { state: "installed", version: "1.0.0" } });
+      const fake = fakeMarketplace({ sources: [team], entries: [elsewhere], deepLink: { action: "uninstall", key: { sourceId: HANDLE, kind: "skill", name: "note" } } });
+      fake.market.packageDetail.mockResolvedValue(QUARANTINE);
+      renderTab(fake);
+
+      const sheet = await screen.findByTestId("git-marketplace:sheet");
+      await within(sheet).findByText(/이 소스의 ID가 비밀번호나 토큰처럼 보여/u);
+      await waitFor(() => expect(fake.market.listCatalog).toHaveBeenCalledWith({ installedOnly: true }));
+      expect(within(sheet).queryByTestId("git-marketplace:uninstall")).toBeNull();
+    });
+
     it("offers no Uninstall when the row that opened the sheet says nothing is installed from it", async () => {
       const note = entry(HANDLE, "skill", "note", { sourceLabel: HANDLE, state: { state: "install", version: "1.0.0" } });
       const fake = fakeMarketplace({ entries: [note] });
