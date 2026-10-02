@@ -1061,7 +1061,7 @@ describe("PackageSheet: the Installed lookup behind a refused detail decides onl
   }
 
   function sheet(fake: ReturnType<typeof fakeMarketplace>) {
-    const props = { api: fake.market as unknown as GitMarketplaceApi, source: null, onClose: vi.fn(), onChanged: vi.fn() };
+    const props = { api: fake.market as unknown as GitMarketplaceApi, source: null, onClose: vi.fn(), onChanged: vi.fn(), onAutoUpdateSwitch: vi.fn(async () => null) };
     const view = render(<PackageSheet {...props} target={{ key: KEY, mode: "detail" }} />);
     return {
       close: () => view.rerender(<PackageSheet {...props} target={null} />),
