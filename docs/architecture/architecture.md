@@ -691,7 +691,7 @@ transition is running (`ConversationActivityCoordinator.onIdle`); an agent
 plugin also waits until its MCP calls drain. An update applies automatically
 only when its consent fingerprint (authority, MCP servers, hooks, launchers,
 and each bundled server's and hook's approval digest over the package
-tree's exact bytes, the manifest's version included)
+tree, with only the manifest's version string normalized)
 equals the baseline the installed version was reviewed with: checked once
 against the catalog and again against the staged bytes before anything
 activates. A consent change is never applied automatically; it waits for the

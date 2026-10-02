@@ -6,10 +6,12 @@
  *
  * No runtime boundary keeps an approved server from reading another file of
  * its package and evaluating it, so the digest covers the **whole** package
- * tree, every byte as the component can read it. Nothing is normalized away:
- * not even `plugin.json`'s `version`, which a server can read and act on, so
- * a new release always asks again for its servers and hooks. It is the
- * sha256 of canonical JSON:
+ * tree, every byte as it is, with exactly one exception: the string value of
+ * `plugin.json`'s one top-level `version` member ({@link comparedBytes}). A
+ * release must change it, and a component that behaves differently by the
+ * version string is reading input data, which is outside what an approval
+ * covers (owner decision, design §18.7.3). It is the sha256 of canonical
+ * JSON:
  *
  *   { declaration: <static fingerprint of the declaring file>,
  *     anchored:    ["<token index>\0<package path>\0<sha256>", ...] sorted,
@@ -63,14 +65,99 @@ function sha256(bytes: Buffer | string): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+const JSON_WHITESPACE = new Set([" ", "\t", "\n", "\r"]);
+
+function skipWhitespace(text: string, at: number): number {
+  let i = at;
+  while (i < text.length && JSON_WHITESPACE.has(text[i]!)) i += 1;
+  return i;
+}
+
+/** The index just past the JSON string that starts at `at` (an opening quote). */
+function stringEnd(text: string, at: number): number {
+  let i = at + 1;
+  while (text[i] !== '"') i += text[i] === "\\" ? 2 : 1;
+  return i + 1;
+}
+
+/** The index just past the JSON value that starts at `at`, in text already known to parse. */
+function valueEnd(text: string, at: number): number {
+  const first = text[at];
+  if (first === '"') return stringEnd(text, at);
+  if (first === "{" || first === "[") {
+    let depth = 0;
+    let i = at;
+    do {
+      const char = text[i];
+      if (char === '"') {
+        i = stringEnd(text, i);
+        continue;
+      }
+      if (char === "{" || char === "[") depth += 1;
+      else if (char === "}" || char === "]") depth -= 1;
+      i += 1;
+    } while (depth > 0);
+    return i;
+  }
+  let i = at;
+  while (i < text.length && !JSON_WHITESPACE.has(text[i]!) && text[i] !== "," && text[i] !== "}" && text[i] !== "]") i += 1;
+  return i;
+}
+
 /**
- * The tree digest (§6.4) of the payload's exact bytes. Lines are
- * `"<mode> <sha256> <path>\n"` sorted by path bytes, as the receipt's tree
- * digest.
+ * Where the string value of the one top-level `version` member of a
+ * `plugin.json` sits, quotes excluded; null when the file is not a JSON
+ * object, has no such member, has it more than once, or its value is not a
+ * string.
+ */
+function versionValueSpan(text: string): { start: number; end: number } | null {
+  let document: unknown;
+  try {
+    document = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof document !== "object" || document === null || Array.isArray(document)) return null;
+  const found: Array<{ start: number; end: number; isString: boolean }> = [];
+  let i = skipWhitespace(text, 0) + 1;
+  i = skipWhitespace(text, i);
+  while (text[i] === '"') {
+    const keyEnd = stringEnd(text, i);
+    const key = JSON.parse(text.slice(i, keyEnd)) as string;
+    const start = skipWhitespace(text, skipWhitespace(text, keyEnd) + 1);
+    const end = valueEnd(text, start);
+    if (key === "version") found.push({ start: start + 1, end: end - 1, isString: text[start] === '"' });
+    i = skipWhitespace(text, end);
+    if (text[i] !== ",") break;
+    i = skipWhitespace(text, i + 1);
+  }
+  const only = found.length === 1 ? found[0]! : null;
+  return only && only.isString ? { start: only.start, end: only.end } : null;
+}
+
+/**
+ * The bytes a file is compared and hashed as. `plugin.json` has the string
+ * value of its one top-level `version` member emptied, every other byte kept
+ * as it is: another key, key order, whitespace, a second `version` member or
+ * a version that is not a string all still differ. A file whose bytes are
+ * not exactly UTF-8, or that does not parse, is hashed as it is.
+ */
+function comparedBytes(file: PayloadFile): Buffer {
+  if (file.path !== "plugin.json") return file.data;
+  const text = file.data.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(file.data)) return file.data;
+  const span = versionValueSpan(text);
+  return span ? Buffer.from(text.slice(0, span.start) + text.slice(span.end), "utf8") : file.data;
+}
+
+/**
+ * The tree digest (§6.4) of the payload with the one normalization above.
+ * Lines are `"<mode> <sha256> <path>\n"` sorted by path bytes, as the
+ * receipt's tree digest.
  */
 export function payloadTreeSha256(files: readonly PayloadFile[]): string {
   const lines = files
-    .map((file) => ({ key: Buffer.from(file.path, "utf8"), line: `${file.executable === true ? "100755" : "100644"} ${sha256(file.data)} ${file.path}\n` }))
+    .map((file) => ({ key: Buffer.from(file.path, "utf8"), line: `${file.executable === true ? "100755" : "100644"} ${sha256(comparedBytes(file))} ${file.path}\n` }))
     .sort((a, b) => Buffer.compare(a.key, b.key));
   const hash = createHash("sha256");
   for (const { line } of lines) hash.update(line, "utf8");
@@ -90,14 +177,15 @@ export function extensionDeclarationPaths(manifestDocument: unknown): string[] {
 }
 
 /**
- * The package paths whose bytes differ between two payloads. `plugin.json`
- * is always code, its version included: a component can read it. So is every
- * file in `declaring`, the declarations of the package's servers and hooks,
- * whose change changes what runs whatever its extension.
+ * The package paths whose bytes differ between two payloads, under the same
+ * normalization as {@link payloadTreeSha256}. `plugin.json` is listed only
+ * when something other than its version's value differs, and then always as
+ * code; so is every file in `declaring`, the declarations of the package's
+ * servers and hooks, whose change changes what runs whatever its extension.
  * The split is for display only: it never decides whether an update applies.
  */
 export function changedPayloadFiles(before: readonly PayloadFile[], after: readonly PayloadFile[], declaring: ReadonlySet<string>): { code: string[]; nonCode: string[] } {
-  const digests = (files: readonly PayloadFile[]) => new Map(files.map((file) => [file.path, `${file.executable === true ? "x" : "-"}${sha256(file.data)}`]));
+  const digests = (files: readonly PayloadFile[]) => new Map(files.map((file) => [file.path, `${file.executable === true ? "x" : "-"}${sha256(comparedBytes(file))}`]));
   const left = digests(before);
   const right = digests(after);
   const changed = [...new Set([...left.keys(), ...right.keys()])].filter((path) => left.get(path) !== right.get(path)).sort();

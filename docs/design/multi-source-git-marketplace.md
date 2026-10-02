@@ -1050,10 +1050,9 @@ the installed version never replaces it. Checkpoint one compares what the
 index row carries; checkpoint two compares the staged bytes and throws
 `UpdateNeedsReviewError` before anything activates. A bundled MCP server or
 hook is fingerprinted by its approval digest, which covers its declaration
-and every byte of the package tree as the component can read it,
-`plugin.json`'s `version` included, so every new release asks again for its
-servers and hooks; an unpinned launcher (`npx foo`, `image:latest`) gives
-`null`, which never carries. The trust store, now version 3, keeps each approval's
+and the package tree byte for byte, except the string value of
+`plugin.json`'s one top-level `version` (§18.7.3); an unpinned launcher
+(`npx foo`, `image:latest`) gives `null`, which never carries. The trust store, now version 3, keeps each approval's
 digest, and an approval carries to a new generation only while its digest is
 unchanged, for extensions and agent plugins alike; a version-2 record gets a
 digest only when its generation is active and matches the installed
@@ -2907,11 +2906,9 @@ installs the bytes it showed:
   off. An agent plugin's hook has no box where hooks cannot be confined;
 - when the only differences are approval digests and no changed file is
   code, one row, "Only these non-code files changed:", and *Approve update*,
-  which approves every changed component. `plugin.json`, its version
-  included, and the files that declare a server or hook are code, whatever
-  their extension; Markdown, text, images and other JSON are not. A new
-  version changes `plugin.json`, so the one-row form is a same-version
-  refresh's (§7.7);
+  which approves every changed component. `plugin.json` (beyond its
+  version's value) and the files that declare a server or hook are code,
+  whatever their extension; Markdown, text, images and other JSON are not;
 - an `approval-pending` agent plugin is reviewed in a component dialog from
   the Updates card: the unapproved components' rows and approve boxes, sent
   with `components:approve` for the `installId` shown. When that generation
@@ -3991,10 +3988,6 @@ states that a local directory source is refused like `installLocal`
 > - Nothing an update is queued with authorizes it: its facts are gathered
 >   again under the locks and judged with the policy and switches in force
 >   then (§7.3).
-> - The approval digest normalizes nothing, `plugin.json`'s `version`
->   included: a component can read it (§18.7.3 below is corrected), so a
->   versioned release always asks again for its servers and hooks, and the
->   one-row review is a same-version refresh's.
 > - In the cheap review, the files that declare a server or hook
 >   (`mcp.json`, `ai.agent-connector.ave/hooks.json`, and the paths an extension's
 >   `plugin.json` names) are code although they are JSON.
@@ -4211,13 +4204,26 @@ JSON:
 
 - **`treeSha256`** is the tree digest (§6.4, the algorithm behind the
   receipt's `artifactSha256`) over **every** installed payload file of the
-  package, **exact bytes, nothing normalized**. An earlier draft removed
-  the top-level `version` of `plugin.json` on the premise that it runs
-  nothing; it is read by anything that reads the file (a server can print
-  or branch on `require('../plugin.json').version`), so a release's version
-  change is a change to what an approved component can read, and needs its
-  approval again. Content packages' descriptor `ave-package.json` is not
-  installed (`content/store.ts:114-128`), so it is not in the tree.
+  package, with exactly **one normalization**: the string value of the one
+  top-level `version` member of `plugin.json` is emptied before that file
+  is hashed. Every other byte stays as it is, so another key, key order,
+  whitespace, a second `version` member, a nested `version`, a version that
+  is not a string, or bytes that are not exact UTF-8 still change the
+  digest; a file that does not parse is hashed as it is. A release must
+  change that field (`plugins/marketplace.ts:635-642`). Content packages
+  need no normalization, because their descriptor `ave-package.json` is
+  not installed (`content/store.ts:114-128`).
+- **Why the version is outside consent** (owner decision, 2026-10-02). An
+  executable component can read the version string, and one could behave
+  differently by it. That is the component reading input data, like any
+  file or response it reads at run time, which is outside what an approval
+  covers: the approval covers what runs and the files it ships with, not
+  the values it is given. A version-only change with identical code bytes
+  therefore applies automatically. The independent review (Codex, round 1)
+  objected that the field is runtime-readable input; the objection was
+  considered and rejected for that reason. What keeps the exception narrow
+  is exactness: only that one value is normalized, and every other byte of
+  `plugin.json` or of the code is a consent change.
 - **`launcher` closure.** For `npx`, `bunx`, `uvx`, `pipx run` and
   `docker run` the spec names an immutable artifact: npm or PyPI at an exact
   version (`name@1.2.3`, `name==1.2.3`), or an OCI image by `@sha256:` digest.
@@ -4300,10 +4306,11 @@ ledger entry.
   `authorityDelta` and `componentsDelta` (`service.ts:799-810`) become
   projections of it.
 - **Cheap review for code-free changes.** `changedFiles` lists, for a changed
-  approval digest, the package paths whose bytes differ, compared as exact
-  bytes like `treeSha256`; `plugin.json` is always `code`. A versioned
-  release therefore always lists `plugin.json` as code, and the one-row form
-  below is a same-version refresh's (§18.7.6). The renderer splits
+  approval digest, the package paths whose bytes differ, compared with the
+  **same single normalization** as `treeSha256`: `plugin.json` is listed
+  only when something other than its version's value differs, then always
+  as `code`. A complete versioned release that edits only `SKILL.md`
+  therefore lists `SKILL.md` alone. The renderer splits
   them for display only: `nonCode` holds Markdown, plain text, images and
   JSON outside `plugin.json`; `code` holds everything else. When the only
   differing fields are approval digests (and `minAppVersion` is unchanged)
@@ -5118,16 +5125,19 @@ The E2E flows named below run in `test/e2e/ui/`.
     - **a complete versioned release** — `plugin.json` `version` bumped and
       one `SKILL.md` edited — in a package **without** a local executable
       component applies automatically; the same release in a package
-      **with** a stdio MCP server gives `needs-review` listing
-      `plugin.json` as code; a same-version refresh that edits only
-      `SKILL.md` gives the one-row "Only these non-code files changed"
-      delta, and *Approve update* approves every changed component in one
-      call (revert: drop the cheap form);
-    - a server that reads its input from `plugin.json`'s `version`: a
-      change of the version alone changes the digest and gives
-      `needs-review` (revert: normalize `version` away);
-    - a change to any `plugin.json` field, the version included, changes
-      the digest and lists `plugin.json` under `changedFiles.code`;
+      **with** a stdio MCP server gives `needs-review` with the one-row
+      "Only these non-code files changed" delta, and *Approve update*
+      approves every changed component in one call (revert: hash
+      `version`, or drop the cheap form);
+    - a server that reads its input from `plugin.json`'s version string:
+      a version-only change gives no consent delta, while any other byte of
+      `plugin.json` or of the code does (revert: hash `version`);
+    - the normalization is exact: whitespace, key order, another key, a
+      second or nested `version`, a version that is not a string, and bytes
+      that are not exact UTF-8 all still change the digest (revert: any
+      looser normalization);
+    - a change to any other `plugin.json` field changes the digest and
+      lists `plugin.json` under `changedFiles.code`;
     - `npx foo` and `image:latest` give `null` and never carry;
     - `npx foo@1.2.3` and an `@sha256:` image carry while unchanged.
   - `plugin-contribution-trust.test.ts`:
@@ -5285,7 +5295,7 @@ The E2E flows named below run in `test/e2e/ui/`.
 | 20 | Any consent-fingerprint difference, a narrowing included, any `unknown` baseline field, and any previously approved component that would not keep its approval, needs review (§18.7.2, §18.7.3) | The owner's rule taken literally; equality is deterministic and testable; an automatic update must never silently disable a component the user approved |
 | 21 | Every `mcp` package update needs review (§18.7.3) | An MCP server declares no authority; its command is its authority, and its version is in the command |
 | 22 | Packages with no local executable component (stdio MCP, command hook, `process` entry) apply changed text and data automatically (§18.7.3) | `extensions-and-plugins.md` decision 18 activates them without consent; a routine template creates nothing; nothing local runs that could read the changed files |
-| 23 | The approval digest covers declaration, anchored files and the **whole** package tree as exact bytes, `plugin.json`'s `version` included; an undeterminable closure is `null`; carry-forward is provisional until publication revalidates it; a code-free change gets a one-action review (§18.7.3) | No runtime boundary keeps an unchanged server from evaluating or reading another package file, so exclusions by extension, execute bit or field are unsafe: a server can read its own version; review stays cheap instead of being skipped |
+| 23 | The approval digest covers declaration, anchored files and the **whole** package tree, normalizing only the string value of `plugin.json`'s one top-level `version`, byte-exactly; an undeterminable closure is `null`; carry-forward is provisional until publication revalidates it; a code-free change gets a one-action review (§18.7.3) | No runtime boundary keeps an unchanged server from evaluating another package file, so exclusions by extension or execute bit are unsafe; the version bump is release bookkeeping, and a component acting on the version string is reading input data, outside consent (owner decision 2026-10-02; Codex's runtime-input objection considered and rejected); review stays cheap instead of being skipped |
 | 24 | Two checkpoints: catalog, then staged bytes before activation; a manual review stages and installs exactly those bytes (§18.7.3) | The index cannot show an extension's bundled servers and hooks; approval must cover the bytes that install |
 | 25 | Updates wait for `onIdle` across all four busy conditions, at boot too; after 30 minutes an escalation offers *Apply now*; agent-plugin MCP gets its own lease source and drain, acquired by one helper for registered tools and `withBundledLease`, and payload directories are install-addressed under `.installs/`, disjoint from legacy `<version>/` (§18.7.4) | "Without interrupting a running turn"; startup order is not a barrier; the agent-plugin path had no lease owner, a same-version refresh moved live files, and a nested replacement would be deleted with its legacy predecessor |
 | 26 | Required installs update at every apply check through the apply queue; the policy approves authority, not MCP servers or hooks; an unapproved component is `approval-pending` with a notice and *Review* (§18.7.2, §18.7.5) | §10.2: the policy stands for authority consent; an unapproved projection is never published (`mcp-manager.ts:393`), so the pending approval must be visible and actionable |
