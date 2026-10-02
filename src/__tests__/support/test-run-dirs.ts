@@ -21,6 +21,9 @@ import { basename, dirname, join } from "node:path";
 /** Run directory names: `mkdtemp` adds six characters after the prefix. */
 const RUN_DIR_RE = /^(?:h|sbx)-[A-Za-z0-9]{6}$/;
 
+/** A run directory a sweep renamed aside to remove (`.del-<uuid>`). */
+const ASIDE_DIR_RE = /^\.del-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /** Inside each run directory: who made it. */
 export const RUN_OWNER_FILE = ".ave-test-run-owner.json";
 
@@ -102,7 +105,9 @@ export function parsePsLstartUtc(text: string): number | undefined {
   const [day, hour, minute, second, year] = [match[2], match[3], match[4], match[5], match[6]].map(Number) as [
     number, number, number, number, number,
   ];
-  if (hour > 23 || minute > 59 || second > 59) return undefined;
+  // No process started before the epoch; and `Date.UTC` reads years 0-99 as
+  // 1900-1999, so those would come back as another instant.
+  if (year < 1970 || hour > 23 || minute > 59 || second > 59) return undefined;
   const ms = Date.UTC(year, month, day, hour, minute, second);
   // Reject a date that does not exist (Feb 30) rather than let it roll over.
   const back = new Date(ms);
@@ -125,11 +130,17 @@ function processStartIdentity(pid: number): string | undefined {
     const out = execFileSync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid}).StartTime.ToFileTimeUtc()`],
-      { encoding: "utf8", timeout: 15_000, windowsHide: true },
+      // A pid with no process is an answer here, not news for the console.
+      { encoding: "utf8", timeout: 15_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] },
     ).trim();
     return `win32:${out}`;
   }
-  const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", timeout: 15_000, env: PS_ENV });
+  const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+    encoding: "utf8",
+    timeout: 15_000,
+    env: PS_ENV,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
   const seconds = parsePsLstartUtc(out);
   return seconds === undefined ? undefined : `ps:${seconds}`;
 }
@@ -223,6 +234,13 @@ export interface SweepResult {
    * name inside `test-tmp`, for a person to look at.
    */
   stranded: string[];
+  /**
+   * Directories renamed aside for removal that are still there: one whose
+   * removal failed in this sweep, or one an earlier sweep left (stranded, or
+   * interrupted) whose owner cannot be shown dead. Reported so a person knows
+   * to look; a later sweep removes any whose evidence becomes complete.
+   */
+  leftAside: string[];
 }
 
 export interface SweepOptions {
@@ -252,11 +270,15 @@ export async function sweepStaleRunDirs(
   options: SweepOptions = {},
 ): Promise<SweepResult> {
   const { now = Date.now(), maxAgeMs = STALE_RUN_DIR_AGE_MS, probe = systemProcessProbe, onStep } = options;
-  const result: SweepResult = { removed: [], stranded: [] };
+  const result: SweepResult = { removed: [], stranded: [], leftAside: [] };
   // Again here, not only when setup made it: what is removed below is
   // whatever `testTmp` names now.
   assertTestTmpRoot(testTmp);
   for (const name of readdirSync(testTmp)) {
+    if (ASIDE_DIR_RE.test(name)) {
+      await reclaimAside(join(testTmp, name), remove, { now, maxAgeMs, probe }, result);
+      continue;
+    }
     if (!RUN_DIR_RE.test(name)) continue;
     const path = join(testTmp, name);
     let stat;
@@ -288,10 +310,56 @@ export async function sweepStaleRunDirs(
       if (!putBack(aside, path)) result.stranded.push(aside);
       continue;
     }
-    await remove(aside);
-    result.removed.push(path);
+    if (await removeAside(aside, remove, result)) result.removed.push(path);
   }
   return result;
+}
+
+/**
+ * A directory an earlier sweep renamed aside and did not remove — its removal
+ * failed or was interrupted, or it was stranded. Removed on the same evidence
+ * as a run directory (a valid record, old, owner gone); kept and reported
+ * otherwise. Its name is a fresh UUID only a sweep makes, so nothing else
+ * comes to hold it between the judgment and the removal.
+ */
+async function reclaimAside(
+  aside: string,
+  remove: (path: string) => Promise<void>,
+  options: { now: number; maxAgeMs: number; probe: ProcessProbe },
+  result: SweepResult,
+): Promise<void> {
+  let stat;
+  try {
+    stat = lstatSync(aside);
+  } catch (error) {
+    // Another sweep removed it between the listing and here.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!stat.isDirectory()) return;
+  const evidence = readOwnerEvidence(aside);
+  if (options.now - stat.mtimeMs <= options.maxAgeMs || evidence === undefined || !ownerIsDead(evidence.owner, options.probe)) {
+    result.leftAside.push(aside);
+    return;
+  }
+  if (await removeAside(aside, remove, result)) result.removed.push(aside);
+}
+
+/**
+ * Remove a directory renamed aside. A failure leaves it there, reported, for
+ * a later sweep: a stale directory that will not go is no reason to stop a
+ * test run. Returns whether this sweep removed it.
+ */
+async function removeAside(aside: string, remove: (path: string) => Promise<void>, result: SweepResult): Promise<boolean> {
+  try {
+    await remove(aside);
+    return true;
+  } catch (error) {
+    // Another sweep reclaimed it first.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    result.leftAside.push(aside);
+    return false;
+  }
 }
 
 /** Rename `aside` back to `path` unless something holds that name again. */

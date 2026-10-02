@@ -125,6 +125,9 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
     for (const aside of swept.stranded) {
       console.warn(`[vitest setup] left ${aside} in place: it changed between being judged abandoned and being taken aside`);
     }
+    for (const aside of swept.leftAside) {
+      console.warn(`[vitest setup] left ${aside} in place: renamed aside for removal, but not removed; look at it, or a later run removes it once its owner is shown gone`);
+    }
     await validateJsonFixtures();
   } catch (error) {
     // Vitest calls no teardown for a setup that threw. Nothing has run in

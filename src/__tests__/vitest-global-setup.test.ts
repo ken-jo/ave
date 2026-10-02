@@ -7,6 +7,7 @@
  * HOME is a scratch directory throughout, so `~/.ave/test-tmp` here is a
  * scratch one too.
  */
+import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
@@ -160,6 +161,22 @@ describe("vitest global setup", () => {
     await teardown();
   });
 
+  it("names in its warning every directory it left aside unremoved", async () => {
+    const testTmp = scratchTestTmp();
+    const unattributed = runDir(join(testTmp, `.del-${randomUUID()}`), "null");
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation((message: unknown) => {
+      warnings.push(String(message));
+    });
+    const teardown = await setup(project()).finally(() => warn.mockRestore());
+    try {
+      expect(existsSync(unattributed)).toBe(true);
+      expect(warnings.some((message) => message.includes(unattributed))).toBe(true);
+    } finally {
+      await teardown();
+    }
+  });
+
   it("refuses a test-tmp that is a link, before making or removing anything", async () => {
     const testTmp = scratchTestTmp();
     const elsewhere = scratch();
@@ -208,6 +225,7 @@ describe("a process's start identity", () => {
   it("reads ps start text in the C locale and UTC as seconds since the epoch, and nothing else", () => {
     expect(parsePsLstartUtc("Thu Oct  2 04:29:05 2026")).toBe(Date.UTC(2026, 9, 2, 4, 29, 5) / 1000);
     expect(parsePsLstartUtc("Mon Feb 29 23:59:59 2028\n")).toBe(Date.UTC(2028, 1, 29, 23, 59, 59) / 1000);
+    expect(parsePsLstartUtc("Thu Jan  1 00:00:00 1970")).toBe(0);
     for (const text of [
       "",
       "jeu  2 oct 04:29:05 2026",
@@ -215,6 +233,10 @@ describe("a process's start identity", () => {
       "Mon Feb 30 01:00:00 2026",
       "Thu Oct  2 24:00:00 2026",
       "Thu Okt  2 04:29:05 2026",
+      // Before the epoch, and the years `Date.UTC` would read as 1900-1999.
+      "Wed Dec 31 23:59:59 1969",
+      "Fri Jan  1 00:00:00 0050",
+      "Sat Jan  1 00:00:00 0000",
     ]) {
       expect(parsePsLstartUtc(text), text).toBeUndefined();
     }
@@ -316,7 +338,7 @@ describe("sweepStaleRunDirs", () => {
       runDir(join(testTmp, "h-Form01"), owner(100, "win32:1000", host)),
     ];
     const result = await sweep(testTmp);
-    expect(result).toEqual({ removed: [], stranded: [] });
+    expect(result).toEqual({ removed: [], stranded: [], leftAside: [] });
     for (const path of kept) expect(existsSync(path), path).toBe(true);
   });
 
@@ -355,7 +377,7 @@ describe("sweepStaleRunDirs", () => {
         writeFileSync(join(path, "new-run-data"), "kept");
       },
     });
-    expect(result).toEqual({ removed: [], stranded: [] });
+    expect(result).toEqual({ removed: [], stranded: [], leftAside: [] });
     expect(readFileSync(join(judged, "new-run-data"), "utf8")).toBe("kept");
     expect(existsSync(join(movedAway, RUN_OWNER_FILE))).toBe(true);
     expect(readdirSync(testTmp)).toEqual(["h-Race01"]);
@@ -390,7 +412,39 @@ describe("sweepStaleRunDirs", () => {
         if (step === "judged") renameSync(path, join(testTmp, ".del-other-sweep"));
       },
     });
-    expect(result).toEqual({ removed: [], stranded: [] });
+    expect(result).toEqual({ removed: [], stranded: [], leftAside: [] });
+  });
+
+  it("reclaims next time a directory whose removal failed, and reports it meanwhile", async () => {
+    const testTmp = scratch();
+    runDir(join(testTmp, "h-Fail01"), owner(200, "ps:900", host));
+    const failing = await sweepStaleRunDirs(testTmp, async () => {
+      throw Object.assign(new Error("busy"), { code: "EBUSY" });
+    }, { probe });
+    expect(failing.removed).toEqual([]);
+    expect(failing.leftAside).toHaveLength(1);
+    const aside = failing.leftAside[0]!;
+    expect(readdirSync(testTmp)).toEqual([aside.slice(testTmp.length + 1)]);
+    expect(aside.slice(testTmp.length + 1)).toMatch(/^\.del-[0-9a-f-]{36}$/);
+
+    const next = await sweep(testTmp);
+    expect(next).toEqual({ removed: [aside], stranded: [], leftAside: [] });
+    expect(readdirSync(testTmp)).toEqual([]);
+  });
+
+  it("keeps and reports a directory left aside whose owner cannot be shown gone", async () => {
+    const testTmp = scratch();
+    const kept = [
+      runDir(join(testTmp, `.del-${randomUUID()}`), null),
+      runDir(join(testTmp, `.del-${randomUUID()}`), "null"),
+      runDir(join(testTmp, `.del-${randomUUID()}`), owner(100, "ps:1000", host)),
+      runDir(join(testTmp, `.del-${randomUUID()}`), owner(200, "ps:900", host), new Date()),
+    ];
+    const notOurs = runDir(join(testTmp, ".del-not-a-sweep"), owner(200, "ps:900", host));
+    const result = await sweep(testTmp);
+    expect(result.removed).toEqual([]);
+    expect(result.leftAside.sort()).toEqual([...kept].sort());
+    for (const path of [...kept, notOurs]) expect(existsSync(path), path).toBe(true);
   });
 
   it("refuses a test-tmp that became a link before it sweeps", async () => {
