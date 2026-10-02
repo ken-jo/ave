@@ -116,9 +116,12 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
   /**
    * An id the user entered that has a credential's shape (§18.8): the
    * renderer only ever sees it masked, so it could never be named again.
+   * `stored-id-holds-credential`: a source an earlier build stored under
+   * such an id, named by its row's handle for anything but Remove.
    */
   SOURCE_ID_INVALID: {
     "holds-credential": {},
+    "stored-id-holds-credential": {},
   },
   /**
    * A package whose name, version or component name has a credential's

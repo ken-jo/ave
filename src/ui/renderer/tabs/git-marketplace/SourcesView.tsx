@@ -187,7 +187,7 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
           <tbody>
             {sources.map((source) => {
               const status = source.status;
-              const warn = status.state === "unreachable" || status.state === "auth-required" || status.state === "history-rewritten" || status.state === "broken";
+              const warn = status.state === "unreachable" || status.state === "auth-required" || status.state === "history-rewritten" || status.state === "broken" || status.state === "id-holds-credential";
               const statusDetail = sourceStatusDetail(t, source);
               const allowable = statusAllowable(source);
               return (
@@ -271,7 +271,7 @@ export function SourcesView({ api, sources, onChanged, onAdd }: SourcesViewProps
                         >
                           {busy === source.id ? t("gitMarketplace.sources.status.repairing") : t("gitMarketplace.sources.repair")}
                         </Button>
-                      ) : (
+                      ) : status.state === "id-holds-credential" ? null : (
                         <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={busy !== null} onClick={() => void run(source.id, () => api.refreshSources(source.id))}>
                           {busy === source.id ? t("gitMarketplace.sources.status.syncing") : t("gitMarketplace.sources.refresh")}
                         </Button>

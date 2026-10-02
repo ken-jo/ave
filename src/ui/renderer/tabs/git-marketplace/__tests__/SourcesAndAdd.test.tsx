@@ -49,6 +49,24 @@ describe("SourcesView", () => {
     expect(onChanged).toHaveBeenCalled();
   });
 
+  it("explains a source whose stored id looks like a token, and offers only Remove, through the handle main gave the row (§18.8)", async () => {
+    const fake = fakeMarketplace();
+    const handle = "ave-legacy-0123456789abcdef0123456789abcdef";
+    fake.market.removeSource.mockResolvedValue({ ok: true, value: { orphanedPackages: [] } });
+    sourcesView(fake, [source({ id: handle, label: "[REDACTED:TOKEN]", canDisable: false, enabled: false, status: { state: "id-holds-credential" } })]);
+
+    const row = within(screen.getByTestId(`git-marketplace:source:${handle}`));
+    expect(row.getByText("ID가 토큰처럼 보임")).toBeInTheDocument();
+    expect(row.getByTestId(`git-marketplace:source:${handle}:status-detail`)).toHaveTextContent(
+      "이 소스의 ID가 비밀번호나 토큰처럼 보여 Ave가 동기화하거나 패키지를 제공하지 않습니다. 소스를 제거한 뒤 다른 ID로 다시 추가하세요.",
+    );
+    expect(row.getByRole("switch")).toBeDisabled();
+    expect(row.queryByRole("button", { name: "새로 고침" })).toBeNull();
+    fireEvent.click(row.getByTestId(`git-marketplace:source:${handle}:remove`));
+    fireEvent.click(await screen.findByTestId("git-marketplace:sources:confirm"));
+    await waitFor(() => expect(fake.market.removeSource).toHaveBeenCalledWith(handle));
+  });
+
   it("accepts a rewritten history only for the commit it showed", async () => {
     const fake = fakeMarketplace();
     sourcesView(fake, [source({ id: "team", status: { state: "history-rewritten", candidate: COMMIT_B, reviewable: true } })]);

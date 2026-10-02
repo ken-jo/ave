@@ -14,7 +14,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { isAsrtSandboxActive } from "../../permissions/asrt-sandbox.js";
 import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
@@ -258,6 +258,9 @@ function mcpRuntimeView(runtime: McpRuntimeSpec): McpRuntimeView {
   return { transport: "stdio", command: runtime.command, args: [...(runtime.args ?? [])], url: null, env, usesDataDir: /\$DATA_DIR(?![A-Za-z0-9_])/u.test(text) };
 }
 
+/** The prefix of a quarantined source's handle; `ave-` ids are reserved, so it names no added source. */
+const QUARANTINE_HANDLE_PREFIX = "ave-legacy-";
+
 /** A source id from a name: lowercase, `-` for anything else, never reserved. */
 function idFrom(raw: string): string | null {
   const id = raw.toLowerCase().replace(/\.git$/u, "").replace(/[^a-z0-9-]+/gu, "-").replace(/-{2,}/gu, "-").replace(/^-+|-+$/gu, "");
@@ -329,6 +332,8 @@ export class MarketplaceService implements RetirementEntryLookup {
   private readonly plans: Tickets<HeldPlan>;
   private readonly previews: Tickets<HeldPreview>;
   private readonly syncing = new Set<string>();
+  /** Keys the handles of quarantined sources ({@link handleOf}): a handle cannot be derived from the id without it. */
+  private readonly handleKey = randomBytes(32);
   /**
    * Installs in flight, by `kind:name`, and the source each is moving to:
    * every feed judges them by that source, not the one they leave (§10.4).
@@ -503,8 +508,31 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   private source(id: string): ResolvedSource {
     const source = this.registry.get(id);
-    if (!source) throw new MarketplaceError("SOURCE_ID_INVALID", `no source named ${id}`);
-    return source;
+    if (source && !this.registry.isQuarantined(source)) return source;
+    if (source || this.quarantinedByHandle(id)) {
+      throw new MarketplaceError("SOURCE_ID_INVALID", "this source's id looks like a password or token; remove it and add it again with another id", {
+        detail: { reason: "stored-id-holds-credential" },
+      });
+    }
+    throw new MarketplaceError("SOURCE_ID_INVALID", `no source named ${id}`);
+  }
+
+  /**
+   * The id the Sources view gives a quarantined source (§18.8) in place of
+   * its own, which the renderer would only see masked: `ave-legacy-` and
+   * an HMAC of the stored id under a key this service drew. It is stable
+   * while the service runs, names that one stored entry, and cannot be
+   * derived from the token; `ave-` ids are reserved, so no added source
+   * has one.
+   */
+  private handleOf(id: string): string {
+    return `${QUARANTINE_HANDLE_PREFIX}${createHmac("sha256", this.handleKey).update(id).digest("hex").slice(0, 32)}`;
+  }
+
+  /** The quarantined source a handle names, checked against the stored entries now; null for anything else. */
+  private quarantinedByHandle(handle: string): ResolvedSource | null {
+    if (!handle.startsWith(QUARANTINE_HANDLE_PREFIX)) return null;
+    return this.registry.list().find((source) => this.registry.isQuarantined(source) && this.handleOf(source.id) === handle) ?? null;
   }
 
   /**
@@ -533,8 +561,9 @@ export class MarketplaceService implements RetirementEntryLookup {
     const reviewable = source.origin === "custom" || source.origin === "direct";
     const tokenHost = source.auth.kind === "token" ? source.auth.host : null;
     const git = source.transport === "git" ? source : null;
+    const quarantined = this.registry.isQuarantined(source);
     return {
-      id: source.id,
+      id: quarantined ? this.handleOf(source.id) : source.id,
       origin: source.origin,
       label: sourceLabel(source, snapshot),
       ...(source.transport === "git" ? { transport: "git" as const, url: source.url.url, path: null } : { transport: "folder" as const, url: null, path: source.path }),
@@ -555,8 +584,10 @@ export class MarketplaceService implements RetirementEntryLookup {
           }
         : null,
       packageCount: snapshot?.packages.length ?? 0,
-      status: "problem" in read ? brokenStatus(read.problem) : sourceStatus(read.state, this.syncing.has(source.id), snapshot !== null, reviewable),
-      enabled: state ? this.registry.isEnabled(source, state) : !this.registry.canDisable(source),
+      status: quarantined
+        ? { state: "id-holds-credential" }
+        : "problem" in read ? brokenStatus(read.problem) : sourceStatus(read.state, this.syncing.has(source.id), snapshot !== null, reviewable),
+      enabled: quarantined ? false : state ? this.registry.isEnabled(source, state) : !this.registry.canDisable(source),
       canDisable: this.registry.canDisable(source),
       canRemove: reviewable,
       diagnostics: (snapshot?.diagnostics ?? []).map((item) => `${item.subject}: ${item.message}`),
@@ -680,6 +711,7 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   async setEnabled(id: string, enabled: boolean): Promise<SourceView> {
     return this.operation(async () => {
+      this.source(id);
       await this.registry.setEnabled(id, enabled);
       this.catalogChanged();
       return this.sourceView(this.source(id));
@@ -716,12 +748,13 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   private async removeSourceNow(id: string): Promise<{ orphanedPackages: PackageKeyView[] }> {
-    const source = this.source(id);
+    // A quarantined source is removed through the handle its row carries, and only removed (§18.8).
+    const source = this.quarantinedByHandle(id) ?? this.source(id);
     if (source.origin === "official" || source.origin === "managed") {
       throw new MarketplaceError("SOURCE_POLICY_BLOCKED", `the ${source.origin} source ${id} cannot be removed`);
     }
-    const orphaned = (await this.installedAll()).filter((item) => item.sourceId === id).map((item) => ({ sourceId: id, kind: item.kind, name: item.name }));
-    await this.options.syncer.removeSource(id);
+    const orphaned = (await this.installedAll()).filter((item) => item.sourceId === source.id).map((item) => ({ sourceId: source.id, kind: item.kind, name: item.name }));
+    await this.options.syncer.removeSource(source.id);
     this.catalogChanged();
     return { orphanedPackages: orphaned };
   }
@@ -1053,6 +1086,8 @@ export class MarketplaceService implements RetirementEntryLookup {
       const read = await this.read(source);
       // A source whose files cannot be read shows as broken in Sources and lists nothing.
       if ("problem" in read) continue;
+      // A quarantined source (§18.8) is served to no one, bound packages included.
+      if (this.registry.isQuarantined(source)) continue;
       if (!this.registry.isEnabled(source, read.state) && !bound?.has(source.id)) continue;
       shown.push(source);
       badges.set(source.id, badgesOf(source, acknowledgedOf(source, read.state)));

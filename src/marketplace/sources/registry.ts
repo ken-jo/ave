@@ -1014,7 +1014,18 @@ export class SourceRegistry {
   }
 
   /** Whether a source may be hidden at all (§10.5). */
+  /**
+   * A source whose stored id has a credential's shape (§18.8): one an
+   * earlier build added before ids were checked. The renderer sees it only
+   * masked, so it could never name it back; it is neither synced nor served,
+   * and the Sources view offers Remove through a handle main issues.
+   */
+  isQuarantined(source: ResolvedSource): boolean {
+    return !isSourceId(source.id);
+  }
+
   canDisable(source: ResolvedSource): boolean {
+    if (this.isQuarantined(source)) return false;
     if (source.origin === "managed") return false;
     if (source.origin === "official") return this.policy.allowDisablingOfficial;
     return true;

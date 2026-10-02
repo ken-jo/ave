@@ -98,6 +98,7 @@ export function sourceStatusLabel(t: Translate, status: SourceStatusView): strin
     case "history-rewritten":
       return status.reviewable ? t("gitMarketplace.sources.status.rewrittenReview") : t("gitMarketplace.sources.status.rewrittenKept");
     case "broken": return t("gitMarketplace.sources.status.broken");
+    case "id-holds-credential": return t("gitMarketplace.sources.status.idHoldsCredential");
   }
 }
 
@@ -169,6 +170,8 @@ export function sourceStatusDetail(t: Translate, source: SourceView): string | n
     case "auth-required": return failureText(t, { code: "SOURCE_AUTH_REQUIRED", message: "", ...(status.detail ? { detail: status.detail } : {}) }, subject);
     // The sentence names the Repair the row offers.
     case "broken": return failureText(t, { code: "SOURCE_LOCAL_DATA_DAMAGED", message: "", ...(status.detail ? { detail: status.detail } : {}) }, subject);
+    // The sentence names the Remove the row offers.
+    case "id-holds-credential": return failureText(t, { code: "SOURCE_ID_INVALID", message: "", detail: { reason: "stored-id-holds-credential" } }, subject);
     case "up-to-date":
     case "syncing":
     case "never-synced":
@@ -442,9 +445,11 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
     case "SOURCE_ID_INVALID": {
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
       if (!detail) return t("gitMarketplace.error.idInvalid");
-      // The one reason; a second one fails this line until it has a sentence.
-      const reason: "holds-credential" = detail.reason;
-      return reason === "holds-credential" ? t("gitMarketplace.error.idInvalid.holdsCredential") : unhandled(reason);
+      switch (detail.reason) {
+        case "holds-credential": return t("gitMarketplace.error.idInvalid.holdsCredential");
+        case "stored-id-holds-credential": return t("gitMarketplace.error.idInvalid.storedIdHoldsCredential");
+      }
+      return unhandled(detail);
     }
     case "SOURCE_ID_TAKEN": {
       const detail = parseMarketplaceErrorDetail(code, failure.detail);

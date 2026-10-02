@@ -87,8 +87,9 @@ const CREDENTIAL_WORDS = [
 
 /**
  * Whether `key` names a credential: it holds a credential word in any case
- * (`api_key`, `GH_TOKEN`, `db.password`, `X-Api-Key`), or has `auth` as a
- * whole segment (`x-auth`, `auth_header`; not `author` or `oauth`).
+ * (`api_key`, `GH_TOKEN`, `db.password`, `X-Api-Key`), or has `auth` or
+ * `pat` as a whole segment (`x-auth`, `auth_header`, `AZURE_DEVOPS_EXT_PAT`;
+ * not `author`, `oauth` or `path`).
  */
 function isCredentialKey(key: string): boolean {
   // A redaction marker another pass left in the key (`[REDACTED:CREDENTIALS]`) is never key material,
@@ -96,7 +97,9 @@ function isCredentialKey(key: string): boolean {
   const stripped = key.replace(/\[REDACTED:[A-Z_]+\]/gu, "");
   if (stripped !== key && stripped.trim() === "") return true;
   const lower = stripped.toLowerCase();
-  return CREDENTIAL_WORDS.some((word) => lower.includes(word)) || lower.split(/[^a-z0-9]/u).includes("auth");
+  const segments = lower.split(/[^a-z0-9]/u);
+  // `pat`: a personal access token (`AZURE_DEVOPS_EXT_PAT`, `pat=`), which may have no prefix of its own.
+  return CREDENTIAL_WORDS.some((word) => lower.includes(word)) || segments.includes("auth") || segments.includes("pat");
 }
 
 const JSON_ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
@@ -445,38 +448,55 @@ export function scrubSecretsForLLM(text: string): string {
 }
 
 /**
- * Real credential formats, each by its issuer's prefix, charset and length:
+ * Real credential formats, each by its issuer's prefix, alphabet and length:
  * the one detector both scrubber modes apply, and that the marketplace's
- * ingress uses to refuse an identifier ({@link holdsCredential}). A bare
- * prefix is no format (`test-`, `live-`, `proj-`), so names that start like
- * one pass. Case-sensitive: these tokens are, and a lowercased one no longer
- * authenticates.
+ * ingress uses to refuse an identifier ({@link holdsCredential}). The
+ * contract is design §18.8's table:
+ *   - A format is found wherever its prefix starts, whatever precedes it (a
+ *     letter, a digit, `_`, `-`, `.`, `/`): `backup_<token>`,
+ *     `backup<token>` and `/srv/<token>` are all found. No row has a word
+ *     boundary.
+ *   - Its body is read greedily over the format's own alphabet and counts
+ *     once it reaches the format's length, whatever follows: `<token>_backup`
+ *     and a body ending in `-` are found, and the whole run is masked.
+ *   - A bare word is no format (`test-`, `live-`, `proj-`), so names that
+ *     start like one pass. Case-sensitive: these tokens are, and a lowercased
+ *     one no longer authenticates.
+ * A credential without a prefix of its own (an Azure DevOps token, a
+ * password) is found only where it stands as one: URL userinfo, an
+ * Authorization or Bearer value, or a credential assignment
+ * (`redactCredentialAssignments`).
  */
-const CREDENTIAL_FORMATS: ReadonlyArray<{ pattern: RegExp; holds?: (match: string) => boolean }> = [
-  // GitHub classic, OAuth, user-to-server, server-to-server and refresh tokens; fine-grained PATs.
-  { pattern: /\bgh[pousr]_[A-Za-z0-9]{36,251}\b/g },
-  { pattern: /\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}\b/g },
+const CREDENTIAL_FORMATS: ReadonlyArray<{ pattern: RegExp }> = [
+  // GitHub classic, OAuth, user-to-server, server-to-server and refresh tokens.
+  { pattern: /gh[pousr]_[A-Za-z0-9]{36,}/g },
+  // GitHub App installation tokens in the stateless form `ghs_<app id>_<JWT>` (2026-04-24); the opaque
+  // form is the row above. Not GitHub's looser `ghs_[A-Za-z0-9._-]{36,}`: without a word boundary that
+  // also matches ordinary names (`laughs_compilation-of-the-best-moments.mp4`).
+  { pattern: /ghs_[A-Za-z0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g },
+  // GitHub fine-grained personal access tokens: 22 and 59 characters around `_`.
+  { pattern: /github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59,}/g },
   // GitLab personal, deploy, runner, pipeline-trigger, CI-build and service-account tokens.
-  { pattern: /\bgl(?:pat|dt|rt|ptt|cbt|soat)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*/g },
+  { pattern: /gl(?:pat|dt|rt|ptt|cbt|soat)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*/g },
   // npm access tokens.
-  { pattern: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  { pattern: /npm_[A-Za-z0-9]{36,}/g },
   // Slack: bot, user, app-level and refresh tokens carry numeric workspace and user ids.
-  { pattern: /\bxox[abposre]-\d{6,}-[0-9A-Za-z-]{8,}\b/g },
-  { pattern: /\bxapp-\d-[A-Z0-9]+-\d+-[A-Za-z0-9]+\b/g },
+  { pattern: /xox[abposre]-\d{6,}-[0-9A-Za-z-]{8,}/g },
+  { pattern: /xapp-\d-[A-Z0-9]+-\d+-[A-Za-z0-9]+/g },
   // AWS access key ids, long-term and temporary.
-  { pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g },
+  { pattern: /(?:AKIA|ASIA)[0-9A-Z]{16,}/g },
   // Google API keys.
-  { pattern: /\bAIza[0-9A-Za-z_-]{35}\b/g },
+  { pattern: /AIza[0-9A-Za-z_-]{35,}/g },
   // OpenAI: legacy 48, project/service-account/admin keys, and any carrying the issuer's signature.
-  { pattern: /\bsk-[A-Za-z0-9]{48}\b/g },
-  { pattern: /\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{40,}/g },
-  { pattern: /\bsk-[A-Za-z0-9_-]*T3BlbkFJ[A-Za-z0-9_-]*/g },
+  { pattern: /sk-[A-Za-z0-9]{48,}/g },
+  { pattern: /sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{40,}/g },
+  { pattern: /sk-[A-Za-z0-9_-]*T3BlbkFJ[A-Za-z0-9_-]*/g },
   // Anthropic API, admin and session keys.
-  { pattern: /\bsk-ant-(?:api|admin|sid|oat|ort)\d{2}-[A-Za-z0-9_-]{32,}/g },
+  { pattern: /sk-ant-(?:api|admin|sid|oat|ort)\d{2}-[A-Za-z0-9_-]{32,}/g },
   // Stripe secret, publishable and restricted keys.
-  { pattern: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g },
-  // Azure DevOps personal access tokens (the 52-character base32 form): letters and digits both.
-  { pattern: /\b[a-z2-7]{52}\b/g, holds: (match) => /[a-z]/u.test(match) && /[2-7]/u.test(match) },
+  { pattern: /(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}/g },
+  // JSON Web Tokens: three base64url segments (header.payload.signature), the header's `{"` as `eyJ`.
+  { pattern: /eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g },
 ];
 
 /** Whether {@link scrubDiagnosticSecrets} would change `text`: a credential format, URL userinfo or a credential assignment. */
@@ -528,9 +548,7 @@ function scrubCredentialShapes(text: string, mode: "broad" | "precise"): string 
       "[REDACTED:TOKEN]$1[REDACTED:TOKEN]",
     )
     .replace(/\b(AWS_SECRET_ACCESS_KEY\s*[:=]\s*["']?)[A-Za-z0-9/+=]{40}(["']?)/gi, "$1[REDACTED:TOKEN]$2");
-  for (const format of CREDENTIAL_FORMATS) {
-    out = out.replace(format.pattern, (match) => (format.holds === undefined || format.holds(match) ? "[REDACTED:TOKEN]" : match));
-  }
+  for (const format of CREDENTIAL_FORMATS) out = out.replace(format.pattern, "[REDACTED:TOKEN]");
   if (mode === "precise") return out;
   return out
     // Vendor-prefixed tokens observed in diagnostics probes (#1511), by prefix alone.

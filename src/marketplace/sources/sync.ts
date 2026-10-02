@@ -22,7 +22,7 @@
  * folder's current state. A read that fails keeps the last good snapshot
  * served, and the next read tries again.
  */
-import { validateCachedSnapshotText } from "../catalog/validate.js";
+import { admitSnapshotPackages, validateCachedSnapshotText } from "../catalog/validate.js";
 import { effectiveRevocations } from "../catalog/effective-revocations.js";
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm } from "node:fs/promises";
@@ -71,8 +71,12 @@ export type SyncResult =
 const SNAPSHOT_FILE = /^(?:[0-9a-f]{40}|local-[0-9a-f]{64})\.json$/u;
 const CANDIDATE_REF = "candidate";
 
-/** A source syncs while it is shown, or while an installed package is still bound to it (§7.3). */
+/**
+ * A source syncs while it is shown, or while an installed package is still
+ * bound to it (§7.3); never while its id has a credential's shape (§18.8).
+ */
 export function shouldSyncSource(registry: SourceRegistry, source: ResolvedSource, state: SourceState, hasInstalledPackages: boolean): boolean {
+  if (registry.isQuarantined(source)) return false;
   return registry.isEnabled(source, state) || hasInstalledPackages;
 }
 
@@ -505,7 +509,7 @@ export class SourceSyncer {
     return this.withSourceLock(id, () => this.options.registry.remove(id));
   }
 
-  /** The snapshot at the pin, or null before the first successful sync. Served offline as is (§7.5). */
+  /** The snapshot at the pin, or null before the first successful sync. Served offline as stored (§7.5), under identifier admission (§18.8). */
   async readSnapshot(id: string): Promise<SourceSnapshot | null> {
     return readPinnedSnapshot(this.options.root, id);
   }
@@ -559,7 +563,8 @@ async function readPinnedSnapshot(root: string, id: string): Promise<SourceSnaps
   if (named.sourceId !== id || named.commit !== pinnedCommit) {
     throw invalid(`names ${String(named.sourceId)}@${String(named.commit)}`);
   }
-  return parsed as SourceSnapshot;
+  // A snapshot stored before identifier admission (§18.8) is served under it.
+  return admitSnapshotPackages(parsed as SourceSnapshot);
 }
 
 /**

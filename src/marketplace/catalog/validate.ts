@@ -480,6 +480,29 @@ export function validateConditionalRevocationsText(text: string): Validation<Con
 }
 
 /** A same-pin sync may reuse only a complete, current and readable cache. */
+/**
+ * A stored snapshot as it is served: its packages held to the identifier
+ * admission a fresh read applies (§18.8). A snapshot written before that
+ * rule, or at a commit a refresh does not rebuild, can still list a package
+ * whose name, version or component name has a credential's shape; it is
+ * left out here, with the diagnostic a fresh read gives, on every read
+ * (offline ones included). The file, and its revocations, stay as stored.
+ */
+export function admitSnapshotPackages(snapshot: SourceSnapshot): SourceSnapshot {
+  const diagnostics: CatalogDiagnostic[] = [];
+  const packages = snapshot.packages.filter((entry, position) => {
+    const credential = credentialIn(
+      entry.name,
+      [...(entry.latest !== undefined ? [entry.latest] : []), ...entry.versions.map((version) => version.version)],
+      entry.versions.map((version) => version.components),
+    );
+    if (!credential) return true;
+    diagnostics.push({ subject: holdsCredential(entry.name) ? `packages[${position}]` : `${entry.kind}/${entry.name}`, message: credential.message });
+    return false;
+  });
+  return diagnostics.length === 0 ? snapshot : { ...snapshot, packages, diagnostics: [...snapshot.diagnostics, ...diagnostics] };
+}
+
 export function validateCachedSnapshotText(text: string): Validation<SourceSnapshot> {
   const parsed = parse(text);
   if (!parsed.ok) return parsed;

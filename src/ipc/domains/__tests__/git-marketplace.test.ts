@@ -13,7 +13,7 @@ import { FilePolicySource } from "../../../marketplace/sources/policy.js";
 import { parseGitMarketplaceResult, type EnteredTargetWarningView } from "../../../shared/git-marketplace.js";
 import { breakDiagnosticScrubberOn, DIAGNOSTIC_KEPT, DIAGNOSTIC_SECRET_PROBES } from "../../../shared/__tests__/fixtures/diagnostic-secret-probes.js";
 import { invokeAppIpcHandlerFromFrame, invokeFileIpcHandler } from "./test-helpers.js";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { latestBootstrapStatus } from "../../../boot/bootstrap-status.js";
@@ -680,6 +680,13 @@ describe("git marketplace IPC boundary", () => {
             en: "This package's version looks like a password or token, so Ave does not offer it. Ask the package's author to change it.",
             ko: "이 패키지의 버전이 비밀번호나 토큰처럼 보여 Ave가 제공하지 않습니다. 패키지 작성자에게 버전을 바꿔 달라고 하세요.",
           }],
+          ["an MCP server's name with a word glued to its token", new FakeVolume("linux")
+            .file("/m/plugin.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer", version: "1.0.0", description: "Writes" }))
+            .file("/m/mcp.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: { [`backup_${KEY_TOKEN}`]: { type: "stdio", command: "./server/editor", args: [] } } }))
+            .file("/m/server/editor", "#!/bin/sh\n"), "component-holds-credential", {
+            en: "A skill, agent, prompt, routine or MCP server in this package has a name that looks like a password or token, so Ave does not offer it. Ask the package's author to rename it.",
+            ko: "이 패키지에 든 스킬, 에이전트, 프롬프트, 루틴 또는 MCP 서버의 이름이 비밀번호나 토큰처럼 보여 Ave가 제공하지 않습니다. 패키지 작성자에게 이름을 바꿔 달라고 하세요.",
+          }],
           ["an MCP server's name", new FakeVolume("linux")
             .file("/m/plugin.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer", version: "1.0.0", description: "Writes" }))
             .file("/m/mcp.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: { [KEY_TOKEN]: { type: "stdio", command: "./server/editor", args: [] } } }))
@@ -697,6 +704,83 @@ describe("git marketplace IPC boundary", () => {
           expect(sentences(answer)).toEqual(expected);
         });
 
+        it("quarantines a source an earlier build stored under one, and removes it through the handle its row carries", async () => {
+          const root = mkdtempSync(join(tmpdir(), "ave-ipc-legacy-"));
+          const skill = "---\nname: note\ndescription: d\n---\n";
+          const volume = new FakeVolume("linux").file("/m/SKILL.md", skill).file("/n/SKILL.md", skill);
+          try {
+            // An earlier build stored the id as typed: write it the way the registry does, then reopen.
+            const first = await folderService({ root, folders: { fs: volume, platform: "linux", limits: TEST_FOLDER_LIMITS } });
+            const preview = await first.service.previewSource({ input: "/m", auth: "none" });
+            if (preview.type === "confirm") throw new Error("unexpected confirmation");
+            await first.service.addSource({ previewId: preview.previewId, id: "team" });
+            const other = await first.service.previewSource({ input: "/n", auth: "none" });
+            if (other.type === "confirm") throw new Error("unexpected confirmation");
+            await first.service.addSource({ previewId: other.previewId, id: "notes" });
+            first.service.close();
+            const list = join(root, "marketplaces", "sources.json");
+            writeFileSync(list, readFileSync(list, "utf8").replace('"team"', JSON.stringify(NAME_TOKEN)));
+            // Its data moves with it, the snapshot naming it, so the source reads as healthy and holds a package.
+            const data = join(root, "marketplaces", NAME_TOKEN);
+            renameSync(join(root, "marketplaces", "team"), data);
+            for (const file of readdirSync(join(data, "snapshots"))) {
+              const snapshot = join(data, "snapshots", file);
+              writeFileSync(snapshot, readFileSync(snapshot, "utf8").replace('"sourceId":"team"', `"sourceId":${JSON.stringify(NAME_TOKEN)}`));
+            }
+
+            const harness = await folderService({ root, folders: { fs: volume, platform: "linux", limits: TEST_FOLDER_LIMITS } });
+            try {
+              const real = harness.service;
+              await setup({
+                listSources: vi.fn(() => real.listSources()),
+                setEnabled: vi.fn((id: string, enabled: boolean) => real.setEnabled(id, enabled)),
+                refresh: vi.fn((id?: string) => real.refresh(id)),
+                removeSource: vi.fn((id: string) => real.removeSource(id)),
+                catalog: vi.fn((query: never) => real.catalog(query)),
+              });
+              const listed = (await invokeFileIpcHandler(handlers, channels.sourcesList)) as { ok: true; value: Array<{ id: string; status: { state: string }; canRemove: boolean; canDisable: boolean; enabled: boolean }> };
+              noToken(listed);
+              const row = listed.value.find((source) => source.status.state === "id-holds-credential")!;
+              expect(row).toMatchObject({ id: expect.stringMatching(/^ave-legacy-[0-9a-f]{32}$/u), canRemove: true, canDisable: false, enabled: false });
+              expect(await harness.registry.readState(NAME_TOKEN)).toMatchObject({ enabled: true });
+              expect((await harness.syncer.readSnapshot(NAME_TOKEN))?.packages).toHaveLength(1);
+              expect(listed.value.find((source) => source.id === "notes")).toMatchObject({ status: { state: expect.not.stringMatching("id-holds-credential") } });
+              // Served to no one, and named back by nothing but its handle.
+              const catalog = (await invokeFileIpcHandler(handlers, channels.catalogList, {})) as { ok: true; value: { entries: Array<{ key: { sourceId: string } }> } };
+              expect(catalog.value.entries.map((entry) => entry.key.sourceId)).toEqual(["notes"]);
+              for (const answer of [
+                await invokeFileIpcHandler(handlers, channels.sourcesSetEnabled, row.id, true),
+                await invokeFileIpcHandler(handlers, channels.sourcesRefresh, row.id),
+              ]) {
+                expect(answer).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID", detail: { reason: "stored-id-holds-credential" } });
+                noToken(answer);
+                expect(sentences(answer)).toEqual({
+                  en: "This source's id looks like a password or token, so Ave does not sync it or offer its packages. Remove the source and add it again with another id.",
+                  ko: "이 소스의 ID가 비밀번호나 토큰처럼 보여 Ave가 동기화하거나 패키지를 제공하지 않습니다. 소스를 제거한 뒤 다른 ID로 다시 추가하세요.",
+                });
+              }
+              // Refreshing everything syncs the other sources and never this one (the official source's git fails here, as in every folder harness).
+              const synced = vi.spyOn(harness.syncer, "sync");
+              await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+              expect(synced.mock.calls.map(([id]) => id)).toContain("notes");
+              expect(synced.mock.calls.map(([id]) => id)).not.toContain(NAME_TOKEN);
+              // Nor by the stored id itself, were a request to carry it.
+              expect(await invokeFileIpcHandler(handlers, channels.sourcesSetEnabled, NAME_TOKEN, false)).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID", detail: { reason: "stored-id-holds-credential" } });
+              // The masked id it would otherwise have shown names nothing.
+              expect(await invokeFileIpcHandler(handlers, channels.sourcesRemove, "[REDACTED:TOKEN]")).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID" });
+              expect(await invokeFileIpcHandler(handlers, channels.sourcesRemove, row.id)).toMatchObject({ ok: true });
+              const after = (await invokeFileIpcHandler(handlers, channels.sourcesList)) as { ok: true; value: Array<{ id: string }> };
+              expect(after.value.map((source) => source.id)).not.toContain(row.id);
+              expect(after.value.map((source) => source.id)).toContain("notes");
+              expect(readFileSync(list, "utf8")).not.toContain(NAME_TOKEN);
+            } finally {
+              harness.service.close();
+            }
+          } finally {
+            rmSync(root, { recursive: true, force: true });
+          }
+        });
+
         it("refuses a pasted server.json whose name ends in one", async () => {
           const answer = await refusal(new FakeVolume("linux"), async (harness) => {
             await setup({ previewDirectMcp: vi.fn((request: never) => harness.service.previewDirectMcp(request)) });
@@ -712,12 +796,18 @@ describe("git marketplace IPC boundary", () => {
         const harness = await folderService({ root, folders: { fs: new FakeVolume("win32"), platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });
         try {
           await setup({ previewSource: vi.fn((request: never) => harness.service.previewSource(request)) });
-          for (const token of TOKENS) {
-            const answer = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: `//server/share/${token}`, auth: "none" }) as { ok: true; value: { type: string; warnings: EnteredTargetWarningView[] } };
-            expect(answer).toMatchObject({ ok: true, value: { type: "confirm", warnings: [{ warning: "network-folder", address: expect.stringContaining("[REDACTED:") }] } });
-            expect(leaks(JSON.stringify(answer))).toBe(false);
-            for (const language of ["en", "ko"] as const) {
-              expect(leaks(warningText((key, vars) => translate(language, key, vars), answer.value.warnings[0]!))).toBe(false);
+          // Each token alone and with a name glued to it, and the formats whose edges the detector once missed.
+          const mixed = "A1b2C3d4".repeat(43);
+          const appToken = `gh${"s_"}123456_eyJ${"hbGciOiJSUzI1NiJ9"}.eyJ${"pc3MiOiIxMjM0NTYifQ"}.${mixed.slice(0, 342)}`;
+          const googleDash = `AI${"za"}${mixed.slice(0, 34)}-`;
+          for (const token of [...TOKENS, appToken, googleDash]) {
+            for (const segment of [token, `backup_${token}`, `backup${token}`, `${token}_old`]) {
+              const answer = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: `//server/share/${segment}`, auth: "none" }) as { ok: true; value: { type: string; warnings: EnteredTargetWarningView[] } };
+              expect(answer).toMatchObject({ ok: true, value: { type: "confirm", warnings: [{ warning: "network-folder", address: expect.stringContaining("[REDACTED:") }] } });
+              expect(JSON.stringify(answer), segment).not.toContain(token);
+              for (const language of ["en", "ko"] as const) {
+                expect(warningText((key, vars) => translate(language, key, vars), answer.value.warnings[0]!)).not.toContain(token);
+              }
             }
           }
         } finally {

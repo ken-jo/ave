@@ -57,7 +57,13 @@ export type SourceStatusView =
    * Its downloaded copy (state or snapshot) cannot be used: the row offers
    * Repair (§18.8). `message` is main's scrubbed English, for Copy details.
    */
-  | { state: "broken"; message: string; detail?: MarketplaceErrorDetail<"SOURCE_LOCAL_DATA_DAMAGED"> };
+  | { state: "broken"; message: string; detail?: MarketplaceErrorDetail<"SOURCE_LOCAL_DATA_DAMAGED"> }
+  /**
+   * Its stored id has a credential's shape (§18.8): an earlier build added
+   * it before ids were checked. It is neither synced nor served; the row's
+   * `id` is a handle main issued, and Remove is its only action.
+   */
+  | { state: "id-holds-credential" };
 
 /**
  * A source as the Sources view lists it: a git repository at its normalized

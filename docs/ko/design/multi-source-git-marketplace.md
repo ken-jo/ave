@@ -1908,9 +1908,9 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
   `message`만 다시 지웁니다. 렌더러가 돌려보내는 것은 main이 확인할 수 있는 값
   (`previewId`, `planId`, 소스 id, 패키지 키, 버전, 커밋, 구성 요소의 이름과 digest)입니다.
   이 식별자들은 같은 탐지기가 걸러 내면 들어오는 곳에서 거부되므로(§18.8), 스크러버는 main이
-  받아들인 식별자를 하나도 바꾸지 않고 렌더러는 받은 그대로 돌려보냅니다. 그래도 가려진 채
-  돌아온 값(그 규칙 이전에 저장된 id)은 어떤 것과도 맞지 않아 거부되며, 다른 것으로
-  오인되지 않습니다. 토큰 모양을 담은 딥 링크 `add` 주소는 가려진 채 추가 대화상자를
+  받아들인 식별자를 하나도 바꾸지 않고 렌더러는 받은 그대로 돌려보냅니다. 이전 빌드가 그런
+  id로 저장한 소스는 main이 발급한 핸들로 목록에 오르고, 제거는 그 핸들을 받습니다(§18.8).
+  가려진 채 돌아온 값은 어떤 것과도 맞지 않아 거부되며, 다른 것으로 오인되지 않습니다. 토큰 모양을 담은 딥 링크 `add` 주소는 가려진 채 추가 대화상자를
   채우고 사용자가 고칩니다. 패키지나 소스에 토큰 모양이 있는 `install`·`uninstall`
   링크는 링크로 읽지 않습니다.
 - `sources:preview`는 `{ input; ref?; subdir?; auth: "none" | "token" | "ssh";
@@ -2029,7 +2029,7 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 | `SOURCE_POLICY_BLOCKED` | 관리 정책 allow/block, `requireHttps`, `blockPrivateNetworks`, `allowLocalSources`, `allowDirectInstall`, 또는 공식이 아닌 대상에 대해 읽을 수 없는 정책 | `blocked-by-pattern`(target, pattern, policyPath), `not-in-allow-list`(target, policyPath), `https-required`(target, policyPath), `private-network-blocked`(target, address, policyPath), `local-sources-blocked`(target, policyPath), `direct-install-blocked`(target, policyPath), `policy-invalid`(error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.httpsRequired`, `.privateNetworkBlocked`, `.localSourcesBlocked`, `.directInstallBlocked`, `.policyInvalid` |
 | `SOURCE_CONFIRMATION_REQUIRED` | 대상이 소스에 없는 확인을 요구함(§7.4): 동기화, 계획, 설치 때, 또는 어느 소스도 지정하지 않은 다운로드 | 경고: `unencrypted`(host), `token-unencrypted`(host), `internal-network`(host, address), `this-computer`(host, address), `internal-downloads`(source, host), `network-folder`(server, path: 다른 컴퓨터의 폴더, 그 확인이 없는 폴더 소스를 읽을 때) | `.confirmationRequired`. 사유가 있으면 `gitMarketplace.warning.<warning>`(그 확인 자신의 질문, `198.18.0.0/15` 주소는 `internalNetwork.proxyRange`, 드라이브 매핑이 서버를 밝히지 않으면 `networkFolder.unknownServer`, macOS·Linux에서는 `networkFolder.automount`) |
 | `SOURCE_NAME_RESERVED` | 예약된 id | — | `.nameReserved` |
-| `SOURCE_ID_INVALID` | id가 2–63자의 소문자·숫자·`-`가 아니거나, 그런 소스가 없음. 또는 추가하려는 id가 자격 증명의 모양임(§18.8) | `holds-credential` | `.idInvalid`, `.idInvalid.holdsCredential` |
+| `SOURCE_ID_INVALID` | id가 2–63자의 소문자·숫자·`-`가 아니거나, 그런 소스가 없음. 또는 추가하려는 id가 자격 증명의 모양이거나, 제거가 아닌 요청이 격리된 소스를 가리킴(§18.8) | `holds-credential`, `stored-id-holds-credential` | `.idInvalid`, `.idInvalid.holdsCredential`, `.idInvalid.storedIdHoldsCredential` |
 | `SOURCE_ID_TAKEN` | 이미 쓰는 id나 이미 추가된 저장소. 이미 소스인 폴더, 또는 소스를 포함하거나 그 안에 있는 폴더(§7.7) | 저장소나 폴더: `repository-already-added`(url, existingId) — 주소의 어떤 표기로든, `url`은 추가하려던 주소를 정규화한 것. `folder-already-added`(path, existingId), `folder-inside-source`(path, existingId, existingPath), `folder-contains-source`(path, existingId, existingPath) — 경로로 또는 별칭을 거쳐. id만 겹치면 detail 없음 | `.idTaken`(id: 다른 id를 고름). `.idTaken.repositoryAlreadyAdded`, `.folderAlreadyAdded`, `.folderInsideSource`, `.folderContainsSource`는 다른 id가 아니라 겹치는 소스를 쓰거나 지우라고 안내 |
 | `SOURCE_AUTH_REQUIRED` | 401/403, ssh 거부. Ave가 저장된 토큰을 건넸는데 "저장소 없음"이 돌아올 때 | `token`(host), `token-no-access`(host: 저장된 토큰에 호스트가 "저장소 없음"으로 답함, 토큰에 권한이 없을 수 있음), `token-unencrypted`(host: 호스트가 평문 http로 로그인을 요구하는데 소스에 `token-unencrypted`가 없어 자격 증명을 내주지 않음), `ssh`(host) — git 메시지에서. 다운로드 거부는 담지 않음(다운로드 호스트가 토큰의 호스트와 다를 수 있음) | `.authRequired`, `.authRequired.token`, `.authRequired.tokenNoAccess`, `.authRequired.ssh`와 아래 변형. `.authRequired.tokenUnencrypted`와 `.entry`, `.setToken` |
 | `SOURCE_SSH_HOST_UNKNOWN` | known_hosts에 없거나 다른 호스트 키 | `unknown`(host, port), `changed`(host, port) — ssh가 "remote host identification has changed"를 출력하면 `changed`. 문장에 `ssh-keyscan`이나 `ssh-keygen -R` 명령이 들어가고 *명령 복사*가 그것을 복사함 | `.sshHostUnknown`, `.sshHostUnknown.unknown`, `.sshHostUnknown.changed` |
@@ -2076,34 +2076,96 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
 돌아오면, 문장은 서버 이름 일부가 토큰처럼 보였다고 말하고 명령은 보여 주지 않습니다.
 가려진 호스트를 쓴 명령은 실행되지 않기 때문입니다.
 
-진단 스크러버는 실제 자격 증명 형식의 표이며, 각 형식은 발급자의 접두사·문자 집합·길이를
-가집니다. GitHub(`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` 뒤 글자·숫자 36자 이상,
-22자와 59자 두 부분의 `github_pat_`), GitLab(`glpat-`와 형제 접두사, 20자 이상),
-npm(`npm_` 뒤 36자), Slack(숫자 id가 붙은 `xox?-`, `xapp-`), AWS(`AKIA`/`ASIA` 뒤
-대문자·숫자 16자), Google(`AIza` 뒤 35자), OpenAI(`sk-` 뒤 48자,
-`sk-proj-`/`sk-svcacct-`/`sk-admin-` 뒤 40자 이상, `T3BlbkFJ` 표지를 담은 `sk-` 키),
-Anthropic(`sk-ant-api03-`와 형제), Stripe(`live_`/`test_`가 붙은 `sk_`, `pk_`, `rk_` 뒤
-24자 이상), Azure DevOps 토큰(글자와 `2`–`7`이 섞인 소문자 base32 52자). 여기에 쓰인
-그대로의 JSON Web Token, PEM 개인 키 블록, URL userinfo, `Authorization`·`Bearer`·
-`x-api-key` 값을 더합니다. `test-`, `live-`, `proj-` 같은 단어만으로는 자격 증명 형식이
-아니어서 아무것도 가리지 않습니다. 그래서 `test-marketplace2026`,
-`live-notifications2026`, `sk-proj-tools`, `glpat-rotation-docs`는 그대로 두고, 각 형식은
-호스트·경로·id·URL·ssh 계정 안에서도 가립니다. 모델로 가는 텍스트(`scrubSecretsForLLM`)는
-예전의 넓은 접두사 규칙을 그대로 둡니다. 거기서는 이름을 잘못 가려도 잃는 것이 없습니다.
+#### 자격 증명 탐지기 계약
 
-같은 탐지기(`holdsCredential`: 스크러버가 텍스트를 바꾸는가)가 렌더러가 돌려보내는 모든
-식별자를 들어오는 곳에서 지킵니다. 추가하려는 소스 id(`SOURCE_ID_INVALID`
-`holds-credential`)와 정책이 적은 소스 id(정책이 거부됨, §18.6), 인덱스 항목이나
-디스크립터(합성된 것 포함)의 패키지 이름·버전·구성 요소 이름(스킬, MCP 서버, 프롬프트,
-에이전트, 루틴)입니다. 마켓플레이스는 그 패키지를 위치로 이름 붙인 진단과 함께 빼고,
-직접 패키지나 붙여넣은 `server.json`은 `SOURCE_INDEX_INVALID`와 그 사유로 실패합니다.
-그런 것을 가리키는 `install`·`uninstall` 딥 링크는 읽지 않습니다. 내보내는 쪽의 지우기는
-그대로 모든 문자열에 적용되며, 이 검사를 통과한 식별자는 하나도 바꾸지 않으므로 소스와
-패키지는 렌더러의 모든 요청에서 그대로 동작합니다. 이전 빌드가 저장한 소스 id는 계속
-읽습니다. 탐지기가 그것을 걸러 내면 렌더러는 가려진 id를 보고, 그 id를 가리키는 요청은
-없는 소스로 거부됩니다. 탐지기가 보지 못하는 것은 셋입니다. 소문자로 바뀐 토큰(더 이상
-자격 증명이 아님), 예전 형식의 40자리 16진수 GitHub 토큰(식별자가 지켜야 하는 커밋과
-같은 모양), 84자 형식의 Azure DevOps 토큰입니다.
+탐지기 하나(`src/shared/dlp.ts`)가 두 가지 일을 합니다. main의 스크러버는 렌더러에 건네거나
+로그에 쓰는 모든 문자열에서 찾은 것을 가리고, 들어오는 곳에서는 무엇이든 찾아낸 식별자를
+거부합니다(`holdsCredential(text)`: 스크러버가 `text`를 바꾸는가). 이 절이 그 계약이며,
+`src/audit/__tests__/dlp-redact.test.ts`의 테스트가 코드를 이 계약에 묶습니다.
+
+**어디서든 찾는 형식.** 각 행은 접두사가 시작하는 곳이면 어디서든 찾고, 통째로 가립니다.
+
+| 발급자 | 접두사 | 접두사 뒤 본문 |
+| --- | --- | --- |
+| GitHub classic, OAuth, user-to-server, server-to-server, refresh | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` | 글자·숫자 36자 이상 |
+| GitHub App 설치 토큰, stateless | `ghs_` | `<글자·숫자>_` 뒤 JWT(`eyJ…`와 base64url 세 조각) |
+| GitHub fine-grained | `github_pat_` | 글자·숫자 22자, `_`, 글자·숫자 59자 이상 |
+| GitLab | `glpat-`, `gldt-`, `glrt-`, `glptt-`, `glcbt-`, `glsoat-` | 글자·숫자·`_`·`-` 20자 이상, 그 뒤 `.`로 나뉜 조각 |
+| npm | `npm_` | 글자·숫자 36자 이상 |
+| Slack | `xoxa-`, `xoxb-`, `xoxp-`, `xoxo-`, `xoxs-`, `xoxr-`, `xoxe-` | 숫자 6자 이상, `-`, 글자·숫자·`-` 8자 이상 |
+| Slack 앱 수준 | `xapp-` | 숫자, `-`, 대문자·숫자, `-`, 숫자, `-`, 글자·숫자 |
+| AWS 액세스 키 id | `AKIA`, `ASIA` | 대문자·숫자 16자 이상 |
+| Google API 키 | `AIza` | 글자·숫자·`_`·`-` 35자 이상 |
+| OpenAI | `sk-` | 글자·숫자 48자 이상 |
+| OpenAI 프로젝트·서비스 계정·관리자 | `sk-proj-`, `sk-svcacct-`, `sk-admin-` | 글자·숫자·`_`·`-` 40자 이상 |
+| OpenAI 서명 | `sk-` | `T3BlbkFJ`를 담은 글자·숫자·`_`·`-` |
+| Anthropic | `sk-ant-api`, `-admin`, `-sid`, `-oat`, `-ort`와 숫자 두 자리, `-` | 글자·숫자·`_`·`-` 32자 이상 |
+| Stripe | `sk_`, `pk_`, `rk_` 뒤 `live_` 또는 `test_` | 글자·숫자 24자 이상 |
+| JSON Web Token | `eyJ` | base64url 5자 이상, `.`, 5자 이상, `.`, 5자 이상 |
+| PEM 개인 키 | `-----BEGIN … PRIVATE KEY-----` | `-----END … PRIVATE KEY-----`까지 |
+
+경계 규칙은 모든 행에 같습니다.
+
+- **왼쪽: 없음.** 접두사 앞에 무엇이 있든(글자, 숫자, `_`, `-`, `.`, `/`, 또는 아무것도
+  없음) 형식이 시작합니다. `backup_<토큰>`, `backup<토큰>`, `market-<토큰>`,
+  `//server/share/<토큰>`을 모두 찾습니다.
+- **오른쪽: 없음.** 본문은 그 행의 문자 집합으로 끝까지 읽고, 그 행의 길이에 닿으면 뒤에
+  무엇이 오든 셉니다. `<토큰>_old`, `<토큰>.example.com`, 본문이 `-`로 끝나는 Google 키를
+  찾고, 이어진 부분 전체를 가립니다.
+- **대소문자: 발급된 그대로.** 모든 접두사와 문자 집합은 대소문자를 구분합니다.
+
+**자격 증명 자리에서만 찾는 형식.** 자기 접두사가 없는 자격 증명(어떤 base32 다이제스트와도
+같은 소문자 base32 52자인 Azure DevOps 개인 액세스 토큰, 비밀번호, 그 밖의 불투명한 비밀)은
+다음 자리에서만 가립니다.
+
+- URL userinfo: `http(s)` 주소의 `@` 앞 전부, 그 밖의 주소나 scp 형태에서는
+  `user:password`(또는 ssh 계정 이름이 아닌 userinfo)
+- 모든 방식의 `Authorization` 값, `Bearer` 값, `x-api-key`·`x-auth-token` 값
+- 키에 `token`, `secret`, `password`, `passwd`, `pwd`, `apikey`, `accesskey`, `privatekey`,
+  `credential`, `bearer`, `authorization`이 들었거나 `auth`·`pat`이 온전한 조각인
+  자격 증명 할당(`key=value`, `key: value`, JSON `"key": "value"`, `--key value`)의 값
+  (`AZURE_DEVOPS_EXT_PAT=…`, `pat=…`. `path=`는 아님)
+- 쿼리 매개변수 `api_key`, `token`, `access_token`, `refresh_token`
+
+그 밖의 자리에서는 그대로 두므로, 빌드 메타데이터의 52자 base32 다이제스트
+(`1.0.0+<다이제스트>`)는 남습니다.
+
+**자격 증명이 아닌 것.** 단어만으로는 형식이 아닙니다. `test-`, `live-`, `proj-`, `npm-`,
+`pk-`, `rk-`, 그리고 본문이 그 행보다 짧은 접두사(`glpat-rotation-docs`, `sk-proj-tools`,
+`test-marketplace2026`, `laughs_compilation-of-the-best-moments.mp4`)는 그대로 둡니다.
+커밋(16진수 40자), SHA-256 다이제스트(16진수 64자), 폴더 리비전(`local-<16진수 64자>`)도
+그대로 둡니다.
+
+**범위 밖.** 탐지기는 다음을 찾지 않습니다.
+
+- 소문자·대문자 등으로 대소문자가 바뀐 토큰(더 이상 인증되지 않음)
+- 2021년 이전 형식의 40자리 16진수 GitHub 토큰(식별자가 지켜야 하는 커밋과 같은 모양)
+- 84자 형식의 Azure DevOps 토큰, 그리고 위 자리 밖의 52자 형식
+- 위 자리 밖의 접두사 없는 비밀번호나 불투명한 비밀
+- 표에 없는 형식
+
+모델로 가는 텍스트(`scrubSecretsForLLM`)는 같은 표를 쓰고, 예전의 넓은 접두사 규칙을 그 위에
+그대로 둡니다. 거기서는 이름을 잘못 가려도 잃는 것이 없습니다.
+
+**들어오는 곳에서의 적용.** 렌더러가 돌려보내는 모든 식별자를 들어오는 곳에서 검사합니다.
+추가하려는 소스 id(`SOURCE_ID_INVALID` `holds-credential`)와 정책이 적은 소스 id(정책이
+거부됨, §18.6), 인덱스 항목이나 디스크립터(합성된 것 포함)의 패키지 이름·버전·구성 요소
+이름(스킬, MCP 서버, 프롬프트, 에이전트, 루틴), 그리고 저장된 스냅숏을 읽을 때마다(오프라인이든,
+커밋이 그대로인 새로 고침 뒤든)입니다. 이 규칙 이전에 쓴 스냅숏은 그런 패키지를 아직 담고
+있을 수 있기 때문입니다. 마켓플레이스는 그 패키지를 위치로 이름 붙인 진단과 함께 빼고, 직접
+패키지나 붙여넣은 `server.json`은 `SOURCE_INDEX_INVALID`와 그 사유로 실패합니다. 그런 것을
+가리키는 `install`·`uninstall` 딥 링크는 읽지 않습니다. 내보내는 쪽의 지우기는 그대로 모든
+문자열에 적용되며, 통과한 식별자는 하나도 바꾸지 않으므로 소스와 패키지는 렌더러의 모든
+요청에서 그대로 동작합니다.
+
+**이전 빌드가 그런 id로 저장한 소스**는 계속 읽지만(목록 전체는 읽히게 둠) 격리합니다.
+동기화하지 않고, 거기서 설치한 패키지에도 그 패키지를 제공하지 않으며, 행은
+`id-holds-credential` 상태와 "이 소스의 ID가 비밀번호나 토큰처럼 보여 Ave가 동기화하거나
+패키지를 제공하지 않습니다. 소스를 제거한 뒤 다른 ID로 다시 추가하세요." 문장을 보입니다.
+행의 `id`는 가려진 id가 아니라 main이 발급한 핸들(`ave-legacy-`와, 서비스가 시작할 때 뽑은
+키로 저장된 id를 HMAC한 값)입니다. 제거는 그 핸들을 저장된 항목과 대조해 풀고, 그 핸들을
+가리키는 다른 요청은 `SOURCE_ID_INVALID` `stored-id-holds-credential`과 같은 문장으로
+실패합니다.
 
 백그라운드 동기화의 실패는 `sources:list`로 소스 화면에 닿습니다. `SyncResult`가
 detail을 담고, 동기화기가 그것을 `state.json`의 `lastSync.detail`에 저장하고, 상태
@@ -3717,6 +3779,7 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 | `SOURCE_DISABLED` | E | 지금 문장 | *소스 보이기* |
 | `SOURCE_NAME_RESERVED`, `SOURCE_ID_INVALID` | E | "<id>는 예약되었거나 올바른 ID가 아닙니다(소문자·숫자·`-` 2–63자)." | "다른 ID를 고르세요." |
 | · `holds-credential` | E | "이 ID는 비밀번호나 토큰처럼 보여 쓸 수 없습니다." | "다른 ID를 고르세요." |
+| · `stored-id-holds-credential` | E | "이 소스의 ID가 비밀번호나 토큰처럼 보여 Ave가 동기화하거나 패키지를 제공하지 않습니다." | "소스를 제거한 뒤 다른 ID로 다시 추가하세요."(행에는 제거만 있음) |
 | `SOURCE_ID_TAKEN` | E | "<id>는 이미 쓰입니다" | "다른 ID를 고르세요." |
 | · `repository-already-added` | E | "<url>은 이미 <id>로 추가되어 있습니다" | "<id>를 쓰거나 지우세요"(그 뒤 저장소를 다시 추가), *<id> 보기*(슬라이스 D2) |
 | · `folder-already-added`, `folder-inside-source`, `folder-contains-source` | E | "<경로>는 이미 <id>로 추가되어 있습니다" / "<경로>는 이미 <id>로 추가된 <기존 경로> 안에 있습니다" / "<경로>는 이미 <id>로 추가된 <기존 경로>를 담고 있습니다" | "<id>를 쓰거나 지우세요"(그리고 원하는 폴더, 또는 그것을 담지 않는 폴더를 추가), *<id> 보기*(슬라이스 D2) |

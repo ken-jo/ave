@@ -93,6 +93,7 @@ describe("scrubDiagnosticSecrets — real credential formats, not prefixes (desi
     ["GitHub user-to-server", fixtureSecret("gh", "u_", mixed(36))],
     ["GitHub server-to-server", fixtureSecret("gh", "s_", mixed(36))],
     ["GitHub refresh", fixtureSecret("gh", "r_", mixed(36))],
+    ["GitHub App installation (stateless)", fixtureSecret("gh", "s_", "123456_", "eyJ", "hbGciOiJSUzI1NiJ9", ".", "eyJpc3MiOiIxMjM0NTYifQ", ".", mixed(342))],
     ["GitHub fine-grained", fixtureSecret("github", "_pat_", mixed(22), "_", mixed(59))],
     ["GitLab personal", fixtureSecret("gl", "pat-", mixed(20))],
     ["GitLab deploy", fixtureSecret("gl", "dt-", mixed(20))],
@@ -103,18 +104,27 @@ describe("scrubDiagnosticSecrets — real credential formats, not prefixes (desi
     ["AWS key id", fixtureSecret("AK", "IA", "IOSFODNN7EXAMPL3")],
     ["AWS temporary key id", fixtureSecret("AS", "IA", "IOSFODNN7EXAMPL3")],
     ["Google API key", fixtureSecret("AI", "za", mixed(35))],
+    ["Google API key ending in -", fixtureSecret("AI", "za", mixed(34), "-")],
     ["OpenAI", fixtureSecret("sk", "-", mixed(48))],
     ["OpenAI project", fixtureSecret("sk", "-proj-", mixed(64), "_", mixed(40))],
     ["OpenAI signed", fixtureSecret("sk", "-", mixed(20), "T3Blbk", "FJ", mixed(20))],
     ["Anthropic", fixtureSecret("sk", "-ant-api03-", mixed(93), "AA")],
     ["Stripe secret", fixtureSecret("sk", "_live_", mixed(24))],
     ["Stripe restricted", fixtureSecret("rk", "_test_", mixed(24))],
-    ["Azure DevOps", fixtureSecret("abcdefgh234567", "abcdefgh234567", "abcdefgh234567", "abcdefgh23")],
   ];
 
-  it.each(TOKENS)("masks a %s token in a host, a path, an id, a URL and an ssh account", (_kind, token) => {
+  it.each(TOKENS)("masks a %s token in a host, a path, an id, a URL and an ssh account, whatever touches it", (_kind, token) => {
     for (const text of [
       token,
+      // The prefix starts a format whatever precedes it, and the body counts whatever follows it.
+      `backup_${token}`,
+      `backup${token}`,
+      `backup-${token}`,
+      `backup.${token}`,
+      `${token}_backup`,
+      `${token}-backup`,
+      `${token}.backup`,
+      `//server/share/backup_${token}`,
       `${token}.example.com`,
       `/srv/markets/${token}/plugins`,
       `C:\\work\\${token}\\market`,
@@ -128,11 +138,40 @@ describe("scrubDiagnosticSecrets — real credential formats, not prefixes (desi
     }
   });
 
-  it("masks a JSON Web Token in a path and a URL, and a private key block", () => {
+  it("masks a stateless GitHub App installation token whole, app id included", () => {
+    const token = fixtureSecret("gh", "s_", "123456_", "eyJ", "hbGciOiJSUzI1NiJ9", ".", "eyJpc3MiOiIxMjM0NTYifQ", ".", mixed(342));
+    expect(scrubDiagnosticSecrets(`/srv/${token}/x`)).toBe("/srv/[REDACTED:TOKEN]/x");
+  });
+
+  it("masks a JSON Web Token in a path and a URL, after `_` too, and a private key block", () => {
     const jwt = fixtureSecret("eyJ", "hbGciOiJIUzI1NiJ9", ".", "eyJzdWIiOiIxMjM0In0", ".", mixed(43));
-    for (const text of [`/srv/${jwt}/x`, `https://example.com/cb?state=${jwt}`]) expect(scrubDiagnosticSecrets(text)).not.toContain(jwt);
+    for (const text of [`/srv/${jwt}/x`, `https://example.com/cb?state=${jwt}`, `/srv/backup_${jwt}`, `backup${jwt}`]) {
+      expect(scrubDiagnosticSecrets(text), text).not.toContain(jwt);
+    }
     const pem = fixtureSecret("-----BEGIN ", "PRIVATE KEY-----\n", mixed(64), "\n-----END ", "PRIVATE KEY-----");
     expect(scrubDiagnosticSecrets(`key file:\n${pem}\nend`)).toBe("key file:\n[REDACTED:PRIVATE_KEY]\nend");
+  });
+
+  // An Azure DevOps token has no prefix: 52 characters of lowercase base32, which a digest can be too.
+  const azure = fixtureSecret("abcdefgh234567", "abcdefgh234567", "abcdefgh234567", "abcdefgh23");
+
+  it("masks an Azure DevOps token only where it stands as a credential", () => {
+    for (const text of [
+      `https://user:${azure}@dev.azure.com/acme/_git/market`,
+      `https://${azure}@dev.azure.com/acme/_git/market`,
+      `Authorization: Basic ${Buffer.from(`:${azure}`).toString("base64")}`,
+      `Authorization: Bearer ${azure}`,
+      `AZURE_DEVOPS_EXT_PAT=${azure}`,
+      `pat=${azure}`,
+      `https://dev.azure.com/acme?token=${azure}`,
+      `{"pat": "${azure}"}`,
+    ]) {
+      const scrubbed = scrubDiagnosticSecrets(text);
+      expect(scrubbed, text).not.toContain(azure);
+      expect(scrubbed).toContain("[REDACTED:");
+    }
+    // Anywhere else it is indistinguishable from a base32 digest, which identifiers must keep.
+    for (const text of [azure, `1.0.0+${azure}`, `/srv/cache/${azure}/x`]) expect(scrubDiagnosticSecrets(text)).toBe(text);
   });
 
   it.each([
@@ -165,8 +204,15 @@ describe("scrubDiagnosticSecrets — real credential formats, not prefixes (desi
     "/opt/sk-learn-utils/v2",
     "ssh://git@github.com/acme/market",
     "https://github.com/acme/live-captions",
-    // Hashes.
+    // Names that hold a prefix's letters without its format.
+    "laughs_compilation-of-the-best-moments-2026.mp4",
+    "/media/backup_test-marketplace2026/notes",
+    "path=/srv/market",
+    "patterns=src/**/*.ts",
+    // Hashes, and base32 build metadata.
     "0123456789abcdef0123456789abcdef01234567",
+    // SHA-256 of "ordinary package contents", unpadded lowercase base32: 52 characters.
+    "1.0.0+al62ny3xigdbyafl7irut3jbxlrld5chtn2dxghblz6hml2otyqq",
     "local-9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
   ])("keeps %s as it is", (text) => {
     expect(scrubDiagnosticSecrets(text)).toBe(text);

@@ -2085,9 +2085,10 @@ wins:
   commit, a component's name and digest). Each of those identifiers is
   refused where it enters when the same detector flags it (§18.8), so the
   scrubber leaves every identifier main accepted unchanged and the renderer
-  names it back as it was handed. A value that still came back masked (an
-  id stored before that rule) matches nothing and is refused, never taken
-  for another. A deep link's `add` address that held a token's shape
+  names it back as it was handed. A source an earlier build stored under
+  such an id is listed under a handle main issues, which Remove takes
+  (§18.8). A masked value sent back matches nothing and is refused, never
+  taken for another. A deep link's `add` address that held a token's shape
   prefills the Add dialog masked, for the user to correct; an `install` or
   `uninstall` link whose package or source has one is not read as a link.
 - `sources:preview` takes `{ input; ref?; subdir?; auth: "none" | "token" |
@@ -2220,7 +2221,7 @@ subject in both catalogs.
 | `SOURCE_POLICY_BLOCKED` | managed policy allow/block, `requireHttps`, `blockPrivateNetworks`, `allowLocalSources`, `allowDirectInstall`, or an unreadable policy for a non-official target | `blocked-by-pattern` (target, pattern, policyPath), `not-in-allow-list` (target, policyPath), `https-required` (target, policyPath), `private-network-blocked` (target, address, policyPath), `local-sources-blocked` (target, policyPath), `direct-install-blocked` (target, policyPath), `policy-invalid` (error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.httpsRequired`, `.privateNetworkBlocked`, `.localSourcesBlocked`, `.directInstallBlocked`, `.policyInvalid` |
 | `SOURCE_CONFIRMATION_REQUIRED` | a target needs a confirmation the source does not hold (§7.4): at a sync, plan or install, or a download that no source names | the warning: `unencrypted` (host), `token-unencrypted` (host), `internal-network` (host, address), `this-computer` (host, address), `internal-downloads` (source, host), `network-folder` (server, path: a folder on another computer, at a read of a folder source that does not hold it) | `.confirmationRequired`; with a reason, `gitMarketplace.warning.<warning>` (the confirmation's own question; `internalNetwork.proxyRange` for a `198.18.0.0/15` address; `networkFolder.unknownServer` when the drive's mapping names no server and `networkFolder.automount` on macOS and Linux) |
 | `SOURCE_NAME_RESERVED` | reserved id | — | `.nameReserved` |
-| `SOURCE_ID_INVALID` | id is not 2–63 lowercase letters, digits or `-`, or names no source; or the id being added has a credential's shape (§18.8) | `holds-credential` | `.idInvalid`, `.idInvalid.holdsCredential` |
+| `SOURCE_ID_INVALID` | id is not 2–63 lowercase letters, digits or `-`, or names no source; or the id being added has a credential's shape, or a request other than Remove names a quarantined source (§18.8) | `holds-credential`, `stored-id-holds-credential` | `.idInvalid`, `.idInvalid.holdsCredential`, `.idInvalid.storedIdHoldsCredential` |
 | `SOURCE_ID_TAKEN` | id or repository already added; a folder that is a source, or contains or lies inside one (§7.7) | a repository or a folder: `repository-already-added` (url, existingId) — any spelling of its address, `url` the one being added, normalized; `folder-already-added` (path, existingId), `folder-inside-source` (path, existingId, existingPath), `folder-contains-source` (path, existingId, existingPath) — by path or through an alias. A taken id alone has none | `.idTaken` (the id: choose another); `.idTaken.repositoryAlreadyAdded`, `.folderAlreadyAdded`, `.folderInsideSource`, `.folderContainsSource`, which say to use or remove the other source, never to choose another id |
 | `SOURCE_AUTH_REQUIRED` | 401/403, ssh denied; a "repository not found" after Ave offered the stored token | `token` (host), `token-no-access` (host: the host answered "repository not found" to the stored token, which may lack access), `token-unencrypted` (host: the host wants sign-in over plain http and the source does not hold `token-unencrypted`, so no credential was offered), `ssh` (host) — from git's message; a download's refusal carries none, since its host need not be the token's | `.authRequired`, `.authRequired.token`, `.authRequired.tokenNoAccess`, `.authRequired.ssh`, each with the variants below; `.authRequired.tokenUnencrypted` with `.entry` and `.setToken` |
 | `SOURCE_SSH_HOST_UNKNOWN` | host key not in known_hosts, or different from it | `unknown` (host, port), `changed` (host, port) — `changed` when ssh prints "remote host identification has changed"; the sentence carries the `ssh-keyscan` or `ssh-keygen -R` command, which *Copy command* copies | `.sshHostUnknown`, `.sshHostUnknown.unknown`, `.sshHostUnknown.changed` |
@@ -2272,42 +2273,112 @@ the host of an unknown or changed SSH host key came back masked, the sentence
 says part of the server name looked like a token and offers no command, since
 a command naming a masked host would not run.
 
-The diagnostic scrubber is a table of real credential formats, each with its
-issuer's prefix, alphabet and length: GitHub (`ghp_`, `gho_`, `ghu_`, `ghs_`,
-`ghr_` and 36 or more letters and digits; `github_pat_` with its 22- and
-59-character parts), GitLab (`glpat-` and its sibling prefixes, 20 or more
-characters), npm (`npm_` and 36), Slack (`xox?-` with its numeric ids,
-`xapp-`), AWS (`AKIA`/`ASIA` and 16 capitals or digits), Google (`AIza` and
-35), OpenAI (`sk-` and 48, `sk-proj-`/`sk-svcacct-`/`sk-admin-` and 40 or
-more, any `sk-` key carrying the `T3BlbkFJ` marker), Anthropic
-(`sk-ant-api03-` and its siblings), Stripe (`sk_`, `pk_`, `rk_` with
-`live_`/`test_` and 24 or more), and an Azure DevOps token (52 characters of
-lowercase base32 mixing letters and `2`–`7`); plus a JSON Web Token as
-written, a PEM private-key block, URL userinfo and an `Authorization`,
-`Bearer` or `x-api-key` value. A bare word such as `test-`, `live-` or
-`proj-` is no credential format and masks nothing, so `test-marketplace2026`,
-`live-notifications2026`, `sk-proj-tools` and `glpat-rotation-docs` pass
-unchanged while each format is masked inside a host, a path, an id, a URL or
-an ssh account. Text bound for a model (`scrubSecretsForLLM`) keeps the
-older broad prefix rules, where a name masked by mistake costs nothing.
+#### The credential detector contract
 
-The same detector (`holdsCredential`: the scrubber would change the text)
-guards every identifier the renderer names back, where it enters: a source id
-being added (`SOURCE_ID_INVALID` `holds-credential`) or listed by the policy
-(the policy is refused, §18.6); a package's name, version or component name
-(skill, MCP server, prompt, agent, routine) in an index entry or a descriptor,
-synthesized ones included. A marketplace drops that package with a diagnostic
-that names it by its position; a direct package or a pasted `server.json`
-fails with `SOURCE_INDEX_INVALID` and the reason. An `install` or `uninstall`
-deep link naming one is not read. Egress scrubbing stays universal, and for
-every identifier that passed this check it changes nothing, so a source and a
-package keep working through every request the renderer makes. A source id
-stored by an earlier build is still read; if the detector flags it, the
-renderer sees it masked and requests naming it are refused as a missing
-source. The detector does not see three things: a token lowercased (no
-longer a credential), a bare 40-hex GitHub token of the old format (the shape
-of a commit, which identifiers must keep), and an Azure DevOps token in its
-84-character format.
+One detector (`src/shared/dlp.ts`) does two jobs: main's scrubber masks what
+it finds in every string it hands the renderer or a log, and ingress refuses
+every identifier in which it finds anything (`holdsCredential(text)`: the
+scrubber would change `text`). This section is its contract; the tests in
+`src/audit/__tests__/dlp-redact.test.ts` hold the code to it.
+
+**Formats found anywhere.** A row is found wherever its prefix starts, and
+masked whole:
+
+| Issuer | Prefix | Body after the prefix |
+| --- | --- | --- |
+| GitHub classic, OAuth, user-to-server, server-to-server, refresh | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_` | 36 or more letters and digits |
+| GitHub App installation, stateless | `ghs_` | `<letters and digits>_` then a JWT (`eyJ…` and three base64url segments) |
+| GitHub fine-grained | `github_pat_` | 22 letters and digits, `_`, 59 or more letters and digits |
+| GitLab | `glpat-`, `gldt-`, `glrt-`, `glptt-`, `glcbt-`, `glsoat-` | 20 or more of letters, digits, `_`, `-`, then any `.`-separated segments |
+| npm | `npm_` | 36 or more letters and digits |
+| Slack | `xoxa-`, `xoxb-`, `xoxp-`, `xoxo-`, `xoxs-`, `xoxr-`, `xoxe-` | 6 or more digits, `-`, 8 or more of letters, digits, `-` |
+| Slack app-level | `xapp-` | a digit, `-`, capitals and digits, `-`, digits, `-`, letters and digits |
+| AWS access key id | `AKIA`, `ASIA` | 16 or more capitals and digits |
+| Google API key | `AIza` | 35 or more of letters, digits, `_`, `-` |
+| OpenAI | `sk-` | 48 or more letters and digits |
+| OpenAI project, service account, admin | `sk-proj-`, `sk-svcacct-`, `sk-admin-` | 40 or more of letters, digits, `_`, `-` |
+| OpenAI, signed | `sk-` | any of letters, digits, `_`, `-` holding `T3BlbkFJ` |
+| Anthropic | `sk-ant-api`, `-admin`, `-sid`, `-oat`, `-ort` and two digits, `-` | 32 or more of letters, digits, `_`, `-` |
+| Stripe | `sk_`, `pk_`, `rk_` then `live_` or `test_` | 24 or more letters and digits |
+| JSON Web Token | `eyJ` | 5 or more base64url characters, `.`, 5 or more, `.`, 5 or more |
+| PEM private key | `-----BEGIN … PRIVATE KEY-----` | through `-----END … PRIVATE KEY-----` |
+
+Boundary rules, the same for every row:
+
+- **Left: none.** A prefix starts a format whatever precedes it: a letter, a
+  digit, `_`, `-`, `.`, `/` or nothing. `backup_<token>`, `backup<token>`,
+  `market-<token>` and `//server/share/<token>` are all found.
+- **Right: none.** The body is read greedily over the row's alphabet and
+  counts once it reaches the row's length, whatever follows: `<token>_old`,
+  `<token>.example.com` and a Google key whose body ends in `-` are found.
+  The whole run is masked.
+- **Case: as issued.** Every prefix and alphabet is case-sensitive.
+
+**Formats found only where a credential stands.** A credential with no
+prefix of its own (an Azure DevOps personal access token, which is 52
+characters of lowercase base32 like any base32 digest; a password; any
+other opaque secret) is masked only in these positions:
+
+- URL userinfo: everything before `@` in an `http(s)` address, and a
+  `user:password` (or any userinfo that is not an ssh account name) in any
+  other address or in scp form;
+- an `Authorization` value of any scheme, a `Bearer` value, an `x-api-key`
+  or `x-auth-token` value;
+- the value of a credential assignment (`key=value`, `key: value`, JSON
+  `"key": "value"`, `--key value`) whose key holds `token`, `secret`,
+  `password`, `passwd`, `pwd`, `apikey`, `accesskey`, `privatekey`,
+  `credential`, `bearer` or `authorization`, or has `auth` or `pat` as a
+  whole segment (`AZURE_DEVOPS_EXT_PAT=…`, `pat=…`; not `path=`);
+- a query parameter `api_key`, `token`, `access_token` or `refresh_token`.
+
+Anywhere else such a value passes unchanged, so a 52-character base32 digest
+in build metadata (`1.0.0+<digest>`) is kept.
+
+**Not credentials.** A bare word is no format: `test-`, `live-`, `proj-`,
+`npm-`, `pk-`, `rk-`, and a prefix whose body is shorter than its row's
+(`glpat-rotation-docs`, `sk-proj-tools`, `test-marketplace2026`,
+`laughs_compilation-of-the-best-moments.mp4`) pass. Commits (40 hex),
+SHA-256 digests (64 hex) and folder revisions (`local-<64 hex>`) pass.
+
+**Out of scope.** The detector does not find:
+
+- a token lowercased, uppercased or otherwise re-cased (it no longer
+  authenticates);
+- a bare 40-hex GitHub token of the pre-2021 format, which has the shape of
+  a commit that identifiers must keep;
+- an Azure DevOps token in its 84-character format, or in its 52-character
+  format outside the positions above;
+- an unprefixed password or opaque secret outside the positions above;
+- a format not in the table.
+
+Text bound for a model (`scrubSecretsForLLM`) applies the same table and
+keeps its older broad prefix rules on top, where a name masked by mistake
+costs nothing.
+
+**Where ingress applies it.** Every identifier the renderer names back is
+checked where it enters: a source id being added (`SOURCE_ID_INVALID`
+`holds-credential`) or listed by the policy (the policy is refused, §18.6);
+a package's name, version or component name (skill, MCP server, prompt,
+agent, routine) in an index entry or a descriptor, synthesized ones
+included; and a stored snapshot each time it is read, offline or after a
+refresh that keeps the commit, since one written before this rule can still
+list such a package. A marketplace leaves that package out with a
+diagnostic naming it by its position; a direct package or a pasted
+`server.json` fails with `SOURCE_INDEX_INVALID` and the reason. An
+`install` or `uninstall` deep link naming one is not read. Egress scrubbing
+stays universal, and for every identifier that passed changes nothing, so a
+source and a package keep working through every request the renderer makes.
+
+**A source an earlier build stored under such an id** is still read (the
+list stays readable) but quarantined: it is not synced, its packages are
+not served, even to packages installed from it, and its row has the status
+`id-holds-credential` with the sentence "This source's id looks like a
+password or token, so Ave does not sync it or offer its packages. Remove
+the source and add it again with another id." The row's `id` is a handle
+main issues (`ave-legacy-` and an HMAC of the stored id under a key drawn
+when the service starts), never the masked id; Remove resolves it against
+the stored entries, and any other request naming it fails with
+`SOURCE_ID_INVALID` `stored-id-holds-credential` and the same sentence.
 
 A background sync's failure reaches the Sources view through `sources:list`:
 `SyncResult` carries the detail, the syncer stores it in
@@ -4204,6 +4275,7 @@ the slice that adds the code or reason.
 | `SOURCE_LIST_UNREADABLE` · `unreadable`, `invalid` | E | "Ave cannot read the list of sources you added, `marketplaces/sources.json` in the Ave data folder (<fsCode>, or not in the format Ave writes), so it changes no source until it is fixed." | "Fix the file or delete it, then restart Ave. Deleting it removes only the sources you added: the official and organization sources and your installed packages stay." *Copy details* for an invalid file | "직접 추가한 소스 목록(Ave 데이터 폴더의 marketplaces/sources.json)을 읽을 수 없습니다. 고치거나 지운 뒤 Ave를 다시 시작하세요. 지우면 직접 추가한 소스만 사라집니다." |
 | `SOURCE_NAME_RESERVED`, `SOURCE_ID_INVALID` | E | "<id> is reserved or not a valid id (2–63 lowercase letters, digits and `-`)." | "Choose another id." | "다른 ID를 고르세요." |
 | · `holds-credential` | E | "This id looks like a password or token, so it cannot be used." | "Choose another id." | "이 ID는 비밀번호나 토큰처럼 보여 쓸 수 없습니다." |
+| · `stored-id-holds-credential` | E | "This source's id looks like a password or token, so Ave does not sync it or offer its packages." | "Remove the source and add it again with another id." (the row offers only Remove) | "이 소스의 ID가 비밀번호나 토큰처럼 보여 Ave가 동기화하거나 패키지를 제공하지 않습니다." |
 | `SOURCE_ID_TAKEN` | E | "<id> is taken" | "Choose another id." | "다른 소스가 이미 쓰는 ID입니다." |
 | · `repository-already-added` | E | "<url> is already added as <id>" | "Use <id>, or remove it" (before adding the repository again); *Show <id>* (slice D2) | "<url>은(는) 이미 <id>(으)로 추가되어 있습니다." |
 | · `folder-already-added`, `folder-inside-source`, `folder-contains-source` | E | "<path> is already added as <id>" / "<path> lies inside <existing path>, which is already added as <id>" / "<path> contains <existing path>, which is already added as <id>" | "Use <id>, or remove it" (and add the folder you want, or one that does not contain it); *Show <id>* (slice D2) | "이미 <id>(으)로 추가된 폴더와 겹칩니다. <id>을(를) 쓰거나 지우세요." |

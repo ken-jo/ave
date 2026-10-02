@@ -492,6 +492,42 @@ describe("SourceSyncer", () => {
     }
   });
 
+  it("serves a snapshot stored before identifier admission without its credential-shaped package, offline and after a same-commit refresh (§18.8)", async () => {
+    const { repo, name } = fixture();
+    // Assembled here so no whole token sits in the source.
+    const token = `glp${"at-"}${"abcd1234".repeat(3)}`;
+    const entry = { kind: "plugin", name: "retired-fixture", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT,
+      action: "uninstall", successors: { plugins: [{ pluginId: "successor-fixture" }], hostKinds: [] } };
+    const commit = repo.commit({
+      "marketplace.2.json": index("acme", [{ kind: "skill", name: "alpha", path: "skills/alpha" }, { kind: "skill", name: token, path: "skills/held" }]),
+      "skills/alpha/ave-package.json": skill("alpha"),
+      "skills/held/ave-package.json": skill(token),
+      "policy/revocations-by-app.json": revocations([entry]),
+    }, "a package named like a token");
+    const { registry, syncer } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    await syncer.sync("acme");
+    const fresh = (await syncer.readSnapshot("acme"))!;
+    expect(fresh.packages.map((item) => item.name)).toEqual(["alpha"]);
+    // The snapshot an earlier build wrote at the same commit: the package listed, nothing diagnosed.
+    const alpha = fresh.packages[0]!;
+    const held = { ...alpha, name: token, path: "skills/held" };
+    const stored = { ...fresh, packages: [alpha, held], diagnostics: [] };
+    const path = join(root, "acme", "snapshots", `${commit}.json`);
+    writeFileSync(path, JSON.stringify(stored));
+
+    for (const step of ["offline", "refresh"] as const) {
+      if (step === "refresh") expect(await syncer.sync("acme")).toEqual({ status: "ok", pinnedCommit: commit, changed: false });
+      const served = (await syncer.readSnapshot("acme"))!;
+      expect(served.packages.map((item) => item.name), step).toEqual(["alpha"]);
+      expect(served.diagnostics).toEqual([{ subject: "packages[1]", message: "its name looks like a password or token" }]);
+      expect(JSON.stringify(served)).not.toContain(token);
+      expect(await syncer.readRevocations("acme", "0.12.0")).toEqual([entry]);
+    }
+    // The stored file is not rewritten or removed: admission is how it is read.
+    expect(readFileSync(path, "utf8")).toBe(JSON.stringify(stored));
+  });
+
   it("reports no change when the ref has not moved, and rebuilds a lost snapshot at the same pin", async () => {
     const { repo, name } = fixture();
     const commit = repo.commit({ "marketplace.2.json": index("acme", []) }, "empty");
