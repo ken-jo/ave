@@ -506,6 +506,8 @@ export const CHANNELS = {
     resize: "ave:dock:resize",
     /** Remove a plugin card. */
     unmount: "ave:dock:unmount",
+    /** The host theme changed (`host.theme.changed` payload); the dock repaints its own chrome. */
+    theme: "ave:dock:theme",
     /** Dock-to-main: the user pressed the dock's close control. */
     requestClose: "ave:dock:request-close",
     /** Dock-to-main: one slot's guest died. */

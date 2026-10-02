@@ -18,6 +18,7 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { ALERTS } from "../shared/ipc-channels.js";
 import type { AveApi } from "../ui/renderer/types.js";
+import { dockAssetArgs } from "../shared/floating-dock-args.js";
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
@@ -681,5 +682,53 @@ describe("preload contextBridge world shape lock", () => {
         },
       }
     `);
+  });
+});
+
+describe("floating dock preload world shape lock", () => {
+  // The dock's own preload, not the host one: a persistent always-on-top window
+  // gets only these, and its theme arrives from main (no plugin `getTheme`, whose
+  // guard refuses a non-plugin frame).
+  it("exposes only aveDock with the dock's API, and forwards each theme without the event object", async () => {
+    const before = new Set(exposed.keys());
+    // Main passes the asset URLs; the sandboxed preload cannot resolve files itself.
+    const argv = process.argv;
+    process.argv = [...argv, ...dockAssetArgs({ pluginShellUrl: "file:///app/plugin-ui-shell.html", pluginPreloadUrl: "file:///app/plugin-preload.cjs" })];
+    try {
+      await import("../floating-dock-preload.js");
+    } finally {
+      process.argv = argv;
+    }
+    const added = [...exposed.keys()].filter((key) => !before.has(key));
+    expect(added).toEqual(["aveDock"]);
+    const dock = exposed.get("aveDock") as Record<string, unknown> & { onTheme(handler: (theme: unknown) => void): () => void };
+    exposed.delete("aveDock");
+    expect(deepShape(dock)).toMatchInlineSnapshot(`
+      {
+        "ensurePartition": "function",
+        "onActivity": "function",
+        "onMount": "function",
+        "onResize": "function",
+        "onTheme": "function",
+        "onUnmount": "function",
+        "pluginPreloadUrl": "string",
+        "pluginShellUrl": "string",
+        "registerWebview": "function",
+        "reportSlotGone": "function",
+        "requestClose": "function",
+      }
+    `);
+
+    expect(dock.pluginShellUrl).toBe("file:///app/plugin-ui-shell.html");
+    expect(dock.pluginPreloadUrl).toBe("file:///app/plugin-preload.cjs");
+
+    const handler = vi.fn();
+    const dispose = dock.onTheme(handler);
+    const listener = mockOn.mock.calls.findLast(([channel]) => channel === "ave:dock:theme")![1];
+    const theme = { bundleId: "moonstone", shell: "light", tokens: { "--ave-bg": "#ffffff" } };
+    listener({ sender: "not forwarded" }, theme);
+    expect(handler).toHaveBeenCalledExactlyOnceWith(theme);
+    dispose();
+    expect(mockRemoveListener).toHaveBeenCalledWith("ave:dock:theme", listener);
   });
 });

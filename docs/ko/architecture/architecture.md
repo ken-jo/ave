@@ -2331,6 +2331,7 @@ DLP 통계는 audit NDJSON에서 `type = "dlp"` 엔트리만 집계한다.
 - **CSP + toolbar shell**: main IPC handler 는 renderer payload 를 그대로 로드하지 않고 `src/shared/render-html-preview.ts` 의 CSP-first host shell 로 재구성한 뒤 `data:` URL 로 로드한다. host shell 은 상단 toolbar 와 JavaScript 허용 토글만 소유하고, LLM HTML 은 sandboxed `iframe srcdoc` 안에 넣는다. 토글은 iframe sandbox 의 `allow-scripts` 와 CSP 문서를 재로딩할 뿐 parent/window 권한을 열지 않는다.
 - **테마 토큰 주입**: renderer 는 현재 `--background`, `--foreground`, `--primary`, `--muted`, `--border` 등 Ave theme token 을 preview payload 에 싣고, shell 은 같은 token 을 host toolbar 와 iframe 문서 앞부분에 주입한다.
 - **효과**: 악성 플러그인 HTML 이 외부 서버로 데이터를 유출하거나 원격 스크립트를 로드하는 것을 OS 네트워크 계층에서 차단한다.
+- **테마는 스냅샷**: 열린 preview 는 만들어질 때의 테마를 유지하고, 새 preview 는 현재 테마를 쓴다. LLM HTML 은 opaque-origin sandbox 의 `iframe srcdoc` 별도 문서이고 스크립트가 꺼진 경우가 많다. 그래서 iframe 요소에 변수를 설정해 상속시키거나 parent 가 내부 DOM 에 접근하는 방식은 통하지 않는다. 실시간 갱신에는 문서 안의 메시지 수신기가 필요한데, scripts-disabled 경로에서는 그것이 동작하지 않는다. preview 를 다시 로드하면 문서 상태를 잃는다.
 
 ### 6.6.6 Playwright-Electron E2E 테스트 인프라 (E4 PR #135)
 
@@ -2418,6 +2419,40 @@ ThemeProvider.tsx (renderer)
   임의 CSS 주입 차단 (자세한 검증은 `validateThemePayload`)
 - registry 외 webContents 로 누출 없음 — `pluginWebviewRegistry` 등록된
   webContentsId 만 순회
+
+**호스트 소유 표면**: 같은 ID 의 테마가 제자리에서 갱신된 경우를 포함해, 테마 값을
+복사하는 모든 표면은 호스트 렌더러가 적용한 테마를 따른다.
+- 플로팅 독은 plugin 전용 `getTheme` 를 묻지 않는다. 그 guard 는 plugin frame 만
+  통과시킨다. 대신 main 이 창을 열 때 캐시된 테마를 보내고, 이후의 `host.theme.changed`
+  를 `ave:dock:theme` 로 전달한다 (`hostDockThemeSource`,
+  `src/main/floating-dock-surface.ts`).
+- MCP 앱 카드는 `:root` 에 이미 쓰인 테마(`appliedBundle` / `appliedRevision`)로
+  host context 를 만든다. 그래서 앱은 한 테마의 shell 과 다른 테마의 토큰을 함께 받지 않는다.
+- HTML preview 는 스냅샷이다 (§6.6.5).
+
+**sandboxed preload**: sandboxed frame 에서 도는 preload 는 `electron` 과 Node 모듈
+`events`, `timers`, `url` 만 require 할 수 있다. 그런 frame 은 플로팅 독 창, plugin webview,
+MCP 앱 webview 다. 독의 plugin shell / preload URL 처럼 디스크에서 경로를 풀어야 하는 값은
+main 이 풀어 창 인자(`additionalArguments`, `src/shared/floating-dock-args.ts`)로 넘긴다.
+preload 마다 파일과 sandbox 모드는 표 하나(`src/shared/preload-bundles.json`)에서 온다.
+창은 `preloadPreferences(id)` 를 펼치고, session 은 `preloadBundlePath(id)` 를 등록하며,
+webpack 은 행마다 preload config 를 만든다. `test/scripts/preload-sites.test.ts` 는 `src` 를
+TypeScript 컴파일러로 읽는다. 창은 해석된 Electron 타입으로 찾고, electron 은 import, `require`,
+await 한 dynamic import 를 따라간다. 표에 묶는 지점은 창 `webPreferences`, `registerPreloadScript`,
+guest `sandbox` 대입, 그리고 JSX, `createElement`, `document.createElement` + `setAttribute`, HTML
+문자열 리터럴, HTML sink(`innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`,
+`parseFromString`, `createContextualFragment`, `setHTMLUnsafe`, `dangerouslySetInnerHTML`)로 만든
+`<webview>` 다. 이 지점에서 읽을 수 없는 형태는 거부한다. 계산된 키, `webPreferences` 를 담을 수 있는
+타입의 spread, 리터럴이 아닌 options 나 `webpreferences` 요청, 값으로 쓰이거나 상속되거나
+`Reflect.construct` 에 넘겨진 창 클래스, binding 으로 await 하지 않은 electron dynamic import, 태그
+이름을 보간하거나 markup 을 담을 수 있는 값을 보간한 HTML 이 그 대상이다. 이 형태 밖에서 Electron 에
+닿는 코드는 검사하지 않는다. guest 설정을 실제로 강제하는 것은 main 의 attach guard 다.
+`<webview>` 를 품는 창은 guest 설정을 main 에서 정한다. 메인 창은 plugin, MCP 앱, side browser
+partition 을 각자의 guard 로 넘기고(`configureMainWindowWebviewAttach`) 그 밖의 partition 은
+거부한다. `build` 안의 `check-sandboxed-preloads` 는 표가 분류하지 않은 preload 를
+webpack 이 빌드하거나, 어떤 행 뒤에 webpack config 나 asset 복사가 없으면 실패한다. 그다음 표의
+각 행이 빌드한 파일을 검사한다. sandboxed preload 는 위 모듈만 require 할 수 있고 chunk 를
+가질 수 없다. `dist/src` 의 다른 파일은 훑지 않는다.
 
 **초기 상태 — pull-on-load (1차 메커니즘)**: plugin-ui-shell 이 plugin 모듈
 dynamic-import 직전에 `await window.avePlugin.getTheme()` 으로 호스트의 캐시된

@@ -200,11 +200,15 @@ describe("main-window.ts — headless creation allocates no window", () => {
     expect(start).toBeGreaterThanOrEqual(0);
     const body = windowSource.slice(start);
     const guard = body.indexOf("if (options.headless) return;");
-    const preload = body.indexOf("const preloadPath");
+    // The host preload comes from the preload table, and its built file is
+    // checked before any window exists.
+    const preload = body.indexOf('preloadPreferences("preload")');
+    const assetCheck = body.indexOf("existsSync(hostPreload.preload)");
     const window = body.indexOf("new BrowserWindow(");
     expect(guard).toBeGreaterThanOrEqual(0);
     expect(preload).toBeGreaterThan(guard);
-    expect(window).toBeGreaterThan(preload);
+    expect(assetCheck).toBeGreaterThan(preload);
+    expect(window).toBeGreaterThan(assetCheck);
   });
 });
 

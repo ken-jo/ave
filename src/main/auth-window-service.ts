@@ -18,7 +18,6 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { getCommonChromeOptions } from "./window-chrome.js";
-import { runtimeAssetPath } from "./main-paths.js";
 import { BrowserWindow, screen, session, type Cookie, type Session, type WebContents } from "electron";
 import { registerWindowEventListeners } from "./window-event-listeners.js";
 import { markAsWindowControlOwned } from "../ipc/window-control-registry.js";
@@ -41,6 +40,7 @@ import {
 import { createLogger } from "../lib/logger.js";
 import { escapeHtml } from "../shared/escape-html.js";
 import { errorMessage } from "../shared/error-message.js";
+import { preloadPreferences } from "./preload-bundles.js";
 
 const log = createLogger("auth-window");
 
@@ -181,10 +181,6 @@ function authWindowDedupKey(effectivePartition: string, windowTitle: string): st
   return `${effectivePartition}\u0000${windowTitle}`;
 }
 
-
-function authShellPreloadPath(): string {
-  return runtimeAssetPath("preload.cjs");
-}
 
 export function buildAuthWindowShellHtml(input: {
   title: string;
@@ -586,8 +582,7 @@ export async function openAuthWindow(
       contextIsolation: true,
       nodeIntegration: false,
       webviewTag: true,
-      sandbox: false,
-      preload: authShellPreloadPath(),
+      ...preloadPreferences("preload"),
     },
   });
   // Centering only matters for visible windows; skip the geometry math

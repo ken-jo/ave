@@ -14,7 +14,7 @@
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { act, render, waitFor } from "@testing-library/react";
-import { useEffect } from "react";
+import { StrictMode, useEffect, useLayoutEffect } from "react";
 import { ThemeProvider, useTheme, useOptionalTheme } from "../theme/ThemeProvider.js";
 import { applyBundleToDocument, resolveSystemPair } from "../theme/resolve-theme.js";
 import { bundleToPluginTokens } from "../theme/plugin-token-map.js";
@@ -28,6 +28,7 @@ import { moonstoneBundle } from "../theme/bundles/moonstone.js";
 import { applyInstalledContent, resetInstalledContentForTests } from "../installed-content.js";
 import type { InstalledContentView } from "../../../shared/installed-content.js";
 import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
+import { installedTheme, installedThemeContent, NO_LANGUAGE_BRIDGE } from "../../../../test/renderer/installed-theme.js";
 
 /** Every theme but Moonstone and Gallery is an installed package; these stand in for the ones used below. */
 function installed(id: string, shell: "light" | "dark", tokens: Partial<ThemeBundle["tokens"]> = {}, highContrast = false, pair?: string): ThemeBundle {
@@ -165,6 +166,30 @@ describe("<ThemeProvider>", () => {
     expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("midnight");
   });
 
+  it("hydrates and follows the settings broadcast under StrictMode, whose remount runs every effect twice", async () => {
+    const { api } = makeMockAveApi({
+      settings: {
+        ...MOCK_DEFAULT_SETTINGS,
+        appearance: { schemaVersion: 2, bundleId: "midnight" },
+      },
+    });
+    const seen: string[] = [];
+    render(
+      <StrictMode>
+        <ThemeProvider api={api as never}>
+          <Probe onValue={(v) => seen.push(v.bundleId)} />
+        </ThemeProvider>
+      </StrictMode>,
+    );
+    // The simulated unmount must not leave the provider thinking it is gone: the saved theme applies.
+    await waitFor(() => expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("midnight"));
+    expect(seen.at(-1)).toBe("midnight");
+
+    // Another window changes the theme: the broadcast reaches this provider too.
+    await act(async () => { await api.updateSettings({ appearance: { schemaVersion: 2, bundleId: DEFAULT_BUNDLE_ID } }); });
+    await waitFor(() => expect(document.documentElement.getAttribute("data-theme-bundle")).toBe(DEFAULT_BUNDLE_ID));
+  });
+
   it("falls back to DEFAULT_BUNDLE_ID when settings load fails", async () => {
     const { api } = makeMockAveApi();
     api.getSettings.mockRejectedValueOnce(new Error("boom"));
@@ -178,6 +203,33 @@ describe("<ThemeProvider>", () => {
       expect(observed).not.toBeNull();
     });
     expect(observed).toBe(DEFAULT_BUNDLE_ID);
+  });
+
+  it("names as applied only the theme :root holds, at every commit of a switch", async () => {
+    // A layout effect runs before the provider's write: it sees what a consumer that
+    // copies the theme at commit (an MCP app's first context) would.
+    const seen: Array<{ applied: string; root: string | null }> = [];
+    let setter: ((id: string) => void) | null = null;
+    function Watch() {
+      const v = useTheme();
+      setter = v.setBundle;
+      useLayoutEffect(() => {
+        seen.push({ applied: v.appliedBundle.id, root: document.documentElement.getAttribute("data-theme-bundle") });
+      });
+      return null;
+    }
+    render(
+      <ThemeProvider initialBundleId={DEFAULT_BUNDLE_ID}>
+        <Watch />
+      </ThemeProvider>,
+    );
+    await waitFor(() => expect(document.documentElement.getAttribute("data-theme-bundle")).toBe(DEFAULT_BUNDLE_ID));
+    seen.length = 0;
+
+    act(() => setter!("midnight"));
+
+    await waitFor(() => expect(seen.at(-1)).toEqual({ applied: "midnight", root: "midnight" }));
+    for (const entry of seen) expect(entry.applied).toBe(entry.root);
   });
 
   it("setBundle persists via api.updateSettings and updates DOM", async () => {
@@ -324,6 +376,97 @@ describe("<ThemeProvider>", () => {
     await waitFor(() => {
       expect(observed).toBe("nord");
       expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("nord");
+    });
+  });
+
+  describe("a theme package updated in place (same id)", () => {
+    // Updating a theme in the marketplace reloads the installed content: the
+    // registry gets new bundle objects under the same ids.
+    const reload = (themes: ThemeBundle[]) => act(() => { applyInstalledContent(installedThemeContent(themes), NO_LANGUAGE_BRIDGE); });
+
+    async function showing(id: string, themes: ThemeBundle[], followSystem = false) {
+      const { api } = makeMockAveApi({ settings: { ...MOCK_DEFAULT_SETTINGS, appearance: { schemaVersion: 2, bundleId: id, followSystem } } });
+      reload(themes);
+      let revision = -1;
+      render(
+        <ThemeProvider api={api as never}>
+          <Probe onValue={(v) => { revision = v.appliedRevision; }} />
+        </ThemeProvider>,
+      );
+      return { api, revision: () => revision };
+    }
+
+    it("applies the selected theme's new tokens without selecting it again, and bumps appliedRevision", async () => {
+      const root = document.documentElement;
+      const before = installedTheme("nord", "dark", { "muted-foreground": "227 6% 71%" });
+      const after = installedTheme("nord", "dark", { "muted-foreground": "227 6% 78%" });
+      const { api, revision } = await showing("nord", [before]);
+      await waitFor(() => expect(root.style.getPropertyValue("--muted-foreground")).toBe("227 6% 71%"));
+      const applied = revision();
+
+      reload([after]);
+
+      await waitFor(() => {
+        expect(root.style.getPropertyValue("--muted-foreground")).toBe("227 6% 78%");
+        // Plugin webviews get the new tokens too.
+        expect(api.notifyPluginTheme).toHaveBeenLastCalledWith(expect.objectContaining({ bundleId: "nord", tokens: bundleToPluginTokens(after) }));
+        expect(revision()).toBeGreaterThan(applied);
+      });
+      expect(root.getAttribute("data-theme-bundle")).toBe("nord");
+    });
+
+    it("re-sends nothing when a reload carries the same values, in any key order", async () => {
+      const nord = installedTheme("nord", "dark");
+      const { api, revision } = await showing("nord", [nord]);
+      await waitFor(() => expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("nord"));
+      await act(async () => {});
+      const applied = revision();
+      api.notifyPluginTheme.mockClear();
+
+      const reordered = { ...nord, tokens: Object.fromEntries(Object.entries(nord.tokens).reverse()) as ThemeBundle["tokens"] };
+      reload([JSON.parse(JSON.stringify(nord)) as ThemeBundle, installedTheme("other", "light")]);
+      reload([reordered]);
+      await act(async () => {});
+
+      expect(api.notifyPluginTheme).not.toHaveBeenCalled();
+      expect(revision()).toBe(applied);
+    });
+
+    it("follows an update to the side of a pair the OS shows, ignores the other side, and shows it on an OS switch", async () => {
+      let light = true;
+      const listeners = new Set<() => void>();
+      vi.stubGlobal("matchMedia", (query: string) => ({
+        matches: query.includes("light") ? light : false,
+        media: query,
+        addEventListener: (_: string, listener: () => void) => listeners.add(listener),
+        removeEventListener: (_: string, listener: () => void) => listeners.delete(listener),
+      }));
+      const root = document.documentElement;
+      const dark = installedTheme("harbor", "dark", { background: "210 40% 12%" }, "harbor-light");
+      const bright = installedTheme("harbor-light", "light", { background: "210 40% 92%" }, "harbor");
+      // The dark side is saved; the OS is light, so the light side shows.
+      const { api } = await showing("harbor", [dark, bright], true);
+      await waitFor(() => expect(root.style.getPropertyValue("--background")).toBe("210 40% 92%"));
+      await act(async () => {});
+
+      api.notifyPluginTheme.mockClear();
+      const brightNext = { ...bright, tokens: { ...bright.tokens, background: "210 40% 88%" } };
+      reload([dark, brightNext]);
+      await waitFor(() => expect(root.style.getPropertyValue("--background")).toBe("210 40% 88%"));
+      expect(api.notifyPluginTheme).toHaveBeenCalledTimes(1);
+      expect(api.notifyPluginTheme).toHaveBeenLastCalledWith(expect.objectContaining({ bundleId: "harbor-light", tokens: bundleToPluginTokens(brightNext) }));
+
+      // The side not shown changes: nothing on screen does.
+      api.notifyPluginTheme.mockClear();
+      const darkNext = { ...dark, tokens: { ...dark.tokens, background: "210 40% 22%" } };
+      reload([darkNext, brightNext]);
+      await act(async () => {});
+      expect(api.notifyPluginTheme).not.toHaveBeenCalled();
+      expect(root.style.getPropertyValue("--background")).toBe("210 40% 88%");
+
+      // The OS turns dark: the dark side shows with its new values.
+      await act(async () => { light = false; for (const listener of listeners) listener(); });
+      await waitFor(() => expect(root.style.getPropertyValue("--background")).toBe("210 40% 22%"));
     });
   });
 

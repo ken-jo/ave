@@ -24,6 +24,7 @@ import { RENDER_HTML_PARTITION } from "../shared/render-html-preview.js";
 import { mcpAppPartitionName } from "../shared/mcp-app-partition.js";
 import { runtimeAssetPath } from "./main-paths.js";
 import { installPluginAssetProtocolHandler, PLUGIN_ASSET_SCHEME } from "./plugin-asset-protocol.js";
+import { preloadBundlePath } from "./preload-bundles.js";
 import {
   installMcpAppProtocolHandler,
   isDeclaredOriginForServer,
@@ -36,8 +37,8 @@ const require = createRequire(import.meta.url);
 // must stay anchored at the real `dist/src` directory rather than this chunk.
 const pluginShellHtmlPath = normalize(runtimeAssetPath("plugin-ui-shell.html"));
 const pluginShellJsPath = normalize(runtimeAssetPath("plugin-ui-shell.js"));
-const pluginPreloadPath = runtimeAssetPath("plugin-preload.cjs");
-const mcpAppPreloadPath = runtimeAssetPath("mcp-app-preload.cjs");
+const pluginPreloadPath = preloadBundlePath("pluginPreload");
+const mcpAppPreloadPath = preloadBundlePath("mcpAppPreload");
 
 type SessionApi = { fromPartition(partition: string): Electron.Session };
 

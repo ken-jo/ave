@@ -133,16 +133,19 @@ function preloadConfig(name, entry, filename) {
   };
 }
 
+// Every webpack-built preload comes from the one preload table, which also
+// says the sandbox each runs in (`src/shared/preload-bundles.ts`): a config
+// per id, named by the id, so `--config-name <id>` builds one, and
+// `scripts/check-sandboxed-preloads.mjs` reads the same table and this list.
+// The MCP-App sandbox-proxy relay is installed via session.registerPreloadScript()
+// on each `ave-mcp-app:<hex>` partition (see html-preview-partition.ts). The
+// floating dock's preload is bundled rather than hand-written `.cjs` because it
+// imports the channel constants (`check-no-inline-channels.mjs`).
+const PRELOAD_BUNDLES = require("./src/shared/preload-bundles.json");
+
 module.exports = [
   renderer,
-  preloadConfig("preload", "src/preload.ts", "preload.cjs"),
-  preloadConfig("pluginPreload", "src/plugin-preload.ts", "plugin-preload.cjs"),
-  // MCP-App sandbox-proxy relay. Installed via session.setPreloads() on the
-  // per-server `ave-mcp-app:<hex>` partition (see html-preview-partition.ts).
-  preloadConfig("mcpAppPreload", "src/mcp-app-preload.ts", "mcp-app-preload.cjs"),
-  // The floating dock's own preload. Bundled rather than shipped as hand-written
-  // `.cjs` (the way `audio-capture-window-preload.cjs` is) because it imports
-  // the channel constants — `check-no-inline-channels.mjs` exists precisely to
-  // stop a preload from restating a channel string it could import.
-  preloadConfig("floatingDockPreload", "src/floating-dock-preload.ts", "floating-dock-preload.cjs"),
+  ...Object.entries(PRELOAD_BUNDLES)
+    .filter(([, bundle]) => bundle.build === "webpack")
+    .map(([id, bundle]) => preloadConfig(id, bundle.entry, bundle.file)),
 ];
