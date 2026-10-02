@@ -2148,6 +2148,7 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
     packages: PackageUpdateView[];     // updates from the sources the last discovery reached, minus skipped versions not required,
                                        // each with its state; an unreached source's only as shown before, `stale: true`;
                                        // then the updates applied in the last 24 hours
+    unmetRequired: UnmetRequirementView[];  // each requiredInstalls entry the app cannot meet now, and why (§18.7.5)
   }
   // PackageUpdateView adds reasons?, failure? { code, detail?, message?, attempts },
   // appliedAt?, commitRange?, autoUpdate? (the package's switch), escalated? (a waiting
@@ -2883,7 +2884,9 @@ Retry가 있는 `failed` 상태.
 >   빌드를 설명합니다.
 > - 사용자 문서는 former-site.invalid의 마켓플레이스 페이지(`web/app/docs/marketplace/`)이고,
 >   목업([../../design/multi-source-git-marketplace.html](../../design/multi-source-git-marketplace.html))이
->   §18.9의 상태를 보여 줍니다. 코드는 `e10c823e2` 기준으로 인용합니다.
+>   §18.9의 상태를 보여 줍니다. 코드는 `e10c823e2` 기준으로 인용합니다. 이 절의 줄
+>   번호 인용은 그 커밋의 스냅숏이라 현재 코드와 다를 수 있고, 동작을 맡는
+>   §7–§17이 현재 코드를 인용합니다.
 
 ### 18.1 소유자 결정 (2026-09-28, 확정)
 
@@ -3103,7 +3106,8 @@ git은 원격을 스스로 해석합니다. 그래서 검사에는 공개 주소
 
 > #1–4와 #7은 슬라이스 C에서(§7.1, §7.4, §13.1), #5와 #6은 슬라이스 D1에서
 > 구현됐습니다(§7.7). #8은 Publication 계획의 몫이며, 폴더의 `process` 진입점은
-> 이미 거부합니다(§18.4.9).
+> 이미 거부합니다(§18.4.9). 경로가 마켓플레이스 파일로 끝나는 `http(s)` 주소(아래
+> 마지막 항목)는 거부하지 않으며, 사용자가 대신 보는 것은 §18.8에 있습니다.
 
 사용자가 어떤 결정을 해도 안전해지지 않으므로 거부합니다. 나머지는 경고(§18.2)나
 정책 결정(§18.6)입니다.
@@ -3486,6 +3490,21 @@ P3(`process` 런타임과 그 코드, `:3557`)와 P4(마켓플레이스 허용, 
 
 ### 18.6 관리 정책 추가 항목
 
+> 슬라이스 C(`requireHttps`, `blockPrivateNetworks`, 정책 갱신), 슬라이스
+> D1(`allowLocalSources`, `path:` 패턴, `additional` 폴더), 슬라이스
+> F(`autoUpdate`)에서 구현됐고 §12가 구현된 모습을 설명합니다. 아래 글과 다른
+> 점은 다음과 같습니다.
+> - `path:` 패턴은 유니코드 NFC 형태로 비교하고, 드라이브 문자는 대소문자를 가리지
+>   않으며, `*`는 끝에만 받습니다. 다른 자리에 `*`가 있는 패턴은 해석되지 않으므로
+>   절이 무효가 됩니다.
+> - `additional` 폴더는 `ref`나 `auth`를 받지 않고, 경로는 절대 경로이며 실행 중인
+>   플랫폼 기준으로 읽습니다. `allowLocalSources: false` 말고도 정책 자신의 목록이
+>   그것을 막을 때, 그리고 다른 `additional` 폴더와 같거나 그것을 담거나 그 안에 있을
+>   때 절을 무효로 만듭니다.
+> - `PLAN_EXPIRED` `policy-changed`로 실패한 계획은 검토를 스스로 다시 열지
+>   않습니다. 패키지 시트가 실패를 보여 주고 *다시 검토*를 제공하며, 이것이 새
+>   계획을 만듭니다.
+
 ```jsonc
 "marketplaces": {
   "requireHttps": false,          // true: plain http is a policy block (allowHttpHosts excepted)
@@ -3529,8 +3548,6 @@ P3(`process` 런타임과 그 코드, `:3557`)와 P4(마켓플레이스 허용, 
   닿으면 예외를 던집니다. 같은 이름의 다른 종류는 다른 패키지이고,
   `defaultInstalls`는 이 규칙에 묶이지 않습니다.
 - 사용자 설정, 확인, 스위치는 정책 차단을 넘지 못합니다.
-- `requireHttps`, `blockPrivateNetworks`, 아래의 정책 갱신은 구현됐습니다
-  (슬라이스 C, §12). 이 절의 나머지는 구현 전입니다.
 - **정책 변경이 적용되는 때.** 슬라이스 C 전에는 서비스를 만들 때 정책을 한 번
   읽고 서비스를 캐시했으므로 변경이 재시작을 기다렸습니다. 슬라이스 C부터:
   - 서비스는 `PolicySource`를 거쳐 정책을 읽습니다. 모든 작업(미리보기, 추가, 확인,
@@ -4135,6 +4152,37 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 
 ### 18.8 메시지: 모든 거부, 경고, 실패
 
+> 0.13.0의 코드와 사유는 슬라이스 B에서, 나머지는 슬라이스 C–F에서 구현됐고,
+> 구현된 모든 코드, 사유, 메시지 키는 §14에 있습니다. 아래 표의 다음 행은 일부러
+> 구현하지 않았으므로, 사용자는 다른 문장으로 그 경우를 만납니다.
+> - `SOURCE_URL_REJECTED` · `index-file-url`: 마켓플레이스 파일을 가리킨다는 이유로
+>   거부하는 주소는 없습니다. `marketplace.2.json`이나 `marketplace.json`으로 끝나는
+>   폴더 경로는 그 파일을 담은 폴더로 풀리고(§7.7), 그 파일을 가리키는 웹 주소는
+>   저장소 주소로 읽히므로 호스트의 답이 표시됩니다. 대개 `SOURCE_UNREACHABLE` ·
+>   `not-found`("<호스트>이(가) 이 주소에 저장소가 없다고 답했습니다…")입니다.
+> - `SOURCE_NOT_A_MARKETPLACE` · `nothing-found`, `other-app-plugin`: 이 코드에는
+>   사유가 없습니다. 다른 앱용 플러그인을 포함해 모든 경우에 받는 쪽에 맞춘 사유 없는
+>   문장이 표시됩니다. 입력 중인 주소에는 "이 주소에서 마켓플레이스나 패키지를 찾지
+>   못했습니다. 주소와 브랜치, 저장소 안의 패키지라면 폴더 칸을 확인하세요.", 이미
+>   추가한 소스에는 그 변형입니다. *플러그인 가져오기*로 안내하지 않습니다.
+> - `PACKAGE_INCOMPATIBLE` · `prerelease`, `rollout`: 이 둘은 코드의 사유가 아니라
+>   버전 제외 사유입니다. 모든 버전이 이것들로 보류된 패키지는 사유 없는 문장 "이
+>   컴퓨터에 설치할 수 있는 버전이 없습니다. 각 버전이 제외된 이유는 버전 목록에서
+>   확인하세요."로 실패하고, 버전 목록이 각 버전에 *사전 릴리스*나 *아직 배포 대상
+>   아님*을 붙입니다. 직접 고른 버전은 둘 다 넘습니다.
+> - `CONTENT_RULE_VIOLATION` · `extension`: 이 코드의 사유는 폴더 읽기의
+>   사유입니다(§18.4.5). §5.4의 패키지 종류 규칙(파일 확장자, 종류별 파일 수와 전체
+>   크기, 확장자가 말하는 형식이 아닌 파일)은 사유 없이 이 코드를 내므로, 사용자는
+>   "패키지가 콘텐츠 규칙(파일 형식, 크기, 개수)을 어겨 아무것도 설치하지
+>   않았습니다. 마켓플레이스 운영자에게 알리세요. 해당 파일은 세부 정보 복사로 확인할
+>   수 있습니다."를 봅니다.
+> - `PLAN_EXPIRED` · `expired`, `replaced`: 10분이 지나 만료됐거나 새 계획으로 바뀐
+>   계획과 미리보기는 그냥 사라지므로 실패에 사유가 없고, 사용자는 "검토한 내용이 더
+>   이상 유효하지 않습니다. 10분이 지나 만료되었거나 새 검토로 바뀌었습니다. 다시
+>   시작해 새로 검토하세요."를 봅니다. `folder-changed`를 일으키는 경우는
+>   없습니다(§18.4). 모든 `PLAN_EXPIRED`에서 패키지 시트는 검토를 스스로 다시 열지
+>   않고 *다시 검토*를 제공하며, 업데이트 검토는 다시 불러옵니다.
+
 지금 `failureText`(`labels.ts:103-118`)는 아홉 개 코드에만 문장이 있고, 나머지는
 `CODE · <main의 영어 메시지>`를 출력합니다(`:116`). 0.13.0부터:
 
@@ -4270,6 +4318,16 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 | 탐색 `offline` | S | "오프라인 — 마지막 확인 <시각>." | "네트워크가 돌아오면 다시 확인합니다." |
 
 ### 18.9 설정, IPC, preload, 잠금 스위트, UI
+
+> 슬라이스 C, D2, E, F에서 구현됐고 §13, §13.1, §15가 구현된 모습을 설명합니다.
+> 아래 글과 다른 점은 다음과 같습니다.
+> - `SourceView`는 `transport`, `path`, `acknowledged`, `badges`를 얻고 `autoUpdate`는
+>   얻지 않습니다. 소스의 스위치는 `UpdateStatusView.autoUpdate.sources`에, 설치된 각
+>   패키지의 스위치는 `autoUpdate.packages`에 있습니다(§13.1).
+> - `UpdateStatusView`는 `escalated`(§18.7)와, 앱이 지금 충족할 수 없는
+>   `requiredInstalls` 항목인 `unmetRequired`(§18.7.5)도 담습니다.
+> - *자동 업데이트* 선택은 소스와 설치됨 행이 아니라 업데이트 카드, 각 업데이트 행,
+>   설치된 패키지의 시트에 있습니다(§18.7).
 
 **설정** — `MarketplaceSettings`(`settings-store.ts:893-959`), `normalizeMarketplace`
 (`settings-normalization.ts:921`):
