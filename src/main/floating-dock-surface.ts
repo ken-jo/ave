@@ -27,6 +27,8 @@ import { onEvent } from "../boot/types.js";
 import { getLastThemePayload } from "../shared/plugin-theme-cache.js";
 import { dockAssetArgs } from "../shared/floating-dock-args.js";
 import { pathToFileURL } from "node:url";
+import { preloadBundlePath, preloadPreferences } from "./preload-bundles.js";
+import { configurePluginWebviewAttach } from "./plugin-webview-attach.js";
 import type {
   DockActivity,
   DockBounds,
@@ -138,18 +140,17 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
       webPreferences: {
         // `.cjs` because this package is `type: "module"` and a `.js` preload
         // would load as ESM, while the preload needs `require("electron")`.
-        preload: runtimeAssetPath("floating-dock-preload.cjs"),
+        // The dock's preload and its sandbox, from the one table: sandboxed,
+        // since the dock hosts plugin `<webview>` guests. The preload needs
+        // only `contextBridge` and `ipcRenderer`, both available there.
+        ...preloadPreferences("floatingDockPreload"),
         // The sandboxed preload cannot resolve files itself (no `node:path`).
         additionalArguments: dockAssetArgs({
           pluginShellUrl: pathToFileURL(runtimeAssetPath("plugin-ui-shell.html")).toString(),
-          pluginPreloadUrl: pathToFileURL(runtimeAssetPath("plugin-preload.cjs")).toString(),
+          pluginPreloadUrl: pathToFileURL(preloadBundlePath("pluginPreload")).toString(),
         }),
         contextIsolation: true,
         nodeIntegration: false,
-        // The dock hosts plugin `<webview>` guests, so its own renderer runs
-        // sandboxed too. The preload needs only `contextBridge` and
-        // `ipcRenderer`, both of which work in a sandboxed preload.
-        sandbox: true,
         webSecurity: true,
         allowRunningInsecureContent: false,
         spellcheck: false,
@@ -157,6 +158,16 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
       },
     });
     this.#window = win;
+    // The dock hosts only plugin cards. Each attaches under the same main-side
+    // guard as the main window's plugin frames (sandbox, isolation, no Node, no
+    // nested webviews), whatever the element asked for; anything else is refused.
+    win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
+      const enforced = configurePluginWebviewAttach({
+        webPreferences: webPreferences as Record<string, unknown>,
+        params: params as unknown as Record<string, string>,
+      });
+      if (enforced !== "enforced") event.preventDefault();
+    });
     // The theme current now goes first, queued with anything later until the
     // window is ready, so the chrome paints in it from the first frame it shows.
     const opening = this.#currentTheme();

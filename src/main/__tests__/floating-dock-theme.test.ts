@@ -14,7 +14,7 @@ import { emitEvent } from "../../boot/types.js";
 import { recordValidatedTheme, resetLastThemePayloadForTests } from "../../shared/plugin-theme-cache.js";
 
 const { windows, rendererListeners, invoke } = vi.hoisted(() => ({
-  windows: [] as Array<{ send: ReturnType<typeof vi.fn>; fire(event: string): void; args: string[] }>,
+  windows: [] as Array<{ send: ReturnType<typeof vi.fn>; fire(event: string): void; args: string[]; attach(prefs: Record<string, unknown>, params: Record<string, string>): boolean; prefs: Record<string, unknown> }>,
   /** The dock renderer's `ipcRenderer.on` listeners: what main's `webContents.send` reaches. */
   rendererListeners: new Map<string, Set<(event: unknown, payload: unknown) => void>>(),
   invoke: vi.fn(),
@@ -24,9 +24,21 @@ vi.mock("electron", () => {
   class BrowserWindow {
     #handlers = new Map<string, () => void>();
     // Delivered as Electron delivers it: to the renderer's listeners, behind an event object.
-    webContents = { id: 7, send: vi.fn((channel: string, payload: unknown) => rendererListeners.get(channel)?.forEach((listener) => listener({ sender: "ipc-event" }, payload))) };
-    constructor(options: { webPreferences?: { additionalArguments?: string[] } }) {
-      windows.push({ send: this.webContents.send, fire: (event) => this.#handlers.get(event)?.(), args: options.webPreferences?.additionalArguments ?? [] });
+    #contentsHandlers = new Map<string, (...args: unknown[]) => void>();
+    webContents = { id: 7, on: (event: string, handler: (...args: unknown[]) => void) => { this.#contentsHandlers.set(event, handler); }, send: vi.fn((channel: string, payload: unknown) => rendererListeners.get(channel)?.forEach((listener) => listener({ sender: "ipc-event" }, payload))) };
+    constructor(options: { webPreferences?: Record<string, unknown> & { additionalArguments?: string[] } }) {
+      windows.push({
+        send: this.webContents.send,
+        fire: (event) => this.#handlers.get(event)?.(),
+        args: options.webPreferences?.additionalArguments ?? [],
+        prefs: options.webPreferences ?? {},
+        // A guest attaching: whether the window's handler let it through.
+        attach: (prefs, params) => {
+          let prevented = false;
+          this.#contentsHandlers.get("will-attach-webview")?.({ preventDefault: () => { prevented = true; } }, prefs, params);
+          return !prevented;
+        },
+      });
     }
     setAlwaysOnTop() {}
     setVisibleOnAllWorkspaces() {}
@@ -118,6 +130,25 @@ describe("ElectronFloatingDockSurface sends host themes to its window", () => {
     dock.show(BOUNDS);
     windows[0]!.fire("ready-to-show");
     expect(themesSent(windows[0]!)).toEqual([]);
+  });
+});
+
+describe("the dock window's preload, sandbox and guests", () => {
+  it("runs its preload in the sandbox the preload table gives it, and attaches only guarded plugin guests", async () => {
+    const { ElectronFloatingDockSurface } = await import("../floating-dock-surface.js");
+    const { PRELOAD_BUNDLES } = await import("../../shared/preload-bundles.js");
+    const { pluginPartitionName } = await import("../../shared/plugin-partition.js");
+    new ElectronFloatingDockSurface({ onThemeChanged: () => () => {}, currentTheme: () => null }).show(BOUNDS);
+    const win = windows[0]!;
+    expect(win.prefs).toMatchObject({ preload: `/assets/${PRELOAD_BUNDLES.floatingDockPreload.file}`, sandbox: PRELOAD_BUNDLES.floatingDockPreload.sandbox });
+    expect(win.prefs.sandbox).toBe(true);
+
+    // A plugin card's guest: let through, with main's preferences whatever the element asked.
+    const prefs: Record<string, unknown> = { sandbox: false, nodeIntegration: true, webviewTag: true };
+    expect(win.attach(prefs, { partition: pluginPartitionName("meeting"), src: "file:///assets/plugin-ui-shell.html" })).toBe(true);
+    expect(prefs).toMatchObject({ sandbox: true, nodeIntegration: false, contextIsolation: true, webviewTag: false });
+    // Anything else is refused.
+    expect(win.attach({}, { partition: "persist:elsewhere", src: "https://example.test/" })).toBe(false);
   });
 });
 

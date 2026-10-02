@@ -289,9 +289,16 @@ A preload that runs in a sandboxed frame can require only `electron` and the
 Node modules `events`, `timers` and `url`. The sandboxed frames are the floating
 dock window and plugin and MCP app webviews. Anything such a preload would
 resolve from disk, such as the dock's plugin shell and preload URLs, is resolved
-by main and passed as window arguments. The `build` composite's
-`check-sandboxed-preloads` reads every built preload against the sandbox mode of
-the frames that run it, and it fails on an unclassified preload.
+by main and passed as window arguments. Each preload's file and sandbox mode
+come from one table, `src/shared/preload-bundles.json`: windows spread
+`preloadPreferences(id)`, sessions register `preloadBundlePath(id)`, and webpack
+builds a preload config per row (`test/scripts/preload-sites.test.ts` holds
+the window and session sites to the table). The `build` composite's
+`check-sandboxed-preloads` fails when webpack builds a preload the table does
+not classify, or when a row has no webpack config or asset copy behind it. It
+then checks the built file of each table row: a sandboxed one may require only
+the modules above and may have no chunks. It does not scan `dist/src` for other
+files.
 
 Every surface that copies theme values follows the theme the host renderer has
 applied, including a theme updated in place under the same id. Plugin webviews

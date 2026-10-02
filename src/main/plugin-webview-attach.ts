@@ -22,6 +22,7 @@
  * on what was asked for.
  */
 import { isPluginPartitionName } from "../shared/plugin-partition.js";
+import { PRELOAD_BUNDLES } from "../shared/preload-bundles.js";
 
 export type PluginWebviewAttachResult = "ignored" | "enforced";
 
@@ -40,7 +41,8 @@ export function configurePluginWebviewAttach(input: {
   // The isolated world is what keeps the plugin's page scripts away from the
   // `avePlugin` bridge object and its closure over `ipcRenderer`.
   input.webPreferences.contextIsolation = true;
-  input.webPreferences.sandbox = true;
+  // From the one preload table: the build gate holds `plugin-preload.cjs` to the same mode.
+  input.webPreferences.sandbox = PRELOAD_BUNDLES.pluginPreload.sandbox;
   input.webPreferences.webSecurity = true;
 
   // A plugin frame has no business embedding further guest views; allowing it

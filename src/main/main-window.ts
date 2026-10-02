@@ -43,6 +43,7 @@ import { MAIN_WINDOW_MIN_HEIGHT, MAIN_WINDOW_MIN_WIDTH } from "../shared/shell-g
 import { isAppUpdateInstallRequested } from "./app-update-install-intent.js";
 import { BOOTSTRAP_SPLASH, markBootstrapSplashShown } from "./bootstrap-splash.js";
 import { requestNativeChromeRefresh } from "./native-window-coordinator.js";
+import { preloadPreferences } from "./preload-bundles.js";
 import {
   getLastRendererReloadAt,
   getMainWindow,
@@ -157,9 +158,9 @@ export function createWindow(options: { showBootstrapSplash?: boolean; headless?
   // One-shot runs have no desktop surface and must not allocate a renderer.
   if (options.headless) return;
   const showBootstrapSplash = options.showBootstrapSplash ?? true;
-  const preloadPath = resolve(mainDir, "..", "preload.cjs");
-  if (!existsSync(preloadPath)) {
-    throw new Error(`[ave] preload.cjs not found at ${preloadPath} — run 'npm run build:preload' first`);
+  const hostPreload = preloadPreferences("preload");
+  if (!existsSync(hostPreload.preload)) {
+    throw new Error(`[ave] preload.cjs not found at ${hostPreload.preload} — run 'npm run build:preload' first`);
   }
 
   const win = new BrowserWindow({
@@ -175,14 +176,13 @@ export function createWindow(options: { showBootstrapSplash?: boolean; headless?
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      // sandbox:false required for Node built-ins (node:path, node:url) in preload.cjs
-      sandbox: false,
+      // The host preload and its sandbox (false: it needs Node built-ins), from the one table.
+      ...hostPreload,
       // render_html tool renders LLM-produced HTML inside an Electron
       // <webview>. The webview runs on its own webContents / OS process so
       // a malicious or runaway payload (e.g. `while(true){}`) can't freeze
       // the main UI. The <webview> tag is gated by webPreferences.webviewTag.
       webviewTag: true,
-      preload: preloadPath,
       // Pass the host's cached lastThemePayload + persisted appMode to the
       // renderer so ThemeProvider and the App shell can both init from frame 0
       // (no flash of fallback theme / wrong mode). See initialThemeArgs() and

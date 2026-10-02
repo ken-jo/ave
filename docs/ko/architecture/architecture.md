@@ -2434,8 +2434,13 @@ ThemeProvider.tsx (renderer)
 `events`, `timers`, `url` 만 require 할 수 있다. 그런 frame 은 플로팅 독 창, plugin webview,
 MCP 앱 webview 다. 독의 plugin shell / preload URL 처럼 디스크에서 경로를 풀어야 하는 값은
 main 이 풀어 창 인자(`additionalArguments`, `src/shared/floating-dock-args.ts`)로 넘긴다.
-`build` 안의 `check-sandboxed-preloads` 가 빌드된 preload 마다 그것을 실행하는 frame 의
-sandbox 모드에 맞는지 검사한다. 분류되지 않은 preload 가 있으면 실패한다.
+preload 마다 파일과 sandbox 모드는 표 하나(`src/shared/preload-bundles.json`)에서 온다.
+창은 `preloadPreferences(id)` 를 펼치고, session 은 `preloadBundlePath(id)` 를 등록하며,
+webpack 은 행마다 preload config 를 만든다(`test/scripts/preload-sites.test.ts` 가 창·session
+지점을 표에 묶는다). `build` 안의 `check-sandboxed-preloads` 는 표가 분류하지 않은 preload 를
+webpack 이 빌드하거나, 어떤 행 뒤에 webpack config 나 asset 복사가 없으면 실패한다. 그다음 표의
+각 행이 빌드한 파일을 검사한다. sandboxed preload 는 위 모듈만 require 할 수 있고 chunk 를
+가질 수 없다. `dist/src` 의 다른 파일은 훑지 않는다.
 
 **초기 상태 — pull-on-load (1차 메커니즘)**: plugin-ui-shell 이 plugin 모듈
 dynamic-import 직전에 `await window.avePlugin.getTheme()` 으로 호스트의 캐시된
