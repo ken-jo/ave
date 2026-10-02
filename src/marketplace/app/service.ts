@@ -1872,8 +1872,17 @@ export class MarketplaceService implements RetirementEntryLookup {
     const target = heldTarget(held);
     // Made before this package's lock (a review, a boot pass's required switch): what it decided, and what a
     // review showed, was judged against the install then. Another install or removal since leaves it stale (§18.6).
-    if (held.kind !== "mcp-unbound" && !isDeepStrictEqual(installIdentity(await this.installed(target.kind, target.name)), held.installed)) {
-      throw new MarketplaceError("PLAN_EXPIRED", `${target.kind} ${target.name} changed since plan ${planId} was made`, { detail: { reason: "package-changed" } });
+    if (held.kind !== "mcp-unbound") {
+      if (!isDeepStrictEqual(installIdentity(await this.installed(target.kind, target.name)), held.installed)) {
+        throw new MarketplaceError("PLAN_EXPIRED", `${target.kind} ${target.name} changed since plan ${planId} was made`, { detail: { reason: "package-changed" } });
+      }
+      // Its offer, as its source makes it now: a version the source revoked since the plan is not installed (§10.4).
+      // The policy and what it requires are the plan's digest, checked above.
+      const { sourceId, version } = held.kind === "mcp" ? held.resolved.plan : held.plan;
+      const feed = await revocationFeed([{ kind: target.kind, name: target.name, sourceId }], (id) => this.options.syncer.readRevocations(id, this.options.versionContext().appVersion));
+      if (findRevocation(target.kind, target.name, version, feed.rules)) {
+        throw new MarketplaceError("PACKAGE_REVOKED", `${target.name} ${version} was revoked by ${this.viewSourceId(sourceId)} since plan ${planId} was made`);
+      }
     }
     const key = keyOf(target.kind, target.name);
     this.pendingBindings.set(key, target);
@@ -2710,8 +2719,9 @@ export class MarketplaceService implements RetirementEntryLookup {
     for (const decided of await this.feedRevocations()) {
       const { kind, name } = decided.record;
       await this.withPackage(kind, name, async () => {
+        // Judged again from what is installed and what its source revokes now: the feed's decision is only why this turn came.
         const now = await this.installed(kind, name);
-        const current = isDeepStrictEqual(installIdentity(now), installIdentity(decided.record)) ? decided : await this.revocationNow(now);
+        const current = await this.revocationNow(now, decided.record);
         if (typeof current === "string") {
           this.options.log.warn(`revocation of ${this.viewSourceId(decided.record.sourceId)}/${kind}/${name}@${decided.record.version} skipped: ${current}`);
           return;
@@ -2725,14 +2735,18 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   /**
    * The revocation an install's own source carries for its version now
-   * (§10.4), or why there is none to enforce: the reason a revocation
-   * decided for an earlier install is skipped.
+   * (§10.4), read from the source's snapshot as it is under the package
+   * lock; or why there is none to enforce, against `decided`, the install a
+   * feed judged revoked before the lock.
    */
-  private async revocationNow(record: InstalledRecord | null): Promise<RevokedInstall | string> {
+  private async revocationNow(record: InstalledRecord | null, decided: InstalledRecord): Promise<RevokedInstall | string> {
     if (!record) return "it was removed before its turn";
     const feed = await revocationFeed(boundOf([record]), (sourceId) => this.options.syncer.readRevocations(sourceId, this.options.versionContext().appVersion));
     const [revoked] = revokedAmong([record], feed.rules);
-    return revoked ?? `it was replaced by ${record.version} ${record.sourceId === null ? "without a source" : `from ${this.viewSourceId(record.sourceId)}`}, which its own source's revocations do not cover`;
+    if (revoked) return revoked;
+    return isDeepStrictEqual(installIdentity(record), installIdentity(decided))
+      ? "its source no longer revokes it"
+      : `it was replaced by ${record.version} ${record.sourceId === null ? "without a source" : `from ${this.viewSourceId(record.sourceId)}`}, which its own source's revocations do not cover`;
   }
 
   /** Enforce one revocation under its package's lock; null when a gate holds it (nothing to report). */

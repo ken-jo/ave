@@ -246,7 +246,7 @@ describe("MarketplaceService", () => {
         uninstall: vi.fn(async () => {}),
       },
       content: {
-        list: async () => store.list().map((entry) => ({ kind: entry.kind, name: entry.name, version: entry.version, sourceId: entry.origin.sourceId, originCommit: entry.origin.commit })),
+        list: async () => store.list().map((entry) => ({ kind: entry.kind, name: entry.name, version: entry.version, sourceId: entry.origin.sourceId, originCommit: entry.origin.commit, digest: entry.origin.contentSha256 })),
         installedComponents: async (name) => {
           const content = (await store.load()).loaded.find((item) => item.entry.kind === "agent-plugin" && item.entry.name === name)?.content;
           if (content?.kind !== "agent-plugin") throw new Error(`installed agent-plugin ${name} has no verified components`);
@@ -968,11 +968,11 @@ describe("MarketplaceService", () => {
   });
 
   /**
-   * The feed judges 1.0.0 revoked while an update to 2.0.0 owns the package; the update lands
-   * before enforcement gets the lock. `versions` is what the source revokes: only the old release,
-   * or every release.
+   * The feed judges 1.0.0 revoked (`=1.0.0`) while an update to 2.0.0 owns the package; the update
+   * lands before enforcement gets the lock. With `widened`, once the update is past its own check the
+   * source revokes every release, and a second sync publishes that before enforcement's turn.
    */
-  async function reviseWhileRevoking(versions: string): Promise<{ removedVersions: string[]; done: Promise<void> }> {
+  async function reviseWhileRevoking(widened: boolean): Promise<{ removedVersions: string[]; done: Promise<void> }> {
     const acme = market();
     await addMarket(acme.url);
     const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
@@ -981,7 +981,7 @@ describe("MarketplaceService", () => {
     await service.refresh("acme-tools");
     const plan = await service.planInstall(key);
     expect(plan).toMatchObject({ version: "2.0.0" });
-    createRevocations(acme, [{ kind: "skill", name: "review", versions, reason: "old release unsafe", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "=1.0.0", reason: "old release unsafe", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     let entered!: () => void;
@@ -993,6 +993,15 @@ describe("MarketplaceService", () => {
     // The update takes the package lock, then waits for that feed before it installs 2.0.0.
     const installing = service.executeInstall(plan.planId);
     await vi.waitFor(() => expect((service as unknown as { pendingBindings: Map<string, unknown> }).pendingBindings.size).toBe(1));
+    let widening: Promise<void> = Promise.resolve();
+    if (widened) {
+      createRevocations(acme, [{ kind: "skill", name: "review", versions: "*", reason: "every release unsafe", at: "2026-09-25T00:00:00Z", action: "uninstall" }]);
+      let published!: () => void;
+      const publishedNew = new Promise<void>((resolve) => { published = resolve; });
+      afterSourceSynced = () => published();
+      widening = service.refresh("acme-tools").then(() => undefined);
+      await publishedNew;
+    }
     const removedVersions: string[] = [];
     const original = store.uninstall.bind(store);
     vi.spyOn(store, "uninstall").mockImplementation(async (...args) => {
@@ -1000,16 +1009,61 @@ describe("MarketplaceService", () => {
       return original(...args);
     });
     release();
-    return { removedVersions, done: Promise.all([installing, refresh]).then(() => undefined) };
+    return { removedVersions, done: Promise.all([installing, refresh, widening]).then(() => undefined) };
   }
 
   it("judges a revocation again under the package lock: an update that landed while it waited stays when its version is not revoked (§10.4, §18.6)", async () => {
-    const { removedVersions, done } = await reviseWhileRevoking("=1.0.0");
+    const { removedVersions, done } = await reviseWhileRevoking(false);
     await done;
     expect(removedVersions).toEqual([]);
     expect(store.list().map((item) => `${item.name}@${item.version}`)).toEqual(["review@2.0.0"]);
     expect(service.takeRevocationNotice()).toBeNull();
     expect(warnings).toEqual(["revocation of acme-tools/skill/review@1.0.0 skipped: it was replaced by 2.0.0 from acme-tools, which its own source's revocations do not cover"]);
+  });
+
+  it("judges a revocation again under the package lock: one its source withdrew while it waited removes nothing (§10.4, §18.6)", async () => {
+    const acme = market();
+    await addMarket(acme.url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    await service.executeInstall((await service.planInstall(key)).planId);
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "=1.0.0", reason: "withdrawn rule", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    // Another operation holds review's package lock and changes nothing.
+    const holder = service.asOneOperation(async () => { entered(); await held; }, [{ kind: "skill", name: "review" }]);
+    await inside;
+    const removal = vi.spyOn(store, "uninstall");
+    const before = feeds.length;
+    // This sync's feed revokes the installed 1.0.0; its enforcement waits for the lock.
+    const first = service.refresh("acme-tools");
+    await vi.waitFor(() => expect(feeds.length).toBeGreaterThan(before));
+    // The source withdraws the rule, and a second sync publishes that snapshot while the first still waits.
+    createRevocations(acme, []);
+    let published!: () => void;
+    const publishedNew = new Promise<void>((resolve) => { published = resolve; });
+    afterSourceSynced = () => published();
+    const second = service.refresh("acme-tools");
+    await publishedNew;
+    release();
+    await Promise.all([holder, first, second]);
+    expect(removal).not.toHaveBeenCalled();
+    expect(store.list().map((item) => `${item.name}@${item.version}`)).toEqual(["review@1.0.0"]);
+    expect(service.takeRevocationNotice()).toBeNull();
+    expect(warnings).toEqual(["revocation of acme-tools/skill/review@1.0.0 skipped: its source no longer revokes it"]);
+  });
+
+  it("refuses a plan whose version its source revoked after the plan was made (§10.4, §18.6)", async () => {
+    const acme = market();
+    await addMarket(acme.url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    const plan = await service.planInstall(key);
+    expect(plan).toMatchObject({ version: "1.0.0" });
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "=1.0.0", reason: "prompt injection", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+    await service.refresh("acme-tools");
+    await expect(service.executeInstall(plan.planId)).rejects.toMatchObject({ code: "PACKAGE_REVOKED" });
+    expect(store.list()).toEqual([]);
   });
 
   it("skips a revocation whose install was removed while it waited for the package lock (§10.4, §18.6)", async () => {
@@ -1043,12 +1097,12 @@ describe("MarketplaceService", () => {
   });
 
   it("removes the install that landed while a revocation waited when its own version is revoked too, and reports that version (§10.4, §18.6)", async () => {
-    const { removedVersions, done } = await reviseWhileRevoking("*");
+    const { removedVersions, done } = await reviseWhileRevoking(true);
     await done;
     expect(removedVersions).toEqual(["2.0.0"]);
     expect(store.list()).toEqual([]);
     expect(service.takeRevocationNotice()?.revoked).toEqual([
-      { key: { sourceId: "acme-tools", kind: "skill", name: "review" }, version: "2.0.0", reason: "old release unsafe", outcome: "uninstalled" },
+      { key: { sourceId: "acme-tools", kind: "skill", name: "review" }, version: "2.0.0", reason: "every release unsafe", outcome: "uninstalled" },
     ]);
     expect(warnings).toEqual([]);
   });

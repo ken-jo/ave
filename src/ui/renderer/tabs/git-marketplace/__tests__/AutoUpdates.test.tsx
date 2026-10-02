@@ -413,6 +413,65 @@ describe("required installs not met (§10.2)", () => {
       expect(fake.market.uninstall).not.toHaveBeenCalled();
     });
 
+    it("says it is removing until its reply, never that nothing was removed, when its own removal is published first", async () => {
+      const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row("team")] }) });
+      const replies = heldReplies(fake);
+      await opened(fake);
+      // Every state the question is drawn in, in order, and whether "nothing was removed" was ever drawn.
+      const drawn: string[] = [];
+      let saidNothingRemoved = false;
+      const record = () => {
+        const box = screen.queryByTestId(id("confirm-remove"));
+        const shown = box?.querySelector("p")?.getAttribute("data-testid") ?? (box ? "confirm" : "none");
+        if (drawn.at(-1) !== shown) drawn.push(shown);
+        if (screen.queryByTestId(id("remove-changed"))) saidNothingRemoved = true;
+      };
+      const observer = new MutationObserver(record);
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      try {
+        record();
+        fireEvent.click(screen.getByTestId(id("confirm-uninstall")));
+        // main removed it and publishes the status before the reply: the requirement is still unmet, nothing in its way.
+        act(() => push(fake, row(null)));
+        await act(async () => replies[0]!(removed("team")));
+        record();
+      } finally {
+        observer.disconnect();
+      }
+      expect(drawn).toEqual(["confirm", id("remove-pending"), "none"]);
+      expect(saidNothingRemoved).toBe(false);
+      expect(screen.getByTestId("git-marketplace:updates:unmet:corp:mcp:notes")).toBeInTheDocument();
+    });
+
+    it("says nothing was removed once a request that went out while the install changed fails", async () => {
+      const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row("team")] }) });
+      const replies = heldReplies(fake);
+      await opened(fake);
+      fireEvent.click(screen.getByTestId(id("confirm-uninstall")));
+      act(() => push(fake, row("replacement")));
+      expect(screen.queryByTestId(id("remove-changed"))).toBeNull();
+      await act(async () => replies[0]!(conflict));
+      expect(screen.getByTestId(id("remove-changed"))).toBeInTheDocument();
+      expect(screen.getByTestId(id("remove-error"))).toBeInTheDocument();
+      expect(screen.queryByTestId(id("confirm-uninstall"))).toBeNull();
+    });
+
+    it("removes the install named by the Remove clicked, even from a frame drawn before a status naming another (§10.2)", async () => {
+      const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row("team")] }) });
+      renderTab(fake);
+      const shownRemove = await screen.findByTestId(id("remove"));
+      // The status naming another install and the click on the button drawn for team land in one frame.
+      act(() => {
+        push(fake, row("replacement"));
+        fireEvent.click(shownRemove);
+      });
+      expect(screen.getByTestId(id("installed-from"))).toHaveTextContent("replacement");
+      // The question is the one the user chose: about team, never silently about the install named since.
+      expect(screen.getByTestId(id("confirm-remove"))).toHaveTextContent("team에서 설치된 notes");
+      fireEvent.click(screen.getByTestId(id("confirm-uninstall")));
+      expect(fake.market.uninstall).toHaveBeenCalledWith({ sourceId: "team", kind: "mcp", name: "notes", removeData: false });
+    });
+
     it("sends once for a double click", async () => {
       const fake = fakeMarketplace({ sources: [team], updateStatus: updateStatus({ unmetRequired: [row("team")] }) });
       const replies = heldReplies(fake);
@@ -434,7 +493,9 @@ describe("required installs not met (§10.2)", () => {
       await opened(fake);
       fireEvent.click(screen.getByTestId(id("confirm-uninstall")));
       act(() => push(fake, row("replacement")));
-      expect(screen.getByTestId(id("remove-changed"))).toBeInTheDocument();
+      // Its request is still out: it says it is removing, and Remove asks about the install named now.
+      expect(screen.getByTestId(id("remove-pending"))).toBeInTheDocument();
+      expect(screen.getByTestId(id("remove"))).toBeEnabled();
       fireEvent.click(screen.getByTestId(id("remove")));
       expect(screen.getByTestId(id("confirm-remove"))).toHaveTextContent("replacement에서 설치된 notes");
       fireEvent.click(screen.getByTestId(id("confirm-uninstall")));

@@ -104,9 +104,13 @@ function rowId(key: PackageKeyView): string {
  * row named then (`target`, by the id its view carried). The confirmation
  * removes that install and nothing else; `generation` tells this question
  * from every other, so a reply answers only the question that sent it.
- * `invalidated` once any status received since the click named another
- * install for the row, even if a later one names this one again: the
- * question then removes nothing.
+ * `invalidated` once any status received since the click, before its
+ * request was sent, named another install for the row, even if a later one
+ * names this one again: the question then removes nothing. While its
+ * request is out, such a status (its own removal, published first, among
+ * them) only marks it `changedWhileSending`: the question says it is
+ * removing until the reply says how that ended, and is invalidated only if
+ * the request failed.
  */
 type RemovalQuestion = {
   generation: number;
@@ -116,6 +120,7 @@ type RemovalQuestion = {
   busy: boolean;
   failure: GitMarketplaceFailure | null;
   invalidated: boolean;
+  changedWhileSending: boolean;
 };
 
 /** The open question, and how a request of an earlier question that no longer is open failed. */
@@ -147,7 +152,7 @@ function stepRemoval(state: Removal, event: RemovalEvent): Removal {
       if (question) {
         const now = row(question.rowId);
         if (!now) next = null;
-        else if (now.installedFrom?.sourceId !== question.target.sourceId) next = { ...question, invalidated: true };
+        else if (now.installedFrom?.sourceId !== question.target.sourceId) next = question.busy ? { ...question, changedWhileSending: true } : { ...question, invalidated: true };
       }
       return { ...state, question: next, earlier: state.earlier && row(state.earlier.rowId) ? state.earlier : null };
     }
@@ -156,7 +161,7 @@ function stepRemoval(state: Removal, event: RemovalEvent): Removal {
       const generation = state.generations + 1;
       return {
         generations: generation,
-        question: { generation, rowId: event.rowId, target: event.target, label: event.label, busy: false, failure: null, invalidated: false },
+        question: { generation, rowId: event.rowId, target: event.target, label: event.label, busy: false, failure: null, invalidated: false, changedWhileSending: false },
         earlier: null,
       };
     }
@@ -166,7 +171,7 @@ function stepRemoval(state: Removal, event: RemovalEvent): Removal {
       return { ...state, question: { ...event.question, busy: true, failure: null } };
     case "reply":
       if (question?.generation === event.generation) {
-        return { ...state, question: event.result.ok ? null : { ...question, busy: false, failure: event.result } };
+        return { ...state, question: event.result.ok ? null : { ...question, busy: false, failure: event.result, invalidated: question.changedWhileSending } };
       }
       // A reply to a question since replaced or ended: it changes no open question. Its failure is still shown, as its own.
       return event.result.ok ? state : { ...state, earlier: { rowId: event.rowId, label: event.label, failure: event.result } };
@@ -471,7 +476,7 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
               size="sm"
               variant="outline"
               className="h-6 px-2 text-[11px]"
-              disabled={confirming !== null && !confirming.invalidated}
+              disabled={confirming !== null && !confirming.invalidated && !confirming.changedWhileSending}
               onClick={() => (other.removal === "sheet"
                 ? onOpenPackage(otherKey)
                 : step({ type: "open", rowId: id, target: otherKey, label: other.label }))}
@@ -489,7 +494,11 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
         )}
         {confirming && (
           <div className="space-y-2 rounded-md border bg-background px-3 py-2" data-testid="git-marketplace:updates:unmet:confirm-remove">
-            {confirming.invalidated ? (
+            {confirming.busy ? (
+              <p data-testid="git-marketplace:updates:unmet:remove-pending">
+                {t("gitMarketplace.updates.unmet.removing", { name: unmet.key.name, source: confirming.label })}
+              </p>
+            ) : confirming.invalidated ? (
               <p role="alert" data-testid="git-marketplace:updates:unmet:remove-changed">
                 {t("gitMarketplace.updates.unmet.removeChanged", { name: unmet.key.name, source: confirming.label })}
               </p>
