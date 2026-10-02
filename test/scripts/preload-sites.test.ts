@@ -1,9 +1,9 @@
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import {
   isArrowFunction,
   isAsExpression,
+  isAwaitExpression,
   isBinaryExpression,
   isBindingElement,
   isCallExpression,
@@ -54,7 +54,7 @@ import {
   type ObjectLiteralExpression,
   type SourceFile,
 } from "typescript/unstable/ast";
-import { API, SymbolFlags, TypeFlags, type Checker, type Project, type Symbol as TsSymbol } from "typescript/unstable/sync";
+import { API, SignatureKind, SymbolFlags, TypeFlags, type Checker, type Project, type Symbol as TsSymbol } from "typescript/unstable/sync";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 /**
@@ -64,11 +64,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
  * table's sandbox, so a site that named its own `sandbox` or preload could run
  * a preload in a sandbox the gate never checked it for.
  *
- * Read with the TypeScript compiler (`typescript/unstable/sync`), so a site is
- * found however it is spelled: an aliased `BrowserWindow` import, the electron
- * module under another name, a constructor passed around. Each site must take
- * one recognized form, and anything the audit cannot prove is a problem rather
- * than a pass — a computed key, a helper-built object, a non-literal value:
+ * Read with the TypeScript compiler (`typescript/unstable/sync`): windows are
+ * found by their resolved Electron type, and electron is followed through
+ * imports, `require` and awaited dynamic imports. Within the sites below, a
+ * form the audit cannot read is a problem rather than a pass — a computed key,
+ * a helper-built object, a non-literal value, a window class used as a value or
+ * handed to `Reflect.construct`, an unbound dynamic import of electron, HTML
+ * with an interpolated tag name or an interpolation that could carry markup.
+ * Code that reaches Electron outside these forms is not seen here; main's
+ * attach guards are what enforce a guest's preferences.
  *   - `new BrowserWindow` / `BrowserView` / `WebContentsView` with a preload
  *     spreads `preloadPreferences(id)` (directly or through a `const`) into a
  *     literal `webPreferences`, and names neither `sandbox` nor `preload`; one
@@ -78,8 +82,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
  *     refused;
  *   - a guest's `sandbox` is assigned from `PRELOAD_BUNDLES.<id>.sandbox`, or
  *     `true` beside a `delete` of its preload;
- *   - every `<webview>` (JSX, `createElement`, or `document.createElement`
- *     with `setAttribute`, or inside an HTML string) is in a file mapped to the
+ *   - every `<webview>` it can see (JSX, `createElement`, `document.createElement`
+ *     with `setAttribute`, an HTML string literal, or HTML written to
+ *     `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`,
+ *     `parseFromString`, `createContextualFragment`, `setHTMLUnsafe` or
+ *     `dangerouslySetInnerHTML`) is in a file mapped to the
  *     table row of the preload its guest runs, and its literal `webpreferences`
  *     request agrees with that row's sandbox.
  */
@@ -111,6 +118,11 @@ const ELECTRON_DTS = "/node_modules/electron/electron.d.ts";
 const PRELOAD_HELPERS = "src/main/preload-bundles.ts";
 const PRELOAD_TABLE_MODULE = "src/shared/preload-bundles.ts";
 const ATTACH_GUARDS = "src/main/plugin-webview-attach.ts";
+const HTML_SINK_PROPERTIES = new Set(["innerHTML", "outerHTML"]);
+const HTML_SINK_CALLS: Record<string, number> = { insertAdjacentHTML: 1, write: 0, writeln: 0, parseFromString: 0, createContextualFragment: 0, setHTMLUnsafe: 0 };
+
+/** The compiler's path form, on every platform: forward slashes (as in `scripts/lib/ts7-ast.mjs`). */
+const toWire = (path: string): string => path.split("\\").join("/");
 
 function listSources(root: string): string[] {
   const files: string[] = [];
@@ -144,6 +156,25 @@ function keyOf(name: Node): string | null {
   if (isIdentifier(name)) return name.text;
   if (isStringLiteral(name) || isNumericLiteral(name)) return name.text;
   return null;
+}
+
+/** `require("electron")` or `import("electron")`, by kind; null for anything else. */
+function isElectronLoad(node: Node): "require" | "import" | null {
+  const expression = unwrap(node as Expression);
+  if (!isCallExpression(expression) || literalText(expression.arguments[0]) !== "electron") return null;
+  if (expression.expression.kind === SyntaxKind.ImportKeyword) return "import";
+  return isIdentifier(expression.expression) && expression.expression.text === "require" ? "require" : null;
+}
+
+/** The node's parent past parentheses and type assertions, and the node it is reached through. */
+function usage(node: Node): { child: Node; parent: Node } {
+  let child = node;
+  let parent = node.parent;
+  while (isParenthesizedExpression(parent) || isAsExpression(parent) || isSatisfiesExpression(parent) || isNonNullExpression(parent) || isTypeAssertion(parent)) {
+    child = parent;
+    parent = parent.parent;
+  }
+  return { child, parent };
 }
 
 class FileAudit {
@@ -183,13 +214,13 @@ class FileAudit {
   }
 
   declaredIn(symbol: TsSymbol | undefined, rel: string): boolean {
-    const target = join(this.root, rel).toLowerCase();
-    return !!symbol && symbol.declarations.some((declaration) => declaration.path.toLowerCase() === target);
+    const target = toWire(join(this.root, rel)).toLowerCase();
+    return !!symbol && symbol.declarations.some((declaration) => toWire(declaration.path).toLowerCase() === target);
   }
 
   isElectron(symbol: TsSymbol | undefined, names: Set<string>): string | null {
     if (!symbol || !names.has(symbol.name)) return null;
-    return symbol.declarations.some((declaration) => declaration.path.endsWith(ELECTRON_DTS)) ? symbol.name : null;
+    return symbol.declarations.some((declaration) => toWire(declaration.path).endsWith(ELECTRON_DTS)) ? symbol.name : null;
   }
 
   /** The table id `fn("<id>")` names, through one `const` alias at most; null when it is not that form. */
@@ -212,7 +243,8 @@ class FileAudit {
     const isElectronRequire = (node: Expression | undefined): boolean => {
       if (!node) return false;
       const expression = unwrap(node);
-      return isCallExpression(expression) && isIdentifier(expression.expression) && expression.expression.text === "require" && literalText(expression.arguments[0]) === "electron";
+      if (isAwaitExpression(expression)) return isElectronLoad(expression.expression) === "import";
+      return isElectronLoad(expression) === "require";
     };
     const visit = (node: Node): void => {
       if (isImportDeclaration(node) && literalText(node.moduleSpecifier) === "electron" && node.importClause && node.importClause.phaseModifier !== SyntaxKind.TypeKeyword) {
@@ -235,9 +267,17 @@ class FileAudit {
             const local = element.name && isIdentifier(element.name) ? element.name : null;
             const imported = element.propertyName ? keyOf(element.propertyName) : local ? local.text : null;
             if (imported === null) this.report(element, "computed binding from the electron module");
-            else if (WINDOW_CLASSES.has(imported) && local) this.windowLocals.add(local.text);
           }
         }
+      }
+      if (isVariableDeclaration(node) && node.initializer && isIdentifier(unwrap(node.initializer)) && (unwrap(node.initializer) as { text?: string }).text === "Reflect" && !isIdentifier(node.name)) {
+        this.report(node, "Reflect.construct taken out of Reflect, where the test cannot follow it");
+      }
+      // A window class destructured from anything (a callback's parameter, a
+      // re-export) is followed as one, wherever the object came from.
+      if (isBindingElement(node) && node.name && isIdentifier(node.name)) {
+        const imported = node.propertyName ? keyOf(node.propertyName) : node.name.text;
+        if (imported !== null && WINDOW_CLASSES.has(imported)) this.windowLocals.add(node.name.text);
       }
       node.forEachChild(visit);
     };
@@ -418,6 +458,14 @@ class FileAudit {
     if (method === "setPreloads") this.report(node, "session.setPreloads bypasses the preload table; use registerPreloadScript with preloadBundlePath(id)");
     if (method === "registerPreloadScript") this.sessionPreload(node);
     if (method === "createElement") this.createElement(node);
+    if (method === "construct" && (isPropertyAccessExpression(callee) || isElementAccessExpression(callee)) && isIdentifier(callee.expression) && callee.expression.text === "Reflect") this.construct(node);
+    if (method !== null && method in HTML_SINK_CALLS) {
+      const value = node.arguments[HTML_SINK_CALLS[method]];
+      const document = method !== "write" && method !== "writeln" || (isPropertyAccessExpression(callee) && /\bdocument$/u.test(this.text(callee.expression)));
+      if (value && document) this.html(value, method);
+    }
+    const load = isElectronLoad(node);
+    if (load) this.electronLoad(node, load);
     if (method === "setAttribute" && isPropertyAccessExpression(callee)) {
       this.attributeCalls.push({ receiver: isIdentifier(callee.expression) ? callee.expression.text : null, node, name: node.arguments[0], value: node.arguments[1] });
     }
@@ -447,6 +495,10 @@ class FileAudit {
   memberReference(node: Node): void {
     if (!isPropertyAccessExpression(node) && !isElementAccessExpression(node)) return;
     const name = isPropertyAccessExpression(node) ? node.name.text : literalText(node.argumentExpression);
+    if (name === "construct" && isIdentifier(node.expression) && node.expression.text === "Reflect") {
+      const { child, parent } = usage(node);
+      if (!(isCallExpression(parent) && parent.expression === child)) this.report(node, "Reflect.construct is referenced without being called");
+    }
     if ((name === "registerPreloadScript" || name === "setPreloads") && !(isCallExpression(node.parent) && node.parent.expression === node)) {
       this.report(node, `${name} is referenced without being called`);
     }
@@ -460,6 +512,7 @@ class FileAudit {
     if (!isBinaryExpression(node)) return;
     const left = node.left;
     const property = isPropertyAccessExpression(left) ? left.name.text : isElementAccessExpression(left) ? literalText(left.argumentExpression) : null;
+    if (property !== null && HTML_SINK_PROPERTIES.has(property)) this.html(node.right, property);
     if (isPropertyAccessExpression(left) && isIdentifier(left.expression) && this.domWebviews.has(left.expression.text)) {
       this.propertyWrites.push({ receiver: left.expression.text, property: left.name.text, node });
     }
@@ -488,6 +541,13 @@ class FileAudit {
 
   jsx(node: Node): void {
     if (!isJsxOpeningElement(node) && !isJsxSelfClosingElement(node)) return;
+    for (const attribute of node.attributes.properties) {
+      if (!isJsxAttribute(attribute) || attribute.name.getText(this.source) !== "dangerouslySetInnerHTML") continue;
+      const value = attribute.initializer && isJsxExpression(attribute.initializer) && attribute.initializer.expression ? unwrap(attribute.initializer.expression) : null;
+      const html = value && isObjectLiteralExpression(value) && value.properties.length === 1 && isPropertyAssignment(value.properties[0]) && keyOf(value.properties[0].name) === "__html" ? value.properties[0].initializer : null;
+      if (html) this.html(html, "dangerouslySetInnerHTML");
+      else this.report(attribute, "dangerouslySetInnerHTML is not { __html: <value> }");
+    }
     if (node.tagName.getText(this.source) !== "webview") return;
     const site: Site = { file: this.rel, kind: "webview", id: null, request: null };
     for (const attribute of node.attributes.properties) {
@@ -588,6 +648,98 @@ class FileAudit {
     site.id = this.webviewSites[this.rel];
   }
 
+  /**
+   * `require("electron")` / `import("electron")`: followed when bound by a
+   * declaration (`const e = …`, `const { BrowserWindow } = await …`) or read
+   * for one member; anything else hands the module to code the audit cannot see.
+   */
+  electronLoad(node: Node, kind: "require" | "import"): void {
+    let { child, parent } = usage(node);
+    if (kind === "import") {
+      if (!isAwaitExpression(parent)) {
+        this.report(node, `a dynamic import of electron the test cannot follow: ${this.text(parent)}`);
+        return;
+      }
+      ({ child, parent } = usage(parent));
+    }
+    if (isVariableDeclaration(parent) && parent.initializer === child) return;
+    if (isPropertyAccessExpression(parent) && parent.expression === child) {
+      if (WINDOW_CLASSES.has(parent.name.text)) this.windowReference(parent, parent.name.text);
+      return;
+    }
+    this.report(node, `passes the electron module around: ${this.text(parent)}`);
+  }
+
+  /** `Reflect.construct(target, …)` and other `construct(…)` calls: the target must be a class that is provably not Electron's. */
+  construct(node: Node): void {
+    if (!isCallExpression(node) || !node.arguments[0]) return;
+    const target = node.arguments[0];
+    // Provable when the target has construct signatures and every one of them
+    // returns a concrete type that is not one of Electron's.
+    const type = this.checker.getTypeAtLocation(target);
+    const signatures = type && !(type.flags & (TypeFlags.Any | TypeFlags.Unknown)) ? this.checker.getSignaturesOfType(type, SignatureKind.Construct) : [];
+    const provable = signatures.length > 0 && signatures.every((signature) => {
+      const instance = this.checker.getReturnTypeOfSignature(signature);
+      if (!instance || instance.flags & (TypeFlags.Any | TypeFlags.Unknown | TypeFlags.TypeParameter)) return false;
+      const symbol = instance.getSymbol();
+      return !symbol?.declarations.some((declaration) => toWire(declaration.path).endsWith(ELECTRON_DTS));
+    });
+    if (!provable) this.report(node, `construct(${this.text(target)}, …) with a target the test cannot prove is not an Electron window`);
+  }
+
+  /**
+   * HTML written into a DOM sink. A literal is read (a `<webview` in it is a
+   * webview site); a template or concatenation must have no interpolation in a
+   * tag-name position and only interpolations that cannot carry markup
+   * (numbers, booleans, string literal types without `<`). Anything else is
+   * refused: it could write a `<webview>` the audit cannot see.
+   */
+  html(value: Node, sink: string): void {
+    const parts: (string | Node)[] = [];
+    const flatten = (node: Node): void => {
+      const expression = unwrap(node as Expression);
+      const text = literalText(expression);
+      if (text !== null) parts.push(text);
+      else if (isTemplateExpression(expression)) {
+        parts.push(expression.head.text);
+        for (const span of expression.templateSpans) {
+          flatten(span.expression);
+          parts.push(span.literal.text);
+        }
+      } else if (isBinaryExpression(expression) && expression.operatorToken.kind === SyntaxKind.PlusToken) {
+        flatten(expression.left);
+        flatten(expression.right);
+      } else parts.push(expression);
+    };
+    flatten(value);
+    let markup = "";
+    for (const part of parts) {
+      if (typeof part === "string") {
+        markup += part;
+        continue;
+      }
+      if (/<\/?\s*$/u.test(markup)) {
+        this.report(part, `${sink} interpolates a tag name the test cannot read: ${this.text(part)}`);
+        return;
+      }
+      if (!this.cannotCarryMarkup(part)) {
+        this.report(part, `${sink} writes HTML that is not a literal or provably free of <webview: ${this.text(part)}`);
+        return;
+      }
+      markup += "\u0000";
+    }
+    // A literal `<webview` is already a site through the string scan; one assembled from parts is not.
+    if (parts.some((part) => typeof part !== "string") && /<\s*webview\b/iu.test(markup)) this.webview(value, { file: this.rel, kind: "html-webview", id: null });
+  }
+
+  cannotCarryMarkup(node: Node): boolean {
+    const type = this.checker.getTypeAtLocation(node);
+    if (!type) return false;
+    if (type.flags & (TypeFlags.NumberLike | TypeFlags.BooleanLike | TypeFlags.BigIntLike | TypeFlags.Null | TypeFlags.Undefined)) return true;
+    const members = type.isUnionType() ? type.getTypes() ?? [] : [type];
+    return members.every((member) => member.isLiteralType() && (typeof member.value !== "string" || !member.value.includes("<")));
+  }
+
   electronReference(node: Node): void {
     if (!isIdentifier(node)) return;
     const parent = node.parent;
@@ -611,10 +763,10 @@ class FileAudit {
 
   /** A window class used anywhere but `new X(…)`, `X.member`, `instanceof X` or a type is a value the audit cannot follow. */
   windowReference(node: Node, name: string): void {
-    const parent = node.parent;
-    if (isNewExpression(parent) && parent.expression === node) return;
-    if (isPropertyAccessExpression(parent) && parent.expression === node) return;
-    if (isBinaryExpression(parent) && parent.operatorToken.kind === SyntaxKind.InstanceOfKeyword && parent.right === node) return;
+    const { child, parent } = usage(node);
+    if (isNewExpression(parent) && parent.expression === child) return;
+    if (isPropertyAccessExpression(parent) && parent.expression === child) return;
+    if (isBinaryExpression(parent) && parent.operatorToken.kind === SyntaxKind.InstanceOfKeyword && parent.right === child) return;
     if (isTypeReferenceNode(parent) || isTypeQueryNode(parent) || isQualifiedName(parent)) return;
     if (isExpressionWithTypeArguments(parent)) return;
     this.report(node, `uses ${name} as a value the test cannot follow: ${this.text(parent)}`);
@@ -633,14 +785,14 @@ class FileAudit {
 
 /** Every preload site under `root/src`, and every way one departs from the table or cannot be proven. */
 function auditPreloadSites(root: string, table: Table = TABLE, webviewSites: Record<string, string | null> = WEBVIEW_SITES): Audit {
-  const files = listSources(root);
+  const files = listSources(root).map(toWire);
   const audit: Audit = { sites: [], problems: [], files: 0 };
-  const api = new API({ cwd: root });
+  const api = new API({ cwd: toWire(root) });
   try {
     const snapshot = api.updateSnapshot({ openFiles: files });
     const projects = snapshot.getProjects();
     for (const file of files) {
-      const rel = relative(root, file);
+      const rel = toWire(relative(root, file));
       const project = [snapshot.getDefaultProjectForFile(file), ...projects].find((candidate) => candidate?.program.getSourceFile(file));
       const source = project?.program.getSourceFile(file);
       if (!project || !source) {
@@ -793,6 +945,103 @@ export const View = () => createElement("webview", { src: "about:blank", webpref
 `,
     problem: "createElement with a tag the test cannot read: tag",
   },
+  // Round 6.
+  "src/probes/dynamic-reflect.ts": {
+    source: `export const open = async () => {
+  const e = await import("electron");
+  return Reflect.construct(e.BrowserWindow, [{ webPreferences: { preload: "/tmp/x.cjs", sandbox: false } }]);
+};
+`,
+    problem: "construct(e.BrowserWindow, …) with a target the test cannot prove is not an Electron window",
+  },
+  "src/probes/reflect-generic.ts": {
+    source: `export const make = <T>(Ctor: new (options: object) => T) => Reflect.construct(Ctor, [{ webPreferences: { sandbox: false } }]);
+`,
+    problem: "construct(Ctor, …) with a target the test cannot prove is not an Electron window",
+  },
+  "src/probes/reflect-element.ts": {
+    source: `declare const Shell: any;
+export const open = () => Reflect["construct"](Shell, [{ webPreferences: { sandbox: false } }]);
+`,
+    problem: "construct(Shell, …) with a target the test cannot prove is not an Electron window",
+  },
+  "src/probes/reflect-destructured.ts": {
+    source: `const { construct } = Reflect;
+export const open = (Ctor: new () => object) => construct(Ctor, []);
+`,
+    problem: "Reflect.construct taken out of Reflect, where the test cannot follow it",
+  },
+  "src/probes/reflect-alias.ts": {
+    source: `const make = Reflect.construct;
+export const open = (Ctor: new () => object) => make(Ctor, []);
+`,
+    problem: "Reflect.construct is referenced without being called",
+  },
+  "src/probes/import-then.ts": {
+    source: `export const open = () => import("electron").then(({ BrowserWindow }) => new BrowserWindow({ webPreferences: { sandbox: false } }));
+`,
+    problem: "a dynamic import of electron the test cannot follow",
+  },
+  "src/probes/require-passed.ts": {
+    source: `export const open = (use: (module: unknown) => void) => use(require("electron"));
+`,
+    problem: "passes the electron module around: use(require(\"electron\"))",
+  },
+  "src/probes/interpolated-tag.ts": {
+    source: `export const f = (e: HTMLElement) => { const tag = "webview"; e.innerHTML = \`<\${tag} src="about:blank" webpreferences="sandbox=no"></\${tag}>\`; };
+`,
+    problem: "innerHTML interpolates a tag name the test cannot read: tag",
+  },
+  "src/probes/concatenated-tag.ts": {
+    source: `export const f = (e: HTMLElement, tag: string) => { e.outerHTML = "<" + tag + " webpreferences=\\"sandbox=no\\">"; };
+`,
+    problem: "outerHTML interpolates a tag name the test cannot read: tag",
+  },
+  "src/probes/innerhtml-literal.ts": {
+    source: `export const f = (e: HTMLElement) => { e.innerHTML = \`<webview src="about:blank" webpreferences="sandbox=no"></webview>\`; };
+`,
+    problem: "a <webview> site the preload table does not map",
+  },
+  "src/probes/innerhtml-variable.ts": {
+    source: `export const f = (e: HTMLElement, html: string) => { e.innerHTML = html; };
+`,
+    problem: "innerHTML writes HTML that is not a literal or provably free of <webview: html",
+  },
+  "src/probes/insert-adjacent.ts": {
+    source: `export const f = (e: HTMLElement, html: string) => e.insertAdjacentHTML("beforeend", html);
+`,
+    problem: "insertAdjacentHTML writes HTML that is not a literal or provably free of <webview: html",
+  },
+  "src/probes/document-write.ts": {
+    source: `export const f = (name: string) => document.write(\`<div>\${name}</div>\`);
+`,
+    problem: "write writes HTML that is not a literal or provably free of <webview: name",
+  },
+  "src/probes/dom-parser.ts": {
+    source: `export const f = (html: string) => document.body.append(...new DOMParser().parseFromString(html, "text/html").body.children);
+`,
+    problem: "parseFromString writes HTML that is not a literal or provably free of <webview: html",
+  },
+  "src/probes/dangerously.tsx": {
+    source: `export const View = ({ html }: { html: string }) => <div dangerouslySetInnerHTML={{ __html: html }} />;
+`,
+    problem: "dangerouslySetInnerHTML writes HTML that is not a literal or provably free of <webview: html",
+  },
+};
+
+/** Forms the audit must accept: if one of these is refused, the rules over-reach. */
+const CLEAN_PROBE = {
+  path: "src/probes/clean.tsx",
+  source: `import { BrowserWindow } from "electron";
+export const count = () => BrowserWindow.getAllWindows().length;
+export const isWindow = (value: unknown) => value instanceof BrowserWindow;
+export const map = () => Reflect.construct(Map, []);
+export const app = async () => (await import("electron")).app;
+export const quit = async () => { const { app: electronApp } = await import("electron"); electronApp.quit(); };
+export const label = (e: HTMLElement, total: number, flag: boolean) => { e.innerHTML = \`<b>\${total}</b> \${flag}\`; e.outerHTML = "<span>done</span>"; };
+export const Note = () => <div dangerouslySetInnerHTML={{ __html: "<em>static</em>" }} />;
+export const plain = () => new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true } });
+`,
 };
 
 /** The probes that must sit in a file WEBVIEW_SITES maps, and to which row. */
@@ -869,28 +1118,26 @@ describe("preload sites follow the preload table", () => {
     let scratch: string;
     let probes: Audit;
     beforeAll(() => {
-      scratch = mkdtempSync(join(tmpdir(), "ave-preload-sites-"));
+      // Inside the repo's ignored .cache, so the probes resolve node_modules by
+      // walking up, as src does — no link into node_modules to clean up.
+      mkdirSync(resolve(ROOT, ".cache"), { recursive: true });
+      scratch = mkdtempSync(join(ROOT, ".cache", "preload-sites-"));
       for (const path of ["tsconfig.json", "package.json", "src/main/preload-bundles.ts", "src/main/main-paths.ts", "src/shared/preload-bundles.ts", "src/shared/preload-bundles.json"]) {
         mkdirSync(dirname(join(scratch, path)), { recursive: true });
         copyFileSync(resolve(ROOT, path), join(scratch, path));
       }
-      symlinkSync(resolve(ROOT, "node_modules"), join(scratch, "node_modules"), "dir");
-      for (const [path, probe] of Object.entries(PROBES)) {
+      for (const [path, probe] of [...Object.entries(PROBES), [CLEAN_PROBE.path, CLEAN_PROBE] as const]) {
         mkdirSync(dirname(join(scratch, path)), { recursive: true });
         writeFileSync(join(scratch, path), probe.source, "utf-8");
       }
       probes = auditPreloadSites(scratch, TABLE, PROBE_WEBVIEW_SITES);
     }, 120_000);
     afterAll(() => {
-      // The link first, on its own: a recursive removal must never walk into the real node_modules.
-      if (scratch) {
-        unlinkSync(join(scratch, "node_modules"));
-        rmSync(scratch, { recursive: true, force: true });
-      }
+      if (scratch) rmSync(scratch, { recursive: true, force: true });
     });
 
     it("reads every probe", () => {
-      expect(probes.files).toBe(Object.keys(PROBES).length + 3);
+      expect(probes.files).toBe(Object.keys(PROBES).length + 4);
       expect(probes.problems.filter((problem) => problem.includes("could not load"))).toEqual([]);
     });
 
@@ -901,6 +1148,10 @@ describe("preload sites follow the preload table", () => {
 
     it("finds nothing to refuse in the table's own helpers", () => {
       expect(probes.problems.filter((problem) => !problem.startsWith("src/probes/"))).toEqual([]);
+    });
+
+    it("accepts the forms it can prove: static members, instanceof, Reflect.construct of a known class, bound dynamic imports, markup-free HTML", () => {
+      expect(probes.problems.filter((problem) => problem.startsWith(`${CLEAN_PROBE.path}:`))).toEqual([]);
     });
   });
 });

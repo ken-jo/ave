@@ -2437,8 +2437,16 @@ main 이 풀어 창 인자(`additionalArguments`, `src/shared/floating-dock-args
 preload 마다 파일과 sandbox 모드는 표 하나(`src/shared/preload-bundles.json`)에서 온다.
 창은 `preloadPreferences(id)` 를 펼치고, session 은 `preloadBundlePath(id)` 를 등록하며,
 webpack 은 행마다 preload config 를 만든다. `test/scripts/preload-sites.test.ts` 는 `src` 를
-TypeScript 컴파일러로 읽어 모든 창, session preload, guest `sandbox` 대입, `<webview>` 생성을 표에
-묶는다. 계산된 키나 helper 가 만든 `webPreferences` 처럼 증명할 수 없는 형태는 실패한다.
+TypeScript 컴파일러로 읽는다. 창은 해석된 Electron 타입으로 찾고, electron 은 import, `require`,
+await 한 dynamic import 를 따라간다. 표에 묶는 지점은 창 `webPreferences`, `registerPreloadScript`,
+guest `sandbox` 대입, 그리고 JSX, `createElement`, `document.createElement` + `setAttribute`, HTML
+문자열 리터럴, HTML sink(`innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`,
+`parseFromString`, `createContextualFragment`, `setHTMLUnsafe`, `dangerouslySetInnerHTML`)로 만든
+`<webview>` 다. 이 지점에서 읽을 수 없는 형태는 거부한다. 계산된 키, `webPreferences` 를 담을 수 있는
+타입의 spread, 리터럴이 아닌 options 나 `webpreferences` 요청, 값으로 쓰이거나 상속되거나
+`Reflect.construct` 에 넘겨진 창 클래스, binding 으로 await 하지 않은 electron dynamic import, 태그
+이름을 보간하거나 markup 을 담을 수 있는 값을 보간한 HTML 이 그 대상이다. 이 형태 밖에서 Electron 에
+닿는 코드는 검사하지 않는다. guest 설정을 실제로 강제하는 것은 main 의 attach guard 다.
 `<webview>` 를 품는 창은 guest 설정을 main 에서 정한다. 메인 창은 plugin, MCP 앱, side browser
 partition 을 각자의 guard 로 넘기고(`configureMainWindowWebviewAttach`) 그 밖의 partition 은
 거부한다. `build` 안의 `check-sandboxed-preloads` 는 표가 분류하지 않은 preload 를

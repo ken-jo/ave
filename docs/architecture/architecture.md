@@ -293,10 +293,21 @@ by main and passed as window arguments. Each preload's file and sandbox mode
 come from one table, `src/shared/preload-bundles.json`: windows spread
 `preloadPreferences(id)`, sessions register `preloadBundlePath(id)`, and webpack
 builds a preload config per row. `test/scripts/preload-sites.test.ts` reads
-`src` with the TypeScript compiler and holds every window, session preload,
-guest `sandbox` assignment and `<webview>` creation to the table; a form it
-cannot prove, such as a computed key or a helper-built `webPreferences`, fails.
-Each window that hosts `<webview>`s sets its guests' preferences in main: the
+`src` with the TypeScript compiler. It finds windows by their resolved Electron
+type and follows electron through imports, `require` and awaited dynamic
+imports. It holds these sites to the table: window `webPreferences`,
+`registerPreloadScript`, guest `sandbox` assignments, and `<webview>`s created
+in JSX, `createElement`, `document.createElement` with `setAttribute`, HTML
+string literals and the HTML sinks `innerHTML`, `outerHTML`,
+`insertAdjacentHTML`, `document.write`, `parseFromString`,
+`createContextualFragment`, `setHTMLUnsafe` and `dangerouslySetInnerHTML`. In
+those sites it refuses what it cannot read: computed keys, spreads whose type
+may carry `webPreferences`, non-literal options or `webpreferences` requests, a
+window class used as a value, subclassed or passed to `Reflect.construct`, a
+dynamic import of electron that is not awaited into a binding, and HTML with
+an interpolated tag name or an interpolation that could carry markup. Code that
+reaches Electron outside these forms is not checked; the attach guards in main
+are what enforce a guest's preferences. Each window that hosts `<webview>`s sets its guests' preferences in main: the
 main window routes plugin, MCP app and side-browser partitions to their guards
 (`configureMainWindowWebviewAttach`) and refuses any other partition. The
 `build` composite's
