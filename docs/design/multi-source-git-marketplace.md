@@ -2384,6 +2384,7 @@ wins:
     packages: PackageUpdateView[];     // updates from the sources the last discovery reached, minus skipped versions not required,
                                        // each with its state; an unreached source's only as shown before, `stale: true`;
                                        // then the updates applied in the last 24 hours
+    unmetRequired: UnmetRequirementView[];  // each requiredInstalls entry the app cannot meet now, and why (§18.7.5)
   }
   // PackageUpdateView adds reasons?, failure? { code, detail?, message?, attempts },
   // appliedAt?, commitRange?, autoUpdate? (the package's switch), escalated? (a waiting
@@ -3250,7 +3251,10 @@ Where the sections above and the shipped code differ, the code wins:
 > - The user docs are the Marketplace pages of former-site.invalid
 >   (`web/app/docs/marketplace/`), and the mockup
 >   ([multi-source-git-marketplace.html](./multi-source-git-marketplace.html))
->   shows the states of §18.9. Code is cited at `e10c823e2`.
+>   shows the states of §18.9. Code is cited at `e10c823e2`: the line
+>   citations in this section are a snapshot of that commit and may differ
+>   from the current code, while §7–§17, which own the behaviour, cite the
+>   current code.
 
 ### 18.1 Owner decisions (2026-09-28, closed)
 
@@ -3513,7 +3517,9 @@ blocks may not.
 
 > #1–4 and #7 are built (slice C, §7.1, §7.4, §13.1), #5 and #6 in slice D1
 > (§7.7). #8 belongs to the Publication plan; a folder's `process` entry is
-> already refused (§18.4.9).
+> already refused (§18.4.9). The `http(s)` address whose path ends in a
+> marketplace file (the last item below) is not refused; §18.8 says what the
+> user sees instead.
 
 Each is refused because no user decision makes it safe. Everything else is a
 warning (§18.2) or a policy decision (§18.6).
@@ -3959,6 +3965,21 @@ states that a local directory source is refused like `installLocal`
 
 ### 18.6 Managed policy additions
 
+> Built in slice C (`requireHttps`, `blockPrivateNetworks` and the policy
+> refresh), slice D1 (`allowLocalSources`, `path:` patterns and `additional`
+> folders) and slice F (`autoUpdate`); §12 describes it as built, with these
+> differences from the text below:
+> - `path:` patterns compare Unicode NFC forms, match a drive letter in
+>   either case, and take `*` only at the end; a pattern with a `*` anywhere
+>   else does not parse, so the section is invalid.
+> - An `additional` folder takes no `ref` or `auth`, and its path is absolute
+>   and read for the running platform. Besides `allowLocalSources: false`, it
+>   makes the section invalid when the policy's own lists block it and when
+>   it is, contains or lies inside another `additional` folder.
+> - A plan that fails `PLAN_EXPIRED` `policy-changed` does not reopen by
+>   itself: the package sheet shows the failure and offers *Review again*,
+>   which makes a fresh plan.
+
 ```jsonc
 "marketplaces": {
   "requireHttps": false,          // true: plain http is a policy block (allowHttpHosts excepted)
@@ -4010,8 +4031,6 @@ states that a local directory source is refused like `installLocal`
   policy that reached it names two. Another kind of the same name is another
   package; `defaultInstalls` is not bound by this rule.
 - User settings, confirmations and switches never override a policy block.
-- `requireHttps`, `blockPrivateNetworks` and the policy refresh below are
-  built (slice C, §12); the rest of this section is not.
 - **When a policy change takes effect.** Before slice C the policy was read
   once when the service was built, and the service was cached, so a change
   waited for a restart. Since slice C:
@@ -4763,6 +4782,45 @@ The default is on (§18.7.2), and consent (§18.7.3) applies unchanged.
 
 ### 18.8 Messages: every refusal, warning and failure
 
+> Built in slice B for the codes and reasons of 0.13.0 and in slices C–F for
+> the rest; §14 lists every code, reason and message key as built. These rows
+> of the table below were deliberately not built, so the user meets the case
+> through another sentence:
+> - `SOURCE_URL_REJECTED` · `index-file-url`: no address is refused for
+>   naming a marketplace file. A folder path ending in `marketplace.2.json`
+>   or `marketplace.json` resolves to the folder that holds it (§7.7), and a
+>   web address naming the file is read as a repository address, so the
+>   host's answer shows, usually `SOURCE_UNREACHABLE` · `not-found` ("<host>
+>   reports no repository at this address…").
+> - `SOURCE_NOT_A_MARKETPLACE` · `nothing-found`, `other-app-plugin`: the
+>   code has no reasons. Every case, a plugin written for another app
+>   included, shows the code's reason-less sentence for its audience: "No
+>   marketplace and no package were found at this address. Check the
+>   address, the branch and, for a package inside a repository, the folder
+>   field." for an address being typed, and its variant for a source already
+>   added. Nothing points to *Import a plugin*.
+> - `PACKAGE_INCOMPATIBLE` · `prerelease`, `rollout`: these are version
+>   exclusions, not reasons of the code. A package whose versions are all
+>   held back by them fails with the reason-less sentence "No version of
+>   this package can be installed on this computer. Its Versions list says
+>   why each one is excluded.", and the Versions list labels each version
+>   *Pre-release* or *Not rolled out to you yet*. A version chosen by hand
+>   overrides both.
+> - `CONTENT_RULE_VIOLATION` · `extension`: the code's reasons are those of
+>   reading a folder (§18.4.5). The package-kind rules of §5.4 (a file's
+>   extension, the kind's file count and total size, a file that is not the
+>   format its extension names) raise the code without a reason, so the user
+>   sees "The package breaks a content rule (a file's type, size or count),
+>   so nothing was installed. Tell the marketplace's owner; Copy details
+>   names the file."
+> - `PLAN_EXPIRED` · `expired`, `replaced`: a plan or preview that expired
+>   after 10 minutes, or that a newer one replaced, is simply gone, so the
+>   failure has no reason, and the user sees "What you reviewed is no longer
+>   valid: it expired after 10 minutes, or a newer review replaced it. Start
+>   again to review it fresh." `folder-changed` has no case (§18.4). For
+>   every `PLAN_EXPIRED` the package sheet offers *Review again* rather than
+>   reopening the review by itself; the update review reloads.
+
 Today `failureText` (`labels.ts:103-118`) has a sentence for nine codes and
 prints `CODE · <main's English message>` for every other (`:116`). From 0.13.0:
 
@@ -4904,6 +4962,17 @@ the slice that adds the code or reason.
 | discovery `offline` | S | "Offline — last checked <time>." | "Ave checks again when the network is back." | "오프라인 — 마지막 확인 <시각>" |
 
 ### 18.9 Settings, IPC, preload, lock suites and UI
+
+> Built in slices C, D2, E and F; §13, §13.1 and §15 describe it as built,
+> with these differences from the text below:
+> - `SourceView` gains `transport`, `path`, `acknowledged` and `badges`, not
+>   `autoUpdate`: a source's switch is in `UpdateStatusView.autoUpdate.sources`
+>   and each installed package's in `autoUpdate.packages` (§13.1).
+> - `UpdateStatusView` also carries `escalated` (§18.7) and `unmetRequired`,
+>   the `requiredInstalls` entries the app cannot meet now (§18.7.5).
+> - The *Automatic updates* selects are in the Updates card, each update's
+>   row and the installed package's sheet, not in the Sources and Installed
+>   rows (§18.7).
 
 **Settings** — `MarketplaceSettings` (`settings-store.ts:893-959`),
 `normalizeMarketplace` (`settings-normalization.ts:921`):
