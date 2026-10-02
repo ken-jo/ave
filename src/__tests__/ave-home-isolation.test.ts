@@ -7,9 +7,10 @@
  * nothing of the developer's. `aveHome()` and the guard only name paths; none
  * of these creates anything under the stand-in home.
  */
-import { mkdirSync, symlinkSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:os", async (importOriginal) => {
@@ -22,8 +23,7 @@ import { defaultAveHome, aveHome } from "../shared/ave-home.js";
 import { checkSandboxSweepRoot, AVE_HOME_ISOLATION_GUARD_ACTIVE } from "../shared/ave-home-test-guard.js";
 import { AVE_HOME_AT_IMPORT } from "./fixtures/import-time-ave-home.js";
 import { canonicalPath } from "./support/ave-home-isolation-guard.js";
-import { removeLinkOnly } from "./support/tmp-dir-teardown.js";
-import { useTempDirs } from "./test-helpers.js";
+import { useScratchLinks, useTempDirs } from "./test-helpers.js";
 
 const actualOs = await vi.importActual<typeof import("node:os")>("node:os");
 const fileEnv = {
@@ -33,12 +33,9 @@ const fileEnv = {
 };
 const refusal = /refusing to resolve AVE_HOME to .* from a test process; it is under the real /;
 const scratch = useTempDirs("ave-home-guard-");
-const links: string[] = [];
+const link = useScratchLinks();
 
 afterEach(() => {
-  // Before the scratch directories' recursive removal, which on Windows would
-  // walk a junction into whatever it points at.
-  for (const link of links.splice(0)) removeLinkOnly(link);
   vi.mocked(userInfo).mockImplementation(actualOs.userInfo);
   for (const [name, value] of Object.entries(fileEnv)) {
     if (value === undefined) delete process.env[name];
@@ -60,15 +57,19 @@ function pointHome(home: string): void {
   expect(homedir()).toBe(home);
 }
 
-function link(target: string, at: string): string {
-  symlinkSync(target, at, "junction");
-  links.push(at);
-  return at;
-}
-
 describe("the test process's Ave home", () => {
   it("is guarded: the test configuration put the guard in the seam's place", () => {
     expect(AVE_HOME_ISOLATION_GUARD_ACTIVE).toBe(true);
+  });
+
+  // A file link needs a privilege Windows does not grant by default.
+  it.runIf(process.platform !== "win32")("is the guard however the seam is reached, through a link of another name too", async () => {
+    const seam = fileURLToPath(new URL("../shared/ave-home-test-guard.ts", import.meta.url));
+    const renamed = join(scratch(), "renamed-module.ts");
+    link(seam, renamed);
+    const viaLink = (await import(renamed)) as typeof import("../shared/ave-home-test-guard.js");
+    expect(viaLink.AVE_HOME_ISOLATION_GUARD_ACTIVE).toBe(true);
+    expect(() => viaLink.checkSandboxSweepRoot(join(account().ave, "sandbox"))).toThrow(/refusing to sweep/);
   });
 
   it("starts this file in its own home inside the run's, under test-tmp", () => {

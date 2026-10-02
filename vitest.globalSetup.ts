@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestProject } from "vitest/node";
-import { sweepStaleRunDirs } from "./src/__tests__/support/test-run-dirs.js";
+import { claimRunDir, ensureTestTmpRoot, sweepStaleRunDirs } from "./src/__tests__/support/test-run-dirs.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -86,7 +86,8 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
   }
 
   const testTmp = join(homedir(), ".ave", "test-tmp");
-  mkdirSync(testTmp, { recursive: true });
+  // A real directory, never a link: the sweep below removes what is in it.
+  ensureTestTmpRoot(testTmp, (path) => mkdirSync(path, { recursive: true }));
   // The sandbox private roots (every confined process's HOME and temp
   // directory) for a test that clears AVE_HOME, one directory per run
   // (`testSandboxPrivateBase` in the isolation guard). Never `~/.ave/sandbox`:
@@ -105,6 +106,9 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
   process.env.AVE_TEST_RUN_HOME = aveHomeBase;
   process.env.AVE_HOME = aveHomeBase;
   try {
+    // Who made them, so another run's sweep keeps them while this one lives.
+    claimRunDir(sandboxBase);
+    claimRunDir(aveHomeBase);
     // The seam `aveHome()` calls must resolve to the isolation guard here as
     // in the workers (same configuration), or no check runs and nothing says so.
     const seam = await import("./src/shared/ave-home-test-guard.js");
@@ -116,7 +120,7 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
     }
     // App modules load only now, after AVE_HOME names this run's home.
     const { removeOwnedPluginTree } = await import("./src/plugins/plugin-removal-transaction.js");
-    // What a killed run could not remove; this run's own are seconds old.
+    // What a killed run could not remove; a live run's are kept.
     await sweepStaleRunDirs(testTmp, removeOwnedPluginTree);
     await validateJsonFixtures();
   } catch (error) {

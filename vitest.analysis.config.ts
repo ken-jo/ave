@@ -1,3 +1,4 @@
+import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizePath } from "vite";
@@ -37,10 +38,31 @@ const rendererTestGlobs = [
  * node environment.
  */
 // The app's no-op seam and the test runner's guard that takes its place (see
-// both files). Swapped by resolved path, so every importer gets the guard and
-// no build ever bundles it.
-const AVE_HOME_GUARD_SEAM = normalizePath(rootPath("src/shared/ave-home-test-guard.ts"));
+// both files). Matched on the file itself — device and inode — when a module
+// loads, so every way of reaching the seam (a relative or absolute specifier,
+// a link of another name, `vi.importActual`) loads the guard, and no build,
+// which never runs this configuration, ever bundles it.
+const AVE_HOME_GUARD_SEAM_PATH = rootPath("src/shared/ave-home-test-guard.ts");
+const AVE_HOME_GUARD_SEAM = statSync(AVE_HOME_GUARD_SEAM_PATH, { bigint: true });
+const AVE_HOME_GUARD_SEAM_REAL = realpathSync.native(AVE_HOME_GUARD_SEAM_PATH);
 const AVE_HOME_GUARD = normalizePath(rootPath("src/__tests__/support/ave-home-isolation-guard.ts"));
+
+function isAveHomeGuardSeam(id: string): boolean {
+  const file = id.split("?")[0];
+  if (!path.isAbsolute(file)) return false;
+  try {
+    // A file system without inode numbers reports 0 for every file; the real
+    // path is the identity there.
+    if (AVE_HOME_GUARD_SEAM.ino === 0n) return realpathSync.native(file) === AVE_HOME_GUARD_SEAM_REAL;
+    const stat = statSync(file, { bigint: true });
+    return stat.ino === AVE_HOME_GUARD_SEAM.ino && stat.dev === AVE_HOME_GUARD_SEAM.dev;
+  } catch (error) {
+    // Not a file on disk (a virtual module): not the seam.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    throw error;
+  }
+}
 
 export default defineConfig({
   plugins: [{
@@ -52,11 +74,11 @@ export default defineConfig({
   }, {
     name: "ave-home-isolation-guard",
     enforce: "pre",
-    async resolveId(source, importer, options) {
-      if (!source.includes("ave-home-test-guard")) return null;
-      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
-      if (resolved === null) return null;
-      return normalizePath(resolved.id.split("?")[0]) === AVE_HOME_GUARD_SEAM ? AVE_HOME_GUARD : resolved;
+    load(id) {
+      // The seam's module becomes the guard's exports, so the guard stays one
+      // module with its own imports resolved from where it lives.
+      if (isAveHomeGuardSeam(id)) return `export * from ${JSON.stringify(AVE_HOME_GUARD)};\n`;
+      return null;
     },
   }],
   test: {
