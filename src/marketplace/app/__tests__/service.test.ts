@@ -1054,6 +1054,34 @@ describe("MarketplaceService", () => {
     expect(warnings).toEqual(["revocation of acme-tools/skill/review@1.0.0 skipped: its source no longer revokes it"]);
   });
 
+  it("keeps an install whose source's revocations cannot be read when its turn comes, and says so, not that the rule was withdrawn (§10.4, §18.6)", async () => {
+    const acme = market();
+    await addMarket(acme.url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    await service.executeInstall((await service.planInstall(key)).planId);
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "=1.0.0", reason: "still revoked", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    const holder = service.asOneOperation(async () => { entered(); await held; }, [{ kind: "skill", name: "review" }]);
+    await inside;
+    const removal = vi.spyOn(store, "uninstall");
+    const before = feeds.length;
+    // This sync's feed revokes 1.0.0; its enforcement waits for the lock.
+    const refresh = service.refresh("acme-tools");
+    await vi.waitFor(() => expect(feeds.length).toBeGreaterThan(before));
+    // The next read of the source's revocations, the one under the lock, fails.
+    const syncer = (service as unknown as { options: { syncer: { readRevocations: (...args: unknown[]) => Promise<unknown> } } }).options.syncer;
+    vi.spyOn(syncer, "readRevocations").mockRejectedValueOnce(new Error("snapshot is not valid JSON"));
+    release();
+    await Promise.all([holder, refresh]);
+    expect(removal).not.toHaveBeenCalled();
+    expect(store.list().map((item) => `${item.name}@${item.version}`)).toEqual(["review@1.0.0"]);
+    expect(service.takeRevocationNotice()).toBeNull();
+    expect(warnings).toEqual(["revocation of acme-tools/skill/review@1.0.0 skipped: its source's revocation rules could not be read; it is kept until they can be"]);
+  });
+
   it("refuses a plan whose version its source revoked after the plan was made (§10.4, §18.6)", async () => {
     const acme = market();
     await addMarket(acme.url);

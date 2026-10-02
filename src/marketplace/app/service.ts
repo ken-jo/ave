@@ -2742,6 +2742,8 @@ export class MarketplaceService implements RetirementEntryLookup {
   private async revocationNow(record: InstalledRecord | null, decided: InstalledRecord): Promise<RevokedInstall | string> {
     if (!record) return "it was removed before its turn";
     const feed = await revocationFeed(boundOf([record]), (sourceId) => this.options.syncer.readRevocations(sourceId, this.options.versionContext().appVersion));
+    // An unreadable source contributes no rules (§10.4): nothing is enforced from it until it reads again, and that is not a withdrawal.
+    if (feed.unreadable.length > 0) return "its source's revocation rules could not be read; it is kept until they can be";
     const [revoked] = revokedAmong([record], feed.rules);
     if (revoked) return revoked;
     return isDeepStrictEqual(installIdentity(record), installIdentity(decided))
