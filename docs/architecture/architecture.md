@@ -683,7 +683,9 @@ one operation first and takes the plugin locks inside it; installs,
 uninstalls and updates of one package also take that package's lock, after
 the operation and before any plugin lock. Predecessor removal takes both
 packages' locks the same way, and a package lock asked for while a plugin
-lock is held fails instead of waiting.
+lock is held fails instead of waiting. Package-lock ownership is a lease
+passed down explicitly (`app/keyed-mutex.ts`); asking again without it, or
+adding a package at or below one held, fails instead of waiting.
 
 Installed packages update by themselves at boot and once a day, one at a
 time and only while no conversation turn, session mutation or session

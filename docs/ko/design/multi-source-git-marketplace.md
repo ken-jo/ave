@@ -960,7 +960,12 @@ ID 키), `marketplace.autoUpdatePackages`(`packageUpdateSkipKey` 키,
 custom이나 direct 소스는 끔). 끔은 `switched-off`인 `manual`입니다.
 `requiredInstalls` 항목(§10.2)은 언제나 자동입니다. 정책이 사용자의 동의를 대신하므로
 스위치, 건너뛰기, 세 번 실패 멈춤, 승인 전제 조건보다 우선하지만, 업데이트를 제안할지
-자체를 정하는 폐기와 호환성은 넘지 않습니다.
+자체를 정하는 폐기와 호환성은 넘지 않습니다. 보기도 그렇게 말합니다: 패키지의
+스위치(`AutoUpdateSwitchView.required`)는 저장된 값과 상관없이 켜짐으로 잠기고 "조직이
+필수로 지정한 패키지"라는 이유를 보이며, 그 업데이트에는 `required: true`가 붙습니다.
+필수 업데이트는 건너뛴 버전을 무시합니다: 저장된 건너뛰기는 남지만 main에서도
+렌더러에서도 그것을 숨기거나 막지 않고, 알약의 건너뛰기는 그 버전을 기록하지 않습니다
+(필수 업데이트만 있으면 건너뛰기를 보이지 않습니다).
 
 **동의**(`updates/consent.ts`, `consent-record.ts`). 모든 설치는 검토한 지문을
 기록합니다: 플러그인 영수증(git과 폴더 기록), 콘텐츠 원장 항목, MCP 설치 기록. 자동
@@ -988,7 +993,9 @@ custom이나 direct 소스는 끔). 끔은 `switched-off`인 `manual`입니다.
 시도하며 폴링하지 않습니다. `AgentPluginMcpRuntime`이 `agent-plugin/` 소유자의 리스
 소스가 되어, 새 세대가 게시되면 승인을 닫고 호출이 빠진 뒤 이전 세대의 연결을 끊습니다.
 설정을 쓰면 새 스위치나 건너뛰기로 더는 스스로 적용되지 않는 것을 큐에서 뺍니다.
-종료하면 큐를 버립니다.
+종료하면 큐를 버립니다. 항목을 빼거나 시작하는 것은 큐 자신의 루프뿐입니다. 교체, 설정
+쓰기, 종료는 언제든 큐의 내용을 바꾸므로, 호출 확인이 찾은 것은 기다리는 동안 아무것도
+바뀌지 않았을 때만 쓰고, 바뀌었으면 루프가 다시 확인합니다.
 
 **패키지 하나의 적용**(`service.applyUpdate`)은 마켓플레이스 작업과 그 패키지 자신의
 잠금 아래에서 돕니다. 그 패키지의 모든 설치와 제거도 같은 잠금을 잡습니다. 순서는
@@ -996,6 +1003,15 @@ custom이나 direct 소스는 끔). 끔은 `switched-off`인 `manual`입니다.
 잠금을 쥔 채 패키지 잠금을 요청하면 기다리지 않고 예외를 던지며, 선행 플러그인
 제거(`alert-predecessor.ts`)는 작업과 함께 두 패키지의 잠금을 플러그인 잠금보다 먼저
 잡습니다. 스케줄러가 종료되면 패키지 잠금 기다림이 끝나고 업데이트는 시작하지 않습니다.
+패키지 잠금은 하나의 `KeyedMutex`(`app/keyed-mutex.ts`)입니다: 패키지마다 FIFO 큐가
+있고 그 머리가 잠금을 쥡니다. 기다리는 쪽을 취소하면 그 기다림만 빠지고, 쥔 쪽과 다른
+기다림은 자리를 지킵니다. 소유권은 쥔 쪽의 함수가 받는 리스이며 명시적으로 넘깁니다
+(`asOneOperation`의 콜백, `uninstall`의 `lease`). 리스가 있으면 쥔 패키지에 다시 들어가거나,
+쥔 모든 패키지보다 정렬상 뒤인 패키지를 더할 수 있습니다. 그 이하를 요청하거나, 패키지를
+쥔 채 리스 없이 요청하면 자기 자신을 기다릴 수도 있으므로 기다리지 않고 예외를 던집니다.
+리스는 쥔 쪽이 도는 동안만 유효하고, 그것을 확장한 리스는 끝날 때까지 확장된 패키지를
+계속 쥡니다. 쥔 쪽이 시작했지만 소유하지 않는 일(카탈로그 변경이 시작하는 업데이트 확인
+등)은 그와 떨어져 돌고, 다른 호출자처럼 기다립니다.
 큐에 넣을 때의 어떤 것도 업데이트를 허가하지 않습니다: 잠금 아래에서, 작업의 갱신이
 남긴 정책으로 서비스가 사실을 다시 모으고, 스케줄러의 판단이 그때의 스위치, 건너뛰기,
 실패로 그것을 판정합니다. 분류된 뒤 설치, 제거, 이동된 패키지, 더는 제안되지 않는 버전,
@@ -2107,14 +2123,17 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
                   lockedByPolicy: "on" | "off" | null;
                   sources: Array<{ id; label; origin; switch: AutoUpdateSwitchView; needsUnencryptedUpdates: boolean }>;
                   packages: Array<{ key; switch: AutoUpdateSwitchView }> };   // every installed package of a listed source
-    packages: PackageUpdateView[];     // updates from the sources the last discovery reached, minus skipped versions,
+    packages: PackageUpdateView[];     // updates from the sources the last discovery reached, minus skipped versions not required,
                                        // each with its state; an unreached source's only as shown before, `stale: true`;
                                        // then the updates applied in the last 24 hours
   }
   // PackageUpdateView adds reasons?, failure? { code, detail?, message?, attempts },
   // appliedAt?, commitRange?, autoUpdate? (the package's switch), escalated? (a waiting
-  // update held 30 minutes: `updateViewNeedsUser` counts it), and, for an agent
-  // plugin's approval-pending entry only, pendingApproval { installId, consentDelta, components }.
+  // update held 30 minutes: `updateViewNeedsUser` counts it), required? (a requiredInstalls
+  // entry names it: skips do not hide it, §18.7.2), and, for an agent plugin's
+  // approval-pending entry only, pendingApproval { installId, consentDelta, components }.
+  // AutoUpdateSwitchView is { effective, override, lockedByPolicy, required }; a required
+  // package's switch is effective and locked, a source's switch never required.
   ```
 
   패키지의 `state`는 §18.7.5의 여덟 가지 중 하나입니다(`UPDATE_PACKAGE_STATES`).
@@ -2821,7 +2840,7 @@ Retry가 있는 `failed` 상태.
 | 직접 설치 | 감지 분기별, npm/pypi/oci/remote에 대한 `server.json` 대응. `folder-direct.test.ts`: 직접 폴더의 합성 `0.0.0+t…` 버전이 파일과 함께 바뀜, `allowDirectInstall: false`가 미리보기(마켓플레이스 폴더는 여전히 미리보기 됨)·추가·계획에서 거부 |
 | 로컬 폴더(§7.7) | `source-input.test.ts`를 `path.posix`와 `path.win32` 규칙으로: 받아들이는 폴더 형태는 모두 정규화되고 거부하는 형태는 모두 사유를 밝히며, `a/b`는 GitHub 약식으로 남음. 모든 호출을 기록하는 `fixtures/folder-fs.ts`의 볼륨으로: `folder-consent.test.ts` — UNC 경로는 호출 없이, 공유에 매핑된 드라이브는 `queryDosDevice`만으로 `confirm`을 답함, 같은 입력이 `allowLocalSources: false`에서 호출 없이 차단됨, 확인한 폴더는 읽기 도구 자신의 호출로만 읽힘(`realpath` 없음), `/tmp → private/tmp`와 그 자체가 링크인 루트가 해석됨, `\\attacker\share`로 가는 상위 링크는 그곳에 호출 없이 `link-to-network`, 정규 경로에서만 보이는 차단은 파일을 열기 전에 미리보기를 끝냄, Windows 8.3 짧은 이름은 긴 이름으로 표기됨, 자동 마운트 경로로 가는 상대 링크는 확인 여부와 상관없이 그 아래 호출 없이 `link-to-network`, 자동 마운트 경로의 다른 철자·로컬 링크 뒤에 자동 마운트 경로에 닿는 구성 요소·자동 마운트 루트를 담은 정식 경로는 각각 건드리기 전에 `confirm`, 매핑 없는 드라이브는 경고하고 실행할 수 없는 분류 도우미는 `classifier-unavailable`. `git-marketplace.test.ts`(IPC) — `classifier-unavailable`과 `SOURCE_ID_TAKEN`의 `folder-*` 사유가 봉투를 건너 영어·한국어로 표시됨. `folder-real-fs.test.ts` — 이 컴퓨터의 실제 파일 시스템에서(macOS와 Windows에서 실행): 네트워크 경로는 호출 전에 답함, 안쪽 링크(Windows는 정션)는 읽고 폴더를 벗어나는 링크는 읽지 않고 거부, 두 번 닿는 디렉터리는 고리, 볼륨 자신의 대소문자 규칙, `.git`으로 가는 링크는 그 아래를 건드리지 않고 거부, 하드 링크는 일반 파일로 읽힘. `folder-tree.test.ts` — 안쪽 링크는 파일로 읽힘, 바깥 링크와 공유로 가는 링크 사슬·정션은 대상에 호출 없이 텍스트에서 멈춤, 매핑으로 판정한 네트워크 드라이브, 고리, `fstat` 불일치, 그대로 남은 상위 교체(`changed-during-read`, 바깥 바이트는 패키지에 없음)와 재확인 전에 되돌린 교체라는 잔여 위험, 건너뛰는 목록, 건너뛰는 항목으로 가는 링크(`.GIT`이나 8.3 별칭으로도)는 `link-to-skipped`이고 그런 항목을 가리키는 인덱스 경로는 없는 것, 확인 없는 루트 아래의 자동 마운트 경로는 건드리기 전에 멈춤, 확인한 공유에서 다른 서버로 가는 상대 링크는 `link-to-network`, NFD/NFC와 충돌, 특수 파일, 플러그인에서 빠진 항목. `folder-identity.test.ts` — 대소문자 구분 볼륨은 두 철자를 두 소스로 둠, `allow` `path:`는 그 철자만, `block`은 모든 철자, 대소문자 무시 볼륨과 별칭 디렉터리는 디스크 철자와 `dev`/`ino`로 한 소스, 중첩은 경로로, 그리고 별칭을 거쳐 양쪽 순서 모두 거부. `folder-sync.test.ts` — `SKILL.md`를 고치면 리비전이 바뀜, git 명령과 다운로드 없음, 폴더의 버전만 제공, 백그라운드 `permission` 실패가 다시 불러온 뒤에도 이유를 지니고 표시됨, 이제 다른 곳을 가리키는 저장 경로는 대상을 읽지 않고 `moved`, 깨진 분류 도구는 아무것도 읽지 않고 `classifier-unavailable`이며 다시 불러온 뒤 재설치 안내로 표시됨. `folder-plan.test.ts` — 계획과 실행 사이에 고친 플러그인 파일과 `SKILL.md`는 계획한 바이트로 설치됨, 선언한 릴리스를 내려받지 않음, 실행 비트 유지, `process` 진입점은 `process-entry-requires-pinned-artifact`로 거부, `plugin.json` 없는 폴더는 `folder-has-no-build`, 사본은 지워짐. `plugin-ladder.test.ts` — `src/`가 있는 git 트리는 여전히 tree 단계에서 실패. `policy.test.ts` — `allowLocalSources`, `path:` 없는 `allow` 목록, `path:` 접두사와 Windows 철자, `path:`와 git 패턴의 분리, `additional[].path`와 그 거부. `registry.test.ts` — 폴더 항목과 식별자(조상 포함)의 왕복, 경로에 묶이고 그 경로의 다른 철자에는 없는 확인, 전송과 짝지은 핀, `network-folder`를 지닌 관리 폴더. `windows-path-kind-launcher.test.ts`(종료 코드 1은 "매핑 없음", 없거나 시작하지 못하거나 시간을 넘기거나 형식 밖인 도우미는 원인과 할 일로 거부), 그리고 Windows에서 `scripts/test-windows-path-kind.mjs`(CI 단계 *Verify Windows folder classification*): `C:`는 볼륨으로, `subst` 드라이브(그리고 그 `subst`)는 대상으로, 쓰지 않거나 지운 드라이브는 닫힌 쪽으로 실패 |
 | 폴더 UI(§7.7, §15) | 같은 볼륨으로 `folder-view.test.ts` — 폴더의 미리보기, 행, 패키지 카드의 *로컬 폴더*와 확인된 공유의 *네트워크 폴더*, 출처 `{ path, readAt, contents }`, `revealFolder`가 폴더면 경로, git이면 `null`, 모르는 ID면 `SOURCE_ID_INVALID`, 지워진 폴더는 `not-found`, 다른 곳으로 다시 링크된 경로는 `moved`, 공유로 매핑이 바뀐 드라이브는 `queryDosDevice`만 부른 채 거부, 실행할 수 없는 분류기는 그 행과 카드만 `folder-unclassified`로 표시(다시 실행되면 다시 분류), 허용한 적 없는 공유는 `network-folder-unconfirmed`, 같은 경로에 새로 만든 디렉터리는 새로 고침처럼 보기에서도 `moved`, 보기의 걷기 중 바뀐 매핑은 마지막 분류에서 거부; `git-marketplace.test.ts`(IPC) — `pick-folder`가 취소하면 `null`, 고르면 서비스를 만들지 않고 `{ pick, display }`, pick은 main이 고른 폴더를 미리 보고 추가하며 가려진 표시가 가리키는 형제 폴더는 쓰지 않음, 위조·교체·사용·만료된 pick은 `folder-pick-unknown`, 격리된 소스의 패키지는 소스가 있을 때와 제거된 뒤 모두 상세 정보는 거부되지만 핸들로 제거됨, 두 채널 모두 플러그인 프레임은 거부, `reveal`은 셸에 묻기 전에 git 소스와 모르는 ID를 거부하고, 분류기를 실행할 수 없는 드라이브는 아무것도 보여 주지 않고 `classifier-unavailable`과 재설치 문장; `SourcesAndAdd.test.tsx` — 폴더 행(경로, `폴더 · 리비전`, 읽은 시각, 플랫폼별 *… 보기*, *토큰 설정* 없음), 옮겨짐·교체됨 문장, `resolvedFrom`과 함께 *폴더 선택…*, 취소·실패한 선택기, ref와 로그인을 숨기는 폴더, `network-folder` 질문, 상대 경로 문장, git이 없을 때 폴더 추가, 미리보기·행 상태·실패한 *… 보기*의 `classifier-unavailable`, 세 가지 겹침 문장과 `repository-already-added` 각각의 *<id> 보기*(그냥 쓰인 ID에는 없음), 표시된 행을 화면 안으로; `GitMarketplaceTab.test.tsx` — 폴더 패키지의 배지, 출처, 버전 안내, 전달 도움말, `notInstalled`, 폴더에 묶인 검토, *<id> 보기*가 대화상자를 닫고 보기가 바뀔 때까지 소스 보기의 행을 표시; E2E(`git-marketplace-lifecycle.spec.ts`, main의 폴더 대화상자와 셸을 대체) — *폴더 선택…*으로 폴더 마켓플레이스 추가, 스킬 설치, 수정, *새로 고침*, *Finder에서 보기*가 소스 경로를 받음, 카탈로그가 업데이트를 제시 |
-| 자동 적용 | `eligibility.test.ts`: 모든 전제 조건, 스위치 순서, 출처 기본값, 필수 설치, 승인 불변식; 실제 활동 코디네이터 위의 `apply.test.ts`: 세션 변경 뒤와 부팅 때의 유휴 게이트, 구독 뒤와 에이전트 플러그인 호출 확인 뒤의 재확인, 상향과 (호출 기다림을 폴링하지 않는) *지금 적용*, 호출을 기다리는 에이전트 플러그인, 순서, `retain`, 종료, 결과 분류; 실제 서비스와 폴더 소스 위의 `auto-update.test.ts`: 폴더 새로 고침의 제안과 적용, 새 번들 훅을 보류하는 검사점 둘, 한 번 스테이징하고 그 바이트를 익스텐션 훅 동의와 함께 설치하는 검토, 한 행 검토, `approval-pending`으로 남는 필수 업데이트, 바뀐 뒤의 `superseded`, 업데이트보다 먼저 직렬화되는 사용자 제거, 큐에 넣은 뒤 꺼진 스위치나 지워진 `requiredInstalls` 항목이 막는 업데이트, 패키지 잠금 기다림 중의 종료는 아무것도 시작하지 않음; 실제 패키지·플러그인 잠금 위의 `alert-predecessor.test.ts`: 제거와 설치는 어느 순서로든 둘 다 끝나고, 플러그인 잠금 아래에서 요청한 패키지 잠금은 예외; `consent.test.ts`, `approval-digest.test.ts`(선언 변경은 코드), `plugin-contribution-trust.test.ts`, 런타임의 리스와 빼기 테스트, `store.test.ts`(`.installs/`, 정리, `installId`에 묶인 `components:approve`); `background.test.ts`: 기록, 시도, 공지, 최근 목록, 차례가 올 때 읽는 판단, 큐의 업데이트를 빼는 설정 쓰기, 도구 모음으로 가는 상향된 기다림, 정책 아래 실제로 적용되는 스위치; `git-marketplace.test.ts`: `components:approve`, `updates:apply-now`, 롤백 건너뛰기, 익스텐션 동의; `AutoUpdates.test.tsx`: 스위치와 http 확인, 패키지 시트의 선택, 실제 값을 보이는 잠긴 선택, 공식 소스의 이름, 행과 동작, 동의 행과 *업데이트 승인*, 구성 요소 대화상자의 묶기, 공지와 알약 |
+| 자동 적용 | `eligibility.test.ts`: 모든 전제 조건, 스위치 순서, 출처 기본값, 필수 설치, 승인 불변식; 실제 활동 코디네이터 위의 `apply.test.ts`: 세션 변경 뒤와 부팅 때의 유휴 게이트, 구독 뒤와 에이전트 플러그인 호출 확인 뒤의 재확인, 상향과 (호출 기다림을 폴링하지 않는) *지금 적용*, 호출을 기다리는 에이전트 플러그인, 순서, `retain`, 에이전트 플러그인 호출 확인 중의 교체나 `retain`(확인이 찾은 것은 시작하지 않고 다른 것은 빠지지 않음), 종료, 결과 분류; `keyed-mutex.test.ts`: 키마다 FIFO, 자기만 빠지는 취소된 기다림, 리스로만 그리고 위로만 하는 재진입과 확장, 쥔 쪽이 돌아온 뒤 넘긴 리스, 쥔 쪽의 키를 지키는 확장 리스, 획득·취소·중첩·해제의 시드 고정 무작위 인터리빙 300개에서 상호 배제, 모든 기다림의 깨움, 남는 예약 없음; 실제 서비스와 폴더 소스 위의 `auto-update.test.ts`: 폴더 새로 고침의 제안과 적용, 새 번들 훅을 보류하는 검사점 둘, 한 번 스테이징하고 그 바이트를 익스텐션 훅 동의와 함께 설치하는 검토, 한 행 검토, `approval-pending`으로 남는 필수 업데이트, 바뀐 뒤의 `superseded`, 업데이트보다 먼저 직렬화되는 사용자 제거, 큐에 넣은 뒤 꺼진 스위치나 지워진 `requiredInstalls` 항목이 막는 업데이트, 패키지 잠금 기다림 중의 종료는 아무것도 시작하지 않음; 실제 패키지·플러그인 잠금 위의 `alert-predecessor.test.ts`: 제거와 설치는 어느 순서로든 둘 다 끝나고, 플러그인 잠금 아래에서 요청한 패키지 잠금은 예외; 서비스를 통해, 종료로 취소된 기다림은 쥔 쪽의 패키지를 잠근 채 두고, 리스 없는 중첩 요청은 예외, 리스 있는 요청은 쥔 쪽보다 오래 살아도 안전하며, 쥔 패키지 이하의 요청은 교착 대신 예외; `consent.test.ts`, `approval-digest.test.ts`(선언 변경은 코드), `plugin-contribution-trust.test.ts`, 런타임의 리스와 빼기 테스트, `store.test.ts`(`.installs/`, 정리, `installId`에 묶인 `components:approve`); `background.test.ts`: 기록, 시도, 공지, 최근 목록, 차례가 올 때 읽는 판단, 큐의 업데이트를 빼는 설정 쓰기, 도구 모음으로 가는 상향된 기다림, 정책 아래 실제로 적용되는 스위치, 어떤 정책과 스위치에서도 켜짐으로 잠기는 필수 패키지의 스위치, 오래된 것까지 보이는 건너뛴 필수 업데이트; `use-marketplace-updates.test.ts`와 `PluginUpdatesPill.test.tsx`: 마운트마다 저장된 건너뛰기를 넘어 남는 필수 상향, 그것에 기록하지 않는 건너뛰기, 필수 업데이트만 있으면 보이지 않는 건너뛰기; `git-marketplace.test.ts`: `components:approve`, `updates:apply-now`, 롤백 건너뛰기, 익스텐션 동의; `AutoUpdates.test.tsx`: 스위치와 http 확인, 패키지 시트의 선택, 실제 값을 보이는 잠긴 선택, 행과 시트에서 이유와 함께 켜짐으로 잠긴 필수 패키지의 선택, 공식 소스의 이름, 행과 동작, 동의 행과 *업데이트 승인*, 구성 요소 대화상자의 묶기, 공지와 알약 |
 | 서비스 | `former-service.json` 파싱, `movedFrom` 있을 때와 없을 때의 `movedTo`, 빌드 상수 변경 시 초기화, 정책 우선, 공지 동등성, 라벨 대체 |
 | E2E | 패키징된 개발 빌드(개발 플래그로 루프백 허용)에서 로컬 HTTP git 마켓플레이스를 추가하고, 종류별로 하나씩 설치하고, 업데이트하고, 소스를 제거. 개발 플래그 없이는 같은 종류의 소스가 픽스처 서버가 요청을 받기 전에 `unencrypted`와 `this-computer`를 묻고, 미리보기·카드·소스 행이 배지를 보임. `git-marketplace-auto-update.spec.ts`는 실제 스케줄러로(`AVE_E2E_MARKETPLACE_SCHEDULER=1`) http 소스를 켜며 `unencrypted-updates`를 받아들이고, *지금 확인*에서 동의가 필요 없는 스킬 업데이트를 스스로 적용하고, 새 호스트를 요구하는 익스텐션을 `needs-review`로 잡으며, 그 검토가 설치함 |
 
@@ -3514,6 +3533,10 @@ P3(`process` 런타임과 그 코드, `:3557`)와 P4(마켓플레이스 허용, 
 >   `superseded`가 되거나 그것을 기다립니다. 잠금 순서는 선행 플러그인 제거를 포함해
 >   어디서나 작업, 패키지, 플러그인이며, 플러그인 잠금 아래에서 요청한 패키지 잠금은
 >   예외를 던지고, 종료는 패키지 잠금 기다림을 끝냅니다.
+> - 패키지 잠금의 소유권은 비동기 컨텍스트가 아니라 명시적으로 넘기는 리스입니다.
+>   물려받은 소유권은 쥔 쪽보다 오래 살거나, 쥔 쪽이 소유하지 않은 일에 닿을 수
+>   있습니다. 컨텍스트는 쥔 쪽의 리스 없는 요청을 거절할 때만 보고, 허가에는 쓰지
+>   않습니다.
 > - 큐에 넣을 때의 어떤 것도 업데이트를 허가하지 않습니다: 잠금 아래에서 사실을 다시
 >   모으고 그때의 정책과 스위치로 판정합니다(§7.3).
 > - 싼 검토에서 서버나 훅을 선언하는 파일(`mcp.json`, `ai.agent-connector.ave/hooks.json`,
@@ -3638,7 +3661,7 @@ apply queue (separate, one package at a time, waits for idle)
 
 | 규칙 | 필수 설치 |
 |---|---|
-| 전역·소스·패키지 스위치; 건너뛴 버전 | 무시: 적용하지 않음 |
+| 전역·소스·패키지 스위치; 건너뛴 버전 | 무시: 적용하지 않음. 패키지의 스위치는 이유와 함께 켜짐으로 잠겨 보이고, 저장된 건너뛰기는 남되 적용하지 않으며, 건너뛰기는 기록하지 않음 |
 | 정책 소스로의 소스 전환 | 지금처럼 허용(`run.ts:136`) |
 | 동의 지문의 권한 필드(§18.7.3) | 정책이 승인: 지금처럼 `reviewedAuthority = true` |
 | MCP 서버와 훅 | 정책이 승인하지 **않음**. 이어가기(§18.7.3)가 바뀌지 않은 것의 승인을 유지함. 새로 생겼거나 바뀐 것은 승인 없이 설치됨: 매니저는 승인 없는 투영을 게시하지 않으므로(`mcp-manager.ts:393`) 실행되지 않고, 패키지는 `approval-pending`(§18.7.5)이 되어 설치 직후 알림과 *검토*가 뜸. 위의 승인 유지 불변식은 필수 설치가 넘는 유일한 전제 조건이고, `approval-pending`이 그 예외를 눈에 보이게 함 |
@@ -3942,7 +3965,8 @@ argv에 있는 경로만 덮습니다(`plugin-bundled-command.ts:37-71`). 바뀌
 | `approval-pending` | 필수 업데이트가 MCP 서버나 훅을 승인 없이 설치해 그 구성 요소가 실행되지 않음(§18.7.2) | 알약, 행, 설치 직후 "조직이 <이름>을 업데이트했고 구성 요소 <n>개가 승인을 기다립니다" 알림과 *검토* |
 
 `skipped`는 보기의 상태가 아닙니다: 건너뛴 버전은 적용하지도 보이지도 않고, 다음 버전은
-그렇습니다.
+그렇습니다. 필수 업데이트는 건너뛴 버전을 무시합니다(§18.7.2): 오래된 것이든 아니든
+적용하고 보입니다.
 
 - **`approval-pending`의 검토**는 기존 승인 화면을 다시 씁니다:
   - **두 화면 모두 승인을 검토한 것에 묶습니다.** 검토는 설치된 세대 하나를 보여 주는데,
