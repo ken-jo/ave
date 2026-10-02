@@ -290,6 +290,28 @@
   textarea.input { width: 100%; min-height: 120px; font-family: var(--mono); resize: vertical; }
   .diff { font-family: var(--mono); font-size: 12px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: grid; gap: 2px; }
   .diff .add { color: var(--success); } .diff .del { color: var(--danger); } .diff .same { color: var(--faint-fg); }
+  .badge.risk { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, transparent); background: var(--warning-soft); }
+  td.warn .sub { color: var(--muted-fg); white-space: normal; overflow-wrap: anywhere; }
+  td > .mono { white-space: nowrap; }
+  /* MarketplaceProblem's three tones: policy (lock, no way on), warning (amber, a confirmation), error (red). */
+  .prob { border-radius: 8px; padding: 10px 12px; font-size: 12px; display: grid; gap: 8px; border: 1px solid; }
+  .prob p { display: flex; gap: 8px; align-items: flex-start; overflow-wrap: anywhere; }
+  .prob.policy { background: var(--panel); border-color: var(--border-strong); }
+  .prob.warning { background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning) 35%, transparent); }
+  .prob.warning svg { color: var(--warning); }
+  .prob.error { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+  .prob.error svg { color: var(--danger); }
+  .prob .lock { display: inline-flex; gap: 6px; align-items: center; font-size: 11px; font-weight: 600; color: var(--muted-fg); }
+  ul.urows { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; }
+  ul.urows > li { display: grid; gap: 4px; padding: 8px 12px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+  ul.urows > li:first-child { border-top: 0; }
+  ul.urows.warnrows { background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning) 35%, transparent); }
+  ul.urows .sub { display: block; color: var(--faint-fg); font-size: 11px; }
+  ul.urows select.input { padding: 3px 8px; }
+  ul.urows .ver, ul.consent .ver { font-family: var(--font); font-size: 12px; color: var(--muted-fg); }
+  ul.consent { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 12px; }
+  ul.consent label { display: flex; gap: 8px; align-items: flex-start; }
+  ul.consent b, ul.consent .ver { display: block; overflow-wrap: anywhere; }
 
   @media (max-width: 900px) {
     .split { grid-template-columns: minmax(0, 1fr); }
@@ -320,12 +342,13 @@
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
 </svg>
 
 <main class="wrap">
   <header class="intro">
     <h1>Multi-source git marketplace — Settings → Marketplace</h1>
-    <p>Static mockup for the design specification (§15). Every package comes from a registered git source; the official source sits beside custom and internal ones. All data below is example data.</p>
+    <p>Static mockup for the design specification (§15). Every package comes from a registered source, a git repository or a folder; the official source sits beside custom and internal ones. Screens 8–13 show the states of §18.9 as built. All data below is example data.</p>
   </header>
 
   <nav class="switcher" aria-label="Mockup screens">
@@ -336,6 +359,12 @@
     <button type="button" data-screen="direct" aria-pressed="false">5 · Install without a marketplace</button>
     <button type="button" data-screen="update" aria-pressed="false">6 · Update review</button>
     <button type="button" data-screen="git" aria-pressed="false">7 · Git runtime</button>
+    <button type="button" data-screen="folders" aria-pressed="false">8 · Folder and http sources</button>
+    <button type="button" data-screen="addfolder" aria-pressed="false">9 · Add a folder</button>
+    <button type="button" data-screen="autoupdates" aria-pressed="false">10 · Automatic updates</button>
+    <button type="button" data-screen="consent" aria-pressed="false">11 · Update consent</button>
+    <button type="button" data-screen="foldersheet" aria-pressed="false">12 · Package sheet: folder and http</button>
+    <button type="button" data-screen="problems" aria-pressed="false">13 · Problems</button>
   </nav>
   <p class="note" id="screen-note"></p>
 
@@ -395,7 +424,7 @@
                 <button class="btn primary" type="button" id="add-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="add-menu"><svg class="i"><use href="#i-plus"/></svg>Add</button>
                 <span class="menu" id="add-menu" role="menu" hidden>
                   <button type="button" role="menuitem" data-go="add">Add marketplace…</button>
-                  <button type="button" role="menuitem" data-go="direct" data-dtab-go="git">Install from Git URL…</button>
+                  <button type="button" role="menuitem" data-go="direct" data-dtab-go="git">Install from Git URL or folder…</button>
                   <button type="button" role="menuitem" data-go="direct" data-dtab-go="mcp">Add MCP server…</button>
                 </span>
               </span>
@@ -533,7 +562,7 @@
           <div class="page-head">
             <div>
               <h2>Sources</h2>
-              <p>Git repositories this app reads packages from. Packages stay bound to the source they were installed from.</p>
+              <p>Git repositories and folders this app reads packages from. Packages stay bound to the source they were installed from.</p>
             </div>
             <div class="row">
               <button class="btn" type="button"><svg class="i"><use href="#i-refresh"/></svg>Refresh all</button>
@@ -608,9 +637,8 @@
               </header>
               <div class="body" id="add-step-1">
                 <div class="field">
-                  <label for="add-url">Git address</label>
-                  <input class="input" id="add-url" value="acme/ave-team-tools" />
-                  <span class="help">owner/repo, https://…, ssh://… or git@host:path</span>
+                  <label for="add-url">Git address or folder</label>
+                  <div class="row" style="flex-wrap:nowrap"><input class="input" id="add-url" style="flex:1 1 auto" value="acme/ave-team-tools" placeholder="owner/repo, https://…, git@host:path or a folder path" /><button class="btn" type="button" data-go="addfolder">Choose folder…</button></div>
                 </div>
                 <div class="field">
                   <label for="add-ref">Branch or tag <span class="ver">(optional)</span></label>
@@ -785,6 +813,378 @@
           </div>
         </div>
       </section>
+
+      <!-- ============ 8. FOLDER AND HTTP SOURCES ============ -->
+      <section data-view="folders" hidden>
+        <div style="display:grid; gap:12px">
+          <div class="page-head">
+            <div>
+              <h2>Sources</h2>
+              <p>Git repositories and folders this app reads packages from. Packages stay bound to the source they were installed from.</p>
+            </div>
+            <div class="row">
+              <button class="btn" type="button"><svg class="i"><use href="#i-refresh"/></svg>Refresh all</button>
+              <button class="btn primary" type="button" data-go="addfolder"><svg class="i"><use href="#i-plus"/></svg>Add marketplace</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Source</th><th>Pinned commit or contents</th><th>Packages</th><th>Status</th><th>On</th><th><span class="sr">Actions</span></th></tr></thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <div class="row" style="gap:6px"><strong>team-share</strong><span class="badge">Added by you</span><span class="badge" title="Read in place from this computer, never copied: changes are picked up at start-up, every few hours and on Refresh.">Local folder</span></div>
+                    <span class="sub"><svg class="i" style="width:12px;height:12px;vertical-align:-2px"><use href="#i-folder"/></svg> Folder <span class="mono" title="/Users/me/Documents/agent-marketplace">/Users/me/Documents/agent-marketplace</span></span>
+                  </td>
+                  <td><span class="mono" title="local-3f9a1c2e7b4d0a8c6e2f1b9d5a3c7e0f4b8d2a6c">folder · 3f9a1c2</span><span class="sub">read 2 min ago</span></td>
+                  <td class="mono">6</td>
+                  <td><span class="status ok">Up to date</span></td>
+                  <td><span class="switch" aria-label="Show packages from team-share"></span></td>
+                  <td><div class="row" style="justify-content:flex-end; gap:4px"><button class="btn ghost" type="button">Refresh</button><button class="btn ghost" type="button">Show in Finder</button><button class="btn ghost danger" type="button">Remove source</button></div></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="row" style="gap:6px"><strong>design-share</strong><span class="badge">Added by you</span><span class="badge" title="Read from another computer over the network, which you allowed. While it cannot be reached, the contents read last stay in use.">Network folder</span></div>
+                    <span class="sub"><svg class="i" style="width:12px;height:12px;vertical-align:-2px"><use href="#i-folder"/></svg> Folder <span class="mono" title="\\files.example\ave\design">\\files.example\ave\design</span></span>
+                  </td>
+                  <td><span class="mono">folder · 8b0d4e1</span><span class="sub">read 1 h ago</span></td>
+                  <td class="mono">3</td>
+                  <td><span class="status ok">Up to date</span></td>
+                  <td><span class="switch" aria-label="Show packages from design-share"></span></td>
+                  <td><div class="row" style="justify-content:flex-end; gap:4px"><button class="btn ghost" type="button">Refresh</button><button class="btn ghost" type="button">Show in Explorer</button><button class="btn ghost danger" type="button">Remove source</button></div></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="row" style="gap:6px"><strong>usb-kit</strong><span class="badge">Added by you</span><span class="badge" title="Read in place from this computer, never copied: changes are picked up at start-up, every few hours and on Refresh.">Local folder</span></div>
+                    <span class="sub"><svg class="i" style="width:12px;height:12px;vertical-align:-2px"><use href="#i-folder"/></svg> Folder <span class="mono">/Volumes/KIT/marketplace</span></span>
+                  </td>
+                  <td><span class="mono">folder · 51c2e9a</span><span class="sub">yesterday</span></td>
+                  <td class="mono">2</td>
+                  <td class="warn"><span>Folder not found — showing cached</span><span class="sub" style="max-width:280px">The folder /Volumes/KIT/marketplace does not exist: it was moved or renamed, or its drive is not connected. Reconnect the drive, or remove the source and add the folder again.</span></td>
+                  <td><span class="switch" aria-label="Show packages from usb-kit"></span></td>
+                  <td><div class="row" style="justify-content:flex-end; gap:4px"><button class="btn ghost" type="button">Refresh</button><button class="btn ghost" type="button">Show in Finder</button><button class="btn ghost danger" type="button">Remove source</button></div></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="row" style="gap:6px"><strong>nas-tools</strong><span class="badge">Added by you</span><span class="badge risk" title="This folder is now on another computer, which you have not allowed for this source, so Ave does not read it. Choose Refresh on its row in Sources, then Allow… if you trust that computer.">Network folder, not allowed</span></div>
+                    <span class="sub"><svg class="i" style="width:12px;height:12px;vertical-align:-2px"><use href="#i-folder"/></svg> Folder <span class="mono">Z:\ave\tools</span></span>
+                  </td>
+                  <td><span class="mono">folder · 0c7a2f4</span><span class="sub">3 days ago</span></td>
+                  <td class="mono">4</td>
+                  <td class="warn"><span>Needs your confirmation — showing cached</span><span class="sub" style="max-width:280px">An address this source uses now needs a confirmation the source does not hold, so Ave did not contact it. Choose Allow… on its row in Sources to read what it means and allow it.</span><button class="btn ghost" type="button" data-allow-open style="padding:0">Allow…</button></td>
+                  <td><span class="switch" aria-label="Show packages from nas-tools"></span></td>
+                  <td><div class="row" style="justify-content:flex-end; gap:4px"><button class="btn ghost" type="button">Refresh</button><button class="btn ghost" type="button">Show in Explorer</button><button class="btn ghost danger" type="button">Remove source</button></div></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="row" style="gap:6px"><strong>lab</strong><span class="badge">Added by you</span><span class="badge risk" title="Anyone on the network path can read what this source sends and change what it serves. Updates from it are not installed automatically.">Unencrypted (http)</span><span class="badge" title="You allowed this source's server on an internal network address.">Internal network</span><span class="badge" title="You allowed this marketplace to download from other hosts on internal network addresses.">Internal downloads</span></div>
+                    <span class="sub mono">http://git.lab.example/ave/marketplace.git</span>
+                  </td>
+                  <td><span class="mono" title="9d4e2b7a1c6f8e0d3b5a7c9e1f2a4b6d8c0e3f5a">9d4e2b7</span><span class="sub">12 min ago</span></td>
+                  <td class="mono">11</td>
+                  <td><span class="status ok">Up to date</span></td>
+                  <td><span class="switch" aria-label="Show packages from lab"></span></td>
+                  <td><div class="row" style="justify-content:flex-end; gap:4px"><button class="btn ghost" type="button">Refresh</button><button class="btn ghost danger" type="button">Remove source</button></div></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="row" style="gap:6px"><strong>[REDACTED:TOKEN]</strong><span class="badge">Added by you</span></div>
+                    <span class="sub mono">https://github.com/acme/old-tools.git</span>
+                  </td>
+                  <td>—</td>
+                  <td class="mono">0</td>
+                  <td class="warn"><span>Id looks like a token</span><span class="sub" style="max-width:280px">This source's id looks like a password or token, so Ave does not sync it or offer its packages. Remove the source and add it again with another id.</span></td>
+                  <td><span class="switch off" aria-label="Show packages from this source"></span></td>
+                  <td><div class="row" style="justify-content:flex-end; gap:4px"><button class="btn ghost danger" type="button">Remove source</button></div></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="note">A folder row shows its path (cut in the middle when long, full path on hover), <span class="mono">folder · &lt;revision&gt;</span> for its contents, and when it was read. It offers <em>Show in Finder</em> (Explorer, file manager) in place of <em>Set token…</em>. The last row is a quarantined source: its stored id has a token's shape, so it is listed under a handle and <em>Remove source</em> is its only action.</p>
+
+          <div class="scrim" id="allow-dialog" hidden style="position:relative; inset:auto; padding:0; background:none; place-items:start">
+            <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="allow-title">
+              <header><h3 id="allow-title">Allow this for nas-tools?</h3>
+                <p class="ver">Z:\ave\tools is a folder on another computer. Ave signs in to files.example with your Windows account to read this folder. Continue?</p></header>
+              <footer><button class="btn" type="button" data-allow-close>Cancel</button><button class="btn primary" type="button" data-allow-close>Allow</button></footer>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 9. ADD A FOLDER ============ -->
+      <section data-view="addfolder" hidden>
+        <div style="display:grid; gap:12px">
+          <div class="row"><span class="ver">Demo state</span>
+            <div class="seg" role="group" aria-label="Add dialog state">
+              <button type="button" data-af="nogit" aria-pressed="false">Git missing</button><button type="button" data-af="address" aria-pressed="true">Address</button><button type="button" data-af="confirm" aria-pressed="false">Before Ave connects</button><button type="button" data-af="review" aria-pressed="false">Review</button><button type="button" data-af="overlap" aria-pressed="false">Overlap</button>
+            </div>
+          </div>
+          <div class="dialog" role="dialog" aria-labelledby="af-title" style="width:min(560px, 100%)">
+            <header>
+              <div class="steps"><span data-afstep="0">0 · Git</span><span>›</span><span data-afstep="1">1 · Address</span><span>›</span><span data-afstep="2">2 · Review</span></div>
+              <h3 id="af-title">Add marketplace</h3>
+            </header>
+            <div class="body" data-afview="nogit" hidden>
+              <div class="panel-card"><div class="row"><strong>Git</strong><span class="spacer"></span><span class="status warn">Not found</span></div><p class="ver">The Git runtime card of screen 7, compact: install a private copy for git sources.</p></div>
+              <div class="row" style="border:1px solid var(--border); border-radius:8px; padding:8px 12px"><span class="ver" style="flex:1 1 200px">Adding a folder does not need git.</span><button class="btn" type="button">Choose folder…</button></div>
+            </div>
+            <div class="body" data-afview="address confirm overlap">
+              <div class="field">
+                <label for="af-url">Git address or folder</label>
+                <div class="row" style="flex-wrap:nowrap"><input class="input" id="af-url" style="flex:1 1 auto" value="/Users/me/Documents/agent-marketplace" /><button class="btn" type="button">Choose folder…</button></div>
+                <span class="help">A folder is read as it is, so it takes no branch, package folder or sign-in.</span>
+              </div>
+              <div class="prob warning" data-afview="confirm" hidden role="alert">
+                <strong>Before Ave connects</strong>
+                <p><svg class="i"><use href="#i-alert"/></svg><span>\\files.example\ave\design is a folder on another computer. Ave signs in to files.example with your Windows account to read this folder. Continue?</span></p>
+                <div class="row" style="justify-content:flex-end"><button class="btn ghost" type="button">Cancel</button><button class="btn primary" type="button" data-af="review">Continue</button></div>
+              </div>
+              <div class="prob error" data-afview="overlap" hidden role="alert">
+                <p><svg class="i"><use href="#i-info"/></svg><span>Folder sources cannot overlap: /Users/me/Documents/agent-marketplace/skills lies inside /Users/me/Documents/agent-marketplace, which is already added as team-share. Use team-share, or remove it and add the folder you want.</span></p>
+                <div class="row"><button class="btn primary" type="button" data-go="folders">Show team-share</button><button class="btn" type="button"><svg class="i"><use href="#i-copy"/></svg>Copy details</button></div>
+              </div>
+            </div>
+            <div class="body" data-afview="review" hidden>
+              <p class="mono" style="overflow-wrap:anywhere">Folder /Users/me/Documents/agent-marketplace</p>
+              <p class="ver" style="overflow-wrap:anywhere">You entered ~/ave. A link on that path leads here, so Ave reads this folder.</p>
+              <p><strong>Team Marketplace</strong> <span class="ver">· owner Platform Team</span></p>
+              <p class="ver">Contents 3f9a1c2</p>
+              <div class="chipset"><span class="badge">2 Extensions</span><span class="badge">4 Skills</span></div>
+              <div class="callout warn"><svg class="i"><use href="#i-alert"/></svg><div>Packages that can run code on this computer: 2. Adding the source installs nothing. Each extension or MCP server asks for its permissions when you install it.</div></div>
+              <div class="chipset"><span class="badge" title="Read in place from this computer, never copied: changes are picked up at start-up, every few hours and on Refresh.">Local folder</span></div>
+              <p class="ver">Changes in this folder are picked up at start-up, every few hours and on Refresh.</p>
+              <div class="field"><label for="af-id">Source name</label><input class="input mono" id="af-id" value="team-share" /><span class="help">Shown on every package from this source. Names starting with “ave” are reserved.</span></div>
+            </div>
+            <footer>
+              <button class="btn" type="button" data-afview="review" hidden data-af="address">Back</button>
+              <button class="btn ghost" type="button">Cancel</button>
+              <button class="btn primary" type="button" data-afview="address overlap" data-af="confirm">Check address</button>
+              <button class="btn primary" type="button" data-afview="confirm" hidden disabled>Check address</button>
+              <button class="btn primary" type="button" data-afview="review" hidden data-go="folders">Add marketplace</button>
+            </footer>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 10. INSTALLED AND AUTOMATIC UPDATES ============ -->
+      <section data-view="autoupdates" hidden>
+        <div style="display:grid; gap:12px">
+          <div class="page-head"><div><h2>Maintenance</h2><p>Update notices, kept downloads, and the git tool the marketplace uses.</p></div></div>
+          <div class="panel-card" aria-label="Updates">
+            <div class="row"><strong>Updates</strong><span class="spacer"></span><button class="btn" type="button">Apply now</button><button class="btn" type="button">Check now</button></div>
+            <div class="row"><span>Update packages automatically</span><span class="spacer"></span><span class="switch" aria-label="Update packages automatically"></span></div>
+            <p class="ver">Checks for updates at start-up and once a day · last checked 3 h ago · next in 21 h</p>
+            <div class="callout warn"><div class="row" style="flex:1"><span style="flex:1 1 220px">2 updates are waiting for the conversation to pause.</span><button class="btn" type="button">Apply now</button></div></div>
+            <div class="callout warn"><div class="row" style="flex:1"><span style="flex:1 1 220px">Some sources could not be reached, so their packages show the installed version. Sources says why for each; Ave tries them again within the hour.</span><button class="btn" type="button" data-go="folders">Show sources</button></div></div>
+
+            <div style="display:grid; gap:4px">
+              <strong style="font-size:12px">Required by your organization, not installed</strong>
+              <ul class="urows warnrows">
+                <li><span>Your organization requires wiki-search from corp, but that marketplace has not been reached yet.</span>
+                  <div class="row"><button class="btn" type="button">Refresh source</button></div></li>
+                <li><span>Your organization requires orion-api from corp, but that marketplace does not list it.</span>
+                  <span class="ver">orion-api is installed from team-tools instead; it may stand in the way.</span>
+                  <div class="row"><button class="btn" type="button">Refresh source</button><button class="btn danger" type="button">Remove from team-tools…</button></div></li>
+                <li><span>Your organization requires notes-sync from corp, but that marketplace is hidden, so nothing installs from it. Show it again in Sources.</span>
+                  <div class="row"><button class="btn" type="button" data-go="folders">Show sources</button></div></li>
+                <li><span>Your organization requires viewer from corp, but it needs Ave 0.15.0 or later.</span><span class="ver">If this does not resolve itself, contact your administrator.</span></li>
+              </ul>
+            </div>
+
+            <ul class="urows">
+              <li><div class="row"><span style="flex:1 1 200px"><strong>Issue Sync</strong><span class="sub">Extensions · <span class="mono">2.0.3 → 2.1.0</span></span></span><span class="ver">Needs your review</span><button class="btn" type="button" data-go="consent">Review</button>
+                <select class="input" aria-label="Automatic updates for Issue Sync"><option>Default (On)</option><option>On</option><option>Off</option></select></div>
+                <span class="ver">It asks for something different from what you agreed to</span></li>
+              <li><div class="row"><span style="flex:1 1 200px"><strong>Lab Tools</strong><span class="sub">Skills · <span class="mono">1.4.0 → 1.5.0</span></span></span><span class="ver">Update available</span><button class="btn" type="button" data-go="consent">Review</button>
+                <select class="input" aria-label="Automatic updates for Lab Tools"><option>Default (Off)</option><option>On</option><option>Off</option></select></div>
+                <span class="ver">Its source uses http, and automatic updates were not accepted for it</span></li>
+              <li><div class="row"><span style="flex:1 1 200px"><strong>Meeting</strong><span class="sub">Extensions · <span class="mono">0.8.4 → 0.9.0</span></span></span><span class="ver">Waiting for the conversation to pause</span>
+                <select class="input" aria-label="Automatic updates for Meeting"><option>Default (On)</option><option>On</option><option>Off</option></select></div></li>
+              <li><div class="row"><span style="flex:1 1 200px"><strong>Diagram Kit</strong><span class="sub">Skills · <span class="mono">1.0.4 → 1.1.0</span></span></span><span class="ver">Update failed</span><button class="btn ghost" type="button">Details</button><button class="btn" type="button">Retry</button>
+                <select class="input" aria-label="Automatic updates for Diagram Kit"><option>Default (On)</option><option>On</option><option>Off</option></select></div>
+                <span class="ver">Three automatic attempts failed; Retry installs it with your review</span>
+                <span class="ver">Failed attempts at this version: 3</span></li>
+              <li><div class="row"><span style="flex:1 1 200px"><strong>Approvals Agent</strong><span class="sub">Plugins · <span class="mono">3.1.0 → 3.2.0</span></span></span><span class="ver">Components wait for your approval</span><button class="btn" type="button" data-go="consent" data-consent-go="components">Review</button>
+                <select class="input" aria-label="Automatic updates for Approvals Agent" disabled><option>On</option></select></div>
+                <span class="ver">Required by your organization: it updates automatically, whatever this switch is set to.</span></li>
+              <li><div class="row"><span style="flex:1 1 200px"><strong>Release Captain</strong><span class="sub">Agents · <span class="mono">0.3.0 → 0.4.0</span></span></span><span class="ver">Update available</span><button class="btn" type="button">Review</button>
+                <select class="input" aria-label="Automatic updates for Release Captain"><option>Default (On)</option><option>On</option><option>Off</option></select></div>
+                <span class="ver">Source not reached in the last check — shown as an earlier check left it.</span></li>
+            </ul>
+
+            <div style="display:grid; gap:4px">
+              <strong style="font-size:12px">Updated automatically</strong>
+              <ul class="urows"><li><div class="row"><span style="flex:1 1 200px"><strong>Nord</strong><span class="sub"><span class="mono">1.0.2 → 1.0.3</span> · 2 h ago</span></span><button class="btn ghost" type="button">What changed</button></div><span class="ver">Commit range 7a1e0c4…b93d2f8</span></li></ul>
+            </div>
+
+            <div style="display:grid; gap:4px">
+              <strong style="font-size:12px">Automatic updates by source</strong>
+              <ul class="urows">
+                <li><div class="row"><span style="flex:1 1 200px">Ave Official</span><select class="input" aria-label="Automatic updates from Ave Official"><option>Default (On)</option><option>On</option><option>Off</option></select></div></li>
+                <li><div class="row"><span style="flex:1 1 200px">team-share</span><select class="input" aria-label="Automatic updates from team-share"><option>Default (On)</option><option>On</option><option>Off</option></select></div></li>
+                <li><div class="row"><span style="flex:1 1 200px">lab</span><select class="input" aria-label="Automatic updates from lab"><option>Default (Off)</option><option selected>On</option><option>Off</option></select></div>
+                  <div class="callout warn" style="display:grid"><span>Updates from lab arrive over http. Anyone on the network path could replace them with their own code, and it would install without asking. Turn on automatic updates anyway?</span>
+                    <div class="row"><button class="btn" type="button">Cancel</button><button class="btn primary" type="button">Turn on anyway</button></div></div></li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="panel-card" aria-label="Under a policy">
+            <strong>Under an organization policy</strong>
+            <div class="row"><span>Update packages automatically</span><span class="spacer"></span><span class="switch off locked" aria-label="Update packages automatically, locked"></span></div>
+            <p class="ver">Set by your organization: packages update only when you review them.</p>
+          </div>
+
+          <div class="split">
+            <div class="panel-card" aria-label="Installed">
+              <strong>Installed</strong>
+              <div class="grid" style="grid-template-columns:repeat(auto-fill, minmax(200px, 1fr))">
+                <article class="card"><div class="card-top"><div class="glyph">Mt</div><div><h3>Meeting</h3><span class="ver">0.8.4</span></div></div><p class="desc">Record meetings, transcribe audio, and produce summaries.</p><div class="card-foot"><span class="badge official"><svg class="i"><use href="#i-shield"/></svg>Ave Official</span><span class="state update">Update 0.9.0</span></div></article>
+                <article class="card"><div class="card-top"><div class="glyph">Pr</div><div><h3>Proofread</h3><span class="ver">1.2.0</span></div></div><p class="desc">Korean proofreading skill from a team folder.</p><div class="card-foot"><span class="badge">team-share</span><span class="badge">Local folder</span><span class="state installed">Installed</span></div></article>
+                <article class="card"><div class="card-top"><div class="glyph">ORION</div><div><h3>ORION</h3><span class="ver">3.2.0</span></div></div><p class="desc">Orion extension approvals and schedules.</p><div class="card-foot"><span class="badge">corp</span><span class="state required" title="Your organization's policy file requires this package, so it cannot be uninstalled or disabled here.">Required by your organization</span></div></article>
+              </div>
+            </div>
+            <aside class="sheet" aria-label="Package sheet, automatic updates">
+              <section><h4>Proofread · package sheet</h4>
+                <div class="row"><span style="flex:1">Automatic updates</span><select class="input" aria-label="Automatic updates for Proofread"><option>Default (On)</option><option>On</option><option>Off</option></select></div>
+                <p class="ver">The select is in every installed package's sheet, with or without an update, so a package can be turned off before its next release.</p>
+              </section>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 11. UPDATE REVIEW: CONSENT ============ -->
+      <section data-view="consent" hidden>
+        <div style="display:grid; gap:12px">
+          <div class="row"><span class="ver">Demo state</span>
+            <div class="seg" role="group" aria-label="Review mode">
+              <button type="button" data-cm="delta" aria-pressed="true">Consent changes</button><button type="button" data-cm="codefree" aria-pressed="false">Non-code files only</button><button type="button" data-cm="components" aria-pressed="false">Component approval</button>
+            </div>
+          </div>
+
+          <div class="sheet" data-cmview="delta codefree" style="max-width:640px">
+            <section>
+              <h4>Issue Sync · team-tools</h4>
+              <p>Update · <span class="mono">Issue Sync 2.1.0</span></p>
+              <p class="ver">Bound to commit 81d0e44 · plan expires in 9:41</p>
+              <p class="ver"><span class="mono">2.0.3 → 2.1.0</span> · Commit range 5be21c0…81d0e44</p>
+            </section>
+            <section data-cmview="delta">
+              <h4>What you agreed to changes</h4>
+              <p class="ver">A changed or new server or hook runs only once you approve it. Leave it unchecked to install the update with it turned off.</p>
+              <ul class="consent">
+                <li><span><b>Network access</b><span class="ver">tracker.example.com → tracker.example.com, uploads.example-cdn.net</span></span></li>
+                <li><label><input type="checkbox" /> <span><b>MCP server issues</b><span class="ver">4f1c2a9e0b7d → 9ae1c03d51b0</span><span class="ver">Changed code: server/index.js</span></span></label></li>
+                <li><label><input type="checkbox" /> <span><b>Hook 0</b><span class="ver">none → 51b07e129ae1</span></span></label></li>
+              </ul>
+            </section>
+            <section data-cmview="codefree" hidden>
+              <div style="border:1px solid var(--border); border-radius:8px; padding:8px 10px; display:grid; gap:4px">
+                <strong style="font-size:12px">Only these non-code files changed:</strong>
+                <ul class="plain mono"><li>README.md</li><li>assets/icon.png</li></ul>
+              </div>
+            </section>
+            <section>
+              <div class="row" style="justify-content:flex-end"><button class="btn" type="button">Keep 2.0.3</button>
+                <button class="btn primary" type="button" data-cmview="delta">Update</button>
+                <button class="btn primary" type="button" data-cmview="codefree" hidden>Approve update</button></div>
+            </section>
+          </div>
+
+          <div class="dialog" data-cmview="components" hidden role="dialog" aria-labelledby="cm-title" style="width:min(560px, 100%)">
+            <header><h3 id="cm-title">Approve components of Approvals Agent</h3><p class="ver">Your organization updated this package. These components stay off until you approve them.</p></header>
+            <div class="body">
+              <ul class="consent">
+                <li><label><input type="checkbox" /> <span><b>MCP server approvals</b><span class="ver">none → 0b7d3c5a8f6e</span></span></label></li>
+                <li><label><input type="checkbox" /> <span><b>Hook 1</b><span class="ver">c4a7e3f5d8b2 → 2d1b9c4a7e3f</span></span></label></li>
+              </ul>
+            </div>
+            <footer><button class="btn" type="button">Cancel</button><button class="btn primary" type="button">Approve</button></footer>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 12. FOLDER PACKAGE SHEET ============ -->
+      <section data-view="foldersheet" hidden>
+        <div class="split">
+          <aside class="sheet" aria-label="Package details from a folder">
+            <section><h4>Proofread · team-share · Skills</h4><p class="ver">Korean proofreading skill from a team folder.</p></section>
+            <section>
+              <h4>Provenance</h4>
+              <dl class="kv">
+                <dt>Source</dt><dd>team-share</dd>
+                <dt>Folder</dt><dd class="mono">/Users/me/Documents/agent-marketplace</dd>
+                <dt>Path</dt><dd class="mono">skills/proofread</dd>
+                <dt>Read</dt><dd>2 min ago</dd>
+                <dt>Contents</dt><dd class="mono" title="a3c7e0f4b8d2a6c3f9a1c2e7b4d0a8c6e2f1b9d5a3c7e0f4b8d2a6c3f9a1c2e7">a3c7e0f4b8d2</dd>
+              </dl>
+            </section>
+            <section><h4>Versions</h4><p class="ver">Only the version in the folder can be installed: a folder holds one version, the one its files declare.</p>
+              <div class="versions"><div><span class="mono">1.2.0</span><span>Latest · Installed</span><span></span></div></div></section>
+            <section><h4>Automatic updates</h4><div class="row"><span style="flex:1">Automatic updates</span><select class="input" aria-label="Automatic updates for Proofread"><option>Default (On)</option><option>On</option><option>Off</option></select></div></section>
+          </aside>
+
+          <div style="display:grid; gap:12px">
+            <div class="panel-card" aria-label="Extension from a folder">
+              <strong>An extension from a folder</strong>
+              <div class="rungs" aria-label="Delivery">
+                <div class="rung skip"><span class="dot">1</span><div>Built tree in the folder <small>declared</small></div><span class="ver"></span></div>
+              </div>
+              <p class="ver">A folder installs the built files it holds, as they are: nothing is downloaded or built on this computer, and a declared release is not used.</p>
+              <p class="ver">Bound to the folder's contents 3f9a1c2: what you review here is what installs, even if the folder changes · plan expires in 9:12</p>
+              <p class="ver">Left out of the install (an extension from a folder installs plugin.json, dist/ and assets/ only): src/, package.json, tsconfig.json</p>
+            </div>
+            <div class="panel-card" aria-label="Extension from an http marketplace">
+              <strong>An extension from an http marketplace</strong>
+              <div class="rungs" aria-label="Delivery">
+                <div class="rung skip"><span class="dot">1</span><div>Release asset <small>lab-tools-1.5.0.zip · <span style="color:var(--warning)">unencrypted download — verified by the pinned sha256</span></small></div><span class="ver"></span></div>
+                <div class="rung skip"><span class="dot">2</span><div>Archive <small>not declared</small></div><span class="ver"></span></div>
+                <div class="rung skip"><span class="dot">3</span><div>Built tree in git <small>declared</small></div><span class="ver"></span></div>
+              </div>
+              <p class="ver">release → archive → built tree. The first rung that verifies is used; nothing is built on this computer.</p>
+            </div>
+            <div class="prob warning" role="alert" aria-label="Internal downloads">
+              <p><svg class="i"><use href="#i-alert"/></svg><span>lab asks Ave to download from 10.0.4.20, another internal address. A marketplace that can name internal hosts can make Ave send requests into your network, for example to a router's settings page; a later failed check cannot undo a request already sent. Allow internal downloads?</span></p>
+              <div class="row"><button class="btn primary" type="button">Allow internal downloads</button><button class="btn" type="button"><svg class="i"><use href="#i-copy"/></svg>Copy details</button></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 13. PROBLEMS ============ -->
+      <section data-view="problems" hidden>
+        <div style="display:grid; gap:12px; max-width:720px">
+          <div class="prob policy" role="alert">
+            <span class="lock"><svg class="i"><use href="#i-lock"/></svg>Set by your organization</span>
+            <p><span>Your organization does not allow folders as sources, so /Users/me/Documents/agent-marketplace cannot be read. Ask your administrator; the policy is in /Library/Application Support/Ave/policy.json.</span></p>
+            <div class="row"><button class="btn" type="button"><svg class="i"><use href="#i-copy"/></svg>Copy details</button></div>
+          </div>
+          <div class="prob policy" role="alert">
+            <span class="lock"><svg class="i"><use href="#i-lock"/></svg>Set by your organization</span>
+            <p><span>Your organization requires https, and http://git.lab.example/ave/marketplace.git uses http. Use the source's https address if it has one, or ask your administrator to list the host; the policy is in /Library/Application Support/Ave/policy.json.</span></p>
+            <div class="row"><button class="btn" type="button"><svg class="i"><use href="#i-copy"/></svg>Copy details</button></div>
+          </div>
+          <div class="prob warning" role="alert">
+            <p><svg class="i"><use href="#i-alert"/></svg><span>git.lab.example needs sign-in, and this source uses http, so Ave sends no sign-in to it until you allow that. Choose Allow… on the source's row in Sources, then Set token….</span></p>
+            <p><b>Your sign-in for git.lab.example would travel unencrypted, and anyone on the network path could copy it. Continue?</b></p>
+            <div class="row"><button class="btn primary" type="button">Allow…</button><button class="btn" type="button"><svg class="i"><use href="#i-copy"/></svg>Copy details</button></div>
+          </div>
+          <div class="prob error" role="alert">
+            <p><svg class="i"><use href="#i-info"/></svg><span>git.example.com resolves to 169.254.169.254, a link-local or cloud-metadata address. No marketplace lives there, and requests to it can expose this computer's credentials, so Ave does not connect. Check the address and your network settings.</span></p>
+            <div class="row"><button class="btn" type="button"><svg class="i"><use href="#i-copy"/></svg>Copy details</button></div>
+          </div>
+          <div class="prob error" role="alert">
+            <p><svg class="i"><use href="#i-info"/></svg><span>A relative path cannot be read here: Ave has no current folder to start from. Enter the folder's full path (starting with /, ~ or a drive letter) or use Choose folder…, or enter owner/repo for a GitHub repository.</span></p>
+            <div class="row"><button class="btn" type="button"><svg class="i"><use href="#i-copy"/></svg>Copy details</button></div>
+          </div>
+          <div class="prob error" role="alert">
+            <p><svg class="i"><use href="#i-info"/></svg><span>skills/proofread/notes.md links outside the folder (to ../../shared/notes.md), and Ave installs files from inside the folder only. Copy the file into the folder instead of linking it.</span></p>
+            <div class="row"><button class="btn" type="button"><svg class="i"><use href="#i-copy"/></svg>Copy details</button></div>
+          </div>
+        </div>
+      </section>
     </div>
   </div>
 </main>
@@ -826,7 +1226,13 @@
     add: "Step 1 takes an address; step 2 previews the marketplace at a resolved commit before anything is saved. Press the primary button to switch steps.",
     direct: "Install a single package with no marketplace manifest: a git folder, an MCP command, a pasted server.json, or an existing client configuration.",
     update: "Updates that add permissions, or that come from rewritten history, need an explicit decision. The Update button unlocks after the checkbox.",
-    git: "Detected git state and the managed install. Use the demo state buttons to see each state."
+    git: "Detected git state and the managed install. Use the demo state buttons to see each state.",
+    folders: "Folder sources beside git ones: the Local folder and Network folder badges, the folder's path, its contents revision and read time, and Show in Finder (Explorer, file manager). A failed read names its reason and keeps the last good contents. A network folder the source never allowed, and an http source's sign-in, offer Allow…, which states the risk again (open it from the nas-tools row). The last row is a quarantined source.",
+    addfolder: "The Add dialog with Choose folder…. A folder hides the branch, package folder and sign-in fields. A network folder is asked about in the same confirm step as an http or internal address (Before Ave connects), before anything is read. A folder that is, lies inside or contains a folder already added is refused with Show <id>. Without git, the git step still offers Choose folder….",
+    autoupdates: "The Updates card in Maintenance: the cadence, Check now, the global switch, the 30-minute wait with Apply now, partial results, rows by state with their reasons and the package's Automatic updates select, the unmet required packages, Updated automatically and the switch per source (an http source asks first). Under a policy the switch is locked and says what takes effect. Installed cards show their update state; the package sheet has the same select.",
+    consent: "The update review's consent section: one row per change to what the user agreed to, with an approve box for a changed or new MCP server or hook; the one-row review when only non-code files changed, approved with Approve update; and the component approval of an organization's agent plugin update.",
+    foldersheet: "A folder package's provenance (folder, path, read time, contents digest), its one version, and its review bound to the folder's contents. Delivery shows the folder rung, or, for an http marketplace, the unencrypted label on a pinned download. An internal download the marketplace names is asked for with Allow internal downloads.",
+    problems: "MarketplaceProblem's tones: policy (Set by your organization, nothing to continue), warning (a confirmation that Allow… resolves, with the risk restated), and error (what happened and what to do). Main's English message is only behind Copy details, scrubbed."
   };
   const views = document.querySelectorAll("[data-view]");
   const tabs = document.querySelectorAll(".switcher button");
@@ -903,6 +1309,28 @@
   }
   document.querySelectorAll("[data-git]").forEach((b) => b.addEventListener("click", () => gitState(b.dataset.git)));
   gitState("missing");
+
+  function afState(name) {
+    const step = name === "nogit" ? "0" : name === "review" ? "2" : "1";
+    document.querySelectorAll("[data-afview]").forEach((v) => { v.hidden = !v.dataset.afview.split(" ").includes(name); });
+    document.querySelectorAll("[data-afstep]").forEach((v) => { if (v.dataset.afstep === step) v.setAttribute("aria-current", "step"); else v.removeAttribute("aria-current"); });
+    document.querySelectorAll(".seg [data-af]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.af === name)));
+    document.getElementById("af-url").value = name === "confirm" ? "\\\\files.example\\ave\\design" : name === "overlap" ? "/Users/me/Documents/agent-marketplace/skills" : "/Users/me/Documents/agent-marketplace";
+  }
+  document.querySelectorAll("[data-af]").forEach((b) => b.addEventListener("click", () => afState(b.dataset.af)));
+  afState("address");
+
+  function cmState(name) {
+    document.querySelectorAll("[data-cmview]").forEach((v) => { v.hidden = !v.dataset.cmview.split(" ").includes(name); });
+    document.querySelectorAll(".seg [data-cm]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.cm === name)));
+  }
+  document.querySelectorAll("[data-cm]").forEach((b) => b.addEventListener("click", () => cmState(b.dataset.cm)));
+  document.querySelectorAll("[data-consent-go]").forEach((b) => b.addEventListener("click", () => cmState(b.dataset.consentGo)));
+  cmState("delta");
+
+  const allowDialog = document.getElementById("allow-dialog");
+  document.querySelectorAll("[data-allow-open]").forEach((b) => b.addEventListener("click", () => { allowDialog.hidden = false; }));
+  document.querySelectorAll("[data-allow-close]").forEach((b) => b.addEventListener("click", () => { allowDialog.hidden = true; }));
 
   const initial = (location.hash || "").replace("#", "");
   show(notes[initial] ? initial : "browse");
