@@ -7,7 +7,7 @@ async function turns(count: number): Promise<void> {
   for (let i = 0; i < count; i += 1) await turn();
 }
 
-/** A gate the test opens: `entered` resolves when the holder runs, `open()` lets it return. */
+/** A gate the test opens: `inside` resolves when the holder runs, `open()` lets it return. */
 function gate() {
   let open!: () => void;
   let entered!: () => void;
@@ -16,8 +16,13 @@ function gate() {
   return { open, inside, hold: async () => { entered(); await opened; } };
 }
 
+/** Settles `work` within a bounded wait, or reports that it is stuck. */
+async function bounded<T>(work: Promise<T>): Promise<T | "stuck"> {
+  return Promise.race([work, new Promise<"stuck">((resolve) => setTimeout(() => resolve("stuck"), 1_000))]);
+}
+
 describe("KeyedMutex", () => {
-  it("grants one key's waiters in arrival order", async () => {
+  it("grants one key's requests in arrival order", async () => {
     const mutex = new KeyedMutex();
     const first = gate();
     const order: string[] = [];
@@ -32,20 +37,54 @@ describe("KeyedMutex", () => {
     expect(mutex.idle).toBe(true);
   });
 
-  it("removes only the cancelled waiter: the holder keeps the key and a later caller still waits for it", async () => {
+  it("takes every key of a request as one: it holds none while it waits for one of them", async () => {
+    const mutex = new KeyedMutex();
+    const holder = gate();
+    const held = mutex.run(["b"], holder.hold);
+    await holder.inside;
+    let bothRan = false;
+    const both = mutex.run(["b", "a"], async (lease) => { bothRan = true; return lease.keys; });
+    await turns(2);
+    // a is free, but a caller of a alone arrived after the request for a and b, so it waits behind it.
+    let aRan = false;
+    const onlyA = mutex.run(["a"], async () => { aRan = true; });
+    await turns(2);
+    expect([bothRan, aRan]).toEqual([false, false]);
+    holder.open();
+    expect(await both).toEqual(["a", "b"]);
+    await Promise.all([held, onlyA]);
+    expect(aRan).toBe(true);
+    expect(mutex.idle).toBe(true);
+  });
+
+  it("cannot wait in a cycle: two requests for the same keys in opposite order both finish", async () => {
+    const mutex = new KeyedMutex();
+    const holder = gate();
+    const held = mutex.run(["a", "b"], holder.hold);
+    await holder.inside;
+    const forward = mutex.run(["a", "b"], async () => "forward");
+    const backward = mutex.run(["b", "a"], async () => "backward");
+    holder.open();
+    expect(await bounded(Promise.all([held, forward, backward]))).toEqual([undefined, "forward", "backward"]);
+    expect(mutex.idle).toBe(true);
+  });
+
+  it("removes only the cancelled request, from every queue: the holder keeps its key and a later caller still waits", async () => {
     const mutex = new KeyedMutex();
     const holder = gate();
     const held = mutex.run(["p"], holder.hold);
     await holder.inside;
     const abort = new AbortController();
     let cancelledRan = false;
-    const cancelled = mutex.run(["p"], async () => { cancelledRan = true; }, { signal: abort.signal }).catch((error: unknown) => error);
+    const cancelled = mutex.run(["p", "q"], async () => { cancelledRan = true; }, { signal: abort.signal }).catch((error: unknown) => error);
     await turns(2);
     abort.abort(new Error("shutdown"));
     expect(await cancelled).toMatchObject({ message: "shutdown" });
     let laterEntered = false;
     const later = mutex.run(["p"], async () => { laterEntered = true; });
-    await turns(5);
+    // q is free again at once.
+    expect(await bounded(mutex.run(["q"], async () => "q"))).toBe("q");
+    await turns(3);
     expect(laterEntered).toBe(false);
     holder.open();
     await Promise.all([held, later]);
@@ -54,80 +93,106 @@ describe("KeyedMutex", () => {
     expect(mutex.idle).toBe(true);
   });
 
-  it("releases the keys a cancelled caller already took, and only those", async () => {
+  it("ends a multi-key wait at once when cancelled, whichever key it waits for", async () => {
     const mutex = new KeyedMutex();
     const holder = gate();
     const held = mutex.run(["b"], holder.hold);
     await holder.inside;
     const abort = new AbortController();
-    const both = mutex.run(["a", "b"], async () => {}, { signal: abort.signal }).catch((error: unknown) => error);
-    await turns(2);
-    let aEntered = false;
-    const onlyA = mutex.run(["a"], async () => { aEntered = true; });
-    await turns(2);
-    expect(aEntered).toBe(false);
+    const both = mutex.run(["a", "b"], async () => "ran", { signal: abort.signal }).catch((error: unknown) => error);
     abort.abort(new Error("shutdown"));
-    await both;
-    await onlyA;
-    expect(aEntered).toBe(true);
+    expect(await bounded(both)).toMatchObject({ message: "shutdown" });
+    expect(await bounded(mutex.run(["a"], async () => "a"))).toBe("a");
     holder.open();
     await held;
     expect(mutex.idle).toBe(true);
   });
 
-  it("re-enters a held key only with the lease passed down", async () => {
+  it("lets a waiter behind a cancelled request run once it heads all its queues", async () => {
     const mutex = new KeyedMutex();
-    const inner = await mutex.run(["p"], (lease) => mutex.run(["p"], async (nested) => nested.keys, { within: lease }));
-    expect(inner).toEqual(["p"]);
+    const holder = gate();
+    const held = mutex.run(["a"], holder.hold);
+    await holder.inside;
+    const abort = new AbortController();
+    const blocked = mutex.run(["a", "b"], async () => "ran", { signal: abort.signal }).catch((error: unknown) => error);
+    const onlyB = mutex.run(["b"], async () => "b");
+    await turns(2);
+    abort.abort(new Error("shutdown"));
+    expect(await bounded(onlyB)).toBe("b");
+    await blocked;
+    holder.open();
+    await held;
+    expect(mutex.idle).toBe(true);
+  });
+
+  it("does not start a request granted in the same turn as its cancellation", async () => {
+    const mutex = new KeyedMutex();
+    const abort = new AbortController();
+    let ran = false;
+    // Free keys are granted at once, but the body starts a turn later: cancelled in between, it never starts.
+    const request = mutex.run(["p"], async () => { ran = true; }, { signal: abort.signal }).catch((error: unknown) => error);
+    abort.abort(new Error("shutdown"));
+    expect(await request).toMatchObject({ message: "shutdown" });
+    expect(ran).toBe(false);
+    expect(mutex.idle).toBe(true);
+  });
+
+  it("refuses a request that names no key: work that needs none takes no lock", async () => {
+    const mutex = new KeyedMutex();
+    await expect(mutex.run([], async () => {})).rejects.toThrow(/lock contract: a lock request names no key/u);
+    expect(mutex.idle).toBe(true);
+  });
+
+  it("runs work under keys the lease holds at once, and refuses any key it does not hold", async () => {
+    const mutex = new KeyedMutex();
+    expect(await mutex.run(["a", "b"], (lease) => mutex.within(lease, ["b"], async () => "under b"))).toBe("under b");
+    await expect(mutex.run(["a"], (lease) => mutex.within(lease, ["a", "b"], async () => {}))).rejects.toThrow(
+      /lock contract: b asked for under the lease of a; a lease runs work only under keys it holds/u,
+    );
+    await expect(mutex.run(["a"], (lease) => mutex.within(lease, [], async () => {}))).rejects.toThrow(/no key asked for under the lease of a/u);
+    expect(mutex.idle).toBe(true);
+  });
+
+  it("refuses a request from a caller holding keys that did not pass its lease, inside work under the lease too", async () => {
+    const mutex = new KeyedMutex();
     await expect(mutex.run(["p"], () => mutex.run(["p"], async () => {}))).rejects.toThrow(
-      /lock contract: p asked for without the lease of a caller holding p; pass it down/u,
+      /lock contract: p asked for by a caller holding p; declare every key up front, or pass the lease/u,
     );
-    // Asking for no key needs no lease: it cannot wait for anything.
-    expect(await mutex.run(["p"], () => mutex.run([], async (nested) => nested.keys))).toEqual([]);
-    // Asking for another key without the lease is refused the same way: it could wait in the wrong order.
-    await expect(mutex.run(["b"], () => mutex.run(["a"], async () => {}))).rejects.toThrow(/without the lease of a caller holding b/u);
+    await expect(mutex.run(["b"], () => mutex.run(["a"], async () => {}))).rejects.toThrow(/a asked for by a caller holding b/u);
+    await expect(mutex.run(["a", "b"], (lease) => mutex.within(lease, ["a"], () => mutex.run(["c"], async () => {})))).rejects.toThrow(
+      /c asked for by a caller holding a, b/u,
+    );
     expect(mutex.idle).toBe(true);
   });
 
-  it("extends a lease only with keys above every key it holds, so two holders extending never wait in a cycle", async () => {
-    const mutex = new KeyedMutex();
-    await expect(mutex.run(["b"], (lease) => mutex.run(["a"], async () => {}, { within: lease }))).rejects.toThrow(
-      /lock order: a asked for while holding b; a lease extends only with keys above every key it holds/u,
-    );
-    await expect(mutex.run(["a", "c"], (lease) => mutex.run(["b"], async () => {}, { within: lease }))).rejects.toThrow(/lock order: b asked for while holding a, c/u);
-    expect(await mutex.run(["a"], (lease) => mutex.run(["a", "b"], async (nested) => nested.keys, { within: lease }))).toEqual(["a", "b"]);
-    expect(mutex.idle).toBe(true);
-  });
-
-  it("refuses a lease passed after its holder returned", async () => {
+  it("refuses a lease passed after its holder returned, or one of another lock", async () => {
     const mutex = new KeyedMutex();
     let kept!: MutexLease;
     await mutex.run(["p"], async (lease) => { kept = lease; });
-    await expect(mutex.run(["p"], async () => {}, { within: kept })).rejects.toThrow(/lock contract: the lease of p was passed after its holder returned/u);
-    await expect(mutex.run(["p"], async () => {}, { within: { keys: ["p"] } })).rejects.toThrow(/the lease passed does not belong to this lock/u);
-    await expect(mutex.run(["p"], (lease) => new KeyedMutex().run(["p"], async () => {}, { within: lease }))).rejects.toThrow(/the lease passed does not belong to this lock/u);
+    await expect(mutex.within(kept, ["p"], async () => {})).rejects.toThrow(/lock contract: the lease of p was passed after its holder returned/u);
+    await expect(mutex.within({ keys: ["p"] }, ["p"], async () => {})).rejects.toThrow(/the lease passed does not belong to this lock/u);
+    await expect(mutex.run(["p"], (lease) => new KeyedMutex().within(lease, ["p"], async () => {}))).rejects.toThrow(/does not belong to this lock/u);
   });
 
-  it("keeps the keys of a holder that returned while a lease extending it still waits or runs", async () => {
+  it("releases its keys only once the work admitted under its lease ends, and admits none after it returned", async () => {
     const mutex = new KeyedMutex();
-    const b = gate();
-    const holdsB = mutex.run(["b"], b.hold);
-    await b.inside;
-    let child!: Promise<boolean>;
-    await mutex.run(["a"], async (lease) => {
-      // Detached on purpose: the child extends a with b and outlives this holder.
-      child = mutex.run(["b"], async (nested) => nested.keys.includes("a"), { within: lease });
-      await turn();
+    const child = gate();
+    let underLease!: Promise<string>;
+    let kept!: MutexLease;
+    const order: string[] = [];
+    const holder = mutex.run(["p"], async (lease) => {
+      kept = lease;
+      // Not awaited: the holder returns while it runs.
+      underLease = mutex.within(lease, ["p"], async () => { await child.hold(); order.push("child"); return "child"; });
+      await child.inside;
     });
-    let laterEnteredA = false;
-    const laterA = mutex.run(["a"], async () => { laterEnteredA = true; });
-    await turns(5);
-    // The holder of a returned, but the lease extending it still needs a.
-    expect(laterEnteredA).toBe(false);
-    b.open();
-    expect(await child).toBe(true);
-    await Promise.all([holdsB, laterA]);
-    expect(laterEnteredA).toBe(true);
+    const later = mutex.run(["p"], async () => { order.push("later"); });
+    await turns(3);
+    await expect(mutex.within(kept, ["p"], async () => {})).rejects.toThrow(/passed after its holder returned/u);
+    expect(order).toEqual([]);
+    child.open();
+    await Promise.all([holder, underLease, later]);
+    expect(order).toEqual(["child", "later"]);
     expect(mutex.idle).toBe(true);
   });
 
@@ -142,7 +207,7 @@ describe("KeyedMutex", () => {
     expect(mutex.idle).toBe(true);
   });
 
-  it("checks every key's hook before waiting and gives up without holding anything when it throws", async () => {
+  it("checks the hook with every key before waiting, and holds nothing when it refuses", async () => {
     const mutex = new KeyedMutex();
     const seen: string[][] = [];
     await expect(mutex.run(["b", "a", "a"], async () => {}, { beforeAcquire: (keys) => { seen.push([...keys]); throw new Error("refused"); } }))
@@ -167,78 +232,79 @@ function seeded(seed: number): () => number {
 const KEYS = ["k0", "k1", "k2", "k3", "k4"];
 
 describe("KeyedMutex under random interleavings", () => {
+  /**
+   * The model keeps its own owner per key, from the keys each task asked
+   * for, never from what the lock reports: a task entering its body claims
+   * every key it requested and must find each unowned; it gives them back
+   * just before it returns, and re-checks after every await that it still
+   * owns each one.
+   */
   async function scenario(seed: number): Promise<void> {
     const next = seeded(seed);
-    const pick = (count: number) => KEYS.filter(() => next() < count / KEYS.length);
     const mutex = new KeyedMutex();
-    // The lease id that owns each key now, set when its function enters and cleared before it returns.
     const owner = new Map<string, number>();
-    let ids = 0;
     const violations: string[] = [];
+    let ids = 0;
 
-    const critical = async (lease: MutexLease, own: readonly string[], inherited: ReadonlyMap<string, number>, id: number, ticks: number, body: () => Promise<void>) => {
-      for (const key of lease.keys) {
-        const current = owner.get(key);
-        if (own.includes(key)) {
-          if (current !== undefined) violations.push(`seed ${seed}: ${key} entered by ${id} while ${current} holds it`);
-          owner.set(key, id);
-        } else if (current !== inherited.get(key)) {
-          violations.push(`seed ${seed}: ${id} re-entered ${key} owned by ${current}, not its holder ${inherited.get(key)}`);
-        }
+    const stillOwns = (id: number, keys: readonly string[], when: string) => {
+      for (const key of keys) {
+        if (owner.get(key) !== id) violations.push(`seed ${seed}: task ${id} ${when} without owning ${key} (owner ${owner.get(key)})`);
       }
-      for (let i = 0; i < ticks; i += 1) await (next() < 0.5 ? turn() : Promise.resolve());
-      await body();
-      for (const key of own) owner.delete(key);
     };
 
     const task = async () => {
       await turns(Math.floor(next() * 3));
-      const keys = pick(2).length > 0 ? pick(2) : [KEYS[Math.floor(next() * KEYS.length)]!];
+      const keys = KEYS.filter(() => next() < 0.35);
+      if (keys.length === 0) keys.push(KEYS[Math.floor(next() * KEYS.length)]!);
+      if (next() < 0.3) keys.reverse();
+      const requested = [...new Set(keys)].sort();
       const abort = new AbortController();
-      const cancelAfter = next() < 0.35 ? Math.floor(next() * 4) : null;
-      if (cancelAfter !== null) void turns(cancelAfter).then(() => abort.abort(new Error("cancelled")));
+      const cancel = next();
+      // Cancelled at once (before the request's first continuation), a few turns in, or never.
+      if (cancel < 0.15) queueMicrotask(() => abort.abort(new Error("cancelled")));
+      else if (cancel < 0.4) void turns(Math.floor(next() * 4)).then(() => abort.abort(new Error("cancelled")));
       const id = (ids += 1);
       let ran = false;
-      const nestedKind = next();
+      const ticks = Math.floor(next() * 4);
+      const nested = next();
       try {
         await mutex.run(keys, async (lease) => {
           ran = true;
-          const own = [...new Set(keys)];
-          await critical(lease, own, new Map(), id, Math.floor(next() * 4), async () => {
-            const highest = lease.keys.at(-1)!;
-            const above = KEYS.filter((key) => key > highest && next() < 0.5);
-            const inherited = new Map(lease.keys.map((key) => [key, owner.get(key)!] as const));
-            if (nestedKind < 0.25 && above.length > 0) {
-              const childId = (ids += 1);
-              await mutex.run([lease.keys[0]!, ...above], (child) => critical(child, above, inherited, childId, Math.floor(next() * 3), async () => {}), { within: lease });
-            } else if (nestedKind < 0.4) {
-              const childId = (ids += 1);
-              await mutex.run([...lease.keys], (child) => critical(child, [], inherited, childId, 1, async () => {}), { within: lease });
-            }
-          });
+          if (lease.keys.join() !== requested.join()) violations.push(`seed ${seed}: task ${id} got a lease of ${lease.keys.join()} for ${requested.join()}`);
+          for (const key of requested) {
+            if (owner.has(key)) violations.push(`seed ${seed}: task ${id} entered with ${key} owned by ${owner.get(key)}`);
+            owner.set(key, id);
+          }
+          for (let i = 0; i < ticks; i += 1) {
+            await (next() < 0.5 ? turn() : Promise.resolve());
+            stillOwns(id, requested, "ran on");
+          }
+          if (nested < 0.3) {
+            const some = requested.filter(() => next() < 0.6);
+            if (some.length > 0) await mutex.within(lease, some, async () => { await turn(); stillOwns(id, requested, "ran under its lease"); });
+          }
+          stillOwns(id, requested, "returned");
+          for (const key of requested) owner.delete(key);
         }, { signal: abort.signal });
-        return { ran, cancelled: false };
+        return "done";
       } catch (error) {
         if ((error as Error).message !== "cancelled") throw error;
         if (ran) violations.push(`seed ${seed}: task ${id} ran and then reported its cancellation`);
-        return { ran, cancelled: true };
+        return "cancelled";
       }
     };
 
     const tasks = Array.from({ length: 10 }, () => task());
-    const settled = await Promise.race([
-      Promise.all(tasks).then((results) => ({ results })),
-      new Promise<"stuck">((resolve) => setTimeout(() => resolve("stuck"), 2_000)),
-    ]);
-    // No lost wakeup: every caller that was not cancelled got its keys and finished.
-    expect(settled, `seed ${seed}: a waiter was never woken`).not.toBe("stuck");
+    const settled = await bounded(Promise.all(tasks));
+    // No lost wakeup: every request that was not cancelled got all its keys and finished.
+    expect(settled, `seed ${seed}: a request was never woken`).not.toBe("stuck");
     expect(violations).toEqual([]);
-    // No orphaned reservation: nothing is held or waited for once every caller settled.
-    expect(mutex.idle, `seed ${seed}: a reservation outlived its caller`).toBe(true);
+    // No orphaned reservation: nothing is held or waited for once every request settled.
+    expect(mutex.idle, `seed ${seed}: a reservation outlived its request`).toBe(true);
     expect(owner.size).toBe(0);
   }
 
-  it("keeps mutual exclusion, wakes every waiter and leaves no reservation, across 300 seeds", async () => {
+  it("keeps each key with one owner, wakes every waiter and leaves no reservation, across 300 seeds", async () => {
     for (let seed = 1; seed <= 300; seed += 1) await scenario(seed);
   }, 120_000);
 });

@@ -589,19 +589,21 @@ export class MarketplaceService implements RetirementEntryLookup {
    * {@link packageLocks}). The lock comes after the operation and before any
    * plugin lock (§18.6): taking it while this context holds a plugin lock
    * could wait for an install that holds it and waits for that plugin lock,
-   * so it throws instead. A caller that holds it passes its `lease` and runs
-   * `fn` at once. `signal` (the scheduler's shutdown) cancels the wait:
-   * aborted before the lock is free, `fn` never starts and the call rejects
-   * with its reason.
+   * so it throws instead. A caller that already holds it passes its `lease`
+   * and `fn` runs at once, under that lease; the lease adds no package.
+   * `signal` (the scheduler's shutdown) cancels the wait: aborted before the
+   * lock is free, `fn` never starts and the call rejects with its reason.
    */
   private async withPackage<T>(kind: PackageKind, name: string, fn: () => Promise<T>, options: { signal?: AbortSignal; lease?: PackageLease } = {}): Promise<T> {
-    return this.withPackages([keyOf(kind, name)], () => fn(), options);
+    const key = keyOf(kind, name);
+    if (options.lease) return this.packageLocks.within(options.lease, [key], fn);
+    return this.withPackages([key], () => fn(), options.signal);
   }
 
-  private async withPackages<T>(keys: readonly string[], fn: (lease: PackageLease) => Promise<T>, options: { signal?: AbortSignal; lease?: PackageLease } = {}): Promise<T> {
+  /** Take every package lock in `keys` as one request (see {@link KeyedMutex}). */
+  private async withPackages<T>(keys: readonly string[], fn: (lease: PackageLease) => Promise<T>, signal?: AbortSignal): Promise<T> {
     return this.packageLocks.run(keys, fn, {
-      ...(options.lease ? { within: options.lease } : {}),
-      ...(options.signal ? { signal: options.signal } : {}),
+      ...(signal ? { signal } : {}),
       beforeAcquire: (wanted) => {
         if (holdsAnyPluginInstallLock()) {
           throw new Error(`lock order: the package lock of ${wanted.join(", ")} was asked for while a plugin lock is held; the package lock comes first (§18.6)`);
@@ -633,12 +635,16 @@ export class MarketplaceService implements RetirementEntryLookup {
    * and then calling the service could wait for a policy change's exclusive
    * lock while an install holds the shared lock and waits for that plugin lock.
    */
-  async asOneOperation<T>(
-    fn: (lease: PackageLease) => Promise<T>,
-    packages: ReadonlyArray<{ kind: PackageKind; name: string }> = [],
-    lease?: PackageLease,
-  ): Promise<T> {
-    return this.operation(() => this.withPackages(packages.map((item) => keyOf(item.kind, item.name)), fn, lease ? { lease } : {}));
+  async asOneOperation<T>(fn: () => Promise<T>): Promise<T>;
+  /**
+   * With `packages`: also hold every one of their package locks, taken as one
+   * request, for the whole of `fn`. An install or uninstall `fn` runs of one
+   * of them passes the lease `fn` receives; there is no second request.
+   */
+  async asOneOperation<T>(fn: (lease: PackageLease) => Promise<T>, packages: ReadonlyArray<{ kind: PackageKind; name: string }>): Promise<T>;
+  async asOneOperation<T>(fn: (lease: PackageLease) => Promise<T>, packages?: ReadonlyArray<{ kind: PackageKind; name: string }>): Promise<T> {
+    if (packages === undefined) return this.operation(() => (fn as () => Promise<T>)());
+    return this.operation(() => this.withPackages(packages.map((item) => keyOf(item.kind, item.name)), fn));
   }
 
   /**

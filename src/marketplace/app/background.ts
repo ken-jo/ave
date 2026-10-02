@@ -242,7 +242,9 @@ function describe(keys: readonly PackageKey[]): string {
 
 function updatesKey(updates: readonly PackageUpdateView[]): string {
   return updates
-    .map((update) => `${update.key.sourceId}/${update.key.kind}/${update.key.name}@${update.from}->${update.to}:${update.state}${update.stale ? ":stale" : ""}`)
+    // Everything the toolbar acts on: a change of any of it is sent again.
+    .map((update) => `${update.key.sourceId}/${update.key.kind}/${update.key.name}@${update.from}->${update.to}:${update.state}`
+      + `${update.stale ? ":stale" : ""}${update.escalated ? ":escalated" : ""}${update.required ? ":required" : ""}`)
     .sort()
     .join("|");
 }
@@ -378,6 +380,9 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
   /** An applied update that stays in the view after its offer is gone (§18.7.5). */
   const appliedView = (id: string, record: PackageUpdateRecord): PackageUpdateView => {
     const pending = pendingApprovals.get(id);
+    // Required by the policy in force now, not when it applied: a required package's
+    // attention states ignore skipped versions (§18.7.2) for as long as it stays required.
+    const required = context?.installed.some((item) => item.required && updateRecordKey(item.key) === id) === true;
     return {
       key: parseUpdateRecordKey(id),
       displayName: record.displayName!,
@@ -387,6 +392,7 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       ...(record.appliedAt ? { appliedAt: record.appliedAt } : {}),
       ...(record.commits ? { commitRange: record.commits } : {}),
       ...(record.state === "approval-pending" && pending ? { pendingApproval: pending } : {}),
+      ...(required ? { required: true as const } : {}),
     };
   };
 

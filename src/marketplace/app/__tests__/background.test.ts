@@ -1300,6 +1300,60 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     }
   });
 
+  it.each(["approval-pending", "applied-not-running"] as const)(
+    "keeps a required update's %s outcome required once its offer is gone, so a skipped version does not hide it",
+    async (state) => {
+      const key = offer("meeting", "2.0.0").key;
+      const source = { id: "ave", label: "Ave Official", origin: "official" as const, http: false, acknowledgedUnencryptedUpdates: false };
+      const h = harness({
+        settings: { updateNotices: true, autoUpdate: true, skippedPluginUpdates: { meeting: "2.0.0" } },
+        service: {
+          autoUpdateContext: async () => ({ policy: "user", sources: [source], installed: [{ key, required: true }] }),
+          applyUpdate: vi.fn(async () => ({ state })),
+          appliedState: vi.fn(async () => ({ state, pendingApproval: null })),
+        },
+      });
+      h.published.offers = [offer("meeting", "2.0.0")];
+      h.published.facts = { meeting: { required: true } };
+      const background = startMarketplaceBackground(h.input);
+      try {
+        await background.started;
+        await settle();
+        expect(h.service.applyUpdate).toHaveBeenCalledOnce();
+        h.published.offers = [];
+        await background.recheck();
+        const sent = vi.mocked(h.input.publishUpdates).mock.calls.at(-1)![0];
+        expect(sent).toEqual([expect.objectContaining({ key, state, required: true })]);
+      } finally {
+        background.stop();
+      }
+    },
+  );
+
+  it("sends the toolbar list again when only an update's required status changes, either way", async () => {
+    const h = harness({ settings: { updateNotices: true, autoUpdate: true }, service: { applyUpdate: vi.fn(async () => ({ state: "failed" as const, error: new Error("offline") })) } });
+    h.published.offers = [offer("meeting", "2.0.0")];
+    const background = startMarketplaceBackground(h.input);
+    const sent = () => vi.mocked(h.input.publishUpdates).mock.calls;
+    try {
+      await background.started;
+      await settle();
+      expect(h.lastStatus().packages[0]?.state).toBe("failed");
+      const before = sent().length;
+      // A policy refresh that adds a requiredInstalls entry reaches the scheduler as a recheck.
+      h.published.facts = { meeting: { required: true } };
+      await background.recheck();
+      expect(sent().length).toBe(before + 1);
+      expect(sent().at(-1)![0]).toEqual([expect.objectContaining({ state: "failed", required: true })]);
+      h.published.facts = { meeting: { required: false } };
+      await background.recheck();
+      expect(sent().length).toBe(before + 2);
+      expect(sent().at(-1)![0]![0]).not.toHaveProperty("required");
+    } finally {
+      background.stop();
+    }
+  });
+
   it("a wait past 30 minutes reaches the toolbar: the waiting update is sent as escalated, whatever the notice setting", async () => {
     const h = applying();
     h.settings.current = { updateNotices: false, autoUpdate: true };
