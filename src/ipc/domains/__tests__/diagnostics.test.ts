@@ -181,6 +181,10 @@ describe("ave:logs:tail", () => {
     ["a carriage return before the colon", '{"Authorization"\r:"Custom opaque-pass-12345"}'],
     ["a line break after the colon", '{"Authorization":\n"Custom opaque-pass-12345"}'],
     ["CRLF and spaces around the colon", '{"Proxy-Authorization" \r\n : \r\n "[REDACTED:TOKEN] opaque-pass-12345"}'],
+    ["an escaped NBSP before the colon", '{"Authorization\\u00a0":"Custom opaque-pass-12345"}'],
+    ["an escaped EM SPACE before the colon", '{"Authorization\\u2003":"Custom opaque-pass-12345"}'],
+    ["an escaped BOM before the colon", '{"Authorization\\uFEFF":"Custom opaque-pass-12345"}'],
+    ["a compound key", '{"authorization_header":"Basic opaque-pass-12345"}'],
   ])("masks an Authorization value with JSON whitespace at its colon, %s, serialized in a log line (§18.8)", async (_label, inner) => {
     expect(JSON.stringify(JSON.parse(inner))).toContain("opaque-pass-12345");
     writeFileSync(join(tmp, "logs", "ave-2025-06-01.log"), [inner.replace(/[\r\n]/gu, " "), JSON.stringify({ level: 30, msg: inner })].join("\n") + "\n", "utf-8");

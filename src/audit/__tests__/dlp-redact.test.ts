@@ -532,8 +532,14 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
     // A header quoted inside a longer text takes the rest of the line too: the quote around it is not its end.
     expect(scrubDiagnosticSecrets('x {"msg":"Authorization: Custom opaque-pass-12345","status":200}')).toBe('x {"msg":"Authorization: [REDACTED:TOKEN]');
     expect(scrubDiagnosticSecrets("error: 'Authorization: Custom opaque-pass-12345' failed")).toBe("error: 'Authorization: [REDACTED:TOKEN]");
-    // Only the header stage reads `authorization`: a key that merely holds the word is not a header (§18.8).
-    expect(scrubDiagnosticSecrets("x: authorization_url=https://idp.example/x kept")).toBe("x: authorization_url=https://idp.example/x kept");
+    // A key holding `authorization` as a delimited word is a header key (§18.8): its value goes, accepted over-masking for a URL.
+    expect(scrubDiagnosticSecrets("x: authorization_url=https://idp.example/x kept")).toBe("x: authorization_url=[REDACTED:TOKEN]");
+    expect(scrubSecretsForLLM("x: authorization_url=https://idp.example/x kept")).toBe("x: authorization_url=[REDACTED:TOKEN]");
+    // A word that only begins or ends with it is not, nor is prose with no separator after the key.
+    for (const kept of ["xauthorization: keep", "authorizationfoo: keep", "the authorization header was absent", "authorization_flow failed"]) {
+      expect(scrubDiagnosticSecrets(kept)).toBe(kept);
+      expect(scrubSecretsForLLM(kept)).toBe(kept);
+    }
   });
 
   describe("an Authorization value ends only at its line's end, or the text's (§18.8)", () => {
@@ -595,25 +601,58 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
         value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
         return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
       };
-      const KEYS = ["Authorization", "authorization", "Proxy-Authorization", "AUTHORIZATION", "x-authorization"];
+      const KEYS = [
+        "Authorization", "authorization", "Proxy-Authorization", "AUTHORIZATION", "x-authorization",
+        // Compound keys: `authorization` as a delimited word of the key (§18.8).
+        "authorization_header", "proxy_authorization", "x-authorization-token", "authorization.value", "AUTHORIZATION_URL", "upstream authorization",
+      ];
       const SCHEMES = ["Custom", "Basic", "Bearer", "[REDACTED:TOKEN]", 'Digest username="O\'Neil", response=', ""];
       const INDENTS: ReadonlyArray<number | string | undefined> = [undefined, 0, 1, 2, "\t"];
-      /** Whitespace written around a key's colon, raw (as a hand-written or pretty file has it) or already escaped in a string. */
-      const GAPS = ["", " ", "\n", "\r", "\r\n", "\t", " \n  ", " ", "\\n", "\\r\\n", "\\t", "\\u000a"];
+      const pick = <T,>(random: () => number, items: readonly T[]): T => items[Math.floor(random() * items.length)]!;
+      /**
+       * Every separator whitespace character: what JS `\s` matches, U+FEFF, U+2028 and U+2029 among them. The one set
+       * the raw and the escaped whitespace are both drawn from, as the stage classifies both with one predicate.
+       */
+      const SPACES = Array.from({ length: 0x10000 }, (_, code) => String.fromCharCode(code)).filter((char) => /\s/u.test(char));
+      const LETTERS: Readonly<Record<string, string>> = { "\n": "n", "\r": "r", "\t": "t", "\f": "f", "\v": "v" };
+      /** How a string literal spells `char`: `\u` and four hex digits in either case, and its one-letter escape when it has one. */
+      const escapedForms = (char: string): string[] => {
+        const hex = char.charCodeAt(0).toString(16).padStart(4, "0");
+        return [`\\u${hex}`, `\\u${hex.toUpperCase()}`, ...(LETTERS[char] === undefined ? [] : [`\\${LETTERS[char]}`])];
+      };
+      /** Whitespace written at a key's colon or before its closing quote: none, or up to three characters from {@link SPACES}, each raw or escaped. */
+      const gap = (random: () => number): string =>
+        Array.from({ length: Math.floor(random() * 4) }, () => {
+          const char = pick(random, SPACES);
+          return random() < 0.5 ? char : pick(random, escapedForms(char));
+        }).join("");
+
+      it("draws its whitespace from what JS `\\s` covers, U+FEFF, U+2028 and U+2029", () => {
+        for (const code of [0x20, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0xa0, 0x1680, 0x2000, 0x2003, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff]) {
+          expect(SPACES).toContain(String.fromCharCode(code));
+        }
+      });
+      it.each(["FEFF", "2028", "2029", "00A0", "2003", "3000", "000B"])("reads U+%s between a key's closing quote and its colon as whitespace, raw and escaped", (hex) => {
+        const char = String.fromCharCode(Number.parseInt(hex, 16));
+        for (const form of [char, ...escapedForms(char)]) {
+          for (const text of [`{"Authorization"${form}: "Custom ${secret}"}`, `{"Authorization":${form}"Custom ${secret}"}`]) {
+            const masked = text.slice(0, text.indexOf('"Custom'));
+            expect(scrubDiagnosticSecrets(text), JSON.stringify(text)).toBe(`${masked}[REDACTED:TOKEN]`);
+            expect(scrubSecretsForLLM(text), JSON.stringify(text)).toBe(`${masked}[REDACTED:TOKEN]`);
+          }
+        }
+      });
       const SHAPES: ReadonlyArray<(key: string, value: string) => unknown> = [
         (key, value) => ({ [key]: value }),
         (key, value) => ({ level: 30, headers: { accept: "*/*", [key]: value, host: "git.example" } }),
         (key, value) => ({ request: { url: "https://git.example/x", headers: [{ name: "accept" }, { [key]: value }] } }),
       ];
-      const pick = <T,>(random: () => number, items: readonly T[]): T => items[Math.floor(random() * items.length)]!;
-      const CASES = Array.from({ length: 300 }, (_, seed) => {
+      const CASES = Array.from({ length: 400 }, (_, seed) => {
         const random = generator(seed + 1);
         const key = pick(random, KEYS);
         let text = JSON.stringify(pick(random, SHAPES)(key, `${pick(random, SCHEMES)} ${secret}`.trim()), null, pick(random, INDENTS));
-        // Whitespace around the colon after the key, as JSON allows.
-        const before = pick(random, GAPS);
-        const after = pick(random, GAPS);
-        text = text.replace(`"${key}":`, `"${key}"${before}:${after}`);
+        // Whitespace before the key's closing quote and around its colon, raw or escaped.
+        text = text.replace(`"${key}":`, () => `"${key}${gap(random)}"${gap(random)}:${gap(random)}`);
         const depth = Math.floor(random() * 4);
         for (let level = 0; level < depth; level++) text = JSON.stringify({ level: 30, msg: text }, null, random() < 0.5 ? undefined : 2);
         return { seed: seed + 1, depth, text };
@@ -657,6 +696,16 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
         ["folded", (value) => `Authorization: Custom\r\n\t${value}\r\nHost: git.example`],
         ["after a line break", (value) => `request failed\nAuthorization: ${value}`],
         ["u-escaped JSON key", (value) => `{"\\u0041uthorization":${JSON.stringify(value)}}`],
+        // Escaped whitespace at the separator, classified as its raw form is.
+        ["escaped NBSP", (value) => `Authorization\\u00a0: ${value}`],
+        ["escaped EM SPACE", (value) => `{"Authorization":\\u2003${JSON.stringify(value)}}`],
+        ["escaped BOM", (value) => `{"Authorization\\uFEFF": ${JSON.stringify(value)}}`],
+        ["escaped vertical tab", (value) => `authorization\\v= ${value}`],
+        // Compound keys: `authorization` as a delimited word.
+        ["compound JSON key", (value) => JSON.stringify({ authorization_header: value, safe: "keep" })],
+        ["compound proxy key", (value) => `proxy_authorization: ${value}`],
+        ["compound dotted key", (value) => `authorization.value = ${value}`],
+        ["compound escaped delimiter", (value) => `{"authorization\\u005fheader":${JSON.stringify(value)}}`],
       ];
       /** `text` serialized `depth` times as a log record's message, as nested structured logs carry it. */
       const encode = (text: string, depth: number): string => {
@@ -802,6 +851,9 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
       fill("\\u0041"), fill("\\\\u0041uthorizatio"), fill("Authorizatio"), fill('\\"Authorization\\"'), fill("\\nauthorization"), fill("--authorizatio"),
       // Separator whitespace, raw and escaped, with no separator after it.
       `Authorization${fill("\n")}`, `"Authorization"${fill("\\n")}`, `Authorization${fill("\\\\\\t")}`, fill("Authorization \n"), fill('"authorization"\\u000a'), `authorization:${fill(" \r\n")}`,
+      // Compound keys and escaped whitespace: long key runs, near-separators and escapes that decode to no whitespace.
+      fill("authorization_"), `authorization_${fill("a")}`, fill("x-authorization-token "), fill("authorization.x\\u00a0"), `Authorization${fill("\\u00a0")}`,
+      `Authorization${fill("\\\\u2003")}`, fill("authorization\\u005f"), fill("Authorization\\u0041"), `"authorization_x${fill("\\uFEFF")}"`,
     ];
     for (const input of inputs) {
       for (const scrub of [scrubDiagnosticSecrets, scrubSecretsForLLM]) {

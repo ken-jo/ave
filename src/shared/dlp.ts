@@ -283,8 +283,9 @@ function redactCredentialAssignments(text: string): string {
     for (let first = true; ; first = false) {
       let start = at + 1;
       while (start < limit && (quoted || !first ? isJsonWhitespace(text[start]) : isBlank(text[start]))) start++;
-      REDACTION_MARKER.lastIndex = start;
-      // A value that is a marker alone was redacted already; one that goes on past a marker is not.
+      // A value that is a marker alone was redacted already; one that goes on past a marker is not. The marker
+      // may stand past separator whitespace, raw or escaped, that the header stage left before it.
+      REDACTION_MARKER.lastIndex = Math.min(skipSeparatorSpace(text, start), limit);
       if (REDACTION_MARKER.test(text) && (REDACTION_MARKER.lastIndex >= limit || isWhitespace(text[REDACTION_MARKER.lastIndex]))) return resumeAt;
       let stop = valueEnd(start, first && text[at] === "=" && keyStart === lineFirst, limit);
       if (text.slice(at + 1, start).includes("\n")) {
@@ -597,39 +598,118 @@ function escapedNamePattern(name: string): string {
 }
 
 /**
- * Whitespace that may stand around a header's separator (`SEP_WS`): any raw
- * whitespace, line breaks and U+2028/U+2029 included (JSON allows a line
- * break between a key, its colon and its value), and the same whitespace
- * escaped in a JSON string at any depth (`\n`, `\\\t`, `\u000a`). An escape's
- * backslashes are read from the first of their run only, so the scan stays linear.
+ * Whitespace that may stand around a header's separator: what JS `\s`
+ * matches, which by the language's definition holds the line terminators
+ * (LF, CR, U+2028, U+2029), U+FEFF and every Unicode space separator (NBSP,
+ * EM SPACE, IDEOGRAPHIC SPACE, ...). The one predicate both a raw character
+ * and a decoded escape are classified by ({@link skipSeparatorSpace}), so no
+ * list of escaped forms can drift from it.
  */
-const SEP_WS = String.raw`(?:\s|(?<!\\)\\+(?:[nrtfv]|u(?:0009|000a|000b|000c|000d|0020|2028|2029)))`;
+function isSeparatorSpace(char: string): boolean {
+  return /^\s$/u.test(char);
+}
+
+/** The characters JSON and JS escapes spell with one letter, decoded. */
+const LETTER_ESCAPES: Readonly<Record<string, string>> = { n: "\n", r: "\r", t: "\t", f: "\f", v: "\v", b: "\b" };
 
 /**
- * The grammar of an `Authorization` or `Proxy-Authorization` header up to
- * its value (§18.8): the name — after any character but a letter or digit,
- * or right after an escape sequence (`\nAuthorization` in a JSON string),
- * each letter as itself or `\u`-escaped — then an optional closing quote,
- * escaped by any number of backslashes, then `SEP_WS*`, `:` or `=`,
- * `SEP_WS*`. So `Authorization: `, `authorization=`, a JSON key at any depth
- * and with any JSON whitespace around its colon, and any key ending in the
- * name (`x-authorization:`) all count; so does a flag `--authorization `.
- * The value starts at the first character after that.
+ * Where separator whitespace starting at `start` ends: raw whitespace and
+ * escaped whitespace at any backslash depth (`\n`, `\\\t`, `\u00a0`, `\uFEFF`),
+ * each escape decoded and classified by {@link isSeparatorSpace}. Reads
+ * forward only, so a run is scanned once.
  */
-const AUTHORIZATION_HEADER = new RegExp(
-  String.raw`(?:(?<![A-Za-z0-9])|(?<=\\[nrtbf])|(?<=\\u[0-9A-Fa-f]{4}))` +
-    `(?:${escapedNamePattern("proxy-")})?${escapedNamePattern("authorization")}` +
-    String.raw`(?:\\*["'])?${SEP_WS}*[:=]${SEP_WS}*` +
-    String.raw`|(?<!\S)--(?:proxy-)?authorization[ \t]+`,
+function skipSeparatorSpace(text: string, start: number): number {
+  let at = start;
+  while (at < text.length) {
+    if (isSeparatorSpace(text[at]!)) {
+      at++;
+      continue;
+    }
+    if (text[at] !== "\\") return at;
+    let letter = at;
+    while (text[letter] === "\\") letter++;
+    const code = text[letter];
+    let decoded: string | undefined;
+    let next = letter + 1;
+    if (code === "u" && /^[0-9A-Fa-f]{4}$/u.test(text.slice(letter + 1, letter + 5))) {
+      decoded = String.fromCharCode(Number.parseInt(text.slice(letter + 1, letter + 5), 16));
+      next = letter + 5;
+    } else if (code !== undefined) {
+      decoded = LETTER_ESCAPES[code];
+    }
+    if (decoded === undefined || !isSeparatorSpace(decoded)) return at;
+    at = next;
+  }
+  return at;
+}
+
+/** A character that ends a key: whitespace, a quote, a backslash, or a separator. */
+const endsKey = (char: string): boolean => isSeparatorSpace(char) || char === '"' || char === "'" || char === "\\" || char === ":" || char === "=";
+const isAlphanumeric = (char: string): boolean => /^[A-Za-z0-9]$/u.test(char);
+
+/**
+ * The key character at `at`, decoded when it is spelled `\uXXXX` at any
+ * backslash depth (`authorization\u005fheader`), with where the next starts;
+ * a backslash that spells no `\u` escape is itself.
+ */
+function keyCharAt(text: string, at: number): { char: string; next: number } | undefined {
+  if (at >= text.length) return undefined;
+  if (text[at] !== "\\") return { char: text[at]!, next: at + 1 };
+  let letter = at;
+  while (text[letter] === "\\") letter++;
+  const hex = text.slice(letter + 1, letter + 5);
+  if (text[letter] === "u" && /^[0-9A-Fa-f]{4}$/u.test(hex)) return { char: String.fromCharCode(Number.parseInt(hex, 16)), next: letter + 5 };
+  return { char: "\\", next: at + 1 };
+}
+
+/**
+ * The name `authorization` as a delimited word of a key (§18.8): after the
+ * start, any character but a letter or digit, or right after an escape
+ * sequence (`\nAuthorization` in a JSON string); each letter as itself or
+ * `\u`-escaped at any backslash depth, case-insensitive. So `Authorization`,
+ * `Proxy-Authorization`, `x-authorization`, `proxy_authorization` and
+ * `authorization_header` all hold it. A flag `--authorization `
+ * (`--proxy-authorization `) is the other form, its value after blanks.
+ */
+const AUTHORIZATION_NAME = new RegExp(
+  String.raw`(?<!\S)--(?:proxy-)?authorization[ \t]+` +
+    String.raw`|(?:(?<![A-Za-z0-9])|(?<=\\[nrtbfv])|(?<=\\u[0-9A-Fa-f]{4}))` +
+    escapedNamePattern("authorization"),
   "giu",
 );
 
 /**
+ * The grammar of an Authorization header up to its value (§18.8), read
+ * after the name ends at `nameEnd`: the rest of the key, when a delimiter
+ * (any character but a letter, a digit or one that {@link endsKey}, raw or
+ * `\u`-escaped) goes on from the name (`_header`, `.value`, `-token`), up to
+ * the first character that ends a key; separator whitespace; an optional
+ * closing quote, escaped by any number of backslashes; separator whitespace;
+ * `:` or `=`; separator whitespace. Returns where the value starts, or where the key
+ * ends when no separator follows it: any later name inside that key fails
+ * the same way, so the search goes on from there.
+ */
+function headerValueStart(text: string, nameEnd: number): { value: number } | { resume: number } {
+  let at = nameEnd;
+  const after = keyCharAt(text, at);
+  if (after !== undefined && isAlphanumeric(after.char)) return { resume: at };
+  for (let next = after; next !== undefined && !endsKey(next.char); next = keyCharAt(text, at)) at = next.next;
+  const keyEnd = at;
+  at = skipSeparatorSpace(text, at);
+  let quote = at;
+  while (text[quote] === "\\") quote++;
+  if (text[quote] === '"' || text[quote] === "'") at = quote + 1;
+  at = skipSeparatorSpace(text, at);
+  if (text[at] !== ":" && text[at] !== "=") return { resume: keyEnd };
+  return { value: skipSeparatorSpace(text, at + 1) };
+}
+
+/**
  * `text` with every Authorization header's value, of any scheme known or
- * not, replaced whole by one marker: from after the name (and separator) to
- * {@link authorizationValueEnd}. A marker already in the value is not trusted
- * (`[REDACTED:TOKEN] <secret>`, a folded line after it): the value goes with
- * it, so a value that is one marker stays one marker.
+ * not, replaced whole by one marker: from where {@link headerValueStart}
+ * says it starts to {@link authorizationValueEnd}. A marker already in the
+ * value is not trusted (`[REDACTED:TOKEN] <secret>`, a folded line after
+ * it): the value goes with it, so a value that is one marker stays one marker.
  *
  * The one stage that recognizes an Authorization key or value: both
  * {@link scrubSecretsForLLM} and {@link scrubDiagnosticSecretsStrict} run it
@@ -639,14 +719,23 @@ const AUTHORIZATION_HEADER = new RegExp(
 function maskAuthorizationValues(text: string): string {
   let out = "";
   let copied = 0;
-  AUTHORIZATION_HEADER.lastIndex = 0;
-  for (let match = AUTHORIZATION_HEADER.exec(text); match !== null; match = AUTHORIZATION_HEADER.exec(text)) {
-    const start = match.index + match[0].length;
+  AUTHORIZATION_NAME.lastIndex = 0;
+  for (let match = AUTHORIZATION_NAME.exec(text); match !== null; match = AUTHORIZATION_NAME.exec(text)) {
+    const nameEnd = match.index + match[0].length;
+    const found = match[0].startsWith("--") ? { value: nameEnd } : headerValueStart(text, nameEnd);
+    if ("resume" in found) {
+      AUTHORIZATION_NAME.lastIndex = Math.max(found.resume, AUTHORIZATION_NAME.lastIndex);
+      continue;
+    }
+    const start = found.value;
     const end = authorizationValueEnd(text, start);
-    if (end === start) continue;
+    if (end === start) {
+      AUTHORIZATION_NAME.lastIndex = Math.max(start, AUTHORIZATION_NAME.lastIndex);
+      continue;
+    }
     out += `${text.slice(copied, start)}[REDACTED:TOKEN]`;
     copied = end;
-    AUTHORIZATION_HEADER.lastIndex = end;
+    AUTHORIZATION_NAME.lastIndex = end;
   }
   return out + text.slice(copied);
 }

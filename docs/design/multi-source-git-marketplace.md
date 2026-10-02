@@ -2336,21 +2336,39 @@ other opaque secret) is masked only in these positions:
   the secret. A redaction marker already in the value is not trusted
   (`[REDACTED:TOKEN] <secret>`, or a folded line after it): the whole value
   becomes one marker, so a value that is one marker stays one marker. The
-  header is read by one grammar: the name (`Authorization` or
-  `Proxy-Authorization`, after any character but a letter or digit or right
-  after an escape sequence, so `x-authorization:` and `\nAuthorization:` in
-  a JSON string count; each letter as itself or `\u`-escaped), an optional
-  closing quote escaped by any number of backslashes, then `SEP_WS*`, `:` or
-  `=`, `SEP_WS*`. `SEP_WS` is any raw whitespace, line breaks (CR, LF,
-  CRLF) and U+2028/U+2029 included, and the same whitespace escaped in a
-  JSON string at any depth (`\n`, `\\\t`, `\u000a`). So a JSON key counts
-  at any depth and with any whitespace JSON allows around its colon
-  (`{"Authorization":` and a line break, then the value). The value starts
-  at the first character after that grammar and runs to the end of the
-  line it starts on, through folded lines, or to the end of the text. A
-  `--authorization` flag counts too. One stage, `maskAuthorizationValues`,
-  is the only code that reads `authorization`: both scrubbers run it first,
-  with one value-span function, and nothing else in either does. A
+  header is read by one grammar. Its key holds `authorization` as a
+  delimited word, case-insensitive, each letter as itself or `\u`-escaped:
+  the word starts the key or follows any character but a letter or digit,
+  or an escape sequence (`x-authorization:`, `proxy_authorization:`, and
+  `\nAuthorization:` in a JSON string), and it ends the key or a
+  delimiter follows it (any character but a letter or digit, raw or
+  `\u`-escaped), which goes on to the key's end: `Authorization`,
+  `Proxy-Authorization`, `authorization_header`, `x-authorization-token`,
+  `authorization.value` and `AUTHORIZATION_URL` are all header keys, and
+  `xauthorization` and `authorizationfoo` are not. A key such as
+  `authorization_url=https://…` is masked too: over-masking a URL costs only
+  display, while a key the grammar skipped (`authorization_header="Basic …"`)
+  leaked its value. After the key: separator whitespace, an optional closing
+  quote escaped by any number of backslashes, separator whitespace, `:` or
+  `=`, separator whitespace. Separator whitespace is classified by one
+  predicate, JS `\s`, which by the language's definition holds the line
+  terminators (CR, LF, U+2028, U+2029), U+FEFF and every Unicode space
+  separator (NBSP, EM SPACE, …). A raw character is classified by it
+  directly; an escape sequence at any backslash depth (`\n`, `\r`,
+  `\t`, `\f`, `\v`, `\u` and four hex digits; `\\\t`,
+  `\u00a0`, `\uFEFF`) is decoded first and its character classified
+  by the same predicate, so there is no list of escaped forms to drift from
+  the raw one. So a JSON key counts at any depth and with any whitespace
+  around its colon (`{"Authorization":` and a line break, then the value;
+  `Authorization\u00a0: …`). The value starts at the first character
+  after that grammar and runs to the end of the line it starts on, through
+  folded lines, or to the end of the text. A `--authorization` flag counts
+  too. One stage, `maskAuthorizationValues`, is the only code that reads
+  `authorization`: both scrubbers run it first, with one value-span
+  function, and nothing else in either does. A credential assignment whose
+  key also holds a credential word (`x-authorization-token`) finds the
+  stage's marker past the same separator whitespace and leaves it, so both
+  scrubbers mask the same span. A
   `Bearer` value; an `x-api-key` or `x-auth-token` value;
 - the value of a credential assignment (`key=value`, `key: value`, JSON
   `"key": "value"`, `--key value`) whose key holds `token`, `secret`,

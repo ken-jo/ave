@@ -925,6 +925,49 @@ describe("git marketplace IPC boundary", () => {
     expect(JSON.stringify(answer)).not.toContain(secret);
   });
 
+  it.each([
+    ["an escaped NBSP", "\\u00a0"],
+    ["an escaped EM SPACE", "\\u2003"],
+    ["an escaped BOM", "\\uFEFF"],
+    ["an escaped vertical tab, two levels deep", "\\\\v"],
+  ])("masks an Authorization value with %s before its colon in a failure it answers with (§18.8)", async (_label, space) => {
+    const secret = "opaque-pass-12345";
+    await setup({
+      refresh: vi.fn(async () => {
+        throw new MarketplaceError("SOURCE_UNREACHABLE", `proxy returned Authorization${space}: Custom ${secret}`, {
+          detail: { reason: "proxy", host: "git.example", proxy: `{"Proxy-Authorization${space}":${space}"Custom ${secret}"}` },
+        });
+      }),
+    });
+    const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+    expect(answer).toMatchObject({
+      ok: false,
+      code: "SOURCE_UNREACHABLE",
+      message: `proxy returned Authorization${space}: [REDACTED:TOKEN]`,
+      detail: { reason: "proxy", proxy: `{"Proxy-Authorization${space}":${space}[REDACTED:TOKEN]` },
+    });
+    expect(JSON.stringify(answer)).not.toContain(secret);
+  });
+
+  it("masks the value of a key that holds `authorization` as a word in a failure it answers with (§18.8)", async () => {
+    const secret = "opaque-pass-12345";
+    await setup({
+      refresh: vi.fn(async () => {
+        throw new MarketplaceError("SOURCE_UNREACHABLE", `config rejected: authorization_header="Basic ${secret}"`, {
+          detail: { reason: "proxy", host: "git.example", proxy: JSON.stringify({ proxy_authorization: `Basic ${secret}`, safe: "keep" }) },
+        });
+      }),
+    });
+    const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+    expect(answer).toMatchObject({
+      ok: false,
+      code: "SOURCE_UNREACHABLE",
+      message: "config rejected: authorization_header=[REDACTED:TOKEN]",
+      detail: { reason: "proxy", proxy: '{"proxy_authorization":[REDACTED:TOKEN]' },
+    });
+    expect(JSON.stringify(answer)).not.toContain(secret);
+  });
+
   it("masks an Authorization value whole in a failure it answers with, past a marker already in it (§18.8)", async () => {
     const secret = "opaque-pass-12345";
     await setup({

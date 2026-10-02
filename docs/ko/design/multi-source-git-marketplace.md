@@ -2129,18 +2129,30 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
   따옴표(`O'Neil`, `Couldn't`) 모두 그렇습니다. 어떤 따옴표가 구분자인지 가릴 수 없고, 줄의
   나머지를 가리는 비용은 표시뿐이지만 일찍 멈추면 비밀이 샙니다. 값 안에 이미 있는 가림
   표시도 믿지 않습니다(`[REDACTED:TOKEN] <비밀>`, 그 뒤의 접힌 줄). 값 전체가 표시 하나가
-  되므로, 이미 표시 하나인 값은 표시 하나로 남습니다. 헤더는 문법 하나로 읽습니다. 이름
-  (`Authorization`·`Proxy-Authorization`. 글자·숫자가 아닌 문자 뒤나 이스케이프 시퀀스 바로
-  뒤에서 시작하므로 `x-authorization:`과 JSON 문자열 안의 `\nAuthorization:`도 셈. 각 글자는
-  그대로이거나 `\u` 이스케이프), 백슬래시 몇 개로든 이스케이프된 닫는 따옴표(선택), 그다음
-  `SEP_WS*`, `:`나 `=`, `SEP_WS*`입니다. `SEP_WS`는 모든 원시 공백(CR, LF, CRLF와
-  U+2028/U+2029 포함)과, 깊이와 상관없이 JSON 문자열 안에 이스케이프된 같은 공백(`\n`,
-  `\\\t`, `\u000a`)입니다. 따라서 JSON 키는 깊이와 상관없이, 콜론 주위에 JSON이 허용하는
-  어떤 공백이 있어도 셉니다(`{"Authorization":` 뒤 줄바꿈, 그리고 값). 값은 이 문법 뒤 첫
-  문자에서 시작해 그 문자가 있는 줄 끝까지, 접힌 줄까지, 또는 텍스트 끝까지입니다.
-  `--authorization` 플래그도 셉니다. `authorization`을 읽는 코드는 `maskAuthorizationValues`
-  단계 하나뿐입니다. 두 스크러버가 값 범위 함수 하나를 쓰는 그 단계를 맨 먼저 실행하고, 어느
-  쪽에도 그 밖의 처리는 없습니다. 그리고 `Bearer` 값, `x-api-key`·`x-auth-token` 값
+  되므로, 이미 표시 하나인 값은 표시 하나로 남습니다. 헤더는 문법 하나로 읽습니다. 키는
+  `authorization`을 구분된 단어로 담습니다(대소문자 무시, 각 글자는 그대로이거나 `\u`
+  이스케이프). 그 단어는 키의 처음이거나 글자·숫자가 아닌 문자나 이스케이프 시퀀스 뒤에서
+  시작하고(`x-authorization:`, `proxy_authorization:`, JSON 문자열 안의
+  `\nAuthorization:`), 키의 끝이거나 구분자(글자·숫자가 아닌 문자, 그대로이거나 `\u`
+  이스케이프)가 뒤따르며, 그 구분자부터 키 끝까지가 키의 나머지입니다. 그래서
+  `Authorization`, `Proxy-Authorization`, `authorization_header`, `x-authorization-token`,
+  `authorization.value`, `AUTHORIZATION_URL`은 모두 헤더 키이고, `xauthorization`과
+  `authorizationfoo`는 아닙니다. `authorization_url=https://…` 같은 키도 가립니다. URL을
+  더 가리는 비용은 표시뿐이지만, 문법이 건너뛴 키(`authorization_header="Basic …"`)는 값이
+  샜습니다. 키 다음은 구분자 공백, 백슬래시 몇 개로든 이스케이프된 닫는 따옴표(선택), 구분자
+  공백, `:`나 `=`, 구분자 공백입니다. 구분자 공백은 술어 하나, JS `\s`로 가립니다. 언어
+  정의상 이것은 줄 끝 문자(CR, LF, U+2028, U+2029), U+FEFF, 모든 유니코드 공백 구분자(NBSP,
+  EM SPACE 등)를 담습니다. 원시 문자는 이 술어로 바로 가리고, 깊이와 상관없는 이스케이프
+  시퀀스(`\n`, `\r`, `\t`, `\f`, `\v`, `\u`와 16진수 네 자리.
+  `\\\t`, `\u00a0`, `\uFEFF`)는 먼저 디코딩한 뒤 그 문자를 같은 술어로
+  가립니다. 그래서 원시 공백 목록과 어긋날 이스케이프 목록이 따로 없습니다. 따라서 JSON 키는
+  깊이와 상관없이, 콜론 주위에 어떤 공백이 있어도 셉니다(`{"Authorization":` 뒤 줄바꿈, 그리고
+  값. `Authorization\u00a0: …`). 값은 이 문법 뒤 첫 문자에서 시작해 그 문자가 있는 줄
+  끝까지, 접힌 줄까지, 또는 텍스트 끝까지입니다. `--authorization` 플래그도 셉니다.
+  `authorization`을 읽는 코드는 `maskAuthorizationValues` 단계 하나뿐입니다. 두 스크러버가
+  값 범위 함수 하나를 쓰는 그 단계를 맨 먼저 실행하고, 어느 쪽에도 그 밖의 처리는 없습니다.
+  키에 자격 증명 단어도 든 할당(`x-authorization-token`)은 같은 구분자 공백 너머에서 그
+  단계의 표시를 찾아 그대로 두므로, 두 스크러버가 같은 범위를 가립니다. 그리고 `Bearer` 값, `x-api-key`·`x-auth-token` 값
 - 키에 `token`, `secret`, `password`, `passwd`, `pwd`, `apikey`, `accesskey`, `privatekey`,
   `credential`, `bearer`가 들었거나 `auth`·`pat`이 온전한 조각인
   자격 증명 할당(`key=value`, `key: value`, JSON `"key": "value"`, `--key value`)의 값
