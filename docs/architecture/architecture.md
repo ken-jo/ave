@@ -681,20 +681,25 @@ after it began. Lock order: a marketplace operation comes before any plugin
 lifecycle lock. Code that holds plugin locks and calls the marketplace enters
 one operation first and takes the plugin locks inside it; installs,
 uninstalls and updates of one package also take that package's lock, after
-the operation and before any plugin lock.
+the operation and before any plugin lock. Predecessor removal takes both
+packages' locks the same way, and a package lock asked for while a plugin
+lock is held fails instead of waiting.
 
 Installed packages update by themselves at boot and once a day, one at a
 time and only while no conversation turn, session mutation or session
 transition is running (`ConversationActivityCoordinator.onIdle`); an agent
 plugin also waits until its MCP calls drain. An update applies automatically
 only when its consent fingerprint (authority, MCP servers, hooks, launchers,
-and each bundled server's and hook's approval digest over the package tree)
+and each bundled server's and hook's approval digest over the package
+tree's exact bytes, the manifest's version included)
 equals the baseline the installed version was reviewed with: checked once
 against the catalog and again against the staged bytes before anything
 activates. A consent change is never applied automatically; it waits for the
 user's review. A component approval carries to a new generation only while
 its approval digest is unchanged. A `requiredInstalls` update is reviewed by
-the policy and leaves any new component unapproved. The [multi-source git marketplace design](../design/multi-source-git-marketplace.md)
+the policy and leaves any new component unapproved. Nothing a queued update
+carries authorizes it: when its turn comes it is judged again, under the
+locks, with the policy and switches in force then. The [multi-source git marketplace design](../design/multi-source-git-marketplace.md)
 owns those contracts (network targets: its §7.4; automatic updates: §7.3;
 local folders: §7.7; refresh, lock order and the policy keys: §12; the update
 review: §15.6).
