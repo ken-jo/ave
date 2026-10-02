@@ -540,21 +540,43 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
       expect(scrubDiagnosticSecrets(kept)).toBe(kept);
       expect(scrubSecretsForLLM(kept)).toBe(kept);
     }
-    // A quoted key runs to its closing quote: whitespace and decoded punctuation inside it are key content (§18.8).
-    for (const key of ["authorization header", "authorization\\tvalue", `authorization${String.fromCharCode(0xa0)}header`, "authorization\\u003aheader", "authorization\\u003dheader"]) {
-      for (const text of [`{"${key}":"Custom opaque-pass-12345"}`, JSON.stringify({ level: 30, msg: `{"${key}":"Custom opaque-pass-12345"}` })]) {
-        expect(scrubDiagnosticSecrets(text), text).toBe(`${text.slice(0, text.lastIndexOf(":", text.indexOf("Custom")) + 1)}[REDACTED:TOKEN]`);
-        expect(scrubSecretsForLLM(text), text).toBe(scrubDiagnosticSecrets(text));
+    // The key's remainder runs forward from the word to the first `:` or `=`, raw or escaped: whitespace, quotes of
+    // any depth, apostrophes and other punctuation are remainder, never its end (§18.8).
+    for (const [key, masked] of [
+      ["authorization header", '{"authorization header":'],
+      ["authorization\\tvalue", '{"authorization\\tvalue":'],
+      [`authorization${String.fromCharCode(0xa0)}header`, `{"authorization${String.fromCharCode(0xa0)}header":`],
+      ["authorization\\u003aheader", '{"authorization\\u003a'],
+      ["authorization\\u003dheader", '{"authorization\\u003d'],
+      ["authorization:header", '{"authorization:'],
+      ["client's authorization header", `{"client's authorization header":`],
+      ['client \\"authorization header', '{"client \\"authorization header":'],
+      ['prefix \\"quoted\\" authorization header', '{"prefix \\"quoted\\" authorization header":'],
+    ]) {
+      const text = `{"${key}":"Custom opaque-pass-12345"}`;
+      expect(scrubDiagnosticSecrets(text), text).toBe(`${masked}[REDACTED:TOKEN]`);
+      expect(scrubSecretsForLLM(text), text).toBe(`${masked}[REDACTED:TOKEN]`);
+      for (let depth = 1; depth < 4; depth++) {
+        let nested = text;
+        for (let level = 0; level < depth; level++) nested = JSON.stringify({ level: 30, msg: nested });
+        expect(scrubDiagnosticSecrets(nested), nested).not.toContain("opaque-pass-12345");
+        expect(scrubSecretsForLLM(nested), nested).toBe(scrubDiagnosticSecrets(nested));
       }
     }
-    // A raw `:` inside the quotes is a bare key's separator too: the earlier reading's value start wins, so more goes.
-    expect(scrubDiagnosticSecrets('{"authorization:header":"Custom opaque-pass-12345"}')).toBe('{"authorization:[REDACTED:TOKEN]');
-    expect(scrubSecretsForLLM('{"authorization:header":"Custom opaque-pass-12345"}')).toBe('{"authorization:[REDACTED:TOKEN]');
-    // A bare header after a stray quote is masked where it stands, whatever a quoted reading finds later (§18.8).
-    const stray = '"x"-\n Authorization=Token opaque-pass-12345\nnext ": v\nlast';
-    expect(scrubDiagnosticSecrets(stray)).toBe('"x"-\n Authorization=[REDACTED:TOKEN]\nlast');
-    expect(scrubSecretsForLLM(stray)).toBe(scrubDiagnosticSecrets(stray));
-    // A quoted value that only mentions the word is no key, and a quoted word that goes on in letters is not the word.
+    // A quote far away no longer pairs with anything: the lines between survive (§18.8, round 17).
+    const info = Array.from({ length: 1000 }, (_, line) => `INFO line ${line} kept`).join("\n");
+    const far = `"\nAuthorization: Custom opaque-pass-12345\n${info}\n": late-value\nlast`;
+    expect(scrubDiagnosticSecrets(far)).toBe(`"\nAuthorization: [REDACTED:TOKEN]\n${info}\n": late-value\nlast`);
+    expect(scrubSecretsForLLM(far)).toBe(scrubDiagnosticSecrets(far));
+    // The read is bounded: past one raw line break, or past KEY_WINDOW (256) decoded characters, the word is no key.
+    for (const kept of ["the authorization header\nwas absent\nnext: line", `authorization ${"x".repeat(300)}: value`]) {
+      expect(scrubDiagnosticSecrets(kept)).toBe(kept);
+      expect(scrubSecretsForLLM(kept)).toBe(kept);
+    }
+    // Prose with a separator after the word within the bound is masked: accepted over-masking (§18.8).
+    expect(scrubSecretsForLLM("authorization flow: PKCE")).toBe("authorization flow: [REDACTED:TOKEN]");
+    expect(scrubSecretsForLLM("the authorization header\n  was absent: retry")).toBe("the authorization header\n  was absent: [REDACTED:TOKEN]");
+    // No separator after the word, or a word that goes on in letters, is no key.
     for (const kept of ['{"level":30,"msg":"authorization header missing"}', '{"authorizationfoo bar":"keep"}', '{"msg":"see the \'authorization\' docs"}']) {
       expect(scrubDiagnosticSecrets(kept)).toBe(kept);
       expect(scrubSecretsForLLM(kept)).toBe(kept);
@@ -627,6 +649,9 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
         // Quoted keys of several words and punctuation: whitespace, `:` and `=` inside the quotes are key content.
         "authorization header", "authorization\theader", `authorization${String.fromCharCode(0xa0)}header`, "authorization:header", "authorization=header",
         "upstream authorization header value",
+        // Quotes inside the key: an apostrophe, an escaped quote, quotes of another depth (§18.8, round 17).
+        "client's authorization header", 'client "authorization header', 'prefix "quoted" authorization header', 'a\\"authorization\\\\" b',
+        "it's 'authorization' here",
       ];
       const SCHEMES = ["Custom", "Basic", "Bearer", "[REDACTED:TOKEN]", 'Digest username="O\'Neil", response=', ""];
       const INDENTS: ReadonlyArray<number | string | undefined> = [undefined, 0, 1, 2, "\t"];
@@ -643,6 +668,13 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
         return [`\\u${hex}`, `\\u${hex.toUpperCase()}`, ...(LETTERS[char] === undefined ? [] : [`\\${LETTERS[char]}`])];
       };
       /** Whitespace written at a key's colon or before its closing quote: none, or up to three characters from {@link SPACES}, each raw or escaped. */
+      const LINE_BREAKS = new Set(["\n", "\r"]);
+      /** As {@link gap}, but a raw line break only escaped: where the stage's bound allows none (§18.8). */
+      const gapWithoutRawBreak = (random: () => number): string =>
+        Array.from({ length: Math.floor(random() * 4) }, () => {
+          const char = pick(random, SPACES);
+          return random() < 0.5 && !LINE_BREAKS.has(char) ? char : pick(random, escapedForms(char));
+        }).join("");
       const gap = (random: () => number): string =>
         Array.from({ length: Math.floor(random() * 4) }, () => {
           const char = pick(random, SPACES);
@@ -674,9 +706,15 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
         const key = pick(random, KEYS);
         let text = JSON.stringify(pick(random, SHAPES)(key, `${pick(random, SCHEMES)} ${secret}`.trim()), null, pick(random, INDENTS));
         // The key spelled as JSON spells it, each character but a letter or digit raw or escaped (`\u003a`, `\t`); then
-        // whitespace before its closing quote and around its colon, raw or escaped.
+        // whitespace before its closing quote and around its colon, raw or escaped. The stage's bound (§18.8): one raw
+        // line break between the word and its separator, and none at all when the key itself holds `:` or `=`, whose
+        // value then runs from that character to the end of its line.
         const spelled = [...key].map((char) => (/[A-Za-z0-9]/u.test(char) || random() < 0.5 ? JSON.stringify(char).slice(1, -1) : pick(random, escapedForms(char)))).join("");
-        text = text.replace(`${JSON.stringify(key)}:`, () => `"${spelled}${gap(random)}"${gap(random)}:${gap(random)}`);
+        const separatorInKey = /[:=]/u.test(key);
+        const inQuotes = gapWithoutRawBreak(random);
+        const beforeColon = separatorInKey ? gapWithoutRawBreak(random) : gap(random);
+        const afterColon = separatorInKey ? gapWithoutRawBreak(random) : gap(random);
+        text = text.replace(`${JSON.stringify(key)}:`, () => `"${spelled}${inQuotes}"${beforeColon}:${afterColon}`);
         const depth = Math.floor(random() * 4);
         for (let level = 0; level < depth; level++) text = JSON.stringify({ level: 30, msg: text }, null, random() < 0.5 ? undefined : 2);
         return { seed: seed + 1, depth, text };
@@ -858,6 +896,20 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
     expect(scrubDiagnosticSecrets("mysql -p canarypass")).toBe("mysql -p canarypass");
   });
 
+  it("scrubs 332 KB of quotes at 800 distinct escape depths in linear time (round 17)", () => {
+    // Each name is followed by a quote one level deeper: no closing quote at any depth, no separator anywhere. A
+    // per-depth closing-quote search read this family in N^1.5 (175M visits); the bounded key window reads it once.
+    let text = "";
+    for (let depth = 1; depth <= 800; depth++) text += `${"\\".repeat(depth)}"authorization `;
+    expect(text.length).toBeGreaterThan(330_000);
+    for (const scrub of [scrubDiagnosticSecrets, scrubSecretsForLLM]) {
+      const started = performance.now();
+      expect(scrub(text)).toBe(text);
+      // Generous for a loaded CI host: linear in its 332 KB, about five times the 64 KiB budget below.
+      expect(performance.now() - started).toBeLessThan(1500);
+    }
+  });
+
   it("scrubs 64 KiB of adversarial text in linear time", () => {
     const size = 64 * 1024;
     const fill = (unit: string, tail = "") => unit.repeat(Math.ceil(size / unit.length)).slice(0, size - tail.length) + tail;
@@ -881,6 +933,8 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
       // Quoted keys: names whose closing quote is far ahead, or never comes, at one depth or alternating depths.
       `"${fill("authorization ")}`, fill('"authorization '), fill("'a authorization "), fill('"authorization \\"authorization '),
       `"${fill("authorization\\u003a")}`, `\\"${fill("authorization\n")}\\": x`, fill('"x" authorization '),
+      // Names within one key window of a long backslash run: the run is read once per window, not once per step.
+      `${"authorization ".repeat(18)}${fill("\\")}`, `${"authorization ".repeat(18)}${fill("\\", "u0041")}`,
     ];
     for (const input of inputs) {
       for (const scrub of [scrubDiagnosticSecrets, scrubSecretsForLLM]) {

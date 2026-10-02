@@ -271,6 +271,9 @@ describe("memory_write — credential guard", () => {
       ["a configuration URL", "authorization_url=https://idp.example/login"],
       ["a compound header key", 'authorization_header="Basic opaque-pass-12345"'],
       ["a quoted key of two words", '{"authorization header":"Custom opaque-pass-12345"}'],
+      ["a key with an apostrophe inside it", JSON.stringify({ "client's authorization header": "Custom opaque-pass-12345" })],
+      ["a key with an escaped quote inside it", JSON.stringify({ 'client "authorization header': "Custom opaque-pass-12345" })],
+      ["prose with a separator after the word", "authorization flow: PKCE"],
     ])("rejects %s under an Authorization-like key and says that is why (§18.8)", async (_label, content) => {
       const { store, saveMemory } = makeStore();
       const result = await run({ title: "HTTP configuration", content }, store);

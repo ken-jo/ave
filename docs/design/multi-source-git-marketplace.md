@@ -2336,54 +2336,55 @@ other opaque secret) is masked only in these positions:
   the secret. A redaction marker already in the value is not trusted
   (`[REDACTED:TOKEN] <secret>`, or a folded line after it): the whole value
   becomes one marker, so a value that is one marker stays one marker. The
-  header is read by one grammar. Its key holds `authorization` as a
-  delimited word, case-insensitive, each letter as itself or `\u`-escaped:
-  the word starts the key or follows any character but a letter or digit,
-  or an escape sequence (`x-authorization:`, `proxy_authorization:`, and
-  `\nAuthorization:` in a JSON string), and it ends the key or a
-  delimiter follows it (any character but a letter or digit, raw or
-  `\u`-escaped), which goes on to the key's end: `Authorization`,
-  `Proxy-Authorization`, `authorization_header`, `x-authorization-token`,
-  `authorization.value` and `AUTHORIZATION_URL` are all header keys, and
-  `xauthorization` and `authorizationfoo` are not. A key such as
-  `authorization_url=https://…` is masked too, an accepted over-mask: a key
-  the grammar skipped (`authorization_header="Basic …"`) leaked its value.
-  The cost is not display alone. Model-bound text loses that configuration
-  value, and `memory_write` refuses a memory holding it
-  (`authorization_url=https://…/login`); its refusal names the reason, a
-  value under an Authorization-like key, in English and Korean, so the user
-  can rephrase the fact without it. A quoted key, opened by `"` or `'` at
-  any escape depth, runs from that quote to the closing quote of the same
-  depth: every character in between is key content, an escape too, whatever
-  it decodes to, so `{"authorization header":…}`,
-  `{"authorization\tvalue":…}` and `{"authorization\u003aheader":…}` are
-  whole keys, and a decoded `:`, `=` or whitespace inside the quotes never
-  ends the key. The separator grammar then starts after the closing quote.
-  Both readings of a name are tried, the quoted key's and the bare key's;
-  when both find a value, it runs from the earlier start through the later
-  one's line, so a stray quote never hides a bare header after it and a raw
-  `:` inside quotes masks from there. A bare key keeps the rule above: it ends at the first whitespace, quote,
-  backslash, `:` or `=`. After a bare key: separator whitespace, an optional
-  closing quote escaped by any number of backslashes, separator whitespace,
-  `:` or `=`, separator whitespace. Separator whitespace is classified by one
-  predicate, JS `\s`, which by the language's definition holds the line
-  terminators (CR, LF, U+2028, U+2029), U+FEFF and every Unicode space
-  separator (NBSP, EM SPACE, …). A raw character is classified by it
-  directly; an escape sequence at any backslash depth (`\n`, `\r`,
-  `\t`, `\f`, `\v`, `\u` and four hex digits; `\\\t`,
-  `\u00a0`, `\uFEFF`) is decoded first and its character classified
-  by the same predicate, so there is no list of escaped forms to drift from
-  the raw one. So a JSON key counts at any depth and with any whitespace
-  around its colon (`{"Authorization":` and a line break, then the value;
-  `Authorization\u00a0: …`). The value starts at the first character
-  after that grammar and runs to the end of the line it starts on, through
+  header is read by one forward rule, with no quote pairing and no escape
+  depth. The name is `authorization` as a delimited word, case-insensitive,
+  each letter as itself or `\u`-escaped: it starts the text or follows any
+  character but a letter or digit, or an escape sequence
+  (`x-authorization:`, `proxy_authorization:`, `\nAuthorization:` in a JSON
+  string), and the character after it, decoded, is no letter or digit, or
+  there is none. From the end of the word the key's remainder runs forward
+  to the first `:` or `=`, raw or `\u`-escaped: every other character is
+  remainder, whatever it is, a quote at any escape depth, an apostrophe, a
+  space, escaped punctuation. So `Authorization`, `Proxy-Authorization`,
+  `authorization_header`, `x-authorization-token`, `authorization.value`,
+  `AUTHORIZATION_URL`, `{"authorization header":…}`,
+  `{"client's authorization header":…}` and
+  `{"client \"authorization header":…}` are all header keys, and
+  `xauthorization` and `authorizationfoo` are not. The read is bounded: at
+  most 256 decoded characters (`KEY_WINDOW`; a `\u` escape or a run of
+  backslashes is one) and one raw line break, the whitespace run around it
+  and blank lines counting as that one. When no separator stands inside the
+  bound the word is no header key and nothing is masked; a key whose
+  remainder runs past 256 characters is out of scope. The bound is also
+  what keeps the stage linear: every character is read only by the windows
+  of the few names that stand within one window before it. After the
+  separator comes separator whitespace, classified by one predicate, JS
+  `\s`, which by the language's definition holds the line terminators (CR,
+  LF, U+2028, U+2029), U+FEFF and every Unicode space separator (NBSP, EM
+  SPACE, …). A raw character is classified by it directly; an escape
+  sequence at any backslash depth (`\n`, `\r`, `\t`, `\f`, `\v`, `\u` and four
+  hex digits; `\\\t`, `\u00a0`, `\uFEFF`) is decoded first and its character
+  classified by the same predicate, so there is no list of escaped forms to
+  drift from the raw one. The value starts at the first character after
+  that whitespace and runs to the end of the line it starts on, through
   folded lines, or to the end of the text. A `--authorization` flag counts
-  too. One stage, `maskAuthorizationValues`, is the only code that reads
-  `authorization`: both scrubbers run it first, with one value-span
-  function, and nothing else in either does. A credential assignment whose
-  key also holds a credential word (`x-authorization-token`) finds the
-  stage's marker past the same separator whitespace and leaves it, so both
-  scrubbers mask the same span. A
+  too. A key that holds `:` or `=` itself (`authorization:header`,
+  `authorization\u003aheader`) is masked from that character: its value is
+  on the same line in every serialized form, and a value on a later line
+  after such a key is out of scope. Accepted consequences of the rule, all
+  over-masking: `authorization_url=https://…` is masked (a key the grammar
+  once skipped, `authorization_header="Basic …"`, leaked its value); prose
+  with a separator after the word within the bound is masked after it
+  (`authorization flow: PKCE`); model-bound text loses those values; and
+  `memory_write` refuses a memory holding one, its refusal naming the
+  reason, a value under an Authorization-like key, in English and Korean,
+  so the user can rephrase the fact without it. One stage,
+  `maskAuthorizationValues`, is the only code that reads `authorization`:
+  both scrubbers run it first, with one value-span function, and nothing
+  else in either does. A credential assignment whose key also holds a
+  credential word (`x-authorization-token`) finds the stage's marker past
+  the same separator whitespace and leaves it, so both scrubbers mask the
+  same span. A
   `Bearer` value; an `x-api-key` or `x-auth-token` value;
 - the value of a credential assignment (`key=value`, `key: value`, JSON
   `"key": "value"`, `--key value`) whose key holds `token`, `secret`,

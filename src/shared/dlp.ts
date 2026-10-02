@@ -643,14 +643,13 @@ function skipSeparatorSpace(text: string, start: number): number {
   return at;
 }
 
-/** A character that ends a key: whitespace, a quote, a backslash, or a separator. */
-const endsKey = (char: string): boolean => isSeparatorSpace(char) || char === '"' || char === "'" || char === "\\" || char === ":" || char === "=";
 const isAlphanumeric = (char: string): boolean => /^[A-Za-z0-9]$/u.test(char);
 
 /**
  * The key character at `at`, decoded when it is spelled `\uXXXX` at any
- * backslash depth (`authorization\u005fheader`), with where the next starts;
- * a backslash that spells no `\u` escape is itself.
+ * backslash depth (`authorization\u005fheader`), with where the next starts.
+ * A run of backslashes that spells no `\u` escape is one character, `\`,
+ * so a long run is read once.
  */
 function keyCharAt(text: string, at: number): { char: string; next: number } | undefined {
   if (at >= text.length) return undefined;
@@ -659,7 +658,7 @@ function keyCharAt(text: string, at: number): { char: string; next: number } | u
   while (text[letter] === "\\") letter++;
   const hex = text.slice(letter + 1, letter + 5);
   if (text[letter] === "u" && /^[0-9A-Fa-f]{4}$/u.test(hex)) return { char: String.fromCharCode(Number.parseInt(hex, 16)), next: letter + 5 };
-  return { char: "\\", next: at + 1 };
+  return { char: "\\", next: letter };
 }
 
 /**
@@ -678,104 +677,48 @@ const AUTHORIZATION_NAME = new RegExp(
   "giu",
 );
 
+/** How far a key's remainder may run past the name, in decoded characters (§18.8). */
+const KEY_WINDOW = 256;
+
 /**
- * The grammar of an Authorization header up to its value (§18.8), read
- * after the name ends at `nameEnd`: the rest of the key, when a delimiter
- * (any character but a letter, a digit or one that {@link endsKey}, raw or
- * `\u`-escaped) goes on from the name (`_header`, `.value`, `-token`), up to
- * the first character that ends a key; separator whitespace; an optional
- * closing quote, escaped by any number of backslashes; separator whitespace;
- * `:` or `=`; separator whitespace. Returns where the value starts, or where the key
- * ends when no separator follows it: any later name inside that key fails
- * the same way, so the search goes on from there.
+ * The key's remainder after the name, read forward to its separator
+ * (§18.8): returns where the separator ends, or undefined when the name is
+ * no header key. The word must end at the name (the next character, decoded,
+ * is no letter or digit). Every character up to the first `:` or `=`, raw or
+ * `\u`-escaped, is the key's remainder, whatever it is: a quote at any
+ * escape depth, an apostrophe, a space, other escaped punctuation. No quote
+ * is paired and no depth is tracked, so no quote inside a key can end it
+ * early. The read is bounded: at most {@link KEY_WINDOW} decoded characters
+ * and one raw line break (the whitespace run around it, blank lines too,
+ * counts as that one); past either, the name is no header key and nothing is masked.
+ * The bound is what keeps the stage linear: each character is read by the
+ * windows of the few names that stand within a window before it.
  */
-function headerValueStart(text: string, nameEnd: number): { value: number } | { resume: number } {
+function separatorAfterName(text: string, nameEnd: number): number | undefined {
+  const first = keyCharAt(text, nameEnd);
+  if (first !== undefined && isAlphanumeric(first.char)) return undefined;
   let at = nameEnd;
-  const after = keyCharAt(text, at);
-  if (after !== undefined && isAlphanumeric(after.char)) return { resume: at };
-  for (let next = after; next !== undefined && !endsKey(next.char); next = keyCharAt(text, at)) at = next.next;
-  const keyEnd = at;
-  at = skipSeparatorSpace(text, at);
-  let quote = at;
-  while (text[quote] === "\\") quote++;
-  if (text[quote] === '"' || text[quote] === "'") at = quote + 1;
-  at = skipSeparatorSpace(text, at);
-  if (text[at] !== ":" && text[at] !== "=") return { resume: keyEnd };
-  return { value: skipSeparatorSpace(text, at + 1) };
-}
-
-/** How many backslashes stand right before `at`: the escape depth of a quote there. */
-function backslashesBefore(text: string, at: number): number {
-  let count = 0;
-  while (at - count > 0 && text[at - count - 1] === "\\") count++;
-  return count;
-}
-
-/**
- * The quoted-key form of the grammar (§18.8), for one text read left to
- * right. A name inside a quoted key belongs to that key up to its closing
- * quote: the nearest `"` or `'` before the name opens the key, at the escape
- * depth of the backslashes before it, and the first same quote of the same
- * depth after the name closes it. Everything in between is key content, an
- * escape too, whatever it decodes to (a space, a tab, a line break, `:`,
- * `=`), so `"authorization header"` and `"authorization\u003aheader"`
- * are whole keys. The name must still end its word: the character after it,
- * decoded, is no letter or digit. The separator grammar starts after the
- * closing quote. Returns where the value starts, or undefined when the name
- * stands in no quoted key that a separator follows; the bare-key grammar
- * ({@link headerValueStart}) then decides.
- *
- * Names are read in the order they stand, so the look back reads each
- * character once, and each look ahead for a closing quote of one depth is
- * kept and reused while the next name stands before that quote.
- */
-function quotedKeyReader(text: string): (nameStart: number, nameEnd: number) => number | undefined {
-  let readBackTo = 0;
-  let opening: { quote: string; depth: number } | undefined;
-  const closings = new Map<string, { from: number; close: number }>();
-  const openingBefore = (at: number): { quote: string; depth: number } | undefined => {
-    for (let back = at - 1; back >= readBackTo; back--) {
-      const char = text[back]!;
-      if (char === '"' || char === "'") {
-        opening = { quote: char, depth: backslashesBefore(text, back) };
-        break;
-      }
+  let lineBreaks = 0;
+  for (let read = 0; read < KEY_WINDOW && at < text.length; read++) {
+    if (text[at] === "\n" || text[at] === "\r") {
+      // One raw line break, with the whitespace (raw or escaped) and blank lines around it, is one crossing.
+      if (++lineBreaks > 1) return undefined;
+      at = skipSeparatorSpace(text, at);
+      continue;
     }
-    readBackTo = Math.max(readBackTo, at);
-    return opening;
-  };
-  const closingAfter = (quote: string, depth: number, from: number): number => {
-    const key = `${quote}${depth}`;
-    const known = closings.get(key);
-    if (known !== undefined && known.from <= from && (known.close === -1 || from <= known.close)) return known.close;
-    let close = -1;
-    for (let at = from; at < text.length; at++) {
-      if (text[at] === quote && backslashesBefore(text, at) === depth) {
-        close = at;
-        break;
-      }
-    }
-    closings.set(key, { from, close });
-    return close;
-  };
-  return (nameStart, nameEnd) => {
-    const open = openingBefore(nameStart);
-    if (open === undefined) return undefined;
-    const after = keyCharAt(text, nameEnd);
-    if (after !== undefined && isAlphanumeric(after.char)) return undefined;
-    const close = closingAfter(open.quote, open.depth, nameEnd);
-    if (close === -1) return undefined;
-    const separator = skipSeparatorSpace(text, close + 1);
-    if (text[separator] !== ":" && text[separator] !== "=") return undefined;
-    return skipSeparatorSpace(text, separator + 1);
-  };
+    const next = keyCharAt(text, at)!;
+    if (next.char === ":" || next.char === "=") return next.next;
+    at = next.next;
+  }
+  return undefined;
 }
 
 /**
  * What {@link scrubSecretsForLLM} would mask in `text`, so a refusal can say
  * why: `authorization-key` when a key holding `authorization` as a word has a
- * value (§18.8; `authorization_url=https://…` too, an accepted over-mask),
- * `credential` for any other credential shape, null for none.
+ * value (§18.8; `authorization_url=https://…` and prose such as
+ * `authorization flow: PKCE` too, accepted over-masks), `credential` for any
+ * other credential shape, null for none.
  */
 export function modelBoundCredentialKind(text: string): "authorization-key" | "credential" | null {
   if (maskAuthorizationValues(text) !== text) return "authorization-key";
@@ -784,12 +727,12 @@ export function modelBoundCredentialKind(text: string): "authorization-key" | "c
 
 /**
  * `text` with every Authorization header's value, of any scheme known or
- * not, replaced whole by one marker: from where the grammar says it starts
- * (by a quoted key's reading, {@link quotedKeyReader}, or a bare key's,
- * {@link headerValueStart}, the earlier of the two) to
- * {@link authorizationValueEnd}. A marker already in the
- * value is not trusted (`[REDACTED:TOKEN] <secret>`, a folded line after
- * it): the value goes with it, so a value that is one marker stays one marker.
+ * not, replaced whole by one marker: from past the separator
+ * {@link separatorAfterName} finds and the separator whitespace after it
+ * ({@link skipSeparatorSpace}) to {@link authorizationValueEnd}. A marker
+ * already in the value is not trusted (`[REDACTED:TOKEN] <secret>`, a folded
+ * line after it): the value goes with it, so a value that is one marker
+ * stays one marker.
  *
  * The one stage that recognizes an Authorization key or value: both
  * {@link scrubSecretsForLLM} and {@link scrubDiagnosticSecretsStrict} run it
@@ -799,25 +742,15 @@ export function modelBoundCredentialKind(text: string): "authorization-key" | "c
 function maskAuthorizationValues(text: string): string {
   let out = "";
   let copied = 0;
-  const quotedValueStart = quotedKeyReader(text);
   AUTHORIZATION_NAME.lastIndex = 0;
   for (let match = AUTHORIZATION_NAME.exec(text); match !== null; match = AUTHORIZATION_NAME.exec(text)) {
     const nameEnd = match.index + match[0].length;
-    // Both readings of a key are tried: a quoted key's and a bare key's. When both find a value, it runs from the
-    // earlier start through the later one's line, so neither reading leaves a value behind.
-    const quoted = match[0].startsWith("--") ? nameEnd : quotedValueStart(match.index, nameEnd);
-    const bare = match[0].startsWith("--") ? undefined : headerValueStart(text, nameEnd);
-    const starts = [quoted, bare !== undefined && "value" in bare ? bare.value : undefined].filter((at) => at !== undefined);
-    if (starts.length === 0) {
-      AUTHORIZATION_NAME.lastIndex = Math.max(bare !== undefined && "resume" in bare ? bare.resume : nameEnd, AUTHORIZATION_NAME.lastIndex);
-      continue;
-    }
-    const start = Math.min(...starts);
-    const end = authorizationValueEnd(text, Math.max(...starts));
-    if (end === start) {
-      AUTHORIZATION_NAME.lastIndex = Math.max(start, AUTHORIZATION_NAME.lastIndex);
-      continue;
-    }
+    const flag = match[0].startsWith("--");
+    const separatorEnd = flag ? nameEnd : separatorAfterName(text, nameEnd);
+    if (separatorEnd === undefined) continue;
+    const start = flag ? nameEnd : skipSeparatorSpace(text, separatorEnd);
+    const end = authorizationValueEnd(text, start);
+    if (end === start) continue;
     out += `${text.slice(copied, start)}[REDACTED:TOKEN]`;
     copied = end;
     AUTHORIZATION_NAME.lastIndex = end;

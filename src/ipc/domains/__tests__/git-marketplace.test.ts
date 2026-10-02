@@ -950,12 +950,13 @@ describe("git marketplace IPC boundary", () => {
   });
 
   it.each([
-    ["a space", "authorization header"],
-    ["an escaped tab", "authorization\\tvalue"],
-    ["an NBSP", `authorization${String.fromCharCode(0xa0)}header`],
-    ["an escaped colon", "authorization\\u003aheader"],
-    ["an escaped equals sign", "authorization\\u003dheader"],
-  ])("masks the value of a quoted key with %s after the word in a failure it answers with (§18.8)", async (_label, key) => {
+    ["a space", "authorization header", '{"authorization header":'],
+    ["an escaped tab", "authorization\\tvalue", '{"authorization\\tvalue":'],
+    ["an NBSP", `authorization${String.fromCharCode(0xa0)}header`, `{"authorization${String.fromCharCode(0xa0)}header":`],
+    // An escaped separator inside the key is the first separator: the value is masked from there.
+    ["an escaped colon", "authorization\\u003aheader", '{"authorization\\u003a'],
+    ["an escaped equals sign", "authorization\\u003dheader", '{"authorization\\u003d'],
+  ])("masks the value of a quoted key with %s after the word in a failure it answers with (§18.8)", async (_label, key, masked) => {
     const secret = "opaque-pass-12345";
     const message = `{"${key}":"Custom ${secret}"}`;
     expect(Object.values(JSON.parse(message))).toEqual([`Custom ${secret}`]);
@@ -965,7 +966,25 @@ describe("git marketplace IPC boundary", () => {
       }),
     });
     const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
-    expect(answer).toMatchObject({ ok: false, code: "SOURCE_UNREACHABLE", message: `{"${key}":[REDACTED:TOKEN]` });
+    expect(answer).toMatchObject({ ok: false, code: "SOURCE_UNREACHABLE", message: `${masked}[REDACTED:TOKEN]` });
+    expect(JSON.stringify(answer)).not.toContain(secret);
+  });
+
+  it.each([
+    ["an apostrophe", "client's authorization header", 0],
+    ["an apostrophe", "client's authorization header", 2],
+    ["an escaped quote", 'client "authorization header', 0],
+    ["an escaped quote", 'client "authorization header', 2],
+    ["quoted words", 'prefix "quoted" authorization header', 0],
+    ["quoted words", 'prefix "quoted" authorization header', 2],
+  ])("masks the value of a key with %s inside it, serialized %i deep, in a failure it answers with (§18.8)", async (_label, key, depth) => {
+    const secret = "opaque-pass-12345";
+    let message = JSON.stringify({ [key]: `Custom ${secret}` });
+    for (let level = 0; level < depth; level++) message = JSON.stringify({ msg: message });
+    expect(() => JSON.parse(message)).not.toThrow();
+    await setup({ refresh: vi.fn(async () => { throw new MarketplaceError("SOURCE_UNREACHABLE", message); }) });
+    const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+    expect(answer).toMatchObject({ ok: false, code: "SOURCE_UNREACHABLE" });
     expect(JSON.stringify(answer)).not.toContain(secret);
   });
 
