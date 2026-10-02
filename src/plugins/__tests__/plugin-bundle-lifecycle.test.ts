@@ -15,6 +15,8 @@ import {
 import { hashReceiptFiles } from "../plugin-install-receipt.js";
 import type { PluginRuntimeGenerationProjection } from "../plugin-host-generation.js";
 import { CommittedPluginGenerationPublicationError } from "../committed-generation-publication-error.js";
+import { PluginMcpTrustStore } from "../../mcp/plugin-mcp-projection.js";
+import { ContributionTrustReviewStaleError } from "../plugin-contribution-trust.js";
 import { makeTestTreeWritable } from "./test-helpers.js";
 import { agentPluginsDocument } from "./test-helpers.js";
 
@@ -111,6 +113,13 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
     files,
   }), "utf8");
   return { root, pluginRoot, cacheRoot, manifest };
+}
+
+/** The review binding a user approval sends: the row the user saw (design §18.7.5). */
+function reviewed(lifecycle: PluginBundleLifecycle, kind: "hook" | "mcpServer", localId: string) {
+  const row = lifecycle.listContributionTrust("orion-api").find((item) => item.kind === kind && item.localId === localId);
+  if (!row) throw new Error(`no ${kind} ${localId} row`);
+  return { generationId: row.generationId, approvalDigest: row.approvalDigest };
 }
 
 function runtimeProjection(manifest: PluginManifest, pluginRoot: string) {
@@ -297,9 +306,9 @@ describe("PluginBundleLifecycle", () => {
     expect(prepareBundledGeneration).toHaveBeenCalledTimes(2);
     expect(publishBundledGeneration).toHaveBeenCalledTimes(2);
 
-    await lifecycle.approveHook("orion-api", "policy");
+    await lifecycle.approveHook("orion-api", "policy", reviewed(lifecycle, "hook", "policy"));
     expect(hookManager.size()).toBe(0); // descriptor intentionally contains no runnable entries
-    await lifecycle.approveMcpServer("orion-api", "orion");
+    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
     expect(prepareBundledGeneration).toHaveBeenCalledTimes(3);
     expect(publishBundledGeneration).toHaveBeenCalledTimes(3);
 
@@ -927,7 +936,7 @@ describe("PluginBundleLifecycle", () => {
     });
 
     await lifecycle.activate("orion-api");
-    await lifecycle.approveMcpServer("orion-api", "orion");
+    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
     expect(lifecycle.listContributionTrust("orion-api")).toContainEqual(
       expect.objectContaining({ kind: "mcpServer", localId: "orion", status: "approved" }),
     );
@@ -988,7 +997,7 @@ describe("PluginBundleLifecycle", () => {
     await lifecycle.waitForRetirements();
     retirePublishedMcpReplacement.mockRejectedValue(new Error("retirement endpoint token=secret"));
 
-    await lifecycle.approveMcpServer("orion-api", "orion");
+    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
     await lifecycle.waitForRetirements();
 
     const trust = lifecycle.listContributionTrust("orion-api")
@@ -1039,7 +1048,7 @@ describe("PluginBundleLifecycle", () => {
     });
 
     await lifecycle.activate("orion-api");
-    await lifecycle.approveMcpServer("orion-api", "orion");
+    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
     prepareBundledGeneration.mockRejectedValueOnce(new Error("candidate preparation failed"));
 
     await expect(lifecycle.revokeMcpServer("orion-api", "orion")).rejects.toThrow(
@@ -1295,5 +1304,170 @@ describe("PluginBundleLifecycle", () => {
     ]));
     expect(JSON.stringify(health)).not.toContain("runtime restore failed");
     expect(JSON.stringify(health)).not.toContain("publication invariant failed");
+  });
+});
+
+describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () => {
+  /** A lifecycle over the fixture whose manifest, files and receipt `release` rewrites in place. */
+  async function updatable(options: { mcpTrust?: PluginMcpTrustStore; loopbackManager?: ReturnType<typeof inertLoopbackManager> } = {}) {
+    const base = await fixture();
+    let manifest = base.manifest;
+    let activationId = 0;
+    const publishBundledGeneration = vi.fn((prepared) => { prepared.published = true; });
+    const lifecycle = makeLifecycle({
+      pluginRuntime: {
+        getPluginManifest: () => manifest,
+        getPluginRoot: () => base.pluginRoot,
+        getRuntimeGenerationProjection: () => ({ ...runtimeProjection(manifest, base.pluginRoot), activationId: `activation-${++activationId}` }),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        postPublishRuntimeGeneration: vi.fn(),
+        publishRuntimeGeneration: vi.fn(),
+        unpublishRuntimeGeneration: vi.fn(),
+        prepareRuntimeRetirement: vi.fn(() => []),
+      },
+      receiptCacheRoot: base.cacheRoot,
+      skillStore: new SkillStore({ userDir: join(base.root, "user-skills") }),
+      hookManager: new ScriptHookManager(),
+      ...(options.mcpTrust ? { mcpTrust: options.mcpTrust } : {}),
+      ...(options.loopbackManager ? { loopbackManager: options.loopbackManager as never } : {}),
+      mcpManager: {
+        bundledServerIdsForPlugin: vi.fn(() => []),
+        prepareBundledGeneration: vi.fn(async ({ pluginId, generationId }) => ({
+          pluginId, generationId, predecessorServerIds: [], predecessorToolNames: [], records: [],
+          registryReplacement: { publish: vi.fn(), cancel: vi.fn(), replacementTools: [] }, published: false,
+        })),
+        publishBundledGeneration,
+        discardBundledGeneration: vi.fn(async () => undefined),
+        retirePublishedMcpReplacement: vi.fn(async () => undefined),
+        disconnectBundledGeneration: vi.fn(async () => undefined),
+      } as never,
+    });
+    /** Publish a new version with the given file contents changed, as an install would leave it. */
+    const release = async (version: string, files: Record<string, string> = {}) => {
+      manifest = { ...manifest, version } as PluginManifest;
+      await writeFile(join(base.pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
+      for (const [path, content] of Object.entries(files)) await writeFile(join(base.pluginRoot, path), content, "utf8");
+      const receiptPath = join(base.cacheRoot, "orion-api", "install-receipt.json");
+      const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+      receipt.version = version;
+      receipt.files = await hashReceiptFiles(base.pluginRoot, receipt.files.map((file: { path: string }) => file.path));
+      await writeFile(receiptPath, JSON.stringify(receipt), "utf8");
+    };
+    const row = (localId = "orion") => lifecycle.listContributionTrust("orion-api").find((item) => item.kind === "mcpServer" && item.localId === localId)!;
+    /** The trust-store view of a row's exact identity. */
+    const owned = (item: ReturnType<typeof row>) => ({ owner: {
+      pluginId: item.pluginId, pluginVersion: item.pluginVersion, generationId: item.generationId, localId: item.localId, fingerprint: item.fingerprint,
+    } }) as never;
+    return { ...base, lifecycle, release, row, owned };
+  }
+
+  it("carries an approval to a new version whose server and package bytes are unchanged, naming its source", async () => {
+    const { lifecycle, release, row, owned } = await updatable();
+    await lifecycle.activate("orion-api");
+    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    const approved = row();
+    expect(approved.approvalDigest).toMatch(/^[a-f0-9]{64}$/u);
+
+    // Only the skill text changed: a remote server's approval digest is the same.
+    await release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nUse the ORION attendance API, carefully." });
+    await lifecycle.activate("orion-api");
+    const carried = row();
+    expect(carried.generationId).not.toBe(approved.generationId);
+    expect(carried).toMatchObject({ pluginVersion: "1.1.0", status: "approved", approvalDigest: approved.approvalDigest });
+    expect(lifecycle.mcpTrust.record(owned(carried))).toMatchObject({ carriedFrom: approved.generationId, approvalDigest: approved.approvalDigest });
+    await lifecycle.waitForRetirements();
+  });
+
+  it("does not carry an approval to a server whose declaration changed", async () => {
+    const { lifecycle, release, row } = await updatable();
+    await lifecycle.activate("orion-api");
+    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await release("1.1.0", { "mcp/orion.json": JSON.stringify({ transport: "http", url: "https://elsewhere.example.test/mcp" }) });
+    await lifecycle.activate("orion-api");
+    expect(row()).toMatchObject({ pluginVersion: "1.1.0", status: "approval_required" });
+    await lifecycle.waitForRetirements();
+  });
+
+  it("abandons the update and revokes the carried approval when its source is revoked before publication", async () => {
+    const loopbackManager = inertLoopbackManager();
+    const { lifecycle, release, row, owned, cacheRoot } = await updatable({ loopbackManager });
+    await lifecycle.activate("orion-api");
+    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    const source = row();
+    await release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nChanged." });
+    // The user revokes the approval while the update is being prepared.
+    let carriedTo: string | undefined;
+    loopbackManager.prepareGeneration.mockImplementationOnce(async (manifest: PluginManifest, generationId: string) => {
+      lifecycle.mcpTrust.revoke(owned(source));
+      carriedTo = generationId;
+      return { pluginId: manifest.id, generationId, tools: [], registryReplacement: { publish: vi.fn(), cancel: vi.fn(), replacementTools: [] }, published: false, disconnectPredecessor: false };
+    });
+    await expect(lifecycle.activate("orion-api")).rejects.toThrow(/was withdrawn while its update was prepared/u);
+    expect(carriedTo).toBeDefined();
+    // The revocation is not undone, the old generation stays active, and nothing was carried.
+    expect(row()).toMatchObject({ generationId: source.generationId, pluginVersion: "1.0.0", status: "approval_required" });
+    const written = JSON.parse(await readFile(join(cacheRoot, "plugin-contribution-trust", "mcp-servers.json"), "utf8"));
+    expect(written.approvals).toEqual([]);
+    await lifecycle.waitForRetirements();
+  });
+
+  it("revokes a carried approval when preparation fails after the carry", async () => {
+    const loopbackManager = inertLoopbackManager();
+    const { lifecycle, release, row, cacheRoot } = await updatable({ loopbackManager });
+    await lifecycle.activate("orion-api");
+    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nChanged." });
+    loopbackManager.prepareGeneration.mockRejectedValueOnce(new Error("tool registry refused the candidate"));
+    const approvedBefore = JSON.stringify(lifecycle.listContributionTrust("orion-api"));
+    await expect(lifecycle.activate("orion-api")).rejects.toThrow();
+    // The 1.0.0 approval is untouched, and no approval of the never-published 1.1.0 generation remains.
+    expect(JSON.stringify(lifecycle.listContributionTrust("orion-api"))).toBe(approvedBefore);
+    expect(row()).toMatchObject({ pluginVersion: "1.0.0", status: "approved" });
+    const raw = JSON.parse(await readFile(join(cacheRoot, "plugin-contribution-trust", "mcp-servers.json"), "utf8"));
+    expect(raw.approvals.filter((item: { pluginVersion: string }) => item.pluginVersion === "1.1.0")).toEqual([]);
+    await lifecycle.waitForRetirements();
+  });
+
+  it("migrates a version-2 approval to version 3 by the running bytes, then carries it", async () => {
+    const trustRoot = mkdtempSync(join(tmpdir(), "ave-trust-v2-"));
+    roots.push(trustRoot);
+    const trustPath = join(trustRoot, "mcp-servers.json");
+    const first = await updatable({ mcpTrust: new PluginMcpTrustStore(trustPath) });
+    await first.lifecycle.activate("orion-api");
+    const identity = first.row();
+    // A 0.12 approval of this exact generation: no approval digest.
+    await writeFile(trustPath, JSON.stringify({ version: 2, kind: "mcpServer", approvals: [{
+      pluginId: identity.pluginId, pluginVersion: identity.pluginVersion, generationId: identity.generationId,
+      localId: identity.localId, fingerprint: identity.fingerprint,
+    }] }), "utf8");
+    await first.lifecycle.waitForRetirements();
+
+    const migrated = new PluginMcpTrustStore(trustPath);
+    const second = await updatable({ mcpTrust: migrated });
+    await second.release("1.0.0");
+    await second.lifecycle.activate("orion-api");
+    expect(second.row()).toMatchObject({ generationId: identity.generationId, status: "approved" });
+    const written = JSON.parse(await readFile(trustPath, "utf8"));
+    expect(written).toMatchObject({ version: 3, approvals: [expect.objectContaining({ generationId: identity.generationId, approvalDigest: identity.approvalDigest })] });
+
+    await second.release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nChanged." });
+    await second.lifecycle.activate("orion-api");
+    expect(second.row()).toMatchObject({ pluginVersion: "1.1.0", status: "approved" });
+    await second.lifecycle.waitForRetirements();
+  });
+
+  it("refuses an approval whose review names a generation or digest that is no longer installed", async () => {
+    const { lifecycle, release, row } = await updatable();
+    await lifecycle.activate("orion-api");
+    const stale = reviewed(lifecycle, "mcpServer", "orion");
+    await release("1.1.0", { "mcp/orion.json": JSON.stringify({ transport: "http", url: "https://elsewhere.example.test/mcp" }) });
+    await lifecycle.activate("orion-api");
+    await expect(lifecycle.approveMcpServer("orion-api", "orion", stale)).rejects.toBeInstanceOf(ContributionTrustReviewStaleError);
+    await expect(lifecycle.approveMcpServer("orion-api", "orion", { ...reviewed(lifecycle, "mcpServer", "orion"), approvalDigest: "0".repeat(64) }))
+      .rejects.toBeInstanceOf(ContributionTrustReviewStaleError);
+    await expect(lifecycle.approveMcpServer("orion-api", "orion", undefined as never)).rejects.toThrow(/requires the reviewed generation/u);
+    expect(row().status).toBe("approval_required");
+    await lifecycle.waitForRetirements();
   });
 });

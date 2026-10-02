@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,7 +6,13 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ScriptHookManager } from "../script-hook-manager.js";
-import { PluginHookTrustStore, preparePluginHookGeneration } from "../plugin-hook-projection.js";
+import { PluginHookTrustStore, preparePluginHookGeneration as prepareWithDigests } from "../plugin-hook-projection.js";
+
+/** Prepare with an approval digest per hook that follows its fingerprint, as `extensionComponentDigests` gives for changed bytes. */
+function preparePluginHookGeneration(generation: ActivePluginGeneration, root: string, dataDir: string) {
+  return prepareWithDigests(generation, root, dataDir, new Map(generation.contributions.map((contribution) =>
+    [contribution.localId, createHash("sha256").update(`digest:${contribution.fingerprint}`).digest("hex")])));
+}
 
 const payloadRoot = mkdtempSync(join(tmpdir(), "ave-plugin-hook-projection-"));
 mkdirSync(join(payloadRoot, "hooks"), { recursive: true });

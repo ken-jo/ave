@@ -46,12 +46,62 @@ describe("the update status across the bridge (design §13.1)", () => {
     applyCheckAt: null,
     running: false,
     historyReset: false,
+    waitingSince: null,
+    escalated: false,
+    autoUpdate: {
+      enabled: true,
+      lockedByPolicy: null,
+      sources: [{ id: "ave", label: "ave", origin: "official", switch: { effective: true, override: null, lockedByPolicy: false, required: false }, needsUnencryptedUpdates: false }],
+      packages: [{ key: update.key, switch: { effective: true, override: null, lockedByPolicy: false, required: false } }],
+    },
     packages,
+    unmetRequired: [],
   });
 
   it("keeps a package with its state, and one an earlier discovery showed, marked stale", () => {
     const sent = status([update, { ...update, key: { ...update.key, name: "notes" }, stale: true }]);
     expect(parseUpdateStatus(sent)).toEqual(sent);
+  });
+
+  it("keeps an escalated wait, and drops a status whose switches are malformed", () => {
+    const sent = status([{ ...update, state: "waiting", escalated: true }]);
+    expect(parseUpdateStatus(sent)).toEqual(sent);
+    expect(parseUpdateStatus(status([{ ...update, state: "waiting", escalated: false }]))).toBeNull();
+    const base = status([]);
+    expect(parseUpdateStatus({ ...base, autoUpdate: { ...base.autoUpdate, sources: [{ ...base.autoUpdate.sources[0], origin: "elsewhere" }] } })).toBeNull();
+    expect(parseUpdateStatus({ ...base, autoUpdate: { ...base.autoUpdate, packages: [{ key: update.key }] } })).toBeNull();
+  });
+
+  it("keeps each unmet required install, and drops a status whose rows are malformed or which has none (§10.2)", () => {
+    const base = status([]);
+    const unmet = { key: { sourceId: "corp", kind: "skill", name: "audit" }, sourceLabel: "Corp", reason: "incompatible", minAppVersion: "9.0.0", installedFrom: { sourceId: "team", label: "Team", removal: "sheet" } };
+    const others = ["source-missing", "source-hidden", "source-unreachable", "not-in-catalog", "rollout-held", "not-offered"]
+      .map((reason) => ({ ...unmet, reason, minAppVersion: null, installedFrom: reason === "not-in-catalog" ? { sourceId: "team", label: "Team", removal: "confirm" } : null }));
+    const sent = { ...base, unmetRequired: [unmet, ...others] };
+    expect(parseUpdateStatus(sent)).toEqual(sent);
+    const { unmetRequired: _rows, ...without } = base;
+    expect(parseUpdateStatus(without)).toBeNull();
+    for (const bad of [
+      { ...unmet, reason: "unknown" },
+      // Exactly an incompatible row names the Ave version it needs.
+      { ...unmet, reason: "not-in-catalog" },
+      { ...unmet, minAppVersion: null },
+      { ...unmet, minAppVersion: 9 },
+      { ...unmet, installedFrom: { sourceId: "team", label: "Team" } },
+      { ...unmet, installedFrom: { sourceId: "team", label: "Team", removal: "sheet-or-not" } },
+      { ...unmet, key: { ...unmet.key, kind: "widget" } },
+    ]) expect(parseUpdateStatus({ ...base, unmetRequired: [bad] })).toBeNull();
+  });
+
+  it("keeps a required update and its required switch, and drops a required switch that is not on and locked", () => {
+    const required = { effective: true, override: "off", lockedByPolicy: true, required: true };
+    const sent = status([{ ...update, state: "waiting", required: true, autoUpdate: required }]);
+    expect(parseUpdateStatus(sent)).toEqual(sent);
+    expect(parseUpdateStatus(status([{ ...update, required: false }]))).toBeNull();
+    expect(parseUpdateStatus(status([{ ...update, autoUpdate: { ...required, effective: false } }]))).toBeNull();
+    expect(parseUpdateStatus(status([{ ...update, autoUpdate: { ...required, lockedByPolicy: false } }]))).toBeNull();
+    const { required: _missing, ...unmarked } = required;
+    expect(parseUpdateStatus(status([{ ...update, autoUpdate: unmarked }]))).toBeNull();
   });
 
   it.each([

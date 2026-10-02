@@ -3,28 +3,47 @@ import { parseHookConfig, type HookConfigEntry } from "./hook-config.js";
 import type { PluginHookOwner } from "./hook-registry.js";
 import type { ActivePluginGeneration } from "../plugins/plugin-generation-coordinator.js";
 import { resolveBundledArgv } from "../plugins/resolve-bundled-argv.js";
-import { PluginContributionTrustStore } from "../plugins/plugin-contribution-trust.js";
+import {
+  PluginContributionTrustStore,
+  type PluginContributionTrustRecord,
+  type ProjectionTrust,
+} from "../plugins/plugin-contribution-trust.js";
 
 export interface PreparedPluginHookProjection {
   owner: PluginHookOwner;
   entries: readonly HookConfigEntry[];
   confinement: { kind: "bundled"; pluginId: string; dataDir: string; generationRoot: string };
+  /** What an approval of this hook covers (design §18.7.3); null when it cannot be determined. */
+  approvalDigest: string | null;
 }
 
-/** Exact-version/fingerprint trust records. Records never transfer to a new version. */
-export class PluginHookTrustStore {
+/**
+ * Exact-generation trust records. A record names one generation; a new
+ * generation's hook is approved explicitly or carried forward by its
+ * approval digest (design §18.7.3).
+ */
+export class PluginHookTrustStore implements ProjectionTrust<PreparedPluginHookProjection> {
   private readonly store: PluginContributionTrustStore;
 
   constructor(path?: string) {
     this.store = new PluginContributionTrustStore("hook", path);
   }
 
-  approve(projection: PreparedPluginHookProjection): void {
-    this.store.approve(projection.owner);
+  approve(projection: PreparedPluginHookProjection, carriedFrom?: string): void {
+    this.store.approve(projection.owner, projection.approvalDigest, carriedFrom);
   }
 
   isApproved(projection: PreparedPluginHookProjection): boolean {
     return this.store.isApproved(projection.owner);
+  }
+
+  record(projection: PreparedPluginHookProjection): Readonly<PluginContributionTrustRecord> | undefined {
+    return this.store.record(projection.owner);
+  }
+
+  /** Give an approval of this exact generation the digest of its running bytes, when it has none (version-2 migration). */
+  recordDigest(projection: PreparedPluginHookProjection): void {
+    this.store.recordDigest(projection.owner, projection.approvalDigest);
   }
 
   revoke(projection: PreparedPluginHookProjection): void {
@@ -37,6 +56,8 @@ export function preparePluginHookGeneration(
   generation: ActivePluginGeneration,
   payloadRoot: string,
   dataDir: string,
+  /** Each hook's approval digest, by local id (`extensionComponentDigests`). */
+  approvalDigests: ReadonlyMap<string, string | null>,
 ): readonly PreparedPluginHookProjection[] {
   const projections: PreparedPluginHookProjection[] = [];
   for (const contribution of generation.contributions) {
@@ -81,8 +102,10 @@ export function preparePluginHookGeneration(
         ? contribution.fingerprint
         : createHash("sha256").update(commandFingerprints.sort().join("\0")).digest("hex"),
     });
+    if (!approvalDigests.has(contribution.localId)) throw new Error(`plugin Hook '${contribution.localId}' has no approval digest`);
     projections.push(Object.freeze({ owner, entries: Object.freeze(anchoredEntries),
       confinement: Object.freeze({ kind: "bundled", pluginId: generation.pluginId, dataDir, generationRoot: payloadRoot }),
+      approvalDigest: approvalDigests.get(contribution.localId)!,
     }));
   }
   return Object.freeze(projections);

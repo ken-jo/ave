@@ -213,7 +213,8 @@ origin in `packages/ledger.json`.
   treeSha256, authoritySha256 }`, and the registry `origin` with `rung:
   "folder"`, a `local-` commit and an origin other than `official`. It is
   never a host-secret grant's install (§10.3) and never admits a `process`
-  entry (§7.7). Slice F adds the record's `consent` baseline (§18.7.3).
+  entry (§7.7). Like the git record, it carries the consent baseline the
+  install was reviewed with (`consent`, §7.3).
 
 ## 3. Marketplace repository layout
 
@@ -930,10 +931,9 @@ and on *Check now* (`ave:marketplace:updates:check`):
   one — and classifies only that discovery's updates: all of them when the
   result is `ok`, and then `applyCheckAt` is written when the check ends;
   those of the reached sources when `partial`; none when `offline` or
-  `error`. This build
-  classifies every update `manual`: nothing applies by itself until
-  automatic apply (§18.7.2–§18.7.4) is built, so each update waits for its
-  review (§15.6).
+  `error`. Each update is classified by the eligibility rules below, and
+  the automatic ones replace what the apply queue holds; one applying is
+  left alone.
 - **A discovery's result** is `ok` when every source synced, `offline` when
   every source failed `SOURCE_UNREACHABLE` reason `offline`, `partial`
   otherwise, and `error` when the pass threw. A broken source (§18.8) is not
@@ -995,8 +995,15 @@ check, and cleared on quit; a stopped scheduler starts nothing.
 { version: 1,
   discovery: { lastAttemptAt, lastSuccessAt, result: "ok" | "partial" | "offline" | "error" } | null,
   applyCheckAt: string | null,
-  packages: { "<sourceId>:<kind>:<name>": { to, state, attempts, lastError?: { code, detail?, at }, appliedAt? } } }
+  packages: { "<sourceId>:<kind>:<name>": { to, state, attempts,
+    lastError?: { code, detail?, message?, at }, appliedAt?,
+    from?, displayName?, commits?: { from, to } } } }
 ```
+
+An `applied`, `applied-not-running` or `approval-pending` entry outlives its
+offer, so it must carry `from`, `displayName` and `commits` (*What changed*);
+`lastError.code` is a §14 code or `unavailable`, and `message` is main's
+text, scrubbed, shown only behind *Copy details*.
 
 The file is read strictly: duplicate or unknown keys, another version, a
 time that does not parse, or a state outside §18.7.5's eight refuse it. One
@@ -1010,7 +1017,155 @@ The settings `marketplace.autoUpdate` (boolean, unset = on),
 `marketplace.autoUpdatePackages` (keyed by `packageUpdateSkipKey`, normalized
 like `skippedPluginUpdates`), each value `"on"` or `"off"`, are normalized
 when read: an invalid key or value is dropped, and both maps have no
-prototype. They decide nothing until automatic apply (§18.7.2).
+prototype. The renderer writes them through the settings channel; a write
+rechecks the list.
+
+**Eligibility** (`updates/eligibility.ts`, pure). An update applies by
+itself only when every precondition holds: the package is enabled, its
+source is shown, it is an upgrade or a folder's same-version refresh (a tree
+whose digest differs from the installed one, §7.7), the source has no
+rewrite pending, the version is not skipped, three attempts at it have not
+failed, its consent fingerprint equals the installed baseline as far as the
+catalog shows (checkpoint one), every approved MCP server and hook can keep
+its approval, a plain-http source holds `unencrypted-updates`, and the
+managed policy still allows its source (`allowDirectInstall`,
+`allowLocalSources`). A consent difference, an unknown baseline field or an
+approval that cannot carry makes it `needs-review`; any other failed
+precondition makes it `manual`, each with its `UpdateReason`s. Then the first
+switch that is set decides: policy `autoUpdate`, the package's, the source's,
+the global one, and the origin's default — on, except a custom or direct
+source over http. Off is `manual` with `switched-off`. A `requiredInstalls`
+entry (§10.2) is always automatic: the policy stands for the user's consent,
+so it overrides the switches, the skips, the three-failure stop and the
+approval precondition, never revocation or compatibility, which decide
+whether an update is offered at all. The views say so: the package's switch
+(`AutoUpdateSwitchView.required`) is on and locked whatever is stored, with
+"Required by your organization", and its update carries `required: true`.
+Required updates ignore skipped versions: a stored skip is kept but does
+not hide or hold one, in main or in the renderer, and the pill's skip
+records no version for one (with only required updates it offers no skip).
+Whether a package is required is one function, `requiresPackage`
+(`updates/eligibility.ts`): the policy's `requiredInstalls` and the
+package's identity (that kind and name from that source), nothing else. A
+source whose metadata cannot be read, or an offer cached from an earlier
+discovery, does not change it. The service's update candidates, every
+installed package's switch (a required one is listed and locked even when
+its source does not read), outcomes that stay after their offer is gone
+(`approval-pending`, `applied-not-running`) and stale offers all call it with
+the policy read at each check; a stale offer keeps its version and state
+but takes its required status and switch from the policy now. Until a
+policy has been read, no update view is built. A quarantined source
+(§18.8) and the packages bound to it are left out of the switches as they
+are out of the offers, so its id never reaches them. A change of required status
+alone sends the toolbar list again; a policy refresh reaches the scheduler
+as a catalog change.
+
+**Consent** (`updates/consent.ts`, `consent-record.ts`). Every install
+records the fingerprint it was reviewed with: in the plugin receipt (git and
+folder records), the content ledger entry and the MCP install record. For an
+install from before automatic apply the baseline is computed from the
+installed bytes, and a field that cannot be computed is unknown: the first
+update needs review and stores a complete baseline. The catalog's copy of
+the installed version never replaces it. Checkpoint one compares what the
+index row carries; checkpoint two compares the staged bytes and throws
+`UpdateNeedsReviewError` before anything activates. A bundled MCP server or
+hook is fingerprinted by its approval digest, which covers its declaration
+and the package tree byte for byte, except the string value of
+`plugin.json`'s one top-level `version` (§18.7.3); an unpinned launcher
+(`npx foo`, `image:latest`) gives `null`, which never carries. The trust store, now version 3, keeps each approval's
+digest, and an approval carries to a new generation only while its digest is
+unchanged, for extensions and agent plugins alike; a version-2 record gets a
+digest only when its generation is active and matches the installed
+declaration.
+
+**The apply queue** (`updates/apply.ts`) applies one package at a time,
+extensions in the order of what they provide and require, then the rest by
+key, and only while `ConversationActivityCoordinator.isBusy()` is false — at
+boot too. It subscribes to `onIdle`, which fires when a turn, a session
+mutation, a transition admission or a session transition ends, and then
+reads the gate again, so no idle moment is missed; it reads the gate once
+more right before a package starts, after its own waits. After 30 minutes of
+waiting the status is `escalated`: the waiting update is marked `escalated`
+and sent to the toolbar's update pill whatever the notice setting, whose
+click opens the Updates card with *Apply now* (`updates:apply-now`). *Apply
+now* skips only the idle gate; without it the queue keeps waiting. An agent
+plugin applies only while its activation holds no MCP call, *Apply now* or
+not; the queue tries it again on the next idle moment or five seconds later,
+never by polling. `AgentPluginMcpRuntime` is the lease source for
+`agent-plugin/` owners, closes admission when a new generation publishes,
+and disconnects the old one after its calls drain. A settings write drops
+from the queue what the new switches or skips no longer let apply by itself.
+Quitting drops the queue. Only the queue's own loop removes or starts an
+item; a replacement, a settings write or quitting changes what is queued at
+any time, so what a call check found is used only if nothing changed while it
+waited, and otherwise the loop checks again.
+
+**Applying one package** (`service.applyUpdate`) runs under the marketplace
+operation and the package's own lock, which every install and uninstall of
+that package also takes. The order is one everywhere: the operation, then
+package locks (several in sorted order), then plugin locks. A package lock
+asked for while the caller holds a plugin lock throws instead of waiting;
+predecessor removal (`alert-predecessor.ts`) takes both packages' locks with
+its operation, before its plugin locks. The scheduler's shutdown ends the
+wait for the package lock, and the update then never starts. The package
+locks are one `KeyedMutex` (`app/keyed-mutex.ts`). A caller names every
+package it needs up front and takes them as one request: the request joins
+each package's FIFO queue in the same step and runs once it heads all of
+them, so two requests stand in the same order in every queue they share and
+cannot wait in a cycle. A request naming no package is refused; work that
+needs none takes no lock. One cancellation point covers the whole request:
+cancelling removes it from every queue, and only it. The lease the holder's
+callback receives lives as long as that callback. The one production flow
+that runs a second lifecycle call under held packages, predecessor removal's
+uninstall, passes the lease (`uninstall`'s `lease`), which runs it at once
+under packages the lease holds and never adds one; passing a lease after its
+callback returned, or for a package it does not hold, throws, as does asking
+for packages without the lease while holding some. The holder releases its
+packages, and its operation ends, only after the work admitted under its
+lease ends, so no policy applies in between. Work a holder starts but does
+not own, such as the update check a catalog change starts, runs detached
+from it and waits like any other caller. Nothing the
+update was queued with authorizes it: under the locks, with the policy the
+operation's refresh left in force, the service gathers its facts again and
+the scheduler's decision judges them with the switches, skips and failures
+as they are then. A package installed, removed or moved since it was
+classified, a version no longer offered, or an update no longer automatic is
+`superseded`, and nothing is done. An automatic update runs checkpoint two
+and keeps the receipt's reviewed app version; one a `requiredInstalls` entry
+names now is reviewed by the policy, skips checkpoint two, and leaves a
+component it adds or changes unapproved, which makes it `approval-pending`.
+What the install throws is classified through its cause chain: a consent
+deferral is `needs-review` and no attempt; a failure before commit is
+`failed`, one attempt, with its code, detail and scrubbed message; a
+`CommittedPluginGenerationPublicationError` is `applied` or
+`applied-not-running` and no attempt. A content install writes its own
+`.installs/<installId>/` directory; the predecessor's is removed once its
+generation has retired, and a boot sweep removes any no ledger entry names.
+An applied update is announced once under the notice's "Updated
+automatically" (`autoUpdated`, joined to a notice not yet dismissed; a
+notice with no start-up section is titled "Marketplace changes") and stays
+24 hours in the card's recent list. A downgrade installed by hand
+(§16.2) records the version it left as skipped, so the next apply check does
+not undo it.
+
+**A decision made before a package lock** is judged again once admitted,
+from what is true then: the install (the receipt's stored source, version,
+origin commit and digest) and the inputs the decision read. The apply queue
+gathers its facts again (above). A plan (an install, a required source
+switch, a reviewed update) records the install it planned against, and
+execution under the lock fails `PLAN_EXPIRED` `package-changed` when the
+package is no longer installed as it was, `PLAN_EXPIRED` `policy-changed`
+under another policy (which carries what it requires), and
+`PACKAGE_REVOKED` when the source has since revoked the version it
+installs. Revocation enforcement (§10.4) chooses each install before
+taking its lock, and under the lock judges whatever is installed then by
+its own source's revocations as its snapshot holds them then, and the
+policy in force: it removes only what they revoke now, and skips an install
+removed, replaced by one not revoked, or whose revocation was withdrawn,
+with a warning that says why; an install whose source's revocations cannot
+be read then is kept, as an unreadable source contributes no rules, and its
+warning says they could not be read, not that they were withdrawn. Predecessor removal resolves everything it
+acts on after admission.
 
 A source syncs while it is enabled **or** while any installed package is
 bound to it, so revocations and update notices keep reaching installed
@@ -2044,7 +2199,9 @@ files is a device-management action).
     invalid behaves as an invalid policy at start: official only, with
     `policy-invalid` shown. It recovers at the
     first operation after the file is fixed.
-- `autoUpdate` (§18.6) belongs to slice F.
+- `autoUpdate`: `"user"` (unset), `"on"` or `"off"`. `on` and `off`
+  decide every package's switch and lock the Updates card's switches (§7.3);
+  a required install ignores it. Any other value invalidates the section.
 
 ## 13. IPC contract
 
@@ -2073,6 +2230,8 @@ files is a device-management action).
 | `ave:marketplace:content:language-messages` | `locale` | `{ ok: true; messages } \| { ok: false; error: "installed-content-unavailable" \| "language-not-installed" }` |
 | `ave:marketplace:updates:status` | — | `UpdateStatusView` (§13.1) |
 | `ave:marketplace:updates:check` | — | `UpdateStatusView`, when the apply check's discovery and classification end (§7.3) |
+| `ave:marketplace:updates:apply-now` | — | `UpdateStatusView`; the apply queue skips the idle gate (§7.3) |
+| `ave:marketplace:components:approve` | `(key, installId, consents)` | `UpdateStatusView`; `PLAN_EXPIRED` `package-changed` when the installed generation is not the reviewed one (§15.6) |
 | `ave:git:runtime:status` | — | `GitRuntimeStatus` |
 | `ave:git:runtime:install` | — | `GitRuntimeStatus` (progress via event) |
 
@@ -2090,8 +2249,7 @@ minutes (`PLAN_EXPIRED`). Disposition of today's channels is in §16.2.
 A folder is previewed and added through `sources:preview` and `sources:add`
 like any address; `sources:pick-folder` only fills the address in (and
 names the chosen folder by its pick), and
-`sources:reveal` only shows a folder source (§7.7, §13.1). The
-automatic-update channels (slice F) are in §18.9.
+`sources:reveal` only shows a folder source (§7.7, §13.1).
 
 ### 13.1 As built
 
@@ -2219,9 +2377,23 @@ wins:
     applyCheckAt: string | null;
     running: boolean;                  // a discovery or an apply check is in flight
     historyReset: boolean;             // updates.json could not be read and was started again
-    packages: PackageUpdateView[];     // updates from the sources the last discovery reached, minus skipped versions,
-                                       // each with its state; an unreached source's only as shown before, `stale: true`
+    waitingSince: string | null;       // the apply queue waits for the conversation to pause
+    escalated: boolean;                // it has waited 30 minutes: Apply now
+    autoUpdate: { enabled: boolean;    // as it takes effect: the policy's value while it locks the switch
+                  lockedByPolicy: "on" | "off" | null;
+                  sources: Array<{ id; label; origin; switch: AutoUpdateSwitchView; needsUnencryptedUpdates: boolean }>;
+                  packages: Array<{ key; switch: AutoUpdateSwitchView }> };   // every installed package of a listed source
+    packages: PackageUpdateView[];     // updates from the sources the last discovery reached, minus skipped versions not required,
+                                       // each with its state; an unreached source's only as shown before, `stale: true`;
+                                       // then the updates applied in the last 24 hours
   }
+  // PackageUpdateView adds reasons?, failure? { code, detail?, message?, attempts },
+  // appliedAt?, commitRange?, autoUpdate? (the package's switch), escalated? (a waiting
+  // update held 30 minutes: `updateViewNeedsUser` counts it), required? (a requiredInstalls
+  // entry names it: skips do not hide it, §18.7.2), and, for an agent plugin's
+  // approval-pending entry only, pendingApproval { installId, consentDelta, components }.
+  // AutoUpdateSwitchView is { effective, override, lockedByPolicy, required }; a required
+  // package's switch is effective and locked, a source's switch never required.
   ```
 
   A package's `state` is one of §18.7.5's eight (`UPDATE_PACKAGE_STATES`).
@@ -2231,6 +2403,19 @@ wins:
   is no scheduler: both answer `unavailable`, whose message ("update checks
   have not started") is behind *Copy details*.
   `marketplace:update-status` carries the same view whenever it changes.
+- `install:execute` takes component consents for an extension too
+  (`{ kind: "extension"; component; localId; approvalDigest }`), and
+  `update:plan` answers `consentDelta`, `codeFreeChange` and
+  `reviewComponents` (§15.6). An update review stages the artifact before it
+  answers, and executing it installs exactly those bytes.
+- `components:approve` approves an `approval-pending` agent plugin's
+  components for the generation the review showed: the store checks, inside
+  its install serialization, that the ledger entry's `installId` and each
+  component's approval digest are the reviewed ones, and approves nothing
+  otherwise. `plugins:contribution-trust:list` rows carry `approvalDigest`,
+  and `:set` with `approved: true` must carry the row's `generationId` and
+  `approvalDigest`, answering `contribution-trust-review-stale` when the
+  active artifact has changed.
 - `marketplace:updates-available` carries `PackageUpdateView` with its
   `state`, and only states that need the user (`updateNeedsUser`:
   `needs-review`, `manual`, `failed`, `applied-not-running`,
@@ -2281,7 +2466,7 @@ subject in both catalogs.
 | `GIT_RUNTIME_INSTALL_FAILED` | managed download/verify/extract/smoke test failed | the phase: `checking`, `downloading`, `verifying`, `extracting`, `smoke-testing`, `installing` (the final move into place) — no fields | `.gitInstallFailed`, `.gitInstallFailed.<phase>` |
 | `SOURCE_URL_REJECTED` | the refusals of §18.3 #1–4 and #7, and unsupported input, a folder path included; no confirmation exists | from the normalizer: `credentials-in-url`, `helper-transport` (scheme), `scheme-unsupported` (scheme), `format` (query, fragment, whitespace, control character or backslash); from the gate, on the address a connection would use: `address-metadata` (host, address), `address-unroutable` (host, address), `catalog-this-computer` (source, host); from the deep link: `deep-link-path`; from a folder path (§7.7): `relative-path`, `device-path`, `windows-path`, `network-file-url`, `unc-without-share`, `unc-credentials`, `outside-root`, `folder-options`; from a *Choose folder…* pick main no longer holds: `folder-pick-unknown`. A download URL's own refusals carry none | `.urlRejected`, `.urlRejected.<reason>`; the two address reasons say "check the address" only for an address being typed or a source the user added, and otherwise (`.network`) name a VPN, proxy or hosts file and the administrator |
 | `SOURCE_POLICY_BLOCKED` | managed policy allow/block, `requireHttps`, `blockPrivateNetworks`, `allowLocalSources`, `allowDirectInstall`, or an unreadable policy for a non-official target | `blocked-by-pattern` (target, pattern, policyPath), `not-in-allow-list` (target, policyPath), `https-required` (target, policyPath), `private-network-blocked` (target, address, policyPath), `local-sources-blocked` (target, policyPath), `direct-install-blocked` (target, policyPath), `policy-invalid` (error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.httpsRequired`, `.privateNetworkBlocked`, `.localSourcesBlocked`, `.directInstallBlocked`, `.policyInvalid` |
-| `SOURCE_CONFIRMATION_REQUIRED` | a target needs a confirmation the source does not hold (§7.4): at a sync, plan or install, or a download that no source names | the warning: `unencrypted` (host), `token-unencrypted` (host), `internal-network` (host, address), `this-computer` (host, address), `internal-downloads` (source, host), `network-folder` (server, path: a folder on another computer, at a read of a folder source that does not hold it) | `.confirmationRequired`; with a reason, `gitMarketplace.warning.<warning>` (the confirmation's own question; `internalNetwork.proxyRange` for a `198.18.0.0/15` address; `networkFolder.unknownServer` when the drive's mapping names no server and `networkFolder.automount` on macOS and Linux) |
+| `SOURCE_CONFIRMATION_REQUIRED` | a target needs a confirmation the source does not hold (§7.4): at a sync, plan or install, or a download that no source names | the warning: `unencrypted` (host), `token-unencrypted` (host), `internal-network` (host, address), `this-computer` (host, address), `internal-downloads` (source, host), `network-folder` (server, path: a folder on another computer, at a read of a folder source that does not hold it), `unencrypted-updates` (source: turning automatic updates on for a plain-http source) | `.confirmationRequired`; with a reason, `gitMarketplace.warning.<warning>` (the confirmation's own question; `internalNetwork.proxyRange` for a `198.18.0.0/15` address; `networkFolder.unknownServer` when the drive's mapping names no server and `networkFolder.automount` on macOS and Linux) |
 | `SOURCE_NAME_RESERVED` | reserved id | — | `.nameReserved` |
 | `SOURCE_ID_INVALID` | id is not 2–63 lowercase letters, digits or `-`, or names no source; or the id being added has a credential's shape, or a request other than Remove names a quarantined source (§18.8) | `reserved-prefix` (`prefix`, `issuer`), `holds-credential`, `stored-id-holds-credential` | `.idInvalid`, `.idInvalid.reservedPrefix`, `.idInvalid.holdsCredential`, `.idInvalid.storedIdHoldsCredential` |
 | `SOURCE_ID_TAKEN` | id or repository already added; a folder that is a source, or contains or lies inside one (§7.7) | a repository or a folder: `repository-already-added` (url, existingId) — any spelling of its address, `url` the one being added, normalized; `folder-already-added` (path, existingId), `folder-inside-source` (path, existingId, existingPath), `folder-contains-source` (path, existingId, existingPath) — by path or through an alias. A taken id alone has none | `.idTaken` (the id: choose another); `.idTaken.repositoryAlreadyAdded`, `.folderAlreadyAdded`, `.folderInsideSource`, `.folderContainsSource`, which say to use or remove the other source, never to choose another id |
@@ -2296,10 +2481,10 @@ subject in both catalogs.
 | `SOURCE_LOCAL_DATA_DAMAGED` | the source's downloaded copy cannot be used (§2.1); a Repair that could not move it aside or write the kept pin back | pin lost: `state-missing`, `state-invalid`, `state-unreadable`; pin kept: `snapshot-invalid`, `snapshot-unreadable`, `repository-damaged`; Repair: `repair-failed` (a pin was kept), `repair-failed-unpinned` (none to keep), `repair-write-failed` (sourceId) — a message names files relative to the source and an fs error by its code, never a home path; a sentence names the source as its row does (the official source by its origin's name, another by its label, the id only when no listed source is known) | `.localDataDamaged`, `.localDataDamaged.<reason>` |
 | `SOURCE_LIST_UNREADABLE` | `marketplaces/sources.json`, the list of sources the user added, cannot be read or is not in Ave's format; every source change is refused until the user fixes or deletes it (no repair: it is the user's data) | `unreadable` (fsCode), `invalid` — the message names the file and an fs error by its code, never a home path | `.listUnreadable`, `.listUnreadable.<reason>` |
 | `SOURCE_LOCAL_UNREADABLE` | a folder source, or a folder being added, cannot be read (§7.7); the last good snapshot stays served and the next read tries again | `not-found` (path), `permission` (path, message), `io` (path, message), `moved` (path, target: the stored path now leads elsewhere, which is not read), `not-a-directory` (path), `ambiguous-case` (path: two entries match the typed name ignoring case on a case-sensitive volume), `changed-during-read` (path), `classifier-unavailable` (path: the Windows folder classifier is missing or broken, so Ave cannot tell whether the folder is on another computer) — `message` is the system's, scrubbed | `.localUnreadable`, `.localUnreadable.<reason>`; `notFound` with `.entry` (a folder being typed) and `.managed`, `moved` with `.managed` |
-| `PLAN_EXPIRED` | plan/preview id expired or reused, or made under another managed policy (§12) | `policy-changed` | `.planExpired`, `.planExpired.policyChanged` |
+| `PLAN_EXPIRED` | plan/preview id expired or reused, made under another managed policy (§12), a plan whose package is no longer installed as it was when the plan was made (§18.6), or a component approval for a generation that is no longer installed (§15.6) | `policy-changed`, `package-changed` | `.planExpired`, `.planExpired.policyChanged`, `.planExpired.packageChanged` |
 | `PACKAGE_INCOMPATIBLE` | no version is offered to this installation: `minAppVersion` above the app version, another platform, a pre-release without canary, or a rollout that excludes it | `min_app_version` (name, version), `platform` (name, platform), `host_protocol` (name) — when the excluded version is known | `.incompatible`, `.incompatible.minAppVersion`, `.incompatible.platform`, `.incompatible.hostProtocol` |
 | `PACKAGE_COMPAT_UNDECLARED` | git-installed plugin without `requires.minAppVersion` | — | `.compatUndeclared` |
-| `PACKAGE_YANKED` / `PACKAGE_REVOKED` | every version is yanked or revoked (revoked when all are revoked) | — | `.yanked` / `.revoked` |
+| `PACKAGE_YANKED` / `PACKAGE_REVOKED` | every version is yanked or revoked (revoked when all are revoked); `PACKAGE_REVOKED` also when a plan's version was revoked after the plan was made (§18.6) | — | `.yanked` / `.revoked` |
 | `PACKAGE_ID_CONFLICT` | same `(kind, name)` installed from another source, or from no source; also a signed-catalog install, update or rollback over a git-bound plugin | — | `.idConflict` |
 | `PACKAGE_REQUIRED_BY_POLICY` | uninstall or disable of a `requiredInstalls` package | — | `.requiredByPolicy` |
 | `PACKAGE_POLICY_BLOCKED` | the MCP governance policy refuses the server (Layer 1), at plan and again at install | — | `.policyBlocked` |
@@ -2773,7 +2958,26 @@ comes first.
 
 Commit range, version change, authority delta (capabilities, network,
 secrets, tools) highlighted, and for custom sources a "history rewritten"
-banner that requires an explicit checkbox.
+banner that requires an explicit checkbox. The review stages the update
+before it opens, so it shows the complete consent delta, and *Update*
+installs the bytes it showed:
+
+- one row per `consentDelta` field: its label, before and after, and for a
+  changed or new MCP server or hook — an extension's included — an approve
+  box with its changed files. A component left unchecked installs turned
+  off. An agent plugin's hook has no box where hooks cannot be confined;
+- when the only differences are approval digests and no changed file is
+  code, one row, "Only these non-code files changed:", and *Approve update*,
+  which approves every changed component. `plugin.json` (beyond its
+  version's value) and the files that declare a server or hook are code,
+  whatever their extension; Markdown, text, images and other JSON are not;
+- an `approval-pending` agent plugin is reviewed in a component dialog from
+  the Updates card: the unapproved components' rows and approve boxes, sent
+  with `components:approve` for the `installId` shown. When that generation
+  was replaced in between, the dialog says "This package changed since you
+  reviewed it. Review it again.", reloads, and starts the new review with
+  nothing checked. An extension's components are approved in its plugin
+  settings, whose trust rows bind the same way.
 
 ### 15.7 Git runtime
 
@@ -2797,8 +3001,18 @@ A card in Settings → Marketplace → Maintenance, above the Git runtime card
   <time>. Ave checks again when the network is back."), partial (some
   sources were not reached, with *Show sources*, where each row says why,
   §15.4), or a check that could not finish; and a lost `updates.json`;
-- each update with its version change and its state (§18.7.5); `manual` and
-  `needs-review` rows offer *Review*, which opens the update review (§15.6).
+- "Update packages automatically", the global switch; under a policy value
+  it is locked with "Set by your organization: …" and shows that value, as
+  every locked select shows what takes effect rather than the stored choice
+  the policy overrides;
+- *Apply now* while updates wait for the conversation to pause, and after
+  30 minutes "<n> updates are waiting for the conversation to pause.";
+- each update that needs the user or is applying, with its version change,
+  state (§18.7.5), reasons and the package's *Automatic updates* select
+  (*Default (On/Off)* / *On* / *Off*). `manual` and `needs-review` rows offer
+  *Review*, which opens the update review (§15.6); `failed` rows show the
+  attempts at this version, *Details* (the failure's sentence) and *Retry*,
+  a reviewed install; `approval-pending` rows offer *Review* (§15.6);
   A `stale` row adds "Source not reached in the last check — shown as an
   earlier check left it." After an `ok` check with nothing listed, the card
   reads "No updates to review." — never "up to date", since a skipped
@@ -2807,10 +3021,25 @@ A card in Settings → Marketplace → Maintenance, above the Git runtime card
   right now. Restart Ave; if it persists, use Copy details to report it.",
   with main's message only behind *Copy details*, scrubbed (§18.8).
 
-The card is read-only: the automatic-update switches and the recent
-automatic updates arrive with automatic apply (§18.9). The toolbar pill
-(`PluginUpdatesPill.tsx`) counts only the updates that need the user
-(`updateNeedsUser`, §13.1), whatever else it is sent.
+- "Updated automatically": the updates applied in the last 24 hours, with
+  *What changed* (the commit range);
+- "Automatic updates by source": each source's select, the official source
+  by its origin's name as Sources shows it. Turning a plain-http source on
+  asks first ("Updates from <source> arrive over http …") and accepts
+  `unencrypted-updates` for it.
+
+An installed package's *Automatic updates* select is also in its package
+sheet, whether or not it has an update, so a package can be turned off
+before its next release. The switches are written through the settings
+channel; a source's or package's map is rewritten whole, so *Default*
+removes its entry. The notice of §15.1 lists "Updated automatically" with
+*What changed*, and an organization's update with components waiting with
+*Review*; titled "Changed when Ave started" only when it holds a start-up
+section, "Marketplace changes" otherwise. The toolbar pill
+(`PluginUpdatesPill.tsx`) counts the updates that need the user and a wait
+past 30 minutes (`updateViewNeedsUser`, §13.1), whatever else it is sent; it
+opens the Updates card for an update already applied or waiting, and the
+update review otherwise.
 
 ### 15.8 Announcements
 
@@ -2998,8 +3227,9 @@ The tests of §18's slices are listed with each slice of §18.10.
 | Direct install | each detection branch; `server.json` mapping for npm/pypi/oci/remote; `folder-direct.test.ts`: a direct folder's synthesized `0.0.0+t…` version, which changes with its files, and `allowDirectInstall: false` refusing it at the preview (a marketplace folder still previews), the add and the plan |
 | Local folders (§7.7) | `source-input.test.ts` under `path.posix` and `path.win32` rules: every accepted folder form normalizes and every refused form names its reason, and `a/b` stays the GitHub shorthand. With the recording volume of `fixtures/folder-fs.ts` (every call logged): `folder-consent.test.ts` — a UNC path answers `confirm` with no call at all and a share-mapped drive with only `queryDosDevice`, the same inputs under `allowLocalSources: false` are blocked with none, an acknowledged folder is read with no call outside the reader's own (no `realpath`), `/tmp → private/tmp` and a root that is itself a link resolve, an ancestor link to `\\attacker\share` is `link-to-network` with no call on it, a block found only on the canonical path ends the preview before a file is opened, a Windows 8.3 short name is spelled by its long name, a relative link onto an automount path is `link-to-network` (confirmed or not) with no call under it, another spelling of an automount path, components after a local link that reach one, and a canonical path holding the automount roots each answer `confirm` before it is touched, a drive with no mapping warns and a classifier that cannot run is `classifier-unavailable`; `git-marketplace.test.ts` (IPC) carries `classifier-unavailable` and the `folder-*` reasons of `SOURCE_ID_TAKEN` across the envelope and renders them in English and Korean; `folder-real-fs.test.ts` on the machine's own filesystem (run on macOS and on Windows) — a network path answered before any call, a link inside (a junction on Windows) read and one leaving the folder refused unread, a directory reached twice a loop, the volume's own case rule, a link into `.git` refused with nothing beneath it touched, and a hard link read as a regular file; `folder-tree.test.ts` — an inside link reads as a file, an outside link and a link chain or junction to a share stop at their text with no call on the target, a mapped network drive by its mapping, a loop, an `fstat` mismatch, an ancestor swap kept in place (`changed-during-read`, no outside byte in the package) and the stated residual of one undone before the recheck, the skip list, a link into a skipped entry (also as `.GIT` or an 8.3 alias) as `link-to-skipped` and an index path naming one as absent, an automount path beneath an unconfirmed root stopped before it is touched, a relative link from a confirmed share to another server as `link-to-network`, NFD/NFC and collisions, special files, a plugin's left-out entries; `folder-identity.test.ts` — a case-sensitive volume keeps two spellings as two sources, an `allow` `path:` admits only its spelling and a `block` every spelling, a case-insensitive volume and an aliased directory are one source by on-disk spelling and `dev`/`ino`, nesting is refused, by path and through an alias in both orders; `folder-sync.test.ts` — editing a `SKILL.md` changes the revision, no git command and no download run, only the folder's version is offered, a background `permission` failure keeps its reason through a reload and renders, a stored path now leading elsewhere is `moved` without reading the target, a broken classifier is `classifier-unavailable` with nothing read and renders as reinstall advice after a reload; `folder-plan.test.ts` — a plugin file and a `SKILL.md` edited between plan and execute install the planned bytes, a declared release is never fetched, the executable bit survives, a `process` entry is refused with `process-entry-requires-pinned-artifact`, a folder with no `plugin.json` is `folder-has-no-build`, and the capture is deleted; `plugin-ladder.test.ts` — a git tree with `src/` still fails the tree rung; `policy.test.ts` — `allowLocalSources`, an `allow` list without `path:`, `path:` prefixes and Windows spellings, `path:` and git patterns kept apart, and `additional[].path` with its refusals; `registry.test.ts` — a folder entry and its identity (with its ancestors) round-trip, confirmations bound to the path and dropped for any other spelling of it, the pin paired with the transport, a managed folder holding `network-folder`; `windows-path-kind-launcher.test.ts` (exit 1 is "no mapping"; a missing, unstartable, timed-out or off-protocol helper rejects with its cause and what to do) and, on Windows, `scripts/test-windows-path-kind.mjs` (CI step *Verify Windows folder classification*): `C:` maps to a volume, a `subst` drive (and a `subst` of one) to its target, and an unused or removed drive fails closed |
 | Folder UI (§7.7, §15) | `folder-view.test.ts` with the same volumes — *Local folder* on a folder's preview, row and package cards and *Network folder* on an acknowledged share, the provenance `{ path, readAt, contents }`, `revealFolder` answering a folder's path, `null` for git and `SOURCE_ID_INVALID` for an unknown id, a deleted folder `not-found`, a path relinked elsewhere `moved`, and a drive remapped to a share refused with only `queryDosDevice` called; a classifier that cannot run marking only its row and cards `folder-unclassified` (and asked again once it runs), a share the source never allowed `network-folder-unconfirmed`, a directory recreated at the path `moved` on reveal as on refresh, and a remap during reveal's walk refused by its last classification; `git-marketplace.test.ts` (IPC) — `pick-folder` `null` on cancel and `{ pick, display }` on choose without building the service, a pick previewing and adding the folder main chose and never the sibling its masked display names, a forged, replaced, used or expired pick `folder-pick-unknown`, a package from a quarantined source refused detail but uninstalled by its handle with the source listed and removed, both channels refused to a plugin frame, `reveal` refusing a git source and an unknown id before the shell is asked, and a drive whose classifier cannot run with `classifier-unavailable` and the reinstall sentence, nothing shown; `SourcesAndAdd.test.tsx` — the folder row (path, `folder · rev`, read time, *Show in …* per platform, no *Set token*), the moved and replaced sentences, *Choose folder…* with `resolvedFrom`, a cancelled and a failed picker, the folder hiding ref and sign-in, the `network-folder` question, the relative-path sentence, a folder added while git is missing, `classifier-unavailable` on the preview, the row status and a failed *Show in …*, the three overlap sentences and `repository-already-added` each with *Show <id>* and none for a bare taken id, the marked row brought into view; `GitMarketplaceTab.test.tsx` — a folder package's badge, provenance, versions note, delivery help, `notInstalled` and the folder-bound review, *Show <id>* closing the dialog and marking the row on Sources until the view changes; E2E (`git-marketplace-lifecycle.spec.ts`, folder dialog and shell stubbed in main) — add a folder marketplace through *Choose folder…*, install a skill, edit it, *Refresh*, *Show in Finder* gets the source's path, and the catalog offers the update |
+| Automatic apply | `eligibility.test.ts`: every precondition, the switch order, origin defaults, required installs and the approval invariant; `apply.test.ts` over the real activity coordinator: the idle gate after a session mutation and at boot, the recheck after subscribing and again after an agent plugin's call check, the escalation and *Apply now* (which never polls a call wait), an agent plugin waiting for its calls, the order, `retain`, a replacement or `retain` during an agent plugin's call check (what the check found is not started, nothing else is dropped), shutdown, and the outcome classification; `keyed-mutex.test.ts`: FIFO per key, every key of a request taken as one, no cycle between opposite orders, a cancelled request leaving every queue at once and waking those behind it, an empty request refused, work under a lease only for keys it holds and only while its callback runs, the holder releasing after that work, and 300 seeded random interleavings checked against the model's own owner per requested key (mutual exclusion, no lost wakeup, no reservation left, cancellation at once or later); `auto-update.test.ts` over the real service and a folder source: a folder refresh offered and applied, checkpoint two deferring a new bundled hook, the review staging once and installing the staged bytes with an extension hook's consent, the one-row review, a required update left `approval-pending`, `superseded` after a change, a user uninstall serialized before the update, a switch turned off or a `requiredInstalls` entry removed after queuing that holds the update, and a shutdown during the package-lock wait that starts nothing; `alert-predecessor.test.ts` with the real package and plugin locks: removal and an install in either order both finish, and a package lock asked for under a plugin lock throws; through the service, a waiter cancelled at shutdown leaves its holder's package locked, a nested request without the lease throws, an uninstall under the lease that outlives its holder keeps the packages and the operation (no policy applies meanwhile), one for a package the lease does not hold throws, and two callers naming packages in opposite order both finish; `consent.test.ts`, `approval-digest.test.ts` (a declaration change is code), `plugin-contribution-trust.test.ts`, the runtimes' lease and drain tests and `store.test.ts` (`.installs/`, the sweep, `components:approve` bound to `installId`); `background.test.ts`: records, attempts, the notice and the recent list, the decision read when the turn comes, a settings write that drops a queued update, an escalated wait sent to the toolbar, the switches as they take effect under a policy, a required package's switches on and locked under every policy and switch, a skipped required update shown, stale too, its `approval-pending` or `applied-not-running` outcome still required once its offer is gone, whether its source reads or not, a stale offer's required status and switch recomputed when the policy withdraws the requirement, no view sent before a policy is read, the toolbar list sent again when only required status changes, and the unmet required installs the service reports, sent again once they change; `service.test.ts`: required status from the policy and identity alone, the policy and the source's health varied independently, each unmet required install with its reason (a missing, a never-reached, a not-listing and an incompatible source) and a same-named install from another source, matched by the boot pass's skips, a requirement on a hidden source unmet in both until it is shown again, a revoked package removed only under its package lock, a revocation judged again under that lock (an update landing meanwhile stays unless its source revokes its own version by then, then is removed and reported at that version; an unchanged install whose revocation the source withdrew meanwhile stays; one whose source's revocations cannot be read under the lock stays, logged as unreadable, not withdrawn; an install removed meanwhile is skipped; each skip's reason logged), a plan expiring `package-changed` when its package was removed or updated before it ran (a reviewed update, a source switch), a plan refused `PACKAGE_REVOKED` when its version was revoked after it was made, and a package required from two sources leaving only the official source with both entries named; `run.test.ts`: the boot pass's skip for each reason (a rollout hold, a newer Ave and no offered version told apart, a hidden source), a required source without a state refused, and `requiredByPolicy` throwing on two sources; `auto-update.test.ts`: an install in a requirement's way named for its sheet while its source lists it, and for a direct uninstall once its source stops listing it, is removed, or is quarantined (by its handle), each uninstalled that way, a quarantined source's handle still uninstalling after the source is removed, and a removal whose install changed meanwhile refused with nothing removed; `policy.test.ts`: the conflict naming both entries, another kind of the same name and defaults not bound by it; `labels.test.ts`: the managed-policy sentence naming both entries; `use-marketplace-updates.test.ts` and `PluginUpdatesPill.test.tsx`: a required escalation kept over a stored skip on every mount, no skip recorded for it, no skip offered for required updates alone; `git-marketplace.test.ts`: `components:approve`, `updates:apply-now`, the rollback skip, extension consents, an unmet required install's labels crossing scrubbed; `git-marketplace-result.test.ts`: the status's unmet rows kept, malformed ones and a status without them dropped; `AutoUpdates.test.tsx`: the switches and the http confirmation, the package sheet's select, locked selects showing what takes effect, a required package's select on and locked with its reason in the row and the sheet, the official source's name, the rows and actions, the consent rows and *Approve update*, the component dialog's binding, the notice and the pill, each unmet required install's reason in en/ko with *Refresh source* only where a sync can help and *Show sources* for a hidden source, *Remove from <source>…* opening the install in the way or asking before uninstalling it when no sheet can load (a source no longer listing it, removed or quarantined), a refresh's failure from a failed reply or from the source's failed sync inside a successful one, an open removal bound to the install it named (a status naming another turns it into a notice, a row that goes ends it), each Remove click its own question (statuses received together before a frame each applied, also one naming another install followed by one naming this again, and a row going and returning; a confirmation clicked from an older frame, after Cancel, or twice sends once at most; a Remove clicked from an older frame removing the install it named; a request whose removal is published before its reply drawn as removing until the reply, never as nothing removed, and one that fails after a change saying nothing was removed; a reply answers only its own question, an earlier one's failure shown as its own and dropped with its row or a new question, its success closing nothing; a Close from a replaced question; a reply after the card is gone), and no rows once every requirement is met |
 | Service | `former-service.json` parsing, `movedTo` with and without `movedFrom`, reset on build-constant change, policy override, announcements parity, label fallback |
-| E2E | packaged dev build (loopback allowed by the dev flag) adds a local-HTTP git marketplace, installs one package of each kind, updates, removes the source; without the dev flag, the same kind of source asks for `unencrypted` and `this-computer` before the fixture server sees any request, and the preview, cards and Sources row show the badges |
+| E2E | packaged dev build (loopback allowed by the dev flag) adds a local-HTTP git marketplace, installs one package of each kind, updates, removes the source; without the dev flag, the same kind of source asks for `unencrypted` and `this-computer` before the fixture server sees any request, and the preview, cards and Sources row show the badges; `git-marketplace-auto-update.spec.ts` runs the real scheduler (`AVE_E2E_MARKETPLACE_SCHEDULER=1`): turning the http source on accepts `unencrypted-updates`, *Check now* applies a consent-free skill update by itself, holds an extension that asks for a new host as `needs-review`, and its review installs it |
 
 ## 18. Source acceptance, local folders and automatic updates (after 0.13.0)
 
@@ -3009,16 +3239,17 @@ The tests of §18's slices are listed with each slice of §18.10.
 > carries the slice.
 > - Slice B (messages), slice C (target classes, warnings and connection
 >   binding), slice E (discovery and status), slice D1 (folder sources:
->   engine and consent) and slice D2 (folder sources: dialogs and
->   presentation) are built. §7, §12–§15 and §17 describe them as
->   built: §7.4 for the classes, outcomes and binding of §18.2, §18.3 #1–4
+>   engine and consent), slice D2 (folder sources: dialogs and
+>   presentation) and slice F (automatic apply) are built. §7, §12–§15 and
+>   §17 describe them as built: §7.4 for the classes, outcomes and binding of §18.2, §18.3 #1–4
 >   and #7, and §18.5, §12 for `requireHttps`, `blockPrivateNetworks` and the
 >   policy refresh of §18.6, §7.3 and §15.7.1 for the update scheduler,
 >   `updates.json` and the Updates card of §18.7.1 and §18.9, and §7.7, §8,
 >   §12, §13, §13.1, §14 and §15 for the folders of §18.3 #5–6, §18.4, the
->   folder keys of §18.6 and the folder channels of §18.9.
-> - The rest (automatic apply and what its settings decide, slice F) is not
->   built. Where this section and an earlier one
+>   folder keys of §18.6 and the folder channels of §18.9, and §7.3, §12, §13,
+>   §14, §15.6, §15.7.1 and §17 for the automatic apply of §18.7.2–§18.7.6 and
+>   §18.9.
+> - Where this section and an earlier one
 >   disagree, the earlier section describes the build and this section the
 >   target.
 > - Each slice of §18.10 rewrites the owning section in the same change and
@@ -3040,8 +3271,8 @@ The tests of §18's slices are listed with each slice of §18.10.
 ### 18.2 Outcomes, and who chose the target
 
 > Built in slice C for git and downloads; §7.4 describes it as built.
-> `network-folder` is built in slice D1 (§7.7); `unencrypted-updates`
-> belongs to slice F.
+> `network-folder` is built in slice D1 (§7.7), `unencrypted-updates` in
+> slice F (§7.3, §15.7.1).
 
 | Outcome | Meaning | Who can change it | UI tone |
 |---|---|---|---|
@@ -3324,8 +3555,7 @@ instead:
 >   (§18.8) has no case that raises it. A capture whose digest differs from
 >   the fresh snapshot fails the plan with `SOURCE_LOCAL_UNREADABLE`
 >   `changed-during-read`.
-> - The folder receipt is written without `consent` (§18.4.2); slice F adds
->   it with §18.7.3's baseline.
+> - The folder receipt carries `consent`, §18.7.3's baseline, since slice F.
 > - §18.4.8 is built as §15.2, §15.4 and §15.5 describe it. *Show in
 >   Finder* re-checks the stored path as a read would before the shell is
 >   asked (§7.7), and the review lists the plan's `notInstalled`.
@@ -3697,7 +3927,7 @@ states that a local directory source is refused like `installLocal`
 > Built in slice C for git addresses (§7.2, §15.4, §15.5), in slice D1
 > for the folder steps and `network-folder` (§7.7), and in slice D2 for
 > *Choose folder…* and the *Network folder* and *Local folder* badges (§7.7,
-> §15.4, §15.5). `unencrypted-updates` belongs to slice F.
+> §15.4, §15.5). `unencrypted-updates` is built in slice F (§7.3, §15.7.1).
 
 1. The user enters an address or chooses a folder.
 2. `sources:preview` parses it (§7.1, §18.4.1 stages 1–2) and applies the
@@ -3770,6 +4000,18 @@ states that a local directory source is refused like `installLocal`
   origin `managed`, no warnings except `network-folder`, which the policy entry
   implies, and not removable. An `additional` folder under
   `allowLocalSources: false` makes the section invalid (§12).
+- **One source per required package.** A package is installed from one
+  source, so two `requiredInstalls` entries naming the same kind and name
+  from different sources contradict each other. That is a malformed policy
+  under §12's rule, not a choice Ave makes: the section is invalid
+  (`policy-invalid`), non-official targets are blocked and the official
+  source stays available. The parser's error names both entries
+  (`marketplaces.requiredInstalls[2]: requires plugin/wiki from corp, but
+  marketplaces.requiredInstalls[0] requires it from ave; a package is
+  installed from one source`), and the managed-policy sentence shows it.
+  No lookup takes a first match: `requiredByPolicy` (`run.ts`) throws if a
+  policy that reached it names two. Another kind of the same name is another
+  package; `defaultInstalls` is not bound by this rule.
 - User settings, confirmations and switches never override a policy block.
 - `requireHttps`, `blockPrivateNetworks` and the policy refresh below are
   built (slice C, §12); the rest of this section is not.
@@ -3798,6 +4040,41 @@ states that a local directory source is refused like `installLocal`
   and later.
 
 ### 18.7 Automatic updates
+
+> Built in slice F; §7.3, §15.6 and §15.7.1 describe it as built, with these
+> differences from the text below:
+> - The per-source *Automatic updates* selects are in the Updates card
+>   ("Automatic updates by source"), and the per-package ones in each
+>   update's row and in the installed package's sheet, not in the Sources and
+>   Installed rows: the same persistent access, without crowding the package
+>   cards or the folder rows of slice D2.
+> - The 30-minute escalation reaches the user through the toolbar's update
+>   pill (the waiting update, `escalated`), which opens the Updates card with
+>   *Apply now*, rather than through a separate notice.
+> - *Retry* on a `failed` update opens its review: a reviewed install, which
+>   needs no channel of its own.
+> - Installs, uninstalls and automatic updates of one package are
+>   serialized by a package lock inside the marketplace operation, so a user
+>   install or uninstall is done before an update reads the package, which is
+>   then `superseded`, or waits for it. The lock order is operation, package,
+>   plugin everywhere, predecessor removal included; a package lock asked for
+>   under a plugin lock throws, and shutdown ends the wait for one.
+> - The package lock's ownership is an explicit lease scoped to the holder's
+>   callback, not the async context, and it cannot be extended: a caller
+>   declares all its packages in one request. Nested and extended leases
+>   allowed shapes (ancestor substitution, empty wrappers, outliving children,
+>   cancellation between keys) that each needed a guard; the only production
+>   need, predecessor removal's uninstall under its held packages, is
+>   re-entry under the lease. The context is consulted only to refuse a
+>   lockless request from a holder, never to grant one.
+> - Nothing an update is queued with authorizes it: its facts are gathered
+>   again under the locks and judged with the policy and switches in force
+>   then (§7.3).
+> - In the cheap review, the files that declare a server or hook
+>   (`mcp.json`, `ai.agent-connector.ave/hooks.json`, and the paths an extension's
+>   `plugin.json` names) are code although they are JSON.
+> - The E2E spec's held update asks for a new network host rather than a
+>   capability.
 
 #### 18.7.1 One scheduler, two due rules
 
@@ -3936,7 +4213,7 @@ stands for the user's consent there, and only there. Exactly:
 
 | Rule | Required installs |
 |---|---|
-| global, source and package switches; skipped versions | overridden: they do not apply |
+| global, source and package switches; skipped versions | overridden: they do not apply. The package's switch shows on and locked with the reason, a stored skip is ignored (kept, not applied), and skipping records none |
 | source switch to the policy's source | allowed, as today (`run.ts:136`) |
 | authority fields of the consent fingerprint (§18.7.3) | approved by the policy: `reviewedAuthority = true`, as today |
 | MCP servers and hooks | **not** approved by the policy. Carry-forward (§18.7.3) keeps an unchanged one approved. A new or changed one installs unapproved: the manager does not publish an unapproved projection (`mcp-manager.ts:393`), so it does not run, and the package enters `approval-pending` (§18.7.5) with a notice and *Review* right after the install. The approval-carrying invariant above is the one precondition required installs override, and `approval-pending` is how the override stays visible |
@@ -4009,13 +4286,26 @@ JSON:
 
 - **`treeSha256`** is the tree digest (§6.4, the algorithm behind the
   receipt's `artifactSha256`) over **every** installed payload file of the
-  package, with exactly **one normalization**: the top-level `version` field
-  of `plugin.json` is removed before that file is hashed (the file is parsed,
-  the field deleted, and the rest serialized as canonical JSON with sorted
-  keys). There is no other normalized field. A release must change that
-  field (`plugins/marketplace.ts:635-642`), and it changes nothing that
-  runs. Content packages need no normalization, because their descriptor
-  `ave-package.json` is not installed (`content/store.ts:114-128`).
+  package, with exactly **one normalization**: the string value of the one
+  top-level `version` member of `plugin.json` is emptied before that file
+  is hashed. Every other byte stays as it is, so another key, key order,
+  whitespace, a second `version` member, a nested `version`, a version that
+  is not a string, or bytes that are not exact UTF-8 still change the
+  digest; a file that does not parse is hashed as it is. A release must
+  change that field (`plugins/marketplace.ts:635-642`). Content packages
+  need no normalization, because their descriptor `ave-package.json` is
+  not installed (`content/store.ts:114-128`).
+- **Why the version is outside consent** (owner decision, 2026-10-02). An
+  executable component can read the version string, and one could behave
+  differently by it. That is the component reading input data, like any
+  file or response it reads at run time, which is outside what an approval
+  covers: the approval covers what runs and the files it ships with, not
+  the values it is given. A version-only change with identical code bytes
+  therefore applies automatically. The independent review (Codex, round 1)
+  objected that the field is runtime-readable input; the objection was
+  considered and rejected for that reason. What keeps the exception narrow
+  is exactness: only that one value is normalized, and every other byte of
+  `plugin.json` or of the code is a consent change.
 - **`launcher` closure.** For `npx`, `bunx`, `uvx`, `pipx run` and
   `docker run` the spec names an immutable artifact: npm or PyPI at an exact
   version (`name@1.2.3`, `name==1.2.3`), or an OCI image by `@sha256:` digest.
@@ -4099,10 +4389,10 @@ ledger entry.
   projections of it.
 - **Cheap review for code-free changes.** `changedFiles` lists, for a changed
   approval digest, the package paths whose bytes differ, compared with the
-  **same single normalization** as `treeSha256`: `plugin.json` is compared
-  with its top-level `version` removed, and is listed only when the rest
-  differs, then always as `code`. A complete versioned release that edits
-  only `SKILL.md` therefore lists `SKILL.md` alone. The renderer splits
+  **same single normalization** as `treeSha256`: `plugin.json` is listed
+  only when something other than its version's value differs, then always
+  as `code`. A complete versioned release that edits only `SKILL.md`
+  therefore lists `SKILL.md` alone. The renderer splits
   them for display only: `nonCode` holds Markdown, plain text, images and
   JSON outside `plugin.json`; `code` holds everything else. When the only
   differing fields are approval digests (and `minAppVersion` is unchanged)
@@ -4299,7 +4589,8 @@ the table and the type list the same eight.
 | `approval-pending` | a required update installed with an MCP server or hook unapproved, so that component is not running (§18.7.2) | pill, row, and right after the install a notice "<name> was updated by your organization; <n> components need your approval" with *Review* |
 
 `skipped` is not a state of the view: a skipped version is neither applied
-nor shown, and the next version is.
+nor shown, and the next version is. A required update ignores a skipped
+version (§18.7.2): it is applied and shown, stale or not.
 
 - **Review for `approval-pending`** reuses the existing approval surfaces:
   - **Both surfaces bind the approval to what was reviewed.** A review
@@ -4403,6 +4694,64 @@ nor shown, and the next version is.
   whatever the settings. An update never targets a revoked version (§6.1
   step 6). A revocation-disabled package is not updated automatically; its
   notice offers the update with one click into the review.
+- **Required installs not met** (§10.2). A `requiredInstalls` entry that is
+  not installed from the source it names, and that the source cannot provide
+  now, is a row of its own in the Updates card
+  (`UpdateStatusView.unmetRequired`), recomputed at every check with the
+  policy read then. One judgement, `requirementGap` (`run.ts`), decides it
+  for the card and for the boot pass's `report.skipped`, over the same
+  inputs: the state of the required source as its registry entry and files
+  say (`RequirementSourceState`: missing, hidden, unreachable or readable,
+  whatever a view shows of it), then the catalog rows of the sources the
+  user sees. A hidden source's cached candidate is no proof a requirement
+  can be met, since nothing installs from a hidden source.
+
+  | Reason | When | Next action in the row | Boot skip |
+  |---|---|---|---|
+  | `source-missing` | the app has no source of that id, or it is quarantined (§18.8) | contact your administrator | `source <id> is not one of the app's sources` |
+  | `source-hidden` | the user hid the source | *Show sources*, to show it again | `source <id> is hidden` |
+  | `source-unreachable` | the source has no usable snapshot | *Refresh source*, then the administrator | `source <id> has no snapshot yet` |
+  | `not-in-catalog` | the source's catalog does not list that kind and name | *Refresh source*, then the administrator | `<id> does not list <kind> <name>` |
+  | `incompatible` | every listed version needs a newer Ave (`minAppVersion`, always named) | contact your administrator | `needs Ave <version>` |
+  | `rollout-held` | a version is held back only by its rollout or as a pre-release (§6.1 `pending`) | none from the user: it can install once a release is offered to this device (waiting does not help a pre-release-only catalog) | `not offered to this installation yet (rollout or pre-release)` |
+  | `not-offered` | no version is offered for another reason: platform, plugin protocol, yanked or revoked | contact your administrator | `no version is offered to this installation` |
+
+  *Refresh source* reads how the refresh ended from the reply: a sync that
+  fails comes back inside a successful reply as the source's status, and
+  the row shows that status and why (§18.8), as a failed reply does.
+
+  One the source can provide is not listed: the boot pass installs it, or
+  the apply queue switches a same-named install to it. When that kind and
+  name is installed from another source, the row names it as its receipt
+  binds it (`installedFrom`), whatever became of that source: by
+  `viewSourceId` of the stored id — the id itself, or the handle of a
+  credential-shaped one, derived from that id alone, so it stays valid
+  after the source is removed — which the public `uninstall` resolves back
+  against the install record once. *Remove from <source>…* opens that
+  package's sheet while that source's catalog still lists it
+  (`removal: "sheet"`); otherwise — the source removed, quarantined,
+  unreadable, or no longer listing it — no sheet can load, and the row
+  asks before uninstalling it directly (`removal: "confirm"`). Each Remove
+  click is its own question, bound to the install it named then: every
+  status the card receives — also several received before a frame — is
+  applied to it in turn, so one naming another install turns it into a
+  notice that nothing was removed even if the next names this install
+  again, and one without the row ends it. A click is judged by what is
+  true when it lands: a confirmation from an older frame, a second click
+  or a closed question sends nothing, and a Remove clicked from an older
+  frame asks about the install that frame named, never one named since.
+  While its request is out the question says it is removing; a status
+  then naming another install, its own removal published first included,
+  changes nothing shown until the reply: success ends the question,
+  failure says nothing was removed. A reply answers only the question
+  that sent it; one for an earlier question changes no open one, and its
+  failure shows on the row as its own until Remove is chosen again or the
+  row goes. Main refuses (`PACKAGE_ID_CONFLICT`) a removal whose install
+  changed meanwhile, so nothing else is removed. The question says what removal does and does
+  not do: it does not install the required package, which waits until its
+  source can provide it. Every string crosses
+  `scrubMarketplaceStrings` with the status (§18.8), and each reason has an
+  en and ko sentence.
 
 #### 18.7.6 Folder sources
 
@@ -4536,7 +4885,7 @@ the slice that adds the code or reason.
 | · `folder-already-added`, `folder-inside-source`, `folder-contains-source` | E | "<path> is already added as <id>" / "<path> lies inside <existing path>, which is already added as <id>" / "<path> contains <existing path>, which is already added as <id>" | "Use <id>, or remove it" (and add the folder you want, or one that does not contain it); *Show <id>* | "이미 <id>(으)로 추가된 폴더와 겹칩니다. <id>을(를) 쓰거나 지우세요." |
 | `GIT_RUNTIME_MISSING`, `GIT_RUNTIME_TOO_OLD` | E | today's sentences | *Install Git* | today's |
 | `GIT_RUNTIME_INSTALL_FAILED` · `<phase>` | E | "Installing git failed while <phase> (<reason>)." | *Retry*; "If your network blocks GitHub downloads, install git yourself and choose *System*." | "git 설치가 <단계>에서 실패했습니다." |
-| `PLAN_EXPIRED` · `expired`, `replaced`, `folder-changed`, `policy-changed`, `package-changed` | E | today's; for a folder "The folder changed while you were reviewing."; for policy "Your organization's policy changed while you were reviewing."; for `package-changed` (an approval of §18.7.5 whose reviewed generation or approval digest no longer matches) "This package changed since you reviewed it. Review it again." | the review reopens with a fresh plan, or with the installed generation for `package-changed` | today's; "검토하는 사이 조직 정책이 바뀌었습니다."; "검토한 뒤 패키지가 바뀌었습니다. 다시 검토하세요." |
+| `PLAN_EXPIRED` · `expired`, `replaced`, `folder-changed`, `policy-changed`, `package-changed` | E | today's; for a folder "The folder changed while you were reviewing."; for policy "Your organization's policy changed while you were reviewing."; for `package-changed` (an approval of §18.7.5 whose reviewed generation or approval digest no longer matches, or a plan whose package was installed, updated or removed since, §18.6) "This package changed since you reviewed it. Review it again." | the review reopens with a fresh plan, or with the installed generation for `package-changed` | today's; "검토하는 사이 조직 정책이 바뀌었습니다."; "검토한 뒤 패키지가 바뀌었습니다. 다시 검토하세요." |
 | `PACKAGE_INCOMPATIBLE` · `min_app_version` / `platform` / `prerelease` / `rollout` / `host_protocol` | E | "<name> needs Ave <version>" / "not available for <OS>" / "only pre-releases exist" / "rolling out gradually; offered to you later" / "needs a newer plugin protocol" | *Update Ave* / — / "Turn on pre-releases under Updates" / — / *Update Ave* | reason by reason |
 | `PACKAGE_COMPAT_UNDECLARED` | E | "The plugin does not declare which Ave version it needs (`requires.minAppVersion`)." | "Ask its author to declare it." | "필요한 Ave 버전을 선언하지 않았습니다." |
 | `PACKAGE_YANKED`, `PACKAGE_REVOKED` | E | "Withdrawn by <source>: <reason>." | "Choose another version, or uninstall." | "<소스>가 철회했습니다." |
@@ -4602,7 +4951,7 @@ type SourceWarning = "unencrypted" | "token-unencrypted" | "internal-network" | 
 interface SourceWarningView { warning: SourceWarning; host: string | null; address: string | null }
 // SourceView (shared/git-marketplace.ts:47-71) gains:
 //   transport: "git" | "folder"; path: string | null; acknowledged: SourceWarning[];
-//   autoUpdate: { effective: boolean; override: "on" | "off" | null; lockedByPolicy: boolean };
+//   autoUpdate: { effective: boolean; override: "on" | "off" | null; lockedByPolicy: boolean; required: boolean };
 // UpdatePlanView gains consentDelta: ConsentDelta (§18.7.3).
 // Slice E builds discovery, applyCheckAt, running, historyReset and packages with
 // key, displayName, from, to and state (§13.1); F adds waitingSince, autoUpdate,
@@ -4921,6 +5270,13 @@ The E2E flows named below run in `test/e2e/ui/`.
       "Only these non-code files changed" delta, and *Approve update*
       approves every changed component in one call (revert: hash
       `version`, or drop the cheap form);
+    - a server that reads its input from `plugin.json`'s version string:
+      a version-only change gives no consent delta, while any other byte of
+      `plugin.json` or of the code does (revert: hash `version`);
+    - the normalization is exact: whitespace, key order, another key, a
+      second or nested `version`, a version that is not a string, and bytes
+      that are not exact UTF-8 all still change the digest (revert: any
+      looser normalization);
     - a change to any other `plugin.json` field changes the digest and
       lists `plugin.json` under `changedFiles.code`;
     - `npx foo` and `image:latest` give `null` and never carry;
@@ -5080,7 +5436,7 @@ The E2E flows named below run in `test/e2e/ui/`.
 | 20 | Any consent-fingerprint difference, a narrowing included, any `unknown` baseline field, and any previously approved component that would not keep its approval, needs review (§18.7.2, §18.7.3) | The owner's rule taken literally; equality is deterministic and testable; an automatic update must never silently disable a component the user approved |
 | 21 | Every `mcp` package update needs review (§18.7.3) | An MCP server declares no authority; its command is its authority, and its version is in the command |
 | 22 | Packages with no local executable component (stdio MCP, command hook, `process` entry) apply changed text and data automatically (§18.7.3) | `extensions-and-plugins.md` decision 18 activates them without consent; a routine template creates nothing; nothing local runs that could read the changed files |
-| 23 | The approval digest covers declaration, anchored files and the **whole** package tree, normalizing only `plugin.json` `version`; an undeterminable closure is `null`; carry-forward is provisional until publication revalidates it; a code-free change gets a one-action review (§18.7.3) | No runtime boundary keeps an unchanged server from evaluating another package file, so exclusions by extension or execute bit are unsafe; the version bump is release bookkeeping that runs nothing; review stays cheap instead of being skipped |
+| 23 | The approval digest covers declaration, anchored files and the **whole** package tree, normalizing only the string value of `plugin.json`'s one top-level `version`, byte-exactly; an undeterminable closure is `null`; carry-forward is provisional until publication revalidates it; a code-free change gets a one-action review (§18.7.3) | No runtime boundary keeps an unchanged server from evaluating another package file, so exclusions by extension or execute bit are unsafe; the version bump is release bookkeeping, and a component acting on the version string is reading input data, outside consent (owner decision 2026-10-02; Codex's runtime-input objection considered and rejected); review stays cheap instead of being skipped |
 | 24 | Two checkpoints: catalog, then staged bytes before activation; a manual review stages and installs exactly those bytes (§18.7.3) | The index cannot show an extension's bundled servers and hooks; approval must cover the bytes that install |
 | 25 | Updates wait for `onIdle` across all four busy conditions, at boot too; after 30 minutes an escalation offers *Apply now*; agent-plugin MCP gets its own lease source and drain, acquired by one helper for registered tools and `withBundledLease`, and payload directories are install-addressed under `.installs/`, disjoint from legacy `<version>/` (§18.7.4) | "Without interrupting a running turn"; startup order is not a barrier; the agent-plugin path had no lease owner, a same-version refresh moved live files, and a nested replacement would be deleted with its legacy predecessor |
 | 26 | Required installs update at every apply check through the apply queue; the policy approves authority, not MCP servers or hooks; an unapproved component is `approval-pending` with a notice and *Review* (§18.7.2, §18.7.5) | §10.2: the policy stands for authority consent; an unapproved projection is never published (`mcp-manager.ts:393`), so the pending approval must be visible and actionable |

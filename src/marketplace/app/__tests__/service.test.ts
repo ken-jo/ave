@@ -8,6 +8,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { readPayloadFiles } from "../../../plugins/contribution-approval-digest.js";
+import { requiresPackage } from "../../updates/eligibility.js";
 import { descriptorText as descriptor, jsonText as text } from "../../__tests__/fixtures/package-files.js";
 import type { McpServerConfig } from "../../../mcp/types.js";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
@@ -24,6 +26,7 @@ import { NO_ARTIFACT_CACHE } from "../../resolve/artifact-cache.js";
 import { migrateLegacyContent, type LegacyActivations, type LegacyContentReport } from "../../migration/legacy-content.js";
 import type { LegacyPluginReport, OfficialPlugin } from "../../migration/legacy-plugins.js";
 import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js";
+import type { MarketplaceError } from "../../errors.js";
 import { OFFICIAL_MARKETPLACE, type OfficialMarketplace } from "../../sources/official.js";
 import { EMPTY_MARKETPLACE_POLICY, FilePolicySource, type PolicyLoad, type PolicySource } from "../../sources/policy.js";
 import { AppliedDefaults } from "../../boot-installs/applied.js";
@@ -210,8 +213,10 @@ describe("MarketplaceService", () => {
         activate: async (_content, _entry, _previous, adopt) => {
           await takeHold("activate");
           adopting.push(adopt);
+          return { retired: Promise.resolve() };
         },
         deactivate: async () => {},
+        approveComponents: async () => {},
       },
       now: () => now,
     });
@@ -233,11 +238,15 @@ describe("MarketplaceService", () => {
         install: vi.fn(async () => {
           throw new Error("no plugin installs in this suite");
         }),
+        baseline: async () => null,
+        stagedFiles: () => [],
+        componentApprovals: () => [],
+        running: () => true,
         retire: vi.fn(async () => {}),
         uninstall: vi.fn(async () => {}),
       },
       content: {
-        list: async () => store.list().map((entry) => ({ kind: entry.kind, name: entry.name, version: entry.version, sourceId: entry.origin.sourceId, originCommit: entry.origin.commit })),
+        list: async () => store.list().map((entry) => ({ kind: entry.kind, name: entry.name, version: entry.version, sourceId: entry.origin.sourceId, originCommit: entry.origin.commit, digest: entry.origin.contentSha256 })),
         installedComponents: async (name) => {
           const content = (await store.load()).loaded.find((item) => item.entry.kind === "agent-plugin" && item.entry.name === name)?.content;
           if (content?.kind !== "agent-plugin") throw new Error(`installed agent-plugin ${name} has no verified components`);
@@ -247,6 +256,19 @@ describe("MarketplaceService", () => {
           await duringContentInstall?.();
           return { action: (await store.install(staged, options)).action };
         },
+        baseline: async (kind, name, descriptor) => {
+          if (kind === "plugin" || kind === "mcp") throw new Error("not content");
+          return store.installedConsent(kind, name, (entry) =>
+            descriptor({ sourceId: entry.origin.sourceId, commit: entry.origin.commit, packagePath: entry.origin.packagePath, version: entry.version }));
+        },
+        installedFiles: async (kind, name) => {
+          const found = (await store.load()).loaded.find((item) => item.entry.kind === kind && item.entry.name === name);
+          return found ? readPayloadFiles(found.dir) : null;
+        },
+        installId: async (kind, name) => store.list().find((entry) => entry.kind === kind && entry.name === name)?.origin.installId ?? null,
+        componentApprovals: async () => [],
+        callsInFlight: async () => false,
+        approveComponents: (name, installId, consents) => store.approveComponents(name, installId, consents),
         uninstall: async (kind, name) => {
           if (kind === "plugin" || kind === "mcp") throw new Error("not content");
           await store.uninstall(kind, name, EMPTY_MARKETPLACE_POLICY);
@@ -469,7 +491,7 @@ describe("MarketplaceService", () => {
     const first = await service.applyBootInstalls(defaults, applied);
     expect(first.report.installed).toEqual([defaults[0]]);
     expect(first.report.skipped).toEqual([{ key: defaults[1], reason: "corp does not list skill missing" }]);
-    expect(first.notice).toEqual({ forYou: [{ sourceId: "corp", kind: "skill", name: "review" }], required: [], unmanaged: [], lostGrants: [], revoked: [] });
+    expect(first.notice).toEqual({ forYou: [{ sourceId: "corp", kind: "skill", name: "review" }], required: [], unmanaged: [], lostGrants: [], revoked: [] , autoUpdated: [] });
     // No official snapshot yet: the migration waits for one.
     expect(legacyRuns).toEqual([]);
     expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual(["skill:review@corp"]);
@@ -477,7 +499,7 @@ describe("MarketplaceService", () => {
     // Uninstalling a default is final: the next boot installs nothing.
     await service.uninstall({ sourceId: "corp", kind: "skill", name: "review" });
     const second = await service.applyBootInstalls(defaults, applied);
-    expect(second.report).toEqual({ installed: [], updated: [], switched: [], skipped: [], failed: [] });
+    expect(second.report).toEqual({ installed: [], skipped: [], failed: [] });
     expect(second.notice).toBeNull();
     expect(store.list()).toEqual([]);
   });
@@ -534,7 +556,7 @@ describe("MarketplaceService", () => {
     expect(legacyRuns).toHaveLength(1);
     // The lookup reads the official snapshot: this fixture lists skills, not plugins.
     expect(legacyRuns[0]!("review")).toBeNull();
-    expect(first.notice).toEqual({ forYou: [], required: [], unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }], revoked: [] });
+    expect(first.notice).toEqual({ forYou: [], required: [], unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }], revoked: [] , autoUpdated: [] });
 
     const second = await service.applyBootInstalls([], applied);
     expect(legacyRuns).toHaveLength(1);
@@ -801,6 +823,350 @@ describe("MarketplaceService", () => {
     expect(manager.configs.has("notes")).toBe(true);
   });
 
+  it("tells the switches which installed packages are required from the policy and their identity alone, whatever their source's health", async () => {
+    const acme = market();
+    const required = policyLoad({ requiredInstalls: [{ kind: "mcp", name: "notes", source: "acme-tools" }] });
+    service.close();
+    await build(required);
+    await addMarket(acme.url);
+    const notes = { sourceId: "acme-tools", kind: "mcp" as const, name: "notes" };
+    const review = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    for (const key of [notes, review]) await service.executeInstall((await service.planInstall(key)).planId);
+    const requiredNames = async () => {
+      const context = await service.autoUpdateContext();
+      return {
+        acmeReads: context.sources.some((source) => source.id === "acme-tools"),
+        installed: context.installed.map((key) => key.name).sort(),
+        required: context.installed.filter((key) => requiresPackage(context, key)).map((key) => key.name),
+      };
+    };
+    const withdrawn = policyLoad({});
+    const healthy = { acmeReads: true, installed: ["notes", "review"] };
+    expect(await requiredNames()).toEqual({ ...healthy, required: ["notes"] });
+    service.close();
+    await build(withdrawn);
+    expect(await requiredNames()).toEqual({ ...healthy, required: [] });
+    // The source's metadata breaks: the installs and the policy are untouched.
+    writeFileSync(join(root, "marketplaces", "acme-tools", "state.json"), "{broken");
+    const damaged = { acmeReads: false, installed: ["notes", "review"] };
+    expect(await requiredNames()).toEqual({ ...damaged, required: [] });
+    service.close();
+    await build(required);
+    expect(await requiredNames()).toEqual({ ...damaged, required: ["notes"] });
+  });
+
+  it("lists each required install it cannot meet, with why, and a same-named install from another source (§10.2)", async () => {
+    const acme = market("1.0.0", "acme-tools", { theme: true });
+    const beta = market("1.0.0", "beta-tools");
+    beta.repo.commit(
+      { "skills/review/ave-package.json": text({ schemaVersion: 2, kind: "skill", name: "review", version: "1.0.0", minAppVersion: "9.0.0", payload: { entry: "SKILL.md" } }) },
+      "needs a newer app",
+    );
+    const corp = market("1.0.0", "corp");
+    // The organization's sources; corp is never reached, so it has no snapshot.
+    const managed = (id: string, url: string) => ({ transport: "git" as const, id, url: normalizeSourceUrl(url), auth: { kind: "none" as const } });
+    const additional = [managed("acme-tools", acme.url), managed("beta-tools", beta.url), managed("corp", corp.url)];
+    service.close();
+    await build(policyLoad({ additional }));
+    await service.refresh("acme-tools");
+    await service.refresh("beta-tools");
+    await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).planId);
+    service.close();
+    await build(policyLoad({
+      additional,
+      requiredInstalls: [
+        { kind: "mcp", name: "notes", source: "nowhere" },
+        { kind: "theme", name: "harbor", source: "corp" },
+        { kind: "plugin", name: "absent", source: "acme-tools" },
+        { kind: "skill", name: "review", source: "beta-tools" },
+      ],
+    }));
+    const unmet = (await service.autoUpdateContext()).unmetRequired;
+    expect(unmet).toEqual([
+      { key: { sourceId: "nowhere", kind: "mcp", name: "notes" }, sourceLabel: "nowhere", reason: "source-missing", minAppVersion: null, installedFrom: { sourceId: "acme-tools", label: "Acme Tools", removal: "sheet" } },
+      { key: { sourceId: "corp", kind: "theme", name: "harbor" }, sourceLabel: "corp", reason: "source-unreachable", minAppVersion: null, installedFrom: null },
+      { key: { sourceId: "acme-tools", kind: "plugin", name: "absent" }, sourceLabel: "Acme Tools", reason: "not-in-catalog", minAppVersion: null, installedFrom: null },
+      { key: { sourceId: "beta-tools", kind: "skill", name: "review" }, sourceLabel: "Acme Tools", reason: "incompatible", minAppVersion: "9.0.0", installedFrom: null },
+    ]);
+    // The boot pass skips the same four for the same reasons.
+    const boot = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
+    expect(boot.report.skipped.map((item) => `${item.key.name}: ${item.reason}`)).toEqual([
+      "notes: source nowhere is not one of the app's sources",
+      "harbor: source corp has no snapshot yet",
+      "absent: acme-tools does not list plugin absent",
+      "review: needs Ave 9.0.0",
+    ]);
+
+    // Met, or one its source can provide: not listed, and the boot pass installs the second.
+    service.close();
+    const met = policyLoad({
+      additional,
+      requiredInstalls: [
+        { kind: "mcp", name: "notes", source: "acme-tools" },
+        { kind: "theme", name: "harbor", source: "acme-tools" },
+      ],
+    });
+    await build(met);
+    expect((await service.autoUpdateContext()).unmetRequired).toEqual([]);
+    const installed = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
+    expect(installed.report).toMatchObject({ installed: [{ kind: "theme", name: "harbor", source: "acme-tools" }], skipped: [], failed: [] });
+  });
+
+  it("lists a requirement on a hidden source as unmet, and the boot pass skips it for the same reason (§10.2, §7.3)", async () => {
+    const official = market("1.0.0", "ave");
+    service.close();
+    await build(
+      policyLoad({ allowDisablingOfficial: true, requiredInstalls: [{ source: "ave", kind: "skill", name: "review" }] }),
+      { id: "ave", url: official.url, mirrors: [], auth: { kind: "none" } },
+    );
+    await service.refresh("ave");
+    // Shown, it can provide the package: nothing is unmet, the boot pass installs it.
+    expect((await service.autoUpdateContext()).unmetRequired).toEqual([]);
+    await service.setEnabled("ave", false);
+    // Hidden before the requirement is met: a cached candidate is no proof it can be met.
+    expect((await service.autoUpdateContext()).unmetRequired).toEqual([
+      { key: { sourceId: "ave", kind: "skill", name: "review" }, sourceLabel: "Acme Tools", reason: "source-hidden", minAppVersion: null, installedFrom: null },
+    ]);
+    const boot = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
+    expect(boot.report).toEqual({ installed: [], skipped: [{ key: { source: "ave", kind: "skill", name: "review" }, reason: "source ave is hidden" }], failed: [] });
+    // Shown again: met at the next boot pass, and no longer listed.
+    await service.setEnabled("ave", true);
+    const shown = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
+    expect(shown.report.installed).toEqual([{ source: "ave", kind: "skill", name: "review" }]);
+    expect((await service.autoUpdateContext()).unmetRequired).toEqual([]);
+  });
+
+  it("removes a revoked package under its package lock: a holder of that package finishes first (§10.4, §18.6)", async () => {
+    const acme = market();
+    await addMarket(acme.url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    await service.executeInstall((await service.planInstall(key)).planId);
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "*", reason: "prompt injection", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    // An update of review holds its package lock.
+    const holder = service.asOneOperation(async () => {
+      entered();
+      await held;
+    }, [{ kind: "skill", name: "review" }]);
+    await inside;
+    const removal = vi.spyOn(store, "uninstall");
+    const fed = feeds.length;
+    const refresh = service.refresh();
+    // The sync fed the revocation: enforcement has reached the uninstall, which waits for the lock.
+    while (feeds.length === fed) await new Promise<void>((resolve) => setImmediate(resolve));
+    for (let i = 0; i < 50; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(removal).not.toHaveBeenCalled();
+    expect(store.list().map((entry) => entry.name)).toEqual(["review"]);
+    release();
+    await holder;
+    await refresh;
+    expect(removal).toHaveBeenCalledOnce();
+    expect(store.list()).toEqual([]);
+  });
+
+  /**
+   * The feed judges 1.0.0 revoked (`=1.0.0`) while an update to 2.0.0 owns the package; the update
+   * lands before enforcement gets the lock. With `widened`, once the update is past its own check the
+   * source revokes every release, and a second sync publishes that before enforcement's turn.
+   */
+  async function reviseWhileRevoking(widened: boolean): Promise<{ removedVersions: string[]; done: Promise<void> }> {
+    const acme = market();
+    await addMarket(acme.url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    await service.executeInstall((await service.planInstall(key)).planId);
+    acme.publish("2.0.0");
+    await service.refresh("acme-tools");
+    const plan = await service.planInstall(key);
+    expect(plan).toMatchObject({ version: "2.0.0" });
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "=1.0.0", reason: "old release unsafe", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    feedHold = { at: feedCalls + 1, wait: async () => { entered(); await held; } };
+    const refresh = service.refresh("acme-tools");
+    // The enforcement feed has read 1.0.0 as installed and is held there.
+    await inside;
+    // The update takes the package lock, then waits for that feed before it installs 2.0.0.
+    const installing = service.executeInstall(plan.planId);
+    await vi.waitFor(() => expect((service as unknown as { pendingBindings: Map<string, unknown> }).pendingBindings.size).toBe(1));
+    let widening: Promise<void> = Promise.resolve();
+    if (widened) {
+      createRevocations(acme, [{ kind: "skill", name: "review", versions: "*", reason: "every release unsafe", at: "2026-09-25T00:00:00Z", action: "uninstall" }]);
+      let published!: () => void;
+      const publishedNew = new Promise<void>((resolve) => { published = resolve; });
+      afterSourceSynced = () => published();
+      widening = service.refresh("acme-tools").then(() => undefined);
+      await publishedNew;
+    }
+    const removedVersions: string[] = [];
+    const original = store.uninstall.bind(store);
+    vi.spyOn(store, "uninstall").mockImplementation(async (...args) => {
+      removedVersions.push(...store.list().filter((item) => item.name === "review").map((item) => item.version));
+      return original(...args);
+    });
+    release();
+    return { removedVersions, done: Promise.all([installing, refresh, widening]).then(() => undefined) };
+  }
+
+  it("judges a revocation again under the package lock: an update that landed while it waited stays when its version is not revoked (§10.4, §18.6)", async () => {
+    const { removedVersions, done } = await reviseWhileRevoking(false);
+    await done;
+    expect(removedVersions).toEqual([]);
+    expect(store.list().map((item) => `${item.name}@${item.version}`)).toEqual(["review@2.0.0"]);
+    expect(service.takeRevocationNotice()).toBeNull();
+    expect(warnings).toEqual(["revocation of acme-tools/skill/review@1.0.0 skipped: it was replaced by 2.0.0 from acme-tools, which its own source's revocations do not cover"]);
+  });
+
+  it("judges a revocation again under the package lock: one its source withdrew while it waited removes nothing (§10.4, §18.6)", async () => {
+    const acme = market();
+    await addMarket(acme.url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    await service.executeInstall((await service.planInstall(key)).planId);
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "=1.0.0", reason: "withdrawn rule", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    // Another operation holds review's package lock and changes nothing.
+    const holder = service.asOneOperation(async () => { entered(); await held; }, [{ kind: "skill", name: "review" }]);
+    await inside;
+    const removal = vi.spyOn(store, "uninstall");
+    const before = feeds.length;
+    // This sync's feed revokes the installed 1.0.0; its enforcement waits for the lock.
+    const first = service.refresh("acme-tools");
+    // A sync takes longer than waitFor's one-second default on a slow disk (Windows).
+    await vi.waitFor(() => expect(feeds.length).toBeGreaterThan(before), { timeout: 20_000 });
+    // The source withdraws the rule, and a second sync publishes that snapshot while the first still waits.
+    createRevocations(acme, []);
+    let published!: () => void;
+    const publishedNew = new Promise<void>((resolve) => { published = resolve; });
+    afterSourceSynced = () => published();
+    const second = service.refresh("acme-tools");
+    await publishedNew;
+    release();
+    await Promise.all([holder, first, second]);
+    expect(removal).not.toHaveBeenCalled();
+    expect(store.list().map((item) => `${item.name}@${item.version}`)).toEqual(["review@1.0.0"]);
+    expect(service.takeRevocationNotice()).toBeNull();
+    expect(warnings).toEqual(["revocation of acme-tools/skill/review@1.0.0 skipped: its source no longer revokes it"]);
+  });
+
+  it("keeps an install whose source's revocations cannot be read when its turn comes, and says so, not that the rule was withdrawn (§10.4, §18.6)", async () => {
+    const acme = market();
+    await addMarket(acme.url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    await service.executeInstall((await service.planInstall(key)).planId);
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "=1.0.0", reason: "still revoked", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    const holder = service.asOneOperation(async () => { entered(); await held; }, [{ kind: "skill", name: "review" }]);
+    await inside;
+    const removal = vi.spyOn(store, "uninstall");
+    const before = feeds.length;
+    // This sync's feed revokes 1.0.0; its enforcement waits for the lock.
+    const refresh = service.refresh("acme-tools");
+    // A sync takes longer than waitFor's one-second default on a slow disk (Windows).
+    await vi.waitFor(() => expect(feeds.length).toBeGreaterThan(before), { timeout: 20_000 });
+    // The next read of the source's revocations, the one under the lock, fails.
+    const syncer = (service as unknown as { options: { syncer: { readRevocations: (...args: unknown[]) => Promise<unknown> } } }).options.syncer;
+    vi.spyOn(syncer, "readRevocations").mockRejectedValueOnce(new Error("snapshot is not valid JSON"));
+    release();
+    await Promise.all([holder, refresh]);
+    expect(removal).not.toHaveBeenCalled();
+    expect(store.list().map((item) => `${item.name}@${item.version}`)).toEqual(["review@1.0.0"]);
+    expect(service.takeRevocationNotice()).toBeNull();
+    expect(warnings).toEqual(["revocation of acme-tools/skill/review@1.0.0 skipped: its source's revocation rules could not be read; it is kept until they can be"]);
+  });
+
+  it("refuses a plan whose version its source revoked after the plan was made (§10.4, §18.6)", async () => {
+    const acme = market();
+    await addMarket(acme.url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    const plan = await service.planInstall(key);
+    expect(plan).toMatchObject({ version: "1.0.0" });
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "=1.0.0", reason: "prompt injection", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+    await service.refresh("acme-tools");
+    await expect(service.executeInstall(plan.planId)).rejects.toMatchObject({ code: "PACKAGE_REVOKED" });
+    expect(store.list()).toEqual([]);
+  });
+
+  it("skips a revocation whose install was removed while it waited for the package lock (§10.4, §18.6)", async () => {
+    const acme = market();
+    await addMarket(acme.url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    await service.executeInstall((await service.planInstall(key)).planId);
+    createRevocations(acme, [{ kind: "skill", name: "review", versions: "*", reason: "prompt injection", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    // A removal of review holds its package lock, and removes it once released.
+    const holder = service.asOneOperation(async (lease) => {
+      entered();
+      await held;
+      await service.uninstallInstalled(key, { lease });
+    }, [{ kind: "skill", name: "review" }]);
+    await inside;
+    const removal = vi.spyOn(store, "uninstall");
+    const fed = feeds.length;
+    const refresh = service.refresh();
+    while (feeds.length === fed) await new Promise<void>((resolve) => setImmediate(resolve));
+    release();
+    await holder;
+    await refresh;
+    expect(removal).toHaveBeenCalledOnce();
+    expect(store.list()).toEqual([]);
+    expect(service.takeRevocationNotice()).toBeNull();
+    expect(warnings).toEqual(["revocation of acme-tools/skill/review@1.0.0 skipped: it was removed before its turn"]);
+  });
+
+  it("removes the install that landed while a revocation waited when its own version is revoked too, and reports that version (§10.4, §18.6)", async () => {
+    const { removedVersions, done } = await reviseWhileRevoking(true);
+    await done;
+    expect(removedVersions).toEqual(["2.0.0"]);
+    expect(store.list()).toEqual([]);
+    expect(service.takeRevocationNotice()?.revoked).toEqual([
+      { key: { sourceId: "acme-tools", kind: "skill", name: "review" }, version: "2.0.0", reason: "every release unsafe", outcome: "uninstalled" },
+    ]);
+    expect(warnings).toEqual([]);
+  });
+
+  it("expires a reviewed update whose package was removed before it ran: the review judged the install then (§18.6, §18.7.3)", async () => {
+    const acme = market();
+    await addMarket(acme.url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    await service.executeInstall((await service.planInstall(key)).planId);
+    acme.publish("2.0.0");
+    await service.refresh("acme-tools");
+    const review = await service.planUpdate(key);
+    expect(review).toMatchObject({ from: "1.0.0", version: "2.0.0" });
+    await service.uninstall(key);
+    await expect(service.executeInstall(review.planId, [], true)).rejects.toMatchObject({ code: "PLAN_EXPIRED", detail: { reason: "package-changed" } });
+    expect(store.list()).toEqual([]);
+  });
+
+  it("expires a source switch's plan whose package was updated before it ran: the switch was decided on the install then (§10.2, §18.6)", async () => {
+    const acme = market();
+    const other = market("1.1.0", "other-tools");
+    await addMarket(acme.url);
+    await addMarket(other.url);
+    const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+    await service.executeInstall((await service.planInstall(key)).planId);
+    const switching = await service.planInstall({ sourceId: "other-tools", kind: "skill", name: "review", switchSource: true });
+    // An update from the bound source lands first.
+    acme.publish("2.0.0");
+    await service.refresh("acme-tools");
+    await service.executeInstall((await service.planInstall(key)).planId);
+    await expect(service.executeInstall(switching.planId)).rejects.toMatchObject({ code: "PLAN_EXPIRED", detail: { reason: "package-changed" } });
+    expect(store.list().map((item) => `${item.name}@${item.version}:${item.origin.sourceId}`)).toEqual(["review@2.0.0:acme-tools"]);
+  });
+
   it("judges a package mid-switch by the source it moves to, in every feed while it moves", async () => {
     const acme = market();
     const other = market("1.1.0", "other-tools");
@@ -863,6 +1229,7 @@ describe("MarketplaceService", () => {
       unmanaged: [],
       lostGrants: [],
       revoked: [{ key: { sourceId: "acme-tools", kind: "mcp", name: "notes" }, version: "2.0.0", reason: "exfiltrates notes", outcome: "uninstalled" }],
+      autoUpdated: [],
     });
     expect(service.takeRevocationNotice()).toBeNull();
     // The boot notice does not repeat what was already reported.
@@ -1319,6 +1686,24 @@ describe("MarketplaceService", () => {
     expect(await service.previewSource({ input: url, auth: "none" })).toMatchObject({ type: "marketplace" });
   });
 
+  it("treats a package required from two sources as a policy it cannot read: only the official source works, and the error names both (§12, §18.7.2)", async () => {
+    const path = join(root, "ave-policy.json");
+    writeFileSync(path, JSON.stringify({ version: 1, managed: true, marketplaces: {
+      additional: [{ id: "corp", url: "https://git.corp.example/a" }],
+      requiredInstalls: [{ kind: "skill", name: "review", source: "ave" }, { kind: "skill", name: "review", source: "corp" }],
+    } }));
+    service.close();
+    await build(await FilePolicySource.open(path));
+    const { url } = market();
+    const refused = service.previewSource({ input: url, auth: "none" });
+    await expect(refused).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "policy-invalid" } });
+    const error = ((await refused.catch((caught: unknown) => caught)) as MarketplaceError).detail as { error: string };
+    expect(error.error).toContain("marketplaces.requiredInstalls[1]: requires skill/review from corp, but marketplaces.requiredInstalls[0] requires it from ave");
+    // Nothing of the invalid policy applies: no managed source, nothing required.
+    expect((await service.listSources()).map((source) => source.id)).toEqual([OFFICIAL_MARKETPLACE.id]);
+    expect((await service.autoUpdateContext()).requiredInstalls).toEqual([]);
+  });
+
   /** The managed policy file the next two groups rewrite while operations run. */
   const policyPath = () => join(root, "ave-policy.json");
   const write = (marketplaces: unknown) => writeFileSync(policyPath(), JSON.stringify({ version: 1, managed: true, marketplaces }));
@@ -1363,6 +1748,34 @@ describe("MarketplaceService", () => {
       await expect(recheck).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "blocked-by-pattern" } });
     });
 
+    it("starts that work as another caller of the package locks, so a package lock it takes waits for the holder whose uninstall reported the change", async () => {
+      const { url } = market();
+      await addMarket(url);
+      const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
+      await service.executeInstall((await service.planInstall(key)).planId);
+      const order: string[] = [];
+      let recheck: Promise<unknown> | null = null;
+      afterCatalogChanged = () => {
+        // Started at once, while the uninstall that reported the change still holds the package lock:
+        // it is not that uninstall's work, so it is neither refused nor let in beside it.
+        recheck ??= service.asOneOperation(async () => {
+          order.push("recheck holds the package");
+          return store.list().length;
+        }, [{ kind: "skill", name: "review" }]);
+        order.push("change reported");
+      };
+      // The uninstall runs under a caller's lease, which holds the package a while after it.
+      await service.asOneOperation(async (lease) => {
+        // A main-side caller holding the lease names the install by its stored identity.
+        await service.uninstallInstalled(key, { lease });
+        for (let i = 0; i < 20; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+        order.push("holder returns");
+      }, [{ kind: "skill", name: "review" }]);
+      expect(recheck).not.toBeNull();
+      await expect(recheck).resolves.toBe(0);
+      expect(order).toEqual(["change reported", "holder returns", "recheck holds the package"]);
+    });
+
     it("runs the update check a sync's snapshot starts as its own operation, though it starts before that sync ends and outlives it", async () => {
       const { url, publish } = market();
       service.close();
@@ -1386,12 +1799,19 @@ describe("MarketplaceService", () => {
           entered();
           return service.updates();
         },
+        updateCandidates: (reached, signal) => service.updateCandidates(reached, signal),
+        autoUpdateContext: (signal) => service.autoUpdateContext(signal),
+        applyUpdate: (target, signal) => service.applyUpdate(target, signal),
+        appliedState: (key, to) => service.appliedState(key, to),
+        callsInFlight: (name) => service.callsInFlight(name),
+        approveComponents: (key, installId, consents) => service.approveComponents(key, installId, consents),
       };
       const background = startMarketplaceBackground({
         service: async () => scheduled,
         appliedDefaults: () => AppliedDefaults.open(join(root, "packages", "default-installs.json")),
         defaults: [],
         settings: () => ({ updateNotices: true, updateCheckIntervalMs: 0 }),
+        activity: { isBusy: () => false, onIdle: () => () => {} },
         history: { load: async () => ({ history: emptyUpdateHistory(), reset: false as const }), save: async () => {} },
         publishStatus: () => {},
         publishNotice: () => {},
@@ -1541,6 +1961,7 @@ describe("MarketplaceService", () => {
         appliedDefaults: () => AppliedDefaults.open(join(root, "packages", "default-installs.json")),
         defaults: [],
         settings: () => ({ updateNotices: true, updateCheckIntervalMs: 0 }),
+        activity: { isBusy: () => false, onIdle: () => () => {} },
         history: { load: async () => ({ history: emptyUpdateHistory(), reset: false as const }), save: async () => {} },
         publishStatus: () => {},
         publishNotice: () => {},
@@ -1768,6 +2189,7 @@ describe("MarketplaceService", () => {
       appliedDefaults: () => AppliedDefaults.open(join(root, "packages", "default-installs.json")),
       defaults: [],
       settings: () => ({ updateNotices: true }),
+      activity: { isBusy: () => false, onIdle: () => () => {} },
       history,
       publishStatus: vi.fn(),
       publishNotice: vi.fn(),
@@ -1840,6 +2262,7 @@ describe("MarketplaceService", () => {
       appliedDefaults: () => AppliedDefaults.open(appliedPath),
       defaults: [{ kind: "skill" as const, name: "review", source: "ave" }],
       settings: () => ({ updateNotices: true }),
+      activity: { isBusy: () => false, onIdle: () => () => {} },
       history: {
         load: async () => ({ history: emptyUpdateHistory(), reset: false as const }),
         save: async (_history: UpdateHistory) => {

@@ -324,6 +324,8 @@ export const CHANNELS = {
     bootInstallsDismiss: "ave:marketplace:boot-installs:dismiss",
     updatesStatus: "ave:marketplace:updates:status",
     updatesCheck: "ave:marketplace:updates:check",
+    updatesApplyNow: "ave:marketplace:updates:apply-now",
+    componentsApprove: "ave:marketplace:components:approve",
     syncProgress: "marketplace:sync-progress", // event main→renderer (SyncProgressView)
     catalogChanged: "marketplace:catalog-changed", // event main→renderer
     installProgress: "marketplace:install-progress", // event main→renderer (InstallProgressView)

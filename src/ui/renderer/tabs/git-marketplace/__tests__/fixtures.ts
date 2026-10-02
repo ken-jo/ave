@@ -181,7 +181,11 @@ export function updateStatus(overrides: Partial<UpdateStatusView> = {}): UpdateS
     applyCheckAt: null,
     running: false,
     historyReset: false,
+    waitingSince: null,
+    escalated: false,
+    autoUpdate: { enabled: true, lockedByPolicy: null, sources: [], packages: [] },
     packages: [],
+    unmetRequired: [],
     ...overrides,
   };
 }
@@ -255,6 +259,8 @@ export function fakeMarketplace(
     onBootInstallsApplied: vi.fn(subscribe(bootListeners)),
     updateStatus: vi.fn(async () => ok(heldStatus)),
     checkUpdates: vi.fn(async () => ok(heldStatus)),
+    applyUpdatesNow: vi.fn(async () => ok(heldStatus)),
+    approveComponents: vi.fn(async () => ok(heldStatus)),
     onUpdateStatus: vi.fn(subscribe(updateStatusListeners)),
   };
   const gitRuntime = {

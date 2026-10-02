@@ -52,6 +52,21 @@ describe("PluginUpdatesPill", () => {
     ]);
   });
 
+  it("counts an update that has waited 30 minutes for the conversation to pause, for Apply now (design §18.7.4)", () => {
+    const onReview = vi.fn();
+    renderPill({
+      updates: [
+        { ...update("plugin", "meeting", "Meeting", "2.0.0"), state: "waiting", escalated: true },
+        { ...update("plugin", "notes", "Notes", "2.0.0"), state: "waiting" },
+      ],
+      onReview,
+    });
+    const pill = screen.getByTestId("marketplace-update-action");
+    expect(pill.textContent).toContain("업데이트 1개");
+    pill.click();
+    expect(onReview.mock.calls[0]![0].map((item: PackageUpdateView) => item.key.name)).toEqual(["meeting"]);
+  });
+
   it("renders nothing when every update is applying, waiting or applied", () => {
     renderPill({
       updates: (["automatic", "waiting", "applied"] as const).map((state) => ({ ...update("plugin", state, state, "2.0.0"), state })),
@@ -68,6 +83,13 @@ describe("PluginUpdatesPill", () => {
 
     expect(onReview).toHaveBeenCalledWith(updates);
     expect(screen.getByTestId("marketplace-update-action").getAttribute("aria-label")).toBe("사용 가능한 업데이트 검토");
+  });
+
+  it("offers no skip when every update it counts is required, since a required update ignores skips", () => {
+    const required: PackageUpdateView = { ...update("plugin", "meeting", "Ave Meeting", "2.0.0"), state: "waiting", escalated: true, required: true };
+    renderPill({ updates: [required] });
+    expect(screen.getByTestId("marketplace-update-action")).toBeInTheDocument();
+    expect(screen.queryByLabelText("이 업데이트를 다음 버전까지 건너뛰기")).toBeNull();
   });
 
   it("uses the close control as a skip-until-next-version action", () => {

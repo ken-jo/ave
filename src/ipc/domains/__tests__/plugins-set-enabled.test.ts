@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 import { PluginDeploymentDeniedError } from "../../../plugins/deployment-guard.js";
+import { ContributionTrustReviewStaleError } from "../../../plugins/plugin-contribution-trust.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const hostEventMock = vi.hoisted(() => ({ emit: vi.fn() }));
@@ -186,10 +187,42 @@ describe("plugin bundled contribution trust IPC", () => {
       localId: "policy",
       kind: "hook",
       approved: true,
+      generationId: "a".repeat(64),
+      approvalDigest: "c".repeat(64),
     });
     expect(updated).toEqual(expect.objectContaining({ ok: true, approved: true }));
-    expect(pluginBundleLifecycle.approveHook).toHaveBeenCalledWith("com.example.meeting", "policy");
+    expect(pluginBundleLifecycle.approveHook).toHaveBeenCalledWith("com.example.meeting", "policy", { generationId: "a".repeat(64), approvalDigest: "c".repeat(64) });
     expect(pluginBundleLifecycle.approveMcpServer).not.toHaveBeenCalled();
+  });
+
+  it("an approval names the reviewed generation and digest; a revoke names neither", async () => {
+    const { pluginBundleLifecycle } = await setup();
+    const request = { pluginId: "com.example.meeting", localId: "policy", kind: "hook" };
+    for (const invalid of [
+      { ...request, approved: true },
+      { ...request, approved: true, generationId: "a".repeat(64) },
+      { ...request, approved: true, generationId: "not-a-generation", approvalDigest: null },
+      { ...request, approved: false, generationId: "a".repeat(64), approvalDigest: null },
+    ]) {
+      expect(await invoke("ave:plugins:contribution-trust:set", invalid)).toEqual({ ok: false, error: "invalid-contribution-trust-request" });
+    }
+    expect(pluginBundleLifecycle.approveHook).not.toHaveBeenCalled();
+    expect(pluginBundleLifecycle.revokeHook).not.toHaveBeenCalled();
+
+    // An undeterminable closure is still approvable: its approval just never carries forward.
+    await invoke("ave:plugins:contribution-trust:set", { ...request, approved: true, generationId: "a".repeat(64), approvalDigest: null });
+    expect(pluginBundleLifecycle.approveHook).toHaveBeenCalledWith("com.example.meeting", "policy", { generationId: "a".repeat(64), approvalDigest: null });
+    await invoke("ave:plugins:contribution-trust:set", { ...request, approved: false });
+    expect(pluginBundleLifecycle.revokeHook).toHaveBeenCalledWith("com.example.meeting", "policy");
+  });
+
+  it("reports a review of a generation that has since been replaced as stale", async () => {
+    const { pluginBundleLifecycle } = await setup();
+    pluginBundleLifecycle.approveMcpServer.mockRejectedValueOnce(new ContributionTrustReviewStaleError("com.example.meeting", "notes"));
+    expect(await invoke("ave:plugins:contribution-trust:set", {
+      pluginId: "com.example.meeting", localId: "notes", kind: "mcpServer", approved: true,
+      generationId: "a".repeat(64), approvalDigest: "c".repeat(64),
+    })).toEqual(expect.objectContaining({ ok: false, error: "contribution-trust-review-stale" }));
   });
 });
 

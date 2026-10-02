@@ -466,6 +466,8 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
           return t("gitMarketplace.warning.internalDownloads", { source: sourceName(t, subject, detail.source), host: detail.host });
         case "network-folder":
           return warningText(t, { warning: "network-folder", host: detail.server === "" ? null : detail.server, address: detail.path });
+        case "unencrypted-updates":
+          return t("gitMarketplace.warning.unencryptedUpdates", { source: sourceName(t, subject, detail.source) });
       }
       return unhandled(detail);
     }
@@ -603,8 +605,9 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       if (!detail) return t("gitMarketplace.error.planExpired");
       switch (detail.reason) {
         case "policy-changed": return t("gitMarketplace.error.planExpired.policyChanged");
+        case "package-changed": return t("gitMarketplace.error.planExpired.packageChanged");
       }
-      return unhandled(detail.reason);
+      return unhandled(detail);
     }
     case "PACKAGE_INCOMPATIBLE": {
       const detail = parseMarketplaceErrorDetail(code, failure.detail);

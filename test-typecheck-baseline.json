@@ -120,7 +120,6 @@
     "src/plugins/__tests__/trust-boundary.test.ts": 1,
     "src/plugins/__tests__/uninstall-lifecycle.test.ts": 22,
     "src/plugins/runtime/__tests__/manifest-validator-gate-required.test.ts": 2,
-    "src/plugins/runtime/__tests__/notification-events-emitted.test.ts": 2,
     "src/plugins/runtime/__tests__/plugin-operation-account-session.test.ts": 9,
     "src/plugins/runtime/__tests__/set-enabled.test.ts": 4,
     "src/shared/__tests__/a2a.test.ts": 1,

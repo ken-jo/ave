@@ -15,6 +15,7 @@ import { cn } from "../../../../lib/utils.js";
 import { errorMessage } from "../../../../shared/error-message.js";
 import {
   bootInstallNoticeIsEmpty,
+  type AutoUpdatedView,
   type BootInstallNoticeView,
   type CatalogEntryView,
   type CatalogView,
@@ -31,13 +32,13 @@ import { isIpcErrorResult, type AveApi } from "../../types.js";
 import { AddSourceDialog } from "./AddSourceDialog.js";
 import { DirectInstallView } from "./DirectInstallView.js";
 import { GitRuntimeCard } from "./GitRuntimeCard.js";
-import { KIND_ORDER, kindLabel, originLabel, OTHER_SUBJECT, relativeTime, stateLabel } from "./labels.js";
+import { KIND_ORDER, kindLabel, originLabel, OTHER_SUBJECT, relativeTime, shortSha, stateLabel, updateStateLabel } from "./labels.js";
 import { MarketplaceProblem } from "./MarketplaceProblem.js";
 import { PackageSheet } from "./PackageSheet.js";
 import { LocalPluginPackageSheet, PluginStudioView } from "./PluginStudioView.js";
 import type { StudioLocalPreview } from "../../../../shared/plugin-studio.js";
 import { SourceBadges, SourcesView } from "./SourcesView.js";
-import { UpdatesCard } from "./UpdatesCard.js";
+import { UpdatesCard, type AutoUpdateSwitchChange } from "./UpdatesCard.js";
 import { onUpdateReview, takeUpdateReview } from "./update-review-request.js";
 
 type View = "browse" | "sources" | "direct" | "studio";
@@ -151,6 +152,8 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
     if (view !== "sources") setShownSource(null);
   }, [view]);
   const [notice, setNotice] = useState<BootInstallNoticeView | null>(null);
+  /** The notice's automatic update whose *What changed* is open. */
+  const [expandedNotice, setExpandedNotice] = useState<string | null>(null);
   const [updateCheckEnabled, setUpdateCheckEnabled] = useState(true);
   const [offlineCacheEnabled, setOfflineCacheEnabled] = useState(true);
   // A switch flipped before the saved value arrives would write a guess.
@@ -246,10 +249,15 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
   }, [market]);
 
   // The update pill asks for a review: an update installs only through it (design §15.6).
+  // An update already applied that needs the user is answered in the Updates card instead.
   useEffect(() => {
     const take = () => {
       const request = takeUpdateReview();
       if (!request) return;
+      if (request.kind === "updates") {
+        showUpdates();
+        return;
+      }
       setView("browse");
       if (request.kind === "package") {
         setSheet({ key: request.key, mode: "update" });
@@ -305,6 +313,44 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
       (error: unknown) => setFlagsFailure(errorMessage(error)),
     );
   }, [api]);
+
+  /**
+   * Save an automatic-update switch (§18.9) through the settings channel. A
+   * source's or package's switch rewrites its whole map, read fresh, so a
+   * switch set back to the default is removed rather than kept.
+   */
+  const persistAutoUpdate = async (change: AutoUpdateSwitchChange): Promise<string | null> => {
+    let patch: { autoUpdate?: boolean; autoUpdateSources?: Record<string, "on" | "off">; autoUpdatePackages?: Record<string, "on" | "off"> };
+    if (change.scope === "global") {
+      patch = { autoUpdate: change.value };
+    } else {
+      let current: Record<string, "on" | "off">;
+      try {
+        const marketplace = (await api.getSettings()).marketplace;
+        current = { ...((change.scope === "source" ? marketplace?.autoUpdateSources : marketplace?.autoUpdatePackages) ?? {}) };
+      } catch (error) {
+        return errorMessage(error);
+      }
+      const key = change.scope === "source" ? change.id : change.key;
+      if (change.value === null) delete current[key];
+      else current[key] = change.value;
+      patch = change.scope === "source" ? { autoUpdateSources: current } : { autoUpdatePackages: current };
+    }
+    const result = await api.updateSettings({ marketplace: patch });
+    if (isIpcErrorResult(result)) return result.message === undefined ? result.error : `${result.error}\n${result.message}`;
+    return null;
+  };
+
+  /** Bring the Updates card into view (Settings → Marketplace → Maintenance). */
+  const showUpdates = () => {
+    document.querySelector('[data-settings-section="marketplace-maintenance"]')?.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
+
+  /** *Review* on an update the organization applied with components waiting: where those components are approved. */
+  const reviewApplied = (item: AutoUpdatedView) => {
+    if (item.key.kind === "plugin" && onOpenPluginSettings) onOpenPluginSettings(item.key.name);
+    else showUpdates();
+  };
 
   const persistFlag = async (patch: { updateCheckEnabled?: boolean; offlineCacheEnabled?: boolean }) => {
     setFlagSaveFailure(null);
@@ -392,7 +438,12 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
         {view === "browse" && notice && (
           <div className="mt-3 space-y-2 rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-soft) px-3 py-2 text-xs" data-testid="git-marketplace:boot-notice">
             <div className="flex items-start justify-between gap-2">
-              <p className="font-medium">{t("gitMarketplace.boot.title")}</p>
+              {/* The start-up sections are the boot pass's; revocations and automatic updates also arrive later, so alone they get a title that names no time. */}
+              <p className="font-medium" data-testid="git-marketplace:boot-notice:title">
+                {notice.forYou.length + notice.required.length + notice.unmanaged.length + notice.lostGrants.length > 0
+                  ? t("gitMarketplace.boot.title")
+                  : t("gitMarketplace.boot.titleChanges")}
+              </p>
               <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => void dismissNotice()} data-testid="git-marketplace:boot-notice:dismiss">
                 {t("gitMarketplace.boot.dismiss")}
               </Button>
@@ -435,6 +486,40 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
                   <li key={item.plugin}>{t("gitMarketplace.boot.lostGrant", { name: item.plugin, keys: item.keys.join(", ") })}</li>
                 ))}
               </ul>
+            )}
+            {notice.autoUpdated.length > 0 && (
+              <div className="space-y-1" data-testid="git-marketplace:boot-notice:auto-updated">
+                <p className="text-muted-foreground">{t("gitMarketplace.boot.autoUpdated")}</p>
+                <ul className="space-y-1">
+                  {notice.autoUpdated.map((item) => {
+                    const id = `${item.key.sourceId}:${item.key.kind}:${item.key.name}`;
+                    return (
+                      <li key={id} className="space-y-0.5" data-testid={`git-marketplace:boot-notice:auto-updated:${id}`}>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="min-w-0 flex-1">
+                            {item.required ? t("gitMarketplace.boot.autoUpdatedRequired", { name: item.displayName }) : item.displayName}
+                            {" · "}<span className="font-mono">{item.from} → {item.to}</span>
+                            {item.state !== "applied" && <> · {updateStateLabel(t, item.state)}</>}
+                          </span>
+                          <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => setExpandedNotice((current) => (current === id ? null : id))} data-testid="git-marketplace:boot-notice:what-changed">
+                            {t("gitMarketplace.updates.whatChanged")}
+                          </Button>
+                          {item.state === "approval-pending" && (
+                            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => reviewApplied(item)} data-testid="git-marketplace:boot-notice:review">
+                              {t("gitMarketplace.updates.review")}
+                            </Button>
+                          )}
+                        </div>
+                        {expandedNotice === id && (
+                          <p className="text-muted-foreground" data-testid="git-marketplace:boot-notice:commit-range">
+                            {t("gitMarketplace.review.commitRange", { from: item.commitRange.from ? shortSha(item.commitRange.from) : "—", to: item.commitRange.to ? shortSha(item.commitRange.to) : "—" })}
+                          </p>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             )}
             {notice.revoked.length > 0 && (
               <ul className="space-y-0.5" data-testid="git-marketplace:boot-notice:revoked">
@@ -574,6 +659,12 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
             setSheet({ key, mode: "update" });
           }}
           onShowSources={() => setView("sources")}
+          onSwitch={persistAutoUpdate}
+          onOpenPackage={(key) => {
+            setView("browse");
+            setSheet({ key, mode: "detail" });
+          }}
+          {...(onOpenPluginSettings ? { onOpenPluginSettings } : {})}
         />
         <div className="mt-4 border-t pt-4">
           <GitRuntimeCard api={api} />
@@ -667,6 +758,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
           void loadCatalog();
           void loadSources();
         }}
+        onAutoUpdateSwitch={persistAutoUpdate}
       />
     </div>
   );

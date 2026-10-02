@@ -2,8 +2,11 @@
  * `~/.ave/packages/ledger.json` (design §2, §2.3): the content packages
  * installed on this machine and where each came from.
  *
- * A package's files live at `packages/<kind>/<name>/<version>/`; the ledger
- * entry is what makes them installed. The origin carries the same provenance
+ * A package's files live in their own install directory,
+ * `packages/<kind>/<name>/.installs/<installId>/` (design §18.7.4), named by
+ * the entry's `payloadDir`; an entry from before that (no `payloadDir`) is a
+ * legacy install at `packages/<kind>/<name>/<version>/`. The ledger entry is
+ * what makes them installed. The origin carries the same provenance
  * a plugin's registry entry does, with the digest of the installed files in
  * place of an artifact hash (content has no delivery rungs).
  *
@@ -19,6 +22,7 @@ import type { SourceOrigin } from "../sources/registry.js";
 import type { OriginReader } from "../sources/retained.js";
 import { isSourcePin } from "../sources/source-tree.js";
 import { CONTENT_KINDS, type ContentKind } from "./rules.js";
+import { parseConsentFingerprint, type ConsentFingerprint } from "../updates/consent-record.js";
 
 interface ContentOrigin {
   sourceId: string | null;
@@ -30,6 +34,12 @@ interface ContentOrigin {
   /** Tree digest (design §6.4) of the installed files. */
   contentSha256: string;
   installedAt: string;
+  /** The install that wrote the files: a random UUID, absent for a legacy install (§18.7.4). */
+  installId?: string;
+  /** `<kind>/<name>/.installs/<installId>`, relative to the packages root; absent for a legacy install. */
+  payloadDir?: string;
+  /** What the user consented to when this version was installed (§18.7.3); absent before slice F. */
+  consent?: ConsentFingerprint;
 }
 
 export interface LedgerEntry {
@@ -46,7 +56,13 @@ interface LedgerFile {
 
 const SOURCE_ORIGINS = new Set<SourceOrigin>(["official", "managed", "custom", "direct"]);
 const ENTRY_KEYS = new Set(["kind", "name", "version", "origin"]);
-const ORIGIN_KEYS = new Set(["sourceId", "sourceOrigin", "commit", "packagePath", "version", "contentSha256", "installedAt"]);
+const ORIGIN_KEYS = new Set(["sourceId", "sourceOrigin", "commit", "packagePath", "version", "contentSha256", "installedAt", "installId", "payloadDir", "consent"]);
+const INSTALL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+/** The packages-root-relative install directory of one install (§18.7.4). */
+export function installPayloadDir(kind: ContentKind, name: string, installId: string): string {
+  return `${kind}/${name}/.installs/${installId}`;
+}
 
 function ledgerKey(kind: ContentKind, name: string): string {
   return `${kind}:${name}`;
@@ -87,6 +103,16 @@ function parse(text: string, path: string): LedgerEntry[] {
       fail(`${at}.origin is malformed`);
     }
     if (origin.sourceId === null && entry.kind !== "agent-plugin") fail(`${at}.origin is only local for agent plugins`);
+    if ((origin.installId === undefined) !== (origin.payloadDir === undefined)) fail(`${at}.origin names an install directory only in part`);
+    if (origin.installId !== undefined
+      && (typeof origin.installId !== "string" || !INSTALL_ID.test(origin.installId)
+        || origin.payloadDir !== installPayloadDir(entry.kind as ContentKind, entry.name as string, origin.installId))) {
+      fail(`${at}.origin.payloadDir is not its install directory`);
+    }
+    if (origin.consent !== undefined) {
+      const consent = parseConsentFingerprint(origin.consent, `${path}: ${at}.origin.consent`);
+      if (consent.kind !== entry.kind) fail(`${at}.origin.consent is not a ${String(entry.kind)} fingerprint`);
+    }
     const key = ledgerKey(entry.kind as ContentKind, entry.name as string);
     if (seen.has(key)) fail(`${key} is recorded twice`);
     seen.add(key);

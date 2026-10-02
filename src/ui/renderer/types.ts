@@ -913,11 +913,19 @@ export type AveApi = {
     | { ok: true; rows: PluginContributionTrustRow[] }
     | { ok: false; error: string }
   >;
+  /**
+   * Approve or revoke an installed bundled component. An approval carries the
+   * reviewed row's `generationId` and `approvalDigest` (design §18.7.5); a
+   * revoke carries neither. A row that changed since it was listed answers
+   * `contribution-trust-review-stale`.
+   */
   setPluginContributionTrust: (input: {
     pluginId: string;
     localId: string;
     kind: "hook" | "mcpServer";
     approved: boolean;
+    generationId?: string;
+    approvalDigest?: string | null;
   }) => Promise<
     | { ok: true; pluginId: string; localId: string; kind: "hook" | "mcpServer"; approved: boolean }
     | { ok: false; error: string; message?: string }

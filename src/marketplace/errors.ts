@@ -169,6 +169,8 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "internal-downloads": { source: "string", host: "string" },
     /** A folder on another computer (§18.4.1 stage 2): the server, empty when the drive's mapping names none, and the folder. */
     "network-folder": { server: "string", path: "string" },
+    /** Updates from this plain-http source would install by themselves (§18.7.2): the source, by its label. */
+    "unencrypted-updates": { source: "string" },
   },
   /**
    * `token-no-access`: the host answered "repository not found" after Ave
@@ -285,9 +287,16 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
   NO_INSTALLABLE_ARTIFACT: {
     "folder-has-no-build": { name: "string" },
   },
-  /** `policy-changed`: the plan was made under another managed policy (§18.6). */
+  /**
+   * `policy-changed`: the plan was made under another managed policy (§18.6).
+   * `package-changed`: an approval of an installed package's components named
+   * a generation, or digests, that are no longer installed (§18.7.5); or a
+   * plan's package is no longer installed as it was when the plan was made
+   * (§18.6).
+   */
   PLAN_EXPIRED: {
     "policy-changed": {},
+    "package-changed": {},
   },
   PACKAGE_INCOMPATIBLE: {
     min_app_version: { name: "string", version: "string" },
@@ -388,8 +397,12 @@ export class MarketplaceError extends Error {
   }
 }
 
-/** A warning an entered target (a source's own address) can need; `internal-downloads` is about other hosts a catalog names. */
-export type EnteredTargetWarningView = SourceWarningView & { warning: Exclude<SourceWarningView["warning"], "internal-downloads"> };
+/**
+ * A warning an entered target (a source's own address) can need;
+ * `internal-downloads` is about other hosts a catalog names, and
+ * `unencrypted-updates` about turning automatic updates on.
+ */
+export type EnteredTargetWarningView = SourceWarningView & { warning: Exclude<SourceWarningView["warning"], "internal-downloads" | "unencrypted-updates"> };
 
 /**
  * SOURCE_CONFIRMATION_REQUIRED for a source's own address, with every warning

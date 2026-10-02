@@ -10,7 +10,16 @@ import { EMPTY_MARKETPLACE_POLICY, type MarketplacePolicy, type PackageKey } fro
 import type { SourceOrigin } from "../../sources/registry.js";
 import { AppliedDefaults } from "../applied.js";
 import { DEFAULT_INSTALLS } from "../default-installs.js";
-import { assertNotRequiredByPolicy, bootInstallNoticeFrom, lockedByPolicy, requiredByPolicy, runBootInstalls, type BootInstallInput } from "../run.js";
+import {
+  assertNotRequiredByPolicy,
+  bootInstallNoticeFrom,
+  lockedByPolicy,
+  requiredByPolicy,
+  requirementGap,
+  runBootInstalls,
+  type BootInstallInput,
+  type RequirementSourceState,
+} from "../run.js";
 
 const AT = new Date("2026-09-23T00:00:00.000Z");
 
@@ -44,6 +53,8 @@ describe("runBootInstalls (design §10.2)", () => {
     policy?: Partial<MarketplacePolicy>;
     rows?: CatalogRow[];
     synced?: Record<string, SourceOrigin>;
+    /** How a required source stands where it is not readable or unreachable as `synced` says. */
+    sourceStates?: Record<string, RequirementSourceState>;
     failing?: Set<string>;
     signal?: AbortSignal;
     /** Runs inside each install, before it lands. */
@@ -54,6 +65,9 @@ describe("runBootInstalls (design §10.2)", () => {
       defaults: DEFAULT_INSTALLS,
       rows: options.rows ?? [row("ave", "meeting"), row("ave", "local-indexer")],
       synced: new Map(Object.entries(options.synced ?? { ave: "official" })),
+      // As the service reads them: each required source is readable while it has a snapshot, unreachable otherwise.
+      requiredSources: new Map((options.policy?.requiredInstalls ?? []).map((item): [string, RequirementSourceState] => [item.source,
+        options.sourceStates?.[item.source] ?? (Object.hasOwn(options.synced ?? { ave: "official" }, item.source) ? "readable" : "unreachable")])),
       installed: async (_kind, name) => installedState.get(name) ?? null,
       install: async (target, flags) => {
         calls.push({ name: target.name, source: target.sourceId, ...flags });
@@ -94,7 +108,7 @@ describe("runBootInstalls (design §10.2)", () => {
     installedState.clear(); // the user uninstalls both
     calls = [];
     const second = await boot();
-    expect(second).toEqual({ installed: [], updated: [], switched: [], skipped: [], failed: [] });
+    expect(second).toEqual({ installed: [], skipped: [], failed: [] });
     expect(calls).toEqual([]);
     expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({
       version: 1,
@@ -147,7 +161,7 @@ describe("runBootInstalls (design §10.2)", () => {
     expect(report.skipped).toEqual([{ key: key("toy", "acme"), reason: "source acme is neither official nor managed" }]);
   });
 
-  it("brings required installs to the candidate every boot: install, update, switch, repair", async () => {
+  it("installs a missing required package every boot, and leaves an installed one's update or switch to the apply queue (§18.7.2)", async () => {
     const policy = { requiredInstalls: [key("wiki", "corp")] };
     const synced = { ave: "official", corp: "managed" } as Record<string, SourceOrigin>;
     const rows = (v: string) => [row("ave", "meeting"), row("ave", "local-indexer"), row("corp", "wiki", { state: "candidate", version: version(v) })];
@@ -155,16 +169,15 @@ describe("runBootInstalls (design §10.2)", () => {
     expect((await boot({ policy, synced, rows: rows("1.0.0") })).installed).toContainEqual(key("wiki", "corp"));
     installedState.delete("wiki"); // removed behind the app's back: required means it comes back
     expect((await boot({ policy, synced, rows: rows("1.0.0") })).installed).toEqual([key("wiki", "corp")]);
-    expect((await boot({ policy, synced, rows: rows("1.0.0") }))).toMatchObject({ installed: [], updated: [] });
-    expect((await boot({ policy, synced, rows: rows("1.1.0") })).updated).toEqual([key("wiki", "corp")]);
 
-    installedState.set("wiki", { kind: "plugin", name: "wiki", version: "5.0.0", sourceId: "acme" });
+    // A newer version, another source, or an unreadable version: the boot pass replaces no running generation.
     calls = [];
-    expect((await boot({ policy, synced, rows: rows("1.1.0") })).switched).toEqual([key("wiki", "corp")]);
-    expect(calls).toEqual([{ name: "wiki", source: "corp", switchSource: true, required: true }]);
-
+    expect((await boot({ policy, synced, rows: rows("1.1.0") }))).toMatchObject({ installed: [], failed: [] });
+    installedState.set("wiki", { kind: "plugin", name: "wiki", version: "5.0.0", sourceId: "acme" });
+    expect((await boot({ policy, synced, rows: rows("1.1.0") }))).toMatchObject({ installed: [], failed: [] });
     installedState.set("wiki", { kind: "plugin", name: "wiki", version: null, sourceId: "corp" });
-    expect((await boot({ policy, synced, rows: rows("1.1.0") })).updated).toEqual([key("wiki", "corp")]);
+    expect((await boot({ policy, synced, rows: rows("1.1.0") }))).toMatchObject({ installed: [], failed: [] });
+    expect(calls).toEqual([]);
   });
 
   it("never records required keys as defaults, and a required key is not also installed as a default", async () => {
@@ -191,6 +204,74 @@ describe("runBootInstalls (design §10.2)", () => {
     expect(() => assertNotRequiredByPolicy(policy, "plugin", "wiki", null, "disable")).not.toThrow();
   });
 
+  it("finds no first match among requiredInstalls: one naming a package from two sources is a broken invariant", () => {
+    const policy = { ...EMPTY_MARKETPLACE_POLICY, requiredInstalls: [key("wiki", "ave"), key("wiki", "skill-only", "skill"), key("wiki", "corp")] };
+    expect(() => requiredByPolicy(policy, "plugin", "wiki")).toThrow("requiredInstalls names plugin wiki from ave and corp; a parsed policy names one source per package");
+    expect(() => lockedByPolicy(policy, "plugin", "wiki", "ave")).toThrow(/from ave and corp/u);
+    expect(requiredByPolicy(policy, "skill", "wiki")).toEqual(key("wiki", "skill-only", "skill"));
+  });
+
+  it("reports why each required install it cannot meet is skipped, also with the same name installed from another source (§10.2)", async () => {
+    installedState.set("meeting", { kind: "plugin", name: "meeting", version: "1.0.0", sourceId: "acme" });
+    const requiredInstalls = [key("meeting", "corp"), key("notes", "team"), key("absent"), key("old")];
+    const report = await boot({
+      policy: { requiredInstalls },
+      rows: [row("ave", "meeting"), row("ave", "local-indexer"), row("ave", "old", { state: "upgrade_required", minAppVersion: "9.0.0" })],
+      sourceStates: { corp: "missing" },
+    });
+    expect(report.skipped.filter((item) => requiredInstalls.includes(item.key))).toEqual([
+      { key: key("meeting", "corp"), reason: "source corp is not one of the app's sources" },
+      { key: key("notes", "team"), reason: "source team has no snapshot yet" },
+      { key: key("absent"), reason: "ave does not list plugin absent" },
+      { key: key("old"), reason: "needs Ave 9.0.0" },
+    ]);
+    expect(calls.filter((call) => call.required)).toEqual([]);
+  });
+
+  it("tells a rollout or pre-release hold, a newer Ave and no offered version apart, and a hidden source, in its skips (§10.2)", async () => {
+    const requiredInstalls = [key("held"), key("newer"), key("withdrawn"), key("yanked"), key("hidden-one", "team")];
+    const report = await boot({
+      policy: { requiredInstalls },
+      rows: [
+        row("ave", "meeting"),
+        row("ave", "local-indexer"),
+        row("ave", "held", { state: "unavailable", reason: "pending" }),
+        row("ave", "newer", { state: "upgrade_required", minAppVersion: "9.0.0" }),
+        row("ave", "withdrawn", { state: "unavailable", reason: "withheld" }),
+        row("ave", "yanked", { state: "unavailable", reason: "yanked" }),
+      ],
+      sourceStates: { team: "hidden" },
+    });
+    expect(report.skipped.filter((item) => requiredInstalls.includes(item.key))).toEqual([
+      { key: key("held"), reason: "not offered to this installation yet (rollout or pre-release)" },
+      { key: key("newer"), reason: "needs Ave 9.0.0" },
+      { key: key("withdrawn"), reason: "no version is offered to this installation" },
+      { key: key("yanked"), reason: "no version is offered to this installation" },
+      { key: key("hidden-one", "team"), reason: "source team is hidden" },
+    ]);
+    // The card reads the same reasons from the same judgement.
+    const rows = [row("ave", "held", { state: "unavailable", reason: "pending" }), row("ave", "newer", { state: "upgrade_required", minAppVersion: "9.0.0" })];
+    expect(requirementGap(key("held"), "readable", rows)).toEqual({ reason: "rollout-held" });
+    expect(requirementGap(key("newer"), "readable", rows)).toEqual({ reason: "incompatible", minAppVersion: "9.0.0" });
+    // The source's state is judged before its rows: a hidden source's cached candidate is no proof it can be met.
+    expect(requirementGap(key("meeting"), "hidden", [row("ave", "meeting")])).toEqual({ reason: "source-hidden" });
+  });
+
+  it("refuses to judge a requirement on a source it was given no state for", async () => {
+    const input = await AppliedDefaults.open(file);
+    await expect(runBootInstalls({
+      policy: { ...EMPTY_MARKETPLACE_POLICY, requiredInstalls: [key("meeting", "corp")] },
+      defaults: [],
+      rows: [],
+      synced: new Map(),
+      requiredSources: new Map(),
+      installed: async () => null,
+      install: async () => {},
+      applied: input,
+      now: () => AT,
+    })).rejects.toThrow("no state was given for required source corp");
+  });
+
   it("leaves a default held back by a rollout or as a pre-release unrecorded, to try again next boot", async () => {
     const report = await boot({ rows: [row("ave", "meeting", { state: "unavailable", reason: "pending" }), row("ave", "local-indexer", { state: "unavailable", reason: "withheld" })] });
     expect(report.skipped).toEqual([
@@ -213,17 +294,17 @@ describe("runBootInstalls (design §10.2)", () => {
 });
 
 describe("bootInstallNoticeFrom (design §15.1)", () => {
-  const empty = { installed: [], updated: [], switched: [], skipped: [], failed: [] };
+  const empty = { installed: [], skipped: [], failed: [] };
 
   it("is null when the boot installed, updated and moved nothing", () => {
     expect(bootInstallNoticeFrom({ ...empty, skipped: [{ key: key("a"), reason: "r" }], failed: [{ key: key("b"), message: "m" }] }, EMPTY_MARKETPLACE_POLICY, null, [])).toBeNull();
     expect(bootInstallNoticeFrom(empty, EMPTY_MARKETPLACE_POLICY, { unmanaged: [], lostGrants: [] }, [])).toBeNull();
   });
 
-  it("offers the default installs to the user, lists what the policy required, updated or moved, and what the migration unlocked", () => {
+  it("offers the default installs to the user, lists what the policy required, and what the migration unlocked", () => {
     const policy: MarketplacePolicy = { ...EMPTY_MARKETPLACE_POLICY, requiredInstalls: [key("vpn", "corp")] };
     const notice = bootInstallNoticeFrom(
-      { ...empty, installed: [key("meeting"), key("vpn", "corp"), key("tokyo-night", "ave", "theme")], updated: [key("audit", "corp")], switched: [key("mail", "corp")] },
+      { ...empty, installed: [key("meeting"), key("vpn", "corp"), key("tokyo-night", "ave", "theme")] },
       policy,
       { unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }] },
       [],
@@ -233,19 +314,16 @@ describe("bootInstallNoticeFrom (design §15.1)", () => {
         { sourceId: "ave", kind: "plugin", name: "meeting" },
         { sourceId: "ave", kind: "theme", name: "tokyo-night" },
       ],
-      required: [
-        { sourceId: "corp", kind: "plugin", name: "vpn" },
-        { sourceId: "corp", kind: "plugin", name: "audit" },
-        { sourceId: "corp", kind: "plugin", name: "mail" },
-      ],
+      required: [{ sourceId: "corp", kind: "plugin", name: "vpn" }],
       unmanaged: ["orion"],
       lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }],
       revoked: [],
+      autoUpdated: [],
     });
   });
 
   it("reports a revocation the boot pass acted on even when nothing else moved (§10.4)", () => {
     const revoked = [{ key: { sourceId: "acme", kind: "mcp" as const, name: "scraper" }, version: "1.2.0", reason: "exfiltrates cookies", outcome: "uninstalled" as const }];
-    expect(bootInstallNoticeFrom(empty, EMPTY_MARKETPLACE_POLICY, null, revoked)).toEqual({ forYou: [], required: [], unmanaged: [], lostGrants: [], revoked });
+    expect(bootInstallNoticeFrom(empty, EMPTY_MARKETPLACE_POLICY, null, revoked)).toEqual({ forYou: [], required: [], unmanaged: [], lostGrants: [], revoked, autoUpdated: [] });
   });
 });

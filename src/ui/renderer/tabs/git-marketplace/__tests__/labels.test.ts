@@ -93,6 +93,17 @@ describe("failure sentences (design §18.8)", () => {
     expect(policy.en).toContain("(token=[REDACTED:TOKEN])");
   });
 
+  it("names both entries of a package required from two sources in the managed-policy sentence (§12, §18.7.2)", () => {
+    const error = "/Library/Application Support/Ave/policy.json: marketplaces.requiredInstalls[1]: requires plugin/wiki from corp, but marketplaces.requiredInstalls[0] requires it from ave; a package is installed from one source";
+    const { en, ko } = render({ code: "SOURCE_POLICY_BLOCKED", message: MESSAGE, detail: scrubMarketplaceErrorDetail("SOURCE_POLICY_BLOCKED", { reason: "policy-invalid", error }) });
+    for (const text of [en, ko]) {
+      expect(text).toContain("marketplaces.requiredInstalls[1]: requires plugin/wiki from corp");
+      expect(text).toContain("marketplaces.requiredInstalls[0] requires it from ave");
+    }
+    expect(en).toContain("only the official marketplace works");
+    expect(ko).toContain("공식 마켓플레이스만 동작합니다");
+  });
+
   it("gives every code its own sentence", () => {
     const keys = ENVELOPE_CODES.map((code) => render({ code, message: MESSAGE }).key);
     expect(new Set(keys).size).toBe(keys.length);

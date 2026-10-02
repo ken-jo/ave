@@ -20,7 +20,7 @@ function packageFixture(): { item: InstalledAgentPluginRuntime; dataDir: string 
   writeFileSync(join(dir, "server", "run"), "server payload");
   const item = {
     name: "meeting-kit", version: "1.0.0", generationId: "a".repeat(64), dir,
-    content: { kind: "agent-plugin", files: [], components: {
+    content: { kind: "agent-plugin", files: [{ path: "server/run", data: Buffer.from("server payload") }], components: {
       skills: [], prompts: [], agents: [], routineTemplates: [], hooks: [],
       mcpServers: { notes: { transport: "stdio", command: "./server/run", cwd: "${PLUGIN_ROOT}", digest: "b".repeat(64) } },
     } },
@@ -36,7 +36,7 @@ describe("installed agent plugin MCP publication", () => {
     const disconnect = vi.fn(async () => undefined);
     const manager = { prepareBundledGeneration: prepare, publishBundledGeneration: publish,
       discardBundledGeneration: vi.fn(), disconnectBundledGeneration: disconnect,
-      stageBundledCredentialDrop: vi.fn(async () => async () => undefined) };
+      stageBundledCredentialDrop: vi.fn(async () => async () => undefined), registerGenerationLeaseSource: vi.fn() };
     const runtime = new AgentPluginMcpRuntime(manager as never, {
       trust: new PluginMcpTrustStore(), dataDirForPackage: async () => dataDir,
     });
@@ -73,13 +73,14 @@ describe("installed agent plugin MCP publication", () => {
       discardBundledGeneration: discard,
       disconnectBundledGeneration: vi.fn(async () => undefined),
       stageBundledCredentialDrop: vi.fn(async () => async () => undefined),
+      registerGenerationLeaseSource: vi.fn(),
     } as never, { trust, dataDirForPackage: async () => dataDir });
     await expect(runtime.activate(item, [{ name: "notes", digest: "b".repeat(64) }])).rejects.toThrow(/not admitted/u);
     expect(discard).toHaveBeenCalledWith(prepared);
     expect(projection && trust.isApproved(projection)).toBe(false);
   });
 
-  it("requires the reviewed digest and does not transfer consent to a new version", async () => {
+  it("requires the reviewed digest and does not transfer consent to a new version with changed bytes", async () => {
     const { item, dataDir } = packageFixture();
     const trustPath = join(dataDir, "approvals.json");
     const trust = new PluginMcpTrustStore(trustPath);
@@ -96,12 +97,15 @@ describe("installed agent plugin MCP publication", () => {
       discardBundledGeneration: vi.fn(),
       disconnectBundledGeneration: vi.fn(async () => undefined),
       stageBundledCredentialDrop: vi.fn(async () => async () => undefined),
+      registerGenerationLeaseSource: vi.fn(),
     } as never, { trust, dataDirForPackage: async () => dataDir });
     await expect(runtime.activate(item, [{ name: "notes", digest: "f".repeat(64) }])).rejects.toThrow(/does not match/u);
     expect(prepare).not.toHaveBeenCalled();
     await runtime.activate(item, [{ name: "notes", digest: "b".repeat(64) }]);
     expect(firstProjection && new PluginMcpTrustStore(trustPath).isApproved(firstProjection)).toBe(true);
-    await runtime.activate({ ...item, version: "1.1.0", generationId: "c".repeat(64) });
+    // A new version whose server bytes changed: the approval does not carry (§18.7.3).
+    await runtime.activate({ ...item, version: "1.1.0", generationId: "c".repeat(64),
+      content: { ...item.content, files: [{ path: "server/run", data: Buffer.from("other server payload") }] } } as InstalledAgentPluginRuntime);
     expect(admissions).toEqual([true, false]);
   });
 
@@ -129,6 +133,7 @@ describe("installed agent plugin MCP publication", () => {
       discardBundledGeneration: vi.fn(async () => undefined),
       disconnectBundledGeneration: vi.fn(async () => undefined),
       stageBundledCredentialDrop: stageDrop,
+      registerGenerationLeaseSource: vi.fn(),
     };
     const runtime = new AgentPluginMcpRuntime(manager as never, { trust: new PluginMcpTrustStore(), dataDirForPackage: async () => dataDir });
     await runtime.activate(withCredential("1.0.0", "FIRST_TOKEN", "a".repeat(64)));
@@ -166,6 +171,7 @@ describe("installed agent plugin MCP publication", () => {
       discardBundledGeneration: vi.fn(),
       disconnectBundledGeneration: vi.fn(async () => undefined),
       stageBundledCredentialDrop: stageDrop,
+      registerGenerationLeaseSource: vi.fn(),
     };
     const runtime = new AgentPluginMcpRuntime(manager as never, { trust: new PluginMcpTrustStore(), dataDirForPackage: async () => dataDir });
     await runtime.activate(withCredential("1.0.0", "FIRST_TOKEN", "a".repeat(64)));
@@ -178,5 +184,98 @@ describe("installed agent plugin MCP publication", () => {
     await runtime.deactivate(item.name);
     await runtime.activate(withCredential("1.1.0", "SECOND_TOKEN", "b".repeat(64)));
     expect(readBoundBundledCredential(saved)?.secret).toBe("replacement-value");
+  });
+
+  /** A runtime over a recording manager: its registered lease source, and the activations it prepared and disconnected. */
+  function leased(options: { trust?: PluginMcpTrustStore; dataDir: string; prepare?: (projections: unknown[], trust: PluginMcpTrustStore) => Promise<void>; publish?: () => void }) {
+    let acquire!: (pluginId: string, activationId: string) => Promise<{ release(): void }>;
+    const prepared: Array<{ activationId: string; projections: Array<Parameters<PluginMcpTrustStore["isApproved"]>[0]>; admitted: boolean[] }> = [];
+    const disconnected: string[] = [];
+    const manager = {
+      prepareBundledGeneration: vi.fn(async (owner: { generationId: string }, projections: Array<Parameters<PluginMcpTrustStore["isApproved"]>[0]>, trust: PluginMcpTrustStore) => {
+        prepared.push({ activationId: owner.generationId, projections, admitted: projections.map((item) => trust.isApproved(item)) });
+        await options.prepare?.(projections, trust);
+        return { published: false };
+      }),
+      publishBundledGeneration: vi.fn(() => options.publish?.()),
+      discardBundledGeneration: vi.fn(async () => undefined),
+      disconnectBundledGeneration: vi.fn(async (_pluginId: string, activationId: string) => { disconnected.push(activationId); }),
+      stageBundledCredentialDrop: vi.fn(async () => async () => undefined),
+      registerGenerationLeaseSource: vi.fn((_prefix: string, source: typeof acquire) => { acquire = source; }),
+    };
+    const runtime = new AgentPluginMcpRuntime(manager as never, { trust: options.trust ?? new PluginMcpTrustStore(), dataDirForPackage: async () => options.dataDir });
+    expect(manager.registerGenerationLeaseSource).toHaveBeenCalledWith("agent-plugin/", expect.any(Function));
+    return { runtime, manager, prepared, disconnected, acquire: (pluginId: string, activationId: string) => acquire(pluginId, activationId) };
+  }
+
+  it("an update closes admission to the replaced activation at publication and disconnects it only after its calls drain", async () => {
+    const { item, dataDir } = packageFixture();
+    // A call that arrives while the new activation is being published must not take the old one.
+    let atPublication: Promise<unknown> | undefined;
+    let first = "";
+    const { runtime, prepared, disconnected, acquire } = leased({ dataDir, publish: () => {
+      if (first) atPublication = acquire("agent-plugin/meeting-kit", first).then(() => "admitted", () => "refused");
+    } });
+    await runtime.activate(item, [{ name: "notes", digest: "b".repeat(64) }]);
+    first = prepared[0]!.activationId;
+    const inFlight = await acquire("agent-plugin/meeting-kit", first);
+    expect(runtime.hasCallsInFlight("meeting-kit")).toBe(true);
+    // A lease names the owner it was published for.
+    await expect(acquire("agent-plugin/other-kit", first)).rejects.toThrow(/is retired/u);
+
+    const { retired } = await runtime.activate({ ...item, version: "1.1.0", generationId: "c".repeat(64) });
+    const second = prepared[1]!.activationId;
+    expect(second).not.toBe(first);
+    expect(await atPublication).toBe("refused");
+    // A call after publication lands on the new activation; the old one admits none.
+    await expect(acquire("agent-plugin/meeting-kit", first)).rejects.toThrow(/is retired/u);
+    const next = await acquire("agent-plugin/meeting-kit", second);
+    next.release();
+    let settled = false;
+    void retired.then(() => { settled = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(disconnected).toEqual([]);
+    expect(settled).toBe(false);
+
+    inFlight.release();
+    inFlight.release();
+    await retired;
+    expect(disconnected).toEqual([first]);
+    expect(runtime.hasCallsInFlight("meeting-kit")).toBe(false);
+  });
+
+  it("carries a server's approval to an update whose server and package bytes are unchanged, and not to a changed one", async () => {
+    const { item, dataDir } = packageFixture();
+    const trust = new PluginMcpTrustStore(join(dataDir, "approvals.json"));
+    const { runtime, prepared } = leased({ dataDir, trust });
+    await runtime.activate(item, [{ name: "notes", digest: "b".repeat(64) }]);
+    expect(prepared[0]!.admitted).toEqual([true]);
+    const approvedDigest = (prepared[0]!.projections[0] as { approvalDigest: string | null }).approvalDigest;
+    expect(approvedDigest).toMatch(/^[a-f0-9]{64}$/u);
+
+    await runtime.activate({ ...item, version: "1.1.0", generationId: "c".repeat(64) });
+    expect(prepared[1]!.admitted).toEqual([true]);
+    const carried = trust.record(prepared[1]!.projections[0]!);
+    expect(carried).toMatchObject({ pluginVersion: "1.1.0", approvalDigest: approvedDigest, carriedFrom: "a".repeat(64) });
+
+    writeFileSync(join(item.dir, "server", "run"), "changed server payload");
+    await runtime.activate({ ...item, version: "1.2.0", generationId: "d".repeat(64),
+      content: { ...item.content, files: [{ path: "server/run", data: Buffer.from("changed server payload") }] } } as InstalledAgentPluginRuntime);
+    expect(prepared[2]!.admitted).toEqual([false]);
+  });
+
+  it("does not undo a revocation made while an update is prepared", async () => {
+    const { item, dataDir } = packageFixture();
+    const trust = new PluginMcpTrustStore();
+    let revokeDuringPrepare: (() => void) | undefined;
+    const { runtime, prepared, manager } = leased({ dataDir, trust, prepare: async () => { revokeDuringPrepare?.(); } });
+    await runtime.activate(item, [{ name: "notes", digest: "b".repeat(64) }]);
+    const source = prepared[0]!.projections[0]!;
+    revokeDuringPrepare = () => trust.revoke(source);
+    await expect(runtime.activate({ ...item, version: "1.1.0", generationId: "c".repeat(64) })).rejects.toThrow(/was withdrawn while its update was prepared/u);
+    expect(manager.publishBundledGeneration).toHaveBeenCalledTimes(1);
+    expect(manager.discardBundledGeneration).toHaveBeenCalledTimes(1);
+    expect(trust.isApproved(source)).toBe(false);
+    expect(trust.isApproved(prepared[1]!.projections[0]!)).toBe(false);
   });
 });

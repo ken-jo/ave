@@ -2,10 +2,11 @@
  * Default and required installs at boot (design §10.2).
  *
  * Required installs (policy `requiredInstalls`, official or managed sources
- * only) are brought to the source's candidate every boot: installed when
- * absent, updated when the bound source offers a newer version, and switched
- * to the listed source when the user installed the name from another one.
- * The policy file stands for the consent.
+ * only) are installed here when absent: a first install replaces no running
+ * generation, so it cannot interrupt a turn. Updating one, or switching it
+ * to the listed source when the user installed the name from another one, is
+ * the apply queue's (design §18.7.2): it waits for the conversation to pause
+ * like every automatic update. The policy file stands for the consent.
  *
  * Default installs (the app's DEFAULT_INSTALLS and policy `defaultInstalls`)
  * are installed once. A key is recorded when it is installed, found already
@@ -19,12 +20,12 @@
  * verification, receipt). Nothing here decides consent or reads the network.
  */
 import { errorMessage } from "../../shared/error-message.js";
-import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type PackageKeyView, type RevokedPackageView } from "../../shared/git-marketplace.js";
+import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type PackageKeyView, type RevokedPackageView, type UnmetRequirementReason } from "../../shared/git-marketplace.js";
 import { MarketplaceError } from "../errors.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import type { PackageKind } from "../catalog/types.js";
 import type { LegacyPluginReport } from "../migration/legacy-plugins.js";
-import { updateFor, type InstalledPackage } from "../resolve/identity.js";
+import type { InstalledPackage } from "../resolve/identity.js";
 import type { MarketplacePolicy, PackageKey } from "../sources/policy.js";
 import type { SourceOrigin } from "../sources/registry.js";
 import type { AppliedDefaults } from "./applied.js";
@@ -37,6 +38,8 @@ export interface BootInstallInput {
   rows: readonly CatalogRow[];
   /** Sources that have a snapshot now, with their origin. */
   synced: ReadonlyMap<string, SourceOrigin>;
+  /** How each source a `requiredInstalls` entry names stands now ({@link RequirementSourceState}). */
+  requiredSources: ReadonlyMap<string, RequirementSourceState>;
   installed(kind: PackageKind, name: string): Promise<InstalledPackage | null>;
   install(row: CatalogRow, options: { switchSource: boolean; required: boolean }): Promise<void>;
   applied: AppliedDefaults;
@@ -52,10 +55,6 @@ export interface BootInstallInput {
 export interface BootInstallReport {
   /** Installed for the first time (default or required). */
   installed: PackageKey[];
-  /** Required packages moved to a newer version. */
-  updated: PackageKey[];
-  /** Required packages moved to the listed source (plugin data kept). */
-  switched: PackageKey[];
   skipped: Array<{ key: PackageKey; reason: string }>;
   failed: Array<{ key: PackageKey; message: string }>;
 }
@@ -76,16 +75,25 @@ export function bootInstallNoticeFrom(
   const view = (key: PackageKey): PackageKeyView => ({ sourceId: key.source, kind: key.kind, name: key.name });
   const required = (key: PackageKey) => requiredByPolicy(policy, key.kind, key.name) !== undefined;
   const forYou = report.installed.filter((key) => !required(key)).map(view);
-  const requiredKeys = [...report.installed.filter(required), ...report.updated, ...report.switched].map(view);
+  const requiredKeys = report.installed.filter(required).map(view);
   const unmanaged = [...(legacy?.unmanaged ?? [])];
   const lostGrants = (legacy?.lostGrants ?? []).map((item) => ({ plugin: item.plugin, keys: [...item.keys] }));
-  const notice = { forYou, required: requiredKeys, unmanaged, lostGrants, revoked: revoked.map((item) => ({ ...item, key: { ...item.key } })) };
+  const notice = { forYou, required: requiredKeys, unmanaged, lostGrants, revoked: revoked.map((item) => ({ ...item, key: { ...item.key } })), autoUpdated: [] };
   return bootInstallNoticeIsEmpty(notice) ? null : notice;
 }
 
-/** The requiredInstalls entry naming `(kind, name)`, if any, whichever source it names. */
+/**
+ * The requiredInstalls entry naming `(kind, name)`, if any, whichever source
+ * it names. A policy names each package from one source at most (an entry
+ * for another source makes it invalid, §12), so there is no first match to
+ * choose: two found is a broken invariant and throws.
+ */
 export function requiredByPolicy(policy: Pick<MarketplacePolicy, "requiredInstalls">, kind: PackageKind, name: string): PackageKey | undefined {
-  return policy.requiredInstalls.find((key) => key.kind === kind && key.name === name);
+  const found = policy.requiredInstalls.filter((key) => key.kind === kind && key.name === name);
+  if (found.length > 1) {
+    throw new Error(`requiredInstalls names ${kind} ${name} from ${found.map((key) => key.source).join(" and ")}; a parsed policy names one source per package`);
+  }
+  return found[0];
 }
 
 /**
@@ -120,46 +128,80 @@ function rowFor(rows: readonly CatalogRow[], key: PackageKey): CatalogRow | unde
   return rows.find((row) => row.sourceId === key.source && row.kind === key.kind && row.name === key.name);
 }
 
+/**
+ * How a source a requirement names stands, whatever any view shows of it:
+ * `missing` (not one of the app's sources, or quarantined, §18.8), `hidden`
+ * (the user hid it: nothing installs from it until it is shown),
+ * `unreachable` (no usable copy of its catalog) or `readable`.
+ */
+export type RequirementSourceState = "missing" | "hidden" | "unreachable" | "readable";
+
+/** Why a required install cannot be had from its source now (§10.2); see {@link requirementGap}. */
+export type RequirementGap =
+  | { reason: Exclude<UnmetRequirementReason, "incompatible"> }
+  | { reason: "incompatible"; minAppVersion: string };
+
+/**
+ * Why `key`, which the policy requires, cannot be installed from its source
+ * now, or null when the source's catalog offers a version of it: the one
+ * judgement the boot pass and the Updates card share, over the same inputs —
+ * the source's state and the catalog rows of the sources the user sees.
+ */
+export function requirementGap(key: PackageKey, source: RequirementSourceState, rows: readonly CatalogRow[]): RequirementGap | null {
+  switch (source) {
+    case "missing": return { reason: "source-missing" };
+    case "hidden": return { reason: "source-hidden" };
+    case "unreachable": return { reason: "source-unreachable" };
+    case "readable": break;
+  }
+  const row = rowFor(rows, key);
+  if (!row) return { reason: "not-in-catalog" };
+  switch (row.choice.state) {
+    case "candidate": return null;
+    case "upgrade_required": return { reason: "incompatible", minAppVersion: row.choice.minAppVersion };
+    case "unavailable": return { reason: row.choice.reason === "pending" ? "rollout-held" : "not-offered" };
+  }
+}
+
+function gapText(key: PackageKey, gap: RequirementGap): string {
+  switch (gap.reason) {
+    case "source-missing": return `source ${key.source} is not one of the app's sources`;
+    case "source-hidden": return `source ${key.source} is hidden`;
+    case "source-unreachable": return `source ${key.source} has no snapshot yet`;
+    case "not-in-catalog": return `${key.source} does not list ${key.kind} ${key.name}`;
+    case "incompatible": return `needs Ave ${gap.minAppVersion}`;
+    case "rollout-held": return "not offered to this installation yet (rollout or pre-release)";
+    case "not-offered": return "no version is offered to this installation";
+  }
+}
+
+/** The state of a source a requirement names; the caller gives one for each, so a missing one is a broken contract. */
+function requiredSourceState(input: BootInstallInput, sourceId: string): RequirementSourceState {
+  const state = input.requiredSources.get(sourceId);
+  if (state === undefined) throw new Error(`no state was given for required source ${sourceId}`);
+  return state;
+}
+
 async function required(key: PackageKey, input: BootInstallInput, report: BootInstallReport): Promise<void> {
   const origin = input.synced.get(key.source);
-  if (!origin) {
-    report.skipped.push({ key, reason: `source ${key.source} has no snapshot yet` });
-    return;
-  }
-  if (!LISTABLE_ORIGINS.has(origin)) {
+  if (origin && !LISTABLE_ORIGINS.has(origin)) {
     report.skipped.push({ key, reason: `source ${key.source} is neither official nor managed` });
     return;
   }
-  const row = rowFor(input.rows, key);
-  if (!row) {
-    report.skipped.push({ key, reason: `${key.source} does not list ${key.kind} ${key.name}` });
-    return;
-  }
+  // Installed from this source: its update is the apply queue's (§18.7.2).
   const current = await input.installed(key.kind, key.name);
-  let outcome: "installed" | "updated" | "switched";
-  if (!current) {
-    outcome = "installed";
-  } else if (current.sourceId !== key.source) {
-    outcome = "switched";
-  } else {
-    if (current.version === null) {
-      outcome = "updated";
-    } else {
-      const state = updateFor({ ...current, version: current.version }, input.rows, new Set(input.synced.keys()));
-      if (state.state !== "update") {
-        if (state.state === "upgrade_required") report.skipped.push({ key, reason: `the update needs Ave ${state.minAppVersion}` });
-        return;
-      }
-      outcome = "updated";
-    }
-  }
-  if (row.choice.state !== "candidate") {
-    report.skipped.push({ key, reason: row.choice.state === "upgrade_required" ? `needs Ave ${row.choice.minAppVersion}` : "no version is offered to this installation" });
+  if (current?.sourceId === key.source) return;
+  const gap = requirementGap(key, requiredSourceState(input, key.source), input.rows);
+  if (gap) {
+    report.skipped.push({ key, reason: gapText(key, gap) });
     return;
   }
+  // Installed from another source: the apply queue switches it to this one (§18.7.2).
+  if (current) return;
+  const row = rowFor(input.rows, key)!;
   try {
-    await input.install(row, { switchSource: outcome === "switched", required: true });
-    report[outcome].push(key);
+    await input.install(row, { switchSource: false, required: true });
+    report.installed.push(key);
   } catch (error) {
     report.failed.push({ key, message: errorMessage(error) });
   }
@@ -203,7 +245,7 @@ async function byDefault(key: PackageKey, input: BootInstallInput, report: BootI
 }
 
 export async function runBootInstalls(input: BootInstallInput): Promise<BootInstallReport> {
-  const report: BootInstallReport = { installed: [], updated: [], switched: [], skipped: [], failed: [] };
+  const report: BootInstallReport = { installed: [], skipped: [], failed: [] };
   const requiredIds = new Set(input.policy.requiredInstalls.map(packageKeyId));
   for (const key of input.policy.requiredInstalls) {
     input.signal?.throwIfAborted();

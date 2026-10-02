@@ -35,6 +35,8 @@ import type { SourceOrigin } from "../sources/registry.js";
 import type { OriginReader } from "../sources/retained.js";
 import { isSourcePin } from "../sources/source-tree.js";
 import type { InstalledRecord, McpInstallerPort } from "./ports.js";
+import { mcpConsent } from "../updates/consent.js";
+import { parseConsentFingerprint, type ConsentFingerprint } from "../updates/consent-record.js";
 
 interface McpOrigin {
   sourceId: string;
@@ -57,6 +59,8 @@ interface McpRecord {
   hasFiles: boolean;
   /** Null for a server bound to no source (design §8.1). */
   origin: McpOrigin | null;
+  /** The consent fingerprint accepted with this install (§18.7.3); absent on a record from before slice F. */
+  consent?: ConsentFingerprint;
 }
 
 interface RecordFile {
@@ -65,7 +69,7 @@ interface RecordFile {
 }
 
 const SOURCE_ORIGINS = new Set<SourceOrigin>(["official", "managed", "custom", "direct"]);
-const RECORD_KEYS = new Set(["name", "version", "runtime", "hasFiles", "origin"]);
+const RECORD_KEYS = new Set(["name", "version", "runtime", "hasFiles", "origin", "consent"]);
 const ORIGIN_KEYS = new Set(["sourceId", "sourceOrigin", "commit", "packagePath", "from", "filesDigest", "installedAt"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -106,9 +110,14 @@ function parseRecords(text: string, path: string): McpRecord[] {
         fail(`${at}.origin is malformed`);
       }
     }
+    let consent: ConsentFingerprint | undefined;
+    if (entry.consent !== undefined) {
+      consent = parseConsentFingerprint(entry.consent, `${path}: ${at}.consent`);
+      if (consent.kind !== "mcp") fail(`${at}.consent is not an MCP server's`);
+    }
     if (seen.has(entry.name)) fail(`${entry.name} is recorded twice`);
     seen.add(entry.name);
-    return { ...(entry as unknown as McpRecord), runtime };
+    return { ...(entry as unknown as McpRecord), runtime, ...(consent ? { consent } : {}) };
   });
 }
 
@@ -190,6 +199,17 @@ export class McpInstaller implements McpInstallerPort {
       dataDir: this.dataDir(record.name),
       nodePath: this.deps.nodePath,
     });
+  }
+
+  /**
+   * The consent baseline of an installed server (§18.7.3): the stored
+   * fingerprint, or one computed from its recorded runtime for a record
+   * from before slice F. Null when this installer does not own `name`.
+   */
+  async baseline(name: string): Promise<ConsentFingerprint | null> {
+    const record = (await readRecords(this.deps.recordsPath)).find((item) => item.name === name);
+    if (!record) return null;
+    return record.consent ?? mcpConsent(record.runtime);
   }
 
   admit(name: string, runtime: McpRuntimeSpec): void {
@@ -303,6 +323,8 @@ export class McpInstaller implements McpInstallerPort {
         version: plan.version,
         runtime: resolved.runtime,
         hasFiles: resolved.packageFiles !== null,
+        // The baseline the next update is compared with: the command the user accepted (§18.7.3).
+        consent: mcpConsent(resolved.runtime),
         origin: {
           sourceId: plan.sourceId,
           sourceOrigin: plan.sourceOrigin,

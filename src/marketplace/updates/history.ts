@@ -46,12 +46,33 @@ export interface DiscoveryRecord {
   result: UpdateDiscoveryResult;
 }
 
+/**
+ * The last failure of an apply attempt (§18.7.5): a marketplace refusal by
+ * its code and detail, or anything else as `unavailable` with its scrubbed
+ * message, which the renderer shows only behind *Copy details*.
+ */
+export interface UpdateFailureRecord {
+  code: MarketplaceErrorCode | "unavailable";
+  detail?: MarketplaceErrorDetail;
+  message?: string;
+  at: string;
+}
+
 export interface PackageUpdateRecord {
   to: string;
   state: UpdatePackageState;
   attempts: number;
-  lastError?: { code: MarketplaceErrorCode; detail?: MarketplaceErrorDetail; at: string };
+  lastError?: UpdateFailureRecord;
   appliedAt?: string;
+  /**
+   * The version it was updated from and its display name: an applied entry
+   * stays in the view after its offer is gone (the card's recent list,
+   * `approval-pending`).
+   */
+  from?: string;
+  displayName?: string;
+  /** `origin.commit` before and after the applied update: *What changed* (§15.6). */
+  commits?: { from: string | null; to: string };
 }
 
 export interface UpdateHistory {
@@ -76,9 +97,16 @@ export function updateRecordSource(recordKey: string): string {
   return recordKey.slice(0, recordKey.indexOf(":"));
 }
 
+/** The package a `packages` key names; the key was checked when the file was read or written. */
+export function parseUpdateRecordKey(recordKey: string): { sourceId: string; kind: PackageKind; name: string } {
+  const [sourceId, kind, ...name] = recordKey.split(":");
+  if (!sourceId || !kind || !KINDS.has(kind) || name.length !== 1 || !name[0]) throw new Error(`${recordKey} is not <sourceId>:<kind>:<name>`);
+  return { sourceId, kind: kind as PackageKind, name: name[0] };
+}
+
 const RESULTS = new Set<string>(["ok", "partial", "offline", "error"]);
 const STATES = new Set<string>(UPDATE_PACKAGE_STATES);
-const CODES = new Set<string>(MARKETPLACE_ERROR_CODES);
+const CODES = new Set<string>([...MARKETPLACE_ERROR_CODES, "unavailable"]);
 const KINDS = new Set<string>(PACKAGE_KINDS);
 
 class InvalidHistory extends Error {}
@@ -109,20 +137,38 @@ function packageKey(key: string): void {
 }
 
 function packageRecord(value: unknown, what: string): PackageUpdateRecord {
-  const entry = object(value, what, ["to", "state", "attempts", "lastError", "appliedAt"]);
+  const entry = object(value, what, ["to", "state", "attempts", "lastError", "appliedAt", "from", "displayName", "commits"]);
   if (typeof entry.to !== "string" || entry.to.length === 0) invalid(`${what}.to is not a version`);
   if (typeof entry.state !== "string" || !STATES.has(entry.state)) invalid(`${what}.state is not an update state`);
   if (typeof entry.attempts !== "number" || !Number.isInteger(entry.attempts) || entry.attempts < 0) invalid(`${what}.attempts is not a count`);
   const record: PackageUpdateRecord = { to: entry.to, state: entry.state as UpdatePackageState, attempts: entry.attempts };
   if (entry.lastError !== undefined) {
-    const error = object(entry.lastError, `${what}.lastError`, ["code", "detail", "at"]);
+    const error = object(entry.lastError, `${what}.lastError`, ["code", "detail", "message", "at"]);
     if (typeof error.code !== "string" || !CODES.has(error.code)) invalid(`${what}.lastError.code is not an error code`);
-    const code = error.code as MarketplaceErrorCode;
+    const code = error.code as UpdateFailureRecord["code"];
     // As the source state does (§18.8): a detail that does not belong to its code is dropped, the code kept.
-    const detail = error.detail === undefined ? undefined : parseMarketplaceErrorDetail(code, error.detail);
-    record.lastError = { code, ...(detail ? { detail } : {}), at: time(error.at, `${what}.lastError.at`) };
+    const detail = error.detail === undefined || code === "unavailable" ? undefined : parseMarketplaceErrorDetail(code, error.detail);
+    if (error.message !== undefined && typeof error.message !== "string") invalid(`${what}.lastError.message is not text`);
+    record.lastError = { code, ...(detail ? { detail } : {}), ...(typeof error.message === "string" ? { message: error.message } : {}), at: time(error.at, `${what}.lastError.at`) };
   }
   if (entry.appliedAt !== undefined) record.appliedAt = time(entry.appliedAt, `${what}.appliedAt`);
+  for (const field of ["from", "displayName"] as const) {
+    const value = entry[field];
+    if (value === undefined) continue;
+    if (typeof value !== "string" || value.length === 0) invalid(`${what}.${field} is not text`);
+    record[field] = value;
+  }
+  if (entry.commits !== undefined) {
+    const commits = object(entry.commits, `${what}.commits`, ["from", "to"]);
+    if (commits.from !== null && (typeof commits.from !== "string" || commits.from.length === 0)) invalid(`${what}.commits.from is not a commit`);
+    if (typeof commits.to !== "string" || commits.to.length === 0) invalid(`${what}.commits.to is not a commit`);
+    record.commits = { from: commits.from as string | null, to: commits.to };
+  }
+  // An applied entry outlives its offer, so it carries what the view shows of it.
+  if ((record.state === "applied" || record.state === "applied-not-running" || record.state === "approval-pending")
+    && (record.from === undefined || record.displayName === undefined || record.commits === undefined)) {
+    invalid(`${what} is ${record.state} without from, displayName and commits`);
+  }
   return record;
 }
 

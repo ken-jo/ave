@@ -24,25 +24,38 @@
  * reads the wall clock. The timer is unreferenced and stops with the app, and
  * a stopped scheduler starts nothing.
  *
- * This build applies no update by itself (automatic apply is design §18.10
- * F), so the apply check classifies every update `manual`: it waits for the
- * user's review, as the toolbar pill and the Updates card show it.
+ * Every list of updates is classified (`../updates/eligibility.ts`): what
+ * needs the user (`needs-review`, `manual`, `failed`) reaches the toolbar
+ * pill. The apply check queues each `automatic` update, and required
+ * updates, on the apply queue (`../updates/apply.ts`), which applies one
+ * package at a time while the conversation is idle and records each
+ * outcome: `applied`, `applied-not-running` and `approval-pending` stay in
+ * the view and are announced once under "Updated automatically" (§18.7.5).
  */
 import { AsyncResource } from "node:async_hooks";
 import type { AppBootstrapStatus } from "../../shared/bootstrap-status.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
 import {
-  updateNeedsUser,
+  updateViewNeedsUser,
+  type AutoUpdatedView,
   type BootInstallNoticeView,
   type InstallProgressView,
+  type PackageKeyView,
   type PackageUpdateOffer,
   type PackageUpdateView,
+  type ReviewedComponentConsent,
   type SyncProgressView,
   type UpdateDiscoveryResult,
   type UpdatePackageState,
+  type UpdateReason,
   type UpdateStatusView,
 } from "../../shared/git-marketplace.js";
-import { isSkippedPackageUpdate, readSkippedPluginUpdates } from "../../shared/skipped-plugin-updates.js";
+import { isSkippedPackageUpdate, packageUpdateSkipKey, readSkippedPluginUpdates } from "../../shared/skipped-plugin-updates.js";
+import { isMarketplaceError, scrubMarketplaceErrorDetail } from "../errors.js";
+import { ApplyQueue, type ApplyItem, type ApplyOutcome } from "../updates/apply.js";
+import { classifyUpdate, requiresPackage, resolvePackageSwitch, resolveSourceSwitch, type AutoUpdateSettings, type UpdateClassification } from "../updates/eligibility.js";
+import type { AppliedState, ApplyDecision, ApplyTarget, AutoUpdateContext, UpdateCandidate } from "./service.js";
 import type { AppliedDefaults } from "../boot-installs/applied.js";
 import { packageKeyId } from "../boot-installs/default-installs.js";
 import type { BootInstallReport } from "../boot-installs/run.js";
@@ -52,10 +65,12 @@ import {
   discoveryDueAt,
   emptyUpdateHistory,
   HOUR_MS,
+  parseUpdateRecordKey,
   updateRecordKey,
   updateRecordSource,
   type PackageUpdateRecord,
   type SyncDiscovery,
+  type UpdateFailureRecord,
   type UpdateHistory,
   type UpdateHistoryStore,
 } from "../updates/history.js";
@@ -112,13 +127,29 @@ export function syncIntervalMs(stored: number | undefined): number {
   return Math.max(stored, MIN_SYNC_INTERVAL_MS);
 }
 
-/**
- * The state an update is classified with in this build: `manual`, since
- * nothing applies by itself until automatic apply (§18.10 F) decides
- * between `automatic`, `needs-review` and `manual`.
- */
-function classifyUpdate(_update: PackageUpdateOffer): UpdatePackageState {
-  return "manual";
+/** How long an `applied` entry stays in the view: the card's recent list (§15.7.1). */
+const RECENT_APPLIED_MS = 24 * HOUR_MS;
+
+/** The states an applied update keeps in the view after its offer is gone (§18.7.5). */
+const APPLIED_STATES: ReadonlySet<UpdatePackageState> = new Set(["applied", "applied-not-running", "approval-pending"]);
+
+/** A recorded failure as the view shows it (§18.7.5): its code, detail, scrubbed message and the attempts at this version. */
+function failureView(record: PackageUpdateRecord & { lastError: UpdateFailureRecord }): NonNullable<PackageUpdateView["failure"]> {
+  const { code, detail, message } = record.lastError;
+  return { code, ...(detail ? { detail } : {}), ...(message ? { message } : {}), attempts: record.attempts };
+}
+
+/** One update on the apply queue. */
+interface QueuedUpdate extends ApplyItem {
+  candidate: UpdateCandidate;
+}
+
+/** The record of a failure before commit (§18.7.5): a marketplace refusal by code and detail, anything else as `unavailable`. */
+function failureRecord(error: unknown, at: string): UpdateFailureRecord {
+  if (isMarketplaceError(error)) {
+    return { code: error.code, ...(error.detail ? { detail: scrubMarketplaceErrorDetail(error.code, error.detail) } : {}), message: scrubDiagnosticSecrets(error.message), at };
+  }
+  return { code: "unavailable", message: scrubDiagnosticSecrets(errorMessage(error)), at };
 }
 
 /**
@@ -132,15 +163,27 @@ export interface BackgroundService {
   /** Sync every source that syncs and enforce the revocations; throws only outside a sync result. */
   discover(signal: AbortSignal): Promise<SyncDiscovery>;
   updates(signal: AbortSignal): Promise<PackageUpdateOffer[]>;
+  /** The updates of the reached sources with what classifies them (§18.7.2). */
+  updateCandidates(reached: ReadonlySet<string>, signal: AbortSignal): Promise<UpdateCandidate[]>;
+  /** The policy's `autoUpdate` and each source's facts, for the switches. */
+  autoUpdateContext(signal: AbortSignal): Promise<AutoUpdateContext>;
   applyBootInstalls(defaults: readonly PackageKey[], applied: AppliedDefaults, signal: AbortSignal): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }>;
+  /** Apply one queued update (§18.7.4), if `decide` still finds it automatic under the locks. */
+  applyUpdate(target: ApplyTarget, decide: ApplyDecision, signal: AbortSignal): Promise<ApplyOutcome>;
+  /** An applied update read again; null when it is no longer installed at that version. */
+  appliedState(key: PackageKeyView, to: string): Promise<AppliedState | null>;
+  callsInFlight(name: string): Promise<boolean>;
+  approveComponents(key: PackageKeyView, installId: string, consents: readonly ReviewedComponentConsent[]): Promise<void>;
 }
 
 export interface MarketplaceBackgroundInput {
   service(): Promise<BackgroundService>;
   appliedDefaults(): Promise<AppliedDefaults>;
   defaults: readonly PackageKey[];
-  /** Read at each use: the interval at each due check, notices and skips at each publication. */
-  settings(): { updateNotices: boolean; updateCheckIntervalMs?: number; skippedPluginUpdates?: unknown };
+  /** Read at each use: the interval at each due check, notices, skips and switches at each publication. */
+  settings(): AutoUpdateSettings & { updateNotices: boolean; updateCheckIntervalMs?: number; skippedPluginUpdates?: unknown };
+  /** The conversation's idle gate (§18.7.4). */
+  activity: { isBusy(): boolean; onIdle(listener: () => void): () => void };
   history: UpdateHistoryStore;
   publishStatus(status: AppBootstrapStatus): void;
   publishNotice(notice: BootInstallNoticeView): void;
@@ -162,7 +205,8 @@ export interface MarketplaceBackground {
   recheck(): Promise<void>;
   /**
    * `marketplace` settings were written: the updates are published again
-   * under the new notice and skip settings, and a due check runs, so a
+   * under the new notice, skip and switch settings, a queued update they no
+   * longer let apply by itself leaves the queue, and a due check runs, so a
    * shorter interval takes effect now.
    */
   settingsChanged(): Promise<void>;
@@ -170,6 +214,10 @@ export interface MarketplaceBackground {
   status(): Promise<UpdateStatusView>;
   /** *Check now* (`updates:check`): an apply check, joined if one runs; answers when its discovery and classification end. */
   checkNow(): Promise<UpdateStatusView>;
+  /** *Apply now* (`updates:apply-now`): the queue skips the wait for the conversation to pause (§18.7.4). */
+  applyNow(): Promise<UpdateStatusView>;
+  /** Approve an `approval-pending` agent plugin's components (`components:approve`, §18.7.5). */
+  approveComponents(key: PackageKeyView, installId: string, consents: readonly ReviewedComponentConsent[]): Promise<UpdateStatusView>;
   stop(): void;
 }
 
@@ -183,7 +231,7 @@ interface DiscoveryOutcome {
 function statusFrom(report: BootInstallReport): AppBootstrapStatus {
   return {
     phase: "complete",
-    installed: [...report.installed, ...report.updated, ...report.switched].map((key) => key.name),
+    installed: report.installed.map((key) => key.name),
     failed: report.failed.map((item) => ({ id: item.key.name, error: item.message })),
   };
 }
@@ -194,7 +242,9 @@ function describe(keys: readonly PackageKey[]): string {
 
 function updatesKey(updates: readonly PackageUpdateView[]): string {
   return updates
-    .map((update) => `${update.key.sourceId}/${update.key.kind}/${update.key.name}@${update.from}->${update.to}:${update.state}${update.stale ? ":stale" : ""}`)
+    // Everything the toolbar acts on: a change of any of it is sent again.
+    .map((update) => `${update.key.sourceId}/${update.key.kind}/${update.key.name}@${update.from}->${update.to}:${update.state}`
+      + `${update.stale ? ":stale" : ""}${update.escalated ? ":escalated" : ""}${update.required ? ":required" : ""}`)
     .sort()
     .join("|");
 }
@@ -225,6 +275,12 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
   let history: UpdateHistory = emptyUpdateHistory();
   let historyReset = false;
   let offered: PackageUpdateOffer[] = [];
+  /** The last list's updates of reached sources, with what classifies them, by record key. */
+  let candidates = new Map<string, UpdateCandidate>();
+  /** The policy and sources the switches resolve with; null until a list has been computed. */
+  let context: AutoUpdateContext | null = null;
+  /** An agent plugin's `approval-pending` review payload, by record key (§18.9). */
+  const pendingApprovals = new Map<string, NonNullable<Extract<AppliedState, { state: "approval-pending" }>["pendingApproval"]>>();
   /** The sources the last finished discovery reached; null until one has. */
   let reached: ReadonlySet<string> | null = null;
   /** What is published: each offer of a reached source classified, the rest only as stale prior state. */
@@ -284,23 +340,117 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
   // ─── what is published ────────────────────────────────────────────────────
 
   /**
-   * Classify what is offered for the sources the last discovery reached. An
-   * offer from a source it did not reach is a cached snapshot's, so it is
-   * never classified anew: what was shown for that version before keeps its
-   * state, marked stale, while the package still offers that version.
-   * Skipped versions are neither.
+   * A classified update as the view shows it. The queue's own state comes
+   * first (applying, or waiting for idle or for an agent plugin's calls), then
+   * what the last attempt at this version recorded (a failure, a deferral at
+   * checkpoint two), then the classification.
+   */
+  /** {@link requiresPackage} under the policy last read; only asked once one was read. */
+  const requiredNow = (key: PackageKeyView): boolean => {
+    if (!context) throw new Error("required status asked for before the policy was read");
+    return requiresPackage({ requiredInstalls: context.requiredInstalls }, key);
+  };
+
+  const packageView = (candidate: UpdateCandidate, classification: UpdateClassification, settings: AutoUpdateSettings): PackageUpdateView => {
+    const id = updateRecordKey(candidate.key);
+    const record = history.packages[id];
+    const memory = record && record.to === candidate.to ? record : undefined;
+    const queued = queue.state();
+    let state: UpdatePackageState = classification.state;
+    let reasons: UpdateReason[] = [...classification.reasons];
+    if (queued.applying === id) {
+      state = "automatic";
+    } else if (queued.queued.includes(id)) {
+      const calls = queued.waitingForCalls.includes(id);
+      state = calls || queued.waitingSince !== null ? "waiting" : "automatic";
+      reasons = calls ? ["calls-in-flight"] : [];
+    } else if (memory?.state === "failed" || memory?.state === "needs-review") {
+      state = memory.state;
+      if (memory.state === "needs-review" && reasons.length === 0) reasons = ["consent-changed"];
+    }
+    const escalated = state === "waiting" && queued.escalated;
+    return {
+      key: candidate.key,
+      displayName: candidate.displayName,
+      from: candidate.from,
+      to: candidate.to,
+      state,
+      ...(reasons.length > 0 ? { reasons } : {}),
+      ...(memory?.lastError ? { failure: failureView({ ...memory, lastError: memory.lastError }) } : {}),
+      ...(context ? { autoUpdate: resolvePackageSwitch(context.policy, settings, candidate.facts.switchKey, candidate.facts.source, candidate.facts.required) } : {}),
+      ...(escalated ? { escalated: true as const } : {}),
+      ...(candidate.facts.required ? { required: true as const } : {}),
+    };
+  };
+
+  /** An applied update that stays in the view after its offer is gone (§18.7.5). */
+  const appliedView = (id: string, record: PackageUpdateRecord): PackageUpdateView => {
+    const pending = pendingApprovals.get(id);
+    // Required by the policy in force now, not when it applied: a required package's
+    // attention states ignore skipped versions (§18.7.2) for as long as it stays required.
+    const required = requiredNow(parseUpdateRecordKey(id));
+    return {
+      key: parseUpdateRecordKey(id),
+      displayName: record.displayName!,
+      from: record.from!,
+      to: record.to,
+      state: record.state,
+      ...(record.appliedAt ? { appliedAt: record.appliedAt } : {}),
+      ...(record.commits ? { commitRange: record.commits } : {}),
+      ...(record.state === "approval-pending" && pending ? { pendingApproval: pending } : {}),
+      ...(required ? { required: true as const } : {}),
+    };
+  };
+
+  /**
+   * Classify the updates of the sources the last discovery reached. An offer
+   * from a source it did not reach is a cached snapshot's, so it is never
+   * classified anew: what was shown for that version before keeps its state,
+   * marked stale, while the package still offers that version. Skipped
+   * versions are neither. Applied updates follow.
    */
   const classifyShown = () => {
-    const skipped = readSkippedPluginUpdates(input.settings().skippedPluginUpdates);
+    // No authority read yet: a view built now could not say which updates are required, and
+    // calling them optional would let a skipped version hide one. What was shown stays.
+    if (!context) return;
+    const settings = input.settings();
+    const skipped = readSkippedPluginUpdates(settings.skippedPluginUpdates);
     const prior = new Map(shown.map((update) => [updateRecordKey(update.key), update]));
     const next: PackageUpdateView[] = [];
+    const listed = new Set<string>();
+    for (const [id, candidate] of candidates) {
+      if (!reached?.has(candidate.key.sourceId)) continue;
+      const classification = classifyUpdate(candidate.facts, {
+        policy: context.policy,
+        settings,
+        memory: history.packages[id] ?? null,
+        skipped: isSkippedPackageUpdate(candidate, skipped),
+      });
+      if (!classification) continue;
+      next.push(packageView(candidate, classification, settings));
+      listed.add(id);
+    }
     for (const update of offered) {
-      if (reached?.has(update.key.sourceId)) {
-        if (!isSkippedPackageUpdate(update, skipped)) next.push({ ...update, state: classifyUpdate(update) });
-        continue;
-      }
-      const before = prior.get(updateRecordKey(update.key));
-      if (before && before.to === update.to && !isSkippedPackageUpdate(update, skipped)) next.push({ ...update, state: before.state, stale: true });
+      const id = updateRecordKey(update.key);
+      if (reached?.has(update.key.sourceId) || listed.has(id)) continue;
+      const before = prior.get(id);
+      if (!before || before.to !== update.to) continue;
+      // The version and its state are an earlier discovery's; whether it is required, and so
+      // its switch and whether a skipped version hides it (§18.7.2), is the policy's now.
+      const required = requiredNow(update.key);
+      if (!required && isSkippedPackageUpdate(update, skipped)) continue;
+      const { required: _was, autoUpdate: _switch, ...kept } = before;
+      const source = context.sources.find((item) => item.id === update.key.sourceId) ?? null;
+      next.push({
+        ...kept,
+        stale: true,
+        ...(required || source ? { autoUpdate: resolvePackageSwitch(context.policy, settings, packageUpdateSkipKey(update.key), source, required) } : {}),
+        ...(required ? { required: true as const } : {}),
+      });
+      listed.add(id);
+    }
+    for (const [id, record] of Object.entries(history.packages)) {
+      if (APPLIED_STATES.has(record.state) && !listed.has(id)) next.push(appliedView(id, record));
     }
     shown = next;
   };
@@ -308,6 +458,8 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
   const view = (): UpdateStatusView => {
     const at = now();
     const next = Math.min(applyCheckDueAt(history), discoveryDueAt(history.discovery, intervalMs()));
+    const queued = queue.state();
+    const settings = input.settings();
     return {
       discovery: {
         lastAttemptAt: history.discovery?.lastAttemptAt ?? null,
@@ -318,7 +470,39 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       applyCheckAt: history.applyCheckAt,
       running: discovering !== null || applying !== null,
       historyReset,
+      waitingSince: queued.waitingSince === null ? null : iso(queued.waitingSince),
+      escalated: queued.escalated,
+      autoUpdate: autoUpdateView(settings),
       packages: shown,
+      unmetRequired: context?.unmetRequired ?? [],
+    };
+  };
+
+  /**
+   * The switches as they take effect (§18.7.2): under a policy value the
+   * global switch shows that value, not the stored one; every installed
+   * package bound to a listed source has its switch, update or not.
+   */
+  const autoUpdateView = (settings: AutoUpdateSettings): UpdateStatusView["autoUpdate"] => {
+    const locked = context && context.policy !== "user" ? context.policy : null;
+    const sources = context?.sources ?? [];
+    const byId = new Map(sources.map((source) => [source.id, source]));
+    return {
+      enabled: locked !== null ? locked === "on" : settings.autoUpdate !== false,
+      lockedByPolicy: locked,
+      sources: sources.map((source) => ({
+        id: source.id,
+        label: source.label,
+        origin: source.origin,
+        switch: resolveSourceSwitch(context!.policy, settings, source),
+        needsUnencryptedUpdates: source.http && !source.acknowledgedUnencryptedUpdates,
+      })),
+      packages: (context?.installed ?? []).flatMap((key) => {
+        const source = byId.get(key.sourceId) ?? null;
+        const required = requiredNow(key);
+        // A source whose metadata cannot be read leaves an optional package without a switch, never a required one.
+        return source || required ? [{ key, switch: resolvePackageSwitch(context!.policy, settings, packageUpdateSkipKey(key), source, required) }] : [];
+      }),
     };
   };
 
@@ -336,7 +520,8 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
     }
     // Notices off: the pill hears of nothing that waits only for the user's choice.
     const notices = input.settings().updateNotices;
-    const updates = status.packages.filter((update) => updateNeedsUser(update.state) && (notices || update.state !== "manual"));
+    // An escalated wait is sent whatever the notice setting: only *Apply now* moves it on (§18.7.4).
+    const updates = status.packages.filter((update) => updateViewNeedsUser(update) && (notices || update.state !== "manual"));
     const key = updatesKey(updates);
     if (key === lastUpdates) return;
     gate.emit(() => input.publishUpdates(updates));
@@ -378,6 +563,10 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       const revoked = await gate.work(() => service.takeRevocationNotice());
       if (revoked) gate.emit(() => input.publishNotice(revoked));
       offered = await gate.work(() => service.updates(gate.signal));
+      context = await gate.work(() => service.autoUpdateContext(gate.signal));
+      const sources = reached ?? new Set<string>();
+      const found = sources.size > 0 ? await gate.work(() => service.updateCandidates(sources, gate.signal)) : [];
+      candidates = new Map(found.map((candidate) => [updateRecordKey(candidate.key), candidate]));
       classifyShown();
       publish();
       return offered;
@@ -445,10 +634,30 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
     return run;
   };
 
+  /**
+   * Read an applied update again (§18.7.5): still installed at its version,
+   * and whether a component still waits for approval or the generation
+   * still does not run. Null when it no longer is installed at that version.
+   */
+  const settleApplied = async (id: string, record: PackageUpdateRecord): Promise<PackageUpdateRecord | null> => {
+    const service = await gate.work(() => input.service());
+    const settled = await gate.work(() => service.appliedState(parseUpdateRecordKey(id), record.to));
+    if (!settled) {
+      pendingApprovals.delete(id);
+      return null;
+    }
+    if (settled.state === "approval-pending" && settled.pendingApproval) pendingApprovals.set(id, settled.pendingApproval);
+    else pendingApprovals.delete(id);
+    return { ...record, state: settled.state };
+  };
+
   const runApplyCheck = async (): Promise<void> => {
     const outcome = await discover();
     if (outcome.result !== "ok" && outcome.result !== "partial") return;
-    const skipped = readSkippedPluginUpdates(input.settings().skippedPluginUpdates);
+    if (!context) return;
+    const policy = context.policy;
+    const settings = input.settings();
+    const skipped = readSkippedPluginUpdates(settings.skippedPluginUpdates);
     const packages = Object.create(null) as Record<string, PackageUpdateRecord>;
     // A partial pass leaves what it did not reach as the last pass classified it.
     if (outcome.result === "partial") {
@@ -456,16 +665,150 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
         if (!outcome.reached.has(updateRecordSource(key))) packages[key] = entry;
       }
     }
-    for (const update of outcome.updates) {
-      if (!outcome.reached.has(update.key.sourceId) || isSkippedPackageUpdate(update, skipped)) continue;
-      packages[updateRecordKey(update.key)] = { to: update.to, state: classifyUpdate(update), attempts: 0 };
+    // Applied updates stay while they are installed: `applied` for a day (the recent list), the others until they clear.
+    const at = now();
+    for (const [id, entry] of Object.entries(history.packages)) {
+      if (!APPLIED_STATES.has(entry.state) || id in packages) continue;
+      if (entry.state === "applied" && entry.appliedAt && at - Date.parse(entry.appliedAt) >= RECENT_APPLIED_MS) continue;
+      const settled = await settleApplied(id, entry);
+      if (settled) packages[id] = settled;
+    }
+    const queued: QueuedUpdate[] = [];
+    for (const [id, candidate] of candidates) {
+      if (!outcome.reached.has(candidate.key.sourceId)) continue;
+      const prior = history.packages[id];
+      const memory = prior && prior.to === candidate.to ? prior : null;
+      const classification = classifyUpdate(candidate.facts, { policy, settings, memory, skipped: isSkippedPackageUpdate(candidate, skipped) });
+      if (!classification) continue;
+      packages[id] = {
+        to: candidate.to,
+        state: classification.state,
+        attempts: memory?.attempts ?? 0,
+        ...(memory?.lastError ? { lastError: memory.lastError } : {}),
+        from: candidate.from,
+        displayName: candidate.displayName,
+      };
+      if (classification.state === "automatic") {
+        queued.push({ id, kind: candidate.key.kind, name: candidate.key.name, provides: candidate.provides, needs: candidate.needs, candidate });
+      }
     }
     await commit(() => {
       history.packages = packages;
       // Timed at its end: a check that spanned a sleep is not due again the moment it ends.
       if (outcome.result === "ok") history.applyCheckAt = iso(now());
     });
+    if (gate.closed) return;
+    // A later apply check replaces what is queued and leaves the package applying alone (§18.7.1).
+    queue.replace(queued);
+    classifyShown();
+    publish();
   };
+
+  /** Whether an update applies by itself under `policy` and the switches, skips and failures as they are now (§18.7.2). */
+  const stillAutomatic = (id: string, facts: UpdateCandidate["facts"], policy: AutoUpdateContext["policy"]): boolean => {
+    const settings = input.settings();
+    const skipped = readSkippedPluginUpdates(settings.skippedPluginUpdates);
+    const prior = history.packages[id];
+    const memory = prior && prior.to === facts.to ? prior : null;
+    const key = parseUpdateRecordKey(id);
+    return classifyUpdate(facts, { policy, settings, memory, skipped: isSkippedPackageUpdate({ key, to: facts.to }, skipped) })?.state === "automatic";
+  };
+
+  /** The notice's "Updated automatically" entry for one applied update (§18.7.5). */
+  const announce = (candidate: UpdateCandidate, state: AutoUpdatedView["state"]) => {
+    const notice: BootInstallNoticeView = {
+      forYou: [],
+      required: [],
+      unmanaged: [],
+      lostGrants: [],
+      revoked: [],
+      autoUpdated: [{
+        key: candidate.key,
+        displayName: candidate.displayName,
+        from: candidate.from,
+        to: candidate.to,
+        commitRange: candidate.commitRange,
+        required: candidate.facts.required,
+        state,
+      }],
+    };
+    gate.emit(() => input.publishNotice(notice));
+  };
+
+  /** Record what one apply ended with (§18.7.4's table, §18.7.5). */
+  const settled = async (item: QueuedUpdate, outcome: ApplyOutcome): Promise<void> => {
+    // A stop ends quietly: nothing the shutdown cut short is recorded or announced.
+    if (gate.closed) return;
+    const { candidate } = item;
+    const prior = history.packages[item.id];
+    const attempts = prior && prior.to === candidate.to ? prior.attempts : 0;
+    const base = { to: candidate.to, from: candidate.from, displayName: candidate.displayName };
+    let record: PackageUpdateRecord;
+    switch (outcome.state) {
+      case "superseded":
+        // A user install or uninstall came first: the list follows what is installed now.
+        await recheck();
+        return;
+      case "failed":
+        record = { ...base, state: "failed", attempts: attempts + 1, lastError: failureRecord(outcome.error, iso(now())) };
+        log.warn(`marketplace update of ${item.id} to ${candidate.to} failed (attempt ${attempts + 1}): ${errorMessage(outcome.error)}`);
+        break;
+      case "needs-review":
+        // A consent deferral is never a failure and never an attempt (§18.7.3).
+        record = { ...base, state: "needs-review", attempts, ...(prior?.to === candidate.to && prior.lastError ? { lastError: prior.lastError } : {}) };
+        break;
+      default:
+        record = { ...base, state: outcome.state, attempts: 0, appliedAt: iso(now()), commits: candidate.commitRange };
+        log.info(`marketplace updated ${item.id} ${candidate.from} -> ${candidate.to} automatically (${outcome.state})`);
+    }
+    await commit(() => {
+      history.packages[item.id] = record;
+    });
+    if (APPLIED_STATES.has(record.state)) {
+      if (record.state === "approval-pending") {
+        try {
+          const settledRecord = await settleApplied(item.id, record);
+          if (settledRecord) await commit(() => {
+            history.packages[item.id] = settledRecord;
+          });
+        } catch (error) {
+          if (error instanceof SchedulerStopped) return;
+          log.warn(`marketplace could not read the approvals of ${item.id}: ${errorMessage(error)}`);
+        }
+      }
+      announce(candidate, record.state as AutoUpdatedView["state"]);
+    }
+    await recheck();
+  };
+
+  const queue: ApplyQueue<QueuedUpdate> = new ApplyQueue<QueuedUpdate>({
+    activity: input.activity,
+    apply: async (item, signal) => {
+      const service = await gate.work(() => input.service());
+      const { candidate } = item;
+      // Judged again under the service's locks with what is in force then: nothing queued earlier authorizes it.
+      const decide: ApplyDecision = (facts, policy) => stillAutomatic(item.id, facts, policy);
+      return gate.work(() => service.applyUpdate({
+        key: candidate.key,
+        from: candidate.from,
+        to: candidate.to,
+        switchSource: candidate.switchSource,
+      }, decide, signal));
+    },
+    callsInFlight: async (item) => {
+      const service = await gate.work(() => input.service());
+      return gate.work(() => service.callsInFlight(item.name));
+    },
+    settled,
+    changed: () => {
+      if (gate.closed) return;
+      classifyShown();
+      publish();
+    },
+    signal: shutdown.signal,
+    now,
+    log,
+  });
 
   const applyCheck = (): Promise<void> => {
     if (applying) return applying;
@@ -534,8 +877,7 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
         if (outcome.result === "error") throw outcome.error;
         const appliedDefaults = await gate.work(() => input.appliedDefaults());
         const { report, notice } = await gate.work(() => service.applyBootInstalls(input.defaults, appliedDefaults, gate.signal));
-        const moved = [...report.installed, ...report.updated, ...report.switched];
-        if (moved.length > 0) log.info(`marketplace boot installs: ${describe(moved)}`);
+        if (report.installed.length > 0) log.info(`marketplace boot installs: ${describe(report.installed)}`);
         if (report.failed.length > 0) {
           log.warn(`marketplace boot installs failed: ${report.failed.map((item) => `${packageKeyId(item.key)}: ${item.message}`).join("; ")}`);
         }
@@ -609,6 +951,14 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       outside(async () => {
         await loaded;
         await recheck();
+        // A switch turned off or a version skipped: what is queued and no longer automatic waits for the user.
+        if (context) {
+          const policy = context.policy;
+          queue.retain((item) => {
+            const fresh = candidates.get(item.id);
+            return stillAutomatic(item.id, (fresh ?? item.candidate).facts, policy);
+          });
+        }
         dueCheck();
       }),
     status: async () => {
@@ -620,6 +970,31 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
         await loaded;
         if (gate.closed) throw new SchedulerStopped();
         await applyCheck();
+        return view();
+      }),
+    applyNow: () =>
+      outside(async () => {
+        await loaded;
+        if (gate.closed) throw new SchedulerStopped();
+        queue.applyNow();
+        return view();
+      }),
+    approveComponents: (key, installId, consents) =>
+      outside(async () => {
+        await loaded;
+        const service = await gate.work(() => input.service());
+        await gate.work(() => service.approveComponents(key, installId, consents));
+        // The state clears when no component of the installed generation is unapproved (§18.7.5).
+        const id = updateRecordKey(key);
+        const record = history.packages[id];
+        if (record?.state === "approval-pending") {
+          const settledRecord = await settleApplied(id, record);
+          await commit(() => {
+            if (settledRecord) history.packages[id] = settledRecord;
+            else delete history.packages[id];
+          });
+        }
+        await recheck();
         return view();
       }),
     stop: () => {

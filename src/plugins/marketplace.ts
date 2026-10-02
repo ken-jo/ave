@@ -40,6 +40,8 @@ import {
 import { assertGitInstallManifest, expectedPluginOf, manifestAuthority } from "../marketplace/resolve/manifest-rules.js";
 import { classifyInstall, type InstallAction } from "../marketplace/resolve/identity.js";
 import { MarketplaceError } from "../marketplace/errors.js";
+import { pluginConsent, unknownConsent, type ConsentFingerprint } from "../marketplace/updates/consent.js";
+import { readPayloadFiles, type PayloadFile } from "./contribution-approval-digest.js";
 import type { PluginAuthority } from "../marketplace/catalog/types.js";
 import type { PluginInstallPlan, StagedPluginArtifact } from "../marketplace/resolve/plugin-ladder.js";
 import { canonicalJSON } from "./secret-access/canonical-json.js";
@@ -463,7 +465,7 @@ export class PluginMarketplaceService {
    * marketplace's installed view (design §15.2). Rows mid-replacement are
    * left out; a missing manifest gives a null version.
    */
-  async listInstalledPackages(): Promise<Array<{ name: string; version: string | null; sourceId: string | null; originCommit: string | null }>> {
+  async listInstalledPackages(): Promise<Array<{ name: string; version: string | null; sourceId: string | null; originCommit: string | null; digest: string | null }>> {
     const registry = await readPluginRegistry(this.registryPath);
     const rows = [];
     for (const entry of registry.plugins) {
@@ -473,6 +475,8 @@ export class PluginMarketplaceService {
         version: entry.origin?.version ?? (await this.readInstalledManifestVersion(entry)),
         sourceId: entry.origin?.sourceId ?? null,
         originCommit: entry.origin?.commit ?? null,
+        // A folder package's refresh compares its tree digest with this (§18.7.6).
+        digest: entry.origin?.artifactSha256 ?? null,
       });
     }
     return rows;
@@ -493,6 +497,45 @@ export class PluginMarketplaceService {
     const authority = manifestAuthority(JSON.parse(raw) as unknown);
     if (!authority) throw new Error(`installed plugin.json of ${pluginId} has no Ave extension`);
     return authority;
+  }
+
+  /**
+   * What an automatic update of `pluginId` is compared with (design
+   * §18.7.3): the consent fingerprint its receipt stored, or one computed
+   * from the receipt-covered installed bytes for an install from before
+   * slice F, never from a catalog. Installed files that no longer match
+   * their receipt give a fingerprint that is entirely unknown. Also the
+   * receipt's `reviewedAppVersion`, which an update that needs no review
+   * keeps. Null when it is not installed.
+   */
+  async getInstalledConsentBaseline(pluginId: string): Promise<{ consent: ConsentFingerprint; reviewedAppVersion: string | null; enabled: boolean; files: PayloadFile[] | null } | null> {
+    const entry = await this.getRawRegistryEntry(pluginId);
+    if (!entry || entry.pendingUpdate) return null;
+    const manifestPath = isAbsolute(entry.manifestPath) ? entry.manifestPath : resolve(dirname(this.registryPath), entry.manifestPath);
+    const pluginRoot = dirname(manifestPath);
+    const enabled = entry.enabled !== false;
+    let raw: string;
+    try {
+      raw = await readFile(installReceiptPath(this.cacheRoot, pluginId), "utf-8");
+    } catch (err) {
+      if (isMissingPathError(err)) return { consent: unknownConsent("plugin"), reviewedAppVersion: null, enabled, files: null };
+      throw err;
+    }
+    const verified = await verifyInstallReceiptRaw(raw, pluginId, pluginRoot);
+    if (!verified.ok) return { consent: unknownConsent("plugin"), reviewedAppVersion: null, enabled, files: null };
+    const { receipt } = verified;
+    const reviewedAppVersion = receipt.reviewedAppVersion ?? null;
+    const files = await readPayloadFiles(pluginRoot, receipt.files.map((file) => file.path));
+    const stored = "git" in receipt ? receipt.git.consent : "folder" in receipt ? receipt.folder.consent : undefined;
+    if (stored) return { consent: stored, reviewedAppVersion, enabled, files };
+    const manifest = files.find((file) => file.path === "plugin.json");
+    if (!manifest) return { consent: unknownConsent("plugin"), reviewedAppVersion, enabled, files };
+    return { consent: pluginConsent(JSON.parse(manifest.data.toString("utf8")) as unknown, files), reviewedAppVersion, enabled, files };
+  }
+
+  /** The files a staged artifact installs, by the paths extraction gives them (design §18.7.3 review). */
+  stagedPayloadFiles(staged: StagedPluginArtifact): PayloadFile[] {
+    return this.artifactStore.readZipPayloadFiles(staged.plan.name, staged.zipBuffer);
   }
 
   /** Read even a disabled or refused-load install without depending on runtime state. */
@@ -635,8 +678,14 @@ export class PluginMarketplaceService {
       switchSource?: boolean;
       signal?: AbortSignal;
       reviewedAppVersion?: string;
+      /**
+       * Checkpoint two of an automatic update (design §18.7.3): sees the
+       * consent fingerprint of the extracted bytes, beside the manifest check
+       * and before anything activates; a throw installs nothing.
+       */
+      assertConsent?: (consent: ConsentFingerprint) => void;
     },
-  ): Promise<{ pluginId: string; installed: true; version: string; action: InstallAction; staged: StagedPluginArtifact }> {
+  ): Promise<{ pluginId: string; installed: true; version: string; action: InstallAction; staged: StagedPluginArtifact; consent: ConsentFingerprint }> {
     const activatePreparedArtifact = requirePreparedMarketplacePluginActivation(
       options?.activatePreparedArtifact,
       "git plugin install",
@@ -666,6 +715,7 @@ export class PluginMarketplaceService {
       const origin = gitInstallOrigin(staged);
       await this.snapshotCurrentInstall(pluginId);
       let pendingEntry: PluginRegistryEntry | null = null;
+      let installedConsent: ConsentFingerprint | null = null;
       const installOutcome = await this.installZipTransaction(pluginId, staged.zipBuffer, {
         // The ladder checked the zip's plugin.json; this checks the file that
         // was actually extracted, which is the one that will run.
@@ -674,7 +724,13 @@ export class PluginMarketplaceService {
           assertGitInstallManifest(document, expectedPluginOf(plan));
           if (hasProcessEntry(document)) assertStagedArtifactPinned(staged);
         },
-        prepareReceipt: (pluginRoot, files) => this.prepareGitInstallReceipt(pluginId, pluginRoot, staged, files, options.reviewedAppVersion),
+        prepareReceipt: async (pluginRoot, files) => {
+          // The baseline the next update is compared with is what installs now, from these exact bytes (§18.7.3).
+          const consent = pluginConsent(JSON.parse(await readFile(resolve(pluginRoot, "plugin.json"), "utf-8")) as unknown, await readPayloadFiles(pluginRoot, files));
+          options.assertConsent?.(consent);
+          installedConsent = consent;
+          return this.prepareGitInstallReceipt(pluginId, pluginRoot, staged, files, consent, options.reviewedAppVersion);
+        },
         approvedPluginAccess: plan.authority.pluginAccess as PluginAccessSpec | undefined,
         activatePreparedArtifact,
         registryInstallSource: "user",
@@ -708,7 +764,8 @@ export class PluginMarketplaceService {
           log.warn({ pluginId, err: error }, "post-retirement backup cleanup degraded");
         });
       }
-      return { pluginId, installed: true, version: plan.version, action, staged };
+      if (!installedConsent) throw new Error(`git plugin install of ${pluginId} committed without its consent baseline`);
+      return { pluginId, installed: true, version: plan.version, action, staged, consent: installedConsent };
     });
   }
 
@@ -732,6 +789,7 @@ export class PluginMarketplaceService {
     pluginRoot: string,
     staged: StagedPluginArtifact,
     files: string[],
+    consent: ConsentFingerprint,
     reviewedAppVersion?: string,
   ): Promise<string> {
     const manifestRaw = await readFile(resolve(pluginRoot, "plugin.json"), "utf-8");
@@ -750,6 +808,7 @@ export class PluginMarketplaceService {
           packagePath: plan.packagePath,
           treeSha256: staged.artifactSha256,
           authoritySha256: sha256Hex(canonicalJSON(plan.authority)),
+          consent,
         },
         files,
       })).raw;
@@ -768,6 +827,7 @@ export class PluginMarketplaceService {
         rung: staged.rung,
         rungs: staged.rungs,
         authoritySha256: sha256Hex(canonicalJSON(plan.authority)),
+        consent,
       },
       files,
     })).raw;

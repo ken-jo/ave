@@ -48,13 +48,21 @@ import type {
   UninstallRequest,
   UninstallResultView,
   UpdatePlanView,
+  ReviewComponentView,
+  ReviewedComponentConsent,
+  ExtensionComponentConsent,
+  ConsentDelta,
+  UnmetRequirementInstall,
+  UnmetRequirementView,
 } from "../../shared/git-marketplace.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
+import { AGENT_PLUGIN_DECLARATION_PATHS, extensionDeclarationPaths, type PayloadFile } from "../../plugins/contribution-approval-digest.js";
+import { packageUpdateSkipKey } from "../../shared/skipped-plugin-updates.js";
 import { aggregateCatalog, findRevocation, versionExclusions, type CatalogRow, type VersionChoiceContext } from "../catalog/aggregate.js";
-import { PACKAGE_KINDS, type IndexVersion, type PackageKind, type PluginAuthority } from "../catalog/types.js";
+import { PACKAGE_KINDS, type AgentPluginComponents, type IndexVersion, type PackageKind, type PluginAuthority } from "../catalog/types.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { credentialRefusal } from "../catalog/validate.js";
-import { stageContentPackage } from "../content/store.js";
+import { stageContentPackage, stagedConsent, type StagedContent } from "../content/store.js";
 import { componentDelta } from "./component-delta.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { holdsCredential } from "../../shared/dlp.js";
@@ -65,11 +73,20 @@ import type { CatalogSource, NetworkGate } from "../net/network-gate.js";
 import { classifyFolder, normalizeSourceInput, resolveFolderRoot, type FolderIdentity, type FolderNetwork, type FolderRoot } from "../net/source-input.js";
 import { normalizeSourceHost, type NormalizedSourceUrl } from "../net/source-url.js";
 import { candidateVersion, planPackage, type PackagePlan, type RepositoryAccess } from "../resolve/descriptor.js";
-import { classifyInstall, updateFor, type InstalledPackage } from "../resolve/identity.js";
+import { classifyInstall, compareVersions, updateFor, type InstalledPackage } from "../resolve/identity.js";
 import { assertMcpRuntimePinned, resolveMcpPackage, runtimeFromServerJson, type ResolvedMcpServer } from "../resolve/mcp.js";
-import { planPluginVersion, runFolderRung, runPluginLadder, type LadderDeps, type PluginInstallPlan } from "../resolve/plugin-ladder.js";
+import { planPluginVersion, runFolderRung, runPluginLadder, type LadderDeps, type PluginInstallPlan, type StagedPluginArtifact } from "../resolve/plugin-ladder.js";
 import type { AppliedDefaults } from "../boot-installs/applied.js";
-import { assertNotRequiredByPolicy, bootInstallNoticeFrom, lockedByPolicy, requiredByPolicy, runBootInstalls, type BootInstallReport } from "../boot-installs/run.js";
+import {
+  assertNotRequiredByPolicy,
+  bootInstallNoticeFrom,
+  lockedByPolicy,
+  requiredByPolicy,
+  requirementGap,
+  runBootInstalls,
+  type BootInstallReport,
+  type RequirementSourceState,
+} from "../boot-installs/run.js";
 import type { LegacyContentKind, LegacyContentReport } from "../migration/legacy-content.js";
 import type { LegacyPluginReport, OfficialPlugin } from "../migration/legacy-plugins.js";
 import { runLegacyMigration } from "../migration/run.js";
@@ -83,13 +100,18 @@ import { SnapshotBuilder, type SourceSnapshot } from "../sources/snapshot.js";
 import { gitAccess, GitTree, rootNameOf, StagedTree, stagedAccess } from "../sources/source-tree.js";
 import { openStoredFolder, shouldSyncSource, type SourceSyncer, type SyncResult } from "../sources/sync.js";
 import type { SyncDiscovery } from "../updates/history.js";
+import { catalogDelta, isCodeFreeChange, mcpConsent, pluginConsent, requireConsentEqual, stagedDelta, withChangedFiles, type ConsentFingerprint } from "../updates/consent.js";
+import { classifyApplyError, type ApplyOutcome } from "../updates/apply.js";
+import { requiresPackage, type UpdateChange, type UpdateFacts } from "../updates/eligibility.js";
 import type { PluginConfigRetention } from "../../plugins/retired-config.js";
+import { holdsAnyPluginInstallLock } from "../../plugins/install-lifecycle.js";
 import type { RetirementEntry, RetirementEntryLookup } from "./retirement-entry.js";
 import { effectiveRevocations } from "../catalog/effective-revocations.js";
 import { revocationFeed, type BoundInstall, type RevocationFeed } from "./revocations.js";
 import { OperationLock } from "./operation-lock.js";
+import { KeyedMutex, type MutexLease } from "./keyed-mutex.js";
 import { Tickets } from "./tickets.js";
-import type { InstallerPorts, InstalledRecord, TokenStore } from "./ports.js";
+import type { ComponentApprovalState, InstallerPorts, InstalledRecord, TokenStore } from "./ports.js";
 import {
   authorityDelta,
   authorityView,
@@ -126,13 +148,29 @@ interface CapturedFolder {
 }
 
 /**
+ * The install a decision was made for (§18.6): the installed receipt's
+ * stored source, version, origin commit and digest, or null when nothing is
+ * installed. A decision made before its package lock holds under the lock
+ * only while the package is still installed with this identity.
+ */
+type InstallIdentity = { sourceId: string | null; version: string | null; originCommit: string | null; digest: string | null } | null;
+
+function installIdentity(record: InstalledRecord | null): InstallIdentity {
+  return record ? { sourceId: record.sourceId, version: record.version, originCommit: record.originCommit, digest: record.digest ?? null } : null;
+}
+
+/**
  * A plan, and the digest of the policy it was made under (§18.6): executed
- * under another, it expires. `folder` is set for a plan from a folder source.
+ * under another, it expires. So does a plan from a source whose package is
+ * no longer installed as it was when the plan was made (`installed`): a
+ * direct server.json binds nothing and replaces only an unbound server
+ * (§8.1). `folder` is set for a plan from a folder source.
  */
 type HeldPlan = { policyDigest: string; folder: CapturedFolder | null } & (
-  | { kind: "plugin"; plan: PluginInstallPlan; switchSource: boolean }
-  | { kind: "content"; plan: ContentPlan; switchSource: boolean; adopt: boolean }
-  | { kind: "mcp"; resolved: ResolvedMcpServer; switchSource: boolean }
+  /** `staged`: an update review staged the artifact (§18.7.3); execution installs exactly it and downloads nothing. */
+  | { kind: "plugin"; plan: PluginInstallPlan; switchSource: boolean; installed: InstallIdentity; staged?: StagedPluginArtifact }
+  | { kind: "content"; plan: ContentPlan; switchSource: boolean; adopt: boolean; installed: InstallIdentity; staged?: StagedContent }
+  | { kind: "mcp"; resolved: ResolvedMcpServer; switchSource: boolean; installed: InstallIdentity }
   | { kind: "mcp-unbound"; name: string; runtime: McpRuntimeSpec }
 );
 
@@ -152,8 +190,115 @@ function heldTarget(held: HeldPlan): PendingBinding {
 
 type PendingBinding = Omit<BoundInstall, "sourceId"> & { sourceId: string | null };
 
+/**
+ * What an install's review decided (§18.7.3): the app version whose review
+ * its receipt records — the current one for a reviewed or required install,
+ * the previous receipt's for an automatic update, none otherwise — and, for
+ * an automatic update, checkpoint two.
+ */
+/** What staging an update for its review read: its fingerprint, files, components and the files that declare its servers and hooks. */
+interface StagedReview {
+  consent: ConsentFingerprint;
+  files: PayloadFile[] | null;
+  components: AgentPluginComponents | null;
+  declaring: ReadonlySet<string>;
+}
+
+interface InstallReview {
+  reviewedAppVersion: string | null;
+  assertConsent?: (consent: ConsentFingerprint) => void;
+}
+
+/** What an installed package was accepted with (§18.7.3). */
+interface InstalledBaseline {
+  consent: ConsentFingerprint;
+  /** The receipt's `reviewedAppVersion` (extensions); an automatic update keeps it. */
+  reviewedAppVersion: string | null;
+  enabled: boolean;
+  /** The installed files, for the review's changed-file list; null when they cannot be read. */
+  files: PayloadFile[] | null;
+}
+
+/**
+ * Kinds whose whole consent fingerprint is in the catalog (`minAppVersion`
+ * only): their update review needs no staging (§18.7.3).
+ */
+const CATALOG_COMPLETE_KINDS: ReadonlySet<PackageKind> = new Set(["skill", "agent", "theme", "font", "language"]);
+
+/** An offered update and what decides whether it applies by itself (§18.7.2). */
+export interface UpdateCandidate extends PackageUpdateOffer {
+  facts: UpdateFacts;
+  /** `origin.commit` of the install to the snapshot that offers the update: *What changed* (§15.6). */
+  commitRange: { from: string | null; to: string };
+  /** A required switch to the policy's source (§10.2). */
+  switchSource: boolean;
+  /** An extension's capabilities and required capabilities, for the apply order (§18.7.4). */
+  provides: string[];
+  needs: string[];
+}
+
+/**
+ * What the switches and every view's required status resolve with
+ * (§18.7.2): the policy's `autoUpdate` and `requiredInstalls`, the facts of
+ * each source whose metadata reads, and every installed package bound to a
+ * source, readable or not, so its switch can be set before it has an
+ * update. Required-ness is {@link requiresPackage} of the policy's entries
+ * and a package's identity alone.
+ */
+export interface AutoUpdateContext {
+  policy: MarketplacePolicy["autoUpdate"];
+  requiredInstalls: PackageKey[];
+  /** Each required install not met now, and why (§10.2), for the Updates card. */
+  unmetRequired: UnmetRequirementView[];
+  sources: Array<{ id: string; label: string; origin: SourceOrigin; http: boolean; acknowledgedUnencryptedUpdates: boolean }>;
+  installed: PackageKeyView[];
+}
+
+/**
+ * What the apply queue asks the service to install: which update, never
+ * whether it may apply. That is decided again when its turn comes, from what
+ * is installed, offered and in force then (§18.7.4).
+ */
+export interface ApplyTarget {
+  key: PackageKeyView;
+  from: string;
+  to: string;
+  switchSource: boolean;
+}
+
+/**
+ * Decides, under the operation and the package lock, whether an update
+ * still applies by itself: the facts the service gathers now and the
+ * organization's `autoUpdate` now, with the user's switches, skips and
+ * failures as the caller reads them now (§18.7.2).
+ */
+/** A caller's hold of package locks (§18.6), passed down to an install or uninstall that runs under them. */
+export type PackageLease = MutexLease;
+
+export type ApplyDecision = (facts: UpdateFacts, policy: MarketplacePolicy["autoUpdate"]) => boolean;
+
+/** An applied update re-read: still installed at its version, and in which state; null when it no longer is. */
+export type AppliedState =
+  | { state: "applied" | "applied-not-running" }
+  | { state: "approval-pending"; pendingApproval: { installId: string; consentDelta: ConsentDelta; components: ReviewedComponentConsent[] } | null };
+
 /** An installed version its own source revokes. */
 type RevokedInstall = { record: InstalledRecord & { sourceId: string }; revocation: RevocationFeed["rules"][number] };
+
+/** The sources installs are bound to, as a revocation feed reads them (§10.4): an install without one has none to read. */
+function boundOf(records: readonly InstalledRecord[]): BoundInstall[] {
+  return records.flatMap((item) => (item.sourceId !== null ? [{ kind: item.kind, name: item.name, sourceId: item.sourceId }] : []));
+}
+
+/** The installs whose installed version their own source's rules revoke (§10.4); one without a source or a readable version is revoked by none. */
+function revokedAmong(records: readonly InstalledRecord[], rules: RevocationFeed["rules"]): RevokedInstall[] {
+  return records.flatMap((record) => {
+    if (record.sourceId === null || record.version === null) return [];
+    const sourceId = record.sourceId;
+    const revocation = findRevocation(record.kind, record.name, record.version, rules.filter((rule) => rule.sourceId === sourceId));
+    return revocation ? [{ record: { ...record, sourceId }, revocation }] : [];
+  });
+}
 
 type HeldPreview = {
   sourceId: string;
@@ -243,6 +388,53 @@ const PREVIEW_ID_PREFIX = "preview-";
 
 /** How long a folder source's network class stands for its badge before it is asked again (§18.4.8). */
 const FOLDER_BADGE_TTL_MS = 60_000;
+
+/**
+ * A folder package's change at a version `updateFor` calls current or older
+ * (§18.7.6): its tree digest differs from the installed one, so an equal
+ * version is a refresh and a lower one a downgrade, offered by hand only.
+ */
+function folderChange(installed: InstalledRecord & { sourceId: string; version: string }, rows: readonly CatalogRow[]): { row: CatalogRow; version: string; change: UpdateChange } | null {
+  const row = rows.find((item) => item.sourceId === installed.sourceId && item.kind === installed.kind && item.name === installed.name);
+  if (!row || row.choice.state !== "candidate" || row.package.treeSha256 === undefined) return null;
+  if (!installed.digest || installed.digest === row.package.treeSha256) return null;
+  const version = row.choice.version.version;
+  const order = compareVersions(version, installed.version);
+  if (order > 0) return null;
+  return { row, version, change: order === 0 ? "refresh" : "downgrade" };
+}
+
+/**
+ * The approve boxes of an update review (§18.7.3): each bundled MCP server
+ * and hook whose consent field changed and that the update still has. An
+ * extension's by local id with the approval digest the review computed; an
+ * agent plugin's by name or index with its declared digest.
+ */
+function reviewComponentsOf(kind: PackageKind, delta: ConsentDelta, staged: ConsentFingerprint | null, components: AgentPluginComponents | null): ReviewComponentView[] {
+  const views: ReviewComponentView[] = [];
+  for (const entry of delta) {
+    const match = /^(mcpServer|hook):(.+)$/u.exec(entry.field);
+    if (!match) continue;
+    const component = match[1] as "mcpServer" | "hook";
+    const id = match[2]!;
+    // A component the update removes asks for nothing.
+    if (!staged || !Object.hasOwn(staged.fields, entry.field)) continue;
+    if (kind === "plugin") {
+      const digest = staged.fields[entry.field];
+      views.push({ kind: "extension", field: entry.field, consent: { kind: "extension", component, localId: id, approvalDigest: typeof digest === "string" ? digest : null } });
+    } else if (kind === "agent-plugin" && components) {
+      if (component === "mcpServer") {
+        const server = Object.hasOwn(components.mcpServers, id) ? components.mcpServers[id] : undefined;
+        if (server) views.push({ kind: "mcpServer", field: entry.field, consent: { name: id, digest: server.digest } });
+      } else {
+        const index = Number(id);
+        const hook = components.hooks[index];
+        if (hook) views.push({ kind: "hook", field: entry.field, consent: { kind: "hook", index, digest: hook.digest } });
+      }
+    }
+  }
+  return views;
+}
 
 function keyOf(kind: PackageKind, name: string): string {
   return `${kind}:${name}`;
@@ -384,6 +576,15 @@ export class MarketplaceService implements RetirementEntryLookup {
    * outlives it finds it closed and enters an operation of its own.
    */
   private readonly inOperation = new AsyncLocalStorage<{ open: boolean }>();
+  /**
+   * One install, uninstall or automatic update of a package at a time
+   * (§18.7.4), taken inside the operation and before any plugin lock. An
+   * automatic update reads what is installed under it, so a user install or
+   * uninstall of the same package is either done before it, and the update
+   * is `superseded`, or waits for it. A caller that holds a package lock and
+   * runs another install or uninstall of it passes its lease down (§18.6).
+   */
+  private readonly packageLocks = new KeyedMutex();
   /** The policy refresh now reading or applying; refreshes run one at a time, in order (§12). */
   private refreshRunning: Promise<void> | null = null;
   /**
@@ -429,6 +630,34 @@ export class MarketplaceService implements RetirementEntryLookup {
    * its body never starts; the call rejects with the signal's reason. A
    * refresh another caller still waits for runs all the same.
    */
+  /**
+   * Run `fn` as the only install, uninstall or update of `kind`/`name` (see
+   * {@link packageLocks}). The lock comes after the operation and before any
+   * plugin lock (§18.6): taking it while this context holds a plugin lock
+   * could wait for an install that holds it and waits for that plugin lock,
+   * so it throws instead. A caller that already holds it passes its `lease`
+   * and `fn` runs at once, under that lease; the lease adds no package.
+   * `signal` (the scheduler's shutdown) cancels the wait: aborted before the
+   * lock is free, `fn` never starts and the call rejects with its reason.
+   */
+  private async withPackage<T>(kind: PackageKind, name: string, fn: () => Promise<T>, options: { signal?: AbortSignal; lease?: PackageLease } = {}): Promise<T> {
+    const key = keyOf(kind, name);
+    if (options.lease) return this.packageLocks.within(options.lease, [key], fn);
+    return this.withPackages([key], () => fn(), options.signal);
+  }
+
+  /** Take every package lock in `keys` as one request (see {@link KeyedMutex}). */
+  private async withPackages<T>(keys: readonly string[], fn: (lease: PackageLease) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.packageLocks.run(keys, fn, {
+      ...(signal ? { signal } : {}),
+      beforeAcquire: (wanted) => {
+        if (holdsAnyPluginInstallLock()) {
+          throw new Error(`lock order: the package lock of ${wanted.join(", ")} was asked for while a plugin lock is held; the package lock comes first (§18.6)`);
+        }
+      },
+    });
+  }
+
   private async operation<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     if (this.inOperation.getStore()?.open) return fn();
     await this.refreshPolicy(signal);
@@ -452,8 +681,16 @@ export class MarketplaceService implements RetirementEntryLookup {
    * and then calling the service could wait for a policy change's exclusive
    * lock while an install holds the shared lock and waits for that plugin lock.
    */
-  async asOneOperation<T>(fn: () => Promise<T>): Promise<T> {
-    return this.operation(fn);
+  async asOneOperation<T>(fn: () => Promise<T>): Promise<T>;
+  /**
+   * With `packages`: also hold every one of their package locks, taken as one
+   * request, for the whole of `fn`. An install or uninstall `fn` runs of one
+   * of them passes the lease `fn` receives; there is no second request.
+   */
+  async asOneOperation<T>(fn: (lease: PackageLease) => Promise<T>, packages: ReadonlyArray<{ kind: PackageKind; name: string }>): Promise<T>;
+  async asOneOperation<T>(fn: (lease: PackageLease) => Promise<T>, packages?: ReadonlyArray<{ kind: PackageKind; name: string }>): Promise<T> {
+    if (packages === undefined) return this.operation(() => (fn as () => Promise<T>)());
+    return this.operation(() => this.withPackages(packages.map((item) => keyOf(item.kind, item.name)), fn));
   }
 
   /**
@@ -463,7 +700,7 @@ export class MarketplaceService implements RetirementEntryLookup {
    */
   private catalogChanged(): void {
     const notify = this.options.onCatalogChanged;
-    if (notify) this.inOperation.exit(notify);
+    if (notify) this.inOperation.exit(() => this.packageLocks.detached(notify));
   }
 
   /**
@@ -1486,7 +1723,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     let rungs: InstallPlanView["rungs"] = [];
     if (row.kind === "plugin") {
       const plan = planPluginVersion(row, version);
-      held = { kind: "plugin", plan, switchSource, policyDigest, folder: captured };
+      held = { kind: "plugin", plan, switchSource, policyDigest, folder: captured, installed: installIdentity(installed) };
       rungs = await this.pluginRungViews(source, version, row.package.path);
     } else if (row.kind === "mcp") {
       const plan = { ...base, kind: "mcp" as const };
@@ -1494,10 +1731,10 @@ export class MarketplaceService implements RetirementEntryLookup {
       const resolve = (access: RepositoryAccess) => resolveMcpPackage(plan, { ...access, limits: this.options.mcpLimits, workRoot: this.options.workRoot });
       const resolved = captured ? await resolve(captured.access) : await this.repositoryAccess(row.sourceId, resolve);
       this.options.installers.mcp.admit(row.name, resolved.runtime);
-      held = { kind: "mcp", resolved, switchSource, policyDigest, folder: captured };
+      held = { kind: "mcp", resolved, switchSource, policyDigest, folder: captured, installed: installIdentity(installed) };
       mcp = mcpRuntimeView(resolved.runtime);
     } else {
-      held = { kind: "content", plan: base as ContentPlan, switchSource, adopt, policyDigest, folder: captured };
+      held = { kind: "content", plan: base as ContentPlan, switchSource, adopt, policyDigest, folder: captured, installed: installIdentity(installed) };
     }
     // One live plan per package: planning again (another version, a source switch) drops the older one and its files.
     const ticket = this.plans.issue(held, `${row.sourceId}:${row.kind}:${row.name}`);
@@ -1540,27 +1777,70 @@ export class MarketplaceService implements RetirementEntryLookup {
         ? { pinned: state.pinnedCommit, candidate: state.pendingRewrite.candidate }
         : null;
     const plan = await this.planInstall(key);
+    const baseline = await this.baselineOf(key.kind, key.name);
+    if (!baseline) throw new MarketplaceError("PACKAGE_ID_CONFLICT", `${key.kind} ${key.name} is no longer installed`);
+    const { row } = await this.row(key);
+    const version = row.package.versions.find((item) => item.version === plan.version);
+    if (!version) throw new Error(`${key.sourceId} no longer lists ${key.kind} ${key.name} ${plan.version}`);
+    // Checkpoint one, then the staged bytes: the review never offers approval with a field still pending (§18.7.3).
+    const catalog = catalogDelta(baseline.consent, version);
+    const staged = await this.stageForReview(this.plans.peek(plan.planId), plan.planId);
+    let consentDelta = staged ? stagedDelta(baseline.consent, staged.consent, catalog) : catalog;
+    if (staged?.files && baseline.files) consentDelta = withChangedFiles(consentDelta, baseline.files, staged.files, staged.declaring);
     let delta: UpdatePlanView["authorityDelta"] = null;
     let componentsDelta: UpdatePlanView["componentsDelta"] = null;
     if (key.kind === "plugin" && plan.authority) {
-      const { row } = await this.row(key);
-      const listed = row.package.versions.find((item) => item.version === installed.version)?.authority;
-      const previous: PluginAuthority | null = listed ?? (await this.options.installers.plugin.installedAuthority(key.name));
+      // The baseline is what is installed, never the catalog's copy of that version (§18.7.3).
+      const previous: PluginAuthority | null = await this.options.installers.plugin.installedAuthority(key.name);
       delta = authorityDelta(previous ? authorityView(previous) : authorityView({ capabilities: [] }), plan.authority);
     }
-    if (key.kind === "agent-plugin" && plan.components) {
+    const components = staged?.components ?? plan.components;
+    if (key.kind === "agent-plugin" && components) {
       const previous = await this.options.installers.content.installedComponents(key.name);
-      componentsDelta = componentDelta(previous, plan.components);
+      componentsDelta = componentDelta(previous, components);
     }
     return {
       ...plan,
+      ...(components ? { components } : {}),
       from: installed.version,
       commitRange: { from: installed.originCommit, to: plan.snapshotCommit },
       authorityDelta: delta,
       componentsDelta,
       historyRewritten,
       needsConfirmation: widensAuthority(delta) || historyRewritten !== null,
+      consentDelta,
+      codeFreeChange: isCodeFreeChange(consentDelta),
+      reviewComponents: reviewComponentsOf(key.kind, consentDelta, staged?.consent ?? null, components),
     };
+  }
+
+  /**
+   * Stage a held update plan for its review (§18.7.3), so the review shows
+   * the complete fingerprint and execution installs exactly these bytes.
+   * Kinds whose fingerprint the catalog carries whole are not staged. Returns
+   * the staged fingerprint, files and (agent plugin) components.
+   */
+  private async stageForReview(held: HeldPlan, planId: string): Promise<StagedReview | null> {
+    if (held.kind === "plugin") {
+      const artifact = await this.stagePlugin(null, held, held.plan);
+      held.staged = artifact;
+      const files = this.options.installers.plugin.stagedFiles(artifact);
+      return { consent: pluginConsent(artifact.manifestDocument, files), files, components: null, declaring: new Set(extensionDeclarationPaths(artifact.manifestDocument)) };
+    }
+    if (held.kind === "content") {
+      if (CATALOG_COMPLETE_KINDS.has(held.plan.kind)) return null;
+      const staged = await this.stageContent(planId, held, false);
+      held.staged = staged;
+      const components = staged.content.kind === "agent-plugin" ? staged.content.components : null;
+      return {
+        consent: stagedConsent(staged),
+        files: staged.files.map((file) => ({ path: file.path, data: file.data })),
+        components,
+        declaring: new Set(components ? AGENT_PLUGIN_DECLARATION_PATHS : []),
+      };
+    }
+    if (held.kind === "mcp") return { consent: mcpConsent(held.resolved.runtime), files: null, components: null, declaring: new Set() };
+    return null;
   }
 
   private progress(planId: string, phase: InstallProgressView["phase"], rung: InstallProgressView["rung"] = null): void {
@@ -1568,94 +1848,129 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   async executeInstall(planId: string, componentConsents: readonly ComponentConsent[] = [], reviewedAuthority = false): Promise<InstallResultView> {
-    return this.operation(() => this.executeInstallNow(planId, componentConsents, reviewedAuthority));
+    // A reviewed or required install records this app version's review in its receipt (§10.3).
+    return this.operation(() => this.executeInstallNow(planId, componentConsents, { reviewedAppVersion: reviewedAuthority ? getAveAppVersion() : null }));
   }
 
-  private async executeInstallNow(planId: string, componentConsents: readonly ComponentConsent[], reviewedAuthority: boolean): Promise<InstallResultView> {
+  private async executeInstallNow(planId: string, componentConsents: readonly ComponentConsent[], review: InstallReview): Promise<InstallResultView> {
     const held = this.plans.take(planId);
+    const target = heldTarget(held);
     try {
-      return await this.executeHeld(planId, held, componentConsents, reviewedAuthority);
+      return await this.withPackage(target.kind, target.name, () => this.executeHeld(planId, held, componentConsents, review));
     } finally {
       // A folder plan's captured copy is used once (§18.4.2).
       if (held.folder) await rm(held.folder.dir, { recursive: true, force: true });
     }
   }
 
-  private async executeHeld(planId: string, held: HeldPlan, componentConsents: readonly ComponentConsent[], reviewedAuthority: boolean): Promise<InstallResultView> {
+  private async executeHeld(planId: string, held: HeldPlan, componentConsents: readonly ComponentConsent[], review: InstallReview): Promise<InstallResultView> {
     // Reviewed under another policy: what it allows may have changed, so the review reopens (§18.6).
     if (held.policyDigest !== this.options.policy.digest) {
       throw new MarketplaceError("PLAN_EXPIRED", `plan ${planId} was made under another marketplace policy`, { detail: { reason: "policy-changed" } });
     }
     // The gates must judge the new install by the source it is about to be bound to, not the one it leaves.
     const target = heldTarget(held);
+    // Made before this package's lock (a review, a boot pass's required switch): what it decided, and what a
+    // review showed, was judged against the install then. Another install or removal since leaves it stale (§18.6).
+    if (held.kind !== "mcp-unbound") {
+      if (!isDeepStrictEqual(installIdentity(await this.installed(target.kind, target.name)), held.installed)) {
+        throw new MarketplaceError("PLAN_EXPIRED", `${target.kind} ${target.name} changed since plan ${planId} was made`, { detail: { reason: "package-changed" } });
+      }
+      // Its offer, as its source makes it now: a version the source revoked since the plan is not installed (§10.4).
+      // The policy and what it requires are the plan's digest, checked above.
+      const { sourceId, version } = held.kind === "mcp" ? held.resolved.plan : held.plan;
+      const feed = await revocationFeed([{ kind: target.kind, name: target.name, sourceId }], (id) => this.options.syncer.readRevocations(id, this.options.versionContext().appVersion));
+      if (findRevocation(target.kind, target.name, version, feed.rules)) {
+        throw new MarketplaceError("PACKAGE_REVOKED", `${target.name} ${version} was revoked by ${this.viewSourceId(sourceId)} since plan ${planId} was made`);
+      }
+    }
     const key = keyOf(target.kind, target.name);
     this.pendingBindings.set(key, target);
     try {
       await this.feedRevocations();
-      if (componentConsents.length > 0 && (held.kind !== "content" || held.plan.kind !== "agent-plugin")) {
+      const extension = componentConsents.filter((consent): consent is ExtensionComponentConsent => "kind" in consent && consent.kind === "extension");
+      const agent = componentConsents.filter((consent) => !("kind" in consent) || consent.kind === "hook");
+      // An extension's bundled components by local id, an agent plugin's by name or index (§18.7.3).
+      if (extension.length > 0 && held.kind !== "plugin") throw new Error("extension component consent applies only to an extension install");
+      if (agent.length > 0 && (held.kind !== "content" || held.plan.kind !== "agent-plugin")) {
         throw new Error("component consent applies only to an agent plugin install");
       }
-      return await this.runInstall(planId, held, componentConsents, reviewedAuthority);
+      return await this.runInstall(planId, held, agent as Array<Exclude<ComponentConsent, ExtensionComponentConsent>>, extension, review);
     } finally {
       if (this.pendingBindings.get(key) === target) this.pendingBindings.delete(key);
       await this.refeedAfter(`${target.kind} ${target.name} install`);
     }
   }
 
-  private async runInstall(planId: string, held: HeldPlan, componentConsents: readonly ComponentConsent[], reviewedAuthority: boolean): Promise<InstallResultView> {
+  /**
+   * Stage an extension: the plan's captured folder copy (nothing is
+   * downloaded, §18.4.2) or the source's ladder. `planId` is set while an
+   * install runs, so its progress is reported.
+   */
+  private async stagePlugin(planId: string | null, held: HeldPlan & { kind: "plugin" }, plan: PluginInstallPlan): Promise<StagedPluginArtifact> {
+    if (held.folder) {
+      const folder = held.folder;
+      const artifact = await runFolderRung(plan, {
+        ...folder.access,
+        zip: this.options.ladder.zip,
+        limits: this.options.ladder.limits,
+        workRoot: this.options.workRoot,
+      }, folder.notInstalled);
+      if (planId) this.progress(planId, "installing", artifact.rung);
+      return artifact;
+    }
+    const staged = await this.options.syncer.withRepository(plan.sourceId, async ({ source, repo, remote }) => {
+      if (planId) this.progress(planId, "downloading");
+      return runPluginLadder(plan, {
+        ...gitAccess(repo, remote, source.origin === "direct"),
+        repo,
+        remote,
+        sourceUrl: source.url,
+        gate: this.options.gate,
+        catalog: await this.catalogSource(source),
+        sourceToken: this.tokenFor(source),
+        tokenMissing: source.auth.kind === "token" && this.tokenFor(source) === null,
+        zip: this.options.ladder.zip,
+        limits: this.options.ladder.limits,
+        workRoot: this.options.workRoot,
+        artifacts: this.options.ladder.artifacts,
+      });
+    });
+    if (planId) this.progress(planId, "installing", staged.rung);
+    return staged;
+  }
+
+  private async stageContent(planId: string, held: HeldPlan & { kind: "content" }, report: boolean): Promise<StagedContent> {
+    const { plan } = held;
+    if (report) this.progress(planId, "downloading");
+    const stage = (access: RepositoryAccess) => stageContentPackage(plan, access, { workRoot: this.options.workRoot, english: this.options.english });
+    return held.folder ? stage(held.folder.access) : this.repositoryAccess(plan.sourceId, stage);
+  }
+
+  private async runInstall(
+    planId: string,
+    held: HeldPlan,
+    componentConsents: ReadonlyArray<Exclude<ComponentConsent, ExtensionComponentConsent>>,
+    extensionConsents: readonly ExtensionComponentConsent[],
+    review: InstallReview,
+  ): Promise<InstallResultView> {
     this.progress(planId, "resolving");
     let result: InstallResultView;
-    if (held.kind === "plugin" && held.folder) {
+    if (held.kind === "plugin") {
       const { plan } = held;
-      const folder = held.folder;
+      const reviewed = held.staged;
       const outcome = await this.options.installers.plugin.install(plan, {
         switchSource: held.switchSource,
-        ...(reviewedAuthority ? { reviewedAppVersion: getAveAppVersion() } : {}),
-        // The folder rung installs the copy the plan captured; nothing is downloaded (§18.4.2).
-        stage: async (staged) => {
-          const artifact = await runFolderRung(staged, {
-            ...folder.access,
-            zip: this.options.ladder.zip,
-            limits: this.options.ladder.limits,
-            workRoot: this.options.workRoot,
-          }, folder.notInstalled);
-          this.progress(planId, "installing", artifact.rung);
-          return artifact;
-        },
-      });
-      result = {
-        key: { sourceId: plan.sourceId, kind: "plugin", name: plan.name },
-        version: plan.version,
-        action: installActionView(outcome.action),
-        rungs: rungOutcomeViews(outcome.staged.rungs),
-        connectionWarning: null,
-      };
-    } else if (held.kind === "plugin") {
-      const { plan } = held;
-      const outcome = await this.options.installers.plugin.install(plan, {
-        switchSource: held.switchSource,
-        ...(reviewedAuthority ? { reviewedAppVersion: getAveAppVersion() } : {}),
-        stage: (staged) =>
-          this.options.syncer.withRepository(plan.sourceId, async ({ source, repo, remote }) => {
-            this.progress(planId, "downloading");
-            return runPluginLadder(staged, {
-              ...gitAccess(repo, remote, source.origin === "direct"),
-              repo,
-              remote,
-              sourceUrl: source.url,
-              gate: this.options.gate,
-              catalog: await this.catalogSource(source),
-              sourceToken: this.tokenFor(source),
-              tokenMissing: source.auth.kind === "token" && this.tokenFor(source) === null,
-              zip: this.options.ladder.zip,
-              limits: this.options.ladder.limits,
-              workRoot: this.options.workRoot,
-              artifacts: this.options.ladder.artifacts,
-            });
-          }).then((staged) => {
-            this.progress(planId, "installing", staged.rung);
-            return staged;
-          }),
+        ...(review.reviewedAppVersion ? { reviewedAppVersion: review.reviewedAppVersion } : {}),
+        ...(review.assertConsent ? { assertConsent: review.assertConsent } : {}),
+        ...(extensionConsents.length > 0 ? { componentConsents: extensionConsents } : {}),
+        // A reviewed update installs the bytes its review staged; nothing is downloaded again (§18.7.3).
+        stage: reviewed
+          ? async () => {
+            this.progress(planId, "installing", reviewed.rung);
+            return reviewed;
+          }
+          : (staged) => this.stagePlugin(planId, held, staged),
       });
       result = {
         key: { sourceId: plan.sourceId, kind: "plugin", name: plan.name },
@@ -1666,14 +1981,19 @@ export class MarketplaceService implements RetirementEntryLookup {
       };
     } else if (held.kind === "content") {
       const { plan } = held;
-      this.progress(planId, "downloading");
-      const stage = (access: RepositoryAccess) => stageContentPackage(plan, access, { workRoot: this.options.workRoot, english: this.options.english });
-      const staged = held.folder ? await stage(held.folder.access) : await this.repositoryAccess(plan.sourceId, stage);
+      const staged = held.staged ?? await this.stageContent(planId, held, true);
       this.progress(planId, "installing");
-      const outcome = await this.options.installers.content.install(staged, { switchSource: held.switchSource, adopt: held.adopt, componentConsents });
+      const outcome = await this.options.installers.content.install(staged, {
+        switchSource: held.switchSource,
+        adopt: held.adopt,
+        componentConsents,
+        ...(review.assertConsent ? { assertConsent: review.assertConsent } : {}),
+      });
       result = { key: { sourceId: plan.sourceId, kind: plan.kind, name: plan.name }, version: plan.version, action: installActionView(outcome.action), rungs: [], connectionWarning: null };
     } else if (held.kind === "mcp") {
       const { plan } = held.resolved;
+      // An MCP server's version is in its command: an automatic update of one never reaches here (§18.7.3).
+      if (review.assertConsent) review.assertConsent(mcpConsent(held.resolved.runtime));
       this.progress(planId, "installing");
       const outcome = await this.options.installers.mcp.install(held.resolved, { switchSource: held.switchSource });
       result = { key: { sourceId: plan.sourceId, kind: "mcp", name: plan.name }, version: plan.version, action: installActionView(outcome.action), rungs: [], connectionWarning: outcome.connectionWarning };
@@ -1723,7 +2043,7 @@ export class MarketplaceService implements RetirementEntryLookup {
    * call {@link uninstallInstalled} instead.
    */
   async uninstall(request: UninstallRequest, options?: { retain: { reason: PluginConfigRetention["reason"] } }): Promise<UninstallResultView> {
-    return this.operation(() => this.uninstallNow(request, options));
+    return this.operation(() => this.withPackage(request.kind, request.name, () => this.uninstallNow(request, options)));
   }
 
   private async uninstallNow(request: UninstallRequest, options?: { retain: { reason: PluginConfigRetention["reason"] } }): Promise<UninstallResultView> {
@@ -1744,8 +2064,13 @@ export class MarketplaceService implements RetirementEntryLookup {
    * install record holds, as main-process state (the plugin registry, a
    * revocation feed) carries it — never a view's handle. Not an IPC entry.
    */
-  async uninstallInstalled(key: StoredInstallKey, options?: { retain: { reason: PluginConfigRetention["reason"] } }): Promise<UninstallResultView> {
-    return this.operation(() => this.uninstallStoredNow(key, false, options));
+  async uninstallInstalled(
+    key: StoredInstallKey,
+    options?: { retain?: { reason: PluginConfigRetention["reason"] }; lease?: PackageLease },
+  ): Promise<UninstallResultView> {
+    // `lease`: the package lock of a caller that already holds it (§18.6), which this uninstall then runs under.
+    const retain = options?.retain ? { retain: options.retain } : undefined;
+    return this.operation(() => this.withPackage(key.kind, key.name, () => this.uninstallStoredNow(key, false, retain), options?.lease ? { lease: options.lease } : {}));
   }
 
   /** The removal both entries share; `key` is a stored identity, checked against the install record. */
@@ -1818,29 +2143,428 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   // ─── boot and periodic work (§7.3, §10.2) ─────────────────────────────────
 
-  /** Installed packages whose bound source offers a newer version, hidden sources included (§7.3). */
+  /** Installed packages whose bound source offers a newer version, or a folder's changed tree (§18.7.6), hidden sources included (§7.3). */
   async updates(signal?: AbortSignal): Promise<PackageUpdateOffer[]> {
-    return this.operation(() => this.updatesNow(), signal);
+    return this.operation(async () => (await this.offersNow()).map((item) => item.offer), signal);
   }
 
-  private async updatesNow(): Promise<PackageUpdateOffer[]> {
+  /**
+   * Every update an installed package's bound source offers (§7.3), with the
+   * row and version it comes from. A folder package whose tree digest differs
+   * from the installed one at the same version is a refresh, and at a lower
+   * version a downgrade offered by hand only (§18.7.6).
+   */
+  private async offersNow(): Promise<Array<{ offer: PackageUpdateOffer; change: UpdateChange; row: CatalogRow; installed: InstalledRecord & { sourceId: string; version: string } }>> {
     const installed = await this.installedAll();
     const bound = new Set(installed.map((item) => item.sourceId).filter((sourceId): sourceId is string => sourceId !== null));
     const { rows } = await this.rows(bound);
     const existing = new Set(this.registry.list().map((source) => source.id));
-    const updates: PackageUpdateOffer[] = [];
+    const offers: Array<{ offer: PackageUpdateOffer; change: UpdateChange; row: CatalogRow; installed: InstalledRecord & { sourceId: string; version: string } }> = [];
     for (const item of installed) {
       if (item.sourceId === null || item.version === null) continue;
-      const state = updateFor({ ...item, version: item.version }, rows, existing);
-      if (state.state !== "update") continue;
-      updates.push({
-        key: { sourceId: item.sourceId, kind: item.kind, name: item.name },
-        displayName: state.row.package.displayName ?? item.name,
-        from: item.version,
-        to: state.version,
+      const record = { ...item, sourceId: item.sourceId, version: item.version };
+      const state = updateFor(record, rows, existing);
+      let found: { row: CatalogRow; version: string; change: UpdateChange } | null = null;
+      if (state.state === "update") found = { row: state.row, version: state.version, change: "upgrade" };
+      else if (state.state === "current") found = folderChange(record, rows);
+      if (!found) continue;
+      offers.push({
+        offer: {
+          key: { sourceId: item.sourceId, kind: item.kind, name: item.name },
+          displayName: found.row.package.displayName ?? item.name,
+          from: item.version,
+          to: found.version,
+        },
+        change: found.change,
+        row: found.row,
+        installed: record,
       });
     }
-    return updates;
+    return offers;
+  }
+
+  /** What an installed package was accepted with (§18.7.3); null when it is not installed. */
+  private async baselineOf(kind: PackageKind, name: string): Promise<InstalledBaseline | null> {
+    if (kind === "plugin") return this.options.installers.plugin.baseline(name);
+    if (kind === "mcp") {
+      const consent = await this.options.installers.mcp.baseline(name);
+      return consent ? { consent, reviewedAppVersion: null, enabled: true, files: null } : null;
+    }
+    const consent = await this.options.installers.content.baseline(kind, name, (origin) => this.installedDescriptor(kind, name, origin));
+    if (!consent) return null;
+    return { consent, reviewedAppVersion: null, enabled: true, files: await this.options.installers.content.installedFiles(kind, name) };
+  }
+
+  /**
+   * The descriptor fields an install from before slice F did not store: the
+   * index row of the installed version in the retained snapshot of the
+   * commit it was installed from (§18.7.3). Null when that snapshot is not
+   * kept, which makes the fields unknown.
+   */
+  private async installedDescriptor(kind: PackageKind, name: string, origin: { sourceId: string | null; commit: string | null; packagePath: string; version: string }): Promise<{ minAppVersion: string | null; hostProtocol: string | null } | null> {
+    if (origin.sourceId === null || origin.commit === null) return null;
+    const snapshot = await this.options.syncer.readRetainedSnapshot(origin.sourceId, origin.commit);
+    const listed = snapshot?.packages.find((item) => item.kind === kind && item.name === name && item.path === origin.packagePath);
+    const version = listed?.versions.find((item) => item.version === origin.version);
+    return version ? { minAppVersion: version.minAppVersion, hostProtocol: version.hostProtocol ?? null } : null;
+  }
+
+  /** The bundled MCP servers and hooks of an installed package's running generation, with their approvals (§18.7.2). */
+  private async componentApprovals(kind: PackageKind, name: string): Promise<ComponentApprovalState[]> {
+    if (kind === "plugin") return this.options.installers.plugin.componentApprovals(name);
+    if (kind === "agent-plugin") return this.options.installers.content.componentApprovals(name);
+    return [];
+  }
+
+  /**
+   * Every update the apply check classifies (§18.7.2), from the sources in
+   * `reached`: the offers, each marked required when a `requiredInstalls`
+   * entry names it from its source, and a required package installed from
+   * another source as a switch to the policy's source. A required package
+   * that is not installed is the boot pass's first install (§10.2).
+   */
+  async updateCandidates(reached: ReadonlySet<string>, signal?: AbortSignal): Promise<UpdateCandidate[]> {
+    return this.operation(() => this.updateCandidatesNow(reached), signal);
+  }
+
+  private async updateCandidatesNow(reached: ReadonlySet<string>, only?: PackageKeyView): Promise<UpdateCandidate[]> {
+    const offers = await this.offersNow();
+    const installed = await this.installedAll();
+    const { rows } = await this.rows(new Set(installed.map((item) => item.sourceId).filter((id): id is string => id !== null)));
+    const revoked = await this.revokedInstalls(installed);
+    const found: Array<{ offer: PackageUpdateOffer; change: UpdateChange; row: CatalogRow; record: InstalledRecord; required: boolean }> = offers.map((item) => ({
+      offer: item.offer,
+      change: item.change,
+      row: item.row,
+      record: item.installed,
+      required: requiresPackage(this.policy, item.offer.key),
+    }));
+    for (const key of this.policy.requiredInstalls) {
+      const record = installed.find((item) => item.kind === key.kind && item.name === key.name);
+      // Not installed: a first install, on the boot path. Installed from the policy's source: an offer above, if any.
+      if (!record || record.sourceId === key.source) continue;
+      const row = rows.find((item) => item.sourceId === key.source && item.kind === key.kind && item.name === key.name);
+      if (!row || row.choice.state !== "candidate" || (row.sourceOrigin !== "official" && row.sourceOrigin !== "managed")) continue;
+      found.push({
+        offer: { key: { sourceId: key.source, kind: key.kind, name: key.name }, displayName: row.package.displayName ?? key.name, from: record.version ?? "", to: row.choice.version.version },
+        change: "switch",
+        row,
+        record,
+        required: requiresPackage(this.policy, { sourceId: key.source, kind: key.kind, name: key.name }),
+      });
+    }
+    const candidates: UpdateCandidate[] = [];
+    for (const item of found) {
+      const { key } = item.offer;
+      if (!reached.has(key.sourceId)) continue;
+      if (only && (only.sourceId !== key.sourceId || only.kind !== key.kind || only.name !== key.name)) continue;
+      const source = this.source(key.sourceId);
+      const state = await this.registry.readState(source.id);
+      const version = item.row.package.versions.find((entry) => entry.version === item.offer.to);
+      if (!version) throw new Error(`${key.sourceId} offers ${key.kind} ${key.name} ${item.offer.to} without listing it`);
+      const baseline = await this.baselineOf(key.kind, key.name);
+      if (!baseline) continue;
+      const approvals = await this.componentApprovals(key.kind, key.name);
+      const http = source.transport === "git" && source.url.scheme === "http";
+      candidates.push({
+        ...item.offer,
+        commitRange: { from: item.record.originCommit, to: item.row.snapshotCommit },
+        switchSource: item.change === "switch",
+        provides: key.kind === "plugin" ? [...(version.authority?.capabilities ?? [])] : [],
+        needs: key.kind === "plugin" ? [...(version.authority?.requires?.capabilities ?? [])] : [],
+        facts: {
+          switchKey: packageUpdateSkipKey(key),
+          to: item.offer.to,
+          change: item.change,
+          enabled: baseline.enabled && !revoked.has(keyOf(key.kind, key.name)),
+          required: item.required,
+          policyBlocked: this.policyBlocks(source),
+          source: {
+            id: source.id,
+            origin: source.origin,
+            http,
+            acknowledgedUnencryptedUpdates: acknowledgedOf(source, state).includes("unencrypted-updates"),
+            shown: this.registry.isEnabled(source, state),
+            pendingRewrite: Boolean(state.pendingRewrite) && (source.origin === "custom" || source.origin === "direct"),
+          },
+          consent: catalogDelta(baseline.consent, version),
+          // Approved, but with no approval digest to carry (§18.7.3, version-2 migration).
+          unconfirmedApprovals: approvals.filter((component) => component.approved && component.recordDigest === null).map((component) => component.field),
+        },
+      });
+    }
+    return candidates;
+  }
+
+  /** The installed packages whose installed version their own source revokes (§10.4), by kind and name; read only. */
+  private async revokedInstalls(installed: readonly InstalledRecord[]): Promise<Set<string>> {
+    const feed = await revocationFeed(boundOf(installed), (sourceId) => this.options.syncer.readRevocations(sourceId, this.options.versionContext().appVersion));
+    return new Set(revokedAmong(installed, feed.rules).map(({ record }) => keyOf(record.kind, record.name)));
+  }
+
+  /** Whether the managed policy refuses installs from this source now: a direct source under `allowDirectInstall: false`, a folder it blocks (§18.6). */
+  private policyBlocks(source: ResolvedSource): boolean {
+    try {
+      if (source.origin === "direct") this.options.gate.checkDirectInstall(source.transport === "git" ? source.url.url : source.path);
+      if (source.transport === "folder") this.options.gate.checkFolderPolicy(source.path);
+      return false;
+    } catch (error) {
+      if (isMarketplaceError(error) && error.code === "SOURCE_POLICY_BLOCKED") return true;
+      throw error;
+    }
+  }
+
+  /**
+   * Apply one update of the queue (§18.7.4) under the operation and the
+   * package lock, so no user install, uninstall or other marketplace
+   * operation of it runs beside it, and with the policy the operation's
+   * refresh left in force. Nothing the update was queued with authorizes
+   * it: its facts are gathered again here, and `decide` judges them with the
+   * policy in force and the switches as they are now. An update whose
+   * package, offer, required status or eligibility changed since it was
+   * queued is `superseded` and nothing is done. An automatic update runs
+   * checkpoint two against the installed baseline and keeps the previous
+   * receipt's reviewed app version; one a `requiredInstalls` entry names now
+   * is reviewed by the policy (this app version) and does not check consent.
+   * What the install throws is classified (§18.7.4's table).
+   */
+  async applyUpdate(target: ApplyTarget, decide: ApplyDecision, signal?: AbortSignal): Promise<ApplyOutcome> {
+    return this.operation(() => this.withPackage(target.key.kind, target.key.name, () => this.applyUpdateNow(target, decide), signal ? { signal } : {}), signal);
+  }
+
+  private async applyUpdateNow(target: ApplyTarget, decide: ApplyDecision): Promise<ApplyOutcome> {
+    const { key } = target;
+    const installed = await this.installed(key.kind, key.name);
+    const bound = target.switchSource ? installed?.sourceId !== key.sourceId : installed?.sourceId === key.sourceId;
+    if (!installed || (installed.version ?? "") !== target.from || !bound) return { state: "superseded" };
+    const baseline = await this.baselineOf(key.kind, key.name);
+    if (!baseline) return { state: "superseded" };
+    // The update as the policy and the source make it now: still offered at this version, the same kind of change, still automatic.
+    const [current] = await this.updateCandidatesNow(new Set([key.sourceId]), key);
+    if (!current || current.to !== target.to || current.from !== target.from || current.switchSource !== target.switchSource) return { state: "superseded" };
+    if (!decide(current.facts, this.policy.autoUpdate)) return { state: "superseded" };
+    const required = current.facts.required;
+    const before = await this.componentApprovals(key.kind, key.name);
+    let view: InstallPlanView;
+    try {
+      view = await this.plan({ sourceId: key.sourceId, kind: key.kind, name: key.name, ...(target.switchSource ? { switchSource: true } : {}) }, false);
+    } catch (error) {
+      return { state: "failed", error };
+    }
+    const held = this.plans.take(view.planId);
+    try {
+      // A later discovery offers another version: the next apply check classifies it.
+      if (view.version !== target.to) return { state: "superseded" };
+      const review: InstallReview = required
+        ? { reviewedAppVersion: getAveAppVersion() }
+        : { reviewedAppVersion: baseline.reviewedAppVersion, assertConsent: requireConsentEqual(key.name, baseline.consent) };
+      try {
+        await this.executeHeld(view.planId, held, [], review);
+      } catch (error) {
+        const outcome = classifyApplyError(error);
+        if (outcome.state !== "applied") return outcome;
+      }
+    } finally {
+      if (held.folder) await rm(held.folder.dir, { recursive: true, force: true });
+    }
+    // A component that is unapproved now and was not unapproved with these bytes before: the update left it waiting (§18.7.2).
+    const after = await this.componentApprovals(key.kind, key.name);
+    const waiting = after.filter((component) => !component.approved
+      && !before.some((prior) => prior.field === component.field && !prior.approved && prior.approvalDigest === component.approvalDigest));
+    if (waiting.length > 0) return { state: "approval-pending" };
+    if (key.kind === "plugin" && !this.options.installers.plugin.running(key.name)) return { state: "applied-not-running" };
+    return { state: "applied" };
+  }
+
+  /**
+   * An applied update read again (§18.7.5): null when the package is no
+   * longer installed at `to` from its source; `approval-pending` while a
+   * component of the installed generation is unapproved (with the agent
+   * plugin's review payload); `applied-not-running` while an extension's
+   * generation does not run; otherwise `applied`.
+   */
+  async appliedState(key: PackageKeyView, to: string): Promise<AppliedState | null> {
+    return this.operation(async () => {
+      const installed = await this.installed(key.kind, key.name);
+      if (!installed || installed.sourceId !== key.sourceId || installed.version !== to) return null;
+      const unapproved = (await this.componentApprovals(key.kind, key.name)).filter((component) => !component.approved);
+      if (unapproved.length > 0) {
+        return { state: "approval-pending", pendingApproval: key.kind === "agent-plugin" ? await this.pendingApprovalOf(key.name, unapproved) : null };
+      }
+      if (key.kind === "plugin" && !this.options.installers.plugin.running(key.name)) return { state: "applied-not-running" };
+      return { state: "applied" };
+    });
+  }
+
+  /** An agent plugin's `pendingApproval` (§18.9): its install id, and its unapproved components as the review shows them. */
+  private async pendingApprovalOf(name: string, unapproved: readonly ComponentApprovalState[]): Promise<NonNullable<Extract<AppliedState, { state: "approval-pending" }>["pendingApproval"]> | null> {
+    const installId = await this.options.installers.content.installId("agent-plugin", name);
+    // A legacy install has no install id to bind an approval to; it is reviewed by its next update.
+    if (installId === null) return null;
+    const components = await this.options.installers.content.installedComponents(name);
+    const consents: ReviewedComponentConsent[] = [];
+    const consentDelta: ConsentDelta = [];
+    for (const component of unapproved) {
+      const match = /^(mcpServer|hook):(.+)$/u.exec(component.field);
+      if (!match) throw new Error(`unknown component field ${component.field}`);
+      const id = match[2]!;
+      if (match[1] === "mcpServer") {
+        const server = Object.hasOwn(components.mcpServers, id) ? components.mcpServers[id] : undefined;
+        if (!server) throw new Error(`agent plugin ${name} has no MCP server ${id}`);
+        consents.push({ name: id, digest: server.digest, approvalDigest: component.approvalDigest });
+      } else {
+        const index = Number(id);
+        const hook = components.hooks[index];
+        if (!hook) throw new Error(`agent plugin ${name} has no hook ${id}`);
+        consents.push({ kind: "hook", index, digest: hook.digest, approvalDigest: component.approvalDigest });
+      }
+      consentDelta.push({ field: component.field, checkpoint: "staged", before: null, after: component.approvalDigest });
+    }
+    return { installId, consentDelta, components: consents };
+  }
+
+  /** Whether a call of the agent plugin's running generation is in flight: the queue waits (§18.7.4). */
+  async callsInFlight(name: string): Promise<boolean> {
+    return this.options.installers.content.callsInFlight(name);
+  }
+
+  /**
+   * What the automatic-update switches resolve with (§18.7.2): the
+   * organization's `autoUpdate`, and each source with its label, origin,
+   * whether it is read over http, and whether it holds
+   * `unencrypted-updates`.
+   */
+  async autoUpdateContext(signal?: AbortSignal): Promise<AutoUpdateContext> {
+    return this.operation(async () => {
+      const sources: AutoUpdateContext["sources"] = [];
+      const quarantined = new Set<string>();
+      for (const source of this.registry.list()) {
+        // A quarantined source (§18.8) is served to no one, its packages and its id included.
+        if (this.registry.isQuarantined(source)) {
+          quarantined.add(source.id);
+          continue;
+        }
+        const read = await this.read(source);
+        if ("problem" in read) continue;
+        sources.push({
+          id: source.id,
+          label: sourceLabel(source, read.snapshot),
+          origin: source.origin,
+          http: source.transport === "git" && source.url.scheme === "http",
+          acknowledgedUnencryptedUpdates: acknowledgedOf(source, read.state).includes("unencrypted-updates"),
+        });
+      }
+      const all = await this.installedAll();
+      // Every bound package, whatever its source's health: required-ness does not depend on it.
+      const installed = all
+        .filter((item): item is InstalledRecord & { sourceId: string } => item.sourceId !== null && !quarantined.has(item.sourceId))
+        .map((item) => ({ sourceId: item.sourceId, kind: item.kind, name: item.name }));
+      return {
+        policy: this.policy.autoUpdate,
+        requiredInstalls: structuredClone([...this.policy.requiredInstalls]),
+        unmetRequired: await this.unmetRequiredNow(all),
+        sources,
+        installed,
+      };
+    }, signal);
+  }
+
+  /**
+   * How each source a `requiredInstalls` entry names stands now
+   * ({@link RequirementSourceState}): what its registry entry and its files
+   * say, whatever a view shows. The boot pass and the Updates card judge
+   * every requirement by this, so hiding a source never hides that a
+   * requirement on it is not met.
+   */
+  private async requiredSourceStates(): Promise<Map<string, RequirementSourceState>> {
+    const states = new Map<string, RequirementSourceState>();
+    for (const id of new Set(this.policy.requiredInstalls.map((key) => key.source))) {
+      const source = this.registry.get(id);
+      if (!source || this.registry.isQuarantined(source)) {
+        states.set(id, "missing");
+        continue;
+      }
+      const read = await this.read(source);
+      if ("problem" in read) states.set(id, "unreachable");
+      else if (!this.registry.isEnabled(source, read.state)) states.set(id, "hidden");
+      else states.set(id, read.snapshot ? "readable" : "unreachable");
+    }
+    return states;
+  }
+
+  /**
+   * Each `requiredInstalls` entry not met now (§10.2): not installed from the
+   * source it names, and that source cannot provide it. The judgement is the
+   * boot pass's, over the same inputs: {@link requirementGap} with
+   * {@link requiredSourceStates} and the rows of the sources the user sees.
+   * One the source can provide is not listed: the boot pass installs it, or
+   * the apply queue switches a same-named install to it.
+   *
+   * A same-named package installed from another source may stand in the
+   * way, so it is named as its receipt binds it, whatever became of that
+   * source: removed (its id), quarantined (the handle its Sources row
+   * carries, §18.8), or still there. Its package sheet can open only while
+   * that source's catalog lists it; otherwise the row uninstalls it directly.
+   */
+  private async unmetRequiredNow(installed: readonly InstalledRecord[]): Promise<UnmetRequirementView[]> {
+    if (this.policy.requiredInstalls.length === 0) return [];
+    const states = await this.requiredSourceStates();
+    const { rows } = await this.rows();
+    const others = installed.filter((item): item is InstalledRecord & { sourceId: string } => item.sourceId !== null
+      && this.policy.requiredInstalls.some((key) => key.kind === item.kind && key.name === item.name && key.source !== item.sourceId));
+    // The other sources' rows as a package sheet reads them: an installed package's hidden source included.
+    const listed = await this.rows(new Set(others.map((item) => item.sourceId)));
+    // A source's name as Sources shows it, whether it is shown or hidden; a removed one has only its id.
+    // A source's name as Sources shows it, shown or hidden; a removed or quarantined one goes by the id its view carries.
+    const label = async (sourceId: string) => {
+      const source = this.registry.get(sourceId);
+      if (!source || this.registry.isQuarantined(source)) return this.viewSourceId(sourceId);
+      const read = await this.read(source);
+      return sourceLabel(source, "problem" in read ? null : read.snapshot);
+    };
+    const unmet: UnmetRequirementView[] = [];
+    for (const key of this.policy.requiredInstalls) {
+      const current = installed.find((item) => item.kind === key.kind && item.name === key.name);
+      if (current?.sourceId === key.source) continue;
+      const state = states.get(key.source);
+      if (state === undefined) throw new Error(`no state was read for required source ${key.source}`);
+      const gap = requirementGap(key, state, rows);
+      if (!gap) continue;
+      unmet.push({
+        key: { sourceId: key.source, kind: key.kind, name: key.name },
+        sourceLabel: await label(key.source),
+        reason: gap.reason,
+        minAppVersion: gap.reason === "incompatible" ? gap.minAppVersion : null,
+        installedFrom: current?.sourceId ? await this.installedFromView(current.sourceId, key, listed.rows, label) : null,
+      });
+    }
+    return unmet;
+  }
+
+  /** A same-named install from another source, as {@link UnmetRequirementInstall} describes it. */
+  private async installedFromView(sourceId: string, key: PackageKey, rows: readonly CatalogRow[], label: (sourceId: string) => Promise<string>): Promise<UnmetRequirementInstall> {
+    // `rows` hold no quarantined source's (§18.8), so a sheet opens only for a served source that lists the package.
+    const sheet = rows.some((row) => row.sourceId === sourceId && row.kind === key.kind && row.name === key.name);
+    // The id the receipt's stored id is viewed as, derived from that id alone: uninstall takes it back whether
+    // the source is still there, quarantined or removed (§18.8).
+    return { sourceId: this.viewSourceId(sourceId), label: await label(sourceId), removal: sheet ? "sheet" : "confirm" };
+  }
+
+  /**
+   * Approve components of an `approval-pending` agent plugin (§18.7.5),
+   * bound to the reviewed install: the store re-validates `installId` and
+   * every approval digest under its install serialization, and fails
+   * `PLAN_EXPIRED` reason `package-changed` on any mismatch.
+   */
+  async approveComponents(key: PackageKeyView, installId: string, consents: readonly ReviewedComponentConsent[]): Promise<void> {
+    return this.operation(async () => {
+      const installed = await this.installed(key.kind, key.name);
+      if (key.kind !== "agent-plugin" || !installed || installed.sourceId !== key.sourceId) {
+        throw new MarketplaceError("PACKAGE_ID_CONFLICT", `${key.kind} ${key.name} is not an agent plugin installed from ${key.sourceId}`);
+      }
+      await this.options.installers.content.approveComponents(key.name, installId, consents);
+      this.catalogChanged();
+    });
   }
 
   /**
@@ -1889,6 +2613,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       defaults,
       rows,
       synced,
+      requiredSources: await this.requiredSourceStates(),
       installed: (kind, name) => this.installed(kind, name),
       install: async (row, options) => {
         const plan = await this.planInstall({ sourceId: row.sourceId, kind: row.kind, name: row.name, ...(options.switchSource ? { switchSource: true } : {}) });
@@ -1934,7 +2659,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   /** What enforcement did since the last notice, as a notice of its own; null when nothing. */
   takeRevocationNotice(): BootInstallNoticeView | null {
     const revoked = this.revokedUnreported.splice(0);
-    return revoked.length === 0 ? null : { forYou: [], required: [], unmanaged: [], lostGrants: [], revoked };
+    return revoked.length === 0 ? null : { forYou: [], required: [], unmanaged: [], lostGrants: [], revoked, autoUpdated: [] };
   }
 
   /**
@@ -1964,25 +2689,16 @@ export class MarketplaceService implements RetirementEntryLookup {
    * never returned: what it replaces is judged once it lands.
    */
   private async feedOnce(): Promise<RevokedInstall[]> {
-    const installed = await this.installedAll();
     const pending = [...this.pendingBindings.entries()];
     const inFlight = new Set(pending.map(([key]) => key));
-    const bound: BoundInstall[] = installed.flatMap((item) =>
-      item.sourceId !== null && !inFlight.has(keyOf(item.kind, item.name)) ? [{ kind: item.kind, name: item.name, sourceId: item.sourceId }] : [],
-    );
+    const settled = (await this.installedAll()).filter((item) => !inFlight.has(keyOf(item.kind, item.name)));
+    const bound = boundOf(settled);
     for (const [, binding] of pending) {
       if (binding.sourceId !== null) bound.push({ kind: binding.kind, name: binding.name, sourceId: binding.sourceId });
     }
     const feed = await revocationFeed(bound, (sourceId) => this.options.syncer.readRevocations(sourceId, this.options.versionContext().appVersion));
     await this.options.revocations.apply(feed);
-    const revoked: RevokedInstall[] = [];
-    for (const record of installed) {
-      if (record.sourceId === null || record.version === null || inFlight.has(keyOf(record.kind, record.name))) continue;
-      const sourceId = record.sourceId;
-      const revocation = findRevocation(record.kind, record.name, record.version, feed.rules.filter((rule) => rule.sourceId === sourceId));
-      if (revocation) revoked.push({ record: { ...record, sourceId }, revocation });
-    }
-    return revoked;
+    return revokedAmong(settled, feed.rules);
   }
 
   /**
@@ -1990,33 +2706,71 @@ export class MarketplaceService implements RetirementEntryLookup {
    * revocation, and a `disable` one for a kind outside {@link GATED_KINDS}.
    * A package a `requiredInstalls` entry locks ({@link lockedByPolicy}) stays
    * (gated where its kind has a gate) and is reported.
+   *
+   * The feed judged each install before its package lock: under the lock
+   * (§18.6) the decision holds only for the install it was made for
+   * ({@link InstallIdentity}). One installed otherwise meanwhile (an update,
+   * a reinstall) is judged again, by its own source's revocations as they
+   * are now, and is removed only if they revoke it too; otherwise it stays
+   * and the log says why.
    */
   private async applyRevocations(): Promise<RevokedPackageView[]> {
     const report: RevokedPackageView[] = [];
-    for (const { record, revocation } of await this.feedRevocations()) {
-      if (revocation.action === "disable" && GATED_KINDS.has(record.kind)) continue;
-      // The report is a view (the boot notice, its Uninstall button): it carries the view id (§18.8).
-      const item = { key: { sourceId: this.viewSourceId(record.sourceId), kind: record.kind, name: record.name }, version: record.version!, reason: revocation.reason };
-      try {
-        const retaining = record.kind === "plugin" && revocation.action === "uninstall" && revocation.successors !== undefined;
-        if (retaining) {
-          await this.options.installers.plugin.retire(record.name, {
-            reason: "revoked", sourceId: record.sourceId, successors: revocation.successors!,
-          });
+    for (const decided of await this.feedRevocations()) {
+      const { kind, name } = decided.record;
+      await this.withPackage(kind, name, async () => {
+        // Judged again from what is installed and what its source revokes now: the feed's decision is only why this turn came.
+        const now = await this.installed(kind, name);
+        const current = await this.revocationNow(now, decided.record);
+        if (typeof current === "string") {
+          this.options.log.warn(`revocation of ${this.viewSourceId(decided.record.sourceId)}/${kind}/${name}@${decided.record.version} skipped: ${current}`);
+          return;
         }
-        if (lockedByPolicy(this.policy, record.kind, record.name, record.sourceId)) {
-          report.push({ ...item, outcome: "required" });
-          continue;
-        }
-        // Stored identity: the record's source id as stored, never resolved as a view id (§18.8).
-        await this.uninstallStoredNow({ sourceId: record.sourceId, kind: record.kind, name: record.name }, false,
-          retaining ? { retain: { reason: "revoked" } } : undefined);
-        report.push({ ...item, outcome: "uninstalled" });
-      } catch (error) {
-        report.push({ ...item, outcome: "failed", message: errorMessage(error) });
-      }
+        const entry = await this.enforceRevocation(current);
+        if (entry) report.push(entry);
+      });
     }
     return report;
+  }
+
+  /**
+   * The revocation an install's own source carries for its version now
+   * (§10.4), read from the source's snapshot as it is under the package
+   * lock; or why there is none to enforce, against `decided`, the install a
+   * feed judged revoked before the lock.
+   */
+  private async revocationNow(record: InstalledRecord | null, decided: InstalledRecord): Promise<RevokedInstall | string> {
+    if (!record) return "it was removed before its turn";
+    const feed = await revocationFeed(boundOf([record]), (sourceId) => this.options.syncer.readRevocations(sourceId, this.options.versionContext().appVersion));
+    // An unreadable source contributes no rules (§10.4): nothing is enforced from it until it reads again, and that is not a withdrawal.
+    if (feed.unreadable.length > 0) return "its source's revocation rules could not be read; it is kept until they can be";
+    const [revoked] = revokedAmong([record], feed.rules);
+    if (revoked) return revoked;
+    return isDeepStrictEqual(installIdentity(record), installIdentity(decided))
+      ? "its source no longer revokes it"
+      : `it was replaced by ${record.version} ${record.sourceId === null ? "without a source" : `from ${this.viewSourceId(record.sourceId)}`}, which its own source's revocations do not cover`;
+  }
+
+  /** Enforce one revocation under its package's lock; null when a gate holds it (nothing to report). */
+  private async enforceRevocation({ record, revocation }: RevokedInstall): Promise<RevokedPackageView | null> {
+    if (revocation.action === "disable" && GATED_KINDS.has(record.kind)) return null;
+    // The report is a view (the boot notice, its Uninstall button): it carries the view id (§18.8).
+    const item = { key: { sourceId: this.viewSourceId(record.sourceId), kind: record.kind, name: record.name }, version: record.version!, reason: revocation.reason };
+    try {
+      const retaining = record.kind === "plugin" && revocation.action === "uninstall" && revocation.successors !== undefined;
+      if (retaining) {
+        await this.options.installers.plugin.retire(record.name, {
+          reason: "revoked", sourceId: record.sourceId, successors: revocation.successors!,
+        });
+      }
+      if (lockedByPolicy(this.policy, record.kind, record.name, record.sourceId)) return { ...item, outcome: "required" };
+      // Stored identity: the record's source id as stored, never resolved as a view id (§18.8).
+      await this.uninstallStoredNow({ sourceId: record.sourceId, kind: record.kind, name: record.name }, false,
+        retaining ? { retain: { reason: "revoked" } } : undefined);
+      return { ...item, outcome: "uninstalled" };
+    } catch (error) {
+      return { ...item, outcome: "failed", message: errorMessage(error) };
+    }
   }
 
   /** Drop every preview clone and plan (shutdown). */

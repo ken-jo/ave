@@ -4,11 +4,15 @@
  * that fails any call (a folder source never runs git, §18.3 #6), there is
  * no network, and the installers record what they were handed.
  */
+import AdmZip from "adm-zip";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import type { PayloadFile } from "../../../plugins/contribution-approval-digest.js";
+import type { ExtensionComponentConsent } from "../../../shared/git-marketplace.js";
+import { pluginConsent } from "../../updates/consent.js";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
 import { PluginArtifactStore } from "../../../plugins/plugin-artifact-store.js";
-import type { InstalledRecord, InstallerPorts } from "../../app/ports.js";
+import type { ComponentApprovalState, InstalledRecord, InstallerPorts } from "../../app/ports.js";
 import { MarketplaceService } from "../../app/service.js";
 import type { StagedContent } from "../../content/store.js";
 import type { ExportLimits } from "../../git/repo.js";
@@ -31,11 +35,39 @@ export interface FolderServiceHarness {
   fetches: string[];
   plugins: StagedPluginArtifact[];
   content: StagedContent[];
+  /**
+   * The extensions installed, by name: what an install left (its staged
+   * files, receipt fields and the review options it was given). Updates and
+   * their baselines are read from here.
+   */
+  installed: Map<string, InstalledFixturePlugin>;
+  /** Each installed extension's bundled components and their approvals, as the lifecycle would report them. */
+  approvals: Map<string, ComponentApprovalState[]>;
+  /** Called after an extension install lands, as a runtime publishing its generation would. */
+  onInstalled: { current: ((name: string) => void) | null };
+  /** Awaited inside a plugin uninstall before the plugin is removed. */
+  onUninstall: { current: (() => Promise<void>) | null };
   root: string;
   workRoot: string;
 }
 
 const NO_CACHE = { read: async () => null, keep: async () => {} };
+
+interface InstalledFixturePlugin {
+  version: string;
+  sourceId: string;
+  originCommit: string;
+  digest: string;
+  document: unknown;
+  files: PayloadFile[];
+  reviewedAppVersion: string | null;
+  componentConsents: readonly ExtensionComponentConsent[];
+}
+
+/** The files a staged zip installs. */
+function zipFiles(staged: StagedPluginArtifact): PayloadFile[] {
+  return new AdmZip(staged.zipBuffer).getEntries().filter((entry) => !entry.isDirectory).map((entry) => ({ path: entry.entryName, data: entry.getData() }));
+}
 
 export async function folderService(options: {
   root: string;
@@ -72,22 +104,59 @@ export async function folderService(options: {
   const syncer = new SourceSyncer({ registry, gate, runner: git, root: marketplaces, now, retainedCommits: async () => new Set(), folders: options.folders });
   const plugins: StagedPluginArtifact[] = [];
   const content: StagedContent[] = [];
+  const installed = new Map<string, InstalledFixturePlugin>();
+  const approvals = new Map<string, ComponentApprovalState[]>();
+  const onInstalled: FolderServiceHarness["onInstalled"] = { current: null };
+  const onUninstall: FolderServiceHarness["onUninstall"] = { current: null };
   const installers: InstallerPorts = {
     plugin: {
-      list: async () => [],
+      list: async () => [...installed.entries()].map(([name, item]) => ({ kind: "plugin" as const, name, version: item.version, sourceId: item.sourceId, originCommit: item.originCommit, digest: item.digest })),
       installedAuthority: async () => null,
-      install: async (plan, { stage }) => {
+      install: async (plan, { stage, assertConsent, reviewedAppVersion, componentConsents }) => {
         const staged = await stage(plan);
         plugins.push(staged);
-        return { action: { action: "install" }, staged };
+        const files = zipFiles(staged);
+        // Checkpoint two runs beside the manifest gate, before anything activates (§18.7.3).
+        assertConsent?.(pluginConsent(staged.manifestDocument, files));
+        const previous = installed.get(plan.name);
+        installed.set(plan.name, {
+          version: plan.version,
+          sourceId: plan.sourceId,
+          originCommit: plan.snapshotCommit,
+          digest: staged.artifactSha256,
+          document: staged.manifestDocument,
+          files,
+          reviewedAppVersion: reviewedAppVersion ?? null,
+          componentConsents: componentConsents ?? [],
+        });
+        onInstalled.current?.(plan.name);
+        return { action: previous ? { action: "replace", direction: "upgrade", from: previous.version } : { action: "install" }, staged };
       },
+      baseline: async (name) => {
+        const item = installed.get(name);
+        return item ? { consent: pluginConsent(item.document, item.files), reviewedAppVersion: item.reviewedAppVersion, enabled: true, files: item.files } : null;
+      },
+      stagedFiles: zipFiles,
+      componentApprovals: (name) => approvals.get(name) ?? [],
+      running: () => true,
       retire: async () => {},
-      uninstall: async () => {},
+      uninstall: async (name) => {
+        await onUninstall.current?.();
+        installed.delete(name);
+      },
     },
     content: {
       list: async () => [...(options.installed ?? [])],
       installedComponents: async () => {
         throw new Error("no installed components in folder tests");
+      },
+      baseline: async () => null,
+      installedFiles: async () => null,
+      installId: async () => null,
+      componentApprovals: async () => [],
+      callsInFlight: async () => false,
+      approveComponents: async () => {
+        throw new Error("no component approvals in folder tests");
       },
       install: async (staged) => {
         content.push(staged);
@@ -101,6 +170,7 @@ export async function folderService(options: {
     },
     mcp: {
       list: async () => [],
+      baseline: async () => null,
       admit: () => {},
       install: async () => ({ action: { action: "install" }, connectionWarning: null }),
       installUnbound: async () => ({ connectionWarning: null }),
@@ -145,5 +215,5 @@ export async function folderService(options: {
       },
     },
   });
-  return { service, registry, syncer, policy, gitCalls, fetches, plugins, content, root: options.root, workRoot };
+  return { service, registry, syncer, policy, gitCalls, fetches, plugins, content, installed, approvals, onInstalled, onUninstall, root: options.root, workRoot };
 }

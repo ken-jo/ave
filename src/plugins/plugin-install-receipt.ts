@@ -5,6 +5,7 @@ import { PLUGIN_RUNTIME_DIR_NAMES } from "./plugin-storage-layout.js";
 import { createLogger } from "../lib/logger.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { isSemver } from "../shared/semver-compare.js";
+import { parseConsentFingerprint, type ConsentFingerprint } from "../marketplace/updates/consent-record.js";
 
 const log = createLogger("plugin-install-receipt");
 
@@ -63,6 +64,8 @@ export interface GitInstallRecord {
   rungs: RungOutcome[];
   /** Hash of the authority reviewed when this artifact was installed. */
   authoritySha256?: string;
+  /** The consent fingerprint accepted with this install (§18.7.3); absent on a receipt from before slice F. */
+  consent?: ConsentFingerprint;
 }
 
 /**
@@ -84,6 +87,8 @@ export interface FolderInstallRecord {
   treeSha256: string;
   /** Hash of the authority reviewed when this artifact was installed. */
   authoritySha256: string;
+  /** The consent fingerprint accepted with this install (§18.7.3); absent on a receipt from before slice F. */
+  consent?: ConsentFingerprint;
 }
 
 /**
@@ -306,9 +311,11 @@ const FOLDER_SOURCE_ORIGINS = new Set(["managed", "custom", "direct"]);
 /** Why a folder install record is malformed, or null when it is well formed. */
 function folderInstallRecordProblem(value: unknown): string | null {
   if (!isPlainRecord(value)) return "folder record is not an object";
-  if (!hasOnlyKeys(value, ["sourceId", "sourceOrigin", "revision", "packagePath", "treeSha256", "authoritySha256"])) {
+  if (!hasOnlyKeys(value, ["sourceId", "sourceOrigin", "revision", "packagePath", "treeSha256", "authoritySha256", "consent"])) {
     return "folder record has unknown fields";
   }
+  const consent = consentProblem(value.consent, "folder");
+  if (consent) return consent;
   if (typeof value.sourceId !== "string" || value.sourceId.length === 0) return "folder record sourceId is invalid";
   if (typeof value.sourceOrigin !== "string" || !FOLDER_SOURCE_ORIGINS.has(value.sourceOrigin)) return "folder record sourceOrigin is invalid";
   // A folder's pin is its revision; a 40-hex commit here is not one (§18.4.3).
@@ -319,6 +326,17 @@ function folderInstallRecordProblem(value: unknown): string | null {
   return null;
 }
 const RUNG_SKIP_REASONS = new Set(["NOT_DECLARED", "ARTIFACT_NOT_PINNED"]);
+
+/** Why a record's optional consent baseline is malformed: it must be an extension's fingerprint (§18.7.3). */
+function consentProblem(value: unknown, record: "git" | "folder"): string | null {
+  if (value === undefined) return null;
+  try {
+    if (parseConsentFingerprint(value, `${record} record consent`).kind !== "plugin") return `${record} record consent is not an extension's`;
+  } catch (error) {
+    return error instanceof Error ? error.message : `${record} record consent is invalid`;
+  }
+  return null;
+}
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -331,9 +349,11 @@ function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): b
 /** Why a git install record is malformed, or null when it is well formed. */
 export function gitInstallRecordProblem(value: unknown): string | null {
   if (!isPlainRecord(value)) return "git record is not an object";
-  if (!hasOnlyKeys(value, ["sourceId", "sourceOrigin", "snapshotCommit", "versionCommit", "packagePath", "rung", "rungs", "authoritySha256"])) {
+  if (!hasOnlyKeys(value, ["sourceId", "sourceOrigin", "snapshotCommit", "versionCommit", "packagePath", "rung", "rungs", "authoritySha256", "consent"])) {
     return "git record has unknown fields";
   }
+  const consent = consentProblem(value.consent, "git");
+  if (consent) return consent;
   if (typeof value.sourceId !== "string" || value.sourceId.length === 0) return "git record sourceId is invalid";
   if (typeof value.sourceOrigin !== "string" || !SOURCE_ORIGINS.has(value.sourceOrigin)) return "git record sourceOrigin is invalid";
   if (typeof value.snapshotCommit !== "string" || !COMMIT_HEX.test(value.snapshotCommit)) return "git record snapshotCommit is invalid";

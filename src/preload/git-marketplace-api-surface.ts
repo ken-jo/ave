@@ -68,6 +68,8 @@ export function buildGitMarketplaceApiSurface(): GitMarketplaceApi {
     onBootInstallsApplied: (listener) => subscribe(channels.bootInstallsApplied, () => true, () => listener()),
     updateStatus: () => call(channels.updatesStatus),
     checkUpdates: () => call(channels.updatesCheck),
+    applyUpdatesNow: () => call(channels.updatesApplyNow),
+    approveComponents: (key, installId, consents) => call(channels.componentsApprove, key, installId, consents),
     onUpdateStatus: (listener) => subscribe(channels.updateStatusChanged, parseUpdateStatus, listener),
   } satisfies GitMarketplaceApi);
 }

@@ -41,6 +41,8 @@ import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
 import { loadInstalledContent, registerMarketplaceContentHandlers } from "../domains/marketplace-content.js";
 
 const TOKEN = "t0123456789abcdef0123456789abcdef";
+/** No installed package here has an MCP server: the runtime only registers its lease source. */
+const LEASE_ONLY_MCP = { registerGenerationLeaseSource: () => undefined };
 const content = { themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] };
 const port = {
   installed: () => content,
@@ -50,7 +52,14 @@ const port = {
   },
   servedFile: () => null,
 };
-const runtime = (service: typeof port) => ({ store: {} as ContentStore, service, reload: async () => {}, removeAgentPluginData: async () => {} });
+const runtime = (service: typeof port) => ({
+  store: {} as ContentStore,
+  service,
+  reload: async () => {},
+  removeAgentPluginData: async () => {},
+  componentApprovals: async () => ({ mcpServers: [], hooks: [] }),
+  callsInFlight: () => false,
+});
 const installedDeps = (templates: unknown[] = []) => ({
   pluginBundleLifecycle: { listRoutineTemplates: () => templates },
 } as unknown as IpcDeps);
@@ -135,8 +144,8 @@ describe("loadInstalledContent", () => {
   async function install(kind: "language" | "skill" | "agent-plugin", name: string, files: Record<string, unknown>, content: ParsedContent, into?: ContentStore) {
     const list = Object.entries(files).map(([path, value]) => ({ path, data: Buffer.from(typeof value === "string" ? value : JSON.stringify(value)) }));
     const plan = { sourceId: "acme", sourceOrigin: "custom", snapshotCommit: "a".repeat(40), versionCommit: "a".repeat(40), packagePath: `${kind}s/${name}`, kind, name, version: "1.0.0", minAppVersion: "0.12.0" } as PackagePlan;
-    const staged = { plan, files: list, contentSha256: treeDigest(list.map((file) => ({ ...file, executable: false }))), content } as StagedContent;
-    const store = into ?? (await ContentStore.open({ root, english: {}, activation: { activate: async () => {}, deactivate: async () => {} } }));
+    const staged = { plan, files: list, contentSha256: treeDigest(list.map((file) => ({ ...file, executable: false }))), content, minAppVersion: "0.12.0", hostProtocol: null } as StagedContent;
+    const store = into ?? (await ContentStore.open({ root, english: {}, activation: { activate: async () => ({ retired: Promise.resolve() }), deactivate: async () => {}, approveComponents: async () => {} } }));
     await store.install(staged);
   }
 
@@ -148,7 +157,7 @@ describe("loadInstalledContent", () => {
     await install("language", "french", { "language.json": language, "messages.json": messages }, { kind: "language", ...language, messages, missingKeys: [] });
     const settingsService = { get: () => ({ language: "fr" }) };
 
-    const { service } = await loadInstalledContent({ settingsService, getAppWindows: () => [] } as unknown as IpcDeps, TOKEN, root);
+    const { service } = await loadInstalledContent({ settingsService, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps, TOKEN, root);
     expect(service.installed().languages.map((item) => item.locale)).toEqual(["fr"]);
     expect(isInstalledLocale("fr")).toBe(true);
     expect(await loadLocaleMessages("fr")).toMatchObject(messages);
@@ -157,7 +166,7 @@ describe("loadInstalledContent", () => {
   });
 
   it("lists nothing and applies nothing for an empty store", async () => {
-    const { service } = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) }, getAppWindows: () => [] } as unknown as IpcDeps, TOKEN, root);
+    const { service } = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) }, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps, TOKEN, root);
     expect(service.installed()).toEqual({ themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] });
     expect(isInstalledLocale("fr")).toBe(false);
   });
@@ -165,7 +174,7 @@ describe("loadInstalledContent", () => {
   it("hands installed skills and agents to their stores, and reload applies an install made after load", async () => {
     const skillStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn(), userSkillFile: async () => null };
     const agentProfileStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn() };
-    const deps = { settingsService: { get: () => ({ language: "en" }) }, skillStore, agentProfileStore, getAppWindows: () => [] } as unknown as IpcDeps;
+    const deps = { settingsService: { get: () => ({ language: "en" }) }, skillStore, agentProfileStore, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps;
     const loaded = await loadInstalledContent(deps, TOKEN, root);
     expect(skillStore.setInstalledPackages).toHaveBeenLastCalledWith([]);
     expect(agentProfileStore.setInstalledPackages).toHaveBeenLastCalledWith([]);
@@ -182,7 +191,7 @@ describe("loadInstalledContent", () => {
     const skillStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn() };
     const agentProfileStore = { setInstalledPackages: vi.fn(), setInstalledAgentPlugins: vi.fn() };
     const personaPromptStore = { setInstalledAgentPlugins: vi.fn() };
-    const deps = { settingsService: { get: () => ({ language: "en" }) }, skillStore, agentProfileStore, personaPromptStore, getAppWindows: () => [] } as unknown as IpcDeps;
+    const deps = { settingsService: { get: () => ({ language: "en" }) }, skillStore, agentProfileStore, personaPromptStore, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps;
     const loaded = await loadInstalledContent(deps, TOKEN, root);
     const files = {
       "plugin.json": JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer-plugin", version: "1.0.0", description: "Writing tools" }),

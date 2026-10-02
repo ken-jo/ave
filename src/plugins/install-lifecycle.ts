@@ -399,6 +399,18 @@ export function isPluginInstallLockHeld(pluginId: string): boolean {
   return held?.get(ALL_PLUGIN_LOCK_KEY)?.active === true || held?.get(pluginId)?.active === true;
 }
 
+/**
+ * True while the calling async context holds any plugin lifecycle lock. The
+ * marketplace refuses to take a package lock then (lock order: marketplace
+ * operation, then package, then plugin; design §18.6).
+ */
+export function holdsAnyPluginInstallLock(): boolean {
+  const held = heldPluginInstallLocks.getStore();
+  if (!held) return false;
+  for (const lock of held.values()) if (lock.active) return true;
+  return false;
+}
+
 /** True while an all-plugin lifecycle mutation is queued or active. */
 export function hasExclusivePluginLifecycleMutation(): boolean {
   return queuedExclusiveLifecycleMutations > 0;

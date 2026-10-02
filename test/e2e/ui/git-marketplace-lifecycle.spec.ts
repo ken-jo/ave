@@ -436,10 +436,15 @@ test.describe('git marketplace lifecycle', () => {
         const updateSettings = await openInlineSettings(app, mainWindow, 'marketplace');
         await updateSettings.getByTestId(`git-marketplace:card:${key.sourceId}:${key.kind}:${key.name}`).getByTestId('git-marketplace:card:state').click();
         const sheet = mainWindow.getByTestId('git-marketplace:sheet');
-        await sheet.getByTestId('git-marketplace:mcp-consent:notes').getByRole('checkbox').click();
-        const hookConsent = sheet.getByTestId('git-marketplace:hook-consent:0').getByRole('checkbox');
-        await expect(hookConsent).not.toBeChecked();
-        await hookConsent.click();
+        // The package's files changed, its server declaration among them (code), so each
+        // component's approval is asked again with the full review (§18.7.3), not the one-row form.
+        await expect(sheet.getByTestId('git-marketplace:code-free')).toHaveCount(0);
+        await expect(sheet.getByTestId('git-marketplace:consent-row:mcpServer:notes')).toContainText('mcp.json');
+        for (const field of ['mcpServer:notes', 'hook:0']) {
+          const consent = sheet.getByTestId(`git-marketplace:consent-approve:${field}`);
+          await expect(consent).not.toBeChecked();
+          await consent.click();
+        }
         await test.info().attach('agent-plugin-update-review', { body: await sheet.screenshot(), contentType: 'image/png' });
         await sheet.getByTestId('git-marketplace:confirm').click();
         await expect(sheet.getByTestId('git-marketplace:done')).toBeVisible({ timeout: 60_000 });

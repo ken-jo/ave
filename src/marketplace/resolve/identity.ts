@@ -20,7 +20,7 @@ import type { PackagePlan } from "./descriptor.js";
  * §8.2) differ only in build metadata, which semver ignores: the pin only
  * moves to descendant commits, so a different one is newer.
  */
-function compareVersions(a: string, b: string): number {
+export function compareVersions(a: string, b: string): number {
   if (isSynthesizedVersion(a) && isSynthesizedVersion(b)) return a === b ? 0 : 1;
   return compareSemver(a, b);
 }

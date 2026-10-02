@@ -656,6 +656,22 @@ export class PluginArtifactStore {
     return entries;
   }
 
+  /**
+   * The regular files a verified zip installs, by the paths extraction gives
+   * them, under the same preflight: what an update review fingerprints
+   * before anything is extracted (design §18.7.3).
+   */
+  readZipPayloadFiles(slug: string, zipBuffer: Buffer): Array<{ path: string; data: Buffer }> {
+    const safeSlug = assertSafeArtifactSlug(slug);
+    const files: Array<{ path: string; data: Buffer }> = [];
+    for (const entry of this.parseAndPreflightZip(safeSlug, zipBuffer)) {
+      const path = sanitizeZipEntryPath(safeSlug, entry.entryName);
+      if (!path || entry.isDirectory) continue;
+      files.push({ path, data: entry.getData() });
+    }
+    return files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+  }
+
   /** The receipt of a local development install: it has no artifact, signer or admission. */
   async prepareInstallReceipt(
     slug: string,

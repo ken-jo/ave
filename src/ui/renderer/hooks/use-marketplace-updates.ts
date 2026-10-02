@@ -10,7 +10,11 @@ import {
   type SkippedPluginUpdateMap,
 } from "../../../shared/skipped-plugin-updates.js";
 
-/** The installed packages with updates, as main last published them, minus the ones the user skipped. */
+/**
+ * The installed packages with updates, as main last published them, minus the
+ * ones the user skipped. A required update ignores a skipped version
+ * (§18.7.2): it stays, and skipping records no version for it.
+ */
 export function useMarketplaceUpdates(api: AveApi) {
   const [updates, setUpdates] = useState<PackageUpdateView[]>([]);
   const updatesRef = useRef<PackageUpdateView[]>([]);
@@ -60,6 +64,7 @@ export function useMarketplaceUpdates(api: AveApi) {
         // must stay untouched for the no-change comparison below.
         const nextSkipped = readSkippedPluginUpdates(existingSkipped);
         for (const update of visibleUpdates) {
+          if (update.required === true) continue;
           putSkippedPluginUpdate(nextSkipped, packageUpdateSkipKey(update.key), update.to);
         }
         if (sameSkippedPluginUpdates(existingSkipped, nextSkipped)) {
@@ -90,7 +95,7 @@ function filterSkippedUpdates(
   updates: PackageUpdateView[],
   skipped: SkippedPluginUpdateMap,
 ): PackageUpdateView[] {
-  return updates.filter((update) => !isSkippedPackageUpdate(update, skipped));
+  return updates.filter((update) => update.required === true || !isSkippedPackageUpdate(update, skipped));
 }
 
 function sameSkippedPluginUpdates(

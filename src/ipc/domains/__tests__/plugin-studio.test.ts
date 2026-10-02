@@ -30,9 +30,9 @@ beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "ave-studio-ipc-"));
   process.env.AVE_HOME = join(root, "home");
   reload = vi.fn(async () => undefined);
-  activate = vi.fn(async () => undefined);
+  activate = vi.fn(async () => ({ retired: Promise.resolve() }));
   content = await ContentStore.open({ root: join(root, "packages"), english: {}, activation: {
-    activate, deactivate: vi.fn(async () => undefined),
+    activate, deactivate: vi.fn(async () => undefined), approveComponents: vi.fn(async () => undefined),
   } });
   registerPluginStudioHandlers({ auditLogger: { log: vi.fn() }, mcpManager: {
     getStudioStoredCredentialValues: async () => [],
