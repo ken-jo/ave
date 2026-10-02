@@ -113,13 +113,17 @@ describe("scrubDiagnosticSecrets — real credential formats, not prefixes (desi
     ["Stripe restricted", fixtureSecret("rk", "_test_", mixed(24))],
   ];
 
-  it.each(TOKENS)("masks a %s token in a host, a path, an id, a URL and an ssh account, whatever touches it", (_kind, token) => {
+  it.each(TOKENS)("masks a %s token in a host, a path, an id, a URL and an ssh account, behind any boundary", (_kind, token) => {
     for (const text of [
       token,
-      // The prefix starts a format whatever precedes it, and the body counts whatever follows it.
+      // The prefix starts a format after any non-alphanumeric character, and the body counts whatever follows it.
       `backup_${token}`,
-      `backup${token}`,
       `backup-${token}`,
+      `x-${token}`,
+      `key:${token}`,
+      `id=${token}`,
+      `"${token}"`,
+      `'${token}'`,
       `backup.${token}`,
       `${token}_backup`,
       `${token}-backup`,
@@ -145,7 +149,7 @@ describe("scrubDiagnosticSecrets — real credential formats, not prefixes (desi
 
   it("masks a JSON Web Token in a path and a URL, after `_` too, and a private key block", () => {
     const jwt = fixtureSecret("eyJ", "hbGciOiJIUzI1NiJ9", ".", "eyJzdWIiOiIxMjM0In0", ".", mixed(43));
-    for (const text of [`/srv/${jwt}/x`, `https://example.com/cb?state=${jwt}`, `/srv/backup_${jwt}`, `backup${jwt}`]) {
+    for (const text of [`/srv/${jwt}/x`, `https://example.com/cb?state=${jwt}`, `/srv/backup_${jwt}`, `x-${jwt}`]) {
       expect(scrubDiagnosticSecrets(text), text).not.toContain(jwt);
     }
     const pem = fixtureSecret("-----BEGIN ", "PRIVATE KEY-----\n", mixed(64), "\n-----END ", "PRIVATE KEY-----");
@@ -204,8 +208,14 @@ describe("scrubDiagnosticSecrets — real credential formats, not prefixes (desi
     "/opt/sk-learn-utils/v2",
     "ssh://git@github.com/acme/market",
     "https://github.com/acme/live-captions",
-    // Names that hold a prefix's letters without its format.
+    // Names that hold a prefix's letters without its format, or glue it to a letter or digit.
     "laughs_compilation-of-the-best-moments-2026.mp4",
+    "task-proj-build-the-user-interface-for-the-marketplace",
+    "task-prepare-marketplace-folder-source-diagnostics",
+    "task-sk-learn-utils",
+    "npm_scripts",
+    "akiak-production",
+    "AKIA-example-not-a-token",
     "/media/backup_test-marketplace2026/notes",
     "path=/srv/market",
     "patterns=src/**/*.ts",
@@ -465,6 +475,13 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
     expect(scrubDiagnosticSecrets("helper --authorization Bearer abc def")).toBe("helper --authorization [REDACTED:TOKEN]");
     expect(scrubDiagnosticSecrets("x: token=Basic abc def")).toBe("x: token=[REDACTED:TOKEN] def");
     expect(scrubDiagnosticSecrets('x: authorization: "Basic abc" kept')).toBe("x: authorization: [REDACTED:TOKEN] kept");
+    // Any scheme, known or not: the header's whole value goes, never the scheme alone.
+    expect(scrubDiagnosticSecrets("Authorization: Custom opaque-pass-12345")).toBe("Authorization: [REDACTED:TOKEN]");
+    expect(scrubDiagnosticSecrets("Proxy-Authorization: Weird a=1, b=2\nnext")).toBe("Proxy-Authorization: [REDACTED:TOKEN]\nnext");
+    expect(scrubDiagnosticSecrets("proxy returned Authorization: Custom opaque-pass-12345")).toBe("proxy returned Authorization: [REDACTED:TOKEN]");
+    // A header quoted inside a longer text ends at that quote.
+    expect(scrubDiagnosticSecrets('x {"msg":"Authorization: Custom opaque-pass-12345","status":200}')).toBe('x {"msg":"Authorization: [REDACTED:TOKEN]","status":200}');
+    expect(scrubDiagnosticSecrets("error: 'Authorization: Custom opaque-pass-12345' failed")).toBe("error: 'Authorization: [REDACTED:TOKEN]' failed");
     // Accepted: a key holding `authorization` takes its value even when it is not a secret.
     expect(scrubDiagnosticSecrets("x: authorization_url=https://idp.example/x kept")).toBe("x: authorization_url=[REDACTED:TOKEN] kept");
   });

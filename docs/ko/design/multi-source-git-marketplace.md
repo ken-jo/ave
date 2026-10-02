@@ -2083,7 +2083,7 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
 거부합니다(`holdsCredential(text)`: 스크러버가 `text`를 바꾸는가). 이 절이 그 계약이며,
 `src/audit/__tests__/dlp-redact.test.ts`의 테스트가 코드를 이 계약에 묶습니다.
 
-**어디서든 찾는 형식.** 각 행은 접두사가 시작하는 곳이면 어디서든 찾고, 통째로 가립니다.
+**접두사로 찾는 형식.** 각 행은 왼쪽 경계에서 접두사가 시작하는 곳에서 찾고, 통째로 가립니다.
 
 | 발급자 | 접두사 | 접두사 뒤 본문 |
 | --- | --- | --- |
@@ -2106,9 +2106,11 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
 
 경계 규칙은 모든 행에 같습니다.
 
-- **왼쪽: 없음.** 접두사 앞에 무엇이 있든(글자, 숫자, `_`, `-`, `.`, `/`, 또는 아무것도
-  없음) 형식이 시작합니다. `backup_<토큰>`, `backup<토큰>`, `market-<토큰>`,
-  `//server/share/<토큰>`을 모두 찾습니다.
+- **왼쪽: 경계.** 접두사는 텍스트의 맨 앞이나, ASCII 글자·숫자가 아닌 문자(`_`, `-`, `.`,
+  `/`, `:`, `=`, 공백, 따옴표) 뒤에서 형식을 시작합니다. `backup_<토큰>`, `x-<토큰>`,
+  `market-<토큰>`, `id=<토큰>`, `//server/share/<토큰>`을 찾습니다. 글자나 숫자에 붙은
+  접두사는 찾지 않습니다. `task-proj-build-the-user-interface…`는 `ta`와 `sk-proj-` 키가
+  아니라 단어 `task`입니다.
 - **오른쪽: 없음.** 본문은 그 행의 문자 집합으로 끝까지 읽고, 그 행의 길이에 닿으면 뒤에
   무엇이 오든 셉니다. `<토큰>_old`, `<토큰>.example.com`, 본문이 `-`로 끝나는 Google 키를
   찾고, 이어진 부분 전체를 가립니다.
@@ -2120,7 +2122,9 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
 
 - URL userinfo: `http(s)` 주소의 `@` 앞 전부, 그 밖의 주소나 scp 형태에서는
   `user:password`(또는 ssh 계정 이름이 아닌 userinfo)
-- 모든 방식의 `Authorization` 값, `Bearer` 값, `x-api-key`·`x-auth-token` 값
+- 알려진 것이든 아니든(`Custom <비밀>`) 모든 방식의 `Authorization`·`Proxy-Authorization`
+  헤더 값: 헤더 이름 뒤부터 그 줄 끝까지, 헤더가 더 긴 텍스트 안에 따옴표로 묶여 있으면 그
+  따옴표까지. 그리고 `Bearer` 값, `x-api-key`·`x-auth-token` 값
 - 키에 `token`, `secret`, `password`, `passwd`, `pwd`, `apikey`, `accesskey`, `privatekey`,
   `credential`, `bearer`, `authorization`이 들었거나 `auth`·`pat`이 온전한 조각인
   자격 증명 할당(`key=value`, `key: value`, JSON `"key": "value"`, `--key value`)의 값
@@ -2133,8 +2137,14 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
 **자격 증명이 아닌 것.** 단어만으로는 형식이 아닙니다. `test-`, `live-`, `proj-`, `npm-`,
 `pk-`, `rk-`, 그리고 본문이 그 행보다 짧은 접두사(`glpat-rotation-docs`, `sk-proj-tools`,
 `test-marketplace2026`, `laughs_compilation-of-the-best-moments.mp4`)는 그대로 둡니다.
-커밋(16진수 40자), SHA-256 다이제스트(16진수 64자), 폴더 리비전(`local-<16진수 64자>`)도
-그대로 둡니다.
+글자나 숫자에 붙은 접두사(`task-proj-build-the-user-interface-for-the-marketplace`,
+`task-<SHA-224 16진수>`, `npm_scripts`, `akiak-production`)도 그대로 둡니다. 커밋(16진수
+40자), SHA-256 다이제스트(16진수 64자), 폴더 리비전(`local-<16진수 64자>`)도 그대로 둡니다.
+
+**탐지기 하나, 그래서 받아들이기와 내보내기가 일치합니다.** 내보낼 때의 가리기, 들어올 때의
+거부, 격리가 모두 같은 탐지기에 묻습니다. 받아들인 것은 내보낼 때 그대로 나가고, 렌더러는 받은
+그대로 돌려보냅니다. 애매한 경우는 소유자의 원칙이 정합니다. 평범한 이름을 거부하는 것("왜
+안 되지?" 하는 순간)이 아래의 남는 위험보다 비싸므로, 왼쪽에는 경계가 있어야 합니다.
 
 **범위 밖.** 탐지기는 다음을 찾지 않습니다.
 
@@ -2142,6 +2152,7 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
 - 2021년 이전 형식의 40자리 16진수 GitHub 토큰(식별자가 지켜야 하는 커밋과 같은 모양)
 - 84자 형식의 Azure DevOps 토큰, 그리고 위 자리 밖의 52자 형식
 - 위 자리 밖의 접두사 없는 비밀번호나 불투명한 비밀
+- 접두사가 글자나 숫자에 붙은 토큰(`backup<토큰>`): 왼쪽 경계가 남기는, 받아들인 위험
 - 표에 없는 형식
 
 모델로 가는 텍스트(`scrubSecretsForLLM`)는 같은 표를 쓰고, 예전의 넓은 접두사 규칙을 그 위에

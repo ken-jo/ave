@@ -764,8 +764,11 @@ describe("git marketplace IPC boundary", () => {
               await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
               expect(synced.mock.calls.map(([id]) => id)).toContain("notes");
               expect(synced.mock.calls.map(([id]) => id)).not.toContain(NAME_TOKEN);
-              // Nor by the stored id itself, were a request to carry it.
+              // Nor by the stored id itself, were a request to carry it; refused before its state changes.
+              const statePath = join(root, "marketplaces", NAME_TOKEN, "state.json");
+              const stateBefore = readFileSync(statePath, "utf8");
               expect(await invokeFileIpcHandler(handlers, channels.sourcesSetEnabled, NAME_TOKEN, false)).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID", detail: { reason: "stored-id-holds-credential" } });
+              expect(readFileSync(statePath, "utf8")).toBe(stateBefore);
               // The masked id it would otherwise have shown names nothing.
               expect(await invokeFileIpcHandler(handlers, channels.sourcesRemove, "[REDACTED:TOKEN]")).toMatchObject({ ok: false, code: "SOURCE_ID_INVALID" });
               expect(await invokeFileIpcHandler(handlers, channels.sourcesRemove, row.id)).toMatchObject({ ok: true });
@@ -796,12 +799,12 @@ describe("git marketplace IPC boundary", () => {
         const harness = await folderService({ root, folders: { fs: new FakeVolume("win32"), platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });
         try {
           await setup({ previewSource: vi.fn((request: never) => harness.service.previewSource(request)) });
-          // Each token alone and with a name glued to it, and the formats whose edges the detector once missed.
+          // Each token alone and behind or before a name's separator, and the formats whose edges the detector once missed.
           const mixed = "A1b2C3d4".repeat(43);
           const appToken = `gh${"s_"}123456_eyJ${"hbGciOiJSUzI1NiJ9"}.eyJ${"pc3MiOiIxMjM0NTYifQ"}.${mixed.slice(0, 342)}`;
           const googleDash = `AI${"za"}${mixed.slice(0, 34)}-`;
           for (const token of [...TOKENS, appToken, googleDash]) {
-            for (const segment of [token, `backup_${token}`, `backup${token}`, `${token}_old`]) {
+            for (const segment of [token, `backup_${token}`, `backup-${token}`, `${token}_old`]) {
               const answer = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: `//server/share/${segment}`, auth: "none" }) as { ok: true; value: { type: string; warnings: EnteredTargetWarningView[] } };
               expect(answer).toMatchObject({ ok: true, value: { type: "confirm", warnings: [{ warning: "network-folder", address: expect.stringContaining("[REDACTED:") }] } });
               expect(JSON.stringify(answer), segment).not.toContain(token);
@@ -894,6 +897,18 @@ describe("git marketplace IPC boundary", () => {
     const answer = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "https://alice:verifier-secret@example.com/owner/repo", auth: "none" });
     expect(answer).toMatchObject({ ok: false, code: "SOURCE_URL_REJECTED", detail: { reason: "credentials-in-url" } });
     expect(JSON.stringify(parseGitMarketplaceResult(answer))).not.toContain("verifier-secret");
+  });
+
+  it("masks the whole value of an Authorization header of any scheme in a failure it answers with (§18.8)", async () => {
+    const secret = "opaque-pass-12345";
+    await setup({
+      refresh: vi.fn(async () => {
+        throw new MarketplaceError("SOURCE_UNREACHABLE", `proxy returned Authorization: Custom ${secret}`, { detail: { reason: "proxy", host: "git.example", proxy: `Proxy-Authorization: Weird ${secret}` } });
+      }),
+    });
+    const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+    expect(answer).toMatchObject({ ok: false, code: "SOURCE_UNREACHABLE", message: "proxy returned Authorization: [REDACTED:TOKEN]", detail: { reason: "proxy", proxy: "Proxy-Authorization: [REDACTED:TOKEN]" } });
+    expect(JSON.stringify(answer)).not.toContain(secret);
   });
 
   it("scrubs credentials from every failure message it answers with", async () => {

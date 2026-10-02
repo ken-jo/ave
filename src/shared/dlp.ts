@@ -130,8 +130,34 @@ function decodeQuotedKey(body: string, quote: string): string | null {
 }
 
 /** Whether `key` names an Authorization header (`Authorization`, `Proxy-Authorization`, `x-authorization`). */
+/** Whether the character at `at` follows an odd run of backslashes. */
+function isEscapedAt(text: string, at: number): boolean {
+  let slashes = 0;
+  for (let i = at - 1; i >= 0 && text[i] === "\\"; i--) slashes++;
+  return slashes % 2 === 1;
+}
+
+/**
+ * The quote left open on `start`'s line before `start` (`"` or `'`, unescaped),
+ * the later one when both are; null when none is. A header found inside it
+ * ends where it closes.
+ */
+function enclosingQuote(text: string, start: number): '"' | "'" | null {
+  const lineStart = Math.max(text.lastIndexOf("\n", start - 1), text.lastIndexOf("\r", start - 1)) + 1;
+  const open: Record<'"' | "'", number> = { '"': -1, "'": -1 };
+  for (let i = lineStart; i < start; i++) {
+    const char = text[i];
+    if ((char === '"' || char === "'") && !isEscapedAt(text, i)) open[char] = open[char] === -1 ? i : -1;
+  }
+  if (open['"'] === -1 && open["'"] === -1) return null;
+  return open['"'] > open["'"] ? '"' : "'";
+}
+
+/** An `Authorization` or `Proxy-Authorization` header name: its value is the rest of its line, whatever the scheme. */
 function isAuthorizationKey(key: string | null): boolean {
-  return key !== null && key.toLowerCase().includes("authorization");
+  if (key === null) return false;
+  const lower = key.toLowerCase();
+  return lower === "authorization" || lower === "proxy-authorization";
 }
 
 function isKeyChar(code: number): boolean {
@@ -258,14 +284,19 @@ function redactCredentialAssignments(text: string): string {
       return close === -1 ? limit : close + 2;
     }
     let end = start;
-    if (toLineEnd) while (end < limit && text[end] !== "\n" && text[end] !== "\r") end++;
-    else while (end < limit && !isWhitespace(text[end])) end++;
-    if (!toLineEnd && AUTH_SCHEMES.has(text.slice(start, end).toLowerCase())) {
-      // A header's scheme takes the whole line, every parameter included (Digest's `response=…`).
-      if (header) {
-        while (end < limit && text[end] !== "\n" && text[end] !== "\r") end++;
-        return end;
+    // A header's value is the rest of its line, whatever its scheme, known or not
+    // (`Custom <secret>`, Digest's `response=…`): the scheme alone never stands for it.
+    // A header quoted inside a longer text (a JSON message, a quoted error) ends at that quote.
+    if (toLineEnd || header) {
+      const quote = header ? enclosingQuote(text, start) : null;
+      while (end < limit && text[end] !== "\n" && text[end] !== "\r") {
+        if (quote !== null && text[end] === quote && !isEscapedAt(text, end)) return end;
+        end++;
       }
+      return end;
+    }
+    while (end < limit && !isWhitespace(text[end])) end++;
+    if (AUTH_SCHEMES.has(text.slice(start, end).toLowerCase())) {
       let word = end;
       while (word < limit && isBlank(text[word])) word++;
       let wordEnd = word;
@@ -452,10 +483,12 @@ export function scrubSecretsForLLM(text: string): string {
  * the one detector both scrubber modes apply, and that the marketplace's
  * ingress uses to refuse an identifier ({@link holdsCredential}). The
  * contract is design §18.8's table:
- *   - A format is found wherever its prefix starts, whatever precedes it (a
- *     letter, a digit, `_`, `-`, `.`, `/`): `backup_<token>`,
- *     `backup<token>` and `/srv/<token>` are all found. No row has a word
- *     boundary.
+ *   - A format starts at a left boundary: the start of the text, or any
+ *     character that is not an ASCII letter or digit (`_`, `-`, `.`, `/`,
+ *     `:`, `=`, a space, a quote): `backup_<token>`, `x-<token>` and
+ *     `/srv/<token>` are found. A prefix glued to a letter or digit is not
+ *     (`ta` + `sk-proj-…` is the word `task-proj-…`): an accepted residual,
+ *     since refusing ordinary names costs more than it (§18.8).
  *   - Its body is read greedily over the format's own alphabet and counts
  *     once it reaches the format's length, whatever follows: `<token>_backup`
  *     and a body ending in `-` are found, and the whole run is masked.
@@ -469,34 +502,34 @@ export function scrubSecretsForLLM(text: string): string {
  */
 const CREDENTIAL_FORMATS: ReadonlyArray<{ pattern: RegExp }> = [
   // GitHub classic, OAuth, user-to-server, server-to-server and refresh tokens.
-  { pattern: /gh[pousr]_[A-Za-z0-9]{36,}/g },
+  { pattern: /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{36,}/g },
   // GitHub App installation tokens in the stateless form `ghs_<app id>_<JWT>` (2026-04-24); the opaque
-  // form is the row above. Not GitHub's looser `ghs_[A-Za-z0-9._-]{36,}`: without a word boundary that
-  // also matches ordinary names (`laughs_compilation-of-the-best-moments.mp4`).
-  { pattern: /ghs_[A-Za-z0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g },
+  // form is the row above. Not GitHub's looser `ghs_[A-Za-z0-9._-]{36,}`: that also matches an ordinary
+  // name after a boundary (`/media/ghs_compilation-of-the-best-moments.mp4`).
+  { pattern: /(?<![A-Za-z0-9])ghs_[A-Za-z0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g },
   // GitHub fine-grained personal access tokens: 22 and 59 characters around `_`.
-  { pattern: /github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59,}/g },
+  { pattern: /(?<![A-Za-z0-9])github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59,}/g },
   // GitLab personal, deploy, runner, pipeline-trigger, CI-build and service-account tokens.
-  { pattern: /gl(?:pat|dt|rt|ptt|cbt|soat)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*/g },
+  { pattern: /(?<![A-Za-z0-9])gl(?:pat|dt|rt|ptt|cbt|soat)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*/g },
   // npm access tokens.
-  { pattern: /npm_[A-Za-z0-9]{36,}/g },
+  { pattern: /(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36,}/g },
   // Slack: bot, user, app-level and refresh tokens carry numeric workspace and user ids.
-  { pattern: /xox[abposre]-\d{6,}-[0-9A-Za-z-]{8,}/g },
-  { pattern: /xapp-\d-[A-Z0-9]+-\d+-[A-Za-z0-9]+/g },
+  { pattern: /(?<![A-Za-z0-9])xox[abposre]-\d{6,}-[0-9A-Za-z-]{8,}/g },
+  { pattern: /(?<![A-Za-z0-9])xapp-\d-[A-Z0-9]+-\d+-[A-Za-z0-9]+/g },
   // AWS access key ids, long-term and temporary.
-  { pattern: /(?:AKIA|ASIA)[0-9A-Z]{16,}/g },
+  { pattern: /(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16,}/g },
   // Google API keys.
-  { pattern: /AIza[0-9A-Za-z_-]{35,}/g },
+  { pattern: /(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35,}/g },
   // OpenAI: legacy 48, project/service-account/admin keys, and any carrying the issuer's signature.
-  { pattern: /sk-[A-Za-z0-9]{48,}/g },
-  { pattern: /sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{40,}/g },
-  { pattern: /sk-[A-Za-z0-9_-]*T3BlbkFJ[A-Za-z0-9_-]*/g },
+  { pattern: /(?<![A-Za-z0-9])sk-[A-Za-z0-9]{48,}/g },
+  { pattern: /(?<![A-Za-z0-9])sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{40,}/g },
+  { pattern: /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]*T3BlbkFJ[A-Za-z0-9_-]*/g },
   // Anthropic API, admin and session keys.
-  { pattern: /sk-ant-(?:api|admin|sid|oat|ort)\d{2}-[A-Za-z0-9_-]{32,}/g },
+  { pattern: /(?<![A-Za-z0-9])sk-ant-(?:api|admin|sid|oat|ort)\d{2}-[A-Za-z0-9_-]{32,}/g },
   // Stripe secret, publishable and restricted keys.
-  { pattern: /(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}/g },
+  { pattern: /(?<![A-Za-z0-9])(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}/g },
   // JSON Web Tokens: three base64url segments (header.payload.signature), the header's `{"` as `eyJ`.
-  { pattern: /eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g },
+  { pattern: /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g },
 ];
 
 /** Whether {@link scrubDiagnosticSecrets} would change `text`: a credential format, URL userinfo or a credential assignment. */

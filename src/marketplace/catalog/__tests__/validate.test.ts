@@ -7,6 +7,9 @@ import {
 } from "../validate.js";
 import { parseVersionRange, rangeIncludes } from "../version-range.js";
 import { deriveAgentPluginComponents } from "../../content/agent-plugin-components.js";
+import { createHash } from "node:crypto";
+import { holdsCredential, scrubDiagnosticSecrets } from "../../../shared/dlp.js";
+import { isSourceId } from "../../sources/official.js";
 
 const COMMIT = "a".repeat(40);
 const SHA = "b".repeat(64);
@@ -383,6 +386,63 @@ describe("identifiers with a credential's shape (§18.8)", () => {
     expect(result).toMatchObject({ ok: true, value: { diagnostics: [] } });
     for (const name of alike) expect(checkDescriptor(descriptor("skill", { name })).ok, name).toBe(true);
     expect(checkDescriptor(descriptor("agent-plugin", { version: "1.0.0-test-marketplace2026", payload: { manifest: "plugin.json", components: components("test_marketplace2026") } })).ok).toBe(true);
+  });
+});
+
+describe("one detector for admission and egress (§18.8)", () => {
+  const context = { sourceId: "acme", official: false };
+  // A task id from a digest of ordinary content, not a token renamed: SHA-224 hex after `task-`.
+  const taskDigest = `task-${createHash("sha224").update("ordinary task inputs").digest("hex")}`;
+  const base32Digest = "al62ny3xigdbyafl7irut3jbxlrld5chtn2dxghblz6hml2otyqq";
+  /** Ordinary names an id or package may have. */
+  const ORDINARY_IDS = [
+    "test-marketplace2026", "test-integration123", "live-notifications2026", "live-captions", "npm-audit-helper",
+    "glpat-rotation-docs", "sk-proj-tools", "sk-learn-utils", "akiak-production", "task-sk-learn-utils",
+    "task-prepare-marketplace-folder-source-diagnostics", "task-proj-build-the-user-interface-for-the-marketplace", taskDigest,
+  ];
+  /** Ordinary values that are not ids: names with other characters, commits, digests, build metadata. */
+  const ORDINARY_VALUES = [
+    "npm_scripts", "AKIA-example-not-a-token", "laughs_compilation-of-the-best-moments.mp4",
+    "0123456789abcdef0123456789abcdef01234567", "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    `1.0.0+${base32Digest}`, `1.0.0+${taskDigest}`,
+  ];
+
+  it.each([...ORDINARY_IDS, ...ORDINARY_VALUES])("passes %s through egress unchanged", (value) => {
+    expect(holdsCredential(value)).toBe(false);
+    expect(scrubDiagnosticSecrets(value)).toBe(value);
+  });
+
+  it.each(ORDINARY_IDS)("admits %s as a source id, a package name and an index entry, so egress leaves what admission took", (id) => {
+    expect(isSourceId(id)).toBe(true);
+    expect(checkDescriptor(descriptor("skill", { name: id }))).toMatchObject({ ok: true });
+    expect(checkDescriptor(descriptor("skill", { version: `1.0.0+${id}` }))).toMatchObject({ ok: true });
+    const result = validateIndexText(index([{ kind: "skill", name: id, path: "skills/x" }]), context);
+    expect(result).toMatchObject({ ok: true, value: { diagnostics: [] } });
+    expect(result.ok && result.value.index.packages.map((entry) => entry.name)).toEqual([id]);
+  });
+
+  // Assembled here so no whole token sits in the source: one fits an id's grammar, one does not.
+  const ID_TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
+  const MIXED_TOKEN = `gh${"p_"}${"A1b2C3d4".repeat(5).slice(0, 36)}`;
+  const BOUNDARIES = ["", "x_", "x-", "x.", "x/", "x:", "x=", "x ", 'x"', "x'"];
+
+  it.each(BOUNDARIES)("refuses and masks a credential shape after %j", (before) => {
+    for (const token of [ID_TOKEN, MIXED_TOKEN]) {
+      const text = `${before}${token}`;
+      expect(holdsCredential(text), text).toBe(true);
+      expect(scrubDiagnosticSecrets(text)).not.toContain(token);
+    }
+    // Where the result is an id's grammar, admission refuses it.
+    const id = `${before}${ID_TOKEN}`;
+    if (/^[a-z0-9-]+$/u.test(id)) {
+      expect(isSourceId(id)).toBe(false);
+      expect(checkDescriptor(descriptor("skill", { name: id }))).toMatchObject({ ok: false, credential: "name-holds-credential" });
+    }
+  });
+
+  it("leaves a prefix glued to a letter or digit to the documented residual", () => {
+    // `ta` + `sk-proj-…` is the word `task-proj-…`: refusing such names would refuse ordinary ones (§18.8).
+    expect(holdsCredential(`backup${MIXED_TOKEN}`)).toBe(false);
   });
 });
 

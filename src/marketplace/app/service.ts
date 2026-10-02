@@ -529,6 +529,16 @@ export class MarketplaceService implements RetirementEntryLookup {
     return `${QUARANTINE_HANDLE_PREFIX}${createHmac("sha256", this.handleKey).update(id).digest("hex").slice(0, 32)}`;
   }
 
+  /**
+   * The id a view carries for a stored source id: the id itself, or, when
+   * it has a credential's shape, its handle ({@link handleOf}). The handle
+   * depends on the id alone, so an installed package keeps a usable identity
+   * after its source is removed (§18.8).
+   */
+  private viewSourceId(id: string): string {
+    return holdsCredential(id) ? this.handleOf(id) : id;
+  }
+
   /** The quarantined source a handle names, checked against the stored entries now; null for anything else. */
   private quarantinedByHandle(handle: string): ResolvedSource | null {
     if (!handle.startsWith(QUARANTINE_HANDLE_PREFIX)) return null;
@@ -563,7 +573,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     const git = source.transport === "git" ? source : null;
     const quarantined = this.registry.isQuarantined(source);
     return {
-      id: quarantined ? this.handleOf(source.id) : source.id,
+      id: this.viewSourceId(source.id),
       origin: source.origin,
       label: sourceLabel(source, snapshot),
       ...(source.transport === "git" ? { transport: "git" as const, url: source.url.url, path: null } : { transport: "folder" as const, url: null, path: source.path }),
@@ -711,18 +721,20 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   async setEnabled(id: string, enabled: boolean): Promise<SourceView> {
     return this.operation(async () => {
-      this.source(id);
-      await this.registry.setEnabled(id, enabled);
+      const source = this.source(id);
+      await this.registry.setEnabled(source.id, enabled);
       this.catalogChanged();
-      return this.sourceView(this.source(id));
+      return this.sourceView(this.source(source.id));
     });
   }
 
   async acceptRewrite(id: string, commit: string): Promise<SourceView> {
     return this.operation(async () => {
-      const result = await this.options.syncer.acceptRewrite(id, commit);
+      // Checked before the syncer touches the repository, pin or snapshot: a quarantined source is refused untouched (§18.8).
+      const source = this.source(id);
+      const result = await this.options.syncer.acceptRewrite(source.id, commit);
       if (result.status === "failed") throw new MarketplaceError(result.code, result.message, result.detail ? { detail: result.detail } : undefined);
-      return this.sourceView(this.source(id));
+      return this.sourceView(this.source(source.id));
     });
   }
 
@@ -753,7 +765,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     if (source.origin === "official" || source.origin === "managed") {
       throw new MarketplaceError("SOURCE_POLICY_BLOCKED", `the ${source.origin} source ${id} cannot be removed`);
     }
-    const orphaned = (await this.installedAll()).filter((item) => item.sourceId === source.id).map((item) => ({ sourceId: source.id, kind: item.kind, name: item.name }));
+    const orphaned = (await this.installedAll()).filter((item) => item.sourceId === source.id).map((item) => ({ sourceId: this.viewSourceId(source.id), kind: item.kind, name: item.name }));
     await this.options.syncer.removeSource(source.id);
     this.catalogChanged();
     return { orphanedPackages: orphaned };
@@ -1158,7 +1170,8 @@ export class MarketplaceService implements RetirementEntryLookup {
           continue;
         }
         entries.push({
-          key: { sourceId: item.sourceId, kind: item.kind, name: item.name },
+          // A source id with a credential's shape goes out as its handle, which Uninstall takes back (§18.8).
+          key: { sourceId: this.viewSourceId(item.sourceId), kind: item.kind, name: item.name },
           sourceOrigin: this.registry.get(item.sourceId)?.origin ?? "custom",
           sourceLabel: labels.get(item.sourceId) ?? item.sourceId,
           displayName: item.name,
@@ -1226,13 +1239,13 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   private async detailNow(key: PackageKeyView): Promise<PackageDetailView> {
+    const source = this.source(key.sourceId);
     const { row, rows, snapshot, label, badges } = await this.row(key);
     const installed = await this.installed(key.kind, key.name);
     const existing = new Set(this.registry.list().map((source) => source.id));
     const context = this.options.versionContext();
     const shownVersion = row.choice.state === "candidate" ? row.choice.version : row.package.versions[0] ?? null;
     const installedHere = installed?.sourceId === key.sourceId ? installed.version : null;
-    const source = this.source(key.sourceId);
     return {
       entry: this.entry(row, installed, rows, existing, label, badges),
       provenance: {
@@ -1399,8 +1412,8 @@ export class MarketplaceService implements RetirementEntryLookup {
     if (!installed || installed.sourceId !== key.sourceId) {
       throw new MarketplaceError("PACKAGE_ID_CONFLICT", `${key.kind} ${key.name} is not installed from ${key.sourceId}`);
     }
-    const state = await this.registry.readState(key.sourceId);
     const source = this.source(key.sourceId);
+    const state = await this.registry.readState(source.id);
     const historyRewritten =
       state.pendingRewrite && (source.origin === "custom" || source.origin === "direct")
         ? { pinned: state.pinnedCommit, candidate: state.pendingRewrite.candidate }
@@ -1588,19 +1601,23 @@ export class MarketplaceService implements RetirementEntryLookup {
     if (request.removeData === true && request.kind !== "mcp" && request.kind !== "agent-plugin") {
       throw new Error("removeData applies only to server or agent plugin packages");
     }
-    assertNotRequiredByPolicy(this.policy, request.kind, request.name, request.sourceId, "uninstall");
     const installed = await this.installed(request.kind, request.name);
-    if (!installed || installed.sourceId !== request.sourceId) {
+    // The key names the installed record by the id its view carried: the stored id, or its handle (§18.8).
+    // Resolved against that record before any policy or removal, whether or not the source still exists.
+    const named = installed === null ? undefined : installed.sourceId === null ? null : this.viewSourceId(installed.sourceId);
+    if (!installed || named !== request.sourceId) {
       const from = request.sourceId === null ? "without a source" : `from ${request.sourceId}`;
       throw new MarketplaceError("PACKAGE_ID_CONFLICT", `${request.kind} ${request.name} is not installed ${from}`);
     }
+    const sourceId = installed.sourceId;
+    assertNotRequiredByPolicy(this.policy, request.kind, request.name, sourceId, "uninstall");
     let keptDataDir: string | null = null;
     if (request.kind === "plugin") {
       let retain: PluginConfigRetention | undefined;
       if (options?.retain) {
         const entry = await this.getRetirementEntry(request.name);
-        if (!entry || (request.sourceId !== null && entry.sourceId !== request.sourceId)) throw new Error("Plugin retirement entry is unavailable");
-        retain = { reason: options.retain.reason, sourceId: request.sourceId, successors: entry.successors };
+        if (!entry || (sourceId !== null && entry.sourceId !== sourceId)) throw new Error("Plugin retirement entry is unavailable");
+        retain = { reason: options.retain.reason, sourceId, successors: entry.successors };
       }
       await this.options.installers.plugin.uninstall(request.name, retain);
     } else if (request.kind === "mcp") ({ keptDataDir } = await this.options.installers.mcp.uninstall(request.name, { removeData: request.removeData === true }));

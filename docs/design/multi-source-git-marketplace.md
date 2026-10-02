@@ -2281,8 +2281,8 @@ every identifier in which it finds anything (`holdsCredential(text)`: the
 scrubber would change `text`). This section is its contract; the tests in
 `src/audit/__tests__/dlp-redact.test.ts` hold the code to it.
 
-**Formats found anywhere.** A row is found wherever its prefix starts, and
-masked whole:
+**Formats found by their prefix.** A row is found where its prefix starts
+at a left boundary, and masked whole:
 
 | Issuer | Prefix | Body after the prefix |
 | --- | --- | --- |
@@ -2305,9 +2305,12 @@ masked whole:
 
 Boundary rules, the same for every row:
 
-- **Left: none.** A prefix starts a format whatever precedes it: a letter, a
-  digit, `_`, `-`, `.`, `/` or nothing. `backup_<token>`, `backup<token>`,
-  `market-<token>` and `//server/share/<token>` are all found.
+- **Left: a boundary.** A prefix starts a format at the start of the text
+  or after any character that is not an ASCII letter or digit: `_`, `-`,
+  `.`, `/`, `:`, `=`, a space, a quote. `backup_<token>`, `x-<token>`,
+  `market-<token>`, `id=<token>` and `//server/share/<token>` are found. A
+  prefix glued to a letter or digit is not: `task-proj-build-the-user-interface…`
+  is the word `task`, not `ta` and an `sk-proj-` key.
 - **Right: none.** The body is read greedily over the row's alphabet and
   counts once it reaches the row's length, whatever follows: `<token>_old`,
   `<token>.example.com` and a Google key whose body ends in `-` are found.
@@ -2322,8 +2325,11 @@ other opaque secret) is masked only in these positions:
 - URL userinfo: everything before `@` in an `http(s)` address, and a
   `user:password` (or any userinfo that is not an ssh account name) in any
   other address or in scp form;
-- an `Authorization` value of any scheme, a `Bearer` value, an `x-api-key`
-  or `x-auth-token` value;
+- the value of an `Authorization` or `Proxy-Authorization` header, of any
+  scheme, known or not (`Custom <secret>`): everything after the header name
+  to the end of its line, or to the quote that encloses the header when it
+  stands quoted in a longer text; a `Bearer` value; an `x-api-key` or
+  `x-auth-token` value;
 - the value of a credential assignment (`key=value`, `key: value`, JSON
   `"key": "value"`, `--key value`) whose key holds `token`, `secret`,
   `password`, `passwd`, `pwd`, `apikey`, `accesskey`, `privatekey`,
@@ -2337,8 +2343,17 @@ in build metadata (`1.0.0+<digest>`) is kept.
 **Not credentials.** A bare word is no format: `test-`, `live-`, `proj-`,
 `npm-`, `pk-`, `rk-`, and a prefix whose body is shorter than its row's
 (`glpat-rotation-docs`, `sk-proj-tools`, `test-marketplace2026`,
-`laughs_compilation-of-the-best-moments.mp4`) pass. Commits (40 hex),
+`laughs_compilation-of-the-best-moments.mp4`) pass, and so does a prefix
+glued to a letter or digit (`task-proj-build-the-user-interface-for-the-marketplace`,
+`task-<SHA-224 hex>`, `npm_scripts`, `akiak-production`). Commits (40 hex),
 SHA-256 digests (64 hex) and folder revisions (`local-<64 hex>`) pass.
+
+**One detector, so admission and egress agree.** Egress masking, ingress
+refusal and quarantine all ask the same detector. Whatever admission
+accepts, egress returns unchanged, and the renderer names it back as it was
+handed. The owner's rule decides the ambiguous cases: refusing an ordinary
+name (a "why won't this work" moment) costs more than the residual below,
+so a boundary is required on the left.
 
 **Out of scope.** The detector does not find:
 
@@ -2349,6 +2364,8 @@ SHA-256 digests (64 hex) and folder revisions (`local-<64 hex>`) pass.
 - an Azure DevOps token in its 84-character format, or in its 52-character
   format outside the positions above;
 - an unprefixed password or opaque secret outside the positions above;
+- a token whose prefix is glued to a letter or digit (`backup<token>`): the
+  accepted residual of the left boundary;
 - a format not in the table.
 
 Text bound for a model (`scrubSecretsForLLM`) applies the same table and
