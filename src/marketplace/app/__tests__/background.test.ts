@@ -104,7 +104,7 @@ function harness(options: {
     }),
     updateCandidates: vi.fn(async (reached: ReadonlySet<string>) =>
       published.offers.filter((update) => reached.has(update.key.sourceId)).map((update) => candidateOf(update, published.facts[update.key.name]))),
-    autoUpdateContext: vi.fn(async () => ({ policy: "user" as const, sources: [] })),
+    autoUpdateContext: vi.fn(async () => ({ policy: "user" as const, sources: [], installed: [] })),
     applyUpdate: vi.fn(async () => ({ state: "applied" as const })),
     appliedState: vi.fn(async () => ({ state: "applied" as const })),
     callsInFlight: vi.fn(async () => false),
@@ -1088,7 +1088,8 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     const background = startMarketplaceBackground(h.input);
     await idle(background);
     expect(h.service.applyUpdate).toHaveBeenCalledOnce();
-    expect(vi.mocked(h.service.applyUpdate).mock.calls[0]![0]).toEqual({ key: offer("meeting", "2.0.0").key, from: "1.0.0", to: "2.0.0", required: false, switchSource: false });
+    // Which update, never whether: the decision is made under the service's locks, with what is in force then.
+    expect(vi.mocked(h.service.applyUpdate).mock.calls[0]![0]).toEqual({ key: offer("meeting", "2.0.0").key, from: "1.0.0", to: "2.0.0", switchSource: false });
     expect(h.store.saved?.packages["ave:plugin:meeting"]).toEqual({ to: "2.0.0", from: "1.0.0", displayName: "meeting", state: "applied", attempts: 0, appliedAt: APPLIED_AT, commits: { from: "a".repeat(40), to: "b".repeat(40) } });
     const notices = vi.mocked(h.input.publishNotice).mock.calls.map(([notice]) => notice.autoUpdated);
     expect(notices).toEqual([[{ key: offer("meeting", "2.0.0").key, displayName: "meeting", from: "1.0.0", to: "2.0.0", commitRange: { from: "a".repeat(40), to: "b".repeat(40) }, required: false, state: "applied" }]]);
@@ -1208,8 +1209,12 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     h.discoveries.splice(0, h.discoveries.length, ...discoveries, { result: "ok", reached: ["corp"] }, { result: "ok", reached: ["corp"] });
     const background = startMarketplaceBackground(h.input);
     await idle(background);
-    // Applied with the policy's review, though automatic updates are on or off.
-    expect(vi.mocked(h.service.applyUpdate).mock.calls[0]![0]).toMatchObject({ required: true });
+    // Applied with the policy's review, though automatic updates are on or off: the decision finds it automatic as long as it is required.
+    const decide = vi.mocked(h.service.applyUpdate).mock.calls[0]![1];
+    const facts = candidateOf(h.published.offers[0]!, { required: true }).facts;
+    h.settings.current = { updateNotices: true, autoUpdate: false };
+    expect(decide(facts, "off")).toBe(true);
+    expect(decide({ ...facts, required: false }, "off")).toBe(false);
     expect(h.store.saved?.packages["corp:agent-plugin:assist"]).toMatchObject({ state: "approval-pending" });
     h.published.offers = [];
     await background.recheck();
@@ -1221,6 +1226,75 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     expect(h.service.approveComponents).toHaveBeenCalledWith({ sourceId: "corp", kind: "agent-plugin", name: "assist" }, pendingApproval.installId, pendingApproval.components);
     expect(status.packages).toEqual([expect.objectContaining({ state: "applied" })]);
     background.stop();
+  });
+
+  it("judges a queued update again when its turn comes: a switch turned off since it was queued holds it", async () => {
+    const h = applying();
+    const background = startMarketplaceBackground(h.input);
+    await idle(background);
+    const decide = vi.mocked(h.service.applyUpdate).mock.calls[0]![1];
+    const facts = candidateOf(offer("meeting", "2.0.0")).facts;
+    expect(decide(facts, "user")).toBe(true);
+    h.settings.current = { updateNotices: true, autoUpdate: false };
+    expect(decide(facts, "user")).toBe(false);
+    // The organization's value in force then decides too.
+    h.settings.current = ON;
+    expect(decide(facts, "off")).toBe(false);
+    background.stop();
+  });
+
+  it("turning updates off removes an update waiting for idle from the queue", async () => {
+    const h = applying();
+    h.activity.busy = true;
+    const background = startMarketplaceBackground(h.input);
+    await idle(background);
+    expect(h.lastStatus().packages).toEqual([expect.objectContaining({ state: "waiting" })]);
+    h.settings.current = { updateNotices: true, autoUpdate: false };
+    await background.settingsChanged();
+    h.goIdle();
+    await settle();
+    expect(h.service.applyUpdate).not.toHaveBeenCalled();
+    expect(h.lastStatus().packages).toEqual([expect.objectContaining({ state: "manual", reasons: ["switched-off"] })]);
+    background.stop();
+  });
+
+  it("a wait past 30 minutes reaches the toolbar: the waiting update is sent as escalated, whatever the notice setting", async () => {
+    const h = applying();
+    h.settings.current = { updateNotices: false, autoUpdate: true };
+    h.activity.busy = true;
+    const background = startMarketplaceBackground(h.input);
+    await idle(background);
+    const sent = () => vi.mocked(h.input.publishUpdates).mock.calls.at(-1)?.[0] ?? [];
+    expect(sent()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+    expect(sent()).toEqual([expect.objectContaining({ key: offer("meeting", "2.0.0").key, state: "waiting", escalated: true })]);
+    await background.applyNow();
+    await settle();
+    expect(sent()).toEqual([]);
+    background.stop();
+  });
+
+  it("shows the switches as they take effect under a policy, for every installed package", async () => {
+    const source = { id: "acme", label: "Acme", origin: "custom" as const, http: false, acknowledgedUnencryptedUpdates: false };
+    const installed = [{ sourceId: "acme", kind: "skill" as const, name: "notes" }];
+    const locked = harness({
+      settings: { updateNotices: true, autoUpdate: false, autoUpdatePackages: { "skill:notes": "off" } },
+      service: { autoUpdateContext: async () => ({ policy: "on" as const, sources: [source], installed }) },
+    });
+    const background = startMarketplaceBackground(locked.input);
+    await background.started;
+    expect((await background.status()).autoUpdate).toEqual({
+      enabled: true,
+      lockedByPolicy: "on",
+      sources: [{ id: "acme", label: "Acme", origin: "custom", switch: { effective: true, override: null, lockedByPolicy: true }, needsUnencryptedUpdates: false }],
+      packages: [{ key: installed[0], switch: { effective: true, override: "off", lockedByPolicy: true } }],
+    });
+    background.stop();
+    const off = harness({ settings: { updateNotices: true }, service: { autoUpdateContext: async () => ({ policy: "off" as const, sources: [source], installed }) } });
+    const second = startMarketplaceBackground(off.input);
+    await second.started;
+    expect((await second.status()).autoUpdate).toMatchObject({ enabled: false, lockedByPolicy: "off" });
+    second.stop();
   });
 
   it("does not apply a switched-off update, and applies nothing more once stopped", async () => {

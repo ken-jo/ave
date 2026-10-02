@@ -6,8 +6,10 @@
  *
  * No runtime boundary keeps an approved server from reading another file of
  * its package and evaluating it, so the digest covers the **whole** package
- * tree, normalizing only the top-level `version` of `plugin.json` (a release
- * must change it and it runs nothing). It is the sha256 of canonical JSON:
+ * tree, every byte as the component can read it. Nothing is normalized away:
+ * not even `plugin.json`'s `version`, which a server can read and act on, so
+ * a new release always asks again for its servers and hooks. It is the
+ * sha256 of canonical JSON:
  *
  *   { declaration: <static fingerprint of the declaring file>,
  *     anchored:    ["<token index>\0<package path>\0<sha256>", ...] sorted,
@@ -61,37 +63,14 @@ function sha256(bytes: Buffer | string): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** `plugin.json` with its top-level `version` removed, as canonical JSON; null when it is not a JSON object. */
-function normalizedPluginJson(data: Buffer): Buffer | null {
-  let document: unknown;
-  try {
-    document = JSON.parse(data.toString("utf8"));
-  } catch {
-    return null;
-  }
-  if (typeof document !== "object" || document === null || Array.isArray(document)) return null;
-  const { version: _version, ...rest } = document as Record<string, unknown>;
-  return Buffer.from(canonicalStringify(rest), "utf8");
-}
-
 /**
- * The bytes a file is compared and hashed as: `plugin.json` without its
- * top-level `version`, every other file as it is. A `plugin.json` that does
- * not parse is hashed as it is, so it still differs from any other.
- */
-function comparedBytes(file: PayloadFile): Buffer {
-  if (file.path === "plugin.json") return normalizedPluginJson(file.data) ?? file.data;
-  return file.data;
-}
-
-/**
- * The tree digest (§6.4) of the payload with the one normalization above.
- * Lines are `"<mode> <sha256> <path>\n"` sorted by path bytes, as the
- * receipt's tree digest.
+ * The tree digest (§6.4) of the payload's exact bytes. Lines are
+ * `"<mode> <sha256> <path>\n"` sorted by path bytes, as the receipt's tree
+ * digest.
  */
 export function payloadTreeSha256(files: readonly PayloadFile[]): string {
   const lines = files
-    .map((file) => ({ key: Buffer.from(file.path, "utf8"), line: `${file.executable === true ? "100755" : "100644"} ${sha256(comparedBytes(file))} ${file.path}\n` }))
+    .map((file) => ({ key: Buffer.from(file.path, "utf8"), line: `${file.executable === true ? "100755" : "100644"} ${sha256(file.data)} ${file.path}\n` }))
     .sort((a, b) => Buffer.compare(a.key, b.key));
   const hash = createHash("sha256");
   for (const { line } of lines) hash.update(line, "utf8");
@@ -111,15 +90,14 @@ export function extensionDeclarationPaths(manifestDocument: unknown): string[] {
 }
 
 /**
- * The package paths whose bytes differ between two payloads, under the same
- * normalization as {@link payloadTreeSha256}. `plugin.json` is listed only
- * when something other than its version differs, and then always as code;
- * so is every file in `declaring`, the declarations of the package's servers
- * and hooks, whose change changes what runs whatever its extension.
+ * The package paths whose bytes differ between two payloads. `plugin.json`
+ * is always code, its version included: a component can read it. So is every
+ * file in `declaring`, the declarations of the package's servers and hooks,
+ * whose change changes what runs whatever its extension.
  * The split is for display only: it never decides whether an update applies.
  */
 export function changedPayloadFiles(before: readonly PayloadFile[], after: readonly PayloadFile[], declaring: ReadonlySet<string>): { code: string[]; nonCode: string[] } {
-  const digests = (files: readonly PayloadFile[]) => new Map(files.map((file) => [file.path, `${file.executable === true ? "x" : "-"}${sha256(comparedBytes(file))}`]));
+  const digests = (files: readonly PayloadFile[]) => new Map(files.map((file) => [file.path, `${file.executable === true ? "x" : "-"}${sha256(file.data)}`]));
   const left = digests(before);
   const right = digests(after);
   const changed = [...new Set([...left.keys(), ...right.keys()])].filter((path) => left.get(path) !== right.get(path)).sort();

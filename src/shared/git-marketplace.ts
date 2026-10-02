@@ -36,6 +36,8 @@ export type SourceBadge =
 
 export type SourceOriginKind = "official" | "managed" | "custom" | "direct";
 
+const SOURCE_ORIGIN_KINDS: readonly SourceOriginKind[] = ["official", "managed", "custom", "direct"];
+
 /** A package in one source: the identity every channel takes (design §15.1). */
 export interface PackageKeyView {
   sourceId: string;
@@ -569,6 +571,21 @@ export interface PackageUpdateView {
   pendingApproval?: { installId: string; consentDelta: ConsentDelta; components: ReviewedComponentConsent[] };
   /** The package's automatic-update switch and what it resolves to (§18.7.2). */
   autoUpdate?: AutoUpdateSwitchView;
+  /**
+   * A `waiting` update the queue has held for 30 minutes while the
+   * conversation stayed busy (§18.7.4): the toolbar counts it, and the
+   * Updates card offers *Apply now*.
+   */
+  escalated?: true;
+}
+
+/**
+ * Whether the toolbar pill counts this update: a state that needs the user
+ * ({@link updateNeedsUser}), or a `waiting` update held past the 30-minute
+ * escalation, which only *Apply now* moves on (§18.7.4).
+ */
+export function updateViewNeedsUser(update: Pick<PackageUpdateView, "state" | "escalated">): boolean {
+  return updateNeedsUser(update.state) || (update.state === "waiting" && update.escalated === true);
 }
 
 /**
@@ -611,7 +628,7 @@ export interface AutoUpdateSwitchView {
 }
 
 /** An update as the service computes it, before the scheduler gives it a state. */
-export type PackageUpdateOffer = Omit<PackageUpdateView, "state" | "stale" | "reasons" | "failure" | "appliedAt" | "commitRange" | "pendingApproval" | "autoUpdate">;
+export type PackageUpdateOffer = Omit<PackageUpdateView, "state" | "stale" | "reasons" | "failure" | "appliedAt" | "commitRange" | "pendingApproval" | "autoUpdate" | "escalated">;
 
 /** How the last discovery ended (§18.7.1): every source synced, some, none because offline, or it threw. */
 export type UpdateDiscoveryResult = "ok" | "partial" | "offline" | "error";
@@ -640,14 +657,16 @@ export interface UpdateStatusView {
   /** True once the queue has waited 30 minutes: the card offers *Apply now*. */
   escalated: boolean;
   /**
-   * The global switch, the organization's lock, and each source's switch
-   * (§18.7.2). The per-source and per-package switches live in the Updates
-   * card (§18.9).
+   * The switches (§18.7.2): the global one as it takes effect (the policy's
+   * value while the organization locks it), the lock, each source's switch,
+   * and the switch of every installed package bound to a listed source,
+   * whether or not it has an update.
    */
   autoUpdate: {
     enabled: boolean;
     lockedByPolicy: "on" | "off" | null;
-    sources: Array<{ id: string; label: string; switch: AutoUpdateSwitchView; needsUnencryptedUpdates: boolean }>;
+    sources: Array<{ id: string; label: string; origin: SourceOriginKind; switch: AutoUpdateSwitchView; needsUnencryptedUpdates: boolean }>;
+    packages: Array<{ key: PackageKeyView; switch: AutoUpdateSwitchView }>;
   };
   packages: PackageUpdateView[];
 }
@@ -876,6 +895,7 @@ function isUpdatePackage(value: unknown): value is PackageUpdateView {
     && (value.commitRange === undefined || (isRecord(value.commitRange) && (value.commitRange.from === null || typeof value.commitRange.from === "string")
       && typeof value.commitRange.to === "string"))
     && (value.autoUpdate === undefined || isSwitchView(value.autoUpdate))
+    && (value.escalated === undefined || value.escalated === true)
     && (value.pendingApproval === undefined || (isRecord(value.pendingApproval) && typeof value.pendingApproval.installId === "string"
       && Array.isArray(value.pendingApproval.consentDelta) && Array.isArray(value.pendingApproval.components)));
 }
@@ -890,7 +910,11 @@ function isAutoUpdateStatus(value: unknown): boolean {
     && (value.lockedByPolicy === null || value.lockedByPolicy === "on" || value.lockedByPolicy === "off")
     && Array.isArray(value.sources)
     && value.sources.every((source: unknown) => isRecord(source) && typeof source.id === "string" && typeof source.label === "string"
-      && isSwitchView(source.switch) && typeof source.needsUnencryptedUpdates === "boolean");
+      && (SOURCE_ORIGIN_KINDS as readonly unknown[]).includes(source.origin)
+      && isSwitchView(source.switch) && typeof source.needsUnencryptedUpdates === "boolean")
+    && Array.isArray(value.packages)
+    && value.packages.every((item: unknown) => isRecord(item) && isRecord(item.key) && typeof item.key.sourceId === "string"
+      && isPackageKind(item.key.kind) && typeof item.key.name === "string" && isSwitchView(item.switch));
 }
 
 /** Shape check for a `marketplace:update-status` payload; anything else is dropped. */

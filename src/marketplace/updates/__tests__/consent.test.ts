@@ -162,12 +162,12 @@ describe("consentFingerprint: one row per field, each change alone needs review"
     expect(changedFields(wide, base)).toContain("authority.capabilities");
   });
 
-  it("the same bytes are equal, and only plugin.json's version is normalized", () => {
+  it("the same bytes are equal; a new version alone changes every bundled server and hook, which can read it", () => {
     expect(changedFields(base, plugin())).toEqual([]);
     const { document, files } = pluginPayload();
     const bumped = { ...(document as Record<string, unknown>), version: "1.0.1" };
     const bumpedFiles = files.map((item) => item.path === "plugin.json" ? file("plugin.json", JSON.stringify(bumped)) : item);
-    expect(changedFields(base, pluginConsent(bumped, bumpedFiles))).toEqual([]);
+    expect(changedFields(base, pluginConsent(bumped, bumpedFiles))).toEqual(["hook:audit", "mcpServer:notes"]);
   });
 });
 

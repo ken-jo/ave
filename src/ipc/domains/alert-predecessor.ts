@@ -59,9 +59,11 @@ export class AlertPredecessorAccess {
       const market = await this.marketplace();
       const predecessorId = row.blockedByPredecessor;
       if (!predecessorId) return { ok: false, error: "predecessor-not-removable" };
-      // Lock order (§18.6): the marketplace operation first, the plugin locks inside it. Every service
-      // call below is part of this one operation, so none waits for a policy change while these
-      // plugin locks are held and an install, inside its own operation, waits for one of them.
+      // Lock order (§18.6): the marketplace operation, then both packages' locks, then the plugin locks.
+      // Every service call below is part of this one operation, so none waits for a policy change while
+      // these plugin locks are held; and the uninstall below already holds its package's lock, so it never
+      // waits for an install that holds that package and waits for one of these plugin locks.
+      const packages = [row.pluginId, predecessorId].map((name) => ({ kind: "plugin" as const, name }));
       return await market.asOneOperation(() => withResolvedPluginInstallLocks(() => [row.pluginId, predecessorId].flatMap((id) => {
         const canonical = this.deps.pluginRuntime.resolvePluginId(id);
         const installed = this.deps.pluginRuntime.resolvePluginInstallIdIfKnown(id);
@@ -81,7 +83,7 @@ export class AlertPredecessorAccess {
         const value = await market.uninstallInstalled({ kind: "plugin", name: resolved.predecessor.name, sourceId: resolved.predecessor.sourceId },
           { retain: { reason: "superseded" } });
         return { ok: true, value };
-      }));
+      }), packages);
     } catch (error) {
       if (error instanceof MarketplaceError && error.code === "PACKAGE_REQUIRED_BY_POLICY") {
         return { ok: false, error: "predecessor-policy-locked" };

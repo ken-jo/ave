@@ -93,6 +93,7 @@ import { catalogDelta, isCodeFreeChange, mcpConsent, pluginConsent, requireConse
 import { classifyApplyError, type ApplyOutcome } from "../updates/apply.js";
 import type { UpdateChange, UpdateFacts } from "../updates/eligibility.js";
 import type { PluginConfigRetention } from "../../plugins/retired-config.js";
+import { holdsAnyPluginInstallLock } from "../../plugins/install-lifecycle.js";
 import type { RetirementEntry, RetirementEntryLookup } from "./retirement-entry.js";
 import { effectiveRevocations } from "../catalog/effective-revocations.js";
 import { revocationFeed, type BoundInstall, type RevocationFeed } from "./revocations.js";
@@ -209,20 +210,36 @@ export interface UpdateCandidate extends PackageUpdateOffer {
   needs: string[];
 }
 
-/** What the switches resolve with (§18.7.2): the policy's `autoUpdate` and each source's facts. */
+/**
+ * What the switches resolve with (§18.7.2): the policy's `autoUpdate`, each
+ * source's facts, and every installed package bound to one of those sources,
+ * so its switch can be set before it has an update.
+ */
 export interface AutoUpdateContext {
   policy: MarketplacePolicy["autoUpdate"];
   sources: Array<{ id: string; label: string; origin: SourceOrigin; http: boolean; acknowledgedUnencryptedUpdates: boolean }>;
+  installed: PackageKeyView[];
 }
 
-/** What the apply queue asks the service to install. */
+/**
+ * What the apply queue asks the service to install: which update, never
+ * whether it may apply. That is decided again when its turn comes, from what
+ * is installed, offered and in force then (§18.7.4).
+ */
 export interface ApplyTarget {
   key: PackageKeyView;
   from: string;
   to: string;
-  required: boolean;
   switchSource: boolean;
 }
+
+/**
+ * Decides, under the operation and the package lock, whether an update
+ * still applies by itself: the facts the service gathers now and the
+ * organization's `autoUpdate` now, with the user's switches, skips and
+ * failures as the caller reads them now (§18.7.2).
+ */
+export type ApplyDecision = (facts: UpdateFacts, policy: MarketplacePolicy["autoUpdate"]) => boolean;
 
 /** An applied update re-read: still installed at its version, and in which state; null when it no longer is. */
 export type AppliedState =
@@ -366,6 +383,23 @@ function reviewComponentsOf(kind: PackageKind, delta: ConsentDelta, staged: Cons
     }
   }
   return views;
+}
+
+/** `wait`, or the rejection of `signal`'s reason once it aborts, whichever comes first. */
+async function untilAborted(wait: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+  if (!signal) return wait;
+  signal.throwIfAborted();
+  let off = () => {};
+  const aborted = new Promise<never>((_, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    off = () => signal.removeEventListener("abort", onAbort);
+  });
+  try {
+    await Promise.race([wait, aborted]);
+  } finally {
+    off();
+  }
 }
 
 function keyOf(kind: PackageKind, name: string): string {
@@ -516,6 +550,12 @@ export class MarketplaceService implements RetirementEntryLookup {
    * is `superseded`, or waits for it.
    */
   private readonly packageTails = new Map<string, Promise<void>>();
+  /**
+   * The package locks the current call holds, so its own nested install or
+   * uninstall of one of them does not wait for itself. Open only while the
+   * holder runs, like {@link inOperation}.
+   */
+  private readonly heldPackages = new AsyncLocalStorage<{ keys: ReadonlySet<string>; open: boolean }>();
   /** The policy refresh now reading or applying; refreshes run one at a time, in order (§12). */
   private refreshRunning: Promise<void> | null = null;
   /**
@@ -561,22 +601,54 @@ export class MarketplaceService implements RetirementEntryLookup {
    * its body never starts; the call rejects with the signal's reason. A
    * refresh another caller still waits for runs all the same.
    */
-  /** Run `fn` as the only install, uninstall or update of `kind`/`name` (see {@link packageTails}). */
-  private async withPackage<T>(kind: PackageKind, name: string, fn: () => Promise<T>): Promise<T> {
-    const key = keyOf(kind, name);
-    const prior = this.packageTails.get(key) ?? Promise.resolve();
-    let release!: () => void;
-    const tail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const mine = prior.then(() => tail);
-    this.packageTails.set(key, mine);
-    await prior;
+  /**
+   * Run `fn` as the only install, uninstall or update of `kind`/`name` (see
+   * {@link packageTails}). The lock comes after the operation and before any
+   * plugin lock (§18.6): taking it while this context holds a plugin lock
+   * could wait for an install that holds it and waits for that plugin lock,
+   * so it throws instead. A caller that already holds it runs `fn` at once.
+   * `signal` (the scheduler's shutdown) cancels the wait: aborted before the
+   * lock is free, `fn` never starts and the call rejects with its reason.
+   */
+  private async withPackage<T>(kind: PackageKind, name: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.withPackages([keyOf(kind, name)], fn, signal);
+  }
+
+  private async withPackages<T>(keys: readonly string[], fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const held = this.heldPackages.getStore();
+    const owned = held?.open ? held.keys : new Set<string>();
+    // One order among packages too: sorted, so two callers taking several never wait for each other in a cycle.
+    const wanted = [...new Set(keys)].filter((key) => !owned.has(key)).sort();
+    if (wanted.length === 0) return fn();
+    if (holdsAnyPluginInstallLock()) {
+      throw new Error(`lock order: the package lock of ${wanted.join(", ")} was asked for while a plugin lock is held; the package lock comes first (§18.6)`);
+    }
+    const releases: Array<() => void> = [];
     try {
-      return await fn();
+      for (const key of wanted) {
+        const prior = this.packageTails.get(key) ?? Promise.resolve();
+        let release!: () => void;
+        const tail = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const mine = prior.then(() => tail);
+        this.packageTails.set(key, mine);
+        releases.push(() => {
+          release();
+          if (this.packageTails.get(key) === mine) this.packageTails.delete(key);
+        });
+        await untilAborted(prior, signal);
+      }
+      // Cancelled while it waited, or the lock came free in the same turn as the abort.
+      signal?.throwIfAborted();
+      const scope = { keys: new Set([...owned, ...wanted]), open: true };
+      try {
+        return await this.heldPackages.run(scope, fn);
+      } finally {
+        scope.open = false;
+      }
     } finally {
-      release();
-      if (this.packageTails.get(key) === mine) this.packageTails.delete(key);
+      for (const release of releases.reverse()) release();
     }
   }
 
@@ -603,8 +675,8 @@ export class MarketplaceService implements RetirementEntryLookup {
    * and then calling the service could wait for a policy change's exclusive
    * lock while an install holds the shared lock and waits for that plugin lock.
    */
-  async asOneOperation<T>(fn: () => Promise<T>): Promise<T> {
-    return this.operation(fn);
+  async asOneOperation<T>(fn: () => Promise<T>, packages: ReadonlyArray<{ kind: PackageKind; name: string }> = []): Promise<T> {
+    return this.operation(() => (packages.length > 0 ? this.withPackages(packages.map((item) => keyOf(item.kind, item.name)), fn) : fn()));
   }
 
   /**
@@ -2122,7 +2194,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     return this.operation(() => this.updateCandidatesNow(reached), signal);
   }
 
-  private async updateCandidatesNow(reached: ReadonlySet<string>): Promise<UpdateCandidate[]> {
+  private async updateCandidatesNow(reached: ReadonlySet<string>, only?: PackageKeyView): Promise<UpdateCandidate[]> {
     const offers = await this.offersNow();
     const installed = await this.installedAll();
     const { rows } = await this.rows(new Set(installed.map((item) => item.sourceId).filter((id): id is string => id !== null)));
@@ -2152,6 +2224,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     for (const item of found) {
       const { key } = item.offer;
       if (!reached.has(key.sourceId)) continue;
+      if (only && (only.sourceId !== key.sourceId || only.kind !== key.kind || only.name !== key.name)) continue;
       const source = this.source(key.sourceId);
       const state = await this.registry.readState(source.id);
       const version = item.row.package.versions.find((entry) => entry.version === item.offer.to);
@@ -2216,26 +2289,35 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   /**
-   * Apply one update of the queue (§18.7.4) under the operation lock, so no
-   * user install, uninstall or other marketplace operation runs beside it.
-   * What is installed is read again first: an update whose package changed
-   * since it was classified is `superseded` and nothing is done. An
-   * automatic update runs checkpoint two against the installed baseline and
-   * keeps the previous receipt's reviewed app version; a required one is
-   * reviewed by the policy (this app version) and does not check consent.
+   * Apply one update of the queue (§18.7.4) under the operation and the
+   * package lock, so no user install, uninstall or other marketplace
+   * operation of it runs beside it, and with the policy the operation's
+   * refresh left in force. Nothing the update was queued with authorizes
+   * it: its facts are gathered again here, and `decide` judges them with the
+   * policy in force and the switches as they are now. An update whose
+   * package, offer, required status or eligibility changed since it was
+   * queued is `superseded` and nothing is done. An automatic update runs
+   * checkpoint two against the installed baseline and keeps the previous
+   * receipt's reviewed app version; one a `requiredInstalls` entry names now
+   * is reviewed by the policy (this app version) and does not check consent.
    * What the install throws is classified (§18.7.4's table).
    */
-  async applyUpdate(target: ApplyTarget, signal?: AbortSignal): Promise<ApplyOutcome> {
-    return this.operation(() => this.withPackage(target.key.kind, target.key.name, () => this.applyUpdateNow(target)), signal);
+  async applyUpdate(target: ApplyTarget, decide: ApplyDecision, signal?: AbortSignal): Promise<ApplyOutcome> {
+    return this.operation(() => this.withPackage(target.key.kind, target.key.name, () => this.applyUpdateNow(target, decide), signal), signal);
   }
 
-  private async applyUpdateNow(target: ApplyTarget): Promise<ApplyOutcome> {
+  private async applyUpdateNow(target: ApplyTarget, decide: ApplyDecision): Promise<ApplyOutcome> {
     const { key } = target;
     const installed = await this.installed(key.kind, key.name);
     const bound = target.switchSource ? installed?.sourceId !== key.sourceId : installed?.sourceId === key.sourceId;
     if (!installed || (installed.version ?? "") !== target.from || !bound) return { state: "superseded" };
     const baseline = await this.baselineOf(key.kind, key.name);
     if (!baseline) return { state: "superseded" };
+    // The update as the policy and the source make it now: still offered at this version, the same kind of change, still automatic.
+    const [current] = await this.updateCandidatesNow(new Set([key.sourceId]), key);
+    if (!current || current.to !== target.to || current.from !== target.from || current.switchSource !== target.switchSource) return { state: "superseded" };
+    if (!decide(current.facts, this.policy.autoUpdate)) return { state: "superseded" };
+    const required = current.facts.required;
     const before = await this.componentApprovals(key.kind, key.name);
     let view: InstallPlanView;
     try {
@@ -2247,7 +2329,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     try {
       // A later discovery offers another version: the next apply check classifies it.
       if (view.version !== target.to) return { state: "superseded" };
-      const review: InstallReview = target.required
+      const review: InstallReview = required
         ? { reviewedAppVersion: getAveAppVersion() }
         : { reviewedAppVersion: baseline.reviewedAppVersion, assertConsent: requireConsentEqual(key.name, baseline.consent) };
       try {
@@ -2340,7 +2422,11 @@ export class MarketplaceService implements RetirementEntryLookup {
           acknowledgedUnencryptedUpdates: acknowledgedOf(source, read.state).includes("unencrypted-updates"),
         });
       }
-      return { policy: this.policy.autoUpdate, sources };
+      const listed = new Set(sources.map((source) => source.id));
+      const installed = (await this.installedAll())
+        .filter((item): item is InstalledRecord & { sourceId: string } => item.sourceId !== null && listed.has(item.sourceId))
+        .map((item) => ({ sourceId: item.sourceId, kind: item.kind, name: item.name }));
+      return { policy: this.policy.autoUpdate, sources, installed };
     }, signal);
   }
 

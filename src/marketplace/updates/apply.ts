@@ -5,15 +5,18 @@
  * - **Idle gate, boot included.** A package starts only while
  *   `activity.isBusy()` is false. The queue subscribes to `onIdle` first and
  *   then rechecks, so an idle moment between the check and the subscription
- *   is not missed. The gate is read before each package; a turn that starts
- *   while one applies is not blocked.
+ *   is not missed. The gate is read again right before each package starts,
+ *   after every wait of its own (an agent plugin's call check); a turn that
+ *   starts once a package is applying is not blocked.
  * - **Escalation, not a bound.** After 30 minutes of waiting the queue is
- *   `escalated`, which the Updates card and the notice show with *Apply now*.
- *   *Apply now* skips only the idle gate, for what is queued then. Without it
- *   the queue keeps waiting, as long as it takes.
+ *   `escalated`, which the Updates card and the toolbar show with *Apply
+ *   now*. *Apply now* skips only the idle gate, for what is queued then; an
+ *   agent plugin still waits for its calls. Without it the queue keeps
+ *   waiting, as long as it takes.
  * - **An agent plugin** applies only while its running activation holds no
  *   call; otherwise it stays waiting and the queue moves on, trying it again
- *   on the next idle moment or a short while later.
+ *   on the next idle moment or {@link CALLS_RETRY_MS} later. Every wait ends
+ *   on an event or a timer, never by polling.
  * - **Order**: extensions in dependency order (a provider of a capability
  *   before what requires it), then the rest by key.
  * - **Shutdown** (`signal`) starts nothing more. An apply already running
@@ -43,7 +46,11 @@ export type ApplyOutcome =
   | { state: "needs-review"; delta: ConsentDelta | null }
   /** Failed before commit: the previous version stays. An attempt. */
   | { state: "failed"; error: unknown }
-  /** What is installed is no longer what the update was offered for (a user install or uninstall came first): nothing was done. */
+  /**
+   * Nothing was done: what is installed is no longer what the update was
+   * offered for (a user install or uninstall came first), or the policy,
+   * the source or the switches no longer let it apply by itself.
+   */
   | { state: "superseded" };
 
 function causes(error: unknown, seen = new Set<unknown>()): unknown[] {
@@ -140,14 +147,18 @@ export class ApplyQueue<T extends ApplyItem> {
   /** *Apply now*: the idle gate is skipped until the queue empties. */
   private forced = false;
   private readonly waitingForCalls = new Set<string>();
-  /** Ends the current wait: idle, *Apply now*, a replacement, shutdown. */
-  private wake: (() => void) | null = null;
+  /**
+   * The current wait and what ends it: idle (or *Apply now*) for the idle
+   * gate; idle or the retry timer for an agent plugin's calls; a replacement
+   * or shutdown for either.
+   */
+  private waiting: { wake: () => void; idle: boolean } | null = null;
 
   constructor(private readonly options: ApplyQueueOptions<T>) {
     options.signal.addEventListener("abort", () => {
       this.items = [];
       this.clearWait();
-      this.wake?.();
+      this.waiting?.wake();
     }, { once: true });
   }
 
@@ -162,14 +173,28 @@ export class ApplyQueue<T extends ApplyItem> {
     for (const id of [...this.waitingForCalls]) if (!this.items.some((item) => item.id === id)) this.waitingForCalls.delete(id);
     this.options.changed();
     if (this.items.length > 0) this.start();
-    else this.wake?.();
+    else this.waiting?.wake();
   }
 
-  /** *Apply now* (§18.7.4): skip the idle gate for what is queued. */
+  /**
+   * Drop what is queued that `keep` refuses (a switch turned off, a version
+   * skipped); the package applying now is left alone.
+   */
+  retain(keep: (item: T) => boolean): void {
+    if (this.options.signal.aborted) return;
+    const before = this.items.length;
+    this.items = this.items.filter(keep);
+    if (this.items.length === before) return;
+    for (const id of [...this.waitingForCalls]) if (!this.items.some((item) => item.id === id)) this.waitingForCalls.delete(id);
+    this.options.changed();
+    if (this.items.length === 0) this.waiting?.wake();
+  }
+
+  /** *Apply now* (§18.7.4): skip the idle gate for what is queued; an agent plugin's call wait stays. */
   applyNow(): void {
     if (this.options.signal.aborted || (this.items.length === 0 && !this.applying)) return;
     this.forced = true;
-    this.wake?.();
+    if (this.waiting?.idle) this.waiting.wake();
     this.start();
   }
 
@@ -223,6 +248,8 @@ export class ApplyQueue<T extends ApplyItem> {
         }, false);
         continue;
       }
+      // The call check awaited: a conversation may have started meanwhile. Read the gate again before starting.
+      if (!this.forced && this.options.activity.isBusy()) continue;
       this.clearWait();
       this.items.splice(this.items.indexOf(next), 1);
       this.waitingForCalls.delete(next.id);
@@ -254,11 +281,13 @@ export class ApplyQueue<T extends ApplyItem> {
   }
 
   /**
-   * Wait until `subscribe`'s wake, *Apply now*, a replacement or shutdown.
-   * For the idle gate (`gate`), the wait is subscribed first and the gate
-   * read again, and the wait starts the escalation clock.
+   * Wait until `subscribe`'s wake, a replacement or shutdown; for the idle
+   * gate (`idle`), also *Apply now*. The idle gate's wait is subscribed first
+   * and the gate read again, and it starts the escalation clock. *Apply now*
+   * never ends another wait: an agent plugin's calls are waited for by event
+   * or timer, not by polling.
    */
-  private async waitFor(subscribe: (wake: () => void) => () => void, gate = true): Promise<void> {
+  private async waitFor(subscribe: (wake: () => void) => () => void, idle = true): Promise<void> {
     const off: { current: (() => void) | null } = { current: null };
     await new Promise<void>((resolve) => {
       let done = false;
@@ -267,17 +296,17 @@ export class ApplyQueue<T extends ApplyItem> {
         done = true;
         resolve();
       };
-      this.wake = wake;
+      this.waiting = { wake, idle };
       off.current = subscribe(wake);
-      if (this.options.signal.aborted || this.forced) wake();
-      else if (gate) {
+      if (this.options.signal.aborted) wake();
+      else if (idle) {
         // Subscribed first, then read again: an idle moment in between is not missed.
-        if (!this.options.activity.isBusy()) wake();
+        if (this.forced || !this.options.activity.isBusy()) wake();
         else this.startWaiting();
       }
     });
     off.current?.();
-    this.wake = null;
+    this.waiting = null;
   }
 
   private startWaiting(): void {

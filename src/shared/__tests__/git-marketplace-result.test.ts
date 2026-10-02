@@ -46,12 +46,29 @@ describe("the update status across the bridge (design §13.1)", () => {
     applyCheckAt: null,
     running: false,
     historyReset: false,
+    waitingSince: null,
+    escalated: false,
+    autoUpdate: {
+      enabled: true,
+      lockedByPolicy: null,
+      sources: [{ id: "ave", label: "ave", origin: "official", switch: { effective: true, override: null, lockedByPolicy: false }, needsUnencryptedUpdates: false }],
+      packages: [{ key: update.key, switch: { effective: true, override: null, lockedByPolicy: false } }],
+    },
     packages,
   });
 
   it("keeps a package with its state, and one an earlier discovery showed, marked stale", () => {
     const sent = status([update, { ...update, key: { ...update.key, name: "notes" }, stale: true }]);
     expect(parseUpdateStatus(sent)).toEqual(sent);
+  });
+
+  it("keeps an escalated wait, and drops a status whose switches are malformed", () => {
+    const sent = status([{ ...update, state: "waiting", escalated: true }]);
+    expect(parseUpdateStatus(sent)).toEqual(sent);
+    expect(parseUpdateStatus(status([{ ...update, state: "waiting", escalated: false }]))).toBeNull();
+    const base = status([]);
+    expect(parseUpdateStatus({ ...base, autoUpdate: { ...base.autoUpdate, sources: [{ ...base.autoUpdate.sources[0], origin: "elsewhere" }] } })).toBeNull();
+    expect(parseUpdateStatus({ ...base, autoUpdate: { ...base.autoUpdate, packages: [{ key: update.key }] } })).toBeNull();
   });
 
   it.each([

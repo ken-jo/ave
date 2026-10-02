@@ -151,6 +151,60 @@ describe("the idle gate", () => {
   });
 });
 
+describe("Apply now and the waits it does not end", () => {
+  it("skips only the idle gate: an agent plugin whose calls run is tried again on its timer, not polled", async () => {
+    let polls = 0;
+    const { queue, applied, shutdown } = queueOf({ calls: () => {
+      polls += 1;
+      // A polling loop never yields to timers or I/O: stop it here so the test ends and fails instead of hanging.
+      if (polls >= 20) shutdown.abort();
+      return true;
+    } });
+    queue.replace([item("assist", { kind: "agent-plugin" })]);
+    queue.applyNow();
+    // Promise turns only, no time: a polling loop would check the calls on every turn.
+    for (let i = 0; i < 200; i += 1) await Promise.resolve();
+    expect(polls).toBe(1);
+    expect(applied).toEqual([]);
+    await vi.advanceTimersByTimeAsync(CALLS_RETRY_MS);
+    expect(polls).toBe(2);
+  });
+
+  it("reads the idle gate again after the agent plugin's call check: a conversation that started meanwhile holds the package", async () => {
+    const activity = createConversationActivityCoordinator();
+    let finishCheck!: (value: boolean) => void;
+    const check = new Promise<boolean>((resolve) => { finishCheck = resolve; });
+    const apply = vi.fn(async (): Promise<ApplyOutcome> => ({ state: "applied" }));
+    const queue = new ApplyQueue<ApplyItem>({
+      activity, apply, callsInFlight: () => check, settled: async () => undefined, changed: vi.fn(),
+      signal: new AbortController().signal, now: () => Date.now(), log: { warn: vi.fn() },
+    });
+    queue.replace([item("assist", { kind: "agent-plugin" })]);
+    await flush();
+    // The call check is pending; a session transition starts now.
+    const admission = activity.beginSessionTransitionAdmission();
+    expect(activity.isBusy()).toBe(true);
+    finishCheck(false);
+    await flush();
+    expect(apply).not.toHaveBeenCalled();
+    admission!.release();
+    await queue.drained();
+    expect(apply).toHaveBeenCalledOnce();
+  });
+
+  it("retain drops what is queued and no longer applies by itself, and leaves the package applying alone", async () => {
+    const { activity, queue, applied } = queueOf();
+    const end = hold((factory) => activity.tryTrackTurn(factory));
+    queue.replace([item("notes"), item("wiki")]);
+    await flush();
+    queue.retain((next) => next.name !== "wiki");
+    expect(queue.state().queued).toEqual(["acme:plugin:notes"]);
+    await end();
+    await queue.drained();
+    expect(applied).toEqual(["notes"]);
+  });
+});
+
 describe("the queue", () => {
   it("waits for an agent plugin's calls, applying the others first, and tries it again", async () => {
     let calls = true;

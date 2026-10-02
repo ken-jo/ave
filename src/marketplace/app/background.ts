@@ -37,7 +37,7 @@ import type { AppBootstrapStatus } from "../../shared/bootstrap-status.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
 import {
-  updateNeedsUser,
+  updateViewNeedsUser,
   type AutoUpdatedView,
   type BootInstallNoticeView,
   type InstallProgressView,
@@ -51,11 +51,11 @@ import {
   type UpdateReason,
   type UpdateStatusView,
 } from "../../shared/git-marketplace.js";
-import { isSkippedPackageUpdate, readSkippedPluginUpdates } from "../../shared/skipped-plugin-updates.js";
+import { isSkippedPackageUpdate, packageUpdateSkipKey, readSkippedPluginUpdates } from "../../shared/skipped-plugin-updates.js";
 import { isMarketplaceError, scrubMarketplaceErrorDetail } from "../errors.js";
 import { ApplyQueue, type ApplyItem, type ApplyOutcome } from "../updates/apply.js";
 import { classifyUpdate, resolvePackageSwitch, resolveSourceSwitch, type AutoUpdateSettings, type UpdateClassification } from "../updates/eligibility.js";
-import type { AppliedState, ApplyTarget, AutoUpdateContext, UpdateCandidate } from "./service.js";
+import type { AppliedState, ApplyDecision, ApplyTarget, AutoUpdateContext, UpdateCandidate } from "./service.js";
 import type { AppliedDefaults } from "../boot-installs/applied.js";
 import { packageKeyId } from "../boot-installs/default-installs.js";
 import type { BootInstallReport } from "../boot-installs/run.js";
@@ -168,8 +168,8 @@ export interface BackgroundService {
   /** The policy's `autoUpdate` and each source's facts, for the switches. */
   autoUpdateContext(signal: AbortSignal): Promise<AutoUpdateContext>;
   applyBootInstalls(defaults: readonly PackageKey[], applied: AppliedDefaults, signal: AbortSignal): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }>;
-  /** Apply one queued update (§18.7.4). */
-  applyUpdate(target: ApplyTarget, signal: AbortSignal): Promise<ApplyOutcome>;
+  /** Apply one queued update (§18.7.4), if `decide` still finds it automatic under the locks. */
+  applyUpdate(target: ApplyTarget, decide: ApplyDecision, signal: AbortSignal): Promise<ApplyOutcome>;
   /** An applied update read again; null when it is no longer installed at that version. */
   appliedState(key: PackageKeyView, to: string): Promise<AppliedState | null>;
   callsInFlight(name: string): Promise<boolean>;
@@ -205,7 +205,8 @@ export interface MarketplaceBackground {
   recheck(): Promise<void>;
   /**
    * `marketplace` settings were written: the updates are published again
-   * under the new notice and skip settings, and a due check runs, so a
+   * under the new notice, skip and switch settings, a queued update they no
+   * longer let apply by itself leaves the queue, and a due check runs, so a
    * shorter interval takes effect now.
    */
   settingsChanged(): Promise<void>;
@@ -359,6 +360,7 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       state = memory.state;
       if (memory.state === "needs-review" && reasons.length === 0) reasons = ["consent-changed"];
     }
+    const escalated = state === "waiting" && queued.escalated;
     return {
       key: candidate.key,
       displayName: candidate.displayName,
@@ -368,6 +370,7 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       ...(reasons.length > 0 ? { reasons } : {}),
       ...(memory?.lastError ? { failure: failureView({ ...memory, lastError: memory.lastError }) } : {}),
       ...(context ? { autoUpdate: resolvePackageSwitch(context.policy, settings, candidate.facts.switchKey, candidate.facts.source) } : {}),
+      ...(escalated ? { escalated: true as const } : {}),
     };
   };
 
@@ -443,17 +446,34 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       historyReset,
       waitingSince: queued.waitingSince === null ? null : iso(queued.waitingSince),
       escalated: queued.escalated,
-      autoUpdate: {
-        enabled: settings.autoUpdate !== false,
-        lockedByPolicy: context && context.policy !== "user" ? context.policy : null,
-        sources: (context?.sources ?? []).map((source) => ({
-          id: source.id,
-          label: source.label,
-          switch: resolveSourceSwitch(context!.policy, settings, source),
-          needsUnencryptedUpdates: source.http && !source.acknowledgedUnencryptedUpdates,
-        })),
-      },
+      autoUpdate: autoUpdateView(settings),
       packages: shown,
+    };
+  };
+
+  /**
+   * The switches as they take effect (§18.7.2): under a policy value the
+   * global switch shows that value, not the stored one; every installed
+   * package bound to a listed source has its switch, update or not.
+   */
+  const autoUpdateView = (settings: AutoUpdateSettings): UpdateStatusView["autoUpdate"] => {
+    const locked = context && context.policy !== "user" ? context.policy : null;
+    const sources = context?.sources ?? [];
+    const byId = new Map(sources.map((source) => [source.id, source]));
+    return {
+      enabled: locked !== null ? locked === "on" : settings.autoUpdate !== false,
+      lockedByPolicy: locked,
+      sources: sources.map((source) => ({
+        id: source.id,
+        label: source.label,
+        origin: source.origin,
+        switch: resolveSourceSwitch(context!.policy, settings, source),
+        needsUnencryptedUpdates: source.http && !source.acknowledgedUnencryptedUpdates,
+      })),
+      packages: (context?.installed ?? []).flatMap((key) => {
+        const source = byId.get(key.sourceId);
+        return source ? [{ key, switch: resolvePackageSwitch(context!.policy, settings, packageUpdateSkipKey(key), source) }] : [];
+      }),
     };
   };
 
@@ -471,7 +491,8 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
     }
     // Notices off: the pill hears of nothing that waits only for the user's choice.
     const notices = input.settings().updateNotices;
-    const updates = status.packages.filter((update) => updateNeedsUser(update.state) && (notices || update.state !== "manual"));
+    // An escalated wait is sent whatever the notice setting: only *Apply now* moves it on (§18.7.4).
+    const updates = status.packages.filter((update) => updateViewNeedsUser(update) && (notices || update.state !== "manual"));
     const key = updatesKey(updates);
     if (key === lastUpdates) return;
     gate.emit(() => input.publishUpdates(updates));
@@ -654,6 +675,16 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
     publish();
   };
 
+  /** Whether an update applies by itself under `policy` and the switches, skips and failures as they are now (§18.7.2). */
+  const stillAutomatic = (id: string, facts: UpdateCandidate["facts"], policy: AutoUpdateContext["policy"]): boolean => {
+    const settings = input.settings();
+    const skipped = readSkippedPluginUpdates(settings.skippedPluginUpdates);
+    const prior = history.packages[id];
+    const memory = prior && prior.to === facts.to ? prior : null;
+    const key = parseUpdateRecordKey(id);
+    return classifyUpdate(facts, { policy, settings, memory, skipped: isSkippedPackageUpdate({ key, to: facts.to }, skipped) })?.state === "automatic";
+  };
+
   /** The notice's "Updated automatically" entry for one applied update (§18.7.5). */
   const announce = (candidate: UpdateCandidate, state: AutoUpdatedView["state"]) => {
     const notice: BootInstallNoticeView = {
@@ -726,13 +757,14 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
     apply: async (item, signal) => {
       const service = await gate.work(() => input.service());
       const { candidate } = item;
+      // Judged again under the service's locks with what is in force then: nothing queued earlier authorizes it.
+      const decide: ApplyDecision = (facts, policy) => stillAutomatic(item.id, facts, policy);
       return gate.work(() => service.applyUpdate({
         key: candidate.key,
         from: candidate.from,
         to: candidate.to,
-        required: candidate.facts.required,
         switchSource: candidate.switchSource,
-      }, signal));
+      }, decide, signal));
     },
     callsInFlight: async (item) => {
       const service = await gate.work(() => input.service());
@@ -890,6 +922,14 @@ export function startMarketplaceBackground(input: MarketplaceBackgroundInput): M
       outside(async () => {
         await loaded;
         await recheck();
+        // A switch turned off or a version skipped: what is queued and no longer automatic waits for the user.
+        if (context) {
+          const policy = context.policy;
+          queue.retain((item) => {
+            const fresh = candidates.get(item.id);
+            return stillAutomatic(item.id, (fresh ?? item.candidate).facts, policy);
+          });
+        }
         dueCheck();
       }),
     status: async () => {
