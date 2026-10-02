@@ -3,8 +3,6 @@ import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildManifestValidator } from "./src/plugins/runtime/manifest-validation.js";
-import { removeOwnedPluginTree } from "./src/plugins/plugin-removal-transaction.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -21,6 +19,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * the schema unchanged at an app release tag.
  */
 async function validateJsonFixtures(): Promise<void> {
+  const { buildManifestValidator } = await import("./src/plugins/runtime/manifest-validation.js");
   const validate = await buildManifestValidator();
 
   const jsonFixtures = await collectJsonFixtures(join(HERE, "src"));
@@ -44,7 +43,8 @@ async function validateJsonFixtures(): Promise<void> {
 }
 
 /**
- * Vitest global setup — creates ~/.ave/test-tmp/ before any tests run.
+ * Vitest global setup — creates ~/.ave/test-tmp/ before any tests run, and
+ * the per-run AVE_HOME and sandbox base inside it.
  *
  * Tests use ~/.ave/test-tmp/ as the base directory for mkdtempSync() to
  * avoid Windows 8.3 short-path (RUNNER~1) issues with os.tmpdir().
@@ -54,17 +54,32 @@ export async function setup(): Promise<() => Promise<void>> {
   const testTmp = join(homedir(), ".ave", "test-tmp");
   mkdirSync(testTmp, { recursive: true });
   // The sandbox private roots (every confined process's HOME and temp
-  // directory) for a test with no AVE_HOME of its own, one directory per run
+  // directory) for a test that clears AVE_HOME, one directory per run
   // (`sandboxPrivateBase` in asrt-sandbox.ts). Never `~/.ave/sandbox`: a
   // running app's boot empties that, and a sweep from a test would empty a
   // running app's. Short, for the socket-path limit some suites run into.
   const sandboxBase = mkdtempSync(join(testTmp, "sbx-"));
   process.env.AVE_TEST_SANDBOX_BASE = sandboxBase;
+  // The run's Ave homes: each test file starts in its own directory inside
+  // this one (`src/__tests__/vitest-ave-home.ts`), so whatever a test does not
+  // point elsewhere — an AuditLogger, a session store, a settings file built
+  // with its defaults — lands there, never in the developer's real ~/.ave.
+  // AVE_HOME is replaced whatever the shell exported, so one left over from
+  // an app session cannot reach the tests. `aveHome()` refuses a path under
+  // the real home that is not test-tmp.
+  const aveHomeBase = mkdtempSync(join(testTmp, "h-"));
+  process.env.AVE_TEST_RUN_HOME = aveHomeBase;
+  process.env.AVE_HOME = aveHomeBase;
+  // The app modules load only now: some resolve a store's directory from
+  // `aveHome()` when they load, which in this process would otherwise be the
+  // real ~/.ave (and is refused under the test runner).
+  const { removeOwnedPluginTree } = await import("./src/plugins/plugin-removal-transaction.js");
   await validateJsonFixtures();
   return async () => {
     // Takes back the modes a confined process may narrow inside its own
     // directory, and follows no link out of the base.
     await removeOwnedPluginTree(sandboxBase);
+    await removeOwnedPluginTree(aveHomeBase);
   };
 }
 

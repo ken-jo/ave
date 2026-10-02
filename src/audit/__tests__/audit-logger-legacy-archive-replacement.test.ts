@@ -20,14 +20,9 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { join } from "node:path";
-
-vi.mock("node:os", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("node:os")>();
-  return { ...orig, homedir: vi.fn(orig.homedir) };
-});
 
 // Both readers are wrapped: the pathname reader is what the pre-fix code used
 // and the descriptor reader is what the fixed code uses, so the injection point
@@ -83,7 +78,8 @@ beforeEach(() => {
   auditDir = join(testHome, ".ave", "audit");
   mkdirSync(auditDir, { recursive: true });
   loggers = [];
-  vi.mocked(homedir).mockReturnValue(testHome);
+  // The logger's default directory, `<AVE_HOME>/audit`.
+  vi.stubEnv("AVE_HOME", join(testHome, ".ave"));
 });
 
 afterEach(async () => {
@@ -96,6 +92,7 @@ afterEach(async () => {
     await cleanupTmpDir(testHome);
   }
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 function createAuditLogger(): AuditLogger {

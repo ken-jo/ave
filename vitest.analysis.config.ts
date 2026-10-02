@@ -107,7 +107,7 @@ export default defineConfig({
           // pins the runtime locale to Korean for node tests so the existing
           // Korean assertions stay valid. Tests that specifically exercise the
           // i18n default (English) set the locale explicitly themselves.
-          setupFiles: ["./src/i18n/testing/vitest-ambient-intl.ts"],
+          setupFiles: ["./src/i18n/testing/vitest-ambient-intl.ts", "./src/__tests__/vitest-ave-home.ts"],
           include: [
             `src/**/__tests__/${testFileGlob}`,
             `test/${testFileGlob}`,
@@ -128,7 +128,7 @@ export default defineConfig({
           // t() with English as the default; this setup pins the runtime
           // locale to Korean for renderer tests so the existing Korean
           // assertions stay valid (and also verify the Korean catalog wiring).
-          setupFiles: ["./src/i18n/testing/vitest-ambient-intl.ts"],
+          setupFiles: ["./src/i18n/testing/vitest-ambient-intl.ts", "./src/__tests__/vitest-ave-home.ts"],
           include: rendererTestGlobs,
           exclude: baseExclude,
         },

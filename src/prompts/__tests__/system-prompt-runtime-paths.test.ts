@@ -13,13 +13,19 @@ afterEach(() => vi.unstubAllEnvs());
 
 describe("Operational session paths in the model context", () => {
   it("provides the default absolute store without requiring a session identity", () => {
+    // The default is `<home>/.ave`; a scratch home stands in for the
+    // person's, which a test process may not resolve.
+    const home = join(tmpdir(), "session-path-default-home");
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
     vi.stubEnv("AVE_HOME", undefined);
 
     const prompt = makeSystemPromptBuilder().build();
 
+    expect(homedir()).toBe(home);
     expect(applicationPaths(prompt)).toEqual({
-      applicationHome: join(homedir(), ".ave"),
-      primarySessionStore: join(homedir(), ".ave", "sessions"),
+      applicationHome: join(home, ".ave"),
+      primarySessionStore: join(home, ".ave", "sessions"),
     });
     expect(prompt).toContain("list_files and read_file");
     expect(prompt).toContain("do not replace them with ~ or $HOME");
