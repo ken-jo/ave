@@ -766,7 +766,7 @@
               <strong>What changes</strong>
               <div class="diff" aria-label="Permission changes">
                 <span class="same">  network  tracker.example.com</span>
-                <span class="add">+ network  uploads.example-cdn.net</span>
+                <span class="add">+ network  uploads.example</span>
                 <span class="add">+ reads    llm.apiKey (host-managed)</span>
                 <span class="del">- tool     issue_export_csv</span>
                 <span class="same">  engines  &gt;=0.10.0 &lt;0.12.0</span>
@@ -1008,6 +1008,10 @@
               <li><div class="row"><span style="flex:1 1 200px"><strong>Approvals Agent</strong><span class="sub">Plugins · <span class="mono">3.1.0 → 3.2.0</span></span></span><span class="ver">Components wait for your approval</span><button class="btn" type="button" data-go="consent" data-consent-go="components">Review</button>
                 <select class="input" aria-label="Automatic updates for Approvals Agent" disabled><option>On</option></select></div>
                 <span class="ver">Required by your organization: it updates automatically, whatever this switch is set to.</span></li>
+              <li><div class="row"><span style="flex:1 1 200px"><strong>Pretendard</strong><span class="sub">Fonts · <span class="mono">1.3.9 → 1.4.0</span></span></span><span class="ver">Updating</span>
+                <select class="input" aria-label="Automatic updates for Pretendard"><option>Default (On)</option><option>On</option><option>Off</option></select></div></li>
+              <li><div class="row"><span style="flex:1 1 200px"><strong>Local Indexer</strong><span class="sub">Extensions · <span class="mono">0.4.10 → 0.4.11</span></span></span><span class="ver">Installed, not running — restart Ave</span>
+                <select class="input" aria-label="Automatic updates for Local Indexer"><option>Default (On)</option><option>On</option><option>Off</option></select></div></li>
               <li><div class="row"><span style="flex:1 1 200px"><strong>Release Captain</strong><span class="sub">Agents · <span class="mono">0.3.0 → 0.4.0</span></span></span><span class="ver">Update available</span><button class="btn" type="button">Review</button>
                 <select class="input" aria-label="Automatic updates for Release Captain"><option>Default (On)</option><option>On</option><option>Off</option></select></div>
                 <span class="ver">Source not reached in the last check — shown as an earlier check left it.</span></li>
@@ -1060,7 +1064,7 @@
         <div style="display:grid; gap:12px">
           <div class="row"><span class="ver">Demo state</span>
             <div class="seg" role="group" aria-label="Review mode">
-              <button type="button" data-cm="delta" aria-pressed="true">Consent changes</button><button type="button" data-cm="codefree" aria-pressed="false">Non-code files only</button><button type="button" data-cm="components" aria-pressed="false">Component approval</button>
+              <button type="button" data-cm="delta" aria-pressed="true">Consent changes</button><button type="button" data-cm="codefree" aria-pressed="false">Non-code files only</button><button type="button" data-cm="components" aria-pressed="false">Component approval</button><button type="button" data-cm="components-selected" aria-pressed="false">Component approval, one selected</button>
             </div>
           </div>
 
@@ -1075,7 +1079,7 @@
               <h4>What you agreed to changes</h4>
               <p class="ver">A changed or new server or hook runs only once you approve it. Leave it unchecked to install the update with it turned off.</p>
               <ul class="consent">
-                <li><span><b>Network access</b><span class="ver">tracker.example.com → tracker.example.com, uploads.example-cdn.net</span></span></li>
+                <li><span><b>Network access</b><span class="ver">tracker.example.com → tracker.example.com, uploads.example</span></span></li>
                 <li><label><input type="checkbox" /> <span><b>MCP server issues</b><span class="ver">4f1c2a9e0b7d → 9ae1c03d51b0</span><span class="ver">Changed code: server/index.js</span></span></label></li>
                 <li><label><input type="checkbox" /> <span><b>Hook 0</b><span class="ver">none → 51b07e129ae1</span></span></label></li>
               </ul>
@@ -1093,15 +1097,15 @@
             </section>
           </div>
 
-          <div class="dialog" data-cmview="components" hidden role="dialog" aria-labelledby="cm-title" style="width:min(560px, 100%)">
+          <div class="dialog" data-cmview="components components-selected" hidden role="dialog" aria-labelledby="cm-title" style="width:min(560px, 100%)">
             <header><h3 id="cm-title">Approve components of Approvals Agent</h3><p class="ver">Your organization updated this package. These components stay off until you approve them.</p></header>
             <div class="body">
-              <ul class="consent">
+              <ul class="consent" id="cm-components">
                 <li><label><input type="checkbox" /> <span><b>MCP server approvals</b><span class="ver">none → 0b7d3c5a8f6e</span></span></label></li>
                 <li><label><input type="checkbox" /> <span><b>Hook 1</b><span class="ver">c4a7e3f5d8b2 → 2d1b9c4a7e3f</span></span></label></li>
               </ul>
             </div>
-            <footer><button class="btn" type="button">Cancel</button><button class="btn primary" type="button">Approve</button></footer>
+            <footer><button class="btn" type="button">Cancel</button><button class="btn primary" type="button" id="cm-approve" disabled>Approve</button></footer>
           </div>
         </div>
       </section>
@@ -1146,7 +1150,7 @@
               <p class="ver">release → archive → built tree. The first rung that verifies is used; nothing is built on this computer.</p>
             </div>
             <div class="prob warning" role="alert" aria-label="Internal downloads">
-              <p><svg class="i"><use href="#i-alert"/></svg><span>lab asks Ave to download from 10.0.4.20, another internal address. A marketplace that can name internal hosts can make Ave send requests into your network, for example to a router's settings page; a later failed check cannot undo a request already sent. Allow internal downloads?</span></p>
+              <p><svg class="i"><use href="#i-alert"/></svg><span>lab asks Ave to download from 10.0.0.2, another internal address. A marketplace that can name internal hosts can make Ave send requests into your network, for example to a router's settings page; a later failed check cannot undo a request already sent. Allow internal downloads?</span></p>
               <div class="row"><button class="btn primary" type="button">Allow internal downloads</button><button class="btn" type="button"><svg class="i"><use href="#i-copy"/></svg>Copy details</button></div>
             </div>
           </div>
@@ -1229,8 +1233,8 @@
     git: "Detected git state and the managed install. Use the demo state buttons to see each state.",
     folders: "Folder sources beside git ones: the Local folder and Network folder badges, the folder's path, its contents revision and read time, and Show in Finder (Explorer, file manager). A failed read names its reason and keeps the last good contents. A network folder the source never allowed, and an http source's sign-in, offer Allow…, which states the risk again (open it from the nas-tools row). The last row is a quarantined source.",
     addfolder: "The Add dialog with Choose folder…. A folder hides the branch, package folder and sign-in fields. A network folder is asked about in the same confirm step as an http or internal address (Before Ave connects), before anything is read. A folder that is, lies inside or contains a folder already added is refused with Show <id>. Without git, the git step still offers Choose folder….",
-    autoupdates: "The Updates card in Maintenance: the cadence, Check now, the global switch, the 30-minute wait with Apply now, partial results, rows by state with their reasons and the package's Automatic updates select, the unmet required packages, Updated automatically and the switch per source (an http source asks first). Under a policy the switch is locked and says what takes effect. Installed cards show their update state; the package sheet has the same select.",
-    consent: "The update review's consent section: one row per change to what the user agreed to, with an approve box for a changed or new MCP server or hook; the one-row review when only non-code files changed, approved with Approve update; and the component approval of an organization's agent plugin update.",
+    autoupdates: "The Updates card in Maintenance: the cadence, Check now, the global switch, the 30-minute wait with Apply now, partial results, rows in every state (Updated automatically is the list below them) with their reasons and the package's Automatic updates select, the unmet required packages, Updated automatically and the switch per source (an http source asks first). Under a policy the switch is locked and says what takes effect. Installed cards show their update state; the package sheet has the same select.",
+    consent: "The update review's consent section: one row per change to what the user agreed to, with an approve box for a changed or new MCP server or hook; the one-row review when only non-code files changed, approved with Approve update; and the component approval of an organization's agent plugin update, whose Approve stays disabled until a component is selected.",
     foldersheet: "A folder package's provenance (folder, path, read time, contents digest), its one version, and its review bound to the folder's contents. Delivery shows the folder rung, or, for an http marketplace, the unencrypted label on a pinned download. An internal download the marketplace names is asked for with Allow internal downloads.",
     problems: "MarketplaceProblem's tones: policy (Set by your organization, nothing to continue), warning (a confirmation that Allow… resolves, with the risk restated), and error (what happened and what to do). Main's English message is only behind Copy details, scrubbed."
   };
@@ -1320,9 +1324,16 @@
   document.querySelectorAll("[data-af]").forEach((b) => b.addEventListener("click", () => afState(b.dataset.af)));
   afState("address");
 
+  // Approve stays disabled until a component is selected (UpdateReview.tsx).
+  const cmBoxes = document.querySelectorAll("#cm-components input[type=checkbox]");
+  const cmApprove = document.getElementById("cm-approve");
+  const cmSync = () => { cmApprove.disabled = ![...cmBoxes].some((box) => box.checked); };
+  cmBoxes.forEach((box) => box.addEventListener("change", cmSync));
   function cmState(name) {
     document.querySelectorAll("[data-cmview]").forEach((v) => { v.hidden = !v.dataset.cmview.split(" ").includes(name); });
     document.querySelectorAll(".seg [data-cm]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.cm === name)));
+    if (name === "components" || name === "components-selected") cmBoxes.forEach((box, i) => { box.checked = name === "components-selected" && i === 0; });
+    cmSync();
   }
   document.querySelectorAll("[data-cm]").forEach((b) => b.addEventListener("click", () => cmState(b.dataset.cm)));
   document.querySelectorAll("[data-consent-go]").forEach((b) => b.addEventListener("click", () => cmState(b.dataset.consentGo)));
