@@ -121,7 +121,10 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
     // App modules load only now, after AVE_HOME names this run's home.
     const { removeOwnedPluginTree } = await import("./src/plugins/plugin-removal-transaction.js");
     // What a killed run could not remove; a live run's are kept.
-    await sweepStaleRunDirs(testTmp, removeOwnedPluginTree);
+    const swept = await sweepStaleRunDirs(testTmp, removeOwnedPluginTree);
+    for (const aside of swept.stranded) {
+      console.warn(`[vitest setup] left ${aside} in place: it changed between being judged abandoned and being taken aside`);
+    }
     await validateJsonFixtures();
   } catch (error) {
     // Vitest calls no teardown for a setup that threw. Nothing has run in

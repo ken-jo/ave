@@ -8,7 +8,7 @@
  * scratch one too.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import type { TestProject } from "vitest/node";
@@ -28,17 +28,22 @@ vi.mock("./support/test-run-dirs.js", async (importOriginal) => {
 
 import {
   ensureTestTmpRoot,
+  parsePsLstartUtc,
   RUN_OWNER_FILE,
+  RUN_OWNER_VERSION,
   STALE_RUN_DIR_AGE_MS,
   sweepStaleRunDirs,
   systemProcessProbe,
+  validRunOwner,
   type ProcessProbe,
   type RunOwner,
 } from "./support/test-run-dirs.js";
 import { useScratchLinks, useTempDirs } from "./test-helpers.js";
 import { setup } from "../../vitest.globalSetup.js";
 
-const RUN_ENV = ["HOME", "USERPROFILE", "AVE_HOME", "AVE_TEST_RUN_HOME", "AVE_TEST_SANDBOX_BASE"] as const;
+const RUN_ENV = [
+  "HOME", "USERPROFILE", "AVE_HOME", "AVE_TEST_RUN_HOME", "AVE_TEST_SANDBOX_BASE", "TZ", "LC_ALL", "LANG",
+] as const;
 const savedEnv = Object.fromEntries(RUN_ENV.map((name) => [name, process.env[name]]));
 const scratch = useTempDirs("vitest-setup-");
 const link = useScratchLinks();
@@ -71,12 +76,21 @@ function runDirs(testTmp: string): string[] {
 
 const DAY_AGO = () => new Date(Date.now() - STALE_RUN_DIR_AGE_MS - 60_000);
 
-/** A run directory as a run makes it: named so, owned, and last touched long ago. */
-function runDir(path: string, owner: RunOwner | null, when: Date = DAY_AGO()): string {
+/**
+ * A run directory as a run makes it: named so, with `record` as its owner
+ * file (an object is written as JSON, a string as is), last touched long ago.
+ */
+function runDir(path: string, record: RunOwner | Record<string, unknown> | string | null, when: Date = DAY_AGO()): string {
   mkdirSync(path, { recursive: true });
-  if (owner !== null) writeFileSync(join(path, RUN_OWNER_FILE), JSON.stringify(owner));
+  if (record !== null) {
+    writeFileSync(join(path, RUN_OWNER_FILE), typeof record === "string" ? record : JSON.stringify(record));
+  }
   utimesSync(path, when, when);
   return path;
+}
+
+function owner(pid: number, started: string, host: string = hostname()): RunOwner {
+  return { version: RUN_OWNER_VERSION, pid, started, host };
 }
 
 /** A pid no process has: a child that has already exited. */
@@ -92,6 +106,17 @@ function exitedPid(): number {
   return pid;
 }
 
+function ownStart(): string {
+  const started = systemProcessProbe.startedAt(process.pid);
+  expect(started).toBeDefined();
+  return started!;
+}
+
+const removeTree = async (path: string) => {
+  const { rm } = await import("node:fs/promises");
+  await rm(path, { recursive: true });
+};
+
 describe("vitest global setup", () => {
   it("makes one set of owned run directories for every project in the run and removes it after the last", async () => {
     const testTmp = scratchTestTmp();
@@ -101,8 +126,8 @@ describe("vitest global setup", () => {
     expect(process.env.AVE_HOME).toBe(process.env.AVE_TEST_RUN_HOME);
     expect(process.env.AVE_TEST_RUN_HOME!.startsWith(join(testTmp, "h-"))).toBe(true);
     for (const name of runDirs(testTmp)) {
-      const owner = JSON.parse(readFileSync(join(testTmp, name, RUN_OWNER_FILE), "utf8")) as RunOwner;
-      expect(owner).toMatchObject({ pid: process.pid, host: hostname() });
+      const record = JSON.parse(readFileSync(join(testTmp, name, RUN_OWNER_FILE), "utf8")) as unknown;
+      expect(validRunOwner(record)).toEqual(owner(process.pid, ownStart()));
     }
 
     await teardownNode();
@@ -113,24 +138,32 @@ describe("vitest global setup", () => {
 
   it("removes what a killed run left long ago before making its own, and keeps a live run's", async () => {
     const testTmp = scratchTestTmp();
-    const killed = runDir(join(testTmp, "h-Kill01"), { pid: exitedPid(), host: hostname() });
+    const killed = runDir(join(testTmp, "h-Kill01"), owner(exitedPid(), "ps:1"));
     mkdirSync(join(killed, "f-Kill01"));
     utimesSync(killed, DAY_AGO(), DAY_AGO());
-    const live = runDir(join(testTmp, "h-Live01"), {
-      pid: process.pid,
-      host: hostname(),
-      started: systemProcessProbe.startedAt(process.pid),
-    });
+    const live = runDir(join(testTmp, "h-Live01"), owner(process.pid, ownStart()));
     const teardown = await setup(project());
     expect(existsSync(killed)).toBe(false);
     expect(existsSync(live)).toBe(true);
     await teardown();
   });
 
+  it("is not stopped by an owner record it cannot read, and keeps that directory", async () => {
+    const testTmp = scratchTestTmp();
+    const kept = [
+      runDir(join(testTmp, "h-Null01"), "null"),
+      runDir(join(testTmp, "h-Arr001"), "[]"),
+      runDir(join(testTmp, "h-Torn01"), "{\"version\":2,"),
+    ];
+    const teardown = await setup(project());
+    for (const path of kept) expect(existsSync(path), path).toBe(true);
+    await teardown();
+  });
+
   it("refuses a test-tmp that is a link, before making or removing anything", async () => {
     const testTmp = scratchTestTmp();
     const elsewhere = scratch();
-    const sentinel = runDir(join(elsewhere, "h-Else01"), { pid: exitedPid(), host: hostname() });
+    const sentinel = runDir(join(elsewhere, "h-Else01"), owner(exitedPid(), "ps:1"));
     mkdirSync(join(testTmp, ".."), { recursive: true });
     link(elsewhere, testTmp);
     await expect(setup(project())).rejects.toThrow(/refusing .* as the tests' scratch root: it is not a real directory/);
@@ -154,82 +187,218 @@ describe("vitest global setup", () => {
   });
 });
 
+describe("a process's start identity", () => {
+  it("is the same under any time zone and locale the reading process has", async () => {
+    process.env.TZ = "UTC";
+    process.env.LC_ALL = "C";
+    process.env.LANG = "C";
+    const recorded = ownStart();
+    const testTmp = scratch();
+    const live = runDir(join(testTmp, "h-Envr01"), owner(process.pid, recorded));
+    for (const [tz, locale] of [["Asia/Seoul", "fr_FR.UTF-8"], ["America/New_York", "de_DE.UTF-8"], ["Pacific/Kiritimati", "ko_KR.UTF-8"]]) {
+      process.env.TZ = tz;
+      process.env.LC_ALL = locale;
+      process.env.LANG = locale;
+      expect(systemProcessProbe.startedAt(process.pid), `${tz} ${locale}`).toBe(recorded);
+      expect((await sweepStaleRunDirs(testTmp, removeTree)).removed).toEqual([]);
+      expect(existsSync(live)).toBe(true);
+    }
+  });
+
+  it("reads ps start text in the C locale and UTC as seconds since the epoch, and nothing else", () => {
+    expect(parsePsLstartUtc("Thu Oct  2 04:29:05 2026")).toBe(Date.UTC(2026, 9, 2, 4, 29, 5) / 1000);
+    expect(parsePsLstartUtc("Mon Feb 29 23:59:59 2028\n")).toBe(Date.UTC(2028, 1, 29, 23, 59, 59) / 1000);
+    for (const text of [
+      "",
+      "jeu  2 oct 04:29:05 2026",
+      "Thu Oct  2 04:29:05 KST 2026",
+      "Mon Feb 30 01:00:00 2026",
+      "Thu Oct  2 24:00:00 2026",
+      "Thu Okt  2 04:29:05 2026",
+    ]) {
+      expect(parsePsLstartUtc(text), text).toBeUndefined();
+    }
+  });
+});
+
+describe("validRunOwner", () => {
+  const good = owner(4242, "ps:1790000000", "this-host");
+
+  it("accepts a record of this version with every field well formed", () => {
+    expect(validRunOwner(good)).toEqual(good);
+    expect(validRunOwner(owner(1, "linux:0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0:123456"))).toBeDefined();
+    expect(validRunOwner(owner(1, "win32:133700000000000000"))).toBeDefined();
+  });
+
+  it("rejects anything else", () => {
+    const { version: _version, ...unversioned } = good;
+    for (const [label, value] of [
+      ["null", null],
+      ["an array", [good]],
+      ["a number", 4242],
+      ["a string", "4242"],
+      ["a class instance", Object.assign(new Date(0), good)],
+      ["a string pid", { ...good, pid: "4242" }],
+      ["a fractional pid", { ...good, pid: 42.5 }],
+      ["a zero pid", { ...good, pid: 0 }],
+      ["a negative pid", { ...good, pid: -1 }],
+      ["an unsafe pid", { ...good, pid: 2 ** 60 }],
+      ["an empty host", { ...good, host: "" }],
+      ["a number host", { ...good, host: 7 }],
+      ["an empty start", { ...good, started: "" }],
+      ["a raw ps start", { ...good, started: "Thu Oct  2 04:29:05 2026" }],
+      ["a start of no known form", { ...good, started: "ps:12a" }],
+      ["no start", { ...good, started: undefined }],
+      ["no version", unversioned],
+      ["another version", { ...good, version: 1 }],
+      ["a future version", { ...good, version: 3 }],
+      ["a string version", { ...good, version: "2" }],
+    ] as const) {
+      expect(validRunOwner(value), label).toBeUndefined();
+    }
+  });
+});
+
 describe("sweepStaleRunDirs", () => {
   const host = "this-host";
-  /** Pid 100 started at "t0" and lives; every other pid is gone. */
+  /** Pid 100 started at "ps:1000" and lives; every other pid is gone. */
   const probe: ProcessProbe = {
     exists: (pid) => pid === 100,
-    startedAt: (pid) => (pid === 100 ? "t0" : undefined),
+    startedAt: (pid) => (pid === 100 ? "ps:1000" : undefined),
     host: () => host,
   };
-  const sweep = (testTmp: string, extra: { now?: number } = {}) =>
-    sweepStaleRunDirs(testTmp, async (path) => {
-      const { rm } = await import("node:fs/promises");
-      await rm(path, { recursive: true });
-    }, { probe, ...extra });
+  const sweep = (testTmp: string, extra: { now?: number; onStep?: (step: "judged" | "taken-aside", path: string) => void } = {}) =>
+    sweepStaleRunDirs(testTmp, removeTree, { probe, ...extra });
 
   it("removes an old run directory whose owner is gone, or whose pid now names another process", async () => {
     const testTmp = scratch();
-    const gone = runDir(join(testTmp, "h-Gone01"), { pid: 200, host, started: "t1" });
-    const reused = runDir(join(testTmp, "sbx-Reus01"), { pid: 100, host, started: "t-earlier" });
-    expect((await sweep(testTmp)).sort()).toEqual([gone, reused].sort());
+    const gone = runDir(join(testTmp, "h-Gone01"), owner(200, "ps:900", host));
+    const reused = runDir(join(testTmp, "sbx-Reus01"), owner(100, "ps:10", host));
+    const result = await sweep(testTmp);
+    expect(result.removed.sort()).toEqual([gone, reused].sort());
+    expect(result.stranded).toEqual([]);
+    expect(readdirSync(testTmp)).toEqual([]);
   });
 
   it("keeps a live run's directory however old its timestamp, even with fresh writes deep inside", async () => {
     const testTmp = scratch();
-    const live = runDir(join(testTmp, "h-Live01"), { pid: 100, host, started: "t0" });
+    const live = runDir(join(testTmp, "h-Live01"), owner(100, "ps:1000", host));
     mkdirSync(join(live, "f-Deep01", "audit"), { recursive: true });
     writeFileSync(join(live, "f-Deep01", "audit", "today.jsonl"), "{}\n");
     utimesSync(live, DAY_AGO(), DAY_AGO());
-    expect(await sweep(testTmp)).toEqual([]);
+    expect((await sweep(testTmp)).removed).toEqual([]);
     expect(existsSync(live)).toBe(true);
   });
 
   it("keeps a new directory of a live run when the clock jumps forward", async () => {
     const testTmp = scratch();
-    const live = runDir(join(testTmp, "h-Jump01"), { pid: 100, host, started: "t0" }, new Date());
-    expect(await sweep(testTmp, { now: Date.now() + 10 * STALE_RUN_DIR_AGE_MS })).toEqual([]);
+    const live = runDir(join(testTmp, "h-Jump01"), owner(100, "ps:1000", host), new Date());
+    expect((await sweep(testTmp, { now: Date.now() + 10 * STALE_RUN_DIR_AGE_MS })).removed).toEqual([]);
     expect(existsSync(live)).toBe(true);
   });
 
-  it("keeps what it cannot attribute: no record, a torn record, another host, an unreadable start", async () => {
+  it("keeps what it cannot attribute, whatever the record holds", async () => {
     const testTmp = scratch();
+    const { version: _version, ...unversioned } = owner(200, "ps:900", host);
     const kept = [
       runDir(join(testTmp, "h-NoRec1"), null),
-      runDir(join(testTmp, "h-OtherH"), { pid: 200, host: "another-host" }),
-      runDir(join(testTmp, "h-NoStrt"), { pid: 100, host }),
+      runDir(join(testTmp, "h-Torn01"), "{\"pid\":"),
+      runDir(join(testTmp, "h-Null01"), "null"),
+      runDir(join(testTmp, "h-Arr001"), "[]"),
+      runDir(join(testTmp, "h-Num001"), "200"),
+      runDir(join(testTmp, "h-PidStr"), { ...owner(200, "ps:900", host), pid: "200" }),
+      runDir(join(testTmp, "h-Empty1"), { ...owner(100, "ps:1000", host), started: "" }),
+      runDir(join(testTmp, "h-Raw001"), { ...owner(100, "ps:1000", host), started: "Thu Oct  2 04:29:05 2026" }),
+      runDir(join(testTmp, "h-NoVer1"), unversioned),
+      runDir(join(testTmp, "h-Ver999"), { ...owner(200, "ps:900", host), version: 999 }),
+      runDir(join(testTmp, "h-OtherH"), owner(200, "ps:900", "another-host")),
+      // Alive, recorded in one form and readable now only in another.
+      runDir(join(testTmp, "h-Form01"), owner(100, "win32:1000", host)),
     ];
-    const torn = runDir(join(testTmp, "h-Torn01"), null);
-    writeFileSync(join(torn, RUN_OWNER_FILE), "{\"pid\":");
-    utimesSync(torn, DAY_AGO(), DAY_AGO());
-    kept.push(torn);
-    expect(await sweep(testTmp)).toEqual([]);
+    const result = await sweep(testTmp);
+    expect(result).toEqual({ removed: [], stranded: [] });
     for (const path of kept) expect(existsSync(path), path).toBe(true);
+  });
+
+  it("keeps a live owner whose start cannot be read now", async () => {
+    const testTmp = scratch();
+    const live = runDir(join(testTmp, "h-Unrd01"), owner(100, "ps:1000", host));
+    const result = await sweepStaleRunDirs(testTmp, removeTree, {
+      probe: { ...probe, startedAt: () => undefined },
+    });
+    expect(result.removed).toEqual([]);
+    expect(existsSync(live)).toBe(true);
   });
 
   it("keeps a dead run's directory until it is old, and touches no link or other name", async () => {
     const testTmp = scratch();
-    const young = runDir(join(testTmp, "h-Young1"), { pid: 200, host }, new Date());
-    const otherName = runDir(join(testTmp, "plugin-fixture-AbC123"), { pid: 200, host });
-    const target = runDir(join(scratch(), "target"), { pid: 200, host });
+    const young = runDir(join(testTmp, "h-Young1"), owner(200, "ps:900", host), new Date());
+    const otherName = runDir(join(testTmp, "plugin-fixture-AbC123"), owner(200, "ps:900", host));
+    const target = runDir(join(scratch(), "target"), owner(200, "ps:900", host));
     link(target, join(testTmp, "h-Link01"));
-    expect(await sweep(testTmp)).toEqual([]);
+    expect((await sweep(testTmp)).removed).toEqual([]);
     for (const path of [young, otherName, target]) expect(existsSync(path), path).toBe(true);
   });
 
-  it("passes over a directory another run removed first", async () => {
+  it("removes nothing a directory made at the judged name in between, and puts it back", async () => {
     const testTmp = scratch();
-    runDir(join(testTmp, "h-Gone01"), { pid: 200, host });
-    const result = await sweepStaleRunDirs(testTmp, async () => {
-      throw Object.assign(new Error("gone"), { code: "ENOENT" });
-    }, { probe });
-    expect(result).toEqual([]);
+    const record = owner(200, "ps:900", host);
+    const judged = runDir(join(testTmp, "h-Race01"), record);
+    const movedAway = join(scratch(), "judged-elsewhere");
+    const result = await sweep(testTmp, {
+      onStep: (step, path) => {
+        if (step !== "judged") return;
+        // Another process moves the judged directory off and makes a new one,
+        // with the very same record, at its name.
+        renameSync(path, movedAway);
+        runDir(path, record);
+        writeFileSync(join(path, "new-run-data"), "kept");
+      },
+    });
+    expect(result).toEqual({ removed: [], stranded: [] });
+    expect(readFileSync(join(judged, "new-run-data"), "utf8")).toBe("kept");
+    expect(existsSync(join(movedAway, RUN_OWNER_FILE))).toBe(true);
+    expect(readdirSync(testTmp)).toEqual(["h-Race01"]);
   });
 
-  it("reads this process's start the same way twice, so a live owner matches itself", () => {
-    const started = systemProcessProbe.startedAt(process.pid);
-    expect(started).toBeDefined();
-    expect(systemProcessProbe.startedAt(process.pid)).toBe(started);
+  it("leaves a replaced directory aside and reports it when its name is taken again", async () => {
+    const testTmp = scratch();
+    const record = owner(200, "ps:900", host);
+    const judged = runDir(join(testTmp, "h-Race02"), record);
+    const result = await sweep(testTmp, {
+      onStep: (step, path) => {
+        if (step === "judged") {
+          renameSync(path, join(scratch(), "judged-elsewhere"));
+          runDir(path, record);
+          writeFileSync(join(path, "new-run-data"), "kept");
+        } else {
+          mkdirSync(path);
+        }
+      },
+    });
+    expect(result.removed).toEqual([]);
+    expect(result.stranded).toHaveLength(1);
+    expect(readFileSync(join(result.stranded[0]!, "new-run-data"), "utf8")).toBe("kept");
+    expect(existsSync(judged)).toBe(true);
+  });
+
+  it("passes over a directory another sweep took first", async () => {
+    const testTmp = scratch();
+    runDir(join(testTmp, "h-Gone01"), owner(200, "ps:900", host));
+    const result = await sweep(testTmp, {
+      onStep: (step, path) => {
+        if (step === "judged") renameSync(path, join(testTmp, ".del-other-sweep"));
+      },
+    });
+    expect(result).toEqual({ removed: [], stranded: [] });
+  });
+
+  it("refuses a test-tmp that became a link before it sweeps", async () => {
+    const elsewhere = scratch();
+    const sentinel = runDir(join(elsewhere, "h-Else01"), owner(200, "ps:900", host));
+    const root = link(elsewhere, join(scratch(), "test-tmp"));
+    await expect(sweep(root)).rejects.toThrow(/not a real directory/);
+    expect(existsSync(sentinel)).toBe(true);
   });
 });
 
