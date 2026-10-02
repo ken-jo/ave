@@ -2070,6 +2070,18 @@ wins:
   keeps a `detail` whose reason belongs to the code and fields have the
   declared types, and drops any other while keeping code and message.
   `message` is main's English text, shown only behind *Copy details*.
+- Main scrubs every string it hands the renderer (§18.8): each answer's
+  `value` at any depth, each failure's `message` and `detail`, each
+  broadcast (`sync-progress`, `install-progress`, `update-status`,
+  `updates-available`, the bootstrap status) and each held answer (the deep
+  link, the boot-install notice), with the one scrubber
+  (`scrubMarketplaceStrings` over `scrubDiagnosticSecrets`). The marketplace's
+  log lines pass it too (`createMarketplaceLogger`). The renderer never
+  scrubs. What it sends back is what main can check (`previewId`, `planId`,
+  a source id, a package key, a commit, a component's name and digest): a
+  value that held a token's shape comes back masked, matches nothing, and is
+  refused, never taken for another. A deep link's `add` address that held
+  one prefills the Add dialog masked, for the user to correct.
 - `sources:preview` takes `{ input; ref?; subdir?; auth: "none" | "token" |
   "ssh"; token?; acknowledge? }`. It answers a marketplace preview, a
   direct-package preview (each with `badges`), or `{ type: "confirm";
@@ -2242,22 +2254,26 @@ error tone with its own sentence. Every message is scrubbed
 (`scrubDiagnosticSecrets`, `src/shared/dlp.ts`: URL userinfo, authorization
 and token values, credential-helper lines) by main before it enters the
 envelope, by the normalizer before it echoes a refused address, and again by
-`MarketplaceProblem` before *Copy details* copies it. A detail is scrubbed the
-same way wherever it crosses or is stored, field by field, once and in main
-(the IPC envelope, a source's status view and stored `lastSync`, the git
-runtime status, which are the only ways a detail reaches the renderer); the
-renderer puts its fields in a sentence as they arrive. Each field is declared
-by where its value comes from (`DetailFieldKind`, `src/marketplace/errors.ts`).
-Anything a person or a remote chose is `text` and scrubbed: diagnostic text, a
-source address or policy pattern as entered (normalization keeps an ssh
-account name, which a pasted token fits), a ref and a remote's advertised
-refs, a catalog's label, a folder path, a server and every name read from a
-folder. Only identifiers whose grammar the code enforces stay as they are (a
-scheme, a normalized host or IP address, a source id, a package name,
-version or platform, an fs error code, the policy file's fixed location): the
-scrubber's patterns would mangle real ones (`test-…`, `live-…`), and a host
-feeds the host-key command the user runs. A test feeds a token into every
-field the schema declares and checks it crosses only in those.
+`MarketplaceProblem` before *Copy details* copies it. Beyond messages, one
+rule holds (§13.1): every string the marketplace hands the renderer or writes
+to a log passes that one scrubber in main, with no field exempt. A detail's
+fields, identifiers included (a grammar that admits a name admits a token of
+the same shape), are scrubbed wherever a detail crosses or is stored; the
+renderer puts them in a sentence as they arrive and never scrubs again. When
+the host of an unknown or changed SSH host key came back masked, the sentence
+says part of the server name looked like a token and offers no command, since
+a command naming a masked host would not run.
+
+The diagnostic scrubber matches token shapes, not prefixes alone, so this
+costs real names nothing (text bound for a model, `scrubSecretsForLLM`, keeps
+its broad prefix rule, where a name masked by mistake costs nothing): a vendor prefix (`ghp_`, `github_pat_`, `xoxb-`, `xapp-`,
+`AKIA`, `AIza`, `sk-`, `pk-`, `rk-`, `proj-`, `test-`, `live-`) counts only
+with the token's own random run after it (a segment of 12 or more characters
+mixing letters and digits, a Slack token's numeric ids, an AWS id's digits),
+so `test-server01.corp`, `live-captions`, `sk-learn-utils` and
+`aizawa-shop-…` pass unchanged while each token format is masked inside a
+host, a path, an id or a URL. A JSON Web Token is matched as written; a
+lowercased one is no longer a credential.
 
 A background sync's failure reaches the Sources view through `sources:list`:
 `SyncResult` carries the detail, the syncer stores it in

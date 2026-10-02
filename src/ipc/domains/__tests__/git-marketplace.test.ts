@@ -10,7 +10,7 @@ import { NetworkGate } from "../../../marketplace/net/network-gate.js";
 import { normalizeSourceUrl } from "../../../marketplace/net/source-url.js";
 import { createPinnedFetch } from "../../../marketplace/net/pinned-fetch.js";
 import { FilePolicySource } from "../../../marketplace/sources/policy.js";
-import { parseGitMarketplaceResult } from "../../../shared/git-marketplace.js";
+import { parseGitMarketplaceResult, type EnteredTargetWarningView } from "../../../shared/git-marketplace.js";
 import { breakDiagnosticScrubberOn, DIAGNOSTIC_KEPT, DIAGNOSTIC_SECRET_PROBES } from "../../../shared/__tests__/fixtures/diagnostic-secret-probes.js";
 import { invokeAppIpcHandlerFromFrame, invokeFileIpcHandler } from "./test-helpers.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -22,7 +22,7 @@ import { FakeVolume, TEST_FOLDER_LIMITS } from "../../../marketplace/__tests__/f
 import { folderService } from "../../../marketplace/__tests__/fixtures/folder-service.js";
 import { policyLoad, policySource } from "../../../marketplace/__tests__/fixtures/policy.js";
 import { translate } from "../../../i18n/translate.js";
-import { ENTRY_SUBJECT, failureText } from "../../../ui/renderer/tabs/git-marketplace/labels.js";
+import { ENTRY_SUBJECT, failureText, warningText } from "../../../ui/renderer/tabs/git-marketplace/labels.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -98,7 +98,8 @@ function holdApplyCheckSaves(): () => void {
 
 const channels = CHANNELS.gitMarketplace;
 
-async function setup(overrides: Record<string, unknown> = {}) {
+/** `window` stands for the app window broadcasts reach; none by default. */
+async function setup(overrides: Record<string, unknown> = {}, window: unknown = null) {
   handlers.clear();
   const service = {
     listSources: vi.fn(async () => []),
@@ -140,7 +141,7 @@ async function setup(overrides: Record<string, unknown> = {}) {
   // A lifetime of its own: the app's shared one (`getMarketplaceLifetime`) would outlive this test's shutdown.
   const lifetime = new AbortController();
   const registration = registerGitMarketplaceHandlers(
-    { auditLogger: { log: vi.fn() }, getMainWindow: () => null, settingsService: settings } as never,
+    { auditLogger: { log: vi.fn() }, getMainWindow: () => window, settingsService: settings } as never,
     async () => null,
     create,
     onBuilt,
@@ -513,29 +514,23 @@ describe("git marketplace IPC boundary", () => {
       }
     });
 
-    describe("a token-shaped value in every detail field the schema declares", () => {
-      // Built here, never written out whole.
-      const token = `ghp_${"a".repeat(36)}`;
-      /**
-       * The `string` fields: identifiers whose grammar the code enforces before they reach a detail
-       * (errors.ts, DetailFieldKind), kept as they are. Every other field is a person's or a remote's
-       * text, and a token pasted into it never crosses.
-       */
-      const IDENTIFIERS = new Set(["scheme", "host", "address", "policyPath", "sourceId", "existingId", "fsCode", "name", "version", "platform"]);
+    describe("a token in any string main hands the renderer (§18.8)", () => {
+      // Real token shapes, assembled here so no whole token sits in the source.
+      const TOKENS = [`gh${"p_"}${"A1b2C3d4".repeat(5).slice(0, 36)}`, `sk${"-proj-"}${"Z9y8X7w6".repeat(8)}`];
+      const leaks = (text: string) => TOKENS.some((token) => text.toLowerCase().includes(token.toLowerCase()));
+      /** `value` with every string in it, at any depth, replaced by `token`. */
+      const poison = (value: unknown, token: string): unknown =>
+        typeof value === "string" ? token
+          : Array.isArray(value) ? value.map((item) => poison(item, token))
+            : typeof value === "object" && value !== null ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, poison(item, token)]))
+              : value;
       const fields = Object.entries(MARKETPLACE_ERROR_DETAIL_FIELDS).flatMap(([code, reasons]) =>
         Object.entries(reasons as Record<string, Record<string, string>>).flatMap(([reason, declared]) =>
-          Object.entries(declared).map(([field, kind]) => ({ code, reason, declared, field, kind }))));
+          Object.entries(declared).filter(([, kind]) => kind !== "number").flatMap(([field]) => TOKENS.map((token) => ({ code, reason, declared, field, token })))));
 
-      it("declares a field string only when it is an identifier, and every identifier string", () => {
-        for (const { code, reason, field, kind } of fields) {
-          if (kind === "number") continue;
-          expect(kind === "string", `${code} ${reason}.${field} is ${kind}`).toBe(IDENTIFIERS.has(field));
-        }
-      });
-
-      it.each(fields.filter((entry) => entry.kind !== "number"))("$code $reason: $field ($kind)", async ({ code, reason, declared, field }) => {
-        const benign = (fieldKind: string) => (fieldKind === "number" ? 1 : fieldKind === "text[]" ? ["x"] : "x");
-        const detail = Object.fromEntries(Object.entries(declared).map(([name, fieldKind]) => [name, name === field ? (fieldKind === "text[]" ? [token] : token) : benign(fieldKind)]));
+      it.each(fields)("$code $reason: a token in $field never crosses, identifier or not", async ({ code, reason, declared, field, token }) => {
+        const benign = (kind: string) => (kind === "number" ? 1 : kind === "string[]" ? ["x"] : "x");
+        const detail = Object.fromEntries(Object.entries(declared).map(([name, kind]) => [name, name === field ? (kind === "string[]" ? [token] : token) : benign(kind)]));
         await setup({
           refresh: vi.fn(async () => {
             throw new MarketplaceError(code as never, "failed", { detail: { reason, ...detail } as never });
@@ -544,12 +539,82 @@ describe("git marketplace IPC boundary", () => {
         const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
         expect(answer).toMatchObject({ ok: false, code, detail: { reason } });
         const { en, ko } = sentences(answer);
-        if (IDENTIFIERS.has(field)) {
-          expect((answer as { detail: Record<string, unknown> }).detail[field]).toBe(token);
-          return;
+        expect(leaks(JSON.stringify(answer))).toBe(false);
+        expect(leaks(`${en}\n${ko}`)).toBe(false);
+      });
+
+      it("never lets one cross in an answer of the preview, list, add, sync and update-status channels", async () => {
+        const root = mkdtempSync(join(tmpdir(), "ave-ipc-payload-"));
+        const skill = "---\nname: note\ndescription: d\n---\n";
+        const harness = await folderService({ root, folders: { fs: new FakeVolume("linux").file("/m/SKILL.md", skill), platform: "linux", limits: TEST_FOLDER_LIMITS } });
+        const network = await folderService({ root: mkdtempSync(join(root, "win-")), folders: { fs: new FakeVolume("win32"), platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });
+        try {
+          // Real answers of each shape, every string in them then replaced by a token.
+          const preview = await harness.service.previewSource({ input: "/m", auth: "none" });
+          if (preview.type === "confirm") throw new Error("unexpected confirmation");
+          const confirm = await network.service.previewSource({ input: "\\\\server\\share\\m", auth: "none" });
+          expect(confirm.type).toBe("confirm");
+          const added = await harness.service.addSource({ previewId: preview.previewId, id: "team" });
+          const listed = await harness.service.listSources();
+          const synced = await harness.service.refresh("team");
+          for (const token of TOKENS) {
+            const sent = vi.fn();
+            await setup({
+              previewSource: vi.fn(async (request: { input: string }) => poison(request.input === "c" ? confirm : preview, token)),
+              listSources: vi.fn(async () => poison(listed, token)),
+              addSource: vi.fn(async () => poison(added, token)),
+              acknowledgeSource: vi.fn(async () => poison(added, token)),
+              setEnabled: vi.fn(async () => poison(added, token)),
+              refresh: vi.fn(async () => poison(synced, token)),
+              repairSource: vi.fn(async () => poison(synced, token)),
+              // A key the scheduler can match, so the package and its name reach the status and its broadcasts.
+              updates: vi.fn(async () => [{ key: { sourceId: "ave", kind: "plugin", name: "meeting" }, displayName: `Meeting ${token}`, from: "1.0.0", to: "1.1.0" }]),
+            }, { isDestroyed: () => false, webContents: { send: sent } }).then(async ({ registration }) => {
+              const answers = [
+                await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "/m", auth: "none" }),
+                await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: "c", auth: "none" }),
+                await invokeFileIpcHandler(handlers, channels.sourcesList),
+                await invokeFileIpcHandler(handlers, channels.sourcesAdd, { previewId: "p", id: "team" }),
+                await invokeFileIpcHandler(handlers, channels.sourcesAcknowledge, "team", ["network-folder"]),
+                await invokeFileIpcHandler(handlers, channels.sourcesSetEnabled, "team", false),
+                await invokeFileIpcHandler(handlers, channels.sourcesRefresh, "team"),
+                await invokeFileIpcHandler(handlers, channels.sourcesRefresh, "team", "repair"),
+              ];
+              await registration.startBackground();
+              answers.push(await invokeFileIpcHandler(handlers, channels.updatesStatus), await invokeFileIpcHandler(handlers, channels.updatesCheck));
+              for (const answer of answers) {
+                expect(answer).toMatchObject({ ok: true });
+                expect(leaks(JSON.stringify(answer))).toBe(false);
+              }
+              // The scheduler's broadcasts (its status, the boot status and notice) cross scrubbed too.
+              expect(sent.mock.calls.map(([channel]) => channel)).toEqual(expect.arrayContaining([channels.updateStatusChanged, channels.bootInstallsApplied, CHANNELS.bootstrap.status]));
+              expect(leaks(JSON.stringify(sent.mock.calls))).toBe(false);
+            });
+          }
+        } finally {
+          harness.service.close();
+          network.service.close();
+          rmSync(root, { recursive: true, force: true });
         }
-        expect(JSON.stringify(answer)).not.toContain(token);
-        expect(`${en}\n${ko}`).not.toContain(token);
+      });
+
+      it("answers a folder preview whose path holds a token with the confirmation, the path masked in it and in both sentences", async () => {
+        const root = mkdtempSync(join(tmpdir(), "ave-ipc-folder-"));
+        const harness = await folderService({ root, folders: { fs: new FakeVolume("win32"), platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });
+        try {
+          await setup({ previewSource: vi.fn((request: never) => harness.service.previewSource(request)) });
+          for (const token of TOKENS) {
+            const answer = await invokeFileIpcHandler(handlers, channels.sourcesPreview, { input: `//server/share/${token}`, auth: "none" }) as { ok: true; value: { type: string; warnings: EnteredTargetWarningView[] } };
+            expect(answer).toMatchObject({ ok: true, value: { type: "confirm", warnings: [{ warning: "network-folder", address: expect.stringContaining("[REDACTED:") }] } });
+            expect(leaks(JSON.stringify(answer))).toBe(false);
+            for (const language of ["en", "ko"] as const) {
+              expect(leaks(warningText((key, vars) => translate(language, key, vars), answer.value.warnings[0]!))).toBe(false);
+            }
+          }
+        } finally {
+          harness.service.close();
+          rmSync(root, { recursive: true, force: true });
+        }
       });
     });
 

@@ -55,26 +55,13 @@ export const MARKETPLACE_ERROR_CODES = [
 export type MarketplaceErrorCode = (typeof MARKETPLACE_ERROR_CODES)[number];
 
 /**
- * A detail field's type, by where its value comes from.
- *
- * `string` is an identifier whose grammar the code enforces before it gets
- * here, and which has no room for credentials or free text: a URL scheme, a
- * normalized host or an IP address, a source id, a package name, version or
- * platform, an fs error code, the policy file's fixed location. It is kept
- * as it is: the scrubber's patterns would mangle real values (`test-…`,
- * `live-…`), and a host feeds the host-key command the user runs.
- *
- * `text` is anything a person or a remote chose: diagnostic text (a parser's,
- * a proxy's or the system's own words), a source address or policy pattern
- * as entered (normalization keeps an ssh account name, which a pasted token
- * fits), a ref, a catalog's label, a folder path, a server and every name
- * read from a folder. `text[]` is a list of such values, as a remote's
- * advertised refs. Any of these may hold a secret, so they are scrubbed
- * wherever a detail leaves main or is stored
- * ({@link scrubMarketplaceErrorDetail}): once, in main. The renderer puts
- * them in a sentence as they arrive.
+ * A detail field's type. Every string in a detail, an identifier as much as
+ * a person's or a remote's text, is scrubbed wherever a detail leaves main or
+ * is stored ({@link scrubMarketplaceStrings}): a grammar that admits a name
+ * admits a token of the same shape, so no field is exempt. The scrubber
+ * matches token shapes, not prefixes alone, so real names pass unchanged.
  */
-type DetailFieldKind = "string" | "text" | "number" | "text[]";
+type DetailFieldKind = "string" | "number" | "string[]";
 
 /**
  * The reasons each code can carry, and the fields of each reason's detail
@@ -114,7 +101,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     format: {},
     "address-metadata": { host: "string", address: "string" },
     "address-unroutable": { host: "string", address: "string" },
-    "catalog-this-computer": { source: "text", host: "string" },
+    "catalog-this-computer": { source: "string", host: "string" },
     "deep-link-path": {},
     "relative-path": {},
     "device-path": {},
@@ -127,15 +114,15 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "folder-options": {},
   },
   SOURCE_POLICY_BLOCKED: {
-    "blocked-by-pattern": { target: "text", pattern: "text", policyPath: "string" },
-    "not-in-allow-list": { target: "text", policyPath: "string" },
-    "https-required": { target: "text", policyPath: "string" },
-    "private-network-blocked": { target: "text", address: "string", policyPath: "string" },
+    "blocked-by-pattern": { target: "string", pattern: "string", policyPath: "string" },
+    "not-in-allow-list": { target: "string", policyPath: "string" },
+    "https-required": { target: "string", policyPath: "string" },
+    "private-network-blocked": { target: "string", address: "string", policyPath: "string" },
     /** `allowLocalSources: false`: no folder is a source or a direct install (§18.6). */
-    "local-sources-blocked": { target: "text", policyPath: "string" },
+    "local-sources-blocked": { target: "string", policyPath: "string" },
     /** `allowDirectInstall: false`: packages install from marketplaces only (§12). */
-    "direct-install-blocked": { target: "text", policyPath: "string" },
-    "policy-invalid": { error: "text" },
+    "direct-install-blocked": { target: "string", policyPath: "string" },
+    "policy-invalid": { error: "string" },
   },
   /**
    * A target needs a confirmation the source does not hold (§18.2, §18.5):
@@ -147,9 +134,9 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "token-unencrypted": { host: "string" },
     "internal-network": { host: "string", address: "string" },
     "this-computer": { host: "string", address: "string" },
-    "internal-downloads": { source: "text", host: "string" },
+    "internal-downloads": { source: "string", host: "string" },
     /** A folder on another computer (§18.4.1 stage 2): the server, empty when the drive's mapping names none, and the folder. */
-    "network-folder": { server: "text", path: "text" },
+    "network-folder": { server: "string", path: "string" },
   },
   /**
    * `token-no-access`: the host answered "repository not found" after Ave
@@ -167,7 +154,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     changed: { host: "string", port: "number" },
   },
   SOURCE_REF_NOT_FOUND: {
-    missing: { ref: "text", repository: "text", available: "text[]" },
+    missing: { ref: "string", repository: "string", available: "string[]" },
   },
   /**
    * `not-found` and `not-found-ssh`: the host answered "repository not
@@ -181,7 +168,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     timeout: { host: "string" },
     "http-status": { host: "string", status: "number" },
     tls: { host: "string" },
-    proxy: { host: "string", proxy: "text" },
+    proxy: { host: "string", proxy: "string" },
     "not-found": { host: "string" },
     "not-found-ssh": { host: "string" },
   },
@@ -232,21 +219,21 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
    * id alone has no detail: choosing another id resolves it.
    */
   SOURCE_ID_TAKEN: {
-    "repository-already-added": { url: "text", existingId: "string" },
-    "folder-already-added": { path: "text", existingId: "string" },
-    "folder-inside-source": { path: "text", existingId: "string", existingPath: "text" },
-    "folder-contains-source": { path: "text", existingId: "string", existingPath: "text" },
+    "repository-already-added": { url: "string", existingId: "string" },
+    "folder-already-added": { path: "string", existingId: "string" },
+    "folder-inside-source": { path: "string", existingId: "string", existingPath: "string" },
+    "folder-contains-source": { path: "string", existingId: "string", existingPath: "string" },
   },
   SOURCE_LOCAL_UNREADABLE: {
-    "not-found": { path: "text" },
-    permission: { path: "text", message: "text" },
-    io: { path: "text", message: "text" },
-    moved: { path: "text", target: "text" },
-    "not-a-directory": { path: "text" },
-    "ambiguous-case": { path: "text" },
-    "changed-during-read": { path: "text" },
+    "not-found": { path: "string" },
+    permission: { path: "string", message: "string" },
+    io: { path: "string", message: "string" },
+    moved: { path: "string", target: "string" },
+    "not-a-directory": { path: "string" },
+    "ambiguous-case": { path: "string" },
+    "changed-during-read": { path: "string" },
     /** The Windows folder classifier is missing or broken (§18.4.1 stage 2): Ave cannot tell whether `path` is on another computer. */
-    "classifier-unavailable": { path: "text" },
+    "classifier-unavailable": { path: "string" },
   },
   /**
    * A folder's file breaks a reading rule (§18.4.5, §5.4, §5.5): a link that
@@ -255,12 +242,12 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
    * `path` is relative to the folder; `target` is the link's own text.
    */
   CONTENT_RULE_VIOLATION: {
-    "link-outside-folder": { path: "text", target: "text" },
-    "link-to-network": { path: "text", target: "text" },
-    "link-to-skipped": { path: "text", target: "text" },
-    "special-file": { path: "text" },
-    "case-collision": { path: "text" },
-    limit: { path: "text", limit: "text" },
+    "link-outside-folder": { path: "string", target: "string" },
+    "link-to-network": { path: "string", target: "string" },
+    "link-to-skipped": { path: "string", target: "string" },
+    "special-file": { path: "string" },
+    "case-collision": { path: "string" },
+    limit: { path: "string", limit: "string" },
   },
   /** A folder plugin without a built tree (`plugin.json` and `dist/`, §18.4.2). */
   NO_INSTALLABLE_ARTIFACT: {
@@ -278,7 +265,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
 } as const satisfies Partial<Record<MarketplaceErrorCode, Record<string, Record<string, DetailFieldKind>>>>;
 
 type DetailFields = typeof MARKETPLACE_ERROR_DETAIL_FIELDS;
-type FieldValue<K> = K extends "string" | "text" ? string : K extends "number" ? number : K extends "text[]" ? readonly string[] : never;
+type FieldValue<K> = K extends "string" ? string : K extends "number" ? number : K extends "string[]" ? readonly string[] : never;
 type DetailOf<C extends keyof DetailFields> = {
   [R in keyof DetailFields[C]]: { reason: R } & { -readonly [F in keyof DetailFields[C][R]]: FieldValue<DetailFields[C][R][F]> };
 }[keyof DetailFields[C]];
@@ -292,7 +279,7 @@ export const MARKETPLACE_ERROR_REASONS: ReadonlyArray<readonly [MarketplaceError
 );
 
 function fieldMatches(value: unknown, kind: DetailFieldKind): boolean {
-  if (kind === "string" || kind === "text") return typeof value === "string";
+  if (kind === "string") return typeof value === "string";
   if (kind === "number") return typeof value === "number" && Number.isFinite(value);
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
@@ -321,21 +308,25 @@ export function parseMarketplaceErrorDetail(code: string, value: unknown): Marke
 }
 
 /**
- * `detail` with every `text` field, and each item of a `text[]` field,
- * scrubbed of credentials; identifiers are kept as they are. Called at each
- * boundary a detail crosses: the IPC envelope, the source status view, the
- * stored `lastSync.detail` and the git runtime status. These are the only
- * ways a detail reaches the renderer, which therefore never scrubs one.
+ * `value` with every string in it, at any depth, scrubbed of credentials by
+ * the one diagnostic scrubber (`scrubDiagnosticSecrets`). Main calls it on
+ * everything the marketplace hands the renderer (each request's answer, each
+ * broadcast, each failure's detail) and on a detail before it is stored, so
+ * no string crosses unscrubbed and the renderer never scrubs.
  */
+export function scrubMarketplaceStrings<T>(value: T): T {
+  if (typeof value === "string") return scrubDiagnosticSecrets(value) as T;
+  if (Array.isArray(value)) return value.map((item: unknown) => scrubMarketplaceStrings(item)) as T;
+  if (typeof value === "object" && value !== null && [Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scrubMarketplaceStrings(item)])) as T;
+  }
+  return value;
+}
+
+/** `detail`, checked to belong to `code`, with every string scrubbed ({@link scrubMarketplaceStrings}). */
 export function scrubMarketplaceErrorDetail<D extends MarketplaceErrorDetail>(code: MarketplaceErrorCode, detail: D): D {
   if (parseMarketplaceErrorDetail(code, detail) === undefined) throw new TypeError(`${JSON.stringify(detail)} is not a detail of ${code}`);
-  const fields: Readonly<Record<string, DetailFieldKind>> = (MARKETPLACE_ERROR_DETAIL_FIELDS[code as keyof DetailFields] as Readonly<Record<string, Readonly<Record<string, DetailFieldKind>>>>)[detail.reason]!;
-  const scrubbed: Record<string, unknown> = { ...detail };
-  for (const [field, kind] of Object.entries(fields)) {
-    if (kind === "text") scrubbed[field] = scrubDiagnosticSecrets(scrubbed[field] as string);
-    if (kind === "text[]") scrubbed[field] = (scrubbed[field] as readonly string[]).map(scrubDiagnosticSecrets);
-  }
-  return scrubbed as D;
+  return scrubMarketplaceStrings(detail);
 }
 
 export class MarketplaceError extends Error {

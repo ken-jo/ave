@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
-import { createLogger } from "../../lib/logger.js";
+import { createMarketplaceLogger } from "../log.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { assertNotRequiredByPolicy } from "../boot-installs/run.js";
 import type { PackageDescriptor } from "../catalog/types.js";
@@ -32,7 +32,7 @@ import { isDataContentKind, parseContent, type ContentFile, type DataContentKind
 import { ContentLedger, type LedgerEntry } from "./ledger.js";
 import { CONTENT_RULES, DESCRIPTOR_ALLOWANCE_BYTES, checkContentFiles, isContentKind, type ContentKind } from "./rules.js";
 
-const log = createLogger("marketplace-content-store");
+const log = createMarketplaceLogger("marketplace-content-store");
 
 interface DataContentPlan extends PackagePlan {
   kind: DataContentKind;

@@ -385,7 +385,7 @@ function redactCredentialAssignments(text: string): string {
 
 /** Every userinfo and assignment shape {@link scrubDiagnosticSecrets} redacts; throws on an internal contract violation. */
 export function scrubDiagnosticSecretsStrict(text: string): string {
-  return scrubSecretsForLLM(redactCredentialAssignments(
+  return scrubCredentialShapes(redactCredentialAssignments(
     text
       // A scheme starts after a character no scheme holds, so `a.a.a…` is read once, not from every `a`.
       .replace(/(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*)(:\/\/)([^\s/?#]*)@/gi, (match: string, scheme: string, slashes: string, userinfo: string): string =>
@@ -394,7 +394,7 @@ export function scrubDiagnosticSecretsStrict(text: string): string {
       .replace(/(^|[\s'"(<=,;])([^\s'"()<>/?#=,;]+)@(?=[A-Za-z0-9[])/gm, (match: string, before: string, userinfo: string): string =>
         userinfoHidesCredential(userinfo, undefined) ? `${before}[REDACTED:CREDENTIALS]@` : match,
       ),
-  ));
+  ), "precise");
 }
 
 /**
@@ -422,6 +422,25 @@ export function scrubDiagnosticSecrets(text: string): string {
   }
 }
 
+/** Whether a scrubber pass replaced part of `text` with a `[REDACTED:…]` marker. */
+export function hasRedaction(text: string): boolean {
+  return /\[REDACTED:[A-Z]+\]/u.test(text);
+}
+
+/**
+ * Whether `text` holds a key's random run: one segment between `-`/`_` of at
+ * least 12 characters mixing letters and digits. A name's segments are words
+ * (`captions`, `server01`); a key's are not.
+ */
+function hasKeyRun(text: string): boolean {
+  return text.split(/[-_]/u).some((segment) => segment.length >= 12 && /[A-Za-z]/u.test(segment) && /\d/u.test(segment));
+}
+
+/** Whether `text` holds a run of 8 or more digits, as a Slack token's workspace and user ids. */
+function hasDigitRun(text: string): boolean {
+  return /\d{8,}/u.test(text);
+}
+
 /**
  * Slice-free credential scrubber shared by diagnostics bundles, log-tail IPC,
  * audit/display masking, and MCP error surfacing.
@@ -431,8 +450,23 @@ export function scrubDiagnosticSecrets(text: string): string {
  * and context-labeled cloud secrets. It stays prefix/context driven rather than
  * redacting every high-entropy blob, because diagnostics often contain commit
  * SHAs and artifact hashes.
+ *
+ * Text bound for a model keeps the broad prefix rules: there a name masked by
+ * mistake costs nothing, and a key missed costs a leak.
  */
 export function scrubSecretsForLLM(text: string): string {
+  return scrubCredentialShapes(text, "broad");
+}
+
+/**
+ * The credential shapes of {@link scrubSecretsForLLM}. `precise` (the
+ * diagnostic scrubber's mode, for text shown to a person: paths, hosts, ids
+ * and package names in the marketplace) counts a vendor prefix only with the
+ * token's own random run after it, so real names pass unchanged; `broad`
+ * counts the prefix alone.
+ */
+function scrubCredentialShapes(text: string, mode: "broad" | "precise"): string {
+  const tokenUnless = (keep: (match: string) => boolean) => (match: string): string => (mode === "precise" && keep(match) ? match : "[REDACTED:TOKEN]");
   return text
     .replace(
       /(authorization\s*:\s*)digest\s+[A-Za-z][A-Za-z0-9_-]*=(?:\\"[^"]*\\"|"[^"]*"|[^,\s"]+)(?:,\s*[A-Za-z][A-Za-z0-9_-]*=(?:\\"[^"]*\\"|"[^"]*"|[^,\s"]+))*/gi,
@@ -471,12 +505,16 @@ export function scrubSecretsForLLM(text: string): string {
     // Vendor-prefixed tokens observed in diagnostics probes (#1511).
     .replace(/\bgh[opsru]_[A-Za-z0-9_]{20,}\b/gi, "[REDACTED:TOKEN]")
     .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/gi, "[REDACTED:TOKEN]")
-    .replace(/\bxox[bp]-[A-Za-z0-9-]{10,}\b/gi, "[REDACTED:TOKEN]")
-    .replace(/\bxapp-[A-Za-z0-9-]{10,}\b/gi, "[REDACTED:TOKEN]")
-    .replace(/\bAKIA[0-9A-Z]{16}\b/gi, "[REDACTED:TOKEN]")
-    .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/gi, "[REDACTED:TOKEN]")
-    // Prefixed API keys: sk-/pk-/rk-/proj-/test-/live- followed by >=8 key chars.
-    .replace(/\b(?:sk|pk|rk|proj|test|live)-[A-Za-z0-9_-]{8,}\b/gi, "[REDACTED:TOKEN]");
+    // A prefix alone also starts ordinary names (`xapp-launcher`, `aizawa-…`, `test-server01`,
+    // `live-captions`, `sk-learn-utils`): precisely, each of these needs the token's own random run too.
+    // Slack tokens carry numeric workspace and user ids.
+    .replace(/\bxox[bp]-[A-Za-z0-9-]{10,}\b/gi, tokenUnless((match) => !hasDigitRun(match)))
+    .replace(/\bxapp-[A-Za-z0-9-]{10,}\b/gi, tokenUnless((match) => !hasDigitRun(match)))
+    // AWS key ids are base32: a run of 16 with no digit is a word.
+    .replace(/\bAKIA[0-9A-Z]{16}\b/gi, tokenUnless((match) => !/\d/u.test(match.slice(4))))
+    .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/gi, tokenUnless((match) => !hasKeyRun(match.slice(4))))
+    // Prefixed API keys: sk-/pk-/rk-/proj-/test-/live- followed by >=8 key chars (precisely: a random run among them).
+    .replace(/\b(?:sk|pk|rk|proj|test|live)-[A-Za-z0-9_-]{8,}\b/gi, tokenUnless((match) => !hasKeyRun(match.slice(match.indexOf("-") + 1))));
 }
 
 /**

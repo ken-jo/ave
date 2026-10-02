@@ -31,7 +31,7 @@ import { isDevModeUnlocked, isE2eTestRuntime } from "../../boot/dev-flags.js";
 import { emitEvent as emitHostEvent } from "../../boot/types.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { messages } from "../../i18n/messages/index.js";
-import { createLogger } from "../../lib/logger.js";
+import { createMarketplaceLogger } from "../../marketplace/log.js";
 import { getBootInstallNotice, getMarketplaceLifetime, setBootInstallNotice, takePendingGitMarketplaceLink } from "../../main/app-state.js";
 import { ensureCorporateCa } from "../../main/corp-ca-runtime.js";
 import { readPersistedCorpCaConfigSync } from "../../main/persisted-corp-ca.js";
@@ -46,7 +46,7 @@ import { AppliedDefaults } from "../../marketplace/boot-installs/applied.js";
 import { DEFAULT_INSTALLS } from "../../marketplace/boot-installs/default-installs.js";
 import { loadInstallationId } from "../../marketplace/catalog/installation-id.js";
 import { contentLedgerOrigins } from "../../marketplace/content/ledger.js";
-import { MarketplaceError, scrubMarketplaceErrorDetail } from "../../marketplace/errors.js";
+import { MarketplaceError, scrubMarketplaceErrorDetail, scrubMarketplaceStrings } from "../../marketplace/errors.js";
 import { MarketplaceGit } from "../../marketplace/git/marketplace-git.js";
 import { migrateLegacyContent } from "../../marketplace/migration/legacy-content.js";
 import { migrateLegacyPlugins } from "../../marketplace/migration/legacy-plugins.js";
@@ -87,7 +87,7 @@ import type { IpcDeps } from "../types.js";
 import { legacyContentSettings, type InstalledContentRuntime } from "./marketplace-content.js";
 import { pluginLifecycleServices } from "./plugins.js";
 
-const log = createLogger("git-marketplace");
+const log = createMarketplaceLogger("git-marketplace");
 
 export type GitMarketplacePort = Pick<
   MarketplaceService,
@@ -546,9 +546,11 @@ async function closeOnQuit(close: () => Promise<void>): Promise<void> {
   });
 }
 
+/** Every window gets `payload` with its strings scrubbed: what the marketplace tells the renderer crosses only scrubbed (§18.8). */
 function broadcastTo(deps: IpcDeps, channel: string, payload?: unknown): void {
+  const scrubbed = scrubMarketplaceStrings(payload);
   for (const window of deps.getAppWindows?.() ?? [deps.getMainWindow()]) {
-    if (window && !window.isDestroyed()) window.webContents.send(channel, payload);
+    if (window && !window.isDestroyed()) window.webContents.send(channel, scrubbed);
   }
 }
 
@@ -617,7 +619,8 @@ export function registerGitMarketplaceHandlers(
       }
       try {
         const { service } = await loaded();
-        return { ok: true, value: await run(service, args) };
+        // Paths, addresses, labels and names in an answer reach the renderer only scrubbed, like a failure's detail.
+        return { ok: true, value: scrubMarketplaceStrings(await run(service, args)) };
       } catch (error) {
         // A message or a detail's text can quote a git error or an address; it reaches the renderer and its clipboard only scrubbed.
         if (error instanceof MarketplaceError) return { ok: false, code: error.code, message: scrubDiagnosticSecrets(error.message), ...(error.detail ? { detail: scrubMarketplaceErrorDetail(error.code, error.detail) } : {}) };
@@ -667,7 +670,7 @@ export function registerGitMarketplaceHandlers(
         auditUnauthorized(deps.auditLogger, channel, event);
         return UNAUTHORIZED;
       }
-      return { ok: true, value: run() };
+      return { ok: true, value: scrubMarketplaceStrings(run()) };
     });
   };
   handleHeld(channels.deepLinkTake, takePendingGitMarketplaceLink);
@@ -686,7 +689,7 @@ export function registerGitMarketplaceHandlers(
       }
       if (!background) return { ok: false, code: "unavailable", message: "update checks have not started" };
       try {
-        return { ok: true, value: await run(background) };
+        return { ok: true, value: scrubMarketplaceStrings(await run(background)) };
       } catch (error) {
         const message = scrubDiagnosticSecrets(errorMessage(error));
         log.error({ err: message, channel }, "git marketplace update request failed");
@@ -740,7 +743,7 @@ export function registerGitMarketplaceHandlers(
             skippedPluginUpdates: marketplace.skippedPluginUpdates,
           };
         },
-        publishStatus: gated((status) => notifyBootstrapStatus(deps.getMainWindow(), status)),
+        publishStatus: gated((status) => notifyBootstrapStatus(deps.getMainWindow(), scrubMarketplaceStrings(status))),
         publishNotice: gated((notice) => {
           setBootInstallNotice(notice);
           broadcastTo(deps, channels.bootInstallsApplied);

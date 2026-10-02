@@ -49,7 +49,7 @@ function sampleDetail(code: keyof typeof MARKETPLACE_ERROR_DETAIL_FIELDS, reason
     if (kind === "number") {
       detail[field] = 2222;
       values.push("2222");
-    } else if (kind === "text[]") {
+    } else if (kind === "string[]") {
       detail[field] = ["main", "v1.0.0"];
       values.push("main, v1.0.0");
     } else {
@@ -131,6 +131,17 @@ describe("failure sentences (design §18.8)", () => {
     expect(failureCommand({ ...changed, detail: { reason: "changed", host: "git.example.com", port: 2222 } })).toBe('ssh-keygen -R "[git.example.com]:2222"');
     expect(render(changed).en).toContain('ssh-keygen -R "github.com"');
     expect(failureCommand({ code: "SOURCE_UNREACHABLE", message: MESSAGE })).toBeNull();
+  });
+
+  it.each(["unknown", "changed"] as const)("offers no command for a %s host key whose host main masked, and says why", (reason) => {
+    // As main sends a host that held a token's shape (§18.8).
+    const failure: GitMarketplaceFailure = { code: "SOURCE_SSH_HOST_UNKNOWN", message: MESSAGE, detail: { reason, host: "[REDACTED:TOKEN].example.com", port: 22 } };
+    expect(failureCommand(failure)).toBeNull();
+    const { en, ko } = render(failure);
+    expect(en).toContain("[REDACTED:TOKEN].example.com");
+    expect(en).toContain("shows no command to run");
+    expect(en).not.toMatch(/ssh-key(scan|gen)/u);
+    expect(ko).toContain("실행할 명령은 보여 주지 않습니다");
   });
 
   it("lists the branches and tags a missing ref's repository has", () => {

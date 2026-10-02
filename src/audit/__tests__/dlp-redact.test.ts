@@ -84,6 +84,82 @@ describe("redactForLLM", () => {
   });
 });
 
+describe("scrubDiagnosticSecrets — token shapes, not prefixes (design §18.8)", () => {
+  // Real token lengths and charsets, assembled here so no whole token sits in the source.
+  const mixed = (length: number) => "A1b2C3d4E5f6G7h8".repeat(Math.ceil(length / 16)).slice(0, length);
+  const TOKENS: ReadonlyArray<readonly [string, string]> = [
+    ["GitHub classic", fixtureSecret("gh", "p_", mixed(36))],
+    ["GitHub OAuth", fixtureSecret("gh", "o_", mixed(36))],
+    ["GitHub fine-grained", fixtureSecret("github", "_pat_", mixed(22), "_", mixed(59))],
+    ["Slack bot", fixtureSecret("xo", "xb-", "123456789012-123456789012-", mixed(24))],
+    ["Slack app", fixtureSecret("xa", "pp-", "1-A0123ABC-1234567890123-", mixed(32))],
+    ["AWS key id", fixtureSecret("AK", "IA", "IOSFODNN7EXAMPL3")],
+    ["Google API key", fixtureSecret("AI", "za", mixed(35))],
+    ["OpenAI", fixtureSecret("sk", "-", mixed(48))],
+    ["OpenAI project", fixtureSecret("sk", "-proj-", mixed(64), "_", mixed(40))],
+    ["Anthropic", fixtureSecret("sk", "-ant-api03-", mixed(93), "AA")],
+  ];
+
+  it.each(TOKENS)("masks a %s token in a host, a path, an id and a URL", (_kind, token) => {
+    for (const text of [
+      `${token}.example.com`,
+      `${token.toLowerCase()}.example.com`,
+      `/srv/markets/${token}/plugins`,
+      `C:\\work\\${token}\\market`,
+      `market-${token}`,
+      `https://example.com/acme/${token}/market.git`,
+      `ssh://git@${token.toLowerCase()}.example/acme/market`,
+    ]) {
+      const scrubbed = scrubDiagnosticSecrets(text);
+      expect(scrubbed, text).not.toContain(token);
+      expect(scrubbed.toLowerCase(), text).not.toContain(token.toLowerCase());
+      expect(scrubbed).toContain("[REDACTED:");
+    }
+  });
+
+  it("masks a JSON Web Token in a path and a URL", () => {
+    const jwt = fixtureSecret("eyJ", "hbGciOiJIUzI1NiJ9", ".", "eyJzdWIiOiIxMjM0In0", ".", mixed(43));
+    for (const text of [`/srv/${jwt}/x`, `https://example.com/cb?state=${jwt}`]) expect(scrubDiagnosticSecrets(text)).not.toContain(jwt);
+  });
+
+  it.each([
+    // Hosts.
+    "test-server01.corp.example",
+    "live-db-replica-0001.internal",
+    "proj-alpha.example.com",
+    "sk-learn.example.org",
+    "aizawa-shop-production-europe-west1.example",
+    "akiaprojectserverab.example",
+    "xapp-launcher.example.com",
+    // Package names and source ids.
+    "live-captions",
+    "sk-learn-utils",
+    "test-runner",
+    "pk-tools",
+    "rk-deploy-helper",
+    "proj-template-react",
+    "test-marketplace",
+    "live-feed-2024",
+    // Paths and addresses.
+    "/Users/example/test-fixtures01/market",
+    "C:\\work\\live-dashboard-2024\\plugins",
+    "/opt/sk-learn-utils/v2",
+    "ssh://git@github.com/acme/market",
+    "https://github.com/acme/live-captions",
+    // Hashes.
+    "0123456789abcdef0123456789abcdef01234567",
+    "local-9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  ])("keeps %s as it is", (text) => {
+    expect(scrubDiagnosticSecrets(text)).toBe(text);
+  });
+
+  it("leaves the model-bound scrubber's broad prefix rule as it was", () => {
+    // Text bound for a model masks a name by mistake rather than miss a key.
+    expect(scrubSecretsForLLM("endpoint live-captions-service")).toContain("[REDACTED:TOKEN]");
+    expect(scrubSecretsForLLM("host test-server01.corp")).toContain("[REDACTED:TOKEN]");
+  });
+});
+
 describe("scrubSecretsForLLM — credential-class SOT (#1499 E2 M1)", () => {
   it("redacts prefixed API keys (sk-/pk-/live-)", () => {
     expect(scrubSecretsForLLM("key sk-ant-ABCDEFGH1234")).not.toContain("sk-ant-ABCDEFGH1234");

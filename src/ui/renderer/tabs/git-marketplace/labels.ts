@@ -5,6 +5,7 @@
 import type { TranslateFn as Translate } from "../../../../i18n/translate.js";
 import type { ClaudeDesktopImportFailure } from "../../../../mcp/claude-desktop-import.js";
 import { packageVocabularyKind } from "../../../../shared/marketplace-package-sections.js";
+import { hasRedaction } from "../../../../shared/dlp.js";
 import {
   parseMarketplaceErrorDetail,
   type GitMarketplaceFailure,
@@ -237,11 +238,15 @@ function knownHostName(host: string, port: number): string {
   return port === 22 ? bare : `[${bare}]:${port}`;
 }
 
-/** The command a failure asks the user to run, for *Copy command*; null when it asks for none. */
+/**
+ * The command a failure asks the user to run, for *Copy command*; null when
+ * it asks for none, or when main masked part of the host (it held a token's
+ * shape), since a command naming a masked host would not run (§18.8).
+ */
 export function failureCommand(failure: GitMarketplaceFailure): string | null {
   if (failure.code !== "SOURCE_SSH_HOST_UNKNOWN") return null;
   const detail = parseMarketplaceErrorDetail(failure.code, failure.detail);
-  return detail ? hostKeyCommand(detail) : null;
+  return detail && !hasRedaction(detail.host) ? hostKeyCommand(detail) : null;
 }
 
 function hostKeyCommand(detail: MarketplaceErrorDetail<"SOURCE_SSH_HOST_UNKNOWN">): string {
@@ -452,6 +457,13 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
     case "SOURCE_SSH_HOST_UNKNOWN": {
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
       if (!detail) return t("gitMarketplace.error.sshHostUnknown");
+      if (hasRedaction(detail.host)) {
+        switch (detail.reason) {
+          case "unknown": return t("gitMarketplace.error.sshHostUnknown.unknown.masked", { host: detail.host });
+          case "changed": return t("gitMarketplace.error.sshHostUnknown.changed.masked", { host: detail.host });
+        }
+        return unhandled(detail);
+      }
       const command = hostKeyCommand(detail);
       switch (detail.reason) {
         case "unknown": return t("gitMarketplace.error.sshHostUnknown.unknown", { host: detail.host, command });

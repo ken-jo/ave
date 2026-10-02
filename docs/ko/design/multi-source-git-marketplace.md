@@ -1897,6 +1897,16 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
   사유가 그 코드에 속하고 필드가 선언된 타입인 `detail`만 남기고, 나머지는 코드와
   메시지를 둔 채 버립니다. `message`는 main의 영어 문장이며 *세부 정보 복사*로만
   보입니다.
+- main은 렌더러에 건네는 모든 문자열을 지웁니다(§18.8). 각 응답의 `value`는 깊이와
+  관계없이, 각 실패의 `message`와 `detail`, 각 브로드캐스트(`sync-progress`,
+  `install-progress`, `update-status`, `updates-available`, 부트스트랩 상태), main이
+  쥐고 있다가 주는 응답(딥 링크, 부트 설치 알림) 모두 스크러버 하나
+  (`scrubDiagnosticSecrets` 위의 `scrubMarketplaceStrings`)를 거칩니다. 마켓플레이스의
+  로그 줄도 거칩니다(`createMarketplaceLogger`). 렌더러는 지우지 않습니다. 렌더러가
+  돌려보내는 것은 main이 확인할 수 있는 값(`previewId`, `planId`, 소스 id, 패키지 키,
+  커밋, 구성 요소의 이름과 digest)입니다. 토큰 모양을 담았던 값은 가려진 채 돌아와 어떤
+  것과도 맞지 않으므로 거부되며, 다른 것으로 오인되지 않습니다. 토큰 모양을 담은 딥 링크
+  `add` 주소는 가려진 채 추가 대화상자를 채우고, 사용자가 고칩니다.
 - `sources:preview`는 `{ input; ref?; subdir?; auth: "none" | "token" | "ssh";
   token?; acknowledge? }`를 받습니다. 마켓플레이스 미리보기나 단일 패키지
   미리보기(각각 `badges` 포함)를 돌려주거나, 주소가 `acknowledge`에 없는 확인을
@@ -2052,18 +2062,22 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 문장으로 오류 톤을 씁니다. 모든 메시지는 `scrubDiagnosticSecrets`(`src/shared/dlp.ts`:
 URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워집니다. main이 봉투에
 넣기 전에, 정규화기가 거부한 주소를 되풀이하기 전에, 그리고 *세부 정보 복사*가 복사하기
-전에 `MarketplaceProblem`이 다시 지웁니다. detail도 경계를 넘거나 저장될 때마다 필드별로
-같은 방식으로, main에서 한 번 지웁니다(IPC 봉투, 소스 상태 뷰와 저장된 `lastSync`, git
-런타임 상태. detail이 렌더러에 닿는 길은 이것뿐입니다). 렌더러는 받은 필드를 그대로 문장에
-넣습니다. 각 필드는 값이 어디서 오는지로 선언합니다(`DetailFieldKind`,
-`src/marketplace/errors.ts`). 사람이나 원격이 정한 것은 모두 `text`이며 지웁니다. 진단
-텍스트, 입력한 소스 주소와 정책 패턴(정규화는 ssh 계정 이름을 남기고, 붙여넣은 토큰이 그
-자리에 들어갈 수 있음), ref와 원격이 알린 ref 목록, 카탈로그 라벨, 폴더 경로, 서버, 폴더에서
-읽은 모든 이름이 여기에 듭니다. 코드가 문법을 강제하는 식별자만 그대로 둡니다(scheme,
-정규화한 호스트나 IP 주소, 소스 id, 패키지 이름·버전·플랫폼, fs 오류 코드, 정책 파일의 고정
-위치). 스크러버의 패턴이 실제 값(`test-…`, `live-…`)을 망가뜨리고, 호스트는 사용자가 실행할
-호스트 키 명령에 들어가기 때문입니다. 테스트가 스키마가 선언한 모든 필드에 토큰을 넣어, 이
-식별자에서만 그대로 넘어가는지 확인합니다.
+전에 `MarketplaceProblem`이 다시 지웁니다. 메시지 밖에도 규칙은 하나입니다(§13.1).
+마켓플레이스가 렌더러에 건네거나 로그에 쓰는 모든 문자열은 main에서 그 스크러버 하나를
+거치며, 예외인 필드는 없습니다. detail의 필드는 식별자까지(이름을 받는 문법은 같은
+모양의 토큰도 받습니다) 경계를 넘거나 저장될 때마다 지웁니다. 렌더러는 받은 그대로
+문장에 넣고 다시 지우지 않습니다. 알 수 없거나 바뀐 SSH 호스트 키의 호스트가 가려져
+돌아오면, 문장은 서버 이름 일부가 토큰처럼 보였다고 말하고 명령은 보여 주지 않습니다.
+가려진 호스트를 쓴 명령은 실행되지 않기 때문입니다.
+
+진단 스크러버는 접두사만이 아니라 토큰의 모양을 봅니다. 그래서 실제 이름은 잃는 것이
+없습니다(모델로 가는 텍스트의 `scrubSecretsForLLM`은 넓은 접두사 규칙을 그대로 둡니다.
+거기서는 이름을 잘못 가려도 잃는 것이 없습니다). 업체 접두사(`ghp_`, `github_pat_`, `xoxb-`, `xapp-`, `AKIA`, `AIza`, `sk-`,
+`pk-`, `rk-`, `proj-`, `test-`, `live-`)는 뒤에 토큰 고유의 무작위 부분(글자와 숫자가
+섞인 12자 이상의 조각, Slack 토큰의 숫자 id, AWS id의 숫자)이 있을 때만 셉니다.
+`test-server01.corp`, `live-captions`, `sk-learn-utils`, `aizawa-shop-…`은 그대로 두고,
+각 토큰 형식은 호스트·경로·id·URL 안에서도 가립니다. JSON Web Token은 쓰인 그대로만
+찾습니다. 소문자로 바뀐 JWT는 더 이상 자격 증명이 아닙니다.
 
 백그라운드 동기화의 실패는 `sources:list`로 소스 화면에 닿습니다. `SyncResult`가
 detail을 담고, 동기화기가 그것을 `state.json`의 `lastSync.detail`에 저장하고, 상태

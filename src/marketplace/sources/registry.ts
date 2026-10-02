@@ -24,7 +24,7 @@ import { existsSync, type Stats } from "node:fs";
 import { lstat, mkdir, readdir, readFile, rmdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
-import { createLogger } from "../../lib/logger.js";
+import { createMarketplaceLogger } from "../log.js";
 import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -445,7 +445,7 @@ export async function readSourceState(root: string, id: string, platform: NodeJS
   }
 }
 
-const log = createLogger("marketplace-registry");
+const log = createMarketplaceLogger("marketplace-registry");
 
 /** Where Repair moves a source's copy before walking it: `.trash-<id>-<random>` beside the sources. */
 const TRASH_PREFIX = ".trash-";

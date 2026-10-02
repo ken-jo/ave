@@ -23,11 +23,11 @@ import { chmod, lstat, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createLogger } from "../../lib/logger.js";
+import { createMarketplaceLogger } from "../log.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { normalizeSourceHost } from "../net/source-url.js";
 
-const log = createLogger("marketplace-askpass");
+const log = createMarketplaceLogger("marketplace-askpass");
 
 /** Username sent with a token; GitHub, GitLab and Gitea accept any non-empty name. */
 export const TOKEN_USERNAME = "x-access-token";
