@@ -1154,7 +1154,10 @@ URL을 가져오게 만들지 못합니다.
    말합니다. 상대 경로(`./x`, `C:foo`, `~user`, `relative-path`), Windows 장치
    경로(`device-path`), macOS·Linux에서의 드라이브·UNC 경로(`windows-path`),
    거기서 다른 컴퓨터를 가리키는 `file:` URL(`network-file-url`), 공유 이름
-   없는 UNC 경로(`unc-without-share`), 드라이브·공유·`/` 위로 올라가는 `..`
+   없는 UNC 경로(`unc-without-share`), 계정을 붙인 UNC 서버
+   (`\\user:secret@server\share`, `unc-credentials`: 자격 증명은 폴더 경로에
+   들어가지 않습니다. WebDAV의 `server@SSL`, `server@8080`은 계정이 아니므로
+   그대로 둡니다), 드라이브·공유·`/` 위로 올라가는 `..`
    (`outside-root`), 폴더와 함께 준 브랜치·하위 폴더·로그인(`folder-options`).
 2. **네트워크 분류.** UNC 경로는 다른 컴퓨터에 있습니다. Windows 드라이브
    문자는 현재 매핑으로 분류하며, 도우미 `ave-path-kind.exe`
@@ -2006,7 +2009,7 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 | `GIT_RUNTIME_MISSING` | 쓸 수 있는 git 없음 | — | `gitMarketplace.error.gitMissing` |
 | `GIT_RUNTIME_TOO_OLD` | `system` 모드에서 시스템 git이 2.45.1 미만 | — | `.gitTooOld` |
 | `GIT_RUNTIME_INSTALL_FAILED` | 관리형 다운로드/검증/압축 해제/스모크 테스트 실패 | 단계: `checking`, `downloading`, `verifying`, `extracting`, `smoke-testing`, `installing`(마지막 제자리 이동) — 필드 없음 | `.gitInstallFailed`, `.gitInstallFailed.<phase>` |
-| `SOURCE_URL_REJECTED` | §18.3 #1–4와 #7의 거부, 그리고 지원하지 않는 입력. 확인이 없음 | 정규화기에서: `credentials-in-url`, `helper-transport`(scheme), `scheme-unsupported`(scheme), `format`(쿼리, 프래그먼트, 공백, 제어 문자, 백슬래시). 게이트에서, 연결이 쓸 주소에 대해: `address-metadata`(host, address), `address-unroutable`(host, address), `catalog-this-computer`(source, host). 딥링크에서: `deep-link-path`. 폴더 경로에서(§7.7): `relative-path`, `device-path`, `windows-path`, `network-file-url`, `unc-without-share`, `outside-root`, `folder-options`. 다운로드 URL 자체의 거부는 담지 않음 | `.urlRejected`, `.urlRejected.<reason>`. 두 주소 사유는 입력 중인 주소와 사용자가 추가한 소스에만 "주소를 확인하세요"라고 하고, 그 밖에는(`.network`) VPN·프록시·hosts 파일과 관리자를 안내 |
+| `SOURCE_URL_REJECTED` | §18.3 #1–4와 #7의 거부, 그리고 지원하지 않는 입력. 확인이 없음 | 정규화기에서: `credentials-in-url`, `helper-transport`(scheme), `scheme-unsupported`(scheme), `format`(쿼리, 프래그먼트, 공백, 제어 문자, 백슬래시). 게이트에서, 연결이 쓸 주소에 대해: `address-metadata`(host, address), `address-unroutable`(host, address), `catalog-this-computer`(source, host). 딥링크에서: `deep-link-path`. 폴더 경로에서(§7.7): `relative-path`, `device-path`, `windows-path`, `network-file-url`, `unc-without-share`, `unc-credentials`, `outside-root`, `folder-options`. 다운로드 URL 자체의 거부는 담지 않음 | `.urlRejected`, `.urlRejected.<reason>`. 두 주소 사유는 입력 중인 주소와 사용자가 추가한 소스에만 "주소를 확인하세요"라고 하고, 그 밖에는(`.network`) VPN·프록시·hosts 파일과 관리자를 안내 |
 | `SOURCE_POLICY_BLOCKED` | 관리 정책 allow/block, `requireHttps`, `blockPrivateNetworks`, `allowLocalSources`, `allowDirectInstall`, 또는 공식이 아닌 대상에 대해 읽을 수 없는 정책 | `blocked-by-pattern`(target, pattern, policyPath), `not-in-allow-list`(target, policyPath), `https-required`(target, policyPath), `private-network-blocked`(target, address, policyPath), `local-sources-blocked`(target, policyPath), `direct-install-blocked`(target, policyPath), `policy-invalid`(error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.httpsRequired`, `.privateNetworkBlocked`, `.localSourcesBlocked`, `.directInstallBlocked`, `.policyInvalid` |
 | `SOURCE_CONFIRMATION_REQUIRED` | 대상이 소스에 없는 확인을 요구함(§7.4): 동기화, 계획, 설치 때, 또는 어느 소스도 지정하지 않은 다운로드 | 경고: `unencrypted`(host), `token-unencrypted`(host), `internal-network`(host, address), `this-computer`(host, address), `internal-downloads`(source, host), `network-folder`(server, path: 다른 컴퓨터의 폴더, 그 확인이 없는 폴더 소스를 읽을 때) | `.confirmationRequired`. 사유가 있으면 `gitMarketplace.warning.<warning>`(그 확인 자신의 질문, `198.18.0.0/15` 주소는 `internalNetwork.proxyRange`, 드라이브 매핑이 서버를 밝히지 않으면 `networkFolder.unknownServer`, macOS·Linux에서는 `networkFolder.automount`) |
 | `SOURCE_NAME_RESERVED` | 예약된 id | — | `.nameReserved` |
@@ -2050,9 +2053,17 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워집니다. main이 봉투에
 넣기 전에, 정규화기가 거부한 주소를 되풀이하기 전에, 그리고 *세부 정보 복사*가 복사하기
 전에 `MarketplaceProblem`이 다시 지웁니다. detail도 경계를 넘거나 저장될 때마다 필드별로
-같은 방식으로 지웁니다. 진단 텍스트와, detail이 담은 모든 소스 주소(`url`, 정책 차단의
-`target`, 없는 ref의 `repository`)가 대상입니다. 정규화는 ssh 계정 이름을 남기고, 붙여넣은
-토큰이 그 자리에 들어갈 수 있기 때문입니다. 경로, 호스트, id 등 코드가 만든 식별자는 그대로 둡니다.
+같은 방식으로, main에서 한 번 지웁니다(IPC 봉투, 소스 상태 뷰와 저장된 `lastSync`, git
+런타임 상태. detail이 렌더러에 닿는 길은 이것뿐입니다). 렌더러는 받은 필드를 그대로 문장에
+넣습니다. 각 필드는 값이 어디서 오는지로 선언합니다(`DetailFieldKind`,
+`src/marketplace/errors.ts`). 사람이나 원격이 정한 것은 모두 `text`이며 지웁니다. 진단
+텍스트, 입력한 소스 주소와 정책 패턴(정규화는 ssh 계정 이름을 남기고, 붙여넣은 토큰이 그
+자리에 들어갈 수 있음), ref와 원격이 알린 ref 목록, 카탈로그 라벨, 폴더 경로, 서버, 폴더에서
+읽은 모든 이름이 여기에 듭니다. 코드가 문법을 강제하는 식별자만 그대로 둡니다(scheme,
+정규화한 호스트나 IP 주소, 소스 id, 패키지 이름·버전·플랫폼, fs 오류 코드, 정책 파일의 고정
+위치). 스크러버의 패턴이 실제 값(`test-…`, `live-…`)을 망가뜨리고, 호스트는 사용자가 실행할
+호스트 키 명령에 들어가기 때문입니다. 테스트가 스키마가 선언한 모든 필드에 토큰을 넣어, 이
+식별자에서만 그대로 넘어가는지 확인합니다.
 
 백그라운드 동기화의 실패는 `sources:list`로 소스 화면에 닿습니다. `SyncResult`가
 detail을 담고, 동기화기가 그것을 `state.json`의 `lastSync.detail`에 저장하고, 상태

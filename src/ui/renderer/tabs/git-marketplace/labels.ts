@@ -4,7 +4,6 @@
  */
 import type { TranslateFn as Translate } from "../../../../i18n/translate.js";
 import type { ClaudeDesktopImportFailure } from "../../../../mcp/claude-desktop-import.js";
-import { scrubDiagnosticSecrets } from "../../../../shared/dlp.js";
 import { packageVocabularyKind } from "../../../../shared/marketplace-package-sections.js";
 import {
   parseMarketplaceErrorDetail,
@@ -397,6 +396,7 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
         case "windows-path": return t("gitMarketplace.error.urlRejected.windowsPath");
         case "network-file-url": return t("gitMarketplace.error.urlRejected.networkFileUrl");
         case "unc-without-share": return t("gitMarketplace.error.urlRejected.uncWithoutShare");
+        case "unc-credentials": return t("gitMarketplace.error.urlRejected.uncCredentials");
         case "outside-root": return t("gitMarketplace.error.urlRejected.outsideRoot");
         case "folder-options": return t("gitMarketplace.error.urlRejected.folderOptions");
       }
@@ -406,14 +406,14 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
       if (!detail) return t("gitMarketplace.policy.blocked");
       switch (detail.reason) {
-        case "blocked-by-pattern": return t("gitMarketplace.policy.blockedByPattern", { target: scrubDiagnosticSecrets(detail.target), pattern: detail.pattern, policyPath: detail.policyPath });
-        case "not-in-allow-list": return t("gitMarketplace.policy.notInAllowList", { target: scrubDiagnosticSecrets(detail.target), policyPath: detail.policyPath });
-        case "https-required": return t("gitMarketplace.policy.httpsRequired", { target: scrubDiagnosticSecrets(detail.target), policyPath: detail.policyPath });
+        case "blocked-by-pattern": return t("gitMarketplace.policy.blockedByPattern", { target: detail.target, pattern: detail.pattern, policyPath: detail.policyPath });
+        case "not-in-allow-list": return t("gitMarketplace.policy.notInAllowList", { target: detail.target, policyPath: detail.policyPath });
+        case "https-required": return t("gitMarketplace.policy.httpsRequired", { target: detail.target, policyPath: detail.policyPath });
         case "private-network-blocked":
-          return t("gitMarketplace.policy.privateNetworkBlocked", { target: scrubDiagnosticSecrets(detail.target), address: detail.address, policyPath: detail.policyPath });
-        case "local-sources-blocked": return t("gitMarketplace.policy.localSourcesBlocked", { target: scrubDiagnosticSecrets(detail.target), policyPath: detail.policyPath });
-        case "direct-install-blocked": return t("gitMarketplace.policy.directInstallBlocked", { target: scrubDiagnosticSecrets(detail.target), policyPath: detail.policyPath });
-        case "policy-invalid": return t("gitMarketplace.policy.policyInvalid", { error: scrubDiagnosticSecrets(detail.error) });
+          return t("gitMarketplace.policy.privateNetworkBlocked", { target: detail.target, address: detail.address, policyPath: detail.policyPath });
+        case "local-sources-blocked": return t("gitMarketplace.policy.localSourcesBlocked", { target: detail.target, policyPath: detail.policyPath });
+        case "direct-install-blocked": return t("gitMarketplace.policy.directInstallBlocked", { target: detail.target, policyPath: detail.policyPath });
+        case "policy-invalid": return t("gitMarketplace.policy.policyInvalid", { error: detail.error });
       }
       return unhandled(detail);
     }
@@ -439,7 +439,7 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
       if (!detail) return t("gitMarketplace.error.idTaken");
       switch (detail.reason) {
-        case "repository-already-added": return t("gitMarketplace.error.idTaken.repositoryAlreadyAdded", { url: scrubDiagnosticSecrets(detail.url), id: detail.existingId });
+        case "repository-already-added": return t("gitMarketplace.error.idTaken.repositoryAlreadyAdded", { url: detail.url, id: detail.existingId });
         case "folder-already-added": return t("gitMarketplace.error.idTaken.folderAlreadyAdded", { path: detail.path, id: detail.existingId });
         case "folder-inside-source":
           return t("gitMarketplace.error.idTaken.folderInsideSource", { path: detail.path, id: detail.existingId, existingPath: detail.existingPath });
@@ -505,8 +505,8 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
               return t("gitMarketplace.error.localUnreadable.notFound.managed", { path: detail.path });
           }
           return unhandled(audience);
-        case "permission": return t("gitMarketplace.error.localUnreadable.permission", { path: detail.path, message: scrubDiagnosticSecrets(detail.message) });
-        case "io": return t("gitMarketplace.error.localUnreadable.io", { path: detail.path, message: scrubDiagnosticSecrets(detail.message) });
+        case "permission": return t("gitMarketplace.error.localUnreadable.permission", { path: detail.path, message: detail.message });
+        case "io": return t("gitMarketplace.error.localUnreadable.io", { path: detail.path, message: detail.message });
         case "moved":
           return audience === "entry" || audience === "custom"
             ? t("gitMarketplace.error.localUnreadable.moved", { path: detail.path, target: detail.target })
@@ -568,12 +568,12 @@ export function failureText(t: Translate, failure: GitMarketplaceFailure, subjec
       const detail = parseMarketplaceErrorDetail(code, failure.detail);
       if (!detail) return t("gitMarketplace.error.contentRule");
       switch (detail.reason) {
-        case "link-outside-folder": return t("gitMarketplace.error.contentRule.linkOutsideFolder", { path: detail.path, target: scrubDiagnosticSecrets(detail.target) });
-        case "link-to-network": return t("gitMarketplace.error.contentRule.linkToNetwork", { path: detail.path, target: scrubDiagnosticSecrets(detail.target) });
+        case "link-outside-folder": return t("gitMarketplace.error.contentRule.linkOutsideFolder", { path: detail.path, target: detail.target });
+        case "link-to-network": return t("gitMarketplace.error.contentRule.linkToNetwork", { path: detail.path, target: detail.target });
         case "link-to-skipped": return t("gitMarketplace.error.contentRule.linkToSkipped", { path: detail.path, target: detail.target });
         case "special-file": return t("gitMarketplace.error.contentRule.specialFile", { path: detail.path });
         case "case-collision": return t("gitMarketplace.error.contentRule.caseCollision", { path: detail.path });
-        case "limit": return t("gitMarketplace.error.contentRule.limit", { path: detail.path, limit: scrubDiagnosticSecrets(detail.limit) });
+        case "limit": return t("gitMarketplace.error.contentRule.limit", { path: detail.path, limit: detail.limit });
       }
       return unhandled(detail);
     }
@@ -596,7 +596,7 @@ function refNotFoundText(t: Translate, detail: MarketplaceErrorDetail<"SOURCE_RE
   }
   switch (detail.reason) {
     case "missing": {
-      const vars = { ref: detail.ref, repository: scrubDiagnosticSecrets(detail.repository), available: detail.available.length > 0 ? detail.available.join(", ") : "—" };
+      const vars = { ref: detail.ref, repository: detail.repository, available: detail.available.length > 0 ? detail.available.join(", ") : "—" };
       switch (audience) {
         case "entry": return t("gitMarketplace.error.refNotFound.missing", vars);
         case "custom": return t("gitMarketplace.error.refNotFound.missing.custom", vars);

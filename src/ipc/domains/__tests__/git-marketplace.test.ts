@@ -5,7 +5,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, isPublicChannel } from "../../../contract/app-contract.js";
-import { MarketplaceError } from "../../../marketplace/errors.js";
+import { MARKETPLACE_ERROR_DETAIL_FIELDS, MarketplaceError } from "../../../marketplace/errors.js";
 import { NetworkGate } from "../../../marketplace/net/network-gate.js";
 import { normalizeSourceUrl } from "../../../marketplace/net/source-url.js";
 import { createPinnedFetch } from "../../../marketplace/net/pinned-fetch.js";
@@ -513,6 +513,46 @@ describe("git marketplace IPC boundary", () => {
       }
     });
 
+    describe("a token-shaped value in every detail field the schema declares", () => {
+      // Built here, never written out whole.
+      const token = `ghp_${"a".repeat(36)}`;
+      /**
+       * The `string` fields: identifiers whose grammar the code enforces before they reach a detail
+       * (errors.ts, DetailFieldKind), kept as they are. Every other field is a person's or a remote's
+       * text, and a token pasted into it never crosses.
+       */
+      const IDENTIFIERS = new Set(["scheme", "host", "address", "policyPath", "sourceId", "existingId", "fsCode", "name", "version", "platform"]);
+      const fields = Object.entries(MARKETPLACE_ERROR_DETAIL_FIELDS).flatMap(([code, reasons]) =>
+        Object.entries(reasons as Record<string, Record<string, string>>).flatMap(([reason, declared]) =>
+          Object.entries(declared).map(([field, kind]) => ({ code, reason, declared, field, kind }))));
+
+      it("declares a field string only when it is an identifier, and every identifier string", () => {
+        for (const { code, reason, field, kind } of fields) {
+          if (kind === "number") continue;
+          expect(kind === "string", `${code} ${reason}.${field} is ${kind}`).toBe(IDENTIFIERS.has(field));
+        }
+      });
+
+      it.each(fields.filter((entry) => entry.kind !== "number"))("$code $reason: $field ($kind)", async ({ code, reason, declared, field }) => {
+        const benign = (fieldKind: string) => (fieldKind === "number" ? 1 : fieldKind === "text[]" ? ["x"] : "x");
+        const detail = Object.fromEntries(Object.entries(declared).map(([name, fieldKind]) => [name, name === field ? (fieldKind === "text[]" ? [token] : token) : benign(fieldKind)]));
+        await setup({
+          refresh: vi.fn(async () => {
+            throw new MarketplaceError(code as never, "failed", { detail: { reason, ...detail } as never });
+          }),
+        });
+        const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
+        expect(answer).toMatchObject({ ok: false, code, detail: { reason } });
+        const { en, ko } = sentences(answer);
+        if (IDENTIFIERS.has(field)) {
+          expect((answer as { detail: Record<string, unknown> }).detail[field]).toBe(token);
+          return;
+        }
+        expect(JSON.stringify(answer)).not.toContain(token);
+        expect(`${en}\n${ko}`).not.toContain(token);
+      });
+    });
+
     it("answers a repository that is already a source with that source's id, rendered as what to do instead of another id", async () => {
       const root = mkdtempSync(join(tmpdir(), "ave-ipc-repository-"));
       const harness = await folderService({ root, folders: { fs: new FakeVolume("linux"), platform: "linux", limits: TEST_FOLDER_LIMITS } });
@@ -554,9 +594,9 @@ describe("git marketplace IPC boundary", () => {
         for (const answer of [duplicate, direct]) {
           expect(JSON.stringify(answer)).not.toContain(token);
           const { en, ko } = sentences(answer);
-          // The renderer scrubs a text field again before a sentence, so the marker may name the userinfo it now sees.
-          expect(en).toMatch(/ssh:\/\/\[REDACTED:[A-Z]+\]@github\.com\/acme\/market/u);
-          expect(ko).toMatch(/ssh:\/\/\[REDACTED:[A-Z]+\]@github\.com\/acme\/market/u);
+          // Scrubbed once, in main: the sentence shows the envelope's marker as it arrived.
+          expect(en).toContain("ssh://[REDACTED:TOKEN]@github.com/acme/market");
+          expect(ko).toContain("ssh://[REDACTED:TOKEN]@github.com/acme/market");
           expect(`${en}\n${ko}`).not.toContain(token);
         }
       } finally {

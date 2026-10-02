@@ -158,9 +158,16 @@ function normalizeWindows(raw: string, input: string): string {
   return refuse(input, "relative-path", "a relative path");
 }
 
+/** WebDAV's spellings of a server with TLS or a port (`server@SSL`, `server@8080`, `server@SSL@8080`): the only `@` a UNC server holds. */
+const WEBDAV_SERVER = /^[^@]+@(?:SSL(?:@\d+)?|\d+)$/iu;
+
 function normalizeUnc(path: string, input: string): string {
   const [server, share, ...rest] = path.slice(2).split(/[\\/]+/u);
   if (!server || !share) refuse(input, "unc-without-share", "a network path without a share");
+  // A server is a name or an address, never an account: `user:secret@server` is refused here, not carried on as a path (§18.4.1).
+  if (server.includes(":") || (server.includes("@") && !WEBDAV_SERVER.test(server))) {
+    refuse(input, "unc-credentials", "a user name or password in a network path");
+  }
   if (server === "." || share === ".") refuse(input, "device-path", "a Windows device path");
   if (server === ".." || share === "..") refuse(input, "outside-root", ".. above the share");
   const segments = lexicalSegments(rest, input);

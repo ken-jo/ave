@@ -97,6 +97,10 @@ describe("stage 1 on Windows (path.win32)", () => {
     ["\\\\?\\UNC\\server\\share\\market", "\\\\server\\share\\market"],
     ["file:///C:/acme/market", "C:\\acme\\market"],
     ["file://server/share/market", "\\\\server\\share\\market"],
+    // WebDAV's TLS and port spellings are the only `@` a server holds.
+    ["\\\\server@SSL\\DavWWWRoot\\market", "\\\\server@SSL\\DavWWWRoot\\market"],
+    ["\\\\server@8080\\DavWWWRoot\\market", "\\\\server@8080\\DavWWWRoot\\market"],
+    ["\\\\server@SSL@443\\DavWWWRoot\\market", "\\\\server@SSL@443\\DavWWWRoot\\market"],
   ])("%s → %s", (input, expected) => {
     expect(folder(input, "win32")).toBe(expected);
   });
@@ -112,11 +116,24 @@ describe("stage 1 on Windows (path.win32)", () => {
     ["\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1", "device-path"],
     ["\\\\server", "unc-without-share"],
     ["\\\\server\\", "unc-without-share"],
+    ["\\\\user:secret@server\\share\\m", "unc-credentials"],
+    ["\\\\user@server\\share\\m", "unc-credentials"],
+    ["//user:secret@server/share/m", "unc-credentials"],
+    ["\\\\?\\UNC\\user:secret@server\\share\\m", "unc-credentials"],
+    ["\\\\server:445\\share", "unc-credentials"],
     ["C:\\..\\x", "outside-root"],
     ["\\\\server\\share\\..\\..\\x", "outside-root"],
     ["file:///market", "relative-path"],
   ])("%s is refused (%s)", (input, reason) => {
     expect(refusal(input, "win32")).toBe(reason);
+  });
+
+  it("refuses a token pasted as a network path's account before anything echoes it", () => {
+    // Built here, never written out whole.
+    const token = `ghp_${"a".repeat(36)}`;
+    const input = `\\\\user:${token}@server.example\\share\\tools`;
+    expect(refusal(input, "win32")).toBe("unc-credentials");
+    expect(() => normalizeSourceInput(input, "win32", WIN_HOME)).toThrow(expect.objectContaining({ message: expect.not.stringContaining(token) }));
   });
 });
 

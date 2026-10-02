@@ -1246,7 +1246,10 @@ is contacted.
    `relative-path`), a Windows device path (`device-path`), a drive or UNC
    path on macOS or Linux (`windows-path`), a `file:` URL naming another
    computer there (`network-file-url`), a UNC path without its share
-   (`unc-without-share`), a `..` above the drive, share or `/`
+   (`unc-without-share`), a UNC server spelled with an account
+   (`\\user:secret@server\share`, `unc-credentials`: credentials never
+   belong in a folder path; WebDAV's `server@SSL` and `server@8080` are not
+   accounts and stay), a `..` above the drive, share or `/`
    (`outside-root`), and a branch, subfolder or sign-in given with a folder
    (`folder-options`).
 2. **Network classification.** A UNC path is on another computer. A Windows
@@ -2193,7 +2196,7 @@ subject in both catalogs.
 | `GIT_RUNTIME_MISSING` | no usable git | — | `gitMarketplace.error.gitMissing` |
 | `GIT_RUNTIME_TOO_OLD` | system git older than 2.45.1 in `system` mode | — | `.gitTooOld` |
 | `GIT_RUNTIME_INSTALL_FAILED` | managed download/verify/extract/smoke test failed | the phase: `checking`, `downloading`, `verifying`, `extracting`, `smoke-testing`, `installing` (the final move into place) — no fields | `.gitInstallFailed`, `.gitInstallFailed.<phase>` |
-| `SOURCE_URL_REJECTED` | the refusals of §18.3 #1–4 and #7, and unsupported input, a folder path included; no confirmation exists | from the normalizer: `credentials-in-url`, `helper-transport` (scheme), `scheme-unsupported` (scheme), `format` (query, fragment, whitespace, control character or backslash); from the gate, on the address a connection would use: `address-metadata` (host, address), `address-unroutable` (host, address), `catalog-this-computer` (source, host); from the deep link: `deep-link-path`; from a folder path (§7.7): `relative-path`, `device-path`, `windows-path`, `network-file-url`, `unc-without-share`, `outside-root`, `folder-options`. A download URL's own refusals carry none | `.urlRejected`, `.urlRejected.<reason>`; the two address reasons say "check the address" only for an address being typed or a source the user added, and otherwise (`.network`) name a VPN, proxy or hosts file and the administrator |
+| `SOURCE_URL_REJECTED` | the refusals of §18.3 #1–4 and #7, and unsupported input, a folder path included; no confirmation exists | from the normalizer: `credentials-in-url`, `helper-transport` (scheme), `scheme-unsupported` (scheme), `format` (query, fragment, whitespace, control character or backslash); from the gate, on the address a connection would use: `address-metadata` (host, address), `address-unroutable` (host, address), `catalog-this-computer` (source, host); from the deep link: `deep-link-path`; from a folder path (§7.7): `relative-path`, `device-path`, `windows-path`, `network-file-url`, `unc-without-share`, `unc-credentials`, `outside-root`, `folder-options`. A download URL's own refusals carry none | `.urlRejected`, `.urlRejected.<reason>`; the two address reasons say "check the address" only for an address being typed or a source the user added, and otherwise (`.network`) name a VPN, proxy or hosts file and the administrator |
 | `SOURCE_POLICY_BLOCKED` | managed policy allow/block, `requireHttps`, `blockPrivateNetworks`, `allowLocalSources`, `allowDirectInstall`, or an unreadable policy for a non-official target | `blocked-by-pattern` (target, pattern, policyPath), `not-in-allow-list` (target, policyPath), `https-required` (target, policyPath), `private-network-blocked` (target, address, policyPath), `local-sources-blocked` (target, policyPath), `direct-install-blocked` (target, policyPath), `policy-invalid` (error) | `gitMarketplace.policy.blocked`, `.blockedByPattern`, `.notInAllowList`, `.httpsRequired`, `.privateNetworkBlocked`, `.localSourcesBlocked`, `.directInstallBlocked`, `.policyInvalid` |
 | `SOURCE_CONFIRMATION_REQUIRED` | a target needs a confirmation the source does not hold (§7.4): at a sync, plan or install, or a download that no source names | the warning: `unencrypted` (host), `token-unencrypted` (host), `internal-network` (host, address), `this-computer` (host, address), `internal-downloads` (source, host), `network-folder` (server, path: a folder on another computer, at a read of a folder source that does not hold it) | `.confirmationRequired`; with a reason, `gitMarketplace.warning.<warning>` (the confirmation's own question; `internalNetwork.proxyRange` for a `198.18.0.0/15` address; `networkFolder.unknownServer` when the drive's mapping names no server and `networkFolder.automount` on macOS and Linux) |
 | `SOURCE_NAME_RESERVED` | reserved id | — | `.nameReserved` |
@@ -2240,11 +2243,21 @@ error tone with its own sentence. Every message is scrubbed
 and token values, credential-helper lines) by main before it enters the
 envelope, by the normalizer before it echoes a refused address, and again by
 `MarketplaceProblem` before *Copy details* copies it. A detail is scrubbed the
-same way wherever it crosses or is stored, field by field: its diagnostic
-text, and every source address it names (`url`, a policy block's `target`, a
-missing ref's `repository`), since normalization keeps an ssh account name
-and a pasted token fits there. Paths, hosts, ids and the other identifiers
-the code built are kept as they are.
+same way wherever it crosses or is stored, field by field, once and in main
+(the IPC envelope, a source's status view and stored `lastSync`, the git
+runtime status, which are the only ways a detail reaches the renderer); the
+renderer puts its fields in a sentence as they arrive. Each field is declared
+by where its value comes from (`DetailFieldKind`, `src/marketplace/errors.ts`).
+Anything a person or a remote chose is `text` and scrubbed: diagnostic text, a
+source address or policy pattern as entered (normalization keeps an ssh
+account name, which a pasted token fits), a ref and a remote's advertised
+refs, a catalog's label, a folder path, a server and every name read from a
+folder. Only identifiers whose grammar the code enforces stay as they are (a
+scheme, a normalized host or IP address, a source id, a package name,
+version or platform, an fs error code, the policy file's fixed location): the
+scrubber's patterns would mangle real ones (`test-…`, `live-…`), and a host
+feeds the host-key command the user runs. A test feeds a token into every
+field the schema declares and checks it crosses only in those.
 
 A background sync's failure reaches the Sources view through `sources:list`:
 `SyncResult` carries the detail, the syncer stores it in

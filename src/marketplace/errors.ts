@@ -55,15 +55,26 @@ export const MARKETPLACE_ERROR_CODES = [
 export type MarketplaceErrorCode = (typeof MARKETPLACE_ERROR_CODES)[number];
 
 /**
- * A detail field's type. `string` is a structured identifier the code built
- * (a host, a ref, a rule, a path); `text` is diagnostic text from elsewhere
- * (a parser's or a proxy configuration's own words), or a source address as
- * entered, whose ssh account name normalization keeps and a pasted token can
- * fill. Either may quote a secret, so `text` is scrubbed wherever a detail
- * leaves main or is stored ({@link scrubMarketplaceErrorDetail}), and again
- * where the renderer puts it in a sentence.
+ * A detail field's type, by where its value comes from.
+ *
+ * `string` is an identifier whose grammar the code enforces before it gets
+ * here, and which has no room for credentials or free text: a URL scheme, a
+ * normalized host or an IP address, a source id, a package name, version or
+ * platform, an fs error code, the policy file's fixed location. It is kept
+ * as it is: the scrubber's patterns would mangle real values (`test-…`,
+ * `live-…`), and a host feeds the host-key command the user runs.
+ *
+ * `text` is anything a person or a remote chose: diagnostic text (a parser's,
+ * a proxy's or the system's own words), a source address or policy pattern
+ * as entered (normalization keeps an ssh account name, which a pasted token
+ * fits), a ref, a catalog's label, a folder path, a server and every name
+ * read from a folder. `text[]` is a list of such values, as a remote's
+ * advertised refs. Any of these may hold a secret, so they are scrubbed
+ * wherever a detail leaves main or is stored
+ * ({@link scrubMarketplaceErrorDetail}): once, in main. The renderer puts
+ * them in a sentence as they arrive.
  */
-type DetailFieldKind = "string" | "text" | "number" | "string[]";
+type DetailFieldKind = "string" | "text" | "number" | "text[]";
 
 /**
  * The reasons each code can carry, and the fields of each reason's detail
@@ -103,18 +114,20 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     format: {},
     "address-metadata": { host: "string", address: "string" },
     "address-unroutable": { host: "string", address: "string" },
-    "catalog-this-computer": { source: "string", host: "string" },
+    "catalog-this-computer": { source: "text", host: "string" },
     "deep-link-path": {},
     "relative-path": {},
     "device-path": {},
     "windows-path": {},
     "network-file-url": {},
     "unc-without-share": {},
+    /** A UNC server spelled with an account (`\\user:secret@server\share`): credentials never belong in a folder path. */
+    "unc-credentials": {},
     "outside-root": {},
     "folder-options": {},
   },
   SOURCE_POLICY_BLOCKED: {
-    "blocked-by-pattern": { target: "text", pattern: "string", policyPath: "string" },
+    "blocked-by-pattern": { target: "text", pattern: "text", policyPath: "string" },
     "not-in-allow-list": { target: "text", policyPath: "string" },
     "https-required": { target: "text", policyPath: "string" },
     "private-network-blocked": { target: "text", address: "string", policyPath: "string" },
@@ -134,9 +147,9 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "token-unencrypted": { host: "string" },
     "internal-network": { host: "string", address: "string" },
     "this-computer": { host: "string", address: "string" },
-    "internal-downloads": { source: "string", host: "string" },
+    "internal-downloads": { source: "text", host: "string" },
     /** A folder on another computer (§18.4.1 stage 2): the server, empty when the drive's mapping names none, and the folder. */
-    "network-folder": { server: "string", path: "string" },
+    "network-folder": { server: "text", path: "text" },
   },
   /**
    * `token-no-access`: the host answered "repository not found" after Ave
@@ -154,7 +167,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     changed: { host: "string", port: "number" },
   },
   SOURCE_REF_NOT_FOUND: {
-    missing: { ref: "string", repository: "text", available: "string[]" },
+    missing: { ref: "text", repository: "text", available: "text[]" },
   },
   /**
    * `not-found` and `not-found-ssh`: the host answered "repository not
@@ -220,20 +233,20 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
    */
   SOURCE_ID_TAKEN: {
     "repository-already-added": { url: "text", existingId: "string" },
-    "folder-already-added": { path: "string", existingId: "string" },
-    "folder-inside-source": { path: "string", existingId: "string", existingPath: "string" },
-    "folder-contains-source": { path: "string", existingId: "string", existingPath: "string" },
+    "folder-already-added": { path: "text", existingId: "string" },
+    "folder-inside-source": { path: "text", existingId: "string", existingPath: "text" },
+    "folder-contains-source": { path: "text", existingId: "string", existingPath: "text" },
   },
   SOURCE_LOCAL_UNREADABLE: {
-    "not-found": { path: "string" },
-    permission: { path: "string", message: "text" },
-    io: { path: "string", message: "text" },
-    moved: { path: "string", target: "string" },
-    "not-a-directory": { path: "string" },
-    "ambiguous-case": { path: "string" },
-    "changed-during-read": { path: "string" },
+    "not-found": { path: "text" },
+    permission: { path: "text", message: "text" },
+    io: { path: "text", message: "text" },
+    moved: { path: "text", target: "text" },
+    "not-a-directory": { path: "text" },
+    "ambiguous-case": { path: "text" },
+    "changed-during-read": { path: "text" },
     /** The Windows folder classifier is missing or broken (§18.4.1 stage 2): Ave cannot tell whether `path` is on another computer. */
-    "classifier-unavailable": { path: "string" },
+    "classifier-unavailable": { path: "text" },
   },
   /**
    * A folder's file breaks a reading rule (§18.4.5, §5.4, §5.5): a link that
@@ -242,12 +255,12 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
    * `path` is relative to the folder; `target` is the link's own text.
    */
   CONTENT_RULE_VIOLATION: {
-    "link-outside-folder": { path: "string", target: "text" },
-    "link-to-network": { path: "string", target: "text" },
-    "link-to-skipped": { path: "string", target: "string" },
-    "special-file": { path: "string" },
-    "case-collision": { path: "string" },
-    limit: { path: "string", limit: "text" },
+    "link-outside-folder": { path: "text", target: "text" },
+    "link-to-network": { path: "text", target: "text" },
+    "link-to-skipped": { path: "text", target: "text" },
+    "special-file": { path: "text" },
+    "case-collision": { path: "text" },
+    limit: { path: "text", limit: "text" },
   },
   /** A folder plugin without a built tree (`plugin.json` and `dist/`, §18.4.2). */
   NO_INSTALLABLE_ARTIFACT: {
@@ -265,7 +278,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
 } as const satisfies Partial<Record<MarketplaceErrorCode, Record<string, Record<string, DetailFieldKind>>>>;
 
 type DetailFields = typeof MARKETPLACE_ERROR_DETAIL_FIELDS;
-type FieldValue<K> = K extends "string" | "text" ? string : K extends "number" ? number : K extends "string[]" ? readonly string[] : never;
+type FieldValue<K> = K extends "string" | "text" ? string : K extends "number" ? number : K extends "text[]" ? readonly string[] : never;
 type DetailOf<C extends keyof DetailFields> = {
   [R in keyof DetailFields[C]]: { reason: R } & { -readonly [F in keyof DetailFields[C][R]]: FieldValue<DetailFields[C][R][F]> };
 }[keyof DetailFields[C]];
@@ -308,10 +321,11 @@ export function parseMarketplaceErrorDetail(code: string, value: unknown): Marke
 }
 
 /**
- * `detail` with every `text` field scrubbed of credentials; identifiers are
- * kept as they are. Called once at each boundary a detail crosses: the IPC
- * envelope, the source status view, the stored `lastSync.detail` and the git
- * runtime status.
+ * `detail` with every `text` field, and each item of a `text[]` field,
+ * scrubbed of credentials; identifiers are kept as they are. Called at each
+ * boundary a detail crosses: the IPC envelope, the source status view, the
+ * stored `lastSync.detail` and the git runtime status. These are the only
+ * ways a detail reaches the renderer, which therefore never scrubs one.
  */
 export function scrubMarketplaceErrorDetail<D extends MarketplaceErrorDetail>(code: MarketplaceErrorCode, detail: D): D {
   if (parseMarketplaceErrorDetail(code, detail) === undefined) throw new TypeError(`${JSON.stringify(detail)} is not a detail of ${code}`);
@@ -319,6 +333,7 @@ export function scrubMarketplaceErrorDetail<D extends MarketplaceErrorDetail>(co
   const scrubbed: Record<string, unknown> = { ...detail };
   for (const [field, kind] of Object.entries(fields)) {
     if (kind === "text") scrubbed[field] = scrubDiagnosticSecrets(scrubbed[field] as string);
+    if (kind === "text[]") scrubbed[field] = (scrubbed[field] as readonly string[]).map(scrubDiagnosticSecrets);
   }
   return scrubbed as D;
 }
