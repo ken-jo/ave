@@ -1966,7 +1966,8 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
   트리 다이제스트(없는 패키지는 `null`)입니다.
 - `sources:pick-folder`(preload의 `pickFolder`)는 요청한 창 위에 main의 폴더
   대화상자를 띄우고 `{ path }`를, 사용자가 취소하면 `null`을 돌려줍니다.
-  아무것도 읽지 않고 서비스도 만들지 않습니다. 대화상자를 열지 못하면
+  아무것도 읽지 않고 서비스도 만들지 않습니다. 그 경로는 탭에 가는 모든 답처럼
+  가려진 채 건너갑니다(§18.8). 대화상자를 열지 못하면
   `unavailable`입니다. `sources:reveal`(`revealSource`)은 소스 ID를 받아 셸에
   폴더를 보여 달라고 한 뒤 `null`을 돌려줍니다. git 소스는 `invalid-request`이고,
   폴더는 먼저 읽기와 같은 판단을 거칩니다(§7.7).
@@ -2285,7 +2286,11 @@ URL userinfo, authorization·토큰 값, 자격 증명 도우미 줄)로 지워�
 실패합니다. 거기서 설치한 패키지도 같은 핸들로 나열되고, 제거(Uninstall)는 그 핸들을 다시
 받습니다. 핸들은 보기의 이름일 뿐입니다. 보기에서 온 요청은 입구에서 한 번 설치 기록의 저장된
 식별자로 풀리고, 제거 자체는 main의 모든 호출자(철회 집행, 이전 플러그인 제거)처럼 그 저장된
-식별자로 패키지를 가리킵니다.
+식별자로 패키지를 가리킵니다. 그 소스와 겹쳐 거부된 추가(`SOURCE_ID_TAKEN`
+`repository-already-added`나 폴더 겹침)도 detail의 `existingId`와 메시지에서 같은 핸들로
+그 소스를 가리키므로, *<id> 보기*가 그 행을 열고 저장된 id는 main 밖으로 나가지 않습니다.
+격리된 폴더 소스는 분류하지 않습니다. 행에 배지도 *Finder에서 보기*도 없고, 핸들이나 저장된
+id로 `sources:reveal`을 부르면 `SOURCE_ID_INVALID` `stored-id-holds-credential`입니다.
 
 백그라운드 동기화의 실패는 `sources:list`로 소스 화면에 닿습니다. `SyncResult`가
 detail을 담고, 동기화기가 그것을 `state.json`의 `lastSync.detail`에 저장하고, 상태

@@ -699,7 +699,8 @@ export function registerGitMarketplaceHandlers(
       const parent = BrowserWindow.fromWebContents(event.sender);
       const picked = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
       const path = picked.filePaths[0];
-      return { ok: true, value: picked.canceled || !path ? null : { path } };
+      // Scrubbed like every answer the tab gets (§18.8): a folder named like a token arrives masked.
+      return { ok: true, value: picked.canceled || !path ? null : scrubMarketplaceStrings({ path }) };
     } catch (error) {
       const message = scrubDiagnosticSecrets(errorMessage(error));
       log.error({ err: message }, "git marketplace folder dialog failed");

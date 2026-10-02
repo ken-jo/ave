@@ -625,7 +625,8 @@ export class MarketplaceService implements RetirementEntryLookup {
       canRemove: reviewable,
       diagnostics: (snapshot?.diagnostics ?? []).map((item) => `${item.subject}: ${item.message}`),
       acknowledged: acknowledgedOf(source, state),
-      badges: await this.badgesOf(source, acknowledgedOf(source, state)),
+      // A quarantined folder is not classified: nothing is asked about a source that is only removed (§18.8).
+      badges: quarantined && source.transport === "folder" ? [] : await this.badgesOf(source, acknowledgedOf(source, state)),
     };
   }
 
@@ -1096,7 +1097,27 @@ export class MarketplaceService implements RetirementEntryLookup {
    * A folder is written with its identity and read (§18.4).
    */
   async addSource(request: SourceAddRequest): Promise<SourceView> {
-    return this.operation(() => this.addSourceNow(request));
+    return this.operation(async () => {
+      try {
+        return await this.addSourceNow(request);
+      } catch (error) {
+        throw this.viewTaken(error);
+      }
+    });
+  }
+
+  /**
+   * SOURCE_ID_TAKEN for a duplicate names the source it duplicates by the id
+   * its row carries (§18.8): a quarantined one by its handle, so *Show <id>*
+   * opens that row and the stored id never leaves main, not even masked.
+   * Any other error is returned as it is.
+   */
+  private viewTaken(error: unknown): unknown {
+    if (!isMarketplaceError(error) || error.code !== "SOURCE_ID_TAKEN" || error.detail === undefined || !("existingId" in error.detail)) return error;
+    const stored = error.detail.existingId;
+    const shown = this.viewSourceId(stored);
+    if (shown === stored) return error;
+    return new MarketplaceError("SOURCE_ID_TAKEN", error.message.replaceAll(stored, shown), { detail: { ...error.detail, existingId: shown } });
   }
 
   private async addSourceNow(request: SourceAddRequest): Promise<SourceView> {

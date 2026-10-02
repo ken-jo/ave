@@ -1049,6 +1049,19 @@ describe("MarketplaceService", () => {
       expect(state).toMatchObject({ pinnedCommit: first, pendingRewrite: { candidate: second } });
     });
 
+    it("names it by its row's handle when the same repository is added again, so Show <id> opens that row", async () => {
+      const m = market();
+      await addMarket(m.url);
+      await storeUnderToken();
+      const handle = (await service.listSources()).find((source) => source.status.state === "id-holds-credential")!.id;
+      const preview = await service.previewSource({ input: m.url, auth: "none" });
+      const error = await service.addSource({ previewId: previewIdOf(preview), id: "again" }).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: "SOURCE_ID_TAKEN", detail: { reason: "repository-already-added", existingId: handle } });
+      // The stored id never leaves, not even to be masked: the message names the handle too.
+      expect(String((error as Error).message)).toContain(handle);
+      expect(JSON.stringify({ message: (error as Error).message, detail: (error as { detail: unknown }).detail })).not.toContain(TOKEN);
+    });
+
     it.each(["disable", "uninstall"] as const)("enforces a %s revocation its cached snapshot carries on a server installed from it", async (action) => {
       const { scrubMarketplaceStrings } = await import("../../errors.js");
       const m = market();

@@ -1276,6 +1276,12 @@ describe("folder dialogs (§18.9)", () => {
     desktop.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ["/Users/example/market"] });
     await expect(invokeFileIpcHandler(handlers, channels.sourcesPickFolder)).resolves.toEqual({ ok: true, value: { path: "/Users/example/market" } });
     expect(desktop.showOpenDialog.mock.calls.at(-1)?.at(-1)).toMatchObject({ properties: ["openDirectory", "dontAddToRecent"] });
+    // A folder named like a token crosses scrubbed, as every answer to the tab does (§18.8).
+    const token = `glp${"at-"}${"abcd1234".repeat(3)}`;
+    desktop.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [`/Users/example/${token}`] });
+    const masked = await invokeFileIpcHandler(handlers, channels.sourcesPickFolder);
+    expect(JSON.stringify(masked)).not.toContain(token);
+    expect(masked).toMatchObject({ ok: true, value: { path: expect.stringMatching(/^\/Users\/example\//u) } });
     expect(create).not.toHaveBeenCalled();
   });
 

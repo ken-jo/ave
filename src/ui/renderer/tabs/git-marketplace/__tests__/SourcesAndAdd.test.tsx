@@ -6,7 +6,7 @@
 // @vitest-environment jsdom
 import "../../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { GitMarketplaceApi, MarketplacePreviewView, SourceView } from "../../../../../shared/git-marketplace.js";
 import type { GitRuntimeStatus } from "../../../../../shared/git-runtime.js";
 import type { AveApi } from "../../../types.js";
@@ -715,6 +715,8 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
 describe("folder sources (§18.4.8)", () => {
   const LONG_PATH = "/Users/example/Library/CloudStorage/Shared drives/Engineering/agents/team-marketplace";
   const REVISION = `local-${"c".repeat(64)}`;
+  /** The id main gives the row of a source stored under a credential-shaped id (§18.8). */
+  const HANDLE = "ave-legacy-0123456789abcdef0123456789abcdef";
   const folderPreview: MarketplacePreviewView = {
     ...marketplacePreview,
     transport: "folder",
@@ -939,6 +941,52 @@ describe("folder sources (§18.4.8)", () => {
         Element.prototype.scrollIntoView = original;
       }
     });
+
+    it("shows a quarantined source by the handle its row carries, and marks that row", async () => {
+      const { error, onShowSource } = await refusedAdd({ reason: "folder-already-added", path: "/m/inner", existingId: HANDLE });
+      fireEvent.click(within(error).getByTestId("git-marketplace:add:error:show-source"));
+      expect(onShowSource).toHaveBeenCalledWith(HANDLE);
+      cleanup();
+      sourcesView(fakeMarketplace(), [folderSource({ id: "other" }), folderSource({ id: HANDLE, status: { state: "id-holds-credential" } })], HANDLE);
+      expect(screen.getByTestId(`git-marketplace:source:${HANDLE}`)).toHaveAttribute("aria-current", "true");
+    });
+  });
+
+  it("offers only Remove on a folder source whose stored id looks like a token: no Refresh and no Show in Finder (§18.8)", async () => {
+    const fake = fakeMarketplace();
+    fake.market.removeSource.mockResolvedValue({ ok: true, value: { orphanedPackages: [] } });
+    sourcesView(fake, [folderSource({ id: HANDLE, label: "[REDACTED:TOKEN]", canDisable: false, enabled: false, pinnedCommit: REVISION, status: { state: "id-holds-credential" } })]);
+
+    const row = within(screen.getByTestId(`git-marketplace:source:${HANDLE}`));
+    expect(row.getByText("ID가 토큰처럼 보임")).toBeInTheDocument();
+    expect(row.getByTestId(`git-marketplace:source:${HANDLE}:status-detail`)).toHaveTextContent(
+      "이 소스의 ID가 비밀번호나 토큰처럼 보여 Ave가 동기화하거나 패키지를 제공하지 않습니다. 소스를 제거한 뒤 다른 ID로 다시 추가하세요.",
+    );
+    expect(row.queryByTestId(`git-marketplace:source:${HANDLE}:reveal`)).toBeNull();
+    expect(row.queryByRole("button", { name: "새로 고침" })).toBeNull();
+    expect(row.getByRole("switch")).toBeDisabled();
+    fireEvent.click(row.getByTestId(`git-marketplace:source:${HANDLE}:remove`));
+    fireEvent.click(await screen.findByTestId("git-marketplace:sources:confirm"));
+    await waitFor(() => expect(fake.market.removeSource).toHaveBeenCalledWith(HANDLE));
+    expect(fake.market.revealSource).not.toHaveBeenCalled();
+  });
+
+  it("names a reserved prefix under a folder's id as it is typed, and holds Add (§18.8)", async () => {
+    const fake = fakeMarketplace();
+    fake.market.previewSource.mockResolvedValue({ ok: true, value: folderPreview });
+    addDialog(fake);
+    await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
+    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "/tmp/market" } });
+    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await screen.findByTestId("git-marketplace:add:folder");
+
+    const field = screen.getByTestId("git-marketplace:add:id");
+    fireEvent.change(field, { target: { value: "glpat-rotation-documentation-for-local-marketplaces" } });
+    expect(screen.getByTestId("git-marketplace:add:id-reserved")).toHaveTextContent(
+      "“glpat-”로 시작하거나 “-” 뒤 부분이 그것으로 시작하는 ID는 GitLab 토큰처럼 보여 예약되어 있습니다. 다른 ID를 고르세요.",
+    );
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByTestId("git-marketplace:add:confirm")).toBeDisabled();
   });
 
   it("lets a folder be added without installing git", async () => {

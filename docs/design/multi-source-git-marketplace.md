@@ -2152,7 +2152,8 @@ wins:
   package's tree digest (`null` for a package that has none).
 - `sources:pick-folder` (`pickFolder` in the preload) shows main's folder
   dialog over the window that asked and answers `{ path }`, or `null` when
-  the user cancels; it reads nothing and builds no service. A dialog that
+  the user cancels; it reads nothing and builds no service. Its path
+  crosses scrubbed like every answer to the tab (§18.8). A dialog that
   could not open is `unavailable`. `sources:reveal` (`revealSource`) takes a
   source id and answers `null` once the shell was asked to show the folder;
   a git source is `invalid-request`, and the folder is judged as a read
@@ -2542,7 +2543,13 @@ takes it back. The handle is only a view's name: a request from a view is
 resolved from it to the install record's stored identity once, at the
 entry, and the removal itself, like every caller in main (revocation
 enforcement, predecessor removal), names the package by that stored
-identity.
+identity. An add refused for duplicating it (`SOURCE_ID_TAKEN`
+`repository-already-added` or a folder overlap) names it by the same
+handle, in the detail's `existingId` and the message, so *Show <id>* opens
+its row and the stored id never leaves main. A quarantined folder source is
+not classified: its row has no badge and no *Show in Finder*, and
+`sources:reveal` by its handle or stored id is `SOURCE_ID_INVALID`
+`stored-id-holds-credential`.
 
 A background sync's failure reaches the Sources view through `sources:list`:
 `SyncResult` carries the detail, the syncer stores it in

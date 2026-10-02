@@ -5,7 +5,7 @@
  * and `revealFolder`, which answers only for a folder source and judges the
  * folder as a read would before anything touches it.
  */
-import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -237,6 +237,61 @@ describe("revealFolder (§18.9)", () => {
       expect(error).toMatchObject({ code: "SOURCE_CONFIRMATION_REQUIRED", detail: { reason: "network-folder", server: "files.corp" } });
       // Only the drive's mapping was read: nothing on the share was touched.
       expect(volume.calls).toEqual([{ op: "queryDosDevice", path: "Z:" }]);
+    } finally {
+      harness.service.close();
+    }
+  });
+});
+
+describe("a folder source an earlier build stored under a credential-shaped id (§18.8)", () => {
+  // Assembled here so no whole token sits in the source.
+  const TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
+
+  /** Rename the added `notes` folder source and its data to TOKEN, as an earlier build stored them, and reopen. */
+  async function storeUnderToken(harness: Awaited<ReturnType<typeof windowsService>>, volume: FakeVolume) {
+    harness.service.close();
+    const marketplaces = join(root, "marketplaces");
+    const list = join(marketplaces, "sources.json");
+    writeFileSync(list, readFileSync(list, "utf8").replaceAll('"notes"', JSON.stringify(TOKEN)));
+    const moved = join(marketplaces, TOKEN);
+    renameSync(join(marketplaces, "notes"), moved);
+    for (const file of readdirSync(join(moved, "snapshots"))) {
+      const path = join(moved, "snapshots", file);
+      writeFileSync(path, readFileSync(path, "utf8").replace('"sourceId":"notes"', `"sourceId":${JSON.stringify(TOKEN)}`));
+    }
+    return windowsService(volume);
+  }
+
+  it("lists its row by handle with no badge, asking nothing of its folder, and refuses to show the folder", async () => {
+    const { volume } = windowsVolume();
+    const harness = await storeUnderToken(await addLocalDrive(volume), volume);
+    try {
+      volume.calls.length = 0;
+      const row = (await harness.service.listSources()).find((item) => item.status.state === "id-holds-credential")!;
+      expect(row).toMatchObject({ transport: "folder", badges: [] });
+      expect(row.id).toMatch(/^ave-legacy-[0-9a-f]{32}$/u);
+      // A source that is only removed is not classified: its drive is not asked about.
+      expect(volume.calls).toEqual([]);
+      for (const id of [row.id, TOKEN]) {
+        expect(await refused(harness.service.revealFolder(id)), id).toMatchObject({ code: "SOURCE_ID_INVALID", detail: { reason: "stored-id-holds-credential" } });
+      }
+      expect(volume.calls).toEqual([]);
+    } finally {
+      harness.service.close();
+    }
+  });
+
+  it("names it by its row's handle when the same folder is added again, so Show <id> opens that row", async () => {
+    const { volume } = windowsVolume();
+    const harness = await storeUnderToken(await addLocalDrive(volume), volume);
+    try {
+      const handle = (await harness.service.listSources()).find((item) => item.status.state === "id-holds-credential")!.id;
+      const preview = await harness.service.previewSource({ input: "Z:\\m", auth: "none" });
+      if (preview.type === "confirm") throw new Error("a local drive needs no confirmation");
+      const error = await refused(harness.service.addSource({ previewId: preview.previewId, id: "again" }));
+      expect(error).toMatchObject({ code: "SOURCE_ID_TAKEN", detail: { reason: "folder-already-added", existingId: handle } });
+      expect(error.message).toContain(handle);
+      expect(JSON.stringify({ message: error.message, detail: error.detail })).not.toContain(TOKEN);
     } finally {
       harness.service.close();
     }

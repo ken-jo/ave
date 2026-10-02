@@ -322,7 +322,8 @@ export function SourcesView({ api, sources, onChanged, onAdd, highlightId = null
                           {busy === source.id ? t("gitMarketplace.sources.status.syncing") : t("gitMarketplace.sources.refresh")}
                         </Button>
                       )}
-                      {source.transport === "folder" && (
+                      {/* A quarantined source is only removed (§18.8): its folder is not shown either. */}
+                      {source.transport === "folder" && status.state !== "id-holds-credential" && (
                         <Button
                           size="sm"
                           variant="ghost"
