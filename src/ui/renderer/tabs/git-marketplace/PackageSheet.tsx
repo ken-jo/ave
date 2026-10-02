@@ -3,7 +3,7 @@
  * the reviewed plan, the install progress and the result, all in place. What
  * the plan shows is what installs: the plan id is single use and expires.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
 import { Checkbox } from "../../../../components/ui/checkbox.js";
@@ -60,7 +60,7 @@ type PlanOptions = { update?: boolean; version?: string; switchSource?: boolean 
 /** Installed states of a row whose package is installed from that row's key. */
 const INSTALLED_HERE: ReadonlySet<CatalogEntryView["state"]["state"]> = new Set(["installed", "update", "source-removed"]);
 
-function sameKey(a: PackageKeyView, b: PackageKeyView): boolean {
+function sameKey(a: Pick<CatalogEntryView["key"], "sourceId" | "kind" | "name">, b: PackageKeyView): boolean {
   return a.sourceId === b.sourceId && a.kind === b.kind && a.name === b.name;
 }
 
@@ -173,21 +173,51 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
    */
   const [installedRow, setInstalledRow] = useState<{ key: PackageKeyView; entry: CatalogEntryView } | null>(null);
 
+  /**
+   * Which answers may still change the sheet. A load, and an Installed lookup, each take the next
+   * generation; opening, reopening and closing the sheet move both on. An answer to an earlier one is
+   * dropped, so a lookup for an earlier opening never decides this one, even for the same key.
+   */
+  const detailGeneration = useRef(0);
+  const lookupGeneration = useRef(0);
+  /** The key whose detail the current load was refused: the Installed lookup follows the catalog for it. */
+  const refusedKey = useRef<PackageKeyView | null>(null);
+
+  /** The Installed row for `key`, now: null while it is asked, and when the list fails or names no install from `key`. */
+  const lookupInstalled = useCallback(async (key: PackageKeyView) => {
+    const mine = ++lookupGeneration.current;
+    setInstalledRow(null);
+    const installed = await api.listCatalog({ installedOnly: true });
+    if (mine !== lookupGeneration.current) return;
+    const row = installed.ok ? installed.value.entries.find((item) => sameKey(item.key, key) && INSTALLED_HERE.has(item.state.state)) : undefined;
+    setInstalledRow(row ? { key, entry: row } : null);
+  }, [api]);
+
   const load = useCallback(async (key: PackageKeyView) => {
+    const mine = ++detailGeneration.current;
+    lookupGeneration.current += 1;
+    refusedKey.current = null;
     setLoadFailure(null);
     setInstalledRow(null);
     const result = await api.packageDetail(key);
+    if (mine !== detailGeneration.current) return;
     if (result.ok) {
       setDetail(result.value);
       return;
     }
     setLoadFailure(result);
-    const installed = await api.listCatalog({ installedOnly: true });
-    const row = installed.ok
-      ? installed.value.entries.find((item) => item.key.sourceId === key.sourceId && item.key.kind === key.kind && item.key.name === key.name && INSTALLED_HERE.has(item.state.state))
-      : undefined;
-    if (row) setInstalledRow({ key, entry: row });
-  }, [api]);
+    refusedKey.current = key;
+    await lookupInstalled(key);
+  }, [api, lookupInstalled]);
+
+  // What is installed changes under an open sheet (§18.8): the lookup follows the same event the cards do.
+  const sheetOpen = target !== null;
+  useEffect(() => {
+    if (!sheetOpen) return;
+    return api.onCatalogChanged(() => {
+      if (refusedKey.current) void lookupInstalled(refusedKey.current);
+    });
+  }, [api, lookupInstalled, sheetOpen]);
 
   /** The last plan asked for, so a review can be asked again after *Allow…* or an expired plan. */
   const [lastPlan, setLastPlan] = useState<{ key: PackageKeyView; options: PlanOptions } | null>(null);
@@ -209,6 +239,12 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
   }, [api]);
 
   useEffect(() => {
+    // A new opening, or none: nothing asked for an earlier one may change the sheet.
+    detailGeneration.current += 1;
+    lookupGeneration.current += 1;
+    refusedKey.current = null;
+    setInstalledRow(null);
+    setLoadFailure(null);
     setDetail(null);
     setStage({ stage: "detail" });
     setTrustRewrite(false);

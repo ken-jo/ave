@@ -2570,7 +2570,10 @@ whenever a sheet's detail is refused it reads the Installed list
 opened (a card, an update review, a deep link): a package installed from
 that key (*Installed*, *Update*, *Source removed*) keeps *Uninstall*, one
 the policy requires says *Required by your organization* and has none, and
-a key nothing is installed from has none.
+a key nothing is installed from has none. The lookup belongs to one opening
+of the sheet: closing, reopening or a new load drops any answer still on its
+way, while it is asked or when it fails the sheet offers no *Uninstall*, and
+it is asked again on the catalog-change event that refreshes the cards.
 
 A background sync's failure reaches the Sources view through `sources:list`:
 `SyncResult` carries the detail, the syncer stores it in

@@ -10,6 +10,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { makeMockAveApi } from "../../../../../../test/renderer/mock-ave-api.js";
 import type { AveApi } from "../../../types.js";
 import { GitMarketplaceTab } from "../GitMarketplaceTab.js";
+import { PackageSheet } from "../PackageSheet.js";
+import type { GitMarketplaceApi } from "../../../../../shared/git-marketplace.js";
 import { requestUpdateReview } from "../update-review-request.js";
 import { COMMIT_A, COMMIT_B, detail, entry, fakeMarketplace, folderSource, installPlan, marketplacePreview, source, updateStatus } from "./fixtures.js";
 
@@ -1032,5 +1034,136 @@ describe("a package from a folder (§18.4.8)", () => {
     fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
     expect(await within(sheet).findByTestId("git-marketplace:review:not-installed")).toHaveTextContent("node_modules/, package.json, src/");
     expect(within(sheet).getByTestId("git-marketplace:review")).toHaveTextContent("폴더 내용 ccccccc에 고정");
+  });
+});
+
+describe("PackageSheet: the Installed lookup behind a refused detail decides only the opening it was asked for (§18.8)", () => {
+  const HANDLE = "ave-legacy-0123456789abcdef0123456789abcdef";
+  const KEY = { sourceId: HANDLE, kind: "skill" as const, name: "note" };
+  const QUARANTINE = { ok: false as const, code: "SOURCE_ID_INVALID" as const, message: "this source's id looks like a password or token", detail: { reason: "stored-id-holds-credential" } };
+  const installed = (required = false) => entry(HANDLE, "skill", "note", { sourceLabel: HANDLE, state: { state: "installed", version: "1.0.0" }, required });
+  const listed = (entries: ReturnType<typeof entry>[]) => ({ ok: true as const, value: { entries, counts: {}, sourceCount: 1, syncedAt: null } });
+  const UNAVAILABLE = { ok: false as const, code: "unavailable" as const, message: "the list could not be read" };
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+
+  function sheet(fake: ReturnType<typeof fakeMarketplace>) {
+    const props = { api: fake.market as unknown as GitMarketplaceApi, source: null, onClose: vi.fn(), onChanged: vi.fn() };
+    const view = render(<PackageSheet {...props} target={{ key: KEY, mode: "detail" }} />);
+    return {
+      close: () => view.rerender(<PackageSheet {...props} target={null} />),
+      reopen: () => view.rerender(<PackageSheet {...props} target={{ key: KEY, mode: "detail" }} />),
+    };
+  }
+
+  /** The quarantine sentence is shown: the refused detail of the current opening has arrived. */
+  const refusalShown = () => screen.findByText(/이 소스의 ID가 비밀번호나 토큰처럼 보여/u);
+
+  it.each([
+    ["fails", UNAVAILABLE, false],
+    ["finds no install", listed([]), false],
+    ["says the policy requires it", listed([installed(true)]), true],
+  ] as const)("ignores an earlier opening's lookup that lands late when the reopened sheet's lookup %s", async (_label, current, required) => {
+    const fake = fakeMarketplace();
+    fake.market.packageDetail.mockResolvedValue(QUARANTINE);
+    const earlier = deferred<unknown>();
+    fake.market.listCatalog.mockReturnValueOnce(earlier.promise).mockResolvedValueOnce(current);
+    const { close, reopen } = sheet(fake);
+    await waitFor(() => expect(fake.market.listCatalog).toHaveBeenCalledTimes(1));
+
+    close();
+    reopen();
+    await refusalShown();
+    await waitFor(() => expect(fake.market.listCatalog).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      earlier.resolve(listed([installed()]));
+      await earlier.promise;
+    });
+
+    expect(screen.queryByTestId("git-marketplace:uninstall")).toBeNull();
+    if (required) expect(screen.getByTestId("git-marketplace:sheet:required")).toBeInTheDocument();
+  });
+
+  it("ignores an earlier opening's lookup that completes in order, before the reopened sheet's own detail and lookup", async () => {
+    const fake = fakeMarketplace();
+    const secondDetail = deferred<unknown>();
+    fake.market.packageDetail.mockResolvedValueOnce(QUARANTINE).mockReturnValueOnce(secondDetail.promise);
+    const earlier = deferred<unknown>();
+    fake.market.listCatalog.mockReturnValueOnce(earlier.promise).mockResolvedValueOnce(UNAVAILABLE);
+    const { close, reopen } = sheet(fake);
+    await waitFor(() => expect(fake.market.listCatalog).toHaveBeenCalledTimes(1));
+
+    close();
+    reopen();
+    // The earlier lookup lands while the reopened sheet still waits for its detail.
+    await act(async () => {
+      earlier.resolve(listed([installed()]));
+      await earlier.promise;
+    });
+    expect(screen.queryByTestId("git-marketplace:uninstall")).toBeNull();
+    await act(async () => {
+      secondDetail.resolve(QUARANTINE);
+      await secondDetail.promise;
+    });
+    await refusalShown();
+    await waitFor(() => expect(fake.market.listCatalog).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId("git-marketplace:uninstall")).toBeNull();
+  });
+
+  it("ignores an earlier opening's detail that lands after the reopened sheet's refusal", async () => {
+    const fake = fakeMarketplace();
+    const earlierDetail = deferred<unknown>();
+    fake.market.packageDetail.mockReturnValueOnce(earlierDetail.promise).mockResolvedValueOnce(QUARANTINE);
+    fake.market.listCatalog.mockResolvedValue(listed([]));
+    const { close, reopen } = sheet(fake);
+    await waitFor(() => expect(fake.market.packageDetail).toHaveBeenCalledTimes(1));
+
+    close();
+    reopen();
+    await refusalShown();
+    await waitFor(() => expect(fake.market.listCatalog).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      earlierDetail.resolve({ ok: true, value: detail(installed()) });
+      await earlierDetail.promise;
+    });
+    expect(screen.getByText(/이 소스의 ID가 비밀번호나 토큰처럼 보여/u)).toBeInTheDocument();
+    expect(screen.queryByTestId("git-marketplace:uninstall")).toBeNull();
+  });
+
+  it("drops Uninstall when the install goes away while the sheet is open, on the event that refreshes the cards", async () => {
+    const fake = fakeMarketplace();
+    fake.market.packageDetail.mockResolvedValue(QUARANTINE);
+    fake.market.listCatalog.mockResolvedValueOnce(listed([installed()])).mockResolvedValueOnce(listed([]));
+    sheet(fake);
+    expect(await screen.findByTestId("git-marketplace:uninstall")).toBeInTheDocument();
+
+    act(() => fake.emitCatalogChanged());
+    await waitFor(() => expect(fake.market.listCatalog).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByTestId("git-marketplace:uninstall")).toBeNull());
+  });
+
+  it("follows the required flag as it changes while the sheet is open", async () => {
+    const fake = fakeMarketplace();
+    fake.market.packageDetail.mockResolvedValue(QUARANTINE);
+    fake.market.listCatalog
+      .mockResolvedValueOnce(listed([installed()]))
+      .mockResolvedValueOnce(listed([installed(true)]))
+      .mockResolvedValueOnce(listed([installed()]));
+    sheet(fake);
+    expect(await screen.findByTestId("git-marketplace:uninstall")).toBeInTheDocument();
+
+    act(() => fake.emitCatalogChanged());
+    expect(await screen.findByTestId("git-marketplace:sheet:required")).toBeInTheDocument();
+    expect(screen.queryByTestId("git-marketplace:uninstall")).toBeNull();
+
+    act(() => fake.emitCatalogChanged());
+    expect(await screen.findByTestId("git-marketplace:uninstall")).toBeInTheDocument();
+    expect(screen.queryByTestId("git-marketplace:sheet:required")).toBeNull();
   });
 });
