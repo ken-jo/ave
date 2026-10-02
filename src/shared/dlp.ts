@@ -677,7 +677,10 @@ const AUTHORIZATION_NAME = new RegExp(
   "giu",
 );
 
-/** How far a key's remainder may run past the name, in decoded characters (§18.8). */
+/**
+ * How many reads a key's remainder may take past the name, the separator's
+ * own read included (§18.8). See {@link separatorAfterName} for what one read is.
+ */
 const KEY_WINDOW = 256;
 
 /**
@@ -688,11 +691,19 @@ const KEY_WINDOW = 256;
  * `\u`-escaped, is the key's remainder, whatever it is: a quote at any
  * escape depth, an apostrophe, a space, other escaped punctuation. No quote
  * is paired and no depth is tracked, so no quote inside a key can end it
- * early. The read is bounded: at most {@link KEY_WINDOW} decoded characters
- * and one raw line break (the whitespace run around it, blank lines too,
- * counts as that one); past either, the name is no header key and nothing is masked.
- * The bound is what keeps the stage linear: each character is read by the
- * windows of the few names that stand within a window before it.
+ * early.
+ *
+ * The read is bounded to {@link KEY_WINDOW} reads, the separator's included.
+ * One read is one UTF-16 code unit (a raw character outside the BMP is two,
+ * as its escaped surrogate pair is), one `\u` escape and four hex digits at
+ * any backslash depth, or one run of backslashes that spells no `\u`
+ * escape. Whitespace before a raw line break takes one read per unit; the
+ * read that meets a raw CR or LF also takes the separator whitespace after
+ * it (raw or escaped, blank lines included), so the whole run after the
+ * break is one read. Only one such break may be crossed. Past either bound
+ * the name is no header key and nothing is masked. The bound is what keeps
+ * the stage linear: each character is read by the windows of the few names
+ * that stand within a window before it.
  */
 function separatorAfterName(text: string, nameEnd: number): number | undefined {
   const first = keyCharAt(text, nameEnd);

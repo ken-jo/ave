@@ -573,6 +573,24 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
       expect(scrubDiagnosticSecrets(kept)).toBe(kept);
       expect(scrubSecretsForLLM(kept)).toBe(kept);
     }
+    // The window's exact count (§18.8): 256 reads, the separator's included; a read is one UTF-16 code unit, one `\u`
+    // escape or one backslash run; the read meeting a raw line break also takes the whitespace run after it.
+    const astral = String.fromCodePoint(0x1f600);
+    for (const [label, text, masked] of [
+      ["255 units, then the separator as the 256th read", `authorization${"_".repeat(255)}: v`, true],
+      ["256 units, the separator a 257th read", `authorization${"_".repeat(256)}: v`, false],
+      ["a space and 127 astral characters (254 units)", `authorization ${astral.repeat(127)}: v`, true],
+      ["a space and 128 astral characters (256 units)", `authorization ${astral.repeat(128)}: v`, false],
+      ["255 `\\u` escapes, one read each", `authorization${"\\u005f".repeat(255)}: v`, true],
+      ["256 `\\u` escapes", `authorization${"\\u005f".repeat(256)}: v`, false],
+      ["254 spaces, the break, the separator", `authorization${" ".repeat(254)}\n: v`, true],
+      ["255 spaces before the break: one read per unit", `authorization${" ".repeat(255)}\n: v`, false],
+      ["300 spaces after the break: one read with it", `authorization\n${" ".repeat(300)}: v`, true],
+    ] as const) {
+      const expected = masked ? `${text.slice(0, -1)}[REDACTED:TOKEN]` : text;
+      expect(scrubSecretsForLLM(text), label).toBe(expected);
+      expect(scrubDiagnosticSecrets(text), label).toBe(expected);
+    }
     // Prose with a separator after the word within the bound is masked: accepted over-masking (§18.8).
     expect(scrubSecretsForLLM("authorization flow: PKCE")).toBe("authorization flow: [REDACTED:TOKEN]");
     expect(scrubSecretsForLLM("the authorization header\n  was absent: retry")).toBe("the authorization header\n  was absent: [REDACTED:TOKEN]");

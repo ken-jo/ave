@@ -2351,11 +2351,19 @@ other opaque secret) is masked only in these positions:
   `{"client's authorization header":…}` and
   `{"client \"authorization header":…}` are all header keys, and
   `xauthorization` and `authorizationfoo` are not. The read is bounded: at
-  most 256 decoded characters (`KEY_WINDOW`; a `\u` escape or a run of
-  backslashes is one) and one raw line break, the whitespace run around it
-  and blank lines counting as that one. When no separator stands inside the
-  bound the word is no header key and nothing is masked; a key whose
-  remainder runs past 256 characters is out of scope. The bound is also
+  most 256 reads (`KEY_WINDOW`), the separator's own read included. One read
+  is one UTF-16 code unit (a raw character outside the BMP takes two, as its
+  escaped surrogate pair does), one `\u` escape with its four hex digits at
+  any backslash depth, or one run of backslashes that spells no `\u`
+  escape. Whitespace before a raw line break takes one read per unit; the
+  read that meets a raw CR or LF also takes the separator whitespace after
+  it (raw or escaped, blank lines included), so that whole run is one read.
+  Only one raw line break may be crossed. So `authorization` with 255
+  underscores and then `:` is a header key, and with 256 it is not; 254
+  spaces, a line break and `:` is one, 255 spaces before the break is not,
+  and a break followed by 300 spaces and `:` is one. When no separator
+  stands inside the bound the word is no header key and nothing is masked; a key whose
+  remainder takes more than 256 reads is out of scope. The bound is also
   what keeps the stage linear: every character is read only by the windows
   of the few names that stand within one window before it. After the
   separator comes separator whitespace, classified by one predicate, JS
