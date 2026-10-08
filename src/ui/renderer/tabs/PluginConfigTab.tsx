@@ -404,10 +404,11 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     const unsubs: Array<() => void> = [];
     if (typeof api.onPluginInstallResult === "function") {
       unsubs.push(
-        api.onPluginInstallResult(({ success }) => {
-          if (success) {
-            void refreshPlugins();
-          }
+        // A failed install can still change a card: a refused update of a
+        // running plugin is recorded on its loaded row (`lastAttemptRefusal`,
+        // §9.8 A1), so both outcomes re-read the cards.
+        api.onPluginInstallResult(() => {
+          void refreshPlugins();
         }),
       );
     }
@@ -512,8 +513,11 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       showBanner("error", errorMessage(e) || t("pluginConfigTab.errorSave"));
     } finally {
       setSaving(false);
+      // A save restarts the plugin, and the restart's outcome is on its card:
+      // a refusal recorded, or a recorded one cleared by the commit.
+      void refreshPlugins();
     }
-  }, [selectedId, entries, showBanner, notifySaved, t]);
+  }, [selectedId, entries, showBanner, notifySaved, refreshPlugins, t]);
 
   const selectedPlugin = plugins.find((p) => p.id === selectedId);
   useEffect(() => {
@@ -1223,6 +1227,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                             showBanner("error", errorMessage(e) || t("pluginConfigTab.errorSave"));
                           } finally {
                             setSaving(false);
+                            void refreshPlugins();
                           }
                         }}
                         onSetSecret={async (key, value) => {
@@ -1231,6 +1236,9 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                             key,
                             value,
                           );
+                          // A secret save may restart the plugin; its card
+                          // carries the outcome either way.
+                          void refreshPlugins();
                           if (!result.ok) {
                             showBanner("error", result.message ?? t("pluginConfigTab.errorSaveSecret"));
                             return;
