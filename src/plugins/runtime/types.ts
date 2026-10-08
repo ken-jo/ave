@@ -13,6 +13,7 @@ import type {
   RuntimePlugin,
 } from "../types.js";
 import type { HostApiGenerationScope } from "../plugin-host-effect-scope.js";
+import type { SpawnConfinement } from "../../permissions/confined-child.js";
 
 export type { PluginAccessSpec, PluginManifest, PluginToolHandler, RuntimePlugin };
 
@@ -20,6 +21,23 @@ export type PluginLifecycleHookScope = {
   active: boolean;
   depth: number;
 };
+
+/**
+ * Which arm a plugin's factory came from (`docs/design/plugin-hostapi-protocol.md`
+ * §9.8 A1, decisions 50-51). The routing function returns `"child"` for every
+ * manifest; `"in-process"` names the retained, deprecated in-process factory
+ * (`importInProcessPluginFactory`), which has no production caller, so the
+ * Doctor text and `allPluginsAreOutOfProcess` stay honest about what the tree
+ * still contains. Loader removal narrows this union to `"child"`.
+ */
+export type PluginLoadArm = "child" | "in-process";
+
+/**
+ * What the Doctor reports a plugin runs under: the wrap its child was
+ * actually spawned under ({@link SpawnConfinement}), or `"not-spawned"` for a
+ * construction that failed before any child existed.
+ */
+export type PluginConfinementReport = SpawnConfinement | "not-spawned";
 
 /**
  * A fully-loaded plugin: manifest + running instance + registered handlers.
@@ -39,6 +57,10 @@ export type LoadedPlugin = {
   deactivateHostApi?: () => void;
   drainHostApiOperations?: () => Promise<void>;
   lifecycleHookScope?: PluginLifecycleHookScope;
+  /** The arm the routing function returned for this generation. */
+  arm: PluginLoadArm;
+  /** The wrap this generation's child was spawned under. */
+  confinement: PluginConfinementReport;
 };
 
 /**

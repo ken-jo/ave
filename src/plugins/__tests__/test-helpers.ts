@@ -5,6 +5,7 @@
  * deploymentGuard?) shape. registry.json lives at the root of pluginsRoot,
  * so tests pick a single tmp root and the helper derives the rest.
  */
+import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -520,6 +521,7 @@ export function makeTestPluginRuntime(
   options: Partial<PluginRuntimeOptions> = {},
 ): PluginRuntime {
   return bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+    childEntryPath: pluginChildEntryPath(),
     hostRoot: fixture.rootDir,
     registryPath: fixture.registryPath,
     pluginsRoot: fixture.pluginsRoot,
@@ -809,11 +811,13 @@ export function createTestHostApiFactory(
 /** PluginRuntime constructor for tests that need the complete generation fixture. */
 export class TestPluginRuntime extends PluginRuntime {
   constructor(
-    options: Omit<PluginRuntimeOptions, "createHostApi" | "encryption">
-      & Partial<Pick<PluginRuntimeOptions, "createHostApi" | "encryption">>,
+    options: Omit<PluginRuntimeOptions, "createHostApi" | "encryption" | "childEntryPath">
+      & Partial<Pick<PluginRuntimeOptions, "createHostApi" | "encryption" | "childEntryPath">>,
   ) {
     super({
       encryption: unavailableSecretEncryption,
+      // This run's bundle of the child entry every `entry` plugin spawns.
+      childEntryPath: pluginChildEntryPath(),
       ...options,
       createHostApi: createTestHostApiFactory(options.createHostApi),
     });

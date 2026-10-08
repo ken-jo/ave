@@ -24,6 +24,7 @@ import { registerBootPluginShutdown, registerShutdownHook } from "../../main/app
 import { onEvent as onHostEvent } from "../types.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { PluginRuntime } from "../../plugins/runtime.js";
+import { resolvePluginChildEntryPath } from "../../plugins/isolation/out-of-process-plugin.js";
 import { LeaseDenialAudit } from "../../plugins/secret-access/lease-denial-audit.js";
 import type { PythonRuntimeBootstrapper } from "../../main/python-runtime.js";
 import { startPluginDevWatcher } from "../../plugins/dev-watcher.js";
@@ -508,6 +509,9 @@ export async function initPluginRuntime(
   pluginRuntime = new PluginRuntime({
     encryption: input.host.encryption,
     hostRoot: projectRoot,
+    // The emitted child entry under the runtime asset directory: every
+    // `entry` plugin runs in a child (§9.8 A1).
+    childEntryPath: resolvePluginChildEntryPath(),
     pluginsRoot: pluginPaths.pluginsRoot,
     registryPath: pluginPaths.registryPath,
     configOverrides,

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
 import { derivePluginChildEnvelope } from "../../isolation/out-of-process-plugin.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
+import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 
 const PLUGIN_ID = "sandbox-candidate";
 let root: string;
@@ -41,6 +42,7 @@ class WithdrawalRuntime extends PluginRuntime {
 
 function runtime(): WithdrawalRuntime {
   return new WithdrawalRuntime({
+    childEntryPath: pluginChildEntryPath(),
     hostRoot: root,
     manifestPaths: [],
     encryption: unavailableSecretEncryption,

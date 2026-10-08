@@ -11,6 +11,7 @@ import type {
 } from "../plugin-host-generation.js";
 import { servedAgentPluginsDocument, makeTestTreeWritable } from "./test-helpers.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
+import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry.js";
 
 const roots: string[] = [];
 
@@ -102,7 +103,7 @@ export default async function createPlugin(ctx) {
       }),
       waitForRetirements: vi.fn(async () => undefined),
     };
-    runtime = new PluginRuntime({ encryption: unavailableSecretEncryption,
+    runtime = new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot: root,
       registryPath,
       pluginsRoot,

@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createNoopHostApiForTests, PluginRuntime } from "../../runtime.js";
 import { isReinstallFixableFailureKind } from "../../../shared/plugin-install-failure.js";
-import { OUT_OF_PROCESS_PLUGIN_IDS } from "../../isolation/out-of-process-plugins.js";
 import { PluginSandboxGrantError } from "../../isolation/out-of-process-plugin.js";
 import type { PluginManifest } from "../../types.js";
 import {
@@ -12,6 +11,7 @@ import {
   writeTestPluginRegistry,
 } from "../../__tests__/test-helpers.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
+import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 
 const PLUGIN_COUNT = 6;
 
@@ -74,7 +74,7 @@ describe("PluginRuntime boot preflight", () => {
 
   it("bounds receipt checks and reports staggered integrity failures in plan order", async () => {
     const integrityAuditPluginIds: string[] = [];
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
@@ -143,7 +143,7 @@ describe("PluginRuntime boot preflight", () => {
     // installed — while every UI surface that lists plugins (sidebar, Settings,
     // Plugin Doctor) projects from the card list and therefore shows nothing at
     // all. The user gets an install they cannot see, diagnose, or repair.
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
@@ -180,7 +180,7 @@ describe("PluginRuntime boot preflight", () => {
     // never attempted: no instance, no failure, and (because a card needs
     // either a load status or a stub) no row anywhere in the UI, while the
     // registry kept calling them installed.
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
@@ -225,12 +225,12 @@ describe("PluginRuntime boot preflight", () => {
   });
 
   it("keeps the sequence when the thrower is an out-of-process plugin", async () => {
-    // The per-plugin boundary wraps the whole attempt, so it cannot depend on
-    // which arm `importPluginFactoryForLifecycle` took. `vega-helper` is the
-    // one id in OUT_OF_PROCESS_PLUGIN_IDS, and the data directory is created
-    // after that arm has already produced its child-backed factory — so a throw
-    // there is an unclassified crash on the isolated path specifically.
-    const isolatedId = [...OUT_OF_PROCESS_PLUGIN_IDS][0]!;
+    // The per-plugin boundary wraps the whole attempt. Every plugin is
+    // isolated since Admission (§9.8 A1), so any manifest id serves: the data
+    // directory is created after routing has already produced the plugin's
+    // child-backed factory — so a throw there is an unclassified crash on the
+    // isolated path.
+    const isolatedId = "isolatedpreflightfixture";
     const isolatedRoot = join(pluginsRoot, isolatedId);
     await mkdir(isolatedRoot, { recursive: true });
     await writeFile(
@@ -252,7 +252,7 @@ describe("PluginRuntime boot preflight", () => {
       { id: isolatedId, manifestPath: join(isolatedRoot, "plugin.json") },
       { id: "preflight-0", manifestPath: join(pluginsRoot, "preflight-0", "plugin.json") },
     ]);
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
@@ -283,7 +283,7 @@ describe("PluginRuntime boot preflight", () => {
   });
 
   it("classifies a refused sandbox grant so Doctor does not reinstall the same version", async () => {
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
@@ -293,16 +293,22 @@ describe("PluginRuntime boot preflight", () => {
     const internals = runtime as unknown as {
       verifyReceiptAndDevGuard(): Promise<{ ok: true }>;
       readManifest(path: string): Promise<PluginManifest>;
-      importPluginFactoryForLifecycle(pluginId: string): Promise<() => Promise<{ handlers: Record<string, never>; start: () => Promise<void> }>>;
+      importPluginFactoryForLifecycle(pluginId: string): Promise<{
+        createPlugin: () => Promise<{ handlers: Record<string, never>; start: () => Promise<void> }>;
+        arm: "child";
+      }>;
     };
     internals.verifyReceiptAndDevGuard = async () => ({ ok: true });
     internals.readManifest = async (path) => manifests.get(path.split(/[\\/]/).at(-2)!)!;
-    internals.importPluginFactoryForLifecycle = async (pluginId) => async () => {
-      if (pluginId === "preflight-1") {
-        throw new PluginSandboxGrantError("declared workspace is outside the approved ceiling");
-      }
-      return { handlers: {}, start: async () => {} };
-    };
+    internals.importPluginFactoryForLifecycle = async (pluginId) => ({
+      arm: "child",
+      createPlugin: async () => {
+        if (pluginId === "preflight-1") {
+          throw new PluginSandboxGrantError("declared workspace is outside the approved ceiling");
+        }
+        return { handlers: {}, start: async () => {} };
+      },
+    });
 
     await expect(runtime.load()).resolves.toBeUndefined();
 
@@ -310,6 +316,10 @@ describe("PluginRuntime boot preflight", () => {
     expect(card?.loadStatus).toBe("failed");
     expect(card?.installFailureKind).toBe("sandbox-grant-outside-ceiling");
     expect(card?.installFailureMessage).toContain("outside the approved ceiling");
+    // Failed after routing and before any child existed: the Doctor names the
+    // arm the routing function chose and that no child was spawned.
+    expect(card?.arm).toBe("child");
+    expect(card?.confinement).toBe("not-spawned");
     expect(isReinstallFixableFailureKind(card?.installFailureKind)).toBe(false);
     expect(runtime.listPluginIds()).toContain("preflight-4");
 
@@ -332,7 +342,7 @@ describe("PluginRuntime boot preflight", () => {
       { id: "preflight-0", manifestPath: join(pluginsRoot, "preflight-0", "plugin.json") },
     ]);
     const readPaths: string[] = [];
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
@@ -364,7 +374,7 @@ describe("PluginRuntime boot preflight", () => {
 
   it("isolates an unexpected receipt verifier rejection to its plugin", async () => {
     const rejected: Array<{ pluginId: string; reason: string }> = [];
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
@@ -409,7 +419,7 @@ describe("PluginRuntime boot preflight", () => {
       manifestPath: join(pluginsRoot, pluginId, "plugin.json"),
     }]);
     const auditMessages: string[] = [];
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
@@ -452,7 +462,7 @@ describe("PluginRuntime boot preflight", () => {
       manifestPath: join(pluginsRoot, id, "plugin.json"),
     })));
     const auditEvents: Array<{ message: string; pluginId: string }> = [];
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,

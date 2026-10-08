@@ -22,6 +22,7 @@ import type { PluginManifest } from "../types.js";
 import { canonicalJSON } from "../secret-access/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
+import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry.js";
 
 function servedPluginDocument(manifest: Record<string, unknown>): Record<string, unknown> {
   const requires = manifest.requires as Record<string, unknown> | undefined;
@@ -29,10 +30,11 @@ function servedPluginDocument(manifest: Record<string, unknown>): Record<string,
 }
 
 function makeGenerationBoundRuntime(
-  options: Omit<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption">
-    & Partial<Pick<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption">>,
+  options: Omit<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption" | "childEntryPath">
+    & Partial<Pick<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption" | "childEntryPath">>,
 ): PluginRuntime {
   return bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+    childEntryPath: pluginChildEntryPath(),
     ...options,
     createHostApi: createTestHostApiFactory(options.createHostApi),
   }));

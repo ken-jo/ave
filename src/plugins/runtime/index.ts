@@ -23,7 +23,7 @@ import { flattenAgentPluginsManifest, pluginEntryKind } from "../public-contract
 import { isModelVisible } from "./tool-visibility.js";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, resolve, basename } from "node:path";
-import type { ManifestLoadPlan, PluginStartPreparationOutcome, PluginStartPreparationReturn, SinglePluginStartResult, ManifestSnapshot, LoadedPlugin, PluginLifecycleHookScope } from "./types.js";
+import type { ManifestLoadPlan, PluginStartPreparationOutcome, PluginStartPreparationReturn, SinglePluginStartResult, ManifestSnapshot, LoadedPlugin, PluginLifecycleHookScope, PluginLoadArm, PluginConfinementReport } from "./types.js";
 import { logPluginLifecycle, PluginPhase } from "../lifecycle-log.js";
 import { t } from "../../i18n/index.js";
 import type { CommittedPluginGeneration, PluginRuntimeGenerationLifecycle, PluginRuntimeGenerationProjection, PluginRuntimeGenerationAccess, PluginRuntimeRetirementStep, PreparedPluginRuntimeGenerationPublication } from "../plugin-host-generation.js";
@@ -63,9 +63,9 @@ import {
 import { revocationRegistry } from "../revocation/revocation-registry.js";
 import { isPluginRuntimeDetachedOperationError, PluginRuntimeDetachedOperationError } from "./detached-operation.js";
 import { ensurePluginDataDir, resolvePluginDataDir, resolveEntryPath, buildPluginContext, resolveRealEntryPath } from "./sandbox.js";
-import { buildImportUrl, buildMethodMap, importPluginFactory, declaredAppVisibleToolMethods } from "./plugin-loader.js";
+import { buildImportUrl, buildMethodMap, declaredAppVisibleToolMethods } from "./plugin-loader.js";
 import { withPluginInstallLock, hasExclusivePluginLifecycleMutation, isPluginInstallLockHeld, withAllPluginInstallLocks, withResolvedPluginInstallLocks } from "../install-lifecycle.js";
-import { isOutOfProcessPlugin } from "../isolation/out-of-process-plugins.js";
+import type { SpawnConfinement } from "../../permissions/confined-child.js";
 import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError } from "../isolation/out-of-process-plugin.js";
 import {
   HOST_PROTOCOL_VERSIONS_SERVED,
@@ -141,12 +141,36 @@ export interface PluginCard {
   /** User-visible install/load failure detail preserved for Doctor diagnostics. */
   installFailureMessage?: string;
   /**
+   * The arm the plugin's factory came from (decision 51): for a loaded plugin,
+   * its running generation's; for a failed one, set only when construction
+   * failed after routing. Absent when routing was never reached.
+   */
+  arm?: PluginLoadArm;
+  /** The wrap the plugin's child was spawned under, or `"not-spawned"`. Present with {@link arm}. */
+  confinement?: PluginConfinementReport;
+  /**
+   * The last update or restart of a RUNNING plugin that the host refused
+   * (decision 52). Copied only while `loadStatus` is `"loaded"`: the incumbent
+   * keeps serving, so the refusal belongs to the attempt, not to the plugin's
+   * state. In memory only; cleared when a later attempt commits.
+   */
+  lastAttemptRefusal?: PluginAttemptRefusal;
+  /**
    * Request slugs that can address this installed plugin in marketplace
    * lifecycle events. This is derived from registry hints, not plugin-specific
    * host knowledge, so renderer surfaces can collapse in-flight install rows
    * onto the canonical plugin card.
    */
   installAliases?: string[];
+}
+
+/** A refused update or restart of a running plugin, as the card carries it. */
+export interface PluginAttemptRefusal {
+  attempt: "update" | "restart";
+  kind: PluginInstallFailureKind;
+  message: string;
+  /** ISO-8601 time of the refusal. */
+  at: string;
 }
 
 export interface PluginPreparationStatus {
@@ -272,6 +296,15 @@ export interface PluginHostApiIncarnation {
 export interface PluginRuntimeOptions {
   hostRoot: string;
   encryption: SecretEncryption;
+  /**
+   * The plugin child's entry module, which every `entry` plugin's child runs
+   * (§9.8 A1: routing has no input, so every `entry` plugin is a child).
+   * Injected by the composition root — `resolvePluginChildEntryPath()` in the
+   * app, a bundle of the same entry built once per run in the tests — and
+   * required, with no default: a runtime that does not know where its child
+   * lives cannot load a plugin, and saying so is the constructor's job.
+   */
+  childEntryPath: string;
   manifestPaths?: string[];
   registryPath?: string;
   pluginsRoot?: string;
@@ -811,7 +844,7 @@ interface PreparationTrackerDeps {
     plan: ManifestLoadPlan,
     manifest: PluginManifest,
     approvedPluginAccess: PluginAccessSpec | undefined,
-    opts: { skipPreparation?: boolean; cacheBust?: boolean; shouldCommit?: () => boolean },
+    opts: { skipPreparation?: boolean; shouldCommit?: () => boolean },
   ) => Promise<SinglePluginStartResult>;
   markFailed: (pluginId: string, stub?: { name: string; description: string }) => void;
   onDisable?: (pluginId: string) => void;
@@ -841,7 +874,7 @@ class PreparationTracker {
     plan: ManifestLoadPlan,
     manifest: PluginManifest,
     approvedPluginAccess: PluginAccessSpec | undefined,
-    startOpts: { cacheBust?: boolean; shouldCommit?: () => boolean } = {},
+    startOpts: { shouldCommit?: () => boolean } = {},
   ): boolean {
     if (!this.deps.preparePluginStart) return false;
     if (this.pendingPreparedStarts.has(manifest.id)) return true;
@@ -891,7 +924,6 @@ class PreparationTracker {
         this.applyPreparationResult(manifest.id, preparationResult);
         const startResult = await this.deps.instantiateAndStartSinglePlugin(plan, manifest, approvedPluginAccess, {
           skipPreparation: true,
-          cacheBust: startOpts.cacheBust,
           shouldCommit: () =>
             this.preparationGenerations.get(manifest.id) === generation
             && (startOpts.shouldCommit?.() ?? true),
@@ -1171,14 +1203,6 @@ interface CapabilityCommitScopedGenerationLifecycle
  */
 
 
-class PluginImportTimeoutError extends Error {
-  readonly code = "plugin-import-timeout";
-
-  constructor(timeoutMs: number) {
-    super(`plugin import timeout (>${timeoutMs}ms)`);
-  }
-}
-
 class PluginFactoryTimeoutError extends Error {
   readonly code = "plugin-factory-timeout";
 
@@ -1192,29 +1216,6 @@ class PluginStartupTimeoutError extends Error {
 
   constructor(timeoutMs: number) {
     super(`startup timeout (>${timeoutMs}ms)`);
-  }
-}
-
-/**
- * Bound the host's wait for ESM evaluation. Dynamic import cannot be aborted
- * in the main process, so callers must quarantine the affected plugin id when
- * this error is observed. The late operation is always observed to avoid an
- * unhandled rejection.
- */
-export async function runPluginImportWithTimeout<T>(
-  importer: () => Promise<T>,
-  timeoutMs: number = TOOL_TIMEOUT_POLICY.pluginImportMs,
-): Promise<T> {
-  const operation = Promise.resolve().then(importer);
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new PluginImportTimeoutError(timeoutMs)), timeoutMs);
-  });
-  try {
-    return await Promise.race([operation, timeout]);
-  } finally {
-    if (timer) clearTimeout(timer);
-    void operation.catch(() => undefined);
   }
 }
 
@@ -1679,6 +1680,12 @@ const HOST_API_OPERATION_DRAIN_TIMEOUT_MS = 10_000;
 
 type RestartPluginResult = "started" | "deferred" | "failed" | undefined;
 
+/**
+ * What the routing function returns (§9.8 A1): the factory and the arm it
+ * belongs to, which the generation records (decision 51).
+ */
+type RoutedPluginFactory = { createPlugin: RuntimePluginFactory; arm: PluginLoadArm };
+
 interface PendingRestartCancellation {
   generation: number;
   cancelled: boolean;
@@ -1704,6 +1711,7 @@ function createPendingRestartCancellation(): PendingRestartCancellation {
 
 abstract class PluginRuntimeState {
   protected readonly hostRoot: string;
+  protected readonly childEntryPath: string;
   protected readonly encryption: SecretEncryption;
   protected readonly manifestPaths: string[];
   protected readonly registryPath?: string;
@@ -1798,8 +1806,39 @@ abstract class PluginRuntimeState {
    */
   protected readonly loadFailureInfo = new Map<
     string,
-    { installFailureKind?: PluginInstallFailureKind; installFailureMessage?: string }
+    {
+      installFailureKind?: PluginInstallFailureKind;
+      installFailureMessage?: string;
+      /** Set only for a construction that failed after routing (§9.8 A1). */
+      arm?: PluginLoadArm;
+      confinement?: PluginConfinementReport;
+    }
   >();
+  /**
+   * The last refused update or restart of a plugin whose running generation
+   * still serves (decision 52). Kept beside {@link loadFailureInfo} and
+   * cleared where it is, and when a later attempt commits; never marks the
+   * plugin failed, because the incumbent is not.
+   */
+  protected readonly lastAttemptRefusal = new Map<string, PluginAttemptRefusal>();
+  /**
+   * The wrap each routed factory's child was spawned under, keyed by the
+   * factory the routing function returned: one routing call yields one factory
+   * and one invocation, so the key names exactly one attempt — an incumbent
+   * and the replacement built beside it never share an entry. Written by the
+   * out-of-process factory's spawn callback; a factory with no entry spawned
+   * no child.
+   */
+  private readonly childSpawnConfinements = new WeakMap<RuntimePluginFactory, SpawnConfinement>();
+
+  protected recordChildSpawnConfinement(createPlugin: RuntimePluginFactory, confinement: SpawnConfinement): void {
+    this.childSpawnConfinements.set(createPlugin, confinement);
+  }
+
+  /** The Doctor's confinement for one routed factory's attempt. */
+  protected confinementReport(createPlugin: RuntimePluginFactory): PluginConfinementReport {
+    return this.childSpawnConfinements.get(createPlugin) ?? "not-spawned";
+  }
   protected readonly disabledPluginIds = new Set<string>();
   /**
    * #1176 active/inactive — plugins toggled inactive at runtime via
@@ -1907,7 +1946,7 @@ abstract class PluginRuntimeState {
     plan: ManifestLoadPlan,
     manifest: PluginManifest,
     approvedPluginAccess: PluginAccessSpec | undefined,
-    opts?: { skipPreparation?: boolean; cacheBust?: boolean; shouldCommit?: () => boolean },
+    opts?: { skipPreparation?: boolean; shouldCommit?: () => boolean },
   ): Promise<SinglePluginStartResult>;
 
   protected hasTrackedPluginState(pluginId: string): boolean {
@@ -1925,7 +1964,13 @@ abstract class PluginRuntimeState {
         "PluginRuntime requires an explicit createHostApi factory; test harnesses may inject createNoopHostApiForTests",
       );
     }
+    if (typeof options.childEntryPath !== "string" || !isAbsolute(options.childEntryPath)) {
+      throw new Error(
+        "PluginRuntime requires an absolute childEntryPath: the composition root resolves the plugin child's entry module",
+      );
+    }
     this.hostRoot = resolve(options.hostRoot);
+    this.childEntryPath = options.childEntryPath;
     this.encryption = options.encryption;
     this.manifestPaths = (options.manifestPaths ?? []).map((path) => resolve(path));
     this.registryPath = options.registryPath ? resolve(options.registryPath) : undefined;
@@ -2745,6 +2790,7 @@ abstract class PluginRuntimeState {
     this.failedPluginIds.clear();
     this.failedPluginStubs.clear();
     this.loadFailureInfo.clear();
+    this.lastAttemptRefusal.clear();
     this.disabledPluginIds.clear();
     this.capabilityBlockedPluginIds.clear();
     this.preparation.clear();
@@ -3048,20 +3094,80 @@ abstract class PluginRuntimeState {
     manifest: PluginManifest,
     error: IncompatibleHostProtocolError,
   ): void {
-    log.error(`${manifest.id} rejected — ${error.message}`);
-    this.auditLog?.("error", "plugin_incompatible_host_protocol", {
-      pluginId: manifest.id,
-      ...error.detail,
-      served: [...HOST_PROTOCOL_VERSIONS_SERVED],
-    });
+    const refusal = this.reportFactoryRefusal(manifest, error);
     this.markLoadRefused(manifest.id, {
-      summary: error.message,
+      summary: refusal.summary,
       reason: error.message,
       // NOT locally reinstall-fixable — the same package speaks the same
       // protocol after a reinstall.
-      kind: "incompatible-host-protocol",
+      kind: refusal.kind,
       displayName: manifest.name ?? manifest.id,
     });
+  }
+
+  /**
+   * The log line and audit event of a refusal a child factory raises, shared
+   * by every path that reports one: boot and add mark the plugin failed with
+   * the result, and prepared activation and restart record it as the
+   * attempt's refusal instead ({@link recordAttemptRefusal}), so all four emit
+   * the same event with the same fields.
+   */
+  protected reportFactoryRefusal(
+    manifest: PluginManifest,
+    error: IncompatibleHostProtocolError | ProcessEntryUnconfinedError | PluginSandboxGrantError,
+  ): { kind: PluginInstallFailureKind; summary: string } {
+    log.error(`${manifest.id} rejected — ${error.message}`);
+    if (error instanceof IncompatibleHostProtocolError) {
+      this.auditLog?.("error", "plugin_incompatible_host_protocol", {
+        pluginId: manifest.id,
+        ...error.detail,
+        served: [...HOST_PROTOCOL_VERSIONS_SERVED],
+      });
+      return { kind: "incompatible-host-protocol", summary: error.message };
+    }
+    if (error instanceof ProcessEntryUnconfinedError) {
+      this.auditLog?.("error", "plugin_process_entry_unconfined", {
+        pluginId: manifest.id,
+        platform: process.platform,
+      });
+      return {
+        kind: "process-entry-unconfined",
+        summary: "This extension runs only under an OS sandbox that confines processes.",
+      };
+    }
+    return {
+      kind: "sandbox-grant-outside-ceiling",
+      summary: "Plugin filesystem grant is outside approved directories.",
+    };
+  }
+
+  /**
+   * Record a refusal the child factory raised while a RUNNING plugin was being
+   * updated or restarted (decision 52): the incumbent generation keeps serving,
+   * so this never goes through {@link markLoadRefused} — which would mark the
+   * plugin failed while it is not — and touches no runtime state but the one
+   * map. Returns false for any other error, which the caller handles as before.
+   */
+  protected recordAttemptRefusal(
+    manifest: PluginManifest,
+    error: unknown,
+    attempt: PluginAttemptRefusal["attempt"],
+  ): boolean {
+    if (
+      !(error instanceof IncompatibleHostProtocolError)
+      && !(error instanceof ProcessEntryUnconfinedError)
+      && !(error instanceof PluginSandboxGrantError)
+    ) {
+      return false;
+    }
+    const refusal = this.reportFactoryRefusal(manifest, error);
+    this.lastAttemptRefusal.set(manifest.id, {
+      attempt,
+      kind: refusal.kind,
+      message: error.message,
+      at: new Date().toISOString(),
+    });
+    return true;
   }
 
   /**
@@ -3070,17 +3176,13 @@ abstract class PluginRuntimeState {
    * path leaves a card the Doctor names rather than a generic failure.
    */
   protected markProcessEntryUnconfined(manifest: PluginManifest, error: ProcessEntryUnconfinedError): void {
-    log.error(`${manifest.id} rejected — ${error.message}`);
-    this.auditLog?.("error", "plugin_process_entry_unconfined", {
-      pluginId: manifest.id,
-      platform: process.platform,
-    });
+    const refusal = this.reportFactoryRefusal(manifest, error);
     this.markLoadRefused(manifest.id, {
-      summary: "This extension runs only under an OS sandbox that confines processes.",
+      summary: refusal.summary,
       reason: error.message,
       // NOT reinstall-fixable: neither the sandbox setting nor the platform
       // changes with a reinstall.
-      kind: "process-entry-unconfined",
+      kind: refusal.kind,
       displayName: manifest.name ?? manifest.id,
     });
   }
@@ -3103,12 +3205,29 @@ abstract class PluginRuntimeState {
 
   /** Report a filesystem grant the host cannot give this plugin incarnation. */
   protected refuseSandboxGrant(manifest: PluginManifest, error: PluginSandboxGrantError): void {
-    log.error(`${manifest.id} rejected — ${error.message}`);
+    const refusal = this.reportFactoryRefusal(manifest, error);
     this.markLoadRefused(manifest.id, {
-      summary: "Plugin filesystem grant is outside approved directories.",
+      summary: refusal.summary,
       reason: error.message,
-      kind: "sandbox-grant-outside-ceiling",
+      kind: refusal.kind,
       displayName: manifest.name ?? manifest.id,
+    });
+  }
+
+  /**
+   * Put the arm and confinement of a construction that failed AFTER routing on
+   * the failure record the card projects (§9.8 A1, "Doctor, wired end to
+   * end"). Merged into whatever classification the refusal already wrote, so
+   * a plain factory failure gets a record too.
+   */
+  protected recordConstructionFailureArm(
+    pluginId: string,
+    routed: RoutedPluginFactory,
+  ): void {
+    this.loadFailureInfo.set(pluginId, {
+      ...this.loadFailureInfo.get(pluginId),
+      arm: routed.arm,
+      confinement: this.confinementReport(routed.createPlugin),
     });
   }
 
@@ -3381,6 +3500,8 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
         ? { drainHostApiOperations: plugin.drainHostApiOperations }
         : {}),
       ...(plugin.lifecycleHookScope ? { lifecycleHookScope: plugin.lifecycleHookScope } : {}),
+      arm: plugin.arm,
+      confinement: plugin.confinement,
     });
   }
 
@@ -3418,6 +3539,8 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
       deactivateHostApi: runtime.deactivateHostApi,
       drainHostApiOperations: runtime.drainHostApiOperations,
       lifecycleHookScope: runtime.lifecycleHookScope,
+      arm: runtime.arm,
+      confinement: runtime.confinement,
     });
     const nextDisposers = new Map(this.disposers);
     nextDisposers.set(pluginId, [...(runtime.disposers ?? [])]);
@@ -3440,6 +3563,9 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
         this.markPluginUiRevision(pluginId);
         this.failedPluginIds.delete(pluginId);
         this.loadFailureInfo.delete(pluginId);
+        // A committed generation supersedes any refused attempt before it:
+        // restart (`replaceRuntime`) and prepared activation both publish here.
+        this.lastAttemptRefusal.delete(pluginId);
         this.disabledPluginIds.delete(pluginId);
         // Auth outcomes can arrive after preparation. Retain the live bridge
         // and erase only the exact predecessor's mutable generation state.
@@ -3604,8 +3730,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     source: PluginFactorySource,
     manifest: PluginManifest,
     verified: PluginIntegrityEvidence | undefined,
-    bustCache?: boolean,
-  ): Promise<RuntimePluginFactory | undefined>;
+  ): Promise<RoutedPluginFactory>;
 
   protected abstract startLoadedPluginAtBoot(
     pluginId: string,
@@ -3895,6 +4020,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     this.failedPluginIds.delete(canonicalPluginId);
     this.failedPluginStubs.delete(canonicalPluginId);
     this.loadFailureInfo.delete(canonicalPluginId);
+    this.lastAttemptRefusal.delete(canonicalPluginId);
     this.disabledPluginIds.delete(canonicalPluginId);
     this.inactivePluginIds.delete(canonicalPluginId);
     this.invalidatePluginUiRevision(canonicalPluginId);
@@ -3917,7 +4043,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     plan: ManifestLoadPlan,
     manifest: PluginManifest,
     approvedPluginAccess: PluginAccessSpec | undefined,
-    opts: { skipPreparation?: boolean; cacheBust?: boolean; shouldCommit?: () => boolean } = {},
+    opts: { skipPreparation?: boolean; shouldCommit?: () => boolean } = {},
   ): Promise<SinglePluginStartResult> {
     const generationLifecycle = this.requireCapabilityCommitLifecycle("plugin add");
     const pluginRoot = dirname(plan.manifestPath);
@@ -4051,14 +4177,13 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       return "failed";
     }
 
-    let createPlugin: RuntimePluginFactory | undefined;
+    let routed: RoutedPluginFactory;
     try {
-      createPlugin = await this.importPluginFactoryForLifecycle(
+      routed = await this.importPluginFactoryForLifecycle(
         manifest.id,
         source,
         manifest,
         verified,
-        opts.cacheBust,
       );
     } catch (err) {
       if (!canCommit()) {
@@ -4082,12 +4207,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return "cancelled";
     }
-    if (!createPlugin) {
-      log.error(`${manifest.id} entry does not export default/createPlugin — skipped`);
-      this.markFailed(manifest.id);
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
-      return "failed";
-    }
+    const { createPlugin } = routed;
 
     const pluginDataDir = this.ensureDataDir(manifest.id, pluginRoot);
     const hostEffects = new HostApiGenerationScope(manifest.id);
@@ -4147,6 +4267,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       } else {
         this.markFailed(manifest.id);
       }
+      this.recordConstructionFailureArm(manifest.id, routed);
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return "failed";
     }
@@ -4261,6 +4382,8 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       deactivateHostApi: deactivate,
       drainHostApiOperations: drainOperations,
       lifecycleHookScope,
+      arm: routed.arm,
+      confinement: this.confinementReport(createPlugin),
     });
     try {
       await generationLifecycle.replaceRuntime(
@@ -4950,7 +5073,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       input.receiptRaw,
       installId,
     );
-    let createPlugin: RuntimePluginFactory | undefined;
+    let routed: RoutedPluginFactory;
     try {
       // The staged receipt is verified against the payload it materialised the
       // same way a cached one is, so this path hands the gate evidence of its
@@ -4959,12 +5082,11 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       if (!staged.ok) {
         throw new Error(`prepared artifact '${manifest.id}' receipt does not verify against its payload: ${staged.reason}`);
       }
-      createPlugin = await this.importPluginFactoryForLifecycle(
+      routed = await this.importPluginFactoryForLifecycle(
         manifest.id,
         this.pluginFactorySource(manifest, payloadRoot),
         manifest,
         integrityEvidence(staged.receipt),
-        true,
       );
     } catch (error) {
       await removeRetainedPluginGeneration(
@@ -4974,14 +5096,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       );
       throw error;
     }
-    if (!createPlugin) {
-      await removeRetainedPluginGeneration(
-        this.installReceiptCacheRoot!,
-        manifest.id,
-        generationId,
-      );
-      throw new Error(`prepared artifact '${manifest.id}' has no default/createPlugin export`);
-    }
+    const { createPlugin } = routed;
     const hostEffects = new HostApiGenerationScope(manifest.id);
     let pluginDataDir: string;
     let hostApiIncarnation: PreparedArtifactHostApiIncarnation;
@@ -5062,6 +5177,8 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         deactivateHostApi: deactivate,
         drainHostApiOperations: drainOperations,
         lifecycleHookScope,
+        arm: routed.arm,
+        confinement: this.confinementReport(createPlugin),
       });
       return withPluginInstallLock(manifest.id, async () => {
         let displacedUnpublishedCandidate:
@@ -5162,6 +5279,13 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
           generationId,
         );
       }
+      // A refusal the child factory raised at invocation (an unserved
+      // `hostProtocol` that reached this path without the boot/add gate, or a
+      // sibling refusal) is this attempt's, never the running generation's:
+      // reported with the boot/add audit event and recorded for the card, and
+      // the incumbent is not touched. The error still propagates, so the
+      // install flow surfaces it as the update's failure.
+      if (!committed) this.recordAttemptRefusal(manifest, error, "update");
       throw error;
     }
     });
@@ -5234,25 +5358,28 @@ type PluginLoadAttemptResources = {
 };
 class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
   /**
-   * THE routing decision (`docs/blueprints/plugin-process-isolation.md` §9).
+   * Where every plugin's factory comes from (`docs/design/plugin-hostapi-protocol.md`
+   * §9.8 A1, decision 50).
    *
-   * Every instantiation path — boot load, add, restart, capability reload —
-   * reaches the plugin's factory through this one method, so the in-process and
-   * out-of-process arms are chosen in exactly one place. An id in the host-owned
-   * routing SOT gets a factory that spawns a confined child; every other id gets
-   * the dynamic import it has always got, unchanged.
+   * Every instantiation path — boot load, add, restart, capability reload,
+   * prepared activation — reaches the plugin's factory through this one
+   * method. Routing has no input: there is no routing SOT, no plugin-id table,
+   * no manifest field, setting or environment variable that selects an arm.
+   * After the provenance gate and the kind check, a `process` source gets its
+   * process launch and an `entry` source gets a factory that spawns the
+   * plugin's child; nothing is imported into main.
    *
-   * It is a routing decision and NOT a fallback: nothing here retries in-process
-   * when the child arm fails. A plugin whose child cannot be spawned or confined
-   * fails to load, which is the same outcome an unimportable entry module has.
+   * It is a routing decision and NOT a fallback: nothing here retries
+   * in-process when the child arm fails. A plugin whose child cannot be spawned
+   * or confined fails to load, which is the same outcome an unimportable entry
+   * module has.
    */
   protected async importPluginFactoryForLifecycle(
     pluginId: string,
     source: PluginFactorySource,
     manifest: PluginManifest,
     verified: PluginIntegrityEvidence | undefined,
-    bustCache?: boolean,
-  ): Promise<RuntimePluginFactory | undefined> {
+  ): Promise<RoutedPluginFactory> {
     this.assertPluginLifecycleAvailable(pluginId);
     // FIRST, before routing: a `process` manifest without pinned provenance is
     // refused on every activation path before any factory exists (decision
@@ -5264,48 +5391,40 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     const outOfProcess = {
       manifest,
       auditLog: this.auditLog,
+      childEntryPath: this.childEntryPath,
       registerSandboxEnvelope: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) =>
         this.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
+      onChildSpawned: (confinement: SpawnConfinement) =>
+        this.recordChildSpawnConfinement(createPlugin, confinement),
       ...(this.onMalformedCredentialSelector
         ? { onMalformedCredentialSelector: this.onMalformedCredentialSelector }
         : {}),
     };
-    if (source.kind === "process") {
-      // Out of process by manifest shape, regardless of the census: there is
-      // no module the in-process arm could import. A contract property, not a
-      // routing exception. The launch is resolved against the generation and
-      // data directory the context names, which exist by the time the
-      // lifecycle calls the factory.
-      return async (context) => createOutOfProcessPluginFactory({
+    // A `process` launch is resolved against the generation and data
+    // directory the context names, which exist by the time the lifecycle
+    // calls the factory. An `entry` launch hands the child the resolved entry
+    // path; the child performs the import, and the whole of it is bounded by
+    // the factory timeout the caller already applies — a fresh process has an
+    // empty module registry, so there is no cache to bust.
+    const createPlugin: RuntimePluginFactory = source.kind === "process"
+      ? async (context) => createOutOfProcessPluginFactory({
         ...outOfProcess,
         launch: { kind: "process", ...resolveProcessLaunch(manifest, context.pluginRoot, context.pluginDataDir) },
-      })(context);
-    }
-    if (isOutOfProcessPlugin(pluginId)) {
-      // No import happens in main for this plugin, so there is no ESM
-      // evaluation to bound and nothing to quarantine: the child performs the
-      // import, and the whole of it is bounded by the factory timeout the
-      // caller already applies. `bustCache` is irrelevant for the same reason —
-      // a fresh process has an empty module registry, which is a stronger
-      // cache-bust than a query parameter.
-      return createOutOfProcessPluginFactory({
+      })(context)
+      : createOutOfProcessPluginFactory({
         ...outOfProcess,
         launch: { kind: "entry", entryPath: source.resolvedEntryPath },
       });
-    }
-    const { resolvedEntryPath } = source;
-    try {
-      return await runPluginImportWithTimeout(
-        () => importPluginFactory(resolvedEntryPath, bustCache),
-      );
-    } catch (err) {
-      if (err instanceof PluginImportTimeoutError) {
-        // ESM evaluation cannot be cancelled in-process. Never admit another
-        // same-id incarnation while that abandoned module body may still run.
-        this.quarantinePluginLifecycle(pluginId, err.message);
-      }
-      throw err;
-    }
+    return { createPlugin, arm: "child" };
+  }
+
+  /**
+   * The arm of every loaded plugin, as its generation recorded it: what
+   * `allPluginsAreOutOfProcess` is fed (decision 51), read from the runtime's
+   * registry of loaded plugins rather than from any list of ids.
+   */
+  listLoadedPluginArms(): Array<{ pluginId: string; arm: PluginLoadArm }> {
+    return [...this.plugins.values()].map((plugin) => ({ pluginId: plugin.manifest.id, arm: plugin.arm }));
   }
 
   protected async preflightBootLoadPlan(
@@ -5536,6 +5655,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       this.failedPluginIds.delete(pluginId);
       this.failedPluginStubs.delete(pluginId);
       this.loadFailureInfo.delete(pluginId);
+      this.lastAttemptRefusal.delete(pluginId);
       logPluginLifecycle(
         "debug",
         { pluginId, phase: PluginPhase.LOAD_OK, reason: "inactive_pointer" },
@@ -5552,6 +5672,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     this.knownPluginManifests.set(manifest.id, manifest);
     this.failedPluginStubs.delete(manifest.id);
     this.loadFailureInfo.delete(manifest.id);
+    this.lastAttemptRefusal.delete(manifest.id);
     this.inactivePluginIds.delete(manifest.id);
     this.disabledPluginIds.delete(manifest.id);
     this.failedPluginIds.delete(manifest.id);
@@ -5619,9 +5740,9 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return;
     }
-    let createPlugin: RuntimePluginFactory | undefined;
+    let routed: RoutedPluginFactory;
     try {
-      createPlugin = await this.importPluginFactoryForLifecycle(
+      routed = await this.importPluginFactoryForLifecycle(
         manifest.id,
         source,
         manifest,
@@ -5643,12 +5764,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return;
     }
-    if (!createPlugin) {
-      logPluginLifecycle("error", { pluginId: manifest.id, phase: PluginPhase.LOAD_FAIL, reason: "no_default_export" }, "entry does not export default/createPlugin");
-      this.markFailed(manifest.id);
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
-      return;
-    }
+    const { createPlugin } = routed;
 
     const pluginDataDir = this.ensureDataDir(manifest.id, pluginRoot);
     const hostEffects = new HostApiGenerationScope(manifest.id);
@@ -5697,6 +5813,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       } else {
         this.markFailed(manifest.id);
       }
+      this.recordConstructionFailureArm(manifest.id, routed);
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       logPluginLifecycle("error", { pluginId: manifest.id, phase: PluginPhase.LOAD_FAIL, err, reason: "factory" }, "plugin factory failed");
       return;
@@ -5746,6 +5863,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       deactivateHostApi: deactivate,
       drainHostApiOperations: drainOperations,
       lifecycleHookScope,
+      arm: routed.arm,
+      confinement: this.confinementReport(createPlugin),
     });
     this.disposers.set(manifest.id, disposers);
     this.markPluginUiRevision(manifest.id);
@@ -6368,18 +6487,16 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err: error, reason: "entry_path" }, "entry path rejected during restart");
       return "failed";
     }
-    // Cache-bust so restart imports the new bundle rather than memoized ESM.
-    let createPlugin: RuntimePluginFactory | undefined;
+    let routed: RoutedPluginFactory;
     try {
-      createPlugin = await this.importPluginFactoryForLifecycle(
+      routed = await this.importPluginFactoryForLifecycle(
         pluginId,
         source,
         manifest,
         // Verified above only when there is a receipt id to verify under.
         integrityResult.verified,
-        true,
       );
-      logPluginLifecycle("debug", { pluginId, phase: PluginPhase.RESTART_RELOAD_OK }, "module re-imported");
+      logPluginLifecycle("debug", { pluginId, phase: PluginPhase.RESTART_RELOAD_OK }, "factory routed");
     } catch (err) {
       await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err }, "module re-import failed");
@@ -6392,11 +6509,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       return "failed";
     }
 
-    if (!createPlugin) {
-      await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
-      logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, reason: "no_default_export" }, "entry does not export default/createPlugin after restart");
-      return "failed";
-    }
+    const { createPlugin } = routed;
 
     const pluginDataDir = this.ensureDataDir(pluginId, pluginRoot);
     const hostEffects = new HostApiGenerationScope(pluginId);
@@ -6452,6 +6565,9 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       });
       await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err, reason: "createPlugin_failed" }, "createPlugin failed during restart");
+      // The replacement's refusal, not the incumbent's: the running
+      // generation keeps serving and is never marked failed (decision 52).
+      this.recordAttemptRefusal(manifest, err, "restart");
       if (opts.throwOnFailure) throw err;
       return "failed";
     }
@@ -6524,6 +6640,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       deactivateHostApi: deactivateReplacementHostApi,
       drainHostApiOperations: drainReplacementHostApiOperations,
       lifecycleHookScope: replacementLifecycleHookScope,
+      arm: routed.arm,
+      confinement: this.confinementReport(createPlugin),
     });
     try {
       await generationLifecycle.replaceRuntime(
@@ -7161,6 +7279,9 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
       instance: {} as import("../types.js").RuntimePlugin,
       methods: new Map([[toolName, handler as import("../types.js").PluginToolHandler]]),
       started: true,
+      // The injected handler runs in this process and no child exists.
+      arm: "in-process",
+      confinement: "not-spawned",
     };
     this.plugins.set(pluginId, stub);
     this.markPluginUiRevision(pluginId);
@@ -7565,7 +7686,22 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         const info = this.loadFailureInfo.get(pluginId);
         if (info?.installFailureKind) card.installFailureKind = info.installFailureKind;
         if (info?.installFailureMessage) card.installFailureMessage = info.installFailureMessage;
+        // The Doctor's arm and confinement for a construction that failed
+        // after routing; absent when the failure came before any factory.
+        if (info?.arm) card.arm = info.arm;
+        if (info?.confinement) card.confinement = info.confinement;
       }
+      // A running plugin reports the generation that serves, whatever the
+      // card's active/inactive status says.
+      const loaded = this.plugins.get(pluginId);
+      if (loaded) {
+        card.arm = loaded.arm;
+        card.confinement = loaded.confinement;
+      }
+      // A refused update or restart of a running plugin is that attempt's
+      // record; the plugin itself stays loaded (decision 52).
+      const refusal = this.lastAttemptRefusal.get(pluginId);
+      if (loadStatus === "loaded" && refusal) card.lastAttemptRefusal = { ...refusal };
       cards.set(pluginId, card);
     }
     for (const [pluginId, stub] of this.failedPluginStubs) {
@@ -7586,6 +7722,8 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         runtimeLoaded: false,
         ...(info?.installFailureKind ? { installFailureKind: info.installFailureKind } : {}),
         ...(info?.installFailureMessage ? { installFailureMessage: info.installFailureMessage } : {}),
+        ...(info?.arm ? { arm: info.arm } : {}),
+        ...(info?.confinement ? { confinement: info.confinement } : {}),
       });
     }
     return [...cards.values()];

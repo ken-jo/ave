@@ -2730,7 +2730,8 @@ export const createPlugin = async (context) => {
  * The loopback listener, which is an admission verdict rather than a curiosity.
  *
  * A plugin whose sign-in flow needs to CATCH a redirect needs a server, and a
- * server needs a bind. `out-of-process-plugins.ts` carried `lyra-mail` as a
+ * server needs a bind. The admission record (`out-of-process-plugins.ts`
+ * before §9.8 A1 retired its census) carried `lyra-mail` as a
  * candidate on the written assumption that its auth library opens no socket
  * outside the injected egress client; it does, and this is where that stops
  * being an assumption. The case is kept platform-split because the backends do

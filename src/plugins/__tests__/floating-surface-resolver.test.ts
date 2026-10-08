@@ -78,28 +78,12 @@ describe("resolveFloatingSurface", () => {
    * fixture derives a tool name from it and the manifest schema requires
    * `^[a-zA-Z_][a-zA-Z0-9_]*$`.
    *
-   * It must be an id this harness can LOAD, which means an in-process one, and
-   * a made-up id is in-process by construction. Naming a real plugin here
-   * bought nothing and cost a move: it was `meeting` until that id was admitted
-   * to `OUT_OF_PROCESS_PLUGIN_IDS`.
-   * The isolated arm spawns a confined child, and that needs the ASRT sandbox
-   * initialized at boot — so every case here failed `unknown-plugin`, which
-   * reads exactly like a resolver bug and is not one.
-   *
-   * WHAT THIS SUITE THEREFORE DOES NOT COVER, said plainly because the only
-   * plugin that uses the dock is now on the other arm: `resolveFloatingSurface`
-   * is exercised here against an IN-PROCESS plugin only.
-   *
-   * The coverage transfers because the resolver reads `this.plugins`, which
-   * both arms populate through the same `plugins.set` after a successful load —
-   * it never consults the routing set, and the case below pins that. What it
-   * does NOT transfer is the load itself, and closing that gap means
-   * initializing ASRT in this suite. That is deliberately not done: the
-   * sandbox cases stand behind a live-sandbox gate that returns early where the
-   * backend cannot initialize, and on the Linux runner that is always — so the
-   * result would be a green suite that measured nothing on the platform it
-   * looked greenest. `confined-plugin-child.test.ts` is where that gate is
-   * already paid for.
+   * Since Admission (§9.8 A1) every `entry` plugin loads as a child, this
+   * fixture included: the runtime spawns it from the child entry the test run
+   * bundled, with the sandbox off as the test process runs it. So the resolver
+   * is exercised here against a plugin on the arm the dock's real user takes,
+   * and the case below still pins that it reads the registry alone — it must
+   * never decide whether a surface may float from where a plugin runs.
    */
   async function runtimeWith(ui: UiEntry[], id = "dockfixture") {
     const runtime = new PluginRuntime({
@@ -230,11 +214,9 @@ describe("resolveFloatingSurface", () => {
     expect(runtime.resolveFloatingSurface("dockfixture", "recorder")).toBe("surface-not-floating");
   });
 
-  it("answers from the registry alone, never from the routing set", () => {
-    // What makes the in-process coverage above transfer to the isolated arm,
-    // and the reason it is worth an assertion rather than a sentence: the only
-    // plugin that uses the dock runs out-of-process, so every other case in
-    // this file exercises the arm it does not use.
+  it("answers from the registry alone, never from routing", () => {
+    // Worth an assertion rather than a sentence: whatever arm a generation
+    // came from, the resolver must answer the same.
     //
     // Both arms register through the same `plugins.set` after a successful
     // load, so a resolver that reads only the registry behaves identically on
@@ -257,9 +239,12 @@ describe("resolveFloatingSurface", () => {
     // leave `body` empty, and every assertion below would pass on nothing.
     expect(body).toContain("return \"unknown-plugin\";");
     expect(body).toContain("this.plugins.get(pluginId)");
-    for (const routing of ["isOutOfProcessPlugin", "OUT_OF_PROCESS_PLUGIN_IDS"]) {
-      expect(body, `${routing} must not decide whether a surface may float`)
-        .not.toContain(routing);
+    // The arm and the wrap a generation records are routing facts; the
+    // routing function is where they are decided. None of them may decide
+    // whether a surface floats.
+    for (const routing of [/\.arm\b/u, /\bconfinement\b/u, /importPluginFactoryForLifecycle/u, /\bPluginLoadArm\b/u]) {
+      expect(body, `${routing.source} must not decide whether a surface may float`)
+        .not.toMatch(routing);
     }
   });
 });

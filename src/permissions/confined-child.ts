@@ -118,6 +118,20 @@ export interface ConfinedChildSpec {
 }
 
 /**
+ * The wrap a spawn actually applied — never the `features.osToolSandbox`
+ * setting. A child spawned unwrapped is `unconfined` whatever the setting
+ * says, because "confined" is a claim about this process, and only the wrap
+ * makes it true. One value per substrate ASRT wraps with.
+ */
+export type SpawnConfinement = "macos-sandbox" | "linux-bubblewrap" | "windows-srt" | "unconfined";
+
+/** A spawned, registered child and the wrap it runs under. */
+export interface ConfinedChildSpawn {
+  readonly child: ChildProcess;
+  readonly confinement: SpawnConfinement;
+}
+
+/**
  * Spawn and register a child, wrapped when the host is sandboxed.
  *
  * A child is confined exactly as much as the host is — no more, no less. With
@@ -132,10 +146,10 @@ export interface ConfinedChildSpec {
  * Throws with the ASRT per-command state already incremented if the failure
  * happens after `onWrapped` fires; the caller's cleanup owns the decrement.
  */
-export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<ChildProcess> {
+export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<ConfinedChildSpawn> {
   spec.assertStillValid?.();
 
-  const { executable, args, wrappedEnv } = await resolveSpawnLine(spec);
+  const { executable, args, wrappedEnv, confinement } = await resolveSpawnLine(spec);
   spec.assertStillValid?.();
 
   assertManagedChildProcessAdmissionOpen(spec.label);
@@ -146,7 +160,25 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Child
     env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
   });
   trackManagedChildProcess(child, { label: spec.label });
-  return child;
+  return { child, confinement };
+}
+
+/**
+ * The substrate ASRT wraps with on this platform. Asked only on the wrapped
+ * path; a platform ASRT does not wrap on is an internal contract violation,
+ * because `isAsrtSandboxActive()` reported a live sandbox there.
+ */
+function wrapConfinement(label: string): Exclude<SpawnConfinement, "unconfined"> {
+  switch (process.platform) {
+    case "darwin":
+      return "macos-sandbox";
+    case "linux":
+      return "linux-bubblewrap";
+    case "win32":
+      return "windows-srt";
+    default:
+      throw new Error(`[confined-child] ${label}: the sandbox is active on '${process.platform}', which no wrap substrate serves`);
+  }
 }
 
 /**
@@ -156,10 +188,11 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Child
  */
 async function resolveSpawnLine(
   spec: ConfinedChildSpec,
-): Promise<{ executable: string; args: string[]; wrappedEnv: NodeJS.ProcessEnv }> {
+): Promise<{ executable: string; args: string[]; wrappedEnv: NodeJS.ProcessEnv; confinement: SpawnConfinement }> {
   if (!isAsrtSandboxActive()) {
-    return { executable: spec.command, args: [...spec.args], wrappedEnv: {} };
+    return { executable: spec.command, args: [...spec.args], wrappedEnv: {}, confinement: "unconfined" };
   }
+  const confinement = wrapConfinement(spec.label);
   const temp = spec.grantMode === "allow-list" ? ensureSandboxTempPrincipalDir(requireTempPrincipal(spec)) : undefined;
   const launch = temp ? sandboxTempEnvLaunch(temp.dir, spec.command, spec.args) : spec;
   const { cmdline, binShell } = buildConfinedCommandLine(launch.command, launch.args);
@@ -172,7 +205,7 @@ async function resolveSpawnLine(
   if (executable === undefined) {
     throw new Error(`[confined-child] ASRT returned an empty argv for ${spec.label}`);
   }
-  return { executable, args, wrappedEnv: env };
+  return { executable, args, wrappedEnv: env, confinement };
 }
 
 function requireTempPrincipal(spec: ConfinedChildSpec): SandboxTempPrincipal {

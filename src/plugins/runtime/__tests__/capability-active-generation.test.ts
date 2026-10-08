@@ -28,6 +28,7 @@ import { canonicalJSON } from "../../secret-access/canonical-json.js";
 import { servedAgentPluginsDocument } from "../../__tests__/test-helpers.js";
 import { settleMacrotask as nextTurn } from "../../../__tests__/test-helpers.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
+import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 
 type WrittenPlugin = {
   id: string;
@@ -235,7 +236,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
     await Promise.all([writeReceipt(consumer), writeReceipt(provider)]);
 
     const providerPreparation = deferredGate();
-    const runtime = new PluginRuntime({ encryption: unavailableSecretEncryption,
+    const runtime = new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot: root,
       pluginsRoot,
       registryPath,

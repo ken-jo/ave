@@ -8,6 +8,7 @@ import type { PreparedPluginHookProjection } from "../hooks/plugin-hook-projecti
 import type { PreparedPluginMcpProjection } from "../mcp/plugin-mcp-projection.js";
 import type { PluginGenerationLease } from "./plugin-generation-coordinator.js";
 import type { HostApiGenerationScope } from "./plugin-host-effect-scope.js";
+import type { PluginConfinementReport, PluginLoadArm } from "./runtime/types.js";
 
 type DeepReadonly<T> =
   T extends (...args: never[]) => unknown ? T
@@ -38,6 +39,10 @@ export interface PluginRuntimeGenerationProjection {
     active: boolean;
     depth: number;
   };
+  /** The arm the routing function returned; carried into the published `LoadedPlugin`. */
+  readonly arm: PluginLoadArm;
+  /** The wrap the generation's child was spawned under. */
+  readonly confinement: PluginConfinementReport;
 }
 
 export interface PreparedPluginRuntimeGenerationPublication {

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestProject } from "vitest/node";
 import { claimRunDir, ensureTestTmpRoot, sweepStaleRunDirs } from "./src/__tests__/support/test-run-dirs.js";
@@ -47,6 +47,8 @@ async function validateJsonFixtures(): Promise<void> {
 interface RunDirs {
   sandboxBase: string;
   aveHomeBase: string;
+  /** This run's bundle of the plugin child entry, which every runtime under test spawns. */
+  pluginChildEntryPath: string;
   /** Projects in this run whose setup has not torn down yet. */
   users: number;
 }
@@ -82,6 +84,7 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
   const existing = holder[RUN_DIRS];
   if (existing !== undefined) {
     existing.users += 1;
+    project.provide("pluginChildEntryPath", existing.pluginChildEntryPath);
     return () => releaseRunDirs(holder);
   }
 
@@ -102,6 +105,7 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
   // an app session cannot reach the tests. `aveHome()` refuses a path under
   // the real home that is not test-tmp.
   const aveHomeBase = mkdtempSync(join(testTmp, "h-"));
+  let pluginChildEntryPath: string | undefined;
   process.env.AVE_TEST_SANDBOX_BASE = sandboxBase;
   process.env.AVE_TEST_RUN_HOME = aveHomeBase;
   process.env.AVE_HOME = aveHomeBase;
@@ -129,14 +133,17 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
       console.warn(`[vitest setup] left ${aside} in place: renamed aside for removal, but not removed; look at it, or a later run removes it once its owner is shown gone`);
     }
     await validateJsonFixtures();
+    pluginChildEntryPath = await buildRunPluginChildEntry();
   } catch (error) {
     // Vitest calls no teardown for a setup that threw. Nothing has run in
     // these yet, so a plain removal takes them.
     await rm(sandboxBase, { recursive: true, force: true });
     await rm(aveHomeBase, { recursive: true, force: true });
+    if (pluginChildEntryPath !== undefined) await rm(dirname(pluginChildEntryPath), { recursive: true, force: true });
     throw error;
   }
-  holder[RUN_DIRS] = { sandboxBase, aveHomeBase, users: 1 };
+  project.provide("pluginChildEntryPath", pluginChildEntryPath);
+  holder[RUN_DIRS] = { sandboxBase, aveHomeBase, pluginChildEntryPath, users: 1 };
   return () => releaseRunDirs(holder);
 }
 
@@ -149,6 +156,33 @@ async function releaseRunDirs(holder: RunDirsHolder): Promise<void> {
   const { removeOwnedPluginTree } = await import("./src/plugins/plugin-removal-transaction.js");
   await removeOwnedPluginTree(dirs.sandboxBase);
   await removeOwnedPluginTree(dirs.aveHomeBase);
+  await rm(dirname(dirs.pluginChildEntryPath), { recursive: true, force: true });
+}
+
+/**
+ * Bundle the plugin child entry once for this run.
+ *
+ * Every `entry` plugin runs in a child (`docs/design/plugin-hostapi-protocol.md`
+ * §9.8 A1), and a source checkout has no emitted `plugin-child-main.js`, so a
+ * runtime under test is handed this bundle through its required
+ * `childEntryPath` option (`src/__tests__/support/plugin-child-entry.ts`). Built
+ * by the same helper, with the shipped build's boundary, that the confinement
+ * suites use, into a directory of its own under the repository's `.cache/` —
+ * where `node_modules` resolves for the externals — so two runs in one
+ * checkout never share a file one of them is rewriting.
+ */
+async function buildRunPluginChildEntry(): Promise<string> {
+  const { buildChildEntry, childBundleDir } = await import("./src/plugins/isolation/__tests__/child-entry-bundle.js");
+  const cacheName = "plugin-child-runtime";
+  const cacheRoot = childBundleDir(cacheName);
+  mkdirSync(cacheRoot, { recursive: true });
+  const runDir = mkdtempSync(join(cacheRoot, "run-"));
+  try {
+    return await buildChildEntry(join(cacheName, basename(runDir)));
+  } catch (error) {
+    await rm(runDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /** Recursively collect JSON files matching manifest/plugin/*-fixture naming under __tests__ dirs. */

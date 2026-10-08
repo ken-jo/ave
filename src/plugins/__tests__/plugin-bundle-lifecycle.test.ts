@@ -130,6 +130,9 @@ function runtimeProjection(manifest: PluginManifest, pluginRoot: string) {
     pluginRoot,
     instance: { handlers: {} },
     methods: new Map(),
+    // A generation the routing function produced, spawned with the sandbox off.
+    arm: "child" as const,
+    confinement: "unconfined" as const,
   };
 }
 

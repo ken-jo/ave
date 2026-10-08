@@ -58,11 +58,18 @@ import {
   type HostApiRequest,
   type ResultMarshalling,
 } from "../host-api-wire.js";
+import { allPluginsAreOutOfProcess } from "../out-of-process-plugins.js";
 import {
-  OUT_OF_PROCESS_PLUGIN_IDS,
-  allPluginsAreOutOfProcess,
-  isOutOfProcessPlugin,
-} from "../out-of-process-plugins.js";
+  makeTestPluginEntrySource,
+  makeTestPluginRuntime,
+  makeTestPluginRuntimeFixture,
+  writeTestPlugin,
+  writeTestPluginRegistry,
+} from "../../__tests__/test-helpers.js";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { buildRuntimeImportGraph } from "../../../../scripts/check-import-cycles.mjs";
 import { hostApiRequest } from "../../../__tests__/support/host-protocol-wire.js";
 
 const PLUGIN_ID = "com.example.contract";
@@ -297,51 +304,148 @@ describe("the marshalling contract covers exactly the classified hostApi surface
   });
 });
 
-describe("the routing set names the isolated plugins and nothing else", () => {
-  it("carries exactly the reviewed ids, and no configuration can widen it", () => {
-    // Named exactly. A test asserting only "non-empty" would stay green if a
-    // plugin were routed out-of-process without its own e2e evidence — and the
-    // whole point of a per-plugin SOT is that each addition is a reviewed,
-    // visible decision.
-    expect([...OUT_OF_PROCESS_PLUGIN_IDS]).toEqual([
-      "vega-helper",
-      "lyra-mail",
-      "local-indexer",
-      "meeting",
-      "orion-api",
-    ]);
-    expect(isOutOfProcessPlugin("vega-helper")).toBe(true);
-    expect(isOutOfProcessPlugin("lyra-mail")).toBe(true);
-    expect(isOutOfProcessPlugin("local-indexer")).toBe(true);
-    // `meeting` joined them: its last axis was a floating window it built
-    // itself out of `BrowserWindow`/`ipcMain`/`screen`/`session`, reached
-    // through a `require` whose specifier lived in a variable. It takes a slot
-    // in the host's dock now and resolves `electron` by no path at all.
-    expect(isOutOfProcessPlugin("meeting")).toBe(true);
-    // `orion-api` was the last one out, and the reason it took longest differed
-    // in KIND from the four above: it was not missing a host API. It shipped
-    // code written to run where the boundary does not reach — function bodies
-    // compiled inside an authenticated page. Those are gone; its cancel flow
-    // was the final one, and it could not simply be rewritten because the code
-    // did not KNOW the endpoint it used. It was read off the live page instead.
-    // Still asserted by id, in the other direction now, so the prose and the
-    // set cannot drift apart.
-    expect(isOutOfProcessPlugin("orion-api")).toBe(true);
-    expect(Object.isFrozen(OUT_OF_PROCESS_PLUGIN_IDS)).toBe(true);
+describe("the in-process loader's removal predicate is fed from the registry", () => {
+  // The census that used to answer this by id is gone (§9.8 A1, decision 50):
+  // the predicate reads the arm each LOADED generation recorded from the
+  // routing function (decision 51), so what it says is what actually ran.
+  it("is true over a runtime whose loaded plugins are children, and false once an in-process one is registered", async () => {
+    const fixture = await makeTestPluginRuntimeFixture({ prefix: "ave-removal-predicate-" });
+    const pluginId = "removalpredicatefixture";
+    const written = await writeTestPlugin(fixture, {
+      id: pluginId,
+      tools: ["predicate_ping"],
+      entrySource: makeTestPluginEntrySource({ predicate_ping: JSON.stringify("pong") }),
+    });
+    await writeTestPluginRegistry(fixture, [{ id: pluginId, manifestPath: written.manifestPath }]);
+    const runtime = makeTestPluginRuntime(fixture);
+    try {
+      await runtime.startAll();
+      // The plugin really ran, in its child: its handler answers.
+      await expect(runtime.call("predicate_ping")).resolves.toBe("pong");
+      const loaded = runtime.listLoadedPluginArms();
+      expect(loaded).toEqual([{ pluginId, arm: "child" }]);
+      expect(allPluginsAreOutOfProcess(loaded)).toBe(true);
+      // A generation the registry records as in-process — what the retained
+      // in-process factory would produce — makes the predicate false, read
+      // from the same registry rather than from a list of ids.
+      runtime._testInjectPlugin("inprocessregistryfixture", "inprocess_ping", async () => "in-process");
+      const mixed = runtime.listLoadedPluginArms();
+      expect(mixed).toContainEqual({ pluginId: "inprocessregistryfixture", arm: "in-process" });
+      expect(allPluginsAreOutOfProcess(mixed)).toBe(false);
+    } finally {
+      await runtime.stopAll();
+      rmSync(fixture.rootDir, { recursive: true, force: true });
+    }
   });
 
-  it("reports the in-process loader as still needed while any plugin is in-process", () => {
-    // No FIRST-PARTY id is in-process any more, so the counter-example is a
-    // fixture. That is not the same as the predicate being unreachable: a
-    // third-party plugin the SOT does not name is exactly this case, and it is
-    // why `importPluginFactory` still has to exist.
-    const thirdParty = "someinstalledthirdpartyplugin";
-    expect(allPluginsAreOutOfProcess([thirdParty])).toBe(false);
-    expect(allPluginsAreOutOfProcess(["vega-helper", thirdParty])).toBe(false);
-    expect(allPluginsAreOutOfProcess(["vega-helper"])).toBe(true);
-    expect(allPluginsAreOutOfProcess([...OUT_OF_PROCESS_PLUGIN_IDS])).toBe(true);
-    // An empty install list is not "all isolated" — it is no evidence either way.
+  it("is false with nothing loaded, which is no evidence either way", () => {
     expect(allPluginsAreOutOfProcess([])).toBe(false);
+    expect(allPluginsAreOutOfProcess([{ pluginId: "a", arm: "child" }, { pluginId: "b", arm: "in-process" }])).toBe(false);
+    expect(allPluginsAreOutOfProcess([{ pluginId: "a", arm: "child" }, { pluginId: "b", arm: "child" }])).toBe(true);
+  });
+});
+
+/**
+ * The import boundary of plugin code (§9.8 A1, in the style of
+ * `validate-boundary.test.ts`): main imports no plugin module. `importPluginFactory`
+ * — the one function that `import()`s a plugin's entry — is imported only by
+ * the child (`plugin-child-main.ts`) and defined in `plugin-loader.ts`, whose
+ * retained in-process factory is the only other caller; and that retained
+ * factory has no production importer at all.
+ *
+ * The graph is the one `scripts/check-import-cycles.mjs` builds, so which
+ * modules import `plugin-loader.ts` is decided by the same resolver the
+ * import-cycle gate uses; the bindings each one takes are then read off its
+ * import statements, and a dynamic `import()` of the module counts as taking
+ * every binding.
+ */
+const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const PLUGIN_LOADER = join(SRC, "plugins", "runtime", "plugin-loader.ts");
+const PLUGIN_CHILD_MAIN = join(SRC, "plugins", "isolation", "plugin-child-main.ts");
+const importGraph = buildRuntimeImportGraph(SRC);
+
+function display(file: string): string {
+  return relative(SRC, file).split(sep).join("/");
+}
+
+function isProductionModule(file: string): boolean {
+  const name = display(file);
+  return !/(^|\/)__tests__\//u.test(name) && !/(^|\/)__probes__\//u.test(name) && !/\.test\.tsx?$/u.test(name);
+}
+
+/** Whether a relative specifier written in `from` names `plugin-loader.ts`. */
+function namesPluginLoader(from: string, specifier: string): boolean {
+  if (!specifier.startsWith(".")) return false;
+  const base = resolve(dirname(from), specifier);
+  return [base.replace(/\.js$/u, ".ts"), `${base}.ts`, base].includes(PLUGIN_LOADER);
+}
+
+const STATIC_IMPORT = /(?:^|[\n;])\s*(import|export)\s+(type\s+)?([\s\S]*?)\s+from\s+["']([^"']+)["']/gu;
+const DYNAMIC_IMPORT = /\bimport\(\s*["']([^"']+)["']\s*\)/gu;
+
+/**
+ * The bindings `file` takes from `plugin-loader.ts`: each named import or
+ * re-export by its exported name, and `*` for a namespace import, an
+ * `export *` or a dynamic `import()`, each of which reaches every export.
+ */
+function bindingsFromPluginLoader(file: string): string[] {
+  const text = readFileSync(file, "utf-8");
+  const names: string[] = [];
+  for (const match of text.matchAll(STATIC_IMPORT)) {
+    if (!namesPluginLoader(file, match[4]!)) continue;
+    const clause = match[3]!.trim();
+    if (clause.includes("*")) names.push("*");
+    const named = /\{([\s\S]*)\}/u.exec(clause)?.[1] ?? "";
+    for (const element of named.split(",")) {
+      const exported = element.trim().replace(/^type\s+/u, "").split(/\s+as\s+/u)[0]!.trim();
+      if (exported) names.push(exported);
+    }
+  }
+  for (const match of text.matchAll(DYNAMIC_IMPORT)) {
+    if (namesPluginLoader(file, match[1]!)) names.push("*");
+  }
+  return names;
+}
+
+/** Every module that loads `plugin-loader.ts`, statically or by a dynamic `import()`. */
+function pluginLoaderImporters(): string[] {
+  return [...importGraph.keys()].filter((file) => file !== PLUGIN_LOADER
+    && (importGraph.get(file)!.has(PLUGIN_LOADER)
+      || [...readFileSync(file, "utf-8").matchAll(DYNAMIC_IMPORT)].some((match) => namesPluginLoader(file, match[1]!))));
+}
+
+function importersOf(binding: string, filter: (file: string) => boolean): string[] {
+  return pluginLoaderImporters()
+    .filter(filter)
+    .filter((file) => bindingsFromPluginLoader(file).some((name) => name === binding || name === "*"))
+    .map(display)
+    .sort();
+}
+
+describe("main imports no plugin code", () => {
+  it("imports importPluginFactory only in the plugin child", () => {
+    // Every module under src — production and test alike — so the function that
+    // `import()`s a plugin's entry has exactly one importer besides its own
+    // module: the child that runs the plugin.
+    expect(importersOf("importPluginFactory", () => true)).toEqual(["plugins/isolation/plugin-child-main.ts"]);
+    expect(existsSync(PLUGIN_CHILD_MAIN)).toBe(true);
+  });
+
+  it("gives the retained in-process factory no production importer", () => {
+    expect(importersOf("importInProcessPluginFactory", isProductionModule)).toEqual([]);
+    expect(importersOf("runPluginImportWithTimeout", isProductionModule)).toEqual([]);
+  });
+
+  it("sees the imports that do exist, so a green run is not an empty walk", () => {
+    // The instrument must find what is really there, through the same
+    // resolution the cases above use: the child's import of the subject, and
+    // main's import of the helpers it still takes from the same module.
+    expect(bindingsFromPluginLoader(PLUGIN_CHILD_MAIN)).toContain("importPluginFactory");
+    const runtimeIndex = join(SRC, "plugins", "runtime", "index.ts");
+    expect(pluginLoaderImporters()).toContain(runtimeIndex);
+    expect(bindingsFromPluginLoader(runtimeIndex)).toEqual(
+      expect.arrayContaining(["buildImportUrl", "buildMethodMap", "declaredAppVisibleToolMethods"]),
+    );
   });
 });
 
