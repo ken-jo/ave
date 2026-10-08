@@ -3962,12 +3962,13 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
   const WORKING = `export default async () => ({ handlers: { ${PING}: async () => "pong" }, start: async () => {}, stop: async () => {} });\n`;
   type Mode =
     | "success" | "factory-crash" | "start-crash" | "directory-crash" | "hostapi-crash" | "duplicate"
-    | "mapping-crash" | "cancel" | "cancel-mapping-crash" | "publication-crash" | "cleanup-error" | "incumbent-crash";
+    | "mapping-crash" | "cancel" | "cancel-mapping-crash" | "publication-crash" | "cleanup-error" | "incumbent-crash"
+    | "post-registration-crash" | "cleanup-audit-crash" | "crash-audit-crash";
   type Constructed = { instance: { handlers: Record<string, (...args: unknown[]) => Promise<unknown>>; stop?: () => Promise<void> }; stops: number; ping: (...args: unknown[]) => Promise<unknown> };
   type Internals = {
     materializeImmutableRuntimeRoot(...args: unknown[]): Promise<string>;
     removeUnpublishedRuntimeRoot(pluginId: string, root: string): Promise<void>;
-    buildHostApiIncarnation(...args: unknown[]): { drainOperations: () => Promise<void> };
+    buildHostApiIncarnation(...args: unknown[]): { deactivate: () => void; drainOperations: () => Promise<void> };
     ensureDataDir(...args: unknown[]): string;
     methodMap: Map<string, { pluginId: string; handler: () => Promise<unknown> }>;
     requireCapabilityCommitLifecycle(...args: unknown[]): object;
@@ -3984,6 +3985,9 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const originalError = new Error(`original ${mode} error`);
     const cleanupError = new Error("root cleanup failed");
     const counts = { disposed: 0, drained: 0 };
+    // Release steps in the order they happened.
+    const timeline: string[] = [];
+    const audits: string[] = [];
     const roots: string[] = [];
     const removals: string[] = [];
     const incarnations: Array<{ isActive(): boolean }> = [];
@@ -4009,10 +4013,15 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     await writeTestPluginRegistry(fixture, [{ id: ID, manifestPath: written.manifestPath }]);
     const runtime = makeTestPluginRuntime(fixture, {
       installReceiptCacheRoot: cacheRoot,
+      auditLog: (_level, type) => {
+        audits.push(type);
+        if (mode === "cleanup-audit-crash" && type === "plugin_attempt_cleanup_failed") throw new Error("cleanup audit sink failed");
+        if (mode === "crash-audit-crash" && type === "plugin_load_crashed") throw new Error("crash audit sink failed");
+      },
       createHostApi: (...args) => {
         const incarnation = args[3];
         incarnations.push(incarnation);
-        incarnation.registerDisposer(() => { counts.disposed += 1; });
+        incarnation.registerDisposer(() => { counts.disposed += 1; timeline.push("disposer"); });
         if (mode === "hostapi-crash") throw originalError;
         return createNoopHostApiForTests(args[0], args[1], args[2]);
       },
@@ -4031,17 +4040,23 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const removeRoot = internals.removeUnpublishedRuntimeRoot.bind(runtime);
     internals.removeUnpublishedRuntimeRoot = async (pluginId, root) => {
       removals.push(root);
-      if (mode === "cleanup-error") throw cleanupError;
+      timeline.push("root");
+      if (mode === "cleanup-error" || mode === "cleanup-audit-crash") throw cleanupError;
       await removeRoot(pluginId, root);
     };
     const build = internals.buildHostApiIncarnation.bind(runtime);
     internals.buildHostApiIncarnation = (...args) => {
       const result = build(...args);
+      const deactivate = result.deactivate;
+      result.deactivate = () => { timeline.push("deactivate"); deactivate(); };
+      const effects = args[3] as { discard(): void };
+      const discard = effects.discard.bind(effects);
+      effects.discard = () => { timeline.push("discard"); discard(); };
       const drain = result.drainOperations;
-      result.drainOperations = async () => { counts.drained += 1; await drain(); };
+      result.drainOperations = async () => { counts.drained += 1; timeline.push("drain"); await drain(); };
       return result;
     };
-    if (mode === "directory-crash" || mode === "cleanup-error") {
+    if (["directory-crash", "cleanup-error", "cleanup-audit-crash", "crash-audit-crash"].includes(mode)) {
       internals.ensureDataDir = () => { throw originalError; };
     }
     if (mode === "duplicate") {
@@ -4055,6 +4070,18 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
           : Reflect.get(target, key),
       });
     }
+    if (mode === "post-registration-crash") {
+      // The lifecycle registers the plugin, then rejects: a post-commit fault.
+      const requireLifecycle = internals.requireCapabilityCommitLifecycle.bind(runtime);
+      internals.requireCapabilityCommitLifecycle = (...args) => new Proxy(requireLifecycle(...args), {
+        get: (target, key) => key === "replaceRuntime"
+          ? async (...replaceArgs: unknown[]) => {
+            await (Reflect.get(target, key) as (...a: unknown[]) => Promise<void>).apply(target, replaceArgs);
+            throw originalError;
+          }
+          : Reflect.get(target, key),
+      });
+    }
     const hook = internals.runPluginLifecycleHook.bind(runtime);
     internals.runPluginLifecycleHook = async (scope, invoke) => {
       const result = await hook(scope, invoke);
@@ -4062,7 +4089,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
         const instance = result as Constructed["instance"];
         const record: Constructed = { instance, stops: 0, ping: instance.handlers[PING]! };
         const stop = instance.stop?.bind(instance);
-        instance.stop = async () => { record.stops += 1; await stop?.(); };
+        instance.stop = async () => { record.stops += 1; timeline.push("stop"); await stop?.(); };
         constructed.push(record);
         // A host-side fault after the factory returned: reading the instance's
         // handlers throws while the runtime maps its tools.
@@ -4084,7 +4111,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     });
     const stops = () => constructed.reduce((total, record) => total + record.stops, 0);
     const card = () => runtime.listPluginCards().find((entry) => entry.id === ID);
-    return { runtime, originalError, cleanupError, counts, roots, removals, incarnations, constructed, exists, stops, card };
+    return { runtime, originalError, cleanupError, counts, timeline, audits, roots, removals, incarnations, constructed, exists, stops, card };
   }
 
   const failures: Record<"boot" | "add", Mode[]> = {
@@ -4167,8 +4194,68 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       arm: "child",
       confinement: "not-spawned",
     });
-    // The cleanup failure is kept with the error, not reported in its place.
-    expect((failure as Error).cause).toBeInstanceOf(AggregateError);
-    expect(((failure as Error).cause as AggregateError).errors).toEqual([f.cleanupError]);
+    // The error is not modified: the cleanup failure is audited where it
+    // happened, never attached to the error.
+    expect((failure as Error).cause).toBeUndefined();
+    expect(f.audits).toContain("plugin_attempt_cleanup_failed");
+  });
+
+  it.each([
+    ["frozen", (error: Error) => { Object.freeze(error); }],
+    ["sealed", (error: Error) => { Object.seal(error); }],
+    ["non-extensible", (error: Error) => { Object.preventExtensions(error); }],
+    ["locked-cause", (error: Error) => { Object.defineProperty(error, "cause", { value: undefined, configurable: false, writable: false }); }],
+  ] as const)("rejects with the unchanged %s original error when compensating cleanup fails", async (_shape, lock) => {
+    const f = await setup("cleanup-error");
+    lock(f.originalError);
+    const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBe(f.originalError);
+    expect(f.card()).toMatchObject({ installFailureKind: "load-crash", installFailureMessage: f.originalError.message });
+    expect(f.audits).toContain("plugin_attempt_cleanup_failed");
+  });
+
+  it.each(["cleanup-audit-crash", "crash-audit-crash"] as const)(
+    "add with a throwing audit sink (%s) still rejects with the original error and records the crash",
+    async (mode) => {
+      const f = await setup(mode);
+      const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
+      expect(failure).toBe(f.originalError);
+      expect(f.card()).toMatchObject({ installFailureKind: "load-crash", installFailureMessage: f.originalError.message });
+      expect(f.removals).toEqual([f.roots[0]]);
+    },
+  );
+
+  it.each(["cleanup-audit-crash", "crash-audit-crash"] as const)(
+    "boot with a throwing audit sink (%s) still records the crash and finishes",
+    async (mode) => {
+      const f = await setup(mode);
+      await expect(f.runtime.startAll()).resolves.toBeUndefined();
+      expect(f.card()).toMatchObject({ installFailureKind: "load-crash", installFailureMessage: f.originalError.message });
+      expect(f.removals).toEqual([f.roots[0]]);
+    },
+  );
+
+  it.each(["boot", "add"] as const)("%s release stops the child before disposing what it left, then drains and removes the root", async (path) => {
+    const f = await setup("mapping-crash");
+    if (path === "boot") await f.runtime.startAll();
+    else await f.runtime.addPlugin(ID).catch(() => undefined);
+    // Authority ends first; the disposers run only after the child stopped.
+    expect(f.timeline).toEqual(["deactivate", "stop", "discard", "disposer", "drain", "root"]);
+  });
+
+  it("a rejection after the plugin was registered leaves the registered generation running and disposes it once", async () => {
+    const f = await setup("post-registration-crash");
+    const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBe(f.originalError);
+    expect(f.runtime.listPluginIds()).toContain(ID);
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 0, drained: 0, stops: 0 });
+    expect(f.incarnations[0]!.isActive()).toBe(true);
+    expect(f.removals).toEqual([]);
+    expect(await f.exists(f.roots[0]!)).toBe(true);
+    await expect(f.runtime.call(PING, {})).resolves.toBe("pong");
+    // Not the attempt's failure: no crash card for a running plugin.
+    expect(f.card()?.installFailureKind).toBeUndefined();
+    await f.runtime.removePlugin(ID);
+    expect({ disposed: f.counts.disposed, stops: f.stops() }).toEqual({ disposed: 1, stops: 1 });
   });
 });

@@ -3526,6 +3526,14 @@ abstract class PluginRuntimeState {
 
 /** Host-private in-memory projections for an already prepared plugin generation. */
 abstract class PluginRuntimePublicationState extends PluginRuntimeState {
+  /**
+   * The add attempt that built a candidate projection, keyed by that exact
+   * projection object. Publishing the projection registers the plugin, and at
+   * that moment the attempt's resources become the registered generation's —
+   * whatever the publication does or throws afterwards.
+   */
+  protected readonly registrationHandoffs = new WeakMap<PluginRuntimeGenerationProjection, () => void>();
+
   getRuntimeGenerationProjection(pluginId: string): PluginRuntimeGenerationProjection | undefined {
     const plugin = this.plugins.get(pluginId);
     if (!plugin) return undefined;
@@ -3603,6 +3611,11 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
         this.methodMap = nextMethods;
         this.plugins = nextPlugins;
         this.disposers = nextDisposers;
+        // Registered: hand the attempt's resources over now, before any later
+        // step of this publication or of the lifecycle around it can reject.
+        const handOff = this.registrationHandoffs.get(runtime);
+        this.registrationHandoffs.delete(runtime);
+        handOff?.();
         this.rememberPluginManifest(pluginId, runtime.manifest, runtime.approvedPluginAccess);
         this.markPluginUiRevision(pluginId);
         this.failedPluginIds.delete(pluginId);
@@ -4093,7 +4106,14 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
    * routing chose no arm. A throw after routing that the attempt did not
    * report itself (data directory, HostApi incarnation, a duplicate tool, a
    * rejected publication) is reported here as a crashed load, unless the
-   * attempt was cancelled, and the add still rejects with it.
+   * attempt was cancelled, and the add still rejects with it. A throw after
+   * the plugin was registered is not the attempt's: the registered generation
+   * keeps running and owns its failure (the generation lifecycle records a
+   * post-commit fault), so the attempt neither releases nor refuses anything.
+   *
+   * The add always rejects with the very error object it caught. That object
+   * is never modified: cleanup failures are logged and audited where they
+   * happen, never attached to it.
    */
   protected async instantiateAndStartSinglePlugin(
     plan: ManifestLoadPlan,
@@ -4106,11 +4126,14 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     try {
       return await this.addSinglePluginAttempt(plan, manifest, approvedPluginAccess, opts, attempt);
     } catch (err) {
-      if (attempt.routed) {
-        const cleanupFailures = opts.shouldCommit?.() ?? true
-          ? await this.abandonCrashedPluginLoad(attempt, err)
-          : await this.releaseAttempt(attempt, "cancelled plugin add");
-        attachCleanupFailures(err, cleanupFailures);
+      if (attempt.registered) {
+        log.error(`${manifest.id} add rejected after the plugin was registered; the registered generation keeps running: ${errorMessage(err)}`);
+      } else if (attempt.routed) {
+        if (opts.shouldCommit?.() ?? true) {
+          await this.abandonCrashedPluginLoad(attempt, err);
+        } else {
+          await this.releaseAttempt(attempt, "cancelled plugin add");
+        }
       }
       throw err;
     }
@@ -4122,14 +4145,14 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
    * What the attempt owns is its own: a plugin already registered for this id
    * — another attempt's generation, or this one's after it handed ownership
    * over — is never touched (see {@link PluginLoadAttemptResources}). The
-   * report carries where the attempt ran when it had been routed. A cleanup
-   * that fails is logged and returned; it never replaces the crash it was
-   * compensating for.
+   * report carries where the attempt ran when it had been routed. Neither a
+   * cleanup that fails nor an audit sink that throws replaces the crash being
+   * reported: both are logged, and the card is recorded regardless.
    */
   protected async abandonCrashedPluginLoad(
     resources: PluginLoadAttemptResources,
     err: unknown,
-  ): Promise<unknown[]> {
+  ): Promise<void> {
     const { pluginId } = resources;
     const reason = errorMessage(err);
     logPluginLifecycle(
@@ -4137,26 +4160,49 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       { pluginId, phase: PluginPhase.LOAD_FAIL, err, reason: "load_crash" },
       `plugin load crashed: ${reason}`,
     );
-    this.auditLog?.("error", "plugin_load_crashed", { pluginId, reason });
-    const cleanupFailures = await this.releaseAttempt(resources, "crashed plugin load");
+    this.auditAttemptEvent("plugin_load_crashed", { pluginId, reason });
+    await this.releaseAttempt(resources, "crashed plugin load");
     this.markLoadRefused(pluginId, {
       summary: "Plugin crashed while loading.",
       reason,
       kind: "load-crash",
       displayName: this.knownPluginManifests.get(pluginId)?.name ?? pluginId,
     }, resources);
-    return cleanupFailures;
+  }
+
+  /**
+   * Audit an attempt's failure. The audit is a report about a failure, so a
+   * throwing audit sink is logged and never becomes the outcome itself.
+   */
+  private auditAttemptEvent(type: string, data: { pluginId: string } & Record<string, unknown>): void {
+    try {
+      this.auditLog?.("error", type, data);
+    } catch (auditError) {
+      log.error(`${data.pluginId} audit ${type} failed: ${errorMessage(auditError)}`);
+    }
   }
 
   /**
    * Release everything `attempt` still owns, each resource exactly once: the
    * field is cleared before its step runs, so a second call — or a throw
-   * part-way — never repeats one. Order: the HostApi incarnation stops
-   * answering, the constructed instance is stopped (ending its child), the
-   * incarnation's disposers run and its operations drain, then the unpublished
-   * root is removed. Every step runs even if an earlier one fails; failures
-   * are logged, audited and returned, never thrown, so the caller's own
-   * outcome — a failed card, a cancellation, the original error — stands.
+   * part-way — never repeats one.
+   *
+   * Order: the incarnation's disposer list is taken first; then the HostApi
+   * incarnation stops answering (authority ends before anything else, so the
+   * instance cannot add effects while it is being stopped); then the
+   * constructed instance is stopped, ending its child; only then are its
+   * effects disposed — the prepared host-effect scope is discarded and the
+   * taken disposers run — its operations drained, and the unpublished root
+   * removed. Taking the list first is what keeps `deactivate` from running the
+   * disposers itself ahead of the stop: invalidating a pending incarnation runs
+   * whatever is still on its list at once, because a factory may never settle.
+   * That eager path still applies when something other than this release
+   * invalidates the incarnation (a removal racing the factory); it then finds
+   * the list already run, and this release finds it empty.
+   *
+   * Every step runs even if an earlier one fails; failures are logged,
+   * audited and returned, never thrown, so the caller's own outcome — a failed
+   * card, a cancellation, the original error — stands.
    */
   protected async releaseAttempt(
     attempt: PluginLoadAttemptResources,
@@ -4175,17 +4221,18 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     attempt.incarnation = undefined;
     attempt.constructed = undefined;
     attempt.runtimeRoot = undefined;
+    const disposers = incarnation ? incarnation.disposers.splice(0) : [];
     if (incarnation) {
       await step(() => incarnation.deactivate());
-      await step(() => {
-        if (incarnation.hostEffects.isPreparing()) incarnation.hostEffects.discard();
-      });
     }
     if (constructed) {
       await step(() => this.stopAfterStartFailure(pluginId, constructed.instance, constructed.lifecycleHookScope));
     }
     if (incarnation) {
-      await step(() => this.runDisposerList(incarnation.disposers, context));
+      await step(() => {
+        if (incarnation.hostEffects.isPreparing()) incarnation.hostEffects.discard();
+      });
+      await step(() => this.runDisposerList(disposers, context));
       await step(() => this.drainPluginHostApiOperations(pluginId, {
         drainHostApiOperations: incarnation.drainOperations,
       }));
@@ -4195,7 +4242,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     }
     for (const failure of failures) {
       log.error(`${pluginId} attempt cleanup failed (${context}): ${errorMessage(failure)}`);
-      this.auditLog?.("error", "plugin_attempt_cleanup_failed", {
+      this.auditAttemptEvent("plugin_attempt_cleanup_failed", {
         pluginId,
         context,
         reason: errorMessage(failure),
@@ -4204,11 +4251,15 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     return failures;
   }
 
-  /** Hand what the attempt owns to the registered plugin; the attempt releases nothing after this. */
+  /**
+   * Hand what the attempt owns to the registered plugin; the attempt releases
+   * nothing after this, and a later rejection is the registered generation's.
+   */
   protected handOverAttempt(attempt: PluginLoadAttemptResources): void {
     attempt.incarnation = undefined;
     attempt.constructed = undefined;
     attempt.runtimeRoot = undefined;
+    attempt.registered = true;
   }
 
   private async addSinglePluginAttempt(
@@ -4508,6 +4559,11 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       arm: routed.arm,
       confinement: this.confinementReport(createPlugin),
     });
+    // Publishing `candidate` registers the plugin; ownership passes at that
+    // exact moment (see `registrationHandoffs`), not when this await settles,
+    // because the lifecycle can still reject after it registered.
+    let rejectedAfterRegistration: { error: unknown } | undefined;
+    this.registrationHandoffs.set(candidate, () => this.handOverAttempt(attempt));
     try {
       await generationLifecycle.replaceRuntime(
         candidate,
@@ -4520,29 +4576,38 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         }),
       );
     } catch (error) {
-      await this.releaseAttempt(attempt, "failed add publication");
-      if (!canCommit()) return "cancelled";
-      const missing = this.capabilityDependencies().missing(manifest);
-      if (missing.length > 0) {
-        this.auditLog?.("error", "plugin_dependency_missing", {
-          pluginId: manifest.id,
-          missing,
-        });
-        this.markFailed(manifest.id, {
-          name: manifest.name ?? manifest.id,
-          description: `Missing capabilities: ${missing.join(", ")}`,
-        }, undefined, attempt);
-        return "failed";
+      if (!attempt.registered) {
+        await this.releaseAttempt(attempt, "failed add publication");
+        if (!canCommit()) return "cancelled";
+        const missing = this.capabilityDependencies().missing(manifest);
+        if (missing.length > 0) {
+          this.auditLog?.("error", "plugin_dependency_missing", {
+            pluginId: manifest.id,
+            missing,
+          });
+          this.markFailed(manifest.id, {
+            name: manifest.name ?? manifest.id,
+            description: `Missing capabilities: ${missing.join(", ")}`,
+          }, undefined, attempt);
+          return "failed";
+        }
+        throw error;
       }
-      throw error;
+      // Registered before the rejection: the generation is live and owns
+      // every resource, and the lifecycle recorded its post-commit fault.
+      // Finish what registration implies below, then reject with the error.
+      rejectedAfterRegistration = { error };
+    } finally {
+      this.registrationHandoffs.delete(candidate);
     }
-    // Registered: the published generation owns the root, the incarnation
-    // and the instance from here on.
+    // A resolved publication registered the plugin even when the lifecycle
+    // published it without this runtime's registration step.
     this.handOverAttempt(attempt);
     this.inactivePluginIds.delete(manifest.id);
     this.perf.recordStartup(manifest.id, startupMs);
     this.resolveCapabilityBlockedRetry(manifest.id);
     this.onEnable?.(manifest.id);
+    if (rejectedAfterRegistration) throw rejectedAfterRegistration.error;
     return "started";
   }
 
@@ -5463,25 +5528,7 @@ const BOOT_START_CANCELLED = "plugin start cancelled";
  * throw anywhere inside it can still be unwound and named. `pluginId` starts
  * as the registry id and narrows to the canonical manifest id the moment the
  * manifest is in hand — a crash before that point is still attributable.
- */
-/**
- * Keep a failed compensation with the error it compensated for. The caller
- * still rejects with the original error object; when that error has no
- * `cause` yet, the cleanup failures become it. Either way they were already
- * logged and audited by `releaseAttempt`, so nothing is lost and nothing is
- * reported instead of the original.
- */
-function attachCleanupFailures(error: unknown, failures: readonly unknown[]): void {
-  if (failures.length === 0 || !(error instanceof Error) || error.cause !== undefined) return;
-  Object.defineProperty(error, "cause", {
-    value: new AggregateError([...failures], "plugin attempt cleanup failed after this error"),
-    configurable: true,
-    writable: true,
-    enumerable: false,
-  });
-}
-
-/**
+ *
  * One boot or add attempt to load a plugin. The object is the attempt's
  * identity: it is created per attempt, never shared or looked up by plugin
  * id, and handed explicitly to every report the attempt makes.
@@ -5511,6 +5558,12 @@ type PluginLoadAttemptResources = {
     instance: RuntimePlugin;
     lifecycleHookScope: PluginLifecycleHookScope;
   };
+  /**
+   * Set at the moment the plugin is registered. From then on a failure,
+   * even one the attempt's own await surfaces, belongs to the registered
+   * plugin: the attempt releases nothing and records no refusal.
+   */
+  registered?: true;
 };
 class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
   /**
@@ -5716,6 +5769,10 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     try {
       await this.instantiatePreflightedPlugin(outcome, enabledManifestSnapshots, resources);
     } catch (err) {
+      if (resources.registered) {
+        log.error(`${resources.pluginId} load threw after the plugin was registered; the registered plugin keeps running: ${errorMessage(err)}`);
+        return;
+      }
       await this.abandonCrashedPluginLoad(resources, err);
     }
   }
