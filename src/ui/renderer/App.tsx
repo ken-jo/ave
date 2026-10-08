@@ -780,9 +780,17 @@ export function App() {
   }, [workspaceProjects]);
 
   useEffect(() => {
+    // Follow the focused tile's conversation, and only once it holds one. A
+    // tile that has not published (the registry's empty stand-in) or has not
+    // hydrated yet reports no project because it has no conversation — not
+    // because its conversation is unscoped. Reading that as "the default
+    // project" reset the window's project in the commit that focused a tile
+    // adopted for New Chat during a turn, before that tile read the project
+    // it was asked to start under.
+    if (!currentSessionId) return;
     const sessionProject = projectIdentityFromPayload(currentSessionProject);
     setActiveProject(reconcileActiveProject(sessionProject, workspaceProjects));
-  }, [currentSessionProject, workspaceProjects]);
+  }, [currentSessionId, currentSessionProject, workspaceProjects]);
 
   const defaultWorkspaceProject = useMemo(
     () => defaultProjectFromProjects(workspaceProjects),

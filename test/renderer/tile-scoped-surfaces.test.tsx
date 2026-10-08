@@ -1576,6 +1576,91 @@ describe("opening a conversation while another is mid-turn", () => {
     });
   });
 
+  describe("New Chat during a turn starts under the project it was asked for (#2348)", () => {
+    // The busy conversation lives in /proj-a; /proj-b is another folder.
+    const projectWindow = {
+      hasApiKey: true,
+      nativeContextMenu: true,
+      workspaceRoots: [
+        { path: "/ws", isDefault: true },
+        { path: "/proj-a", isDefault: false },
+        { path: "/proj-b", isDefault: false },
+      ],
+      sessions: [{
+        id: MOCK_DEFAULT_SESSION_ID, title: "프로젝트 A 대화", modifiedAt: new Date(2, 0, 2).toISOString(),
+        projectRoot: "/proj-a", projectName: "proj-a",
+      }],
+      history: {
+        sessionId: MOCK_DEFAULT_SESSION_ID,
+        projectRoot: "/proj-a",
+        projectName: "proj-a",
+        messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }],
+      },
+    };
+
+    /** A window mid-turn in /proj-a, with the Projects tab showing its folders. */
+    async function busyInProjectA() {
+      const rendered = await renderApp(projectWindow as never);
+      // A group adopted beside the busy one gets a loop of its own, which holds
+      // no conversation yet — the mock otherwise hands every group main's.
+      const groupImpl = rendered.api.chatGroup.getMockImplementation()!;
+      rendered.api.chatGroup.mockImplementation((id: string) => {
+        const made = groupImpl(id);
+        if (id !== MAIN_CHAT_GROUP_ID) {
+          made.chatGetHistory.mockImplementation(async () => ({ sessionId: `session-${id}`, messages: [] }));
+        }
+        return made;
+      });
+      const projectsTab = await waitFor(() => {
+        const tab = rendered.container.querySelector<HTMLElement>('[data-testid="sidebar-tab-projects"]');
+        expect(tab).not.toBeNull();
+        return tab!;
+      });
+      await act(async () => { fireEvent.mouseDown(projectsTab, { button: 0 }); });
+      await waitFor(() => expect(rendered.container.querySelector('[data-testid="sidebar-project-proj-b"]')).not.toBeNull());
+      const pendingSend = deferred<{ ok: true }>();
+      rendered.api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
+      await submitChatMessage(rendered.container, "아직 답하는 중");
+      await waitFor(() => expect(rendered.api.chatSend).toHaveBeenCalled());
+      rendered.api.chatNew.mockClear();
+      return { ...rendered, pendingSend };
+    }
+
+    /** The beside tile hydrated and asked main for its conversation. */
+    async function newChatProject(rendered: Awaited<ReturnType<typeof busyInProjectA>>) {
+      await waitFor(() => expect(collectTiles(rendered.container)).toHaveLength(2));
+      await waitFor(() => expect(rendered.api.chatNew).toHaveBeenCalled());
+      const project = rendered.api.chatNew.mock.calls.at(-1)?.[0] as { projectRoot?: string } | undefined;
+      await act(async () => {
+        rendered.pendingSend.resolve({ ok: true });
+        await rendered.pendingSend.promise;
+      });
+      return project?.projectRoot;
+    }
+
+    it("New Chat stays in the busy conversation's project", async () => {
+      const rendered = await busyInProjectA();
+      const newChat = rendered.container.querySelector('[data-testid="sidebar-new-chat"]') as HTMLButtonElement;
+      await act(async () => { fireEvent.click(newChat); });
+      expect(await newChatProject(rendered)).toBe("/proj-a");
+    });
+
+    it("a folder row starts the conversation in that folder", async () => {
+      const rendered = await busyInProjectA();
+      const row = rendered.container.querySelector('[data-testid="sidebar-project-proj-b"]') as HTMLButtonElement;
+      await act(async () => { fireEvent.click(row); });
+      expect(await newChatProject(rendered)).toBe("/proj-b");
+    });
+
+    it("the folder menu's New Chat starts the conversation in that folder", async () => {
+      const rendered = await busyInProjectA();
+      const row = rendered.container.querySelector('[data-testid="sidebar-project-proj-b"]') as HTMLButtonElement;
+      await act(async () => { fireEvent.contextMenu(row); });
+      await act(async () => { rendered.chooseNativeMenuCommand("project.new-chat"); });
+      expect(await newChatProject(rendered)).toBe("/proj-b");
+    });
+  });
+
   it("clicking the streaming conversation's own row is navigation, not a load", async () => {
     const pendingSend = deferred<{ ok: true }>();
     const { container, api } = await renderApp(withOtherSession);

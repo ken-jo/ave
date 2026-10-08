@@ -585,7 +585,10 @@ New Chat — the rail button, a folder row, the folder menu's "new chat" — tak
 the same ladder. An idle focused group starts the conversation in place; a
 mid-turn one gets a fresh group beside it, which hydrates an empty conversation
 under the window's active project (set in the same commit that mounts the
-tile). At the ceiling with nothing idle to set aside, the refusal is the same
+tile). The window follows the focused tile's project only once that tile holds
+a conversation: a tile that has not published or hydrated has no project to
+report, and reading its silence as "the default project" would reset the
+project the new tile is about to start under. At the ceiling with nothing idle to set aside, the refusal is the same
 toast the sidebar rows give. None of these controls is disabled while a turn
 runs: the turn belongs to one tile, never to the window.
 
