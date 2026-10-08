@@ -91,6 +91,12 @@ export interface GatedFetchInit extends GateSubject {
   signal?: AbortSignal;
   timeoutMs?: number;
   maxRedirects?: number;
+  /**
+   * Told of each hop the gate admitted, just before it is requested: the
+   * first URL and every redirect target. A caller learns from it which
+   * transport the bytes actually travelled over (§15.2 Delivery).
+   */
+  onHop?: (hop: URL) => void;
 }
 
 const CROSS_ORIGIN_STRIPPED_HEADERS = ["authorization", "cookie"];
@@ -390,7 +396,7 @@ export class NetworkGate {
     } catch {
       throw new MarketplaceError("SOURCE_URL_REJECTED", "download URL is malformed");
     }
-    const { official, catalog, method = "GET", headers = {}, signal, timeoutMs, maxRedirects } = init;
+    const { official, catalog, method = "GET", headers = {}, signal, timeoutMs, maxRedirects, onHop } = init;
     // Policy first, so a blocked host is reported as blocked, not as a DNS failure.
     this.checkPolicy(downloadUrlForPolicy(start), { official }, "download");
     const origin = start.origin;
@@ -408,6 +414,7 @@ export class NetworkGate {
       if (hop.origin !== origin) {
         for (const name of CROSS_ORIGIN_STRIPPED_HEADERS) hopHeaders.delete(name);
       }
+      onHop?.(hop);
       return this.options.transport(hop.href, { ...hopInit, headers: hopHeaders }, select);
     };
     try {

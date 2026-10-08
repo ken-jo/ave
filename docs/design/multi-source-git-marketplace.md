@@ -401,10 +401,10 @@ interface PluginArtifactPins {
     repo?: string;      // "owner/name" on the same host as the source; required in marketplace repositories unless url is set
     tag?: string;       // default "v{version}"
     asset?: string;     // default "{name}-{version}.zip"
-    url?: string;       // explicit https URL for non-GitHub release hosts; exclusive with repo, tag and asset
+    url?: string;       // explicit http(s) URL for non-GitHub release hosts; exclusive with repo, tag and asset; plain http is verified by sha256 and labelled (§18.2.3)
     sha256?: string;    // the pin stored in git; without it the rung is skipped (ARTIFACT_NOT_PINNED)
   };
-  archive?: { url: string; sha256?: string };
+  archive?: { url: string; sha256?: string };   // url: http(s), as release.url
   tree?: string;        // repo-relative directory holding plugin.json + dist/; default = package path
 }
 
@@ -734,10 +734,12 @@ for rung in [release, archive, tree]:
   if rung not declared                               -> skip(rung, NOT_DECLARED)
   if rung in {release, archive} and no sha256 pin    -> skip(rung, ARTIFACT_NOT_PINNED)
   fetch rung                                          // every URL passes §7.4 first
-    release: https GET (token only to the origin host; auth headers stripped on cross-host redirects;
+    release: http(s) GET (token only to the origin host; auth headers stripped on cross-host redirects;
              a private asset is fetched with the token only through the GitHub REST asset API
              on github.com; elsewhere the rung runs without it and a private asset falls to the next rung)
-    archive: https GET (same rule)
+    archive: http(s) GET (same rule)
+    // plain http on the URL or any redirect hop is accepted for a catalog target (§18.2.3):
+    // integrity comes from the sha256 pin below, and Delivery labels the rung (§15.2)
     tree:    export `tree` at versionCommit (§9.3)
   on transport error                                 -> fail(rung, SOURCE_UNREACHABLE / …) and continue
   verify
@@ -2336,7 +2338,8 @@ wins:
   unknown warning as `invalid-request`.
 - `SourceView` carries `acknowledged` and `badges`, and a catalog entry
   carries its source's badges as `sourceBadges` (§15.1). A `RungView`
-  carries `unencrypted` for a plain-http download (§15.2).
+  carries `unencrypted` for a plain-http download (§15.2), and the used rung of
+  an install's outcome carries it when any hop of that download was plain http.
 - `catalog:list` answers `{ entries, counts, sourceCount, syncedAt }`.
   `uninstall` takes `{ sourceId | null; kind; name; removeData? }`:
   `sourceId: null` is a package bound to no source, and `removeData` applies to
@@ -2816,7 +2819,9 @@ copy button, published date);
 **Compatibility** (`minAppVersion` and verdict); **Permissions** (from the
 descriptor's authority, before any download); **Delivery** (the rung list with
 the rung that will be used; a plain-http release or archive says
-"unencrypted download — verified by the pinned sha256"; a folder plugin's one
+"unencrypted download — verified by the pinned sha256", and so does the rung
+that delivered once its bytes are staged or installed, when any hop of its
+download, a redirect included, was plain http; a folder plugin's one
 rung is "Built tree in the folder"); **Versions** (history
 with yanked and incompatible markers).
 

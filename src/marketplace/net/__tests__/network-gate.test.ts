@@ -269,6 +269,24 @@ describe("NetworkGate.fetch", () => {
     expect(calls[1]!.headers.get("cookie")).toBeNull();
   });
 
+  it("tells the caller of every hop it admitted, so an https download redirected to http is known to be plain http (§15.2)", async () => {
+    const { transport } = fakeTransport({
+      "https://1.1.1.1/asset": redirect("http://1.0.0.1/blob"),
+      "http://1.0.0.1/blob": ok,
+    });
+    const hops: string[] = [];
+    const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset", { official: false, catalog: CATALOG, onHop: (hop) => hops.push(hop.href) });
+    expect(response.status).toBe(200);
+    expect(hops).toEqual(["https://1.1.1.1/asset", "http://1.0.0.1/blob"]);
+
+    // A hop the gate refuses is never reported.
+    const refused: string[] = [];
+    const blocked = fakeTransport({ "https://1.1.1.1/asset": redirect("https://1.0.0.1/blob") });
+    const load = policy({ block: [parseSourcePattern("host:1.0.0.1")] });
+    expect(await codeOf(gate(load, false, blocked.transport).fetch("https://1.1.1.1/asset", { official: false, catalog: CATALOG, onHop: (hop) => refused.push(hop.href) }))).toBe("SOURCE_POLICY_BLOCKED");
+    expect(refused).toEqual(["https://1.1.1.1/asset"]);
+  });
+
   it("resolves each hop exactly once, in the transport, and connects only to the answers the rule keeps (§18.2.4)", async () => {
     const { transport, calls, lookups } = fakeTransport(
       { "https://cdn.example/asset": redirect("https://mirror.example/asset"), "https://mirror.example/asset": ok },

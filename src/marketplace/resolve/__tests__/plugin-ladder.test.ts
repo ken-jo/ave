@@ -231,6 +231,8 @@ describe("plugin artifact ladder (design §6.2)", () => {
     expect(again.rungs).toEqual([{ rung: "release", outcome: "used" }]);
     expect(again.zipBuffer.equals(zip)).toBe(true);
     expect(again.artifactSha256).toBe(sha(zip));
+    // Kept bytes carry the declared transport: this release comes from the http source's own origin.
+    expect(again.unencrypted).toBe(true);
   });
 
   it("keeps nothing from the tree rung", async () => {
@@ -284,6 +286,35 @@ describe("plugin artifact ladder (design §6.2)", () => {
       .digest("hex");
     expect(fromTree.artifactSha256).toBe(expected);
     expect(new AdmZip(fromTree.zipBuffer).getEntries().map((entry) => entry.entryName).sort()).toEqual(["dist/index.js", "plugin.json"]);
+  });
+
+  it("labels the bytes by the transport they travelled over: an https archive redirected to plain http is unencrypted (§15.2, §18.2.3)", async () => {
+    const zip = pluginZip("alpha", "1.0.0");
+    server.file("/archives/alpha-1.0.0.zip", zip);
+    const httpsOrigin = server.origin.replace("http:", "https:");
+    // The declared https URL answers with a redirect to the same bytes over plain http.
+    const redirecting: AddressCheckedFetch = async (url, init, select) =>
+      url === `${httpsOrigin}/moved/alpha-1.0.0.zip`
+        ? new Response(null, { status: 302, headers: { location: `${server.origin}/archives/alpha-1.0.0.zip` } })
+        : loopbackTransport(url, init, select);
+    const run = async (archiveUrl: string) => {
+      const { repo, name } = fixture();
+      market(repo, { archive: { url: archiveUrl, sha256: sha(zip) } });
+      const { syncer } = await open(name);
+      const gate = new NetworkGate({ policy: policySource({}), allowLoopback: true, transport: redirecting });
+      return ladder(syncer, gate, planPluginInstall(await row(syncer)));
+    };
+
+    const redirected = await run(`${httpsOrigin}/moved/alpha-1.0.0.zip`);
+    expect(redirected.rung).toBe("archive");
+    expect(redirected.artifactSha256).toBe(sha(zip));
+    expect(redirected.unencrypted).toBe(true);
+
+    // The same bytes with no http hop are not labelled.
+    const direct = await run(`${httpsOrigin}/archives/alpha-1.0.0.zip`);
+    expect(direct.rung).toBe("archive");
+    expect(direct.unencrypted).toBe(false);
+    server.file("/archives/alpha-1.0.0.zip", null);
   });
 
   it("stops at the first rung whose plugin.json differs from the descriptor, even when a lower rung would match", async () => {

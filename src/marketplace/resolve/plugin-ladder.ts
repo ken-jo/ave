@@ -63,6 +63,14 @@ export interface StagedPluginArtifact {
   artifactSha256: string;
   rung: PluginRung;
   rungs: RungOutcome[];
+  /**
+   * The used rung's bytes travelled over plain http on some hop: the
+   * declared URL or a redirect target (§15.2 Delivery, §18.2.3). Bytes read
+   * back from the kept artifacts carry the declared URL's transport, since
+   * the hops of their first download are not recorded. Always false for the
+   * tree and folder rungs, which download nothing.
+   */
+  unencrypted: boolean;
   /** The staged plugin.json document, already checked against the descriptor. */
   manifestDocument: unknown;
   /** Top-level entries of a folder package that are not installed (§18.4.2); empty for a git source. */
@@ -230,25 +238,36 @@ class VerificationFailure extends Error {
 interface RungBytes {
   zipBuffer: Buffer;
   artifactSha256: string;
+  /** Some hop that carried these bytes was plain http. */
+  unencrypted: boolean;
 }
 
-function downloadOptions(deps: LadderDeps, plan: PluginInstallPlan, headers?: Record<string, string>) {
+/** Whether any hop a rung's downloads were admitted on was plain http, redirects included. */
+class HopTransport {
+  plainHttp = false;
+  readonly onHop = (hop: URL): void => {
+    if (hop.protocol === "http:") this.plainHttp = true;
+  };
+}
+
+function downloadOptions(deps: LadderDeps, plan: PluginInstallPlan, hops: HopTransport, headers?: Record<string, string>) {
   return {
     gate: deps.gate,
     catalog: deps.catalog,
     official: plan.sourceOrigin === "official",
     maxBytes: deps.limits.maxCompressedBytes,
+    onHop: hops.onHop,
     ...(headers ? { headers } : {}),
     ...(deps.signal ? { signal: deps.signal } : {}),
   };
 }
 
-function verifyPinned(zipBuffer: Buffer, pin: string, what: string): RungBytes {
+function verifyPinned(zipBuffer: Buffer, pin: string, what: string, hops: HopTransport): RungBytes {
   const digest = sha256(zipBuffer);
   if (digest !== pin.toLowerCase()) {
     throw new VerificationFailure("ARTIFACT_DIGEST_MISMATCH", `${what} hashes to ${digest}, the pin is ${pin.toLowerCase()}`);
   }
-  return { zipBuffer, artifactSha256: digest };
+  return { zipBuffer, artifactSha256: digest, unencrypted: hops.plainHttp };
 }
 
 /**
@@ -256,7 +275,7 @@ function verifyPinned(zipBuffer: Buffer, pin: string, what: string): RungBytes {
  * repositories to a token; the asset request redirects to a storage host, and
  * the gate drops `Authorization` on that cross-origin hop.
  */
-async function githubReleaseAsset(repo: string, tag: string, asset: string, token: string, plan: PluginInstallPlan, deps: LadderDeps): Promise<Buffer> {
+async function githubReleaseAsset(repo: string, tag: string, asset: string, token: string, plan: PluginInstallPlan, deps: LadderDeps, hops: HopTransport): Promise<Buffer> {
   // The request goes to api.github.com; the repository's own rules still apply.
   await deps.gate.checkDownloadPolicy(
     `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset)}`,
@@ -265,7 +284,7 @@ async function githubReleaseAsset(repo: string, tag: string, asset: string, toke
   const auth = { authorization: `Bearer ${token}`, "x-github-api-version": "2022-11-28" };
   const releaseUrl = `https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`;
   const metadata = await downloadBounded(releaseUrl, {
-    ...downloadOptions(deps, plan, { ...auth, accept: "application/vnd.github+json" }),
+    ...downloadOptions(deps, plan, hops, { ...auth, accept: "application/vnd.github+json" }),
     maxBytes: RELEASE_METADATA_LIMIT,
   });
   let release: unknown;
@@ -281,7 +300,7 @@ async function githubReleaseAsset(repo: string, tag: string, asset: string, toke
   if (!found || !Number.isSafeInteger(found.id)) {
     throw new MarketplaceError("SOURCE_UNREACHABLE", `release ${repo}@${tag} has no asset ${asset}`);
   }
-  return downloadBounded(`https://api.github.com/repos/${repo}/releases/assets/${found.id}`, downloadOptions(deps, plan, { ...auth, accept: "application/octet-stream" }));
+  return downloadBounded(`https://api.github.com/repos/${repo}/releases/assets/${found.id}`, downloadOptions(deps, plan, hops, { ...auth, accept: "application/octet-stream" }));
 }
 
 /**
@@ -294,10 +313,17 @@ function releaseOrigin(url: NormalizedSourceUrl): string {
   return `${url.scheme}://${url.port === null ? url.host : `${url.host}:${url.port}`}`;
 }
 
+/** A release or archive URL the catalog declared, or the derived release URL, is plain http. */
+function declaredPlainHttp(plan: PluginInstallPlan, deps: LadderDeps, rung: "release" | "archive"): boolean {
+  const url = rung === "archive" ? plan.artifact.archive!.url : plan.artifact.release!.url ?? releaseOrigin(deps.sourceUrl);
+  return url.startsWith("http://");
+}
+
 async function releaseRung(plan: PluginInstallPlan, deps: LadderDeps, pin: string): Promise<RungBytes> {
   const release = plan.artifact.release!;
+  const hops = new HopTransport();
   if (release.url) {
-    return verifyPinned(await downloadBounded(release.url, downloadOptions(deps, plan)), pin, "the release asset");
+    return verifyPinned(await downloadBounded(release.url, downloadOptions(deps, plan, hops)), pin, "the release asset", hops);
   }
   // Validation allows an absent repo only for a direct source: the source repository itself.
   const repo = release.repo ?? deps.sourceUrl.path.replace(/^\//u, "").replace(/\.git$/u, "");
@@ -305,17 +331,18 @@ async function releaseRung(plan: PluginInstallPlan, deps: LadderDeps, pin: strin
   const tag = release.tag ?? `v${plan.version}`;
   const asset = release.asset ?? `${plan.name}-${plan.version}.zip`;
   const bytes = deps.sourceUrl.host === "github.com" && deps.sourceToken
-    ? await githubReleaseAsset(repo, tag, asset, deps.sourceToken, plan, deps)
+    ? await githubReleaseAsset(repo, tag, asset, deps.sourceToken, plan, deps, hops)
     : await downloadBounded(`${releaseOrigin(deps.sourceUrl)}/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset)}`, {
-      ...downloadOptions(deps, plan),
+      ...downloadOptions(deps, plan, hops),
       tokenMissing: deps.tokenMissing,
     });
-  return verifyPinned(bytes, pin, "the release asset");
+  return verifyPinned(bytes, pin, "the release asset", hops);
 }
 
 async function archiveRung(plan: PluginInstallPlan, deps: LadderDeps, pin: string): Promise<RungBytes> {
   const archive = plan.artifact.archive!;
-  return verifyPinned(await downloadBounded(archive.url, downloadOptions(deps, plan)), pin, "the archive");
+  const hops = new HopTransport();
+  return verifyPinned(await downloadBounded(archive.url, downloadOptions(deps, plan, hops)), pin, "the archive", hops);
 }
 
 function treePath(plan: PluginInstallPlan): string {
@@ -364,7 +391,8 @@ async function treeRung(plan: PluginInstallPlan, deps: LadderDeps): Promise<Rung
     }
     const zip = new AdmZip();
     for (const file of files) zip.addFile(file.path, file.data, "", file.executable ? 0o755 : 0o644);
-    return { zipBuffer: zip.toBuffer(), artifactSha256: treeDigest(files) };
+    // Read over the source's own git transport, which the source's badge describes.
+    return { zipBuffer: zip.toBuffer(), artifactSha256: treeDigest(files), unencrypted: false };
   } finally {
     await rm(dest, { recursive: true, force: true });
   }
@@ -417,7 +445,7 @@ export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps)
       const keptZip = pinned === undefined ? null : await deps.artifacts.read(pinned);
       kept = keptZip !== null;
       bytes = keptZip !== null
-        ? { zipBuffer: keptZip, artifactSha256: pinned!.toLowerCase() }
+        ? { zipBuffer: keptZip, artifactSha256: pinned!.toLowerCase(), unencrypted: rung !== "tree" && declaredPlainHttp(plan, deps, rung) }
         : pinned === undefined ? await treeRung(plan, deps) : rung === "release" ? await releaseRung(plan, deps, pinned) : await archiveRung(plan, deps, pinned);
     } catch (error) {
       deps.signal?.throwIfAborted();
@@ -435,7 +463,7 @@ export async function runPluginLadder(plan: PluginInstallPlan, deps: LadderDeps)
     }
     rungs.push({ rung, outcome: "used" });
     if (pinned !== undefined && !kept) await deps.artifacts.keep(bytes.artifactSha256, bytes.zipBuffer);
-    return { plan, zipBuffer: bytes.zipBuffer, artifactSha256: bytes.artifactSha256, rung, rungs, manifestDocument, notInstalled: [] };
+    return { plan, zipBuffer: bytes.zipBuffer, artifactSha256: bytes.artifactSha256, rung, rungs, unencrypted: bytes.unencrypted, manifestDocument, notInstalled: [] };
   }
   const summary = rungs.map((item) => `${item.rung}: ${item.outcome === "failed" ? `${item.code} (${item.message})` : item.outcome === "skipped" ? `skipped (${item.reason})` : "used"}`);
   // A download that needs the source's confirmation is the failure the user can act on: *Allow…* and install again.
@@ -492,7 +520,7 @@ export async function runFolderRung(plan: PluginInstallPlan, deps: FolderLadderD
     }
     const zip = new AdmZip();
     for (const file of files) zip.addFile(file.path, file.data, "", file.executable ? 0o755 : 0o644);
-    bytes = { zipBuffer: zip.toBuffer(), artifactSha256: treeDigest(files) };
+    bytes = { zipBuffer: zip.toBuffer(), artifactSha256: treeDigest(files), unencrypted: false };
   } finally {
     await rm(dest, { recursive: true, force: true });
   }
@@ -509,6 +537,7 @@ export async function runFolderRung(plan: PluginInstallPlan, deps: FolderLadderD
     artifactSha256: bytes.artifactSha256,
     rung: FOLDER_RUNG,
     rungs: [{ rung: FOLDER_RUNG, outcome: "used" }],
+    unencrypted: false,
     manifestDocument,
     notInstalled: [...notInstalled],
   };
