@@ -13,7 +13,7 @@ bun run check:knip
 ```
 
 명령은 설치된 devDependency가 정확히 `knip@6.23.0`인지 검증한 뒤 실행하고,
-정규화된 결과를 `knip-baseline.json`과 비교한다. 기준선에는 이슈 유형, 파일,
+정규화된 결과를 `config/knip-baseline.json`과 비교한다. 기준선에는 이슈 유형, 파일,
 심볼 이름만 기록하므로 소스 줄 이동은 거짓 drift를 만들지 않는다.
 
 다음 조건에서는 실패한다.
@@ -40,7 +40,7 @@ staging 파일을 flush한 뒤 원자 교체하므로 중단된 갱신이 검토
 실패시키지 않고 기준선을 축소하라는 안내를 출력한다.
 
 `vitest.config.ts`는 계속 실제 runtime assertion 경계다. Knip은 순수한
-`vitest.analysis.config.ts`를 읽으므로 정적 분석이 Electron 전용 Vitest 계약을
+`config/vitest.analysis.config.ts`를 읽으므로 정적 분석이 Electron 전용 Vitest 계약을
 우회하거나 잘못 실행하지 않는다. 중첩 `web` package는 별도 workspace로
 모델링한다. `next` binary는 `web/bun.lock`으로 설치되므로 desktop root
 workflow는 `web/node_modules` 없이도 선언을 분석할 수 있다.

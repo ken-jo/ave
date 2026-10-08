@@ -287,8 +287,8 @@ describe("documentation consumer guard", () => {
   it("wires the guard into test, app build, packaging, and site build entrypoints", () => {
     const source = (path: string) => readFileSync(resolve(root, path), "utf8");
     expect(source("vitest.config.ts")).toContain('import "./scripts/lib/document-consumer-guard.mjs"');
-    expect(source("vitest.analysis.config.ts")).toContain('name: "document-input-guard"');
-    expect(source("vitest.analysis.config.ts")).toContain("documentGuardImportArgument(),");
+    expect(source("config/vitest.analysis.config.ts")).toContain('name: "document-input-guard"');
+    expect(source("config/vitest.analysis.config.ts")).toContain("documentGuardImportArgument(),");
     expect(source("scripts/build-main-esbuild.mjs")).toContain("assertBundledDocumentInputs(Object.keys(result.metafile.inputs)");
     expect(source("scripts/build-main-esbuild.mjs")).toContain("assertPackagedDocumentInputs(JSON.parse(");
     expect(source("package.json")).toContain("node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js");
@@ -306,7 +306,7 @@ describe("documentation consumer guard", () => {
   });
 
   it("records the readers that require manual inventory registration", () => {
-    for (const path of ["AGENTS.md", "CONTRIBUTING.md", ".github/pull_request_template.md"]) {
+    for (const path of ["AGENTS.md", ".github/CONTRIBUTING.md", ".github/pull_request_template.md"]) {
       const guidance = readFileSync(resolve(root, path), "utf8");
       expect(guidance).toContain("openAsBlob");
       expect(guidance).toContain("documentation-references.json");

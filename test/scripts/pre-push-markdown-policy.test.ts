@@ -91,7 +91,7 @@ describe("documentation impact policy", () => {
       }
     }
     const sourceLock = readFileSync(resolve(root, "src/__tests__/packaging-discipline-source.test.ts"), "utf8");
-    for (const name of ["AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md"]) {
+    for (const name of ["AGENTS.md", "CLAUDE.md", ".github/CONTRIBUTING.md"]) {
       expect(sourceLock).toContain(`readRepoFile("${name}")`);
       referenced.add(name);
     }
@@ -368,7 +368,7 @@ describe("documentation impact policy", () => {
   });
 
   it("describes the surviving targeted test push path", () => {
-    for (const file of ["AGENTS.md", "CONTRIBUTING.md", ".github/pull_request_template.md"]) {
+    for (const file of ["AGENTS.md", ".github/CONTRIBUTING.md", ".github/pull_request_template.md"]) {
       expect(readFileSync(resolve(root, file), "utf8").includes("test-only")).toBe(true);
     }
   });

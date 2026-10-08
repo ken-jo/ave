@@ -33,7 +33,7 @@ Electron's embedded Node is not on `PATH`, and the `postinstall` +
 
 ```bash
 bun run test:vitest -- run path/to/affected.test.ts  # targeted tests while iterating
-bunx playwright test path/to/flow.spec.ts # changed UI flow only
+bun run test:ui-e2e path/to/flow.spec.ts # changed UI flow only
 ```
 
 The Vitest wrapper runs through Electron's Node mode so tests and the desktop
@@ -115,4 +115,4 @@ By participating, you agree to abide by the
 ## License
 
 By contributing, you agree your contributions will be licensed under the
-project's [MIT License](./LICENSE).
+project's [MIT License](../LICENSE).
