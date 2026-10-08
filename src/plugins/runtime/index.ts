@@ -26,7 +26,7 @@ import { dirname, isAbsolute, resolve, basename } from "node:path";
 import type { ManifestLoadPlan, PluginStartPreparationOutcome, PluginStartPreparationReturn, SinglePluginStartResult, ManifestSnapshot, LoadedPlugin, PluginLifecycleHookScope, PluginLoadArm, PluginConfinementReport, PluginAttemptRefusal } from "./types.js";
 import { logPluginLifecycle, PluginPhase } from "../lifecycle-log.js";
 import { t } from "../../i18n/index.js";
-import type { CommittedPluginGeneration, PluginRuntimeGenerationLifecycle, PluginRuntimeGenerationProjection, PluginRuntimeGenerationAccess, PluginRuntimeRetirementStep, PreparedPluginRuntimeGenerationPublication, PreparedPluginRuntimeRemovalPublication } from "../plugin-host-generation.js";
+import type { CommittedPluginGeneration, PluginRuntimeGenerationLifecycle, PluginRuntimeGenerationProjection, PluginRuntimeGenerationAccess, PluginRuntimeRetirementPhase, PluginRuntimeRetirementStep, PreparedPluginRuntimeGenerationPublication, PreparedPluginRuntimeRemovalPublication } from "../plugin-host-generation.js";
 import { resolveDependencies } from "../dependency-resolver.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { ValidateFunction } from "ajv";
@@ -1202,6 +1202,26 @@ class PluginFactoryTimeoutError extends Error {
   }
 }
 
+/** What retiring one generation's runtime side reads: a projection, or a loaded plugin's own fields. */
+type PluginRuntimeRetirementView = Pick<
+  PluginRuntimeGenerationProjection,
+  "manifest" | "instance" | "lifecycleHookScope" | "hostEffects" | "disposers" | "deactivateHostApi" | "drainHostApiOperations"
+>;
+
+/**
+ * A plugin call that was still running when the runtime shut down. Shutdown
+ * gives in-flight calls a grace period to finish; whatever is still pending
+ * after it is rejected with this error instead of being left waiting, so the
+ * generation lease it held is released and its generation can retire.
+ */
+class PluginRuntimeShutdownError extends Error {
+  readonly code = "plugin-runtime-shutdown";
+
+  constructor(pluginId: string, method: string) {
+    super(`plugin '${pluginId}' call '${method}' aborted: the plugin runtime is shutting down`);
+  }
+}
+
 class PluginStartupTimeoutError extends Error {
   readonly code = "plugin-startup-timeout";
 
@@ -1907,6 +1927,19 @@ abstract class PluginRuntimeState {
    * retirement, or when shutdown stops it — so it is stopped exactly once.
    */
   protected readonly committedUnmappedGenerations = new Map<string, PluginRuntimeGenerationProjection>();
+  /**
+   * Each runtime retirement phase a generation has run or is running, keyed
+   * by the generation's instance (one instance per generation, shared by the
+   * runtime map entry and every projection of it). Shutdown, removal,
+   * uninstall and coordinator retirement all retire through
+   * {@link prepareRuntimeRetirement}, so a second caller awaits the first run
+   * of a phase instead of rerunning its disposers or drain. A failed phase is
+   * forgotten so that a retry runs it again, matching the lifecycle's own
+   * per-phase checkpoint.
+   */
+  private readonly retirementPhaseRuns = new WeakMap<RuntimePlugin, Map<PluginRuntimeRetirementPhase, Promise<void>>>();
+  /** Aborted when shutdown gives up waiting for in-flight plugin calls. */
+  protected readonly runtimeShutdown = new AbortController();
   protected readonly pinnedGenerations =
     new AsyncLocalStorage<ReadonlyMap<string, string>>();
   /**
@@ -3404,77 +3437,113 @@ abstract class PluginRuntimeState {
   }
 
   prepareRuntimeRetirement(
-    runtime: PluginRuntimeGenerationProjection,
+    runtime: PluginRuntimeRetirementView,
   ): readonly PluginRuntimeRetirementStep[] {
     // Its owner is retiring it now; shutdown must not stop it a second time.
     if (this.committedUnmappedGenerations.get(runtime.manifest.id) === runtime) {
       this.committedUnmappedGenerations.delete(runtime.manifest.id);
     }
+    let runs = this.retirementPhaseRuns.get(runtime.instance);
+    if (!runs) {
+      runs = new Map();
+      this.retirementPhaseRuns.set(runtime.instance, runs);
+    }
+    const phaseRuns = runs;
+    // Every caller shares one run of each phase per generation.
+    const once = (
+      phase: PluginRuntimeRetirementPhase,
+      run: () => void | Promise<void>,
+    ): PluginRuntimeRetirementStep => Object.freeze({
+      phase,
+      run: () => {
+        const existing = phaseRuns.get(phase);
+        if (existing) return existing;
+        const pending = Promise.resolve().then(run);
+        phaseRuns.set(phase, pending);
+        pending.catch(() => {
+          if (phaseRuns.get(phase) === pending) phaseRuns.delete(phase);
+        });
+        return pending;
+      },
+    });
     return Object.freeze([
-      Object.freeze({
-        phase: "runtime.authority" as const,
-        run: () => {
-          // Revoke general HostApi authority before user stop code runs. Any
-          // exact operation admitted before publication can finish during
-          // coordinator drain; retirement begins only after those leases have
-          // been released.
-          runtime.deactivateHostApi?.();
-        },
+      once("runtime.authority", () => {
+        // Revoke general HostApi authority before user stop code runs. Any
+        // exact operation admitted before publication can finish during
+        // coordinator drain; retirement begins only after those leases have
+        // been released.
+        runtime.deactivateHostApi?.();
       }),
-      Object.freeze({
-        phase: "runtime.stop" as const,
-        run: async () => {
-          const stopped = await this.stopAfterStartFailure(
-            runtime.manifest.id,
-            runtime.instance,
-            runtime.lifecycleHookScope,
+      once("runtime.stop", async () => {
+        const stopped = await this.stopAfterStartFailure(
+          runtime.manifest.id,
+          runtime.instance,
+          runtime.lifecycleHookScope,
+        );
+        if (!stopped) {
+          throw new Error(
+            `generation stop failed or timed out for ${runtime.manifest.id}`,
           );
-          if (!stopped) {
-            throw new Error(
-              `generation stop failed or timed out for ${runtime.manifest.id}`,
-            );
-          }
-        },
+        }
       }),
-      Object.freeze({
-        phase: "runtime.effects" as const,
-        run: () => {
-          const errors = [...(runtime.hostEffects?.retire() ?? [])];
-          for (const dispose of runtime.disposers ?? []) {
-            try {
-              dispose();
-            } catch (error) {
-              log.error(
-                `generation disposer failed for ${runtime.manifest.id}: %s`,
-                (error as Error).message,
-              );
-              errors.push(error instanceof Error ? error : new Error(String(error)));
-            }
-          }
-          if (errors.length > 0) {
-            throw new AggregateError(
-              errors,
-              `plugin '${runtime.manifest.id}' generation effects retirement failed`,
-            );
-          }
-        },
-      }),
-      Object.freeze({
-        phase: "runtime.drain" as const,
-        run: async () => {
-          if (!runtime.drainHostApiOperations) return;
+      once("runtime.effects", () => {
+        const errors = [...(runtime.hostEffects?.retire() ?? [])];
+        for (const dispose of runtime.disposers ?? []) {
           try {
-            await runtime.drainHostApiOperations();
+            dispose();
           } catch (error) {
             log.error(
-              `generation HostApi drain failed for ${runtime.manifest.id}: %s`,
+              `generation disposer failed for ${runtime.manifest.id}: %s`,
               (error as Error).message,
             );
-            throw error;
+            errors.push(error instanceof Error ? error : new Error(String(error)));
           }
-        },
+        }
+        if (errors.length > 0) {
+          throw new AggregateError(
+            errors,
+            `plugin '${runtime.manifest.id}' generation effects retirement failed`,
+          );
+        }
+      }),
+      once("runtime.drain", async () => {
+        if (!runtime.drainHostApiOperations) return;
+        try {
+          await runtime.drainHostApiOperations();
+        } catch (error) {
+          log.error(
+            `generation HostApi drain failed for ${runtime.manifest.id}: %s`,
+            (error as Error).message,
+          );
+          throw error;
+        }
       }),
     ]);
+  }
+
+  /**
+   * Settle with `work`, or reject with {@link PluginRuntimeShutdownError} once
+   * shutdown stops waiting for in-flight calls. The work itself is not
+   * cancelled — its child is stopped by the retirement that follows — but the
+   * caller, and the generation lease it holds, are released.
+   */
+  protected untilRuntimeShutdown<T>(pluginId: string, method: string, work: Promise<T>): Promise<T> {
+    const signal = this.runtimeShutdown.signal;
+    return new Promise<T>((resolve, reject) => {
+      const abort = () => reject(new PluginRuntimeShutdownError(pluginId, method));
+      if (signal.aborted) abort();
+      else signal.addEventListener("abort", abort, { once: true });
+      work.then(
+        (value) => {
+          signal.removeEventListener("abort", abort);
+          resolve(value);
+        },
+        (error: unknown) => {
+          signal.removeEventListener("abort", abort);
+          reject(error);
+        },
+      );
+    });
   }
 
   protected async withPinnedGeneration<T>(
@@ -6375,34 +6444,87 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     super.resetLoadedState();
   }
 
+  /**
+   * Retire every generation the runtime owns, each exactly once:
+   *
+   * 1. Generations the coordinator committed but the runtime map never
+   *    received (a publication step failed between the two) are retired
+   *    first; nothing can be calling them, since their dispatch never opened.
+   * 2. Retirements already under way — a removal, an uninstall, the
+   *    predecessor of a replacement — are awaited. They wait for in-flight
+   *    calls to release their generation leases, so in-flight calls get
+   *    `pluginShutdownHandlerMs` to finish.
+   * 3. Calls still pending after that are rejected with
+   *    {@link PluginRuntimeShutdownError}, which releases their leases, and
+   *    the retirements get one more such period.
+   * 4. Every generation in the runtime map is retired, including a distinct
+   *    incumbent whose own retirement could not finish in time.
+   *
+   * All of them go through {@link prepareRuntimeRetirement}, whose phases run
+   * once per generation, so a generation reached from more than one place —
+   * the map and the committed record, or shutdown and a removal that
+   * resumes later — never has its disposers or drain run twice.
+   */
   async stopAll(): Promise<void> {
-    // A committed generation the map never received is stopped through its
-    // own retirement steps. The map entry for that plugin, if any, is either
-    // that same generation's boot entry or its predecessor, which the
-    // coordinator retires; stopping it here as well would run disposers and
-    // the drain a second time.
     const committedUnmapped = [...this.committedUnmappedGenerations.values()];
     this.committedUnmappedGenerations.clear();
-    const ownedElsewhere = new Set(committedUnmapped.map((runtime) => runtime.manifest.id));
     for (const runtime of committedUnmapped) {
-      for (const step of this.prepareRuntimeRetirement(runtime)) {
-        try {
-          await step.run();
-        } catch (error) {
-          log.error(`${runtime.manifest.id} shutdown of committed generation failed (${step.phase}): ${errorMessage(error)}`);
-        }
+      await this.runShutdownRetirement(runtime);
+    }
+    const graceMs = TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs;
+    if (!await this.waitForGenerationRetirements(graceMs)) {
+      log.warn(`plugin retirements still waiting after ${graceMs}ms of shutdown; aborting in-flight plugin calls`);
+      this.runtimeShutdown.abort();
+      if (!await this.waitForGenerationRetirements(graceMs)) {
+        log.error(`plugin retirements still waiting after aborting in-flight calls; retiring runtime generations directly`);
       }
     }
-    for (const plugin of this.plugins.values()) {
-      if (ownedElsewhere.has(plugin.manifest.id)) continue;
-      await this.stopAfterStartFailure(
-        plugin.manifest.id,
-        plugin.instance,
-        plugin.lifecycleHookScope,
-      );
-      plugin.deactivateHostApi?.();
-      this.runPluginDisposers(plugin.manifest.id, "stopAll");
-      await this.drainPluginHostApiOperations(plugin.manifest.id, plugin);
+    this.runtimeShutdown.abort();
+    for (const [pluginId, plugin] of [...this.plugins]) {
+      await this.runShutdownRetirement({
+        manifest: plugin.manifest,
+        instance: plugin.instance,
+        lifecycleHookScope: plugin.lifecycleHookScope,
+        hostEffects: plugin.hostEffects,
+        disposers: this.disposers.get(pluginId) ?? [],
+        deactivateHostApi: plugin.deactivateHostApi,
+        drainHostApiOperations: plugin.drainHostApiOperations,
+      });
+      this.disposers.delete(pluginId);
+    }
+  }
+
+  private async runShutdownRetirement(runtime: PluginRuntimeRetirementView): Promise<void> {
+    for (const step of this.prepareRuntimeRetirement(runtime)) {
+      try {
+        await step.run();
+      } catch (error) {
+        log.error(`${runtime.manifest.id} shutdown retirement failed (${step.phase}): ${errorMessage(error)}`);
+      }
+    }
+  }
+
+  /** Whether the generation lifecycle's retirements settled within `withinMs`. */
+  private async waitForGenerationRetirements(withinMs: number): Promise<boolean> {
+    const lifecycle = this.generationLifecycle;
+    if (!lifecycle) return true;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        lifecycle.waitForRetirements().then(
+          () => true,
+          (error: unknown) => {
+            log.error(`plugin retirement failed during shutdown: ${errorMessage(error)}`);
+            return true;
+          },
+        ),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), withinMs);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -8204,13 +8326,14 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
   ): Promise<unknown> {
     this.throwIfToolOwnerNotReady(method);
     this.throwIfPluginNotStarted(pluginId);
+    if (this.runtimeShutdown.signal.aborted) throw new PluginRuntimeShutdownError(pluginId, method);
     return this.withPinnedGeneration(pluginId, async (projection) => {
       const handler = projection.methods.get(method);
       if (!handler) throw new Error(`Plugin method not found in active generation: ${method}`);
       const stats = this.perf.beginCall(pluginId);
       const t0 = Date.now();
       try {
-        return await handler(payload);
+        return await this.untilRuntimeShutdown(pluginId, method, Promise.resolve(handler(payload)));
       } catch (err) {
         stats.errorCount += 1;
         throw err;

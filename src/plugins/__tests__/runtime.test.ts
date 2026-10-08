@@ -3967,7 +3967,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
   type Mode =
     | "success" | "factory-crash" | "start-crash" | "directory-crash" | "hostapi-crash" | "duplicate"
     | "mapping-crash" | "cancel" | "cancel-mapping-crash" | "publication-crash" | "cleanup-error" | "incumbent-crash"
-    | "post-registration-crash" | "cleanup-audit-crash" | "crash-audit-crash";
+    | "post-registration-crash" | "cleanup-audit-crash" | "crash-audit-crash" | "hanging-tool";
   type Constructed = { instance: { handlers: Record<string, (...args: unknown[]) => Promise<unknown>>; stop?: () => Promise<void> }; stops: number; ping: (...args: unknown[]) => Promise<unknown> };
   type Internals = {
     materializeImmutableRuntimeRoot(...args: unknown[]): Promise<string>;
@@ -4000,7 +4000,9 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       ? 'throw new Error("entry construction failed");\n'
       : mode === "start-crash"
         ? WORKING.replace("start: async () => {}", 'start: async () => { throw new Error("child start failed"); }')
-        : WORKING;
+        : mode === "hanging-tool"
+          ? WORKING.replace(`${PING}: async () => "pong"`, `${PING}: () => new Promise(() => {})`)
+          : WORKING;
     const written = await writeTestPlugin(fixture, { id: ID, tools: [PING], entrySource });
     const cacheRoot = join(fixture.rootDir, "receipts");
     await writeInstallReceipt(cacheRoot, {
@@ -4475,6 +4477,73 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     await expect(candidate.ping({})).rejects.toThrow();
     // A reload's retired incumbent is not stopped or disposed again.
     expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: prior + 1, drained: prior + 1, stops: prior + 1 });
+  });
+
+  it.each(["removal", "atomic uninstall"] as const)("a %s already retiring a committed generation when shutdown starts shares its retirement: disposer and drain run once", async (path) => {
+    const f = await setup("success");
+    const faults: { loopbackPublish?: Error } = { loopbackPublish: f.originalError };
+    const lifecycle = bindNativeBundleLifecycle(f, faults);
+    await f.runtime.addPlugin(ID).catch(() => undefined);
+    const loopback = (lifecycle as unknown as { deps: { loopbackManager: { retireGeneration: (...args: unknown[]) => Promise<void> } } }).deps.loopbackManager;
+    const retireLoopback = loopback.retireGeneration;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const atLoopback = new Promise<void>((resolve) => { entered = resolve; });
+    loopback.retireGeneration = async (...args) => { entered(); await held; return retireLoopback(...args); };
+    // The removal commits and its retirement waits in the loopback phase,
+    // before the runtime phases, when shutdown begins.
+    const removal = path === "removal"
+      ? f.runtime.removePlugin(ID)
+      : f.runtime.removePluginWithCommit(ID, async () => "uninstalled");
+    await atLoopback;
+    const shutdown = f.runtime.stopAll();
+    release();
+    await shutdown;
+    await removal;
+    await lifecycle.waitForRetirements();
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+  });
+
+  it("shutdown waits for a distinct incumbent's retirement while its lease is held, and retires it once", async () => {
+    const f = await setup("success");
+    const faults: { loopbackPublish?: Error } = {};
+    const lifecycle = bindNativeBundleLifecycle(f, faults);
+    await f.runtime.addPlugin(ID);
+    let lease: Awaited<ReturnType<typeof lifecycle.acquire>> | undefined = await lifecycle.acquire(ID);
+    faults.loopbackPublish = f.originalError;
+    // The replacement commits; the incumbent stays in the runtime map and its
+    // retirement waits for the held lease.
+    await lifecycle.runWithLease(lease, () => f.runtime.reloadPlugin(ID)).catch(() => undefined);
+    expect(f.constructed).toHaveLength(2);
+    let settled = false;
+    const shutdown = f.runtime.stopAll().finally(() => { settled = true; });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(settled).toBe(false);
+      expect(f.constructed[0]!.stops).toBe(0);
+    } finally {
+      lease?.release();
+      lease = undefined;
+    }
+    await shutdown;
+    await lifecycle.waitForRetirements();
+    expect(f.constructed[0]!.stops).toBe(1);
+    expect(f.constructed[1]!.stops).toBe(1);
+    expect(f.incarnations.every((incarnation) => !incarnation.isActive())).toBe(true);
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 2, drained: 2, stops: 2 });
+  });
+
+  it("shutdown rejects a call still pending with a typed shutdown error instead of leaving it waiting", async () => {
+    const f = await setup("hanging-tool");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const call = f.runtime.call(PING, {}).then(() => "resolved", (error: unknown) => error);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await f.runtime.stopAll();
+    expect(await call).toMatchObject({ code: "plugin-runtime-shutdown" });
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+    await expect(f.runtime.call(PING, {})).rejects.toMatchObject({ code: "plugin-runtime-shutdown" });
   });
 
   it("a rejection after the plugin was registered leaves the registered generation running and disposes it once", async () => {
