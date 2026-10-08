@@ -921,8 +921,10 @@ const CARGO_BUILD_SPEC: GuestArgvSpec = {
     "--target-dir", "--manifest-path", "--jobs", "--profile", "--color", "--message-format", "--exclude", "--depth"],
   short: "rqv",
   shortValues: "Fpj",
-  // A target is a built-in triple; a custom target spec file can name the
-  // linker to run.
+  // A target is a triple-shaped name, never a `.json` target spec path: a spec
+  // file can name the linker to run. A name that is not built in resolves
+  // through rustc's target search, so a planted target file is the stated
+  // planted-file limit.
   valueChecks: { "--target": (value) => /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(value) && !value.endsWith(".json") },
   positional: isGuestLiteralWord,
   restAfterDoubleDash: true,

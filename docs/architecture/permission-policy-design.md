@@ -300,8 +300,10 @@ is LOW. A guest shell is graded first match wins:
    `-linkmode=internal` and similar, and `-gcflags`/`-asmflags` only
    optimisation, diagnostic, define and include flags, so `-extld`,
    `-extldflags`, `-linkmode=external`, `-importcfg` or any unknown tool
-   flag is not LOW; a cargo `--target` must be a built-in triple, never a
-   target spec file that can name the linker; `rustc -C`, `cargo rustc` and
+   flag is not LOW; a cargo `--target` must be a triple-shaped name, never a
+   `.json` target spec path that can name the linker (a name that is not
+   built in resolves through rustc's target search, so a planted target file
+   is the planted-file limit); `rustc -C`, `cargo rustc` and
    `RUSTFLAGS` are not allowlisted), and
    every positional the tool's predicate — a bare package spec for installs
    (no URL, VCS or `@`-URL form, no source, registry, index or config
