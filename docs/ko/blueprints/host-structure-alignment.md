@@ -3,8 +3,8 @@
 > Status: **Landed** (single-PR, atomic commits C0–C19, branch `refactor/host-structure-alignment`).
 > Supersedes the "first refactor target" framing of #1411 with a full, dependency-ordered
 > decomposition, and lands the #1409 contract firewall that makes both safe in one PR.
-> Extends (does not replace) `docs/architecture/architecture.md` §4.6 and
-> `docs/blueprints/phase3-folder-refactor-plan.md`.
+> Extends (does not replace) `docs/architecture/architecture.md` §4.6 (the 2026-04
+> phase-3 folder refactor plan it also extended was removed on 2026-09-23; git history keeps it).
 >
 > **Result (mega-file LOC, before → after thin orchestrator):**
 > conversation-loop 4328→836 · executor 3277→2251 (+11 pipeline units) ·

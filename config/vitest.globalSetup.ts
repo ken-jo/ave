@@ -1,12 +1,13 @@
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestProject } from "vitest/node";
-import { claimRunDir, ensureTestTmpRoot, sweepStaleRunDirs } from "./src/__tests__/support/test-run-dirs.js";
+import { claimRunDir, ensureTestTmpRoot, sweepStaleRunDirs } from "../src/__tests__/support/test-run-dirs.js";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
+// Repository root: this file lives under config/.
+const HERE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
  * Validates all JSON test-fixture files matching the manifest glob pattern
@@ -21,7 +22,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * the schema unchanged at an app release tag.
  */
 async function validateJsonFixtures(): Promise<void> {
-  const { buildManifestValidator } = await import("./src/plugins/runtime/manifest-validation.js");
+  const { buildManifestValidator } = await import("../src/plugins/runtime/manifest-validation.js");
   const validate = await buildManifestValidator();
 
   const jsonFixtures = await collectJsonFixtures(join(HERE, "src"));
@@ -111,15 +112,15 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
     claimRunDir(aveHomeBase);
     // The seam `aveHome()` calls must resolve to the isolation guard here as
     // in the workers (same configuration), or no check runs and nothing says so.
-    const seam = await import("./src/shared/ave-home-test-guard.js");
+    const seam = await import("../src/shared/ave-home-test-guard.js");
     if (!seam.AVE_HOME_ISOLATION_GUARD_ACTIVE) {
       throw new Error(
-        "the Ave home isolation guard is not in place: vitest.analysis.config.ts must resolve "
+        "the Ave home isolation guard is not in place: config/vitest.analysis.config.ts must resolve "
           + "src/shared/ave-home-test-guard.ts to src/__tests__/support/ave-home-isolation-guard.ts",
       );
     }
     // App modules load only now, after AVE_HOME names this run's home.
-    const { removeOwnedPluginTree } = await import("./src/plugins/plugin-removal-transaction.js");
+    const { removeOwnedPluginTree } = await import("../src/plugins/plugin-removal-transaction.js");
     // What a killed run could not remove; a live run's are kept.
     const swept = await sweepStaleRunDirs(testTmp, removeOwnedPluginTree);
     for (const aside of swept.stranded) {
@@ -146,7 +147,7 @@ async function releaseRunDirs(holder: RunDirsHolder): Promise<void> {
   dirs.users -= 1;
   if (dirs.users > 0) return;
   delete holder[RUN_DIRS];
-  const { removeOwnedPluginTree } = await import("./src/plugins/plugin-removal-transaction.js");
+  const { removeOwnedPluginTree } = await import("../src/plugins/plugin-removal-transaction.js");
   await removeOwnedPluginTree(dirs.sandboxBase);
   await removeOwnedPluginTree(dirs.aveHomeBase);
 }

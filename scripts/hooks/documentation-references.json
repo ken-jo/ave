@@ -1,8 +1,8 @@
 {
   "consumed": [
+    ".github/CONTRIBUTING.md",
     "AGENTS.md",
     "CLAUDE.md",
-    "CONTRIBUTING.md",
     "README.md",
     "docs/blueprints/a2a-subagent-messaging.md",
     "docs/design/permission-review-scenario-board-v2.html",

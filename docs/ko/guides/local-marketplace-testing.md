@@ -69,7 +69,7 @@ CGI를 실행할 수 있는 서버라면 `GIT_PROJECT_ROOT=/tmp/served`,
 
 ```bash
 bun run build
-bunx playwright test test/e2e/ui/git-marketplace-lifecycle.spec.ts
+bun run test:ui-e2e test/e2e/ui/git-marketplace-lifecycle.spec.ts
 ```
 
 ## 구현 위치
