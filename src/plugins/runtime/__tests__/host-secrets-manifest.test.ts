@@ -10,7 +10,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildManifestValidator, parsePluginJson } from "../manifest-validation.js";
-import { parseWhitelistDocument } from "../../whitelist/whitelist-schema.js";
 import {
   HOST_SECRET_READ_MAX_ITEMS,
   isAllowedHostSecretKey,
@@ -35,7 +34,7 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
   });
 
   // Permissive envelope — the host-side cross-field check is what this suite
-  // exercises, NOT the SDK schema.
+  // exercises, rather than the host schema.
   const makeValidator = permissiveManifestValidatorFactory({
     namespaceProperties: {
       entry: { type: "string" },
@@ -75,14 +74,13 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
     ]);
   });
 
-  it("patches the SDK schema to accept marketplace provider preset host secret keys", async () => {
+  it("accepts marketplace provider preset host secret keys in the host schema", async () => {
     const validator = await buildManifestValidator();
     const valid = validator(agentPluginsDocument({
       id: "marketplace-provider-secret",
       name: "Marketplace Provider Secret Plugin",
       version: "1.0.0",
       description: "Marketplace provider secret fixture.",
-      publisher: "Ave",
       entry: "dist/index.js",
       tools: [],
       hostSecrets: {
@@ -120,7 +118,6 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
         name: "Host Secret Corpus Plugin",
         version: "1.0.0",
         description: "Host secret corpus fixture.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
         hostSecrets: { read: [key] },
@@ -130,7 +127,7 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
     }
   });
 
-  it("applies the same predicate to a signed whitelist grant as to a manifest", async () => {
+  it("rejects a padded preset key in a manifest", async () => {
     const padded = "llm.marketplaceProvider.  future-router  .apiKey";
     expect(isAllowedHostSecretKey(padded)).toBe(false);
 
@@ -138,24 +135,6 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
     await expect(parsePluginJson(path, makeValidator())).rejects.toThrow(
       /hostSecrets\.read\[0\].*manifest_schema/,
     );
-
-    expect(() =>
-      parseWhitelistDocument(
-        JSON.stringify({
-          version: 1,
-          schemaVersion: 1,
-          issuedAt: "2026-01-01T00:00:00.000Z",
-          expiresAt: "2027-01-01T00:00:00.000Z",
-          pluginGrants: {
-            "host-secrets-test": {
-              publisher: "Ave",
-              approvedManifestSha256: "a".repeat(64),
-              hostSecrets: { read: [padded] },
-            },
-          },
-        }),
-      ),
-    ).toThrow(/hostSecrets\.read\[0\]/);
   });
 
   it("rejects malformed marketplace provider preset host secret keys", async () => {
@@ -240,7 +219,7 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
       );
     });
 
-    // Leading dots are rejected at AJV pattern level (the SDK schema's
+    // Leading dots are rejected at AJV pattern level (the host schema's
     // id pattern requires a leading letter), so the host-side check never
     // sees them. We still want to verify the AJV path rejects.
     it("rejects ids with leading dots", async () => {
@@ -268,11 +247,10 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
   // ── #1939: the two COLLECTION-level bounds ──
   //
   // `isAllowedHostSecretKey` judges one entry at a time, so it can see neither
-  // `maxItems` nor `uniqueItems`. On the manifest path AJV enforces both from
-  // the vendored schema; on the signed-whitelist path there is no schema leg,
-  // so `findHostSecretReadListViolation` is the only gate there. Every case
-  // below drives a real producer — `parseWhitelistDocument` on a whole document
-  // string, `parsePluginJson` on a manifest file.
+  // `maxItems` nor `uniqueItems`. AJV enforces both from the vendored schema,
+  // and `findHostSecretReadListViolation` enforces them again on the host
+  // side. Every case below drives a real producer, `parsePluginJson` on a
+  // manifest file.
   describe("hostSecrets.read[] collection bounds (#1939)", () => {
     const readSchema = (
       aveSchemaProperties(manifestSchema).hostSecrets as {
@@ -286,22 +264,6 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
         { length: count },
         (_, i) => `llm.marketplaceProvider.p${i}.apiKey`,
       );
-    }
-
-    function whitelistJson(read: unknown[]): string {
-      return JSON.stringify({
-        version: 1,
-        schemaVersion: 1,
-        issuedAt: "2026-01-01T00:00:00.000Z",
-        expiresAt: "2027-01-01T00:00:00.000Z",
-        pluginGrants: {
-          "host-secrets-test": {
-            publisher: "Ave",
-            approvedManifestSha256: "a".repeat(64),
-            hostSecrets: { read },
-          },
-        },
-      });
     }
 
     // Pins the hand-declared TS constant to the JSON schema it mirrors, so a
@@ -318,45 +280,6 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
       for (const key of distinctKeys(HOST_SECRET_READ_MAX_ITEMS + 1)) {
         expect(isAllowedHostSecretKey(key), key).toBe(true);
       }
-    });
-
-    it("accepts a whitelist grant at exactly maxItems", () => {
-      const doc = parseWhitelistDocument(
-        whitelistJson(distinctKeys(HOST_SECRET_READ_MAX_ITEMS)),
-      );
-      expect(doc.pluginGrants["host-secrets-test"].hostSecrets.read).toHaveLength(
-        HOST_SECRET_READ_MAX_ITEMS,
-      );
-    });
-
-    it("rejects a whitelist grant over maxItems", () => {
-      expect(() =>
-        parseWhitelistDocument(
-          whitelistJson(distinctKeys(HOST_SECRET_READ_MAX_ITEMS + 1)),
-        ),
-      ).toThrow(
-        new RegExp(
-          `hostSecrets\\.read has ${HOST_SECRET_READ_MAX_ITEMS + 1} entries \\(max ${HOST_SECRET_READ_MAX_ITEMS}\\)`,
-        ),
-      );
-    });
-
-    it("rejects a whitelist grant with duplicate entries", () => {
-      expect(() =>
-        parseWhitelistDocument(
-          whitelistJson(["llm.apiKey.openai", "llm.apiKey.openai"]),
-        ),
-      ).toThrow(/hostSecrets\.read\[1\] 'llm\.apiKey\.openai' is a duplicate/);
-    });
-
-    it("keeps a whitelist grant with distinct entries", () => {
-      const doc = parseWhitelistDocument(
-        whitelistJson(["llm.apiKey.openai", "llm.apiKey.claude"]),
-      );
-      expect(doc.pluginGrants["host-secrets-test"].hostSecrets.read).toEqual([
-        "llm.apiKey.openai",
-        "llm.apiKey.claude",
-      ]);
     });
 
     // Manifest path, host-side leg only: `makeValidator()` is deliberately
@@ -380,7 +303,7 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
       );
     });
 
-    // Manifest path, AJV leg: the covering layer the whitelist path lacks.
+    // Manifest path, AJV leg.
     it("rejects both bounds against the vendored schema too", async () => {
       const validator = await buildManifestValidator();
       const base = {
@@ -388,7 +311,6 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
         name: "Host Secret Bounds Plugin",
         version: "1.0.0",
         description: "Host secret bounds fixture.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
       };

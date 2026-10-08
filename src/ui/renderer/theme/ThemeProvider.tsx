@@ -5,15 +5,15 @@ import {
   BUNDLES,
   DEFAULT_BUNDLE_ID,
   findBundle,
-  isBundleId,
-  loadThemeBundle,
+  systemPairOf,
 } from "./bundles/index.js";
+import { isThemeId } from "../../../shared/theme-bundles.js";
+import { ensureInstalledContent, useInstalledContent } from "../installed-content.js";
 import type { ThemeBundle } from "./bundles/index.js";
 import { applyBundleToDocument, resolveSystemPair } from "./resolve-theme.js";
 import { bundleToPluginTokens } from "./plugin-token-map.js";
 export { bundleToPluginTokens };
 import type { ThemeContextValue, UnvalidatedBundleId, ResolvedShell } from "./types.js";
-import { VIOLET_PAIR_IDS } from "./types.js";
 import type { InitialThemePrime } from "../../../shared/initial-theme.js";
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
@@ -42,7 +42,7 @@ function readGlobalInitialBundleId(): UnvalidatedBundleId | undefined {
   if (!initial || typeof initial !== "object") return undefined;
   const id = initial.bundleId;
   if (typeof id !== "string") return undefined;
-  return isBundleId(id) ? (id as UnvalidatedBundleId) : undefined;
+  return isThemeId(id) ? (id as UnvalidatedBundleId) : undefined;
 }
 
 /**
@@ -50,13 +50,25 @@ function readGlobalInitialBundleId(): UnvalidatedBundleId | undefined {
  * both by the initial settings hydrate and by the `SETTINGS.updated`
  * cross-window broadcast handler so the two paths share one normalizer.
  */
+/** A value with every object's keys sorted, so two equal values serialize the same. */
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical((value as Record<string, unknown>)[key])]));
+}
+
+/** Whether two bundles hold the same values, whatever the order of their keys. */
+function sameBundleValues(a: ThemeBundle, b: ThemeBundle): boolean {
+  return a === b || JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+}
+
 function resolveAppearanceSettings(settings: AppSettings): { bundleId: UnvalidatedBundleId; followSystem: boolean } {
   const appearance = settings.appearance as { schemaVersion?: number; bundleId?: string; followSystem?: boolean } | undefined;
   const rawId = (appearance?.schemaVersion === 2 && typeof appearance.bundleId === "string")
     ? appearance.bundleId
     : DEFAULT_BUNDLE_ID;
   return {
-    bundleId: isBundleId(rawId) ? rawId : DEFAULT_BUNDLE_ID,
+    bundleId: isThemeId(rawId) ? rawId : DEFAULT_BUNDLE_ID,
     followSystem: appearance?.followSystem === true,
   };
 }
@@ -78,8 +90,8 @@ export interface ThemeProviderProps {
  * from `api.getSettings().appearance.bundleId`. On change, writes
  * `data-theme-bundle` on `<html>` and persists via `api.updateSettings`.
  *
- * For the violet pair (violet-light / violet-dark), `followSystem` auto-switches the
- * active bundle based on `prefers-color-scheme`.
+ * When the selected theme declares a pair of the other shell, `followSystem`
+ * switches between the two with `prefers-color-scheme`.
  */
 export function ThemeProvider({
   api,
@@ -109,7 +121,12 @@ export function ThemeProvider({
   // a user toggle that happened in the meantime.
   const userTouchedRef = useRef(false);
   const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  // Set on every mount, not only at creation: StrictMode unmounts and remounts
+  // once, and a ref left false would drop the settings hydrate and broadcasts.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const applySettingsAppearance = useCallback(
     (settings: AppSettings, options: { skipIfUserTouched?: boolean } = {}) => {
@@ -169,22 +186,33 @@ export function ThemeProvider({
   // Tick counter — incremented by the OS media query listener below.
   // Must be declared before effectiveBundleId so it is in scope for the dep array.
   const [osTick, setOsTick] = useState(0);
+  // Installed themes are module state; a pair is known once they have loaded.
+  const installedThemes = useInstalledContent().themes;
 
-  // Derive the effective bundle — when followSystem is active and the bundleId
-  // is part of the violet pair, override with the OS-resolved variant.
-  // osTick is included so any OS scheme change triggers a re-evaluation.
+  // The selected theme and the pair `followSystem` alternates it with, if any.
+  const systemPair = useMemo(() => {
+    const bundle = findBundle(bundleId);
+    const pair = bundle ? systemPairOf(bundle) : undefined;
+    return bundle && pair ? { bundle, pair } : null;
+    // installedThemes: a pair installed later becomes available.
+  }, [bundleId, installedThemes]);
+
+  // Derive the effective bundle — when followSystem is on and the selected
+  // theme has a pair, the one matching the OS scheme applies. osTick is
+  // included so any OS scheme change triggers a re-evaluation.
   const effectiveBundleId: UnvalidatedBundleId = useMemo(() => {
-    if (followSystem && VIOLET_PAIR_IDS.includes(bundleId)) {
-      return resolveSystemPair();
-    }
+    if (followSystem && systemPair) return resolveSystemPair(systemPair.bundle, systemPair.pair);
     return bundleId;
-  }, [bundleId, followSystem, osTick]);
+  }, [bundleId, followSystem, systemPair, osTick]);
 
   useEffect(() => {
     let cancelled = false;
     const cached = findBundle(effectiveBundleId);
     if (cached) setActiveBundle(cached);
-    void loadThemeBundle(effectiveBundleId)
+    // An installed theme is known only once the installed content has loaded;
+    // resolve after it so a selected installed theme is not replaced by the default.
+    void ensureInstalledContent(api)
+      .then(() => findBundle(effectiveBundleId))
       .then((bundle) => {
         if (cancelled) return;
         if (!bundle) {
@@ -203,21 +231,52 @@ export function ThemeProvider({
     return () => {
       cancelled = true;
     };
-  }, [effectiveBundleId, resolveBundle]);
+  }, [api, effectiveBundleId, resolveBundle]);
 
-  // Apply bundle to DOM on every active bundle change.
+  // An installed theme updated in place keeps its id, so the effect above does
+  // not run again: take the registry's new bundle for the theme that shows, or
+  // its old tokens stay on :root until it is selected again. Removal is not
+  // handled here — uninstalling the selected theme resets the setting.
+  useEffect(() => {
+    const bundle = findBundle(effectiveBundleId);
+    if (!bundle) return;
+    // A reload rebuilds every bundle object: keep the shown one when nothing in it changed.
+    setActiveBundle((shown) => (shown.id === bundle.id && !sameBundleValues(shown, bundle) ? bundle : shown));
+  }, [installedThemes, effectiveBundleId]);
+
+  // A theme installed after this window started — the first-boot migration
+  // adopting the selected theme's package (design §16.3) — was replaced by the
+  // default above; once it arrives, the persisted selection applies again.
+  useEffect(() => {
+    if (!api || installedThemes.length === 0) return;
+    let cancelled = false;
+    void api.getSettings().then(
+      (settings) => {
+        if (!cancelled && mountedRef.current) applySettingsAppearance(settings, { skipIfUserTouched: true });
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [api, installedThemes, applySettingsAppearance]);
+
+  // Apply bundle to DOM on every active bundle change, then tell the consumers
+  // that copy theme values: their effects run after this one has written :root.
+  // Revision 0 is the first bundle, which this effect writes in the same commit.
+  const [applied, setApplied] = useState<{ bundle: ThemeBundle; revision: number }>(() => ({ bundle: activeBundle, revision: 0 }));
   useEffect(() => {
     if (typeof document === "undefined") return;
     if (activeBundle.id !== effectiveBundleId) return;
     applyBundleToDocument(activeBundle);
+    setApplied((previous) => ({ bundle: activeBundle, revision: previous.revision + 1 }));
   }, [activeBundle, effectiveBundleId]);
 
   // Propagate bundle tokens to plugin webviews whenever active bundle changes.
-  // Font stack is NOT broadcast — SDK v5+ removed the `fonts` channel from
-  // `AveHostThemeEvent` (marked `@deprecated No longer emitted by the host`),
+  // Font stack is NOT broadcast — `AveHostThemeEvent` has no `fonts` channel,
   // and the plugin webview body letterform is unified via the static
   // `plugin-ui-shell.html` mirror of `HOST_FONT_STACK` instead. Re-introducing
-  // a `fonts.family` payload here would be dead code that the SDK ignores.
+  // a `fonts.family` payload here would be dead code that plugins cannot use.
   useEffect(() => {
     if (!api) return;
     if (activeBundle.id !== effectiveBundleId) return;
@@ -233,16 +292,17 @@ export function ThemeProvider({
     });
   }, [api, activeBundle, effectiveBundleId]);
 
-  // Live-follow OS preference when followSystem is active for violet pair.
+  // Live-follow OS preference while followSystem alternates a pair.
   // A tick counter forces effectiveBundleId to re-evaluate on OS scheme change.
+  const followsPair = followSystem && systemPair !== null;
   useEffect(() => {
-    if (!followSystem || !VIOLET_PAIR_IDS.includes(bundleId)) return;
+    if (!followsPair) return;
     if (typeof window === "undefined" || !window.matchMedia) return;
     const mql = window.matchMedia("(prefers-color-scheme: light)");
     const onChange = () => setOsTick((n) => n + 1);
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
-  }, [followSystem, bundleId]);
+  }, [followsPair]);
 
   const persistAppearance = useCallback(
     (patch: { bundleId?: UnvalidatedBundleId; followSystem?: boolean }) => {
@@ -257,15 +317,16 @@ export function ThemeProvider({
   const setBundle = useCallback(
     (id: UnvalidatedBundleId) => {
       userTouchedRef.current = true;
-      const safeId = isBundleId(id) ? id : DEFAULT_BUNDLE_ID;
+      const safeId = isThemeId(id) ? id : DEFAULT_BUNDLE_ID;
       setBundleIdState(safeId);
-      /* When the user explicitly picks one of the violet pair while followSystem
+      /* When the user explicitly picks a theme with a pair while followSystem
        * is on, the pick would otherwise be silently overridden by the OS
        * preference resolution (resolveSystemPair). Treat the explicit pick as
        * "I want this exact bundle" and turn followSystem off so the click is
        * honored. Re-enabling the toggle continues to work normally. */
-      const isVioletPairPick = VIOLET_PAIR_IDS.includes(safeId);
-      if (isVioletPairPick && followSystem) {
+      const picked = findBundle(safeId);
+      const isPairPick = picked !== undefined && systemPairOf(picked) !== undefined;
+      if (isPairPick && followSystem) {
         setFollowSystemState(false);
         persistAppearance({ bundleId: safeId, followSystem: false });
       } else {
@@ -293,9 +354,12 @@ export function ThemeProvider({
       setBundle,
       resolved,
       followSystem,
+      canFollowSystem: systemPair !== null,
       setFollowSystem,
+      appliedRevision: applied.revision,
+      appliedBundle: applied.bundle,
     }),
-    [bundleId, effectiveBundleId, setBundle, resolved, followSystem, setFollowSystem],
+    [bundleId, effectiveBundleId, setBundle, resolved, followSystem, systemPair, setFollowSystem, applied],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

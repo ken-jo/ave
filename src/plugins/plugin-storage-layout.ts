@@ -19,6 +19,7 @@
 import { lstat, readdir, rename, rmdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
+import { PluginDataRootError, resolvePluginDataRoot } from "./plugin-storage-containment.js";
 
 /**
  * Directory under a plugin root holding the plugin's own writable runtime
@@ -156,6 +157,32 @@ export function isSamePluginPath(
  */
 export function resolvePluginWritableRoot(pluginId: string): string {
   return resolve(aveHome(), "plugins", pluginId, PLUGIN_DATA_DIR_NAME);
+}
+
+/**
+ * The owner-plugin sandbox root a plugin-owned tool invocation is judged and
+ * jailed against, or `undefined` when there is none to trust.
+ *
+ * The reviewer's "write inside owner plugin sandbox" auto-LOW and the shell
+ * write jail both canonicalise this path, so a data root a confined plugin had
+ * replaced with a link would make the link's target the plugin's "own"
+ * sandbox. It goes through {@link resolvePluginDataRoot} first: a root that is
+ * not the host's real directory yields `undefined`, which is the stricter path
+ * for both readers — no auto-LOW, and a jail of the allowed directories only.
+ * A root that does not exist yet has no link to follow and is returned as is.
+ * The lexical path, not the canonical one, is returned, because it is part of
+ * the reviewer's verdict-cache identity.
+ */
+export function resolveOwnerPluginSandboxRoot(pluginId: string): string | undefined {
+  const root = resolvePluginWritableRoot(pluginId);
+  try {
+    resolvePluginDataRoot(`plugin '${pluginId}'`, root);
+  } catch (error) {
+    if (error instanceof PluginDataRootError) return undefined;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return root;
+    throw error;
+  }
+  return root;
 }
 
 /**

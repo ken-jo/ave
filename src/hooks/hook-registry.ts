@@ -53,8 +53,11 @@ interface BaseHookRegistryEntry {
   matcher?: string;
   /** argv form of the command to execute (always ≥1 element). */
   command: string[];
+  env?: Record<string, string>;
   /** Exact plugin-owned trust identity; absent for user/global hooks. */
   owner?: PluginHookOwner;
+  /** Package-owned hooks run with a bounded write grant. */
+  confinement?: { kind: "bundled"; pluginId: string; dataDir: string; generationRoot: string };
 }
 
 /** A registry entry synthesized from a legacy `.sh` `DiscoveredHook`. */
@@ -95,6 +98,7 @@ function fromConfigEntry(entry: HookConfigEntry): ConfigHookRegistryEntry {
     event: entry.event,
     ...(entry.matcher !== undefined ? { matcher: entry.matcher } : {}),
     command: entry.command,
+    ...(entry.env ? { env: entry.env } : {}),
     source: "config",
     timeoutMs: entry.timeoutMs,
   };

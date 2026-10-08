@@ -1,12 +1,10 @@
 /**
  * Shared parser for the `runtime` block on MCP plugin entries.
  *
- * Both the catalog row reader (`cloud-marketplace-fetcher.ts`) and
- * the install-time manifest reader (`mcp-marketplace-install.ts`) need
- * to validate the same discriminated union shape. Loop #5 code-review
- * MEDIUM flagged the duplicated parsers as drift risk: if the two
- * copies diverge, the renderer's pre-install preview could classify a
- * runtime block differently from the install path's actual behavior.
+ * The git marketplace's MCP installer (`src/marketplace/app/mcp-installer.ts`)
+ * and the MCP name rules (`src/mcp/safe-names.ts`) validate the same
+ * discriminated union shape; two parsers would let a preview classify a
+ * runtime block differently from what the install path does.
  *
  * This is the single source of truth.
  */
@@ -100,7 +98,7 @@ export function parseMcpRuntimeSpec(value: unknown): McpRuntimeSpec | undefined 
   return undefined;
 }
 
-export function parseMcpOAuthMetadata(value: unknown): McpOAuthMetadata | undefined {
+function parseMcpOAuthMetadata(value: unknown): McpOAuthMetadata | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
   const out: McpOAuthMetadata = {};

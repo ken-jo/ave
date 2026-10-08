@@ -1,12 +1,35 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// The exclusive broker route is process state owned by the workload runtime;
+// the resolver only asks it two questions, so those are all the fixture answers.
+const broker = vi.hoisted(() => ({
+  active: false,
+  cwd: "/app",
+}));
+
+vi.mock("../../workload/runtime.js", () => ({
+  isWorkloadBrokerActive: () => broker.active,
+  getActiveWorkloadBrokerProjection: () => broker.active
+    ? {
+        version: "brokered-workload-capability/v1",
+        workload: { cwd: broker.cwd },
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        allowedOperations: [],
+      }
+    : undefined,
+  isActiveWorkloadBrokerCwd: (cwd: string) => broker.active && cwd === broker.cwd,
+}));
+
 import { writePermissionSettings } from "../../permissions/permission-settings-store.js";
 import {
   defaultWorkspaceProject,
+  isAuthorizedWorkspaceProjectRoot,
   listAuthorizedWorkspaceProjects,
   resolveAuthorizedWorkspaceProject,
+  sessionBoundProjectRootMatches,
 } from "../project-root-authorization.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -28,6 +51,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  broker.active = false;
   process.chdir(oldCwd);
   if (oldHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = oldHome;
@@ -103,5 +127,76 @@ describe("project root authorization", () => {
     expect(resolution.project).not.toBeNull();
     if (!resolution.project) throw new Error("expected authorized project");
     expect(projectRootEquals(resolution.project.projectRoot, leftRoot)).toBe(true);
+  });
+});
+
+describe("project root authorization under the exclusive workload-broker route", () => {
+  it("authorizes exactly the bound guest cwd and nothing on the controller host", async () => {
+    const allowed = join(root, "allowed-project");
+    mkdirSync(allowed);
+    const allowedRoot = realpathSync(allowed);
+    await writePermissionSettings({ additionalDirectories: [allowedRoot] });
+    broker.active = true;
+
+    // Byte-for-byte: the guest path is never canonicalized against this host.
+    expect(isAuthorizedWorkspaceProjectRoot("/app")).toBe(true);
+    expect(isAuthorizedWorkspaceProjectRoot("/app/")).toBe(false);
+    expect(isAuthorizedWorkspaceProjectRoot(workspace)).toBe(false);
+    expect(isAuthorizedWorkspaceProjectRoot(allowedRoot)).toBe(false);
+
+    const brokered = { projectRoot: "/app", projectName: "app" };
+    expect(listAuthorizedWorkspaceProjects()).toEqual([brokered]);
+    expect(resolveAuthorizedWorkspaceProject("/app", "stale-label")).toEqual({
+      authorized: true,
+      project: brokered,
+    });
+    expect(resolveAuthorizedWorkspaceProject(undefined)).toEqual({
+      authorized: true,
+      project: brokered,
+    });
+    // The host default workspace is not a fallback while the broker is bound.
+    expect(resolveAuthorizedWorkspaceProject(workspace)).toEqual({
+      authorized: false,
+      project: null,
+    });
+    expect(resolveAuthorizedWorkspaceProject(allowedRoot)).toEqual({
+      authorized: false,
+      project: null,
+    });
+    // The loop's fallback project is the guest cwd too, so an unauthorized
+    // or absent selection can never re-root a brokered session at the host.
+    expect(defaultWorkspaceProject()).toEqual(brokered);
+    expect(sessionBoundProjectRootMatches("/app", "/app")).toBe(true);
+    expect(sessionBoundProjectRootMatches(workspace, "/app")).toBe(false);
+    expect(sessionBoundProjectRootMatches(null, "/app")).toBe(false);
+  });
+
+  it("matches a bound root byte-for-byte or as a default-workspace alias on the host", () => {
+    const alias = join(root, "workspace-alias");
+    symlinkSync(workspace, alias);
+    expect(sessionBoundProjectRootMatches(workspace, workspace)).toBe(true);
+    expect(sessionBoundProjectRootMatches(`${workspace}/`, workspace)).toBe(true);
+    expect(sessionBoundProjectRootMatches(workspace, alias)).toBe(true);
+    expect(sessionBoundProjectRootMatches(join(root, "elsewhere"), workspace)).toBe(false);
+    expect(sessionBoundProjectRootMatches(null, workspace)).toBe(false);
+  });
+
+  it("resolves a symlink alias of the default workspace to the default project, not a fallback", () => {
+    const alias = join(root, "workspace-link");
+    symlinkSync(workspace, alias);
+    expect(isAuthorizedWorkspaceProjectRoot(alias)).toBe(true);
+    expect(resolveAuthorizedWorkspaceProject(alias)).toMatchObject({
+      authorized: true,
+      project: { projectRoot: workspace, isDefault: true },
+    });
+  });
+
+  it("leaves host workspace authorization unchanged when no broker is bound", () => {
+    expect(isAuthorizedWorkspaceProjectRoot(workspace)).toBe(true);
+    expect(isAuthorizedWorkspaceProjectRoot("/app")).toBe(false);
+    expect(resolveAuthorizedWorkspaceProject("/app")).toEqual({
+      authorized: false,
+      project: null,
+    });
   });
 });

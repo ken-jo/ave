@@ -84,6 +84,15 @@ export class SubscriptionLedger<T> {
     return this.entries.size;
   }
 
+  /** Count a kind without maintaining a second ledger that could drift on close. */
+  countWhere(matches: (value: T) => boolean): number {
+    let count = 0;
+    for (const entry of this.entries.values()) {
+      if (matches(entry.value)) count += 1;
+    }
+    return count;
+  }
+
   /** True once the peer is gone and no further registration may be opened. */
   get isEnded(): boolean {
     return this.ended;

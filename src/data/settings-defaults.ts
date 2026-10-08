@@ -62,16 +62,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     provider: "duckduckgo",
   },
   marketplace: {
-    // Defaults — single source: marketplace server. Default
-    // points at the production tunnel so a fresh install lands on the live
-    // catalog without any post-install configuration. Operators running a
-    // local marketplace (http://localhost:8000) can override via Settings →
-
-    // No fallback to a local catalog file — the only way to populate the
-    // host's plugin layout is through the marketplace API.
-    backend: "real-cloud",
-    cloudBaseUrl: "https://marketplace.former-site.invalid",
-    cloudAllowPrivateNetwork: false,
+    // No catalog URL or API key: packages come from git marketplaces
+    // (src/marketplace/), whose sources live in ~/.ave/marketplaces/.
     installedProviderIds: [],
     installedProviderPresets: [],
     installedThemeBundleIds: [],
@@ -166,6 +158,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   plugins: {},
   pluginConfigs: {},
+  alerts: {
+    // The master switch is on; every kind is opt-in on its own row, so this
+    // alone notifies nothing.
+    osNotificationsEnabled: true,
+    kinds: {},
+  },
+  retiredPluginConfigs: {},
   features: {
     // Profile changes affect every future prompt, so background refresh is explicit opt-in.
     idlePreferenceRefresh: false,

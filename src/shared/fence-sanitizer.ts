@@ -29,6 +29,7 @@ export type FenceTag =
   | "mcp-app-context"
   | "ave-mcp-server-guidance"
   | "mcp-prompt"
+  | "plugin-prompt"
   | "ave-user-preferences"
   | "ave-memory-index"
   | "ave-user-memory"

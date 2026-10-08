@@ -273,7 +273,7 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
       | { content: string; isError?: boolean }
       | undefined;
     expect(toolResult?.isError).toBe(true);
-    expect(toolResult?.content).toContain("알 수 없는 플러그인 ID");
+    expect(toolResult?.content).toContain("알 수 없는 익스텐션 ID");
   });
 
   it("rejects request_plugin for a loaded but inactive plugin", async () => {
@@ -308,7 +308,7 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
       | { content: string; isError?: boolean }
       | undefined;
     expect(toolResult?.isError).toBe(true);
-    expect(toolResult?.content).toContain("알 수 없는 플러그인 ID");
+    expect(toolResult?.content).toContain("알 수 없는 익스텐션 ID");
     expect(toolResult?.content).toContain("(없음)");
   });
 
@@ -484,7 +484,7 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
       | { content: string; isError?: boolean }
       | undefined;
     expect(toolResult?.isError).toBe(true);
-    expect(toolResult?.content).toContain("알 수 없는 플러그인 ID");
+    expect(toolResult?.content).toContain("알 수 없는 익스텐션 ID");
   });
 
   it("keeps explicitly allowlisted tools visible even when allowedPluginIds is deny-all", async () => {
@@ -610,7 +610,7 @@ describe("ConversationLoop — session-scoped on-demand activation (Option C, di
       | { content: string; isError?: boolean }
       | undefined;
     expect(toolResult?.isError).toBe(true);
-    expect(toolResult?.content).toContain("알 수 없는 플러그인 ID");
+    expect(toolResult?.content).toContain("알 수 없는 익스텐션 ID");
   });
 
   it("main chat (allowedPluginIds undefined) cannot activate a disabled plugin — gates intact", async () => {
@@ -652,7 +652,7 @@ describe("ConversationLoop — session-scoped on-demand activation (Option C, di
       | { content: string; isError?: boolean }
       | undefined;
     expect(toolResult?.isError).toBe(true);
-    expect(toolResult?.content).toContain("알 수 없는 플러그인 ID");
+    expect(toolResult?.content).toContain("알 수 없는 익스텐션 ID");
     expect(setPluginEnabled).not.toHaveBeenCalled();
   });
 });

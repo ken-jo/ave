@@ -136,6 +136,12 @@ describe("parseHookConfig — unknown event ignored + warned (decision b)", () =
     // Never silently active.
     expect(r.entries.some((e) => e.command[0] === "./x.sh")).toBe(false);
   });
+
+  it.each(["constructor", "toString", "__proto__"])("ignores inherited event name %s", (event) => {
+    const result = parseHookConfig({ hooks: { [event]: [{ hooks: [{ type: "command", command: "./hook.sh" }] }] } });
+    expect(result.entries).toEqual([]);
+    expect(result.warnings).toContain(`hooks.json: unknown event "${event}" — entry ignored`);
+  });
 });
 
 // #811 milestone-2 — the six non-blocking lifecycle events are now a recognized
@@ -261,6 +267,12 @@ describe("parseHookConfig — timeoutMs clamp (decision d)", () => {
       const r = parseHookConfig({ hooks: { PreToolUse: [{ hooks: [handler] }] } });
       expect(r.entries[0].timeoutMs).toBe(DEFAULT_HOOK_TIMEOUT_MS);
     }
+  });
+
+  it.each([0, -1, 0.5, 1.5])("warns about timeoutMs %s using the positive-integer diagnostic", (timeoutMs) => {
+    const result = parseHookConfig({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "./a.sh", timeoutMs }] }] } });
+    expect(result.entries[0].timeoutMs).toBe(DEFAULT_HOOK_TIMEOUT_MS);
+    expect(result.warnings).toContain(`hooks.json: PreToolUse#0.0 handler.timeoutMs must be a positive integer — defaulting to ${DEFAULT_HOOK_TIMEOUT_MS}ms`);
   });
 });
 

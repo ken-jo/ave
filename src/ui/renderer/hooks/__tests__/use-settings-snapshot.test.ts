@@ -20,7 +20,7 @@ function makeApi(initial: Promise<AppSettings>) {
   return { api, unsubscribe, emit: (s: AppSettings) => broadcast?.(s) };
 }
 
-const snapshot = (marker: string) => ({ marketplace: { cloudBaseUrl: marker } }) as unknown as AppSettings;
+const snapshot = (marker: string) => ({ chat: { systemPrompt: marker } }) as unknown as AppSettings;
 
 describe("useSettingsSnapshot", () => {
   it("seeds from getSettings, then follows every broadcast, and unsubscribes on unmount", async () => {

@@ -33,7 +33,8 @@
  * files even before the `denyWrite` floor. A renderer-supplied cwd is validated
  * (absolute + within the workspace root) before it anchors the jail.
  */
-import { isAbsolute } from "node:path";
+import { mkdirSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import type { IPty } from "node-pty";
 import { createLogger } from "../../lib/logger.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -44,6 +45,7 @@ import {
   wrapWorkerCommand,
   cleanupAsrtSandboxAfterCommand,
   isAsrtSandboxActive,
+  sandboxTempEnvLaunch,
 } from "../../permissions/asrt-sandbox.js";
 import { isActiveSandboxShellContained } from "../../permissions/sandbox-capability.js";
 import { deriveSandboxWritePaths } from "../../permissions/sandbox-write-jail.js";
@@ -179,11 +181,16 @@ function resolveTerminalCwd(
 /** The command string ASRT runs under its `-c` wrapper: exec the interactive
  * login shell so it takes over the PTY node-pty allocated for the sandbox
  * wrapper process (fd 0/1/2 inherit down sandbox-exec/bwrap → shell). */
-function buildShellCommand(): string {
+function buildShellCommand(tempDir: string): string {
   const shell = resolveLoginShell();
   // `exec` replaces the wrapper's `/bin/bash -c` shell so there is no extra
   // process layer; `-l -i` = login + interactive (prompt, job control, rc).
-  return `exec ${shellQuote(shell)} -l -i`;
+  // The temp directory is set inside the wrap, because ASRT writes its own
+  // `TMPDIR=` there that no spawn env outranks: the sandbox temp root, which
+  // this terminal is neither granted nor allowed to read. Its own, under its
+  // HOME, is both — as the shell tool's bootstrap does.
+  const launch = sandboxTempEnvLaunch(tempDir, shell, ["-l", "-i"]);
+  return `exec ${[launch.command, ...launch.args].map(shellQuote).join(" ")}`;
 }
 
 function pushRing(session: TerminalSession, chunk: string): void {
@@ -321,6 +328,17 @@ async function spawnNewTerminal(
       message: `Could not create isolated terminal HOME: ${errorMessage(err)}`,
     };
   }
+  const tempDir = join(sandboxHome.path, "tmp");
+  try {
+    mkdirSync(tempDir, { mode: 0o700 });
+  } catch (err) {
+    cleanupSandboxHome();
+    return {
+      ok: false,
+      reason: "spawn-failed",
+      message: `Could not create isolated terminal temp directory: ${errorMessage(err)}`,
+    };
+  }
 
   // Filesystem jail (mirrors worker-spawn): write = cwd ∪ authorized dirs;
   // read = jail ∪ cwd; denyRead = the RESTATED shared sensitive read floor (a
@@ -339,7 +357,7 @@ async function spawnNewTerminal(
 
   let wrapped = false;
   try {
-    const cmdline = buildShellCommand();
+    const cmdline = buildShellCommand(tempDir);
     const { argv, env } = await wrapWorkerCommand(cmdline, {
       filesystem: { allowWrite, allowRead, denyRead, denyWrite },
     });

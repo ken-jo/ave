@@ -1,3 +1,4 @@
+import "./lib/document-consumer-guard.mjs";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { resolveBuildAssets } from "./lib/build-assets.mjs";

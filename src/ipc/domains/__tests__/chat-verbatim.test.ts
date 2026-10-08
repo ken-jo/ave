@@ -982,6 +982,20 @@ summarize the repo
     );
   });
 
+  it("binds package template text to plugin-prompt provenance", async () => {
+    const loop = makeConversationLoop("f54c7bda-1854-4991-8708-8d60d079368a", []);
+    loop.runTurn.mockResolvedValue({ text: "ok", toolCalls: [], stopReason: "end_turn" });
+    await setupHandlers(loop);
+    const input = `<plugin-prompt source="plugin-prompt:writer-plugin:draft">\nDraft a note\n</plugin-prompt>`;
+    await invokeRegisteredHandler(handlers, "ave:chat:send", { input, inputOrigin: "plugin-prompt-emitted" }, "main");
+    expect(loop.runTurn).toHaveBeenCalledWith(input, expect.any(Object), undefined,
+      expect.objectContaining({ inputOrigin: "plugin-prompt-emitted", originSource: "plugin-prompt:writer-plugin:draft" }));
+    const missing = await invokeRegisteredHandler(handlers, "ave:chat:send", {
+      input: "Draft a note", inputOrigin: "plugin-prompt-emitted",
+    }, "main");
+    expect(missing).toEqual({ ok: false, error: "missing-plugin-prompt-envelope" });
+  });
+
   it("rejects a staged origin whose envelope is absent", async () => {
     const loop = makeConversationLoop("f54c7bda-1854-4991-8708-8d60d079368a", []);
     await setupHandlers(loop);
@@ -1186,6 +1200,29 @@ B${i}
         },
       }),
     );
+  });
+
+  it("preserves package persona provenance only for keyboard sends", async () => {
+    const loop = makeConversationLoop("f54c7bda-1854-4991-8708-8d60d079368a", []);
+    loop.runTurn.mockResolvedValue({ text: "ok", toolCalls: [], stopReason: "end_turn" });
+    const origin = { kind: "agent-plugin" as const, package: "writer-plugin", version: "1.0.0" };
+    const personaPromptStore = { get: vi.fn(async () => ({
+      id: "agent-plugin:writer-plugin:reviewer",
+      name: "reviewer (writer-plugin)",
+      systemPromptAdd: "Review the draft.", origin,
+    })) };
+    await setupHandlers(loop, { personaPromptStore });
+    await invokeRegisteredHandler(handlers, "ave:chat:send", {
+      input: "hello", inputOrigin: "user-keyboard", userActivation: true,
+      personaPromptId: "agent-plugin:writer-plugin:reviewer",
+    }, "main");
+    expect(loop.runTurn).toHaveBeenCalledWith("hello", expect.any(Object), undefined,
+      expect.objectContaining({ rolePrompt: expect.objectContaining({ origin }) }));
+    const rejected = await invokeRegisteredHandler(handlers, "ave:chat:send", {
+      input: "queued", inputOrigin: "queue-auto", personaPromptId: "agent-plugin:writer-plugin:reviewer",
+    }, "main");
+    expect(rejected).toEqual({ ok: false, error: "persona-prompt-origin-restricted" });
+    expect(personaPromptStore.get).toHaveBeenCalledTimes(1);
   });
 
   it("rejects the original input when the session changes during persona resolution", async () => {

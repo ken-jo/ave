@@ -1,16 +1,18 @@
 /**
  * Host-owned public contract for Ave plugin authors.
  *
- * This module is the sole source for the SDK type surface and its JSDoc. Keep
- * runtime-only registry and marketplace persistence declarations in `types.ts`.
- * The SDK generator copies this module mechanically; it must not add policy,
- * declarations, aliases, or documentation.
+ * This module is the sole source of the plugin-facing type surface and its
+ * JSDoc. Keep runtime-only registry and marketplace persistence declarations in
+ * `types.ts`. Two things read it mechanically and add nothing of their own: a
+ * plugin repository vendors it unchanged at an app release tag into
+ * `contract/`, hash-checked; and `scripts/lib/plugin-host-protocol-schema.ts`
+ * reads its `PluginHostApi` member types into the host protocol schema.
  */
 
 /**
  * Modules supplied by the Host process and therefore excluded from plugin
- * runtime bundles. The Host owns this value; SDK build helpers consume the
- * mechanically mirrored constant without adding policy.
+ * runtime bundles. The Host owns this value; plugin build helpers consume the
+ * vendored constant without adding policy.
  */
 export const HOST_EXTERNAL_MODULES = ["electron"] as const;
 
@@ -43,6 +45,24 @@ export const AGENT_PLUGINS_SCHEMA_URL =
  * and govern a plugin lives under this one key.
  */
 export const AVE_EXTENSION_NAMESPACE = "ai.agent-connector.ave";
+
+/** The non-executable branch of the portable manifest at a marketplace boundary. */
+export interface AgentPluginPackageManifest {
+  $schema: typeof AGENT_PLUGINS_SCHEMA_URL;
+  name: string;
+  version: string;
+  description: string;
+  extensions?: Record<string, unknown> & {
+    "ai.agent-connector.ave"?: {
+      displayName?: string;
+      icon?: string;
+      iconText?: string;
+      requires?: { minAppVersion: string };
+      process?: PluginProcessEntry;
+      mcpAuth?: Record<string, { auth: "api-key"; apiKeyEnv?: string; apiKeyHeader?: string }>;
+    };
+  };
+}
 
 /**
  * The top level Agent Plugins 1.0.0 defines. Anything else up there belongs to
@@ -147,12 +167,10 @@ export interface PluginUiResourceDecl {
   };
 }
 
-export type InstallPolicy = "admin" | "user";
-
 /** Host-enforced minimum risk for one discriminated plugin operation. */
 export type GovernedRiskFloor = "read" | "write" | "network" | "shell";
 
-/** Host-owned schema source consumed by the public SDK drift generator. */
+/** Host-owned operation rule carried in the vendored public contract. */
 export interface PluginToolOperationRule {
   kind: "read" | "write";
   minimumRisk: GovernedRiskFloor;
@@ -223,7 +241,6 @@ export type OpenAuthWindowBaseOptions = {
    * invisible to the user.
    *
    * @default true
-   * @since SDK 5.6.0
    */
   show?: boolean;
   /**
@@ -238,7 +255,6 @@ export type OpenAuthWindowBaseOptions = {
    * — this keeps that credential on the host, never in the plugin bundle.
    *
    * @default false
-   * @since SDK 12.2.0
    */
   retainCookies?: boolean;
 };
@@ -359,8 +375,8 @@ export interface EventSubscription {
  * app-action map:
  * `PluginManifest.tools` is `Tool[]` and every host consumer reads surface
  * visibility off each tool's `_meta.ui.visibility` (materialized once at manifest
- * load by `parsePluginJson`). The SDK public surface (`@ave/plugin-sdk`) mirrors
- * these via `sync-from-host`.
+ * load by `parsePluginJson`). Plugin repositories vendor this public contract
+ * unchanged at an app release tag.
  * ==========================================================================*/
 /**
  * A tool a plugin exposes — the pure MCP `Tool` object (manifest == wire, §2.1/§2.2).
@@ -417,13 +433,29 @@ export interface Tool {
 }
 
 /**
- * Declarative plugin metadata validated by the Host before plugin code loads.
+ * An executable that speaks the host protocol itself, in any language
+ * (docs/design/plugin-hostapi-protocol.md §2.1).
+ *
+ * `command` is a `./` or `${PLUGIN_ROOT}/` path inside the plugin root, never a
+ * bare name: a marketplace plugin gets no `PATH` search. `${PLUGIN_ROOT}/…` and
+ * `${PLUGIN_DATA}…` are expanded in `args` and `env`, and the host sets both
+ * variables in the process's environment.
+ */
+export interface PluginProcessEntry {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+/**
+ * Declarative plugin metadata validated by the Host before plugin code loads,
+ * less the field that says how its process is produced.
  *
  * `tools` is the only callable surface. Legacy `uiTool`, `uiTools`, `uiAction`,
  * `uiActions`, top-level `operationGovernance`, and top-level `appAllowed`
  * declarations are invalid and rejected by the Host-owned manifest schema.
  */
-export interface PluginManifest {
+export interface PluginManifestFields {
 
   id: string;
   /**
@@ -434,7 +466,6 @@ export interface PluginManifest {
    */
   name?: string;
   version: string;
-  entry: string;
 
 
 
@@ -470,6 +501,10 @@ export interface PluginManifest {
   hooks?: PluginContributionDeclaration[];
   /** Plugin-owned declarative MCP server configuration files. Presence does not grant approval. */
   mcpServers?: PluginContributionDeclaration[];
+  /** Plugin-owned prompt files. Their text retains package-authored provenance. */
+  prompts?: PluginContributionDeclaration[];
+  /** Plugin-owned routine suggestion files. Installation never creates a routine. */
+  routineTemplates?: PluginContributionDeclaration[];
 
 
 
@@ -534,13 +569,6 @@ export interface PluginManifest {
 
 
 
-  notificationEvents?: Array<{
-    event: string;
-    titleField?: string;
-    bodyField?: string;
-    bypassFocusGate?: boolean;
-  }>;
-
   /**
    * Recommended-work channel declaration — which KINDS of work proposal this
    * plugin may post to the host's Work Board via
@@ -571,11 +599,30 @@ export interface PluginManifest {
     /** 1..4 entries. Ids must be unique within the plugin. */
     kinds: WorkProposalKind[];
   };
-  installPolicy?: InstallPolicy;
+  /**
+   * Alert declaration — the kinds of alert this plugin may raise, each with
+   * declared, localised templates and typed slots, plus the overlay sources
+   * it may pass to {@link PluginHostApi.triggerConversation}.
+   *
+   * DECLARATION IS AUTHORIZATION, as for {@link PluginManifest.workProposals}:
+   * a kind that is not declared is not granted, and a block that is malformed
+   * in any entry grants nothing. A manifest that carries the block at all —
+   * even a refused one — may trigger conversations only from the sources
+   * listed in `suggestions`.
+   */
+  alerts?: PluginAlertsDeclaration;
+  /** Reviewed filesystem reach for a confined plugin child. */
+  sandbox?: PluginSandboxDeclaration;
+  /**
+   * Config keys this plugin fills from a retired predecessor's saved config,
+   * once, when the retirement names this plugin as a successor. A target key
+   * the user already set is never overwritten. Two entries with the same
+   * `to` refuse the whole list.
+   */
+  configInherits?: ConfigInheritDeclaration[];
   dependencies?: Array<string | DependencySpec>;
   pluginAccess?: PluginAccessSpec;
   requires?: RequiresSpec;
-  publisher?: string;
   /**
    * npm package name persisted into installed manifests by the marketplace
    * service for rollback support. The publish pipeline owns this value;
@@ -635,9 +682,8 @@ export interface PluginManifest {
    * allow + deny) and currently accepts entries shaped
    * `llm.apiKey.<vendor>` or
    * `llm.marketplaceProvider.<presetId>.apiKey` — enforced both here at
-   * manifest load time and by the SDK JSON-schema/host compatibility patch
-   * so plugins can't grant themselves wildcard access by shipping an older
-   * SDK build.
+   * manifest load time and by the host-owned JSON schema, so plugins cannot
+   * grant themselves wildcard access with an older vendored contract.
    *
    * Keys outside the namespace are rejected at manifest load
    * (`manifest_schema` reason) so a misconfigured plugin never reaches the
@@ -650,6 +696,32 @@ export interface PluginManifest {
   };
   /** Marketplace-only advertisement of UI slot names; bindings remain in `ui[].slot`. */
   uiSlots?: string[];
+}
+
+/** A plugin whose process is the host's reference runtime importing this JS module. */
+export interface EntryPluginManifest extends PluginManifestFields {
+  entry: string;
+  process?: never;
+}
+
+/** A plugin whose process is its own executable, speaking the protocol itself. */
+export interface ProcessPluginManifest extends PluginManifestFields {
+  process: PluginProcessEntry;
+  entry?: never;
+}
+
+/**
+ * A plugin manifest: exactly one of `entry` and `process`.
+ *
+ * A union rather than one interface with two optional fields, because that
+ * interface — and the wire schema projected from it — would accept both and
+ * neither (docs/design/plugin-hostapi-protocol.md decision 33).
+ */
+export type PluginManifest = EntryPluginManifest | ProcessPluginManifest;
+
+/** Which of the two ways to produce the plugin's process a manifest declares. */
+export function pluginEntryKind(manifest: PluginManifest): "entry" | "process" {
+  return manifest.process !== undefined ? "process" : "entry";
 }
 
 export interface PluginFirstTaskCopy {
@@ -740,6 +812,15 @@ export interface PluginOnboardingSpec {
 export interface PluginContributionDeclaration {
   id: string;
   path: string;
+}
+
+export type PluginSandboxGrant =
+  | { kind: "hostDirectory"; segments: ["runtime"] | ["certs"]; why: string }
+  | { kind: "userChosenDirectory"; configKey: string; why: string };
+
+export interface PluginSandboxDeclaration {
+  read?: PluginSandboxGrant[];
+  write?: Extract<PluginSandboxGrant, { kind: "userChosenDirectory" }>[];
 }
 
 /**
@@ -859,10 +940,8 @@ export interface VerifyResult {
  * Dependency specification extracted from plugin manifest's `requires` block.
  * Capabilities are kebab-case tags matching `^[a-z][a-z0-9-]*$`.
  *
- * NOTE: This interface is the host-side source of truth that the SDK's
- * generated TS mirror (`ave-plugin-sdk/src/index.ts` `RequiresSpec`) is
- * regenerated from via `sync-from-host`. Keep it consistent with the
- * Host-owned JSON schema (`schemas/plugin-manifest.schema.json`).
+ * Keep this host-owned interface consistent with the manifest JSON schema
+ * (`schemas/plugin-manifest.schema.json`). Plugins vendor both files together.
  */
 export interface RequiresSpec {
   /** Dependency capabilities required from installed plugins. @optional */
@@ -881,6 +960,14 @@ export interface RequiresSpec {
    *     sideloaded an artifact built for a newer host).
    */
   minAppVersion?: string;
+  /**
+   * The Ave host protocol version the plugin speaks — an integer written as a
+   * string (`"2"`). A missing declaration or a version the running app does not serve refuses the load with
+   * `incompatible-host-protocol`. An older app whose schema lacks the field
+   * rejects the manifest outright, so a plugin that declares it also sets
+   * `minAppVersion` to the first release that knows it. @optional
+   */
+  hostProtocol?: string;
 }
 
 /**
@@ -1045,7 +1132,7 @@ export class PluginStorageEncryptionUnavailableError extends Error {
 
 /**
  * Supported text encodings for PluginStorage read/write operations.
- * Defined explicitly to avoid leaking @types/node into the SDK public surface.
+ * Defined explicitly to avoid leaking @types/node into the public contract.
  */
 export type StorageEncoding =
   | "utf-8"
@@ -1228,6 +1315,47 @@ export interface SpawnedPluginWorker {
  * Host API — 플러그인이 호스트 서비스에 접근하는 인터페이스.
  * 플러그인 제거 시 해당 플러그인이 등록한 모든 것이 자동 정리된다.
  */
+export interface ResolveApiKeyOptions {
+  purpose: "llm" | "stt" | "embedding" | "vision";
+  vendor?: "openai" | "azure-openai" | "vertex" | "anthropic";
+  exposure?: "lease" | "raw";
+  signal?: AbortSignal;
+}
+
+export interface ApiKeyLease {
+  readonly exposure: "lease";
+  readonly leaseId: string;
+  readonly vendor: string;
+  readonly baseUrl?: string;
+  release(): Promise<void>;
+  onClosed(listener: (reason: "revoked" | "peer-gone") => void): () => void;
+}
+
+export interface ApiKeyRaw {
+  readonly exposure: "raw";
+  readonly vendor: string;
+  readonly baseUrl?: string;
+  readonly key: string;
+  release(): Promise<void>;
+}
+
+export type ResolveApiKeyDenied = {
+  ok: false;
+  reason: "no-host-vendor" | "vendor-mismatch" | "not-whitelisted"
+    | "user-mode-plugin" | "aborted" | "user-endpoint-with-host-key"
+    | "raw-exposure-denied" | "audience-not-allowlisted" | "vendor-unsupported"
+    | "endpoint-unavailable" | "stale-authorization" | "lease-limit";
+};
+
+export type ResolveApiKeyResult =
+  | ({ ok: true } & ApiKeyLease)
+  | ({ ok: true } & ApiKeyRaw)
+  | ResolveApiKeyDenied;
+
+export interface HostFetchInit extends RequestInit {
+  auth?: { lease: string };
+}
+
 export interface PluginHostApi {
   /**
    * Sandboxed filesystem API scoped to this plugin's `pluginDataDir`. Plugins
@@ -1310,39 +1438,15 @@ export interface PluginHostApi {
   getSecret(key: string): Promise<string | null>;
 
   /**
-   * #893 Stage 2 — Host-managed LLM key resolver. Mirrors the SDK's
-   * `PluginHostApi.resolveApiKey` (optional, may be undefined on older host
-   * builds — plugins guard with `typeof hostApi.resolveApiKey === "function"`).
+   * Host-managed LLM key resolver. Optional on older app releases; plugins
+   * guard with `typeof hostApi.resolveApiKey === "function"` unless their
+   * `requires.minAppVersion` guarantees a supporting release.
    *
    * Implementation in `src/main/host-api/resolve-api-key.ts` runs the four-tier
-   * gate and returns the SDK's discriminated union (`ResolveApiKeyResult`).
-   * The host interface accepts a structurally compatible shape so the SDK
-   * import stays optional at the type level — callers receive the same
-   * `ok: true | false` discriminator either way.
+   * gate and returns the `ResolveApiKeyResult` discriminated union. Callers
+   * receive the same `ok: true | false` discriminator across supported releases.
    */
-  resolveApiKey?(opts: {
-    purpose: "llm" | "stt" | "embedding" | "vision";
-    vendor?: "openai" | "azure-openai" | "vertex" | "anthropic";
-    signal?: AbortSignal;
-  }): Promise<
-    | {
-        ok: true;
-        vendor: string;
-        bearer: () => string;
-        baseUrl?: string;
-        release: () => void;
-      }
-    | {
-        ok: false;
-        reason:
-          | "no-host-vendor"
-          | "vendor-mismatch"
-          | "not-whitelisted"
-          | "user-mode-plugin"
-          | "aborted"
-          | "user-endpoint-with-host-key";
-      }
-  >;
+  resolveApiKey?(opts: ResolveApiKeyOptions): Promise<ResolveApiKeyResult>;
 
   // ─── LLM 접근 (선제성 기능용) ────────────────────────────────────────
   /**
@@ -1372,7 +1476,7 @@ export interface PluginHostApi {
    * (`typeof hostApi.hostFetch === "function"`) and fail closed when absent;
    * do not replace this chokepoint with bare plugin fetch.
    */
-  hostFetch?(input: string | URL, init?: RequestInit): Promise<Response>;
+  hostFetch?(input: string | URL, init?: HostFetchInit): Promise<Response>;
 
   /**
    * Structured log event routed through AuditLogger.
@@ -1623,15 +1727,11 @@ export interface PluginHostApi {
    * hard load failure (not on user close).
    *
    * **Required (not `?`-optional)** unlike `hostFetch?` / `spawnWorker?` /
-   * `getAppPreference?`. Convention: HostApi methods are
-   * declared required when the SDK + host wiring land in the same release
-   * window (lockstep shipping); methods are declared optional only when
-   * the SDK legitimately ships ahead of host adoption. Declaring this
-   * method required forces plugins to call it directly — a missing host
-   * wiring throws loudly at runtime instead of being silently optional-
-   * chained, matching CLAUDE.md "No Fallback Code" + the security
-   * "fail-closed" principle (silent fallback could route the user to a
-   * less-protected window).
+   * `getAppPreference?`. Plugins vendor this contract at an app release tag
+   * and set `requires.minAppVersion` to a release serving every method they
+   * use. This method is required so missing host wiring throws loudly instead
+   * of being silently optional-chained. A silent fallback could route the
+   * user to a less-protected window.
    */
   openAuthPartitionViewer(opts: {
     url: string;
@@ -1655,10 +1755,8 @@ export interface PluginHostApi {
    * **Capability gate:** `manifest.capabilities[]` must include
    * `external-auth-consumer` (same gate as `openAuthWindow`).
    *
-   * **Required (not `?`-optional)** — declared in lockstep with SDK
-   * `@ave/plugin-sdk@5.6.0`. Plugin authors get a typed signature; a
-   * missing host wiring throws loudly. Matches the "No Fallback Code"
-   * rule (CLAUDE.md) — silent optional-chain would let sign-out look
+   * **Required (not `?`-optional)** — plugin authors get a typed signature;
+   * missing host wiring throws loudly. Silent optional-chain would let sign-out look
    * successful while leaving the partition populated.
    */
   clearAuthPartition(partition: string): Promise<void>;
@@ -1684,7 +1782,6 @@ export interface PluginHostApi {
    *
    * **Capability gate:** `external-auth-consumer`, same as `openAuthWindow`.
    *
-   * @since SDK 12.2.0
    */
   getAuthPartitionCookies(opts: {
     partitionSub: string;
@@ -1708,11 +1805,10 @@ export interface PluginHostApi {
    * validates the scheme is http(s) (file:/javascript:/etc. are rejected with an
    * English error) before routing.
    *
-   * **Required (not `?`-optional)** — promoted in lockstep with the host wiring
-   * (SDK v8 regenerates this surface; see `openAuthPartitionViewer` for the
-   * lockstep-shipping convention). Replaces the SDK runtime `getShell` shim so
-   * plugins never reach Electron `shell.openExternal` directly. A missing host
-   * wiring throws loudly rather than being silently optional-chained.
+   * **Required (not `?`-optional)** — plugins using this method set
+   * `requires.minAppVersion` to a supporting app release. Plugins never reach
+   * Electron `shell.openExternal` directly. Missing host wiring throws loudly
+   * rather than being silently optional-chained.
    */
   openExternalUrl(url: string): Promise<void>;
 
@@ -1723,8 +1819,7 @@ export interface PluginHostApi {
    * timeout — on-corp DNS resolves the private host, off-corp DNS returns
    * `ENOTFOUND`, and the async asymmetry is the signal.
    *
-   * Semantics (ported from the SDK's `detectViaPrivateDnsProbe`, replacing that
-   * runtime shim): a `dns.lookup` race against a `timeoutMs` deadline (default
+   * Semantics: a `dns.lookup` race against a `timeoutMs` deadline (default
    * 1500ms, host-clamped to sane bounds); fail-SAFE to `false` on timeout (a slow
    * user gate is worse than a false-negative); same-host in-flight dedup whose
    * lifetime is bound to the UNDERLYING lookup; NO result cache (corp↔off-corp
@@ -1739,9 +1834,9 @@ export interface PluginHostApi {
    * enforce real trust downstream (cookie/origin level) and never treat a `true`
    * here as authorization.
    *
-   * **Required (not `?`-optional)** — declared in lockstep with the host wiring
-   * (SDK v8 regen follows). A missing host wiring throws loudly instead of being
-   * silently optional-chained.
+   * **Required (not `?`-optional)** — plugins using this method set
+   * `requires.minAppVersion` to a supporting app release. Missing host wiring
+   * throws loudly instead of being silently optional-chained.
    */
   probePrivateHost(
     host: string,
@@ -1785,6 +1880,13 @@ export interface PluginHostApi {
    * - `dedupeKey` should be set when the same observation can fire multiple
    *   times (e.g., the same mail re-emitting events) — host will reject the
    *   second call within a short window.
+   * - `source` never contains `--`; that spelling is reserved for sources the
+   *   host's alert pipeline mints.
+   *
+   * A plugin whose manifest declares {@link PluginManifest.alerts} uses this
+   * method for one-time suggestions only: `source` must be one of
+   * `alerts.suggestions` (`source_not_declared` otherwise), and each declared
+   * source is accepted at most once per 30 days (`suggestion_limit`).
    */
   triggerConversation(
     spec: ConversationTriggerSpec,
@@ -1845,6 +1947,29 @@ export interface PluginHostApi {
   withdrawWorkProposal(kind: string, key: string): Promise<boolean>;
 
   /**
+   * Raise one alert of a kind declared in this plugin's `alerts` block.
+   *
+   * The plugin supplies typed slot values, never text: the host renders the
+   * kind's declared summary and prompt in the app locale, decides whether the
+   * alert reaches the user at all (the user's toggle for `<pluginId>:<kind>`,
+   * a predecessor still installed, cooldown and rate budgets), and owns the
+   * card, the OS notification and the conversation an accept starts.
+   *
+   * `(kind, key)` is the identity. Re-raising an open identity refreshes its
+   * card (`refreshed`); an identity the user dismissed or accepted stays
+   * closed for the card's lifetime (`closed`). Callers branch on `status`
+   * rather than expecting a throw.
+   */
+  raiseAlert(input: AlertInput): Promise<AlertResult>;
+
+  /**
+   * Withdraw this plugin's open alert for `(kind, key)` because its condition
+   * no longer holds. Scoped to the caller; resolves `false` when no such
+   * alert is open.
+   */
+  withdrawAlert(kind: string, key: string): Promise<boolean>;
+
+  /**
    * §8 Agent Approval System — main-process–side approval management.
    *
    * Plugins use this namespace to interact with the host's §8 ApprovalGate
@@ -1903,8 +2028,8 @@ export interface PluginHostApi {
 
 /**
  * §8 ApprovalChoice — mirrors `approval-gate.ts` ApprovalChoice.
- * Duplicated here so the plugin SDK surface does not need to import
- * from `permissions/approval-gate.ts` directly.
+ * Defined here so the vendored public contract does not import the Host-private
+ * `permissions/approval-gate.ts` module.
  */
 export type ApprovalChoice =
   | "allow-once"
@@ -1941,9 +2066,21 @@ export interface ConversationTriggerSpec {
    *
    * Current limitation: all three values currently produce identical UI
    * behaviour; the field is recorded into audit only.
+   *
+   * Deprecated: accepted and ignored. A recurring alert declares its
+   * visibility as an alert kind; this field leaves the spec in a later release.
+   *
+   * @deprecated
    */
   visibility?: "silent" | "summary-only" | "user-visible";
-  /** Routing hint for queueing when multiple triggers compete (audit-only today). */
+  /**
+   * Routing hint for queueing when multiple triggers compete (audit-only today).
+   *
+   * Deprecated: accepted and ignored. Alert priority is a field of the alert
+   * pipeline's input; this field leaves the spec in a later release.
+   *
+   * @deprecated
+   */
   priority?: "low" | "normal" | "high";
   /** Suppress duplicate triggers for the same observation (window enforced by host). */
   dedupeKey?: string;
@@ -1973,17 +2110,25 @@ export interface ConversationTriggerResult {
    * When `accepted=false`, why:
    *   `capability_denied` — plugin lacks `host:overlay`.
    *   `invalid_source`    — `source` does not match `^overlay:[a-z][a-z0-9-]*$`,
-   *                         `prompt` empty, or other shape problem.
+   *                         contains `--` (reserved for host-minted alert
+   *                         sources), `prompt` empty, or other shape problem.
    *   `duplicate`         — `dedupeKey` matched a recent trigger.
    *   `rate_limited`      — per-plugin call cap exceeded (sliding window).
    *   `loop_unavailable`  — ConversationLoop not yet bound (boot ordering, legacy).
+   *   `source_not_declared` — the manifest declares an `alerts` block and
+   *                         `source` is not one of its `alerts.suggestions`.
+   *   `suggestion_limit`  — the manifest declares an `alerts` block and this
+   *                         declared source was already accepted within the
+   *                         last 30 days.
    */
   reason?:
     | "capability_denied"
     | "invalid_source"
     | "duplicate"
     | "rate_limited"
-    | "loop_unavailable";
+    | "loop_unavailable"
+    | "source_not_declared"
+    | "suggestion_limit";
   /** Echoed back so callers can correlate logs across plugin/host. */
   source: string;
   /**
@@ -1993,6 +2138,166 @@ export interface ConversationTriggerResult {
    */
   eventId?: string;
 }
+
+// ─── Alert declarations ──────────────────────────────────────────────────────
+//
+// An alert is a declared kind the host renders from declared templates: the
+// plugin supplies typed slot values at raise time, never free text, and the
+// host owns localisation, the card, the OS notification and the user's toggle
+// for `<pluginId>:<kind>`.
+
+/**
+ * User-facing text in every locale the plugin ships, keyed by BCP 47-style
+ * lowercase tag (`en`, `ko`, `pt-br`). `en` is required and is the fallback
+ * when the app locale is missing.
+ */
+export type AlertLocaleText = { en: string } & Record<string, string>;
+
+/** How far an alert reaches the user; a raise may only lower the declared level. */
+export type AlertVisibility = "user-visible" | "summary-only" | "silent";
+
+/**
+ * One typed, bounded, untrusted value a raise supplies.
+ *
+ * - `text` — third-party text, capped at `maxLength` (at most 200).
+ * - `list` — at most `maxItems` (at most 5) texts, each capped at `maxLength`
+ *   (at most 120); joined with `; ` in the summary and one bullet line per
+ *   item in the prompt.
+ * - `ref` — an opaque id (`^[A-Za-z0-9+/=_-]{1,256}$`). A template never
+ *   names it: the host appends it to the model-facing prompt as a wrapped
+ *   footer line, so an id never reaches the card.
+ *
+ * A slot is required unless `optional` is true.
+ */
+export type AlertSlotDeclaration =
+  | { kind: "text"; maxLength: number; optional?: boolean }
+  | { kind: "list"; maxItems: number; maxLength: number; optional?: boolean }
+  | { kind: "ref"; optional?: boolean };
+
+/**
+ * How a successor kind reads one toggle out of a retired plugin's config: the
+ * list stored at `key` either names the disabled members (`listed:
+ * "disabled"`) or the enabled ones (`listed: "enabled"`), and `values` are the
+ * spellings — current and legacy — under which this kind appears in it.
+ * `masterKey` names a boolean that, when false, turns the toggle off outright.
+ */
+export interface AlertInheritRule {
+  key: string;
+  listed: "enabled" | "disabled";
+  values: string[];
+  masterKey?: string;
+}
+
+/**
+ * The predecessor a kind inherits the user's choice from. `sourceId` is the
+ * marketplace source the predecessor is expected to come from, used only
+ * until the host knows the retirement entry.
+ */
+export interface AlertInheritDeclaration {
+  pluginId: string;
+  sourceId: string;
+  enabled: AlertInheritRule;
+  /** Only for a kind that declares `osNotification`. */
+  osNotification?: AlertInheritRule;
+}
+
+export interface AlertKindDeclaration {
+  /** `^(?!.*--)[a-z][a-z0-9-]{0,30}[a-z0-9]$`, unique within the plugin. */
+  id: string;
+  /** At most 40 characters per locale. Also the OS notification title. */
+  label: AlertLocaleText;
+  /** At most 200 characters per locale. */
+  description?: AlertLocaleText;
+  /** The kind's toggle on a fresh install. An update never turns a kind on. */
+  defaultEnabled: boolean;
+  visibility: AlertVisibility;
+  /** Absent = the kind never notifies the OS. */
+  osNotification?: {
+    defaultEnabled: boolean;
+    bypassFocusGate?: boolean;
+    /** Static text, no slots, at most 80 characters per locale. */
+    body: AlertLocaleText;
+  };
+  /** The card's button label, at most 24 characters per locale. */
+  actionLabel?: AlertLocaleText;
+  /** At most 8 slots, named `^[a-z][a-zA-Z0-9]{0,31}$`. */
+  slots?: Record<string, AlertSlotDeclaration>;
+  /**
+   * The card text: a template whose only dynamic parts are `{slot}`
+   * references to `text` or `list` slots. No `<` or `>`. At most 200
+   * characters per locale.
+   */
+  summary: AlertLocaleText;
+  /**
+   * The model-facing prompt the user's accept stages, under the same template
+   * rules as `summary`. At most 1000 characters per locale. Every `text` and
+   * `list` slot appears in the English summary or prompt.
+   */
+  prompt: AlertLocaleText;
+  /** At most one predecessor. */
+  inherits?: AlertInheritDeclaration[];
+}
+
+export interface PluginAlertsDeclaration {
+  /** Why this plugin alerts at all; shown in Settings. At most 400 characters. */
+  reasoning: string;
+  /** 1..12 kinds. */
+  kinds: AlertKindDeclaration[];
+  /**
+   * The only `source` values {@link PluginHostApi.triggerConversation} accepts
+   * from this plugin: at most 4, each matching `^overlay:[a-z][a-z0-9-]*$`
+   * with no `--`. Each is accepted at most once per 30 days.
+   */
+  suggestions?: string[];
+}
+
+/** One raise of a declared alert kind. */
+export interface AlertInput {
+  /** A kind id declared in this plugin's `alerts.kinds`. */
+  kind: string;
+  /**
+   * The dedupe identity within the kind, `^[A-Za-z0-9_.:/@+=-]{1,256}$`.
+   * Never rendered and never logged: the host keys the alert by a keyed hash
+   * of it.
+   */
+  key: string;
+  /** Values for the kind's declared slots: a string for `text` and `ref`, strings for `list`. */
+  slots?: Record<string, string | string[]>;
+  /** Default `normal`. `high` cards sort first; `low` never notifies the OS. */
+  priority?: "low" | "normal" | "high";
+  /** May only lower the kind's declared visibility. */
+  visibility?: AlertVisibility;
+  /** Card lifetime; the host clamps it to 1 minute – 7 days, default 24 hours. */
+  ttlMs?: number;
+}
+
+export type AlertResult =
+  | {
+      status: "raised";
+      alertId: string;
+      delivered: { card: boolean; osNotification: boolean; toast: boolean };
+    }
+  /** An open alert with this identity was updated in place. */
+  | { status: "refreshed"; alertId: string }
+  /** `kind` is not among this plugin's declared kinds. */
+  | { status: "kind_not_granted"; kind: string }
+  /** The user turned this kind off. */
+  | { status: "disabled_by_user" }
+  /** A plugin this kind inherits from is still installed and not revoked. */
+  | { status: "blocked_by_predecessor"; pluginId: string }
+  /** The user dismissed or accepted this identity within its lifetime. */
+  | { status: "closed" }
+  /** The kind was raised within its cooldown window. */
+  | { status: "cooldown" }
+  /** This plugin raised faster than the host's budget allows. */
+  | { status: "rate_limited" }
+  /** Names the field that failed validation. Nothing was delivered. */
+  | { status: "invalid"; field: string };
+
+/** Fill config key `to` from a retired predecessor's config key `from`, or with a constant `value`. */
+export type ConfigInheritDeclaration =
+  | { pluginId: string; to: string; from: string }
+  | { pluginId: string; to: string; value: unknown };
 
 // ─── Recommended-work proposals ──────────────────────────────────────────────
 //

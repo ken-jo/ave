@@ -1,36 +1,28 @@
-import { CHANNELS } from "../../contract/app-contract.js";
 import type { BootHost } from "../host-runtime.js";
 import type { TelemetryService } from "../../main/telemetry.js";
 import type { PluginTelemetryClient } from "../../telemetry/client.js";
 /**
- * Boot §4.2 Step 8 — Post-boot hooks (release prep + update detector).
+ * Boot §4.2 Step 8 — Post-boot hooks (release prep + announcements).
  *
  * Wires anonymous telemetry, crash reporter, auto-updater, plugin lifecycle
- * telemetry, first-boot consent prompt, and the plugin-update-check timer.
+ * telemetry, first-boot consent prompt, and the announcement poller. The
+ * marketplace's update notices start with the window (design §7.3).
  * All init is best-effort (try/catch around release prep; non-fatal).
  */
 import type { BrowserWindow } from "electron";
 import type { SettingsService } from "../../data/settings-store.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
-import type {
-  MarketplaceAnnouncement,
-  MarketplaceFetcher,
-} from "../../plugins/marketplace.js";
+import type { MarketplaceAnnouncement } from "../../shared/marketplace-announcements.js";
 import { MARKETPLACE } from "../../shared/ipc-channels.js";
 import {
   normalizeDismissedAnnouncementIds,
   type MarketplaceAnnouncementPayload,
 } from "../../shared/marketplace-announcements.js";
-import {
-  isSkippedPluginUpdate,
-  readSkippedPluginUpdates,
-} from "../../shared/skipped-plugin-updates.js";
-import type { PluginPaths } from "../../plugins/plugin-paths.js";
-import { PluginUpdateDetector, resolveUpdateCheckEnabled } from "../../plugins/update-detector.js";
-import { createUpdateCheckRunner } from "./update-check-runner.js";
+import { resolveUpdateCheckEnabled } from "../../plugins/update-detector.js";
 import { registerShutdownHook } from "../../main/app-shutdown.js";
 import { sendToWindow } from "../../ipc/safe-send.js";
 import { createLogger } from "../../lib/logger.js";
+import type { ServiceClient } from "../../marketplace/service/client.js";
 import type { TracingHandle } from "../../engine/telemetry/tracing.js";
 const log = createLogger("ave");
 
@@ -48,6 +40,11 @@ export interface ReleasePrepInput {
   networkFetch: typeof fetch;
   /** Boot-configured tracing; its batched spans are flushed on quit. */
   tracing: TracingHandle;
+  /**
+   * The service endpoint: telemetry posts to the endpoint its document names
+   * (design §11). The document is read for telemetry only once the user opted in.
+   */
+  serviceClient: Pick<ServiceClient, "ensureResolved" | "telemetryEndpoint">;
   /**
    * Whether this launch may open the connections in here that nothing forces
    * it to open: the release check, the two telemetry uploaders, and crash
@@ -75,84 +72,25 @@ export function wireReleasePrep(input: ReleasePrepInput, host: BootHost): Releas
   return {};
 }
 
-export interface UpdateCheckInput {
-  mainWindow: BrowserWindow | null;
-  settingsService: SettingsService;
-  marketplaceFetcher: MarketplaceFetcher;
-  /** SoT — registry path resolved once at boot from userDataDir. */
-  pluginPaths: PluginPaths;
-}
-
-/**
- * S8 — plugin update detection. Fires an IPC event `marketplace:updates-available`
- * to the renderer when newer catalog versions are found. Runs once at boot
- * and on a configurable interval (default 10m). Feature-flagged.
- */
-export function wireUpdateCheck(input: UpdateCheckInput): void {
-  const { mainWindow, settingsService, marketplaceFetcher, pluginPaths } = input;
-  const marketplaceSettings = settingsService.get("marketplace");
-  const updateCheckFeatureEnabled = resolveUpdateCheckEnabled(
-    marketplaceSettings?.updateCheckEnabled,
-  );
-  if (!updateCheckFeatureEnabled) return;
-
-  const registryPath = pluginPaths.registryPath;
-  const updateDetector = new PluginUpdateDetector(registryPath, marketplaceFetcher, {
-    canaryOptIn: marketplaceSettings?.canaryOptIn ?? false,
-  });
-  const DEFAULT_UPDATE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
-
-  const runUpdateCheck = createUpdateCheckRunner({
-    check: () => updateDetector.checkForUpdatesResult(),
-    filter: (updates) => {
-      const skippedPluginUpdates = readSkippedPluginUpdates(
-        settingsService.get("marketplace")?.skippedPluginUpdates,
-      );
-      return updates.filter(
-        (update) => !isSkippedPluginUpdate(update, skippedPluginUpdates),
-      );
-    },
-    broadcast: (updates) => {
-      mainWindow?.webContents?.send(CHANNELS.marketplace.updatesAvailable, updates);
-      if (updates.length > 0) {
-        log.info("update-check: %d plugin update(s) available", updates.length);
-      } else {
-        log.debug("update-check: cleared previous updates");
-      }
-    },
-    onNoChange: (count) => log.debug("update-check: no change (%d)", count),
-    onCatalogUnavailable: () =>
-      log.warn("update-check: catalog unavailable; preserving last successful broadcast"),
-    onError: (err) => log.warn("update-check: error: %s", (err as Error).message),
-  });
-
-  void runUpdateCheck();
-
-  const intervalMs =
-    settingsService.get("marketplace")?.updateCheckIntervalMs ?? DEFAULT_UPDATE_INTERVAL_MS;
-  let updateCheckTimer: ReturnType<typeof setInterval> | undefined;
-  if (intervalMs > 0) {
-    updateCheckTimer = setInterval(() => void runUpdateCheck(), intervalMs);
-    updateCheckTimer.unref?.();
-  }
-
-  registerShutdownHook("plugin-update-check-timer", () => {
-    if (updateCheckTimer) clearInterval(updateCheckTimer);
-  });
-}
-
 export interface AnnouncementCheckInput {
   getMainWindow: () => BrowserWindow | null;
   settingsService: SettingsService;
-  marketplaceFetcher: MarketplaceFetcher;
+  /** The service endpoint's active announcements (design §11). */
+  listAnnouncements: () => Promise<MarketplaceAnnouncement[]>;
+  /** Poll interval; the design's 6 hours unless a test passes another. */
+  intervalMs?: number;
 }
 
+/** Announcements are fetched after boot and every 6 hours (design §11). */
+const ANNOUNCEMENT_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 /**
- * Marketplace announcement polling. Fetches the server's active announcement
+ * Announcement polling. Fetches the service endpoint's active announcement
  * set, drops the ids the user has already dismissed (persisted in
  * `settings.marketplace.dismissedAnnouncementIds`), and pushes the remainder
  * to the renderer via `MARKETPLACE.announcements`. Runs once after the real
- * renderer load and on the same interval as the plugin update-check.
+ * renderer load and then every {@link ANNOUNCEMENT_INTERVAL_MS}, while the
+ * update-check switch is on.
  *
  * The dedup key folds in the target webContents, full visible payload, and
  * dismissed id set so a dismiss clears the banner, server-side corrections to
@@ -160,8 +98,7 @@ export interface AnnouncementCheckInput {
  * the current payload at least once.
  */
 export function wireAnnouncementCheck(input: AnnouncementCheckInput): void {
-  const { getMainWindow, settingsService, marketplaceFetcher } = input;
-  const DEFAULT_ANNOUNCEMENT_INTERVAL_MS = 10 * 60 * 1000; // default 10m
+  const { getMainWindow, settingsService, listAnnouncements } = input;
   const marketplaceSettings = settingsService.get("marketplace");
   const announcementCheckEnabled = resolveUpdateCheckEnabled(
     marketplaceSettings?.updateCheckEnabled,
@@ -225,7 +162,7 @@ export function wireAnnouncementCheck(input: AnnouncementCheckInput): void {
 
   const runAnnouncementCheck = async () => {
     try {
-      const announcements = await marketplaceFetcher.listAnnouncements();
+      const announcements = await listAnnouncements();
       const dismissedIds = normalizeDismissedAnnouncementIds(
         settingsService.get("marketplace")?.dismissedAnnouncementIds,
       );
@@ -278,9 +215,7 @@ export function wireAnnouncementCheck(input: AnnouncementCheckInput): void {
 
   runAfterRendererLoad();
 
-  const intervalMs =
-    settingsService.get("marketplace")?.updateCheckIntervalMs ??
-    DEFAULT_ANNOUNCEMENT_INTERVAL_MS;
+  const intervalMs = input.intervalMs ?? ANNOUNCEMENT_INTERVAL_MS;
   let announcementTimer: ReturnType<typeof setInterval> | undefined;
   if (intervalMs > 0) {
     announcementTimer = setInterval(() => void runAnnouncementCheck(), intervalMs);

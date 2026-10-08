@@ -1,0 +1,28 @@
+{
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "ave/host/openExternalUrl",
+    "params": {
+      "url": "https://example.com/help"
+    }
+  },
+  "response": {
+    "error": {
+      "code": -32000,
+      "data": {
+        "code": "manifest-integrity-violation",
+        "detail": {
+          "attemptedMethod": "openExternalUrl",
+          "pluginId": "golden-invoker",
+          "toolName": "invoke_member"
+        },
+        "name": "ManifestIntegrityError"
+      },
+      "message": "Plugin 'golden-invoker' tool 'invoke_member' violated manifest integrity by attempting 'openExternalUrl'. Plugin disabled — reinstall required."
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+  },
+  "trigger": "the call broke the manifest's integrity pin"
+}

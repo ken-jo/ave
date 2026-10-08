@@ -24,6 +24,7 @@ export interface SkillOverlayEntry {
   name: string;
   body: string;
   pluginOwner?: LoadedSkill["pluginOwner"];
+  agentPluginOwner?: LoadedSkill["agentPluginOwner"];
   /**
    * Bundled resources declared by the loaded skill (stage-3). Rendered as an
    * inert manifest so the model knows what it may fetch with `skill_read`;
@@ -57,6 +58,7 @@ export class SkillOverlay {
       name: skill.name,
       body: skill.body,
       pluginOwner: skill.pluginOwner,
+      agentPluginOwner: skill.agentPluginOwner,
       resources: skill.resources,
       filePath: skill.filePath,
       ...(generationLease ? { releaseGeneration: () => generationLease.release() } : {}),

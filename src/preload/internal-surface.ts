@@ -28,7 +28,6 @@ import type {
   NativeContextMenuPayload,
 } from "../shared/native-context-menu.js";
 import {
-  normalizeMarketplacePackageActionResult,
   normalizePluginActionResult,
 } from "./internal-api-surface.js";
 export { buildInternalApiSurface } from "./internal-api-surface.js";
@@ -128,7 +127,6 @@ export function readInitialAppModeArg(): InitialAppMode | null {
   }
 }
 
-
 export function buildAveHostWorld() {
   let hostMarketplaceApiClaimed = false;
   return {
@@ -136,30 +134,8 @@ export function buildAveHostWorld() {
     if (hostMarketplaceApiClaimed) return null;
     hostMarketplaceApiClaimed = true;
     return {
-      installMarketplacePlugin: async (
-        pluginId: string,
-        expectedVersion?: string,
-        options?: { networkAccessAcknowledgement?: unknown },
-      ) =>
-        normalizePluginActionResult(await ipcRenderer.invoke(CHANNELS.plugins.install, pluginId, {
-          ...(expectedVersion ? { expectedVersion } : {}),
-          ...(options?.networkAccessAcknowledgement ? { networkAccessAcknowledgement: options.networkAccessAcknowledgement } : {}),
-        })),
-      uninstallMarketplacePlugin: async (
-        pluginId: string,
-        options?: { doctorCleanup?: { installFailureKind?: string } },
-      ) =>
-        normalizePluginActionResult(await ipcRenderer.invoke(CHANNELS.plugins.uninstall, pluginId, options)),
-      rollbackMarketplacePlugin: async (pluginId: string) =>
-        normalizePluginActionResult(await ipcRenderer.invoke(CHANNELS.plugins.rollback, pluginId)),
-      installMarketplaceAgent: async (slug: string) =>
-        normalizeMarketplacePackageActionResult(await ipcRenderer.invoke(CHANNELS.agents.install, slug), "agentId"),
-      uninstallMarketplaceAgent: async (slug: string) =>
-        normalizeMarketplacePackageActionResult(await ipcRenderer.invoke(CHANNELS.agents.uninstall, slug), "agentId"),
-      installMarketplaceSkill: async (slug: string) =>
-        normalizeMarketplacePackageActionResult(await ipcRenderer.invoke(CHANNELS.skills.install, slug), "skillId"),
-      uninstallMarketplaceSkill: async (slug: string) =>
-        normalizeMarketplacePackageActionResult(await ipcRenderer.invoke(CHANNELS.skills.uninstall, slug), "skillId"),
+      uninstallMarketplacePlugin: async (pluginId: string) =>
+        normalizePluginActionResult(await ipcRenderer.invoke(CHANNELS.plugins.uninstall, pluginId)),
     };
   },
   };

@@ -19,6 +19,23 @@ export const OVERLAY_V1 = {
   dismiss: "ave:overlay:dismiss",
 } as const;
 
+/**
+ * Host-renderer alert Settings and card lifecycle. The cards travel on
+ * {@link OVERLAY_V1}; a window that appeared late can pull staged cards.
+ */
+export const ALERTS = {
+  listKinds: "ave:alerts:list-kinds",
+  removePredecessor: "ave:alerts:remove-predecessor",
+  setKind: "ave:alerts:set-kind",
+  setOsNotificationsEnabled: "ave:alerts:set-os-notifications-enabled",
+  /** main → renderer: re-read registered kinds and alert settings. */
+  kindsChanged: "ave:alerts:kinds-changed",
+  /** invoke `(alertId, "accepted" | "dismissed")`: the identity stays closed for its lifetime. */
+  cardClosed: "ave:alerts:card-closed",
+  /** invoke → every staged alert card. */
+  listOpen: "ave:alerts:list-open",
+} as const;
+
 export const ROUTINES = {
   list: "ave:routines:list",
   add: "ave:routines:add",

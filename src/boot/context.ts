@@ -1,4 +1,5 @@
 import type { BootHost } from "./host-runtime.js";
+import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 /**
  * BootContext — the accumulator threaded through the boot pipeline (C18).
  *
@@ -39,6 +40,7 @@ import type { PluginRuntime } from "../plugins/runtime.js";
 import type { PluginDeploymentGuard } from "../plugins/deployment-guard.js";
 import type { LateBindingRefs } from "./steps/plugin-runtime.js";
 import type { WorkBoardStore } from "../main/work-board-store.js";
+import type { AlertsService } from "../alerts/service.js";
 import type { WorkBoardEngine } from "../core/work-board-engine.js";
 import type { WorkBoardReporter } from "../work-board/work-report.js";
 import type { SessionTasksStore } from "../main/session-tasks-store.js";
@@ -51,9 +53,7 @@ import type { SkillApprovalsStore } from "../main/skill-approvals-store.js";
 import type { AskUserQuestionGate } from "../main/ask-user-question-gate.js";
 import type { SubAgentRunner } from "../engine/subagent-runner.js";
 import type { IdleSchedulerService } from "../main/idle-scheduler.js";
-import type { MarketplaceFetcher, PluginMarketplaceService,
-} from "../plugins/marketplace.js";
-import type { PluginArtifactStore } from "../plugins/plugin-artifact-store.js";
+import type { PluginMarketplaceService } from "../plugins/marketplace.js";
 import type { SystemPromptBuilder } from "../prompts/system-prompt-builder.js";
 import type { McpAppModelContextStore } from "../mcp/mcp-app-model-context.js";
 import type { RoutineEngine } from "../routines/routine-engine.js";
@@ -110,7 +110,7 @@ export class BootContext {
 
   // ── Network fetch surface (setupNetworkFetch) ──────────────────────────────
   declare networkFetch: typeof fetch;
-  declare singleHopNetworkFetch: typeof fetch;
+  declare singleHopNetworkFetch: HostFetchTransport;
   declare llmFetch: typeof fetch;
 
   // ── Home docs seed ─────────────────────────────────────────────────────────
@@ -152,6 +152,7 @@ export class BootContext {
   declare workBoardStorage: WorkBoardStorage;
   declare dueSoonTimer: ReturnType<typeof setInterval> | undefined;
   declare startWorkBoardDueSoon: () => void;
+  declare alertsService: AlertsService;
   declare sessionTasksStore: SessionTasksStore;
   declare sessionGoalStore: SessionGoalStore;
   declare skillStore: SkillStore;
@@ -164,9 +165,7 @@ export class BootContext {
   declare idleScheduler: IdleSchedulerService | undefined;
 
   // ── Marketplace (setupMarketplace) ─────────────────────────────────────────
-  declare marketplaceFetcher: MarketplaceFetcher;
   declare pluginMarketplace: PluginMarketplaceService;
-  declare refreshMarketplaceFetcherConfig: () => void;
   declare refreshActiveLlmWildcard: () => void;
   /** Cancels the active-LLM wildcard restart debounce during host shutdown. */
   declare disposeRefreshActiveLlmWildcard: () => void;
@@ -241,19 +240,15 @@ export class BootContext {
   declare workBoardReporter: WorkBoardReporter;
 
   // ── Plugin IPC bridges (mutable disposers) ─────────────────────────────────
-  declare disposePluginNotifications: () => void;
   declare disposePluginEventBridge: () => void;
   declare pluginEventBridgeWindow: BrowserWindow | null;
   declare replacePluginEventBridge: (win: BrowserWindow | null) => void;
 
-  // ── MCP + signed-artifact stores ───────────────────────────────────────────
+  // ── MCP ────────────────────────────────────────────────────────────────────
   declare mcpGovernance: McpGovernance;
   declare mcpManager: McpManager;
   /** Owns each plugin's loopback MCP host — the loopback-first arm of the render IPC's `ui://` resolver. */
   declare pluginLoopbackManager: PluginLoopbackManager;
-  declare mcpArtifactStore: PluginArtifactStore | undefined;
-  declare agentArtifactStore: PluginArtifactStore | undefined;
-  declare skillArtifactStore: PluginArtifactStore | undefined;
 
   // ── Starred / feedback ─────────────────────────────────────────────────────
   declare starredStore: StarredStore;
@@ -310,6 +305,7 @@ const BOOT_CONTEXT_FIELDS = [
   "workBoardStorage",
   "dueSoonTimer",
   "startWorkBoardDueSoon",
+  "alertsService",
   "sessionTasksStore",
   "sessionGoalStore",
   "skillStore",
@@ -320,9 +316,7 @@ const BOOT_CONTEXT_FIELDS = [
   "askUserQuestionGate",
   "subAgentRunnerRef",
   "idleScheduler",
-  "marketplaceFetcher",
   "pluginMarketplace",
-  "refreshMarketplaceFetcherConfig",
   "refreshActiveLlmWildcard",
   "disposeRefreshActiveLlmWildcard",
   "refreshSandboxNetworkConfig",
@@ -359,16 +353,12 @@ const BOOT_CONTEXT_FIELDS = [
   "memoryMaintenanceCoordinator",
   "workBoardEngine",
   "workBoardReporter",
-  "disposePluginNotifications",
   "disposePluginEventBridge",
   "pluginEventBridgeWindow",
   "replacePluginEventBridge",
   "mcpGovernance",
   "mcpManager",
   "pluginLoopbackManager",
-  "mcpArtifactStore",
-  "agentArtifactStore",
-  "skillArtifactStore",
   "starredStore",
   "feedbackStore",
   "telemetry",

@@ -247,11 +247,21 @@ test.describe("chat preview rail", () => {
       await expect(ctx.page.getByTestId("chat-preview-rail")).toHaveCount(0);
       // No tool-activity control in the header: the activity lives in the panel.
       await expect(ctx.page.getByTestId("pane-header")).not.toContainText("도구 활동");
+      // The work panel is the conversation's, so its toggle is the pane's own
+      // trailing header control, below the window band that holds the mode
+      // toggle (6a64316b5, 954f1d9f9) — not a band control beside it.
       const modeToggleBox = await ctx.page.getByTestId("app-mode-toggle").boundingBox();
+      const paneHeader = ctx.page.getByTestId("pane-header");
+      const paneHeaderBox = await paneHeader.boundingBox();
       const sidePanelButtonBox = await openButton.boundingBox();
+      const paneHeaderPaddingRight = await paneHeader.evaluate((element: Element) => Number.parseFloat(getComputedStyle(element).paddingRight));
       expect(modeToggleBox).not.toBeNull();
+      expect(paneHeaderBox).not.toBeNull();
       expect(sidePanelButtonBox).not.toBeNull();
-      expect(sidePanelButtonBox!.x).toBeGreaterThanOrEqual(modeToggleBox!.x + modeToggleBox!.width);
+      expect(sidePanelButtonBox!.y).toBeGreaterThanOrEqual(modeToggleBox!.y + modeToggleBox!.height);
+      expect(sidePanelButtonBox!.y).toBeGreaterThanOrEqual(paneHeaderBox!.y);
+      expect(sidePanelButtonBox!.y + sidePanelButtonBox!.height).toBeLessThanOrEqual(paneHeaderBox!.y + paneHeaderBox!.height);
+      expect(Math.abs((paneHeaderBox!.x + paneHeaderBox!.width - paneHeaderPaddingRight) - (sidePanelButtonBox!.x + sidePanelButtonBox!.width))).toBeLessThanOrEqual(1);
 
       await openButton.click();
       const panel = ctx.page.getByTestId(TEST_IDS.chatSidePanel);
@@ -357,29 +367,46 @@ test.describe("chat preview rail", () => {
       await expect(rail).not.toContainText(sideBrowserHost);
 
       const chatBox = await ctx.page.locator(".ave-chat-scroll").boundingBox();
-      const rootBox = await ctx.page.getByTestId(TEST_IDS.chatViewRoot).boundingBox();
+      const paneBox = await ctx.page.getByTestId("pane").boundingBox();
+      const finalHeaderBox = await paneHeader.boundingBox();
       const mainColumnBox = await ctx.page.getByTestId("chat-main-column").boundingBox();
       const actionBarBox = await ctx.page.getByTestId("input-action-bar").boundingBox();
       const railBox = await panel.boundingBox();
       const finalSplitterBox = await ctx.page.getByTestId("chat-side-panel-width-splitter").boundingBox();
+      // The docked card floats inside its tile with the floating sidebar's own
+      // air: the wrapper carries --shell-card-inset on top, start and end and
+      // --shell-card-inset-bottom below (a9c521325), so the transcript is
+      // pushed by the card plus its insets and the card's edges line up with
+      // the sidebar card's.
+      const { inset, insetBottom } = await ctx.page.evaluate(() => {
+        const style = getComputedStyle(document.documentElement);
+        return {
+          inset: Number.parseFloat(style.getPropertyValue("--shell-card-inset")),
+          insetBottom: Number.parseFloat(style.getPropertyValue("--shell-card-inset-bottom")),
+        };
+      });
       expect(chatBox).not.toBeNull();
-      expect(rootBox).not.toBeNull();
+      expect(paneBox).not.toBeNull();
+      expect(finalHeaderBox).not.toBeNull();
       expect(mainColumnBox).not.toBeNull();
       expect(actionBarBox).not.toBeNull();
       expect(railBox).not.toBeNull();
       expect(finalSplitterBox).not.toBeNull();
+      expect(inset).toBeGreaterThan(0);
+      expect(insetBottom).toBeGreaterThan(0);
       expect(railBox!.width).toBeGreaterThanOrEqual(300);
-      expect(Math.abs(railBox!.x - (mainColumnBox!.x + mainColumnBox!.width))).toBeLessThanOrEqual(2);
+      expect(Math.abs(railBox!.x - (mainColumnBox!.x + mainColumnBox!.width) - inset)).toBeLessThanOrEqual(1);
       expect(railBox!.x).toBeGreaterThanOrEqual(chatBox!.x + chatBox!.width - 2);
       expect(railBox!.x).toBeGreaterThan(actionBarBox!.x + actionBarBox!.width - 8);
+      // The width handle is the card's own start edge, inside the card (it clips).
       expect(finalSplitterBox!.width).toBeGreaterThanOrEqual(7);
       expect(finalSplitterBox!.width).toBeLessThanOrEqual(9);
-      expect(Math.abs((finalSplitterBox!.x + finalSplitterBox!.width / 2) - railBox!.x)).toBeLessThanOrEqual(1);
-      // The docked rail is a floating card with Tailwind `mr-2` / `my-2`.
-      expect(Math.abs((rootBox!.x + rootBox!.width) - (railBox!.x + railBox!.width) - 8)).toBeLessThanOrEqual(2);
+      expect(Math.abs(finalSplitterBox!.x - railBox!.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs((paneBox!.x + paneBox!.width) - (railBox!.x + railBox!.width) - inset)).toBeLessThanOrEqual(2);
+      expect(Math.abs(railBox!.y - finalHeaderBox!.y - inset)).toBeLessThanOrEqual(1);
+      expect(Math.abs((paneBox!.y + paneBox!.height) - (railBox!.y + railBox!.height) - insetBottom)).toBeLessThanOrEqual(2);
       expect(Math.abs(chatBox!.width - mainColumnBox!.width)).toBeLessThanOrEqual(2);
       expect(Math.abs(actionBarBox!.width - mainColumnBox!.width)).toBeLessThanOrEqual(48);
-      expect(Math.abs(rootBox!.height - railBox!.height - 16)).toBeLessThanOrEqual(2);
       await expect(panel).not.toHaveCSS("position", "absolute");
 
       // The activity tab lists every plugin and tool call of the session; the

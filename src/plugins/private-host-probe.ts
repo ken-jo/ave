@@ -2,16 +2,15 @@
  * `probePrivateHost` — does the OS resolver know about a host that only exists
  * on a private network (corporate intranet, VPN, lab subnet)?
  *
- * Host-side landing of the SDK's `runtime/network.ts#detectViaPrivateDnsProbe`
- * shim: the capability moves INTO hostApi so plugins never reach `dns.lookup`
- * (or a corp-network presence probe) directly. The core mechanism is ported
- * faithfully; the host adds argument validation + timeout clamping.
+ * The capability lives in HostApi so plugins never reach `dns.lookup`
+ * (or a private-network presence probe) directly. The host validates arguments
+ * and clamps timeouts.
  *
  * Mechanism: `node:dns/promises.lookup(host)` raced against a `Promise.race`
  * deadline. On-corp DNS resolves the host (typically an RFC1918 private IP);
  * off-corp DNS returns `ENOTFOUND`. The async asymmetry is the signal.
  *
- * Design decisions (unchanged from the SDK shim):
+ * Design decisions:
  *   - No result cache. corp↔off-corp transitions in both directions are common
  *     (VPN connect/disconnect, leaving the office); a sticky cache defeats the
  *     gate in one direction. The OS DNS cache handles perf (≤1ms hit).

@@ -6,14 +6,9 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { join } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { vi } from "vitest";
-
-vi.mock("node:os", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("node:os")>();
-  return { ...orig, homedir: vi.fn(orig.homedir) };
-});
 
 import { AuditLogger } from "../audit-logger.js";
 import { withAuditSnapshotLock } from "../jsonl-reader.js";
@@ -27,12 +22,14 @@ beforeEach(() => {
   testHome = mkdtempSync(join(tmpdir(), "ave-audit-rot-"));
   auditDir = join(testHome, ".ave", "audit");
   mkdirSync(auditDir, { recursive: true });
-  vi.mocked(homedir).mockReturnValue(testHome);
+  // The logger's default directory, `<AVE_HOME>/audit`.
+  vi.stubEnv("AVE_HOME", join(testHome, ".ave"));
 });
 
 afterEach(async () => {
   if (existsSync(testHome)) await cleanupTmpDir(testHome);
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 function writeJsonlFile(filename: string, content: string): string {

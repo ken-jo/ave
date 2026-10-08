@@ -152,7 +152,7 @@ export function createReadOnlyFsPromisesProxy(
 }
 
 /**
- * Process-wide state for plugin manifest-integrity violations. SDK manifest
+ * Process-wide state for plugin manifest-integrity violations. Plugin manifest
  * metadata is the plugin tool authority; declared read/write tools enter the
  * same disable/audit state when their boundary claims are violated.
  */

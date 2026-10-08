@@ -3,7 +3,13 @@
  * gate predicate (`appVersionSatisfiesMin`).
  */
 import { describe, it, expect } from "vitest";
-import { compareSemver, appVersionSatisfiesMin, SEMVER_CORE_PATTERN } from "../semver-compare.js";
+import {
+  compareSemver,
+  appVersionSatisfiesMin,
+  isSemver,
+  isTwoMinorReleasesBehind,
+  SEMVER_CORE_PATTERN,
+} from "../semver-compare.js";
 
 describe("compareSemver", () => {
   it("orders plain numeric cores numerically (not lexically)", () => {
@@ -52,5 +58,53 @@ describe("SEMVER_CORE_PATTERN", () => {
     expect(SEMVER_CORE_PATTERN.test("1.2.3-beta.1+build")).toBe(true);
     expect(SEMVER_CORE_PATTERN.test("1.2")).toBe(false);
     expect(SEMVER_CORE_PATTERN.test("v1.2.3")).toBe(false);
+  });
+});
+
+/** Pre-release builds and malformed strings: a running version that must prune nothing. */
+const UNSTABLE_RUNNING_VERSIONS = [
+  "0.14.0-beta.1", "1.0.0-rc.1", "0.14.00", "0.14.0garbage", "0.14.0-..", "0.14.0+", "0.14.0\n", "0.14.0.9", "0.14.0+build.1",
+];
+
+describe("isTwoMinorReleasesBehind", () => {
+  it("counts minors within a major and ignores patch and pre-release", () => {
+    expect(isTwoMinorReleasesBehind("0.12.0", "0.13.9")).toBe(false);
+    expect(isTwoMinorReleasesBehind("0.12.9", "0.14.0")).toBe(true);
+    expect(isTwoMinorReleasesBehind("0.12.0-beta.1+build.2", "0.14.0")).toBe(true);
+    expect(isTwoMinorReleasesBehind("0.12.0", "0.12.5")).toBe(false);
+  });
+
+  it("treats any higher running major as behind, and a lower one as not", () => {
+    expect(isTwoMinorReleasesBehind("0.12.0", "1.0.0")).toBe(true);
+    expect(isTwoMinorReleasesBehind("0.99.0", "1.0.0")).toBe(true);
+    expect(isTwoMinorReleasesBehind("1.0.0", "0.14.0")).toBe(false);
+  });
+
+  it("is false when either version has no stable core, so nothing is dropped", () => {
+    expect(isTwoMinorReleasesBehind("0.12.0", "unknown")).toBe(false);
+    expect(isTwoMinorReleasesBehind("0.12.0", "")).toBe(false);
+    expect(isTwoMinorReleasesBehind("unknown", "1.0.0")).toBe(false);
+    expect(isTwoMinorReleasesBehind("0.12.0-..", "1.0.0")).toBe(false);
+  });
+
+  it("is false for a running version that is not a stable release", () => {
+    for (const running of UNSTABLE_RUNNING_VERSIONS) {
+      expect(isTwoMinorReleasesBehind("0.12.0", running), JSON.stringify(running)).toBe(false);
+    }
+  });
+});
+
+describe("isSemver", () => {
+  it("accepts complete versions with pre-release and build metadata", () => {
+    for (const v of ["0.12.0", "0.12.0-beta.1", "0.12.0-beta.1+build.2", "1.0.0+20260926", "1.0.0-0.3.7"]) {
+      expect(isSemver(v), v).toBe(true);
+    }
+  });
+
+  it("rejects partial, padded, zero-led and empty-identifier versions", () => {
+    for (const v of ["0.12", "v1.0.0", "01.0.0", "1.0.0-01", "0.12.0-..", "0.12.0-", "0.12.0+", " 1.0.0", "unknown"]) {
+      expect(isSemver(v), v).toBe(false);
+    }
+    expect(isSemver(`1.0.0-${"x".repeat(130)}`)).toBe(false);
   });
 });

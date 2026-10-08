@@ -9,6 +9,7 @@ import type { PluginRuntime, PluginToolInvocationDelegate,
 } from "../plugins/runtime.js";
 import type { PluginMarketplaceService } from "../plugins/marketplace.js";
 import type { SettingsService } from "../data/settings-store.js";
+import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
 import type { MemoryCaptureService } from "../memory/memory-capture-service.js";
 import type { InputClassifier } from "../core/input-classifier.js";
@@ -198,17 +199,6 @@ export interface AppServices {
   }>;
   /** Revoke one plugin-panel session and its read/grant lifecycle state. */
   revokePluginOperationSession: (appSessionId: string) => void;
-  /**
-   * §FU#259 — artifact store rooted at `userData/mcp-servers/`.
-   * Constructed at boot when the marketplace fetcher supports verified
-   * downloads; absent when the build uses the disabled fetcher (no
-   * marketplace configured) so the MCP install IPC degrades gracefully.
-   */
-  mcpArtifactStore?: import("../plugins/plugin-artifact-store.js").PluginArtifactStore;
-  /** Issue #456 — signed marketplace agent packages extracted under ~/.ave/agents/. */
-  agentArtifactStore?: import("../plugins/plugin-artifact-store.js").PluginArtifactStore;
-  /** Issue #456 — signed marketplace skill packages extracted under ~/.ave/skills/. */
-  skillArtifactStore?: import("../plugins/plugin-artifact-store.js").PluginArtifactStore;
   idleScheduler?: IdleSchedulerService;
   preferenceRefreshService?: PreferenceRefreshService;
   /** Reviewer-backed merge of the packaged agent context with the user's own. */
@@ -231,15 +221,6 @@ export interface AppServices {
    * captured at IPC-registration time would pin the stand-in forever.
    */
   getApprovalSentenceSelector?: () => ApprovalSentenceSelector | undefined;
-  /**
-   * Re-apply the live MarketplaceTab settings to the marketplace fetcher
-   * constructed at boot. Currently used for the SSRF-guard bypass toggle
-   * (`marketplace.cloudAllowPrivateNetwork`) — the field is read
-   * per-request on the fetcher, so calling this after a settings patch
-   * makes the toggle effective on the next marketplace request without
-   * an app restart. No-op for the disabled fetcher.
-   */
-  refreshMarketplaceFetcherConfig?: () => void;
   /**
    * #893 — Re-sync the plugin runtime's wildcard config overrides. Only the
    * non-secret `hostApiVendor` is projected, and only while an API provider
@@ -272,6 +253,8 @@ export interface AppServices {
     | import("../engine/subagent-runner.js").SubAgentRunner | undefined;
   /** Work board persistence (~/.ave/work-board/board.json) — backs the work-board IPC domain. */
   workBoardStore?: import("../main/work-board-store.js").WorkBoardStore;
+  /** Plugin alerts pipeline — backs `hostApi.raiseAlert` and the alerts IPC domain. */
+  alertsService?: import("../alerts/service.js").AlertsService;
   /**
    * Work board agent-orchestration engine — owns the plan→approve→execute run
    * for one item. Wired after the SubAgentRunner exists at boot; reached by the
@@ -289,8 +272,8 @@ export interface AppServices {
   skillStore?: import("../main/skill-store.js").SkillStore;
   agentProfileStore?: import("../main/agent-profile-store.js").AgentProfileStore;
   personaPromptStore?: import("../main/persona-prompt-store.js").PersonaPromptStore;
-  /** Rebuild OS notification handlers after plugin install or removal. */
-  refreshPluginNotifications?: () => void;
+  /** Rebuild plugin event bridge subscriptions after install or removal. */
+  refreshPluginEventBridge?: () => void;
   /** SoT — canonical plugin install/cache paths. */
   pluginPaths?: ReturnType<typeof import("../plugins/plugin-paths.js").resolvePluginPaths>;
   /** Host-owned wipe for persistent plugin auth sessions. */
@@ -340,6 +323,12 @@ export interface AppServices {
    */
   startWorkBoardDueSoon?: () => void;
   /**
+   * Deferred alerts expiry sweep. main.ts calls this beside
+   * startWorkBoardDueSoon, once IPC and plugins are up; the timer stops in
+   * `shutdown()`.
+   */
+  startAlerts?: () => void;
+  /**
    * Issue #260 — system-level notification service. Auto-fires desktop
    * notifications at lifecycle points (turn-end / routine / ask-user /
    * approval / plugin / system). Constructed AFTER main window exists in boot.ts. The LLM never
@@ -373,5 +362,5 @@ export interface AppServices {
    * guard re-validates every redirect target, which it can only do if the
    * transport hands the 3xx back instead of chasing it.
    */
-  singleHopNetworkFetch: typeof fetch;
+  singleHopNetworkFetch: HostFetchTransport;
 }

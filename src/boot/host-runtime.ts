@@ -6,6 +6,7 @@ import type { PowerMonitorLike } from "../main/idle-scheduler.js";
 import type { NotificationServiceOptions } from "../main/notification-service.js";
 import type { InitPluginRuntimeInput } from "./steps/plugin-runtime.js";
 import type { ReleasePrepInput, ReleasePrepOutput } from "./steps/post-boot.js";
+import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 
 /** Desktop-owned capabilities. The server has no presentation surface. */
 export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
@@ -17,7 +18,15 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   installPluginPartition(pluginId: string, pluginRoot: string | undefined): void;
   revokePluginWebviews(pluginId: string, revokeSession: (sessionId: string) => void): void;
   onBootShutdown(run: () => Promise<void>, needed: () => boolean): void;
-  notificationSupported(): boolean;
+  /**
+   * Initialise the OS notification presenter and report whether OS
+   * notifications are supported. Boot calls it once (`setupAuditAndNotification`)
+   * so the presenter exists before the first cue: on Windows, Electron
+   * registers the per-user Start Menu shortcut and the toast activator CLSID
+   * pinned in `early-boot-env.ts` when the presenter is created, and Action
+   * Center activation of a persisted or cold-start toast relies on both.
+   */
+  initializeNotificationPresenter(): boolean;
   notificationOptions: Partial<NotificationServiceOptions>;
   powerMonitor: PowerMonitorLike;
   createAudioCaptureSurface(): AudioCaptureSurface;
@@ -35,7 +44,7 @@ export interface BootHost {
   readonly isPackaged: boolean;
   readonly encryption: SecretEncryption;
   readonly networkFetch: typeof fetch;
-  readonly singleHopNetworkFetch: typeof fetch;
+  readonly singleHopNetworkFetch: HostFetchTransport;
   readonly llmFetch: typeof fetch;
   resolveProxy?: (url: string) => Promise<string>;
   readonly desktop?: DesktopHostCapabilities;

@@ -419,9 +419,10 @@ Implementation anchors:
 
 ## Headless one-shot CLI
 
-The main process accepts two one-shot flags. Each boots the ordinary host
-service graph and performs exactly one action. Both quit by default. Neither opens a
-workspace, and neither is a second conversation runtime: `--exec` runs the same
+The main process accepts one-shot execution and secret-write actions, plus
+optional execution-boundary flags. Each action boots the ordinary host service
+graph and performs exactly one action. Both actions quit by default. Neither
+opens a workspace, and neither is a second conversation runtime: `--exec` runs the same
 `runStreamedTurn` producer the desktop window runs and reads the same closed
 event union, with a sink that serialises instead of projecting to a renderer.
 
@@ -432,14 +433,20 @@ ave --exec="<prompt>"              prompt inline; `--exec` or `--exec=-` reads s
                                     path resolves against it). Must be the
                                     default workspace or a directory listed in
                                     permissions.additionalDirectories of
-                                    ~/.ave/settings.json — the run refuses
-                                    (exit 64) rather than re-rooting elsewhere
+                                    ~/.ave/settings.json — or, with the
+                                    workload-broker flags, exactly the guest
+                                    cwd — the run refuses (exit 64) rather than
+                                    re-rooting elsewhere
      [--exec-approve=default|allow] permission mode for the run (default: default)
      [--exec-output=stream-json|json]  (default: stream-json)
      [--exec-max-rounds=<n>]        round budget for the turn
      [--exec-operator-attestation=<absolute-path>]
                                     verify Linux launcher isolation evidence
                                     before host services start
+     [--exec-workload-broker=<absolute-socket-path>
+      --exec-workload-capability=<absolute-file-path>]
+                                    bind this turn to one host-brokered Linux
+                                    workload; the two flags are inseparable
      [--exec-keep-alive]            retain a successful streamed session until
                                     SIGTERM or SIGINT from its caller
 ave --set-secret=<key>             secret VALUE is read from stdin, never argv
@@ -465,8 +472,38 @@ shutdown and descendant cleanup. Unsuccessful turns exit without retention.
 with `--set-secret`. It is a fail-closed Linux-only boot input. The
 [permission policy](permission-policy-design.md#headless-operator-container-attestation)
 owns its signature, trust-root, process-fact, capability, and revalidation
-contract. Verification only publishes evidence for a later execution router;
-it does not relax current permission or shell policy.
+contract. A builtin shell invocation reacquires that exact process capability
+and consumes a one-shot execution grant for the disposable route. This changes
+only guest-internal path admission that would otherwise require an unavailable
+UI; it does not relax structural shell checks or normal tool authorization.
+
+The workload-broker flags select a different route. The controller remains a
+host process and connects through an owner-only Unix socket to a host broker
+bound to one exact Docker `main` identity. Both absolute paths are required;
+the pair requires `--exec` and cannot be combined with `--set-secret` or
+`--exec-operator-attestation`. The capability file is an owner-owned mode
+`0400` regular file in a real, owner-owned mode `0700` directory; the socket is
+mode `0600` in an owner-owned mode `0700` directory. Before host services start,
+Ave pins and rechecks the capability directory and file identities across the
+bounded read, verifies expiry and workload identity, checks the socket, completes
+an exact handshake, and requires `--exec-cwd` to equal the capability's guest cwd.
+While the broker is bound, `src/main/project-root-authorization.ts` answers every
+"which project" question — the CLI pre-check, the session authorizer, the
+project list, and the loop's fallback default project — with that one guest cwd,
+matched byte-for-byte and never canonicalized against the controller host, where
+it need not exist. After session
+initialization the run re-checks the root the session actually bound to and exits
+`1` rather than continuing from the host default workspace.
+
+In this mode the host-native controller, encrypted provider secret, broker
+credential, receipts and controller logs remain outside `main`; `main` receives
+no host bind, Docker socket or controller environment. Builtin Bash and
+canonical file operations route only through the broker. The route deliberately
+does not reinterpret a guest path as a host path or run the host Bash structural
+parser: the bound workload has no host mounts, devices or secrets to expose.
+The ordinary permission decision, reviewer, audit and deadline layers still
+run. PowerShell is unsupported on this Linux broker route and fails closed.
+See the [host-native workload broker policy](permission-policy-design.md#host-native-workload-broker).
 
 Exit codes are `0` completed, `1` the turn failed or the secret could not be
 stored, `2` the turn ended asking for input, `64` a malformed command line,
@@ -480,13 +517,29 @@ the run produced; the code itself is applied by a `will-quit` handler through
 holds. A cleanup that hits its timeout exits hard with the same chosen code.
 
 An unattended run has nobody to ask. Bootstrap therefore marks its conversation
-loops with an unavailable approval surface. The native main loop keeps the
-ordinary main-chat tool, plugin, MCP, and egress scope intact; if one of its
-tools still needs explicit authorization after the normal policy and reviewer
-paths, the host appends its single paired error result and terminates the turn
-before another model round. Routine loops remain in their existing `headless`
-policy lane, including its fail-closed and deferred-review behavior; approval
-availability does not turn that scope flag into foreground authority.
+loops with an unavailable approval surface, and the native main loop keeps the
+ordinary main-chat tool, plugin, MCP, and egress scope intact. For each turn it
+runs, exec-mode mints a host-issued unattended turn authority
+(`UnattendedTurnAuthority` in `src/shared/authorization-required.ts`) and hands
+it to `runStreamedTurn`; `runTurn` refuses a lookalike the host did not mint, and
+the query loop projects the authority onto that turn's tool permission context as
+the unattended policy lane. An ask on that lane is settled by the routine
+contract — reviewer routing for mutating builtin calls, a deferred-queue hold for
+a path outside the granted set, a fail-closed denial for explicit host execution —
+as a structured tool error the model sees, and the turn continues; the owner's
+own allow rules and "Allow always" grants still apply first, because the turn
+is their gesture rather than a background routine's. The authority is per turn,
+spent by the turn that carries it, and never parsed from chat input, so a
+retained session's later turns, which arrive through the Local API or a Tailnet
+surface, can neither inherit nor replay it. Routine loops remain in their existing `headless` policy lane, including its
+fail-closed and deferred-review behavior; approval availability does not turn
+that scope flag into foreground authority.
+
+When a turn without that authority still needs explicit authorization after the
+normal policy and reviewer paths — an attached client's turn on a retained
+session, or a child agent boundary re-issued through `agent_spawn` — the host
+appends its single paired error result and terminates the turn before another
+model round.
 The terminal event carries only the tool identity, category, reason, and safe
 execution-plan projection; it carries no arguments, command, path, prompt, or
 reviewer prose. JSON output similarly omits the partial result and raw tool-call
@@ -507,10 +560,10 @@ event projection instead of serializing the owner stream.
 
 `--exec-approve=allow` still sets the permission manager's allow mode without
 removing any Layer 0 check. Allow mode does not cover the Layer-1
-allowed-directory request, so an unattended run stops with
-`authorization-required` for a path outside the already-granted set. A harness
-must pre-grant the directories its tasks work in through the workspace grant
-document rather than expecting allow mode to reach them. The pending-approval
+allowed-directory request, so a path outside the already-granted set is held in
+the deferred queue and denied for the turn. A harness must pre-grant the
+directories its tasks work in through the workspace grant document rather than
+expecting allow mode to reach them. The pending-approval
 observer remains a fail-closed backstop for approval producers outside the tool
 invocation path; it never widens a verdict. `--set-secret` writes through the app's own secret store so a
 container never has to produce the platform's ciphertext itself; the store's key

@@ -1,4 +1,5 @@
 import type { BootHost } from "../host-runtime.js";
+import type { HostFetchTransport } from "../../main/host-fetch-guard.js";
 /**
  * Boot §4.2 Step 3-5 — Plugin runtime + HostApi factory.
  *
@@ -16,13 +17,18 @@ import type { BootHost } from "../host-runtime.js";
  */
 import type { BrowserWindow } from "electron";
 import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { aveHome } from "../../shared/ave-home.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { registerBootPluginShutdown, registerShutdownHook } from "../../main/app-shutdown.js";
 import { onEvent as onHostEvent } from "../types.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { PluginRuntime } from "../../plugins/runtime.js";
+import { LeaseDenialAudit } from "../../plugins/secret-access/lease-denial-audit.js";
 import type { PythonRuntimeBootstrapper } from "../../main/python-runtime.js";
 import { startPluginDevWatcher } from "../../plugins/dev-watcher.js";
 import { PluginDeploymentGuard } from "../../plugins/deployment-guard.js";
+import { loadMarketplacePolicy } from "../../marketplace/sources/policy.js";
 import {
   setIsPackaged,
   shouldWarnPackagedFlagsIgnored,
@@ -55,6 +61,7 @@ import { AuthRedirectCatchers } from "../../main/auth-redirect-catcher.js";
 import { createHostApiFactory } from "./plugin-runtime/host-api-factory.js";
 import { createLifecycleCallbacks } from "./plugin-runtime/lifecycle.js";
 import { createRegistryEntryCache } from "./plugin-runtime/registry-cache.js";
+import { grantEvidenceReader } from "./plugin-runtime/grant-evidence.js";
 import { PluginRuntimePreStartPhase } from "./plugin-runtime/pre-start-phase.js";
 const log = createLogger("ave");
 
@@ -124,6 +131,9 @@ export interface InitPluginRuntimeInput {
   host: BootHost;
   projectRoot: string;
   settingsService: SettingsService;
+  _onCredentialIssuanceStageForTest?: (
+    stage: import("../../main/host-api/resolve-api-key.js").CredentialIssuanceStage,
+  ) => Promise<void> | void;
   memoryManager: MemoryManager;
   toolRegistry: ToolRegistry;
   pythonPath: string | undefined;
@@ -135,7 +145,7 @@ export interface InitPluginRuntimeInput {
    * trust store). Backs the capability-gated `hostApi.hostFetch`. Eager (exists
    * at boot) so it needs no late binding, unlike the LLM caller.
    */
-  networkFetch: typeof fetch;
+  networkFetch: HostFetchTransport;
   getMainWindow?: () => BrowserWindow | null;
   openAuthWindowService: (
     parent: BrowserWindow,
@@ -164,7 +174,7 @@ export interface InitPluginRuntimeInput {
     opts: import("../../main/auth-partition-viewer-service.js").OpenAuthPartitionViewerOptions,
   ) => Promise<void>;
   /**
-   * SDK 5.6.0 — wipe-partition surface used by plugin `clearAuthPartition`
+   * HostApi wipe-partition surface used by plugin `clearAuthPartition`
    * to delete cookies / storage / cache / HTTP-auth from one of the
    * plugin's own `persist:plugin-auth:<pluginId>[:<sub>]` partitions
    * after a user-triggered sign-out. Production wiring is
@@ -210,6 +220,12 @@ export interface InitPluginRuntimeInput {
    * time a proposal can arrive.
    */
   getWorkBoardStore: () => import("../../main/work-board-store.js").WorkBoardStore | undefined;
+  /**
+   * Alerts service — backs `hostApi.raiseAlert` / `withdrawAlert` and
+   * registers each plugin's declared kinds at start. Late-bound like the Work
+   * Board store: `setupAlerts` runs after this step and before plugins start.
+   */
+  getAlertsService: () => import("../../alerts/service.js").AlertsService | undefined;
   /** Production defers activation until Skill/Hook/MCP lifecycle wiring exists. */
   deferStart?: boolean;
   /**
@@ -274,6 +290,7 @@ export async function initPluginRuntime(
     permissionManager,
     routinesStore,
     getWorkBoardStore,
+    getAlertsService,
   } = input;
 
   // §B3 — host public preference reader, shared across all per-plugin HostApi
@@ -297,7 +314,6 @@ export async function initPluginRuntime(
     if (pluginShutdownRan) return pluginShutdownPromise ?? Promise.resolve();
     if (pluginShutdownHandlers.length === 0) return Promise.resolve();
     pluginShutdownRan = true;
-    const SHUTDOWN_TIMEOUT_MS = 5000;
     pluginShutdownPromise = (async () => {
       await Promise.allSettled(
         pluginShutdownHandlers.map(async ({ pluginId, handler }) => {
@@ -309,7 +325,7 @@ export async function initPluginRuntime(
                 timer = setTimeout(() => reject(new Error(`shutdown handler timeout [plugin:${pluginId}]`,
                       ),
                     ),
-                  SHUTDOWN_TIMEOUT_MS,
+                  TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs,
                 );
               }),
             ]);
@@ -344,27 +360,30 @@ export async function initPluginRuntime(
     };
   }
 
-  // §7.2 Plugin Deployment Guard.
-  // Plugin layout anchors at `aveHome()/plugins/<id>/` — single root for both
-  // user-installed and admin-injected plugins (distinguished by metadata,
-  // not by physical directory). The resolver always uses
-  // `aveHome()/plugins`; E2E overrides AVE_HOME once and every caller
-  // follows the same app-home SOT.
+  // Plugin layout anchors at `aveHome()/plugins/<id>/`, the single root every
+  // install lands in. The resolver always uses `aveHome()/plugins`; E2E
+  // overrides AVE_HOME once and every caller follows the same app-home SOT.
   const pluginPaths = resolvePluginPaths();
   // mkdir the root once so the trust-root realpath check in PluginRuntime
   // (and any first-install write under pluginsRoot/<id>/) doesn't trip on a
   // missing directory the very first time the app boots.
   mkdirSync(pluginPaths.pluginsRoot, { recursive: true });
+  // Only the machine policy's requiredInstalls locks a plugin (design §10.2).
+  // An unreadable policy file locks nothing, as in the marketplace, which logs it.
   const deploymentGuard = new PluginDeploymentGuard({
     registryPath: pluginPaths.registryPath,
     pluginsRoot: pluginPaths.pluginsRoot,
+    requiredInstalls: async () => {
+      const load = await loadMarketplacePolicy();
+      return load.ok ? load.policy.requiredInstalls : [];
+    },
   });
 
   // #958/#959 security — registry-entry cache (host-verified installSource +
   // install-time manifest SHA pin; `plugin.json` is untrusted). Extracted to
   // ./plugin-runtime/registry-cache.ts and wired here so the HostApi closures
   // answer lookups synchronously and the install/uninstall listeners refresh it.
-  const { refreshRegistryEntryCache, getRegistryEntry } =
+  const { refreshRegistryEntryCache, refreshRegistryEntryCacheIfChanged, getRegistryEntry } =
     createRegistryEntryCache({
       registryPath: pluginPaths.registryPath,
       log,
@@ -441,16 +460,23 @@ export async function initPluginRuntime(
    * would be a bound port with no owner left to close it.
    */
   const authRedirectCatchers = new AuthRedirectCatchers();
+  const leaseDenialAudit = new LeaseDenialAudit(bootAuditLogger);
   const createHostApi = createHostApiFactory({
     host: input.host,
     getPluginRuntime: () => pluginRuntime,
     lateBinding,
     getRegistryEntry,
+    refreshRegistryEntryCacheIfChanged,
+    grantEvidence: grantEvidenceReader({ paths: pluginPaths, marketplacesRoot: join(aveHome(), "marketplaces") }),
     hostClassifiesRiskEnabled,
     pluginShutdownHandlers,
     readAppPreference,
     settingsService,
+    ...(input._onCredentialIssuanceStageForTest
+      ? { _onCredentialIssuanceStageForTest: input._onCredentialIssuanceStageForTest }
+      : {}),
     bootAuditLogger,
+    leaseDenialAudit,
     pluginRuntimeAuditLog,
     networkFetch,
     mainWindow,
@@ -465,9 +491,11 @@ export async function initPluginRuntime(
     permissionManager,
     routinesStore,
     getWorkBoardStore,
+    getAlertsService,
   });
   const { preparePluginStart, onDisable, onActiveStateChange, onEnable } =
     createLifecycleCallbacks({
+      getAlertsService,
       getAppWindows: () => input.host.desktop?.getAppWindows() ?? [],
       lateBinding,
       getMainWindow,
@@ -486,6 +514,9 @@ export async function initPluginRuntime(
     deploymentGuard,
     installReceiptCacheRoot: pluginPaths.cacheRoot,
     auditLog: pluginRuntimeAuditLog,
+    onMalformedCredentialSelector: (pluginId) => {
+      leaseDenialAudit.record(pluginId, "hostFetch", { code: "credential-conflict" });
+    },
     preparePluginStart,
     onDisable,
     onActiveStateChange,

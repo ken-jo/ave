@@ -1,0 +1,15 @@
+{
+  "request": {
+    "id": 9,
+    "jsonrpc": "2.0",
+    "method": "ave/host/storage/mkdir",
+    "params": {
+      "relPath": "notes"
+    }
+  },
+  "response": {
+    "id": 9,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

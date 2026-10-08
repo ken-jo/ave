@@ -4,6 +4,8 @@ import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { PLUGIN_RUNTIME_DIR_NAMES } from "./plugin-storage-layout.js";
 import { createLogger } from "../lib/logger.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { isSemver } from "../shared/semver-compare.js";
+import { parseConsentFingerprint, type ConsentFingerprint } from "../marketplace/updates/consent-record.js";
 
 const log = createLogger("plugin-install-receipt");
 
@@ -13,13 +15,11 @@ export interface InstallReceiptFile {
 }
 
 /**
- * Which signed admission catalog authorised this install.
+ * Which signed admission catalog authorised a server-marketplace install.
  *
- * Recorded because `signerKeyId` alone cannot answer "under whose authority is
- * this on disk" once the artifact key stops being the authority — and because
- * `documentSha256` makes the claim checkable after the fact: given a receipt,
- * an operator can fetch the archived issuance, hash it, and confirm the
- * distributor really made that statement.
+ * The server marketplace and its admission catalog are gone (design §16.2);
+ * nothing writes this any more. A receipt written before the switch may carry
+ * it, and it parses so that receipt keeps verifying.
  */
 export interface PluginAdmissionRecord {
   /** `issuedAt` of the authorising catalog document. */
@@ -30,17 +30,74 @@ export interface PluginAdmissionRecord {
   publisher: string;
 }
 
+/** The rungs of the git plugin artifact ladder (design §6.2), in the order tried. */
+export const ARTIFACT_RUNGS = ["release", "archive", "tree"] as const;
+export type ArtifactRung = (typeof ARTIFACT_RUNGS)[number];
+
 /**
- * Schema v3 — written by all new installs.
- * installSource is the authoritative trust signal; signerKeyId / artifactSha256
- * are null for local-dev installs (no signed artifact to validate against).
- *
- * `admission` is null for local-dev installs, exactly as `signerKeyId` already
- * is, and for marketplace installs performed while the admission catalog is
- * not yet the authority. A null there is a true statement — "no catalog
- * authorised this" — not a missing value to be defaulted.
+ * A folder source's one rung (§18.4.2): the built tree in the folder. It
+ * never downloads, and an install through it never qualifies for a
+ * host-secret grant or a `process` entry.
  */
-export interface PluginInstallReceipt {
+export const FOLDER_RUNG = "folder";
+export type PluginRung = ArtifactRung | typeof FOLDER_RUNG;
+
+/** What happened on one rung; every rung appears once, in ladder order (a folder install has only `folder`). */
+export type RungOutcome =
+  | { rung: PluginRung; outcome: "used" }
+  | { rung: PluginRung; outcome: "skipped"; reason: "NOT_DECLARED" | "ARTIFACT_NOT_PINNED" }
+  | { rung: PluginRung; outcome: "failed"; code: string; message: string };
+
+/**
+ * Where a git install came from: the source, the two commits the plan was
+ * bound to, and the ladder's outcome. The registry's `origin` names the same
+ * install for lookups; the receipt is what proves the bytes.
+ */
+export interface GitInstallRecord {
+  sourceId: string;
+  sourceOrigin: "official" | "managed" | "custom" | "direct";
+  snapshotCommit: string;
+  versionCommit: string;
+  /** Package directory in the repository; "" is the root of a direct source. */
+  packagePath: string;
+  rung: ArtifactRung;
+  rungs: RungOutcome[];
+  /** Hash of the authority reviewed when this artifact was installed. */
+  authoritySha256?: string;
+  /** The consent fingerprint accepted with this install (§18.7.3); absent on a receipt from before slice F. */
+  consent?: ConsentFingerprint;
+}
+
+/**
+ * Where a folder install came from (§18.4.2): the source, the folder's
+ * revision the plan captured, the package path, and the digests of what was
+ * installed and of the authority reviewed. Its bytes came from no pinned
+ * release, so it is categorically ineligible for a `process` entry or a
+ * host-secret grant.
+ */
+export interface FolderInstallRecord {
+  sourceId: string;
+  /** Folder sources are added by the user or provisioned by the policy; the official source is never a folder. */
+  sourceOrigin: "managed" | "custom" | "direct";
+  /** `local-<sha256>` (§18.4.3). */
+  revision: string;
+  /** Package directory in the folder; "" is the root of a direct source. */
+  packagePath: string;
+  /** Tree digest (§6.4) of the installed files; equal to the receipt's `artifactSha256`. */
+  treeSha256: string;
+  /** Hash of the authority reviewed when this artifact was installed. */
+  authoritySha256: string;
+  /** The consent fingerprint accepted with this install (§18.7.3); absent on a receipt from before slice F. */
+  consent?: ConsentFingerprint;
+}
+
+/**
+ * Schema v3 — written by local-dev installs, which have no artifact, signer or
+ * admission. A server-marketplace install from before the git marketplace kept
+ * its v3 receipt (`installSource: "marketplace"`), which still verifies.
+ * installSource is the authoritative trust signal.
+ */
+export interface SignedOrLocalInstallReceipt {
   schemaVersion: 3;
   pluginId: string;
   version: string;
@@ -49,8 +106,46 @@ export interface PluginInstallReceipt {
   signerKeyId: string | null;
   admission: PluginAdmissionRecord | null;
   installedAt: string;
+  reviewedAppVersion?: string;
   files: InstallReceiptFile[];
 }
+
+/**
+ * Schema v4 — written by git installs only (design §6.2), so a receipt of a
+ * signed or local install keeps its v3 bytes. There is no signer and no
+ * admission: `artifactSha256` is the pinned zip hash (release, archive) or
+ * the tree digest (§6.4), and `git` records the plan and the ladder.
+ */
+export interface GitInstallReceipt {
+  schemaVersion: 4;
+  pluginId: string;
+  version: string;
+  installSource: "git";
+  artifactSha256: string;
+  signerKeyId: null;
+  admission: null;
+  git: GitInstallRecord;
+  installedAt: string;
+  reviewedAppVersion?: string;
+  files: InstallReceiptFile[];
+}
+
+/** Schema v4 for a folder install (§18.4.2): no signer, no admission, the tree digest, and the `folder` record. */
+export interface FolderInstallReceipt {
+  schemaVersion: 4;
+  pluginId: string;
+  version: string;
+  installSource: "folder";
+  artifactSha256: string;
+  signerKeyId: null;
+  admission: null;
+  folder: FolderInstallRecord;
+  installedAt: string;
+  reviewedAppVersion?: string;
+  files: InstallReceiptFile[];
+}
+
+export type PluginInstallReceipt = SignedOrLocalInstallReceipt | GitInstallReceipt | FolderInstallReceipt;
 
 /**
  * On-disk shape of receipts written before schema v3. Normalised by
@@ -129,9 +224,10 @@ export async function buildInstallReceipt(
     admission?: PluginAdmissionRecord | null;
     files: string[];
     installedAt?: string;
+    reviewedAppVersion?: string;
   },
-): Promise<{ receipt: PluginInstallReceipt; raw: string }> {
-  const receipt: PluginInstallReceipt = {
+): Promise<{ receipt: SignedOrLocalInstallReceipt; raw: string }> {
+  const receipt: SignedOrLocalInstallReceipt = {
     schemaVersion: 3,
     pluginId: input.pluginId,
     version: input.version,
@@ -140,9 +236,150 @@ export async function buildInstallReceipt(
     signerKeyId: input.signerKeyId,
     admission: input.admission ?? null,
     installedAt: input.installedAt ?? new Date().toISOString(),
+    ...(input.reviewedAppVersion ? { reviewedAppVersion: input.reviewedAppVersion } : {}),
     files: await hashReceiptFiles(pluginRoot, input.files),
   };
   return { receipt, raw: serializeInstallReceipt(receipt) };
+}
+
+export async function buildGitInstallReceipt(
+  pluginRoot: string,
+  input: {
+    pluginId: string;
+    version: string;
+    artifactSha256: string;
+    git: GitInstallRecord;
+    files: string[];
+    installedAt?: string;
+    reviewedAppVersion?: string;
+  },
+): Promise<{ receipt: GitInstallReceipt; raw: string }> {
+  const problem = gitInstallRecordProblem(input.git);
+  if (problem) throw new Error(`git install receipt for ${input.pluginId}: ${problem}`);
+  if (!SHA256_HEX.test(input.artifactSha256)) throw new Error(`git install receipt for ${input.pluginId}: artifactSha256 is not a sha256`);
+  const receipt: GitInstallReceipt = {
+    schemaVersion: 4,
+    pluginId: input.pluginId,
+    version: input.version,
+    installSource: "git",
+    artifactSha256: input.artifactSha256,
+    signerKeyId: null,
+    admission: null,
+    git: input.git,
+    installedAt: input.installedAt ?? new Date().toISOString(),
+    ...(input.reviewedAppVersion ? { reviewedAppVersion: input.reviewedAppVersion } : {}),
+    files: await hashReceiptFiles(pluginRoot, input.files),
+  };
+  return { receipt, raw: serializeInstallReceipt(receipt) };
+}
+
+export async function buildFolderInstallReceipt(
+  pluginRoot: string,
+  input: {
+    pluginId: string;
+    version: string;
+    folder: FolderInstallRecord;
+    files: string[];
+    installedAt?: string;
+    reviewedAppVersion?: string;
+  },
+): Promise<{ receipt: FolderInstallReceipt; raw: string }> {
+  const problem = folderInstallRecordProblem(input.folder);
+  if (problem) throw new Error(`folder install receipt for ${input.pluginId}: ${problem}`);
+  const receipt: FolderInstallReceipt = {
+    schemaVersion: 4,
+    pluginId: input.pluginId,
+    version: input.version,
+    installSource: "folder",
+    artifactSha256: input.folder.treeSha256,
+    signerKeyId: null,
+    admission: null,
+    folder: input.folder,
+    installedAt: input.installedAt ?? new Date().toISOString(),
+    ...(input.reviewedAppVersion ? { reviewedAppVersion: input.reviewedAppVersion } : {}),
+    files: await hashReceiptFiles(pluginRoot, input.files),
+  };
+  return { receipt, raw: serializeInstallReceipt(receipt) };
+}
+
+const SHA256_HEX = /^[a-f0-9]{64}$/;
+const COMMIT_HEX = /^[a-f0-9]{40}$/;
+const FOLDER_REVISION = /^local-[a-f0-9]{64}$/;
+const SOURCE_ORIGINS = new Set(["official", "managed", "custom", "direct"]);
+const FOLDER_SOURCE_ORIGINS = new Set(["managed", "custom", "direct"]);
+
+/** Why a folder install record is malformed, or null when it is well formed. */
+function folderInstallRecordProblem(value: unknown): string | null {
+  if (!isPlainRecord(value)) return "folder record is not an object";
+  if (!hasOnlyKeys(value, ["sourceId", "sourceOrigin", "revision", "packagePath", "treeSha256", "authoritySha256", "consent"])) {
+    return "folder record has unknown fields";
+  }
+  const consent = consentProblem(value.consent, "folder");
+  if (consent) return consent;
+  if (typeof value.sourceId !== "string" || value.sourceId.length === 0) return "folder record sourceId is invalid";
+  if (typeof value.sourceOrigin !== "string" || !FOLDER_SOURCE_ORIGINS.has(value.sourceOrigin)) return "folder record sourceOrigin is invalid";
+  // A folder's pin is its revision; a 40-hex commit here is not one (§18.4.3).
+  if (typeof value.revision !== "string" || !FOLDER_REVISION.test(value.revision)) return "folder record revision is invalid";
+  if (typeof value.packagePath !== "string") return "folder record packagePath is invalid";
+  if (typeof value.treeSha256 !== "string" || !SHA256_HEX.test(value.treeSha256)) return "folder record treeSha256 is invalid";
+  if (typeof value.authoritySha256 !== "string" || !SHA256_HEX.test(value.authoritySha256)) return "folder record authoritySha256 is invalid";
+  return null;
+}
+const RUNG_SKIP_REASONS = new Set(["NOT_DECLARED", "ARTIFACT_NOT_PINNED"]);
+
+/** Why a record's optional consent baseline is malformed: it must be an extension's fingerprint (§18.7.3). */
+function consentProblem(value: unknown, record: "git" | "folder"): string | null {
+  if (value === undefined) return null;
+  try {
+    if (parseConsentFingerprint(value, `${record} record consent`).kind !== "plugin") return `${record} record consent is not an extension's`;
+  } catch (error) {
+    return error instanceof Error ? error.message : `${record} record consent is invalid`;
+  }
+  return null;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key));
+}
+
+/** Why a git install record is malformed, or null when it is well formed. */
+export function gitInstallRecordProblem(value: unknown): string | null {
+  if (!isPlainRecord(value)) return "git record is not an object";
+  if (!hasOnlyKeys(value, ["sourceId", "sourceOrigin", "snapshotCommit", "versionCommit", "packagePath", "rung", "rungs", "authoritySha256", "consent"])) {
+    return "git record has unknown fields";
+  }
+  const consent = consentProblem(value.consent, "git");
+  if (consent) return consent;
+  if (typeof value.sourceId !== "string" || value.sourceId.length === 0) return "git record sourceId is invalid";
+  if (typeof value.sourceOrigin !== "string" || !SOURCE_ORIGINS.has(value.sourceOrigin)) return "git record sourceOrigin is invalid";
+  if (typeof value.snapshotCommit !== "string" || !COMMIT_HEX.test(value.snapshotCommit)) return "git record snapshotCommit is invalid";
+  if (typeof value.versionCommit !== "string" || !COMMIT_HEX.test(value.versionCommit)) return "git record versionCommit is invalid";
+  if (typeof value.packagePath !== "string") return "git record packagePath is invalid";
+  if (value.authoritySha256 !== undefined && (typeof value.authoritySha256 !== "string" || !SHA256_HEX.test(value.authoritySha256))) return "git record authoritySha256 is invalid";
+  if (!(ARTIFACT_RUNGS as readonly unknown[]).includes(value.rung)) return "git record rung is invalid";
+  const rungs = value.rungs;
+  if (!Array.isArray(rungs) || rungs.length === 0 || rungs.length > ARTIFACT_RUNGS.length) return "git record rungs are invalid";
+  let used = 0;
+  for (const [index, item] of rungs.entries()) {
+    if (!isPlainRecord(item) || item.rung !== ARTIFACT_RUNGS[index]) return "git record rungs are out of ladder order";
+    if (item.outcome === "used") {
+      if (!hasOnlyKeys(item, ["rung", "outcome"]) || item.rung !== value.rung || index !== rungs.length - 1) return "git record used rung is invalid";
+      used += 1;
+    } else if (item.outcome === "skipped") {
+      if (!hasOnlyKeys(item, ["rung", "outcome", "reason"]) || !RUNG_SKIP_REASONS.has(item.reason as string)) return "git record skipped rung is invalid";
+    } else if (item.outcome === "failed") {
+      if (!hasOnlyKeys(item, ["rung", "outcome", "code", "message"]) || typeof item.code !== "string" || typeof item.message !== "string") {
+        return "git record failed rung is invalid";
+      }
+    } else {
+      return "git record rung outcome is invalid";
+    }
+  }
+  return used === 1 ? null : "git record must end with the used rung";
 }
 
 /** Restore an already-validated receipt snapshot without changing its bytes. */
@@ -257,6 +494,34 @@ export async function verifyInstallReceiptRaw(
       schemaVersion: 3,
       admission: "admission" in stored ? stored.admission : null,
     };
+  } else if (candidate.schemaVersion === 4 && candidate.installSource === "folder") {
+    const stored = candidate as unknown as FolderInstallReceipt;
+    if (!hasOnlyKeys(candidate, ["schemaVersion", "pluginId", "version", "installSource", "artifactSha256", "signerKeyId", "admission", "folder", "installedAt", "reviewedAppVersion", "files"])) {
+      return { ok: false, reason: "folder receipt has unknown fields" };
+    }
+    if (stored.signerKeyId !== null || stored.admission !== null) {
+      return { ok: false, reason: "folder receipt must not carry a signer or an admission" };
+    }
+    const problem = folderInstallRecordProblem(stored.folder);
+    if (problem) return { ok: false, reason: `folder receipt: ${problem}` };
+    if (stored.artifactSha256 !== stored.folder.treeSha256) {
+      return { ok: false, reason: "folder receipt artifactSha256 is not its tree digest" };
+    }
+    receipt = stored;
+  } else if (candidate.schemaVersion === 4) {
+    const stored = candidate as unknown as GitInstallReceipt;
+    if (stored.installSource !== "git") {
+      return { ok: false, reason: `invalid receipt installSource: ${String(stored.installSource)}` };
+    }
+    if (stored.signerKeyId !== null || stored.admission !== null) {
+      return { ok: false, reason: "git receipt must not carry a signer or an admission" };
+    }
+    if (typeof stored.artifactSha256 !== "string" || !SHA256_HEX.test(stored.artifactSha256)) {
+      return { ok: false, reason: "git receipt has invalid artifactSha256" };
+    }
+    const problem = gitInstallRecordProblem(stored.git);
+    if (problem) return { ok: false, reason: `git receipt: ${problem}` };
+    receipt = stored;
   } else {
     return { ok: false, reason: `unsupported install receipt schema: ${String(candidate.schemaVersion)}` };
   }
@@ -264,6 +529,10 @@ export async function verifyInstallReceiptRaw(
   if (receipt.pluginId !== pluginId) {
     return { ok: false, reason: `install receipt plugin mismatch: expected ${pluginId}, got ${receipt.pluginId}` };
   }
+  if (receipt.reviewedAppVersion !== undefined && (
+    typeof receipt.reviewedAppVersion !== "string"
+    || !isSemver(receipt.reviewedAppVersion)
+  )) return { ok: false, reason: "invalid reviewed app version in install receipt" };
 
   // marketplace receipts must carry a real signerKeyId.
   // The packaged-build gate for local-dev receipts lives in the caller

@@ -911,7 +911,7 @@ test("evidence workflow separates secret-free unsigned candidate execution from 
   const packageJson = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf8"));
   assert.equal(
     packageJson.scripts["test:a2a-p4-5:evidence"],
-    "node --test scripts/a2a-p4-5-live/__tests__/evidence.test.mjs",
+    "node --import ./scripts/lib/document-consumer-guard.mjs --test scripts/a2a-p4-5-live/__tests__/evidence.test.mjs",
     "evidence test command must not depend on shell glob expansion",
   );
 });

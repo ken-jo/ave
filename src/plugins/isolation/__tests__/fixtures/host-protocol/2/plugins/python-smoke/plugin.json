@@ -1,0 +1,27 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "python-smoke",
+  "version": "1.0.0",
+  "description": "Host protocol golden fixture: a Python plugin whose process is its own executable, serving the MCP half through the stock mcp library and the ave half itself.",
+  "extensions": {
+    "ai.agent-connector.ave": {
+      "displayName": "Python Smoke",
+      "process": {
+        "command": "./bin/plugin"
+      },
+      "requires": {
+        "minAppVersion": "0.13.0",
+        "hostProtocol": "2"
+      },
+      "eventSubscriptions": [],
+      "emittedEvents": [],
+      "tools": [
+        {
+          "name": "echo",
+          "description": "Answer with the arguments it was called with.",
+          "inputSchema": { "type": "object", "properties": {} }
+        }
+      ]
+    }
+  }
+}

@@ -23,8 +23,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
+          fetch-depth: 0
+      - name: Classify documentation impact
+        id: docs-impact
+        working-directory: ave
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
+            echo 'docs_only=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check documentation diff
+        if: steps.docs-impact.outputs.docs_only == 'true'
+        working-directory: ave
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: git diff --check "$BASE_SHA..HEAD"
+      - name: Check documentation policy
+        if: steps.docs-impact.outputs.docs_only == 'true'
+        working-directory: ave
+        run: node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-asrt-version-claims.test.mjs && node scripts/check-asrt-version-claims.mjs
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
@@ -35,26 +58,38 @@ jobs:
       # better-sqlite3/node-pty. Exact-key only — a lockfile change (which pins
       # the Electron version) misses and rebuilds, so a stale ABI never leaks in.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
       # uv is fetched to resources/ (outside node_modules) by the postinstall,
       # which bun skips when node_modules is already satisfied from cache. Ensure
       # it explicitly — fetch-uv is idempotent (no-op when already present).
       - name: Ensure uv toolchain
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
+      # The Python smoke's interpreter (§9.7 P5): the harness verifies it,
+      # installs `mcp` 2.2.0 for it with the uv above and proves the import, so
+      # no step relies on the runner image's own python3.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: python
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        with:
+          python-version: "3.12"
       # The steps above are preconditions, not gates: without a checkout, an
-      # install and the uv toolchain there is nothing to verify, so a red job
-      # there genuinely means "could not verify". From here down the job
-      # compiles, builds and tests the product — every step below is one of
-      # those, except `Remove root-level Bun binary shims`, which prepares the
-      # runner for the step after it — and the repository-hygiene gates run
-      # after all of it, at the end of this job. The block above them says why
-      # they are there and not above.
+      # install, the uv toolchain and the smoke's Python there is nothing to
+      # verify, so a red job there genuinely means "could not verify". From
+      # here down the job compiles, builds and tests the product — every step
+      # below is one of those, except `Remove root-level Bun binary shims`,
+      # which prepares the runner for the step after it — and the
+      # repository-hygiene gates run after all of it, at the end of this job.
+      # The block above them says why they are there and not above.
       - name: Typecheck
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run typecheck
       # `typecheck` covers production sources only — both tsconfigs exclude
@@ -63,17 +98,21 @@ jobs:
       # fully checked, existing ones may only improve. The self-test runs beside it
       # because a ratchet that silently stops comparing reports green forever.
       - name: Typecheck tests (baseline ratchet)
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run check:typecheck-tests:self-test && bun run check:typecheck-tests
       # Postinstall leaves native modules on Electron's ABI. The shared Vitest
       # runner uses ELECTRON_RUN_AS_NODE, so tests and the desktop runtime consume
       # that same binary without an in-place Node-ABI rebuild.
       - run: bun run build
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
       - name: Remove root-level Bun binary shims before Vitest
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: rm -f ajv pino
       - name: Run the suite and its coverage gate
+        if: steps.docs-impact.outputs.docs_only != 'true'
         # The suite resolves entirely from ave/src. Sibling slugs appear
         # only as fixtures or mocked installer inputs.
         #
@@ -83,6 +122,8 @@ jobs:
         # layer down, in an npm script instead of a workflow. This job calls the
         # composite's two halves separately, the duplicate scan last;
         # `check:test-quality` stays as the local one-shot README.md documents.
+        env:
+          AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: bun run check:test-coverage
         working-directory: ave
       # Test suites, not policy gates, which is why they sit with the
@@ -90,14 +131,14 @@ jobs:
       # release-signing workflow the evidence suite exercises the
       # release-tooling libraries themselves — descriptor reading,
       # signed-manifest verification, packaged executable selection — and
-      # `test:ci-tooling` covers the A2A wire harness and the marketplace-e2e
-      # control script that the dispatch workflows execute. Failure means that
-      # code is wrong. They run under `node --test` rather than vitest (whose
-      # include is `*.test.{ts,tsx}`), so they need their own step; the
-      # evidence suite was once invoked by nothing and sat red for twelve days
-      # after a batch dependency merge moved a pin without moving its
-      # assertion, and the two `test:ci-tooling` suites were never invoked at
-      # all until this step named them.
+      # `test:ci-tooling` covers the A2A wire harness that its dispatch
+      # workflow executes. Failure means that code is wrong. They run under
+      # `node --test` rather than vitest (whose include is
+      # `*.test.{ts,tsx}`), so they need their own step; the evidence suite
+      # was once invoked by nothing and sat red for twelve days after a batch
+      # dependency merge moved a pin without moving its assertion, and the
+      # `test:ci-tooling` suite was never invoked at all until this step
+      # named it.
       #
       # Last of the verification steps, so this narrow suite does not skip the
       # broad one. `packaging-discipline-source.test.ts` pins that position —
@@ -106,6 +147,7 @@ jobs:
       # reverse ordering would only cost information: a red build-and-test says
       # the code failed either way.
       - name: Run release-tooling tests
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run test:ci-tooling && bun run test:a2a-p4-5:evidence
       # Repository hygiene: manifests, baseline ledgers, and the self-tests of
@@ -155,10 +197,12 @@ jobs:
       # one runner per gate.
       #
       # What this ordering does NOT reach: `bun run build` above is one workflow
-      # step and sixteen commands, and ten of those assert rather than compile.
-      # Four of the ten — `check:import-cycles`, `check-generated-assets`,
+      # step and twenty commands, and fourteen of those assert rather than
+      # compile. Seven of the fourteen — `check:import-cycles`,
+      # `check-generated-assets`, `check:plugin-host-protocol-schema`,
+      # `check:plugin-host-protocol-mirror`, `check:plugin-host-protocol-client`,
       # `check:i18n-catalog`, `check:i18n-barrels` — sit ahead of a later
-      # compile command inside the composite, and all ten sit ahead of the
+      # compile command inside the composite, and all fourteen sit ahead of the
       # suite in this job, so any of them can fail the build step and skip the
       # steps after it. That residual is deliberate and bounded: each reads
       # either the sources being compiled or the bytes the build itself just
@@ -185,6 +229,7 @@ jobs:
       # gate and its self-test cost more than a pre-push budget allows — and
       # `check:test-coverage` above is CI-only for the same reason.
       - name: Core hygiene gates
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run check:gate-core && bun run test:knip-gate
       # The docs-site images are published publicly, and the batch that is there
@@ -195,6 +240,7 @@ jobs:
       # runs beside it because a gate nothing exercises reports green after it
       # has stopped comparing.
       - name: Screenshot provenance gate
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run check:screenshot-provenance:self-test && bun run check:screenshot-provenance
 
@@ -205,19 +251,36 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
+          fetch-depth: 0
+      - name: Classify documentation impact
+        id: docs-impact
+        shell: bash
+        working-directory: ave
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
+            echo 'docs_only=false' >> "$GITHUB_OUTPUT"
+          fi
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
           restore-keys: ${{ runner.os }}-ci-bun-
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
       - name: Verify native background process ownership
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1
@@ -225,7 +288,24 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -FailureFixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/test-windows-job.mjs
+      # Folder sources classify a drive letter from its MS-DOS device mapping
+      # without opening the drive (design multi-source-git-marketplace.md §18.4.1).
+      - name: Verify Windows folder classification
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/test-windows-path-kind.mjs
+      # The tag build runs `bun run build` on Windows, and this check is part of
+      # it: there the generator finds its sources through Windows path spellings
+      # (drive letters, `\` separators), and must still produce the same bytes.
+      - name: Plugin host protocol schema matches its sources
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: bun run check:plugin-host-protocol-schema
       - name: Run Windows permission regressions
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: >
           bun run test --
@@ -270,29 +350,60 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
+          fetch-depth: 0
+      - name: Classify documentation impact
+        id: docs-impact
+        working-directory: ave
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
+            echo 'docs_only=false' >> "$GITHUB_OUTPUT"
+          fi
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
           restore-keys: ${{ runner.os }}-ci-bun-
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+      # The Python smoke's harness runs `uv pip install` with the app's uv, and
+      # a restored node_modules cache skips the postinstall that fetches it.
+      - name: Ensure uv toolchain
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node scripts/fetch-uv.mjs
+      # The Python smoke's interpreter (§9.7 P5): the harness verifies it,
+      # installs `mcp` 2.2.0 for it with the uv above and proves the import, so
+      # no step relies on the runner image's own python3.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: python
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        with:
+          python-version: "3.12"
       # The plugin-confinement cases need a LIVE sandbox, and the Linux job that
       # runs the whole suite has no bubblewrap — so there they return early and
-      # pass without measuring anything. macOS needs no backend install, which
-      # makes this the one job in CI that can actually execute them.
+      # pass without measuring anything. macOS needs no backend install; Linux
+      # gets its own job below, which installs the backend first.
       # `AVE_REQUIRE_SANDBOX_CASES=1` is what stops that from being a silent
       # arrangement: if the sandbox cannot initialize here, the cases FAIL
       # instead of reporting a measurement they never took.
       - name: Run macOS permission regressions
+        if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         env:
           AVE_REQUIRE_SANDBOX_CASES: "1"
+          AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: >
           bun run test --
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
@@ -308,3 +419,81 @@ jobs:
           src/audit/__tests__/hmac-chain.test.ts
           src/audit/__tests__/rationale-audit-adapter.test.ts
           src/data/__tests__/secret-document-store.test.ts
+
+  linux-confinement-tests:
+    name: Linux confinement path tests
+    # The architecture of `build-and-test`, so the native-module cache key below
+    # and ASRT's `arm64` seccomp filter both apply.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ave
+          fetch-depth: 0
+      - name: Classify documentation impact
+        id: docs-impact
+        working-directory: ave
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
+            echo 'docs_only=false' >> "$GITHUB_OUTPUT"
+          fi
+      # ASRT's Linux backend checks for `bwrap` and `socat` and scans deny paths
+      # with `rg`; its README lists all three.
+      - name: Install the Linux sandbox backend
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
+      # Ubuntu 24.04 restricts unprivileged user namespaces by default, which
+      # strips what bubblewrap needs (ASRT README, "Platform-Specific
+      # Dependencies"). A runner setting, not a product change: the app never
+      # changes a user's sysctl, and on such a host the sandbox fails to
+      # initialise and a `process` entry is refused `process-entry-unconfined`.
+      - name: Allow unprivileged user namespaces
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # Fails here, with its own message, on a runner that cannot create the
+      # namespace — rather than inside a test.
+      - name: Prove the sandbox backend
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        run: bwrap --version && socat -V | head -1 && rg --version | head -1 && bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        with:
+          path: ave/node_modules
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock') }}
+      - run: bun install --frozen-lockfile
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+      # The Python smoke's harness runs `uv pip install` with the app's uv, and
+      # a restored node_modules cache skips the postinstall that fetches it.
+      - name: Ensure uv toolchain
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node scripts/fetch-uv.mjs
+      # The Python smoke's interpreter (§9.7 P5): the harness verifies it,
+      # installs `mcp` 2.2.0 for it with the uv above and proves the import, so
+      # no step relies on the runner image's own python3.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: python
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        with:
+          python-version: "3.12"
+      # With the flag set, a case that cannot initialise the sandbox FAILS
+      # instead of returning green, so a green job is a measurement.
+      - name: Run Linux confinement regressions
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          AVE_REQUIRE_SANDBOX_CASES: "1"
+          AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: bun run test -- src/plugins/isolation/__tests__/confined-plugin-child.test.ts

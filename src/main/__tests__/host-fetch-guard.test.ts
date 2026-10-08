@@ -10,6 +10,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { REDIRECT_STATUSES } from "../host-fetch-guard.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
+import { directHostFetchTransport } from "../../__tests__/support/host-fetch-transport.js";
 
 // ─── dns mock — configurable per test via `lookupMock` ──────────────
 const lookupMock = vi.fn<
@@ -405,7 +407,7 @@ function publicDns(): void {
  */
 function scriptedTransport(responses: Response[]) {
   const calls: Array<{ url: string; method: string; headers: Record<string, string> }> = [];
-  const transport = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+  const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const headers = new Headers(init?.headers as HeadersInit | undefined);
     calls.push({
       url: String(input),
@@ -416,6 +418,7 @@ function scriptedTransport(responses: Response[]) {
     if (!next) throw new Error("scripted transport ran out of responses");
     return next;
   }) as unknown as typeof fetch;
+  const transport = directHostFetchTransport(fetchImpl);
   return { transport, calls };
 }
 
@@ -455,6 +458,40 @@ function hopOptions(
     hops,
   };
 }
+
+function registeredCredentialUse() {
+  let revision = 0;
+  const listeners = new Set<() => void>();
+  const registry = new CredentialLeaseRegistry({
+    getProviderConfigRevision: () => revision,
+    getSecretGeneration: () => 0,
+    onLeaseStateChanged: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+  });
+  const incarnation = {};
+  const permission = new AbortController();
+  const reservation = registry.reserve("p", incarnation, ["key"], permission.signal, "lease");
+  if (!reservation) throw new Error("reservation missing");
+  const result = registry.register(reservation, {
+    key: "key", vendor: "source", secret: "synthetic-secret", scheme: "bearer",
+    audience: (url) => url.origin === "https://api.example.com",
+    permissionSignal: permission.signal,
+  });
+  if (!result || result.exposure !== "lease") throw new Error("lease missing");
+  return {
+    use: registry.beginUse(result.leaseId, "p", incarnation),
+    revoke: () => { revision += 1; for (const listener of listeners) listener(); },
+  };
+}
+
+it("refuses a credential use when the transport has no handoff contract", async () => {
+  publicDns();
+  const lease = registeredCredentialUse();
+  const transport = vi.fn(async () => new Response(null)) as unknown as typeof fetch;
+  const { options } = hopOptions(await firstAllow("https://api.example.com/a"), {}, transport);
+  await expect(runHostFetchHops({ ...options, credentialUse: lease.use }))
+    .rejects.toThrow("hostFetch internal error: credential transport lacks sendWithHandoff");
+  expect(transport).not.toHaveBeenCalled();
+});
 
 describe("runHostFetchHops — hop deadline", () => {
   /** A server that accepts the connection and then says nothing, ever. */
@@ -513,6 +550,58 @@ describe("runHostFetchHops — hop deadline", () => {
 });
 
 describe("runHostFetchHops — redirect policy", () => {
+  it("stops a followed redirect when the registry revokes during the first response", async () => {
+    publicDns();
+    const lease = registeredCredentialUse();
+    const transport = vi.fn(async () => {
+      lease.revoke();
+      return redirect(302, "https://api.example.com/next");
+    }) as unknown as typeof fetch;
+    const { options } = hopOptions(await firstAllow("https://api.example.com/a"), { redirect: "follow" }, directHostFetchTransport(transport));
+    await expect(runHostFetchHops({ ...options, credentialUse: lease.use }))
+      .rejects.toMatchObject({ code: "lease-unavailable" });
+    expect(transport).toHaveBeenCalledOnce();
+  });
+  it("checks the lease audience again on a followed redirect before a second send", async () => {
+    publicDns();
+    const { transport, calls } = scriptedTransport([redirect(302, "https://sso.example.com/next")]);
+    const { options } = hopOptions(await firstAllow("https://api.example.com/a"), { redirect: "follow" }, transport);
+    const lease = registeredCredentialUse();
+    const finish = vi.spyOn(lease.use, "finish");
+    await expect(runHostFetchHops({ ...options, credentialUse: lease.use })).rejects.toMatchObject({
+      code: "lease-audience-denied", detail: { hop: 1 },
+    });
+    expect(calls).toHaveLength(1);
+    expect(finish).toHaveBeenCalledOnce();
+  });
+
+  it("rechecks a lease after the asynchronous cookie lookup and before transport", async () => {
+    publicDns();
+    const { transport, calls } = scriptedTransport([new Response("unused")]);
+    const { options } = hopOptions(await firstAllow("https://api.example.com/a"), {}, transport);
+    const lease = registeredCredentialUse();
+    const finish = vi.spyOn(lease.use, "finish");
+    await expect(runHostFetchHops({
+      ...options, credentialUse: lease.use,
+      injectSessionCookie: async () => { lease.revoke(); return "sid=synthetic"; },
+    })).rejects.toMatchObject({ code: "lease-unavailable" });
+    expect(calls).toHaveLength(0);
+    expect(finish).toHaveBeenCalledOnce();
+  });
+
+  it("drops a response body when the lease closes before it is drained", async () => {
+    publicDns();
+    const { transport } = scriptedTransport([new Response("body")]);
+    const { options } = hopOptions(await firstAllow("https://api.example.com/a"), {}, transport);
+    const lease = registeredCredentialUse();
+    const finish = vi.spyOn(lease.use, "finish");
+    const onResponseBodyError = vi.fn(() => { throw new Error("audit sink failed"); });
+    const response = await runHostFetchHops({ ...options, credentialUse: lease.use, onResponseBodyError });
+    lease.revoke();
+    await expect(response.text()).rejects.toMatchObject({ code: "lease-unavailable" });
+    expect(onResponseBodyError).toHaveBeenCalledWith(expect.objectContaining({ code: "lease-unavailable" }));
+    expect(finish).toHaveBeenCalledOnce();
+  });
   it("default (no redirect field) refuses a redirect, after one hop only", async () => {
     publicDns();
     const { transport, calls } = scriptedTransport([redirect(302, "https://api.example.com/next")]);
@@ -678,7 +767,7 @@ describe("runHostFetchHops — method, body, and credentials across a followed h
       await firstAllow("https://api.example.com/a"),
       {
         redirect: "follow",
-        headers: { authorization: "Bearer t", cookie: "sid=1", "x-app": "keep" },
+        headers: { authorization: "Bearer t", cookie: "sid=1", "api-key": "secret-a", "x-api-key": "secret-b", "ocp-apim-subscription-key": "secret-c", "x-app": "keep" },
       },
       crossOrigin.transport,
     );
@@ -686,6 +775,9 @@ describe("runHostFetchHops — method, body, and credentials across a followed h
     expect(crossOrigin.calls[0]!.headers.authorization).toBe("Bearer t");
     expect(crossOrigin.calls[1]!.headers.authorization).toBeUndefined();
     expect(crossOrigin.calls[1]!.headers.cookie).toBeUndefined();
+    expect(crossOrigin.calls[1]!.headers["api-key"]).toBeUndefined();
+    expect(crossOrigin.calls[1]!.headers["x-api-key"]).toBeUndefined();
+    expect(crossOrigin.calls[1]!.headers["ocp-apim-subscription-key"]).toBeUndefined();
     expect(crossOrigin.calls[1]!.headers["x-app"]).toBe("keep");
 
     const sameOrigin = scriptedTransport([

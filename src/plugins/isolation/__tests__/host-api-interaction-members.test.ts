@@ -38,7 +38,6 @@ import {
   INTERACTION_HOSTAPI_PATHS,
   PluginHostApiError,
   isHostApiPath,
-  type HostApiChannel,
   type HostApiWireErrorCode,
   type InteractionHostApiPath,
 } from "../host-api-wire.js";
@@ -48,9 +47,9 @@ import {
   type PluginChildRuntime,
   type PluginFactoryLoader,
 } from "../plugin-child-runtime.js";
+import { directHostApiChannel } from "../../../__tests__/support/host-protocol-wire.js";
 
 const PLUGIN_ID = "com.example.interaction";
-const GENERATION = "gen-3";
 
 const MANIFEST: PluginManifest = {
   id: PLUGIN_ID,
@@ -161,10 +160,10 @@ async function harness(
 
   let host!: HostApiDispatcher;
   let child!: PluginChildRuntime;
-  const channel: HostApiChannel = {
-    call: (request) => host.handle(request),
-    notify: (notification) => host.handleNotification(notification),
-  };
+  const channel = directHostApiChannel({
+    handle: (request) => host.handle(request),
+    handleNotification: (notification) => host.handleNotification(notification),
+  });
 
   const hostLogs: { message: string; meta?: unknown }[] = [];
   host = new HostApiDispatcher({
@@ -172,7 +171,9 @@ async function harness(
     // test that discards could not tell the difference.
     log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
-    generationId: GENERATION,
+    reportUnknownField: () => {},
+    // `ave/instance/shutdown`, answered by the child runtime itself.
+    shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     isActive: options.isActive ?? (() => true),
     notifications: { deliver: (notification) => child.deliver(notification) },
     table:
@@ -194,7 +195,6 @@ async function harness(
       userHome: "/Users/example",
       aveHome: "/Users/example/.ave",
       installedPluginIds: [],
-      generationId: GENERATION,
     },
     channel,
     loadFactory,

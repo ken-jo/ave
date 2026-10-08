@@ -60,17 +60,21 @@ import {
 } from "../host-api-child.js";
 import {
   HOSTAPI_PATH_CONTRACTS,
-  HOST_API_WIRE_VERSION,
   PluginHostApiError,
   STORAGE_HOSTAPI_PATHS,
   WIRE_BYTES_MAX,
   type ChildNotificationSink,
   type DispatchedStorageHostApiPath,
-  type HostApiChannel,
   type HostApiPath,
   type HostApiRequest,
   type WireBytes,
 } from "../host-api-wire.js";
+import {
+  argsOfRequest,
+  directHostApiChannel,
+  hostApiRequest,
+  settleHostApiReply,
+} from "../../../__tests__/support/host-protocol-wire.js";
 import {
   createChildHostApiStub,
   createHostApiCaller,
@@ -78,7 +82,6 @@ import {
 } from "../plugin-child-runtime.js";
 
 const PLUGIN_ID = "com.example.storage";
-const GENERATION = "gen-3";
 const silentSink: ChildNotificationSink = { deliver: () => {} };
 
 /**
@@ -128,22 +131,20 @@ function harness(
     // test that discards could not tell the difference.
     log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
-    generationId: GENERATION,
     isActive: () => true,
     notifications: silentSink,
+    reportUnknownField: () => {},
+    // No child runs here, so a shutdown reaching for one is a test bug.
+    shutdownChild: async (subscriptionId) => {
+      throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
+    },
     table:
       options.bind === false
         ? HOSTAPI_DISPATCH_TABLE
         : { ...HOSTAPI_DISPATCH_TABLE, ...createStorageHostApiPaths(hostApi) },
   });
-  const channel: HostApiChannel = {
-    call: (request) => {
-      requests.push(request);
-      return host.handle(request);
-    },
-    notify: () => {},
-  };
-  const context = { pluginId: PLUGIN_ID, generationId: GENERATION };
+  const channel = directHostApiChannel(host, { requests });
+  const context = { pluginId: PLUGIN_ID };
   // Merged into the same partial map the child runtime builds, so an unwired
   // member falls through to the throwing default exactly as it does in
   // production rather than being a type error only this test would see.
@@ -163,18 +164,7 @@ function harness(
     storage: stub.storage,
     dataDir,
     requests,
-    raw: async (path, args) => {
-      const reply = await host.handle({
-        wire: HOST_API_WIRE_VERSION,
-        pluginId: PLUGIN_ID,
-        generationId: GENERATION,
-        callId: "raw",
-        path,
-        args,
-      } as HostApiRequest);
-      if (reply.ok) return reply.value;
-      throw new PluginHostApiError(reply.error);
-    },
+    raw: async (path, args) => settleHostApiReply(await host.handle(hostApiRequest(path, args))),
   };
 }
 
@@ -240,13 +230,13 @@ describe("bytes survive the boundary unchanged", () => {
       Array.from(HOSTILE_BYTES),
     );
     // Both directions carried the base64 tag rather than the utf8 one.
-    expect((requests[0].args[1] as WireBytes).encoding).toBe("base64");
+    expect((argsOfRequest(requests[0])[1] as WireBytes).encoding).toBe("base64");
   });
 
   it("keeps a base64-looking STRING verbatim, which the tag is what stops", async () => {
     const { storage, requests } = harness();
     await storage.write("verbatim.txt", "aGVsbG8=");
-    expect((requests[0].args[1] as WireBytes).encoding).toBe("utf8");
+    expect((argsOfRequest(requests[0])[1] as WireBytes).encoding).toBe("utf8");
     expect(readFileSync(join(dataDir, "verbatim.txt"), "utf-8")).toBe("aGVsbG8=");
   });
 
@@ -607,21 +597,17 @@ describe("the boundary refuses a member the plugin is no longer entitled to", ()
       // test that discards could not tell the difference.
       log: (message, meta) => hostLogs.push({ message, meta }),
       pluginId: PLUGIN_ID,
-      generationId: GENERATION,
       isActive: () => false,
       notifications: silentSink,
+      reportUnknownField: () => {},
+      // No child runs here, so a shutdown reaching for one is a test bug.
+      shutdownChild: async (subscriptionId) => {
+        throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
+      },
       table: { ...HOSTAPI_DISPATCH_TABLE, ...createStorageHostApiPaths(hostApi) },
     });
     writeFileSync(join(dataDir, "live.txt"), "live");
-    const reply = await host.handle({
-      wire: HOST_API_WIRE_VERSION,
-      pluginId: PLUGIN_ID,
-      generationId: GENERATION,
-      callId: "c1",
-      path: "storage.read",
-      args: ["live.txt"],
-    });
-    expect(reply.ok).toBe(false);
-    expect(reply.ok === false && reply.error.code).toBe("plugin-inactive");
+    const reply = await host.handle(hostApiRequest("storage.read", ["live.txt"], "c1"));
+    expect("error" in reply && reply.error.data.code).toBe("plugin-inactive");
   });
 });

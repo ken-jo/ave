@@ -13,7 +13,9 @@ import { ToolRegistry } from "../../tools/registry.js";
 const FIXTURE = resolve(__dirname, "..", "..", "..", "test", "fixtures", "mcp", "echo-stdio-server.mjs");
 
 function makeHost(registry: ToolRegistry): PluginMcpHost {
-  const transport = new StdioChildTransport(process.execPath, [FIXTURE]);
+  const transport = new StdioChildTransport(process.execPath, [FIXTURE], {
+    maxLineBytes: 1024 * 1024,
+  });
   // The host registers tools under the plugin id namespace; "echo" stands in for
   // the spawned plugin's id.
   void registry;
@@ -71,5 +73,19 @@ describe("StdioChildTransport — out-of-process plugin over a real subprocess",
     expect(result.isError).toBe(true);
 
     await retireTestHost(host, registry);
+  }, 15_000);
+
+  it("kills a child whose stdout passes the line bound without a newline", async () => {
+    // A child that never writes 0x0A would otherwise grow the host's buffer
+    // until the host ran out of memory.
+    const transport = new StdioChildTransport(
+      process.execPath,
+      ["-e", "process.stdout.write('x'.repeat(4096)); setInterval(() => {}, 1000);"],
+      { maxLineBytes: 1024 },
+    );
+    const closed = new Promise<string>((resolve) => transport.onClose(resolve));
+    await transport.open();
+    expect(await closed).toMatch(/framing violated: .*exceeded 1024 bytes/);
+    expect(transport.isAlive()).toBe(false);
   }, 15_000);
 });

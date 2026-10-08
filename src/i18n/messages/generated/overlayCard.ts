@@ -1,7 +1,6 @@
 // AUTO-GENERATED — i18n migration. Source: src/ui/renderer/components/OverlayCard.tsx. Do not edit by hand.
 export const en = {
   "overlayCard.running": "In progress…",
-  "overlayCard.pluginNotice": "Plugin notice",
   "overlayCard.appNotice": "MCP app message",
   "overlayCard.routineDone": "Routine complete",
   "overlayCard.prevAriaLabel": "Previous",
@@ -24,7 +23,6 @@ export const en = {
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "overlayCard.running": "진행 중…",
-  "overlayCard.pluginNotice": "플러그인 알림",
   "overlayCard.appNotice": "MCP 앱 메시지",
   "overlayCard.routineDone": "루틴 완료",
   "overlayCard.prevAriaLabel": "이전",

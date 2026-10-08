@@ -11,6 +11,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  announcementActionLabel,
   isMarketplaceAnnouncementAction,
   parseMarketplaceAnnouncementActions,
 } from "../marketplace-announcements.js";
@@ -229,5 +230,14 @@ describe("isMarketplaceAnnouncementAction", () => {
     ["a half-filled label", { label: { en: "Open" }, target: { kind: "url", url: "https://example.com" } }],
   ])("rejects %s", (_case, value) => {
     expect(isMarketplaceAnnouncementAction(value)).toBe(false);
+  });
+});
+
+describe("announcementActionLabel", () => {
+  it("reads the label in the UI language, and in English for an installed language it does not carry", () => {
+    const action = { label: LABEL };
+    expect(announcementActionLabel(action, "ko")).toBe("샌드박스 설정 열기");
+    expect(announcementActionLabel(action, "en")).toBe("Open sandbox settings");
+    expect(announcementActionLabel(action, "fr")).toBe("Open sandbox settings");
   });
 });

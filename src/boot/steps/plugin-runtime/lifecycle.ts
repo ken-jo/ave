@@ -24,6 +24,7 @@ const log = createLogger("ave");
 /** Explicit deps for the lifecycle callbacks. Lazy bindings arrive as getters. */
 export interface LifecycleDeps {
   getAppWindows: () => BrowserWindow[];
+  getAlertsService: () => import("../../../alerts/service.js").AlertsService | undefined;
   lateBinding: LateBindingRefs;
   getMainWindow?: () => BrowserWindow | null;
   mainWindow: BrowserWindow | null;
@@ -47,6 +48,12 @@ export function createLifecycleCallbacks(
     pythonRuntime,
     installLoadedPluginPartitionPolicy,
   } = deps;
+
+  const reconcileAlerts = () => {
+    void deps.getAlertsService()?.reconcileMigration().catch((error: unknown) => {
+      log.warn({ error }, "alert inheritance lifecycle reconciliation failed");
+    });
+  };
 
   return {
     preparePluginStart: ({ pluginId, manifest, manifestPath, reportProgress,
@@ -82,6 +89,7 @@ export function createLifecycleCallbacks(
       })();
     },
     onDisable: (pluginId) => {
+      reconcileAlerts();
       lateBinding.conversationLoopRef.fn?.onPluginDisabled(pluginId);
     },
     onActiveStateChange: async (pluginId, enabled) => {
@@ -99,6 +107,7 @@ export function createLifecycleCallbacks(
     // `도구를 찾을 수 없습니다` post-restart. Non-fatal:
     // a sync exception is logged but does not become `runtime reload failed`.
     onEnable: (pluginId) => {
+      reconcileAlerts();
       // Register the partition preload on every live enable/reload path so the
       // refreshed plugin UI receives window.avePlugin immediately.
       installLoadedPluginPartitionPolicy(pluginId);

@@ -19,6 +19,7 @@ import {
   readInitialAppModeArg,
   readInitialThemeArg,
 } from "./preload/internal-surface.js";
+import { PRELOAD_BUNDLES } from "./shared/preload-bundles.js";
 
 // ─── Deterministic plugin webview asset URLs ────────────────────────────────
 // `__dirname` here resolves to the host preload's bundled location
@@ -32,7 +33,7 @@ function safeResolveFileUrl(relative: string): string {
     return "";
   }
 }
-const pluginPreloadUrl = safeResolveFileUrl("plugin-preload.cjs");
+const pluginPreloadUrl = safeResolveFileUrl(PRELOAD_BUNDLES.pluginPreload.file);
 const pluginShellUrl = safeResolveFileUrl("plugin-ui-shell.html");
 
 // ─── Race-window-zero primes (theme + app-mode) ─────────────────────────────

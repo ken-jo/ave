@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { RefObject } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import type { QuickAction } from "../components/command-actions.js";
-import type { PluginEntry } from "../components/PluginGridButton.js";
+import type { PluginEntry } from "../types.js";
 import {
   CATEGORY_ORDER,
   filterActions,

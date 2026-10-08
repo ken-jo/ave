@@ -1,0 +1,4 @@
+#!/bin/sh
+# The program a `process` manifest names: a launcher that execs its
+# interpreter on the protocol script, as a non-JS plugin's launcher would.
+exec node "$@"

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { dirname, resolve } from "node:path";
-import type { InstallPolicy, PluginAccessSpec, PluginRegistry, PluginRegistryEntry, PluginRegistryEntryInstallSource } from "./types.js";
+import type { PluginAccessSpec, PluginRegistry, PluginRegistryEntry, PluginRegistryEntryInstallSource } from "./types.js";
 import { logPluginLifecycle, PluginPhase } from "./lifecycle-log.js";
 import { isCommittedAtomicWriteError, isMissingPathError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { FileLockReleaseError, withFileLock, withInProcessFileQueue } from "../lib/with-file-lock.js";
@@ -29,7 +29,7 @@ import { isRecord, isStringArray } from "../shared/is-record.js";
  * sees a clear failure (missing receipt) instead of a silent skip.
  */
 interface LegacyRegistryEntry extends Omit<PluginRegistryEntry, "installSource"> {
-  installedBy?: InstallPolicy;
+  installedBy?: "admin" | "user";
   _devLinked?: boolean;
   /**
    * Pre-2026-05 registries may carry `installSource: "dev-link"`. The
@@ -130,6 +130,7 @@ function migrateLegacyEntry(
   if (entry.bundleRefs !== undefined) migrated.bundleRefs = entry.bundleRefs;
   if (cleanedAccess.access !== undefined) migrated.approvedPluginAccess = cleanedAccess.access;
   if (installSource !== undefined) migrated.installSource = installSource;
+  if (entry.origin !== undefined) migrated.origin = entry.origin;
   if (entry.pendingUpdate !== undefined) migrated.pendingUpdate = entry.pendingUpdate;
   if (entry.pendingCleanup !== undefined) {
     migrated.pendingCleanup = entry.pendingCleanup.map((item) => ({ ...item }));
@@ -233,7 +234,7 @@ export async function readPluginRegistry(registryPath: string): Promise<PluginRe
 
 const REGISTRY_ENTRY_KEYS = new Set([
   "id", "manifestPath", "manifestSha256", "enabled", "bundleRefs",
-  "approvedPluginAccess", "installSource", "pendingUpdate",
+  "approvedPluginAccess", "installSource", "origin", "pendingUpdate",
   "pendingCleanup",
 ]);
 const LEGACY_REGISTRY_ENTRY_KEYS = new Set([...REGISTRY_ENTRY_KEYS, "installedBy", "_devLinked"]);
@@ -288,8 +289,38 @@ function validateRegistryEntry(
     }
   }
   if (value.approvedPluginAccess !== undefined) validatePluginAccess(value.approvedPluginAccess, value.id);
+  if (value.origin !== undefined) validateOrigin(value.origin, value.id);
   if (value.pendingUpdate !== undefined) validatePendingUpdate(value.pendingUpdate, value.id);
   if (value.pendingCleanup !== undefined) validatePendingCleanup(value.pendingCleanup, value.id);
+}
+
+const ORIGIN_SOURCE_KINDS = new Set(["official", "managed", "custom", "direct"]);
+const ORIGIN_RUNGS = new Set(["release", "archive", "tree", "folder", "legacy"]);
+
+function validateOrigin(value: unknown, pluginId: string): void {
+  if (!isRecord(value)) throw new Error(`Invalid plugin registry origin: ${pluginId}`);
+  assertOnlyKeys(
+    value,
+    new Set(["sourceId", "sourceOrigin", "commit", "packagePath", "version", "rung", "artifactSha256", "installedAt"]),
+    `origin for '${pluginId}'`,
+  );
+  // A folder install's commit is its revision (§18.4.3); every other rung's is a 40-hex commit.
+  const commitOk = typeof value.commit === "string"
+    && (value.rung === "folder" ? /^local-[a-f0-9]{64}$/.test(value.commit) : /^[a-f0-9]{40}$/.test(value.commit));
+  const folderOriginOk = value.rung !== "folder" || value.sourceOrigin !== "official";
+  const digestOk = value.rung === "legacy"
+    ? value.artifactSha256 === null
+    : typeof value.artifactSha256 === "string" && /^[a-f0-9]{64}$/.test(value.artifactSha256);
+  if (typeof value.sourceId !== "string" || value.sourceId.length === 0
+    || typeof value.sourceOrigin !== "string" || !ORIGIN_SOURCE_KINDS.has(value.sourceOrigin)
+    || !commitOk || !folderOriginOk
+    || typeof value.packagePath !== "string"
+    || typeof value.version !== "string" || value.version.length === 0
+    || typeof value.rung !== "string" || !ORIGIN_RUNGS.has(value.rung)
+    || !digestOk
+    || typeof value.installedAt !== "string") {
+    throw new Error(`Invalid plugin registry origin: ${pluginId}`);
+  }
 }
 
 function validatePendingCleanup(value: unknown, pluginId: string): void {

@@ -90,6 +90,10 @@ scan() {
     echo "::error::git ls-files failed — gate cannot verify this tree"
     return 2
   fi
+  if [ "$considered" -eq 0 ]; then
+    echo "::error::git ls-files returned an empty inventory — gate cannot verify this tree"
+    return 2
+  fi
 
   local hits status violations=0 file line rest name pattern strip
   # The two spellings are scanned separately because they end at different

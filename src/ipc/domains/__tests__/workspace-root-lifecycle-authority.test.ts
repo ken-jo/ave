@@ -47,6 +47,7 @@ import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const workspaceDeps = {
   auditLogger: { log: vi.fn() },
+  pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
   getMainWindow: () => null,
   memoryManager: {
     allowProjectRoot: vi.fn(),
