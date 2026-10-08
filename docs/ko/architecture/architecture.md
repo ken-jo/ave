@@ -1436,7 +1436,6 @@ gesture-gated surface, and any remote/multi-user exposure beyond loopback.
 #### 4.6.3 관련 청사진
 
 - `docs/blueprints/openharness-selective-borrow-plan.md` — OpenHarness MIT 재사용/출처 근거
-- `docs/blueprints/phase3-folder-refactor-plan.md` — file-by-file migration map
 
 #### 4.6.4 불변 사항 (리팩터가 바꾸지 않는 것)
 

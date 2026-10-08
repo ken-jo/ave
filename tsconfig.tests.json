@@ -2,8 +2,7 @@
   // Typechecks what `tsconfig.json` deliberately leaves out.
   //
   // The root config excludes `src/**/__tests__/**`, `src/**/__probes__/**`, the preload
-  // tree and `renderer.tsx`; `tsconfig.build.json` re-declares the same exclusions rather
-  // than relaxing them. So before this file, NO configuration in the repo typechecked a
+  // tree and `renderer.tsx`. So before this file, NO configuration in the repo typechecked a
   // test — a test could reference an unimported symbol, pass `bun run typecheck`, and
   // reach CI green, failing only if a test happened to execute that line.
   //
