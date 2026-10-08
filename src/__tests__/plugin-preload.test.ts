@@ -258,7 +258,7 @@ describe("plugin-preload bridge", () => {
 
   it("getTheme returns null on cold-boot when host has not broadcast yet", async () => {
     // Pre-paint must tolerate `theme: null` so the shell falls back to
-    // SDK :root defaults rather than blocking the entry import.
+    // its own initial paint rather than blocking the entry import.
     const bridge = exposed.get("avePlugin") as { getTheme: () => Promise<unknown> };
     mockInvoke.mockResolvedValueOnce({ ok: true, theme: null });
 

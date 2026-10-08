@@ -3,10 +3,8 @@ import { _electron as electron, type ElectronApplication, type Page,
 import { test as base, expect } from "@playwright/test";
 import path from "node:path";
 import fs from "node:fs";
-import os from "node:os";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { execSync } from "node:child_process";
+import { hostGit } from "../../../src/marketplace/__tests__/fixtures/git-http-server.js";
 import {
   hashReceiptFiles,
   listFilesRecursive,
@@ -17,19 +15,19 @@ import {
   buildE2eSecrets,
   buildIsolatedElectronEnv,
 } from "./seeded-electron";
-import { canonicalJSON } from "../../../src/plugins/whitelist/canonical-json.js";
 import { makeTestT, type TestT } from "./i18n.js";
 import { agentPluginsDocument } from "../../../src/plugins/__tests__/test-helpers.js";
+import { flattenAgentPluginsManifest } from "../../../src/plugins/public-contract.js";
+
+import { ALERT_FIXTURE_MANIFEST, ALERT_FIXTURE_SOURCE } from "./alert-fixture.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 const E2E_PLUGIN_REPOS = [
   "ave-plugin-local-indexer",
   "ave-plugin-meeting",
-  "ave-plugin-vega-helper",
 ] as const;
 
-const E2E_RESOLVE_CREDENTIAL_PROBE_TOOL = "meeting_resolve_credential_probe";
 const E2E_PLUGIN_UI_STUB_SOURCE =
   'export function mount({ root }) { root.textContent = "E2E Plugin UI"; }\nexport default { mount };\n';
 
@@ -40,75 +38,19 @@ type E2eManifest = {
   version?: unknown;
   pluginAccess?: unknown;
   tools?: unknown;
-  hostSecrets?: { read?: unknown };
   ui?: unknown;
   python?: unknown;
 };
 
-function addCredentialProbeTool(tools: unknown): unknown[] {
-  if (
-    !Array.isArray(tools) ||
-    tools.some((tool) =>
-        tool === null || typeof tool !== "object" || Array.isArray(tool),
-    )
-  ) {
-    throw new Error("E2E plugin manifest must declare pure Tool objects");
-  }
-  if (
-    tools.some(
-      (tool) =>
-        (tool as { name?: unknown }).name === E2E_RESOLVE_CREDENTIAL_PROBE_TOOL,
-    )
-  ) {
-    return tools;
-  }
-  return [
-    ...tools,
-    {
-      name: E2E_RESOLVE_CREDENTIAL_PROBE_TOOL,
-      description:
-        "E2E-only probe that resolves the host-managed OpenAI key through hostApi.resolveApiKey.",
-      inputSchema: {
-        type: "object",
-        properties: {},
-        additionalProperties: false,
-      },
-      _meta: {
-        ui: { visibility: ["model", "app"] },
-      },
-    },
-  ];
-}
-
-function manifestIdentitySha256FromPluginJson(pluginJsonPath: string): string {
-  const manifest = JSON.parse(fs.readFileSync(pluginJsonPath, "utf-8"),
-  ) as unknown;
-  return createHash("sha256").update(canonicalJSON(manifest)).digest("hex");
-}
-
-function prepareE2eManifest(manifest: E2eManifest, enableCredentialProbe: boolean,
-): E2eManifest {
+/** The seeded copy runs without its Python runtime; everything else is the plugin's own manifest. */
+function prepareE2eManifest(manifest: E2eManifest): E2eManifest {
   const base = { ...manifest };
   delete base.python;
-  if (!enableCredentialProbe || base.id !== "meeting") return base;
-
-  const declaredHostKeyNames = Array.isArray(base.hostSecrets?.read)
-    ? base.hostSecrets.read.filter((item): item is string => typeof item === "string",
-      )
-    : [];
-  const hostSecretReads = declaredHostKeyNames.includes("llm.apiKey.openai")
-    ? declaredHostKeyNames
-    : [...declaredHostKeyNames, "llm.apiKey.openai"];
-  return {
-    ...base,
-    hostSecrets: { read: hostSecretReads },
-    tools: addCredentialProbeTool(base.tools),
-  };
+  return base;
 }
 
 function buildHostPluginStub(
   manifestId: string,
-  enableCredentialProbe: boolean,
   toolNames: readonly string[] = [],
 ): string {
   /**
@@ -126,8 +68,7 @@ function buildHostPluginStub(
       + `{ ok: true, stub: ${JSON.stringify(`e2e-stub:${manifestId}:`)} + ${JSON.stringify(name)}, args }),`)
     .join("\n");
 
-  if (!enableCredentialProbe || manifestId !== "meeting") {
-    return `export default function createPlugin() {
+  return `export default function createPlugin() {
   return {
     handlers: {
 ${echoHandlers}
@@ -137,105 +78,6 @@ ${echoHandlers}
   };
 }
 `;
-  }
-
-  return `export default function createPlugin(context) {
-  return {
-    handlers: {
-${echoHandlers}
-      ${E2E_RESOLVE_CREDENTIAL_PROBE_TOOL}: async () => {
-        const resolver = context.hostApi && context.hostApi.resolveApiKey;
-        if (typeof resolver !== "function") {
-          return { ok: false, reason: "missing-resolveApiKey" };
-        }
-        const result = await resolver({ purpose: "llm", vendor: "openai" });
-        if (!result.ok) return result;
-        try {
-          return { ok: true, vendor: result.vendor, bearer: result.bearer() };
-        } finally {
-          result.release();
-        }
-      }
-    },
-    start() {},
-    stop() {}
-  };
-}\n`;
-}
-
-function buildSignedWhitelistEnv(
-  aveHomeForTest: string,
-  grants: Record<string, { read: string[]; manifestSha256: string }>,
-): LaunchEnv {
-  if (Object.keys(grants).length === 0) return {};
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  const rawPublicKey = publicKey
-    .export({ type: "spki", format: "der" })
-    .slice(-32);
-  const doc = {
-    version: 1,
-    schemaVersion: 1,
-    issuedAt: "2026-05-17T00:00:00.000Z",
-    expiresAt: "2030-01-01T00:00:00.000Z",
-    pluginGrants: Object.fromEntries(
-      Object.entries(grants).map(([pluginId, grant]) => [
-        pluginId,
-        {
-          publisher: "e2e",
-          hostSecrets: { read: grant.read },
-          approvedManifestSha256: grant.manifestSha256,
-        },
-      ]),
-    ),
-  };
-  const body = JSON.stringify(doc);
-  const envelope = {
-    version: 1,
-    iat: Math.floor(Date.now() / 1000),
-    artifact_sha256: createHash("sha256")
-      .update(Buffer.from(body, "utf-8"))
-      .digest("hex"),
-    signatures: [
-      {
-        key_id: "whitelist-v1",
-        alg: "ed25519",
-        sig: sign(null, Buffer.from(body, "utf-8"), privateKey).toString(
-          "base64",
-        ),
-      },
-    ],
-  };
-  const whitelistPath = path.join(
-    aveHomeForTest,
-    "e2e-marketplace-whitelist.fixture.json",
-  );
-  fs.writeFileSync(whitelistPath, body, "utf-8");
-  fs.writeFileSync(`${whitelistPath}.sig`, JSON.stringify(envelope), "utf-8");
-  return {
-    AVE_E2E_WHITELIST_SNAPSHOT_PATH: whitelistPath,
-    AVE_E2E_WHITELIST_PUBLIC_KEY: rawPublicKey.toString("base64"),
-  };
-}
-
-/** Kill any processes occupying the local-indexer worker port so E2E runs cleanly. */
-function killLocalIndexerWorkers(): void {
-  if (process.platform === "win32") return;
-
-  try {
-    const raw = execSync("lsof -ti :43129 2>/dev/null || true")
-      .toString()
-      .trim();
-    const pids = raw.split("\n").filter(Boolean);
-    for (const pid of pids) {
-      try {
-        process.kill(parseInt(pid), "SIGKILL");
-      } catch {
-        /* already dead */
-      }
-    }
-  } catch {
-    /* lsof unavailable */
-  }
 }
 
 function resolveE2ePluginSourceRoot(repoRoot: string): string {
@@ -245,10 +87,7 @@ function resolveE2ePluginSourceRoot(repoRoot: string): string {
 
   const candidates = [path.resolve(repoRoot, "..")];
   try {
-    const output = execSync("git worktree list --porcelain", {
-      cwd: repoRoot,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).toString();
+    const output = hostGit(["worktree", "list", "--porcelain"], repoRoot);
     for (const line of output.split("\n")) {
       if (!line.startsWith("worktree ")) continue;
       candidates.push(path.dirname(line.slice("worktree ".length).trim()));
@@ -270,18 +109,13 @@ function resolveE2ePluginSourceRoot(repoRoot: string): string {
 async function seedE2ePlugins(
   repoRoot: string,
   aveHomeForTest: string,
-  enableCredentialProbe: boolean,
   seedTogglePlugin: boolean,
   seedRepositoryPlugins: boolean,
-): Promise<LaunchEnv> {
+  seedAlertPlugin: boolean,
+): Promise<void> {
   const pluginsRoot = path.join(aveHomeForTest, "plugins");
   const cacheRoot = path.join(pluginsRoot, ".cache");
   fs.mkdirSync(pluginsRoot, { recursive: true, mode: 0o700 });
-  const whitelistGrants: Record<
-    string,
-    { read: string[]; manifestSha256: string }
-  > = {};
-
   const entries: Array<{
     id: string;
     manifestPath: string;
@@ -336,6 +170,8 @@ async function seedE2ePlugins(
     });
   }
 
+  if (seedAlertPlugin) await writeSeededPlugin(ALERT_FIXTURE_MANIFEST, ALERT_FIXTURE_SOURCE);
+
   if (seedTogglePlugin) {
     await writeSeededPlugin(
       {
@@ -344,7 +180,6 @@ async function seedE2ePlugins(
         version: "0.0.0",
         description:
           "Minimal plugin used by plugin active/inactive E2E coverage.",
-        publisher: "Ave E2E",
         entry: "dist/hostPlugin.js",
         tools: [
           {
@@ -384,9 +219,10 @@ async function seedE2ePlugins(
       }
 
       const sourceManifestText = fs.readFileSync(sourceManifest, "utf-8");
+      // Plugin repositories ship the Agent Plugins document; the seeding below
+      // edits the flat host view and writes the document back.
       const manifest = prepareE2eManifest(
-        JSON.parse(sourceManifestText) as E2eManifest,
-        enableCredentialProbe,
+        flattenAgentPluginsManifest(JSON.parse(sourceManifestText)) as unknown as E2eManifest,
       );
       if (
         typeof manifest.id !== "string" ||
@@ -401,18 +237,6 @@ async function seedE2ePlugins(
       const pluginJsonPath = path.join(pluginDir, "plugin.json");
       fs.writeFileSync(pluginJsonPath, manifestText, "utf-8");
 
-      const hostSecretReads = Array.isArray(manifest.hostSecrets?.read)
-        ? manifest.hostSecrets.read.filter(
-            (item): item is string => typeof item === "string",
-          )
-        : [];
-      if (hostSecretReads.length > 0) {
-        whitelistGrants[manifest.id] = {
-          read: hostSecretReads,
-          manifestSha256: manifestIdentitySha256FromPluginJson(pluginJsonPath),
-        };
-      }
-
       const targetDist = path.join(pluginDir, "dist");
       const uiEntries = Array.isArray((manifest as { ui?: unknown }).ui)
         ? (
@@ -426,7 +250,6 @@ async function seedE2ePlugins(
         path.join(targetDist, "hostPlugin.js"),
         buildHostPluginStub(
           manifest.id,
-          enableCredentialProbe,
           (Array.isArray(manifest.tools) ? manifest.tools : [])
             .map((tool) => (tool as { name?: unknown }).name)
             .filter((name): name is string => typeof name === "string"),
@@ -475,7 +298,6 @@ async function seedE2ePlugins(
     "utf-8",
   );
 
-  return buildSignedWhitelistEnv(aveHomeForTest, whitelistGrants);
 }
 
 /**
@@ -493,15 +315,26 @@ export type ElectronOptions = {
   launchEnv: LaunchEnv;
   onboardingCompleted: boolean;
   seedTogglePlugin: boolean;
+  seedAlertPlugin: boolean;
+  seedPermissionMode: "default" | "allow" | undefined;
   seedRepositoryPlugins: boolean;
   seedApiKey: boolean;
   seedLocale: "ko" | "en";
+  /**
+   * Launch with `AVE_DEV=1` (the default). A spec that checks what a user's
+   * build asks for (an http or loopback marketplace's confirmations, design
+   * §18.2.2) turns it off; without it, plugins seeded from the repository do
+   * not load, so such a spec also sets `seedRepositoryPlugins: false`.
+   */
+  devFlag: boolean;
 };
 
 export const test = base.extend<ElectronFixtures & ElectronOptions>({
   launchEnv: [{}, { option: true }],
   onboardingCompleted: [true, { option: true }],
   seedTogglePlugin: [false, { option: true }],
+  seedAlertPlugin: [false, { option: true }],
+  seedPermissionMode: [undefined, { option: true }],
   seedRepositoryPlugins: [true, { option: true }],
   // Seed a usable LLM key so the composer is enabled (see buildE2eSecrets).
   // Specs that assert the no-key / key-toggle state override with
@@ -513,9 +346,10 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
   // Korean override with `test.use({ seedLocale: 'ko' })`; specs with their own
   // harness pin their locale via a module-scoped `makeTestT(...)`.
   seedLocale: ["en", { option: true }],
+  devFlag: [true, { option: true }],
 
   userDataDir: async ({}, use) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ave-e2e-"));
+    const dir = fs.mkdtempSync(path.join("/tmp", "ave-e2e-"));
     await use(dir);
     try {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -531,8 +365,11 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       onboardingCompleted,
       seedTogglePlugin,
       seedRepositoryPlugins,
+      seedAlertPlugin,
+      seedPermissionMode,
       seedApiKey,
       seedLocale,
+      devFlag,
     },
     use,
   ) => {
@@ -543,8 +380,6 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
         `Electron main entry not found at ${mainEntry}. Run 'bun run build' before 'playwright test'.`,
       );
     }
-    // Kill any leftover local-indexer worker from a previous run before launching
-    killLocalIndexerWorkers();
     /* Isolate Ave user-data state under the per-test temp dir so encrypted
        secret blobs from a previous dev run on `~/.ave/secrets/` do not bleed
        into the test (their Keychain key may have rotated, decryption fails,
@@ -556,7 +391,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
     // card — nobody answers it headlessly, so a live spec that needs tools to
     // actually RUN never gets past the first one. Export
     // AVE_E2E_PERMISSION_MODE=allow to exercise the tool path end to end.
-    const permissionMode = process.env.AVE_E2E_PERMISSION_MODE?.trim();
+    const permissionMode = seedPermissionMode ?? process.env.AVE_E2E_PERMISSION_MODE?.trim();
     if (permissionMode) {
       // The WHOLE PermissionsFile shape. `readPermissionsFile` discards the
       // file unless `version === 1` and `rules` is an array, and a discarded
@@ -626,21 +461,20 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
         { encoding: "utf-8", mode: 0o600 },
       );
     }
-    const e2eWhitelistEnv = await seedE2ePlugins(
+    await seedE2ePlugins(
       repoRoot,
       aveHomeForTest,
-      launchEnv.AVE_E2E_RESOLVE_CREDENTIAL_PROBE === "1",
       seedTogglePlugin,
       seedRepositoryPlugins,
+      seedAlertPlugin,
     );
     const app = await electron.launch({
       args: [mainEntry, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
       env: buildIsolatedElectronEnv({
         ...launchEnv,
-        ...e2eWhitelistEnv,
         HOME: userDataDir,
         USERPROFILE: userDataDir,
-        AVE_DEV: "1",
+        ...(devFlag ? { AVE_DEV: "1" } : {}),
         AVE_E2E: "1",
         AVE_HOME: aveHomeForTest,
         NODE_ENV: "test",
@@ -661,8 +495,6 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       );
     await use(app);
     await app.close().catch(() => {});
-    // Ensure child Python workers spawned by local-indexer are cleaned up
-    killLocalIndexerWorkers();
   },
 
   mainWindow: async ({ app }, use) => {

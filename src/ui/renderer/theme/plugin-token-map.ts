@@ -31,8 +31,8 @@ function tripleToHslWithAlpha(triple: string, alpha: number): string {
 //
 // These values reach plugin webviews via the primed token payload that
 // `main.ts:initialThemeArgs` ships on every `BrowserWindow` (commit 1696f92,
-// closes ave#667). The SDK no longer carries a fallback stylesheet; the
-// host is the single source for what plugins paint.
+// closes ave#667). The host owns the broadcast values; plugins supply
+// their own CSS fallback before the first payload arrives.
 const _INVARIANT: Partial<Record<AveTokenName, string>> = {
   "--ave-radius-xs":       "0.15rem",
   "--ave-radius-lg":       "0.75rem",

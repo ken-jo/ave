@@ -72,10 +72,13 @@ construct the ordinary host service graph without a window or renderer; `--serve
 that host available through the authenticated Local API and any explicitly
 configured Tailnet surface. Desktop event bridges have no subscription when
 their surface is absent. Approval availability is a host capability separate
-from the routine `headless` tool-scope flag. A native `--exec` invocation that
-still needs explicit consent ends once with a host-issued
-`authorization-required` result instead of feeding a denial back to the model;
-UI-only HostApi calls fail before consuming proposal state. The
+from the routine `headless` tool-scope flag. A native `--exec` turn carries a
+host-issued unattended turn authority that selects the routine policy lane for
+that turn alone, so its asks settle as reviewer decisions or structured denials
+the model sees; a turn without that authority that still needs explicit consent
+ends once with a host-issued `authorization-required` result instead of feeding
+a denial back to the model; UI-only HostApi calls fail before consuming proposal
+state. The
 [native host guide](../guides/native-server.md) owns launcher, profile, key-file,
 and Linux artifact instructions.
 
@@ -105,13 +108,27 @@ sandbox cleanup waits for confirmed root termination. Output display keeps a
 bounded prefix. Foreground capture also retains the original stdout/stderr bytes
 in observed event order in a session artifact owned by `MemoryManager`.
 
+The native headless workload-broker route keeps the Ave controller, encrypted
+provider secret and controller logs on the host. At boot, the host binds an
+owner-only Unix socket and capability file to one exact running Docker `main`
+container. While that route is active, builtin Bash and the canonical file tools
+can reach the task only through the broker; transport, binding, expiry and grant
+failures never select a local shell or filesystem path. Normal authorization,
+reviewer and audit processing still run before the host issues a one-shot grant.
+The broker owns Docker identity revalidation, operation deadlines,
+cancellation, cgroup-v2 OOM evidence and terminal cleanup receipts. The
+[permission policy](permission-policy-design.md#host-native-workload-broker)
+defines the full route and lifecycle contract.
+
 The [Linux workload resource controller](linux-workload-resource-controller.md)
 is an unwired cgroup-v2 foundation for keeping the host controller outside
 per-invocation memory/PID bounds and explicit swap/CPU settings. It is not a
-security sandbox and does not make the disposable-container route available.
-Runtime integration remains blocked until the workload cannot see or write a
-parent cgroup hierarchy and the resource capability and limits are bound into
-the execution grant.
+security sandbox and does not itself advertise the disposable-container route.
+It remains distinct from both implemented routes: strict operator attestation
+for a controller already inside the disposable guest, and the host-native
+Docker workload broker. Runtime integration of this controller remains blocked
+until the workload cannot see or write a parent cgroup hierarchy and the
+resource capability and limits are bound into the execution grant.
 
 Each foreground capture artifact is limited to 5,000,000 bytes. Retained captures
 plus active reservations are limited to 20,000,000 bytes per session. Capture
@@ -267,6 +284,53 @@ current project context, and dispatches to host services.
 Plugin UI code runs inside host-created shells. The host resolves plugin asset
 URLs, applies theme tokens, and passes a bridge. Plugin code can request host
 operations only through declared capabilities and HostApi methods.
+
+A preload that runs in a sandboxed frame can require only `electron` and the
+Node modules `events`, `timers` and `url`. The sandboxed frames are the floating
+dock window and plugin and MCP app webviews. Anything such a preload would
+resolve from disk, such as the dock's plugin shell and preload URLs, is resolved
+by main and passed as window arguments. Each preload's file and sandbox mode
+come from one table, `src/shared/preload-bundles.json`: windows spread
+`preloadPreferences(id)`, sessions register `preloadBundlePath(id)`, and webpack
+builds a preload config per row. `test/scripts/preload-sites.test.ts` reads
+`src` with the TypeScript compiler. It finds windows by their resolved Electron
+type and follows electron through imports, `require` and awaited dynamic
+imports. It holds these sites to the table: window `webPreferences`,
+`registerPreloadScript`, guest `sandbox` assignments, and `<webview>`s created
+in JSX, `createElement`, `document.createElement` with `setAttribute`, HTML
+string literals and the HTML sinks `innerHTML`, `outerHTML`,
+`insertAdjacentHTML`, `document.write`, `parseFromString`,
+`createContextualFragment`, `setHTMLUnsafe` and `dangerouslySetInnerHTML`. In
+those sites it refuses what it cannot read: computed keys, spreads whose type
+may carry `webPreferences`, non-literal options or `webpreferences` requests, a
+window class used as a value, subclassed or passed to `Reflect.construct`, a
+dynamic import of electron that is not awaited into a binding, and HTML with
+an interpolated tag name or an interpolation that could carry markup. Code that
+reaches Electron outside these forms is not checked; the attach guards in main
+are what enforce a guest's preferences. Each window that hosts `<webview>`s sets its guests' preferences in main: the
+main window routes plugin, MCP app and side-browser partitions to their guards
+(`configureMainWindowWebviewAttach`) and refuses any other partition. The
+`build` composite's
+`check-sandboxed-preloads` fails when webpack builds a preload the table does
+not classify, or when a row has no webpack config or asset copy behind it. It
+then checks the built file of each table row: a sandboxed one may require only
+the modules above and may have no chunks. It does not scan `dist/src` for other
+files.
+
+Every surface that copies theme values follows the theme the host renderer has
+applied, including a theme updated in place under the same id. Plugin webviews
+receive `host.theme.changed` and can query the replay cache through the plugin-only
+`getTheme`, whose guard admits plugin frames only. The floating dock never asks.
+Main sends it the cached theme when its window opens and forwards each later
+`host.theme.changed` on `ave:dock:theme`. MCP app cards build their host context
+from the theme already written to `:root` (`appliedBundle` / `appliedRevision`),
+so an app never receives one theme's shell with another theme's tokens. An open
+HTML preview is a snapshot: it keeps the theme it was created with, and the next
+preview uses the current theme. Its LLM HTML runs in an opaque-origin sandboxed
+`iframe srcdoc`, often with scripts disabled. The host cannot restyle that document
+by setting variables on the frame or by reaching into it. Live updates would need
+a message receiver inside the document, which the scripts-disabled path cannot
+run. Reloading the preview would discard the document's state.
 
 MCP servers are treated as external tool providers. Their tools are normalized
 into the same registry and are subject to the same permission and audit
@@ -593,48 +657,103 @@ chat a file. The sidebar draws the row under that conversation. A side chat
 whose conversation is not in the list — a page that did not reach it, a
 conversation since deleted — is listed in its own right rather than dropped.
 
-## Plugin Runtime
+## Extension Runtime
 
-Plugin installation and runtime behavior are governed by manifest declarations,
-capability checks, marketplace policy, and host APIs.
+Extension installation and runtime behavior are governed by manifest declarations,
+capability checks, the machine's marketplace policy, and host APIs. Extensions and
+every other package kind arrive through git marketplaces (`src/marketplace/`):
+the app syncs each source's repository, pins the commit it read, and installs
+only the bytes that commit names (release or archive by sha256, or the pinned
+tree). A source can also be a local folder: it is read in place through
+`FolderFs` (no git command, no download), pinned by a revision over the files
+it read, and installed from a copy captured when the install is planned. A
+folder is classified and judged by the policy before anything touches it; a
+folder on another computer is confirmed once per path, and links that leave
+the folder or name another computer are refused unread. Every git remote and download a source names passes one network gate.
+The gate applies the machine's policy, then checks the class of each address.
+Downloads and git over http(s) connect only to the addresses checked. git over
+ssh is checked before git runs, and ssh's own later lookup is not bound. A
+proxy is checked at its own address and trusted beyond it. Plain http,
+internal-network and this-computer targets are confirmed once per source
+address. Metadata and unroutable addresses are always refused. Each
+marketplace call runs as one operation under the policy a refresh applied
+after it began. Lock order: a marketplace operation comes before any plugin
+lifecycle lock. Code that holds plugin locks and calls the marketplace enters
+one operation first and takes the plugin locks inside it; installs,
+uninstalls and updates of one package also take that package's lock, after
+the operation and before any plugin lock. Predecessor removal takes both
+packages' locks the same way, and a package lock asked for while a plugin
+lock is held fails instead of waiting. A caller takes all its package
+locks as one request (`app/keyed-mutex.ts`); the lease it gets lives as long
+as its callback, runs work only under packages it holds, and is never
+extended; asking again without it fails instead of waiting.
+
+Installed packages update by themselves at boot and once a day, one at a
+time and only while no conversation turn, session mutation or session
+transition is running (`ConversationActivityCoordinator.onIdle`); an agent
+plugin also waits until its MCP calls drain. An update applies automatically
+only when its consent fingerprint (authority, MCP servers, hooks, launchers,
+and each bundled server's and hook's approval digest over the package
+tree, with only the manifest's version string normalized)
+equals the baseline the installed version was reviewed with: checked once
+against the catalog and again against the staged bytes before anything
+activates. A consent change is never applied automatically; it waits for the
+user's review. A component approval carries to a new generation only while
+its approval digest is unchanged. A `requiredInstalls` update is reviewed by
+the policy and leaves any new component unapproved. Nothing a queued update
+carries authorizes it: when its turn comes it is judged again, under the
+locks, with the policy and switches in force then. The [multi-source git marketplace design](../design/multi-source-git-marketplace.md)
+owns those contracts (network targets: its §7.4; automatic updates: §7.3;
+local folders: §7.7; refresh, lock order and the policy keys: §12; the update
+review: §15.6).
 
 Key boundaries:
 
-- The complete plugin-author TypeScript contract and its JSDoc are Host-owned in
+- The complete extension-author TypeScript contract and its JSDoc are Host-owned in
   `src/plugins/public-contract.ts`. `src/plugins/types.ts` re-exports that
-  surface and adds Host-private registry/marketplace DTOs. The SDK copies the
-  public module mechanically and adds no declarations, documentation, aliases,
-  or validation policy.
-- plugin code cannot invent its own identity when calling HostApi;
-- installed plugin assets are loaded through host-approved URLs;
-- plugin tools must declare schemas (pure MCP `Tool` objects); per-tool category
+  surface and adds Host-private registry/marketplace DTOs. Extension repositories
+  vendor the public module and `schemas/plugin-manifest.schema.json` unchanged
+  at an app release tag, recorded in `contract/sources.json`. An extension using a
+  new contract member sets `requires.minAppVersion` to a supporting app release.
+- extension code cannot invent its own identity when calling HostApi;
+- installed extension assets are loaded through host-approved URLs;
+- extension tools must declare schemas (pure MCP `Tool` objects); per-tool category
   is not a manifest field — the host classifies the effective category per
   invocation;
-- natural-language keywords never activate plugin scope or preload a Tool.
-  Bundled `manifest.skills` contribute instructions, while host-selected plugin
+- natural-language keywords never activate extension scope or preload a Tool.
+  Bundled `manifest.skills` contribute instructions, while host-selected extension
   scope and `tool_search` control model-visible Tool discovery;
-- plugin UI can render in host slots but cannot bypass permission review;
-- optional `manifest.onboarding` copy is inert, localized metadata. A plugin
+- extension UI can render in host slots but cannot bypass permission review;
+- optional `manifest.onboarding` copy is inert, localized metadata. An extension
   declares one `firstTask` and up to five `highlights`; the host asks each as a
   tile overlay card once and remembers the answer — accept, later, or never — in
   `~/.ave/onboarding/proposals.json`. Accepting performs the declared `action`
   and only that (prefill the visible composer, or move the settings view onto a
   destination written `<tab>` or `<tab>/<section>`, so the reader lands on the
   control rather than on the page that holds it); nothing auto-submits, starts a
-  turn, or invokes a tool, and undeclared or unusable plugins produce no
+  turn, or invokes a tool, and undeclared or unusable extensions produce no
   proposal. The host validates both halves of the path against the tabs and
   sections its build ships and rejects the manifest otherwise;
-- marketplace metadata should not override local policy or managed-plugin rules.
+- no package locks or privileges itself. The manifest's retired
+  `installPolicy` and `publisher` are refused at install and ignored, with one
+  warning, on an installed manifest. Only the system policy file's
+  `marketplaces.requiredInstalls` keeps a package installed: an entry locks the
+  package installed from the source it names against uninstall and disable.
+  Host secrets beyond an extension's own namespace come only from the app's
+  `HOST_SECRET_GRANTS` table, for an official extension installed from the
+  artifact its snapshot pins; provider-preset keys are never granted and a
+  local development install never qualifies. Each source's
+  `policy/revocations.json` disables or uninstalls only that source's installs;
 - boot verifies each installed payload's receipt before parsing its manifest.
   Receipt hashing and manifest validation run with bounded concurrency, but
   successful results and failures are projected in registry order. A rejected
   payload never contributes tool/event ownership or dependency capability, and
   an accepted manifest is parsed only once for that boot load.
-- plugin replacements keep the prior registry row in a strict `pendingUpdate`
+- extension replacements keep the prior registry row in a strict `pendingUpdate`
   state from the pre-promotion boundary through registry commit. Runtime and
   HostApi trust caches skip pending rows, while uninstall/bundle planners retain
   the full row and its references. Boot clears the marker only after the exact
-  receipt snapshot verifies every covered file in the owned plugin directory,
+  receipt snapshot verifies every covered file in the owned extension directory,
   restoring directory bytes before publishing that receipt when a validated
   backup is required. A verified retry preserves the original predecessor and
   grants until its replacement registry commit; unresolved live bytes are
@@ -656,9 +775,9 @@ Key boundaries:
   repair may use the generic generation lifecycle to activate the new artifact
   before reporting retry success. A failed runtime start remains sealed and is
   never retried or reported as started implicitly.
-- a plugin artifact may declare plugin-owned `skills`, `hooks`, and `mcpServers`
-  as `{id,path}` entries. IDs are local to the tuple `(plugin id, plugin version,
-  contribution kind)` and paths are normalized relative to the verified plugin
+- an extension artifact may declare extension-owned `skills`, `hooks`, and `mcpServers`
+  as `{id,path}` entries. IDs are local to the tuple `(extension id, extension version,
+  contribution kind)` and paths are normalized relative to the verified extension
   root. The Host rejects absolute/traversing/ambiguous paths, declaration or
   archive-member collisions, links/devices, missing members, and a Skill
   directory without `SKILL.md`. A contribution-free manifest remains valid.
@@ -667,14 +786,14 @@ Key boundaries:
   command-policy fingerprint; MCP connection approval is bound to the exact
   owner/version/local ID and static policy fingerprint. Candidate preparation
   for MCP is parse/fingerprint-only and performs no spawn, network, discovery,
-  registry write, or plugin execution.
+  registry write, or extension execution.
   An `mcpServers[].path` descriptor is one JSON object containing a standard
   `stdio` or Streamable HTTP MCP config without `id`, `apiKey`, `sandboxRoot`,
   or `allowPrivateNetworks`; the Host derives a generation-scoped server ID and
   an ephemeral strict governance rule. Exact approval connects it without
   adding it to the user's global `servers.json`. A failed connection is a typed
-  degraded projection with zero tools and does not roll back the plugin bundle.
-- plugin code, handlers, materialized Skill bytes, Hook projections, static MCP
+  degraded projection with zero tools and does not roll back the extension bundle.
+- extension code, handlers, materialized Skill bytes, Hook projections, static MCP
   descriptors, and operation policy belong to one immutable active generation.
   Every dispatch first acquires a lease on that generation. Lifecycle transitions
   prepare a hidden candidate, block new leases, durably commit bytes/receipt/
@@ -688,16 +807,78 @@ Key boundaries:
   the union of app-only `["app"]` and dual `["model","app"]`) are
   renderer-invokable;
 - an app-only **non-status** tool (visibility exactly `["app"]`) is driven by a
-  direct UI activation only and cannot be invoked from a plugin-origin
+  direct UI activation only and cannot be invoked from an extension-origin
   `ctx.callTool` — give it `"model"` visibility (`["model","app"]`) for governed
   model/plugin invocation (the auth `statusTool` is exempt: status polling skips
-  the user-activation gate and runs on a plugin-origin chain) (#1556);
-- long-lived plugin workers are spawned only through HostApi `spawnWorker`;
+  the user-activation gate and runs on an extension-origin chain) (#1556);
+- long-lived extension workers are spawned only through HostApi `spawnWorker`;
   filesystem read grants must be declared explicitly as `allowReadPaths` and are
   never inferred from argv. The worker's stdin is the host's liveness pipe — it
   carries no bytes and closes only when the host process is gone — so a
   long-lived worker treats EOF on stdin as the order to exit; that, not the
   shutdown sweep, is what keeps workers from outliving a crashed or killed host.
+
+### Extension alerts and scheduled routines
+
+The [alerts design](../design/plugin-alerts.md) defines the complete alerts
+release; partial rollout builds expose only their implemented portions. Extensions
+own signal detection and declare localized templates and bounded slots in
+`alerts.kinds`. The host owns consent and delivery through `raiseAlert` and
+`withdrawAlert`, with no extension-specific delivery branches. A malformed block
+grants no kinds. Durable work proposals retain their separate contract.
+
+The pipeline checks grant, input shape, predecessor, user toggle, open/closed
+identity, cooldown and rate before accepting and delivering an alert. A
+predecessor from the declared source, or without a source binding, blocks while
+loaded, or installed and not revoked; revocation without unloading does not
+immediately lift the block. Only accepted alerts consume delivery budgets.
+Effective visibility can only decrease: a user-visible alert stages a card,
+a summary-only alert delivers a notification cue without a model prompt, and a
+silent alert writes audit and an event. OS delivery requires the declaration,
+user OS toggle and master switch, respects focus unless bypass is declared,
+and never occurs for low priority. One OS cue replaces, rather than duplicates,
+an in-app toast.
+
+Identity uses an installation-secret HMAC. Raw keys and slot text are excluded
+from audit, events and `alerts/open.json`. The persistent table retains identity
+and lifecycle metadata, not rendered cards: after restart an extension must re-raise
+an open identity to redraw it, returning `refreshed`. A late renderer can obtain
+cards already staged in the current process. Host-only `alert.*` events carry
+no slots and reach only the originating extension or a subscriber with an explicit
+grant naming it. Reference slots remain in the wrapped prompt footer, never on
+the card; OS text is static.
+
+Accepting a card closes its identity and inserts the pending prompt into the
+selected conversation with the `plugin-emitted` staged origin. Tool permission
+and force-ask gates remain intact. The host-renderer-only alert IPC owns card
+closure and staged-card queries. `setupAlerts` runs after marketplace setup and
+before boot uninstall-cleanup replay so it observes lifecycle events, and the
+service is available before extensions start.
+
+All official kinds are opt-in, including the successors of new-mail and
+meeting-summary OS notifications. A new kind first encountered during an update
+starts off. A visibility increase disables the kind until the user consents.
+Eligible predecessor choices transfer through retained configuration under the
+migration rules; the generic settings patch cannot author alert choices.
+
+`triggerConversation` survives for setup suggestions. Extensions declaring alerts
+must declare their suggestion sources and receive at most one acceptance per
+source per 30 days. The transition exception for extensions without alerts and the
+legacy trigger visibility/priority fields end in the next minor release.
+From 0.13.0, the host drops an installed manifest's `notificationEvents` field
+before strict validation and warns once per extension. It no longer registers
+OS notifications from that field. New packages requiring the alerts release or
+later are refused by the repository checker when they declare it. See the
+[overlay contract](../references/overlay-trigger.md) for sources and delivery.
+
+Scheduled LLM routines with non-empty explicit extension allow-lists use installed
+registry rows, including pending updates, to detect missing extensions. With none
+installed, the occurrence is skipped with `plugins-missing`; a one-shot remains
+pending and a repeating schedule advances without a fabricated result. With
+some missing, the routine runs and records the missing IDs as `needsAttention`.
+The routine panel shows either state and offers removal. Installed-but-unloaded
+extensions are not missing; runtime scope and headless permission gates still decide
+which tools may run.
 
 ## Main-process composition and boot readiness
 

@@ -33,7 +33,7 @@ Next actions stated by the previous assistant. If none, "(TBD)".
 
 ## Critical Context
 Things that must not be lost — secrets/tickets/endpoints/rules. Ave domain-specific items also included:
-- Active plugin list
+- Active extension list
 - Active routine ID
 - Task identifier
 - Permission mode (propose-only / auto)
@@ -92,7 +92,7 @@ export const ko: Record<keyof typeof en, string> = {
 
 ## Critical Context
 잃으면 안 되는 것 — secret/ticket/endpoint/규칙. Ave 도메인 specific 도 포함:
-- 활성 plugin 목록
+- 활성 익스텐션 목록
 - 활성 routine ID
 - 작업 식별자
 - 권한 모드 (propose-only / auto)

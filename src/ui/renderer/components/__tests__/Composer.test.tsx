@@ -12,7 +12,7 @@ import type {
 import type { SuggestedRepliesSnapshot } from "../../hooks/use-suggested-replies.js";
 import type { UserKeyboardIntentSnapshot } from "../../../../shared/chat-origin.js";
 import type { QuickAction } from "../command-actions.js";
-import type { PluginEntry } from "../PluginGridButton.js";
+import type { PluginEntry } from "../../types.js";
 import { MCP_RESOURCE_ATTACHMENTS_PER_TURN } from "../../../../shared/mcp-resource-bounds.js";
 import { PASTE_TEXT_MIN_CHARS } from "../../types/attachments.js";
 import type { SubscriptionImageAttachmentLimits } from "../../../../shared/subscription-runtime.js";

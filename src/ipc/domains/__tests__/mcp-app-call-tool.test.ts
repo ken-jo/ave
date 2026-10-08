@@ -102,7 +102,7 @@ async function setup() {
     settingsService: { get: vi.fn(() => ({})) },
     auditLogger: { log: vi.fn() },
     pluginMarketplace: { list: vi.fn(async () => []) },
-    refreshPluginNotifications: vi.fn(),
+    refreshPluginEventBridge: vi.fn(),
     getMainWindow: vi.fn(() => null),
     getAppWindows: vi.fn(() => []),
   };

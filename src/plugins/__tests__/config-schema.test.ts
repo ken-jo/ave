@@ -34,7 +34,7 @@ import type { PluginConfigSchema } from "../types.js";
 import { agentPluginsDocument, aveSchemaProperties } from "./test-helpers.js";
 
 // Host-owned manifest schema SOT (ph2) — resolved relative to this test file
-// so it works regardless of cwd and no longer depends on the SDK package.
+// so it works regardless of cwd and reads the host schema directly.
 const SCHEMA_PATH = fileURLToPath(
   new URL("../../../schemas/plugin-manifest.schema.json", import.meta.url),
 );
@@ -74,7 +74,6 @@ describe("US-B1 — host plugin.schema.json declares configSchema", () => {
       name: "Test",
       version: "1.0.0",
       description: "Test fixture.",
-      publisher: "Test fixture",
       entry: "index.js",
       tools: [
         {
@@ -158,7 +157,7 @@ describe("US-B1 — host plugin.schema.json declares configSchema", () => {
 
 // #885 v6.1.0 — the "toolSchemas authority metadata" describe block (per-tool
 // `category` + `toolSchemas.pathFields` declared via the legacy `toolSchemas`
-// map) was removed here: the SDK's pure Tool[] schema collapse now rejects
+// map) was removed here: the host's pure Tool[] schema now rejects
 // `toolSchemas` and per-tool `category` outright (additionalProperties), and
 // the host already stopped reading them in #885 Phase R. Current authority
 // metadata is `tool._meta["ave/pathFields"]` — covered by
@@ -175,7 +174,6 @@ describe("pure Tool authority metadata — no toolSchemas, category, or workerId
       name: "Category-less",
       version: "1.0.0",
       description: "A manifest whose tools carry no permission category.",
-      publisher: "Test fixture",
       entry: "dist/index.js",
       tools: [
         {
@@ -207,7 +205,6 @@ describe("pure Tool authority metadata — no toolSchemas, category, or workerId
       name: "Worker aware",
       version: "1.0.0",
       description: "A manifest with a pure model-only tool (no worker self-claim).",
-      publisher: "Test fixture",
       entry: "dist/index.js",
       // #885 Phase R — per-tool `workerId` (and the whole toolSchemas map) left the
       // manifest contract; a pure Tool never carries a worker self-claim.
@@ -302,7 +299,6 @@ describe("US-B1 regression — baseline manifest WITHOUT configSchema still vali
       name: "회의록 녹음",
       version: "1.3.0",
       description: "Test fixture.",
-      publisher: "Test fixture",
       entry: "dist/index.js",
       tools: [
         {

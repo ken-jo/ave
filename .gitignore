@@ -56,7 +56,9 @@ bun.lockb
 # `.ico` files stay tracked instead: the signing job packages the installer from
 # a plain checkout without running repository scripts, so it reads those bytes
 # from the tree. `scripts/check-generated-assets.mjs` keeps the tracked ones
-# equal to the generator's output.
+# equal to the generator's output. `scripts/run-vitest-under-electron.mjs` runs
+# the generator itself when a worktree lacks these outputs, so a direct
+# `test:vitest` invocation does not depend on `test:prepare` having run.
 build/icon.png
 build/icons/
 build/tray-icon.png
@@ -79,3 +81,4 @@ smoke-live-model.status.txt
 smoke-live-app.status.txt
 
 /resources/windows-job/
+/resources/windows-path-kind/

@@ -25,7 +25,7 @@
  * Drag region uses the Electron CSS hint `WebkitAppRegion: "drag"`;
  * interactive children opt out with `WebkitAppRegion: "no-drag"`.
  *
- * Theme sync: when the resolved shell theme changes, the component calls
+ * Theme sync: when the applied theme values change (`appliedRevision`), the component calls
  * `window.aveWindow.syncTitleBarTheme` so the Electron titleBarOverlay
  * (Win/Linux native layer) matches our CSS tokens.
  */
@@ -138,7 +138,7 @@ export function CustomTitleBar({ children, leadClearance = 0 }: CustomTitleBarPr
     return () => { unsubMax(); unsubFull(); };
   }, [platformBridge]);
 
-  // Sync titlebar overlay colors when theme changes (Win/Linux only).
+  // Sync titlebar overlay colors whenever the applied theme values change (Win/Linux only).
   useEffect(() => {
     if (!platformBridge) return;
     if (isDarwin) return;
@@ -153,9 +153,11 @@ export function CustomTitleBar({ children, leadClearance = 0 }: CustomTitleBarPr
     } catch (err) {
       console.warn("[CustomTitleBar] theme sync failed:", err);
     }
-    // optionalTheme.resolved is the dependency — rerun whenever shell theme flips
+    // appliedRevision is the dependency: it changes after ThemeProvider has
+    // written the new values to :root — another theme, or the same theme
+    // updated in place — so the colors read here are the new ones.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [platformBridge, isDarwin, optionalTheme?.resolved]);
+  }, [platformBridge, isDarwin, optionalTheme?.appliedRevision]);
 
   const handleMinimize = useCallback(() => { void getWindowBridge().minimize(); }, []);
   const handleMaximize = useCallback(() => { void getWindowBridge().toggleMaximize(); }, []);

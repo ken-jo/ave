@@ -21,6 +21,7 @@ const sampleSource: Record<string, string> = {
   "plugin-emitted": "overlay:meeting-detection",
   "app-emitted": "app:acme-cards",
   "mcp-prompt-emitted": "mcp-prompt:hr-mcp",
+  "plugin-prompt-emitted": "plugin-prompt:writer-plugin:draft",
 };
 
 describe("staged provenance on the replay paths", () => {

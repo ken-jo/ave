@@ -17,6 +17,9 @@
  *   - kill / killAll tear down + decrement ASRT state.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // ─── ASRT mock — gate + wrap controllable per test ──────────
 let gateActive = true;
@@ -24,7 +27,10 @@ const wrapWorkerCommandMock = vi.fn<
   (command: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
 >(() => Promise.resolve({ argv: ["sandbox-exec", "-p", "prof", "/bin/bash", "-c", "exec /bin/zsh -l -i"], env: {} }));
 const cleanupMock = vi.fn(() => Promise.resolve());
-vi.mock("../../../permissions/asrt-sandbox.js", () => ({
+vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
+  sandboxTempEnvLaunch: (await vi.importActual<typeof import("../../../permissions/asrt-sandbox.js")>(
+    "../../../permissions/asrt-sandbox.js",
+  )).sandboxTempEnvLaunch,
   isAsrtSandboxActive: () => gateActive,
   wrapWorkerCommand: (command: string, options?: unknown) => wrapWorkerCommandMock(command, options),
   cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
@@ -58,14 +64,21 @@ vi.mock("../../../tools/safe-env.js", () => ({
   }),
 }));
 
-const SANDBOX_HOME = "/tmp/ave-sandbox-home-test";
+// Real directories, one per terminal, under a parent made per test: the
+// terminal creates its temp directory inside its HOME.
+let homeParent = "";
+let createdHomes: string[] = [];
 const sandboxHomeCleanupMock = vi.fn();
 vi.mock("../../../permissions/sandbox-process-home.js", () => ({
-  createSandboxProcessHome: () => ({
-    path: SANDBOX_HOME,
-    env: { HOME: SANDBOX_HOME, XDG_CONFIG_HOME: `${SANDBOX_HOME}/config` },
-    cleanup: sandboxHomeCleanupMock,
-  }),
+  createSandboxProcessHome: () => {
+    const path = mkdtempSync(join(homeParent, "home-"));
+    createdHomes.push(path);
+    return {
+      path,
+      env: { HOME: path, XDG_CONFIG_HOME: `${path}/config` },
+      cleanup: sandboxHomeCleanupMock,
+    };
+  },
 }));
 
 vi.mock("../../../lib/shell-resolver.js", () => ({
@@ -146,11 +159,14 @@ beforeEach(() => {
   cleanupMock.mockClear();
   sandboxHomeCleanupMock.mockClear();
   ptySpawnMock.mockClear();
+  homeParent = mkdtempSync(join(tmpdir(), "ave-pty-home-"));
+  createdHomes = [];
   __resetTerminalsForTest();
   setTerminalEmitter(emit);
 });
 afterEach(() => {
   __resetTerminalsForTest();
+  rmSync(homeParent, { recursive: true, force: true });
 });
 
 describe("pty-manager fail-closed", () => {
@@ -202,8 +218,9 @@ describe("pty-manager happy path (fs-contained)", () => {
     // write jail anchored on the WORKSPACE ROOT — NOT $HOME (cluster-review MAJOR).
     expect(options.filesystem.allowWrite).toContain(ROOT);
     expect(options.filesystem.allowRead).toContain(ROOT);
-    expect(options.filesystem.allowWrite).toContain(SANDBOX_HOME);
-    expect(options.filesystem.allowRead).toContain(SANDBOX_HOME);
+    const [sandboxHome] = createdHomes;
+    expect(options.filesystem.allowWrite).toContain(sandboxHome);
+    expect(options.filesystem.allowRead).toContain(sandboxHome);
 
     // spawned the WRAPPED argv[0] + argv.slice(1).
     expect(ptySpawnMock).toHaveBeenCalledTimes(1);
@@ -214,7 +231,44 @@ describe("pty-manager happy path (fs-contained)", () => {
     expect(opts.cols).toBe(120);
     expect(opts.rows).toBe(40);
     expect(opts.env.TERM).toBe("xterm-256color");
-    expect(opts.env.HOME).toBe(SANDBOX_HOME);
+    expect(opts.env.HOME).toBe(sandboxHome);
+  });
+
+  it("sets the shell's temp directory inside the wrap, to one under its own HOME", async () => {
+    vi.stubEnv("SHELL", "/bin/sh");
+    let res: Awaited<ReturnType<typeof spawnTerminal>>;
+    try {
+      res = await spawnTerminal({ tabId: "terminal:1" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(res.ok).toBe(true);
+    const [command, options] = wrapWorkerCommandMock.mock.calls[0] as [string, { filesystem: { allowWrite: string[] } }];
+    const [sandboxHome] = createdHomes;
+    const temp = join(sandboxHome!, "tmp");
+    // ASRT writes its own `TMPDIR=` (the sandbox temp root) ahead of the
+    // command, so only an assignment inside the wrap reaches the shell.
+    expect(command).toBe(`exec /usr/bin/env TMPDIR=${temp} TMP=${temp} TEMP=${temp} /bin/sh -l -i`);
+    expect(statSync(temp).isDirectory()).toBe(true);
+    expect(statSync(temp).mode & 0o777).toBe(0o700);
+    // Written under the HOME the wrap already grants.
+    expect(options.filesystem.allowWrite).toContain(sandboxHome);
+  });
+
+  it("refuses the spawn and releases the HOME when the temp directory cannot be made", async () => {
+    const home = await import("../../../permissions/sandbox-process-home.js");
+    const create = vi.spyOn(home, "createSandboxProcessHome");
+    create.mockImplementationOnce(() => {
+      const path = mkdtempSync(join(homeParent, "home-"));
+      writeFileSync(join(path, "tmp"), "");
+      return { path, env: { HOME: path }, cleanup: sandboxHomeCleanupMock };
+    });
+    const res = await spawnTerminal({ tabId: "terminal:1" });
+    create.mockRestore();
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("spawn-failed");
+    expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
   });
 
   it("honors a renderer-supplied cwd that is WITHIN the workspace root", async () => {

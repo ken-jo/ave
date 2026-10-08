@@ -37,7 +37,7 @@ Include:
 
 In scope:
 - Ave desktop app (this repository)
-- The plugin SDK and bundled plugins shipped with each release
+- The plugin contract vendored at an app release tag and bundled plugins
 - Marketplace fetcher behavior and bundled plugin verification
 - Tool execution sandbox, permission gates, and approval flow
 - Auto-update verification (signature, manifest, integrity)

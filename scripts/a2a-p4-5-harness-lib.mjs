@@ -18,6 +18,7 @@ import {
   sign,
 } from "node:crypto";
 import { dirname, resolve } from "node:path";
+import { withoutGitContext } from "./lib/git-process-environment.mjs";
 
 export const WIRE_CONFORMANCE_SCHEMA = "ave-wire-conformance-bundle/v1";
 export const WIRE_RESULT_SCHEMA = "ave-wire-conformance-result-bundle/v1";
@@ -90,6 +91,7 @@ export function git(repoPath, ...args) {
   return execFileSync("git", ["-C", repoPath, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: withoutGitContext(),
   }).trim();
 }
 

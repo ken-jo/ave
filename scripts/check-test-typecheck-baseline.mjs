@@ -313,6 +313,20 @@ export function runTsc(spawn = spawnSync) {
  * adding to a PR.
  */
 export function readExpectedSourceFiles(spawn = spawnSync, exists = existsSync) {
+  // A foreign empty index can report this entire checkout as untracked. Require
+  // at least one tracked source before accepting the combined inventory.
+  const tracked = spawn(
+    "git",
+    ["ls-files", "-z", "--cached", "--", "src", "scripts", "test"],
+    { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+  if (tracked.error) throw tracked.error;
+  if (tracked.signal || tracked.status !== 0) {
+    throw new Error(`git could not list tracked TypeScript sources: ${tracked.stderr ?? ""}`);
+  }
+  if (expectedSourceFilesFromGitOutput(tracked.stdout ?? "", exists).size === 0) {
+    throw new Error("git returned an empty tracked TypeScript source inventory");
+  }
   const result = spawn(
     "git",
     ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "src", "scripts", "test"],

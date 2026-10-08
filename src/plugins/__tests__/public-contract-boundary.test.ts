@@ -10,7 +10,7 @@ const PUBLIC_CONTRACT_URL = new URL("../public-contract.ts", import.meta.url);
 const TYPES_BARREL_URL = new URL("../types.ts", import.meta.url);
 
 describe("Host-owned public plugin contract boundary", () => {
-  it("keeps the SDK source self-contained and excludes Host-private DTOs", async () => {
+  it("keeps the vendored public contract self-contained and excludes Host-private DTOs", async () => {
     const source = await readFile(PUBLIC_CONTRACT_URL, "utf8");
 
     expect(source).not.toMatch(/^import\s/m);
@@ -18,7 +18,6 @@ describe("Host-owned public plugin contract boundary", () => {
       "PluginRegistryEntryInstallSource",
       "PluginRegistryEntry",
       "PluginRegistry",
-      "PluginMarketplaceItem",
     ]) {
       expect(source).not.toMatch(
         new RegExp(`^export (?:interface|type|class|const|enum) ${declaration}\\b`,
@@ -41,7 +40,7 @@ describe("Host-owned public plugin contract boundary", () => {
     expect(barrel).toContain('export * from "./public-contract.js";');
   });
 
-  it("owns the plugin build-policy ABI mirrored by the SDK", () => {
+  it("owns the plugin build-policy ABI carried by the public contract", () => {
     expect(HOST_EXTERNAL_MODULES).toEqual(["electron"]);
     expect(HOST_BROWSER_EXTERNAL_MODULES).toEqual(["react", "react-dom"]);
     expect(BUNDLE_EVERYTHING_REGEX.source).toBe(".*");

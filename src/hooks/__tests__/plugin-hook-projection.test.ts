@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,10 +6,17 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ScriptHookManager } from "../script-hook-manager.js";
-import { PluginHookTrustStore, preparePluginHookGeneration } from "../plugin-hook-projection.js";
+import { PluginHookTrustStore, preparePluginHookGeneration as prepareWithDigests } from "../plugin-hook-projection.js";
+
+/** Prepare with an approval digest per hook that follows its fingerprint, as `extensionComponentDigests` gives for changed bytes. */
+function preparePluginHookGeneration(generation: ActivePluginGeneration, root: string, dataDir: string) {
+  return prepareWithDigests(generation, root, dataDir, new Map(generation.contributions.map((contribution) =>
+    [contribution.localId, createHash("sha256").update(`digest:${contribution.fingerprint}`).digest("hex")])));
+}
 
 const payloadRoot = mkdtempSync(join(tmpdir(), "ave-plugin-hook-projection-"));
 mkdirSync(join(payloadRoot, "hooks"), { recursive: true });
+mkdirSync(join(payloadRoot, "data"), { recursive: true });
 writeFileSync(join(payloadRoot, "hooks", "policy.mjs"), "process.stdout.write(JSON.stringify({ action: 'allow', reason: 'ok' }))");
 
 afterAll(async () => {
@@ -38,7 +46,7 @@ function generation(version: string, generationId: string, fingerprint = "a".rep
         sha256: fingerprint,
         content: JSON.stringify({
           hooks: {
-            PreToolUse: [{ matcher: "ep_*", hooks: [{ type: "command", command: ["node", "./policy.mjs"] }] }],
+            PreToolUse: [{ matcher: "ep_*", hooks: [{ type: "command", command: ["node", "./hooks/policy.mjs"] }] }],
           },
         }),
       }],
@@ -48,7 +56,7 @@ function generation(version: string, generationId: string, fingerprint = "a".rep
 
 describe("plugin-owned Hook projections", () => {
   it("prepares without spawn and contributes nothing until exact trust", () => {
-    const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot);
+    const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot, join(payloadRoot, "data"));
     const trust = new PluginHookTrustStore();
     const manager = new ScriptHookManager();
     manager.publishPluginGeneration([projection], trust);
@@ -70,7 +78,7 @@ describe("plugin-owned Hook projections", () => {
   });
 
   it("refuses to run plugin hooks without exact generation leasing", async () => {
-    const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot);
+    const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot, join(payloadRoot, "data"));
     const trust = new PluginHookTrustStore();
     const manager = new ScriptHookManager();
     trust.approve(projection);
@@ -87,7 +95,7 @@ describe("plugin-owned Hook projections", () => {
   });
 
   it("rejects a plugin Hook projection without an exact activation identity", () => {
-    const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot);
+    const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot, join(payloadRoot, "data"));
     const missingActivation = {
       ...projection,
       owner: { ...projection.owner, activationId: undefined },
@@ -101,7 +109,7 @@ describe("plugin-owned Hook projections", () => {
   });
 
   it("fails closed when a hook snapshot races generation retirement", async () => {
-    const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot);
+    const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot, join(payloadRoot, "data"));
     const trust = new PluginHookTrustStore();
     const manager = new ScriptHookManager();
     trust.approve(projection);
@@ -124,11 +132,11 @@ describe("plugin-owned Hook projections", () => {
 
   it("does not transfer trust across versions or fingerprints", () => {
     const trust = new PluginHookTrustStore();
-    const [approved] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot);
+    const [approved] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot, join(payloadRoot, "data"));
     trust.approve(approved);
-    const [newVersion] = preparePluginHookGeneration(generation("2.0.0", "g2"), payloadRoot);
-    const [changed] = preparePluginHookGeneration(generation("1.0.0", "g3", "b".repeat(64)), payloadRoot);
-    const [restored] = preparePluginHookGeneration(generation("1.0.0", "g1-restored"), payloadRoot);
+    const [newVersion] = preparePluginHookGeneration(generation("2.0.0", "g2"), payloadRoot, join(payloadRoot, "data"));
+    const [changed] = preparePluginHookGeneration(generation("1.0.0", "g3", "b".repeat(64)), payloadRoot, join(payloadRoot, "data"));
+    const [restored] = preparePluginHookGeneration(generation("1.0.0", "g1-restored"), payloadRoot, join(payloadRoot, "data"));
     expect(trust.isApproved(newVersion)).toBe(false);
     expect(trust.isApproved(changed)).toBe(false);
     expect(trust.isApproved(restored)).toBe(true);
@@ -137,7 +145,7 @@ describe("plugin-owned Hook projections", () => {
   it("removes only the retired owner generation", () => {
     const trust = new PluginHookTrustStore();
     const manager = new ScriptHookManager();
-    const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot);
+    const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot, join(payloadRoot, "data"));
     trust.approve(projection);
     manager.publishPluginGeneration([projection], trust);
     manager.removePluginGeneration("bundle-hooks", "g1");
@@ -151,11 +159,11 @@ describe("plugin-owned Hook projections", () => {
       ...broken,
       contributions: [{ ...contribution, files: [{ ...contribution.files[0], content: "{" }] }],
     };
-    expect(() => preparePluginHookGeneration(malformed, payloadRoot)).toThrow(/not valid JSON/);
+    expect(() => preparePluginHookGeneration(malformed, payloadRoot, join(payloadRoot, "data"))).toThrow(/not valid JSON/);
   });
 
   it("anchors executable paths to the retained generation root", () => {
-    const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot);
+    const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot, join(payloadRoot, "data"));
     expect(projection.entries[0].command).toEqual(["node", realpathSync(join(payloadRoot, "hooks", "policy.mjs"))]);
   });
 });

@@ -11,6 +11,7 @@ import {
   marketplacePackageLabel,
   marketplacePackageTypeOf,
   marketplaceTrustLabelKeysForPackage,
+  packageVocabularyKind,
 } from "../marketplace-package-sections.js";
 
 describe("marketplace package sections", () => {
@@ -43,6 +44,10 @@ describe("marketplace package sections", () => {
   });
 
   it("centralizes labels and trust badges for marketplace UI rows", () => {
+    expect(packageVocabularyKind("plugin")).toBe("extension");
+    expect(packageVocabularyKind("agent-plugin")).toBe("plugin");
+    expect(marketplacePackageLabel("plugin")).toBe("Extensions");
+    expect(marketplacePackageLabel("agent-plugin")).toBe("Plugins");
     expect(marketplacePackageLabel("provider")).toBe("Providers");
     expect(marketplacePackageLabel("language-pack")).toBe("Languages");
     expect(marketplaceTrustLabelKeysForPackage("provider")).toEqual([

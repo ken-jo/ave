@@ -2,7 +2,7 @@
  * The persisted `settings.marketplace.skippedPluginUpdates` contract — shared
  * between main and renderer.
  *
- * The renderer WRITES the map (the update banner's "skip" action) and main
+ * The renderer WRITES the map (the update pill's "skip" action) and main
  * READS it to filter every `marketplace:updates-available` broadcast. The two
  * sides must agree on the key normalization, the reserved-key denylist and the
  * skip predicate, or an update is hidden on one side and shown on the other —
@@ -80,14 +80,23 @@ export function readSkippedPluginUpdates(input: unknown): SkippedPluginUpdateMap
 }
 
 /**
- * Whether this pending update is one the user already chose to skip — true only
- * for an exact match on the same `latestVersion`, so a newer release re-notifies.
+ * The key a package's skipped update is stored under: a plugin's name, which is
+ * its plugin id and the key earlier builds wrote, else `kind:name`. An
+ * installed `(kind, name)` has one bound source, so neither needs the source.
  */
-export function isSkippedPluginUpdate(
-  update: { pluginId: string; latestVersion: string },
+export function packageUpdateSkipKey(key: { kind: string; name: string }): string {
+  return key.kind === "plugin" ? key.name : `${key.kind}:${key.name}`;
+}
+
+/**
+ * Whether this pending update is one the user already chose to skip — true only
+ * for an exact match on the same offered version, so a newer release re-notifies.
+ */
+export function isSkippedPackageUpdate(
+  update: { key: { kind: string; name: string }; to: string },
   skipped: SkippedPluginUpdateMap,
 ): boolean {
-  const key = normalizeSkippedPluginUpdateKey(update.pluginId);
-  const version = update.latestVersion.trim();
+  const key = normalizeSkippedPluginUpdateKey(packageUpdateSkipKey(update.key));
+  const version = update.to.trim();
   return Boolean(key && version && skipped[key] === version);
 }

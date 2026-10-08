@@ -15,6 +15,26 @@ function deferred<T>() {
 }
 
 describe("McpTab remove flow", () => {
+  it("offers a write-only key for an installed plugin server without a remove-config action", async () => {
+    const id = 'bundled:["agent-plugin","meeting-kit","notes"]';
+    const mcp = {
+      servers: vi.fn(async () => []),
+      getConfigs: vi.fn(async () => [{ id, transport: "http" as const, url: "https://example.test/mcp", auth: "api-key" as const,
+        apiKeyHeader: "X-Token", bundled: { kind: "agent-plugin" as const, name: "meeting-kit", server: "notes" } }]),
+      getConfigPath: vi.fn(async () => "/tmp/ave-test-fixture/.mcp.json"),
+      setApiKey: vi.fn(async () => ({ connected: false, warning: "server did not connect" })),
+      removeConfig: vi.fn(),
+    };
+    vi.stubGlobal("ave", { mcp });
+    render(<McpTab />);
+    expect(await screen.findByText("플러그인: meeting-kit/notes")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "제거" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "키 설정" }));
+    fireEvent.change(screen.getByLabelText("API 키 (저장 전용)"), { target: { value: "private-value" } });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(mcp.setApiKey).toHaveBeenCalledWith(id, "private-value"));
+  });
+
   it("prevents duplicate remove requests while one is already in flight", async () => {
     const removal = deferred<void>();
     const mcp = {

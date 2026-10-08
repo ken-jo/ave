@@ -1,0 +1,18 @@
+{
+  "request": {
+    "id": 37,
+    "jsonrpc": "2.0",
+    "method": "ave/host/listAudioInputDevices",
+    "params": {}
+  },
+  "response": {
+    "id": 37,
+    "jsonrpc": "2.0",
+    "result": [
+      {
+        "deviceId": "default",
+        "label": "Built-in Microphone"
+      }
+    ]
+  }
+}

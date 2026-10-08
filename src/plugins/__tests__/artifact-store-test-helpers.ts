@@ -3,7 +3,7 @@
  *
  * `plugin-artifact-store.test.ts` and
  * `plugin-artifact-store-windows-lock.test.ts` both need a store rooted at a
- * throwaway temp dir with a no-op marketplace fetcher. Keeping a single
+ * throwaway temp dir. Keeping a single
  * implementation here is what `scripts/check-test-duplicates.mjs` enforces —
  * copying `makeStore` into each suite trips the `--fail-on-duplicates` gate.
  */
@@ -14,25 +14,15 @@ import {
   PluginArtifactStore,
   type ArtifactStoreOptions,
 } from "../plugin-artifact-store.js";
-import type { MarketplaceFetcher } from "../marketplace-fetcher.js";
 
-/** A store rooted at `{tmpDir}/installed` + `{tmpDir}/cache`, tarball cache off. */
+/** A store rooted at `{tmpDir}/installed` + `{tmpDir}/cache`. */
 export function makeStore(
   tmpDir: string,
   overrides: Partial<Pick<ArtifactStoreOptions, "artifactLimits">> = {},
 ): PluginArtifactStore {
-  const fetcher = {
-    listPlugins: async () => [],
-    getPluginDetail: async () => null,
-    downloadVersion: async () => ({ zipBuffer: Buffer.alloc(0), sha256: "x" }),
-    listAnnouncements: async () => [],
-  } satisfies MarketplaceFetcher;
   return new PluginArtifactStore({
     installRoot: resolve(tmpDir, "installed"),
     cacheRoot: resolve(tmpDir, "cache"),
-    fetcher,
-    publicKeys: {},
-    tarballCacheBase: null,
     ...overrides,
   });
 }

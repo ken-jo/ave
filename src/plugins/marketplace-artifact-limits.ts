@@ -66,20 +66,6 @@ export function resolveMarketplaceArtifactLimits(
   return Object.freeze(limits);
 }
 
-export interface MarketplaceArtifactLimitProvider {
-  getArtifactLimits(): Readonly<MarketplaceArtifactLimits>;
-}
-
-export function isMarketplaceArtifactLimitProvider(
-  value: unknown,
-): value is MarketplaceArtifactLimitProvider {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      typeof (value as Partial<MarketplaceArtifactLimitProvider>).getArtifactLimits === "function",
-  );
-}
-
 export function assertCompressedArtifactSize(
   bytes: number,
   limit: number,

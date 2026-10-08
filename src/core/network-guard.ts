@@ -18,6 +18,12 @@
  *      `fetch` that validates every hop of a redirect chain (defense
  *      against DNS rebinding + CRLF location injection) and enforces
  *      a timeout.
+ *   4. {@link classifyAddress}, {@link selectAnswers} and
+ *      {@link fetchAddressCheckedResponse} — for a caller with its own
+ *      per-class rules (the git marketplace, design §18.2): the class of an
+ *      address, the answers of one lookup a connection may use, and the
+ *      redirect-checked fetch whose transport resolves each hop once and
+ *      connects only to those answers.
  *
  * Node stdlib only (`node:dns`, `node:net`, built-in `fetch`).
  */
@@ -26,11 +32,65 @@ import { isIPv4, isIPv6 } from "node:net";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 export class NetworkGuardError extends Error {
-  constructor(message: string) {
-    super(message);
+  /**
+   * For an {@link AddressPolicy} verdict: how restrictive the refusal is. When
+   * every answer of a lookup is refused, the hop fails with the refusal of
+   * the highest rank (the most restrictive class dropped).
+   */
+  readonly rank: number;
+  /**
+   * For an {@link AddressPolicy} verdict: the answer is not dropped but fails
+   * the hop, even when other answers pass (a target that needs a decision
+   * the caller has not made).
+   */
+  readonly fatal: boolean;
+
+  constructor(message: string, options: { cause?: unknown; rank?: number; fatal?: boolean } = {}) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "NetworkGuardError";
+    this.rank = options.rank ?? 0;
+    this.fatal = options.fatal ?? false;
   }
 }
+
+/**
+ * What one resolved address is to the guard (design §18.2.1). One list of
+ * ranges answers every caller; the refusals and warnings built on it belong
+ * to the caller.
+ *
+ *   - `public`: {@link isGloballyRoutableAddress};
+ *   - `internal`: RFC 1918, ULA, CGNAT and `198.18.0.0/15` (fake-IP proxy
+ *     tools answer every name from it), minus the metadata addresses;
+ *   - `this-computer`: loopback and the unspecified addresses, which reach
+ *     loopback;
+ *   - `metadata`: link-local and the cloud metadata addresses inside ULA and
+ *     CGNAT;
+ *   - `unroutable`: every other special-purpose block.
+ *
+ * IPv4-mapped IPv6 and NAT64 take the class of the IPv4 address they embed.
+ * Anything that is not an IP address is `unroutable`: there is no address
+ * to judge.
+ */
+export type AddressClass = "public" | "internal" | "this-computer" | "metadata" | "unroutable";
+
+/**
+ * What a caller decides for one resolved address of one hop: allowed, or the
+ * refusal (dropped, or `fatal`) as a {@link NetworkGuardError}. It replaces
+ * the three `allow*` axes for a caller that passes it.
+ */
+type AddressVerdict = "allow" | NetworkGuardError;
+export type AddressPolicy = (address: string, hop: URL) => AddressVerdict;
+
+/**
+ * A transport that resolves the hop's host once and connects only to the
+ * answers `select` keeps (design §18.2.4), so the address that was checked is
+ * the address that is used. `select` throws when no answer may be used.
+ */
+export type AddressCheckedFetch = (
+  url: string,
+  init: RequestInit,
+  select: (answers: readonly string[]) => readonly string[],
+) => Promise<Response>;
 
 export interface NetworkGuardOptions {
   /**
@@ -62,6 +122,19 @@ export interface NetworkGuardOptions {
    */
   allowCarrierGradeNat?: boolean | ((url: URL) => boolean);
 }
+
+/**
+ * A caller that judges each resolved address itself. The guard resolves
+ * nothing for it: the transport resolves each hop once and keeps the answers
+ * the policy allows (`selectAnswers`), so the check is bound to the
+ * connection instead of to a separate, earlier lookup.
+ */
+export type AddressPolicyFetchInit = RequestInit & {
+  addressPolicy: AddressPolicy;
+  fetchImpl: AddressCheckedFetch;
+  maxRedirects?: number;
+  timeoutMs?: number;
+};
 
 type NetworkGuardFetchInit = RequestInit & NetworkGuardOptions & {
   /**
@@ -206,6 +279,7 @@ const GLOBALLY_REACHABLE_IPV6_BLOCKS = GLOBALLY_REACHABLE_IPV6.map(parseIpv6Bloc
 const GLOBAL_UNICAST_IPV6_BLOCK = parseIpv6Block(GLOBAL_UNICAST_IPV6);
 const LOOPBACK_IPV4_BLOCK = parseIpv4Block(LOOPBACK_IPV4);
 const LOOPBACK_IPV6_BLOCK = parseIpv6Block(LOOPBACK_IPV6);
+const NAT64_IPV6_BLOCK = parseIpv6Block("64:ff9b::/96");
 const UNIQUE_LOCAL_IPV6_BLOCK = parseIpv6Block(UNIQUE_LOCAL_IPV6);
 
 /**
@@ -262,12 +336,92 @@ export function isGloballyRoutableAddress(address: string): boolean {
   if (isIPv6(address)) {
     const value = ipv6ToBigInt(address);
     if (value === null) return false;
+    if (inBlock(value, NAT64_IPV6_BLOCK)) {
+      // The gateway forwards to the IPv4 address in the low 32 bits, so the
+      // address reaches exactly what that one does: 64:ff9b::a9fe:a9fe is the
+      // metadata service, not the internet.
+      const v4 = value & 0xffffffffn;
+      return isGloballyRoutableAddress([24n, 16n, 8n, 0n].map((shift) => String((v4 >> shift) & 0xffn)).join("."));
+    }
     if (GLOBALLY_REACHABLE_IPV6_BLOCKS.some((block) => inBlock(value, block))) return true;
     if (!inBlock(value, GLOBAL_UNICAST_IPV6_BLOCK)) return false;
     return !SPECIAL_PURPOSE_IPV6_BLOCKS.some((block) => inBlock(value, block));
   }
   // Unknown address family → fail closed.
   return false;
+}
+
+const METADATA_IPV4_BLOCKS = ["169.254.0.0/16", "100.100.100.200/32"].map(parseIpv4Block);
+const METADATA_IPV6_BLOCKS = ["fe80::/10", "fd00:ec2::254/128"].map(parseIpv6Block);
+const INTERNAL_IPV4_BLOCKS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "198.18.0.0/15"].map(parseIpv4Block);
+const THIS_COMPUTER_IPV4_BLOCKS = ["127.0.0.0/8", "0.0.0.0/8"].map(parseIpv4Block);
+const UNSPECIFIED_IPV6_BLOCK = parseIpv6Block("::/128");
+const MAPPED_IPV4_BLOCK = parseIpv6Block("::ffff:0:0/96");
+
+function ipv4FromLow32(value: bigint): string {
+  const v4 = value & 0xffffffffn;
+  return [24n, 16n, 8n, 0n].map((shift) => String((v4 >> shift) & 0xffn)).join(".");
+}
+
+/** The class of one address (design §18.2.1); see {@link AddressClass}. */
+export function classifyAddress(address: string): AddressClass {
+  const bare = stripIpv6Brackets(address);
+  if (isIPv4(bare)) {
+    if (isGloballyRoutableAddress(bare)) return "public";
+    const value = ipv4ToBigInt(bare);
+    // Metadata first: 100.100.100.200 lies inside CGNAT and is carved out of it.
+    if (METADATA_IPV4_BLOCKS.some((block) => inBlock(value, block))) return "metadata";
+    if (INTERNAL_IPV4_BLOCKS.some((block) => inBlock(value, block))) return "internal";
+    if (THIS_COMPUTER_IPV4_BLOCKS.some((block) => inBlock(value, block))) return "this-computer";
+    return "unroutable";
+  }
+  if (isIPv6(bare)) {
+    const value = ipv6ToBigInt(bare);
+    if (value === null) return "unroutable";
+    // The embedded IPv4 address is what the packet reaches.
+    if (inBlock(value, MAPPED_IPV4_BLOCK) || inBlock(value, NAT64_IPV6_BLOCK)) return classifyAddress(ipv4FromLow32(value));
+    if (isGloballyRoutableAddress(bare)) return "public";
+    // fd00:ec2::254 lies inside ULA and is carved out of it.
+    if (METADATA_IPV6_BLOCKS.some((block) => inBlock(value, block))) return "metadata";
+    if (inBlock(value, UNIQUE_LOCAL_IPV6_BLOCK)) return "internal";
+    if (inBlock(value, LOOPBACK_IPV6_BLOCK) || inBlock(value, UNSPECIFIED_IPV6_BLOCK)) return "this-computer";
+    return "unroutable";
+  }
+  return "unroutable";
+}
+
+/**
+ * The answers of one lookup a connection may use under `policy` (design
+ * §18.2.4).
+ *
+ *   - `connectable` (a transport Ave owns): refused answers are dropped and
+ *     the connection uses the rest; a `fatal` verdict on an answer that is
+ *     not dropped fails the hop; no answer left fails with the refusal of
+ *     the highest rank.
+ *   - `every` (a preflight whose connection Ave does not make, such as ssh):
+ *     any refused answer fails the operation, since the connection may use
+ *     any of them; then a `fatal` verdict does.
+ */
+export function selectAnswers(answers: readonly string[], hop: URL, policy: AddressPolicy, mode: "connectable" | "every" = "connectable"): string[] {
+  if (answers.length === 0) throw new NetworkGuardError(`target host did not resolve: ${hop.hostname}`);
+  const kept: string[] = [];
+  const refused: NetworkGuardError[] = [];
+  const fatal: NetworkGuardError[] = [];
+  for (const answer of answers) {
+    const verdict = policy(answer, hop);
+    if (verdict === "allow") {
+      if (!kept.includes(answer)) kept.push(answer);
+    } else if (verdict.fatal) {
+      fatal.push(verdict);
+    } else {
+      refused.push(verdict);
+    }
+  }
+  const worst = (errors: readonly NetworkGuardError[]) => errors.reduce((a, b) => (b.rank > a.rank ? b : a));
+  if (mode === "every" && refused.length > 0) throw worst(refused);
+  if (fatal.length > 0) throw worst(fatal);
+  if (kept.length === 0) throw worst(refused);
+  return kept;
 }
 
 /**
@@ -409,26 +563,56 @@ export async function fetchPublicHttpResponse(
   init: NetworkGuardFetchInit,
 ): Promise<Response> {
   const {
+    fetchImpl,
     allowPrivateNetworks = false,
     allowLoopback = false,
     allowCarrierGradeNat = false,
-    fetchImpl,
-    maxRedirects = 5,
-    timeoutMs = TOOL_TIMEOUT_POLICY.networkFetchDefaultMs,
-    signal: externalSignal,
-    ...restInit
+    maxRedirects,
+    timeoutMs,
+    signal,
+    ...request
   } = init;
+  return followRedirects(rawUrl, request, { maxRedirects, timeoutMs, signal }, async (url, requestInit) => {
+    await ensurePublicHttpUrl(url, { allowPrivateNetworks, allowLoopback, allowCarrierGradeNat });
+    return fetchImpl(url, requestInit);
+  });
+}
+
+/**
+ * {@link fetchPublicHttpResponse} for a caller that judges each resolved
+ * address itself (design §18.2.4). The guard resolves nothing: the transport
+ * resolves each hop once and connects only to the answers the policy keeps
+ * ({@link selectAnswers}), so the check is bound to the connection instead of
+ * to a separate, earlier lookup. Redirects, the timeout and the caller's
+ * signal behave as in {@link fetchPublicHttpResponse}.
+ */
+export async function fetchAddressCheckedResponse(
+  rawUrl: string,
+  init: AddressPolicyFetchInit,
+): Promise<Response> {
+  const { addressPolicy, fetchImpl, maxRedirects, timeoutMs, signal, ...request } = init;
+  return followRedirects(rawUrl, request, { maxRedirects, timeoutMs, signal }, (url, requestInit) => {
+    const hopUrl = validateHttpUrl(url);
+    return fetchImpl(url, requestInit, (answers) => selectAnswers(answers, hopUrl, addressPolicy));
+  });
+}
+
+/** One request, each redirect hop sent through `send` (which checks the hop), with a per-hop timeout. */
+async function followRedirects(
+  rawUrl: string,
+  restInit: RequestInit,
+  limits: { maxRedirects: number | undefined; timeoutMs: number | undefined; signal: AbortSignal | null | undefined },
+  send: (url: string, requestInit: RequestInit) => Promise<Response>,
+): Promise<Response> {
+  const maxRedirects = limits.maxRedirects ?? 5;
+  const timeoutMs = limits.timeoutMs ?? TOOL_TIMEOUT_POLICY.networkFetchDefaultMs;
+  const externalSignal = limits.signal;
   let currentUrl = rawUrl;
 
   // Unbounded loop: the redirect cap is enforced by the single `hop >= maxRedirects`
   // check below. The last permitted hop (hop === maxRedirects) always returns a final
   // response or throws, so control never falls through past the loop.
   for (let hop = 0; ; hop++) {
-    await ensurePublicHttpUrl(currentUrl, {
-      allowPrivateNetworks,
-      allowLoopback,
-      allowCarrierGradeNat,
-    });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     // Forward aborts from the caller-supplied signal so callers can cancel
@@ -444,7 +628,7 @@ export async function fetchPublicHttpResponse(
       }
     }
     try {
-      const response = await fetchImpl(currentUrl, {
+      const response = await send(currentUrl, {
         ...restInit,
         redirect: "manual",
         signal: controller.signal,

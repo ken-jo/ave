@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFile
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { test } from "node:test";
+import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 import {
   A2A_SPECIFICATION_URI,
   EXACT_REPLAY_EXTENSION_URI,
@@ -94,14 +95,17 @@ test("Hub wire bundle rejects extra keys, placeholders, and non-passing totals",
 test("repository pin rejects dirty state and symlink aliases", () => {
   const directory = mkdtempSync(resolve(tmpdir(), "p4-5-repository-"));
   const link = `${directory}-link`;
+  const git = (args) => execFileSync("git", args, {
+    env: gitFixtureEnv(directory), encoding: "utf8",
+  });
   try {
-    execFileSync("git", ["init", "-q", directory]);
-    execFileSync("git", ["-C", directory, "config", "user.email", "test@example.invalid"]);
-    execFileSync("git", ["-C", directory, "config", "user.name", "P4-5 Test"]);
+    git(["init", "-q", directory]);
+    git(["-C", directory, "config", "user.email", "test@example.invalid"]);
+    git(["-C", directory, "config", "user.name", "P4-5 Test"]);
     writeFileSync(resolve(directory, "tracked.txt"), "clean\n");
-    execFileSync("git", ["-C", directory, "add", "tracked.txt"]);
-    execFileSync("git", ["-C", directory, "commit", "-qm", "fixture"]);
-    const head = execFileSync("git", ["-C", directory, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    git(["-C", directory, "add", "tracked.txt"]);
+    git(["-C", directory, "commit", "-qm", "fixture"]);
+    const head = git(["-C", directory, "rev-parse", "HEAD"]).trim();
     assert.equal(assertCleanPinnedRepository(directory, head, "fixture"), realpathSync.native(directory));
     writeFileSync(resolve(directory, "tracked.txt"), "dirty\n");
     assert.throws(() => assertCleanPinnedRepository(directory, head, "fixture"), /clean/u);

@@ -163,7 +163,7 @@ export function RolesTab({ api }: { api: AveApi }) {
 
   const removePreset = async (id: string) => {
     const target = rolePresets.find((preset) => preset.id === id);
-    if (!target || target.isDefault) return;
+    if (!target || target.isDefault || target.origin) return;
     setSaving("roles");
     setError(null);
     try {
@@ -845,11 +845,11 @@ export function RolesTab({ api }: { api: AveApi }) {
                       variant="ghost"
                       className="h-7 text-[11px]"
                       onClick={() => startEdit(preset)}
-                      disabled={!rolesLoaded || Boolean(preset.isDefault)}
+                      disabled={!rolesLoaded || Boolean(preset.isDefault) || Boolean(preset.origin)}
                     >
                       {t("rolesTab.editButton")}
                     </Button>
-                    {!preset.isDefault ? (
+                    {!preset.isDefault && !preset.origin ? (
                       <Button
                         size="sm"
                         variant="ghost"

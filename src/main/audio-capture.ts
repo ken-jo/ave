@@ -29,8 +29,8 @@
  */
 import { randomUUID } from "node:crypto";
 // The plugin-facing contract is the SOT for these shapes; this file conforms
-// to it rather than declaring a second copy that could drift from what the
-// SDK mirrors.
+// to it rather than declaring a second copy that could drift from the
+// vendored public contract.
 import type {
   AudioCaptureDevice,
   AudioCaptureEnd,

@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
+import type { PluginIntegrityEvidence } from "../index.js";
 import type { PluginManifest, RuntimePluginFactory } from "../../types.js";
 import { OUT_OF_PROCESS_PLUGIN_IDS } from "../../isolation/out-of-process-plugins.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
@@ -22,8 +23,9 @@ const HOST_ROOT = "/tmp/ave-out-of-process-routing";
 interface LifecycleRouting {
   importPluginFactoryForLifecycle(
     pluginId: string,
-    resolvedEntryPath: string,
+    source: { kind: "entry"; resolvedEntryPath: string } | { kind: "process" },
     manifest: PluginManifest,
+    verified: PluginIntegrityEvidence | undefined,
     bustCache?: boolean,
   ): Promise<RuntimePluginFactory | undefined>;
 }
@@ -85,8 +87,9 @@ describe("importPluginFactoryForLifecycle chooses one arm per plugin", () => {
       const unimportable = join(tmpdir(), "no-such-plugin-entry.mjs");
       const factory = await routing().importPluginFactoryForLifecycle(
         isolatedId,
-        unimportable,
+        { kind: "entry", resolvedEntryPath: unimportable },
         manifestFor(isolatedId),
+        undefined,
       );
       expect(typeof factory).toBe("function");
     },
@@ -106,8 +109,9 @@ describe("importPluginFactoryForLifecycle chooses one arm per plugin", () => {
     try {
       const factory = await routing().importPluginFactoryForLifecycle(
         IN_PROCESS_PLUGIN_ID,
-        entryPath,
+        { kind: "entry", resolvedEntryPath: entryPath },
         manifestFor(IN_PROCESS_PLUGIN_ID),
+        undefined,
       );
       expect(typeof factory).toBe("function");
       // The module's OWN export, which only an in-main dynamic import produces.
@@ -122,9 +126,55 @@ describe("importPluginFactoryForLifecycle chooses one arm per plugin", () => {
     await expect(
       routing().importPluginFactoryForLifecycle(
         IN_PROCESS_PLUGIN_ID,
-        join(tmpdir(), "no-such-plugin-entry.mjs"),
+        { kind: "entry", resolvedEntryPath: join(tmpdir(), "no-such-plugin-entry.mjs") },
         manifestFor(IN_PROCESS_PLUGIN_ID),
+        undefined,
       ),
     ).rejects.toThrow();
   });
+
+  // A `process` manifest has no module the in-process arm could import, so it
+  // is out of process by its shape — the census does not name it, and the
+  // factory comes back without anything being imported in main.
+  it("routes a pinned process manifest out of process even though the census does not name it", async () => {
+    expect(OUT_OF_PROCESS_PLUGIN_IDS.has(IN_PROCESS_PLUGIN_ID)).toBe(false);
+    const factory = await routing().importPluginFactoryForLifecycle(
+      IN_PROCESS_PLUGIN_ID,
+      { kind: "process" },
+      processManifestFor(IN_PROCESS_PLUGIN_ID),
+      PINNED_RELEASE,
+    );
+    expect(typeof factory).toBe("function");
+  });
+
+  it("refuses a source that disagrees with the manifest's shape", async () => {
+    await expect(
+      routing().importPluginFactoryForLifecycle(
+        IN_PROCESS_PLUGIN_ID,
+        { kind: "process" },
+        manifestFor(IN_PROCESS_PLUGIN_ID),
+        undefined,
+      ),
+    ).rejects.toThrow(/factory source is 'process' but its manifest declares 'entry'/);
+  });
 });
+
+const PINNED_RELEASE: PluginIntegrityEvidence = {
+  installSource: "git",
+  signerKeyId: null,
+  artifactSha256: "a".repeat(64),
+  rung: "release",
+  sourceOrigin: "custom",
+};
+
+function processManifestFor(pluginId: string): PluginManifest {
+  return {
+    id: pluginId,
+    name: pluginId,
+    version: "1.0.0",
+    process: { command: "./bin/plugin" },
+    requires: { minAppVersion: "0.13.0", hostProtocol: "2" },
+    description: "a process plugin used to observe which arm the lifecycle chose",
+    tools: [],
+  };
+}

@@ -76,14 +76,17 @@ describe("AVE_TOKEN_NAMES — complete public token contract", () => {
 });
 
 describe("isAveThemeBundleId", () => {
-  it("accepts every member of AVE_THEME_BUNDLE_IDS", () => {
+  it("lists the compiled bundles, and accepts each", () => {
+    expect(AVE_THEME_BUNDLE_IDS).toEqual(["moonstone", "gallery"]);
     for (const id of AVE_THEME_BUNDLE_IDS) {
       expect(isAveThemeBundleId(id)).toBe(true);
     }
   });
 
-  it("rejects non-member strings", () => {
-    expect(isAveThemeBundleId("non-existent-bundle")).toBe(false);
+  it("accepts a theme package name, and rejects strings that cannot be one", () => {
+    expect(isAveThemeBundleId("tokyo-night")).toBe(true);
+    expect(isAveThemeBundleId("Tokyo Night")).toBe(false);
+    expect(isAveThemeBundleId("a")).toBe(false);
     expect(isAveThemeBundleId("")).toBe(false);
   });
 

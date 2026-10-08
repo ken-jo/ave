@@ -102,7 +102,7 @@ export interface UseSendMessageDeps {
  * envelope, both skip the user bubble, and both classify as a non-`user-keyboard`
  * trust origin in main.
  */
-export type SendMode = "default" | "trigger-import" | "app-message" | "mcp-prompt";
+export type SendMode = "default" | "trigger-import" | "app-message" | "mcp-prompt" | "plugin-prompt";
 
 /**
  * The forward-ref bridge this hook writes.
@@ -129,6 +129,7 @@ export const SEND_MODE_ORIGIN: Record<SendMode, ChatSendInputOrigin> = {
   "trigger-import": "plugin-emitted",
   "app-message": "app-emitted",
   "mcp-prompt": "mcp-prompt-emitted",
+  "plugin-prompt": "plugin-prompt-emitted",
 };
 
 export interface UseSendMessageResult {
@@ -191,7 +192,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       // runtime selection. Until settings resolves we cannot know whether a
       // subscription login, rather than an API-key provider, is selected.
       if (!settingsReady) return;
-      // `mcp-prompt` joins `default` here because both are USER-initiated: the
+      // Prompt picker sends join `default` here because both are user initiated: the
       // picker is live while a turn streams, so without this a click lands on
       // `trackStreamTurn` and surfaces a raw "stream already active" error. The
       // staged modes that are NOT user-initiated stay out — they are queued or
@@ -200,7 +201,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       // running turn inside the same chatSend call (see the `interrupt`
       // payload flag); awaiting a separate abort here first let the keyboard
       // intent expire, and the send that followed was silently refused.
-      const interrupt = (mode === "default" || mode === "mcp-prompt")
+      const interrupt = (mode === "default" || mode === "mcp-prompt" || mode === "plugin-prompt")
         && streaming
         && opts?.inputOrigin !== "queue-auto";
       // Renderer only performs UX-level shortcuts for typed composer input.

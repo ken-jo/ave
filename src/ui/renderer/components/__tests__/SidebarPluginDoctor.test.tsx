@@ -49,7 +49,6 @@ describe("Sidebar plugin Doctor affordance", () => {
         id: "agent-hub",
         name: "Agent Hub",
         description: "Agent orchestration",
-        publisher: "Test fixture",
         sampleTools: [],
         capabilities: [],
         tools: [],

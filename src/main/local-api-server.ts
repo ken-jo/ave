@@ -394,6 +394,10 @@ async function startLocalApiServerForBoot(
   }
   const approveAgentAction = getBootAgentActionApprover(services.approvalGate, emit);
   const conversationSurfaceRuntime = suppliedSurfaceRuntime ?? createConversationSurfaceRuntime();
+  conversationSurfaceRuntime.activity.bindSessionTransitionGuard(
+    () => services.conversationLoop.isSessionTransitioning?.() ?? false,
+    (notify) => services.conversationLoop.onSessionTransitionSettled?.(notify) ?? (() => undefined),
+  );
   const a2aRuntime = bootRouteFamilies.a2a
     ? await Promise.race([
       initializeA2ARouter(input.createA2ARouter, services, emit, approveAgentAction),

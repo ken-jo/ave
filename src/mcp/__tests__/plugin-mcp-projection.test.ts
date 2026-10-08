@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,11 +8,13 @@ import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coo
 import { ToolRegistry } from "../../tools/registry.js";
 
 const connect = vi.fn(async () => undefined);
+const construct = vi.fn();
 const disconnect = vi.fn(async () => undefined);
 const getState = vi.fn(() => ({ id: "plugin", status: "connected" as const, registeredTools: ["mcp_orion_read"] }));
 
 vi.mock("../mcp-client.js", () => ({
   McpClient: class {
+    constructor() { construct(); }
     connect = connect;
     disconnect = disconnect;
     getState = getState;
@@ -21,7 +24,13 @@ vi.mock("../mcp-client.js", () => ({
 
 import { McpManager } from "../mcp-manager.js";
 import { McpGovernance } from "../mcp-governance.js";
-import { PluginMcpTrustStore, preparePluginMcpGeneration } from "../plugin-mcp-projection.js";
+import { PluginMcpTrustStore, preparePluginMcpGeneration as prepareWithDigests } from "../plugin-mcp-projection.js";
+
+/** Prepare with an approval digest per server that follows its fingerprint, as `extensionComponentDigests` gives for changed bytes. */
+function preparePluginMcpGeneration(generation: ActivePluginGeneration, root: string) {
+  return prepareWithDigests(generation, root, new Map(generation.contributions.map((contribution) =>
+    [contribution.localId, createHash("sha256").update(`digest:${contribution.fingerprint}`).digest("hex")])));
+}
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 
 function generation(version = "1.0.0", generationId = "g1", fingerprint = "a".repeat(64)): ActivePluginGeneration {
@@ -77,6 +86,7 @@ const registerRuntimeApproval = vi.fn();
 const unregisterRuntimeApproval = vi.fn();
 const replaceRuntimeApprovals = vi.fn();
 const prepareRuntimeApprovals = vi.fn((predecessors, approvals) => ({
+  assertAdmitted: () => {},
   publish: () => replaceRuntimeApprovals(predecessors, approvals),
 }));
 const scopedRuntimeApproval = vi.fn(() => ({
@@ -91,6 +101,8 @@ function manager(): McpManager {
       replaceRuntimeApprovals,
       prepareRuntimeApprovals,
       scopedRuntimeApproval,
+      policyFingerprintApproval: () => null,
+      isRuntimeApprovalAdmitted: () => true,
       applyToolNamespace: (_serverId: string, toolName: string) => toolName,
     } as never,
     new ToolRegistry(),
@@ -115,6 +127,88 @@ afterAll(async () => {
 });
 
 describe("plugin-owned MCP projections", () => {
+  it("blocks a user-approved bundled server before client construction when policy disables it", async () => {
+    const path = join(testDir, "deny-user-policy.json");
+    await writeFile(path, JSON.stringify({ version: "1.0", defaultPolicy: "deny", servers: [],
+      globalRules: { maxServersTotal: 10, blockedUrlPatterns: [], allowedUrlPatterns: [], policyRefreshIntervalMs: 60_000, allowUserApprovedServers: false } }));
+    const governance = new McpGovernance(path);
+    const [projection] = preparePluginMcpGeneration(generation(), testDir);
+    const trust = new PluginMcpTrustStore();
+    trust.approve(projection);
+    const mgr = new McpManager(governance, new ToolRegistry(), unusedNetworkFetch, configPath);
+    const prepared = await mgr.prepareBundledGeneration({ pluginId: "orion-api", generationId: "g1" }, [projection], trust);
+    expect(prepared.records).toEqual([]);
+    expect(prepared.degraded).toMatchObject([{ code: "blocked-by-policy", retryable: false }]);
+    expect(construct).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("connects a policy-listed fingerprint and disconnects it when the listing is withdrawn", async () => {
+    const path = join(testDir, "fingerprint-policy.json");
+    const [projection] = preparePluginMcpGeneration(generation(), testDir);
+    const base = { version: "1.0", defaultPolicy: "deny", servers: [],
+      globalRules: { maxServersTotal: 10, blockedUrlPatterns: [], allowedUrlPatterns: [], policyRefreshIntervalMs: 60_000, allowUserApprovedServers: false } };
+    await writeFile(path, JSON.stringify({ ...base, bundledServers: [projection.approval.bundled] }));
+    const governance = new McpGovernance(path);
+    const mgr = new McpManager(governance, new ToolRegistry(), unusedNetworkFetch, configPath);
+    const prepared = await mgr.prepareBundledGeneration({ pluginId: "orion-api", generationId: "g1" }, [projection], new PluginMcpTrustStore());
+    expect(prepared.records).toHaveLength(1);
+    expect(construct).toHaveBeenCalledOnce();
+    mgr.publishBundledGeneration(prepared);
+    expect(governance.getApproval(projection.serverId)?.provenance).toBe("policy-fingerprint");
+    await writeFile(path, JSON.stringify({ ...base, bundledServers: [] }));
+    const withdrawn = governance.reloadPolicy();
+    expect(withdrawn).toEqual([projection.serverId]);
+    await mgr.handlePolicyWithdrawal(withdrawn);
+    expect(disconnect).toHaveBeenCalled();
+    expect(mgr.getServerState(projection.serverId)).toBeUndefined();
+    expect(mgr.getBundledGenerationDegraded("orion-api", "g1")).toMatchObject([{ code: "blocked-by-policy" }]);
+  });
+
+  it("a rule flip disconnects user consent while leaving a listed fingerprint running", async () => {
+    const path = join(testDir, "mixed-policy.json");
+    const baseGeneration = generation();
+    const secondContribution = { ...baseGeneration.contributions[0]!, localId: "other", path: "mcp/other.json" };
+    const [listed, user] = preparePluginMcpGeneration({ ...baseGeneration,
+      contributions: [baseGeneration.contributions[0]!, secondContribution] }, testDir);
+    const trust = new PluginMcpTrustStore();
+    trust.approve(user);
+    const base = { version: "1.0", defaultPolicy: "deny", servers: [], bundledServers: [listed.approval.bundled],
+      globalRules: { maxServersTotal: 10, blockedUrlPatterns: [], allowedUrlPatterns: [], policyRefreshIntervalMs: 60_000, allowUserApprovedServers: true } };
+    await writeFile(path, JSON.stringify(base));
+    const governance = new McpGovernance(path);
+    const mgr = new McpManager(governance, new ToolRegistry(), unusedNetworkFetch, configPath);
+    const prepared = await mgr.prepareBundledGeneration({ pluginId: "orion-api", generationId: "g1" }, [listed, user], trust);
+    mgr.publishBundledGeneration(prepared);
+    expect(prepared.records).toHaveLength(2);
+    await writeFile(path, JSON.stringify({ ...base, globalRules: { ...base.globalRules, allowUserApprovedServers: false } }));
+    const withdrawn = governance.reloadPolicy();
+    expect(withdrawn).toEqual([user.serverId]);
+    await mgr.handlePolicyWithdrawal(withdrawn);
+    expect(mgr.getServerState(listed.serverId)).toBeDefined();
+    expect(mgr.getServerState(user.serverId)).toBeUndefined();
+  });
+
+  it("refuses a prepared candidate when admission is withdrawn before publication", async () => {
+    const path = join(testDir, "stale-policy.json");
+    const base = { version: "1.0", defaultPolicy: "deny", servers: [],
+      globalRules: { maxServersTotal: 10, blockedUrlPatterns: [], allowedUrlPatterns: [], policyRefreshIntervalMs: 60_000, allowUserApprovedServers: true } };
+    await writeFile(path, JSON.stringify(base));
+    const governance = new McpGovernance(path);
+    const [projection] = preparePluginMcpGeneration(generation(), testDir);
+    const trust = new PluginMcpTrustStore();
+    trust.approve(projection);
+    const mgr = new McpManager(governance, new ToolRegistry(), unusedNetworkFetch, configPath);
+    const prepared = await mgr.prepareBundledGeneration({ pluginId: "orion-api", generationId: "g1" }, [projection], trust);
+    await writeFile(path, JSON.stringify({ ...base, globalRules: { ...base.globalRules, allowUserApprovedServers: false } }));
+    governance.reloadPolicy();
+    expect(() => mgr.publishBundledGeneration(prepared)).toThrow("runtime approval not admitted by policy");
+    expect(prepared.published).toBe(false);
+    expect(mgr.getServerState(projection.serverId)).toBeUndefined();
+    await mgr.discardBundledGeneration(prepared);
+    expect(disconnect).toHaveBeenCalled();
+  });
+
   it("prepares statically and requires exact approval before any connection side effect", async () => {
     const [projection] = preparePluginMcpGeneration(generation(), testDir);
     const trust = new PluginMcpTrustStore();

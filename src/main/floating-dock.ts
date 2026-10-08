@@ -35,8 +35,8 @@
  * card does.
  */
 // The plugin-facing contract is the SOT for these shapes; this file conforms
-// to it rather than declaring a second copy that could drift from what the
-// SDK mirrors.
+// to it rather than declaring a second copy that could drift from the
+// vendored public contract.
 import type {
   AttachFloatingPanelRequest,
   DetachReason,

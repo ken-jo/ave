@@ -1,0 +1,22 @@
+{
+  "request": {
+    "id": 40,
+    "jsonrpc": "2.0",
+    "method": "ave/host/attachFloatingPanel",
+    "params": {
+      "request": {
+        "extensionId": "golden-card",
+        "height": 240
+      }
+    }
+  },
+  "response": {
+    "id": 40,
+    "jsonrpc": "2.0",
+    "result": {
+      "handleId": "<uuid-1>",
+      "height": 240,
+      "panelId": "panel-1"
+    }
+  }
+}

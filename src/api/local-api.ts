@@ -59,7 +59,7 @@ import {
   handleChatGetHistory,
   handleChatSessionHistory,
 } from "../ipc/handlers/chat.js";
-import { handlePluginCards, handleMarketplaceList } from "../ipc/handlers/plugins.js";
+import { handlePluginCards } from "../ipc/handlers/plugins.js";
 import { handleGetMode, handleSetPermissionMode } from "../ipc/handlers/permissions.js";
 import { handleUsageSummary, handleUsageRange } from "../ipc/handlers/usage.js";
 
@@ -220,8 +220,6 @@ export function createLocalApi(deps: LocalApiDeps): LocalApi {
         return handleChatSessionHistory(ipc, args as string);
       case CHANNELS.plugins.cards:
         return handlePluginCards(ipc);
-      case CHANNELS.plugins.marketplaceList:
-        return handleMarketplaceList(ipc);
       case PERMISSIONS.getMode:
         return handleGetMode(ipc);
       case CHANNELS.usage.summary:

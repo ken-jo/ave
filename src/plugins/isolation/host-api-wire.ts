@@ -1,29 +1,32 @@
 /**
  * The wire contract between the host and a plugin running in its own process
- * (`docs/blueprints/plugin-process-isolation.md` §2, §3).
+ * (`docs/blueprints/plugin-process-isolation.md` §2, §3), and the reverse
+ * channel of the published host protocol
+ * (`docs/design/plugin-hostapi-protocol.md` §3): every hostApi member is a
+ * JSON-RPC 2.0 method named `ave/host/<path>`, sharing the stream with the
+ * MCP half the plugin serves.
  *
- * Today `hostApi` is a plain object handed to a factory in the SAME heap, so
- * every member is a direct call and NOTHING pins its shape. Behind a process
- * boundary each member becomes a message, and a message is JSON. This module is
- * the vocabulary that makes that translation checkable BEFORE any single member
- * is implemented.
+ * Behind a process boundary each member becomes a message, and a message is
+ * JSON. This module is the vocabulary that makes that translation checkable
+ * BEFORE any single member is implemented.
  *
  * The load-bearing type is {@link HostApiPathContract}. §3 decided four
  * independent things for every member — how its ARGUMENTS reach the host, how
  * its RETURN reaches the child, whether the call creates a two-sided LIFETIME,
- * and which ERROR IDENTITIES it may reply with — and 38 members × 4 axes is 152
- * chances to change behaviour that no existing test notices, because today each
- * one is a function call nothing was written to pin. Making all four fields
- * REQUIRED means a member cannot be declared with an axis left undecided: the
- * omission is a type error, not a runtime surprise in the field.
+ * and which ERROR IDENTITIES it may reply with — and the protocol adds a fifth,
+ * the parameter NAMES its params object is keyed by. Each is a chance to change
+ * behaviour that no existing test notices, because in-process each member is a
+ * function call nothing was written to pin. Making every field REQUIRED means a
+ * member cannot be declared with an axis left undecided: the omission is a type
+ * error, not a runtime surprise in the field.
  *
- * ONE MODULE BECAUSE BOTH PROCESSES NEED ALL OF IT. Alongside the envelope and
- * the error taxonomy this holds the contract table itself, the partition of
- * paths each handler group carries, and the payload shapes that stand in for
- * values JSON cannot carry. Those were three sibling files, but none of them is
- * host-only or child-only — a declaration either side could not import would be
- * two hand-matched literals instead of one checkable contract, which is the
- * failure this module exists to prevent.
+ * ONE MODULE BECAUSE BOTH PROCESSES NEED ALL OF IT. Alongside the message
+ * shapes and the error taxonomy this holds the contract table itself, the
+ * partition of paths each handler group carries, and the payload shapes that
+ * stand in for values JSON cannot carry. Those were three sibling files, but
+ * none of them is host-only or child-only — a declaration either side could not
+ * import would be two hand-matched literals instead of one checkable contract,
+ * which is the failure this module exists to prevent.
  *
  * ELECTRON-FREE BY CONSTRUCTION. Everything here is imported by the child, and
  * the child is a plain Node process where `import("electron")` yields nothing.
@@ -36,51 +39,260 @@ import {
   base64DecodedLength,
   describeNonJson,
 } from "../../shared/json-representable.js";
+import { RPC_METHOD_NOT_FOUND } from "../../mcp/protocol-constants.js";
 import type { PluginLifecycleEvent } from "../public-contract.js";
+import { randomBytes } from "node:crypto";
+
+// ───────────────────────────────────────────────────────────────────────────
+// The protocol this module is the vocabulary of
+// (`docs/design/plugin-hostapi-protocol.md` §3).
+// ───────────────────────────────────────────────────────────────────────────
 
 /**
- * Wire format revision. A child built against a different revision is rejected
- * at the dispatcher rather than parsed optimistically — a mixed-revision pair
- * cannot be made safe by guessing which fields it meant.
+ * The one host protocol version this build serves. A breaking release replaces
+ * the previous version after its announced boundary (§3.2). The same value
+ * governs both directions of the connection.
  */
-export const HOST_API_WIRE_VERSION = 1;
+export const HOST_PROTOCOL_VERSIONS_SERVED = ["2"] as const;
+
+/** One served version, as it travels: an integer written as a string. */
+export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number];
 
 /**
- * Identity every message carries. `pluginId` and `generationId` are checked by
- * the host on EVERY inbound message: the child is told which incarnation it
- * serves, and a message naming a different one is refused. This is the wire form
- * of the `withPinnedGeneration` lease that today is a host-side closure the
- * plugin shares a heap with (§2.4).
+ * The first app version that served each protocol this build serves
+ * (`docs/design/plugin-hostapi-protocol.md` decision 29).
+ *
+ * A manifest that declares a protocol must not declare a `minAppVersion` below
+ * this: an older app would install the plugin and then refuse to load it. Held
+ * by a test to the lowest `appVersion` the published schema mirror records for
+ * the protocol, so it is read off the release history rather than restated.
  */
-export interface HostApiEnvelope {
-  readonly wire: typeof HOST_API_WIRE_VERSION;
-  readonly pluginId: string;
-  readonly generationId: string;
+export const HOST_PROTOCOL_FIRST_APP_VERSION: Readonly<Record<HostProtocolVersion, string>> = {
+  "2": "0.12.0",
+};
+
+/** Whether `value` names a version this build serves. */
+export function isServedHostProtocolVersion(value: unknown): value is HostProtocolVersion {
+  return (HOST_PROTOCOL_VERSIONS_SERVED as readonly unknown[]).includes(value);
 }
 
-/** One `hostApi.<path>(...args)` invocation travelling child → host. */
-export interface HostApiRequest extends HostApiEnvelope {
-  /** Correlates the reply. Allocated by the child; opaque to the host. */
-  readonly callId: string;
-  readonly path: HostApiPath;
-  /** Positional arguments, ALREADY marshalled per the path's contract. */
-  readonly args: readonly unknown[];
+/**
+ * The load refusal for a plugin that speaks a host protocol this host cannot
+ * serve (§3.2): a declared `requires.hostProtocol` outside the served set,
+ * found before anything is spawned, or a `pluginProtocol.requires` method the
+ * host does not advertise, found at `construct`. One class for both, because
+ * both mean the same thing to the user — this plugin was built for a
+ * different protocol — and the Doctor's remedy is the same.
+ */
+export class IncompatibleHostProtocolError extends Error {
+  constructor(
+    readonly pluginId: string,
+    readonly detail:
+      | { readonly declared: string | null }
+      | { readonly missingCapabilities: readonly string[] },
+  ) {
+    super(
+      "declared" in detail
+        ? detail.declared === null
+          ? `plugin '${pluginId}' does not declare a host protocol; this app serves `
+            + HOST_PROTOCOL_VERSIONS_SERVED.join(", ")
+          : `plugin '${pluginId}' speaks host protocol ${detail.declared}; this app serves `
+            + HOST_PROTOCOL_VERSIONS_SERVED.join(", ")
+        : `plugin '${pluginId}' requires host methods this app does not serve: `
+          + detail.missingCapabilities.join(", "),
+    );
+    this.name = "IncompatibleHostProtocolError";
+  }
+}
+
+/** A JSON-RPC request id. The two directions allocate from separate spaces. */
+export type JsonRpcRequestId = string | number;
+
+/**
+ * One `hostApi.<path>(...args)` invocation travelling child → host: a JSON-RPC
+ * 2.0 request whose method is {@link hostApiMethodOf} the path.
+ *
+ * NO IDENTITY FIELD. The host spawned the process and owns both ends of its
+ * pipes, so the connection IS the plugin and the generation (§2.4). A field the
+ * host would have to ignore or refuse is a field an author will try to set.
+ *
+ * `params` is an OBJECT keyed by the member's own parameter names (the
+ * contract's `params` axis), never a positional array, so a field can be added
+ * without shifting an argument. It may be absent, as JSON-RPC 2.0 §4 allows,
+ * and absent reads as the empty object; the reference runtime always sends it.
+ */
+export interface HostApiRequest {
+  readonly jsonrpc: "2.0";
+  readonly id: JsonRpcRequestId;
+  readonly method: string;
+  readonly params?: Record<string, unknown>;
 }
 
 /** The settled outcome of a {@link HostApiRequest}, travelling host → child. */
 export type HostApiReply =
   | {
-      readonly wire: typeof HOST_API_WIRE_VERSION;
-      readonly callId: string;
-      readonly ok: true;
-      readonly value: unknown;
+      readonly jsonrpc: "2.0";
+      readonly id: JsonRpcRequestId;
+      /** `null` for a `void` member: JSON-RPC requires the field and JSON has no `undefined`. */
+      readonly result: unknown;
     }
   | {
-      readonly wire: typeof HOST_API_WIRE_VERSION;
-      readonly callId: string;
-      readonly ok: false;
-      readonly error: HostApiWireError;
+      readonly jsonrpc: "2.0";
+      readonly id: JsonRpcRequestId;
+      readonly error: HostApiRpcError;
     };
+
+/**
+ * A JSON-RPC `error` on the reverse channel.
+ *
+ * `data.code` is the identity (§3.6). The numeric `code` is what a generic
+ * JSON-RPC library can read, and it says only "method not found" or "the host
+ * refused or failed"; nothing branches on it.
+ */
+export interface HostApiRpcError {
+  readonly code: number;
+  readonly message: string;
+  readonly data: {
+    readonly code: HostApiWireErrorCode;
+    readonly name: string;
+    readonly detail?: Record<string, unknown>;
+    readonly retryAfterMs?: number;
+  };
+}
+
+/**
+ * The numeric code every refusal but `path-unknown` carries: the first of
+ * JSON-RPC's implementation-defined server-error range.
+ */
+const HOST_PROTOCOL_ERROR = -32000;
+
+/** Put a host error on the wire as a JSON-RPC error. */
+export function toHostApiRpcError(wire: HostApiWireError): HostApiRpcError {
+  return {
+    code: wire.code === "path-unknown" ? RPC_METHOD_NOT_FOUND : HOST_PROTOCOL_ERROR,
+    message: wire.message,
+    data: {
+      code: wire.code,
+      name: wire.name,
+      ...(wire.detail !== undefined ? { detail: wire.detail } : {}),
+      ...(wire.retryAfterMs !== undefined ? { retryAfterMs: wire.retryAfterMs } : {}),
+    },
+  };
+}
+
+/**
+ * Take a JSON-RPC error off the wire. Child side.
+ *
+ * An error without `data.code` is refused rather than read as `host-internal`:
+ * the host always sets it, so its absence means the two ends disagree about the
+ * wire, and naming that is the only honest answer.
+ */
+export function fromHostApiRpcError(error: unknown): HostApiWireError {
+  const candidate = error as Partial<HostApiRpcError> | null;
+  const data = candidate?.data as Partial<HostApiRpcError["data"]> | undefined;
+  if (
+    candidate === null
+    || typeof candidate !== "object"
+    || typeof candidate.message !== "string"
+    || data === null
+    || typeof data !== "object"
+    || typeof data.code !== "string"
+    || typeof data.name !== "string"
+  ) {
+    throw new HostApiBoundaryError(
+      "result-marshalling-rejected",
+      "[host-api-wire] a reply error carries no data.code",
+    );
+  }
+  if (data.code === "rate-limited" && (
+    !Number.isInteger(data.retryAfterMs)
+    || (data.retryAfterMs as number) < 0
+    || (data.retryAfterMs as number) > 5000
+  )) {
+    throw new HostApiBoundaryError(
+      "result-marshalling-rejected",
+      "[host-api-wire] a rate-limited reply carries no bounded retryAfterMs",
+    );
+  }
+  return {
+    code: data.code,
+    name: data.name,
+    message: candidate.message,
+    ...(typeof data.retryAfterMs === "number" && data.retryAfterMs >= 0
+      && data.retryAfterMs <= 5000 ? { retryAfterMs: data.retryAfterMs } : {}),
+    ...(data.detail !== undefined ? { detail: data.detail } : {}),
+  };
+}
+
+/**
+ * The method prefix of every member the plugin calls on the host. Ave-owned,
+ * which is what keeps these names apart from every name MCP defines (§3.1).
+ */
+const HOST_METHOD_PREFIX = "ave/host/";
+
+/** `storage.read` → `ave/host/storage/read`. Total over {@link HostApiPath}. */
+export function hostApiMethodOf(path: HostApiPath): string {
+  return `${HOST_METHOD_PREFIX}${path.replaceAll(".", "/")}`;
+}
+
+/**
+ * `ave/host/storage/read` → `storage.read`, or `undefined` for a method that
+ * names no member. Total over strings, and the exact inverse of
+ * {@link hostApiMethodOf}: a method is accepted only in the one spelling that
+ * function produces, so `ave/host/storage.read` names nothing rather than
+ * being a silent alias of `ave/host/storage/read`.
+ */
+export function hostApiPathOf(method: string): HostApiPath | undefined {
+  if (!method.startsWith(HOST_METHOD_PREFIX)) return undefined;
+  const path = method.slice(HOST_METHOD_PREFIX.length).replaceAll("/", ".");
+  return isHostApiPath(path) && hostApiMethodOf(path) === method ? path : undefined;
+}
+
+/** Whether a method belongs to the host-served half of the channel. */
+export function isHostApiMethod(method: string): boolean {
+  return method.startsWith(HOST_METHOD_PREFIX);
+}
+
+/**
+ * Put a positional call on the wire as the params object its contract names.
+ *
+ * An argument that is `undefined` is left out rather than sent: JSON has no
+ * `undefined`, and an absent key reads back as `undefined` on the host. Extra
+ * arguments beyond the declared list are not carried, which is what a
+ * JavaScript call does with them in-process too.
+ */
+export function hostApiParamsOf(
+  path: HostApiPath,
+  args: readonly unknown[],
+): Record<string, unknown> {
+  const names: readonly string[] = HOSTAPI_PATH_CONTRACTS[path].params;
+  const params: Record<string, unknown> = {};
+  names.forEach((name, index) => {
+    if (index < args.length && args[index] !== undefined) params[name] = args[index];
+  });
+  return params;
+}
+
+/**
+ * Take a params object off the wire as the positional arguments the host
+ * implementation takes, and name every field the member does not declare.
+ *
+ * Trailing absent arguments are dropped, so a call that omitted its optional
+ * tail reaches the implementation with the arity it was made with. `_meta` is
+ * reserved for protocol use (§3.3) and is neither an argument nor unknown.
+ */
+export function hostApiArgsOf(
+  path: HostApiPath,
+  params: Record<string, unknown>,
+): { readonly args: unknown[]; readonly unknownFields: string[] } {
+  const names: readonly string[] = HOSTAPI_PATH_CONTRACTS[path].params;
+  const args = names.map((name) => (Object.hasOwn(params, name) ? params[name] : undefined));
+  while (args.length > 0 && args[args.length - 1] === undefined) args.pop();
+  const unknownFields = Object.keys(params).filter(
+    (key) => key !== "_meta" && !names.includes(key),
+  );
+  return { args, unknownFields };
+}
 
 /**
  * Why a subscription ended. The distinction is not cosmetic: `disposed` means
@@ -91,17 +303,38 @@ export type HostApiReply =
  */
 export type SubscriptionCloseReason = "disposed" | "peer-gone" | "revoked";
 
+/** The notification names both directions use (§3.4, §3.5). */
+export const HOST_PROTOCOL_NOTIFICATIONS = {
+  subscription: "notifications/ave/subscription",
+  subscriptionClosed: "notifications/ave/subscription/closed",
+  subscriptionRelease: "notifications/ave/subscription/release",
+  cancelled: "notifications/cancelled",
+  log: "notifications/ave/log",
+  installedPluginsSnapshot: "notifications/ave/installedPlugins/snapshot",
+  configSnapshot: "notifications/ave/config/snapshot",
+  preferencesSnapshot: "notifications/ave/preferences/snapshot",
+} as const;
+
+/** One notification frame: JSON-RPC with no `id`, never answered. */
+interface HostProtocolNotification<M extends string, P> {
+  readonly jsonrpc: "2.0";
+  readonly method: M;
+  readonly params: P;
+}
+
 /**
- * Fire-and-forget traffic in both directions. Notifications carry no `callId`
- * and are never awaited; anything that needs an answer is a {@link HostApiRequest}.
+ * Fire-and-forget traffic in both directions. Notifications carry no `id` and
+ * are never awaited; anything that needs an answer is a {@link HostApiRequest}.
  */
 export type HostApiNotification =
-  /** host → child: an event for a subscription the child opened. */
-  | (HostApiEnvelope & {
-      readonly kind: "subscription-event";
-      readonly subscriptionId: string;
-      readonly payload: unknown;
-    })
+  /**
+   * host → child: an event for a subscription the child opened. The payload's
+   * shape is the `events` of the method that opened it (`HostApiEventPayloads`).
+   */
+  | HostProtocolNotification<
+      typeof HOST_PROTOCOL_NOTIFICATIONS.subscription,
+      { readonly subscriptionId: string; readonly payload: unknown }
+    >
   /**
    * host → child: the host ended a subscription the child still holds.
    *
@@ -109,36 +342,35 @@ export type HostApiNotification =
    * HOST decided. `disposed` came from the child and echoing it back would be a
    * ping-pong; `peer-gone` means the pipe is already closed and sending would
    * be a write on it. The single sender is the dispatcher's own release path,
-   * which owns the envelope, rather than each lifetime-bearing handler stamping
-   * its own.
+   * rather than each lifetime-bearing handler sending its own.
    */
-  | (HostApiEnvelope & {
-      readonly kind: "subscription-closed";
-      readonly subscriptionId: string;
-      readonly reason: SubscriptionCloseReason;
-    })
+  | HostProtocolNotification<
+      typeof HOST_PROTOCOL_NOTIFICATIONS.subscriptionClosed,
+      { readonly subscriptionId: string; readonly reason: "revoked" }
+    >
   /** child → host: the plugin called its disposer; release the host side. */
-  | (HostApiEnvelope & {
-      readonly kind: "subscription-release";
-      readonly subscriptionId: string;
-    })
+  | HostProtocolNotification<
+      typeof HOST_PROTOCOL_NOTIFICATIONS.subscriptionRelease,
+      { readonly subscriptionId: string }
+    >
   /**
-   * child → host: cancel the work behind an abort channel.
+   * child → host: cancel an in-flight `ave/host/*` request.
    *
-   * An `AbortSignal` cannot cross, so the child sends an id and the host holds
-   * the `AbortController`. Three members carry one (`hostFetch`, `callLlm`,
-   * `resolveApiKey`), which is why it is a shared mechanism and not three.
+   * An `AbortSignal` cannot cross, so the child names the REQUEST the signal
+   * belonged to and the host aborts the controller it holds for that request.
+   * Three members take a signal (`hostFetch`, `callLlm`, `resolveApiKey`); the
+   * host holds a controller for every request, which is what makes this one
+   * mechanism for all three. An id with nothing in flight is dropped (§3.5).
    */
-  | (HostApiEnvelope & {
-      readonly kind: "abort";
-      readonly subscriptionId: string;
-    })
-  /** child → host: `context.log`, which is a host closure today (§3.4). */
-  | (HostApiEnvelope & {
-      readonly kind: "log";
-      readonly message: string;
-      readonly meta?: unknown;
-    })
+  | HostProtocolNotification<
+      typeof HOST_PROTOCOL_NOTIFICATIONS.cancelled,
+      { readonly requestId: JsonRpcRequestId; readonly reason?: string }
+    >
+  /** child → host: `context.log`, which is a host closure in-process (§3.4). */
+  | HostProtocolNotification<
+      typeof HOST_PROTOCOL_NOTIFICATIONS.log,
+      { readonly message: string; readonly meta?: unknown }
+    >
   /**
    * host → child: the installed-plugin set changed.
    *
@@ -148,10 +380,10 @@ export type HostApiNotification =
    * handler for it: the snapshot is read by a member, and the member has to
    * answer whether or not the plugin ever subscribed to `onPluginsChanged`.
    */
-  | (HostApiEnvelope & {
-      readonly kind: "installed-plugins";
-      readonly pluginIds: readonly string[];
-    })
+  | HostProtocolNotification<
+      typeof HOST_PROTOCOL_NOTIFICATIONS.installedPluginsSnapshot,
+      { readonly pluginIds: readonly string[] }
+    >
   /**
    * host → child: the plugin's resolved config changed.
    *
@@ -178,15 +410,14 @@ export type HostApiNotification =
    * can change it. That is the limit of this member, stated rather than left to
    * be discovered.
    */
-  | (HostApiEnvelope & {
-      readonly kind: "config-snapshot";
-      readonly keys: readonly string[];
-      readonly values: Record<string, unknown>;
-    })
+  | HostProtocolNotification<
+      typeof HOST_PROTOCOL_NOTIFICATIONS.configSnapshot,
+      { readonly keys: readonly string[]; readonly values: Record<string, unknown> }
+    >
   /**
    * host → child: an allow-listed HOST preference now reads differently.
    *
-   * The sibling of `config-snapshot`, for the other config value a plugin
+   * The sibling of the config snapshot, for the other config value a plugin
    * reads. `getAppPreference` is synchronous too, so §3.1 answers it from a
    * host-pushed snapshot as well — and until this notification existed there
    * was nothing to re-push FROM, which is why the child left that one member
@@ -194,7 +425,7 @@ export type HostApiNotification =
    * `lyra-mail` reads `webView.preferredFlow` at CALL time, so a construction
    * snapshot with no re-push would answer it wrong by construction.
    *
-   * TWO FIELDS, NOT ONE OBJECT, for the same reason `config-snapshot` splits
+   * TWO FIELDS, NOT ONE OBJECT, for the same reason the config snapshot splits
    * them: the reader answers `undefined` for an unset preference, and
    * `undefined` is not a JSON value. A plain record would simply lose the
    * property and the child would keep the value it was supposed to drop. So
@@ -206,11 +437,10 @@ export type HostApiNotification =
    * (`boot/steps/plugin-runtime/app-preference.ts`); nothing a plugin sends can
    * widen what it is told.
    */
-  | (HostApiEnvelope & {
-      readonly kind: "preference-snapshot";
-      readonly keys: readonly string[];
-      readonly values: Record<string, unknown>;
-    });
+  | HostProtocolNotification<
+      typeof HOST_PROTOCOL_NOTIFICATIONS.preferencesSnapshot,
+      { readonly keys: readonly string[]; readonly values: Record<string, unknown> }
+    >;
 
 // ───────────────────────────────────────────────────────────────────────────
 // The four axes §3 decided, one per member.
@@ -224,7 +454,8 @@ export type HostApiNotification =
  *   round-trips successfully into a different type, so "did stringify throw" is
  *   not the question being asked (see `describeNonJson`).
  * - `encoded` — the child re-shapes them first: base64 for bytes, `[k, v][]` for
- *   `Headers`, an abort-channel id for an `AbortSignal`. The host decodes.
+ *   `Headers`, and an `AbortSignal` is left behind because it cancels the
+ *   request rather than crossing (§3.5). The host decodes.
  * - `handler-registration` — one argument is a FUNCTION. It never crosses; the
  *   child keeps it and a subscription id crosses instead.
  * - `child-local` — the call never leaves the child (§3.1). Declared so the axis
@@ -257,6 +488,7 @@ export type ResultMarshalling =
   | "void"
   | "encoded"
   | "handle"
+  | "handle-or-denied"
   | "child-local";
 
 /**
@@ -280,6 +512,16 @@ export type DisposerLifetime = "none" | "child-disposable" | "host-terminated";
  * cannot each silently skip a different axis.
  */
 export interface HostApiPathContract {
+  /**
+   * The member's parameter names, in declaration order: the keys of the params
+   * object the call travels as. The child maps a positional call onto them and
+   * the dispatcher maps them back, so the host implementations keep their
+   * positional signatures. A parameter that is a FUNCTION on the member (a
+   * `handler-registration` callback) carries the subscription id the child
+   * allocated for it. Held to `public-contract.ts` by a test that reads the
+   * member signatures with the compiler, so this list cannot drift from them.
+   */
+  readonly params: readonly string[];
   readonly arguments: ArgumentMarshalling;
   readonly result: ResultMarshalling;
   readonly lifetime: DisposerLifetime;
@@ -306,41 +548,16 @@ export interface HostApiHandle {
  * An `Error` degrades to `{ message, stack }` on a wire, and the host today
  * distinguishes several by CLASS. A code is what survives, and it is strictly
  * better than what §3.3 was trying to avoid: no consumer ever has to match on a
- * message string, and adding a code is a deliberate edit in one union that both
+ * message string, and adding a code is a deliberate edit in one list that both
  * sides compile against.
+ *
+ * A runtime list rather than only a union, because the protocol publishes it:
+ * a plugin in another language reads the set, and the golden fixtures carry one
+ * reply per code.
  */
-export type HostApiWireErrorCode =
+export const HOST_API_WIRE_ERROR_CODES = [
   // ── Boundary-level refusals. The call never reached a host implementation.
-  | "wire-version-mismatch"
-  | "plugin-mismatch"
-  | "generation-mismatch"
-  | "plugin-inactive"
-  | "path-unknown"
-  | "path-not-dispatchable"
-  | "path-not-implemented"
-  | "argument-marshalling-rejected"
-  | "result-marshalling-rejected"
-  | "payload-too-large"
-  | "subscription-unknown"
-  // ── Host decisions the plugin is expected to branch on.
-  | "effect-boundary-denied"
-  | "manifest-integrity-violation"
-  | "detached-operation"
-  | "plugin-storage"
-  | "plugin-storage-encryption-unavailable"
-  // ── Anything the host threw that is none of the above. Deliberately last and
-  //    deliberately opaque: a host internal is not a contract.
-  | "host-internal";
-
-/**
- * Codes any path may reply with, because they are produced by the boundary
- * itself before (or instead of) reaching the path's implementation. A path's
- * `errors` list names only what its OWN implementation can raise.
- */
-export const UNIVERSAL_WIRE_ERROR_CODES: readonly HostApiWireErrorCode[] = [
-  "wire-version-mismatch",
-  "plugin-mismatch",
-  "generation-mismatch",
+  "protocol-version-mismatch",
   "plugin-inactive",
   "path-unknown",
   "path-not-dispatchable",
@@ -348,6 +565,42 @@ export const UNIVERSAL_WIRE_ERROR_CODES: readonly HostApiWireErrorCode[] = [
   "argument-marshalling-rejected",
   "result-marshalling-rejected",
   "payload-too-large",
+  "subscription-unknown",
+  "rate-limited",
+  // ── Host decisions the plugin is expected to branch on.
+  "effect-boundary-denied",
+  "manifest-integrity-violation",
+  "detached-operation",
+  "plugin-storage",
+  "plugin-storage-encryption-unavailable",
+  "lease-unavailable",
+  "lease-audience-denied",
+  "credential-conflict",
+  // ── Anything the host threw that is none of the above. Deliberately last and
+  //    deliberately opaque: a host internal is not a contract.
+  "host-internal",
+] as const;
+
+/** One of {@link HOST_API_WIRE_ERROR_CODES}. */
+export type HostApiWireErrorCode = (typeof HOST_API_WIRE_ERROR_CODES)[number];
+
+/**
+ * Codes any path may reply with, because they are produced by the boundary
+ * itself before (or instead of) reaching the path's implementation. A path's
+ * `errors` list names only what its OWN implementation can raise.
+ *
+ * `protocol-version-mismatch` is not among them: the version is settled once,
+ * at `construct`, and no individual call can fail on it.
+ */
+export const UNIVERSAL_WIRE_ERROR_CODES: readonly HostApiWireErrorCode[] = [
+  "plugin-inactive",
+  "path-unknown",
+  "path-not-dispatchable",
+  "path-not-implemented",
+  "argument-marshalling-rejected",
+  "result-marshalling-rejected",
+  "payload-too-large",
+  "rate-limited",
   "host-internal",
 ];
 
@@ -386,6 +639,7 @@ export interface HostApiWireError {
   readonly name: string;
   readonly message: string;
   readonly detail?: Record<string, unknown>;
+  readonly retryAfterMs?: number;
 }
 
 /**
@@ -411,12 +665,14 @@ export interface HostApiWireError {
 export class PluginHostApiError extends Error {
   readonly code: HostApiWireErrorCode;
   readonly detail: Record<string, unknown> | undefined;
+  readonly retryAfterMs: number | undefined;
 
   constructor(wire: HostApiWireError) {
     super(wire.message);
     this.name = wire.name;
     this.code = wire.code;
     this.detail = wire.detail;
+    this.retryAfterMs = wire.retryAfterMs;
   }
 }
 
@@ -445,9 +701,17 @@ export function inactiveHostApiMessage(pluginId: string, memberPath: string): st
  * transport (`StdioServerLoop` + `PluginMcpServer`); multiplexing the reverse
  * direction onto the same pipes is a transport concern, and pinning it here
  * would make every hostApi handler untestable without a subprocess.
+ *
+ * The CHANNEL allocates request ids, because it owns the pending table they
+ * key; `onSent` hands the id back before the frame can be answered, so a
+ * caller holding an `AbortSignal` can name the request it cancels.
  */
 export interface HostApiChannel {
-  call(request: HostApiRequest): Promise<HostApiReply>;
+  call(
+    method: string,
+    params: Record<string, unknown>,
+    onSent?: (id: JsonRpcRequestId) => void,
+  ): Promise<HostApiReply>;
   notify(notification: HostApiNotification): void;
 }
 
@@ -469,6 +733,30 @@ export interface ChildNotificationSink {
  * message is up to ~21 MB — bounded, and bounded is the requirement.
  */
 export const WIRE_BYTES_MAX = 16 * 1024 * 1024;
+
+/** What one frame may carry beyond its payloads: ids, method names, the JSON around them. */
+const FRAME_ENVELOPE_HEADROOM_BYTES = 1024 * 1024;
+
+/**
+ * The longest line either end of the plugin channel writes or reads.
+ *
+ * It is the ONLY bound on plain-JSON traffic — a tool result, a `readText` or
+ * `readJson` reply, a `writeJson` argument, a config value — which
+ * {@link WIRE_BYTES_MAX} does not reach, since that bounds byte payloads alone.
+ * So both ends enforce it. The writer refuses a message that would exceed it
+ * (`FramedMessageStream.send`: a reply becomes a `payload-too-large` error for
+ * the same call, a request throws that error to its writer, a notification is
+ * dropped and logged), and the reader
+ * (`StdioFrameDecoder`) ends the channel on a longer line, which only a peer
+ * that skipped the writer's check can produce.
+ *
+ * Sized so a byte payload at {@link WIRE_BYTES_MAX} always fits: it crosses
+ * base64-encoded, 4 bytes for every 3, and a `tools/call` result carries the
+ * plugin's value twice — as MCP text content and as the raw result in `_meta`
+ * — so that frame is twice the encoded payload, plus room for the envelope.
+ */
+export const FRAME_BYTES_MAX =
+  2 * Math.ceil(WIRE_BYTES_MAX / 3) * 4 + FRAME_ENVELOPE_HEADROOM_BYTES;
 
 /**
  * Bytes or text on the wire, with the encoding stated rather than inferred.
@@ -594,6 +882,7 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // the host's to enforce at every method that actually touches the disk, so
   // the child's answer cannot become the security decision.
   "storage.resolve": {
+    params: ["segments"],
     arguments: "child-local",
     result: "child-local",
     lifetime: "none",
@@ -604,30 +893,35 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // different type that reads as success. The encoding has to be explicit
   // precisely because JSON will not object.
   "storage.read": {
+    params: ["relPath"],
     arguments: "plain-json",
     result: "encoded",
     lifetime: "none",
     errors: ["plugin-storage"],
   },
   "storage.readText": {
+    params: ["relPath", "encoding"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
     errors: ["plugin-storage"],
   },
   "storage.readJson": {
+    params: ["relPath"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
     errors: ["plugin-storage"],
   },
   "storage.list": {
+    params: ["relPath"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
     errors: ["plugin-storage"],
   },
   "storage.exists": {
+    params: ["relPath"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
@@ -636,30 +930,35 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // `data: string | Uint8Array` — the bytes branch needs a tagged encoding, and
   // the tag is what stops a base64 string being written as text.
   "storage.write": {
+    params: ["relPath", "data", "encoding"],
     arguments: "encoded",
     result: "void",
     lifetime: "none",
     errors: ["plugin-storage", "effect-boundary-denied"],
   },
   "storage.writeJson": {
+    params: ["relPath", "value", "indent"],
     arguments: "plain-json",
     result: "void",
     lifetime: "none",
     errors: ["plugin-storage", "effect-boundary-denied"],
   },
   "storage.rm": {
+    params: ["relPath", "options"],
     arguments: "plain-json",
     result: "void",
     lifetime: "none",
     errors: ["plugin-storage", "effect-boundary-denied"],
   },
   "storage.mkdir": {
+    params: ["relPath"],
     arguments: "plain-json",
     result: "void",
     lifetime: "none",
     errors: ["plugin-storage", "effect-boundary-denied"],
   },
   "storage.writeEncrypted": {
+    params: ["relPath", "plaintext"],
     arguments: "plain-json",
     result: "void",
     lifetime: "none",
@@ -670,6 +969,7 @@ export const HOSTAPI_PATH_CONTRACTS = {
     ],
   },
   "storage.readEncrypted": {
+    params: ["relPath"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
@@ -682,18 +982,21 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // BEFORE the `config.set` reply, so a plugin that sets-then-gets sees its own
   // write.
   "config.get": {
+    params: ["key"],
     arguments: "child-local",
     result: "child-local",
     lifetime: "none",
     errors: [],
   },
   "config.set": {
+    params: ["key", "value"],
     arguments: "plain-json",
     result: "void",
     lifetime: "none",
     errors: [],
   },
   "config.onChange": {
+    params: ["key", "callback"],
     arguments: "handler-registration",
     result: "handle",
     lifetime: "child-disposable",
@@ -703,18 +1006,21 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // Cannot be snapshot-pushed: shipping secrets into the child eagerly is the
   // opposite of the goal, and the secret gate is a per-call decision.
   getSecret: {
+    params: ["key"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
     errors: [],
   },
   getInstalledPluginIds: {
+    params: [],
     arguments: "child-local",
     result: "child-local",
     lifetime: "none",
     errors: [],
   },
   hasRoutineBySource: {
+    params: ["source"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
@@ -724,36 +1030,39 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // crosses, and nothing outlives the call — the proposal the host stores is
   // reachable afterwards only through the board, never through a handle.
   proposeWork: {
+    params: ["input"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
     errors: ["effect-boundary-denied"],
   },
   withdrawWorkProposal: {
+    params: ["kind", "key"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
     errors: ["effect-boundary-denied"],
   },
   getAppPreference: {
+    params: ["key"],
     arguments: "child-local",
     result: "child-local",
     lifetime: "none",
     errors: [],
   },
   probePrivateHost: {
+    params: ["host", "opts"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
     errors: [],
   },
-  // `opts.signal` becomes an abort-channel id; the reply is
-  // `{ ok, vendor, baseUrl?, key, leaseId }` and the child synthesises
-  // `bearer()` / `release()` around it. `release()` drops the child's copy AND
-  // sends the release, so the host can unwire its own.
+  // The host returns an opaque lease by default; a denied result has no handle.
+  // A reviewed raw request is the only branch whose reply carries key bytes.
   resolveApiKey: {
+    params: ["opts"],
     arguments: "encoded",
-    result: "handle",
+    result: "handle-or-denied",
     lifetime: "child-disposable",
     errors: [],
   },
@@ -763,18 +1072,21 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // authoritatively and writes the denial audit. Both run — the host check is
   // the control, the child check only preserves the contract's timing.
   emitEvent: {
+    params: ["eventType", "data"],
     arguments: "plain-json",
     result: "void",
     lifetime: "none",
     errors: [],
   },
   onEvent: {
+    params: ["eventType", "handler"],
     arguments: "handler-registration",
     result: "handle",
     lifetime: "child-disposable",
     errors: [],
   },
   onPluginsChanged: {
+    params: ["handler"],
     arguments: "handler-registration",
     result: "handle",
     lifetime: "child-disposable",
@@ -785,33 +1097,32 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // lifecycle timeout, then SIGTERM → SIGKILL. That bound is new and is an
   // improvement — today a plugin can hang shutdown forever.
   onShutdown: {
+    params: ["handler"],
     arguments: "handler-registration",
     result: "void",
     lifetime: "host-terminated",
     errors: [],
   },
   logEvent: {
+    params: ["level", "message", "data"],
     arguments: "plain-json",
     result: "void",
     lifetime: "none",
     errors: [],
   },
-  // `options.signal` is an `AbortSignal` → abort-channel id. The return is a
-  // plain string, which is why counting non-representable members by return
-  // value alone missed this one.
+  // `options.signal` is an `AbortSignal`, which cancels the request with
+  // `notifications/cancelled` rather than crossing. The return is a plain
+  // string, which is why counting non-representable members by return value
+  // alone missed this one.
   //
-  // `child-disposable` because of that signal, not because of the return. The
-  // abort channel IS a registration: the child allocates its id and holds the
-  // release, the host holds the `AbortController`, and a child that dies
-  // mid-call leaves the host generating for nobody unless the host releases it
-  // too — the definition of a two-sided lifetime. Declaring `none` here would
-  // also deny the handler the shared abort registry (`SubscriptionScope` is
-  // handed only to lifetime-bearing members), which is what would push a
-  // handler into inventing a second one.
+  // `none`, because nothing outlives the reply: the host's `AbortController`
+  // is per REQUEST and ends with it, and a child that dies mid-call aborts it
+  // through the dispatcher's in-flight table rather than a registration.
   callLlm: {
+    params: ["prompt", "options"],
     arguments: "encoded",
     result: "plain-json",
-    lifetime: "child-disposable",
+    lifetime: "none",
     errors: ["effect-boundary-denied"],
   },
   // Both directions non-representable. `init` may carry `Headers`, an
@@ -822,15 +1133,14 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // payload (`WireBytes`), so the one codec three members already share carries
   // this one too. Streaming responses stop streaming,
   // and that loss is the decision, not an oversight.
-  // `child-disposable` for the same reason as `callLlm`: `init.signal` becomes
-  // an abort channel the child opens and the host must release when the child
-  // dies, or the host keeps an egress in flight on behalf of a process that no
-  // longer exists.
+  // `none` for the same reason as `callLlm`: `init.signal` cancels the request,
+  // and the controller behind it ends with the reply.
   hostFetch: {
+    params: ["input", "init"],
     arguments: "encoded",
     result: "encoded",
-    lifetime: "child-disposable",
-    errors: ["effect-boundary-denied"],
+    lifetime: "none",
+    errors: ["effect-boundary-denied", "lease-unavailable", "lease-audience-denied", "credential-conflict"],
   },
   // The host KEEPS OWNING the worker process — the sandbox grant machinery, the
   // wrapped-worker registry, the Windows holder-PID ACL lifecycle and the
@@ -840,30 +1150,35 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // must NOT be permitted to spawn its own worker: a grandchild would sit
   // outside the grants keyed to host-allocated paths.
   spawnWorker: {
+    params: ["spec"],
     arguments: "plain-json",
     result: "handle",
     lifetime: "child-disposable",
     errors: ["effect-boundary-denied"],
   },
   openExternalUrl: {
+    params: ["url"],
     arguments: "plain-json",
     result: "void",
     lifetime: "none",
     errors: ["effect-boundary-denied"],
   },
   openAuthWindow: {
+    params: ["options"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
     errors: ["effect-boundary-denied"],
   },
   openAuthPartitionViewer: {
+    params: ["opts"],
     arguments: "plain-json",
     result: "void",
     lifetime: "none",
     errors: ["effect-boundary-denied"],
   },
   clearAuthPartition: {
+    params: ["partition"],
     arguments: "plain-json",
     result: "void",
     lifetime: "none",
@@ -876,6 +1191,7 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // "none" and not "child-disposable" — nothing on the child side needs
   // disposing, because nothing on the child side holds anything.
   "authRedirect.open": {
+    params: [],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
@@ -886,12 +1202,14 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // host's ownership check plus the timeout, neither of which is a boundary
   // denial.
   "authRedirect.wait": {
+    params: ["options"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
     errors: [],
   },
   "authRedirect.close": {
+    params: ["options"],
     arguments: "plain-json",
     result: "void",
     lifetime: "none",
@@ -904,6 +1222,7 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // mutating-effect verdict applies. Its bounds are the user's dismissal and
   // the one-chooser-per-plugin refusal, neither of which is a boundary denial.
   pickFolders: {
+    params: [],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
@@ -916,12 +1235,14 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // disk. A lookup that could not run rejects, and a rejection is not a
   // boundary verdict.
   resolveMappedDriveRoot: {
+    params: ["drive"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
     errors: [],
   },
   listAudioInputDevices: {
+    params: [],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
@@ -932,6 +1253,7 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // ONE plugin that asked. Delivering them on the event bus instead would hand
   // every installed plugin the microphone, because that bus broadcasts.
   startAudioCapture: {
+    params: ["request"],
     arguments: "plain-json",
     result: "handle",
     lifetime: "child-disposable",
@@ -948,12 +1270,14 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // existing handle rather than creating one, so it opens no lifetime of its
   // own.
   resizeFloatingPanel: {
+    params: ["panelId", "height"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
     errors: ["effect-boundary-denied"],
   },
   attachFloatingPanel: {
+    params: ["request"],
     arguments: "plain-json",
     result: "handle",
     lifetime: "child-disposable",
@@ -967,6 +1291,7 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // into a separate browser context — so the host, not the child, decides
   // which cookies are in the answer (own partition ∩ declared allow-list).
   getAuthPartitionCookies: {
+    params: ["opts"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
@@ -977,6 +1302,7 @@ export const HOSTAPI_PATH_CONTRACTS = {
     errors: [],
   },
   triggerConversation: {
+    params: ["spec"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
@@ -988,16 +1314,37 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // child's own call timeout — a child timeout must not leave the host gate
   // pending (§7.5).
   "agentApproval.request": {
+    params: ["input"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
     errors: ["effect-boundary-denied"],
   },
   "agentApproval.respond": {
+    params: ["requestId", "choice", "nonce", "hmac"],
     arguments: "plain-json",
     result: "void",
     lifetime: "none",
     errors: [],
+  },
+  // ─── Alerts ───────────────────────────────────────────────────────────────
+  // Last in the table so the method ids the goldens already record stay put.
+  // A kind id, a key and typed slot values out, a discriminated envelope back.
+  // The card and its prompt are rendered by the host from the declaration, so
+  // nothing the plugin sends is executable and nothing outlives the call.
+  raiseAlert: {
+    params: ["input"],
+    arguments: "plain-json",
+    result: "plain-json",
+    lifetime: "none",
+    errors: ["effect-boundary-denied"],
+  },
+  withdrawAlert: {
+    params: ["kind", "key"],
+    arguments: "plain-json",
+    result: "plain-json",
+    lifetime: "none",
+    errors: ["effect-boundary-denied"],
   },
 } as const satisfies Record<string, HostApiPathContract>;
 
@@ -1050,6 +1397,8 @@ export const SERVICE_HOSTAPI_PATHS = [
   "hasRoutineBySource",
   "proposeWork",
   "withdrawWorkProposal",
+  "raiseAlert",
+  "withdrawAlert",
   "probePrivateHost",
   "resolveApiKey",
   "emitEvent",
@@ -1170,6 +1519,45 @@ export interface PluginLifecycleDelivery {
 }
 
 /**
+ * What `config.onChange` puts on the wire: the new value, or in its place the
+ * flag that stands for {@link SECRET_REDACTED_SENTINEL} (see
+ * {@link encodeConfigChange}).
+ */
+export type WireConfigChangeEvent =
+  | { readonly key: string; readonly value?: unknown }
+  | { readonly key: string; readonly secretRedacted: true };
+
+/**
+ * The `payload` of each `notifications/ave/subscription` frame, by the member
+ * whose registration or handle it is for.
+ *
+ * One table serves both ends of the claim: the dispatcher's
+ * `SubscriptionScope.deliver` takes its payload type from here, so a handler
+ * cannot push another shape, and the published protocol schema reads each
+ * member's `events` from the same entries. Every `handler-registration` member
+ * and every `handle` result has one, and the schema generator refuses to run
+ * without it. A member that pushes nothing is `never`.
+ */
+export interface HostApiEventPayloads {
+  /** One per change of the watched key. */
+  readonly "config.onChange": WireConfigChangeEvent;
+  /** One per event of the subscribed type. */
+  readonly onEvent: HostEventDelivery;
+  /** One per plugin installed, updated, enabled, disabled or removed. */
+  readonly onPluginsChanged: PluginLifecycleDelivery;
+  /** Output as it is written, then one `exit`. */
+  readonly spawnWorker: WireWorkerEvent;
+  /** PCM frames in order, then one `end`. */
+  readonly startAudioCapture: WireAudioCaptureEvent;
+  /** One `detached` when the slot goes away. */
+  readonly attachFloatingPanel: WireFloatingPanelEvent;
+  /** Pushes nothing: a lease is only ever closed, by `notifications/ave/subscription/closed`. */
+  readonly resolveApiKey: never;
+  /** Pushes nothing: the host runs the handler with the `ave/instance/shutdown` request. */
+  readonly onShutdown: never;
+}
+
+/**
  * Read one event payload as a record, or refuse.
  *
  * The host is the trust root for this direction, so this is not a security
@@ -1221,7 +1609,7 @@ function asEventRecord(payload: unknown, label: string): Record<string, unknown>
  * dropped and reported, and the plugin receives nothing rather than a payload
  * it would read as "cleared".
  */
-export function encodeConfigChange(key: string, value: unknown): Record<string, unknown> {
+export function encodeConfigChange(key: string, value: unknown): WireConfigChangeEvent {
   if (value === SECRET_REDACTED_SENTINEL) {
     return { key, [SECRET_REDACTED_WIRE_FIELD]: true };
   }
@@ -1297,8 +1685,9 @@ export function decodePluginLifecycle(payload: unknown): PluginLifecycleDelivery
  * These are the members §3.2 names as NOT JSON-representable, so both sides need
  * the same vocabulary for what replaces the values that cannot cross: a
  * `Response` becomes {@link WireHttpResponse}, a `RequestInit` becomes
- * {@link WireRequestInit}, an `AbortSignal` becomes an abort-channel id, and a
- * live worker handle becomes an id plus a stream of {@link WireWorkerEvent}.
+ * {@link WireRequestInit}, an `AbortSignal` becomes a `notifications/cancelled`
+ * naming its request, and a live worker handle becomes an id plus a stream of
+ * {@link WireWorkerEvent}.
  *
  * ELECTRON-FREE, and it has to be: the child imports these to build its stubs,
  * and the child is a plain Node process. The host half lives in
@@ -1346,17 +1735,21 @@ const WIRE_REQUEST_INIT_FIELDS = [
   "redirect",
   "referrer",
   "referrerPolicy",
+  "auth",
 ] as const;
 
-/** A `RequestInit` reduced to JSON, with the two live members replaced. */
+/**
+ * A `RequestInit` reduced to JSON. `headers` and `body` are replaced by their
+ * wire forms; `signal` does not cross at all — the child cancels the REQUEST
+ * with `notifications/cancelled` instead (§3.5).
+ */
 export interface WireRequestInit {
+  readonly auth?: { readonly lease: string };
   readonly method?: string;
   /** `Headers` flattened to entries; the form `new Headers()` accepts back. */
   readonly headers?: readonly (readonly [string, string])[];
   /** Tagged so a base64 STRING body is not decoded into the bytes it spells. */
   readonly body?: WireBytes;
-  /** The id the child allocated where an `AbortSignal` would have been. */
-  readonly signalChannelId?: string;
   readonly cache?: string;
   readonly credentials?: string;
   readonly integrity?: string;
@@ -1494,16 +1887,13 @@ export function decodeWireHttpResponse(value: unknown, label: string): Response 
 }
 
 /**
- * Child side: reduce `input` and `init` to the wire form.
+ * Child side: reduce `init` to the wire form.
  *
- * `openAbortChannel` is passed rather than imported so this stays a pure
- * function of its arguments — the ledger that owns abort channels lives in the
- * child runtime, and reaching it from here would make every payload test need a
- * runtime.
+ * `init.signal` is accepted and left behind: the caller cancels the request it
+ * belongs to rather than sending the signal (§3.5).
  */
-export function encodeWireRequestInit(
-  init: RequestInit | undefined,
-  openAbortChannel: (signal: AbortSignal) => string,
+function encodeWireRequestInit(
+  init: import("../public-contract.js").HostFetchInit | undefined,
   label: string,
 ): WireRequestInit | undefined {
   if (init === undefined) return undefined;
@@ -1519,10 +1909,11 @@ export function encodeWireRequestInit(
   }
   const wire: Record<string, unknown> = {};
   for (const key of WIRE_REQUEST_INIT_FIELDS) {
-    if (key === "headers" || key === "body" || key === "signal") continue;
+    if (key === "headers" || key === "body" || key === "signal" || key === "auth") continue;
     const value = (init as Record<string, unknown>)[key];
     if (value !== undefined) wire[key] = value;
   }
+  if (init.auth !== undefined) wire.auth = validateWireAuth(init.auth);
   if (init.headers !== undefined) {
     wire.headers = [...new Headers(init.headers).entries()].map(
       ([key, value]) => [key, value] as const,
@@ -1531,8 +1922,59 @@ export function encodeWireRequestInit(
   if (init.body !== undefined && init.body !== null) {
     wire.body = encodeWireBytes(asWireBody(init.body, label), `${label}(body)`);
   }
-  if (init.signal) wire.signalChannelId = openAbortChannel(init.signal);
   return wire as WireRequestInit;
+}
+
+/** Serialize multipart fields while counting the complete body before each allocation. */
+export async function encodeHostFetchInit(
+  init: import("../public-contract.js").HostFetchInit | undefined,
+  label: string,
+): Promise<WireRequestInit | undefined> {
+  if (!(init?.body instanceof FormData)) return encodeWireRequestInit(init, label);
+  const headers = new Headers(init.headers);
+  if (headers.has("content-type")) {
+    throw new HostApiBoundaryError("argument-marshalling-rejected", "Multipart content type conflicts with generated boundary.");
+  }
+  const boundary = `ave-${randomBytes(16).toString("hex")}`;
+  const encoder = new TextEncoder();
+  const pieces: Uint8Array[] = [];
+  let total = 0;
+  const append = (bytes: Uint8Array) => {
+    assertWithinWireBytesMax(total + bytes.byteLength, label);
+    total += bytes.byteLength;
+    pieces.push(bytes);
+  };
+  const quoted = (value: string) => value.replace(/\r|\n/g, " ").replace(/["\\]/g, "_");
+  for (const [name, value] of init.body) {
+    if (init.signal?.aborted) throw new HostApiBoundaryError("argument-marshalling-rejected", "Multipart upload was aborted.");
+    const file = typeof value === "string" ? null : value;
+    const nameBytes = encoder.encode(name);
+    if (nameBytes.byteLength > 255) throw new HostApiBoundaryError("payload-too-large", "Multipart field name is too long.");
+    const filename = file ? file.name : undefined;
+    if (filename && encoder.encode(filename).byteLength > 255) {
+      throw new HostApiBoundaryError("payload-too-large", "Multipart filename is too long.");
+    }
+    const header = `--${boundary}\r\nContent-Disposition: form-data; name="${quoted(name)}"`
+      + (filename !== undefined ? `; filename="${quoted(filename)}"` : "")
+      + `\r\n${file ? `Content-Type: ${file.type || "application/octet-stream"}\r\n` : ""}\r\n`;
+    append(encoder.encode(header));
+    if (file) {
+      assertWithinWireBytesMax(total + file.size, label);
+      append(new Uint8Array(await file.arrayBuffer()));
+      if (init.signal?.aborted) throw new HostApiBoundaryError("argument-marshalling-rejected", "Multipart upload was aborted.");
+    } else {
+      const bytes = encoder.encode(value as string);
+      if (bytes.byteLength > 8192) throw new HostApiBoundaryError("payload-too-large", "Multipart field is too large.");
+      append(bytes);
+    }
+    append(encoder.encode("\r\n"));
+  }
+  append(encoder.encode(`--${boundary}--\r\n`));
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const piece of pieces) { body.set(piece, offset); offset += piece.byteLength; }
+  headers.set("content-type", `multipart/form-data; boundary=${boundary}`);
+  return encodeWireRequestInit({ ...init, headers, body }, label);
 }
 
 /**
@@ -1558,15 +2000,18 @@ function asWireBody(body: BodyInit, label: string): string | Uint8Array {
 /**
  * Host side: rebuild the `RequestInit` the in-process plugin would have passed.
  *
- * `abortChannel` resolves an id back to the host-held signal, so the abort the
- * child asks for reaches the fetch the host actually issued.
+ * `signal` is the host's own controller for this request, which the child's
+ * `notifications/cancelled` aborts — so the abort the plugin asks for reaches
+ * the fetch the host actually issued. It is attached whether or not the plugin
+ * passed a signal: the request is cancellable either way, and a child that dies
+ * mid-fetch aborts it too.
  */
 export function decodeWireRequestInit(
   value: unknown,
-  abortChannel: (channelId: string) => AbortSignal,
+  signal: AbortSignal,
   label: string,
-): RequestInit | undefined {
-  if (value === undefined || value === null) return undefined;
+): import("../public-contract.js").HostFetchInit {
+  if (value === undefined || value === null) return { signal };
   if (typeof value !== "object") {
     throw new HostApiBoundaryError(
       "argument-marshalling-rejected",
@@ -1574,7 +2019,7 @@ export function decodeWireRequestInit(
     );
   }
   const wire = value as WireRequestInit & Record<string, unknown>;
-  const allowed = new Set<string>([...WIRE_REQUEST_INIT_FIELDS, "signalChannelId"]);
+  const allowed = new Set<string>(WIRE_REQUEST_INIT_FIELDS);
   for (const key of Object.keys(wire)) {
     if (key === "signal" || !allowed.has(key)) {
       throw new HostApiBoundaryError(
@@ -1586,60 +2031,76 @@ export function decodeWireRequestInit(
   }
   const init: Record<string, unknown> = {};
   for (const key of WIRE_REQUEST_INIT_FIELDS) {
-    if (key === "headers" || key === "body" || key === "signal") continue;
+    if (key === "headers" || key === "body" || key === "signal" || key === "auth") continue;
     const field = wire[key];
     if (field !== undefined) init[key] = field;
   }
+  if (Object.hasOwn(wire, "auth")) init.auth = validateWireAuth(wire.auth);
   if (wire.headers !== undefined) init.headers = new Headers(wire.headers.map(([k, v]) => [k, v]));
   // `decodeWireBytes`, not `decodeWireBinary`: a `utf8`-tagged body is a plugin
   // sending TEXT, and re-encoding it to bytes would be right only by accident —
   // `fetch` derives a different default `content-type` from the two branches.
   if (wire.body !== undefined) init.body = decodeWireBytes(wire.body, `${label}(body)`);
-  if (wire.signalChannelId !== undefined) init.signal = abortChannel(wire.signalChannelId);
-  return init as RequestInit;
+  init.signal = signal;
+  return init as import("../public-contract.js").HostFetchInit;
+}
+
+export function validateWireAuth(value: unknown): { lease: string } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new HostApiBoundaryError("credential-conflict", "Credential selector is malformed.");
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== 1 || keys[0] !== "lease") {
+    throw new HostApiBoundaryError("credential-conflict", "Credential selector is malformed.");
+  }
+  const lease = (value as { lease?: unknown }).lease;
+  if (typeof lease !== "string" || lease.length === 0) {
+    throw new HostApiBoundaryError("credential-conflict", "Credential selector is malformed.");
+  }
+  return { lease };
 }
 
 // ───────────────────────────────────────────────────────────────────────────
 // callLlm / resolveApiKey (§3.2)
 // ───────────────────────────────────────────────────────────────────────────
 
-/** `callLlm`'s options with the `AbortSignal` replaced by its channel id. */
+/**
+ * `callLlm`'s options without the `AbortSignal`, which cancels the request
+ * instead of crossing (§3.5).
+ */
 export interface WireCallLlmOptions {
   readonly maxTokens?: number;
   readonly systemPrompt?: string;
-  readonly signalChannelId?: string;
-}
-
-/** `resolveApiKey`'s options with the `AbortSignal` replaced by its channel id. */
-export interface WireResolveApiKeyOptions {
-  readonly purpose: "llm" | "stt" | "embedding" | "vision";
-  readonly vendor?: "openai" | "azure-openai" | "vertex" | "anthropic";
-  readonly signalChannelId?: string;
 }
 
 /**
- * The reply behind the `handle` `resolveApiKey` declares.
- *
- * `handleId` names the LEASE, and it is present on both branches: the dispatcher
- * pins `handle` results to `{ handleId: string }`, and a denied resolve is still
- * a settled call that has to name itself. On the denied branch the host has
- * already closed the lease, so the id identifies the call and owns nothing.
- *
- * `key` is the raw credential. It crosses because the child stub's `bearer()`
- * has to return it — isolation does not shrink what a GRANTED plugin holds
- * (§3.2), it shrinks what an ungranted one can reach, and the gate that decides
- * granted runs host-side before this shape exists.
+ * `resolveApiKey`'s options without the `AbortSignal`, which cancels the
+ * request instead of crossing (§3.5).
  */
+export interface WireResolveApiKeyOptions {
+  readonly purpose: "llm" | "stt" | "embedding" | "vision";
+  readonly vendor?: "openai" | "azure-openai" | "vertex" | "anthropic";
+  readonly exposure?: "lease" | "raw";
+}
+
+/** A success has one releasable id; a denial has none. Only raw carries key bytes. */
 export type WireApiKeyLease =
   | {
       readonly handleId: string;
       readonly ok: true;
+      readonly exposure: "lease";
+      readonly vendor: string;
+      readonly baseUrl?: string;
+    }
+  | {
+      readonly handleId: string;
+      readonly ok: true;
+      readonly exposure: "raw";
       readonly vendor: string;
       readonly baseUrl?: string;
       readonly key: string;
     }
   | {
-      readonly handleId: string;
       readonly ok: false;
       readonly reason: string;
     };

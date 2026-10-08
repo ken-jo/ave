@@ -62,3 +62,67 @@ adding secrets to this unsigned workflow.
 ## Review Notes
 
 This English page should let a reviewer understand scope, risk, and validation without opening the Korean archive. If the archive contains rationale that still matters, translate the relevant part into this page and keep the archive link as provenance.
+
+## Alerts release publication
+
+The alerts release is the version carrying the complete
+[alerts rollout](../design/plugin-alerts.md#pull-request-plan), not a guessed
+version from the design example. At publication:
+
+1. Record that stable version in the marketplace CI caller's
+   `RepositoryCheckOptions.alertsReleaseVersion`, alongside successor plugin
+   `minAppVersion` and conditional revocation `appVersions`.
+2. Re-vendor the repository checker and update its caller in the same marketplace
+   change. The option is required and validated at runtime: missing, malformed,
+   pre-release or build-suffixed values produce a repository problem before any
+   package is checked. There is no default threshold that silently disables the
+   rule or prematurely chooses a release number.
+3. Supply `releasedManifests` for published artifacts. The checker examines tree
+   manifests and supplied release manifests against the matching descriptor or
+   index minimum version. An eligible release-only package without manifest
+   evidence fails the check. A `notificationEvents` declaration at or above the
+   threshold is refused even when its array is empty. Older package artifacts
+   retain their historical threshold treatment.
+4. Include the new-mail and meeting-summary opt-in loss in the release notes.
+   The 0.13.0 installer draft must remain unpublished until `local-indexer` has
+   published a version on the alert contract. Confirm the published artifact's
+   manifest declares `alerts.kinds` and `requires.hostProtocol: "2"`, and record
+   its version and tag in the release evidence before publishing the installer.
+   The host then drops
+   `notificationEvents` from installed manifests with one warning per extension,
+   before strict validation, rather than refusing the whole installed manifest.
+
+The explicit caller option lets publication select the actual release once and
+keeps the same checker usable by every source. Updating the app's own package
+version cannot move the deprecation threshold on later releases.
+
+## Protocol 2 release rollback
+
+The v0.12.0 app serves host protocol 2. Keep its installer release as a draft
+until the published extension replacements and packaged upgrade matrix pass the
+release checks in the [host protocol design](../design/plugin-hostapi-protocol.md).
+If those checks fail, leave the release as a draft and supersede it with a new
+tag. Never change the bytes behind the existing tag or its schema URL. Published
+extension artifacts stay available: older apps still select their older versions
+from the frozen legacy marketplace index. Promote the protocol-2 web schema
+alias only after the app draft is published, in a `web`-only change that runs
+`node scripts/sync-plugin-host-protocol-mirror.mjs --publish 2/<version>`. The
+command marks the tag-named mirror copy published and points the `2` alias at
+the newest published copy of protocol 2, so promoting an older copy after a
+newer one leaves the alias on the newer copy.
+`check:plugin-host-protocol-mirror` refuses an alias that names any other copy,
+whether or not a candidate is open.
+
+## Between releases: the next protocol candidate
+
+Once a release is tagged, its protocol schema copy is frozen, and
+`check:plugin-host-protocol-mirror` refuses any change to the canonical schema
+that would alter it. The first change after the tag therefore bumps
+`package.json` to the next minor version. It regenerates the schema with
+`bun run generate:plugin-host-protocol-schema` and runs
+`node scripts/sync-plugin-host-protocol-mirror.mjs`, which records a new
+candidate copy with `publishedTag: null`. Later protocol changes refresh only
+that candidate. The previous release's copy keeps its recorded bytes until its
+own publication marks it published with the `--publish` command above, which may
+run after this bump. The release PR then folds the changelog and
+regenerates the candidate once more at the final commit.

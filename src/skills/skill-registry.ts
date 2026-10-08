@@ -20,7 +20,7 @@ export interface SkillRegistry {
   skills: SkillRegistryEntry[];
 }
 
-export async function readSkillRegistry(registryPath: string): Promise<SkillRegistry> {
+async function readSkillRegistry(registryPath: string): Promise<SkillRegistry> {
   let raw: string;
   try {
     raw = await readFile(registryPath, "utf-8");

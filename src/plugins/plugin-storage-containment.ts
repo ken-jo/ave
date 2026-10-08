@@ -18,12 +18,13 @@
  * `resolve()` returns the same STRING the host would; containment is enforced
  * where the bytes move.
  *
- * The host canonicalises its root with `realpathSync` at construction and the
- * child holds the un-canonicalised `pluginDataDir`, so the two can differ when
- * the data dir is itself reached through a symlink. That difference is visible
+ * The host canonicalises its root ({@link resolvePluginDataRoot}) at construction
+ * and the child holds the un-canonicalised `pluginDataDir`, so the two can differ
+ * when the data dir is reached through a linked ancestor. That difference is visible
  * in the returned string and harmless: the plugin feeds it straight back into a
  * storage call, which re-guards against the canonical root.
  */
+import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { PluginStorageError } from "./public-contract.js";
 
@@ -83,6 +84,58 @@ export function isPathWithin(root: string, target: string): boolean {
  */
 export function isResolvedPathWithin(root: string, target: string): boolean {
   return isPathWithin(resolve(root), resolve(target));
+}
+
+/**
+ * The data root is not the directory the host created: a symlink sits in its
+ * place, or something that is not a directory does.
+ */
+export class PluginDataRootError extends Error {
+  constructor(readonly owner: string, readonly dataDir: string, readonly found: "symlink" | "non-directory") {
+    super(
+      found === "symlink"
+        ? `${owner}: the plugin data root ${dataDir} is a symlink, not the directory the host created; `
+          + "refusing to follow it"
+        : `${owner}: the plugin data root ${dataDir} is not a directory`,
+    );
+    this.name = "PluginDataRootError";
+  }
+}
+
+/**
+ * THE one check on a plugin's data root, and its canonical path.
+ *
+ * Every reader that RESOLVES the root goes through here: storage handles at
+ * construction, `${PLUGIN_DATA}` argv and env tokens, the load-time ensure, and
+ * the owner sandbox root the reviewer and the shell write jail are given
+ * (`resolveOwnerPluginSandboxRoot`). The host code that touches the root
+ * without resolving it does not need to: carrying `data/` across an install
+ * swap, the uninstall removal and the update backup move the directory entry
+ * itself with `rename`/`lstat`-based operations, and a link there is moved or
+ * removed as a link, never followed. The rule:
+ *
+ *  - the root's ANCESTORS are trusted host paths and are resolved, links
+ *    included — macOS `/tmp` is `/private/tmp`, and `AVE_HOME` may sit on
+ *    another volume behind a link;
+ *  - the root ITSELF must be a real directory. A confined plugin writes inside
+ *    it, and on macOS a write grant on a directory reaches the directory's own
+ *    entry, so the plugin could `rmdir` the root and put a link in its place.
+ *    The sandbox denies that as well (`confined-child.ts`); this check is what
+ *    holds if a root is replaced anyway — a handle built afterwards refuses
+ *    instead of following the link out;
+ *  - every component BELOW the root is the caller's to walk with `lstat`.
+ *
+ * A missing root throws the raw `ENOENT`: whether absence is a manifest error,
+ * a refused operation or something to create is the caller's decision.
+ */
+export function resolvePluginDataRoot(owner: string, dataDir: string): string {
+  // `resolve` drops a trailing separator, which would make `lstat` follow a
+  // link in the last component instead of reporting it.
+  const root = resolve(dataDir);
+  const entry = lstatSync(root);
+  if (entry.isSymbolicLink()) throw new PluginDataRootError(owner, root, "symlink");
+  if (!entry.isDirectory()) throw new PluginDataRootError(owner, root, "non-directory");
+  return realpathSync(root);
 }
 
 /**

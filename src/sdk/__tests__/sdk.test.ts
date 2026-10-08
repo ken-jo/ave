@@ -41,7 +41,6 @@ describe("AveClient — read routing + origin propagation", () => {
     await client.getHistory();
     await client.getHistory("session-42");
     await client.listPlugins();
-    await client.listMarketplace();
     await client.getPermissionMode();
     await client.getUsageSummary(30);
     await client.getUsageRange({ dateFrom: "2026-01-01", dateTo: "2026-01-31" });
@@ -51,7 +50,6 @@ describe("AveClient — read routing + origin propagation", () => {
       CHANNELS.chat.getHistory,
       CHANNELS.chat.sessionHistory,
       CHANNELS.plugins.cards,
-      CHANNELS.plugins.marketplaceList,
       PERMISSIONS.getMode,
       CHANNELS.usage.summary,
       CHANNELS.usage.range,

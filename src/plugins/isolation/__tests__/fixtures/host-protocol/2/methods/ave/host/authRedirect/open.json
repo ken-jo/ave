@@ -1,0 +1,16 @@
+{
+  "request": {
+    "id": 32,
+    "jsonrpc": "2.0",
+    "method": "ave/host/authRedirect/open",
+    "params": {}
+  },
+  "response": {
+    "id": 32,
+    "jsonrpc": "2.0",
+    "result": {
+      "handle": "redirect-1",
+      "redirectUri": "http://127.0.0.1:43110/callback"
+    }
+  }
+}
