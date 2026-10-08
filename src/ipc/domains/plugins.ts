@@ -132,6 +132,33 @@ function pluginConfigError(
   return { ok: false, error, message };
 }
 
+/**
+ * The reply message of a config or secret save whose restart did not start.
+ *
+ * When the restart's replacement was refused by the child factory (an
+ * unserved `hostProtocol` or a sibling refusal, decision 52), the runtime
+ * recorded that attempt on the plugin's card while the incumbent kept
+ * serving; the reply carries that refusal rather than a bare result string.
+ * Only a refusal recorded by THIS restart counts — one at or after
+ * `attemptedAt` — so an older refusal never explains a newer failure.
+ */
+function runtimeReloadFailureMessage(
+  pluginRuntime: Pick<IpcDeps["pluginRuntime"], "listPluginCards">,
+  pluginId: string,
+  saved: "config" | "secret",
+  result: string | undefined,
+  attemptedAt: string,
+): string {
+  const prefix = saved === "config" ? "Plugin config saved" : "Plugin secret saved";
+  const refusal = pluginRuntime.listPluginCards()
+    .find((card) => card.id === pluginId || card.installAliases?.includes(pluginId))
+    ?.lastAttemptRefusal;
+  if (result === "failed" && refusal?.attempt === "restart" && refusal.at >= attemptedAt) {
+    return `${prefix} but runtime reload refused: ${refusal.message}`;
+  }
+  return `${prefix} but runtime reload returned ${result ?? "not-loaded"}`;
+}
+
 function asPlainRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, unknown>;
@@ -764,12 +791,13 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       if (pluginRuntime.getPluginManifest(pluginId) !== persisted.manifest) {
         throw new Error(`Plugin instance changed before config reload: ${pluginId}`);
       }
+      const restartAttemptedAt = new Date().toISOString();
       const restartResult = await pluginRuntime.restartPlugin(
         pluginId,
         { skipPreparation: true },
       );
       if (restartResult !== "started") {
-        throw new Error(`Plugin config saved but runtime reload returned ${restartResult ?? "not-loaded"}`);
+        throw new Error(runtimeReloadFailureMessage(pluginRuntime, pluginId, "config", restartResult, restartAttemptedAt));
       }
       return { ok: true as const, config: persisted.savedConfig };
     } catch (err) {
@@ -847,12 +875,13 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       if (pluginRuntime.getPluginManifest(safePluginId) !== persisted.manifest) {
         throw new Error(`Plugin instance changed before secret reload: ${safePluginId}`);
       }
+      const restartAttemptedAt = new Date().toISOString();
       const restartResult = await pluginRuntime.restartPlugin(
         safePluginId,
         { skipPreparation: true },
       );
       if (restartResult !== "started") {
-        throw new Error(`Plugin secret saved but runtime reload returned ${restartResult ?? "not-loaded"}`);
+        throw new Error(runtimeReloadFailureMessage(pluginRuntime, safePluginId, "secret", restartResult, restartAttemptedAt));
       }
       return { ok: true as const };
     } catch (err) {

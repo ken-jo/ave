@@ -19,6 +19,8 @@ import type { PluginPaths } from "../plugin-paths.js";
 import { installReceiptPath, verifyInstallReceipt } from "../plugin-install-receipt.js";
 import { readPluginRegistry, updatePluginRegistry } from "../registry.js";
 import { MissingDependenciesError, MissingPluginDependenciesError } from "../types.js";
+import { MarketplaceError } from "../../marketplace/errors.js";
+import { IncompatibleHostProtocolError } from "../isolation/host-api-wire.js";
 import { pluginConsent, requireConsentEqual, UpdateNeedsReviewError } from "../../marketplace/updates/consent.js";
 import {
   activateAndCommitPreparedPluginForTest,
@@ -480,6 +482,34 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     expect(await entry()).toEqual(before);
     expect(await readFile(installReceiptPath(cacheRoot, "alpha"), "utf8")).toBe(receiptBefore);
     expect(JSON.parse(await readFile(join(pluginsDir, "alpha", "plugin.json"), "utf8"))).toMatchObject({ version: "1.0.0" });
+  });
+
+  it("reports a host-protocol refusal at activation as the update's PACKAGE_INCOMPATIBLE failure", async () => {
+    await install(plan("1.0.0"));
+    const before = await entry();
+    const refusal = new IncompatibleHostProtocolError("alpha", { declared: null });
+    const failure = await install(plan("1.1.0"), undefined, async () => {
+      throw refusal;
+    }).then(() => undefined, (error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(MarketplaceError);
+    expect(failure).toMatchObject({
+      code: "PACKAGE_INCOMPATIBLE",
+      message: refusal.message,
+      detail: { reason: "host_protocol", name: "alpha" },
+    });
+    expect((failure as Error).cause).toBe(refusal);
+    expect(await entry()).toEqual(before);
+    expect(JSON.parse(await readFile(join(pluginsDir, "alpha", "plugin.json"), "utf8"))).toMatchObject({ version: "1.0.0" });
+  });
+
+  it("passes any other activation failure through untranslated", async () => {
+    await install(plan("1.0.0"));
+    const other = new Error("activation refused");
+    const failure = await install(plan("1.1.0"), undefined, async () => {
+      throw other;
+    }).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBe(other);
   });
 
   it("drops the origin when a local build replaces a git install", async () => {
