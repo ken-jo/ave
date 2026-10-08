@@ -2275,7 +2275,27 @@ export class SubAgentRunner {
 
   private unregisterActiveChild(childSessionId: string, lease: symbol): void {
     const active = this.activeChildren.get(childSessionId);
-    if (active?.lease === lease) this.activeChildren.delete(childSessionId);
+    if (active?.lease !== lease) return;
+    this.activeChildren.delete(childSessionId);
+    // The run that held this lease is over, spawn and resume alike, so the
+    // per-run parent-adjudication state it built up (budget, denial streaks)
+    // goes with it. Only the lease holder releases it: a mismatched lease
+    // means a newer run owns the session and is still spending that budget.
+    const gate = this.deps.parentDeps.approvalGate;
+    if (!gate) return;
+    try {
+      gate.forgetChildRun(childSessionId);
+    } catch (err) {
+      // Releasing bookkeeping must not turn a finished run into a failed one;
+      // the maps stay bounded by their own eviction if this ever throws.
+      log.warn(
+        {
+          childSessionId,
+          errorName: err instanceof Error ? err.name : "UnknownError",
+        },
+        "sub-agent parent-adjudication release failed",
+      );
+    }
   }
 
   listRunStatuses(
