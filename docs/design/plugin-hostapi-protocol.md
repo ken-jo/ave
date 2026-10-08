@@ -1815,7 +1815,7 @@ its evidence.
 | Wire (§9.4) | reverse channel becomes JSON-RPC `ave/host/*`; `construct` negotiation; newline framing; identity fields off the wire; schema generator + parity gate | golden-fixture conformance suite passes against the JS reference runtime for all five plugins | **none** — the reference runtime is host-shipped |
 | Lease (protocol `2`, app release X = 0.12.0; decisions 8-26) | credential lease: `bearer()` removed, `ResolveApiKeyResult` union, `HostFetchInit.auth` forwarded to the one factory path, host lease registry with linearised issuance and epoch fencing, audience and scheme binding by normalized source, credential-header clearing per hop including `api-key`, cookie composition, the four closed error codes, raw exposure under `secrets:raw-api-key` with receipt-bound consent, the operation rule that refuses host-provider-key export through `getSecret` and the removal of the official plugins' fallbacks (§4.1); catalog format 2 (§6.4); `sandbox` manifest block through schema, runtime, marketplace authority, descriptor/index, review, receipts and the re-vendored checker, replacing `PLUGIN_ENVELOPE_GRANTS` with the global exclusions preserved (§2.2, §6.3); protocol-aware catalog selection and the pre-activation refusal of undeclared or unserved protocols on both arms (§3.2, §6.4); dispatcher budgets (§7.4); `FormData` serialisation in the reference runtime and the 15 MiB effective STT body (§8); schema regeneration at the final version and the web mirror (§6.1); the protocol schema joins the vendored set (§6.3) | host: the gates of §9.6 per slice, then once at publication; plugins: `meeting` both STT paths in host-key and plugin-key modes through the real child encoder with abort, release and revoke; `local-indexer` startup, warm-up, scan, query outside a scan, caption, key switch and restart through the real broker with the worker holding tokens only and a synthetic marker proving no shared key leaves main on argv, env or any normal frame, lease counts returning to baseline; lease-failure paths of both plugins proven not to reach `getSecret`, a raw resolve or a socket; old `meeting`/`local-indexer` bundles refused before activation on X; the packaged upgrade matrix of §6.4 including downgrade and offline; `lyra-mail`, `orion`, plugin-key STT/indexer and the FFmpeg download unchanged; measured budgets (§7.4) | **announced boundary, not a runtime flag-day**: every code plugin republishes with `requires.hostProtocol: "2"` and `minAppVersion` X; `resolveApiKey` callers (`meeting`, `local-indexer`) migrate to the lease; `local-indexer` manifest carries its four `sandbox` declarations; publication order in §9.5 |
 | Publication (app release 0.13.0; §9.7, decisions 27-47) | TS protocol client vendored with the contract (§6.2, §6.3); validate CLI; `process` entry runtime under a process-confining sandbox, its pinned-artifact admission, and its place in the descriptor and index (no new field: `platforms` and the pinned rungs, §9.7 P4) | validate CLI passes for every tracked official source (`plugins/*/source` after the candidate wave retires `vega-helper`'s, §9.7 E2′), `templates/extension` (the former `templates/plugin`), `orion` and `git` with the app not running; a non-JS smoke plugin (Python: a stock MCP server library plus a JSON-RPC library for the Ave peer channel) passes conformance | none for existing plugins; the schema vendoring, `hostProtocol` in the descriptor/index and the official plugins' declarations moved into Lease (§6.4) |
-| Admission (app release 0.14.0; §9.8, decisions 48-62) | out-of-process by default for every install and every source (decision 3): the routing function has no input, the census `OUT_OF_PROCESS_PLUGIN_IDS` / `isOutOfProcessPlugin` is deleted and the in-process import call leaves main (§9.8 A1); the arm and the confinement (`PluginConfinementReport`: the spawn's wrap outcome, or `not-spawned`) on the Doctor's plugin report; `git`, `hello-world`, `templates/extension`, `orion` onto the path; adversarial fixture (§9.8 A2); `orion` and `git` distributed through one company-git marketplace source, never the official index (decision 48); the official-URL switch when the repository is public (O1); the old server's retirement sequence (P7) | fixture attempts the four escapes (blueprint §9 Stage 9) under the real wrap and is denied on each, with control cases, after being built against the validate CLI; the routing matrix routes every `entry` manifest to `child` for every source kind, rung, install source and platform, and admits or refuses a `process` manifest explicitly; a refused prepared activation or restart reports the refusal with the boot/add audit event and kind and leaves the running generation untouched; `allPluginsAreOutOfProcess`, fed by the registry's `arm`, is true, and a test routes every manifest of the official index to `child`; `git` 0.3.0: no `fetch` call site outside its bound `hostFetch`, its `networkAccess` in the manifest, its cache under a `sandbox.write` `userChosenDirectory` grant and the `~` refusal tested (planned; not started; awaiting owner go-ahead, decision 49) | `git` **prerequisites (decision 22)**: its direct `fetch` for GitLab/GitHub with cookie and token headers (`ave-plugin-draco` at `d71fb95`, `src/hostPlugin.ts:797-806`) and for plugin LLM calls (`:920-932`) move to `hostFetch` with `networkAccess` declarations; its optional external `dataDirectory`, expanded from `~` today (`:824-834`) and written under (`:1140`), becomes a `sandbox.write` `userChosenDirectory` grant on `configKey: "dataDirectory"` that requires a normalised absolute path and refuses `~`. These are not Lease work; the earlier "all mediated" claim is withdrawn (§9.2 item 7). No other plugin changes: a protocol-2 `entry` plugin gets the same `PluginHostApi` in its own process |
+| Admission (app release 0.14.0; §9.8, decisions 48-62) | out-of-process by default for every install and every source (decision 3): the routing function has no input, the census `OUT_OF_PROCESS_PLUGIN_IDS` / `isOutOfProcessPlugin` is deleted and the in-process import call leaves main (§9.8 A1); the arm and the confinement (`PluginConfinementReport`: the spawn's wrap outcome, or `not-spawned`) on the Doctor's plugin report; `git`, `hello-world`, `templates/extension`, `orion` onto the path; adversarial fixture (§9.8 A2); `orion` and `git` distributed through one company-git marketplace source, never the official index (decision 48); the official-URL switch when the repository is public (O1); the old server's retirement sequence (P7) | fixture attempts the four escapes (blueprint §9 Stage 9) under the real wrap and is denied on each, with control cases, after being built against the validate CLI; the routing matrix routes every `entry` manifest to `child` for every source kind, rung, install source and platform, and admits or refuses a `process` manifest explicitly; a refused prepared activation reports as a `PACKAGE_INCOMPATIBLE` (`host_protocol`) update failure and a refused restart through the config-save reply and the card's `lastAttemptRefusal`, both with the boot/add audit event and the running generation untouched; `allPluginsAreOutOfProcess`, fed by the registry's `arm`, is true, and a test routes every manifest of the official index to `child`; `git` 0.3.0: no `fetch` call site outside its bound `hostFetch`, its `networkAccess` in the manifest, its cache under a `sandbox.write` `userChosenDirectory` grant and the `~` refusal tested (planned; not started; awaiting owner go-ahead, decision 49) | `git` **prerequisites (decision 22)**: its direct `fetch` for GitLab/GitHub with cookie and token headers (`ave-plugin-draco` at `d71fb95`, `src/hostPlugin.ts:797-806`) and for plugin LLM calls (`:920-932`) move to `hostFetch` with `networkAccess` declarations; its optional external `dataDirectory`, expanded from `~` today (`:824-834`) and written under (`:1140`), becomes a `sandbox.write` `userChosenDirectory` grant on `configKey: "dataDirectory"` that requires a normalised absolute path and refuses `~`. These are not Lease work; the earlier "all mediated" claim is withdrawn (§9.2 item 7). No other plugin changes: a protocol-2 `entry` plugin gets the same `PluginHostApi` in its own process |
 | Loader removal | remove the retained in-process factory function (`importInProcessPluginFactory`, §9.8 A1) and narrow the arm union | `plugin-loader.ts` exports no in-process factory path; `importPluginFactory`'s only importer is `plugin-child-main.ts`; `PluginLoadArm` has one member; condition and boundary as §9.3 restated by §9.8 (0.16.0 at the latest) | none |
 
 Dual-run period: from the wire step until Admission, both loaders coexist as a
@@ -4561,16 +4561,25 @@ Verified on 2026-10-03, each with the source that proves it.
     routes. That check runs **inside the returned factory**, not at lookup: the catches
     around the lookup (`:4969-4976`, `:6383-6388`) never see it; the runtime invokes the
     factory later (`createPlugin(…)` at `:5021` and `:6422`, under
-    `runPluginFactoryWithTimeout`) and the error reaches the invocation catches at
-    `:5141` and `:6443`, which today clean up and report generically — the prepared
-    activation rethrows (`:5165`) into the apply queue's failure record (`failureView`,
-    `src/marketplace/app/background.ts:137-139`), the restart returns `"failed"` with
-    `RESTART_RELOAD_FAIL reason: "createPlugin_failed"` (`:6454`). Neither stops the
-    running generation: the prepared activation checks `committed` (`:5148`) and
-    discards only the new generation (`:5149-5164`); the restart builds its replacement
-    beside the incumbent (`:6226`) and discards only the replacement (`:6444-6453`),
-    swapping on commit alone (`:6541`). A1 makes those two catches report the refusal as
-    boot and add do — see "What a user sees on upgrade".
+    `runPluginFactoryWithTimeout`, which races the factory's own promise without
+    re-wrapping its rejection, `:1232`, as `runPluginLifecycleHook` does, `:2219`) and
+    the error reaches the invocation catches at `:5141` and `:6443`, which today clean
+    up and report generically. The prepared activation rethrows (`:5165`) through
+    `src/plugins/marketplace.ts:956` — the install flow's one call of the runtime's
+    activation — to the apply queue, whose `failureRecord` stores a non-marketplace
+    error as `{ code: "unavailable", message }` (`src/marketplace/app/background.ts:148-153`)
+    in `~/.ave/marketplaces/updates.json` (`src/marketplace/updates/history.ts:2`,
+    `:54-59`), shown by `UpdatesCard.tsx:609-620` as if the source were unreachable;
+    the restart returns `"failed"` (`RestartPluginResult`, `:1680`) and only logs
+    (`:6454`; `logPluginLifecycle` writes a log and nothing else,
+    `src/plugins/lifecycle-log.ts:140-146`); and the card copies a classification only
+    for `loadStatus === "failed"` (`:7564-7568`), which a running incumbent never is.
+    Neither path stops the running generation: the prepared activation checks
+    `committed` (`:5148`) and discards only the new generation (`:5149-5164`); the
+    restart builds its replacement beside the incumbent (`:6226`), discards only the
+    replacement (`:6444-6453`) and swaps on commit alone (`replaceRuntime`, `:6529`).
+    A1 makes those two catches report the refusal — the transport of each path is in
+    "What a user sees on upgrade".
 13. **The web author page is behind the catalog format.**
     `web/app/docs/marketplace/authors/page.tsx:27-55` documents `marketplace.json`,
     `schemaVersion: 1` and GitHub release assets; decision 24 made `marketplace.2.json`
@@ -4743,43 +4752,116 @@ function through prepared activation or restart (fact 12) is refused by the chil
 factory's check before its child connects (`connectionHostProtocol`,
 `out-of-process-plugin.ts:1057`, called at `:1085`), the same refusal boot and add make
 explicitly. A1 wires the two **invocation** catches (`runtime/index.ts:5141`, `:6443` —
-not the lookup catches, which never see the factory's error) to the same reporting: the
-audit event `plugin_incompatible_host_protocol` with the declared and served versions
-(`:3052-3056`) and the `kind: "incompatible-host-protocol"` classification
-(`:3057-3064`), on the surface that owns the attempt — the apply queue's failure record
-for a prepared activation (`failureView`, `background.ts:137-139`; shown by
-`PluginPreparationStatusPanel`, `PluginConfigTab.tsx:77-107`, and the Doctor already keys
-on that kind, `:449`), the restart result for a restart (`RESTART_RELOAD_FAIL` with
-`reason: "incompatible-host-protocol"`, `:6454`, carried to the card the same way) —
-through one helper that boot and add call too, so the message and the audit fields are
-identical on every path. It does **not** call `markLoadRefused` (`:2972-2988`) on those
-two paths, because that marks the plugin failed while a running generation is still
-serving. The sibling refusals (`ProcessEntryUnconfinedError`, `PluginSandboxGrantError`,
-`:5693-5696`) take the same route. A1 tests both paths with such a manifest for **both**
-properties: the refusal is reported (the audit event and the status surface carry the
-same kind and message as the boot and add refusals), and the incumbent generation is
-preserved (`generationLifecycle.getActive` returns the same generation id, `:5148`; the
-incumbent's tools still answer; the retained generation is removed, `:5159-5163`, and
-the unpublished runtime root is removed, `:6453`). No manifest field, setting or
-environment variable selects the arm.
+not the lookup catches, which never see the factory's error; the rejection arrives
+unwrapped, `:1232`, `:2219`, so the existing `instanceof` classification works) to
+report the refusal **without** `markLoadRefused` (`:2972-2988`, which marks the plugin
+failed while a running generation still serves) and without touching the incumbent.
+Both catches emit the boot/add audit event (`plugin_incompatible_host_protocol` with the
+declared and served versions, `:3052-3056`) and record the attempt in one new
+in-memory map beside `loadFailureInfo` — `lastAttemptRefusal: Map<pluginId, { attempt:
+"update" | "restart"; kind: PluginInstallFailureKind; message: string; at: string }>` —
+cleared where `loadFailureInfo` is cleared (`:3442`, `:3897`, `:5538`, `:5554`) and when
+a later attempt commits (`replaceRuntime`, `:6529`; the prepared commit). The sibling
+refusals (`ProcessEntryUnconfinedError`, `PluginSandboxGrantError`, `:5693-5696`) take
+the same route. What the user sees differs per path, and each transport is existing
+code:
 
-*Files.* `src/plugins/runtime/index.ts` (`:66-69`, `:1174-1215`, `:1735`, `:1799-1802`,
-`:2951`, `:3047-3065`, `:3602`, `:4056`, `:4962`, `:5141-5165`, `:5236-5310`, `:5624`,
-`:5737`, `:6374-6380`, `:6443-6457`, `:7561-7575`); `src/plugins/runtime/types.ts:30` (`LoadedPlugin`,
+*Prepared activation (an update).* The error propagates (`:5165`) to
+`src/plugins/marketplace.ts:956`, the install flow's one call of the runtime's
+activation, which A1 makes translate `IncompatibleHostProtocolError`
+(`host-api-wire.ts:87`) into the **existing** `MarketplaceError("PACKAGE_INCOMPATIBLE",
+<the same message>, { reason: "host_protocol", name })` — the code exists
+(`src/marketplace/errors.ts:39`), its `host_protocol` detail exists (`:304`; the catalog
+already produces it for an unserved version, `service.ts:1648`, `aggregate.ts:87`), and
+`MarketplaceError` is already imported there (`marketplace.ts:42`). The apply queue's
+`failureRecord` (`background.ts:148-151`) then stores `{ code: "PACKAGE_INCOMPATIBLE",
+detail, message, at }` as the update's `lastError` in `~/.ave/marketplaces/updates.json`
+(`history.ts:54-59`: `version: 1`, an exact key list at `:146`, and **no key is added**,
+so nothing changes for an older or newer reader), `failureView` (`:137-139`) projects it
+into `PackageUpdateView.failure` (`src/shared/git-marketplace.ts:560`), and
+`UpdatesCard.tsx:609-620` shows the update as failed with its attempts and, behind
+*details*, the existing "incompatible host protocol" label (`labels.ts:612-618`,
+`gitMarketplace.error.incompatible.hostProtocol`) and the message. Today the same error
+arrives as `code: "unavailable"` (`:152`), which reads as the source being unreachable;
+the translation is what makes that surface truthful. No new error code, no new IPC
+channel, no persisted-shape change.
+
+*Restart.* `restartPlugin` keeps returning `"failed"` (`RestartPluginResult`, `:1680`;
+its callers compare the string and stay as they are: `src/ipc/domains/plugins.ts:771`,
+`:854`, `src/boot/steps/alerts-setup.ts:60`, `marketplace-setup.ts:101`,
+`plugin-runtime/host-api-factory.ts:705`, `refresh-active-llm-wildcard.ts:120`). The
+user-initiated restarts are the config and secret saves (`src/ipc/domains/plugins.ts:767-776`,
+`:850-859`), which already answer a `"failed"` result with the existing
+`plugin-config-save-failed` / `plugin-config-secret-save-failed` reply whose message is
+built from the result string; A1 makes that message carry the recorded refusal
+("runtime reload refused: <message>"), read from the plugin's card (`listPluginCards`,
+`:7521`, the cards channel's own producer, `src/ipc/handlers/plugins.ts:189`) — no new
+channel, no new error code. Background restarts (`alerts-setup.ts:59-61`,
+`marketplace-setup.ts:100-102`, `refresh-active-llm-wildcard.ts:120-122`; the plugin's
+own `config.set` reload, `host-api-factory.ts:701-713`, which returns the message to the
+plugin) keep their logs; for them the audit event is the record and the card field
+below is what a user can see.
+
+*The card.* `PluginCard` (`runtime/index.ts:106`; produced by `listPluginCards`,
+`:7521`, the projection at `:7561-7575`) gains one optional field, `lastAttemptRefusal`,
+copied from the map for a plugin whose `loadStatus` is `"loaded"` — the failed-only
+copy at `:7564-7568` is unchanged — and the renderer's `PluginCardSummary`
+(`src/ui/renderer/types.ts:148`) gains the same optional field; the loaded-plugin row
+(`PluginConfigTab.tsx:699`) shows one muted line, "last update refused: <message>" or
+"last restart refused: <message>" (i18n keys in `en.ts` and `ko.ts`), and keeps its
+loaded state. **What the Doctor shows for a running plugin whose update was refused:
+nothing failed** — the Doctor panel renders only for `loadStatus === "failed"`
+(`PluginConfigTab.tsx:855`) and the protocol update-path lookup only for a failed card
+(`:449`), so the plugin reads as loaded at its running version with that one line, and
+the Updates card carries the failed update. Consumers of the widened card:
+`listPluginCards` and its two callers (`src/ipc/handlers/plugins.ts:189`,
+`src/ipc/domains/tour.ts:88`), `PluginCardSummary` and `PluginConfigTab.tsx`; the field
+is not persisted. Lock suites — `channel-inventory`, `preload-shape`,
+`format-ipc-error-coverage`, `domain-exports`, `settings-section-anchors` and
+`settings-store` — are **unchanged**: no channel, no preload method, no error code, no
+export and no setting is added.
+
+A1 tests both paths with such a manifest for **both** properties. Prepared activation:
+`activatePreparedArtifact` rejects with `IncompatibleHostProtocolError`; the audit
+callback receives the same event and fields as boot and add; the install flow surfaces
+`PACKAGE_INCOMPATIBLE` with `reason: "host_protocol"` and the same message (a test on
+the activation step of `src/plugins/marketplace.ts`, and the apply-queue test asserting
+the stored `lastError`); the card shows `lastAttemptRefusal` with `loadStatus:
+"loaded"`; `generationLifecycle.getActive` returns the same generation id (`:5148`), the
+incumbent's tools still answer and the retained generation is removed (`:5159-5163`) —
+the shape `capability-active-generation.test.ts:1195` already uses. Restart:
+`restartPlugin` resolves `"failed"` and the incumbent's tool still answers (as
+`:1124-1125` already asserts); the audit event; the card field; the unpublished runtime
+root removed (`:6453`); and the config-save reply carrying the message (a handler test
+beside `src/ipc/domains/__tests__/plugins-set-enabled.test.ts`). No manifest field,
+setting or environment variable selects the arm.
+
+*Files.* `src/plugins/runtime/index.ts` (`:66-69`, `:106`, `:1174-1215`, `:1735`,
+`:1799-1802`, `:2951`, `:3047-3065`, `:3602`, `:4056`, `:4962`, `:5141-5165`,
+`:5236-5310`, `:5624`, `:5737`, `:6374-6380`, `:6443-6457`, `:6529`, `:7521`,
+`:7561-7575`); `src/plugins/runtime/types.ts:30` (`LoadedPlugin`,
 `PluginConfinementReport`); `src/plugins/runtime/plugin-loader.ts`;
 `src/plugins/isolation/out-of-process-plugins.ts`;
 `src/plugins/isolation/out-of-process-plugin.ts` (`:194-199`, `:408-427`, `:827` passing
 the spawn result's `confinement` through); `src/permissions/confined-child.ts:135`
-(`SpawnConfinement`, the wrap outcome);
-`src/ui/renderer/tabs/PluginConfigTab.tsx:855` and the card DTO it reads;
-`src/i18n/messages/{en,ko}.ts`; `knip` baseline.
+(`SpawnConfinement`, the wrap outcome); `src/plugins/marketplace.ts:956` (the
+`PACKAGE_INCOMPATIBLE` translation; `MarketplaceError` imported at `:42`);
+`src/ipc/domains/plugins.ts:767-776`, `:850-859` (the reply message);
+`src/ui/renderer/types.ts:148` (`PluginCardSummary`);
+`src/ui/renderer/tabs/PluginConfigTab.tsx:699` (the loaded row's line) and `:855` (the
+Doctor panel), with the card DTO they read; `src/i18n/messages/{en,ko}.ts`; `knip`
+baseline. Cited and unchanged: `src/marketplace/app/background.ts:137-153`,
+`src/marketplace/updates/history.ts:54-59`, `:146`, `src/marketplace/errors.ts:39`,
+`:304`, `src/ui/renderer/tabs/git-marketplace/UpdatesCard.tsx:609-620`, `labels.ts:612-618`.
 
 *Tests.* The four test files named above, rewritten as described, with the routing
 matrix in its three kinds; `PluginConfigTab` tests for the two card fields in the loaded
 and the failed state; prepared-activation and restart cases with an undeclared
 `hostProtocol`, refused by the factory's check at invocation — asserting the audit
-event, the path's status surface and the untouched incumbent generation ("What a user
-sees on upgrade"); the `~` recovery test. Two suites that
+event, the surface named in "What a user sees on upgrade" (the `PACKAGE_INCOMPATIBLE` /
+`host_protocol` update failure; the config-save reply and the card's
+`lastAttemptRefusal`) with the same message as boot and add, the unchanged incumbent
+generation id and its still-answering tools; the `~` recovery test. Two suites that
 today share one heap with the plugin they load migrate with A1, because the plugin code
 now runs in a child: `capability-active-generation.test.ts` parks deferred gates on the
 host's `globalThis` and reads them from dynamically imported plugin code (`:505-513`,
@@ -4878,10 +4960,12 @@ probes run from the packaged runtime's Node — the packaged executable with
 same four shapes as row 3; and **the packaged control is the packaged application's own
 main process**: launched through the Playwright driver the repository already uses for
 an installed build (`scripts/a2a-p4-5-live/ui-driver.mjs:40-41`,
-`electron.launch({ executablePath, … })` with `buildPackagedUiEnvironment()`), with the
-profile isolation and platform flags the launchers already apply (`--user-data-dir` and
-a temporary `AVE_HOME`, `test/e2e/ui/seeded-electron.ts:245-259`; the Windows
-no-sandbox environment and the deleted `ELECTRON_RUN_AS_NODE`,
+`electron.launch({ executablePath, … })` with `buildPackagedUiEnvironment()` — an
+environment allow-list that leaves `ELECTRON_RUN_AS_NODE` out and establishes no
+profile of its own, `scripts/a2a-p4-5-live/ui-driver-environment.mjs:11-15`), so the A2
+launch adds the profile isolation and platform flags the other launchers apply
+(`--user-data-dir` and a temporary `AVE_HOME`, `test/e2e/ui/seeded-electron.ts:245-259`;
+the Windows no-sandbox environment and the deleted `ELECTRON_RUN_AS_NODE`,
 `scripts/lib/electron-launch-options.mjs:77-87`), and asked in the main process —
 `app.evaluate`, the form `seeded-electron.ts:318` already uses — for `typeof
 BrowserWindow`, `typeof session.defaultSession` and `typeof ipcMain`: `"function"`,
@@ -4891,8 +4975,14 @@ starts the packaged application (`package.json:36`, `main` inside `app.asar`,
 development-helper result is never packaged evidence**: row 3's helper measures the
 development executable, the packaged control is this evaluation, and each is recorded
 per platform. The attach needs the packaged binary to accept Playwright's inspector
-flags, which it does: no Electron fuse is flipped in the build (`git grep -i fuses` at
-`c4c9689d2` finds none) and the live driver already attaches to an installed build.
+flags, which it does: no Electron fuse is flipped in the build — `flipFuses`,
+`FuseV1Options`, `FuseVersion`, `electronFuses`, `@electron/fuses` and `fuses` searched
+across `package.json` (the `build` block at `:228`; `afterPack` at `:235` is
+`scripts/electron-after-pack.cjs`, which prunes binaries and names no fuse), `scripts/`,
+`.github/` and `bun.lock` at `c4c9689d2` hit only the transitive lockfile entries
+(`bun.lock:240`, `:1072`, `:2676`, `:2808`: `app-builder-lib`'s own dependency), no
+configuration and no invocation — and the live driver already attaches to an installed
+build.
 Measured so far: the development helper on macOS (2026-10-08); every packaged value and
 the Linux and Windows helpers are UNVERIFIED until the first run, and a control that
 cannot be launched fails the gate rather than passing it.
@@ -5441,7 +5531,7 @@ What Ave should not adopt, and why:
 | 49 | **Plan only for the plugin side (owner, 2026-10-03).** Slices G0, G1, C1, C2 and C3 are specified here and marked "planned; not started; awaiting owner go-ahead"; this round edits, branches or pushes nothing in `ave-plugin-draco`, the `orion` repository or any company-git repository. The host slices (A1, A2, O1, O2, R1, the code half of P7) are not held. | The owner's instruction; the host work has no dependency on the plugin work (fact 12 of §9.8). |
 | 50 | **Routing has no input.** `importPluginFactoryForLifecycle` routes every `entry` manifest to `createOutOfProcessPluginFactory` unconditionally; `OUT_OF_PROCESS_PLUGIN_IDS` and `isOutOfProcessPlugin` are deleted at Admission with their pins; the in-process import becomes `importInProcessPluginFactory` in `plugin-loader.ts` with no production caller, carried in the knip baseline with the owner (decision 5) and the removal condition (§9.3), and Loader removal deletes it; `bustCache` leaves the lifecycle method. | A host-owned plugin-id table is a plugin-specific branch once the arm it selects is the only arm (AGENTS.md); keeping the in-process factory as dead-but-tested code for two releases is the deprecation shape §9.3 already defines, and a routing reversal is then a reviewed code change, never a runtime fallback. Rejected: an empty exclusion set as a dormant routing input (a branch no test can reach); deleting the arm in the same slice (it would collapse §9.3's two-release observation into nothing). |
 | 51 | **The removal predicate is fed by the registry.** `LoadedPlugin` records `arm: PluginLoadArm` from the routing function's return; `allPluginsAreOutOfProcess(loaded)` is true when every arm is `"child"`; the Doctor's plugin entry shows `arm` and `confinement` (`PluginConfinementReport`: the spawn's `SpawnConfinement`, or `"not-spawned"` for a construction that failed before a child existed); the "official index" clause of §9.1 is a test that routes every manifest of the committed official index to `child`. | The old predicate was a lookup in the census it existed to retire; a predicate over what actually loaded is what makes §9.3's condition checkable without fleet telemetry, and the Doctor fields are what decision 3 promised the user. |
-| 52 | **No migration shim for installed plugins.** On 0.14.0 every installed plugin loads as a child — every protocol-2 `entry` plugin outside the census (third-party, folder and direct installs) **changes arm**, and the release notes say so (R1); one whose child cannot be spawned or wrapped fails the load with the factory's existing error and the Doctor's `arm`/`confinement`, and is not retried in process; one that used an ambient capability fails at that call; the fix is the plugin's next version and the status's existing update path. A manifest with no served `hostProtocol` that reaches the routing function through prepared activation or restart is refused by the child factory's check inside the invoked factory; A1 reports it from the invocation catches (`runtime/index.ts:5141`, `:6443`) with the boot/add audit event and kind, never through `markLoadRefused`, and tests both the reporting and the untouched incumbent generation on both paths. No manifest field, setting or environment variable selects the arm. | Protocol 2 proves compatibility of the contract, not independence from ambient capabilities, so the earlier "no running plugin changes arm" claim was too strong (fact 12); decision 9 still refuses every pre-protocol-2 plugin before activation, and boot and add refuse an unserved version explicitly, but prepared activation and restart do not (the lookups at `runtime/index.ts:4962` and `:6374`; the check runs when the factory is invoked, `:5021` and `:6422`), and the factory's check (`out-of-process-plugin.ts:1057`) is the one gate every path shares after A1; a refusal that marked a running plugin failed would misreport the incumbent, so the report goes to the attempt's own surface. A per-plugin opt-out would be the routing input decision 50 removes. |
+| 52 | **No migration shim for installed plugins.** On 0.14.0 every installed plugin loads as a child — every protocol-2 `entry` plugin outside the census (third-party, folder and direct installs) **changes arm**, and the release notes say so (R1); one whose child cannot be spawned or wrapped fails the load with the factory's existing error and the Doctor's `arm`/`confinement`, and is not retried in process; one that used an ambient capability fails at that call; the fix is the plugin's next version and the status's existing update path. A manifest with no served `hostProtocol` that reaches the routing function through prepared activation or restart is refused by the child factory's check inside the invoked factory; A1 reports it from the invocation catches (`runtime/index.ts:5141`, `:6443`) with the boot/add audit event — an update's refusal reaches the Updates card as the existing `PACKAGE_INCOMPATIBLE` / `host_protocol` failure (translated at `src/plugins/marketplace.ts:956`), a restart's reaches the config-save reply and the card's optional `lastAttemptRefusal` — never through `markLoadRefused`, and tests both the reporting and the untouched incumbent generation on both paths. No manifest field, setting or environment variable selects the arm. | Protocol 2 proves compatibility of the contract, not independence from ambient capabilities, so the earlier "no running plugin changes arm" claim was too strong (fact 12); decision 9 still refuses every pre-protocol-2 plugin before activation, and boot and add refuse an unserved version explicitly, but prepared activation and restart do not (the lookups at `runtime/index.ts:4962` and `:6374`; the check runs when the factory is invoked, `:5021` and `:6422`), and the factory's check (`out-of-process-plugin.ts:1057`) is the one gate every path shares after A1; a refusal that marked a running plugin failed would misreport the incumbent, so the report goes to the attempt's own surface. A per-plugin opt-out would be the routing input decision 50 removes. |
 | 53 | **The adversarial fixture** lives at `src/plugins/isolation/__tests__/fixtures/adversarial/`, attempts the four escapes through `escape_secrets`, `escape_network`, `escape_electron`, `escape_patch`, asserts only where the harness claims confinement (`expectConfined`), is built first against the validate CLI (which asserts "no usable main-process API" by shape and the stdout discipline, and records the host-call probes) and then gated under the real wrap through the production factory, with the production secret gate, audit sink and `hostFetch` guard, on macOS, Linux and Windows with control cases that must pass first. The Electron claim is "no usable main-process API", never "no version" or "import throws" (the child is `process.execPath` under `ELECTRON_RUN_AS_NODE=1`); its positive control is a separate full Electron main process (`control-electron-main.cjs`, the same binary with `ELECTRON_RUN_AS_NODE` removed; under `xvfb-run` on Linux CI), never the test process, which runs as Node itself; the planted `electron` entry lives outside bare-specifier resolution (`vendored-electron/`, as the confined suite does) and the fixture is staged outside the checkout; the packaged gate's control is the packaged application's main process, launched through the installed-build Playwright driver (`ui-driver.mjs:40-41`) and evaluated with `app.evaluate`, because a packaged executable without `ELECTRON_RUN_AS_NODE` starts the application, not a helper — a development-helper result is never packaged evidence; the secret claim is `null`, no bytes, a denial audit under the spawn-bound identity and an own-namespace positive control (production `getSecret` returns `null` on denial, `host-api-factory.ts:984-987`). Escapes 1–2 are added to the Python smoke. | The validator never confines (decision 30), so a filesystem or socket claim there would be false; the wrap suite is where the host's claim is made, and a probe that cannot be shown live is no evidence (a failed control fails the file). The first draft asserted a wire error code for a denial and an undefined Electron version, both contradicted by the production launcher and the existing measurements (`confined-plugin-child.test.ts:1487-1515`); the second took the test process as the Electron control, which runs under `ELECTRON_RUN_AS_NODE=1` (`run-vitest-under-electron.mjs:154`) and so measures the trap, not the API, and put the planted package where a bare `require` would resolve it. |
 | 54 | **`git` 0.3.0 prerequisites.** Egress through a once-bound `hostFetch` that throws when absent (no global `fetch`), caller `Cookie`/`Authorization` headers kept (no lease, §4.1.4), `authCookiePartition` not adopted (two partitions), a static `networkAccess.allowedDomains` of the company GitLab host, `github.com`, `api.github.com`, `api.openai.com`, `openai.azure.com` with `allowPrivateNetworks: true`, and a configured LLM endpoint outside it refused, never widened from config; `dataDirectory` as a `sandbox.write` `userChosenDirectory` grant, `~` refused by the plugin's tools with one sentence where plugin code runs and by the host's resolver at spawn with the host's generic guidance ("enter an approved absolute directory, or clear the setting", added by A1 for every key), the stored value rewritten by nobody, recovery tested; `requires: { minAppVersion: "0.12.0", hostProtocol: "2" }`; retired manifest fields dropped; published only after these, so #27 (0.2.2) is superseded. | The allow-list is manifest authority the marketplace pins and reviews (decision 11), so a config-driven widening would be authority the review never saw; the host's resolver already refuses `~` (`out-of-process-plugin.ts:408-427`) but names no way out, and a host-side rewrite of one plugin's setting would be a plugin-specific branch; a plugin that cannot run cannot migrate its own value, so the host's generic sentence names the setting and both acceptable actions. |
 | 55 | **The company source** is one repository on the company GitLab, with `marketplace.2.json`, `plugins/<name>/ave-package.json` (`schemaVersion: 2`, `hostProtocol: "2"`, `platforms`, `authority` copied from the released `plugin.json`, `artifact.release: { url, sha256 }` pointing at the plugin project's generic package file), `plugins/<name>/source.json` for the plugin repository's tag and commit (provenance, read by nothing), `policy/revocations.json` as `{"schemaVersion":1,"revocations":[]}`, `tools/pin.mjs` and `tools/index.mjs` with the official generator's rule — **`versions[].commit` is a marketplace-repository commit containing the descriptor**, so a pin MR is two commits (descriptor, then index) merged with a merge commit — and the vendored ave checker built with the official recipe and committed; no `tree` or `archive` rung. | `marketplace.2.json` is the only index a 0.12.0+ app reads (decision 24; `snapshot.ts:85`); the installer reads the descriptor at `versions[].commit` **in the source repository** before any rung (`descriptor.ts:97-104`, `plugin-ladder.ts:380-382`), so a plugin-repository commit there would block every install; a `{ url, sha256 }` pin is what the ladder accepts for a non-GitHub host (`plugin-ladder.ts:299-300`); an empty array fails the revocations schema (`revocations.schema.json:6-11`); release-asset-only matches the official rule and keeps `dist/` out of git. |
