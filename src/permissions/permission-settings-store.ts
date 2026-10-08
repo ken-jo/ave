@@ -369,7 +369,7 @@ const PARENT_ADJUDICATION_MAX_VERDICTS: ReadonlySet<ParentAdjudicationMaxVerdict
 const PARENT_ADJUDICATION_BACKGROUND_ESCALATIONS: ReadonlySet<ParentAdjudicationBackgroundEscalation> =
   new Set(["deferred", "modal"]);
 
-const PARENT_ADJUDICATION_MODEL_SOURCES: ReadonlySet<ParentAdjudicationModelSource> =
+export const PARENT_ADJUDICATION_MODEL_SOURCES: ReadonlySet<ParentAdjudicationModelSource> =
   new Set(["reviewer", "parent-session"]);
 
 const DEFAULT_FILE: PermissionSettingsFile = {

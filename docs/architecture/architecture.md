@@ -1114,10 +1114,15 @@ Three settings move or widen the chain, each conservative by default
   assessed nothing is not a ceiling. Cost note: it bills the (usually larger)
   chat model once per adjudicated call, bounded by `maxPerChildRun`.
 
-One known gap remains, recorded so it is not mistaken for design: a child run's
-budget counter is never released when the run ends. The origin conversation id
-handed to the adjudicator is no longer dead — it is what `"parent-session"`
-resolves its target from.
+Tier-2 state is per run. When a child run ends — spawn or resume, completed,
+failed or aborted — the runner releases its active-child lease and, as the
+lease holder, calls `ApprovalGate.forgetChildRun`, which drops that run's
+consecutive-denial streaks and tells every adjudicator the policy can name to
+release its `maxPerChildRun` counter. A resume therefore starts from a fresh
+budget, as the setting's name promises; the bounded LRU maps remain only as a
+backstop. The deferred-escalation coalescing map is not cleared, because its
+entries track queue rows that outlive the run. The origin conversation id
+handed to the adjudicator is what `"parent-session"` resolves its target from.
 
 The chain end to end — tier-1 auto-approve, tier-2 allow, tier-2 deny, tier-3
 escalate — is regression-locked by
