@@ -67,8 +67,15 @@ function scratchTestTmp(): string {
   return join(home, ".ave", "test-tmp");
 }
 
-function project(isolate = true, pool = "forks"): TestProject {
-  return { name: "node", config: { isolate, pool } } as unknown as TestProject;
+/** What setup handed each project through `provide`, by key. */
+type Provided = Map<string, unknown>;
+
+function project(isolate = true, pool = "forks", provided: Provided = new Map()): TestProject {
+  return {
+    name: "node",
+    config: { isolate, pool },
+    provide: (key: string, value: unknown) => { provided.set(key, value); },
+  } as unknown as TestProject;
 }
 
 function runDirs(testTmp: string): string[] {
@@ -121,9 +128,16 @@ const removeTree = async (path: string) => {
 describe("vitest global setup", () => {
   it("makes one set of owned run directories for every project in the run and removes it after the last", async () => {
     const testTmp = scratchTestTmp();
-    const teardownNode = await setup(project());
-    const teardownJsdom = await setup(project());
+    const nodeProvided: Provided = new Map();
+    const jsdomProvided: Provided = new Map();
+    const teardownNode = await setup(project(true, "forks", nodeProvided));
+    const teardownJsdom = await setup(project(true, "forks", jsdomProvided));
     expect(runDirs(testTmp)).toHaveLength(2);
+    // Both projects run the one plugin child bundle this run built.
+    const childEntry = nodeProvided.get("pluginChildEntryPath");
+    expect(typeof childEntry).toBe("string");
+    expect(existsSync(childEntry as string)).toBe(true);
+    expect(jsdomProvided.get("pluginChildEntryPath")).toBe(childEntry);
     expect(process.env.AVE_HOME).toBe(process.env.AVE_TEST_RUN_HOME);
     expect(process.env.AVE_TEST_RUN_HOME!.startsWith(join(testTmp, "h-"))).toBe(true);
     for (const name of runDirs(testTmp)) {
@@ -133,8 +147,10 @@ describe("vitest global setup", () => {
 
     await teardownNode();
     expect(runDirs(testTmp)).toHaveLength(2);
+    expect(existsSync(childEntry as string)).toBe(true);
     await teardownJsdom();
     expect(runDirs(testTmp)).toEqual([]);
+    expect(existsSync(childEntry as string)).toBe(false);
   });
 
   it("removes what a killed run left long ago before making its own, and keeps a live run's", async () => {
