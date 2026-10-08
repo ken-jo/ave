@@ -1,6 +1,5 @@
 import { useEffect, useMemo } from "react";
 import type { getApi } from "../api-client.js";
-import { useInstallingPlugins } from "./use-installing-plugins.js";
 import type { usePluginMarketplace } from "./use-plugin-marketplace.js";
 
 type Api = ReturnType<typeof getApi>;
@@ -11,16 +10,13 @@ export interface UsePluginLifecycleRefreshDeps {
   pluginCards: PluginMarketplace["pluginCards"];
   refreshViews: PluginMarketplace["refreshViews"];
   refreshCards: PluginMarketplace["refreshCards"];
-  refreshMarketplace: PluginMarketplace["refreshMarketplace"];
 }
 
 /**
- * Plugin/agent/skill lifecycle → catalog refresh, extracted verbatim from
- * App.tsx. Owns the in-flight install tracker (drives the grid overlay spinner)
- * and every IPC subscription that keeps plugin views / cards / marketplace
- * entries fresh without an app restart: install/uninstall/runtime-updated/
- * install-progress broadcasts, the preparing-plugin poll interval, and the
- * agent/skill install-result listeners. All effects are independent IPC
+ * Plugin lifecycle → view/card refresh, extracted verbatim from App.tsx. Owns
+ * every IPC subscription that keeps plugin views and cards fresh without an
+ * app restart: install/uninstall/runtime-updated broadcasts and the
+ * preparing-plugin poll interval. All effects are independent IPC
  * subscriptions with no cross-effect state; each returns void.
  */
 export function usePluginLifecycleRefresh({
@@ -28,30 +24,22 @@ export function usePluginLifecycleRefresh({
   pluginCards,
   refreshViews,
   refreshCards,
-  refreshMarketplace,
 }: UsePluginLifecycleRefreshDeps): void {
-  // Track in-flight plugin installs for the grid overlay spinner.
-  const installingPlugins = useInstallingPlugins(api);
+  const hasPreparingPlugin = useMemo(
+    () => pluginCards.some((card) => card.loadStatus === "preparing"),
+    [pluginCards],
+  );
 
-  const hasPreparingPlugin = useMemo(() => {
-    if (pluginCards.some((card) => card.loadStatus === "preparing")) return true;
-    return Array.from(installingPlugins.values()).some((phase) => phase === "preparing");
-  }, [installingPlugins, pluginCards]);
-
-  // Refresh plugin views + marketplace catalog when a ave:// deep-link
-  // install completes in the main process, so new plugin entries appear
-  // (and uninstalled ones disappear) without requiring an app restart.
+  // Refresh plugin views when an install completes in the main process, so
+  // new plugin entries appear without requiring an app restart.
   useEffect(() => {
     if (typeof api.onPluginInstallResult !== "function") return;
     const unsubscribe = api.onPluginInstallResult(({ success }) => {
-      if (success) {
-        void refreshViews();
-        void refreshMarketplace();
-      }
+      if (success) void refreshViews();
       void refreshCards();
     });
     return unsubscribe;
-  }, [api, refreshViews, refreshMarketplace, refreshCards]);
+  }, [api, refreshViews, refreshCards]);
 
   useEffect(() => {
     if (typeof api.onBootstrapStatus !== "function") return;
@@ -59,26 +47,15 @@ export function usePluginLifecycleRefresh({
       if (status.phase === "start") return;
       void refreshCards();
       void refreshViews();
-      void refreshMarketplace();
     });
     return unsubscribe;
-  }, [api, refreshViews, refreshCards, refreshMarketplace]);
+  }, [api, refreshViews, refreshCards]);
 
   useEffect(() => {
     if (typeof api.onPluginRuntimeUpdated !== "function") return;
     const unsubscribe = api.onPluginRuntimeUpdated(() => {
       void refreshViews();
       void refreshCards();
-    });
-    return unsubscribe;
-  }, [api, refreshViews, refreshCards]);
-
-  useEffect(() => {
-    if (typeof api.onPluginInstallProgress !== "function") return;
-    const unsubscribe = api.onPluginInstallProgress((payload) => {
-      if (payload.phase !== "preparing") return;
-      void refreshCards();
-      void refreshViews();
     });
     return unsubscribe;
   }, [api, refreshViews, refreshCards]);
@@ -103,21 +80,8 @@ export function usePluginLifecycleRefresh({
     const unsubscribe = api.onPluginUninstallResult(({ success }) => {
       if (!success) return;
       void refreshViews();
-      void refreshMarketplace();
       void refreshCards();
     });
     return unsubscribe;
-  }, [api, refreshViews, refreshMarketplace, refreshCards]);
-
-  useEffect(() => {
-    const unsubs = [
-      api.onAgentInstallResult?.(({ success }) => { if (success) void refreshMarketplace(); }),
-      api.onAgentUninstallResult?.(({ success }) => { if (success) void refreshMarketplace(); }),
-      api.onSkillInstallResult?.(({ success }) => { if (success) void refreshMarketplace(); }),
-      api.onSkillUninstallResult?.(({ success }) => { if (success) void refreshMarketplace(); }),
-    ].filter((unsubscribe): unsubscribe is () => void => typeof unsubscribe === "function");
-    return () => {
-      for (const unsubscribe of unsubs) unsubscribe();
-    };
-  }, [api, refreshMarketplace]);
+  }, [api, refreshViews, refreshCards]);
 }

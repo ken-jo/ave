@@ -69,7 +69,7 @@ function makeDeps(options: { initialFlow: WebViewPreferredFlow }) {
       getAll: vi.fn(() => ({ llm, webView: { preferredFlow: flow } })),
       get: vi.fn((key: string) => {
         if (key === "llm") return llm;
-        if (key === "marketplace") return { cloudAllowPrivateNetwork: false };
+        if (key === "marketplace") return {};
         if (key === "shortcuts") return { toggleWindow: null, enabled: false };
         if (key === "system") return { launchAtStartup: false, launchMinimized: false };
         if (key === "webView") return { preferredFlow: flow };
@@ -150,5 +150,19 @@ describe("settings.update and the host public preference signal", () => {
     } finally {
       stop();
     }
+  });
+});
+
+describe("settings.update and the git marketplace", () => {
+  it("tells the marketplace a save wrote `marketplace`, and not a save that did not", async () => {
+    const marketplaceSettingsChanged = vi.fn();
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(makeDeps({ initialFlow: "in-app" }) as never, { marketplaceSettingsChanged });
+
+    await invoke("ave:settings:update", { chat: { fontScale: 1.1 } });
+    expect(marketplaceSettingsChanged).not.toHaveBeenCalled();
+
+    await invoke("ave:settings:update", { marketplace: { updateCheckEnabled: false } });
+    expect(marketplaceSettingsChanged).toHaveBeenCalledOnce();
   });
 });

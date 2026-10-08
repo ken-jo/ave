@@ -1,5 +1,10 @@
 # Ave Agent Hub Plugin — Implementation Plan
 
+> **대체된 작업 계획입니다.** 아래 SDK 이벤트 카탈로그 등록과 저장소 간 배포
+> 지시는 당시 계획의 기록이며 현재 구현 지침이 아닙니다. 플러그인 계약은 앱
+> 릴리스 태그에서 복사하며 호환성은 `requires.minAppVersion`으로 선언합니다.
+> 현재 계약은 [마켓플레이스 설계 §5.6](../../design/multi-source-git-marketplace.md#56-plugin-contract-for-authors)을 따릅니다.
+
 > **Scope.** v3 mockup (`ave/docs/design/agent-hub-work-board-v3.html`) 합의 결과를 production plugin 으로 구현. 기존 `ave-plugin-hydra` repo 를 활용하고, host 측 §8 ApprovalGate 와 lyra-mail plugin 의 calendar method 를 재사용한다. 본 계획은 9 Lane × 4 Wave 로 worker 격리 dispatch 를 가정한다.
 > **Status.** Plan only. 본 문서가 구현 코드를 포함하지 않는다. 각 lane 의 dispatch prompt 까지가 산출물.
 > **매니페스트 포맷 (removed in #885 Phase R):** 본 계획의 `tools[]` / `uiActions` / `toolSchemas` manifest 스니펫은 pre-v6 (legacy) 포맷이다. v6 에서는 pure `Tool[]` + `_meta.ui.visibility` 로 대체됐다 — 실제 구현 시 [`plugin-contract-v6-design.md`](../architecture/plugin-contract-v6-design.md) 를 따를 것.

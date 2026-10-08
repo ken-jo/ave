@@ -20,7 +20,10 @@ import type { ActiveRolePrompt } from "../../data/role-presets.js";
 import type { ConversationLoop, TurnResult } from "../../engine/conversation-loop.js";
 import type { UserContentPart } from "../../engine/llm/types.js";
 import { createDlpSafeUuid } from "../../shared/dlp-safe-id.js";
-import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
+import {
+  authorizationRequiredStateForOutput,
+  type UnattendedTurnAuthority,
+} from "../../shared/authorization-required.js";
 import { parseStagedEnvelope, stagedOriginForInput } from "../../shared/staged-origins.js";
 import {
   countResourceAttachmentFences,
@@ -66,6 +69,8 @@ export async function runStreamedTurn(
     approvalReasonPrefix?: string;
     /** Host-owned remote-controller authority, never parsed from chat input. */
     remoteControllerAuthority?: RemoteControllerAuthority;
+    /** Host-issued unattended lane for a windowless one-shot turn; never from chat input. */
+    unattendedAuthority?: UnattendedTurnAuthority;
     /** Carried by the replay paths so a folded turn keeps the row the user saw. */
     displayText?: string;
     /**
@@ -325,6 +330,9 @@ export async function runStreamedTurn(
         : {}),
       ...(options.remoteControllerAuthority
         ? { remoteControllerAuthority: options.remoteControllerAuthority }
+        : {}),
+      ...(options.unattendedAuthority
+        ? { unattendedAuthority: options.unattendedAuthority }
         : {}),
       ...(options.displayText !== undefined ? { displayText: options.displayText } : {}),
       userMessageId,

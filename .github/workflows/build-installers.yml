@@ -146,7 +146,7 @@ jobs:
           printf '{ "type": "commonjs" }\n' > "$ELECTRON_BUILDER_CACHE/package.json"
       - name: Install Linux packaging tools
         if: matrix.target == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm xvfb
+        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm xvfb dbus dbus-x11 gnome-keyring
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Build installer
@@ -197,7 +197,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ matrix.target }}" = "linux" ]; then
-            xvfb-run -a node scripts/smoke-packaged-app.mjs --target "${{ matrix.target }}"
+            dbus-run-session -- bash -euo pipefail -c '
+              eval "$(printf %s packaged-smoke | gnome-keyring-daemon --unlock --components=secrets)"
+              xvfb-run -a node scripts/smoke-packaged-app.mjs --target linux
+            '
           else
             node scripts/smoke-packaged-app.mjs --target "${{ matrix.target }}"
           fi

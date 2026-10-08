@@ -6,7 +6,7 @@ import { isValidSessionId } from "../shared/session-id.js";
 export { isValidSessionId } from "../shared/session-id.js";
 
 
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync, unlinkSync, rmSync, renameSync, watch, type FSWatcher } from "node:fs";
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync, unlinkSync, rmSync, renameSync, watch, type FSWatcher } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, resolve, basename } from "node:path";
 import { withFileLock } from "../lib/with-file-lock.js";
@@ -3464,12 +3464,40 @@ export class MemoryManager implements PromptMemorySource {
 
     mkdirSync(this.memoryDir, { recursive: true });
     mkdirSync(this.sessionsDir, { recursive: true });
+    this.restrictSessionsDirWrites();
 
     // Atomic create-if-absent: the exclusive "wx" flag fails with EEXIST when
     // the file already exists, so there is no check-then-write TOCTOU window.
     this.writeDefaultIfAbsent(join(this.aveDir, "AGENTS.md"), getDefaultAgentsMd());
     this.writeDefaultIfAbsent(join(this.aveDir, "user-preferences.md"), getDefaultUserPrefs());
     this.writeDefaultIfAbsent(join(this.memoryDir, "MEMORY.md"), getDefaultMemoryIndex());
+  }
+
+  /**
+   * Tool-output capture refuses a sessions root that another account could
+   * write. `mkdirSync` filters its mode through the process umask, and Debian
+   * and Ubuntu logins run with 0002 for user-private groups, so the root came
+   * out group-writable and every shell output capture settled unavailable.
+   * Only an owned, real directory is tightened; a symlinked or foreign root is
+   * left as it is for the store to refuse.
+   */
+  private restrictSessionsDirWrites(): void {
+    if (process.platform === "win32") return;
+    let fd: number;
+    try {
+      fd = openSync(this.sessionsDir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    } catch (error) {
+      // With O_DIRECTORY a trailing link fails ENOTDIR (Linux and darwin), not
+      // ELOOP. A sessions root moved to another disk and linked back must not
+      // stop the host booting; it is left for the store to judge.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ELOOP" || code === "ENOTDIR") return;
+      throw error;
+    }
+    try {
+      const stat = fstatSync(fd);
+      if (stat.uid === process.getuid?.() && (stat.mode & 0o022) !== 0) fchmodSync(fd, stat.mode & 0o7755);
+    } finally { closeSync(fd); }
   }
 
   /** Write `content` only when `path` does not yet exist, atomically (no TOCTOU). */

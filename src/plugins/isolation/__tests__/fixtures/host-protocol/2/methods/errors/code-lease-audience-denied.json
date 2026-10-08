@@ -1,0 +1,40 @@
+{
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "ave/host/hostFetch",
+    "params": {
+      "init": {
+        "body": {
+          "data": "ping",
+          "encoding": "utf8"
+        },
+        "headers": [
+          [
+            "content-type",
+            "text/plain"
+          ]
+        ],
+        "method": "POST"
+      },
+      "input": "https://api.example.com/ping"
+    }
+  },
+  "response": {
+    "error": {
+      "code": -32000,
+      "data": {
+        "code": "lease-audience-denied",
+        "detail": {
+          "hop": 0,
+          "origin": "https://example.com"
+        },
+        "name": "CredentialLeaseError"
+      },
+      "message": "Credential lease audience denied this URL."
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+  },
+  "trigger": "a URL outside the credential audience"
+}

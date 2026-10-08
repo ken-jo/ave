@@ -2,8 +2,7 @@
  * Host-owned manifest validator SOT guard (ph2).
  *
  * The host compiles its OWN vendored `schemas/plugin-manifest.schema.json`
- * (imported as a bundler-visible JSON module) with AJV — no runtime
- * `@ave/plugin-sdk` import. This suite pins:
+ * (imported as a bundler-visible JSON module) with AJV. This suite pins:
  *   1. the validator compiles + accepts every host-required field,
  *   2. the negative-strictness guards (formerly runtime probes, now test-time
  *      assertions per ph2) still REJECT removed / unreachable / removed-ui shapes,
@@ -64,7 +63,6 @@ function manifestWithOnboarding(onboarding: Record<string, unknown>,
     name: "Sample Onboarding Plugin",
     version: "1.0.0",
     description: "Synthetic manifest used to validate declarative onboarding.",
-    publisher: "Ave",
     entry: "dist/index.js",
     tools: [],
     onboarding,
@@ -222,8 +220,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     );
   });
 
-  // ── accept-probes (formerly runtime guards vs a stale SDK; now test-time
-  // assertions against the host-compiled validator) ──────────────────────────
+  // ── accept-probes against the host-compiled validator ────────────────────
   it("accepts a pure MCP Tool[] object carrying _meta.ui.visibility", async () => {
     const validator = await buildManifestValidator();
     expect(
@@ -232,7 +229,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         name: "Pure Tool Plugin",
         version: "1.0.0",
         description: "Pure MCP Tool object fixture.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [
           {
@@ -424,7 +420,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
       name: "Legacy Meta Plugin",
       version: "1.0.0",
       description: "Legacy-only _meta pathFields fixture.",
-      publisher: "Ave",
       entry: "dist/index.js",
       tools: [
         {
@@ -463,7 +458,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
       name: "Retired Plugin Access Tool Grant",
       version: "1.0.0",
       description: "A manifest carrying the removed cross-plugin tool grant.",
-      publisher: "Ave",
       entry: "dist/index.js",
       tools: [],
       pluginAccess: {
@@ -496,7 +490,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         name: "Private Network Plugin",
         version: "1.0.0",
         description: "Private network fixture.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
         networkAccess: {
@@ -516,7 +509,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         name: "Local Endpoint Plugin",
         version: "1.0.0",
         description: "Local inference endpoint fixture.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
         networkAccess: {
@@ -538,7 +530,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
           name: "Local Endpoint Plugin",
           version: "1.0.0",
           description: "Local inference endpoint fixture.",
-          publisher: "Ave",
           entry: "dist/index.js",
           tools: [],
           networkAccess: { allowedDomains: [host] },
@@ -559,7 +550,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         name: "UI Resource Plugin",
         version: "1.0.0",
         description: "Plugin serving a ui:// MCP App card.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
         uiResources: [
@@ -587,7 +577,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         name: "UI Resource Plugin",
         version: "1.0.0",
         description: "Plugin serving a ui:// MCP App card.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
         uiResources: [
@@ -612,7 +601,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         name: "UI Resource Plugin",
         version: "1.0.0",
         description: "Plugin serving a ui:// MCP App card.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
         uiResources: [
@@ -650,7 +638,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         name: "UI Resource Bare",
         version: "1.0.0",
         description: "uiResources entry with no declared policy.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
         uiResources: [{ uri: "ui://ui-resource-bare/card.html" }],
@@ -666,7 +653,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         name: "UI Resource Bad",
         version: "1.0.0",
         description: "uiResources entry with a stray field.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
         uiResources: [
@@ -690,7 +676,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         name: "UI Resource Legacy",
         version: "1.0.0",
         description: "uiResources entry with the removed html path.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
         uiResources: [
@@ -711,7 +696,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         name: "Marketplace Provider Secret Plugin",
         version: "1.0.0",
         description: "Marketplace provider secret fixture.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
         hostSecrets: { read: ["llm.marketplaceProvider.future-router.apiKey"] },
@@ -728,7 +712,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         name: "Removed Field Plugin",
         version: "1.0.0",
         description: "Pure tool carrying a removed field fixture.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [
           {
@@ -751,7 +734,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         name: "Empty Visibility Plugin",
         version: "1.0.0",
         description: "Pure tool with empty visibility fixture.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [
           {
@@ -773,7 +755,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         name: "UI Action Kind Plugin",
         version: "1.0.0",
         description: 'Removed ui[].kind="action" fixture.',
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
         ui: [
@@ -791,7 +772,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         name: "UI Window Hints Plugin",
         version: "1.0.0",
         description: "UI extension carrying retired window hints.",
-        publisher: "Ave",
         entry: "dist/index.js",
         tools: [],
         ui: [
@@ -869,7 +849,6 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
     version: "1.2.3",
     description:
       "A representative manifest exercising every host-required field.",
-    publisher: "Ave",
     packageName: "@ave/full-featured-plugin",
     author: { name: "Ave Team" },
     uiSlots: ["sidebar"],
@@ -1023,7 +1002,6 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
           name: "Default Visibility Plugin",
           version: "1.0.0",
           description: "Exercises default Tool visibility materialization.",
-          publisher: "Ave",
           entry: "dist/index.js",
           tools: [
             {

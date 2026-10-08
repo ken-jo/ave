@@ -41,7 +41,7 @@ export const en = {
 
 ## Frequently Used Tools
 
-(Plugins, tools, commands you use often)
+(Extensions, tools, commands you use often)
 `,
   "be_memoryManager.sessionTitleWithRoutine": "{routineTitle} conversation",
   "be_memoryManager.sessionTitleShort": "Session {id}",
@@ -92,7 +92,7 @@ export const ko: Record<keyof typeof en, string> = {
 
 ## 자주 쓰는 도구
 
-(자주 사용하는 플러그인, 도구, 명령어 등)
+(자주 사용하는 익스텐션, 도구, 명령어 등)
 `,
   "be_memoryManager.sessionTitleWithRoutine": "{routineTitle} 대화",
   "be_memoryManager.sessionTitleShort": "세션 {id}",

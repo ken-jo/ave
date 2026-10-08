@@ -4,14 +4,14 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LocalCatalogMarketplaceFetcher, PluginMarketplaceService } from "../marketplace.js";
+import { PluginMarketplaceService } from "../marketplace.js";
 import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
 import {
   makeTestPluginPaths,
   preparedActivationOptionsForTest,
   TestPluginMarketplaceService,
 } from "./test-helpers.js";
-import { manifestSha } from "../../__tests__/support/sign-envelope-fixture.js";
+import { manifestSha } from "../../__tests__/support/manifest-sha-fixture.js";
 import { CommittedPluginGenerationPublicationError } from "../committed-generation-publication-error.js";
 import {
   PLUGIN_DATA_FIXTURE,
@@ -55,7 +55,6 @@ describe("PluginMarketplaceService.installLocal", () => {
           name: "Test Plugin",
           version: "1.2.3",
           description: "fixture",
-          publisher: "tests",
           entry: "dist/hostPlugin.js",
         }),
         null,
@@ -85,8 +84,7 @@ describe("PluginMarketplaceService.installLocal", () => {
       pluginsRoot: pluginsDir,
       cacheRoot,
     });
-    const fetcher = new LocalCatalogMarketplaceFetcher(join(testDir, "marketplace.json"));
-    return new TestPluginMarketplaceService(paths, fetcher);
+    return new TestPluginMarketplaceService(paths);
   }
 
   it("resolves a local plugin id without mutating install storage", async () => {
@@ -99,6 +97,25 @@ describe("PluginMarketplaceService.installLocal", () => {
       plugins?: unknown[];
     };
     expect(registry.plugins).toEqual([]);
+  });
+
+  // A local install is never pinned by a release or archive artifact, so a
+  // process entry is refused before anything is copied.
+  it("refuses a process-entry extension before local install changes the registry", async () => {
+    await writeFile(join(sourceDir, "plugin.json"), JSON.stringify({
+      $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+      name: "test-plugin", version: "1.2.3", description: "Process extension",
+      extensions: { "ai.agent-connector.ave": {
+        process: { command: "./bin/plugin" },
+        requires: { minAppVersion: "0.13.0", hostProtocol: "2" },
+        tools: [],
+      } },
+    }), "utf8");
+    const service = makeService();
+    await expect(service.installLocal(sourceDir, preparedActivationOptionsForTest))
+      .rejects.toMatchObject({ code: "process-entry-requires-pinned-artifact" });
+    expect(existsSync(join(pluginsDir, "test-plugin"))).toBe(false);
+    expect(JSON.parse(await readFile(registryPath, "utf8"))).toMatchObject({ plugins: [] });
   });
 
   it("skips node_modules/electron, .git, and nested node_modules/electron during cp", async () => {
@@ -146,7 +163,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         id: "test-plugin",
         name: "Test Plugin",
         description: "fixture",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
@@ -267,7 +283,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         version: "2.0.0",
         description: "broken staged candidate",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
@@ -343,7 +358,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         version: "2.0.0",
         description: "fixture v2",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
@@ -385,7 +399,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         version: "2.0.0",
         description: "fixture v2",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
@@ -416,7 +429,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         version: "2.0.0",
         description: "fixture v2",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
@@ -445,7 +457,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         version: "2.0.0",
         description: "committed candidate",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
@@ -500,7 +511,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         version: "2.0.0",
         description: "fixture v2",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
@@ -561,7 +571,6 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         version: "2.0.0",
         description: "verified retry",
-        publisher: "tests",
         entry: "dist/hostPlugin.js",
       })));
 
@@ -593,7 +602,6 @@ describe("PluginMarketplaceService.installLocal", () => {
           name: "Test Plugin",
           version: "1.2.3",
           description: "fixture",
-          publisher: "tests",
           entry: "dist/hostPlugin.js",
           pluginAccess: accessSpec,
         }),
@@ -648,7 +656,6 @@ describe("PluginMarketplaceService.installLocal", () => {
           name: "Test Plugin",
           version: "1.2.3",
           description: "fixture",
-          publisher: "tests",
           entry: "dist/hostPlugin.js",
           pluginAccess: accessSpec,
         }),

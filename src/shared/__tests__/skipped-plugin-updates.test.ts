@@ -3,7 +3,7 @@
  *
  * The renderer writes this map (`useMarketplaceUpdates.skip`) and main reads it
  * to filter the `marketplace:updates-available` broadcast
- * (`wireUpdateCheck`). Both sides now share these functions, so the rules below
+ * (the marketplace background step). Both sides now share these functions, so the rules below
  * are pinned once for both — previously main's copy had no test at all.
  *
  * Every assertion reds when the corresponding clause is removed; the renderer's
@@ -14,8 +14,9 @@
 import { describe, it, expect } from "vitest";
 import {
   createSkippedPluginUpdateMap,
-  isSkippedPluginUpdate,
+  isSkippedPackageUpdate,
   normalizeSkippedPluginUpdateKey,
+  packageUpdateSkipKey,
   putSkippedPluginUpdate,
   readSkippedPluginUpdates,
 } from "../skipped-plugin-updates.js";
@@ -119,32 +120,38 @@ describe("readSkippedPluginUpdates", () => {
   });
 });
 
-describe("isSkippedPluginUpdate", () => {
-  const skipped = readSkippedPluginUpdates({ meeting: "0.5.24" });
+describe("packageUpdateSkipKey", () => {
+  it("keeps a plugin's name, the key earlier builds wrote", () => {
+    expect(packageUpdateSkipKey({ kind: "plugin", name: "meeting" })).toBe("meeting");
+  });
+
+  it("prefixes other kinds so a skill cannot answer for a plugin of the same name", () => {
+    expect(packageUpdateSkipKey({ kind: "skill", name: "meeting" })).toBe("skill:meeting");
+  });
+});
+
+describe("isSkippedPackageUpdate", () => {
+  const skipped = readSkippedPluginUpdates({ meeting: "0.5.24", "theme:dusk": "2.0.0" });
+  const update = (kind: string, name: string, to: string) => ({ key: { kind, name }, to });
 
   it("skips only an exact version match", () => {
-    expect(isSkippedPluginUpdate({ pluginId: "meeting", latestVersion: "0.5.24" }, skipped))
-      .toBe(true);
-    expect(isSkippedPluginUpdate({ pluginId: "meeting", latestVersion: "0.5.25" }, skipped))
-      .toBe(false);
+    expect(isSkippedPackageUpdate(update("plugin", "meeting", "0.5.24"), skipped)).toBe(true);
+    expect(isSkippedPackageUpdate(update("plugin", "meeting", "0.5.25"), skipped)).toBe(false);
+    expect(isSkippedPackageUpdate(update("theme", "dusk", "2.0.0"), skipped)).toBe(true);
   });
 
   it("applies the same trimming the writer applied", () => {
-    expect(isSkippedPluginUpdate({ pluginId: " meeting ", latestVersion: " 0.5.24 " }, skipped))
-      .toBe(true);
+    expect(isSkippedPackageUpdate(update("plugin", " meeting ", " 0.5.24 "), skipped)).toBe(true);
   });
 
-  it("never skips an unknown plugin", () => {
-    expect(isSkippedPluginUpdate({ pluginId: "hub", latestVersion: "0.5.24" }, skipped))
-      .toBe(false);
+  it("never skips an unknown package or another kind of the same name", () => {
+    expect(isSkippedPackageUpdate(update("plugin", "hub", "0.5.24"), skipped)).toBe(false);
+    expect(isSkippedPackageUpdate(update("skill", "meeting", "0.5.24"), skipped)).toBe(false);
   });
 
   it("never skips on a reserved id or a blank version", () => {
-    expect(isSkippedPluginUpdate({ pluginId: "__proto__", latestVersion: "1.0.0" }, skipped))
-      .toBe(false);
-    expect(isSkippedPluginUpdate({ pluginId: "constructor", latestVersion: "1.0.0" }, skipped))
-      .toBe(false);
-    expect(isSkippedPluginUpdate({ pluginId: "meeting", latestVersion: "  " }, skipped))
-      .toBe(false);
+    expect(isSkippedPackageUpdate(update("plugin", "__proto__", "1.0.0"), skipped)).toBe(false);
+    expect(isSkippedPackageUpdate(update("plugin", "constructor", "1.0.0"), skipped)).toBe(false);
+    expect(isSkippedPackageUpdate(update("plugin", "meeting", "  "), skipped)).toBe(false);
   });
 });

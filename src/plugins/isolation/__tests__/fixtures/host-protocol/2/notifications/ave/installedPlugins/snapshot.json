@@ -1,0 +1,16 @@
+{
+  "frame": {
+    "jsonrpc": "2.0",
+    "method": "notifications/ave/installedPlugins/snapshot",
+    "params": {
+      "pluginIds": [
+        "orion-api",
+        "local-indexer",
+        "meeting",
+        "lyra-mail",
+        "vega-helper"
+      ]
+    }
+  },
+  "from": "host"
+}

@@ -1,4 +1,4 @@
-# Plugin Decoupling Migration
+# Extension Decoupling Migration
 
 Status: Active English default. The Korean archive keeps earlier review history and original discussion, but this page must be usable on its own.
 
@@ -6,7 +6,7 @@ Korean archive: [docs/ko mirror](../ko/guides/plugin-decoupling-migration.md).
 
 ## What This Page Owns
 
-This page owns moving plugin-specific behavior out of host code and into manifests, HostApi, or plugin-owned code. Use it as the first review surface when changing this area; use the archive for background, not as a substitute for current English guidance.
+This page owns moving extension-specific behavior out of host code and into manifests, HostApi, or extension-owned code. Use it as the first review surface when changing this area; use the archive for background, not as a substitute for current English guidance.
 
 ## Current Operating Contract
 

@@ -70,10 +70,7 @@ describe("App plugin auth routing", () => {
   };
 
   it("surfaces a preparing plugin's view as a selectable entry in the picker's plugin category", async () => {
-    // The preparing-cell visual detail (aria-busy, phase/progress label, title)
-    // is asserted directly against the component in
-    // PluginGridButton.test.tsx ("shows preparation detail for preparing
-    // registered plugin cells"). At the App level the contract is: a preparing
+    // At the App level the contract is: a preparing
     // plugin card that declares a UI extension still appears as a reachable
     // entry in the composer's command surface.
     const { api } = await renderApp({

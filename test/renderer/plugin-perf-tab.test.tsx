@@ -75,7 +75,7 @@ describe("PluginPerfTab", () => {
   it("shows empty message when no plugins", async () => {
     await renderTab(pluginPerfTabApi({}));
     await waitFor(() => {
-      expect(screen.getByText(/로드된 플러그인이 없습니다/)).toBeTruthy();
+      expect(screen.getByText(/로드된 익스텐션이 없습니다/)).toBeTruthy();
     });
   });
 

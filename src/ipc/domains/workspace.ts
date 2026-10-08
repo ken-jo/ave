@@ -392,6 +392,12 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
   ): Promise<{ liveScopesRevoked: number }> {
     let liveScopesRevoked = 0;
     const errors: unknown[] = [];
+    try {
+      await deps.pluginRuntime.retireSandboxGrantsOutsideCeiling();
+    } catch (error: unknown) {
+      errors.push(error);
+      auditLifecycleWarning(source, root, "revoke-live-scopes", error);
+    }
     const liveScopeOwners: unknown[] = [
       deps.conversationLoop,
       deps.sideChatConversationLoop,

@@ -9,9 +9,6 @@ import { type StatusBarProps } from "./components/StatusBar.js";
 import { ChatSidePanel } from "./components/ChatSidePanel.js";
 import type { SideChatOpenRequest } from "./components/SideChatView.js";
 
-
-
-
 import { getApi } from "./api-client.js";
 import { useChatContext } from "./context/ChatContext.js";
 import type { AppMode } from "./MainToolbar.js";
@@ -19,7 +16,7 @@ import { useInputStatusRow } from "./hooks/use-input-status-row.js";
 import { type ComposerHandle } from "./components/Composer.js";
 import { useSuggestedReplies } from "./hooks/use-suggested-replies.js";
 import { hasActiveSuggestedReplies } from "./utils/composer-placeholder.js";
-import type { PluginEntry } from "./components/PluginGridButton.js";
+import type { PluginEntry } from "./types.js";
 import type { QuickAction } from "./components/command-actions.js";
 import { type AskUserQuestionRequest } from "./components/AskUserQuestionCard.js";
 import type { ApprovalRequest, AveApi } from "./types.js";
@@ -29,6 +26,7 @@ import type { SubAgentSpawn } from "./subagents/types.js";
 import type { SkillBadgeProps } from "./components/SkillBadge.js";
 import type { UserKeyboardIntentSnapshot } from "../../shared/chat-origin.js";
 import type { McpPromptEntry } from "./components/slash-picker-data.js";
+import type { AgentPluginTemplatePrompt } from "../../shared/agent-plugin-prompt.js";
 import type { ProjectIdentity } from "../../shared/project-identity.js";
 import { isTurnStartEntry } from "./utils/classify-turn-entries.js";
 import { collectChatPreviewModel } from "./preview/preview-targets.js";
@@ -66,6 +64,7 @@ export interface ChatViewProps {
   ) => void | Promise<void>;
   /** Run a server-declared MCP prompt (staged, untrusted provenance). */
   onRunMcpPrompt: (prompt: McpPromptEntry) => void;
+  onRunPluginPrompt: (prompt: AgentPluginTemplatePrompt) => void;
   onEditSave: (idx: number, text: string) => void | Promise<void>;
   onFork: (idx: number) => void | Promise<void>;
   /**
@@ -158,7 +157,7 @@ export interface ChatViewProps {
 
 const SIDE_PANEL_LAYOUT_TRANSITION_MS = 300;
 
-export function ChatView({ api, onAsk, onRunMcpPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, appMode = "work", onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, sidePanelOpen = false, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, blogLayout = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError }: ChatViewProps) {
+export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, appMode = "work", onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, sidePanelOpen = false, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, blogLayout = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError }: ChatViewProps) {
   const { t } = useTranslation();
   const approvals = useApprovalSurface();
   const approvalHead = pendingApprovals[0] ?? null;
@@ -474,8 +473,6 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onEditSave, onFork, onRet
     [visibleEntries],
   );
 
-
-
   const turnSummaryByTurnStart = useMemo(() => {
     const map = new Map<number, TurnSummary>();
     let curTurnStart = -1;
@@ -575,7 +572,6 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onEditSave, onFork, onRet
   const handleInsertSlashCommand = useCallback((cmd: string) => {
     setQuestion((prev) => (prev ? `${prev}${cmd} ` : `${cmd} `));
   }, [setQuestion]);
-
 
   const handleBottomSend = useCallback(() => {
     handleComposerSend({ inputOrigin: "user-keyboard", token: "" });
@@ -835,6 +831,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onEditSave, onFork, onRet
         streaming={streaming}
         onInsertSlashCommand={handleInsertSlashCommand}
         onRunMcpPrompt={onRunMcpPrompt}
+        onRunPluginPrompt={onRunPluginPrompt}
         slashPickerOpen={slashPickerOpen}
         onSlashPickerOpenChange={onSlashPickerOpenChange}
         ringSlot={ringSlot}

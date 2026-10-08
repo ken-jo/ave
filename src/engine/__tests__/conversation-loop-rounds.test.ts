@@ -240,6 +240,7 @@ describe("ConversationLoop queryLoop", () => {
     await loop.runTurn("review this", undefined, undefined, {
       inputOrigin: "user-keyboard",
       rolePrompt: { id: "reviewer", name: "Reviewer", systemPromptAdd: "Review carefully.",
+        origin: { kind: "agent-plugin", package: "writer-plugin", version: "1.0.0" },
       },
     });
 
@@ -251,6 +252,7 @@ describe("ConversationLoop queryLoop", () => {
         activePersonaPrompt: {
           id: "reviewer",
           name: "Reviewer",
+          origin: { kind: "agent-plugin", package: "writer-plugin", version: "1.0.0" },
         },
       },
     });
@@ -1194,7 +1196,7 @@ describe("ConversationLoop queryLoop", () => {
       } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
       (loop as { provider: LLMProvider | null }).provider = provider;
 
-      expect(loop.loadSession(sessionId)).toBe(true);
+      expect(await loop.loadSession(sessionId)).toBe(true);
       const persistedUnknown = memoryManager.loadSession(sessionId);
       expect(persistedUnknown).not.toBeNull();
       const persisted = persistedUnknown as GenericMessage[];

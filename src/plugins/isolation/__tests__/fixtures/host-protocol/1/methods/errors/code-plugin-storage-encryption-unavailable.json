@@ -1,0 +1,27 @@
+{
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "ave/host/storage/writeEncrypted",
+    "params": {
+      "plaintext": "the token cache",
+      "relPath": "tokens/cache.bin"
+    }
+  },
+  "response": {
+    "error": {
+      "code": -32000,
+      "data": {
+        "code": "plugin-storage-encryption-unavailable",
+        "detail": {
+          "pluginId": "golden-invoker"
+        },
+        "name": "PluginStorageEncryptionUnavailableError"
+      },
+      "message": "[plugin-storage:golden-invoker] Host encryption is unavailable; encrypted storage cannot be used (no plaintext fallback)"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+  },
+  "trigger": "a host with no OS keychain to encrypt with"
+}

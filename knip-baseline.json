@@ -53,11 +53,6 @@
       "name": "MAX_AGENT_SPAWNS_PER_ROUND,MAX_TOOL_CALLS_PER_ROUND"
     },
     {
-      "type": "duplicates",
-      "file": "src/ui/renderer/theme/bundles/index.ts",
-      "name": "BUNDLES,DEFAULT_VISIBLE_BUNDLES"
-    },
-    {
       "type": "exports",
       "file": "scripts/a2a-p4-5-live/evidence-lib.mjs",
       "name": "HEAD_SHA_RE"
@@ -320,11 +315,6 @@
     {
       "type": "exports",
       "file": "src/i18n/index.ts",
-      "name": "isLocale"
-    },
-    {
-      "type": "exports",
-      "file": "src/i18n/index.ts",
       "name": "isLocaleMessagesLoaded"
     },
     {
@@ -335,17 +325,7 @@
     {
       "type": "exports",
       "file": "src/i18n/index.ts",
-      "name": "loadLocaleMessages"
-    },
-    {
-      "type": "exports",
-      "file": "src/i18n/index.ts",
       "name": "onLocaleChange"
-    },
-    {
-      "type": "exports",
-      "file": "src/i18n/index.ts",
-      "name": "SUPPORTED_LOCALES"
     },
     {
       "type": "exports",
@@ -381,11 +361,6 @@
       "type": "exports",
       "file": "src/ipc/index.ts",
       "name": "validateSender"
-    },
-    {
-      "type": "exports",
-      "file": "src/lib/logger.ts",
-      "name": "transport"
     },
     {
       "type": "exports",
@@ -569,28 +544,8 @@
     },
     {
       "type": "exports",
-      "file": "src/plugins/capabilities.ts",
-      "name": "PUBLIC_HOST_EVENT_TYPES"
-    },
-    {
-      "type": "exports",
-      "file": "src/plugins/envelope-verifier.ts",
-      "name": "toKeyObject"
-    },
-    {
-      "type": "exports",
       "file": "src/plugins/installed-entry-fs.ts",
       "name": "deferTombstoneRemoval"
-    },
-    {
-      "type": "exports",
-      "file": "src/plugins/marketplace-artifact-limits.ts",
-      "name": "DEFAULT_MARKETPLACE_ARTIFACT_LIMITS"
-    },
-    {
-      "type": "exports",
-      "file": "src/plugins/marketplace-installer.ts",
-      "name": "encodeMarketplaceVersionForFilename"
     },
     {
       "type": "exports",
@@ -736,11 +691,6 @@
       "type": "exports",
       "file": "src/shared/permission-reviewer-framework.ts",
       "name": "PERMISSION_REVIEWER_OUTPUT_CONTRACT"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/plugin-config.ts",
-      "name": "PLUGIN_CONFIG_RESERVED_KEYS"
     },
     {
       "type": "exports",
@@ -909,48 +859,13 @@
     },
     {
       "type": "exports",
-      "file": "src/ui/renderer/theme/bundles/index.ts",
-      "name": "DEFAULT_VISIBLE_THEME_BUNDLE_IDS"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/bundles/index.ts",
-      "name": "MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS"
-    },
-    {
-      "type": "exports",
       "file": "src/ui/renderer/theme/index.ts",
       "name": "applyBundleToDocument"
     },
     {
       "type": "exports",
       "file": "src/ui/renderer/theme/index.ts",
-      "name": "BUNDLES"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/index.ts",
       "name": "bundleShell"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "isBundleId"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "loadAllThemeBundles"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "loadThemeBundle"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "MARKETPLACE_THEME_BUNDLES"
     },
     {
       "type": "exports",
@@ -1164,11 +1079,6 @@
     },
     {
       "type": "files",
-      "file": "src/shared/host-font-stack.ts",
-      "name": "src/shared/host-font-stack.ts"
-    },
-    {
-      "type": "files",
       "file": "src/ui/renderer/components/AveLogo.tsx",
       "name": "src/ui/renderer/components/AveLogo.tsx"
     },
@@ -1261,11 +1171,6 @@
       "type": "types",
       "file": "src/api/tailnet-web-session-store.ts",
       "name": "TailnetWebIssuedSession"
-    },
-    {
-      "type": "types",
-      "file": "src/audit/audit-logger.ts",
-      "name": "PluginInstallEscalationAudit"
     },
     {
       "type": "types",
@@ -2079,26 +1984,6 @@
     },
     {
       "type": "types",
-      "file": "src/plugins/revocation/revocation-registry.ts",
-      "name": "RevocationInitOptions"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/revocation/revocation-registry.ts",
-      "name": "RevocationSource"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/revocation/revocation-registry.ts",
-      "name": "RevocationStatus"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/revocation/revocation-schema.ts",
-      "name": "RevocationBlockedEntry"
-    },
-    {
-      "type": "types",
       "file": "src/plugins/runtime.ts",
       "name": "ManifestLoadPlan"
     },
@@ -2130,11 +2015,6 @@
     {
       "type": "types",
       "file": "src/plugins/runtime/index.ts",
-      "name": "InstallPolicy"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/runtime/index.ts",
       "name": "PluginPreparationProgressInput"
     },
     {
@@ -2149,48 +2029,8 @@
     },
     {
       "type": "types",
-      "file": "src/plugins/whitelist/whitelist-registry.ts",
-      "name": "WhitelistDecision"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/whitelist/whitelist-registry.ts",
-      "name": "WhitelistInitOptions"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/whitelist/whitelist-registry.ts",
-      "name": "WhitelistSource"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/whitelist/whitelist-registry.ts",
-      "name": "WhitelistState"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/whitelist/whitelist-registry.ts",
-      "name": "WhitelistStatus"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/whitelist/whitelist-schema.ts",
-      "name": "WhitelistPluginGrant"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/whitelist/whitelist-schema.ts",
-      "name": "WhitelistSignatureEnvelope"
-    },
-    {
-      "type": "types",
       "file": "src/sdk/index.ts",
       "name": "ActiveHistoryResult"
-    },
-    {
-      "type": "types",
-      "file": "src/sdk/index.ts",
-      "name": "ListMarketplaceResult"
     },
     {
       "type": "types",
@@ -2494,11 +2334,6 @@
     },
     {
       "type": "types",
-      "file": "src/telemetry/host-secret-counters.ts",
-      "name": "HostSecretDeniedReason"
-    },
-    {
-      "type": "types",
       "file": "src/tools/agent-send.ts",
       "name": "A2AQuestionWaitReservation"
     },
@@ -2676,21 +2511,6 @@
       "type": "types",
       "file": "src/ui/renderer/preview/workspace-tabs.ts",
       "name": "WorkspaceTabMode"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/theme/bundles/index.ts",
-      "name": "BundleTokens"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "BundleTokens"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "ThemeBundleManifest"
     },
     {
       "type": "types",

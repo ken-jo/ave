@@ -45,8 +45,7 @@ import type { ExactDenyDraft } from "./exact-permission-decision.js";
 
 // ─── Imports: types / constants / helpers / components / tabs ────────
 import { getApi, getPluginViewLabel, toViewKey } from "./api-client.js";
-import type { PluginEntry } from "./components/PluginGridButton.js";
-import { getPluginInstallAliases } from "./utils/plugin-install-aliases.js";
+import type { PluginEntry } from "./types.js";
 import { pluginIconFor } from "./utils/plugin-icon.js";
 import {
   parsePluginDoctorViewKey,
@@ -77,6 +76,8 @@ import { useMarketplaceAnnouncements } from "./hooks/use-marketplace-announcemen
 import type { MarketplaceAnnouncementActionTarget } from "../../shared/marketplace-announcements.js";
 import { useBootstrapStatus } from "./hooks/use-bootstrap-status.js";
 import { usePluginMarketplace } from "./hooks/use-plugin-marketplace.js";
+import { requestUpdateReview } from "./tabs/git-marketplace/update-review-request.js";
+import type { PackageUpdateView } from "../../shared/git-marketplace.js";
 import { usePluginAuthStatuses } from "./hooks/use-plugin-auth-status.js";
 import { useRolePresets } from "./hooks/use-role-presets.js";
 import { useAppBootstrap } from "./hooks/use-app-bootstrap.js";
@@ -410,7 +411,6 @@ export function App() {
     await handleLoadSessionAndRefresh(sessionId);
   }, [handleImport, handleLoadSessionAndRefresh]);
 
-
   /**
    * A conversation dragged out of the sidebar and dropped on a tile.
    *
@@ -492,12 +492,7 @@ export function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  const {
-    updates: marketplaceUpdates,
-    dismiss: dismissMarketplaceUpdates,
-    skip: skipMarketplaceUpdates,
-    resolveUpdated: resolveMarketplaceUpdates,
-  } = useMarketplaceUpdates(api);
+  const { updates: marketplaceUpdates, skip: skipMarketplaceUpdates } = useMarketplaceUpdates(api);
   const { announcements: marketplaceAnnouncements, dismiss: dismissMarketplaceAnnouncement } = useMarketplaceAnnouncements(api);
   const { status: bootstrapStatus, dismiss: dismissBootstrapStatus, retry: retryBootstrap } = useBootstrapStatus(api);
   const approvals = useApproval();
@@ -563,12 +558,7 @@ export function App() {
   // primary action reaches its tile through the registry, so the turn starts in
   // the conversation the card was shown in. See use-routine-overlay.ts.
   // Marketplace + plugin UI extensions
-  const {
-    pluginViews,
-    pluginCards,
-    installPlugin,
-    refreshViews, refreshMarketplace, refreshCards,
-  } = usePluginMarketplace(api);
+  const { pluginViews, pluginCards, refreshViews, refreshCards } = usePluginMarketplace(api);
 
   // Where the main window is. `InlineViewKey` (not `string`) so a destination
   // that has no inline form — or a typo — cannot be assigned here at all.
@@ -638,8 +628,10 @@ export function App() {
   );
   const {
     addFireRef,
+    dismissRef,
     runningRoutines,
     handlePluginPrimaryAction,
+    handleAlertDismiss,
     handleRoutineAcknowledge,
     handleProposalAnswer,
   } = useRoutineOverlay({
@@ -687,12 +679,9 @@ export function App() {
     reviewerSuggestion,
   }), [approvals, handleOpenPermanentDeny, exactDenyDraft, approvalProposal, reviewerSuggestion]);
 
-  // Auth status for every plugin that declares `manifest.auth`
-
-
-  // (PluginGridButton). Hoisting to App.tsx means a single live-poll
-  // + event-bridge subscription serves both surfaces — no duplicate
-  // listeners, no stale-state divergence between the two views.
+  // Auth status for every plugin that declares `manifest.auth`. Hoisting to
+  // App.tsx means a single live-poll + event-bridge subscription serves every
+  // surface — no duplicate listeners, no stale-state divergence between views.
   const { statuses: pluginAuthStatuses, refresh: refreshPluginAuthStatus } = usePluginAuthStatuses(api, pluginCards);
 
   // Role preset, cost preview, multimodal attachments
@@ -836,7 +825,6 @@ export function App() {
     return api.onRoutineFired(() => void refreshSessions());
   }, [api, refreshSessions]);
 
-
   // Small adapter callbacks that bridge hook outputs to ChatView / MainToolbar.
   const {
     llmVendor,
@@ -930,7 +918,6 @@ export function App() {
     };
   }, [location, t, pluginViews, viewHistory, navigateToLocation, activeProject]);
 
-
   // The conversation action set. Built once so the pane header and the
   // sidebar row's context menu cannot drift apart about what is offered.
   // Build flat PluginEntry list for InputActionBar plugin grid.
@@ -944,7 +931,6 @@ export function App() {
       return {
         viewKey: toViewKey(view),
         pluginId: view.pluginId,
-        installAliases: getPluginInstallAliases(view.pluginId, card?.installAliases),
         loadStatus: card?.loadStatus,
         preparationStatus: card?.preparationStatus,
         label: getPluginViewLabel(view),
@@ -968,7 +954,6 @@ export function App() {
           return {
             viewKey,
             pluginId: card.id,
-            installAliases: getPluginInstallAliases(card.id, card.installAliases),
             loadStatus: card.loadStatus,
             preparationStatus: card.preparationStatus,
             label: extension.displayName?.trim() || extension.title || card.name,
@@ -984,7 +969,6 @@ export function App() {
       return [{
         viewKey: toPluginDoctorViewKey(card.id),
         pluginId: card.id,
-        installAliases: getPluginInstallAliases(card.id, card.installAliases),
         loadStatus: card.loadStatus,
         label: card.name,
         icon: card.icon,
@@ -1058,6 +1042,11 @@ export function App() {
     setSettingsTab(normalizeSettingsTab(tab));
     setActiveView("settings");
   }, []);
+  // An update installs only through its review, in the marketplace tab (design §15.6).
+  const reviewMarketplaceUpdates = useCallback((updates: PackageUpdateView[]) => {
+    requestUpdateReview(updates);
+    onOpenSettings("marketplace");
+  }, [onOpenSettings]);
 
   const handleViewSelectWithDoctor = useCallback((key: string) => {
     // An inactive plugin's row is a shortcut to the toggle that turned it off,
@@ -1292,8 +1281,6 @@ export function App() {
     onSetLabel: setProjectLabel,
   }), [isProjectArchived, toggleProjectArchived, projectLabel, setProjectLabel]);
 
-
-
   // ─── Effects ──────────────────────────────────
   const toggleSlashPicker = useCallback(() => {
     if (activeView !== "home") {
@@ -1313,7 +1300,7 @@ export function App() {
   // tracker + every IPC subscription that keeps plugin views/cards/marketplace
   // fresh (install/uninstall/runtime/progress broadcasts, the preparing-plugin
   // poll, agent/skill install results). See use-plugin-lifecycle-refresh.ts.
-  usePluginLifecycleRefresh({ api, pluginCards, refreshViews, refreshCards, refreshMarketplace });
+  usePluginLifecycleRefresh({ api, pluginCards, refreshViews, refreshCards });
 
   // Clear the SlashPicker's raise flag when navigating away from home. The
   // picker is only mounted on the home view, so a flag left set survives the
@@ -1369,7 +1356,6 @@ export function App() {
     },
     [navigateToSettingsPath, api],
   );
-
 
   /**
    * Everything a tile needs that is NOT its own conversation.
@@ -1487,6 +1473,7 @@ export function App() {
         onPluginPrimaryAction={(id, actionChatGroupId) => {
           void handlePluginPrimaryAction(id, actionChatGroupId);
         }}
+        onAlertDismiss={handleAlertDismiss}
         onRoutineAcknowledge={handleRoutineAcknowledge}
         onProposalAnswer={(id, disposition, actionChatGroupId) => {
           void handleProposalAnswer(id, disposition, actionChatGroupId);
@@ -1776,6 +1763,7 @@ export function App() {
           <OverlayContextProvider
             onOpenSession={handleOpenRoutineSession}
             addFireRef={addFireRef}
+            dismissRef={dismissRef}
             runningRoutines={runningRoutines}
             onQueueChange={setOverlayQueue}
           >
@@ -1814,10 +1802,8 @@ export function App() {
                   onSkipAppUpdate={appUpdate.skip}
                   pluginUpdates={{
                     updates: marketplaceUpdates,
-                    onDismiss: dismissMarketplaceUpdates,
                     onSkip: skipMarketplaceUpdates,
-                    onResolved: resolveMarketplaceUpdates,
-                    onUpdate: installPlugin,
+                    onReview: reviewMarketplaceUpdates,
                   }}
                   bootstrapStatus={{
                     status: bootstrapStatus,

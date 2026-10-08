@@ -67,8 +67,16 @@ import { getWorkspaceRootLifecycle } from "../../../permissions/workspace-root-l
 import { canonicalizePathForMatch, caseFoldForMatch } from "../../../permissions/sensitive-paths.js";
 import { ReadFileTool } from "../../../tools/file-tools.js";
 
+function withSandboxRuntime(value: unknown): never {
+  return {
+    ...(value as object),
+    pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
+  } as never;
+}
+
 const deps = {
   auditLogger: { log: vi.fn() },
+  pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
   getMainWindow: () => null,
   memoryManager: {
     allowProjectRoot: vi.fn(),
@@ -352,7 +360,7 @@ describe("workspace handlers", () => {
         })),
       },
     } as never;
-    registerWorkspaceHandlers(lifecycleDeps);
+    registerWorkspaceHandlers(withSandboxRuntime(lifecycleDeps));
 
     try {
       const res = (await invoke(CHANNELS.workspace.listRoots, OK_FRAME)) as {
@@ -447,7 +455,7 @@ describe("workspace handlers", () => {
       routinesStore: { revokeWorkspaceRoot: pruneRoutineScopes },
     } as never;
     showOpenDialogMock.mockResolvedValueOnce({ canceled: false, filePaths: [root] });
-    registerWorkspaceHandlers(lifecycleDeps);
+    registerWorkspaceHandlers(withSandboxRuntime(lifecycleDeps));
 
     try {
       const res = (await invoke(CHANNELS.workspace.pickRoot, OK_FRAME)) as {
@@ -480,7 +488,7 @@ describe("workspace handlers", () => {
       routinesStore: { revokeWorkspaceRoot: pruneRoutineScopes },
     } as never;
     showOpenDialogMock.mockResolvedValueOnce({ canceled: false, filePaths: [picked] });
-    registerWorkspaceHandlers(lifecycleDeps);
+    registerWorkspaceHandlers(withSandboxRuntime(lifecycleDeps));
 
     try {
       const res = (await invoke(CHANNELS.workspace.pickRoot, OK_FRAME)) as {
@@ -811,7 +819,7 @@ describe("workspace handlers", () => {
       }),
       routinesStore: { revokeWorkspaceRoot: pruneRoutineScopes },
     } as never;
-    registerWorkspaceHandlers(lifecycleDeps);
+    registerWorkspaceHandlers(withSandboxRuntime(lifecycleDeps));
     try {
       const res = (await invoke(CHANNELS.workspace.removeRoot, OK_FRAME, root)) as {
         ok: boolean;
@@ -902,7 +910,7 @@ describe("workspace handlers", () => {
       getSubAgentRunner: () => subAgentRunner,
       routinesStore: { revokeWorkspaceRoot: pruneRoutineScopes },
     } as never;
-    registerWorkspaceHandlers(lifecycleDeps);
+    registerWorkspaceHandlers(withSandboxRuntime(lifecycleDeps));
 
     try {
       const first = (await invoke(CHANNELS.workspace.removeRoot, OK_FRAME, root)) as {
@@ -1053,7 +1061,7 @@ describe("workspace handlers", () => {
       routinesStore: { revokeWorkspaceRoot: pruneRoutineScopes },
     } as never;
     showOpenDialogMock.mockResolvedValueOnce({ canceled: false, filePaths: [root] });
-    registerWorkspaceHandlers(lifecycleDeps);
+    registerWorkspaceHandlers(withSandboxRuntime(lifecycleDeps));
 
     try {
       const removePromise = invoke(CHANNELS.workspace.removeRoot, OK_FRAME, root) as Promise<{
@@ -1111,7 +1119,7 @@ describe("workspace handlers", () => {
         revokeWorkspaceRoot: pruneRoutineScopes,
       },
     } as never;
-    registerWorkspaceHandlers(lifecycleDeps);
+    registerWorkspaceHandlers(withSandboxRuntime(lifecycleDeps));
     try {
       const res = (await invoke(CHANNELS.workspace.removeRoot, OK_FRAME, root)) as {
         ok: boolean;
@@ -1172,7 +1180,7 @@ describe("workspace handlers", () => {
         })),
       },
     } as never;
-    registerWorkspaceHandlers(lifecycleDeps);
+    registerWorkspaceHandlers(withSandboxRuntime(lifecycleDeps));
 
     try {
       const res = (await invoke(CHANNELS.workspace.removeRoot, OK_FRAME, root)) as {

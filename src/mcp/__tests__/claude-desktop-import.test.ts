@@ -5,8 +5,12 @@
  * heuristic flags the right env keys, valid entries map to the Ave
  * stdio config shape with `auth: "none"`.
  */
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseClaudeDesktopConfig } from "../claude-desktop-import.js";
+import { importFailureKind, parseClaudeDesktopConfig } from "../claude-desktop-import.js";
 
 describe("parseClaudeDesktopConfig — happy path", () => {
   it("maps a single stdio server with command+args+env", () => {
@@ -205,5 +209,29 @@ describe("parseClaudeDesktopConfig — output shape invariants", () => {
     const entry = parseClaudeDesktopConfig(raw).entries[0];
     expect(entry.id).toBe("trimmed-id");
     expect((entry.config as { command: string }).command).toBe("/usr/bin/node");
+  });
+});
+
+describe("importFailureKind", () => {
+  it("names the settings-file failures the renderer words, and everything else other", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-mcp-import-"));
+    try {
+      writeFileSync(join(dir, "file"), "");
+      const caught = (promise: Promise<unknown>) => promise.then(() => null, (error: unknown) => error);
+      expect(importFailureKind(await caught(readFile(join(dir, "missing.json"))))).toBe("not-found");
+      expect(importFailureKind(await caught(readFile(dir)))).toBe("unreadable");
+      expect(importFailureKind(await caught(mkdir(join(dir, "file"))))).toBe("other");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    for (const code of ["EACCES", "EPERM", "EROFS"]) {
+      expect(importFailureKind(Object.assign(new Error(`${code}: refused`), { code }))).toBe("permission-denied");
+    }
+    for (const code of ["ENOTDIR", "EIO"]) {
+      expect(importFailureKind(Object.assign(new Error(`${code}: unreadable`), { code }))).toBe("unreadable");
+    }
+    expect(importFailureKind(new SyntaxError("Unexpected token } in JSON"))).toBe("unreadable");
+    expect(importFailureKind(new Error("[mcp-manager] governance refused notes"))).toBe("other");
+    expect(importFailureKind("not an error")).toBe("other");
   });
 });

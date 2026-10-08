@@ -109,15 +109,29 @@ describe("UsageDashboard — workspace stats section", () => {
     });
   });
 
-  it("renders the marketplace status pill with the resolved online state", async () => {
-    const api = workspaceStatsApi({ marketplacePing: { configured: true, online: true } });
+  it("reads the marketplace as synced when an enabled source is up to date", async () => {
+    const api = workspaceStatsApi({
+      marketplaceSources: [
+        { id: "ave", enabled: true, status: { state: "up-to-date" } },
+        { id: "acme", enabled: false, status: { state: "never-synced" } },
+      ],
+    });
     const { findByTestId } = await renderDashboard(api as any);
     const status = await findByTestId("general-tab-marketplace-status");
-    await waitFor(() => expect(status.textContent).toContain("정상"));
+    await waitFor(() => expect(status.textContent).toContain("동기화됨"));
   });
 
-  it("renders 미연결 when the marketplace is not configured", async () => {
-    const api = workspaceStatsApi({ marketplacePing: { configured: false, online: false } });
+  it("reads the marketplace as not synced when no enabled source is up to date", async () => {
+    const api = workspaceStatsApi({
+      marketplaceSources: [{ id: "ave", enabled: true, status: { state: "unreachable", code: "SOURCE_UNREACHABLE", cached: true } }],
+    });
+    const { findByTestId } = await renderDashboard(api as any);
+    const status = await findByTestId("general-tab-marketplace-status");
+    await waitFor(() => expect(status.textContent).toContain("동기화 안 됨"));
+  });
+
+  it("renders 미연결 when no marketplace source is enabled", async () => {
+    const api = workspaceStatsApi({ marketplaceSources: [{ id: "acme", enabled: false, status: { state: "up-to-date" } }] });
     const { findByTestId } = await renderDashboard(api as any);
     const status = await findByTestId("general-tab-marketplace-status");
     await waitFor(() => expect(status.textContent).toContain("미연결"));

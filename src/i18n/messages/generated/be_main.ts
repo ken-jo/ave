@@ -1,42 +1,7 @@
 // AUTO-GENERATED — i18n migration. Source: src/main.ts. Do not edit by hand.
 export const en = {
-  // marketplacePackageLabel
-  "be_main.labelAgent": "Agent",
-  "be_main.labelSkill": "Skill",
-  "be_main.labelMcpServer": "MCP Server",
-  "be_main.labelPlugin": "Plugin",
-
-  // dialog buttons
-  "be_main.btnOk": "OK",
-  "be_main.btnRemove": "Remove",
-  "be_main.btnCancel": "Cancel",
-  "be_main.btnInstall": "Install",
-  "be_main.btnInstallAndOpenSettings": "Install and Open Settings",
-
-  // handleAssistantMarketplaceAction / handleMcpMarketplaceAction dialogs
-  "be_main.packageNotInstalledMsg": "{label} '{name}' is not installed.",
-  "be_main.packageNotInstalledDetail": "The removal request from an external link was not processed.",
-  "be_main.packageUninstallMsg": "Remove {label} '{name}'?",
-  "be_main.packageUninstallDetail": "This removal was requested via an external link.",
-  "be_main.packageInstallMsg": "Install {label} '{name}'?",
-  "be_main.packageInstallDetail": "This installation was requested via an external link.",
-
-  // handleMcpLoginAction dialog
-  "be_main.mcpLoginPrepareMsg": "Prepare login for MCP '{name}'?",
-  "be_main.mcpLoginPrepareDetail": "The MCP server will be installed and its connection settings registered before OAuth login. Tokens or authorization codes are not stored in the marketplace manifest.",
-
-  // handleAveUri — managed plugin uninstall dialogs
-  "be_main.pluginManagedCannotRemoveMsg": "Plugin '{name}' cannot be removed.",
-  "be_main.pluginManagedCannotRemoveDetail": "Plugins installed by an administrator cannot be removed by user request.",
-  "be_main.pluginNotInstalledMsg": "Plugin '{name}' is not installed.",
-  "be_main.pluginNotInstalledDetail": "The removal request from an external link was not processed.",
-  "be_main.pluginUninstallMsg": "Remove plugin '{name}'?",
-  "be_main.pluginUninstallDetail": "This removal was requested via an external link. Plugin files, local data, settings, stored secrets, and recorded login sessions will be deleted.",
-  "be_main.pluginInstallMsg": "Install plugin '{slug}'?",
-  "be_main.pluginInstallDetail": "This installation was requested via an external link.",
-
   // createViewMenu / menu labels
-  "be_main.menuPlugins": "Plugins",
+  "be_main.menuPlugins": "Extensions",
   "be_main.menuHome": "Home",
   "be_main.menuSettings": "Settings...",
   "be_main.menuOpenAve": "Open Ave",
@@ -58,7 +23,7 @@ export const en = {
   // bootstrap status messages
   "be_main.bootstrapStatusPreparingRuntime": "Preparing runtime...",
   "be_main.bootstrapStatusLoadingSettingsAndMemory": "Loading user settings and memory...",
-  "be_main.bootstrapStatusVerifyingPluginIntegrity": "Verifying plugin integrity...",
+  "be_main.bootstrapStatusVerifyingPluginIntegrity": "Verifying extension integrity...",
   "be_main.bootstrapStatusSyncingMarketplace": "Syncing with marketplace...",
   "be_main.bootstrapStatusOpeningWorkspace": "Opening workspace...",
 
@@ -71,37 +36,7 @@ export const en = {
   "be_main.splashVersionLabel": "Version information",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
-  "be_main.labelAgent": "에이전트",
-  "be_main.labelSkill": "스킬",
-  "be_main.labelMcpServer": "MCP 서버",
-  "be_main.labelPlugin": "플러그인",
-
-  "be_main.btnOk": "확인",
-  "be_main.btnRemove": "제거",
-  "be_main.btnCancel": "취소",
-  "be_main.btnInstall": "설치",
-  "be_main.btnInstallAndOpenSettings": "설치 후 설정 열기",
-
-  "be_main.packageNotInstalledMsg": "{label} '{name}'은(는) 설치되어 있지 않습니다.",
-  "be_main.packageNotInstalledDetail": "외부 링크의 제거 요청을 처리하지 않았습니다.",
-  "be_main.packageUninstallMsg": "{label} '{name}'을(를) 제거하시겠습니까?",
-  "be_main.packageUninstallDetail": "외부 링크로부터 요청된 제거입니다.",
-  "be_main.packageInstallMsg": "{label} '{name}'을(를) 설치하시겠습니까?",
-  "be_main.packageInstallDetail": "외부 링크로부터 요청된 설치입니다.",
-
-  "be_main.mcpLoginPrepareMsg": "MCP '{name}' 로그인을 준비하시겠습니까?",
-  "be_main.mcpLoginPrepareDetail": "OAuth 로그인을 위해 먼저 MCP 서버를 설치하고 연결 설정을 등록합니다. 토큰이나 인증 코드는 마켓플레이스 manifest에 저장되지 않습니다.",
-
-  "be_main.pluginManagedCannotRemoveMsg": "플러그인 '{name}'은(는) 제거할 수 없습니다.",
-  "be_main.pluginManagedCannotRemoveDetail": "관리자가 설치한 플러그인은 사용자 요청으로 제거할 수 없습니다.",
-  "be_main.pluginNotInstalledMsg": "플러그인 '{name}'은(는) 설치되어 있지 않습니다.",
-  "be_main.pluginNotInstalledDetail": "외부 링크의 제거 요청을 처리하지 않았습니다.",
-  "be_main.pluginUninstallMsg": "플러그인 '{name}'을(를) 제거하시겠습니까?",
-  "be_main.pluginUninstallDetail": "외부 링크로부터 요청된 제거입니다. 플러그인 파일, 로컬 데이터, 설정, 저장된 비밀값, 기록된 로그인 세션이 삭제됩니다.",
-  "be_main.pluginInstallMsg": "플러그인 '{slug}'을(를) 설치하시겠습니까?",
-  "be_main.pluginInstallDetail": "외부 링크로부터 요청된 설치입니다.",
-
-  "be_main.menuPlugins": "플러그인",
+  "be_main.menuPlugins": "익스텐션",
   "be_main.menuHome": "홈",
   "be_main.menuSettings": "설정...",
   "be_main.menuOpenAve": "Ave 열기",
@@ -122,7 +57,7 @@ export const ko: Record<keyof typeof en, string> = {
 
   "be_main.bootstrapStatusPreparingRuntime": "런타임을 준비하는 중...",
   "be_main.bootstrapStatusLoadingSettingsAndMemory": "사용자 설정과 메모리를 불러오는 중...",
-  "be_main.bootstrapStatusVerifyingPluginIntegrity": "플러그인 무결성을 확인하는 중...",
+  "be_main.bootstrapStatusVerifyingPluginIntegrity": "익스텐션 무결성을 확인하는 중...",
   "be_main.bootstrapStatusSyncingMarketplace": "마켓플레이스와 동기화하는 중...",
   "be_main.bootstrapStatusOpeningWorkspace": "작업 화면을 여는 중...",
 

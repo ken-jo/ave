@@ -9,8 +9,28 @@ import { isDeepStrictEqual } from "node:util";
 import * as asar from "@electron/asar";
 import { readBuildSourceIdentity } from "./lib/build-source-identity.mjs";
 import { headlessPackagedMarkerPath } from "./lib/headless-packaged-marker.mjs";
+import {
+  HEADLESS_FORBIDDEN_INHERITED_ENV,
+  prepareHeadlessLaunchEnv,
+} from "./lib/headless-launch-options.mjs";
+
+export { HEADLESS_FORBIDDEN_INHERITED_ENV };
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+export const HEADLESS_RUNTIME_CONTRACTS = Object.freeze({
+  workloadBrokerCorrelation: "ave-workload-correlation/v1",
+  permissionAuditProof: "ave-permission-audit-proof/v1",
+  permissionAuditSelfTest: "ave-permission-audit-self-test/v1",
+  launcherEnvironment: "ave-headless-launch-environment/v1",
+});
+export const HEADLESS_LAUNCHER = `#!/bin/sh
+set -eu
+ave_runtime_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+unset ${HEADLESS_FORBIDDEN_INHERITED_ENV.join(" ")}
+export NODE_ENV=production
+export AVE_RESOURCES_DIR="$ave_runtime_root/resources"
+exec "$ave_runtime_root/bin/node" --disable-warning=UNDICI-EHPA "$ave_runtime_root/app/dist/src/main/headless.js" "$@"
+`;
 
 function parseArguments(argv) {
   const options = {};
@@ -90,7 +110,15 @@ export function extractPackagedRuntime(archive, app) {
 export function writePackagedRuntimeMarker(app) {
   const markerPath = headlessPackagedMarkerPath(app);
   writeFileSync(markerPath, new Uint8Array(), { flag: "wx", mode: 0o444 });
+  chmodSync(markerPath, 0o444);
   return markerPath;
+}
+
+export function writeHeadlessLauncher(root) {
+  const launcherPath = join(root, "ave");
+  writeFileSync(launcherPath, HEADLESS_LAUNCHER, { flag: "wx", mode: 0o755 });
+  chmodSync(launcherPath, 0o755);
+  return launcherPath;
 }
 
 function main() {
@@ -103,7 +131,8 @@ function main() {
   const nodeBinding = binding(options.node);
   const licenseBinding = binding(options["node-license"]);
   const sourceIdentity = readBuildSourceIdentity(repository);
-  const runtime = JSON.parse(execFileSync(options.node, ["-p", "JSON.stringify({version:process.version,platform:process.platform,arch:process.arch,modules:process.versions.modules,napi:process.versions.napi,electron:process.versions.electron??null})"], { encoding: "utf8" }));
+  const runtimeEnv = prepareHeadlessLaunchEnv({ ...process.env });
+  const runtime = JSON.parse(execFileSync(options.node, ["-p", "JSON.stringify({version:process.version,platform:process.platform,arch:process.arch,modules:process.versions.modules,napi:process.versions.napi,electron:process.versions.electron??null})"], { encoding: "utf8", env: runtimeEnv }));
   if (runtime.electron !== null || runtime.platform !== "linux" || !runtime.version.startsWith("v22.")) {
     throw new Error("The server artifact requires the standalone Linux 22.x runtime");
   }
@@ -154,7 +183,7 @@ function main() {
   cpSync(options["node-license"], join(options.out, "licenses/node-LICENSE"));
   // Keep NODE_ENV for downstream compatibility; the app-root marker below is
   // the only input that establishes the native runtime's packaged identity.
-  writeFileSync(join(options.out, "ave"), '#!/bin/sh\nset -eu\nave_runtime_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexport NODE_ENV=production\nexport AVE_RESOURCES_DIR="$ave_runtime_root/resources"\nexec "$ave_runtime_root/bin/node" "$ave_runtime_root/app/dist/src/main/headless.js" "$@"\n', { mode: 0o755 });
+  writeHeadlessLauncher(options.out);
   const packagedMarker = writePackagedRuntimeMarker(app);
 
   const probeProfile = mkdtempSync(join(tmpdir(), "ave-package-runtime-"));
@@ -164,9 +193,7 @@ function main() {
       ...process.env, NODE_ENV: "production", AVE_RESOURCES_DIR: resources,
       AVE_HOME: join(probeProfile, "home"), AVE_USER_DATA_DIR: join(probeProfile, "user-data"),
     };
-    delete probeEnv.NODE_OPTIONS;
-    delete probeEnv.NODE_PATH;
-    delete probeEnv.ELECTRON_RUN_AS_NODE;
+    prepareHeadlessLaunchEnv(probeEnv);
     delete probeEnv.AVE_SECRET_KEY_FILE;
     const addonProbe = execFileSync(join(options.out, "bin/node"), [join(repository, "scripts/headless-runtime-smoke.mjs"), app], { encoding: "utf8", cwd: options.out, env: probeEnv, timeout: 60_000 });
     nativeRuntime = JSON.parse(addonProbe.trim());
@@ -176,6 +203,7 @@ function main() {
   if (nativeRuntime.database !== "ok" || nativeRuntime.terminal !== "ok") throw new Error("Native runtime qualification did not complete");
   const manifest = {
     schema: "ave-headless-runtime/v1",
+    contracts: HEADLESS_RUNTIME_CONTRACTS,
     version: sourcePackage.version,
     source: boundary.source,
     producer: { commit: sourceIdentity.commit, tree: sourceIdentity.tree, script: binding(fileURLToPath(import.meta.url)) },

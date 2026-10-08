@@ -26,7 +26,7 @@ import {
 import { getDeclaredEmittedEvents } from "../../plugins/runtime/manifest-validation.js";
 import { registerManifestEventSubscriptions } from "../plugins.js";
 import { mkdtempSync } from "node:fs";
-import { agentPluginsDocument } from "../../plugins/__tests__/test-helpers.js";
+import { servedAgentPluginsDocument } from "../../plugins/__tests__/test-helpers.js";
 
 describe("capabilities module namespace policy", () => {
   it("classifies private namespaces as 'private'", () => {
@@ -67,10 +67,10 @@ describe("capabilities module namespace policy", () => {
   });
 
   it("KNOWN_CAPABILITIES is the reduced host-ENFORCED set (Ph1/Ph2)", () => {
-    // After the capabilities reduction the enforced vocab is exactly the two
-    // strings the host gates on at runtime.
+    // Raw credential export adds a distinct capability to the host-enforced
+    // vocabulary; the lease operation remains under its existing gate.
     expect([...KNOWN_CAPABILITIES].sort()).toEqual(
-      ["external-auth-consumer", "host:overlay"].sort(),
+      ["external-auth-consumer", "host:overlay", "secrets:raw-api-key"].sort(),
     );
     // The 6 dead strings and the 4 event-source strings (now inferred from
     // emittedEvents) are all gone from the enforced vocab.
@@ -125,6 +125,16 @@ describe("capabilities module namespace policy", () => {
     expect(HOST_ONLY_EMIT_NAMESPACES.has("work_board")).toBe(true);
   });
 
+  it("refuses a forged alert emit even when the plugin declares it", () => {
+    // `alert.raised` / `alert.withdrawn` report what the host's alert pipeline
+    // accepted and withdrew; a plugin that could emit them could make
+    // subscribers react to an alert nobody raised.
+    expect(canEmitEvent("alert.raised", [])).toBe(false);
+    expect(canEmitEvent("alert.raised", ["alert.raised"])).toBe(false);
+    expect(canEmitEvent("alert.withdrawn", ["alert.withdrawn"])).toBe(false);
+    expect(HOST_ONLY_EMIT_NAMESPACES.has("alert")).toBe(true);
+  });
+
   it("private namespaces reject plugin emit even when explicitly declared", () => {
     for (const eventType of [
       "memory.private.document",
@@ -173,7 +183,6 @@ describe("registerManifestEventSubscriptions namespace gate", () => {
       name: id,
       version: "1.0.0",
       description: "Test fixture.",
-      publisher: "Test fixture",
       entry: "entry.mjs",
       tools: [
         {
@@ -186,7 +195,7 @@ describe("registerManifestEventSubscriptions namespace gate", () => {
       eventSubscriptions,
       ...extra,
     };
-    await writeFile(join(pluginDir, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(join(pluginDir, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)), "utf-8");
     await mkdir(join(testDir, "plugins"), { recursive: true });
     await writeFile(
       registryPath,
@@ -321,7 +330,6 @@ describe("capability emit gate", () => {
       name: id,
       version: "1.0.0",
       description: "Test fixture.",
-      publisher: "Test fixture",
       entry: "entry.mjs",
       tools: [
         {
@@ -334,7 +342,7 @@ describe("capability emit gate", () => {
       emittedEvents,
       ...extra,
     };
-    await writeFile(join(pluginDir, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(join(pluginDir, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)), "utf-8");
     await mkdir(join(testDir, "plugins"), { recursive: true });
     await writeFile(
       registryPath,

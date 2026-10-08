@@ -188,3 +188,11 @@ describe("routine pending results", () => {
     ]);
   });
 });
+
+it("reports a manual missing-plugin skip without pretending the routine was not found", async () => {
+  handlers.clear();
+  const { registerRoutineHandlers } = await import("../routines.js");
+  const deps = { ...makeDeps([]), routinesScheduler: { dispatchNow: vi.fn(async () => "plugins-missing") } };
+  registerRoutineHandlers(deps as unknown as Parameters<typeof registerRoutineHandlers>[0]);
+  expect(await invoke(ROUTINES.triggerNow, "routine-a")).toEqual({ ok: false, error: "plugins-missing" });
+});

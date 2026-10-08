@@ -3,7 +3,7 @@
  *
  * Same discipline as the handshake gate: every security-relevant piece is the REAL
  * production module, so this cannot pass against a reimplementation.
- *   - registerMcpAppProtocolScheme   (main/mcp-app-protocol.ts)
+ *   - MCP_APP_CUSTOM_SCHEME          (main/mcp-app-protocol.ts)
  *   - installMcpAppPartitionPolicy   (main/html-preview-partition.ts)
  *       → the declared-origin network gate, the `ave-mcp-app://` handler that serves the
  *         proxy document (carrying the host-computed `allow` meta), the relay preload,
@@ -37,7 +37,7 @@ import { installMcpAppPartitionPolicy } from "../../../../src/main/html-preview-
 import {
   createMcpAppProxySession,
   disposeMcpAppProxySession,
-  registerMcpAppProtocolScheme,
+  MCP_APP_CUSTOM_SCHEME,
 } from "../../../../src/main/mcp-app-protocol.js";
 import { mcpAppPartitionName } from "../../../../src/shared/mcp-app-partition.js";
 import type { McpUiResourcePermissions } from "../../../../src/mcp/types.js";
@@ -66,7 +66,7 @@ const ALL_FOUR: McpUiResourcePermissions = {
 // src/shared/mcp-app-permissions.ts and mcp-app-permissions.spec.ts:44-47,190-195).
 const MIC_ONLY: McpUiResourcePermissions = { microphone: {} };
 
-registerMcpAppProtocolScheme(protocol);
+protocol.registerSchemesAsPrivileged([MCP_APP_CUSTOM_SCHEME]);
 
 // The two cards run in SEQUENCE, so there is a moment with no window open. Electron's
 // default would quit the app right there and the second card would never run.

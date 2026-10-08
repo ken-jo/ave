@@ -9,16 +9,9 @@ export { applyBundleToDocument, resolveSystemPair, bundleShell } from "./resolve
 export { bundleToPluginTokens } from "./plugin-token-map.js";
 export {
   BUNDLES,
-  DEFAULT_VISIBLE_BUNDLES,
-  MARKETPLACE_THEME_BUNDLES,
   DEFAULT_BUNDLE_ID,
   findBundle,
-  isBundleId,
-  loadAllThemeBundles,
-  loadThemeBundle,
-  loadThemeBundles,
-  visibleBundlesFor,
+  visibleBundles,
 } from "./bundles/index.js";
-export type { ThemeBundle, BundleTokens, ThemeBundleManifest } from "./bundles/index.js";
+export type { ThemeBundle } from "./bundles/index.js";
 export type { ThemeContextValue } from "./types.js";
-export { VIOLET_PAIR_IDS } from "./types.js";

@@ -65,6 +65,10 @@ const INTERNAL: readonly string[] = [
   // list has to mean it.
   "AVE_SUBSCRIPTION_TOOL_BRIDGE_TOKEN",
   "AVE_SUBSCRIPTION_TOOL_BRIDGE_URL",
+  // The marketplace's git askpass helper: the host mints a single-use ticket
+  // and names its local socket for the git child it spawns (design §9.3).
+  "AVE_ASKPASS_ENDPOINT",
+  "AVE_ASKPASS_TICKET",
 ];
 
 /**

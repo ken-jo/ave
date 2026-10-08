@@ -28,7 +28,7 @@ import { relativeLuminance } from "./helpers.js";
 import { render } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { AssistantCard } from "../../src/ui/renderer/components/AssistantCard.js";
-import { BUNDLE_IDS, loadThemeBundle } from "../../src/ui/renderer/theme/bundles/index.js";
+import { BUNDLE_IDS, findBundle } from "../../src/ui/renderer/theme/bundles/index.js";
 import { assistantEntry } from "../../src/__tests__/test-helpers.js";
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -123,16 +123,16 @@ describe("Theme tokens — body text contrast must clear WCAG AA on every shell"
 
 describe("Theme bundles — chat and code text contrast must clear WCAG AA", () => {
   for (const bundleId of BUNDLE_IDS) {
-    it(`${bundleId} foreground/background contrast >= 4.5:1`, async () => {
-      const bundle = await loadThemeBundle(bundleId);
+    it(`${bundleId} foreground/background contrast >= 4.5:1`, () => {
+      const bundle = findBundle(bundleId);
       expect(bundle).toBeDefined();
       if (!bundle) return;
       const ratio = contrastRatio(bundle.tokens.foreground, bundle.tokens.background);
       expect(ratio).toBeGreaterThanOrEqual(4.5);
     });
 
-    it(`${bundleId} code foreground/background contrast >= 4.5:1`, async () => {
-      const bundle = await loadThemeBundle(bundleId);
+    it(`${bundleId} code foreground/background contrast >= 4.5:1`, () => {
+      const bundle = findBundle(bundleId);
       expect(bundle).toBeDefined();
       if (!bundle) return;
       const ratio = contrastRatio(bundle.tokens["code-fg"], bundle.tokens["code-bg"]);

@@ -17,6 +17,7 @@
 import type { BrowserWindow, Tray } from "electron";
 import type { WindowManager } from "./window-manager.js";
 import type { AppServices } from "../boot.js";
+import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type GitMarketplaceDeepLink } from "../shared/git-marketplace.js";
 
 // Main-window identity and mode-driven bounds manager. Created before
 // createWindow() so it is ready when the main window is registered.
@@ -50,6 +51,40 @@ export function getServices(): AppServices | null {
 }
 export function setServices(value: AppServices | null): void {
   services = value;
+}
+
+// Git marketplace deep link and boot-install notice (design §15.1):
+// held here until the Marketplace tab reads them, since either can arrive
+// before the tab is open.
+let pendingGitMarketplaceLink: GitMarketplaceDeepLink | null = null;
+export function setPendingGitMarketplaceLink(value: GitMarketplaceDeepLink): void {
+  pendingGitMarketplaceLink = value;
+}
+export function takePendingGitMarketplaceLink(): GitMarketplaceDeepLink | null {
+  const link = pendingGitMarketplaceLink;
+  pendingGitMarketplaceLink = null;
+  return link;
+}
+
+/**
+ * The git marketplace's lifetime (design §7.3), shared by everything of it
+ * that reaches the renderer or starts work: the marketplace IPC domain, its
+ * git runtime's progress and its deep links. Aborted once, by the
+ * `git-marketplace-events` shutdown hook the marketplace domain registers;
+ * the work in progress then finishes, and nothing after it is sent.
+ */
+const marketplaceLifetime = new AbortController();
+export function getMarketplaceLifetime(): AbortController {
+  return marketplaceLifetime;
+}
+
+let bootInstallNotice: BootInstallNoticeView | null = null;
+/** Set by the boot-install step; an empty notice clears it. */
+export function setBootInstallNotice(value: BootInstallNoticeView | null): void {
+  bootInstallNotice = value && !bootInstallNoticeIsEmpty(value) ? value : null;
+}
+export function getBootInstallNotice(): BootInstallNoticeView | null {
+  return bootInstallNotice;
 }
 
 let pendingAveUri: string | null = null;

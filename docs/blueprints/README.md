@@ -15,6 +15,10 @@ This page owns the blueprint index and the status language for active, implement
 - Source files and tests are authoritative when this prose and implementation disagree.
 - Korean-only material stays in the mirrored archive unless it is translated or summarized here.
 
+## Plans In This Directory
+
+- [Multi-source git marketplace](./multi-source-git-marketplace.md) — phases 0–6 done; phase 7 (release and server retirement) remains. Supersedes [keyless-marketplace-signing](./keyless-marketplace-signing.md) and [signed-admission-catalog](./signed-admission-catalog.md).
+
 ## Implementation Anchors
 
 - `docs/architecture/README.md`

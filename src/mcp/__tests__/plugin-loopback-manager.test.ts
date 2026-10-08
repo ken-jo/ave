@@ -14,7 +14,6 @@ function manifest(id: string, tools: string[]): PluginManifest {
     version: "1.0.0",
     entry: "dist/index.js",
     description: id,
-    publisher: "tests",
     tools: tools.map((name) => ({
       name,
       description: name,

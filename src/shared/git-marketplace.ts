@@ -1,0 +1,1016 @@
+/**
+ * The git marketplace as the renderer sees it (design §13, §15): the views
+ * the `ave:marketplace:*` channels return, their requests, the events, and
+ * the private `window.aveApi.gitMarketplace` namespace.
+ *
+ * The kind list and the error codes are the marketplace's own
+ * (`catalog/types.ts`, `errors.ts`), both free of imports, so the renderer
+ * reads the same constants main validates against.
+ */
+import { PACKAGE_KINDS, type AgentPluginComponents, type PackageKind } from "../marketplace/catalog/types.js";
+import type { ComponentDelta } from "../marketplace/app/component-delta.js";
+import { MARKETPLACE_ERROR_CODES, parseMarketplaceErrorDetail, type EnteredTargetWarningView, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../marketplace/errors.js";
+import type { DirectDetectedFile } from "../marketplace/sources/direct-package.js";
+import type { SourceWarning, SourceWarningView } from "../marketplace/sources/warnings.js";
+
+export type { EnteredTargetWarningView, MarketplaceErrorDetail, PackageKind, SourceWarning, SourceWarningView };
+export { parseMarketplaceErrorDetail };
+
+/**
+ * What a source's row and its package cards show while it applies (design
+ * §18.5): plain http, and each address class the user confirmed; for a
+ * folder, whether it is on this computer or read from another one — with
+ * or without the source's `network-folder` confirmation — or that Ave
+ * cannot tell, because its folder classifier does not run (§18.4.8). Text
+ * plus a tooltip, never colour alone.
+ */
+export type SourceBadge =
+  | "unencrypted"
+  | "internal-network"
+  | "this-computer"
+  | "internal-downloads"
+  | "local-folder"
+  | "network-folder"
+  | "network-folder-unconfirmed"
+  | "folder-unclassified";
+
+export type SourceOriginKind = "official" | "managed" | "custom" | "direct";
+
+const SOURCE_ORIGIN_KINDS: readonly SourceOriginKind[] = ["official", "managed", "custom", "direct"];
+
+/** A package in one source: the identity every channel takes (design §15.1). */
+export interface PackageKeyView {
+  sourceId: string;
+  kind: PackageKind;
+  name: string;
+}
+
+/** An installed package's key: the source is null when the install is bound to none. */
+export interface InstalledKeyView {
+  sourceId: string | null;
+  kind: PackageKind;
+  name: string;
+}
+
+// ─── Sources ────────────────────────────────────────────────────────────────
+
+export type SourceStatusView =
+  | { state: "up-to-date" }
+  | { state: "syncing" }
+  | { state: "never-synced" }
+  /**
+   * The last sync failed with `code`, and why when it was recorded (§18.8);
+   * `cached` when the snapshot at the pin is still served.
+   */
+  | { state: "unreachable"; code: MarketplaceErrorCode; detail?: MarketplaceErrorDetail; cached: boolean }
+  | { state: "auth-required"; detail?: MarketplaceErrorDetail<"SOURCE_AUTH_REQUIRED">; cached: boolean }
+  /** Custom and direct sources show Review; official and managed keep the pin (design §7.3). */
+  | { state: "history-rewritten"; candidate: string; reviewable: boolean }
+  /**
+   * Its downloaded copy (state or snapshot) cannot be used: the row offers
+   * Repair (§18.8). `message` is main's scrubbed English, for Copy details.
+   */
+  | { state: "broken"; message: string; detail?: MarketplaceErrorDetail<"SOURCE_LOCAL_DATA_DAMAGED"> }
+  /**
+   * Its stored id has a credential's shape (§18.8): an earlier build added
+   * it before ids were checked. It is neither synced nor served; the row's
+   * `id` is a handle main issued, and Remove is its only action.
+   */
+  | { state: "id-holds-credential" };
+
+/**
+ * A source as the Sources view lists it: a git repository at its normalized
+ * address, or a local folder at its canonical path, read in place (§18.4).
+ */
+export type SourceView = SourceViewFields & (
+  | { transport: "git"; url: string; path: null }
+  | { transport: "folder"; url: null; path: string }
+);
+
+interface SourceViewFields {
+  id: string;
+  origin: SourceOriginKind;
+  /** The user's label, else the marketplace's display name, else the id. */
+  label: string;
+  ref: string | null;
+  /** Direct sources: the package path inside the repository. */
+  subdir: string | null;
+  mirrors: number;
+  auth: "none" | "token" | "ssh";
+  /** The host a token is stored under when `auth` is token. */
+  tokenHost: string | null;
+  tokenStored: boolean;
+  pinnedCommit: string | null;
+  lastSyncAt: string | null;
+  marketplace: { name: string; displayName: string; description: string | null; owner: string | null } | null;
+  packageCount: number;
+  status: SourceStatusView;
+  enabled: boolean;
+  canDisable: boolean;
+  canRemove: boolean;
+  /** Packages the snapshot dropped, as "path: problem". */
+  diagnostics: string[];
+  /** The confirmations the source holds (§18.5). */
+  acknowledged: SourceWarning[];
+  badges: SourceBadge[];
+}
+
+export interface SourcePreviewRequest {
+  /**
+   * `owner/repo`, an https or ssh URL, or `git@host:path`; or a folder: an
+   * absolute, `~`, drive or UNC path, or a `file:` URL (§18.4.1). A folder
+   * takes no `ref`, `subdir`, `token` or sign-in.
+   */
+  input: string;
+  ref?: string;
+  /** Direct install from a git folder (design §8.1). */
+  subdir?: string;
+  auth: "none" | "token" | "ssh";
+  /** Used for this preview only; stored under the host when the source is added. */
+  token?: string;
+  /**
+   * The warnings the user confirmed for this address (§18.5). A preview that
+   * needs one it does not carry answers `confirm` before any network or git
+   * traffic; *Add* stores exactly these.
+   */
+  acknowledge?: SourceWarning[];
+}
+
+/**
+ * A folder chosen with *Choose folder…* (§18.9). Main keeps the folder it
+ * chose; `pick` names that selection, and `display` is its path as the tab
+ * may show it — scrubbed (§18.8), so text to read, never an address to send.
+ */
+export interface FolderPickView {
+  pick: string;
+  display: string;
+}
+
+/**
+ * What the tab previews: an address as typed, or a *Choose folder…*
+ * selection by its `pick` (§18.9), which main resolves to the folder it
+ * chose. A folder takes no branch, package folder or sign-in.
+ */
+export type SourcePreviewAsk = SourcePreviewRequest | { pick: string; auth: "none"; acknowledge?: SourceWarning[] };
+
+/** The address needs confirmations before Ave contacts it (§18.5 step 3); *Continue* previews again with them. */
+interface SourceConfirmView {
+  type: "confirm";
+  warnings: EnteredTargetWarningView[];
+}
+
+export interface MarketplacePreviewView {
+  type: "marketplace";
+  previewId: string;
+  expiresAt: string;
+  transport: "git" | "folder";
+  url: string | null;
+  /** A folder's canonical path (§18.4.1 stage 4). */
+  path: string | null;
+  /** What was typed, when the canonical path differs from it ("resolved from …"). */
+  resolvedFrom: string | null;
+  /** What the source will show once added (§18.5 step 4): plain http and each class confirmed. */
+  badges: SourceBadge[];
+  ref: string | null;
+  /** The commit read, or a folder's revision `local-<sha256>` (§18.4.3). */
+  commit: string;
+  marketplace: { name: string; displayName: string; description: string | null; owner: string | null };
+  counts: Partial<Record<PackageKind, number>>;
+  /** Plugins and MCP servers: packages that can run code on this computer. */
+  codeRunning: number;
+  diagnostics: string[];
+  /** An OS credential helper answers for this host (design §9.3). */
+  credentialHelper: boolean;
+  suggestedId: string;
+}
+
+
+interface DirectPackagePreviewView {
+  type: "package";
+  previewId: string;
+  expiresAt: string;
+  transport: "git" | "folder";
+  url: string | null;
+  path: string | null;
+  resolvedFrom: string | null;
+  /** What the source will show once added (§18.5 step 4): plain http and each class confirmed. */
+  badges: SourceBadge[];
+  ref: string | null;
+  subdir: string | null;
+  commit: string;
+  detectedFrom: DirectDetectedFile;
+  kind: PackageKind;
+  name: string;
+  displayName: string | null;
+  description: string | null;
+  version: string;
+  /** `0.0.0+g<commit12>` (git) or `0.0.0+t<digest12>` (folder): the file declares no version (design §8.2, §18.4.7). */
+  versionSynthesized: boolean;
+  runsCode: boolean;
+  credentialHelper: boolean;
+  suggestedId: string;
+}
+
+export type SourcePreviewView = MarketplacePreviewView | DirectPackagePreviewView;
+
+export type SourcePreviewResultView = SourcePreviewView | SourceConfirmView;
+
+export interface SourceAddRequest {
+  previewId: string;
+  id?: string;
+  label?: string;
+}
+
+// ─── Catalog ────────────────────────────────────────────────────────────────
+
+export type PackageStateView =
+  | { state: "install"; version: string }
+  | { state: "installed"; version: string | null }
+  | { state: "update"; from: string; to: string }
+  | { state: "requires-app"; minAppVersion: string }
+  | { state: "yanked" }
+  | { state: "revoked" }
+  | { state: "unavailable" }
+  /** The name is installed from another source (or from none): installing here is a switch. */
+  | { state: "installed-elsewhere"; sourceId: string | null; version: string | null }
+  /** Installed from a source that no longer exists: no updates. */
+  | { state: "source-removed"; version: string | null }
+  /** Installed without a source (a pasted server.json, a local plugin): nothing updates it. */
+  | { state: "unbound"; version: string | null };
+
+export interface CatalogEntryView {
+  /** The source is null only for an installed package bound to none (`installedOnly`). */
+  key: InstalledKeyView;
+  sourceOrigin: SourceOriginKind | null;
+  sourceLabel: string | null;
+  displayName: string;
+  description: string;
+  keywords: string[];
+  state: PackageStateView;
+  /** The policy's requiredInstalls names this package from this source: no Uninstall or Disable. */
+  required: boolean;
+  /** Plugins and MCP servers. */
+  runsCode: boolean;
+  /** The badges of the source this row is from (§18.5); none for a package bound to no source. */
+  sourceBadges: SourceBadge[];
+}
+
+export interface CatalogQuery {
+  kind?: PackageKind;
+  sourceId?: string;
+  query?: string;
+  installedOnly?: boolean;
+}
+
+export interface CatalogView {
+  entries: CatalogEntryView[];
+  /** Entries per kind for the tab counts, before the kind filter. */
+  counts: Record<PackageKind, number>;
+  sourceCount: number;
+  /** The most recent successful sync of any shown source. */
+  syncedAt: string | null;
+}
+
+// ─── Detail, plans, installs ────────────────────────────────────────────────
+
+export type VersionExclusionView = "min_app_version" | "host_protocol" | "yanked" | "platform" | "prerelease" | "rollout" | "revoked";
+
+export interface VersionView {
+  version: string;
+  commit: string;
+  publishedAt: string;
+  minAppVersion: string;
+  excluded: VersionExclusionView[];
+  yankedReason: string | null;
+  rolloutPercent: number | null;
+  installed: boolean;
+  /** The version the source offers this installation. */
+  candidate: boolean;
+}
+
+export interface AuthorityView {
+  capabilities: string[];
+  networkHosts: string[];
+  secrets: string[];
+  pluginAccess: string[];
+  dependencies: string[];
+  filesystem: Array<{ access: "read" | "write"; target: string; why: string }>;
+}
+
+/** `folder`: a folder source's one rung, its built tree read in place (§18.4.2). */
+type RungKindView = "release" | "archive" | "tree" | "folder";
+
+export interface RungView {
+  rung: RungKindView;
+  declared: boolean;
+  /** A sha256 stored in git (release and archive); the tree rung needs none. */
+  pinned: boolean;
+  /** Asset name, archive host or tree path. */
+  detail: string | null;
+  /** The download is plain http: verified only by its pinned sha256 (§18.2.3). */
+  unencrypted: boolean;
+}
+
+export type RungOutcomeView =
+  | { rung: RungKindView; outcome: "used" }
+  | { rung: RungKindView; outcome: "skipped"; reason: string }
+  | { rung: RungKindView; outcome: "failed"; code: string; message: string };
+
+export interface McpRuntimeView {
+  transport: "stdio" | "http";
+  /** The command line after `$PLUGIN_DIR`/`$DATA_DIR`/`$NODE` names, before substitution. */
+  command: string | null;
+  args: string[];
+  url: string | null;
+  env: Array<{ name: string; secret: boolean; required: boolean }>;
+  usesDataDir: boolean;
+}
+
+export interface PackageDetailView {
+  entry: CatalogEntryView;
+  provenance: {
+    sourceLabel: string;
+    /** The git source's address, or null for a folder. */
+    repository: string | null;
+    /**
+     * A folder source (§18.4.8): its path, when Ave last read it, and the
+     * tree digest of what this package installs; null for a git source.
+     */
+    folder: { path: string; readAt: string; contents: string | null } | null;
+    path: string;
+    snapshotCommit: string;
+    versionCommit: string | null;
+    publishedAt: string | null;
+  };
+  compatibility: { minAppVersion: string | null; appVersion: string; compatible: boolean };
+  authority: AuthorityView | null;
+  components: AgentPluginComponents | null;
+  rungs: RungView[];
+  versions: VersionView[];
+}
+
+export interface InstallPlanRequest extends PackageKeyView {
+  version?: string;
+  /** Replace an install bound to another source (or to none), keeping the plugin's data. */
+  switchSource?: boolean;
+}
+
+export type InstallActionView =
+  | { action: "install" }
+  | { action: "replace"; direction: "upgrade" | "reinstall" | "downgrade" | "repair"; from: string | null }
+  | { action: "switch"; fromSource: string | null; from: string | null };
+
+export interface InstallPlanView {
+  planId: string;
+  expiresAt: string;
+  key: PackageKeyView;
+  displayName: string;
+  version: string;
+  snapshotCommit: string;
+  versionCommit: string;
+  action: InstallActionView;
+  runsCode: boolean;
+  authority: AuthorityView | null;
+  components: AgentPluginComponents | null;
+  /** Confinement observed by the host when this review plan was issued. */
+  hookConfinement: "sandboxed" | "user-permissions" | "unavailable";
+  rungs: RungView[];
+  mcp: McpRuntimeView | null;
+  /** A folder package's top-level entries that are not installed (`src/`, `package.json`, §18.4.2); empty for git. */
+  notInstalled: string[];
+}
+
+// ─── Consent (design §18.7.3) ───────────────────────────────────────────────
+
+export type ConsentJson = null | boolean | number | string | ConsentJson[] | { [key: string]: ConsentJson };
+
+/**
+ * One field of the consent fingerprint that differs between the installed
+ * baseline and an update. `checkpoint` says where the difference was seen:
+ * the catalog (no download) or the staged bytes. `before` is the baseline's
+ * value (`"unknown"` when it could not be computed), `after` the update's
+ * (`null`: the component is gone; `"added"`: the catalog lists a component
+ * the baseline lacks). `changedFiles` is set for a changed approval digest:
+ * the package paths whose bytes differ, split for display only.
+ */
+export interface ConsentDeltaEntry {
+  field: string;
+  checkpoint: "catalog" | "staged";
+  before: ConsentJson | "unknown";
+  after: ConsentJson;
+  changedFiles?: { code: string[]; nonCode: string[] };
+}
+
+export type ConsentDelta = ConsentDeltaEntry[];
+
+export interface UpdatePlanView extends InstallPlanView {
+  from: string | null;
+  /** `origin.commit` of the install to the plan's snapshot commit. */
+  commitRange: { from: string | null; to: string };
+  authorityDelta: { added: AuthorityView; removed: AuthorityView } | null;
+  componentsDelta: ComponentDelta | null;
+  /** The source's history was rewritten and the new history is pending review (custom and direct only). */
+  historyRewritten: { pinned: string | null; candidate: string } | null;
+  /** New network hosts, secrets or capabilities, or rewritten history: the update needs an explicit decision. */
+  needsConfirmation: boolean;
+  /**
+   * Every consent-fingerprint field that differs from the installed
+   * baseline, from the staged bytes when the review staged them (§18.7.3):
+   * a review with no `pending` field left. `authorityDelta` and
+   * `componentsDelta` are projections of it.
+   */
+  consentDelta: ConsentDelta;
+  /** The only differences are approval digests and no changed file is code: the one-row review with *Approve update*. */
+  codeFreeChange: boolean;
+  /**
+   * The bundled MCP servers and hooks whose approval this update changes, as
+   * the review's approve boxes send them back: an agent plugin's by name or
+   * index with its declared digest, an extension's by local id with its
+   * approval digest (§18.7.3 "Extension components").
+   */
+  reviewComponents: ReviewComponentView[];
+}
+
+/** One bundled component an update review can approve. */
+export type ReviewComponentView =
+  | { kind: "mcpServer"; consent: McpComponentConsent; field: string }
+  | { kind: "hook"; consent: HookComponentConsent; field: string }
+  | { kind: "extension"; consent: ExtensionComponentConsent; field: string };
+
+type InstallPhaseView = "resolving" | "downloading" | "verifying" | "installing" | "activating";
+
+export interface InstallProgressView {
+  planId: string;
+  phase: InstallPhaseView;
+  rung: RungKindView | null;
+  bytes: number | null;
+  total: number | null;
+}
+
+export interface InstallResultView {
+  /** `sourceId` is null for an MCP server from a pasted server.json: it is bound to no source. */
+  key: { sourceId: string | null; kind: PackageKind; name: string };
+  /** Null for a pasted server.json, whose version is not recorded. */
+  version: string | null;
+  action: InstallActionView;
+  /** Plugins: the rung that delivered and every rung's outcome. */
+  rungs: RungOutcomeView[];
+  /** MCP servers: installed, but the first connection failed with this message (the server stays configured). */
+  connectionWarning: string | null;
+}
+
+export interface UninstallRequest extends InstalledKeyView {
+  /** MCP servers: also remove `$DATA_DIR` (design §5.2). */
+  removeData?: boolean;
+}
+
+export interface UninstallResultView {
+  key: InstalledKeyView;
+  /** An MCP server's data directory that was kept. */
+  keptDataDir: string | null;
+}
+
+// ─── Direct MCP input (design §8.1) ─────────────────────────────────────────
+
+export type DirectMcpPreviewRequest = { serverJson: string; select?: { package?: number; remote?: number } };
+
+export interface DirectMcpPreviewView {
+  planId: string;
+  expiresAt: string;
+  name: string;
+  version: string;
+  runtime: McpRuntimeView;
+  /** How many packages and remotes the file lists; `select` picks one. */
+  options: { packages: number; remotes: number };
+}
+
+// ─── Envelope and API ───────────────────────────────────────────────────────
+
+// ─── Deep links and the boot-install notice (design §15.1) ───
+
+/**
+ * What `ave://install|uninstall/<kind>/<name>@<source>` or
+ * `ave://marketplace/add?url=…` asks the marketplace to open. The link only
+ * opens the confirming UI (the package sheet, the Add dialog); nothing is
+ * installed, removed or added until the user confirms there.
+ */
+export type GitMarketplaceDeepLink =
+  | { action: "install" | "uninstall"; key: PackageKeyView }
+  | { action: "add"; url: string }
+  /** The link named a folder, which no link may choose (§18.3 #7): the Add dialog opens empty and says why. */
+  | { action: "add-refused"; reason: "deep-link-path" };
+
+/**
+ * The state of one installed package's update (design §18.7.5): the eight
+ * members, exactly. A skipped version is no state: it is not shown.
+ */
+export const UPDATE_PACKAGE_STATES = [
+  "automatic",
+  "waiting",
+  "needs-review",
+  "manual",
+  "failed",
+  "applied",
+  "applied-not-running",
+  "approval-pending",
+] as const;
+export type UpdatePackageState = (typeof UPDATE_PACKAGE_STATES)[number];
+
+/**
+ * Whether an update in this state waits for the user, so the toolbar pill
+ * counts it (§18.7.5). `manual` reaches the pill only while update notices
+ * are on: main leaves it out of `marketplace:updates-available` otherwise.
+ */
+export function updateNeedsUser(state: UpdatePackageState): boolean {
+  switch (state) {
+    case "needs-review":
+    case "manual":
+    case "failed":
+    case "applied-not-running":
+    case "approval-pending":
+      return true;
+    case "automatic":
+    case "waiting":
+    case "applied":
+      return false;
+  }
+  const unhandled: never = state;
+  throw new Error(`unknown update state ${String(unhandled)}`);
+}
+
+/**
+ * An installed package whose bound source offers a newer version, and the
+ * state of that update (design §7.3, §18.7.5). `marketplace:updates-available`
+ * carries only the states that need the user ({@link updateNeedsUser}).
+ */
+export interface PackageUpdateView {
+  key: PackageKeyView;
+  displayName: string;
+  from: string;
+  to: string;
+  state: UpdatePackageState;
+  /**
+   * The last discovery did not reach this package's source: `state` is what
+   * an earlier discovery classified, kept as it was, not a new classification.
+   */
+  stale?: true;
+  /** Why it is not automatic (§18.7.2, §18.7.3), as {@link UpdateReason} codes. */
+  reasons?: UpdateReason[];
+  /** The last attempt failed before commit (§18.7.4): its code, why, and the attempts at this version. */
+  failure?: { code: GitMarketplaceErrorCode; detail?: MarketplaceErrorDetail; message?: string; attempts: number };
+  /** When an automatic or required update installed it. */
+  appliedAt?: string;
+  /** An applied update's `origin.commit` before and after: *What changed* (§15.6). */
+  commitRange?: { from: string | null; to: string };
+  /**
+   * An agent plugin's `approval-pending` entry (§18.7.5): the installed
+   * generation and the unapproved components, which *Review* approves through
+   * `components:approve`. An extension's entry has none: its review reads the
+   * plugin's trust rows.
+   */
+  pendingApproval?: { installId: string; consentDelta: ConsentDelta; components: ReviewedComponentConsent[] };
+  /** The package's automatic-update switch and what it resolves to (§18.7.2). */
+  autoUpdate?: AutoUpdateSwitchView;
+  /**
+   * A `waiting` update the queue has held for 30 minutes while the
+   * conversation stayed busy (§18.7.4): the toolbar counts it, and the
+   * Updates card offers *Apply now*.
+   */
+  escalated?: true;
+  /**
+   * A `requiredInstalls` entry (§10.2) names this update: it applies by
+   * itself whatever the switches, and a skipped version does not hold it
+   * (§18.7.2), so a surface that hides skipped versions shows it all the same.
+   */
+  required?: true;
+}
+
+/**
+ * Whether the toolbar pill counts this update: a state that needs the user
+ * ({@link updateNeedsUser}), or a `waiting` update held past the 30-minute
+ * escalation, which only *Apply now* moves on (§18.7.4).
+ */
+export function updateViewNeedsUser(update: Pick<PackageUpdateView, "state" | "escalated">): boolean {
+  return updateNeedsUser(update.state) || (update.state === "waiting" && update.escalated === true);
+}
+
+/**
+ * Why an update is not applied by itself (§18.7.2, §18.7.3):
+ * - `disabled`: the package is turned off, by the user or a revocation;
+ * - `source-hidden`, `history-rewritten`: its source is hidden, or has a rewrite pending review;
+ * - `not-an-upgrade`: a downgrade or a source switch;
+ * - `unencrypted-updates`: its source is plain http and automatic updates were not accepted for it;
+ * - `switched-off`: a switch, or the organization's policy, turns automatic updates off for it;
+ * - `consent-changed`: the update asks for more than (or differs from) what was accepted;
+ * - `baseline-unknown`: what was accepted cannot be computed, so it must be confirmed once;
+ * - `approval-unconfirmed`: an approval from an earlier Ave version must be confirmed;
+ * - `failed-three-times`: three attempts at this version failed;
+ * - `calls-in-flight`: an agent plugin's calls are running (waiting only);
+ * - `policy-blocked`: the organization's policy refuses installs from its source now.
+ */
+export type UpdateReason =
+  | "disabled"
+  | "source-hidden"
+  | "history-rewritten"
+  | "not-an-upgrade"
+  | "unencrypted-updates"
+  | "switched-off"
+  | "consent-changed"
+  | "baseline-unknown"
+  | "approval-unconfirmed"
+  | "failed-three-times"
+  | "calls-in-flight"
+  | "policy-blocked";
+
+/**
+ * A package's or source's automatic-update switch (§18.7.2): its own
+ * override, what the resolution gives, and whether the organization's
+ * policy decides it.
+ */
+export interface AutoUpdateSwitchView {
+  effective: boolean;
+  override: "on" | "off" | null;
+  lockedByPolicy: boolean;
+  /**
+   * A `requiredInstalls` entry names the package (§18.7.2): its updates
+   * apply by themselves whatever the switches, so it is on and locked. A
+   * source's switch is never required.
+   */
+  required: boolean;
+}
+
+/** An update as the service computes it, before the scheduler gives it a state. */
+export type PackageUpdateOffer = Omit<PackageUpdateView, "state" | "stale" | "reasons" | "failure" | "appliedAt" | "commitRange" | "pendingApproval" | "autoUpdate" | "escalated" | "required">;
+
+/** How the last discovery ended (§18.7.1): every source synced, some, none because offline, or it threw. */
+export type UpdateDiscoveryResult = "ok" | "partial" | "offline" | "error";
+
+/**
+ * What the update scheduler knows (`ave:marketplace:updates:status`,
+ * `marketplace:update-status`, design §18.7.1, §18.9). `historyReset`:
+ * `updates.json` could not be read and was started again, which moves only
+ * check times. Each package is an update from a source the last discovery
+ * reached, classified by it, minus the versions the user skipped; a source it
+ * did not reach keeps only what an earlier discovery showed, marked `stale`.
+ */
+export interface UpdateStatusView {
+  discovery: {
+    lastAttemptAt: string | null;
+    lastSuccessAt: string | null;
+    result: UpdateDiscoveryResult | null;
+    /** When the next due check runs a discovery: the earlier of the discovery and apply-check due times. */
+    nextAt: string;
+  };
+  applyCheckAt: string | null;
+  running: boolean;
+  historyReset: boolean;
+  /** Since when the apply queue waits for the conversation to pause (§18.7.4); null when it does not wait. */
+  waitingSince: string | null;
+  /** True once the queue has waited 30 minutes: the card offers *Apply now*. */
+  escalated: boolean;
+  /**
+   * The switches (§18.7.2): the global one as it takes effect (the policy's
+   * value while the organization locks it), the lock, each source's switch,
+   * and the switch of every installed package bound to a listed source,
+   * whether or not it has an update.
+   */
+  autoUpdate: {
+    enabled: boolean;
+    lockedByPolicy: "on" | "off" | null;
+    sources: Array<{ id: string; label: string; origin: SourceOriginKind; switch: AutoUpdateSwitchView; needsUnencryptedUpdates: boolean }>;
+    packages: Array<{ key: PackageKeyView; switch: AutoUpdateSwitchView }>;
+  };
+  packages: PackageUpdateView[];
+  /** Each `requiredInstalls` entry the app cannot meet now, and why (§10.2, §18.7.2). */
+  unmetRequired: UnmetRequirementView[];
+}
+
+/**
+ * Why a required install cannot be met from the source the policy names
+ * (§10.2): the source is not among the app's sources (`source-missing`),
+ * the user hid it (`source-hidden`), it has no readable copy of its catalog
+ * (`source-unreachable`), its catalog does not list the package
+ * (`not-in-catalog`), every listed version needs a newer Ave
+ * (`incompatible`), a version is held back only by its rollout or as a
+ * pre-release (`rollout-held`), or no version is offered for another reason
+ * — platform, plugin protocol, yanked or revoked (`not-offered`).
+ */
+const UNMET_REQUIREMENT_REASONS = [
+  "source-missing",
+  "source-hidden",
+  "source-unreachable",
+  "not-in-catalog",
+  "incompatible",
+  "rollout-held",
+  "not-offered",
+] as const;
+export type UnmetRequirementReason = (typeof UNMET_REQUIREMENT_REASONS)[number];
+
+/**
+ * A required install not met (§10.2): the package the policy requires from
+ * its source, that source's name, the reason, the app version an
+ * `incompatible` package needs (set exactly then), and the same-named
+ * package installed from another source, which does not meet the
+ * requirement and may stand in its way.
+ */
+export interface UnmetRequirementView {
+  key: PackageKeyView;
+  sourceLabel: string;
+  reason: UnmetRequirementReason;
+  minAppVersion: string | null;
+  installedFrom: UnmetRequirementInstall | null;
+}
+
+/**
+ * The same-named install from another source, as its receipt binds it.
+ * `sourceId` is what `uninstall` takes for it: the id the receipt's stored
+ * source id is viewed as — itself, or the handle of a credential-shaped one
+ * (§18.8), derived from that id alone, so it stays valid after the source
+ * is removed. `removal`
+ * says where it is removed: its package sheet, when that source's catalog
+ * still lists it; otherwise (the source removed, quarantined, unreadable,
+ * or no longer listing it) no sheet can load, and the row asks to
+ * uninstall it directly.
+ */
+export interface UnmetRequirementInstall {
+  sourceId: string;
+  label: string;
+  removal: "sheet" | "confirm";
+}
+
+/** What the boot pass installed, moved or migrated (design §10.2, §16.3), shown once until dismissed. */
+/**
+ * An installed package its bound source revoked with `uninstall`, or with
+ * `disable` where the host has no load gate for the kind (design §10.4).
+ */
+export interface RevokedPackageView {
+  key: PackageKeyView;
+  version: string;
+  /** The source's reason, as written in its revocations file. */
+  reason: string;
+  /** `required`: a `requiredInstalls` entry locks it, so it stays; `failed`: the uninstall threw (`message`). */
+  outcome: "uninstalled" | "required" | "failed";
+  message?: string;
+}
+
+export interface BootInstallNoticeView {
+  /** Default installs: they belong to the user now, each offered with Uninstall. */
+  forYou: PackageKeyView[];
+  /** `requiredInstalls` entries installed, updated or switched to their listed source. */
+  required: PackageKeyView[];
+  /** Plugins an administrator installed that no source lists: no longer locked, no updates. */
+  unmanaged: string[];
+  /** Plugins that no longer read these host secrets until they update (§10.3). */
+  lostGrants: Array<{ plugin: string; keys: string[] }>;
+  /** Packages removed, or left in place, because their source revoked them (§10.4). */
+  revoked: RevokedPackageView[];
+  /** Updates applied by themselves or by the organization's policy since the notice was last dismissed (§18.7.5). */
+  autoUpdated: AutoUpdatedView[];
+}
+
+/** One update applied without the user's review: "Updated automatically" (§18.7.5). */
+export interface AutoUpdatedView {
+  key: PackageKeyView;
+  displayName: string;
+  from: string;
+  to: string;
+  /** `origin.commit` before and after: *What changed* (§15.6). */
+  commitRange: { from: string | null; to: string | null };
+  /** `required`: the organization's policy applied it. */
+  required: boolean;
+  state: "applied" | "applied-not-running" | "approval-pending";
+}
+
+/**
+ * A notice joined to the one the user has not dismissed yet: each list
+ * appended, and an update applied again replacing its earlier entry, so one
+ * notice says everything since it was last dismissed (§18.7.5).
+ */
+export function mergeBootInstallNotices(held: BootInstallNoticeView | null, next: BootInstallNoticeView): BootInstallNoticeView {
+  if (!held) return next;
+  const sameKey = (left: PackageKeyView, right: PackageKeyView) => left.sourceId === right.sourceId && left.kind === right.kind && left.name === right.name;
+  return {
+    forYou: [...held.forYou, ...next.forYou],
+    required: [...held.required, ...next.required],
+    unmanaged: [...held.unmanaged, ...next.unmanaged],
+    lostGrants: [...held.lostGrants, ...next.lostGrants],
+    revoked: [...held.revoked, ...next.revoked],
+    autoUpdated: [...held.autoUpdated.filter((item) => !next.autoUpdated.some((entry) => sameKey(entry.key, item.key))), ...next.autoUpdated],
+  };
+}
+
+/** Nothing left to show: every list is empty. */
+export function bootInstallNoticeIsEmpty(notice: BootInstallNoticeView): boolean {
+  return notice.forYou.length + notice.required.length + notice.unmanaged.length + notice.lostGrants.length + notice.revoked.length + notice.autoUpdated.length === 0;
+}
+
+export type GitMarketplaceErrorCode = MarketplaceErrorCode | "invalid-request" | "unauthorized-frame" | "unavailable";
+
+/**
+ * A failed answer. `message` is main's English text, shown only behind *Copy
+ * details*; the sentence comes from `code` and, when present, `detail`, which
+ * always belongs to `code` (design §18.8).
+ */
+export interface GitMarketplaceFailure {
+  code: GitMarketplaceErrorCode;
+  message: string;
+  detail?: MarketplaceErrorDetail;
+}
+
+export type GitMarketplaceResult<T> = { ok: true; value: T } | ({ ok: false } & GitMarketplaceFailure);
+
+export interface SyncProgressView {
+  sourceId: string;
+  state: "syncing" | "done" | "failed";
+}
+
+/** Consent for one exact reviewed server component; the installed tree must match its digest. */
+export interface McpComponentConsent {
+  name: string;
+  digest: string;
+}
+
+export interface HookComponentConsent {
+  kind: "hook";
+  index: number;
+  digest: string;
+}
+
+/**
+ * Consent for one bundled component of an extension (`plugin`), by its
+ * local id, with the approval digest the review showed (§18.7.3).
+ */
+export interface ExtensionComponentConsent {
+  kind: "extension";
+  component: "hook" | "mcpServer";
+  localId: string;
+  approvalDigest: string | null;
+}
+
+export type ComponentConsent = McpComponentConsent | HookComponentConsent | ExtensionComponentConsent;
+
+/**
+ * An approval of an installed agent plugin's component (§18.7.5): the
+ * consent and the approval digest the review showed, bound to the installed
+ * generation through `components:approve`'s `installId`.
+ */
+export type ReviewedComponentConsent = (McpComponentConsent | HookComponentConsent) & { approvalDigest: string | null };
+
+export interface GitMarketplaceApi {
+  listSources(): Promise<GitMarketplaceResult<SourceView[]>>;
+  previewSource(request: SourcePreviewAsk): Promise<GitMarketplaceResult<SourcePreviewResultView>>;
+  addSource(request: SourceAddRequest): Promise<GitMarketplaceResult<SourceView>>;
+  /** Add confirmations to a source (*Allow…*, §18.5) and sync it again. */
+  acknowledgeSource(id: string, warnings: readonly SourceWarning[]): Promise<GitMarketplaceResult<SourceView>>;
+  /** *Choose folder…*: main's folder dialog, answering the selection main holds; null when it was cancelled (§18.9). */
+  pickFolder(): Promise<GitMarketplaceResult<FolderPickView | null>>;
+  /** *Show in Finder / Explorer / file manager* for a folder source, by id (§18.4.8). */
+  revealSource(id: string): Promise<GitMarketplaceResult<null>>;
+  removeSource(id: string): Promise<GitMarketplaceResult<{ orphanedPackages: PackageKeyView[] }>>;
+  setSourceEnabled(id: string, enabled: boolean): Promise<GitMarketplaceResult<SourceView>>;
+  refreshSources(id?: string): Promise<GitMarketplaceResult<SourceView[]>>;
+  /** Remove a source's damaged downloaded copy and sync it again (§18.8); answers the sources like a refresh. */
+  repairSource(id: string): Promise<GitMarketplaceResult<SourceView[]>>;
+  acceptRewrite(id: string, commit: string): Promise<GitMarketplaceResult<SourceView>>;
+  setToken(host: string, token: string): Promise<GitMarketplaceResult<{ host: string }>>;
+  deleteToken(host: string): Promise<GitMarketplaceResult<{ host: string }>>;
+  listCatalog(query: CatalogQuery): Promise<GitMarketplaceResult<CatalogView>>;
+  packageDetail(key: PackageKeyView): Promise<GitMarketplaceResult<PackageDetailView>>;
+  planInstall(request: InstallPlanRequest): Promise<GitMarketplaceResult<InstallPlanView>>;
+  planUpdate(key: PackageKeyView): Promise<GitMarketplaceResult<UpdatePlanView>>;
+  executeInstall(planId: string, componentConsents?: readonly ComponentConsent[]): Promise<GitMarketplaceResult<InstallResultView>>;
+  uninstall(request: UninstallRequest): Promise<GitMarketplaceResult<UninstallResultView>>;
+  previewDirectMcp(request: DirectMcpPreviewRequest): Promise<GitMarketplaceResult<DirectMcpPreviewView>>;
+  onSyncProgress(listener: (progress: SyncProgressView) => void): () => void;
+  onCatalogChanged(listener: () => void): () => void;
+  onInstallProgress(listener: (progress: InstallProgressView) => void): () => void;
+  /** The deep link waiting to be opened, cleared by this read. */
+  takeDeepLink(): Promise<GitMarketplaceResult<GitMarketplaceDeepLink | null>>;
+  /** A deep link arrived: read it with `takeDeepLink`. */
+  onDeepLink(listener: () => void): () => void;
+  bootInstallNotice(): Promise<GitMarketplaceResult<BootInstallNoticeView | null>>;
+  dismissBootInstallNotice(): Promise<GitMarketplaceResult<null>>;
+  /** The boot-install step published a notice: read it with `bootInstallNotice`. */
+  onBootInstallsApplied(listener: () => void): () => void;
+  /** What the update scheduler knows (§18.7.1). */
+  updateStatus(): Promise<GitMarketplaceResult<UpdateStatusView>>;
+  /** *Check now*: joins a discovery in flight, and answers when that discovery and its apply check end. */
+  checkUpdates(): Promise<GitMarketplaceResult<UpdateStatusView>>;
+  /** *Apply now*: the queue skips the wait for the conversation to pause (§18.7.4). */
+  applyUpdatesNow(): Promise<GitMarketplaceResult<UpdateStatusView>>;
+  /**
+   * Approve an `approval-pending` agent plugin's components (§18.7.5), bound
+   * to the installed generation `installId`; `PLAN_EXPIRED` reason
+   * `package-changed` when it has changed since the review.
+   */
+  approveComponents(key: PackageKeyView, installId: string, consents: readonly ReviewedComponentConsent[]): Promise<GitMarketplaceResult<UpdateStatusView>>;
+  onUpdateStatus(listener: (status: UpdateStatusView) => void): () => void;
+}
+
+// ─── Bridge checks ──────────────────────────────────────────────────────────
+
+const ENVELOPE_CODES = new Set<string>([...MARKETPLACE_ERROR_CODES, "invalid-request", "unauthorized-frame", "unavailable"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Shape check for a result crossing the bridge: the envelope is checked and
+ * the value is trusted as main's own view. A failure keeps a `detail` whose
+ * reason belongs to its code and drops any other, keeping code and message.
+ * Anything else reads as unavailable.
+ */
+export function parseGitMarketplaceResult<T>(value: unknown): GitMarketplaceResult<T> {
+  if (isRecord(value)) {
+    if (value.ok === true && "value" in value) return { ok: true, value: value.value as T };
+    if (value.ok === false && typeof value.code === "string" && ENVELOPE_CODES.has(value.code) && typeof value.message === "string") {
+      const detail = value.detail === undefined ? undefined : parseMarketplaceErrorDetail(value.code, value.detail);
+      return { ok: false, code: value.code as GitMarketplaceErrorCode, message: value.message, ...(detail ? { detail } : {}) };
+    }
+  }
+  return { ok: false, code: "unavailable", message: "the marketplace did not answer" };
+}
+
+export function isPackageKind(value: unknown): value is PackageKind {
+  return typeof value === "string" && (PACKAGE_KINDS as readonly string[]).includes(value);
+}
+
+export function parseSyncProgress(value: unknown): SyncProgressView | null {
+  return isRecord(value) && typeof value.sourceId === "string" && (value.state === "syncing" || value.state === "done" || value.state === "failed")
+    ? { sourceId: value.sourceId, state: value.state }
+    : null;
+}
+
+const DISCOVERY_RESULTS = new Set<string>(["ok", "partial", "offline", "error"]);
+
+function isTime(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function isUpdatePackage(value: unknown): value is PackageUpdateView {
+  if (!isRecord(value) || !isRecord(value.key)) return false;
+  const { key } = value;
+  return typeof key.sourceId === "string" && isPackageKind(key.kind) && typeof key.name === "string"
+    && typeof value.displayName === "string" && typeof value.from === "string" && typeof value.to === "string"
+    && (UPDATE_PACKAGE_STATES as readonly unknown[]).includes(value.state)
+    && (value.stale === undefined || value.stale === true)
+    && (value.reasons === undefined || (Array.isArray(value.reasons) && value.reasons.every((reason) => typeof reason === "string")))
+    && (value.failure === undefined || (isRecord(value.failure) && typeof value.failure.code === "string" && ENVELOPE_CODES.has(value.failure.code)
+      && typeof value.failure.attempts === "number"))
+    && (value.appliedAt === undefined || isTime(value.appliedAt))
+    && (value.commitRange === undefined || (isRecord(value.commitRange) && (value.commitRange.from === null || typeof value.commitRange.from === "string")
+      && typeof value.commitRange.to === "string"))
+    && (value.autoUpdate === undefined || isSwitchView(value.autoUpdate))
+    && (value.escalated === undefined || value.escalated === true)
+    && (value.required === undefined || value.required === true)
+    && (value.pendingApproval === undefined || (isRecord(value.pendingApproval) && typeof value.pendingApproval.installId === "string"
+      && Array.isArray(value.pendingApproval.consentDelta) && Array.isArray(value.pendingApproval.components)));
+}
+
+function isSwitchView(value: unknown): value is AutoUpdateSwitchView {
+  return isRecord(value) && typeof value.effective === "boolean" && typeof value.lockedByPolicy === "boolean"
+    && typeof value.required === "boolean" && (!value.required || (value.effective && value.lockedByPolicy))
+    && (value.override === null || value.override === "on" || value.override === "off");
+}
+
+function isAutoUpdateStatus(value: unknown): boolean {
+  return isRecord(value) && typeof value.enabled === "boolean"
+    && (value.lockedByPolicy === null || value.lockedByPolicy === "on" || value.lockedByPolicy === "off")
+    && Array.isArray(value.sources)
+    && value.sources.every((source: unknown) => isRecord(source) && typeof source.id === "string" && typeof source.label === "string"
+      && (SOURCE_ORIGIN_KINDS as readonly unknown[]).includes(source.origin)
+      && isSwitchView(source.switch) && typeof source.needsUnencryptedUpdates === "boolean")
+    && Array.isArray(value.packages)
+    && value.packages.every((item: unknown) => isRecord(item) && isRecord(item.key) && typeof item.key.sourceId === "string"
+      && isPackageKind(item.key.kind) && typeof item.key.name === "string" && isSwitchView(item.switch));
+}
+
+function isUnmetRequirement(value: unknown): boolean {
+  return isRecord(value) && isRecord(value.key) && typeof value.key.sourceId === "string" && isPackageKind(value.key.kind)
+    && typeof value.key.name === "string" && typeof value.sourceLabel === "string"
+    && (UNMET_REQUIREMENT_REASONS as readonly unknown[]).includes(value.reason)
+    && (value.reason === "incompatible" ? typeof value.minAppVersion === "string" : value.minAppVersion === null)
+    && (value.installedFrom === null || (isRecord(value.installedFrom) && typeof value.installedFrom.sourceId === "string"
+      && typeof value.installedFrom.label === "string" && (value.installedFrom.removal === "sheet" || value.installedFrom.removal === "confirm")));
+}
+
+/** Shape check for a `marketplace:update-status` payload; anything else is dropped. */
+export function parseUpdateStatus(value: unknown): UpdateStatusView | null {
+  if (!isRecord(value) || !isRecord(value.discovery) || !Array.isArray(value.packages)) return null;
+  const { discovery } = value;
+  const timeOrNull = (item: unknown) => item === null || isTime(item);
+  if (!timeOrNull(discovery.lastAttemptAt) || !timeOrNull(discovery.lastSuccessAt) || !isTime(discovery.nextAt)) return null;
+  if (discovery.result !== null && !DISCOVERY_RESULTS.has(discovery.result as string)) return null;
+  if (!timeOrNull(value.applyCheckAt) || typeof value.running !== "boolean" || typeof value.historyReset !== "boolean") return null;
+  if (!timeOrNull(value.waitingSince) || typeof value.escalated !== "boolean" || !isAutoUpdateStatus(value.autoUpdate)) return null;
+  if (!value.packages.every(isUpdatePackage)) return null;
+  if (!Array.isArray(value.unmetRequired) || !value.unmetRequired.every(isUnmetRequirement)) return null;
+  return value as unknown as UpdateStatusView;
+}
+
+export function parseInstallProgress(value: unknown): InstallProgressView | null {
+  if (!isRecord(value) || typeof value.planId !== "string" || typeof value.phase !== "string") return null;
+  if (!["resolving", "downloading", "verifying", "installing", "activating"].includes(value.phase)) return null;
+  return value as unknown as InstallProgressView;
+}

@@ -10,6 +10,7 @@
 import { BrowserWindow, ipcMain, session as electronSession } from "electron";
 import { randomUUID } from "node:crypto";
 import { runtimeAssetPath } from "./main-paths.js";
+import { preloadPreferences } from "./preload-bundles.js";
 import {
   AudioCaptureError,
   type AudioCaptureDevice,
@@ -254,11 +255,10 @@ export class ElectronAudioCaptureSurface implements AudioCaptureSurface {
     const window = new BrowserWindow({
       show: false,
       webPreferences: {
-        preload: runtimeAssetPath("audio-capture-window-preload.cjs"),
+        ...preloadPreferences("audioCaptureWindowPreload"),
         partition: CAPTURE_PARTITION,
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
       },
     });
     this.#window = window;
