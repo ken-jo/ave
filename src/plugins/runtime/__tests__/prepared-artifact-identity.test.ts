@@ -504,6 +504,9 @@ async function bootRefusalOf(pluginId: string): Promise<{ audit: AuditEntry[]; m
   await runtime.startAll();
   const card = runtime.listPluginCards().find((candidate) => candidate.id === pluginId);
   expect(card?.loadStatus).toBe("failed");
+  // Boot refuses an undeclared protocol before routing, so no arm was chosen.
+  expect(card?.arm).toBeUndefined();
+  expect(card?.confinement).toBeUndefined();
   return {
     audit: audit.filter((entry) => entry.message === "plugin_incompatible_host_protocol"),
     message: card?.installFailureMessage,

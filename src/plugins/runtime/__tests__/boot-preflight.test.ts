@@ -280,6 +280,9 @@ describe("PluginRuntime boot preflight", () => {
     const card = runtime.listPluginCards().find((entry) => entry.id === isolatedId);
     expect(card?.installFailureKind).toBe("load-crash");
     expect(card?.installFailureMessage).toContain("permission denied");
+    // Routing had chosen the child arm before the throw, and no child existed
+    // yet: the Doctor says both (§9.8 A1).
+    expect(card).toMatchObject({ arm: "child", confinement: "not-spawned" });
   });
 
   it("classifies a refused sandbox grant so Doctor does not reinstall the same version", async () => {

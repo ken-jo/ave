@@ -1821,6 +1821,19 @@ abstract class PluginRuntimeState {
    * no child.
    */
   private readonly childSpawnConfinements = new WeakMap<RuntimePluginFactory, SpawnConfinement>();
+  /**
+   * The routed factory of the boot or add attempt in flight for a plugin, from
+   * the moment routing returns until the attempt ends (§9.8 A1, "Doctor,
+   * wired end to end"). {@link markFailed} reads it, so EVERY failure after
+   * routing — the factory's refusal, a throw before the factory is invoked
+   * (data directory, HostApi incarnation), a start failure, a duplicate
+   * tool, a crash the boot loop catches — leaves the arm and the confinement
+   * on the failed card, `"not-spawned"` when no child existed. A failure
+   * before routing finds no entry and carries neither, because no arm was
+   * chosen. Restart and prepared activation never set it: their failures are
+   * the attempt's, not the plugin's (decision 52).
+   */
+  protected readonly routedAttempts = new Map<string, RoutedPluginFactory>();
 
   protected recordChildSpawnConfinement(createPlugin: RuntimePluginFactory, confinement: SpawnConfinement): void {
     this.childSpawnConfinements.set(createPlugin, confinement);
@@ -2895,6 +2908,7 @@ abstract class PluginRuntimeState {
     awaitDefinitiveStop = false,
   ): Promise<boolean> {
     this.markFailed(pluginId);
+    this.retainLoadedPluginDiagnostics(pluginId, plugin);
     plugin.deactivateHostApi?.();
     for (const method of plugin.methods.keys()) {
       this.methodMap.delete(method);
@@ -2987,6 +3001,8 @@ abstract class PluginRuntimeState {
     if (failure && (failure.installFailureKind || failure.installFailureMessage)) {
       this.loadFailureInfo.set(pluginId, failure);
     }
+    const routed = this.routedAttempts.get(pluginId);
+    if (routed) this.recordConstructionFailureArm(pluginId, routed);
   }
 
   /**
@@ -3206,20 +3222,31 @@ abstract class PluginRuntimeState {
   }
 
   /**
-   * Put the arm and confinement of a construction that failed AFTER routing on
+   * Put the arm and confinement of an attempt that failed AFTER routing on
    * the failure record the card projects (§9.8 A1, "Doctor, wired end to
    * end"). Merged into whatever classification the refusal already wrote, so
-   * a plain factory failure gets a record too.
+   * a plain failure gets a record too. {@link markFailed} calls it for the
+   * attempt in {@link routedAttempts}; a generation that had loaded and is
+   * failed closed keeps its own ({@link retainLoadedPluginDiagnostics}).
    */
   protected recordConstructionFailureArm(
     pluginId: string,
     routed: RoutedPluginFactory,
   ): void {
-    this.loadFailureInfo.set(pluginId, {
-      ...this.loadFailureInfo.get(pluginId),
-      arm: routed.arm,
-      confinement: this.confinementReport(routed.createPlugin),
-    });
+    this.retainFailureDiagnostics(pluginId, routed.arm, this.confinementReport(routed.createPlugin));
+  }
+
+  /** The loaded generation's own arm and confinement, kept when it is failed closed. */
+  protected retainLoadedPluginDiagnostics(pluginId: string, plugin: LoadedPlugin): void {
+    this.retainFailureDiagnostics(pluginId, plugin.arm, plugin.confinement);
+  }
+
+  private retainFailureDiagnostics(
+    pluginId: string,
+    arm: PluginLoadArm,
+    confinement: PluginConfinementReport,
+  ): void {
+    this.loadFailureInfo.set(pluginId, { ...this.loadFailureInfo.get(pluginId), arm, confinement });
   }
 
   /**
@@ -4036,6 +4063,20 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     approvedPluginAccess: PluginAccessSpec | undefined,
     opts: { skipPreparation?: boolean; shouldCommit?: () => boolean } = {},
   ): Promise<SinglePluginStartResult> {
+    try {
+      return await this.addSinglePluginAttempt(plan, manifest, approvedPluginAccess, opts);
+    } finally {
+      // The attempt is over, however it ended; see {@link routedAttempts}.
+      this.routedAttempts.delete(manifest.id);
+    }
+  }
+
+  private async addSinglePluginAttempt(
+    plan: ManifestLoadPlan,
+    manifest: PluginManifest,
+    approvedPluginAccess: PluginAccessSpec | undefined,
+    opts: { skipPreparation?: boolean; shouldCommit?: () => boolean },
+  ): Promise<SinglePluginStartResult> {
     const generationLifecycle = this.requireCapabilityCommitLifecycle("plugin add");
     const pluginRoot = dirname(plan.manifestPath);
     const canCommit = () => opts.shouldCommit?.() ?? true;
@@ -4199,6 +4240,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       return "cancelled";
     }
     const { createPlugin } = routed;
+    this.routedAttempts.set(manifest.id, routed);
 
     const pluginDataDir = this.ensureDataDir(manifest.id, pluginRoot);
     const hostEffects = new HostApiGenerationScope(manifest.id);
@@ -4258,7 +4300,6 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       } else {
         this.markFailed(manifest.id);
       }
-      this.recordConstructionFailureArm(manifest.id, routed);
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return "failed";
     }
@@ -5552,6 +5593,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       await this.instantiatePreflightedPlugin(outcome, enabledManifestSnapshots, resources);
     } catch (err) {
       await this.abandonCrashedPluginLoad(resources, err);
+    } finally {
+      this.routedAttempts.delete(resources.pluginId);
     }
   }
 
@@ -5756,6 +5799,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       return;
     }
     const { createPlugin } = routed;
+    this.routedAttempts.set(manifest.id, routed);
 
     const pluginDataDir = this.ensureDataDir(manifest.id, pluginRoot);
     const hostEffects = new HostApiGenerationScope(manifest.id);
@@ -5804,7 +5848,6 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       } else {
         this.markFailed(manifest.id);
       }
-      this.recordConstructionFailureArm(manifest.id, routed);
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       logPluginLifecycle("error", { pluginId: manifest.id, phase: PluginPhase.LOAD_FAIL, err, reason: "factory" }, "plugin factory failed");
       return;

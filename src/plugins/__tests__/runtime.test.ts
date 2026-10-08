@@ -1956,6 +1956,13 @@ export default async function createPlugin({ hostApi }) {
 
     expect(runtime.listPluginIds()).not.toContain("p-start-fails");
     await expect(readFile(stoppedPath, "utf-8")).resolves.toBe("stopped");
+    // The failed generation's child had spawned (unwrapped: the sandbox is
+    // off here); the Doctor keeps where it ran after it is failed closed.
+    expect(runtime.listPluginCards().find((card) => card.id === "p-start-fails")).toMatchObject({
+      loadStatus: "failed",
+      arm: "child",
+      confinement: "unconfined",
+    });
   });
 
   it("startAll start failure cleans runtime-managed disposers before unload", async () => {
@@ -2208,6 +2215,11 @@ export default async function createPlugin({ hostApi }) {
       /addPlugin failed/,
     );
     await expect(readFile(stoppedPath, "utf-8")).resolves.toBe("stopped");
+    expect(runtime.listPluginCards().find((card) => card.id === "p-new-broken")).toMatchObject({
+      loadStatus: "failed",
+      arm: "child",
+      confinement: "unconfined",
+    });
     expect(runtime.listPluginIds()).toEqual(["p-existing"]);
   });
 
