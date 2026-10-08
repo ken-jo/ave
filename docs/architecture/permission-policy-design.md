@@ -255,8 +255,16 @@ is LOW. A guest shell is graded first match wins:
    abbreviations. This covers `rm`/`unlink`/`shred`/`truncate`/`dd`,
    `find -delete`, `git clean`, `git reset --hard`, `git checkout -- <path>`
    and `git checkout .`, `git restore` without `--staged`, `git stash
-   drop`/`clear`, `git branch -D`, rsync `--del*`/`--remove-source-files`, tar
-   `--remove-files`, and inline interpreter code (`python -c`, `node -e`,
+   drop`/`clear`, rsync `--del*`/`--remove-source-files`, tar
+   `--remove-files`, git ref deletion and forced ref overwrite (`git branch
+   -d`/`-D`/`--delete`/`-f`/`-M`/`-C`, `git tag -d`/`--delete`/`-f`, `git
+   checkout -B`, `git switch -C`, `git fetch --prune`/`--prune-tags`/`--force`,
+   `git remote remove`/`prune`, `git mv -f`), abandoning an in-progress merge,
+   rebase or pick (`--abort`, `--skip`, `--quit`), the deleting git forms
+   that are not on the allowlist at all (`git gc`, `git prune`, `git reflog
+   expire`/`delete`, `git worktree remove`/`prune`, `git notes
+   remove`/`prune`, `git update-ref -d`, `git symbolic-ref -d`, `git push
+   --delete`/`--force`/`:ref`/`+ref`), and inline interpreter code (`python -c`, `node -e`,
    `perl -e`, `ruby -e`, `php -r`, a program read from stdin or a `data:`
    URL), whose effects cannot be graded from the line. Only deletion and
    discard verbs are destructive: a content edit, including emptying a file
@@ -269,16 +277,29 @@ is LOW. A guest shell is graded first match wins:
    `/dev/tcp`/`/dev/udp` path makes it ineligible. An eligible leaf must then
    match its tool's argv spec exactly: every option an exact allowlisted
    spelling for that tool and subcommand (so an abbreviation or an unknown
-   letter in a short cluster fails, and no option value may carry a URL), and
+   letter in a short cluster fails, and no option value may carry a URL or a
+   remote `host:path` — a `:` before any `/` — since tar, rsync and cp-like
+   tools open a connection for that form: `tar -cf host:/a.tar` stays MEDIUM,
+   and so does the same value after `--force-local`, which is admitted only
+   for local archives. Options whose value is text rather than a file — a
+   commit message, a format, a pattern, a date — are declared per tool and keep
+   only the URL check, so `git commit -m "fix: x"` stays LOW), and
    every positional the tool's predicate — a bare package spec for installs
    (no URL, VCS or `@`-URL form, no source, registry, index or config
    option; a local path only as an editable target, `-e .`, or a requirement
    or constraint file, `-r requirements.txt`), a local path word (path
-   characters only, so never a command string), a literal git clone/fetch
-   source, or for
+   characters only, so never a command string or a `host:path`), a literal
+   git clone/fetch source (including the scp form `git@host:repo.git`), or for
    `curl`/`wget` a plain public URL with exact GET-only options. Wrappers that
    run another program (`uv run`, `bundle exec`, `bun run`, `bun x`, `npx`,
    `pnpm exec`, `yarn dlx`, …) grade the wrapped argv as a command of its own.
+   `bun run <name>` is graded this way by design: bun resolves the same word
+   to a package script, a file or a binary, and the line cannot tell which, so
+   a script name that is not itself an allowlisted command (`bun run build`)
+   stays MEDIUM, unlike `npm run <script>`. A name that coincides with an
+   allowlisted command (`bun run test`, `bun run tsc`) grades as that command
+   and is LOW; the script it may run instead is the same stated limit as
+   `npm run <script>` below.
    A tool whose first positional is a subcommand names the allowed words
    explicitly (`git submodule update|init|status|sync`, never `foreach`), and
    options that name a program to run (`sort --compress-program`, `split
@@ -289,8 +310,10 @@ is LOW. A guest shell is graded first match wins:
    read-only verb handed a program (`sort --compress-program` and its
    abbreviations, `ag --pager`, `rg --pre`/`--hostname-bin`, `fd --exec`/`-x`)
    is an execution, not a read. The host also resolves GNU getopt
-   abbreviations of write flags (`sed --in-pl`, `sort --out`) and treats
-   `GIT_CONFIG_PARAMETERS` as an execution-selecting environment variable.
+   abbreviations of write flags (`sed --in-pl`, `sort --out`), treats
+   `GIT_CONFIG_PARAMETERS` as an execution-selecting environment variable, and
+   does not read `git reflog expire`/`delete` as an inspection: they rewrite
+   the reflog.
    Everything else — any shell binary, `exec`, `eval`, `builtin`,
    `source`/`.`, BusyBox, aliases, a pipe or here-doc into a shell, unknown
    verbs, a path-qualified program outside the system bin directories, input

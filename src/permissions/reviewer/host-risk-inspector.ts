@@ -585,6 +585,9 @@ function isReadOnlyGitLeaf(argv: readonly string[]): boolean {
   const sub = argv[1];
   if (typeof sub !== "string") return false;
   if (READ_ONLY_GIT_SUBCOMMANDS.has(sub)) {
+    // `git reflog expire` / `git reflog delete` rewrite the reflog; only its
+    // show/list/exists forms read. Any such word escalates, wherever it sits.
+    if (sub === "reflog" && argv.slice(2).some((t) => t === "expire" || t === "delete")) return false;
     // The subcommand name is not the whole answer: `git diff
     // --output=~/.ssh/authorized_keys` writes, `git show --ext-diff` execs.
     // Every FLAG must be in the read-only allow-list; non-flag tokens are

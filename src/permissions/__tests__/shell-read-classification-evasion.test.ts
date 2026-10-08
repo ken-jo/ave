@@ -167,12 +167,26 @@ describe("evasion: a read-only git subcommand carries a writing flag", () => {
     expect(isReadOnlyCommand("git show --frobnicate")).toBe(false);
   });
 
+  // `reflog` is an inspection subcommand, but its expire/delete forms rewrite
+  // the reflog. `expire --all` and `delete HEAD@{1}` graded read on b77d98d0;
+  // `--expire=now` was already escalated by the inspection flag allow-list.
+  it.each([
+    "git reflog expire --all",
+    "git reflog expire --expire=now --all",
+    "git reflog delete HEAD@{1}",
+  ])("git reflog expire/delete is not a read: %s", (command) => {
+    expect(isReadOnlyCommand(command)).toBe(false);
+    expect(classify({ command })).toBe("shell");
+  });
+
   it("keeps ordinary inspection forms read", () => {
     expect(isReadOnlyCommand("git status")).toBe(true);
     expect(isReadOnlyCommand("git log --oneline -5")).toBe(true);
     expect(isReadOnlyCommand("git diff HEAD -- src/index.ts")).toBe(true);
     expect(isReadOnlyCommand("git show abc123 --stat")).toBe(true);
     expect(isReadOnlyCommand("git blame -w src/index.ts")).toBe(true);
+    expect(isReadOnlyCommand("git reflog")).toBe(true);
+    expect(isReadOnlyCommand("git reflog show HEAD")).toBe(true);
   });
 
   it("runs path containment on the git write flag", () => {

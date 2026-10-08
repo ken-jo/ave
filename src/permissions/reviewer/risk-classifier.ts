@@ -610,7 +610,11 @@ export function screenEgressRequest(input: Record<string, unknown>): EgressScree
 //     stuck short form (`-ccore.x=y`) or an unknown letter in a cluster fails —
 //     and every positional must pass that tool's predicate (a bare package
 //     spec, a local path, a literal clone URL, a plain public download URL).
-//     No option value may carry a URL.
+//     No option value may carry a URL or a remote `host:path` (a `:` before
+//     any `/`): tar, rsync and cp-like tools open a connection for that form
+//     (`tar -cf host:/a.tar`). A local path positional never contains a `:`.
+//     git's scp-form clone and fetch sources are positionals with their own
+//     predicate and are kept.
 //   - WRAPPERS that run another program (`uv run`, `bundle exec`, `bun run`,
 //     `bun x`, `npx`, `pnpm exec`, `yarn dlx`, …) grade the wrapped argv as a
 //     command of its own.
@@ -619,7 +623,13 @@ export function screenEgressRequest(input: Record<string, unknown>): EgressScree
 //     the way GNU and git resolve abbreviations; a short cluster matches when
 //     it contains a dangerous letter. Inline interpreter code (`python -c`,
 //     `node -e`, `perl -e`, `ruby -e`, `php -r`) counts as destructive: its
-//     effects cannot be graded from the line.
+//     effects cannot be graded from the line. git ref deletion and forced ref
+//     overwrite (`branch -d/-D/-f/-M/-C`, `tag -d/-f`, `checkout -B`,
+//     `switch -C`, `fetch --prune/--force`, `remote remove/prune`, `mv -f`),
+//     abandoning a merge/rebase/pick (`--abort`, `--skip`, `--quit`) and the
+//     unlisted deleting forms (`gc`, `prune`, `reflog expire/delete`,
+//     `worktree remove/prune`, `notes remove/prune`, `update-ref -d`,
+//     `symbolic-ref -d`, `push --delete/--force/:ref/+ref`) are destructive.
 //
 // Stated limits (also in permission-policy-design.md): a program the line
 // allows still runs code of its own — a script file given to an interpreter,
@@ -735,6 +745,14 @@ interface GuestArgvSpec {
   readonly subcommands?: readonly string[];
   /** Every other positional must pass; absent = no positional allowed. */
   readonly positional?: (arg: string) => boolean;
+  /**
+   * Options (long, or `-x` for a short letter) whose value is text — a
+   * message, format, pattern, selector or time — never a file or a host. Such
+   * a value is still refused when it carries a URL, but not for the
+   * `host:path` form, which a commit message (`-m "fix: x"`), a date or a
+   * format (`%(refname:short)`) legitimately has.
+   */
+  readonly textValues?: readonly string[];
   /** Extra checks for particular option values, keyed by option (`--editable`, `-e`). */
   readonly valueChecks?: Readonly<Record<string, (value: string) => boolean>>;
   /** Words after this many positionals are a program's own arguments. */
@@ -743,9 +761,17 @@ interface GuestArgvSpec {
   readonly restAfterDoubleDash?: boolean;
 }
 
-/** Values never carry a URL; a URL given to an option is a source or sink. */
-function isGuestOptionValue(value: string | undefined): boolean {
-  return value !== undefined && !/:\/\//.test(value) && !value.startsWith("@");
+/**
+ * The remote-file form `host:path` / `user@host:path`: a `:` before any `/`.
+ * tar (`-f host:/a.tar`), rsync and cp-like tools open a connection for it, so
+ * no option value of that shape is local. git's scp-form sources are checked
+ * separately by `isGuestGitSource`, never through option values.
+ */
+const GUEST_REMOTE_OPERAND_RE = /^[^/]*:/;
+
+/** Values never carry a URL or a remote `host:path`; either one is a source or sink. */
+function isGuestOptionValue(value: string | undefined, text = false): boolean {
+  return value !== undefined && !/:\/\//.test(value) && !value.startsWith("@") && (text || !GUEST_REMOTE_OPERAND_RE.test(value));
 }
 
 function matchesGuestArgvSpec(args: readonly string[], spec: GuestArgvSpec): boolean {
@@ -753,6 +779,7 @@ function matchesGuestArgvSpec(args: readonly string[], spec: GuestArgvSpec): boo
   const values = new Set(spec.values ?? []);
   const short = spec.short ?? "";
   const shortValues = spec.shortValues ?? "";
+  const textValues = new Set(spec.textValues ?? []);
   let positionals = 0;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -767,7 +794,7 @@ function matchesGuestArgvSpec(args: readonly string[], spec: GuestArgvSpec): boo
       const name = eq > 0 ? arg.slice(0, eq) : arg;
       if (values.has(name)) {
         const value = eq > 0 ? arg.slice(eq + 1) : args[++i];
-        if (!isGuestOptionValue(value) || spec.valueChecks?.[name]?.(value!) === false) return false;
+        if (!isGuestOptionValue(value, textValues.has(name)) || spec.valueChecks?.[name]?.(value!) === false) return false;
         continue;
       }
       if (arg.startsWith("--")) return false;
@@ -777,7 +804,7 @@ function matchesGuestArgvSpec(args: readonly string[], spec: GuestArgvSpec): boo
         if (short.includes(letter)) continue;
         if (!shortValues.includes(letter)) return false;
         const value = j + 1 < arg.length ? arg.slice(j + 1) : args[++i];
-        if (!isGuestOptionValue(value) || spec.valueChecks?.[`-${letter}`]?.(value!) === false) return false;
+        if (!isGuestOptionValue(value, textValues.has(`-${letter}`)) || spec.valueChecks?.[`-${letter}`]?.(value!) === false) return false;
         consumed = true;
       }
       continue;
@@ -898,6 +925,7 @@ const GO_BUILD_SPEC: GuestArgvSpec = {
   values: ["-o", "-tags", "-run", "-count", "-timeout", "-mod", "-ldflags", "-gcflags", "-asmflags",
     "-p", "-bench", "-benchtime", "-coverprofile", "-coverpkg", "-covermode", "-C", "-cpu",
     "-parallel", "-buildvcs", "-skip", "-shuffle", "-f", "-go"],
+  textValues: ["-tags", "-run", "-timeout", "-ldflags", "-gcflags", "-asmflags", "-bench", "-benchtime", "-skip"],
   positional: (arg) => GO_PACKAGE_RE.test(arg) || GO_MODULE_RE.test(arg),
 };
 
@@ -917,6 +945,7 @@ const MVN_SPEC: GuestArgvSpec = {
     "--no-transfer-progress", "-ntp", "--no-daemon", "--info", "--stacktrace", "--build-cache",
     "--parallel", "--continue"],
   values: ["--file", "-pl", "--projects", "--threads", "--console", "--exclude-task", "--project-dir"],
+  textValues: ["-pl", "--projects", "--exclude-task", "-x"],
   short: "qBoeXUis",
   shortValues: "fTxp",
   positional: (arg) => BUILD_GOAL_RE.test(arg),
@@ -945,6 +974,7 @@ const GUEST_SUBCOMMAND_TOOLS: ReadonlyMap<string, ReadonlyMap<string, GuestArgvS
     ...["test", "build"].map((sub) => [sub, {
       flags: ["--watch", "--minify", "--sourcemap", "--bail", "--coverage", "--production"],
       values: ["--outdir", "--outfile", "--target", "--timeout", "--test-name-pattern"],
+      textValues: ["--test-name-pattern", "-t"],
       short: "t",
       positional: isGuestLocalPath,
     }] as [string, GuestArgvSpec]),
@@ -1033,25 +1063,29 @@ const GIT_SUBCOMMANDS: ReadonlyMap<string, GuestArgvSpec> = new Map<string, Gues
     positional: (arg) => GIT_REF_RE.test(arg) }],
   ["branch", { flags: ["--all", "--remotes", "--list", "--verbose", "-vv", "--show-current", "--merged",
     "--no-merged"], values: ["--set-upstream-to", "--sort", "--format"], short: "arlvdm", shortValues: "u",
+    textValues: ["--sort", "--format"],
     positional: (arg) => GIT_REF_RE.test(arg) }],
   ["add", { flags: ["--all", "--update", "--intent-to-add", "--force", "--verbose", "--dry-run"], short: "AuNfvn",
     positional: isGuestLocalPath, restAfterDoubleDash: true }],
   ["commit", { flags: ["--all", "--quiet", "--allow-empty", "--amend", "--no-edit", "--no-verify", "--signoff"],
-    values: ["--message", "--file", "--author", "--date"], short: "aqsn", shortValues: "mF" }],
+    values: ["--message", "--file", "--author", "--date"], short: "aqsn", shortValues: "mF",
+    textValues: ["--message", "-m", "--author", "--date"] }],
   ["restore", { flags: ["--staged", "--quiet"], values: ["--source"], short: "Sq", shortValues: "s",
     positional: isGuestLocalPath, restAfterDoubleDash: true }],
   ["reset", { flags: ["--soft", "--mixed", "--quiet", "--keep", "--merge"], short: "q",
     positional: (arg) => GIT_REF_RE.test(arg) || isGuestLocalPath(arg), restAfterDoubleDash: true }],
   ["stash", { flags: ["--include-untracked", "--keep-index", "--quiet", "--index"], values: ["--message"],
-    short: "ukq", shortValues: "m", subcommands: ["push", "list", "show", "pop", "apply"],
+    short: "ukq", shortValues: "m", textValues: ["--message", "-m"], subcommands: ["push", "list", "show", "pop", "apply"],
     positional: (arg) => /^(stash@\{\d+\}|\d+)$/.test(arg) }],
   ["merge", { flags: ["--no-ff", "--ff-only", "--ff", "--no-edit", "--abort", "--continue", "--squash", "--quiet",
-    "--no-commit"], values: ["--message"], short: "q", shortValues: "m", positional: (arg) => GIT_REF_RE.test(arg) }],
+    "--no-commit"], values: ["--message"], short: "q", shortValues: "m", textValues: ["--message", "-m"],
+    positional: (arg) => GIT_REF_RE.test(arg) }],
   ["rebase", { flags: ["--continue", "--abort", "--skip", "--autostash", "--quiet", "--no-autostash"],
     values: ["--onto"], short: "q", positional: (arg) => GIT_REF_RE.test(arg) }],
   ...["cherry-pick", "revert"].map((sub) => [sub, { flags: ["--no-edit", "--no-commit", "--continue", "--abort",
     "--skip"], short: "nx", positional: (arg: string) => GIT_REF_RE.test(arg) }] as [string, GuestArgvSpec]),
   ["tag", { flags: ["--list", "--annotate", "--force", "--delete"], values: ["--message"], short: "lafd", shortValues: "m",
+    textValues: ["--message", "-m"],
     positional: (arg) => GIT_REF_RE.test(arg) }],
   ["init", { flags: ["--quiet", "--bare"], values: ["--initial-branch"], short: "q", shortValues: "b",
     positional: isGuestLocalPath }],
@@ -1061,7 +1095,7 @@ const GIT_SUBCOMMANDS: ReadonlyMap<string, GuestArgvSpec> = new Map<string, Gues
     short: "R3v", positional: isGuestLocalPath }],
   ["grep", { flags: ["--line-number", "--ignore-case", "--files-with-matches", "--count", "--cached", "--untracked",
     "--no-index", "--word-regexp", "--extended-regexp", "--fixed-strings", "--invert-match", "--recurse-submodules"],
-    values: ["-e", "--max-depth"], short: "nilwEFcvhHIrPz", shortValues: "eABC", positional: isGuestLiteralWord,
+    values: ["-e", "--max-depth"], short: "nilwEFcvhHIrPz", shortValues: "eABC", textValues: ["-e"], positional: isGuestLiteralWord,
     restAfterDoubleDash: true }],
   ["submodule", { flags: ["--init", "--recursive", "--quiet", "--remote"], short: "q",
     subcommands: ["update", "init", "status", "sync"], positional: isGuestLocalPath }],
@@ -1190,6 +1224,24 @@ function guestVerbOf(word: string): string | null {
   return /^(python[0-9.]*|pip3?|node|pytest|gradlew|mvnw)$/.test(base) ? base : null;
 }
 
+/**
+ * True when a git short cluster sets one of `letters` before a letter that
+ * takes a glued value (`-vd` → d; `-uorigin/dev` → u's value, not d).
+ */
+function gitClusterHas(arg: string, letters: string, valueLetters = ""): boolean {
+  if (!/^-[^-]/.test(arg)) return false;
+  for (const letter of arg.slice(1)) {
+    if (letters.includes(letter)) return true;
+    if (valueLetters.includes(letter)) return false;
+  }
+  return false;
+}
+
+/** The first argument that is not an option (`git reflog --verbose expire` → `expire`). */
+function firstOperand(args: readonly string[]): string | undefined {
+  return args.find((arg) => !arg.startsWith("-"));
+}
+
 function isGuestDestructiveArgv(argv: readonly string[], depth: number): boolean {
   const verb = stripCommandPath(argv[0] ?? "");
   const args = argv.slice(1);
@@ -1207,22 +1259,49 @@ function isGuestDestructiveArgv(argv: readonly string[], depth: number): boolean
     const { sub, rest } = git;
     if (sub === "clean") return true;
     if (sub === "reset") return rest.some((arg) => longOptionAbbreviates(arg, ["--hard"]));
+    // `checkout -B` / `switch -C` reset an existing branch to a new start point.
     if (sub === "checkout") {
-      return rest.some((arg) => arg === "--" || arg === "." || shortClusterHas(arg, "f") || longOptionAbbreviates(arg, ["--force"]));
+      return rest.some((arg) => arg === "--" || arg === "." || gitClusterHas(arg, "fB", "b") || longOptionAbbreviates(arg, ["--force"]));
     }
-    if (sub === "switch") return rest.some((arg) => shortClusterHas(arg, "f") || longOptionAbbreviates(arg, ["--force", "--discard-changes"]));
+    if (sub === "switch") {
+      return rest.some((arg) => gitClusterHas(arg, "fC", "c") ||
+        longOptionAbbreviates(arg, ["--force", "--discard-changes", "--force-create"]));
+    }
     if (sub === "restore") {
       const staged = rest.some((arg) => shortClusterHas(arg, "S") || longOptionAbbreviates(arg, ["--staged"]));
       const worktree = rest.some((arg) => shortClusterHas(arg, "W") || longOptionAbbreviates(arg, ["--worktree"]));
       return !staged || worktree;
     }
     if (sub === "stash") return rest.some((arg) => arg === "drop" || arg === "clear");
+    // Ref deletion, or a forced overwrite of an existing ref, discards what the
+    // ref pointed at. Short letters match anywhere in a cluster (`-vd`) and long
+    // options by prefix (`--del`), the way git's parse-options resolves them.
     if (sub === "branch") {
-      const force = rest.some((arg) => shortClusterHas(arg, "f") || longOptionAbbreviates(arg, ["--force"]));
-      const del = rest.some((arg) => shortClusterHas(arg, "d") || longOptionAbbreviates(arg, ["--delete"]));
-      return rest.some((arg) => shortClusterHas(arg, "D")) || (force && del);
+      return rest.some((arg) => gitClusterHas(arg, "dDfMC", "u") || longOptionAbbreviates(arg, ["--delete", "--force"]));
+    }
+    if (sub === "tag") return rest.some((arg) => gitClusterHas(arg, "df", "mFun") || longOptionAbbreviates(arg, ["--delete", "--force"]));
+    if (sub === "fetch" || sub === "pull") {
+      return rest.some((arg) => gitClusterHas(arg, "pPf", "jo") || longOptionAbbreviates(arg, ["--prune", "--prune-tags", "--force"]));
+    }
+    if (sub === "remote") return ["remove", "rm", "prune"].includes(firstOperand(rest) ?? "");
+    if (sub === "mv") return rest.some((arg) => gitClusterHas(arg, "f") || longOptionAbbreviates(arg, ["--force"]));
+    // Abandoning an in-progress merge, rebase or pick discards its resolution work.
+    if (["merge", "rebase", "cherry-pick", "revert", "am"].includes(sub)) {
+      return rest.some((arg) => longOptionAbbreviates(arg, ["--abort", "--skip", "--quit"]));
     }
     if (sub === "rm") return !rest.some((arg) => arg === "--cached");
+    // Subcommands whose deleting forms are not on the guest allowlist, named
+    // here so they grade as destructive rather than merely unlisted.
+    if (sub === "gc" || sub === "prune" || sub === "filter-branch" || sub === "replace") return true;
+    if (sub === "reflog") return ["expire", "delete"].includes(firstOperand(rest) ?? "");
+    if (sub === "worktree" || sub === "notes") return ["remove", "prune"].includes(firstOperand(rest) ?? "");
+    if (sub === "update-ref" || sub === "symbolic-ref") {
+      return rest.some((arg) => gitClusterHas(arg, "d", "m") || longOptionAbbreviates(arg, ["--delete"]));
+    }
+    if (sub === "push") {
+      return rest.some((arg) => gitClusterHas(arg, "df", "o") || arg.startsWith(":") || arg.startsWith("+") ||
+        longOptionAbbreviates(arg, ["--delete", "--force", "--force-with-lease", "--force-if-includes", "--prune", "--mirror"]));
+    }
     return false;
   }
   const wrapped = depth < GUEST_WRAPPER_MAX_DEPTH ? unwrapGuestRunner(argv) : null;
@@ -1306,14 +1385,19 @@ function isGuestLocalArgv(leaf: ShellLeaf, argv: readonly string[], depth: numbe
   if (verb === "wget") return isPlainGetDownload(args, WGET_GET_FLAG_OPTIONS, WGET_GET_VALUE_OPTIONS, WGET_GET_SHORT_FLAGS, WGET_GET_SHORT_VALUES);
   if (verb === "tar") {
     // A dashless first argument is an old-style cluster (`xzf`, `xIf`).
+    // `--force-local` is admitted, but a `host:path` value stays unlisted even
+    // with it: the value check never depends on another option's presence.
     const words = args.length > 0 && !args[0]!.startsWith("-") ? [`-${args[0]}`, ...args.slice(1)] : args;
     return matchesGuestArgvSpec(words, {
       flags: ["--extract", "--create", "--list", "--gzip", "--gunzip", "--bzip2", "--xz", "--zstd", "--verbose",
         "--exclude-vcs", "--no-same-owner", "--no-same-permissions", "--preserve-permissions", "--overwrite",
         "--keep-old-files", "--skip-old-files", "--wildcards", "--numeric-owner", "--totals", "--auto-compress",
-        "--to-stdout", "--one-top-level", "--null"],
+        "--to-stdout", "--one-top-level", "--null", "--force-local"],
       values: ["--file", "--directory", "--strip-components", "--exclude", "--owner", "--group", "--mode", "--mtime",
         "--sort", "--files-from", "--exclude-from"],
+      // Patterns, owners, modes and times are text; `-f`, `-C`, `-T`, `-X`
+      // and their long forms name files and keep the `host:path` check.
+      textValues: ["--exclude", "--owner", "--group", "--mode", "--mtime", "--sort"],
       short: "cxtuarzjJavpkhSmOWP",
       shortValues: "fCTX",
       positional: isGuestLocalPath,
@@ -1331,6 +1415,7 @@ function isGuestLocalArgv(leaf: ShellLeaf, argv: readonly string[], depth: numbe
         "--no-perms", "--no-owner", "--no-group", "--mkpath", "--inplace", "--append", "--ignore-existing",
         "--existing", "--size-only", "--copy-links"],
       values: ["--exclude", "--include", "--exclude-from", "--info", "--chmod"],
+      textValues: ["--exclude", "--include", "--info", "--chmod"],
       short: "avzrPhnpogtlDHAXucqiWSxRmL",
       positional: isGuestLocalPath,
     });
