@@ -4194,7 +4194,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
    * Audit an attempt's failure. The audit is a report about a failure, so a
    * throwing audit sink is logged and never becomes the outcome itself.
    */
-  private auditAttemptEvent(type: string, data: { pluginId: string } & Record<string, unknown>): void {
+  protected auditAttemptEvent(type: string, data: { pluginId: string } & Record<string, unknown>): void {
     try {
       this.auditLog?.("error", type, data);
     } catch (auditError) {
@@ -6176,6 +6176,11 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     const slowTimer = setTimeout(() => {
       log.warn(`slow plugin: ${pluginId} (>${SLOW_THRESHOLD_MS}ms)`);
     }, SLOW_THRESHOLD_MS);
+    // Set when the coordinator commits this exact projection. From then on
+    // the committed generation owns the instance, incarnation and root; this
+    // start releases nothing, whatever its publication throws afterwards.
+    let committed = false;
+    let publishedProjection: PluginRuntimeGenerationProjection | undefined;
     try {
       this.perf.ensure(pluginId);
       if (plugin.instance.start) {
@@ -6203,6 +6208,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       this.perf.setStartupMs(pluginId, elapsed);
       const projection = this.getRuntimeGenerationProjection(pluginId);
       if (!projection) throw new Error("runtime projection disappeared before publication");
+      publishedProjection = projection;
+      this.commitHandoffs.set(projection, () => { committed = true; });
       await generationLifecycle.replaceRuntime(
         projection,
         this.capabilityDependencyCommitScope(() => {
@@ -6224,12 +6231,25 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       }
       return undefined;
     } catch (error) {
+      if (committed) {
+        // Not a start failure to clean up: the committed generation keeps its
+        // resources, the lifecycle recorded the post-commit fault and settled
+        // dispatch, and a normal removal retires it exactly once.
+        logPluginLifecycle("error", { pluginId, phase: PluginPhase.START_FAIL, err: error, reason: "post_commit" }, "plugin start failed after its generation was committed");
+        try {
+          this.resolveCapabilityBlockedRetry(pluginId);
+        } catch (followUpError) {
+          log.error(`${pluginId} bookkeeping after a committed boot start failed: ${errorMessage(followUpError)}`);
+        }
+        return undefined;
+      }
       plugin.started = false;
       plugin.deactivateHostApi?.();
       if (!isCurrent()) return BOOT_START_CANCELLED;
       return errorMessage(error);
     } finally {
       clearTimeout(slowTimer);
+      if (publishedProjection) this.commitHandoffs.delete(publishedProjection);
     }
   }
 
@@ -6838,6 +6858,10 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       arm: routed.arm,
       confinement: this.confinementReport(createPlugin),
     });
+    // Set when the coordinator commits this exact candidate; the committed
+    // generation then owns it (see `commitHandoffs`).
+    let committed = false;
+    this.commitHandoffs.set(candidate, () => { committed = true; });
     try {
       await generationLifecycle.replaceRuntime(
         candidate,
@@ -6855,6 +6879,25 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         }),
       );
     } catch (error) {
+      if (committed) {
+        // The replacement is the committed generation: it owns its child,
+        // incarnation and root, the lifecycle recorded the post-commit fault
+        // and settled dispatch, and its own retirement releases it. The
+        // restart still fails with the lifecycle's error; what the commit
+        // implies runs first, and a failure there is reported, never instead.
+        logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err: error, reason: "post_commit" }, "runtime generation failed after it was committed");
+        try {
+          this.onEnable?.(pluginId);
+        } catch (followUpError) {
+          log.error(`${pluginId} bookkeeping after a committed restart failed: ${errorMessage(followUpError)}`);
+          this.auditAttemptEvent("plugin_add_follow_up_failed", {
+            pluginId,
+            reason: errorMessage(followUpError),
+          });
+        }
+        if (opts.throwOnFailure) throw error;
+        return "failed";
+      }
       deactivateReplacementHostApi();
       if (hostEffects.isPreparing()) hostEffects.discard();
       await this.stopAfterStartFailure(pluginId, instance, replacementLifecycleHookScope);
@@ -6865,6 +6908,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err: error, reason: "publication" }, "runtime generation publication failed");
       return "failed";
+    } finally {
+      this.commitHandoffs.delete(candidate);
     }
     this.onEnable?.(pluginId);
     return "started";

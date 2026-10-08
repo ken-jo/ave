@@ -859,8 +859,13 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
         // Committed and published, but a post-commit step (the contributions
         // notification) failed before readiness was scheduled. Nothing else
         // will ever open or reject the candidate's dispatch barrier, so settle
-        // it here: calls fail visibly with this fault instead of waiting.
-        published?.markDispatchUnavailable(error);
+        // it here: calls fail visibly with this fault instead of waiting. The
+        // predecessor's retirement is still under way; track it like the
+        // committed-publication branch above, so retirement waiters see it.
+        if (published) {
+          published.markDispatchUnavailable(error);
+          this.trackRetirement(published.retired);
+        }
         this.recordPostCommitFault(
           pluginId,
           candidate.generationId,

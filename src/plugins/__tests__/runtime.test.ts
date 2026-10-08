@@ -4121,7 +4121,8 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
   /**
    * The production bundle lifecycle (coordinator, commit closure, post-commit
    * handling) over the fixture's runtime, with inert loopback and MCP
-   * projections. `faults` injects a one-shot failure at a named point.
+   * projections. `faults` injects a one-shot failure at a named point; it is
+   * read when the point is reached, so a test can arm it after warming up.
    */
   function bindNativeBundleLifecycle(
     f: Awaited<ReturnType<typeof setup>>,
@@ -4135,8 +4136,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       published: false,
       disconnectPredecessor: false,
     });
-    let loopbackFault = faults.loopbackPublish;
-    let notifyFault = faults.contributionsUpdated;
     const lifecycle = new PluginBundleLifecycle({
       pluginRuntime: f.runtime,
       receiptCacheRoot: join(f.fixture.rootDir, "receipts"),
@@ -4144,8 +4143,8 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       personaPromptStore: new PersonaPromptStore({ userDir: join(f.fixture.rootDir, "native-prompts") }),
       hookManager: new ScriptHookManager(),
       onContributionsUpdated: () => {
-        const fault = notifyFault;
-        notifyFault = undefined;
+        const fault = faults.contributionsUpdated;
+        faults.contributionsUpdated = undefined;
         if (fault) throw fault;
       },
       revokeOperationGeneration: () => undefined,
@@ -4153,8 +4152,8 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
         prepareGeneration: async (manifest: PluginManifest, generationId: string) => prepared(manifest.id, generationId),
         prepareRemoval: prepared,
         publishGeneration: (value: { published: boolean }) => {
-          const fault = loopbackFault;
-          loopbackFault = undefined;
+          const fault = faults.loopbackPublish;
+          faults.loopbackPublish = undefined;
           if (fault) throw fault;
           value.published = true;
         },
@@ -4180,8 +4179,8 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     f.runtime.setGenerationAccess(lifecycle);
     // Retire whatever the lifecycle still holds before the fixture is torn down.
     disposers.unshift(async () => {
-      loopbackFault = undefined;
-      notifyFault = undefined;
+      faults.loopbackPublish = undefined;
+      faults.contributionsUpdated = undefined;
       await lifecycle.deactivate(ID);
       await lifecycle.waitForRetirements();
     });
@@ -4368,6 +4367,51 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     // The second failure is reported on its own.
     expect(f.audits).toContain("plugin_add_follow_up_failed");
     expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 0, drained: 0, stops: 0 });
+  });
+
+  it("boot: a publication failure after the coordinator commit leaves the committed generation owning everything until removal", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f, { loopbackPublish: f.originalError });
+    await f.runtime.startAll();
+    expect(lifecycle.getActive(ID)).toBeDefined();
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 0, drained: 0, stops: 0 });
+    expect(f.removals).toEqual([]);
+    expect(await f.exists(f.roots[0]!)).toBe(true);
+    await expect(f.constructed[0]!.ping({})).resolves.toBe("pong");
+    await f.runtime.removePlugin(ID);
+    await lifecycle.waitForRetirements();
+    expect(lifecycle.getActive(ID)).toBeUndefined();
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+    expect(await f.exists(f.roots[0]!)).toBe(false);
+  });
+
+  it.each([
+    ["before", "loopbackPublish"],
+    ["after", "contributionsUpdated"],
+  ] as const)("reload: a failure after the coordinator commit, %s the runtime publishes, leaves the committed replacement owning everything until removal", async (_when, point) => {
+    const f = await setup("success");
+    const faults: { loopbackPublish?: Error; contributionsUpdated?: Error } = {};
+    const lifecycle = bindNativeBundleLifecycle(f, faults);
+    await f.runtime.addPlugin(ID);
+    faults[point] = f.originalError;
+    const failure = await f.runtime.reloadPlugin(ID).then(() => undefined, (error: unknown) => error);
+    await lifecycle.waitForRetirements();
+    expect(f.constructed).toHaveLength(2);
+    // The incumbent retired once; the committed replacement was not touched.
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+    expect(f.constructed[1]!.stops).toBe(0);
+    expect(f.incarnations[1]!.isActive()).toBe(true);
+    const replacementRoot = f.roots.at(-1)!;
+    expect(await f.exists(replacementRoot)).toBe(true);
+    await expect(f.constructed[1]!.ping({})).resolves.toBe("pong");
+    // The reload still fails with the lifecycle's fault: wrapped as a
+    // committed-publication error before the runtime publishes, itself after.
+    expect(failure === f.originalError || (failure as Error).cause === f.originalError).toBe(true);
+    await f.runtime.removePlugin(ID);
+    await lifecycle.waitForRetirements();
+    expect(lifecycle.getActive(ID)).toBeUndefined();
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 2, drained: 2, stops: 2 });
+    expect(await f.exists(replacementRoot)).toBe(false);
   });
 
   it("a rejection after the plugin was registered leaves the registered generation running and disposes it once", async () => {
