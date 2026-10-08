@@ -1821,19 +1821,6 @@ abstract class PluginRuntimeState {
    * no child.
    */
   private readonly childSpawnConfinements = new WeakMap<RuntimePluginFactory, SpawnConfinement>();
-  /**
-   * The routed factory of the boot or add attempt in flight for a plugin, from
-   * the moment routing returns until the attempt ends (§9.8 A1, "Doctor,
-   * wired end to end"). {@link markFailed} reads it, so EVERY failure after
-   * routing — the factory's refusal, a throw before the factory is invoked
-   * (data directory, HostApi incarnation), a start failure, a duplicate
-   * tool, a crash the boot loop catches — leaves the arm and the confinement
-   * on the failed card, `"not-spawned"` when no child existed. A failure
-   * before routing finds no entry and carries neither, because no arm was
-   * chosen. Restart and prepared activation never set it: their failures are
-   * the attempt's, not the plugin's (decision 52).
-   */
-  protected readonly routedAttempts = new Map<string, RoutedPluginFactory>();
 
   protected recordChildSpawnConfinement(createPlugin: RuntimePluginFactory, confinement: SpawnConfinement): void {
     this.childSpawnConfinements.set(createPlugin, confinement);
@@ -2988,10 +2975,17 @@ abstract class PluginRuntimeState {
     );
   }
 
+  /**
+   * `attempt` is the boot or add attempt the failure belongs to, passed by
+   * the attempt itself — never looked up by plugin id, so an overlapping
+   * attempt for the same plugin can neither lend nor erase its diagnostics.
+   * With it, the card says where the attempt ran ({@link recordAttemptDiagnostics}).
+   */
   protected markFailed(
     pluginId: string,
     stub?: { name: string; description: string },
     failure?: { installFailureKind?: PluginInstallFailureKind; installFailureMessage?: string },
+    attempt?: PluginLoadAttemptResources,
   ): void {
     this.failedPluginIds.add(pluginId);
     this.disabledPluginIds.delete(pluginId);
@@ -3001,8 +2995,7 @@ abstract class PluginRuntimeState {
     if (failure && (failure.installFailureKind || failure.installFailureMessage)) {
       this.loadFailureInfo.set(pluginId, failure);
     }
-    const routed = this.routedAttempts.get(pluginId);
-    if (routed) this.recordConstructionFailureArm(pluginId, routed);
+    if (attempt) this.recordAttemptDiagnostics(pluginId, attempt);
   }
 
   /**
@@ -3030,6 +3023,7 @@ abstract class PluginRuntimeState {
       kind?: PluginInstallFailureKind;
       displayName?: string;
     },
+    attempt?: PluginLoadAttemptResources,
   ): void {
     this.markFailed(pluginId, {
       name: refusal.displayName ?? pluginId,
@@ -3037,7 +3031,7 @@ abstract class PluginRuntimeState {
     }, {
       ...(refusal.kind ? { installFailureKind: refusal.kind } : {}),
       installFailureMessage: refusal.reason,
-    });
+    }, attempt);
   }
 
   /**
@@ -3222,18 +3216,50 @@ abstract class PluginRuntimeState {
   }
 
   /**
-   * Put the arm and confinement of an attempt that failed AFTER routing on
-   * the failure record the card projects (§9.8 A1, "Doctor, wired end to
-   * end"). Merged into whatever classification the refusal already wrote, so
-   * a plain failure gets a record too. {@link markFailed} calls it for the
-   * attempt in {@link routedAttempts}; a generation that had loaded and is
-   * failed closed keeps its own ({@link retainLoadedPluginDiagnostics}).
+   * Put where a failed boot or add attempt ran on the failure record the card
+   * projects (§9.8 A1, "Doctor, wired end to end"): the arm routing chose and
+   * the wrap its child got, `"not-spawned"` when no child existed. An attempt
+   * that failed before routing chose no arm, so it carries neither — and
+   * erases whatever an earlier attempt left, which no longer describes this
+   * plugin. Merged into the classification the refusal already wrote.
    */
-  protected recordConstructionFailureArm(
-    pluginId: string,
-    routed: RoutedPluginFactory,
+  protected recordAttemptDiagnostics(pluginId: string, attempt: PluginLoadAttemptResources): void {
+    if (attempt.routed) {
+      this.retainFailureDiagnostics(pluginId, attempt.routed.arm, this.confinementReport(attempt.routed.createPlugin));
+    } else {
+      this.clearFailureDiagnostics(pluginId);
+    }
+  }
+
+  /** Drop an earlier attempt's arm and confinement; the rest of the record stays. */
+  protected clearFailureDiagnostics(pluginId: string): void {
+    const info = this.loadFailureInfo.get(pluginId);
+    if (!info || (info.arm === undefined && info.confinement === undefined)) return;
+    const { arm: _arm, confinement: _confinement, ...rest } = info;
+    if (Object.keys(rest).length === 0) this.loadFailureInfo.delete(pluginId);
+    else this.loadFailureInfo.set(pluginId, rest);
+  }
+
+  /**
+   * The factory's own failure on a boot or add attempt: the refusal it names,
+   * or a plain failure, and where the attempt ran. One reporter for both
+   * paths, so they cannot drift.
+   */
+  protected reportAttemptFactoryFailure(
+    manifest: PluginManifest,
+    err: unknown,
+    attempt: PluginLoadAttemptResources,
   ): void {
-    this.retainFailureDiagnostics(pluginId, routed.arm, this.confinementReport(routed.createPlugin));
+    if (err instanceof IncompatibleHostProtocolError) {
+      this.refuseIncompatibleHostProtocol(manifest, err);
+    } else if (err instanceof ProcessEntryUnconfinedError) {
+      this.markProcessEntryUnconfined(manifest, err);
+    } else if (err instanceof PluginSandboxGrantError) {
+      this.refuseSandboxGrant(manifest, err);
+    } else {
+      this.markFailed(manifest.id);
+    }
+    this.recordAttemptDiagnostics(manifest.id, attempt);
   }
 
   /** The loaded generation's own arm and confinement, kept when it is failed closed. */
@@ -4057,17 +4083,82 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
   }
 
   /** Instantiate and start one post-boot plugin without rebuilding its peers. */
+  /**
+   * One add attempt, owned by its own {@link PluginLoadAttemptResources}: the
+   * object is the attempt's identity, holds the factory routing returned and
+   * whatever the attempt took before invoking it, and is passed explicitly to
+   * every report the attempt makes — so an overlapping add or boot of the
+   * same plugin can neither lend nor erase its diagnostics. An earlier
+   * attempt's arm and confinement are dropped up front: a failure before
+   * routing chose no arm. A throw after routing that the attempt did not
+   * report itself (data directory, HostApi incarnation, a duplicate tool, a
+   * rejected publication) is reported here as a crashed load, unless the
+   * attempt was cancelled, and the add still rejects with it.
+   */
   protected async instantiateAndStartSinglePlugin(
     plan: ManifestLoadPlan,
     manifest: PluginManifest,
     approvedPluginAccess: PluginAccessSpec | undefined,
     opts: { skipPreparation?: boolean; shouldCommit?: () => boolean } = {},
   ): Promise<SinglePluginStartResult> {
+    const attempt: PluginLoadAttemptResources = { pluginId: manifest.id };
+    this.clearFailureDiagnostics(manifest.id);
     try {
-      return await this.addSinglePluginAttempt(plan, manifest, approvedPluginAccess, opts);
-    } finally {
-      // The attempt is over, however it ended; see {@link routedAttempts}.
-      this.routedAttempts.delete(manifest.id);
+      return await this.addSinglePluginAttempt(plan, manifest, approvedPluginAccess, opts, attempt);
+    } catch (err) {
+      if (attempt.routed) {
+        if (opts.shouldCommit?.() ?? true) await this.abandonCrashedPluginLoad(attempt, err);
+        else await this.releaseAbandonedAttempt(attempt);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Release whatever the crashed attempt had already taken, then report it.
+   *
+   * The candidate runtime root is on disk and the HostApi incarnation may be
+   * live but unpublished; neither has an owner once the attempt is abandoned.
+   * Teardown is skipped for a plugin that already reached `this.plugins` — the
+   * throw came after it was published, so it is running and must not be pulled
+   * out from under its own tools. `listPluginCards()` reads `this.plugins`
+   * ahead of `failedPluginIds`, so that plugin still projects as loaded. The
+   * report carries where the attempt ran when it had been routed.
+   */
+  protected async abandonCrashedPluginLoad(
+    resources: PluginLoadAttemptResources,
+    err: unknown,
+  ): Promise<void> {
+    const { pluginId } = resources;
+    const reason = errorMessage(err);
+    logPluginLifecycle(
+      "error",
+      { pluginId, phase: PluginPhase.LOAD_FAIL, err, reason: "load_crash" },
+      `plugin load crashed: ${reason}`,
+    );
+    this.auditLog?.("error", "plugin_load_crashed", { pluginId, reason });
+    await this.releaseAbandonedAttempt(resources);
+    this.markLoadRefused(pluginId, {
+      summary: "Plugin crashed while loading.",
+      reason,
+      kind: "load-crash",
+      displayName: this.knownPluginManifests.get(pluginId)?.name ?? pluginId,
+    }, resources);
+  }
+
+  /** The teardown half of {@link abandonCrashedPluginLoad}, alone for a cancelled attempt. */
+  protected async releaseAbandonedAttempt(resources: PluginLoadAttemptResources): Promise<void> {
+    const { pluginId, runtimeRoot, incarnation } = resources;
+    if (incarnation && !this.plugins.has(pluginId)) {
+      incarnation.deactivate();
+      incarnation.hostEffects.discard();
+      this.runDisposerList(incarnation.disposers, "crashed plugin load");
+      await this.drainPluginHostApiOperations(pluginId, {
+        drainHostApiOperations: incarnation.drainOperations,
+      });
+    }
+    if (runtimeRoot) {
+      await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
     }
   }
 
@@ -4076,6 +4167,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     manifest: PluginManifest,
     approvedPluginAccess: PluginAccessSpec | undefined,
     opts: { skipPreparation?: boolean; shouldCommit?: () => boolean },
+    attempt: PluginLoadAttemptResources,
   ): Promise<SinglePluginStartResult> {
     const generationLifecycle = this.requireCapabilityCommitLifecycle("plugin add");
     const pluginRoot = dirname(plan.manifestPath);
@@ -4240,7 +4332,8 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       return "cancelled";
     }
     const { createPlugin } = routed;
-    this.routedAttempts.set(manifest.id, routed);
+    attempt.routed = routed;
+    attempt.runtimeRoot = runtimeRoot;
 
     const pluginDataDir = this.ensureDataDir(manifest.id, pluginRoot);
     const hostEffects = new HostApiGenerationScope(manifest.id);
@@ -4251,6 +4344,10 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         pluginDataDir,
         hostEffects,
       );
+    // From the factory's invocation on, every exit below releases the root and
+    // the incarnation itself before it returns or throws; the attempt keeps
+    // only its routing, for the report.
+    attempt.runtimeRoot = undefined;
 
     let instance: RuntimePlugin;
     try {
@@ -4291,15 +4388,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       log.error(`${manifest.id} createPlugin failed: %s`, (err as Error).message);
       // A child whose `construct` named a host method this app does not serve
       // is the same refusal as an unserved declared version, and says so.
-      if (err instanceof IncompatibleHostProtocolError) {
-        this.refuseIncompatibleHostProtocol(manifest, err);
-      } else if (err instanceof ProcessEntryUnconfinedError) {
-        this.markProcessEntryUnconfined(manifest, err);
-      } else if (err instanceof PluginSandboxGrantError) {
-        this.refuseSandboxGrant(manifest, err);
-      } else {
-        this.markFailed(manifest.id);
-      }
+      this.reportAttemptFactoryFailure(manifest, err, attempt);
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return "failed";
     }
@@ -4366,7 +4455,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
           return "cancelled";
         }
         log.error(`start during addPlugin failed: %s`, (err as Error).message);
-        this.markFailed(manifest.id);
+        this.markFailed(manifest.id, undefined, undefined, attempt);
         await this.stopAfterStartFailure(manifest.id, instance, lifecycleHookScope);
         this.runDisposerList(disposers, "failed add start");
         await this.drainPluginHostApiOperations(manifest.id, {
@@ -4447,7 +4536,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         this.markFailed(manifest.id, {
           name: manifest.name ?? manifest.id,
           description: `Missing capabilities: ${missing.join(", ")}`,
-        });
+        }, undefined, attempt);
         return "failed";
       }
       throw error;
@@ -5377,8 +5466,15 @@ const BOOT_START_CANCELLED = "plugin start cancelled";
  * as the registry id and narrows to the canonical manifest id the moment the
  * manifest is in hand — a crash before that point is still attributable.
  */
+/**
+ * One boot or add attempt to load a plugin. The object is the attempt's
+ * identity: it is created per attempt, never shared or looked up by plugin
+ * id, and handed explicitly to every report the attempt makes.
+ */
 type PluginLoadAttemptResources = {
   pluginId: string;
+  /** The factory routing returned; set once routing chose the arm. */
+  routed?: RoutedPluginFactory;
   /** Materialized candidate generation root; unpublished until `commit()`. */
   runtimeRoot?: string;
   incarnation?: {
@@ -5593,50 +5689,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       await this.instantiatePreflightedPlugin(outcome, enabledManifestSnapshots, resources);
     } catch (err) {
       await this.abandonCrashedPluginLoad(resources, err);
-    } finally {
-      this.routedAttempts.delete(resources.pluginId);
     }
-  }
-
-  /**
-   * Release whatever the crashed attempt had already taken, then report it.
-   *
-   * The candidate runtime root is on disk and the HostApi incarnation may be
-   * live but unpublished; neither has an owner once the attempt is abandoned.
-   * Teardown is skipped for a plugin that already reached `this.plugins` — the
-   * throw came after it was published, so it is running and must not be pulled
-   * out from under its own tools. `listPluginCards()` reads `this.plugins`
-   * ahead of `failedPluginIds`, so that plugin still projects as loaded.
-   */
-  private async abandonCrashedPluginLoad(
-    resources: PluginLoadAttemptResources,
-    err: unknown,
-  ): Promise<void> {
-    const { pluginId, runtimeRoot, incarnation } = resources;
-    const reason = errorMessage(err);
-    logPluginLifecycle(
-      "error",
-      { pluginId, phase: PluginPhase.LOAD_FAIL, err, reason: "load_crash" },
-      `plugin load crashed: ${reason}`,
-    );
-    this.auditLog?.("error", "plugin_load_crashed", { pluginId, reason });
-    if (incarnation && !this.plugins.has(pluginId)) {
-      incarnation.deactivate();
-      incarnation.hostEffects.discard();
-      this.runDisposerList(incarnation.disposers, "crashed plugin load");
-      await this.drainPluginHostApiOperations(pluginId, {
-        drainHostApiOperations: incarnation.drainOperations,
-      });
-    }
-    if (runtimeRoot) {
-      await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
-    }
-    this.markLoadRefused(pluginId, {
-      summary: "Plugin crashed while loading.",
-      reason,
-      kind: "load-crash",
-      displayName: this.knownPluginManifests.get(pluginId)?.name ?? pluginId,
-    });
   }
 
   private async instantiatePreflightedPlugin(
@@ -5799,7 +5852,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       return;
     }
     const { createPlugin } = routed;
-    this.routedAttempts.set(manifest.id, routed);
+    resources.routed = routed;
 
     const pluginDataDir = this.ensureDataDir(manifest.id, pluginRoot);
     const hostEffects = new HostApiGenerationScope(manifest.id);
@@ -5839,15 +5892,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       await this.drainPluginHostApiOperations(manifest.id, {
         drainHostApiOperations: drainOperations,
       });
-      if (err instanceof IncompatibleHostProtocolError) {
-        this.refuseIncompatibleHostProtocol(manifest, err);
-      } else if (err instanceof ProcessEntryUnconfinedError) {
-        this.markProcessEntryUnconfined(manifest, err);
-      } else if (err instanceof PluginSandboxGrantError) {
-        this.refuseSandboxGrant(manifest, err);
-      } else {
-        this.markFailed(manifest.id);
-      }
+      this.reportAttemptFactoryFailure(manifest, err, resources);
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       logPluginLifecycle("error", { pluginId: manifest.id, phase: PluginPhase.LOAD_FAIL, err, reason: "factory" }, "plugin factory failed");
       return;
@@ -5875,7 +5920,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
           summary: "Plugin declares a tool name another plugin already owns.",
           reason,
           displayName: manifest.name ?? manifest.id,
-        });
+        }, resources);
         return;
       }
     }

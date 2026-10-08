@@ -11,6 +11,8 @@ import { mkdtempSync } from "node:fs";
 import {
   makeTestPluginEntrySource,
   makeTestPluginRuntime,
+  makeTestPluginRuntimeFixture,
+  makeTestTreeWritable,
   bindTestPluginRuntimeGeneration,
   createTestHostApiFactory,
   writeTestPlugin,
@@ -3744,5 +3746,201 @@ describe("PluginRuntime lifecycle log emission", () => {
     });
     expect(hasRestartRequest).toBe(true);
     spyLog.mockRestore();
+  });
+});
+
+/**
+ * Where a failed boot or add attempt ran belongs to THAT attempt (§9.8 A1,
+ * "Doctor, wired end to end"). Each attempt carries its own routing and
+ * reports it explicitly, so overlapping attempts for one plugin cannot lend
+ * or erase each other's arm and confinement, a failure before routing never
+ * shows an arm, and a throw between routing and the factory still leaves a
+ * failed card. Plugins run as real children; a host-side lifecycle seam
+ * parks an attempt after its factory constructed the plugin.
+ */
+describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
+  const WORKING = 'export default async () => ({ handlers: {}, start: async () => {}, stop: async () => {} });\n';
+  const BROKEN_START = 'export default async () => ({ handlers: {}, start: async () => { throw new Error("child startup refused"); }, stop: async () => {} });\n';
+  const ID = "attemptowned";
+  const fixtures: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    for (const dispose of fixtures.splice(0)) await dispose();
+  });
+
+  async function setup(entrySource = WORKING) {
+    const fixture = await makeTestPluginRuntimeFixture({ prefix: "ave-attempt-owned-" });
+    const written = await writeTestPlugin(fixture, { id: ID, entrySource });
+    await writeTestPluginRegistry(fixture, [{ id: ID, manifestPath: written.manifestPath }]);
+    const runtime = makeTestPluginRuntime(fixture);
+    const internals = runtime as unknown as {
+      ensureDataDir(...args: unknown[]): string;
+      buildHostApiIncarnation(...args: unknown[]): unknown;
+      runPluginLifecycleHook(scope: unknown, hook: () => unknown): Promise<unknown>;
+    };
+    fixtures.push(async () => {
+      await runtime.stopAll();
+      await makeTestTreeWritable(fixture.rootDir);
+      await rm(fixture.rootDir, { recursive: true, force: true });
+    });
+    const requires = async (next: Record<string, unknown>) => {
+      const document = JSON.parse(await readFile(written.manifestPath, "utf8")) as Record<string, unknown>;
+      await writeFile(written.manifestPath, JSON.stringify(patchAveFields(document, { requires: next })), "utf8");
+    };
+    const card = () => runtime.listPluginCards().find((entry) => entry.id === ID);
+    return { runtime, internals, requires, card };
+  }
+
+  /** Hold the first `count` constructed plugins until released, in order. */
+  function parkAfterConstruct(internals: Awaited<ReturnType<typeof setup>>["internals"], count: number) {
+    const releases: Array<() => void> = [];
+    let entered = 0;
+    const original = internals.runPluginLifecycleHook.bind(internals);
+    internals.runPluginLifecycleHook = async (scope, hook) => {
+      const result = await original(scope, hook);
+      if (result && typeof result === "object" && "handlers" in result && entered < count) {
+        entered += 1;
+        await new Promise<void>((resolve) => { releases.push(resolve); });
+      }
+      return result;
+    };
+    return {
+      entered: (n: number) => vi.waitFor(() => expect(entered).toBe(n), { timeout: 10_000 }),
+      release: (index: number) => releases[index]?.(),
+      releaseAll: () => { for (const release of releases) release(); },
+    };
+  }
+
+  const settle = <T,>(promise: Promise<T>) => promise.then((value) => ({ value }), (error: unknown) => ({ error }));
+
+  it.each([
+    ["the plugin data directory", "ensureDataDir", "EACCES: permission denied creating plugin data"],
+    ["the HostApi incarnation", "buildHostApiIncarnation", "HostApi construction failed before invocation"],
+  ] as const)("leaves a failed child/not-spawned card when add throws building %s", async (_what, seam, message) => {
+    const { runtime, internals, card } = await setup();
+    internals[seam] = () => { throw new Error(message); };
+    await expect(runtime.addPlugin(ID)).rejects.toThrow(message);
+    expect(card()).toMatchObject({
+      loadStatus: "failed",
+      installFailureKind: "load-crash",
+      arm: "child",
+      confinement: "not-spawned",
+    });
+    expect(card()?.installFailureMessage).toContain(message);
+    expect(runtime.listPluginIds()).not.toContain(ID);
+  });
+
+  it("drops an earlier child failure's arm when a later add is refused before routing", async () => {
+    const { runtime, requires, card } = await setup(BROKEN_START);
+    await expect(runtime.addPlugin(ID)).rejects.toThrow();
+    expect(card()).toMatchObject({ loadStatus: "failed", arm: "child", confinement: "unconfined" });
+    await requires({ hostProtocol: "2", capabilities: ["attempt-owned-missing-capability"] });
+    await expect(runtime.addPlugin(ID)).rejects.toThrow(/Missing capabilities|missing required capabilities/);
+    expect(card()?.loadStatus).toBe("failed");
+    expect(card()?.arm).toBeUndefined();
+    expect(card()?.confinement).toBeUndefined();
+  });
+
+  it("does not lend a parked child attempt's diagnostics to an overlapping add refused before routing", async () => {
+    const { runtime, internals, requires, card } = await setup();
+    const parked = parkAfterConstruct(internals, 1);
+    const first = settle(runtime.addPlugin(ID));
+    try {
+      await parked.entered(1);
+      await requires({ hostProtocol: "3" });
+      await expect(runtime.addPlugin(ID)).rejects.toThrow();
+      expect(card()?.installFailureKind).toBe("incompatible-host-protocol");
+      expect(card()?.arm).toBeUndefined();
+      expect(card()?.confinement).toBeUndefined();
+    } finally {
+      parked.releaseAll();
+      await first;
+    }
+  });
+
+  it("keeps a newer add's diagnostics when an older overlapping add ends first", async () => {
+    const { runtime, internals, card } = await setup(BROKEN_START);
+    const parked = parkAfterConstruct(internals, 2);
+    const first = settle(runtime.addPlugin(ID));
+    let second: Promise<unknown> | undefined;
+    try {
+      await parked.entered(1);
+      second = settle(runtime.addPlugin(ID));
+      await parked.entered(2);
+      parked.release(0);
+      await first;
+      parked.release(1);
+      await second;
+      expect(card()).toMatchObject({ loadStatus: "failed", arm: "child", confinement: "unconfined" });
+    } finally {
+      parked.releaseAll();
+      await Promise.allSettled([first, ...(second ? [second] : [])]);
+    }
+  });
+
+  it("reports a boot attempt's own diagnostics, not those of an add in flight beside it", async () => {
+    const { runtime, internals, card } = await setup(BROKEN_START);
+    // Hook 1 is the boot attempt's factory invocation: held, then failed
+    // without invoking the factory, so the boot attempt never had a child.
+    // Hook 2 is the overlapping add's factory, which spawns its child and is
+    // then held; hook 3 is that add's start, which the plugin fails.
+    let releaseBoot!: () => void;
+    const bootHeld = new Promise<void>((resolve) => { releaseBoot = resolve; });
+    let releaseAdd!: () => void;
+    const addHeld = new Promise<void>((resolve) => { releaseAdd = resolve; });
+    let hooks = 0;
+    let addConstructed = false;
+    const original = internals.runPluginLifecycleHook.bind(internals);
+    internals.runPluginLifecycleHook = async (scope, hook) => {
+      hooks += 1;
+      const call = hooks;
+      if (call === 1) {
+        await bootHeld;
+        throw new Error("boot construct failed before invoking the factory");
+      }
+      const result = await original(scope, hook);
+      if (call === 2) {
+        addConstructed = true;
+        await addHeld;
+      }
+      return result;
+    };
+    const boot = settle(runtime.load());
+    let add: Promise<unknown> | undefined;
+    try {
+      await vi.waitFor(() => expect(hooks).toBe(1), { timeout: 10_000 });
+      add = settle(runtime.addPlugin(ID));
+      // The add's factory has spawned its child before the boot attempt fails.
+      await vi.waitFor(() => expect(addConstructed).toBe(true), { timeout: 10_000 });
+      releaseBoot();
+      await boot;
+      expect(card()).toMatchObject({ loadStatus: "failed", arm: "child", confinement: "not-spawned" });
+      releaseAdd();
+      expect(await add).toHaveProperty("error");
+      expect(card()).toMatchObject({ loadStatus: "failed", arm: "child", confinement: "unconfined" });
+    } finally {
+      releaseBoot();
+      releaseAdd();
+      await Promise.allSettled([boot, ...(add ? [add] : [])]);
+    }
+  });
+
+  it("does not show a removed attempt's diagnostics on a reinstall refused before routing", async () => {
+    const { runtime, internals, requires, card } = await setup();
+    const parked = parkAfterConstruct(internals, 1);
+    const add = settle(runtime.addPlugin(ID));
+    try {
+      await parked.entered(1);
+      await runtime.removePlugin(ID);
+      expect(card()).toBeUndefined();
+      await requires({ hostProtocol: "3" });
+      await expect(runtime.addPlugin(ID)).rejects.toThrow();
+      expect(card()?.installFailureKind).toBe("incompatible-host-protocol");
+      expect(card()?.arm).toBeUndefined();
+      expect(card()?.confinement).toBeUndefined();
+    } finally {
+      parked.releaseAll();
+      await add;
+    }
   });
 });
