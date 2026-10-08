@@ -17,14 +17,15 @@ import {
   makeTestTreeWritable,
 } from "../../__tests__/test-helpers.js";
 import { PluginBundleLifecycle } from "../../plugin-bundle-lifecycle.js";
+import { PersonaPromptStore } from "../../../main/persona-prompt-store.js";
 import {
   buildInstallReceipt,
   writeInstallReceipt,
 } from "../../plugin-install-receipt.js";
 import { createNoopHostApiForTests, PluginRuntime } from "../../runtime.js";
 import type { PluginManifest } from "../../types.js";
-import { canonicalJSON } from "../../whitelist/canonical-json.js";
-import { agentPluginsDocument } from "../../__tests__/test-helpers.js";
+import { canonicalJSON } from "../../secret-access/canonical-json.js";
+import { servedAgentPluginsDocument } from "../../__tests__/test-helpers.js";
 import { settleMacrotask as nextTurn } from "../../../__tests__/test-helpers.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
 
@@ -90,7 +91,6 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       name: options.id,
       version: "1.0.0",
       description: "active capability dependency fixture",
-      publisher: "Ave tests",
       entry: "entry.mjs",
       tools: [{
         name: toolName,
@@ -114,7 +114,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       "utf8",
     );
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf8");
+    await writeFile(manifestPath, JSON.stringify(servedAgentPluginsDocument(manifest)), "utf8");
     return {
       id: options.id,
       pluginDir,
@@ -172,6 +172,8 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       pluginRuntime: runtime,
       receiptCacheRoot: root,
       skillStore: new SkillStore({ userDir: join(root, "real-lifecycle-skills") }),
+      personaPromptStore: new PersonaPromptStore({ userDir: join(root, "real-lifecycle-prompts") }),
+      onContributionsUpdated: vi.fn(),
       hookManager: new ScriptHookManager(),
       mcpManager: {
         bundledServerIdsForPlugin: vi.fn(() => []),
@@ -288,7 +290,6 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       name: "prepared-consumer",
       version: "1.0.0",
       description: "prepared active capability fixture",
-      publisher: "Ave tests",
       entry: "entry.mjs",
       requires: { capabilities: ["calendar-source"] },
       tools: [{
@@ -299,7 +300,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       }],
     };
     await mkdir(pluginRoot, { recursive: true });
-    await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
+    await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)), "utf8");
     await writeFile(
       join(pluginRoot, "entry.mjs"),
       `export default async function createPlugin() {
@@ -325,7 +326,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       registryEntry: {
         installSource: "user",
         manifestSha256: createHash("sha256")
-          .update(canonicalJSON(agentPluginsDocument(manifest)))
+          .update(canonicalJSON(servedAgentPluginsDocument(manifest)))
           .digest("hex"),
       },
       toolName,
@@ -358,7 +359,6 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       name: plugin.id,
       version: "1.0.1",
       description: "prepared replacement without a pending capability requirement",
-      publisher: "Ave tests",
       entry: "entry.mjs",
       tools: [{
         name: toolName,
@@ -368,7 +368,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       }],
     };
     await mkdir(pluginRoot, { recursive: true });
-    await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
+    await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)), "utf8");
     await writeFile(
       join(pluginRoot, "entry.mjs"),
       `export default async function createPlugin() {
@@ -398,7 +398,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       registryEntry: {
         installSource: "user",
         manifestSha256: createHash("sha256")
-          .update(canonicalJSON(agentPluginsDocument(manifest)))
+          .update(canonicalJSON(servedAgentPluginsDocument(manifest)))
           .digest("hex"),
       },
       toolName,
@@ -1117,7 +1117,7 @@ export default async function createPlugin() {
     delete replacementManifest.capabilities;
     await writeFile(
       provider.manifestPath,
-      JSON.stringify(agentPluginsDocument(replacementManifest)),
+      JSON.stringify(servedAgentPluginsDocument(replacementManifest)),
       "utf8",
     );
 
@@ -1149,7 +1149,7 @@ export default async function createPlugin() {
     delete replacementManifest.capabilities;
     await writeFile(
       firstProvider.manifestPath,
-      JSON.stringify(agentPluginsDocument(replacementManifest)),
+      JSON.stringify(servedAgentPluginsDocument(replacementManifest)),
       "utf8",
     );
 
@@ -1180,7 +1180,7 @@ export default async function createPlugin() {
     await mkdir(stagingRoot, { recursive: true });
     await writeFile(
       join(stagingRoot, "plugin.json"),
-      JSON.stringify(agentPluginsDocument(replacementManifest)),
+      JSON.stringify(servedAgentPluginsDocument(replacementManifest)),
       "utf8");
     await writeFile(
       join(stagingRoot, "entry.mjs"),
@@ -1200,7 +1200,7 @@ export default async function createPlugin() {
       registryEntry: {
         installSource: "user",
         manifestSha256: createHash("sha256")
-          .update(canonicalJSON(agentPluginsDocument(replacementManifest)))
+          .update(canonicalJSON(servedAgentPluginsDocument(replacementManifest)))
           .digest("hex"),
       },
       durableCommit,

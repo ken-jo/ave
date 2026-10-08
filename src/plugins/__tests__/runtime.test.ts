@@ -5,6 +5,7 @@ import { join, relative } from "node:path";
 import { PluginRuntime } from "../runtime.js";
 import { PluginPhase } from "../lifecycle-log.js";
 import { PluginDeploymentGuard } from "../deployment-guard.js";
+import type { PackageKey } from "../../marketplace/sources/policy.js";
 import { uninstallPluginWithLifecycle } from "../uninstall-lifecycle.js";
 import { mkdtempSync } from "node:fs";
 import {
@@ -16,7 +17,16 @@ import {
   writeTestPluginRegistry,
 } from "./test-helpers.js";
 import { agentPluginsDocument, patchAveFields } from "./test-helpers.js";
+import { manifestDocumentSha256 } from "../runtime/manifest-validation.js";
+import type { PluginManifest } from "../types.js";
+import { canonicalJSON } from "../secret-access/canonical-json.js";
+import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
+
+function servedPluginDocument(manifest: Record<string, unknown>): Record<string, unknown> {
+  const requires = manifest.requires as Record<string, unknown> | undefined;
+  return agentPluginsDocument({ ...manifest, requires: { hostProtocol: "2", ...requires } });
+}
 
 function makeGenerationBoundRuntime(
   options: Omit<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption">
@@ -37,6 +47,19 @@ describe("PluginRuntime.disable", () => {
   let testDir: string;
   let installedDir: string;
   let registryPath: string;
+  /** The machine policy's requiredInstalls the guard reads (design §10.2). */
+  let required: PackageKey[] = [];
+  const REQUIRED = { kind: "plugin" as const, name: "p-required", source: "corp" };
+  const corpOrigin = {
+    sourceId: "corp",
+    sourceOrigin: "managed",
+    commit: "c".repeat(40),
+    packagePath: "plugins/p-required",
+    version: "1.0.0",
+    rung: "release",
+    artifactSha256: "d".repeat(64),
+    installedAt: "2026-09-24T00:00:00.000Z",
+  };
 
   beforeEach(async () => {
     testDir = mkdtempSync(join(tmpdir(), "ave-runtime-"));
@@ -45,6 +68,7 @@ describe("PluginRuntime.disable", () => {
     installedDir = join(testDir, "plugins");
     await mkdir(installedDir, { recursive: true });
     registryPath = join(installedDir, "registry.json");
+    required = [];
   });
 
   afterEach(async () => {
@@ -88,6 +112,7 @@ describe("PluginRuntime.disable", () => {
     const guard = new PluginDeploymentGuard({
       registryPath,
       pluginsRoot: installedDir,
+      requiredInstalls: async () => required,
     });
     return makeTestPluginRuntime(
       {
@@ -194,38 +219,39 @@ describe("PluginRuntime.disable", () => {
     expect(entry.enabled).toBe(false);
   });
 
-  it("disable rejects managed plugin with guard error and leaves state unchanged", async () => {
-    const manifestPath = await writeFakePlugin("p-managed", "admin");
+  it("disable rejects a plugin the policy requires and leaves state unchanged", async () => {
+    const manifestPath = await writeFakePlugin("p-required");
     await writeTestPluginRegistry({ registryPath }, [
-      { id: "p-managed", manifestPath, enabled: true },
+      { id: "p-required", manifestPath, enabled: true, origin: corpOrigin },
     ]);
+    required = [REQUIRED];
     const runtime = makeRuntime();
     await runtime.startAll();
 
-    await expect(runtime.disable("p-managed", "user")).rejects.toThrow(
-      /Admin plugin/,
+    await expect(runtime.disable("p-required")).rejects.toThrow(
+      /required by policy \(source corp\); it cannot be disabled/,
     );
 
-    expect(runtime.listPluginIds()).toContain("p-managed");
-    expect(runtime.listToolNames()).toContain("p_managed_hello");
+    expect(runtime.listPluginIds()).toContain("p-required");
+    expect(runtime.listToolNames()).toContain("p_required_hello");
 
     // registry should NOT have enabled=false
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
     const entry = registry.plugins.find(
-      (p: { id: string }) => p.id === "p-managed",
+      (p: { id: string }) => p.id === "p-required",
     );
     expect(entry.enabled).toBe(true);
   });
 
-  it("disable allows it-admin actor to disable a managed plugin", async () => {
+  it("disable is not refused by a legacy admin claim in the manifest or the registry", async () => {
     const manifestPath = await writeFakePlugin("p-managed", "admin");
     await writeTestPluginRegistry({ registryPath }, [
-      { id: "p-managed", manifestPath, enabled: true },
+      { id: "p-managed", manifestPath, enabled: true, installSource: "admin" },
     ]);
     const runtime = makeRuntime();
     await runtime.startAll();
 
-    await runtime.disable("p-managed", "it-admin");
+    await runtime.disable("p-managed");
 
     expect(runtime.listPluginIds()).not.toContain("p-managed");
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
@@ -253,8 +279,8 @@ describe("PluginRuntime.disable", () => {
    * `setPluginEnabled` is the writer the renderer toggle actually reaches
    * (`ave:plugins:set-enabled` → `PluginRuntime.setPluginEnabled`);
    * `disable()` has no production caller. Both mutate the same registry
-   * `enabled` field, so both must consult the deployment guard — otherwise the
-   * admin-managed protection is reachable only from the dead lane.
+   * `enabled` field, so both must consult the deployment guard — otherwise a
+   * required plugin could be switched off from the settings tab.
    */
   function makeRuntimeWithGuard(): {
     runtime: PluginRuntime;
@@ -263,6 +289,7 @@ describe("PluginRuntime.disable", () => {
     const guard = new PluginDeploymentGuard({
       registryPath,
       pluginsRoot: installedDir,
+      requiredInstalls: async () => required,
     });
     const runtime = makeTestPluginRuntime(
       { rootDir: testDir, registryPath, pluginsRoot: installedDir },
@@ -271,44 +298,41 @@ describe("PluginRuntime.disable", () => {
     return { runtime, guard };
   }
 
-  it("setPluginEnabled(false) rejects a manifest-declared admin plugin and leaves it enabled", async () => {
-    const manifestPath = await writeFakePlugin("p-managed", "admin");
+  it("setPluginEnabled(false) rejects a plugin the policy requires and leaves it enabled", async () => {
+    const manifestPath = await writeFakePlugin("p-required");
     await writeTestPluginRegistry({ registryPath }, [
-      { id: "p-managed", manifestPath, enabled: true },
+      { id: "p-required", manifestPath, enabled: true, origin: corpOrigin },
     ]);
+    required = [REQUIRED];
     const { runtime } = makeRuntimeWithGuard();
     await runtime.startAll();
 
-    await expect(runtime.setPluginEnabled("p-managed", false)).rejects.toThrow(
-      /Admin plugin/,
+    await expect(runtime.setPluginEnabled("p-required", false)).rejects.toThrow(
+      /required by policy/,
     );
 
-    expect(runtime.listPluginIds()).toContain("p-managed");
-    expect(runtime.listToolNames()).toContain("p_managed_hello");
+    expect(runtime.listPluginIds()).toContain("p-required");
+    expect(runtime.listToolNames()).toContain("p_required_hello");
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
     expect(
-      registry.plugins.find((p: { id: string }) => p.id === "p-managed").enabled,
+      registry.plugins.find((p: { id: string }) => p.id === "p-required").enabled,
     ).toBe(true);
   });
 
-  it("setPluginEnabled(false) rejects a registry installSource=admin plugin", async () => {
-    // Trust-precedence shape: the manifest claims "user" (it is user-writable)
-    // but the host-recorded registry row says admin. The guard must win.
-    const manifestPath = await writeFakePlugin("p-managed", "user");
+  it("setPluginEnabled(false) disables a registry installSource=admin plugin: no install source locks it", async () => {
+    const manifestPath = await writeFakePlugin("p-managed");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "p-managed", manifestPath, enabled: true, installSource: "admin" },
     ]);
     const { runtime } = makeRuntimeWithGuard();
     await runtime.startAll();
 
-    await expect(runtime.setPluginEnabled("p-managed", false)).rejects.toThrow(
-      /Admin plugin/,
-    );
+    await runtime.setPluginEnabled("p-managed", false);
 
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
     expect(
       registry.plugins.find((p: { id: string }) => p.id === "p-managed").enabled,
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("setPluginEnabled(false) still disables an ordinary user plugin", async () => {
@@ -329,22 +353,23 @@ describe("PluginRuntime.disable", () => {
   });
 
   it("setPluginEnabled does not consult the disable guard on the enable direction", async () => {
-    const manifestPath = await writeFakePlugin("p-managed", "admin");
+    const manifestPath = await writeFakePlugin("p-required");
     await writeTestPluginRegistry({ registryPath }, [
-      { id: "p-managed", manifestPath, enabled: true },
+      { id: "p-required", manifestPath, enabled: true, origin: corpOrigin },
     ]);
+    required = [REQUIRED];
     const { runtime, guard } = makeRuntimeWithGuard();
     await runtime.startAll();
     const canDisable = vi.spyOn(guard, "canDisable");
 
-    await runtime.setPluginEnabled("p-managed", true);
+    await runtime.setPluginEnabled("p-required", true);
 
     expect(canDisable).not.toHaveBeenCalled();
-    expect(runtime.listPluginIds()).toContain("p-managed");
+    expect(runtime.listPluginIds()).toContain("p-required");
   });
 
   it("plugin with kebab-case id (example-plugin) and underscore methods loads correctly", async () => {
-    // Plugin ID must use kebab-case (SDK v5.11.0 pattern ^[a-z][a-z0-9-]*$)
+    // Plugin ID must use kebab-case (host schema pattern ^[a-z][a-z0-9-]*$)
     // Tool names (methods[]) must still be underscore-only (LLM tool name namespace)
     const pluginId = "example-plugin";
     const pluginDir = join(installedDir, "com-example-test");
@@ -377,10 +402,9 @@ describe("PluginRuntime.disable", () => {
         },
       ],
       description: "Test plugin fixture.",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     await writeTestPluginRegistry({ registryPath }, [
       { id: pluginId, manifestPath, enabled: true },
     ]);
@@ -413,10 +437,9 @@ describe("PluginRuntime.disable", () => {
       entry: "entry.mjs",
       tools: ["bad.method"],
       description: "Test fixture.",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "bad-plugin", manifestPath, enabled: true },
     ]);
@@ -452,10 +475,9 @@ describe("PluginRuntime.disable", () => {
       entry: "entry.mjs",
       tools: ["1bad_name"],
       description: "Test fixture.",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "bad-leading-digit", manifestPath, enabled: true },
     ]);
@@ -491,10 +513,9 @@ describe("PluginRuntime.disable", () => {
       entry: "entry.mjs",
       tools: ["bad-name"],
       description: "Test fixture.",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "bad-hyphen", manifestPath, enabled: true },
     ]);
@@ -537,7 +558,7 @@ describe("PluginRuntime.disable", () => {
       ],
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "no-description", manifestPath, enabled: true },
     ]);
@@ -579,10 +600,9 @@ describe("PluginRuntime.disable", () => {
         },
       ],
       description: "",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "empty-description", manifestPath, enabled: true },
     ]);
@@ -622,12 +642,11 @@ describe("PluginRuntime.disable", () => {
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "ui-actions",
         name: "ui-actions",
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         entry: "entry.mjs",
         tools: [
           // uic_get is UI-invokable (dual) — reachable from callFromUi.
@@ -695,12 +714,11 @@ describe("PluginRuntime.disable", () => {
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "ui-only-method",
         name: "ui-only-method",
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         entry: "entry.mjs",
         // UI-only method: app-only visibility, not model-visible (not an LLM tool).
         tools: [
@@ -748,12 +766,11 @@ describe("PluginRuntime.disable", () => {
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "meta-plugin",
         name: "meta-plugin",
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         entry: "entry.mjs",
         tools: [
           {
@@ -782,6 +799,82 @@ describe("PluginRuntime.disable", () => {
     expect(manifest?.capabilities).toEqual(["sample-capability"]);
   });
 
+  it("hands the HostApi factory the digest of the plugin.json document, the value installers pin", async () => {
+    // The registry's manifestSha256 is taken over the document as authored; the
+    // flat projection the runtime passes along hashes to something else, so a
+    // host-secret grant that compared the projection could never hold.
+    const pluginDir = join(installedDir, "pin-plugin");
+    await mkdir(pluginDir, { recursive: true });
+    await writeFile(join(pluginDir, "entry.mjs"), "export default async function createPlugin() { return { handlers: { pin_ping: async () => \"pong\" } }; }\n", "utf-8");
+    const manifestPath = join(pluginDir, "plugin.json");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument({
+      id: "pin-plugin",
+      name: "pin-plugin",
+      version: "1.0.0",
+      entry: "entry.mjs",
+      tools: [{ name: "pin_ping", description: "pin_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
+      description: "Test fixture.",
+    })), "utf-8");
+    await writeTestPluginRegistry({ registryPath }, [{ id: "pin-plugin", manifestPath, enabled: true }]);
+    const seen: PluginManifest[] = [];
+    const runtime = makeGenerationBoundRuntime({
+      hostRoot: testDir,
+      registryPath,
+      deploymentGuard: new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir, requiredInstalls: async () => [] }),
+      pluginsRoot: installedDir,
+      createHostApi: (_pluginId, manifest) => {
+        seen.push(manifest);
+        return { emitEvent: () => {}, onEvent: () => () => {}, getSecret: () => null, logEvent: () => {}, onShutdown: () => {} } as never;
+      },
+    });
+    await runtime.startAll();
+    await runtime.restartPlugin("pin-plugin");
+
+    const documentSha = sha256Hex(canonicalJSON(JSON.parse(await readFile(manifestPath, "utf-8"))));
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    for (const manifest of seen) {
+      expect(manifestDocumentSha256(manifest)).toBe(documentSha);
+      expect(sha256Hex(canonicalJSON(manifest))).not.toBe(documentSha);
+    }
+  });
+
+  it("digests a pre-switch plugin.json as authored, though the loader drops its retired fields", async () => {
+    // Installs from before the git marketplace keep installPolicy and publisher
+    // until their next update, and their registry pin covers both fields.
+    const pluginDir = join(installedDir, "legacy-pin");
+    await mkdir(pluginDir, { recursive: true });
+    await writeFile(join(pluginDir, "entry.mjs"), "export default async function createPlugin() { return { handlers: { legacy_ping: async () => \"pong\" } }; }\n", "utf-8");
+    const manifestPath = join(pluginDir, "plugin.json");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument({
+      id: "legacy-pin",
+      name: "legacy-pin",
+      version: "1.0.0",
+      entry: "entry.mjs",
+      installPolicy: "admin",
+      publisher: "Ave",
+      tools: [{ name: "legacy_ping", description: "legacy_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
+      description: "Test fixture.",
+    })), "utf-8");
+    await writeTestPluginRegistry({ registryPath }, [{ id: "legacy-pin", manifestPath, enabled: true }]);
+    const seen: PluginManifest[] = [];
+    const runtime = makeGenerationBoundRuntime({
+      hostRoot: testDir,
+      registryPath,
+      deploymentGuard: new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir, requiredInstalls: async () => [] }),
+      pluginsRoot: installedDir,
+      createHostApi: (_pluginId, manifest) => {
+        seen.push(manifest);
+        return { emitEvent: () => {}, onEvent: () => () => {}, getSecret: () => null, logEvent: () => {}, onShutdown: () => {} } as never;
+      },
+    });
+    await runtime.startAll();
+
+    const authored = JSON.parse(await readFile(manifestPath, "utf-8")) as Record<string, unknown>;
+    expect(JSON.stringify(authored)).toContain("installPolicy");
+    expect(seen).toHaveLength(1);
+    expect(manifestDocumentSha256(seen[0]!)).toBe(sha256Hex(canonicalJSON(authored)));
+  });
+
   describe("PluginHostApi cross-plugin isolation", () => {
     it("does not synthesize a cross-plugin callTool surface", async () => {
       const pluginDir = join(installedDir, "calltool-plugin");
@@ -797,7 +890,7 @@ describe("PluginRuntime.disable", () => {
       const manifestPath = join(pluginDir, "plugin.json");
       await writeFile(
         manifestPath,
-        JSON.stringify(agentPluginsDocument({
+        JSON.stringify(servedPluginDocument({
           id: "calltool-plugin",
           name: "calltool-plugin",
           version: "1.0.0",
@@ -811,7 +904,6 @@ describe("PluginRuntime.disable", () => {
             },
           ],
           description: "Test fixture.",
-          publisher: "Test fixture",
         })),
         "utf-8");
       await writeTestPluginRegistry({ registryPath }, [
@@ -823,6 +915,7 @@ describe("PluginRuntime.disable", () => {
       const guard = new PluginDeploymentGuard({
         registryPath,
         pluginsRoot: installedDir,
+        requiredInstalls: async () => [],
       });
       const runtime = makeGenerationBoundRuntime({
         hostRoot: testDir,
@@ -866,7 +959,7 @@ describe("PluginRuntime.disable", () => {
       const manifestPath = join(pluginDir, "plugin.json");
       await writeFile(
         manifestPath,
-        JSON.stringify(agentPluginsDocument({
+        JSON.stringify(servedPluginDocument({
           id: "calltool-delegate",
           name: "calltool-delegate",
           version: "1.0.0",
@@ -880,7 +973,6 @@ describe("PluginRuntime.disable", () => {
             },
           ],
           description: "Test fixture.",
-          publisher: "Test fixture",
         })),
         "utf-8");
       await writeTestPluginRegistry({ registryPath }, [
@@ -890,6 +982,7 @@ describe("PluginRuntime.disable", () => {
       const guard = new PluginDeploymentGuard({
         registryPath,
         pluginsRoot: installedDir,
+        requiredInstalls: async () => [],
       });
       const runtime = makeGenerationBoundRuntime({
         hostRoot: testDir,
@@ -944,12 +1037,11 @@ describe("PluginRuntime.disable", () => {
       const manifestPath = join(pluginDir, "plugin.json");
       await writeFile(
         manifestPath,
-        JSON.stringify(agentPluginsDocument({
+        JSON.stringify(servedPluginDocument({
           id,
           name: id,
           version: "1.0.0",
           description: "Test fixture.",
-          publisher: "Test fixture",
           entry: "entry.mjs",
           tools: [
             {
@@ -1117,7 +1209,6 @@ describe("PluginRuntime.disable", () => {
         name: id,
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         installPolicy: "user",
         entry: relative(pluginDir, entryPath),
         tools: [
@@ -1130,7 +1221,7 @@ describe("PluginRuntime.disable", () => {
         ],
         ...extraManifest,
       };
-      await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+      await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
       return manifestPath;
     };
 
@@ -1245,6 +1336,7 @@ describe("PluginRuntime.disable", () => {
       deploymentGuard: new PluginDeploymentGuard({
         registryPath,
         pluginsRoot: installedDir,
+        requiredInstalls: async () => [],
       }),
       createHostApi: (pluginId) =>
         ({
@@ -1299,6 +1391,7 @@ describe("PluginRuntime.disable", () => {
       deploymentGuard: new PluginDeploymentGuard({
         registryPath,
         pluginsRoot: installedDir,
+        requiredInstalls: async () => [],
       }),
       createHostApi: (pluginId) =>
         ({
@@ -1352,12 +1445,11 @@ describe("PluginRuntime.disable", () => {
     const providerManifestPath = join(providerDir, "plugin.json");
     await writeFile(
       providerManifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "cap-provider",
         name: "cap-provider",
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         entry: "entry.mjs",
         tools: [
           {
@@ -1388,12 +1480,11 @@ describe("PluginRuntime.disable", () => {
     const consumerManifestPath = join(consumerDir, "plugin.json");
     await writeFile(
       consumerManifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "needs-calendar",
         name: "needs-calendar",
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         entry: "entry.mjs",
         tools: [
           {
@@ -1473,12 +1564,11 @@ describe("PluginRuntime registry trusted-path", () => {
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id,
         name: id,
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         entry: "entry.mjs",
         tools: [
           {
@@ -1624,10 +1714,9 @@ export default async function createPlugin(ctx) {
         },
       ],
       description: "Test fixture.",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     return manifestPath;
   }
 
@@ -1665,10 +1754,9 @@ export default async function createPlugin() {
         },
       ],
       description: "Start failure fixture.",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     return { manifestPath, stoppedPath };
   }
 
@@ -1709,10 +1797,9 @@ export default async function createPlugin({ hostApi }) {
         },
       ],
       description: "Start failure fixture.",
-      publisher: "Test fixture",
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(manifest)), "utf-8");
     return { manifestPath, stoppedPath };
   }
 
@@ -1801,7 +1888,7 @@ export default async function createPlugin({ hostApi }) {
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id,
         name: id,
         version: "1.0.0",
@@ -1815,7 +1902,6 @@ export default async function createPlugin({ hostApi }) {
           },
         ],
         description: "Disposer incarnation fixture.",
-        publisher: "Test fixture",
       })),
       "utf-8");
     return manifestPath;
@@ -1905,17 +1991,16 @@ export default async function createPlugin({ hostApi }) {
         },
       ],
       description: "Boot timeout revocation fixture.",
-      publisher: "Test fixture",
     });
     const timedManifestPath = join(timedDir, "plugin.json");
     const slowManifestPath = join(slowDir, "plugin.json");
     await writeFile(
       timedManifestPath,
-      JSON.stringify(agentPluginsDocument(manifestFor(timedId, "p_start_timeout_revoked_ping", 30))),
+      JSON.stringify(servedPluginDocument(manifestFor(timedId, "p_start_timeout_revoked_ping", 30))),
       "utf-8");
     await writeFile(
       slowManifestPath,
-      JSON.stringify(agentPluginsDocument(manifestFor(slowId, "p_start_slow_peer_ping", 1_000))),
+      JSON.stringify(servedPluginDocument(manifestFor(slowId, "p_start_slow_peer_ping", 1_000))),
       "utf-8");
     await writeFile(
       registryPath,
@@ -2278,7 +2363,7 @@ export default async function createPlugin({ hostApi }) {
     const consumerPath = await writePlugin("p-calendar-consumer");
     const consumerManifest = JSON.parse(await readFile(consumerPath, "utf-8"));
     patchAveFields(consumerManifest, {
-      requires: { capabilities: ["calendar-source"] },
+      requires: { hostProtocol: "2", capabilities: ["calendar-source"] },
     });
     await writeFile(consumerPath, JSON.stringify(consumerManifest), "utf-8");
     await writeFile(
@@ -2743,7 +2828,7 @@ export default async function createPlugin() {
       );
       await writeFile(
         staleManifestPath,
-        JSON.stringify(agentPluginsDocument({
+        JSON.stringify(servedPluginDocument({
           id: pluginId,
           name: pluginId,
           version: "1.0.0",
@@ -2757,7 +2842,6 @@ export default async function createPlugin() {
             },
           ],
           description: "stale start fixture",
-          publisher: "Test fixture",
         })),
         "utf-8");
       await writeFile(
@@ -2807,7 +2891,7 @@ export default async function createPlugin() {
       );
       await writeFile(
         freshManifestPath,
-        JSON.stringify(agentPluginsDocument({
+        JSON.stringify(servedPluginDocument({
           id: pluginId,
           name: pluginId,
           version: "1.0.1",
@@ -2821,7 +2905,6 @@ export default async function createPlugin() {
             },
           ],
           description: "fresh start fixture",
-          publisher: "Test fixture",
         })),
         "utf-8");
       await writeFile(
@@ -2908,7 +2991,7 @@ export default async function createPlugin() {
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: pluginId,
         name: pluginId,
         version: "1.0.0",
@@ -2922,7 +3005,6 @@ export default async function createPlugin() {
           },
         ],
         description: "Restart configuration fixture.",
-        publisher: "Test fixture",
       })),
       "utf-8");
     await writeFile(
@@ -3226,7 +3308,7 @@ export default async function createPlugin() {
       tools: ["bad.tool"],
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(badManifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedPluginDocument(badManifest)), "utf-8");
     await writeFile(
       registryPath,
       JSON.stringify({
@@ -3264,7 +3346,7 @@ export default async function createPlugin() { return {}; }`,
     const manifestPath = join(pluginDir, "plugin.json");
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "p-broken-entry",
         name: "Broken Entry",
         version: "1.0.0",
@@ -3278,7 +3360,6 @@ export default async function createPlugin() { return {}; }`,
           },
         ],
         description: "test fixture for addPlugin import-fail rollback signal",
-        publisher: "test",
       })),
       "utf-8");
     await writeFile(
@@ -3320,12 +3401,11 @@ export default async function createPlugin() {
     );
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "p-update",
         name: "Update",
         version: "1.0.0",
         description: "regression fixture",
-        publisher: "Test fixture",
         entry: "entry-v1.mjs",
         tools: [
           {
@@ -3376,12 +3456,11 @@ export default async function createPlugin() {
     // Update manifest.entry to point to the new entry file.
     await writeFile(
       manifestPath,
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedPluginDocument({
         id: "p-update",
         name: "Update",
         version: "2.0.0",
         description: "regression fixture v2",
-        publisher: "Test fixture",
         entry: "entry-v2.mjs",
         tools: [
           {
@@ -3439,12 +3518,11 @@ export default async function createPlugin() {
       const manifestPath = join(pluginDir, "plugin.json");
       await writeFile(
         manifestPath,
-        JSON.stringify(agentPluginsDocument({
+        JSON.stringify(servedPluginDocument({
           id: pluginId,
           name: "Update Schema",
           version,
           description: `schema fixture ${version}`,
-          publisher: "Test fixture",
           entry: "entry.mjs",
           tools: [
             {

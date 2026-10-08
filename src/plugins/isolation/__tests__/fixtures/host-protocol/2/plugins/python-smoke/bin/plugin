@@ -1,0 +1,10 @@
+#!/bin/sh
+# The plugin's own executable. The host hands it PLUGIN_ROOT and PLUGIN_DATA,
+# inside confinement; PYTHONPATH is a name the host reserves, so it is set
+# here, from PLUGIN_ROOT, rather than declared in the manifest. The interpreter
+# is the one the test harness provisioned and wrote to bin/python-path in its
+# copy of this directory; -s keeps a user site directory off sys.path.
+set -eu
+PYTHONPATH="$PLUGIN_ROOT/vendor"
+export PYTHONPATH
+exec "$(cat "$PLUGIN_ROOT/bin/python-path")" -s "$PLUGIN_ROOT/plugin.py" "$@"

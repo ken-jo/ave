@@ -7,7 +7,7 @@ export const en = {
     "edit (change a task's text and/or status: pending | in_progress), delete (remove task N), complete (mark task N done), " +
     "list (return the list without changing it). " +
     "Do NOT use this tool when the user asks to register, record, or add their own tasks — " +
-    "if a plugin tool for registering permanent task items is available, call that first. This tool is for " +
+    "if an extension tool for registering permanent task items is available, call that first. This tool is for " +
     "*tracking the assistant's own steps* while working through a multi-step request.",
   "be_sessionTasks.actionDesc": "create | add | edit | delete | complete | list.",
   "be_sessionTasks.stepsDesc": "create/add: the tasks, comma-separated, in order (e.g. \"scan folder, summarize findings, write report\"). A JSON array of strings is also accepted.",
@@ -24,7 +24,7 @@ export const ko: Record<keyof typeof en, string> = {
     "edit (작업의 text 와/또는 status 변경: pending | in_progress), delete (N번 제거), complete (N번 완료 표시), " +
     "list (변경 없이 목록만 반환). " +
     "사용자가 본인의 업무·할 일을 등록·기록·추가해달라는 요청에는 이 도구를 사용하지 마세요 — " +
-    "영구 업무 항목 등록을 지원하는 플러그인 도구가 노출되어 있으면 그쪽을 우선 호출하세요. 본 도구는 어시스턴트가 " +
+    "영구 업무 항목 등록을 지원하는 익스텐션 도구가 노출되어 있으면 그쪽을 우선 호출하세요. 본 도구는 어시스턴트가 " +
     "다단계 요청을 풀어가는 *내부 단계 추적* 용도입니다.",
   "be_sessionTasks.actionDesc": "create | add | edit | delete | complete | list.",
   "be_sessionTasks.stepsDesc": "create/add: 작업 목록을 쉼표로 구분해 순서대로 (예: \"폴더 스캔, 결과 요약, 보고서 작성\"). 문자열 JSON 배열도 허용.",

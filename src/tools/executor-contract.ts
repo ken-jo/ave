@@ -85,6 +85,12 @@ export interface ToolExecutorCallbacks {
 
 export interface ToolPermissionContext {
   headless?: boolean;
+  /**
+   * The local owner started this unattended turn (native `--exec`). Asks still
+   * route to the reviewer as on the headless lane, but the owner's explicit
+   * allow rules and durable grants apply first: the gesture is their own.
+   */
+  ownerUnattended?: boolean;
   /** Host-owned UI capability, independent of routine/headless tool scope. */
   approvalSurface?: ApprovalSurface;
   allowedPluginIds?: ReadonlySet<string>;
@@ -114,7 +120,7 @@ export interface ToolPermissionContext {
  * Host-private auth-transition lifecycle for one governed plugin invocation.
  *
  * This deliberately travels through executor options rather than the plugin
- * permission context: plugins, manifests, SDK consumers, and HostApi handlers
+ * permission context: plugins, manifests, external callers, and HostApi handlers
  * must never be able to observe or supply it. The executor invokes
  * `beforeHandler` at its final no-await authorization boundary and settles the
  * result before releasing the governed-operation lease.

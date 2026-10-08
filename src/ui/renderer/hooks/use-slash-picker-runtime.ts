@@ -22,11 +22,13 @@ import type {
   McpToolEntry,
   SkillEntry,
 } from "../components/slash-picker-data.js";
+import type { AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
 
 export interface SlashPickerRuntime {
   mcpTools: McpToolEntry[];
   /** Server-declared prompts — a USER-controlled primitive, never model-callable. */
   mcpPrompts: McpPromptEntry[];
+  pluginPrompts: AgentPluginTemplatePrompt[];
   skills: SkillEntry[];
 }
 
@@ -37,9 +39,10 @@ export interface SlashPickerRuntime {
  * draws must be what is connected at the moment it opens.
  */
 export async function loadSlashPickerRuntime(): Promise<SlashPickerRuntime> {
-  const [servers, skillResult] = await Promise.all([
+  const [servers, skillResult, promptResult] = await Promise.all([
     (async () => (await window.ave?.mcp?.servers?.()) ?? [])(),
     (async () => await window.aveApi?.listSkills?.())(),
+    (async () => await window.aveApi?.listPersonaPrompts?.())(),
   ]);
   const mcpTools: McpToolEntry[] = [];
   const mcpPrompts: McpPromptEntry[] = [];
@@ -63,6 +66,7 @@ export async function loadSlashPickerRuntime(): Promise<SlashPickerRuntime> {
   return {
     mcpTools,
     mcpPrompts,
+    pluginPrompts: promptResult?.templates ?? [],
     skills: (skillResult?.skills ?? []).map((skill) => ({
       name: skill.name,
       description: skill.description,
@@ -70,7 +74,7 @@ export async function loadSlashPickerRuntime(): Promise<SlashPickerRuntime> {
   };
 }
 
-const EMPTY_RUNTIME: SlashPickerRuntime = { mcpTools: [], mcpPrompts: [], skills: [] };
+const EMPTY_RUNTIME: SlashPickerRuntime = { mcpTools: [], mcpPrompts: [], pluginPrompts: [], skills: [] };
 
 export function useSlashPickerRuntime(enabled: boolean): SlashPickerRuntime {
   const [runtime, setRuntime] = useState<SlashPickerRuntime>(EMPTY_RUNTIME);

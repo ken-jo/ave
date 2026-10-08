@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -109,6 +109,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     }
     const moved = join(cwd, "moved.jsonl");
     const created = join(sessions, "new.jsonl");
+    const transcriptIdentity = statSync(transcript).ino;
     for (const command of [
       "printf changed > " + shellQuote(transcript),
       "printf created > " + shellQuote(created),
@@ -120,8 +121,17 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
       expect(result.isError, result.output).toBe(true);
     }
     expect(readFileSync(transcript, "utf8")).toBe(CONTENT);
+    expect(statSync(transcript).ino).toBe(transcriptIdentity);
     expect(existsSync(created)).toBe(false);
-    expect(existsSync(moved)).toBe(false);
+    if (process.platform === "linux") {
+      // Across bubblewrap's separate mounts `mv` gets EXDEV and falls back to a
+      // copy before its unlink is refused. The copy is a granted read; the
+      // transcript itself must never move.
+      if (existsSync(moved)) expect(statSync(moved).ino).not.toBe(transcriptIdentity);
+    } else {
+      // One filesystem, so `mv` is a rename the sandbox refuses outright.
+      expect(existsSync(moved)).toBe(false);
+    }
   });
 
   it("public BashTool reads a configured session under strict path scope", async (test) => {
@@ -154,7 +164,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     try {
       const child = await spawnConfinedChild({
         command: "/bin/cat", args: [ordinary, transcript], label: "session-read-confined-fixture",
-        grantMode: "allow-list", allowRead: [cwd, profile], allowWrite: [cwd], baseEnv: buildSafeChildEnv(),
+        grantMode: "allow-list", tempPrincipal: { kind: "plugin", id: "session-read-fixture" },
+        allowRead: [cwd, profile], allowWrite: [cwd], baseEnv: buildSafeChildEnv(),
         onWrapped: () => { wrapped = true; },
       });
       const output: Buffer[] = [];

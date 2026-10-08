@@ -21,9 +21,14 @@ import { normalizeAllowedHosts, urlHostMatchesAllowList } from "../../../main/ho
 import type { AuthRedirectCatchers } from "../../../main/auth-redirect-catcher.js";
 import { resolveMappedDriveRoot } from "../../../main/host-api/mapped-drive-root.js";
 import { AudioCaptureService } from "../../../main/audio-capture.js";
-import type { AttachFloatingPanelRequest, AudioCaptureRequest } from "../../../plugins/public-contract.js";
+import type {
+  AlertInput,
+  AlertResult,
+  AttachFloatingPanelRequest,
+  AudioCaptureRequest,
+} from "../../../plugins/public-contract.js";
 import { FloatingDock } from "../../../main/floating-dock.js";
-import { evaluateHostFetch, runHostFetchHops } from "../../../main/host-fetch-guard.js";
+import { CREDENTIAL_HEADERS, evaluateHostFetch, runHostFetchHops, type HostFetchTransport } from "../../../main/host-fetch-guard.js";
 import {
   partitionCookieHeaderForUrl,
   partitionCookiesForUrl,
@@ -34,7 +39,7 @@ import { instrumentEffectsByPath } from "../../../permissions/hostapi-effect-rec
 import { enforceMutatingEffects, gateMutatingEffect } from "../../../permissions/effect-enforcement.js";
 import { recordEffect } from "../../../permissions/effect-ledger.js";
 import { methodEffect } from "../../../permissions/effect-kind.js";
-import type { PluginAccessSpec, PluginRegistryEntry } from "../../../plugins/types.js";
+import type { PluginAccessSpec, PluginRegistryTrust } from "../../../plugins/types.js";
 import type { PluginHostApiIncarnation } from "../../../plugins/runtime/index.js";
 import {
   createPluginStorage,
@@ -50,10 +55,13 @@ import { shouldBlockPluginSecretRead } from "../../../plugins/secret-shape.js";
 import {
   canEmitEvent,
   CAPABILITY_EXTERNAL_AUTH_CONSUMER,
+  CAPABILITY_RAW_API_KEY,
 } from "../../../plugins/capabilities.js";
+import { appVersionSatisfiesMin } from "../../../shared/semver-compare.js";
 import { auditPluginEmitDenial } from "../../../plugins/emit-denial-audit.js";
-import { getDeclaredEmittedEvents } from "../../../plugins/runtime/manifest-validation.js";
-import { applyConfigDefaults } from "../../../plugins/config-schema.js";
+import { getDeclaredEmittedEvents, manifestDocumentSha256 } from "../../../plugins/runtime/manifest-validation.js";
+import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
+import { effectivePluginConfig } from "../../../plugins/effective-config.js";
 import { shouldRestartAfterPluginConfigWrite } from "../../../plugins/config-restart-policy.js";
 import { OVERLAY_V1, WORK_BOARD } from "../../../shared/ipc-channels.js";
 import {
@@ -78,10 +86,17 @@ import { t } from "../../../i18n/index.js";
 import { createLogger } from "../../../lib/logger.js";
 import { logPluginLifecycle, PluginPhase } from "../../../plugins/lifecycle-log.js";
 import { incrementHostSecretCounter, sanitizeKeyPrefix } from "../../../telemetry/host-secret-counters.js";
-import { canonicalJSON } from "../../../plugins/whitelist/canonical-json.js";
-import { runSecretGate } from "../../../plugins/whitelist/secret-gate.js";
+import type { HostSecretGrantEvidence } from "../../../plugins/secret-access/grants.js";
+import { runSecretGate } from "../../../plugins/secret-access/secret-gate.js";
+import { CredentialLeaseRegistry, CredentialLeaseError, type CredentialScheme } from "../../../plugins/secret-access/credential-lease-registry.js";
+import { LeaseDenialAudit } from "../../../plugins/secret-access/lease-denial-audit.js";
+import { HostApiBoundaryError, validateWireAuth } from "../../../plugins/isolation/host-api-wire.js";
+import type { GrantEvidenceReader } from "./grant-evidence.js";
 import {
   resolveApiKey as resolveApiKeyImpl,
+  apiKeyIdentities,
+  normalizeVendor,
+  type CredentialIssuanceStage,
   type ResolveApiKeyPurpose,
   type ResolveApiKeyVendor,
 } from "../../../main/host-api/resolve-api-key.js";
@@ -90,6 +105,7 @@ import {
   verifyApprovalResponder,
 } from "../../../permissions/agent-action-requester.js";
 import { spawnWorker } from "../../../permissions/worker-spawn.js";
+import { declaredHostDirectoryFloorPierces } from "../../../plugins/sandbox-authority.js";
 import { approvalIssuerRegistry, auditApprovalViolation } from "./approval-gating.js";
 import { routeExternalUrl } from "./external-url.js";
 import {
@@ -101,16 +117,22 @@ import {
   triggerDenyAuditThrottle,
   TriggerConversationRateLimiter,
 } from "./trigger-gate.js";
-import { getDeclaredWorkProposalKinds } from "../../../plugins/runtime/manifest-validation.js";
+import {
+  getDeclaredSuggestionSources,
+  getDeclaredWorkProposalKinds,
+} from "../../../plugins/runtime/manifest-validation.js";
+import { suggestionLedger } from "../../../alerts/suggestion-ledger.js";
+import type { AlertsService } from "../../../alerts/service.js";
+import { alertEventReaches, isAlertEvent } from "../../../alerts/events.js";
 import type {
   WorkProposalChangedEventPayload,
   WorkProposalInput,
   WorkProposalResult,
 } from "../../../shared/work-board-types.js";
 import type { LateBindingRefs } from "../plugin-runtime.js";
-import { sha256Hex } from "../../../lib/hex-digest-equal.js";
 import { proposalId } from "../../../work-board/board-file.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { resolvePluginDisplayName } from "../../../shared/plugin-provenance.js";
 
 const log = createLogger("ave");
 
@@ -228,12 +250,16 @@ export interface CreateHostApiFactoryDeps {
   lateBinding: LateBindingRefs;
   getRegistryEntry: (
     pluginId: string,
-  ) => Pick<PluginRegistryEntry, "installSource" | "manifestSha256"> | undefined;
+  ) => PluginRegistryTrust | undefined;
+  /** Re-read the registry into `getRegistryEntry` when the file changed since the last read. */
+  refreshRegistryEntryCacheIfChanged: () => Promise<void>;
   hostClassifiesRiskEnabled: () => boolean;
   pluginShutdownHandlers: Array<{ pluginId: string; handler: () => void | Promise<void> }>;
   readAppPreference: (pluginId: string, key: string) => unknown;
   settingsService: SettingsService;
   bootAuditLogger: AuditLogger;
+  leaseDenialAudit?: LeaseDenialAudit;
+  _onCredentialIssuanceStageForTest?: (stage: CredentialIssuanceStage) => Promise<void> | void;
   /**
    * The very callback handed to `new PluginRuntime({ auditLog })`, narrowed to
    * what the storage rejection sink needs. Reused (rather than re-derived from
@@ -241,7 +267,7 @@ export interface CreateHostApiFactoryDeps {
    * same refusal on the webview-bridge path land as one record shape.
    */
   pluginRuntimeAuditLog: PluginStorageAuditLog;
-  networkFetch: typeof fetch;
+  networkFetch: HostFetchTransport;
   /**
    * The main window captured at boot. Only a FALLBACK — read
    * {@link CreateHostApiFactoryDeps.getMainWindow} instead wherever the host
@@ -289,6 +315,13 @@ export interface CreateHostApiFactoryDeps {
    * to degrade around.
    */
   getWorkBoardStore: () => WorkBoardStore | undefined;
+  /**
+   * Late-bound alerts service, built before plugins start. A host without one
+   * (a minimal test host) registers no kinds, and `raiseAlert` fails loudly.
+   */
+  getAlertsService: () => AlertsService | undefined;
+  /** What a host-secret grant reads from disk (design §10.3). */
+  grantEvidence: GrantEvidenceReader;
 }
 
 /**
@@ -304,7 +337,7 @@ export function createHostApiFactory(
   incarnation: PluginHostApiIncarnation,
   installPluginId: string | null,
   candidateRegistryEntry?: Readonly<
-    Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+    PluginRegistryTrust
   >,
   candidateApprovedPluginAccess?: PluginAccessSpec | null,
 ) => PluginHostApi {
@@ -312,6 +345,7 @@ export function createHostApiFactory(
     getPluginRuntime,
     lateBinding,
     getRegistryEntry,
+    refreshRegistryEntryCacheIfChanged,
     hostClassifiesRiskEnabled,
     pluginShutdownHandlers,
     readAppPreference,
@@ -331,7 +365,14 @@ export function createHostApiFactory(
     permissionManager,
     routinesStore,
     getWorkBoardStore,
+    getAlertsService,
+    grantEvidence,
   } = deps;
+  const credentialRegistry = new CredentialLeaseRegistry(
+    settingsService,
+    (pluginId) => permissionManager?.getPluginRevokeEpoch(pluginId) ?? 0,
+  );
+  const leaseDenialAudit = deps.leaseDenialAudit ?? new LeaseDenialAudit(bootAuditLogger);
 
   /**
    * The window a host→renderer send (or a host-opened child window's parent)
@@ -359,7 +400,7 @@ export function createHostApiFactory(
     incarnation: PluginHostApiIncarnation,
     installPluginId: string | null,
     candidateRegistryEntry?: Readonly<
-      Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+      PluginRegistryTrust
     >,
     candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ): PluginHostApi => {
@@ -375,12 +416,33 @@ export function createHostApiFactory(
     if (installPluginId === undefined) {
       throw new Error(`HostApi install provenance missing: ${pluginId}`);
     }
-    const getCurrentRegistryEntry = () =>
-      candidateRegistryEntry
-      ?? (installPluginId === null
-        ? undefined
-        : getRegistryEntry(installPluginId));
+    // The host-owned entry a host-secret grant trusts: the registry's, re-read
+    // first if another writer changed the file. A candidate answers with its
+    // own entry until the registry records the same install (source, manifest
+    // and, when the candidate names one, origin); after that the registry's
+    // wins, so a later write (the §16.3 migration binding an origin) reaches
+    // this incarnation without a restart. A candidate from another source never
+    // borrows the registry's origin.
+    const readRegistryEntry = async (): Promise<PluginRegistryTrust | undefined> => {
+      if (installPluginId === null) return candidateRegistryEntry;
+      await refreshRegistryEntryCacheIfChanged();
+      const committed = getRegistryEntry(installPluginId);
+      if (!candidateRegistryEntry) return committed;
+      return committed && recordsCandidate(committed, candidateRegistryEntry) ? committed : candidateRegistryEntry;
+    };
+    // A legacy install's receipt is verified once per incarnation: an update
+    // installs through the ladder and starts a new one.
+    let legacyReceiptSha256: string | null | undefined;
+    const hostSecretGrantEvidence: HostSecretGrantEvidence = {
+      officialPins: (plugin, version) => grantEvidence.officialPins(plugin, version),
+      receiptArtifactSha256: async () => {
+        if (installPluginId === null) return null;
+        if (legacyReceiptSha256 === undefined) legacyReceiptSha256 = await grantEvidence.receiptArtifactSha256(installPluginId);
+        return legacyReceiptSha256;
+      },
+    };
     const hostIncarnation = incarnation;
+    hostIncarnation.registerDisposer(() => credentialRegistry.endIncarnation(hostIncarnation));
     const hostEffects = hostIncarnation.generationScope;
     const registerOwnedDisposer = (dispose: () => void): (() => void) => {
       let disposed = false;
@@ -392,6 +454,29 @@ export function createHostApiFactory(
       hostIncarnation.registerDisposer(disposeOnce);
       hostEffects?.registerDisposer(disposeOnce);
       return disposeOnce;
+    };
+    // Candidate grants become effective only with their generation. A failed
+    // candidate cannot replace the incumbent's kinds or alter its settings.
+    const alertRegistration = getAlertsService()?.prepareRegistration(pluginId, manifest, () => hostIncarnation.isActive());
+    if (alertRegistration) {
+      const publish = () => {
+        void alertRegistration.publish().catch((err: unknown) => {
+          log.warn(`[plugin:${pluginId}] alert kind registration failed: ${errorMessage(err)}`);
+        });
+      };
+      registerOwnedDisposer(alertRegistration.unpublish);
+      if (hostEffects) {
+        hostEffects.stagePublish(publish);
+        hostEffects.onSupersede(alertRegistration.unpublish);
+      } else if (hostIncarnation.isActive()) {
+        publish();
+      }
+    }
+    /** The alerts service, or a loud failure: plugins start after it is built. */
+    const requireAlertsService = (member: string): AlertsService => {
+      const service = getAlertsService();
+      if (!service) throw new Error(`[plugin:${pluginId}] hostApi.${member}: alerts service is not constructed`);
+      return service;
     };
     /**
      * The Work Board store, or a loud failure. Plugins start long after
@@ -432,20 +517,27 @@ export function createHostApiFactory(
     ): Awaited<ReturnType<NonNullable<PluginHostApi["resolveApiKey"]>>> => {
       if (!result.ok) return result;
       let released = false;
-      const release = () => {
+      const release = async () => {
         if (released) return;
         released = true;
-        result.release();
+        await result.release();
       };
-      hostIncarnation.registerDisposer(release);
-      return {
+      hostIncarnation.registerDisposer(() => { void release(); });
+      const bound = {
         ...result,
-        bearer: () => {
-          assertIssuedCapabilityActive("hostApi.resolveApiKey().bearer");
-          return result.bearer();
-        },
         release,
       };
+      if (result.exposure === "raw") {
+        const metadata = result as typeof result & {
+          handleId: string;
+          onClosed: (listener: (reason: "revoked" | "peer-gone") => void) => () => void;
+        };
+        Object.defineProperties(bound, {
+          handleId: { value: metadata.handleId },
+          onClosed: { value: metadata.onClosed },
+        });
+      }
+      return bound;
     };
     const bindWorkerHandle = (
       worker: Awaited<ReturnType<NonNullable<PluginHostApi["spawnWorker"]>>>,
@@ -481,21 +573,15 @@ export function createHostApiFactory(
         },
       };
     };
-      // #893 Stage 2 — manifest sha256 pin (Tier-3 whitelist check). The
-      // whitelist registry stores `approvedManifestSha256` per pluginId; we
-      // compare against the canonicalized JSON of the running manifest so a
-      // post-install manifest swap (different tools / wider hostSecrets.read)
-      // forces a fresh whitelist roll.
-      //
-      // The digest MUST come from a recursive canonical serializer
-      // (`canonicalJSON` — RFC 8785 JCS-style: sort keys at every depth,
-      // preserve array element order). The replacer-array form
-      // `JSON.stringify(manifest, Object.keys(manifest).sort())` does NOT
-      // work here: it filters only top-level keys and emits every nested
-      // object as `{}`, so distinct manifests collapse onto near-identical
-      // digests and the Tier-3 pin stops discriminating.
-      const canonical = canonicalJSON(manifest);
-      const manifestSha256 = sha256Hex(canonical);
+      // Manifest sha256 pin (design §10.3 condition 2). The host-secret gate
+      // compares the running manifest with the pin the registry recorded at
+      // install, so a post-install manifest swap (different tools / wider
+      // hostSecrets.read) loses every grant. Installers pin the canonical JSON
+      // of the `plugin.json` DOCUMENT; the flat projection this factory
+      // receives hashes differently, so the digest is the one recorded when
+      // the document was parsed. A manifest not read from a document (null)
+      // matches no pin.
+      const manifestSha256 = manifestDocumentSha256(manifest);
       // Structural effect observability — wrap the whole hostApi so EVERY method
       // (and any future-added one) auto-records its host-observed effect on the
       // ambient per-invocation ledger, looked up by method PATH in the
@@ -550,11 +636,10 @@ export function createHostApiFactory(
           // runtime/sandbox.ts) returned the author-declared default — the two
           // now agree. applyConfigDefaults only backfills keys still undefined,
           // so it never changes the precedence of the higher layers.
-          const merged = applyConfigDefaults(manifest.configSchema, {
-            ...(manifest.config ?? {}),
-            ...(pluginRuntime.getWildcardConfigOverride?.() ?? {}),
-            ...(settingsService.getPluginConfig(pluginId) ?? {}),
-          });
+          const merged = effectivePluginConfig(manifest,
+            pluginRuntime.getWildcardConfigOverride?.() ?? {},
+            settingsService.getPluginConfig(pluginId) ?? {},
+          );
           return merged[key] as T | undefined;
         },
         set: <T = unknown>(key: string, value: T): Promise<void> => {
@@ -679,8 +764,13 @@ export function createHostApiFactory(
           type,
           candidateApprovedPluginAccess,
         );
+        // The host emits `alert.*`, so its owner is the payload's plugin: a
+        // subscriber hears its own alerts and, with a grant, the named plugin's.
+        const alertEvent = isAlertEvent(type);
         const dispatch = (data: unknown) => {
-          if (hostIncarnation.isActive()) handler(data);
+          if (!hostIncarnation.isActive()) return;
+          if (alertEvent && !alertEventReaches(pluginId, type, data, getApprovedPluginAccess())) return;
+          handler(data);
         };
         // Contained for the same reason `config.onChange` is: `emitEvent`
         // catches what a synchronous handler throws, and a `void`-discarded
@@ -717,20 +807,49 @@ export function createHostApiFactory(
         const unsubscribe = () => { unsubInstalled(); unsubUninstalled(); };
         return registerOwnedDisposer(unsubscribe);
       },
-      // #893 Stage 2 — Host implementation of the SDK's `resolveApiKey`.
-      // Returns the SDK `ResolveApiKeyResult` discriminated union (bearer +
-      // release on success; typed reason on failure). Plugins read the
-      // key via `result.bearer()` and SHOULD call `result.release()` in a
-      // `finally` so the captured string has a deterministic lifetime.
+      // Host implementation of the public contract's `resolveApiKey`.
+      // Returns an opaque host-owned lease by default. Only a reviewed raw
+      // exposure returns copied bytes.
       // All four tiers are evaluated in-line inside `resolveApiKeyImpl`;
       // the call here is a thin closure capture of pluginId + manifest +
       // manifestSha256 + the shared audit/settings services.
       resolveApiKey: async (opts) => {
+        const request = {
+          purpose: opts.purpose,
+          vendor: opts.vendor,
+          exposure: opts.exposure ?? "lease",
+          signal: opts.signal,
+        };
+        if (request.exposure !== "lease" && request.exposure !== "raw") {
+          throw new HostApiBoundaryError("argument-marshalling-rejected", "Unknown credential exposure.");
+        }
+        const activeVendor = settingsService.get("llm").provider;
+        const normalizedSource = normalizeVendor(request.vendor ?? activeVendor);
+        if (normalizedSource === "gemini" || normalizedSource === "vertex-ai") {
+          return { ok: false, reason: "vendor-unsupported" };
+        }
+        const permissionSignal = permissionManager?.getPluginRevokeSignal(pluginId) ?? new AbortController().signal;
+        const identities = apiKeyIdentities(request, pluginId, settingsService);
+        const reservation = credentialRegistry.reserve(
+          pluginId, hostIncarnation, identities, permissionSignal, request.exposure,
+        );
+        if (!reservation) return { ok: false, reason: "lease-limit" };
+        try {
+        if (request.exposure === "raw") {
+          const reviewedVersion = installPluginId === null ? null
+            : await grantEvidence.receiptReviewedAppVersion?.(installPluginId) ?? null;
+          if (!manifest.capabilities?.includes(CAPABILITY_RAW_API_KEY)
+            || !reviewedVersion || !appVersionSatisfiesMin(reviewedVersion, "0.12.0")) {
+            reservation.finish();
+            return { ok: false, reason: "raw-exposure-denied" };
+          }
+        }
         const result = await resolveApiKeyImpl(
           {
-            purpose: opts.purpose as ResolveApiKeyPurpose,
-            vendor: opts.vendor as ResolveApiKeyVendor | undefined,
-            signal: opts.signal,
+            purpose: request.purpose as ResolveApiKeyPurpose,
+            vendor: request.vendor as ResolveApiKeyVendor | undefined,
+            exposure: request.exposure,
+            signal: request.signal,
           },
           {
             pluginId,
@@ -738,23 +857,12 @@ export function createHostApiFactory(
             manifestSha256,
             settingsService,
             auditLogger: bootAuditLogger,
-            // #958/#959 — feed the registry-anchored installSource and
-            // install-time manifest SHA so admin bypasses skip only the
-            // host-secret ACL, never the manifest tamper check.
-            ...((): {
-              registryInstallSource?: "admin" | "user" | "local-dev";
-              registryManifestSha256?: string;
-            } => {
-              const entry = getCurrentRegistryEntry();
-              return {
-                ...(entry?.installSource !== undefined ? { registryInstallSource: entry.installSource } : {}),
-                ...(entry?.manifestSha256 !== undefined ? { registryManifestSha256: entry.manifestSha256 } : {}),
-              };
-            })(),
-            // Bind the permission-manager revoke signal
-            // accessor so an in-flight bearer aborts when permissions
-            // change for this plugin. When permissionManager is not wired
-            // (test runtimes) the host-api falls back to caller-signal-only.
+            readRegistryEntry,
+            grantEvidence: hostSecretGrantEvidence,
+            ...(deps._onCredentialIssuanceStageForTest
+              ? { _onCredentialIssuanceStageForTest: deps._onCredentialIssuanceStageForTest }
+              : {}),
+            // Bind the permission revoke signal for the issuing request.
             ...(permissionManager
               ? {
                   getPluginRevokeSignal: (id: string) =>
@@ -763,17 +871,70 @@ export function createHostApiFactory(
               : {}),
           },
         );
-        if (!hostIncarnation.isActive() && result.ok) {
-          result.release();
-          throw new Error(
-            `[plugin:${pluginId}] hostApi.resolveApiKey: plugin instance is no longer active`,
-          );
+        if (!result.ok) {
+          reservation.finish();
+          return result;
         }
-        return bindApiKeyResult(result);
+        let secret: string;
+        try { secret = result.bearer(); } catch {
+          reservation.finish(); result.release();
+          return { ok: false, reason: request.signal?.aborted ? "aborted" : "stale-authorization" };
+        }
+        const llm = settingsService.get("llm");
+        const configuredBaseUrl = (llm.vendors as Record<string, { baseUrl?: string } | undefined> | undefined)?.[result.vendor]?.baseUrl;
+        const defaultBaseUrl = result.vendor === "openai" ? "https://api.openai.com"
+          : result.vendor === "claude" ? "https://api.anthropic.com" : undefined;
+        const baseUrl = configuredBaseUrl || result.baseUrl || defaultBaseUrl;
+        const scheme: CredentialScheme | undefined = result.vendor === "openai" ? "bearer"
+          : result.vendor === "azure-foundry" ? "api-key"
+            : result.vendor === "claude" ? "x-api-key" : undefined;
+        if (!scheme) { reservation.finish(); result.release(); return { ok: false, reason: "vendor-unsupported" }; }
+        if (result.source === "host-secret" && !baseUrl) {
+          reservation.finish(); result.release(); return { ok: false, reason: "endpoint-unavailable" };
+        }
+        const allowedDomains = manifest.networkAccess?.allowedDomains ?? [];
+        if (request.exposure === "lease" && result.source === "plugin-own" && allowedDomains.length === 0) {
+          reservation.finish(); result.release(); return { ok: false, reason: "audience-not-allowlisted" };
+        }
+        let origin: string | undefined;
+        try {
+          if (baseUrl) {
+            const endpoint = new URL(baseUrl);
+            if (endpoint.protocol === "https:") origin = endpoint.origin;
+          }
+        } catch { /* invalid host endpoint is unavailable */ }
+        if (result.source === "host-secret" && !origin) {
+          reservation.finish(); result.release(); return { ok: false, reason: "endpoint-unavailable" };
+        }
+        if (result.source === "host-secret" && !urlHostMatchesAllowList(new URL(origin!).hostname, allowedDomains)) {
+          reservation.finish(); result.release(); return { ok: false, reason: "audience-not-allowlisted" };
+        }
+        if (!hostIncarnation.isActive()) {
+          reservation.finish(); result.release(); return { ok: false, reason: "stale-authorization" };
+        }
+        if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("before-reply");
+        const registered = credentialRegistry.register(reservation, {
+          key: result.keyName,
+          vendor: result.vendor,
+          ...(baseUrl ? { baseUrl } : {}),
+          secret,
+          scheme,
+          permissionSignal,
+          audience: result.source === "host-secret"
+            ? (url) => url.origin === origin
+            : (url) => urlHostMatchesAllowList(url.hostname, allowedDomains),
+        });
+        result.release();
+        return registered ? bindApiKeyResult(registered)
+          : { ok: false, reason: request.signal?.aborted ? "aborted" : "stale-authorization" };
+        } catch (error) {
+          reservation.finish();
+          throw error;
+        }
       },
       getSecret: async (key) => {
         // #893 Stage 2 — the four-tier secret access gate. The DECISION lives
-        // in `runSecretGate` (src/plugins/whitelist/secret-gate.ts), the one
+        // in `runSecretGate` (src/plugins/secret-access/secret-gate.ts), the one
         // authority `resolveApiKey` above also calls; everything below is this
         // API's own audit vocabulary, counters, and `string | null` shape.
         //
@@ -798,20 +959,16 @@ export function createHostApiFactory(
             });
           } catch { /* audit must not break host */ }
         };
-        // #958/#959 security — registry-recorded `installSource` is the only
-        // source that can activate the admin secret-access bypass. The registry
-        // file is host-managed; `plugin.json` is inside the plugin's writable
-        // surface, so a malicious post-install patch could flip
-        // `installPolicy:"admin"` and inherit the Tier-3 bypass if
-        // manifest-only metadata were trusted here.
-        const registryEntry = getCurrentRegistryEntry();
-        const outcome = runSecretGate({
+        // The grant reads the host-owned registry entry, never `plugin.json`,
+        // which sits inside the plugin's writable surface.
+        const outcome = await runSecretGate({
           pluginId,
+          operation: "export",
           key,
           allowlist: manifest.hostSecrets?.read ?? [],
           manifestSha256,
-          installedManifestSha256: registryEntry?.manifestSha256,
-          installPolicy: registryEntry?.installSource === "admin" ? "admin" : "user",
+          readRegistryEntry,
+          grantEvidence: hostSecretGrantEvidence,
           readSettings: () => {
             const llm = settingsService.get("llm");
             return {
@@ -850,19 +1007,6 @@ export function createHostApiFactory(
           incrementHostSecretCounter("hostSecret_read", pluginId, keyPrefix);
           return value;
         }
-        // Admin-bypass audit + counter. Emit BEFORE the host-secret read
-        // line so operators can pivot on
-        // `policy=admin manifest-allowlist-bypassed` in the audit log. The
-        // dedicated `hostSecret_admin_bypass` counter is on top of the regular
-        // `hostSecret_read` increment below so totals stay comparable across
-        // bypass and non-bypass reads.
-        if (outcome.via === "admin-bypass") {
-          audit(
-            "info",
-            `policy=admin manifest-allowlist-bypassed key=${auditKey} source=registry.installSource`,
-          );
-          incrementHostSecretCounter("hostSecret_admin_bypass", pluginId, keyPrefix);
-        }
         audit("info", `hostSecret_read key=${auditKey}`);
         incrementHostSecretCounter("hostSecret_read", pluginId, keyPrefix);
         return value;
@@ -875,6 +1019,7 @@ export function createHostApiFactory(
         return lateBinding.llmCallerRef.fn(prompt, opts);
       },
       hostFetch: async (input, init) => {
+        try {
         // Capability-gated host-mediated egress through Electron net (Chromium
         // stack → OS proxy incl. PAC/WPAD + OS trust store), for plugins whose
         // Node libraries (e.g. MSAL) can't be configured for the corporate
@@ -910,6 +1055,16 @@ export function createHostApiFactory(
         // The host owns the verb here — non-forgeable. Default "GET" mirrors
         // `fetch`'s default when init.method is omitted/empty/non-string.
         const { method: rawVerb, ...restInit } = init ?? {};
+        const hasAuth = Object.hasOwn(restInit, "auth");
+        const auth = hasAuth ? validateWireAuth(restInit.auth) : undefined;
+        const { auth: _auth, ...liveInit } = restInit;
+        const callerHeaders = new Headers(liveInit.headers ?? {});
+        const transportInit = { ...liveInit, headers: callerHeaders };
+        if (auth) {
+          for (const header of CREDENTIAL_HEADERS) {
+            if (callerHeaders.has(header)) throw new CredentialLeaseError("credential-conflict", { header });
+          }
+        }
         const methodSnapshot =
           typeof rawVerb === "string" && rawVerb.length > 0 ? rawVerb.toUpperCase() : "GET";
         // hostFetch is the ONLY verb-derived chokepoint, so the generic recorder
@@ -984,6 +1139,8 @@ export function createHostApiFactory(
           });
         }
         assertActiveHostApi(pluginId, hostIncarnation, "hostApi.hostFetch");
+        const credentialUse = auth ? credentialRegistry.beginUse(auth.lease, pluginId, hostIncarnation) : undefined;
+        credentialUse?.assertLive("after-await");
         // The host-observed effect for this egress was recorded above from the
         // SAME verb snapshot that drives `decision` and pins the wire below, so
         // the recorded effect == decision.effect == the wire verb (no divergence).
@@ -1020,7 +1177,7 @@ export function createHostApiFactory(
         let injectSessionCookie: ((target: URL) => Promise<string>) | undefined;
         if (typeof authCookieSub === "string" && authCookieSub.length > 0) {
           const pluginSentCookie = new Headers(
-            (restInit.headers as HeadersInit | undefined) ?? {},
+            (transportInit.headers as HeadersInit | undefined) ?? {},
           ).has("cookie");
           if (pluginSentCookie) {
             auditEgressDeny(
@@ -1038,11 +1195,12 @@ export function createHostApiFactory(
           injectSessionCookie = (target: URL) =>
             partitionCookieHeaderForUrl(partitionSession, target);
         }
-        return runHostFetchHops({
+        return await runHostFetchHops({
           pluginId,
           first: decision,
-          init: restInit,
+          init: transportInit,
           transport: networkFetch,
+          ...(credentialUse ? { credentialUse } : {}),
           allowedDomains: manifest.networkAccess?.allowedDomains ?? [],
           allowPrivateNetworks: manifest.networkAccess?.allowPrivateNetworks === true,
           ...(injectSessionCookie ? { injectSessionCookie } : {}),
@@ -1057,7 +1215,17 @@ export function createHostApiFactory(
             } catch { /* audit must not break host */ }
           },
           auditDeny: auditEgressDeny,
+          onResponseBodyError: (error) => {
+            if (error instanceof CredentialLeaseError) leaseDenialAudit.record(pluginId, "hostFetch", error);
+          },
         });
+        } catch (error) {
+          if (error instanceof CredentialLeaseError) leaseDenialAudit.record(pluginId, "hostFetch", error);
+          else if (error instanceof HostApiBoundaryError && error.code === "credential-conflict") {
+            leaseDenialAudit.record(pluginId, "hostFetch", { code: "credential-conflict" });
+          }
+          throw error;
+        }
       },
       logEvent: (level, message, data) => {
         try {
@@ -1097,7 +1265,13 @@ export function createHostApiFactory(
       // Tool.workerId; a plugin-self-claimed worker id is advisory only (#885 v6
       // removed the manifest field — normalize drops any legacy `workerId`).
       spawnWorker: async (workerSpec) => {
-        const worker = await spawnWorker({ ...workerSpec, pluginId });
+        const worker = await spawnWorker({
+          ...workerSpec,
+          pluginId,
+          // Host-decided, from the reviewed declaration: the plugin's spec
+          // cannot name a read inside the protected floor for its worker.
+          floorPierces: declaredHostDirectoryFloorPierces(manifest.sandbox),
+        });
         if (!hostIncarnation.isActive()) {
           worker.stop();
           throw new Error(
@@ -1128,9 +1302,9 @@ export function createHostApiFactory(
         return readAppPreference(pluginId, key) as T | undefined;
       },
       // ─── Corp-network presence probe ───────────────────────────────────
-      // Lands the SDK `runtime/network.ts#detectViaPrivateDnsProbe` shim in
-      // hostApi so plugins never reach `dns.lookup` (or a raw corp-network
-      // presence probe) directly. Pure DNS race with host-side host validation
+      // HostApi owns the private DNS probe so plugins never reach `dns.lookup`
+      // (or a raw corp-network presence probe) directly. Pure DNS race with
+      // host-side host validation
       // + timeout clamping; UX hint only, NOT a trust boundary (see the impl
       // header). Module-level dedup/no-cache/unref'd-timer semantics live in
       // private-host-probe.ts.
@@ -1399,7 +1573,7 @@ export function createHostApiFactory(
         );
       },
 
-      // ─── SDK 5.6.0 — clearAuthPartition ──────────────────────────────
+      // ─── HostApi clearAuthPartition ───────────────────────────────────
       // Wipe cookies / storage / cache / HTTP-auth from one of the calling
       // plugin's own `persist:plugin-auth:<pluginId>[:<sub>]` partitions.
       // Used after a user-triggered plugin sign-out so a subsequent
@@ -1602,8 +1776,36 @@ export function createHostApiFactory(
       // started). The user's confirm action inserts the prompt as a user
       // message into main chat via the imported_trigger mechanism.
       //
+      //
+      // A plugin that declares `alerts` may pass only its declared suggestion
+      // sources, each accepted once per 30 days. Stage synchronously before
+      // charging acceptance, then persist before resolving the call.
       triggerConversation: async (spec: ConversationTriggerSpec) => {
+        const declaredSuggestions = getDeclaredSuggestionSources(manifest, pluginId);
+        if (declaredSuggestions !== null) await suggestionLedger.load();
+        const eventId = randomUUID();
         const decision = evaluateTriggerSpec({
+          stageDelivery: (source) => {
+            const overlayTarget = requireMainWindow();
+
+            // Allow path — push to renderer OverlayContext via IPC instead of
+            // spawning a fresh ConversationLoop.
+            const overlayId = `plugin:${pluginId}:${eventId}`;
+            const derivedSummary = deriveOverlaySummaryForDisplay(spec);
+            const overlayItem = {
+              id: overlayId,
+              source: { kind: "plugin" as const, pluginId, eventId },
+              pluginDisplayName: resolvePluginDisplayName(pluginId, manifest.name),
+              title: spec.title ?? spec.source.replace(/^overlay:/, ""),
+              summary: derivedSummary,
+              running: false,
+              primaryActionLabel: spec.primaryActionLabel ?? t("be_pluginRuntime.overlayPrimaryActionLabel"),
+              pendingPrompt: formatPluginPendingPrompt(spec.prompt, source),
+              createdAt: new Date().toISOString(),
+            };
+            overlayTarget.webContents.send(OVERLAY_V1.show, overlayItem);
+
+          },
           assertDeliveryAvailable: () => { requireMainWindow(); },
           spec,
           pluginId,
@@ -1612,29 +1814,15 @@ export function createHostApiFactory(
           rateLimiter: triggerConversationRateLimiter,
           denyAuditThrottle: triggerDenyAuditThrottle,
           auditLogger: bootAuditLogger,
+          suggestions: declaredSuggestions === null
+            ? undefined
+            : { declared: declaredSuggestions, ledger: suggestionLedger },
         });
 
         if (decision.kind === "deny") {
           return decision.result;
         }
-        const overlayTarget = requireMainWindow();
-
-        // Allow path — push to renderer OverlayContext via IPC instead of
-        // spawning a fresh ConversationLoop.
-        const eventId = randomUUID();
-        const overlayId = `plugin:${pluginId}:${eventId}`;
-        const derivedSummary = deriveOverlaySummaryForDisplay(spec);
-        const overlayItem = {
-          id: overlayId,
-          source: { kind: "plugin" as const, pluginId, eventId },
-          title: spec.title ?? spec.source.replace(/^overlay:/, ""),
-          summary: derivedSummary,
-          running: false,
-          primaryActionLabel: spec.primaryActionLabel ?? t("be_pluginRuntime.overlayPrimaryActionLabel"),
-          pendingPrompt: formatPluginPendingPrompt(spec.prompt, decision.source),
-          createdAt: new Date().toISOString(),
-        };
-        overlayTarget.webContents.send(OVERLAY_V1.show, overlayItem);
+        if (declaredSuggestions !== null) await suggestionLedger.flush();
 
         return { accepted: true, source: decision.source, eventId };
       },
@@ -1696,6 +1884,17 @@ export function createHostApiFactory(
         if (withdrawn) notifyProposalChanged(proposalId(pluginId, kind, key.trim()), "withdrawn");
         return withdrawn;
       },
+
+      // ─── Alerts — hostApi.raiseAlert() / withdrawAlert() ────────────────
+      // What arrives is a declared kind id, a key and typed slot values; the
+      // card, the prompt and the notification are the host's, rendered from
+      // the kind's declaration. The identity is keyed by the CALLER's plugin
+      // id, so a plugin can neither raise nor withdraw another's alert.
+      raiseAlert: async (input: AlertInput): Promise<AlertResult> =>
+        requireAlertsService("raiseAlert").raise(pluginId, input),
+
+      withdrawAlert: async (kind: string, key: string): Promise<boolean> =>
+        requireAlertsService("withdrawAlert").withdraw(pluginId, kind, key),
         }),
         {
           pluginId,
@@ -1706,4 +1905,11 @@ export function createHostApiFactory(
         },
       ));
   };
+}
+
+function recordsCandidate(committed: Readonly<PluginRegistryTrust>, candidate: Readonly<PluginRegistryTrust>): boolean {
+  if (committed.installSource !== candidate.installSource) return false;
+  if (committed.manifestSha256 !== candidate.manifestSha256) return false;
+  if (!candidate.origin) return true;
+  return canonicalJSON(committed.origin ?? null) === canonicalJSON(candidate.origin);
 }

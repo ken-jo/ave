@@ -14,24 +14,13 @@
  * free of process-specific imports (electron, node:fs, etc.).
  */
 
-export const BUNDLE_IDS = Object.freeze([
-  "moonstone",
-  "gallery",
-  "cherry-blossom",
-  "tokyo-night",
-  "midnight",
-  "forest",
-  "violet-light",
-  "violet-dark",
-  "high-contrast",
-  "catppuccin-mocha",
-  "catppuccin-latte",
-  "nord",
-  "gruvbox-dark-hard",
-  "solarized-light",
-  "rose-pine",
-  "executive-graphite",
-] as const);
+/**
+ * The bundles compiled into the app. Every other theme is an installed theme
+ * package (design §5.5): the fourteen bundles the server marketplace
+ * delivered ship as packages under their own ids, so a selection keeps its
+ * name.
+ */
+export const BUNDLE_IDS = Object.freeze(["moonstone", "gallery"] as const);
 
 export type BundleId = (typeof BUNDLE_IDS)[number];
 
@@ -43,52 +32,14 @@ export function isBundleId(value: unknown): value is BundleId {
 
 export const DEFAULT_BUNDLE_ID: BundleId = "moonstone";
 
+const THEME_ID = /^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$/u;
+
 /**
- * Themes shown in the default in-app appearance picker while older/community
- * themes move toward marketplace packages. The full `BUNDLE_IDS` union remains
- * broad for settings migration, plugin theme events, and backward-compatible
- * validation during the marketplace migration.
+ * A value `appearance.bundleId` may hold: a compiled-in bundle id or the name
+ * of a theme package (the descriptor's package-name rule, which every
+ * compiled-in id also satisfies). Whether that theme is installed is decided
+ * where it is applied; one that is not falls back to the default bundle.
  */
-export const DEFAULT_VISIBLE_THEME_BUNDLE_IDS = Object.freeze([
-  "moonstone",
-  "gallery",
-] as const satisfies readonly BundleId[]);
-
-export type DefaultVisibleThemeBundleId =
-  (typeof DEFAULT_VISIBLE_THEME_BUNDLE_IDS)[number];
-
-const DEFAULT_VISIBLE_THEME_BUNDLE_ID_SET = new Set<string>(
-  DEFAULT_VISIBLE_THEME_BUNDLE_IDS,
-);
-
-export type MarketplaceEligibleThemeBundleId =
-  Exclude<BundleId, DefaultVisibleThemeBundleId>;
-
-export const MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS = Object.freeze(
-  BUNDLE_IDS.filter(
-    (bundleId): bundleId is MarketplaceEligibleThemeBundleId =>
-      !DEFAULT_VISIBLE_THEME_BUNDLE_ID_SET.has(bundleId),
-  ),
-);
-
-const MARKETPLACE_ELIGIBLE_THEME_BUNDLE_ID_SET = new Set<string>(
-  MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS,
-);
-
-export function isDefaultVisibleThemeBundleId(
-  bundleId: unknown,
-): bundleId is DefaultVisibleThemeBundleId {
-  return (
-    typeof bundleId === "string" &&
-    DEFAULT_VISIBLE_THEME_BUNDLE_ID_SET.has(bundleId)
-  );
-}
-
-export function isMarketplaceEligibleThemeBundleId(
-  bundleId: unknown,
-): bundleId is MarketplaceEligibleThemeBundleId {
-  return (
-    typeof bundleId === "string" &&
-    MARKETPLACE_ELIGIBLE_THEME_BUNDLE_ID_SET.has(bundleId)
-  );
+export function isThemeId(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 3 && value.length <= 64 && THEME_ID.test(value);
 }

@@ -34,7 +34,6 @@
 import { BrowserWindow, session as electronSession, type WebContents } from "electron";
 import { existsSync } from "node:fs";
 import { registerWindowEventListeners } from "./window-event-listeners.js";
-import { runtimeAssetPath } from "./main-paths.js";
 import { getCommonChromeOptions } from "./window-chrome.js";
 import { markAsWindowControlOwned } from "../ipc/window-control-registry.js";
 import { markAsLinkOwned } from "./link-window-registry.js";
@@ -45,6 +44,7 @@ import {
 } from "./window-titlebar-shell.js";
 import { resolveAppIconPath } from "./app-icon.js";
 import { escapeHtml } from "../shared/escape-html.js";
+import { preloadPreferences } from "./preload-bundles.js";
 
 /**
  * JSON for embedding inside a `<script>` block.
@@ -106,10 +106,6 @@ export function buildLinkWindowShellHtml(opts: {
   </script>
 </body>
 </html>`;
-}
-
-function linkShellPreloadPath(): string {
-  return runtimeAssetPath("preload.cjs");
 }
 
 export interface OpenLinkWindowOptions {
@@ -244,8 +240,8 @@ export async function openLinkWindow(
     applyPersistentBrowserUserAgent(opts.persistPartition);
   }
 
-  const preloadPath = linkShellPreloadPath();
-  const preloadExists = existsSync(preloadPath);
+  const shellPreload = preloadPreferences("preload");
+  const preloadExists = existsSync(shellPreload.preload);
   const shellTitle = opts.windowTitle ?? "External Link";
   /* Frame settings mirror the main app window so traffic-light spacing
      stays uniform on macOS and Win/Linux gets the same frameless shell
@@ -272,9 +268,10 @@ export async function openLinkWindow(
       webviewTag: true,
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false,
       webSecurity: true,
-      preload: preloadExists ? preloadPath : undefined,
+      // The host preload's sandbox always; the preload itself only when it was built.
+      ...shellPreload,
+      ...(preloadExists ? {} : { preload: undefined }),
     },
   });
   if (typeof win.setMenu === "function") win.setMenu(null);

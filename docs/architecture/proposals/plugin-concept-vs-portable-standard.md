@@ -1,5 +1,7 @@
 # Ave "plugin" vs the portable Agent Plugins packaging standard — concept + naming proposal
 
+> **Superseded (2026-09-27)** by [`docs/design/extensions-and-plugins.md`](../../design/extensions-and-plugins.md): code packages are extensions, the standard bundle is the plugin, and the manifest file is not renamed. Kept as provenance.
+>
 > Status: **Proposal** (owner directive 2026-08-16: the standard is NOT being adopted now;
 > the prerequisite is putting OUR OWN plugin model in order — clear naming, clear
 > separation — so that adoption stays possible later without a collision.)

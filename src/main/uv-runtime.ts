@@ -8,7 +8,7 @@ import { projectRoot } from "./main-paths.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { getHostResources } from "./host-resources.js";
 
-const DEFAULT_RUNTIME_UV_DIR = path.join(aveHome(), "runtime", "uv");
+const defaultRuntimeUvDir = (): string => path.join(aveHome(), "runtime", "uv");
 
 export interface BundledUvRuntimeOptions {
   defaultApp?: boolean;
@@ -75,7 +75,7 @@ function materializePackagedUvBinary(uvTarget: UvTarget, options: BundledUvRunti
   const compressedBin = path.join(packagedDir, `${uvTarget.bin}.gz`);
   const metaPath = path.join(packagedDir, "uv.meta.json");
   const { binarySha256 } = readPackagedUvMetadata(metaPath);
-  const runtimeUvDir = options.uvRuntimeDir ?? DEFAULT_RUNTIME_UV_DIR;
+  const runtimeUvDir = options.uvRuntimeDir ?? defaultRuntimeUvDir();
   const targetDir = path.join(runtimeUvDir, uvTarget.dir, binarySha256);
   const targetBin = path.join(targetDir, uvTarget.bin);
 

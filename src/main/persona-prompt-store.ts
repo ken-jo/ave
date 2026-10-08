@@ -10,12 +10,17 @@ import { readFile, readdir, realpath, rm } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { createLogger } from "../lib/logger.js";
+import type { InstalledAgentPlugin } from "../marketplace/content/service.js";
+import type { AgentPluginTemplatePrompt } from "../shared/agent-plugin-prompt.js";
+import type { ActivePluginGeneration } from "../plugins/plugin-generation-coordinator.js";
+import { parsePackagePrompt } from "../marketplace/content/agent-plugin-components.js";
 import { openFeatureNamespace, writeFileAtomicAtPath } from "./storage/feature-namespace.js";
 import { parseFrontmatterBlock, unquoteFrontmatterValue } from "./skill-store.js";
 
 const log = createLogger("ave");
 
-export const PERSONA_PROMPT_ID_ALLOWLIST = /^[a-zA-Z0-9_-]+$/;
+const LOCAL_PERSONA_PROMPT_ID = /^[a-zA-Z0-9_-]+$/;
+export const PERSONA_PROMPT_ID_ALLOWLIST = /^(?:[a-zA-Z0-9_-]+|(?:agent-plugin|extension):[a-z][a-z0-9-]{0,62}:[a-z][a-z0-9-]{0,62})$/;
 const PERSONA_PROMPT_MAX_BODY_BYTES = 8 * 1024;
 const USER_PROMPTS_NAMESPACE = openFeatureNamespace("prompts");
 
@@ -31,6 +36,7 @@ export interface PersonaPrompt {
   description: string;
   systemPromptAdd: string;
   filePath: string;
+  origin?: { kind: "agent-plugin" | "plugin"; package: string; version: string };
 }
 
 export interface PersonaPromptStoreOptions {
@@ -67,9 +73,95 @@ export function renderPersonaPromptFile(prompt: Pick<PersonaPrompt, "id" | "name
 
 export class PersonaPromptStore {
   private readonly userDir: string;
+  private agentPluginPersonas = new Map<string, PersonaPrompt>();
+  private agentPluginTemplates = new Map<string, AgentPluginTemplatePrompt>();
+  private extensionPersonas = new Map<string, PersonaPrompt>();
+  private extensionTemplates = new Map<string, AgentPluginTemplatePrompt>();
 
   constructor(opts: PersonaPromptStoreOptions = {}) {
     this.userDir = opts.userDir ?? USER_PROMPTS_NAMESPACE.dir;
+  }
+
+  /** Replace package personas from the installed content store's verified bytes. */
+  setInstalledAgentPlugins(packages: readonly InstalledAgentPlugin[]): void {
+    const next = new Map<string, PersonaPrompt>();
+    const nextTemplates = new Map<string, AgentPluginTemplatePrompt>();
+    for (const { name: packageName, version, content } of packages) {
+      const files = new Map(content.files.map((file) => [file.path, file.data]));
+      for (const component of content.components.prompts) {
+        const id = `agent-plugin:${packageName}:${component.name}`;
+        const bytes = files.get(`ai.agent-connector.ave/prompts/${component.name}.md`);
+        if (!bytes) throw new Error(`installed agent plugin prompt ${id} is missing`);
+        const { fields, body } = parseFrontmatterBlock(bytes.toString("utf8"));
+        if (fields.get("name") !== component.name || fields.get("kind") !== component.kind || !body.trim()
+          || Buffer.byteLength(body.trim(), "utf8") > PERSONA_PROMPT_MAX_BODY_BYTES) {
+          throw new Error(`installed agent plugin prompt ${id} is invalid`);
+        }
+        if (component.kind === "persona") {
+          if (next.has(id)) throw new Error(`duplicate installed agent plugin persona ${id}`);
+          next.set(id, {
+            id,
+            name: `${component.name} (${packageName})`,
+            description: fields.get("description") ?? "",
+            systemPromptAdd: body.trim(),
+            filePath: `agent-plugin://${packageName}/${component.name}.md`,
+            origin: { kind: "agent-plugin", package: packageName, version },
+          });
+        } else {
+          if (nextTemplates.has(id)) throw new Error(`duplicate installed agent plugin template ${id}`);
+          nextTemplates.set(id, {
+            id, packageName, version, name: component.name,
+            description: fields.get("description") ?? "",
+            ...(fields.get("argumentHint") ? { argumentHint: fields.get("argumentHint") } : {}),
+            body: body.trim(),
+          });
+        }
+      }
+    }
+    this.agentPluginPersonas = next;
+    this.agentPluginTemplates = nextTemplates;
+  }
+
+  /** Prepare prompt replacement for one receipt-covered extension generation. */
+  preparePluginGeneration(generation: ActivePluginGeneration): { publish(): void } {
+    const personas = new Map([...this.extensionPersonas].filter(([, prompt]) => prompt.origin?.package !== generation.pluginId));
+    const templates = new Map([...this.extensionTemplates].filter(([, prompt]) => prompt.packageName !== generation.pluginId));
+    for (const contribution of generation.contributions) {
+      if (contribution.kind !== "prompt") continue;
+      const file = contribution.files[0];
+      if (!file || contribution.files.length !== 1) throw new Error(`extension prompt ${contribution.localId} has no single file`);
+      const basename = contribution.path.split("/").at(-1)?.replace(/\.md$/u, "");
+      if (!basename) throw new Error(`extension prompt ${contribution.localId} has no file name`);
+      const parsed = parsePackagePrompt(Buffer.from(file.content), contribution.path, basename);
+      const { fields, body } = parseFrontmatterBlock(file.content);
+      const id = `extension:${generation.pluginId}:${parsed.name}`;
+      const description = new Map(fields).get("description") ?? "";
+      if (personas.has(id) || templates.has(id)) throw new Error(`duplicate extension prompt ${id}`);
+      if (parsed.kind === "persona") {
+        personas.set(id, {
+          id, name: `${parsed.name} (${generation.pluginId})`, description,
+          systemPromptAdd: body.trim(), filePath: `extension://${generation.pluginId}/${parsed.name}.md`,
+          origin: { kind: "plugin", package: generation.pluginId, version: generation.pluginVersion },
+        });
+      } else {
+        templates.set(id, {
+          id, packageName: generation.pluginId, version: generation.pluginVersion, name: parsed.name,
+          description, ...(new Map(fields).get("argumentHint") ? { argumentHint: new Map(fields).get("argumentHint") } : {}),
+          body: body.trim(),
+        });
+      }
+    }
+    return { publish: () => { this.extensionPersonas = personas; this.extensionTemplates = templates; } };
+  }
+
+  preparePluginRemoval(pluginId: string): { publish(): void } {
+    const personas = new Map([...this.extensionPersonas].filter(([, prompt]) => prompt.origin?.package !== pluginId));
+    const templates = new Map([...this.extensionTemplates].filter(([, prompt]) => prompt.packageName !== pluginId));
+    return { publish: () => { this.extensionPersonas = personas; this.extensionTemplates = templates; } };
+  }
+
+  listTemplates(): AgentPluginTemplatePrompt[] {
+    return [...this.agentPluginTemplates.values(), ...this.extensionTemplates.values()];
   }
 
   async list(): Promise<PersonaPrompt[]> {
@@ -77,8 +169,8 @@ export class PersonaPromptStore {
     try {
       entries = await readdir(this.userDir, { withFileTypes: true });
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw err;
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") entries = [];
+      else throw err;
     }
 
     let canonicalDir: string;
@@ -93,7 +185,7 @@ export class PersonaPromptStore {
       const candidate = this.promptCandidate(entry);
       if (!candidate) continue;
       const { baseId, filePath } = candidate;
-      if (!PERSONA_PROMPT_ID_ALLOWLIST.test(baseId)) {
+      if (!LOCAL_PERSONA_PROMPT_ID.test(baseId)) {
         log.warn(`persona prompt scan: rejected non-allowlist entry: ${entry.name}`);
         continue;
       }
@@ -122,7 +214,7 @@ export class PersonaPromptStore {
         const raw = await readFile(canonicalFile, "utf-8");
         const { fm, body } = parsePersonaPromptFrontmatter(raw);
         const id = fm.id || baseId;
-        if (!PERSONA_PROMPT_ID_ALLOWLIST.test(id) || id === "default") {
+        if (!LOCAL_PERSONA_PROMPT_ID.test(id) || id === "default") {
           log.warn(
             `persona prompt scan: rejected invalid frontmatter id "${id}" in ${canonicalFile}`,
           );
@@ -153,7 +245,7 @@ export class PersonaPromptStore {
 
     const byId = new Map<string, PersonaPrompt>();
     for (const prompt of prompts) byId.set(prompt.id, prompt);
-    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+    return [...byId.values(), ...this.agentPluginPersonas.values(), ...this.extensionPersonas.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async get(id: string): Promise<PersonaPrompt | null> {
@@ -161,6 +253,8 @@ export class PersonaPromptStore {
     if (!PERSONA_PROMPT_ID_ALLOWLIST.test(trimmed) || trimmed === "default") {
       throw new Error("invalid persona prompt id");
     }
+    if (trimmed.startsWith("agent-plugin:")) return this.agentPluginPersonas.get(trimmed) ?? null;
+    if (trimmed.startsWith("extension:")) return this.extensionPersonas.get(trimmed) ?? null;
     return (await this.list()).find((prompt) => prompt.id === trimmed) ?? null;
   }
 
@@ -171,7 +265,7 @@ export class PersonaPromptStore {
     systemPromptAdd: string;
   }): Promise<PersonaPrompt> {
     const id = input.id.trim();
-    if (!PERSONA_PROMPT_ID_ALLOWLIST.test(id) || id === "default") {
+    if (!LOCAL_PERSONA_PROMPT_ID.test(id) || id === "default") {
       throw new Error("invalid persona prompt id");
     }
     const name = sanitizePersonaName(input.name);
@@ -196,7 +290,7 @@ export class PersonaPromptStore {
 
   async delete(id: string): Promise<boolean> {
     const trimmed = id.trim();
-    if (!PERSONA_PROMPT_ID_ALLOWLIST.test(trimmed) || trimmed === "default") {
+    if (!LOCAL_PERSONA_PROMPT_ID.test(trimmed) || trimmed === "default") {
       throw new Error("invalid persona prompt id");
     }
     const prompt = (await this.list()).find((item) => item.id === trimmed);

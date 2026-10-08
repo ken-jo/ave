@@ -92,6 +92,7 @@ import * as sessionGoal from "../domains/session-goal.js";
 import * as permissions from "../domains/permissions.js";
 import * as plugins from "../domains/plugins.js";
 import * as prompts from "../domains/prompts.js";
+import * as pluginStudio from "../domains/plugin-studio.js";
 import * as settings from "../domains/settings.js";
 import * as tour from "../domains/tour.js";
 import * as ui from "../domains/ui.js";
@@ -115,6 +116,7 @@ describe("IPC domain runtime named-export lock", () => {
       permissions: keys(permissions),
       plugins: keys(plugins),
       prompts: keys(prompts),
+      "plugin-studio": keys(pluginStudio),
       settings: keys(settings),
       tour: keys(tour),
       ui: keys(ui),
@@ -144,9 +146,13 @@ describe("IPC domain runtime named-export lock", () => {
           "broadcastPermissionConfigChanged",
           "registerPermissionsHandlers",
         ],
+        "plugin-studio": [
+          "registerPluginStudioHandlers",
+        ],
         "plugins": [
           "__resetLastThemePayloadForTests",
           "getLastThemePayload",
+          "pluginLifecycleServices",
           "publishHostThemeChanged",
           "recordValidatedTheme",
           "registerPluginsHandlers",
@@ -169,6 +175,8 @@ describe("IPC domain runtime named-export lock", () => {
           "registerSessionTasksHandlers",
         ],
         "settings": [
+          "broadcastSettingsSnapshot",
+          "mutateMarketplaceProviderPresets",
           "registerSettingsHandlers",
         ],
         "tour": [

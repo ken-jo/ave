@@ -108,10 +108,12 @@ function envelopePatterns(fenceTag: string, sourceBody: string): {
 const OVERLAY_SOURCE_BODY = "overlay:[a-z][a-z0-9-]*";
 const APP_SOURCE_BODY = "app:[A-Za-z0-9][A-Za-z0-9._-]{0,127}";
 const MCP_PROMPT_SOURCE_BODY = "mcp-prompt:[A-Za-z0-9][A-Za-z0-9._-]{0,127}";
+const PLUGIN_PROMPT_SOURCE_BODY = "plugin-prompt:(?:extension:)?[a-z][a-z0-9-]{0,62}:[a-z][a-z0-9-]{0,62}";
 
 const overlayEnvelope = envelopePatterns("imported-from-proactive", OVERLAY_SOURCE_BODY);
 const appEnvelope = envelopePatterns("app-message", APP_SOURCE_BODY);
 const mcpPromptEnvelope = envelopePatterns("mcp-prompt", MCP_PROMPT_SOURCE_BODY);
+const pluginPromptEnvelope = envelopePatterns("plugin-prompt", PLUGIN_PROMPT_SOURCE_BODY);
 
 /**
  * The registry, keyed by turn-entry origin.
@@ -179,6 +181,23 @@ const STAGED_ORIGINS: Readonly<Record<StagedChatInputOrigin, StagedOriginKind>> 
     missingEnvelopeError: "missing-mcp-prompt-envelope",
     envelopePrefixPattern: mcpPromptEnvelope.prefix,
     envelopeFullPattern: mcpPromptEnvelope.full,
+  } as const),
+  "plugin-prompt-emitted": Object.freeze({
+    inputOrigin: "plugin-prompt-emitted",
+    labelKey: "trustOriginLabel.pluginPromptEmitted",
+    fenceTag: "plugin-prompt",
+    sourcePattern: new RegExp(`^${PLUGIN_PROMPT_SOURCE_BODY}$`),
+    guidance: {
+      tag: "plugin-prompt-origin-guidance",
+      lineKeys: [
+        "pluginPromptOrigin.notDirectInput",
+        "pluginPromptOrigin.packageAuthored",
+        "pluginPromptOrigin.confirmBeforeAction",
+      ],
+    },
+    missingEnvelopeError: "missing-plugin-prompt-envelope",
+    envelopePrefixPattern: pluginPromptEnvelope.prefix,
+    envelopeFullPattern: pluginPromptEnvelope.full,
   } as const),
 });
 

@@ -1,8 +1,8 @@
 /**
  * #893 Stage 2 — Host implementation of `hostApi.resolveApiKey()`.
  *
- * Wraps the four-tier secret gate (`runSecretGate`) and returns the SDK's
- * discriminated union (`@ave/plugin-sdk` → `ResolveApiKeyResult`).
+ * Wraps the four-tier secret gate (`runSecretGate`) and returns the public
+ * contract's `ResolveApiKeyResult` discriminated union.
  * On `ok=true` the host yields a one-shot bearer thunk + `release()`; plugins
  * should call `release()` in a `finally` block so the in-memory copy of the
  * key has a deterministic lifetime.
@@ -11,25 +11,25 @@
  * call `runSecretGate`:
  *   - tier-1 own-namespace          → ok=true (vendor = requested vendor or active)
  *   - tier-2 manifest allowlist     → check
- *   - tier-3 whitelist registry     → check (BEFORE Tier-4 — see ORDER below)
+ *   - tier-3 host-secret grant      → check (BEFORE Tier-4 — see ORDER below)
  *   - tier-4 active-vendor cross    → reason "vendor-mismatch"
- *   - whitelist no-cache + offline  → reason "not-whitelisted" (closest SDK enum)
+ *   - tier-2/tier-3 refusal         → reason "not-whitelisted" (public contract reason)
  *   - missing key in settings       → reason "no-host-vendor"
  *
  * Tier-3 / Tier-4 ORDER:
- *   Both `getSecret` and `resolveApiKey` now evaluate Tier-3 (whitelist
- *   registry) BEFORE Tier-4 (active-vendor cross-check). The whitelist is
- *   a coarse ACL — it is the static, signed declaration of which plugin
+ *   Both `getSecret` and `resolveApiKey` evaluate Tier-3 (the app's grant
+ *   table, design §10.3) BEFORE Tier-4 (active-vendor cross-check). The
+ *   grant table is a coarse ACL — the static declaration of which plugin
  *   may read which key. The vendor cross-check is per-call and dynamic
  *   (driven by `settings.llm.provider`). Running the coarse ACL first
- *   prevents an unwhitelisted plugin from leaking the dynamic vendor
- *   state via the deny-reason channel.
+ *   prevents an ungranted plugin from leaking the dynamic vendor state via
+ *   the deny-reason channel.
  *
  * Vendor alias normalization:
- *   The SDK enum (`@ave/plugin-sdk`) uses
+ *   The public contract uses
  *   `"openai" | "azure-openai" | "vertex" | "anthropic"`; the host's
  *   internal vendor union (`src/shared/llm-vendor-defaults.ts`) uses
- *   `"openai" | "azure-foundry" | "vertex-ai" | "claude"`. Map the SDK
+ *   `"openai" | "azure-foundry" | "vertex-ai" | "claude"`. Map the public
  *   names to host names at the entry so a Claude-default user and an
  *   plugin that asks for `vendor:"anthropic"` doesn't silently fall into
  *   `not-whitelisted` for a non-existent `llm.apiKey.anthropic` key.
@@ -40,14 +40,15 @@
  * bearer reference is dropped without the plugin having to remember.
  */
 import type { SettingsService } from "../../data/settings-store.js";
-import type { PluginManifest } from "../../plugins/types.js";
+import type { HostSecretGrantEvidence } from "../../plugins/secret-access/grants.js";
+import type { PluginManifest, PluginRegistryTrust } from "../../plugins/types.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import { shouldBlockPluginSecretRead } from "../../plugins/secret-shape.js";
 import {
   hostSecretKeyForVendor,
   runSecretGate,
-} from "../../plugins/whitelist/secret-gate.js";
-import type { SecretGateOutcome } from "../../plugins/whitelist/secret-gate.js";
+} from "../../plugins/secret-access/secret-gate.js";
+import type { SecretGateOutcome } from "../../plugins/secret-access/secret-gate.js";
 import {
   incrementHostSecretCounter,
   sanitizeKeyPrefix,
@@ -60,10 +61,14 @@ export type ResolveApiKeyVendor =
   | "vertex"
   | "anthropic";
 
+export type CredentialIssuanceStage = "before-gate" | "after-gate" | "after-secret-read" | "before-reply";
+
 export type ResolveApiKeyResult =
   | {
       ok: true;
       vendor: string;
+      keyName: string;
+      source: "host-secret" | "plugin-own";
       bearer: () => string;
       baseUrl?: string;
       release: () => void;
@@ -82,6 +87,7 @@ export type ResolveApiKeyResult =
 export interface ResolveApiKeyRequest {
   purpose: ResolveApiKeyPurpose;
   vendor?: ResolveApiKeyVendor;
+  exposure?: "lease" | "raw";
   signal?: AbortSignal;
 }
 
@@ -89,7 +95,8 @@ export interface ResolveApiKeyDeps {
   pluginId: string;
   // #885 v6 — reads only `hostSecrets` (shared by legacy + normalized manifests).
   manifest: Pick<PluginManifest, "hostSecrets">;
-  manifestSha256?: string;
+  /** Canonical sha256 of the running `plugin.json` document; null when the manifest was not read from one. */
+  manifestSha256: string | null;
   settingsService: Pick<SettingsService, "get" | "getSecret">;
   auditLogger: Pick<AuditLogger, "log">;
   /**
@@ -101,37 +108,20 @@ export interface ResolveApiKeyDeps {
    * `plugin-runtime.ts` binds this to `permissionManager.getPluginRevokeSignal`.
    */
   getPluginRevokeSignal?: (pluginId: string) => AbortSignal;
-  /**
-   * Install-source from the on-disk plugin registry
-   * (`PluginRegistryEntry.installSource`). This is the only value that can
-   * activate the Tier-3 admin-bypass gate:
-   *   - `registry.installSource` is written by the host at install time
-   *     under a verified actor; the file lives at
-   *     `~/.ave/plugins/registry.json` and is not part of the plugin's
-   *     own writable surface.
-   *   - `manifest.installPolicy` is a field inside `plugin.json` — a
-   *     user-installed plugin (or a malicious post-install patch) can
-   *     flip it to `"admin"` and inherit the Tier-3 bypass.
-   * Trust source: registry only. A manifest-only `"admin"` value is advisory
-   * metadata and cannot activate the secret-access bypass.
-   */
-  registryInstallSource?: "admin" | "user" | "local-dev";
-  /**
-   * Install-time canonical plugin.json SHA from the host-owned plugin
-   * registry. Required for admin secret-access bypasses so the bypass cannot
-   * survive a post-install manifest swap.
-   */
-  registryManifestSha256?: string;
+  /** The host-owned registry entry Tier 3 trusts; read only when Tier 3 runs. */
+  readRegistryEntry: () => Promise<PluginRegistryTrust | undefined>;
+  grantEvidence: HostSecretGrantEvidence;
+  _onCredentialIssuanceStageForTest?: (stage: CredentialIssuanceStage) => Promise<void> | void;
 }
 
 /**
- * Map SDK-enum vendor names to host internal vendor names. The SDK ships
+ * Map public-contract vendor names to host internal vendor names. The contract has
  * `"openai" | "azure-openai" | "vertex" | "anthropic"`; the host's
  * `LLM_VENDORS` union is
  * `"openai" | "azure-foundry" | "vertex-ai" | "claude" | "gemini" | "copilot"`.
  *
  * Only the three aliases that *differ* between the two surfaces are
- * mapped; `"openai"` passes through unchanged. Adding a new SDK alias
+ * mapped; `"openai"` passes through unchanged. Adding a new public alias
  * needs an entry here AND an `llm.apiKey.<host-vendor>` key wired into
  * the manifest allowlist and host whitelist.
  */
@@ -141,7 +131,7 @@ const VENDOR_ALIAS_MAP: Record<string, string> = {
   vertex: "vertex-ai",
 };
 
-function normalizeVendor(v: string): string {
+export function normalizeVendor(v: string): string {
   return VENDOR_ALIAS_MAP[v] ?? v;
 }
 
@@ -161,9 +151,8 @@ function audit(deps: ResolveApiKeyDeps, level: "info" | "warn", message: string)
 /**
  * One-shot bearer thunk wired to the request's `AbortSignal`. The captured
  * string is dropped after `release()` so subsequent `bearer()` calls throw
- * `Error("released")` per SDK contract
- * (see `sdk/src/index.ts` `bearer()` docs). Strings in JS are immutable
- * so we cannot literally zero the buffer; the "zeroize" here is a
+ * `Error("released")` per the vendored HostApi contract. Strings in JS are
+ * immutable, so we cannot literally zero the buffer; the "zeroize" here is a
  * best-effort signal: the reference is dropped, and tests can assert
  * the post-release state.
  *
@@ -173,6 +162,8 @@ function audit(deps: ResolveApiKeyDeps, level: "info" | "warn", message: string)
  */
 function makeSuccess(
   vendor: string,
+  keyName: string,
+  source: "host-secret" | "plugin-own",
   value: string,
   signal?: AbortSignal,
   baseUrl?: string,
@@ -194,6 +185,8 @@ function makeSuccess(
   const result: ResolveApiKeyResult & { ok: true } = {
     ok: true,
     vendor,
+    keyName,
+    source,
     bearer: () => {
       if (captured === null) {
         throw new Error("released");
@@ -210,8 +203,8 @@ function makeSuccess(
 
 /**
  * Resolve an API key for a plugin. Runs the same 4-tier `runSecretGate` as
- * `hostApi.getSecret`, returning the SDK's discriminated union so plugins can
- * branch on each refusal cause.
+ * `hostApi.getSecret`, returning the public contract's discriminated union so
+ * plugins can branch on each refusal cause.
  */
 export async function resolveApiKey(
   request: ResolveApiKeyRequest,
@@ -228,24 +221,23 @@ export async function resolveApiKey(
     return { ok: false, reason: "aborted" };
   }
   // Default vendor to the user's active LLM provider when the plugin omits
-  // it (purpose-only call). This matches the SDK example where the plugin
-  // declines to pin a specific provider and asks the host to pick.
+  // it (purpose-only call). The plugin may decline to pin a provider and
+  // ask the host to pick.
   const llmSettings = deps.settingsService.get("llm") as {
     provider?: unknown;
     marketplaceProviderPresetId?: unknown;
   };
   const defaultActiveProvider =
     typeof llmSettings.provider === "string" ? llmSettings.provider : "";
-  // Map the SDK vendor enum to the host vendor name so a Claude-default user
-  // + `vendor:"anthropic"` request lands on `llm.apiKey.claude`, not a
-  // non-existent `llm.apiKey.anthropic`.
+  // Map public vendor aliases before key lookup so the request reaches the
+  // host's configured key rather than a key built from the alias.
   const requestedVendor = request.vendor ?? defaultActiveProvider;
   const normalizedVendor =
     typeof requestedVendor === "string" ? normalizeVendor(requestedVendor) : requestedVendor;
   if (typeof normalizedVendor !== "string" || normalizedVendor.length === 0) {
     return { ok: false, reason: "no-host-vendor" };
   }
-  // Audit log records BOTH the requested SDK name and the normalized
+  // Audit log records BOTH the requested public name and the normalized
   // host name so operators see the alias resolution.
   if (typeof requestedVendor === "string" && requestedVendor !== normalizedVendor) {
     audit(
@@ -300,21 +292,18 @@ export async function resolveApiKey(
       `resolveApiKey allow source=plugin-namespace vendor=${vendor} purpose=${request.purpose}`,
     );
     incrementHostSecretCounter("hostSecret_read", deps.pluginId, keyPrefix);
-    return makeSuccess(vendor, ownValue, mergedSignal);
+    return makeSuccess(vendor, ownNamespaceKey, "plugin-own", ownValue, mergedSignal);
   }
 
-  // #958/#959 security — trust source for the Tier-3 admin-bypass gate:
-  // registry-recorded `installSource` (verified at install time, lives outside
-  // the plugin's writable surface) is the only admin bypass source.
-  // `manifest.installPolicy` is user-writable advisory metadata and never
-  // activates the secret-access bypass.
-  const gateOutcome = runSecretGate({
+  if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("before-gate");
+  const gateOutcome = await runSecretGate({
     pluginId: deps.pluginId,
+    operation: "lease",
     key: llmKey,
     allowlist: deps.manifest.hostSecrets?.read ?? [],
     manifestSha256: deps.manifestSha256,
-    installedManifestSha256: deps.registryManifestSha256,
-    installPolicy: deps.registryInstallSource === "admin" ? "admin" : "user",
+    readRegistryEntry: deps.readRegistryEntry,
+    grantEvidence: deps.grantEvidence,
     readSettings: readGateSettings,
   });
   if (gateOutcome.kind === "deny") {
@@ -327,33 +316,15 @@ export async function resolveApiKey(
     if (gateOutcome.tier === "tier-4") {
       return { ok: false, reason: "vendor-mismatch" };
     }
-    // Tier-2/Tier-3 deny — map the gate's reasons (`not-allowlisted`,
-    // `manifest-sha-mismatch`, `whitelist-unreachable`,
-    // `whitelist-stale-exceeded`, `not-whitelisted`) to the SDK enum's narrow
-    // `not-whitelisted` slot. The precise reason lives in the audit log.
+    // Tier-2/Tier-3 deny — map the gate's reasons (`not-allowlisted` and the
+    // grant's refusals) to the public contract's narrow `not-whitelisted` slot.
+    // The precise reason lives in the audit log.
     return { ok: false, reason: "not-whitelisted" };
   }
-  // Admin-bypass audit + counter. Emit an explicit audit line BEFORE the
-  // host-secret read so operators can pivot on
-  // `policy=admin manifest-allowlist-bypassed` in the audit log even if the
-  // subsequent settings lookup fails for an unrelated reason. The dedicated
-  // `hostSecret_admin_bypass` counter is on top of the regular
-  // `hostSecret_read` increment downstream so totals stay comparable.
-  if (gateOutcome.via === "admin-bypass") {
-    audit(
-      deps,
-      "info",
-      `resolveApiKey policy=admin manifest-allowlist-bypassed vendor=${vendor} purpose=${request.purpose} source=registry.installSource`,
-    );
-    incrementHostSecretCounter(
-      "hostSecret_admin_bypass",
-      deps.pluginId,
-      keyPrefix,
-    );
-  }
-
+  if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("after-gate");
   // All four tiers passed — fetch the key from settings.
   const value = deps.settingsService.getSecret(llmKey);
+  if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("after-secret-read");
   if (typeof value !== "string" || value.length === 0) {
     audit(deps, "info", `resolveApiKey deny reason=no-host-vendor vendor=${vendor}`);
     incrementHostSecretCounter("hostSecret_denied", deps.pluginId, keyPrefix);
@@ -366,7 +337,7 @@ export async function resolveApiKey(
   );
   incrementHostSecretCounter("hostSecret_read", deps.pluginId, keyPrefix);
 
-  // azure-foundry needs a baseUrl alongside the bearer — the SDK contract
+  // azure-foundry needs a baseUrl alongside the bearer — the public contract
   // already exposes it. Reach into the per-vendor settings block when
   // the vendor is azure-foundry; otherwise leave baseUrl unset.
   let baseUrl: string | undefined;
@@ -376,33 +347,41 @@ export async function resolveApiKey(
     };
     baseUrl = llmSettings?.vendors?.["azure-foundry"]?.baseUrl;
   }
-  return makeSuccess(vendor, value, mergedSignal, baseUrl);
+  return makeSuccess(vendor, llmKey, "host-secret", value, mergedSignal, baseUrl);
+}
+
+/** Resolve the two possible key identities before issuance crosses an await. */
+export function apiKeyIdentities(
+  request: ResolveApiKeyRequest,
+  pluginId: string,
+  settingsService: Pick<SettingsService, "get">,
+): readonly string[] {
+  const llm = settingsService.get("llm");
+  const active = typeof llm.provider === "string" ? llm.provider : "";
+  const requested = request.vendor ?? active;
+  const vendor = normalizeVendor(requested);
+  return [
+    `plugin.${pluginId}.llm.apiKey.${vendor}`,
+    hostSecretKeyForVendor(vendor, {
+      llmProvider: active,
+      marketplaceProviderPresetId: llm.marketplaceProviderPresetId,
+    }),
+  ];
 }
 
 /**
  * Name the gate path that produced a grant, for the `resolveApiKey allow`
- * audit line.
- *
- * The line used to say `source=whitelist-registry` unconditionally, including
- * on the admin-bypass path — where the signed Tier-3 whitelist ACL is exactly
- * the gate that was NOT consulted. That misreported the grant source to
- * operators auditing host-secret reads.
- *
- * Derived from the `via` discriminator so the source claim has a single
- * authority (`TierOutcome`), and exhaustively matched so a future bypass
- * variant is a compile-time error here rather than a silently wrong audit
- * line — which is the contract `TierOutcome`'s own doc comment promises.
+ * audit line. Exhaustively matched on the gate's `via`, so a new allow path is
+ * a compile-time error here rather than a silently wrong audit line.
  */
 function grantAuditSource(
   via: Extract<SecretGateOutcome, { kind: "allow" }>["via"],
 ): string {
   switch (via) {
-    case "admin-bypass":
-      return "registry.installSource";
     case "own-namespace":
       return "plugin-namespace";
     case undefined:
-      return "whitelist-registry";
+      return "host-secret-grant";
     default: {
       const exhaustive: never = via;
       return exhaustive;

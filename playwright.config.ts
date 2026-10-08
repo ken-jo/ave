@@ -9,7 +9,6 @@ import { defineConfig } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './test/e2e',
-  testIgnore: ['**/marketplace-e2e.test.ts'],
   testMatch: /.*\.spec\.ts$/,
   timeout: 60_000,
   expect: { timeout: 10_000 },

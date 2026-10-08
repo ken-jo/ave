@@ -4,7 +4,7 @@
  * `untrusted-stdio-isolation`).
  *
  * This is what runs INSIDE a spawned, sandboxed plugin process: it reads
- * Content-Length-framed JSON-RPC requests from an input stream (the subprocess's
+ * newline-delimited JSON-RPC requests from an input stream (the subprocess's
  * stdin), dispatches each to a {@link PluginMcpServer}-shaped handler, and writes
  * the framed response to an output stream (stdout). The host side drives it via a
  * stdio transport (the untrusted arm of the hybrid topology), exactly as the
@@ -34,14 +34,22 @@ export interface StdioRequestHandler {
 }
 
 export class StdioServerLoop {
-  private readonly decoder = new StdioFrameDecoder();
+  private readonly decoder: StdioFrameDecoder;
   private started = false;
 
+  /**
+   * `maxLineBytes` bounds one request line. It is the caller's because the
+   * bound belongs to the channel this loop is mounted on, not to the loop: an
+   * overflow throws out of the input's `data` event, to whoever wrote it.
+   */
   constructor(
     private readonly input: Readable,
     private readonly output: Writable,
     private readonly handler: StdioRequestHandler,
-  ) {}
+    maxLineBytes: number,
+  ) {
+    this.decoder = new StdioFrameDecoder(maxLineBytes);
+  }
 
   /** Begin consuming framed requests from the input stream. */
   start(): void {

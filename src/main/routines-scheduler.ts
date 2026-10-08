@@ -42,7 +42,10 @@ export class RoutinesScheduler {
   /** M1: reentrancy guard — skip tick if previous check is still running. */
   private inFlight = false;
 
-  constructor(private readonly store: RoutinesStore) {}
+  constructor(
+    private readonly store: RoutinesStore,
+    private readonly getInstalledPluginIds: () => Promise<readonly string[]>,
+  ) {}
 
   start(): void {
     if (this.timer) return;
@@ -93,13 +96,19 @@ export class RoutinesScheduler {
       try {
         const due = this.isDue(routine, now);
         if (!due) continue;
+        const missingPluginIds = await this.getMissingPluginIds(routine);
+        if (this.areAllPluginsMissing(routine, missingPluginIds)) {
+          await this.store.markPluginsMissing(routine.id, missingPluginIds,
+            routine.schedule?.repeat?.kind === "cron" ? minuteKeyUTC(now) : undefined);
+          continue;
+        }
         if (routine.schedule?.repeat?.kind === "cron") {
           // Persist the dedup key before firing so that a crash/restart mid-dispatch
           // does not re-fire in the same minute.
           const currentMinuteUTC = minuteKeyUTC(now);
           await this.store.update(routine.id, { lastFiredMinuteUTC: currentMinuteUTC });
         }
-        const updated = await this.store.markFired(routine.id);
+        const updated = await this.store.markFired(routine.id, missingPluginIds);
         if (!updated) continue;
         this.dispatch(updated);
       } catch (err) {
@@ -112,16 +121,19 @@ export class RoutinesScheduler {
   // ─── Internal ──────────────────────────────────────────────────────────────
 
   private isDue(routine: RoutineRecord, now: Date): boolean {
+    if (routine.trigger !== "schedule") return false;
     const schedule = routine.schedule;
     if (!schedule) return false;
 
     const repeat = schedule.repeat;
+    if ((!repeat || repeat.kind === "none") && routine.lastFiredAt) return false;
 
     // Cron expression: match current minute using persistent dedup key.
     if (repeat?.kind === "cron") {
       const currentMinuteUTC = minuteKeyUTC(now);
       // Persistent dedup: skip if this minute was already fired (survives restarts).
       if (routine.lastFiredMinuteUTC === currentMinuteUTC) return false;
+      if (routine.lastSkippedMinuteUTC === currentMinuteUTC) return false;
       return matchesCron(repeat.expression, now);
     }
 
@@ -137,10 +149,16 @@ export class RoutinesScheduler {
    * Used by the IPC `trigger-now` handler so manual triggers go through the
    * same code path as scheduled fires — persistence + fired event included.
    */
-  async dispatchNow(routineId: string): Promise<boolean> {
+  async dispatchNow(routineId: string): Promise<boolean | "plugins-missing"> {
     const active = this.store.listActive();
     const routine = active.find((r) => r.id === routineId);
     if (!routine) return false;
+    const missingPluginIds = await this.getMissingPluginIds(routine);
+    if (this.areAllPluginsMissing(routine, missingPluginIds)) {
+      await this.store.markPluginsMissing(routine.id, missingPluginIds,
+        routine.schedule?.repeat?.kind === "cron" ? minuteKeyUTC(new Date()) : undefined);
+      return "plugins-missing";
+    }
     // M2: apply same cron dedup as the scheduled tick path — persist the
     // minuteKey before dispatching so a scheduler-tick in the same minute
     // does not double-fire.
@@ -149,10 +167,22 @@ export class RoutinesScheduler {
       if (routine.lastFiredMinuteUTC === minuteKey) return false;
       await this.store.update(routine.id, { lastFiredMinuteUTC: minuteKey });
     }
-    const updated = await this.store.markFired(routine.id);
+    const updated = await this.store.markFired(routine.id, missingPluginIds);
     if (!updated) return false;
     this.dispatch(updated);
     return true;
+  }
+
+  private async getMissingPluginIds(routine: RoutineRecord): Promise<string[]> {
+    const scope = routine.scope?.pluginIds;
+    if (routine.trigger !== "schedule" || routine.execution !== "llm-session" || scope?.mode !== "allow" || scope.ids.length === 0) return [];
+    const installed = new Set(await this.getInstalledPluginIds());
+    return [...new Set(scope.ids)].filter((id) => !installed.has(id));
+  }
+
+  private areAllPluginsMissing(routine: RoutineRecord, missing: string[]): boolean {
+    const scope = routine.scope?.pluginIds;
+    return missing.length > 0 && scope?.mode === "allow" && scope.ids.every((id) => missing.includes(id));
   }
 
   private dispatch(routine: RoutineRecord): void {

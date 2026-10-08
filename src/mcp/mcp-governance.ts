@@ -76,11 +76,13 @@ const DEFAULT_POLICY: McpGovernancePolicy = {
   version: "1.0",
   defaultPolicy: "deny",
   servers: [],
+  bundledServers: [],
   globalRules: {
     maxServersTotal: 10,
     blockedUrlPatterns: ["*.ngrok.io", "*.serveo.net", "*.localtunnel.me"],
     allowedUrlPatterns: [],
     policyRefreshIntervalMs: 30 * 60 * 1000,
+    allowUserApprovedServers: true,
   },
 };
 
@@ -120,12 +122,21 @@ export class McpGovernance {
       }
       if (!parsed.globalRules) parsed.globalRules = DEFAULT_POLICY.globalRules;
       if (!Array.isArray(parsed.servers)) parsed.servers = [];
+      if (parsed.globalRules.allowUserApprovedServers !== undefined
+        && typeof parsed.globalRules.allowUserApprovedServers !== "boolean") {
+        throw new Error("allowUserApprovedServers must be boolean");
+      }
+      if (parsed.bundledServers !== undefined && (!Array.isArray(parsed.bundledServers)
+        || !parsed.bundledServers.every((entry) => entry && typeof entry.package === "string"
+          && typeof entry.server === "string" && /^[a-f0-9]{64}$/u.test(entry.fingerprint)))) {
+        throw new Error("bundledServers must contain package, server and fingerprint");
+      }
 
     log.info(`Policy loaded: ${parsed.servers.length} server rules`);
       return parsed;
     } catch (err) {
     log.error({ err }, "Policy file parse failed — applying deny-by-default");
-      return DEFAULT_POLICY;
+      return { ...DEFAULT_POLICY, globalRules: { ...DEFAULT_POLICY.globalRules, allowUserApprovedServers: false } };
     }
   }
 
@@ -134,14 +145,7 @@ export class McpGovernance {
     if (this.refreshTimer) return;
     const interval = this.policy.globalRules.policyRefreshIntervalMs;
     this.refreshTimer = setInterval(() => {
-      const previous = this.policy;
-      const updated = this.loadPolicy();
-      const prevStatusById = new Map(previous.servers.map((server) => [server.id, server.status]));
-      const revokedIds = updated.servers
-        .filter((s) => s.status === "revoked")
-        .filter((s) => prevStatusById.get(s.id) !== "revoked")
-        .map((s) => s.id);
-      this.policy = updated;
+      const revokedIds = this.reloadPolicy();
       if (revokedIds.length > 0) {
     log.warn(`Revoked servers detected: ${revokedIds.join(", ")}`);
         Promise.resolve(onRevoked?.(revokedIds)).catch((err) => {
@@ -150,6 +154,16 @@ export class McpGovernance {
       }
     }, interval);
     this.refreshTimer.unref?.();
+  }
+
+  reloadPolicy(): string[] {
+    const previous = this.policy;
+    this.policy = this.loadPolicy();
+    const prevStatusById = new Map(previous.servers.map((server) => [server.id, server.status]));
+    const revokedManaged = this.policy.servers
+      .filter((server) => server.status === "revoked" && prevStatusById.get(server.id) !== "revoked")
+      .map((server) => server.id);
+    return [...new Set([...revokedManaged, ...this.inadmissibleRuntimeServerIds()])];
   }
 
   stopPolicyRefresh(): void {
@@ -401,8 +415,31 @@ export class McpGovernance {
     return this.findApproval(serverId);
   }
 
+  /** One admission rule for lookup, preparation, insertion and publication. */
+  isRuntimeApprovalAdmitted(approval: McpServerApproval): boolean {
+    if (this.policy.servers.some((entry) => entry.id === approval.id)) return true;
+    if (!approval.bundled) return false;
+    if (approval.provenance === "user") return this.policy.globalRules.allowUserApprovedServers !== false;
+    if (approval.provenance !== "policy-fingerprint") return false;
+    return this.policy.bundledServers?.some((entry) => entry.package === approval.bundled!.package
+      && entry.server === approval.bundled!.server && entry.fingerprint === approval.bundled!.fingerprint) ?? false;
+  }
+
+  /** Promote an exact bundled fingerprint that the current policy lists. */
+  policyFingerprintApproval(approval: McpServerApproval): McpServerApproval | null {
+    if (!approval.bundled) return null;
+    const candidate = { ...approval, provenance: "policy-fingerprint" as const };
+    return this.isRuntimeApprovalAdmitted(candidate) ? candidate : null;
+  }
+
+  /** Runtime approvals withdrawn by a policy reload, including reused clients. */
+  inadmissibleRuntimeServerIds(): string[] {
+    return [...this.runtimeApprovals].filter(([, approval]) => !this.isRuntimeApprovalAdmitted(approval)).map(([id]) => id);
+  }
+
   /** Register a host-owned, non-persistent approval for one active plugin generation. */
   registerRuntimeApproval(approval: McpServerApproval): void {
+    if (!this.isRuntimeApprovalAdmitted(approval)) throw new Error("runtime approval not admitted by policy");
     if (this.policy.servers.some((entry) => entry.id === approval.id)) {
       throw new Error(`runtime MCP approval '${approval.id}' collides with managed policy`);
     }
@@ -419,6 +456,7 @@ export class McpGovernance {
 
   /** Isolated governance view for hidden candidate discovery. */
   scopedRuntimeApproval(approval: McpServerApproval): McpGovernance {
+    if (!this.isRuntimeApprovalAdmitted(approval)) throw new Error("runtime approval not admitted by policy");
     if (this.policy.servers.some((entry) => entry.id === approval.id)) {
       throw new Error(`runtime MCP approval '${approval.id}' collides with managed policy`);
     }
@@ -435,6 +473,7 @@ export class McpGovernance {
     const next = new Map(this.runtimeApprovals);
     for (const serverId of predecessorServerIds) next.delete(serverId);
     for (const approval of approvals) {
+      if (!this.isRuntimeApprovalAdmitted(approval)) throw new Error("runtime approval not admitted by policy");
       if (this.policy.servers.some((entry) => entry.id === approval.id)) {
         throw new Error(`runtime MCP approval '${approval.id}' collides with managed policy`);
       }
@@ -451,12 +490,13 @@ export class McpGovernance {
   prepareRuntimeApprovals(
     predecessorServerIds: Iterable<string>,
     approvals: readonly McpServerApproval[],
-  ): { publish(): void } {
+  ): { assertAdmitted(): void; publish(): void } {
     const predecessors = Object.freeze([...predecessorServerIds]);
     const prepared = approvals.map((approval) => Object.freeze({ ...approval }));
     const next = new Map(this.runtimeApprovals);
     for (const serverId of predecessors) next.delete(serverId);
     for (const approval of prepared) {
+      if (!this.isRuntimeApprovalAdmitted(approval)) throw new Error("runtime approval not admitted by policy");
       if (this.policy.servers.some((entry) => entry.id === approval.id)) {
         throw new Error(`runtime MCP approval '${approval.id}' collides with managed policy`);
       }
@@ -467,9 +507,16 @@ export class McpGovernance {
       next.set(approval.id, approval);
     }
     let published = false;
+    const assertAdmitted = () => {
+        for (const approval of prepared) {
+          if (!this.isRuntimeApprovalAdmitted(approval)) throw new Error("runtime approval not admitted by policy");
+        }
+    };
     return Object.freeze({
+      assertAdmitted,
       publish: () => {
         if (published) return;
+        assertAdmitted();
         for (const serverId of predecessors) this.runtimeApprovals.delete(serverId);
         for (const approval of prepared) this.runtimeApprovals.set(approval.id, approval);
         published = true;
@@ -480,7 +527,10 @@ export class McpGovernance {
   // ─── Private Validation ──────────────────────────
 
   private findApproval(serverId: string): McpServerApproval | undefined {
-    return this.policy.servers.find((s) => s.id === serverId) ?? this.runtimeApprovals.get(serverId);
+    const managed = this.policy.servers.find((s) => s.id === serverId);
+    if (managed) return managed;
+    const runtime = this.runtimeApprovals.get(serverId);
+    return runtime && this.isRuntimeApprovalAdmitted(runtime) ? runtime : undefined;
   }
 
   private validateStdioCommand(config: McpServerConfig, approval: McpServerApproval): ValidationResult {

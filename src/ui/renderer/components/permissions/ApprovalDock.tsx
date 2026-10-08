@@ -380,7 +380,7 @@ export function ApprovalLaneCard({
   const remaining = Math.max(0, queue.length - 1);
   return (
     <section
-      className={`pointer-events-auto flex ${FLOATING_LANE_ITEM_WIDTH} max-h-[min(60dvh,28rem)] min-w-0 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-2xl`}
+      className={`pointer-events-auto flex ${FLOATING_LANE_ITEM_WIDTH} max-h-[min(60dvh,28rem)] min-w-0 flex-col overflow-hidden @max-[14rem]:overflow-y-auto rounded-xl border bg-card text-card-foreground shadow-2xl`}
       data-testid="approval-lane-card"
       data-approval-request-id={isRationale ? undefined : request.id}
       data-approval-tool-name={isRationale ? undefined : request.toolName}
@@ -405,6 +405,7 @@ export function ApprovalLaneCard({
       </header>
       <ToolApprovalContent
         key={request.id}
+        narrowLaneScroll
         open
         request={request}
         conversationLabel={conversationLabel}

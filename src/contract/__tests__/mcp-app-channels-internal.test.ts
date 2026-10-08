@@ -61,6 +61,6 @@ describe("#885 MCP-app channels are internal (fail-closed)", () => {
   it("does NOT bump CONTRACT_VERSION (all three are internal)", () => {
     // Pinned so a future public-surface change is a conscious edit here, not a
     // side effect of adding these internal channels.
-    expect(CONTRACT_VERSION).toBe("1.2.0");
+    expect(CONTRACT_VERSION).toBe("2.0.0");
   });
 });

@@ -67,6 +67,21 @@ export function compareSemver(a: string, b: string): number {
 }
 
 /**
+ * A complete SemVer 2.0 version: no leading zeros in numeric parts, a
+ * pre-release of dot-separated non-empty identifiers, build metadata likewise.
+ * Bounded so a hand-edited file cannot hand the comparator an unbounded string.
+ */
+const SEMVER_RE =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/u;
+
+export function isSemver(value: string): boolean {
+  return value.length <= 128 && SEMVER_RE.test(value);
+}
+
+/** A stable `major.minor.patch` core, pre-release or build suffix allowed after it. */
+const STABLE_CORE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)/;
+
+/**
  * Plugin↔app minimum-version gate. Returns `true` when the running app version
  * satisfies the plugin's declared `minAppVersion` (i.e. `appVersion >= min`).
  *
@@ -77,10 +92,32 @@ export function compareSemver(a: string, b: string): number {
  */
 export function appVersionSatisfiesMin(appVersion: string, minAppVersion: string): boolean {
   if (!appVersion || !minAppVersion) return false;
-  const STABLE_CORE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)/;
   // The app version is the running build's package.json version. If it is the
   // `"unknown"` fallback sentinel (or otherwise not a recognizable semver
   // core), fail closed — we cannot prove compatibility.
   if (!STABLE_CORE.test(appVersion)) return false;
   return compareSemver(appVersion, minAppVersion) >= 0;
+}
+
+/** A stable release and nothing else: `X.Y.Z`, no leading zeros, no suffix. */
+const STABLE_RELEASE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+
+/**
+ * Whether `version` is at least two minor releases behind `running`: a higher
+ * running major, or the same major with a minor at least two ahead. Patch and
+ * the stored version's pre-release are not compared.
+ *
+ * Callers drop data on `true`, so the running version must be a stable
+ * release: a pre-release build has not shipped the version it names, and the
+ * resolver's `"unknown"` sentinel or any malformed string must keep
+ * everything. The stored version must be a complete SemVer version.
+ */
+export function isTwoMinorReleasesBehind(version: string, running: string): boolean {
+  const stored = isSemver(version) ? STABLE_CORE.exec(version) : null;
+  const current = STABLE_RELEASE.exec(running);
+  if (!stored || !current) return false;
+  const storedMajor = Number(stored[1]);
+  const currentMajor = Number(current[1]);
+  if (currentMajor !== storedMajor) return currentMajor > storedMajor;
+  return Number(current[2]) - Number(stored[2]) >= 2;
 }

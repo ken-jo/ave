@@ -20,7 +20,7 @@ export interface AgentRegistry {
   agents: AgentRegistryEntry[];
 }
 
-export async function readAgentRegistry(registryPath: string): Promise<AgentRegistry> {
+async function readAgentRegistry(registryPath: string): Promise<AgentRegistry> {
   let raw: string;
   try {
     raw = await readFile(registryPath, "utf-8");

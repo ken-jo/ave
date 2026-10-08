@@ -1,10 +1,10 @@
-import { afterAll, vi } from "vitest";
+import { afterAll, afterEach, vi } from "vitest";
 import { createServer as createNetServer } from "node:net";
-import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync } from "node:fs";
+import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createTmpDirTracker } from "./support/tmp-dir-teardown.js";
+import { createTmpDirTracker, removeLinkOnly } from "./support/tmp-dir-teardown.js";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import type { IpcMainInvokeEvent } from "electron";
 import { IPC_APPROVAL_REQUEST } from "../permissions/approval-gate.js";
@@ -323,6 +323,24 @@ export function useTempDirFile(
   return () => {
     const dir = makeDir();
     return { dir, path: join(dir, fileName) };
+  };
+}
+
+/**
+ * Make a link (a junction for a directory on Windows) at `at` pointing at
+ * `target`, removed — the link only — after each test. Removed before the
+ * scratch directories it sits in, whose recursive removal would walk a Windows
+ * junction into whatever it points at.
+ */
+export function useScratchLinks(): (target: string, at: string) => string {
+  const links: string[] = [];
+  afterEach(() => {
+    for (const link of links.splice(0)) removeLinkOnly(link);
+  });
+  return (target, at) => {
+    symlinkSync(target, at, "junction");
+    links.push(at);
+    return at;
   };
 }
 

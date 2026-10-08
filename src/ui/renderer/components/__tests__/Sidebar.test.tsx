@@ -1070,7 +1070,6 @@ const FAILED_PLUGIN_CARD: NonNullable<Parameters<typeof Sidebar>[0]["failedPlugi
   id: "notes",
   name: "Notes",
   description: "Notes fixture",
-  publisher: "Test fixture",
   sampleTools: [],
   capabilities: [],
   tools: [],
@@ -1137,7 +1136,7 @@ describe("Sidebar nav groups", () => {
     restore();
   });
 
-  it("renders the Plugins group only when there is a plugin row, and lists it in the flyout", async () => {
+  it("renders the extension group only when there is a code package row", async () => {
     const empty = renderSidebar();
     expect(empty.queryByTestId("sidebar-group-plugins")).toBeNull();
     empty.restore();
@@ -1148,6 +1147,7 @@ describe("Sidebar nav groups", () => {
       failedPluginCards: [FAILED_PLUGIN_CARD],
       onSelect,
     });
+    expect(getByTestId("sidebar-group-plugins")).toHaveTextContent("익스텐션");
     fireEvent.click(getByTestId("sidebar-group-plugins"));
     const menu = await findByTestId("sidebar-group-plugins-menu");
     const row = menu.querySelector<HTMLElement>('[role="menuitem"]');

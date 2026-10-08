@@ -1,3 +1,4 @@
+import { readPluginRegistry } from "./plugins/registry.js";
 import { requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
 import { configureHostResources } from "./main/host-resources.js";
 /**
@@ -25,8 +26,7 @@ import { configureHostResources } from "./main/host-resources.js";
  *   steps/plugin-runtime          PluginRuntime + per-plugin HostApi factory.
  *   steps/work-board-setup        Work Board persistence + due-soon scanner.
  *   steps/workflow-stores         workflow stores + builtin tool registration.
- *   steps/marketplace-setup       marketplace backend + managed bootstrap +
- *                                 live-refresh closures.
+ *   steps/marketplace-setup       plugin store + live-refresh closures.
  *   steps/reviewer-permission-wiring  reviewer agent + PermissionManager
  *                                 broadcasts + manifest-integrity bridge.
  *   steps/plugin-tool-executor    plugin-surface ToolExecutor + invoke delegate.
@@ -41,6 +41,7 @@ import { configureHostResources } from "./main/host-resources.js";
  * HostApi manufactured in `steps/plugin-runtime.ts`.
  */
 import type { BrowserWindow } from "electron";
+import { CHANNELS } from "./contract/app-contract.js";
 import { resolve } from "node:path";
 import { sweepOrphanUninstallDirs } from "./plugins/orphan-uninstall-sweeper.js";
 import { preparePluginRegistryForBoot } from "./plugins/plugin-boot-recovery.js";
@@ -50,11 +51,8 @@ import { resolvePluginPaths } from "./plugins/plugin-paths.js";
 import { StarredStore } from "./data/starred-store.js";
 import { FeedbackStore } from "./data/feedback-store.js";
 import { forgetTrackedPluginAuthPartitions, getTrackedPluginAuthPartitions } from "./main/plugin-auth-partition-tracker.js";
-import {
-  ensurePluginStateReadyForInstall,
-  recoverPendingPluginUninstallCleanups,
-  removeQuiescentPluginResidualState,
-} from "./plugins/uninstall-lifecycle.js";
+import { createPluginRetirementPort } from "./plugins/retired-config.js";
+import { recoverPendingPluginUninstallCleanups } from "./plugins/uninstall-lifecycle.js";
 import { drainPluginInstallLockOperations } from "./plugins/install-lifecycle.js";
 import { registerShutdownHook, configureAppShutdownHost } from "./main/app-shutdown.js";
 
@@ -73,10 +71,9 @@ import { summarizeParentContextTurns } from "./permissions/parent-context-eviden
 import type { ParentContextTurn } from "./permissions/parent-context-evidence.js";
 import { McpAppModelContextStore } from "./mcp/mcp-app-model-context.js";
 import { initPluginRuntime } from "./boot/steps/plugin-runtime.js";
-import { wireWhitelistRegistry } from "./boot/steps/whitelist-bootstrap.js";
-import { wireRevocationRegistry } from "./boot/steps/revocation-bootstrap.js";
-import { wireAdmissionRegistry } from "./boot/steps/admission-bootstrap.js";
-import { wireAnnouncementCheck, wireReleasePrep, wireUpdateCheck,
+import { feedRevocationsFromSnapshots } from "./boot/steps/revocation-bootstrap.js";
+import { createServiceClient } from "./boot/steps/service-endpoint.js";
+import { wireAnnouncementCheck, wireReleasePrep,
 } from "./boot/steps/post-boot.js";
 import { migrateCanonicalization } from "./permissions/user-approval-store.js";
 import { reconcileWorkspaceRoots } from "./permissions/workspace-root-reconciler.js";
@@ -95,9 +92,9 @@ import { assembleAppServices } from "./boot/assemble-services.js";
 import { setupNetworkFetch } from "./boot/steps/network-fetch-setup.js";
 import { setupAuditAndNotification } from "./boot/steps/audit-notification.js";
 import { setupWorkBoard } from "./boot/steps/work-board-setup.js";
+import { setupAlerts } from "./boot/steps/alerts-setup.js";
 import { setupWorkflowStores } from "./boot/steps/workflow-stores.js";
 import { setupMarketplace } from "./boot/steps/marketplace-setup.js";
-import { runManagedBootstrap } from "./boot/managed-marketplace.js";
 import { wireReviewerAndPermissions } from "./boot/steps/reviewer-permission-wiring.js";
 import { setupPluginToolExecutor } from "./boot/steps/plugin-tool-executor.js";
 import { wireRationaleHost } from "./boot/steps/rationale-host-wiring.js";
@@ -164,19 +161,15 @@ export type { AppServices } from "./boot/types.js";
  *
  * `"headless"` is the one-shot `--exec` / `--set-secret` run: it performs a
  * single request and quits. Such a run opens no DISCRETIONARY service
- * connection — no marketplace catalog sync, no admission warm-up, no release
- * check, no polling, no telemetry — because nothing in the process can act on
+ * connection — no marketplace catalog sync, no release check, no polling, no
+ * telemetry — because nothing in the process can act on
  * what any of them returns, and a run asked for one turn should not reach
  * anything the turn did not ask for.
  *
- * The plugin trust chain is NOT discretionary and is refreshed on every
- * launch. The whitelist gates plugin secret reads and fails CLOSED, so a
- * headless-only host that never fetched it would lock itself out of its own
- * secrets once the cached document aged out; the revocation list fails OPEN,
- * so the same host would silently lose the plugin kill switch. Admission is
- * the one signed document a headless run skips: it is consulted at install,
- * and the install path re-checks freshness itself, so warming it at boot only
- * ever saved the first install of a session a cold fetch.
+ * The plugin trust chain needs no connection: host-secret grants and
+ * revocations are read from the marketplace snapshots already on disk
+ * (design §10.3, §10.4), so a headless run keeps both without fetching
+ * anything.
  *
  * An `"interactive"` launch keeps every one of them.
  */
@@ -205,16 +198,9 @@ export async function bootstrap(
   if (!headless && !mainWindow) throw new Error("Interactive boot requires a main window");
   if (headless) {
     log.info(
-      "boot: headless launch — no catalog sync, admission warm-up, release check, polling or telemetry",
+      "boot: headless launch — no catalog sync, release check, polling or telemetry",
     );
   }
-  /**
-   * Offline override for the admission warm-up — the one signed document a
-   * headless run can skip (see {@link BootLaunch}). Spread rather than passed
-   * as a plain `online:` so an interactive launch still resolves the toggle
-   * exactly as it always has, from the step's own default.
-   */
-  const admissionOffline = headless ? { online: false as const } : {};
   const ctx = createBootContext({ projectRoot, mainWindow, getMainWindow, host });
 
   // Before any provider exists, so the AI SDK integration is registered by the
@@ -546,47 +532,16 @@ export async function bootstrap(
       );
     });
 
-  // #893 Stage 2 — Load the marketplace whitelist registry BEFORE
-  // initPluginRuntime. The per-plugin HostApi factory consults the registry
-  // synchronously from `getSecret`; if the registry isn't initialized the
-  // tier-3 check fails closed with `whitelist-unreachable`. Resolves on every
-  // path (fresh, offline, cached) so a network blip never blocks boot.
-  // Fetched on every launch, headless included: the registry fails CLOSED, so
-  // a run that skipped it would deny its own plugins their secrets rather than
-  // save a request.
-  await wireWhitelistRegistry({
-    userDataPath: host.userDataPath,
+  // Feed revocations from the marketplace snapshots on disk BEFORE
+  // initPluginRuntime: the LOAD-boundary gate (`markRevoked`) runs inside
+  // `pluginRuntime.startAll()`, and the installed-content reload the renderer
+  // triggers after boot reads the same registry. Local files only; the
+  // marketplace feeds it again after each sync.
+  await feedRevocationsFromSnapshots({
+    appVersion: getAveAppVersion(),
+    home: aveHome(),
+    pluginRegistryPath: resolvePluginPaths().registryPath,
     bootAuditLogger: ctx.bootAuditLogger,
-    networkFetch: ctx.singleHopNetworkFetch,
-    packaged: host.isPackaged,
-  });
-
-  // Load the plugin revocation registry BEFORE initPluginRuntime, same
-  // ordering requirement as the whitelist above: the LOAD-boundary gate
-  // (`markRevoked`) runs inside `pluginRuntime.startAll()`, which fires later
-  // (deferStart:true — see `startPlugins()` below) but must see a populated
-  // registry the first time it runs. Resolves on every path (fresh, offline,
-  // cached) — fail-open on a fetch failure, never blocks boot.
-  // Also fetched on every launch. This one fails OPEN, which is exactly why a
-  // headless run must not skip it: a stale or absent document revokes nothing,
-  // so skipping the refresh loses the kill switch silently.
-  await wireRevocationRegistry({
-    userDataPath: host.userDataPath,
-    bootAuditLogger: ctx.bootAuditLogger,
-    networkFetch: ctx.singleHopNetworkFetch,
-    packaged: host.isPackaged,
-  });
-
-  // Warm the admission catalog. Unlike the two registries above this is not an
-  // ordering requirement — admission is consulted at install, not at load, and
-  // the install path re-checks freshness itself. Warming here only saves the
-  // first install of a session a cold fetch.
-  await wireAdmissionRegistry({
-    userDataPath: host.userDataPath,
-    bootAuditLogger: ctx.bootAuditLogger,
-    networkFetch: ctx.singleHopNetworkFetch,
-    packaged: host.isPackaged,
-    ...admissionOffline,
   });
 
   // PermissionManager is built BEFORE initPluginRuntime
@@ -668,7 +623,6 @@ export async function bootstrap(
     loopbackManager,
     setBundleLifecycleHandler,
     startPlugins,
-    admitPreStartOperation,
   } = await initPluginRuntime({
     host,
     projectRoot,
@@ -696,6 +650,9 @@ export async function bootstrap(
     // Recommended-work channel target for `hostApi.proposeWork`. Read lazily:
     // setupWorkBoard() runs below this call, and plugins only start after it.
     getWorkBoardStore: () => ctx.workBoardStore,
+    // Alerts channel for `hostApi.raiseAlert`, read lazily for the same reason:
+    // setupAlerts() runs below this call, before plugins start.
+    getAlertsService: () => ctx.alertsService,
     onPluginUiRevisionChange: (pluginId) => {
       host.desktop?.revokePluginWebviews(pluginId, (appSessionId) =>
         ctx.revokePluginOperationSession?.(appSessionId),
@@ -718,12 +675,18 @@ export async function bootstrap(
   // (subAgentRunner, askUserQuestionGate) hop through closures so the
   // ConversationLoop / BrowserWindow are available before the tool fires.
   // (routinesStore is constructed above — it must exist before initPluginRuntime.)
-  const routinesScheduler = new RoutinesScheduler(routinesStore);
+  const routinesScheduler = new RoutinesScheduler(routinesStore, async () => {
+    const registry = await readPluginRegistry(pluginPaths.registryPath);
+    return registry.plugins.map((entry) => pluginRuntime.resolvePluginId(entry.id));
+  });
   ctx.routinesScheduler = routinesScheduler;
 
   await setupWorkBoard(ctx);
   await setupWorkflowStores(ctx, workspaceSessionStores);
   await setupMarketplace(ctx);
+  // Before cleanup replay and plugin startup: uninstall events must reach the
+  // alerts service, and declared kinds must register before their first raise.
+  await setupAlerts(ctx);
   // ONE cleanup service set for every boot entry point into
   // plugins/uninstall-lifecycle. It used to be hand-spelled per call site, and
   // `emitHostEvent` — optional on the dep interface, so its absence type-checks
@@ -731,11 +694,11 @@ export async function bootstrap(
   // `plugin.uninstalled`, and that event is what drops the stale registry-entry
   // cache (boot/steps/plugin-runtime.ts, "so a re-install does not inherit the
   // previous Tier-3 bypass or manifest SHA decision"). The subscriber is
-  // registered by initPluginRuntime above, so it is live for both uses below.
+  // registered by initPluginRuntime above, so it is live for the use below.
   //
-  // `refreshPluginNotifications` is deliberately NOT in this set: it re-registers
-  // the notification bridge against a renderer window, and the first use below
-  // runs before conversation wiring has one. The renderer-driven (IPC) and
+  // `refreshPluginEventBridge` is deliberately NOT in this set: it re-registers
+  // the plugin event bridge against a renderer window, and the use below runs
+  // before conversation wiring has one. The renderer-driven (IPC) and
   // deep-link wirings pass it because they run with a live window; boot does not.
   const pluginStateCleanupDeps = {
     pluginRuntime,
@@ -752,6 +715,12 @@ export async function bootstrap(
     await recoverPendingPluginUninstallCleanups({
       pluginMarketplace: ctx.pluginMarketplace,
       ...pluginStateCleanupDeps,
+      retirement: createPluginRetirementPort({
+        settings: settingsService,
+        marketplace: ctx.pluginMarketplace,
+        wildcard: () => pluginRuntime.getWildcardConfigOverride(),
+        appVersion: getAveAppVersion,
+      }),
     });
   if (unresolvedUninstallCleanups.length > 0) {
     ctx.bootAuditLogger.log({
@@ -840,6 +809,11 @@ export async function bootstrap(
     pluginRuntime,
     receiptCacheRoot: pluginPaths.cacheRoot,
     skillStore: ctx.skillStore,
+    personaPromptStore: ctx.personaPromptStore,
+    onContributionsUpdated: () => {
+      const win = getMainWindow();
+      if (win && !win.isDestroyed()) win.webContents.send(CHANNELS.prompts.updated);
+    },
     hookManager: ctx.scriptHookManager,
     mcpManager: ctx.mcpManager,
     loopbackManager: ctx.pluginLoopbackManager,
@@ -852,40 +826,6 @@ export async function bootstrap(
   setBundleLifecycleHandler?.(pluginBundleLifecycle);
   await pluginBundleLifecycle.recoverRetirements();
 
-  // The lifecycle and its retirement journal are recovered before managed
-  // durable sync. The sync is admitted into the boot-local promise tail and
-  // commits verified bytes/receipt/registry only: it never publishes or starts
-  // a candidate. startPlugins() seals admission synchronously, waits for the
-  // tail (including rollback), then loads the one committed registry snapshot.
-  //
-  // A headless run skips the sync entirely: it is the boot-time reader of the
-  // marketplace catalog, and nothing about running one turn needs the managed
-  // set to be current. The plugins already on disk still load — this drops the
-  // network refresh, not the registry snapshot `startPlugins()` reads.
-  let managedPreStartSync: Promise<void> = Promise.resolve();
-  if (!headless) {
-    managedPreStartSync = runManagedBootstrap({
-      pluginMarketplace: ctx.pluginMarketplace,
-      ensurePluginStateReadyForInstall: (pluginId) =>
-        ensurePluginStateReadyForInstall(pluginId, {
-          pluginMarketplace: ctx.pluginMarketplace,
-          ...pluginStateCleanupDeps,
-        }),
-      // The registry-entry cache, the uninstall telemetry track and every
-      // per-plugin `onEvent("plugin.uninstalled")` subscriber hang off this
-      // event; an enforced removal has to publish it like any other.
-      removeDelistedAdminInstall: (removal, commitRegistryRemoval) =>
-        removeQuiescentPluginResidualState(
-          { ...removal, installPluginId: removal.pluginId },
-          commitRegistryRemoval,
-          pluginStateCleanupDeps,
-        ),
-      mainWindow: mainWindow!,
-      marketplace: ctx.settingsService.get("marketplace"),
-      mode: "pre-start-sync",
-      admitPreStartOperation,
-    });
-  }
   // §691: OS-level tool sandbox — decided exactly once here at boot, and
   // BEFORE startPlugins(): an out-of-process plugin's factory spawns its
   // confined child inside startAll(), and wrapWorkerCommand refuses to build
@@ -894,8 +834,7 @@ export async function bootstrap(
   // (same builder, safe global live-swap) after load() and before startAll().
   await initSandboxGate(ctx);
 
-  const sealedPluginStart = startPlugins();
-  await Promise.all([managedPreStartSync, sealedPluginStart]);
+  await startPlugins();
 
   log.info(
     "boot: ready (%d tools, %d plugins, %d mcp)",
@@ -945,28 +884,24 @@ export async function bootstrap(
   ctx.feedbackStore = feedbackStore;
 
   // §4.2 Step 8: Post-boot — release prep (telemetry/crash/updater) + plugin update-check.
+  const serviceClient = createServiceClient(ctx.singleHopNetworkFetch);
   const { telemetry, pluginTelemetry, autoUpdaterStop } = wireReleasePrep({
     mainWindow,
     settingsService,
     bootAuditLogger: ctx.bootAuditLogger,
     networkFetch: ctx.singleHopNetworkFetch,
     tracing: ctx.tracing,
+    serviceClient,
     discretionaryEgress: !headless,
   }, host);
-  // Both pollers exist to push a banner at a renderer, and both read the
-  // marketplace to do it. A headless run has neither the renderer nor the
-  // lifetime, so it schedules neither.
+  // The announcement poller exists to push a banner at a renderer. A headless
+  // run has neither the renderer nor the lifetime, so it does not schedule it.
+  // The marketplace's sync and update notices start with the window (main.ts).
   if (!headless) {
-    wireUpdateCheck({
-      mainWindow,
-      settingsService,
-      marketplaceFetcher: ctx.marketplaceFetcher,
-      pluginPaths,
-    });
     wireAnnouncementCheck({
       getMainWindow,
       settingsService,
-      marketplaceFetcher: ctx.marketplaceFetcher,
+      listAnnouncements: () => serviceClient.announcements(),
     });
   }
   ctx.telemetry = telemetry;

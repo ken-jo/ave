@@ -13,6 +13,10 @@ export async function createWindowlessHost(projectRoot: string, host: BootHost) 
   const services = await bootstrap(projectRoot, null, () => null, "headless", host);
   setServices(services);
   const conversationSurfaceRuntime = createConversationSurfaceRuntime();
+  conversationSurfaceRuntime.activity.bindSessionTransitionGuard(
+    () => services.conversationLoop.isSessionTransitioning(),
+    (notify) => services.conversationLoop.onSessionTransitionSettled(notify),
+  );
   const deps = {
     ...services,
     getMainWindow: () => null,

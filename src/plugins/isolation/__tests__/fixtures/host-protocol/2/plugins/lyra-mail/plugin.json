@@ -1,0 +1,82 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "lyra-mail",
+  "version": "0.5.3",
+  "description": "Host protocol golden fixture: the hostApi surface the lyra-mail plugin reaches, beside its own lifecycle and access declarations.",
+  "extensions": {
+    "ai.agent-connector.ave": {
+      "displayName": "Ave Lyra Mail",
+      "entry": "entry.mjs",
+      "capabilities": [
+        "calendar-source",
+        "mail-source",
+        "background-watcher",
+        "lyra-mail-consumer",
+        "external-auth-consumer"
+      ],
+      "emittedEvents": [
+        "email.new",
+        "email.action.needed",
+        "email.watcher.poll.completed",
+        "email.watcher.seeding.started",
+        "email.watcher.seeding.completed",
+        "email.watcher.ready",
+        "calendar.event.added",
+        "calendar.event.upcoming",
+        "calendar.event.starting",
+        "calendar.event.conflict.detected",
+        "lyra-mail.auth.changed",
+        "lyra-mail.snapshot.ready"
+      ],
+      "eventSubscriptions": [
+        "vega_helper.snapshot.requested"
+      ],
+      "pluginAccess": {
+        "plugins": [
+          {
+            "pluginId": "vega-helper",
+            "events": [
+              "vega_helper.snapshot.requested"
+            ]
+          }
+        ]
+      },
+      "requires": {
+        "minAppVersion": "0.12.0",
+        "hostProtocol": "2"
+      },
+      "startupTimeoutMs": 6500,
+      "configSchema": {
+        "properties": {
+          "environment": {
+            "type": "string",
+            "title": "Environment",
+            "enum": [
+              "external",
+              "corporate"
+            ],
+            "default": "external"
+          }
+        }
+      },
+      "tools": [
+        {
+          "name": "exercise_host",
+          "description": "Call each hostApi member this surface uses, once.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "report_host",
+          "description": "Report what the host pushed since, and release what is held.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,4 +1,4 @@
-# Plugin Version Quickref
+# Extension Version Quickref
 
 Status: Active English default. The Korean archive keeps earlier review history and original discussion, but this page must be usable on its own.
 
@@ -6,7 +6,7 @@ Korean archive: [docs/ko mirror](../ko/guides/plugin-version-quickref.md).
 
 ## What This Page Owns
 
-This page owns plugin compatibility rules, manifest version expectations, SDK alignment, and package lockstep checks. Use it as the first review surface when changing this area; use the archive for background, not as a substitute for current English guidance.
+This page owns extension compatibility rules, manifest version expectations, app release tag contract vendoring, and `requires.minAppVersion`. Use it as the first review surface when changing this area; use the archive for background, not as a substitute for current English guidance.
 
 ## Current Operating Contract
 
@@ -14,6 +14,11 @@ This page owns plugin compatibility rules, manifest version expectations, SDK al
 - The document must name the behavior that still matters today, the code or test locations that enforce it, and the conditions that make the note stale.
 - Source files and tests are authoritative when this prose and implementation disagree.
 - Korean-only material stays in the mirrored archive unless it is translated or summarized here.
+- Extension repositories vendor `src/plugins/public-contract.ts` and
+  `schemas/plugin-manifest.schema.json` unchanged into `contract/` at an app
+  release tag. `contract/sources.json` records the tag and both file hashes.
+- An extension that uses a new contract member declares a supporting app release in
+  `requires.minAppVersion`; the host enforces that minimum at install and load.
 
 ## Implementation Anchors
 

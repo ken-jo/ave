@@ -21,9 +21,7 @@ vi.mock("electron", () => ({
 
 type ExposedApi = {
   takePluginMarketplaceApi: () => {
-    installMarketplacePlugin: (pluginId: string) => Promise<unknown>;
     uninstallMarketplacePlugin: (pluginId: string, options?: unknown) => Promise<unknown>;
-    rollbackMarketplacePlugin: (pluginId: string) => Promise<unknown>;
   } | null;
 };
 
@@ -45,19 +43,23 @@ describe("preload plugin action normalization", () => {
     vi.resetModules();
   });
 
-  it("rejects malformed install payloads as invalid-result", async () => {
-    mockInvoke.mockResolvedValueOnce({ installed: true });
+  it.each([
+    ["an install result", { pluginId: "meeting", installed: true }],
+    ["no plugin id", { uninstalled: true }],
+    ["a non-object", "done"],
+  ])("rejects an uninstall answer with %s as invalid-result", async (_label, answer) => {
+    mockInvoke.mockResolvedValueOnce(answer);
     const api = await loadExposedApi();
     const hostApi = api.takePluginMarketplaceApi();
     if (!hostApi) throw new Error("host plugin marketplace api unavailable");
 
-    await expect(hostApi.installMarketplacePlugin("meeting")).resolves.toEqual({
+    await expect(hostApi.uninstallMarketplacePlugin("meeting")).resolves.toEqual({
       ok: false,
       error: "invalid-result",
       // preload resolves i18n at the English default — it has no settings
       // context to switch language, and this suite re-imports it via
       // resetModules so the runtime locale is the default.
-      message: "Plugin action result is invalid.",
+      message: "Extension action result is invalid.",
     });
   });
 
@@ -74,30 +76,15 @@ describe("preload plugin action normalization", () => {
     });
   });
 
-  it("forwards Doctor cleanup options to the uninstall IPC channel", async () => {
+  it("sends only the plugin id on the uninstall IPC channel", async () => {
     mockInvoke.mockResolvedValueOnce({ pluginId: "meeting", uninstalled: true });
     const api = await loadExposedApi();
     const hostApi = api.takePluginMarketplaceApi();
     if (!hostApi) throw new Error("host plugin marketplace api unavailable");
 
-    const options = { doctorCleanup: { installFailureKind: "catalog-grant-mismatch" } };
-    await hostApi.uninstallMarketplacePlugin("meeting", options);
+    await hostApi.uninstallMarketplacePlugin("meeting");
 
-    expect(mockInvoke).toHaveBeenCalledWith("ave:plugins:uninstall", "meeting", options);
-  });
-
-  it("normalizes rollback results and forwards the plugin id", async () => {
-    mockInvoke.mockResolvedValueOnce({ pluginId: "meeting", rolledBackTo: "1.0.0" });
-    const api = await loadExposedApi();
-    const hostApi = api.takePluginMarketplaceApi();
-    if (!hostApi) throw new Error("host plugin marketplace api unavailable");
-
-    await expect(hostApi.rollbackMarketplacePlugin("meeting")).resolves.toEqual({
-      ok: true,
-      pluginId: "meeting",
-      rolledBackTo: "1.0.0",
-    });
-    expect(mockInvoke).toHaveBeenCalledWith("ave:plugins:rollback", "meeting");
+    expect(mockInvoke).toHaveBeenCalledWith("ave:plugins:uninstall", "meeting");
   });
 
   it("allows the host marketplace api to be claimed only once", async () => {

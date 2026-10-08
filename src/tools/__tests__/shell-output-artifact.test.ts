@@ -4,7 +4,7 @@ import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { createDynamicTool } from "../base.js";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -287,6 +287,31 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     expect(memoryManager.loadToolOutputArtifact(SESSION, "checkpoint-only-0", firstInfo) === null).toBe(true);
     expect(readdirSync(join(dir, "sessions", SESSION, "tool-output")).filter((entry) => entry.endsWith(".bin"))).toHaveLength(1);
     next.abandon?.();
+  });
+
+  it("captures output when the process umask left the sessions root group-writable", async () => {
+    // Debian and Ubuntu logins use umask 0002, which a plain mkdir passes on.
+    const dir = mkdtempSync(join(tmpdir(), "ave-shell-artifact-"));
+    dirs.push(dir);
+    mkdirSync(join(dir, "sessions"));
+    chmodSync(join(dir, "sessions"), 0o775);
+    const memoryManager = new MemoryManager({ aveDir: dir });
+    expect(statSync(join(dir, "sessions")).mode & 0o777).toBe(0o755);
+    const capture = memoryManager.startToolOutputCapture(SESSION, TOOL);
+    capture.append(Buffer.from("x".repeat(20_000)));
+    const info = await capture.finish();
+    expect(info.status).toBe("complete");
+    expect(memoryManager.loadToolOutputArtifact(SESSION, TOOL, info)).toBe("x".repeat(20_000));
+  });
+
+  it("still constructs when the sessions root is a link to another disk", () => {
+    // O_DIRECTORY|O_NOFOLLOW on a trailing link fails ENOTDIR, not ELOOP, and
+    // the constructor runs at boot with nothing to catch it.
+    const dir = mkdtempSync(join(tmpdir(), "ave-shell-artifact-"));
+    dirs.push(dir);
+    mkdirSync(join(dir, "elsewhere"));
+    symlinkSync(join(dir, "elsewhere"), join(dir, "sessions"));
+    expect(() => new MemoryManager({ aveDir: dir })).not.toThrow();
   });
 
   it("does not reserve disk artifacts for a small result", async () => {

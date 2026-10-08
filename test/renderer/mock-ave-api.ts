@@ -116,11 +116,11 @@ type ApiOverrides = {
   hasProvider?: boolean;
   usage?: unknown;
   appInfo?: unknown;
-  marketplacePing?: unknown;
+  /** What `gitMarketplace.listSources` answers (the workspace stats read it). */
+  marketplaceSources?: unknown[];
   agentProfiles?: unknown;
   skills?: unknown;
   pluginCards?: unknown[];
-  marketplace?: unknown[];
   pluginUiExtensions?: unknown[];
   /**
    * Give the app a side-chat channel. Off by default because the panel offers
@@ -147,9 +147,6 @@ export const MOCK_DEFAULT_SETTINGS = {
   chat: { systemPrompt: "", autoCompact: true },
   webSearch: { provider: "none" },
   marketplace: {
-    backend: "real-cloud",
-    cloudBaseUrl: "https://marketplace.example.com",
-    cloudAllowPrivateNetwork: false,
     installedProviderIds: [],
     installedThemeBundleIds: [],
     installedLanguagePacks: [],
@@ -264,11 +261,10 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   const hasProvider = overrides.hasProvider ?? true;
   const usage = overrides.usage ?? DEFAULT_USAGE;
   const appInfo = overrides.appInfo ?? DEFAULT_APP_INFO;
-  const marketplacePing = overrides.marketplacePing ?? { configured: true, online: true };
+  const marketplaceSources = overrides.marketplaceSources ?? [{ id: "ave", enabled: true, status: { state: "up-to-date" } }];
   const agentProfiles = overrides.agentProfiles ?? { agents: [] };
   const skills = overrides.skills ?? { skills: [] };
   const pluginCards = overrides.pluginCards ?? [];
-  const marketplace = overrides.marketplace ?? [];
   const pluginUiExtensions = overrides.pluginUiExtensions ?? [];
   const latestRoutineResult = overrides.latestRoutineResult ?? null;
   const pendingRoutineResults = overrides.pendingRoutineResults ?? [];
@@ -401,18 +397,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     setWebApiKey: vi.fn(async () => ({ ok: true })),
     hasWebApiKey: vi.fn(async () => false),
     deleteWebApiKey: vi.fn(async () => ({ ok: true })),
-    setMarketplaceApiKey: vi.fn(async () => ({ ok: true })),
-    hasMarketplaceApiKey: vi.fn(async () => false),
-    deleteMarketplaceApiKey: vi.fn(async () => ({ ok: true })),
-    listMcpCatalog: vi.fn(async () => []),
-    installMcpFromMarketplace: vi.fn(async (slug: string) => ({
-      ok: true,
-      slug,
-      installDir: `/tmp/mcp-servers/${slug}`,
-      connected: true,
-      needsCredential: false,
-      authMode: "none" as const,
-    })),
     previewClaudeDesktopMcpImport: vi.fn(async () => ({ entries: [], errors: [] })),
     applyClaudeDesktopMcpImport: vi.fn(async () => ({ ok: true, results: [], parseErrors: [] })),
     permission: {
@@ -664,39 +648,29 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     homeDocsApplyMerged: vi.fn(async () => ({ ok: true })),
     homeDocsDiscardMerged: vi.fn(async () => ({ ok: true })),
 
-    listMarketplacePlugins: vi.fn(async () => marketplace),
-    pingMarketplace: vi.fn(async () => marketplacePing),
-    installMarketplacePlugin: vi.fn(async () => ({ ok: true })),
     uninstallMarketplacePlugin: vi.fn(async () => ({ ok: true })),
+    // A namespace, not a function: the map's `Mock` type does not describe it.
+    gitMarketplace: mockGitMarketplace(marketplaceSources) as unknown as Mock,
+    gitRuntime: {
+      status: vi.fn(async () => ({ ok: false as const, error: "git-runtime-unavailable" as const })),
+      install: vi.fn(async () => ({ ok: false as const, error: "git-runtime-unavailable" as const })),
+      onProgress: vi.fn(() => () => {}),
+    } as unknown as Mock,
     // Marketplace agent/skill surface. Settings/dashboard tests still read
     // these counts even though the composer no longer injects them per turn.
     listAgentProfiles: vi.fn(async () => agentProfiles),
     listSkills: vi.fn(async () => skills),
-    installAgentFromMarketplace: vi.fn(async (slug: string) => ({
-      ok: true as const,
-      slug,
-      agentId: `mock-agent-${slug}`,
-      version: "0.0.0",
-    })),
     uninstallAgentPackage: vi.fn(async (slug: string) => ({
       ok: true as const,
       slug,
       agentId: `mock-agent-${slug}`,
-    })),
-    installSkillFromMarketplace: vi.fn(async (slug: string) => ({
-      ok: true as const,
-      slug,
-      skillId: `mock-skill-${slug}`,
-      version: "0.0.0",
     })),
     uninstallSkillPackage: vi.fn(async (slug: string) => ({
       ok: true as const,
       slug,
       skillId: `mock-skill-${slug}`,
     })),
-    onAgentInstallResult: vi.fn(() => () => {}),
     onAgentUninstallResult: vi.fn(() => () => {}),
-    onSkillInstallResult: vi.fn(() => () => {}),
     onSkillUninstallResult: vi.fn(() => () => {}),
     listPluginUiExtensions: vi.fn(async () => pluginUiExtensions),
     listPluginCards: vi.fn(async () => pluginCards),
@@ -1004,5 +978,53 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
     /** The host retired a parked request — see `ave:approval:settled`. */
     emitApprovalSettled: (requestId: string) =>
       approvalSettledHandlers.forEach((h) => h({ requestId })),
+  };
+}
+
+/** The git marketplace namespace: every read answers empty, every event subscribes to nothing. */
+function mockGitMarketplace(sources: unknown[]) {
+  const ok = <T>(value: T) => vi.fn(async () => ({ ok: true as const, value }));
+  const subscribe = () => vi.fn(() => () => {});
+  return {
+    listSources: ok(sources),
+    previewSource: ok(null),
+    addSource: ok(null),
+    removeSource: ok({ orphanedPackages: [] }),
+    setSourceEnabled: ok(null),
+    refreshSources: ok(sources),
+    repairSource: ok(sources),
+    acceptRewrite: ok(null),
+    setToken: ok({ host: "github.com" }),
+    deleteToken: ok({ host: "github.com" }),
+    listCatalog: ok({ entries: [], counts: {}, sourceCount: sources.length, syncedAt: null }),
+    packageDetail: ok(null),
+    planInstall: ok(null),
+    planUpdate: ok(null),
+    executeInstall: ok(null),
+    uninstall: ok(null),
+    previewDirectMcp: ok(null),
+    onSyncProgress: subscribe(),
+    onCatalogChanged: subscribe(),
+    onInstallProgress: subscribe(),
+    takeDeepLink: ok(null),
+    onDeepLink: subscribe(),
+    bootInstallNotice: ok(null),
+    dismissBootInstallNotice: ok(null),
+    onBootInstallsApplied: subscribe(),
+    updateStatus: ok({
+      discovery: { lastAttemptAt: null, lastSuccessAt: null, result: null, nextAt: "2026-10-01T00:00:00.000Z" },
+      applyCheckAt: null,
+      running: false,
+      historyReset: false,
+      packages: [],
+    }),
+    checkUpdates: ok({
+      discovery: { lastAttemptAt: null, lastSuccessAt: null, result: null, nextAt: "2026-10-01T00:00:00.000Z" },
+      applyCheckAt: null,
+      running: false,
+      historyReset: false,
+      packages: [],
+    }),
+    onUpdateStatus: subscribe(),
   };
 }

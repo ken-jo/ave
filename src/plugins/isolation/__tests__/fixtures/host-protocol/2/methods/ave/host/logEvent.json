@@ -1,0 +1,19 @@
+{
+  "request": {
+    "id": 24,
+    "jsonrpc": "2.0",
+    "method": "ave/host/logEvent",
+    "params": {
+      "data": {
+        "step": 1
+      },
+      "level": "info",
+      "message": "golden: an event"
+    }
+  },
+  "response": {
+    "id": 24,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

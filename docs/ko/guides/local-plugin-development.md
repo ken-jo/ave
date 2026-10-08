@@ -1,8 +1,8 @@
 # 마켓플레이스 없이 플러그인 다루기 (dev / prod)
 
-> **대상**: `agent-marketplace` 카탈로그를 거치지 않고 ave 에 플러그인을 직접 등록하고 싶은 개발자/관리자.
+> **대상**: git 마켓플레이스를 거치지 않고 ave 에 플러그인을 직접 등록하고 싶은 개발자/관리자.
 >
-> **이 문서가 다루는 범위**: 마켓플레이스 우회 시나리오 — dev 빌드에서의 빠른 prototyping 과 packaged(prod) 빌드에서의 사이드로드 가능 여부. **이 경로는 제한적입니다** (§3, §4 참고). 일상적 dev 루프는 [`local-marketplace-testing.md`](./local-marketplace-testing.md) (로컬 마켓플레이스 서버) 가 권장됩니다 — 사이드로드 형제-레포 manifest 는 호스트 trust-root 검사에서 거부됩니다.
+> **이 문서가 다루는 범위**: 마켓플레이스 우회 시나리오 — dev 빌드에서의 빠른 prototyping 과 packaged(prod) 빌드에서의 사이드로드 가능 여부. **이 경로는 제한적입니다** (§3, §4 참고). 마켓플레이스 경로까지 확인하려면 [`local-marketplace-testing.md`](./local-marketplace-testing.md) (루프백으로 서비스하는 로컬 git 마켓플레이스) 를 씁니다 — 사이드로드 형제-레포 manifest 는 호스트 trust-root 검사에서 거부됩니다.
 
 ---
 
@@ -19,11 +19,11 @@ bun run dev
 
 앱에서 Settings → Plugin Config → 하단 amber **"개발자 도구"** → **"로컬 폴더에서 설치"**를 누르고 `plugin.json`과 `dist/`가 들어있는 빌드 디렉토리를 선택합니다. 설치와 registry 갱신은 실행 중인 호스트가 처리하고 플러그인을 자동 재시작합니다.
 
-> 호스트의 `bun run dev:link`와 mutation CLI는 제거되었습니다. 정식 설치는 marketplace를, 로컬 개발은 위 Settings 흐름을 사용합니다.
+> 호스트의 `bun run dev:link`와 mutation CLI는 제거되었습니다. 정식 설치는 git 마켓플레이스를, 로컬 개발은 위 Settings 흐름을 사용합니다.
 
 **C. 기존 dev 환경에서 새 단일 루트로 마이그레이션** → §7 참고
 
-**D. packaged 빌드 sideload?** → **지원 안 됨**. 정식 마켓플레이스 publish 만 ([`marketplace-publishing.md`](./marketplace-publishing.md))
+**D. packaged 빌드 sideload?** → **지원 안 됨**. git 마켓플레이스 게시만 ([`marketplace-publishing.md`](./marketplace-publishing.md))
 
 상세 절차/제한/트러블슈팅은 §3-7 참고.
 
@@ -33,8 +33,8 @@ bun run dev
 
 | | 마켓플레이스 있이 | 마켓플레이스 없이 |
 |--|--|--|
-| **dev** (unpackaged 빌드) | [local-marketplace-testing.md](./local-marketplace-testing.md) — git-based 부트스트랩 자동 publish (**권장 dev 루프**) | §3 — Settings에서 로컬 빌드 폴더 설치 |
-| **prod** (packaged 빌드) | [marketplace-publishing.md](./marketplace-publishing.md) — 정식 publish 채널 | §4 — 비공식 channel 없음 |
+| **dev** (unpackaged 빌드) | [local-marketplace-testing.md](./local-marketplace-testing.md) — `AVE_DEV=1` 빌드가 루프백 git 마켓플레이스를 추가 | §3 — Settings에서 로컬 빌드 폴더 설치 |
+| **prod** (packaged 빌드) | [marketplace-publishing.md](./marketplace-publishing.md) — git 마켓플레이스 게시 | §4 — 비공식 channel 없음 |
 
 이 가이드는 **오른쪽 열** (마켓플레이스 없이) 만 다룹니다.
 
@@ -46,7 +46,7 @@ bun run dev
 |------|------|
 | Node.js ≥ 18 | `ave` Electron launcher + `postinstall` 훅이 시스템 `node` 직접 호출 |
 | bun (선택) | `ave`/플러그인 기본 패키지 매니저. 없으면 `npm` 폴백 (`*:npm` 스크립트) |
-| git | 플러그인 레포 클론 + submodule (`@ave/plugin-sdk`) |
+| git | 플러그인 저장소와 앱 릴리스 태그 확인 |
 
 ---
 
@@ -56,14 +56,15 @@ bun run dev
 
 ```bash
 # GitHub 에서 "Use this template" → 새 레포 생성 후
-git clone --recurse-submodules <your-repo-url> ave-plugin-<yourname>
+git clone <your-repo-url> ave-plugin-<yourname>
 cd ave-plugin-<yourname>
 bun install
 bun run build         # tsup → dist/
 bun run test
 ```
 
-submodule 누락 시: `git submodule update --init --recursive`.
+플러그인 저장소의 `contract/`에는 앱 릴리스 태그에서 가져온 공개 계약과 매니페스트
+스키마가 들어 있습니다. `contract/sources.json`으로 태그와 파일 해시를 확인하세요.
 
 매니페스트 작성 규칙(필수 필드, AJV 검증, tool 스키마 — v6 는 pure `Tool[]`)은 [현재 English Plugin Development Guide](../../guides/plugin-development.md#manifest-basics)와 [`plugin-manifest.schema.json`](../../../schemas/plugin-manifest.schema.json)을 참고하세요. 한국어 [`plugin-development.md`](./plugin-development.md)는 과거 검토·논의 이력이며 현재 계약의 정본이 아닙니다.
 
@@ -87,7 +88,7 @@ submodule 누락 시: `git submodule update --init --recursive`.
 
 따라서 마켓플레이스 없이 dev 설치를 하려면 **실행 중인 호스트의 Settings에서 로컬 빌드 폴더를 선택**해야 합니다. 호스트가 검증된 내용을 `~/.ave/plugins/<id>/` 트리로 복사하고 registry와 runtime을 함께 갱신합니다.
 
-> 일상적 dev 루프에는 [local-marketplace-testing.md](./local-marketplace-testing.md) 의 로컬 마켓플레이스 서버(git-based 부트스트랩)가 더 빠릅니다 — 플러그인을 형제 디렉토리로 두고 `bun run build` + 서버 재시작만 하면 자동 publish 됩니다. 이 §3 경로는 그 서버 띄우기조차 부담스러운 단발성 prototype 시나리오에 한정됩니다.
+> 설치·업데이트·아티팩트 사다리까지 실제 경로로 확인하려면 [local-marketplace-testing.md](./local-marketplace-testing.md) 처럼 로컬 git 마켓플레이스를 루프백으로 서비스해 추가합니다. 이 §3 경로는 빌드 결과를 바로 올려 보는 prototype 용입니다.
 
 ### 3-2. 플러그인 루트 경로
 
@@ -144,7 +145,7 @@ bun run start
 | GPU safe-flags (Windows) | `--disable-gpu --disable-software-rasterizer --disable-gpu-compositing --no-sandbox` 자동 추가 |
 | 콘솔 UTF-8 (Windows) | `chcp 65001`, `PYTHONIOENCODING=utf-8` 등 |
 
-> `bun run start` 는 **`AVE_DEV=1` 을 세팅하지 않습니다**. 개발자 설치 UI가 필요하면 `bun run dev` (`run-electron-dev.mjs`)를 사용하세요. `AVE_DEV_RELOAD` (§5)는 독립적으로 개발 모드를 엽니다. 어떤 dev 플래그도 marketplace envelope 검증, 설치 receipt 무결성, entry 경로 containment를 우회하지 않습니다. 마켓플레이스 trust root는 앱 호스트가 소유하며 SDK는 타입/소스 계약만 제공합니다.
+> `bun run start` 는 **`AVE_DEV=1` 을 세팅하지 않습니다**. 개발자 설치 UI가 필요하면 `bun run dev` (`run-electron-dev.mjs`)를 사용하세요. `AVE_DEV_RELOAD` (§5)는 독립적으로 개발 모드를 엽니다. 어떤 dev 플래그도 마켓플레이스 아티팩트의 sha256 고정 검증, 설치 receipt 무결성, entry 경로 containment를 우회하지 않습니다. `AVE_DEV=1`이 여는 것은 루프백 평문 HTTP 마켓플레이스 접근뿐입니다.
 
 ### 3-6. 검증
 
@@ -164,13 +165,13 @@ packaged 빌드 (`app.isPackaged === true`) 는 보안 정책 상 사이드로�
 | 게이트 | 동작 |
 |--------|------|
 | 모든 `AVE_DEV*` env | packaged 빌드에서 무시하고 부팅 시 stale/tampered 플래그를 감사 로그에 기록 |
-| Marketplace envelope | Host 내장 publisher trust set으로 항상 검증하며 dev 우회 없음 |
+| 마켓플레이스 아티팩트 | 스냅숏 커밋이 고정한 sha256·트리로 항상 검증하며 dev 우회 없음 |
 | 설치 payload | 설치 receipt와 payload digest를 항상 검증 |
 | Entry 경로 | `pluginsRoot/<id>/` containment를 항상 강제하며 linked entry 우회 없음 |
 
 Settings의 로컬 폴더 설치는 dev mode에서만 표시되며 packaged 빌드에는 설치 우회 경로가 없습니다. `~/.ave/plugins/registry.json` 직접 편집도 지원하지 않습니다.
 
-**결론**: 비공식 prod 사이드로드 channel 은 설계상 없음. dev 에서 §3 또는 [local-marketplace-testing.md](./local-marketplace-testing.md) 로 검증 후, **prod 는 [`marketplace-publishing.md`](./marketplace-publishing.md) 의 정식 publish 가 유일 경로**입니다.
+**결론**: 비공식 prod 사이드로드 channel 은 설계상 없음. dev 에서 §3 또는 [local-marketplace-testing.md](./local-marketplace-testing.md) 로 검증 후, **prod 는 [`marketplace-publishing.md`](./marketplace-publishing.md) 의 git 마켓플레이스 게시가 유일 경로**입니다.
 
 ---
 
@@ -208,10 +209,10 @@ watch 빌드가 `dist/*.js` 를 갱신하면 호스트 watcher 가 디바운스 
 
 | 증상 | 원인 / 해결 |
 |------|-------------|
-| 부팅 후 플러그인이 안 보이고 `[plugin-runtime] ignoring untrusted registry manifest path for <id>` 로그 | manifest 가 trust-root 밖. §3-1의 Settings 로컬 폴더 설치 또는 [local-marketplace-testing.md](./local-marketplace-testing.md)를 사용합니다. symlink도 안 됩니다 (`realpathSync` 검사). |
+| 부팅 후 플러그인이 안 보이고 `[plugin-runtime] ignoring untrusted registry manifest path for <id>` 로그 | manifest 가 trust-root 밖. §3-1의 Settings 로컬 폴더 설치 또는 [local-marketplace-testing.md](./local-marketplace-testing.md)의 로컬 git 마켓플레이스를 사용합니다. symlink도 안 됩니다 (`realpathSync` 검사). |
 | `bun run plugins:list` 결과가 기대와 다름 | CLI와 Electron 모두 `~/.ave/plugins/`를 플러그인 루트로 사용합니다. 오래된 `.ave-dev` 잔재를 제거한 뒤 Settings 로컬 폴더 설치를 다시 실행하세요. registry는 직접 편집하지 않습니다. |
-| `[manifest:<id>] schema validation failed (<jsonpath>): ...` | AJV 검증 실패. `plugin.json` 의 해당 필드 확인. SDK 빌드시 `bun run validate:hostapi` 로 미리 잡힘. |
-| `plugin signature required` 또는 `plugin signature verification failed` (packaged 빌드에서) | §4 참고 — packaged 빌드는 dev skip flag를 무시하고 우회 토글을 제공하지 않습니다. 정상 marketplace 경로로 정식 publish/install하고 envelope, receipt, publisher key를 확인합니다. |
+| `[manifest:<id>] schema validation failed (<jsonpath>): ...` | AJV 검증 실패. `plugin.json`의 해당 필드를 확인하고, 앱 릴리스 태그에서 가져온 `contract/plugin-manifest.schema.json`으로 검증합니다. |
+| `MANIFEST_MISMATCH` 또는 아티팩트 sha256 불일치 (마켓플레이스 설치에서) | 설명자의 `minAppVersion`·`authority`와 스테이징한 `plugin.json`이 같은지, release/archive 의 `sha256` 고정이 실제 바이트와 같은지 확인합니다. dev 우회 토글은 없습니다. |
 | Hot-reload 가 안 됨 | (a) `AVE_DEV_RELOAD=1` 누락 (`bun run start` 는 자동 세팅 X — `bun run dev` 거나 직접 export). (b) `dist/` 가 watch 가능 위치인지 확인 (네트워크 드라이브 등에서는 fs.watch 부정확). (c) plugin.json 자체를 바꿨다면 호스트 재시작 필수. |
 | 한글 깨짐 (cp949) | PowerShell 에서 `chcp 65001` 후 `bun run start`. 또는 Windows Terminal (UTF-8 default) 사용. |
 
@@ -228,7 +229,7 @@ watch 빌드가 `dist/*.js` 를 갱신하면 호스트 watcher 가 디바운스 
 |---|---|
 | `AVE_PLUGINS_DIR` 가 dev runner 에서 자동 세팅 | dev runner 는 `AVE_PLUGINS_DIR` 를 더 이상 사용하지 않음 — 런타임은 항상 `~/.ave/plugins/` 사용 |
 | `ave/.ave-dev/plugins/` 에 sibling repo 별 등록 | 단일 루트 `~/.ave/plugins/` + Settings 로컬 폴더 설치로 호스트 소유 경로 통일 |
-| 마켓플레이스 서명 키: SDK 또는 플러그인 패키지가 키 소유 | 앱 호스트 `marketplace-keys.ts` + 서버 env 가 trust root 를 소유 |
+| 마켓플레이스 서명 키: SDK 또는 플러그인 패키지가 키 소유 | 서명 키 없음 — git 마켓플레이스 스냅숏의 커밋과 sha256 고정이 신뢰 근거 |
 | 외부 개발자 sideload: 수동 파일 복사만 | UI: Settings → Plugin Config → "로컬 폴더에서 설치" 버튼 |
 
 ### 7-2. 마이그레이션 단계
@@ -243,7 +244,6 @@ cd ave
 git stash push --include-untracked -m "pre-single-root-migration"
 git checkout main
 git pull origin main
-git submodule update --init --recursive   # SDK 서브모듈 갱신 (af62b1e+)
 bun install                                # bun.lock 동기화
 git stash pop  # 필요 시
 
@@ -251,8 +251,8 @@ git stash pop  # 필요 시
 cd ..
 for r in ave-plugin-meeting ave-plugin-local-indexer ave-plugin-vega-helper \
          ave-plugin-vega-helper ave-plugin-lyra-mail \
-         ave-plugin-hydra ave-plugin-template ave-plugin-sdk \
-         agent-marketplace ave-agent-hub; do
+         ave-plugin-hydra ave-plugin-template \
+         ave-agent-hub; do
   (cd "$r" && git checkout main && git pull origin main)
 done
 ```
@@ -291,7 +291,7 @@ bun run dev
 3. `plugin.json` + `dist/` 가 포함된 빌드 디렉토리 선택
 4. 자동 재시작 후 즉시 사용 가능
 
-> 플러그인 디렉토리 요건: `plugin.json` 의 `id` 가 `^[a-zA-Z0-9._-]+$` 매치, `dist/` 빌드 산출물 존재. `installPolicy: "admin"` 으로 이미 설치된 같은 id 는 덮어쓰기 거부됨.
+> 플러그인 디렉토리 요건: `plugin.json` 의 `id` 가 `^[a-zA-Z0-9._-]+$` 매치, `dist/` 빌드 산출물 존재.
 >
 > 복사 시 `node_modules/electron` · `node_modules/@electron/*` · `.git` 은 자동 제외됩니다 (Electron 번들 asar 가 패치된 fs 에서 "Invalid package" 로 폭사하는 사례 회피). 플러그인 런타임이 필요한 다른 npm 의존성은 그대로 복사되어 install dir 에서 import 됩니다. 같은 id 의 dev-link entry 가 registry 에 남아 있으면 `_devLinked` 플래그가 자동으로 제거되어 다음 `bun run dev` 부팅의 dev-link cleanup 으로부터 보호됩니다. install 시점에 `plugin.json` + `dist/` 의 sha256 receipt 가 `~/.ave/plugins/.cache/<id>/install-receipt.json` 에 기록되어 호스트 integrity 게이트(`runtime/snapshots.ts`)를 통과합니다.
 
@@ -299,7 +299,7 @@ bun run dev
 
 | 증상 | 원인 / 해결 |
 |------|-------------|
-| `Cannot find module '@ave/plugin-sdk/keys'` 또는 관련 keys export 오류 | 로컬 working copy / SDK 서브모듈 stale 또는 오래된 코드가 SDK 키 소유 모델을 참조 중. `git pull && git submodule update --recursive` 후 앱 호스트의 `src/plugins/marketplace-keys.ts` 경로를 사용하세요. |
+| 이전 키 모듈을 찾을 수 없음 | 오래된 코드가 폐기된 키 소유 모델을 참조 중입니다. 해당 import를 제거하고 앱 릴리스 태그의 계약 파일로 갱신합니다. |
 | `bun install --frozen-lockfile` 실패 | bun.lock 갱신 필요 → `bun install` (frozen 없이) 후 커밋 |
 | 플러그인이 안 보임 | Settings → Plugin Config → 개발자 도구에서 빌드 폴더를 다시 설치하고 `bun run plugins:list`로 조회 |
 | 두 위치에서 플러그인 충돌 | `.ave-dev` 잔재를 삭제한 뒤 Settings에서 빌드 폴더를 다시 설치. registry는 직접 편집하지 않음 |
@@ -311,8 +311,8 @@ bun run dev
 
 ## 관련 문서
 
-- [`local-marketplace-testing.md`](./local-marketplace-testing.md) — **권장 dev 루프** (로컬 마켓플레이스 서버 + git-based 부트스트랩)
-- [`marketplace-publishing.md`](./marketplace-publishing.md) — prod 마켓플레이스 publish 채널
+- [`local-marketplace-testing.md`](./local-marketplace-testing.md) — 로컬 git 마켓플레이스로 설치·업데이트 확인
+- [`marketplace-publishing.md`](./marketplace-publishing.md) — git 마켓플레이스 게시
 - [`plugin-development.md`](./plugin-development.md) — 매니페스트 전체 스키마, HostApi 계약, capabilities, 이벤트, 서명, 테스팅 깊은 레퍼런스
 - [`windows-setup.md`](./windows-setup.md) — Windows first-run 가이드
 - [`../architecture/architecture.md` §9](../architecture/architecture.md#9-plugin-system--ui-extension) — 플러그인 시스템 아키텍처

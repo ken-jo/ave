@@ -1,3 +1,4 @@
+import { createAlertMigrationPorts } from "../../__tests__/support/alert-migration.js";
 import { createBootHostFixture } from "../../__tests__/support/host-runtime.js";
 /**
  * Construction of the REAL plugin hostApi object, and the traversal every
@@ -23,6 +24,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkBoardStore } from "../../main/work-board-store.js";
+import { AlertsService } from "../../alerts/service.js";
+import type { AlertSettings } from "../../shared/alerts-types.js";
 import type { PluginHostApi } from "../../plugins/types.js";
 
 /**
@@ -82,10 +85,32 @@ export async function buildRealHostApi(
 ): Promise<PluginHostApi> {
   harness.capturedRuntimeOptions = null;
   const bootAuditLogger = { log: vi.fn() };
+  // A real alerts service over a temp directory, for the same reason as the
+  // board below: `raiseAlert` must return a genuine envelope, and the probe's
+  // kind is undeclared so it refuses before anything is rendered or stored.
+  const alertsDir = mkdtempSync(join(tmpdir(), "ave-probe-alerts-"));
+  let alertSettings: AlertSettings = { osNotificationsEnabled: true, kinds: {} };
+  const alertsService = new AlertsService({
+    migration: createAlertMigrationPorts(),
+    dir: () => alertsDir,
+    settings: { get: () => alertSettings, set: async (next) => { alertSettings = next; } },
+    installedPluginIds: async () => [],
+    appVersion: "0.0.0",
+    locale: () => "en",
+    predecessorBlocks: async () => false,
+    overlay: { show: vi.fn(), dismiss: vi.fn() },
+    notifications: { isFocusGateActive: () => false, fire: vi.fn() },
+    emit: vi.fn(),
+    audit: vi.fn(),
+  });
+  await alertsService.load();
   await initPluginRuntime({
     host: createBootHostFixture(),
     projectRoot: "/tmp/ave-test/project",
     settingsService: {
+      getProviderConfigRevision: () => 0,
+      getSecretGeneration: () => 0,
+      onLeaseStateChanged: () => () => {},
       get: vi.fn((key: string) => {
         if (key === "llm") return { provider: "openai" };
         if (key === "pluginConfigs") return {};
@@ -119,6 +144,7 @@ export async function buildRealHostApi(
     // undeclared so it refuses before it ever touches the file.
     getWorkBoardStore: () =>
       new WorkBoardStore(join(mkdtempSync(join(tmpdir(), "ave-probe-wb-")), "board.json")),
+    getAlertsService: () => alertsService,
   });
 
   const createHostApi = capturedCreateHostApi(harness);

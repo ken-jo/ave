@@ -349,8 +349,12 @@ describe("isGloballyRoutableAddress — the IANA special-purpose registry", () =
     expect(isGloballyRoutableAddress(address)).toBe(false);
   });
 
-  it("still allows 64:ff9b::1 (NAT64), which sits outside global unicast", () => {
-    expect(isGloballyRoutableAddress("64:ff9b::1")).toBe(true);
+  it("classifies a NAT64 address (outside global unicast) by the IPv4 address it embeds", () => {
+    expect(isGloballyRoutableAddress("64:ff9b::808:808")).toBe(true);
+    expect(isGloballyRoutableAddress("64:ff9b::8.8.8.8")).toBe(true);
+    expect(isGloballyRoutableAddress("64:ff9b::a9fe:a9fe")).toBe(false);
+    expect(isGloballyRoutableAddress("64:ff9b::7f00:1")).toBe(false);
+    expect(isGloballyRoutableAddress("64:ff9b::a00:1")).toBe(false);
   });
 
   it("allows an ordinary public IPv6 address", () => {

@@ -1,7 +1,19 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import { validateThemePayload } from "../domains/plugins.js";
+import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
 import { bundleToPluginTokens } from "../../ui/renderer/theme/plugin-token-map.js";
-import { loadAllThemeBundles } from "../../ui/renderer/theme/bundles/index.js";
+import { BUNDLES } from "../../ui/renderer/theme/bundles/index.js";
+
+// Every theme but the compiled Moonstone and Gallery is an installed package.
+const INSTALLED_THEMES = ["tokyo-night", "midnight", "forest", "violet-light", "violet-dark", "high-contrast"];
+
+beforeEach(() => {
+  setInstalledThemeIds(INSTALLED_THEMES);
+});
+
+afterEach(() => {
+  setInstalledThemeIds([]);
+});
 
 // v2 helper: a full ThemeProvider v2 payload shape — tokens required per spec
 const V2_PAYLOAD = {
@@ -181,7 +193,15 @@ describe("validateThemePayload", () => {
     }
   });
 
-  it("accepts all 6 valid bundleIds", () => {
+  it("accepts the compiled bundles and every installed theme, and nothing else", () => {
+    for (const bundleId of ["moonstone", "gallery"]) {
+      expect(validateThemePayload({ bundleId, shell: "light", tokens: { "--ave-bg": "#fff" } }).ok, bundleId).toBe(true);
+    }
+    setInstalledThemeIds([]);
+    expect(validateThemePayload({ bundleId: "tokyo-night", shell: "dark", tokens: { "--ave-bg": "#000" } }).ok).toBe(false);
+  });
+
+  it("accepts all 6 installed theme ids", () => {
     const cases: Array<[string, "light" | "dark"]> = [
       ["tokyo-night", "dark"],
       ["midnight", "dark"],
@@ -199,13 +219,11 @@ describe("validateThemePayload", () => {
 
   // The validator and the token producer have to agree on value shapes. When
   // they drifted, the seven derived color-mix tokens were dropped from every
-  // payload and plugin panels silently kept the SDK's dark-theme fallbacks —
+  // payload and plugin panels silently kept their dark-theme fallbacks —
   // visible as a dark chip in a light shell, with nothing logged anywhere.
-  it("keeps every token every real bundle produces", async () => {
-    // Marketplace entries are manifests until loaded, so pull the full set.
-    const bundles = await loadAllThemeBundles();
-    expect(bundles.length).toBeGreaterThan(5);
-    for (const bundle of bundles) {
+  it("keeps every token every compiled bundle produces", () => {
+    // An installed theme is held to the same token table, so its tokens take the same shapes.
+    for (const bundle of BUNDLES) {
       const tokens = bundleToPluginTokens(bundle);
       const result = validateThemePayload({ bundleId: bundle.id, shell: bundle.shell, tokens });
       expect(result.ok, `bundleId=${bundle.id}`).toBe(true);

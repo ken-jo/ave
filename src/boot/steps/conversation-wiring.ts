@@ -8,9 +8,8 @@
  * plugin runtime holds (loop / callLlm / pluginCallLlm), starts the preference
  * refresh service, constructs the SubAgentRunner (reusing the loop's dep set),
  * and finally the WorkBoardEngine + reporter that depend on the runner + one-
- * shot LLM caller. The mutable plugin-notification / event-bridge disposers are
- * stored on the context so `shutdown()` + `refreshPluginNotifications` can drive
- * them post-boot.
+ * shot LLM caller. The mutable event-bridge disposer is stored on the context
+ * so shutdown and plugin refresh can replace its subscriptions post-boot.
  */
 import type { BrowserWindow } from "electron";
 import { createRoutineEngine } from "../routine.js";
@@ -25,7 +24,6 @@ import {
 } from "../conversation.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
-import { registerPluginNotifications } from "../plugins.js";
 import { registerPluginEventBridge } from "./ipc-bridge.js";
 import { readPermissionSettings } from "../../permissions/permission-settings-store.js";
 import { retainedDescendantWorkspaceRoots } from "../../permissions/workspace-root-reconciler.js";
@@ -284,12 +282,7 @@ export async function wireConversation(
     });
   }
 
-  // §4.2 Step 7: manifest-driven IPC bridges. Plugin notifications route
-  // through `notificationService` (#841) so they inherit the same focus
-  // gate, cooldown, sanitization, and audit policy as the host's lifecycle
-  // notifications.
-  ctx.disposePluginNotifications = registerPluginNotifications(pluginRuntime, mainWindow, notificationService, bootAuditLogger, ctx.host.desktop?.notificationSupported() ?? false,
-  );
+  // §4.2 Step 7: manifest-driven renderer event bridge.
   ctx.disposePluginEventBridge = registerPluginEventBridge(pluginRuntime, mainWindow,
   );
   ctx.pluginEventBridgeWindow = mainWindow;

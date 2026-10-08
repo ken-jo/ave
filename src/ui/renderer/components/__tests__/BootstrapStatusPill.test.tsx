@@ -22,8 +22,8 @@ describe("BootstrapStatusPill", () => {
   it("reports the install in progress with nothing to click", () => {
     renderPill({ phase: "start" });
     const pill = screen.getByTestId("bootstrap-status-pill");
-    expect(pill.textContent).toContain("플러그인 설치 중");
-    expect(pill.getAttribute("title")).toContain("매니지드 플러그인 설치 중");
+    expect(pill.textContent).toContain("익스텐션 설치 중");
+    expect(pill.getAttribute("title")).toContain("매니지드 익스텐션 설치 중");
     expect(pill.getAttribute("aria-disabled")).toBe("true");
   });
 
@@ -38,7 +38,7 @@ describe("BootstrapStatusPill", () => {
     expect((pill as HTMLButtonElement).disabled).toBe(false);
 
     fireEvent.focus(pill);
-    expect(screen.getByRole("tooltip").textContent).toContain("매니지드 플러그인 설치 중");
+    expect(screen.getByRole("tooltip").textContent).toContain("매니지드 익스텐션 설치 중");
 
     pill.click();
     expect(onRetry).not.toHaveBeenCalled();
@@ -52,7 +52,7 @@ describe("BootstrapStatusPill", () => {
     });
 
     const label = screen.getByTestId("bootstrap-status-pill").getAttribute("aria-label");
-    expect(label).toContain("플러그인 부트스트랩 다시 시도");
+    expect(label).toContain("익스텐션 부트스트랩 다시 시도");
     expect(label).toContain("meeting");
     expect(label).toContain("tarball 404");
   });
@@ -62,15 +62,15 @@ describe("BootstrapStatusPill", () => {
       phase: "complete",
       installed: [],
       failed: [],
-      skipped: { reason: "no-base-url" },
+      skipped: { reason: "e2e-isolated" },
     });
 
     const label = screen.getByTestId("bootstrap-status-pill").getAttribute("aria-label");
     expect(label).toContain("알림 닫기");
-    expect(label).toContain("마켓플레이스 주소가 설정되지 않아");
+    expect(label).toContain("격리된 테스트 모드");
   });
 
-  it("translates each skip code into its own sentence, with no marketplace claim on the isolated skip", () => {
+  it("translates the skip code into its own sentence, with no marketplace claim on the isolated skip", () => {
     // The old surface interpolated one English reason string into one Korean
     // sentence that began "마켓플레이스 부트스트랩 건너뜀" — so an E2E-isolated run,
     // which has nothing to do with the marketplace, was reported as one.
@@ -84,19 +84,6 @@ describe("BootstrapStatusPill", () => {
     const title = screen.getByTestId("bootstrap-status-pill").getAttribute("title") ?? "";
     expect(title).toContain("격리된 테스트 모드");
     expect(title).not.toContain("마켓플레이스");
-  });
-
-  it("appends the failed request's own message to the translated catalog sentence", () => {
-    renderPill({
-      phase: "complete",
-      installed: [],
-      failed: [],
-      skipped: { reason: "catalog-unreachable", detail: "ENOTFOUND marketplace" },
-    });
-
-    const title = screen.getByTestId("bootstrap-status-pill").getAttribute("title") ?? "";
-    expect(title).toContain("마켓플레이스 카탈로그에 연결하지 못해");
-    expect(title).toContain("ENOTFOUND marketplace");
   });
 
   it("retries the bootstrap when the error pill is clicked", () => {
@@ -119,7 +106,7 @@ describe("BootstrapStatusPill", () => {
     );
 
     const pill = screen.getByTestId("bootstrap-status-pill");
-    expect(pill.textContent).toContain("플러그인 설치 실패");
+    expect(pill.textContent).toContain("익스텐션 설치 실패");
     expect(pill.getAttribute("title")).toContain("meeting");
     expect(pill.getAttribute("title")).toContain("tarball 404");
 
@@ -135,7 +122,7 @@ describe("BootstrapStatusPill", () => {
     });
 
     expect(screen.getByTestId("bootstrap-status-pill").getAttribute("title")).toContain(
-      "2개 플러그인 설치 실패",
+      "2개 익스텐션 설치 실패",
     );
   });
 
@@ -152,13 +139,13 @@ describe("BootstrapStatusPill", () => {
   it("dismisses the skipped-bootstrap report from the pill itself", () => {
     const onDismiss = vi.fn();
     renderPill(
-      { phase: "complete", installed: [], failed: [], skipped: { reason: "no-base-url" } },
+      { phase: "complete", installed: [], failed: [], skipped: { reason: "e2e-isolated" } },
       { onDismiss },
     );
 
     const pill = screen.getByTestId("bootstrap-status-pill");
     expect(pill.textContent).toContain("부트스트랩 건너뜀");
-    expect(pill.getAttribute("title")).toContain("마켓플레이스 주소가 설정되지 않아");
+    expect(pill.getAttribute("title")).toContain("격리된 테스트 모드");
     // Nothing to retry — a skip is a decision, not a failure.
     expect(screen.queryByTestId("bootstrap-status-dismiss")).toBeNull();
 

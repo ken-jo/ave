@@ -9,7 +9,7 @@ import {
   pureTool,
   TestPluginRuntime as PluginRuntime,
 } from "./test-helpers.js";
-import { agentPluginsDocument } from "./test-helpers.js";
+import { servedAgentPluginsDocument } from "./test-helpers.js";
 
 describe("manifest AJV and Tool visibility guards", () => {
   let testDir: string;
@@ -45,13 +45,12 @@ describe("manifest AJV and Tool visibility guards", () => {
       name: id,
       version: "1.0.0",
       description: "Test fixture.",
-      publisher: "Test fixture",
       entry: "entry.mjs",
       ...manifestOverrides,
       tools: overrideTools.map((tool) =>
         typeof tool === "string" ? pureTool(tool) : tool),
     };
-    await writeFile(join(pluginDir, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(join(pluginDir, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)), "utf-8");
     await mkdir(join(testDir, "plugins"), { recursive: true });
     await writeFile(
       registryPath,

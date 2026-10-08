@@ -1,4 +1,5 @@
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
+import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
 /**
  * C1 gap-lock — initPluginRuntime HostApi: openAuthWindow / clearAuthPartition
  * capability + partition allow-list gates (observable effects).
@@ -131,6 +132,9 @@ async function initAndGetFactory(): Promise<CreateHostApi> {
         return undefined;
       }),
       getSecret: vi.fn(() => undefined),
+      getProviderConfigRevision: () => 0,
+      getSecretGeneration: () => 0,
+      onLeaseStateChanged: () => () => {},
       getPluginConfig: vi.fn(() => ({})),
       setPluginConfig: vi.fn(),
     } as never,
@@ -145,7 +149,7 @@ async function initAndGetFactory(): Promise<CreateHostApi> {
     pythonPath: undefined,
     bootAuditLogger: { log: vi.fn() } as never,
     mainWindow: {} as never,
-    networkFetch: vi.fn() as unknown as typeof fetch,
+    networkFetch: directHostFetchTransport(vi.fn() as unknown as typeof fetch),
     openAuthWindowService: vi.fn(async () => []),
     openLinkWindowService: vi.fn(),
     openAuthPartitionViewerService: vi.fn(),
@@ -155,6 +159,7 @@ async function initAndGetFactory(): Promise<CreateHostApi> {
     routinesStore: { list: () => [] } as never,
     // This harness has no Work Board; the proposal verbs are not exercised here.
     getWorkBoardStore: () => undefined,
+    getAlertsService: () => undefined,
   });
   const createHostApi = (
     runtimeTestState.capturedRuntimeOptions as {

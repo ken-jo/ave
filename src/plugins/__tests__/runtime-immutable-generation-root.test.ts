@@ -9,7 +9,7 @@ import type {
   HostPluginGenerationState,
   PluginRuntimeGenerationProjection,
 } from "../plugin-host-generation.js";
-import { agentPluginsDocument, makeTestTreeWritable } from "./test-helpers.js";
+import { servedAgentPluginsDocument, makeTestTreeWritable } from "./test-helpers.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 
 const roots: string[] = [];
@@ -38,7 +38,6 @@ describe("PluginRuntime immutable generation root", () => {
       version: "1.0.0",
       entry: "entry.mjs",
       description: "Reads one receipt-covered fixture byte.",
-      publisher: "Ave",
       tools: [{
         name: "immutable_root_read",
         description: "Read the immutable generation fixture.",
@@ -46,7 +45,7 @@ describe("PluginRuntime immutable generation root", () => {
         _meta: { ui: { visibility: ["model"] } },
       }],
     };
-    await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
+    await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)), "utf8");
     await writeFile(join(pluginRoot, "value.txt"), "g1", "utf8");
     await writeFile(
       join(pluginRoot, "entry.mjs"),

@@ -2,6 +2,47 @@ import { describe, expect, it } from "vitest";
 import { createConversationActivityCoordinator } from "../conversation-activity-coordinator.js";
 
 describe("ConversationActivityCoordinator", () => {
+  it("treats a session transition as busy before deferred surface work can enter", async () => {
+    const coordinator = createConversationActivityCoordinator();
+    let transitioning = true;
+    coordinator.bindSessionTransitionGuard(() => transitioning, () => () => undefined);
+    let turnEntered = false;
+    let mutationEntered = false;
+
+    expect(coordinator.isBusy()).toBe(true);
+    expect(coordinator.tryTrackTurn(async () => { turnEntered = true; })).toBeNull();
+    expect(coordinator.trackMutation(async () => { mutationEntered = true; })).toBeNull();
+    await expect(coordinator.trackTurn(async () => { turnEntered = true; })).rejects.toThrow("streaming-active");
+    expect(turnEntered).toBe(false);
+    expect(mutationEntered).toBe(false);
+
+    transitioning = false;
+    await expect(coordinator.trackTurn(async () => "entered")).resolves.toBe("entered");
+  });
+
+  it("seals admission atomically while exposing the owner that must drain", async () => {
+    const coordinator = createConversationActivityCoordinator();
+    let finishOwner!: () => void;
+    const owner = coordinator.trackMutation(
+      () => new Promise<void>((resolve) => { finishOwner = resolve; }),
+    );
+    expect(owner).not.toBeNull();
+
+    const admission = coordinator.beginSessionTransitionAdmission();
+    expect(admission?.owner).toBe(owner);
+    expect(coordinator.isBusy()).toBe(true);
+    expect(coordinator.tryTrackTurn(async () => undefined)).toBeNull();
+    expect(coordinator.trackMutation(async () => undefined)).toBeNull();
+    expect(coordinator.beginSessionTransitionAdmission()).toBeNull();
+
+    await Promise.resolve();
+    finishOwner();
+    await admission?.owner;
+    expect(coordinator.isBusy()).toBe(true);
+    admission?.release();
+    expect(coordinator.isBusy()).toBe(false);
+  });
+
   it("uses one turn lease across all callers and releases it after completion", async () => {
     const coordinator = createConversationActivityCoordinator();
     let release!: () => void;
@@ -95,5 +136,58 @@ describe("ConversationActivityCoordinator onTurnSettled", () => {
     coordinator.onTurnSettled(() => { notified += 1; });
     await coordinator.trackMutation(async () => {});
     expect(notified).toBe(0);
+  });
+
+  describe("onIdle (design §18.7.4)", () => {
+    it("fires when a session mutation with no turn completes", async () => {
+      const coordinator = createConversationActivityCoordinator();
+      const fired: boolean[] = [];
+      coordinator.onIdle(() => fired.push(coordinator.isBusy()));
+      let finish!: () => void;
+      const mutation = coordinator.trackMutation(() => new Promise<void>((resolve) => { finish = resolve; }));
+      expect(coordinator.isBusy()).toBe(true);
+      await Promise.resolve();
+      expect(fired).toEqual([]);
+      finish();
+      await mutation;
+      expect(fired).toEqual([false]);
+    });
+
+    it("fires when a transition admission is released, and when a turn settles", async () => {
+      const coordinator = createConversationActivityCoordinator();
+      let count = 0;
+      coordinator.onIdle(() => { count += 1; });
+      const admission = coordinator.beginSessionTransitionAdmission();
+      admission?.release();
+      expect(count).toBe(1);
+      await coordinator.trackTurn(async () => undefined);
+      expect(count).toBe(2);
+    });
+
+    it("fires when a bound loop's session transition ends, and not while something else keeps it busy", async () => {
+      const coordinator = createConversationActivityCoordinator();
+      let transitioning = true;
+      let settled: (() => void) | null = null;
+      coordinator.bindSessionTransitionGuard(() => transitioning, (notify) => {
+        settled = notify;
+        return () => { settled = null; };
+      });
+      let count = 0;
+      coordinator.onIdle(() => { count += 1; });
+      settled!();
+      expect(count).toBe(0);
+      transitioning = false;
+      settled!();
+      expect(count).toBe(1);
+    });
+
+    it("stops after unsubscribe", async () => {
+      const coordinator = createConversationActivityCoordinator();
+      let count = 0;
+      const off = coordinator.onIdle(() => { count += 1; });
+      off();
+      await coordinator.trackTurn(async () => undefined);
+      expect(count).toBe(0);
+    });
   });
 });

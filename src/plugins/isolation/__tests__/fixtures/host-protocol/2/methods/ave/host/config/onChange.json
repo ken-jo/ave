@@ -1,0 +1,18 @@
+{
+  "request": {
+    "id": 13,
+    "jsonrpc": "2.0",
+    "method": "ave/host/config/onChange",
+    "params": {
+      "callback": "<uuid-1>",
+      "key": "region"
+    }
+  },
+  "response": {
+    "id": 13,
+    "jsonrpc": "2.0",
+    "result": {
+      "handleId": "<uuid-1>"
+    }
+  }
+}

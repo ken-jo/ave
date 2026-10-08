@@ -1,6 +1,6 @@
 {
   "name": "ave",
-  "version": "0.10.0",
+  "version": "0.13.0",
   "private": true,
   "aveRelease": {
     "tagDistribution": "public",
@@ -37,14 +37,14 @@
   "scripts": {
     "postinstall": "node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs && node scripts/hooks/install.mjs",
     "build:main": "node scripts/build-main-esbuild.mjs",
-    "build:webpack": "webpack --config webpack.config.cjs",
-    "build:renderer": "webpack --config webpack.config.cjs --config-name renderer",
+    "build:webpack": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs",
+    "build:renderer": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs --config-name renderer",
     "build:styles": "tailwindcss --input src/styles.css --output dist/src/styles.css --minify",
-    "build:preload": "webpack --config webpack.config.cjs --config-name preload",
+    "build:preload": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs --config-name preload",
     "build:plugin-preload": "webpack --config webpack.config.cjs --config-name pluginPreload",
     "build:floating-dock-preload": "webpack --config webpack.config.cjs --config-name floatingDockPreload",
     "build:icons": "node scripts/generate-ave-icons.cjs",
-    "build": "bun run check:import-cycles && node scripts/clean-dist.mjs && bun run build:icons && node scripts/check-generated-assets.mjs && bun run build:main && bun run check:i18n-catalog && bun run check:i18n-barrels && bun run build:webpack && bun run build:styles && node scripts/copy-build-assets.mjs && node scripts/check-no-tls-bypass.mjs && node scripts/check-opacity-tokens.mjs && node scripts/check-color-tokens.mjs && node scripts/check-shell-geometry-tokens.mjs && node scripts/check-no-inline-channels.mjs && bun run check:source-text-safe",
+    "build": "bun run check:import-cycles && node scripts/clean-dist.mjs && bun run build:icons && node scripts/check-generated-assets.mjs && bun run check:plugin-host-protocol-schema && bun run check:plugin-host-protocol-mirror && bun run check:plugin-host-protocol-client && bun run build:main && bun run check:i18n-catalog && bun run check:i18n-barrels && bun run build:webpack && bun run build:styles && node scripts/copy-build-assets.mjs && node scripts/check-no-tls-bypass.mjs && node scripts/check-opacity-tokens.mjs && node scripts/check-color-tokens.mjs && node scripts/check-shell-geometry-tokens.mjs && node scripts/check-no-inline-channels.mjs && node scripts/check-sandboxed-preloads.mjs && bun run check:source-text-safe",
     "typecheck": "tsc --noEmit",
     "start": "bun run build && node scripts/run-electron.mjs dist/src/main/main.js",
     "dev": "node scripts/run-electron-dev.mjs",
@@ -52,31 +52,35 @@
     "cli": "tsx scripts/ave-cli.ts",
     "test:prepare": "bun run build:icons",
     "test:vitest": "node scripts/run-vitest-under-electron.mjs",
-    "test:plugin-bundle-inputs": "node --test scripts/plugin-bundle-e2e-inputs.test.mjs",
+    "test:plugin-bundle-inputs": "node --import ./scripts/lib/document-consumer-guard.mjs --test scripts/plugin-bundle-e2e-inputs.test.mjs",
     "test": "bun run test:prepare && bun run test:vitest -- run",
     "test:a2a-tck": "bun scripts/run-a2a-tck.ts",
     "test:a2a-external": "bun scripts/run-a2a-external-smoke.ts",
+    "plugin:validate": "node --import tsx --import ./scripts/lib/stub-app-logger-hook.mjs src/plugins/validate/cli.ts --child-entry src/plugins/isolation/plugin-child-main.ts --child-exec-arg=--import --child-exec-arg=tsx --child-exec-arg=--import --child-exec-arg=./scripts/lib/stub-app-logger-hook.mjs",
     "check:i18n-catalog": "node --import tsx scripts/i18n-validate-catalog.ts",
-    "check:i18n-barrels": "node --test test/scripts/i18n-catalog-barrels.test.mjs && node scripts/check-i18n-catalog-barrels.mjs",
+    "check:plugin-host-protocol-schema": "node --import tsx scripts/generate-plugin-host-protocol-schema.ts --check",
+    "check:plugin-host-protocol-mirror": "node scripts/check-plugin-host-protocol-mirror.mjs",
+    "check:plugin-host-protocol-client": "node --import tsx scripts/generate-plugin-host-protocol-client.ts --check",
+    "generate:plugin-host-protocol-schema": "node --import tsx scripts/generate-plugin-host-protocol-schema.ts",
+    "generate:plugin-host-protocol-client": "node --import tsx scripts/generate-plugin-host-protocol-client.ts",
+    "check:i18n-barrels": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/i18n-catalog-barrels.test.mjs && node scripts/check-i18n-catalog-barrels.mjs",
     "check:sunset-inventory": "node scripts/check-sunset-inventory.mjs",
-    "check:import-cycles": "node --test test/scripts/import-cycle-check.test.mjs && node scripts/check-import-cycles.mjs src",
+    "check:import-cycles": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/import-cycle-check.test.mjs && node scripts/check-import-cycles.mjs src",
     "check:a2a-p4-5-contract": "node scripts/check-a2a-p4-5-contract.mjs",
     "test:a2a-p4-5:deterministic": "node scripts/run-a2a-p4-5-deterministic.mjs",
     "test:a2a-p4-5:wire": "node scripts/run-a2a-p4-5-wire.mjs",
-    "test:a2a-p4-5:evidence": "node --test scripts/a2a-p4-5-live/__tests__/evidence.test.mjs",
-    "test:ci-tooling": "node --test test/scripts/a2a-p4-5-harness.test.mjs test/scripts/marketplace-e2e-control.test.mjs",
+    "test:a2a-p4-5:evidence": "node --import ./scripts/lib/document-consumer-guard.mjs --test scripts/a2a-p4-5-live/__tests__/evidence.test.mjs",
+    "test:ci-tooling": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/a2a-p4-5-harness.test.mjs",
     "check:a2a-p4-5:evidence": "bun run test:a2a-p4-5:evidence && bun run check:a2a-p4-5-contract",
     "test:a2a-p4-5:packaged-live": "node scripts/run-a2a-p4-5-packaged-live.mjs",
-    "test:knip-gate": "node --test test/scripts/knip-baseline.test.mjs && node scripts/check-knip-gate-self-test.mjs",
+    "test:knip-gate": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/knip-baseline.test.mjs && node scripts/check-knip-gate-self-test.mjs",
     "check:shell-geometry-tokens": "node scripts/check-shell-geometry-tokens.mjs",
     "check:no-inline-channels": "node scripts/check-no-inline-channels.mjs",
+    "check:sandboxed-preloads": "node scripts/check-sandboxed-preloads.mjs",
     "check:env-surface": "node --import tsx scripts/check-env-surface-policy.ts",
-    "check:source-text-safe": "node --test test/scripts/source-text-safe.test.mjs && node scripts/check-source-text-safe.mjs",
+    "check:source-text-safe": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/source-text-safe.test.mjs && node scripts/check-source-text-safe.mjs",
     "check:screenshot-provenance": "node scripts/check-screenshot-provenance.mjs",
     "check:screenshot-provenance:self-test": "node scripts/check-screenshot-provenance-self-test.mjs",
-    "check:sdk-schemas": "node scripts/sync-sdk-schemas.mjs --check",
-    "check:sdk-schemas:verify": "node scripts/sync-sdk-schemas.mjs --verify",
-    "sync:sdk-schemas": "node scripts/sync-sdk-schemas.mjs",
     "check:knip": "node scripts/check-knip-baseline.mjs",
     "check:knip:engine": "knip --config knip.jsonc --reporter json",
     "check:knip:self-test": "node scripts/check-knip-gate-self-test.mjs",
@@ -85,8 +89,8 @@
     "check:typecheck-tests:self-test": "node scripts/check-test-typecheck-gate-self-test.mjs",
     "check:typecheck-tests:update": "node scripts/check-test-typecheck-baseline.mjs --update-baseline",
     "check:test-duplicates": "node scripts/check-test-duplicates.mjs",
-    "check:sot-shapes": "node --test test/scripts/check-sot-shapes.test.mjs && node scripts/check-sot-shapes.mjs",
-    "check:asrt-claims": "node --test test/scripts/check-asrt-version-claims.test.mjs && node scripts/check-asrt-version-claims.mjs",
+    "check:sot-shapes": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-sot-shapes.test.mjs && node scripts/check-sot-shapes.mjs",
+    "check:asrt-claims": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-asrt-version-claims.test.mjs && node scripts/check-asrt-version-claims.mjs",
     "check:sot-shapes:update": "node scripts/check-sot-shapes.mjs --update-baseline",
     "check:gate-core": "bun run check:knip && bun run check:test-duplicates -- --fail-on-duplicates && bun run check:sunset-inventory && bun run check:sot-shapes && bun run check:asrt-claims",
     "test:coverage": "bun run test:prepare && bun run test:vitest -- run --coverage",
@@ -99,7 +103,7 @@
     "test:electron-smoke": "node scripts/run-electron.mjs --version",
     "test:packaged-smoke": "node scripts/smoke-packaged-app.mjs --target current",
     "test:main-flow": "tsx scripts/test-main-flow.ts",
-    "test:headless:build": "node --test test/scripts/headless-bundle-boundary.test.mjs test/scripts/headless-launch-options.test.mjs test/scripts/build-source-identity.test.mjs",
+    "test:headless:build": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/headless-bundle-boundary.test.mjs test/scripts/headless-launch-options.test.mjs test/scripts/build-source-identity.test.mjs",
     "test:headless:runtime": "node scripts/headless-runtime-smoke.mjs",
     "test:headless:process": "node scripts/headless-process-smoke.mjs",
     "dist": "node scripts/build-installers.mjs --current",
@@ -172,6 +176,7 @@
     "@vitest/coverage-v8": "^5.0.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "app-builder-lib": "26.15.3",
     "baseline-browser-mapping": "^2.10.27",
     "caniuse-lite": "^1.0.30001792",
     "class-variance-authority": "^0.7.1",
@@ -183,6 +188,7 @@
     "esbuild": "^0.28.1",
     "esbuild-loader": "^4.5.0",
     "jsdom": "^30.0.0",
+    "json-schema-to-typescript": "15.0.4",
     "knip": "6.34.0",
     "lucide-react": "^1.7.0",
     "playwright": "^1.48.0",
@@ -196,6 +202,7 @@
     "shadcn": "^4.7.0",
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.4",
+    "ts-json-schema-generator": "2.9.0",
     "tsx": "^4.19.2",
     "tw-animate-css": "^1.4.0",
     "typescript": "^7.0.2",
@@ -384,10 +391,33 @@
       "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
     },
     "deb": {
-      "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-linux-${arch}.${ext}",
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "libasound2t64 | libasound2"
+      ]
     },
     "rpm": {
-      "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-linux-${arch}.${ext}",
+      "depends": [
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libXScrnSaver",
+        "(libXtst or libXtst6)",
+        "xdg-utils",
+        "at-spi2-core",
+        "(libuuid or libuuid1)",
+        "alsa-lib"
+      ]
     },
     "win": {
       "target": [
@@ -397,6 +427,10 @@
         {
           "from": "resources/windows-job/${arch}/ave-job.exe",
           "to": "windows-job/${arch}/ave-job.exe"
+        },
+        {
+          "from": "resources/windows-path-kind/${arch}/ave-path-kind.exe",
+          "to": "windows-path-kind/${arch}/ave-path-kind.exe"
         }
       ]
     },

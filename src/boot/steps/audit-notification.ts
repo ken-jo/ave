@@ -5,7 +5,8 @@
  * The AuditLogger built here is the SINGLE instance shared by the plugin
  * runtime, hooks, and approval gate. The NotificationService is constructed
  * up-front so every lifecycle cue (turn-end / routine / ask-user / approval /
- * plugin / system) can fire against a live mainWindow getter. Finally the
+ * plugin / system) can fire against a live mainWindow getter, and the OS
+ * notification presenter is created with it. Finally the
  * in-memory plugin-auth-partition tracker is seeded from disk (#748) with
  * persistence callbacks wired so later observations flush to disk.
  */
@@ -23,8 +24,27 @@ import {
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
+import type { DesktopHostCapabilities } from "../host-runtime.js";
 
 const log = createLogger("ave");
+
+/**
+ * Create the OS notification presenter at boot rather than at the first cue.
+ * On Windows this is when Electron registers the per-user Start Menu shortcut
+ * and the toast activator CLSID, so both exist before any notification and
+ * the uninstaller can remove what the app registered
+ * (`scripts/smoke-windows-nsis-installer.mjs` asserts each step). Until
+ * 0.13.0 this happened only as a side effect of the retired manifest
+ * `notificationEvents` wiring. A host without a desktop surface has no
+ * presenter.
+ */
+function initializeOsNotificationPresenter(
+  desktop: Pick<DesktopHostCapabilities, "initializeNotificationPresenter"> | undefined,
+): void {
+  if (!desktop) return;
+  const supported = desktop.initializeNotificationPresenter();
+  log.info("boot: OS notification presenter initialised (supported=%s)", supported);
+}
 
 export async function setupAuditAndNotification(ctx: BootContext): Promise<void> {
   const { getMainWindow, aveHomeDocUpgradeMarkers } = ctx;
@@ -67,6 +87,7 @@ export async function setupAuditAndNotification(ctx: BootContext): Promise<void>
       notificationActivationRegistration: null,
     }),
   });
+  initializeOsNotificationPresenter(ctx.host.desktop);
   if (aveHomeDocUpgradeMarkers.length > 0) {
     const markerSummary =
       aveHomeDocUpgradeMarkers.length === 1

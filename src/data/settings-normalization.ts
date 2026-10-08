@@ -2,6 +2,7 @@ import {
   normalizeCorpCaCommonName,
 } from "../shared/corp-ca-common-name.js";
 import { isIP } from "node:net";
+import { isDeepStrictEqual } from "node:util";
 import { isCanonicalA2APublicHttpsOrigin } from "../shared/a2a-public-origin.js";
 import {
   normalizeSidePanelSplitPercent,
@@ -10,9 +11,22 @@ import {
 } from "../shared/side-panel.js";
 import {
   sanitizePluginConfig,
+  sanitizePluginConfigKey,
   sanitizePluginConfigPluginId,
   type PluginConfigRecord,
 } from "../shared/plugin-config.js";
+import {
+  ALERT_HOST_PLUGIN_ID,
+  isAlertKindKey,
+  isAlertVisibility,
+  type AlertInheritRule,
+  type AlertKindChoice,
+  type AlertSettings,
+  type RetiredPluginConfigRecord,
+  type RetirementHostKindMapping,
+  type RetirementSuccessorPlugin,
+  type RetirementSuccessors,
+} from "../shared/alerts-types.js";
 import {
   DEFAULT_LLM_VENDOR,
   getLlmVendorSettings,
@@ -27,7 +41,7 @@ import {
 import {
   DEFAULT_BUNDLE_ID,
   isBundleId,
-  isMarketplaceEligibleThemeBundleId,
+  isThemeId,
 } from "../shared/theme-bundles.js";
 import {
   FONT_SIZE_SCALE_VALUES,
@@ -37,8 +51,9 @@ import {
 } from "../shared/appearance-font.js";
 import {
   isMarketplaceEligibleLocale,
-  normalizeLocale,
+  normalizeLocaleSetting,
 } from "../i18n/index.js";
+import { isGitRuntimeMode } from "../shared/git-runtime-mode.js";
 import { normalizeAppMode } from "../shared/initial-app-mode.js";
 import { isProcessingDisplayLevel } from "../shared/processing-display-level.js";
 import { isSidebarTab } from "../shared/sidebar-tab.js";
@@ -63,6 +78,9 @@ import {
 } from "../shared/marketplace-package-assets.js";
 import { projectRootKey } from "../shared/project-identity.js";
 import { clampLogRetentionDays } from "../shared/log-retention.js";
+import { isSemver, isTwoMinorReleasesBehind } from "../shared/semver-compare.js";
+import { SOURCE_ID_RE } from "../marketplace/sources/official.js";
+import { normalizeSkippedPluginUpdateKey } from "../shared/skipped-plugin-updates.js";
 import { createLogger } from "../lib/logger.js";
 import {
   STORED_FIELD,
@@ -82,6 +100,7 @@ import {
 import { DEFAULT_SETTINGS } from "./settings-defaults.js";
 import type {
   A2ARemoteSettings,
+  AutoUpdateSwitch,
   AppearanceSettings,
   AppearanceSettingsV1,
   ChatSettings,
@@ -258,6 +277,99 @@ export function withoutMirroredMarketplaceProviderPresetEndpoint(
     "openai-compatible",
   );
   return { ...llm, vendors };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Rewrite renamed built-in vendor ids in settings exactly as they were read
+ * from disk, before any normalization runs.
+ *
+ * Normalization drops every vendor id this build does not know, so an install
+ * still on an old id would otherwise lose its selected provider, its vendor
+ * block, its fallback entries, its price corrections, its cached model list and
+ * its installed-provider record in a single load. Where the file already holds
+ * the new id as well, the new id's value wins and the old one is dropped.
+ */
+export function withRenamedLlmVendorIds(
+  stored: Record<string, any>,
+  renames: Readonly<Record<string, LLMVendor>>,
+): Record<string, any> {
+  const renamedId = (id: unknown): unknown =>
+    typeof id === "string" && Object.hasOwn(renames, id) ? renames[id] : id;
+  // A row that would duplicate one already stored under the new id is dropped
+  // rather than renamed, so the new id's row wins.
+  const renameRows = (rows: unknown[], idField: string, modelField: string): unknown[] => {
+    const rowKey = (id: unknown, row: Record<string, unknown>) => `${String(id)}\u0000${String(row[modelField])}`;
+    const present = new Set(rows.filter(isPlainRecord).map((row) => rowKey(row[idField], row)));
+    return rows.flatMap((row) => {
+      if (!isPlainRecord(row)) return [row];
+      const to = renamedId(row[idField]);
+      if (to === row[idField]) return [row];
+      return present.has(rowKey(to, row)) ? [] : [{ ...row, [idField]: to }];
+    });
+  };
+  // Model-list cache entries are keyed by vendor + endpoint + credential scope.
+  const cacheKeyOf = (entry: Record<string, unknown>, vendor: string): string =>
+    llmModelListCacheKey(
+      vendor,
+      typeof entry.baseUrl === "string" ? entry.baseUrl : undefined,
+      typeof entry.credentialScope === "string" ? entry.credentialScope : undefined,
+    );
+  const next: Record<string, any> = { ...stored };
+
+  if (isPlainRecord(stored.llm)) {
+    const llm: Record<string, unknown> = { ...stored.llm };
+    if (llm.provider !== undefined) llm.provider = renamedId(llm.provider);
+    if (isPlainRecord(llm.vendors)) {
+      const vendors = { ...llm.vendors };
+      for (const [from, to] of Object.entries(renames)) {
+        if (!Object.hasOwn(vendors, from)) continue;
+        if (!Object.hasOwn(vendors, to)) vendors[to] = vendors[from];
+        delete vendors[from];
+      }
+      llm.vendors = vendors;
+    }
+    if (Array.isArray(llm.fallbackChain)) {
+      llm.fallbackChain = renameRows(llm.fallbackChain, "provider", "model");
+    }
+    if (Array.isArray(llm.pricingOverrides)) {
+      llm.pricingOverrides = renameRows(llm.pricingOverrides, "vendor", "model");
+    }
+    if (isPlainRecord(llm.modelListCache)) {
+      const cache: Record<string, unknown> = {};
+      const renamed: Array<[string, Record<string, unknown>]> = [];
+      for (const [key, entry] of Object.entries(llm.modelListCache)) {
+        const to = isPlainRecord(entry) ? renamedId(entry.vendor) : undefined;
+        if (isPlainRecord(entry) && typeof to === "string" && to !== entry.vendor) {
+          renamed.push([cacheKeyOf(entry, to), { ...entry, vendor: to }]);
+        } else {
+          cache[key] = entry;
+        }
+      }
+      const present = new Set(
+        Object.values(cache)
+          .filter(isPlainRecord)
+          .filter((entry) => typeof entry.vendor === "string")
+          .map((entry) => cacheKeyOf(entry, entry.vendor as string)),
+      );
+      for (const [key, entry] of renamed) {
+        if (!present.has(key)) cache[key] = entry;
+      }
+      llm.modelListCache = cache;
+    }
+    next.llm = llm;
+  }
+
+  if (isPlainRecord(stored.marketplace) && Array.isArray(stored.marketplace.installedProviderIds)) {
+    next.marketplace = {
+      ...stored.marketplace,
+      installedProviderIds: [...new Set(stored.marketplace.installedProviderIds.map(renamedId))],
+    };
+  }
+  return next;
 }
 
 /**
@@ -815,17 +927,10 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   const merged: MarketplaceSettings = {
     ...DEFAULT_SETTINGS.marketplace,
     ...raw,
-    backend: "real-cloud",
   };
-  if (typeof raw.cloudBaseUrl === "string") {
-    const trimmed = raw.cloudBaseUrl.trim();
-    merged.cloudBaseUrl = trimmed || DEFAULT_SETTINGS.marketplace.cloudBaseUrl;
-  } else {
-    merged.cloudBaseUrl = DEFAULT_SETTINGS.marketplace.cloudBaseUrl;
-  }
-  merged.cloudAllowPrivateNetwork = typeof raw.cloudAllowPrivateNetwork === "boolean"
-    ? raw.cloudAllowPrivateNetwork
-    : DEFAULT_SETTINGS.marketplace.cloudAllowPrivateNetwork;
+  const gitMode = raw.git && typeof raw.git === "object" ? (raw.git as { mode?: unknown }).mode : undefined;
+  if (isGitRuntimeMode(gitMode)) merged.git = { mode: gitMode };
+  else delete merged.git;
   merged.installedProviderIds = uniqueValidList(
     raw.installedProviderIds,
     isMarketplaceEligibleLLMVendor,
@@ -833,9 +938,11 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   merged.installedProviderPresets = uniqueValidProviderPresets(
     raw.installedProviderPresets,
   );
+  // Legacy: read only by the first-boot migration (design §16.3), whose theme
+  // packages carry these ids; a compiled id never needed one.
   merged.installedThemeBundleIds = uniqueValidList(
     raw.installedThemeBundleIds,
-    isMarketplaceEligibleThemeBundleId,
+    (id: unknown): id is string => isThemeId(id) && !isBundleId(id),
   );
   merged.installedMessagingConnections = uniqueValidMessagingConnections(
     raw.installedMessagingConnections,
@@ -850,7 +957,34 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   merged.offlineCacheEnabled = typeof raw.offlineCacheEnabled === "boolean"
     ? raw.offlineCacheEnabled
     : DEFAULT_SETTINGS.marketplace.offlineCacheEnabled;
+  // Automatic-update switches (design §18.7.2, §18.9): unset means the default decides.
+  if (typeof raw.autoUpdate === "boolean") merged.autoUpdate = raw.autoUpdate;
+  else delete merged.autoUpdate;
+  const sources = autoUpdateSwitches(raw.autoUpdateSources, (id) => (SOURCE_ID_RE.test(id) ? id : null));
+  if (sources) merged.autoUpdateSources = sources;
+  else delete merged.autoUpdateSources;
+  const packages = autoUpdateSwitches(raw.autoUpdatePackages, normalizeSkippedPluginUpdateKey);
+  if (packages) merged.autoUpdatePackages = packages;
+  else delete merged.autoUpdatePackages;
   return merged;
+}
+
+/**
+ * A switch map keeps each entry whose key normalizes and whose value is
+ * `on` or `off`, in a null-prototype map; anything that is not a plain
+ * object is unset.
+ */
+function autoUpdateSwitches(
+  input: unknown,
+  normalizeKey: (key: string) => string | null,
+): Record<string, AutoUpdateSwitch> | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const switches = Object.create(null) as Record<string, AutoUpdateSwitch>;
+  for (const [rawKey, value] of Object.entries(input)) {
+    const key = normalizeKey(rawKey);
+    if (key !== null && (value === "on" || value === "off")) switches[key] = value;
+  }
+  return switches;
 }
 
 /**
@@ -933,19 +1067,20 @@ export function normalizeAppearance(input: unknown): AppearanceSettings {
 
   // v2 path — schemaVersion:2 present.
   if (obj.schemaVersion === 2) {
-    // Retired bundle IDs from earlier internal builds are not migrated:
-    // the open-source release has no install base that would carry them
-    // forward. Unknown bundleIds fall through to DEFAULT_BUNDLE_ID via
-    // `isBundleId` — the same predicate the patch path in settings-store uses,
-    // so the two write paths cannot accept different value sets.
-    const bundleId = isBundleId(obj.bundleId) ? obj.bundleId : DEFAULT_BUNDLE_ID;
+    // A compiled-in bundle id or an installed theme's package name (design
+    // §5.2): whether that theme is still installed is decided where it is
+    // applied, since the content ledger is read after settings. Anything else
+    // falls through to DEFAULT_BUNDLE_ID via `isThemeId` — the same predicate
+    // the patch path in settings-store uses, so the two write paths cannot
+    // accept different value sets.
+    const bundleId = isThemeId(obj.bundleId) ? obj.bundleId : DEFAULT_BUNDLE_ID;
     const followSystem = typeof obj.followSystem === "boolean" ? obj.followSystem : undefined;
     const result: AppearanceSettings = {
       schemaVersion: 2,
       bundleId,
       // Coerce any stored/legacy value to a supported locale; missing →
       // English default for the global build.
-      language: normalizeLocale(obj.language),
+      language: normalizeLocaleSetting(obj.language),
     };
     if (followSystem !== undefined) result.followSystem = followSystem;
     const font = normalizeAppearanceFont(obj.font);
@@ -963,7 +1098,7 @@ export function normalizeAppearance(input: unknown): AppearanceSettings {
       codeTheme: (typeof obj.codeTheme === "string" ? obj.codeTheme : "auto") as CodeThemePreference,
     };
     // Preserve any stored language across the v1→v2 migration; default English.
-    return { ...migrateAppearanceV1ToV2(legacy), language: normalizeLocale(obj.language) };
+    return { ...migrateAppearanceV1ToV2(legacy), language: normalizeLocaleSetting(obj.language) };
   }
 
   return { ...DEFAULT_SETTINGS.appearance };
@@ -1515,6 +1650,255 @@ export function sanitizeStoredPluginConfigs(input: unknown): Record<string, Plug
         (err as Error).message,
       );
     }
+  }
+  return out;
+}
+
+/**
+ * A stored app version is a complete SemVer version, judged by the same
+ * validator the marketplace applies to version ranges. The `"unknown"`
+ * sentinel the version resolver can return is not a version and must never be
+ * persisted as one.
+ */
+function isStoredAppVersion(value: unknown): value is string {
+  return typeof value === "string" && isSemver(value);
+}
+
+/**
+ * The identities in the alert blocks — plugin ids, source ids, config keys —
+ * are compared exactly by their readers, so they are validated as stored and
+ * never rewritten. Trimming `" sample "` into `sample` would let a second
+ * record overwrite the first under the same id, or accept a successor id no
+ * plugin carries.
+ */
+function isStoredPluginId(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    return sanitizePluginConfigPluginId(value) === value;
+  } catch {
+    return false;
+  }
+}
+
+function isStoredConfigKey(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    return sanitizePluginConfigKey(value) === value;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What a malformed kind entry becomes: off, no OS notification, never seen,
+ * and consented to the lowest visibility. Dropping the entry instead would
+ * let the kind resolve again from its declaration, and a declaration may say
+ * `defaultEnabled: true` for a plugin the user already has — a damaged file
+ * must not turn a kind on. The lowest visibility makes any declared level an
+ * escalation, which leaves the kind off until the user visits it.
+ */
+const FAIL_CLOSED_ALERT_KIND_CHOICE: Readonly<AlertKindChoice> = Object.freeze({
+  enabled: false,
+  osNotification: false,
+  visibility: "silent",
+  seenByUser: false,
+  repaired: true,
+});
+
+function normalizeAlertKindChoice(key: string, input: unknown): AlertKindChoice {
+  const obj = input && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : {};
+  let choice: AlertKindChoice;
+  if (
+    typeof obj.enabled === "boolean"
+    && typeof obj.osNotification === "boolean"
+    && typeof obj.seenByUser === "boolean"
+    && isAlertVisibility(obj.visibility)
+    // A damaged mark is a damaged entry: read as absent, it would turn a
+    // repaired or escalated entry back into one a later retirement may
+    // switch on.
+    && (!Object.hasOwn(obj, "repaired") || obj.repaired === true)
+    && (!Object.hasOwn(obj, "escalated") || obj.escalated === true)
+  ) {
+    choice = {
+      enabled: obj.enabled,
+      osNotification: obj.osNotification,
+      visibility: obj.visibility,
+      seenByUser: obj.seenByUser,
+    };
+    if (obj.repaired === true) choice.repaired = true;
+    if (obj.escalated === true) choice.escalated = true;
+  } else {
+    log.warn("alert kind entry %s is malformed, storing it off and unseen", key);
+    choice = { ...FAIL_CLOSED_ALERT_KIND_CHOICE };
+  }
+  if (isStoredAppVersion(obj.absentSinceAppVersion)) {
+    choice.absentSinceAppVersion = obj.absentSinceAppVersion;
+  }
+  return choice;
+}
+
+/**
+ * Coerce the on-disk `alerts` block to AlertSettings. The master switch falls
+ * back to its default. A kind entry is kept only under a key that follows the
+ * `<pluginId>:<kind>` grammar; an entry whose choice fields are out of shape
+ * is stored as {@link FAIL_CLOSED_ALERT_KIND_CHOICE} rather than repaired
+ * field by field, because a repaired choice would read as one the user made.
+ * `absentSinceAppVersion` is kept only as a real version string.
+ *
+ * With the running `appVersion`, an entry whose plugin has been absent for two
+ * minor releases is dropped: a reinstall after that starts from the kind's
+ * declaration. A repaired entry is kept whatever its age, because dropping it
+ * would let the kind resolve from its declaration again — the outcome the
+ * repair exists to prevent. Without a stable release version nothing is dropped.
+ */
+export function normalizeAlertSettings(input: unknown, appVersion?: string): AlertSettings {
+  const base = DEFAULT_SETTINGS.alerts;
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { osNotificationsEnabled: base.osNotificationsEnabled, kinds: {} };
+  }
+  const obj = input as Record<string, unknown>;
+  const result: AlertSettings = {
+    osNotificationsEnabled: typeof obj.osNotificationsEnabled === "boolean"
+      ? obj.osNotificationsEnabled
+      : base.osNotificationsEnabled,
+    kinds: {},
+  };
+  const rawKinds = obj.kinds;
+  if (rawKinds && typeof rawKinds === "object" && !Array.isArray(rawKinds)) {
+    for (const [key, value] of Object.entries(rawKinds as Record<string, unknown>)) {
+      if (!isAlertKindKey(key)) {
+        log.warn("dropping alert kind entry with an invalid key: %s", key);
+        continue;
+      }
+      const choice = normalizeAlertKindChoice(key, value);
+      if (
+        appVersion !== undefined
+        && choice.repaired !== true
+        && choice.absentSinceAppVersion !== undefined
+        && isTwoMinorReleasesBehind(choice.absentSinceAppVersion, appVersion)
+      ) {
+        log.info("dropping alert kind entry %s: its plugin was removed at %s", key, choice.absentSinceAppVersion);
+        continue;
+      }
+      result.kinds[key] = choice;
+    }
+  }
+  return result;
+}
+
+/**
+ * An inherit rule names at least one value: with none, a `listed: "disabled"`
+ * rule would read as on for every former user whatever they had chosen.
+ */
+function normalizeAlertInheritRule(input: unknown): AlertInheritRule | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const obj = input as Record<string, unknown>;
+  if (
+    !isStoredConfigKey(obj.key)
+    || (obj.listed !== "enabled" && obj.listed !== "disabled")
+    || !Array.isArray(obj.values)
+    || obj.values.length === 0
+    || !obj.values.every((v) => typeof v === "string" && v.length > 0)
+  ) {
+    return undefined;
+  }
+  const rule: AlertInheritRule = { key: obj.key, listed: obj.listed, values: [...obj.values] };
+  if (obj.masterKey !== undefined) {
+    if (!isStoredConfigKey(obj.masterKey)) return undefined;
+    rule.masterKey = obj.masterKey;
+  }
+  return rule;
+}
+
+function normalizeRetirementSuccessors(input: unknown): RetirementSuccessors | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const obj = input as Record<string, unknown>;
+  if (!Array.isArray(obj.plugins) || !Array.isArray(obj.hostKinds)) return undefined;
+  const plugins: RetirementSuccessorPlugin[] = [];
+  for (const entry of obj.plugins) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+    const e = entry as Record<string, unknown>;
+    if (!isStoredPluginId(e.pluginId)) return undefined;
+    const pluginId = e.pluginId;
+    if (e.anySource !== undefined && e.anySource !== true) return undefined;
+    plugins.push(e.anySource === true ? { pluginId, anySource: true } : { pluginId });
+  }
+  const hostKinds: RetirementHostKindMapping[] = [];
+  for (const entry of obj.hostKinds) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+    const e = entry as Record<string, unknown>;
+    if (!isAlertKindKey(e.kind) || !e.kind.startsWith(`${ALERT_HOST_PLUGIN_ID}:`)) return undefined;
+    const enabled = normalizeAlertInheritRule(e.enabled);
+    if (!enabled) return undefined;
+    const mapping: RetirementHostKindMapping = { kind: e.kind, enabled };
+    if (e.osNotification !== undefined) {
+      const osNotification = normalizeAlertInheritRule(e.osNotification);
+      if (!osNotification) return undefined;
+      mapping.osNotification = osNotification;
+    }
+    hostKinds.push(mapping);
+  }
+  return { plugins, hostKinds };
+}
+
+export function normalizeRetiredPluginConfigRecord(input: unknown): RetiredPluginConfigRecord | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const obj = input as Record<string, unknown>;
+  if (typeof obj.enabled !== "boolean") return undefined;
+  if (obj.sourceId !== null && (typeof obj.sourceId !== "string" || !SOURCE_ID_RE.test(obj.sourceId))) {
+    return undefined;
+  }
+  if (!isStoredAppVersion(obj.retiredAtAppVersion)) return undefined;
+  const successors = normalizeRetirementSuccessors(obj.successors);
+  if (!successors) return undefined;
+  if (!Array.isArray(obj.consumedBy) || !obj.consumedBy.every(isStoredPluginId)) return undefined;
+  const consumedBy: string[] = [...obj.consumedBy];
+  let config: PluginConfigRecord;
+  try {
+    config = sanitizePluginConfig(obj.config);
+  } catch {
+    return undefined;
+  }
+  // Sanitising trims keys; a config it had to change was not written by the host.
+  if (!isDeepStrictEqual(config, obj.config)) return undefined;
+  return {
+    config,
+    enabled: obj.enabled,
+    sourceId: obj.sourceId,
+    retiredAtAppVersion: obj.retiredAtAppVersion,
+    successors,
+    consumedBy,
+  };
+}
+
+/**
+ * Coerce the on-disk `retiredPluginConfigs` block. A record is what a
+ * retirement wrote for one plugin, and a successor reads it as the user's
+ * former choices, so a record with any field out of shape is dropped whole:
+ * a half-repaired record would hand a successor choices nobody made.
+ *
+ * The load never removes a well-formed record, whatever its age: whether
+ * every successor has inherited and the retired package is gone is the
+ * alerts service's question, not one the settings file can answer.
+ */
+export function normalizeRetiredPluginConfigs(input: unknown): Record<string, RetiredPluginConfigRecord> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return {};
+  }
+  const out: Record<string, RetiredPluginConfigRecord> = {};
+  for (const [pluginId, value] of Object.entries(input)) {
+    if (!isStoredPluginId(pluginId)) {
+      log.warn("dropping retired plugin config with an invalid id: %s", JSON.stringify(pluginId));
+      continue;
+    }
+    const record = normalizeRetiredPluginConfigRecord(value);
+    if (!record) {
+      log.warn("dropping malformed retired plugin config: %s", pluginId);
+      continue;
+    }
+    out[pluginId] = record;
   }
   return out;
 }

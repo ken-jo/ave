@@ -1,16 +1,22 @@
-param([string]$Arch = "x64", [switch]$FailureFixture)
+# Builds one of the Windows native helpers: the job launcher (`-Helper job`,
+# native/windows-job/) or the folder classifier (`-Helper path-kind`,
+# native/windows-path-kind/). Both use the installed C++ build tools and
+# download nothing.
+param([string]$Arch = "x64", [switch]$FailureFixture, [ValidateSet("job", "path-kind")][string]$Helper = "job")
 $ErrorActionPreference = "Stop"
 if ($Arch -notin @("x64", "arm64")) { throw "Unsupported job launcher architecture: $Arch" }
+if ($FailureFixture -and $Helper -ne "job") { throw "The failure fixture belongs to the job launcher" }
 $root = Split-Path $PSScriptRoot -Parent
-$out = Join-Path $root "resources/windows-job/$Arch"
+$out = Join-Path $root "resources/windows-$Helper/$Arch"
 New-Item -ItemType Directory -Force $out | Out-Null
 $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
 if (!(Test-Path $vswhere)) { throw "Windows job launcher requires the C++ build tools" }
 $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 if (!$installation) { throw "Windows job launcher requires the C++ build tools" }
 $devcmd = Join-Path $installation "Common7/Tools/VsDevCmd.bat"
-$source = Join-Path $root "native/windows-job/launcher.cpp"
-$name = if ($FailureFixture) { "ave-job-failure.exe" } else { "ave-job.exe" }
+$source = if ($Helper -eq "job") { Join-Path $root "native/windows-job/launcher.cpp" } else { Join-Path $root "native/windows-path-kind/path-kind.cpp" }
+$name = if ($Helper -eq "path-kind") { "ave-path-kind.exe" } elseif ($FailureFixture) { "ave-job-failure.exe" } else { "ave-job.exe" }
+$object = if ($Helper -eq "job") { "launcher.obj" } else { "path-kind.obj" }
 # Import the compiler environment without passing checkout paths through cmd.
 # UTF-16 preserves environment values containing non-ASCII user/profile paths.
 $setup = New-Object System.Diagnostics.ProcessStartInfo
@@ -35,8 +41,8 @@ foreach ($line in ($environmentText -split "`r?`n")) {
 }
 $compilerArgs = @("/nologo", "/std:c++17", "/O2", "/MT", "/W4", "/WX", "/EHsc")
 if ($FailureFixture) { $compilerArgs += "/DAVE_TEST_INVALID_JOB" }
-$compilerArgs += @($source, "/Fo:$out/launcher.obj", "/Fe:$out/$name", "/link", "/INCREMENTAL:NO", "/Brepro")
+$compilerArgs += @($source, "/Fo:$out/$object", "/Fe:$out/$name", "/link", "/INCREMENTAL:NO", "/Brepro")
 # Direct argument passing preserves Unicode, spaces, and literal percent signs.
 & cl.exe @compilerArgs
-if ($LASTEXITCODE -ne 0) { throw "Windows job launcher build failed ($LASTEXITCODE)" }
-Remove-Item -LiteralPath (Join-Path $out "launcher.obj") -ErrorAction SilentlyContinue
+if ($LASTEXITCODE -ne 0) { throw "Windows $Helper helper build failed ($LASTEXITCODE)" }
+Remove-Item -LiteralPath (Join-Path $out $object) -ErrorAction SilentlyContinue

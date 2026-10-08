@@ -1,35 +1,49 @@
 # Marketplace Artifact Trust Operations
 
-Ave uses a single marketplace artifact trust gate.
+Ave installs plugins from git marketplaces. There is no signing key, no
+signed envelope and no upload API; what an install trusts is the commit it
+synced and the pins that commit carries
+([design](../design/multi-source-git-marketplace.md) §6).
 
-1. Plugin authors build a zip containing `plugin.json`, `dist/`, and any static
-   assets.
-2. The marketplace upload API validates the zip, manifest schema, plugin id,
-   version monotonicity, install policy, dependencies, and plugin access grants.
-3. The marketplace server signs the final artifact envelope.
-4. `ave` downloads the artifact, verifies the envelope with host-owned
-   marketplace public keys, extracts the zip, and writes an install receipt with
-   file hashes.
+1. A plugin package's `ave-package.json` pins its artifact: a GitHub release
+   asset or an https archive by `sha256`, or the package's own tree at the
+   version's commit.
+2. The app syncs the marketplace, pins the commit it read, and plans the
+   install from that commit only.
+3. The ladder downloads the pinned zip (release, then archive) or packs the
+   pinned tree, and checks the bytes against the pin. The staged `plugin.json`
+   must match the descriptor's `minAppVersion` and authority fields
+   (`MANIFEST_MISMATCH` otherwise), and may not declare the retired
+   `installPolicy` or `publisher`.
+4. The install writes a receipt (schema v4, `installSource: "git"`) with the
+   artifact digest, the source, the snapshot and version commits, the rung
+   outcomes and per-file SHA-256 values.
 5. Runtime boot verifies the install receipt before parsing `plugin.json` or
    importing plugin code.
 
-Plugin repositories do not generate detached manifest sidecar signatures. The
-SDK does not carry marketplace trust keys.
+Plugin repositories do not generate signatures. Their vendored `contract/`
+contains authoring types and the manifest schema, with no trust keys.
 
-## Key ownership
+## What an organization controls
 
-- Marketplace private signing keys are server-side only.
-- Marketplace public trust anchors are host-owned in `ave`.
-- `@ave/plugin-sdk` is a type/source-only authoring contract.
+- Which marketplaces a machine may reach (`marketplaces.allow` and `block` in
+  the system policy file) and which it adds (`additional`).
+- Which packages are installed once (`defaultInstalls`) or kept installed
+  (`requiredInstalls`).
+- Its own marketplace's branch protection, which is the publishing review.
+
+A marketplace's `policy/revocations.json` disables or uninstalls only that
+marketplace's installs.
 
 ## Local tamper detection
 
 The install receipt records:
 
 - plugin id and version
-- artifact SHA-256 from the verified envelope
-- signer key id
-- per-file SHA-256 values for files extracted from the artifact
+- the artifact SHA-256 (the pinned zip's hash, or the tree digest)
+- the source, the snapshot and version commits, and each rung's outcome
+- per-file SHA-256 values for the installed files
 
 If any recorded file is missing or modified, the runtime rejects that plugin and
-emits `plugin_integrity_rejected`.
+emits `plugin_integrity_rejected`. Receipts written before the git marketplace
+(schema v3, `installSource: "marketplace"`) still verify.

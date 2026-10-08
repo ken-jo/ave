@@ -1,4 +1,4 @@
-# Local Plugin Development
+# Local Extension Development
 
 Status: Active English default. The Korean archive keeps earlier review history and original discussion, but this page must be usable on its own.
 
@@ -6,7 +6,7 @@ Korean archive: [docs/ko mirror](../ko/guides/local-plugin-development.md).
 
 ## What This Page Owns
 
-This page owns the local plugin authoring loop, manifest shape, HostApi use, UI actions, and reload behavior. Use it as the first review surface when changing this area; use the archive for background, not as a substitute for current English guidance.
+This page owns the local extension authoring loop, manifest shape, HostApi use, UI actions, and reload behavior. Use it as the first review surface when changing this area; use the archive for background, not as a substitute for current English guidance.
 
 ## Current Operating Contract
 
