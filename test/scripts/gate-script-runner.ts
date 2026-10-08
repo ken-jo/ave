@@ -1,5 +1,6 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
 /**
@@ -42,4 +43,29 @@ export function writeFixtureFile(root: string, rel: string, contents: string): v
   const path = join(root, rel);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, contents, "utf-8");
+}
+
+/**
+ * Absolute path of the installed `@electron/asar` command-line entry.
+ *
+ * Packaging tests build fixture archives with the real `asar` CLI so the
+ * archive layout (header, `.unpacked` sidecar) is what electron-builder makes.
+ * Since @electron/asar 4 the package's `exports` map publishes only its library
+ * entry, so the CLI cannot be reached by a subpath `require.resolve`. The path
+ * is read from the package's own `bin` field instead of being hardcoded, so a
+ * renamed CLI fails here by name rather than as a missing-module spawn error.
+ */
+export function asarCliPath(): string {
+  const libraryEntry = createRequire(import.meta.url).resolve("@electron/asar");
+  for (let directory = dirname(libraryEntry); directory !== dirname(directory); directory = dirname(directory)) {
+    const manifestPath = join(directory, "package.json");
+    if (!existsSync(manifestPath)) continue;
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as { name?: string; bin?: string | Record<string, string> };
+    if (manifest.name !== "@electron/asar") continue;
+    // npm's single-command shorthand is a bare string; the map form names it.
+    const bin = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.asar;
+    if (typeof bin !== "string") throw new Error(`@electron/asar at ${directory} declares no "asar" bin`);
+    return join(directory, bin);
+  }
+  throw new Error(`no @electron/asar package.json above ${libraryEntry}`);
 }

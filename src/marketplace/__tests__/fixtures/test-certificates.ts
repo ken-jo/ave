@@ -74,11 +74,22 @@ function pem(der: Buffer): string {
   return `-----BEGIN CERTIFICATE-----\n${lines.join("\n")}\n-----END CERTIFICATE-----\n`;
 }
 
+/**
+ * A random positive serial in minimal DER: a zero first byte would make the
+ * encoding non-minimal (or the value shorter), which BoringSSL rejects as
+ * INVALID_INTEGER — about one certificate in 256 failed before this.
+ */
+function serialNumber(): Buffer {
+  const serial = randomBytes(12);
+  serial[0] = (serial[0]! & 0x7f) | 0x01;
+  return serial;
+}
+
 function certificate(options: { subject: string; issuer: string; publicKey: KeyObject; signer: KeyObject; extensions: Buffer[] }): string {
   const now = Date.now();
   const tbs = sequence(
     tlv(0xa0, integer(Buffer.from([2]))),
-    integer(randomBytes(12)),
+    integer(serialNumber()),
     ECDSA_WITH_SHA256,
     name(options.issuer),
     sequence(utcTime(new Date(now - 60 * 60 * 1000)), utcTime(new Date(now + 24 * 60 * 60 * 1000))),

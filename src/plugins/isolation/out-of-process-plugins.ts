@@ -270,7 +270,7 @@
  *      The merge is unconditional: `sandbox-manager.js` composes the
  *    allow-list as `[...getDefaultWritePaths(), ...userAllowWrite]`, so an
  *    ALLOW grant cannot subtract from it. A DENY grant can, which is the lever
- *    named at the end of this outcome list. READ OUT OF ASRT 0.0.75's
+ *    named at the end of this outcome list. READ OUT OF ASRT 0.0.76's
  *    `getDefaultWritePaths()`, the merged list is `/dev/stdout`, `/dev/stderr`,
  *    `/dev/null`, `/dev/tty`, `/dev/dtracehelper`, `/dev/autofs_nowait`,
  *    `/tmp/claude`, `/private/tmp/claude`, `<real home>/.npm/_logs` and
@@ -358,7 +358,7 @@
  *    One residual, on macOS only: an approved WRITE grant on an ancestor of
  *    `~/.ave` (a user-chosen directory, or a shell workspace containing it)
  *    can write into other processes' temp directories and HOMEs, though not
- *    read them. ASRT 0.0.75 carves exceptions out of read denies only. That
+ *    read them. ASRT 0.0.76 carves exceptions out of read denies only. That
  *    grant already reaches every plugin's data directory, so it is the trust
  *    already given; on Linux the tmpfs masks hide the roots from it.
  *      READ is NOT a jail, and calling it one would be the same error facing
