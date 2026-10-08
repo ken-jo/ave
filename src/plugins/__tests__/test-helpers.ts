@@ -11,7 +11,8 @@ import { execFile } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { ValidateFunction } from "ajv";
 import { resolveAddFormats, resolveAjv } from "../config-schema.js";
@@ -514,6 +515,22 @@ export async function writeTestPluginRegistry(
     JSON.stringify({ version: 1, plugins: entries }),
     "utf-8",
   );
+}
+
+/** `src/`, the root the import-boundary tests read the runtime import graph from. */
+export const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
+/** `src`-relative and `/`-separated, so a boundary failure names a file readably on every platform. */
+export function sourceDisplayPath(file: string): string {
+  return relative(SOURCE_ROOT, file).split(sep).join("/");
+}
+
+/** A module the app ships: not a test, a test helper or a probe. */
+export function isProductionSourceModule(file: string): boolean {
+  const name = sourceDisplayPath(file);
+  return !/(^|\/)__tests__\//u.test(name)
+    && !/(^|\/)__probes__\//u.test(name)
+    && !/\.test\.tsx?$/u.test(name);
 }
 
 /**

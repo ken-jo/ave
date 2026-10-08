@@ -60,15 +60,17 @@ import {
 } from "../host-api-wire.js";
 import { allPluginsAreOutOfProcess } from "../out-of-process-plugins.js";
 import {
+  isProductionSourceModule,
   makeTestPluginEntrySource,
   makeTestPluginRuntime,
   makeTestPluginRuntimeFixture,
+  SOURCE_ROOT,
+  sourceDisplayPath,
   writeTestPlugin,
   writeTestPluginRegistry,
 } from "../../__tests__/test-helpers.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
 import { buildRuntimeImportGraph } from "../../../../scripts/check-import-cycles.mjs";
 import { hostApiRequest } from "../../../__tests__/support/host-protocol-wire.js";
 
@@ -366,19 +368,13 @@ describe("the in-process loader's removal predicate is fed from the registry", (
  * import statements, and a dynamic `import()` of the module counts as taking
  * every binding.
  */
-const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const SRC = SOURCE_ROOT;
 const PLUGIN_LOADER = join(SRC, "plugins", "runtime", "plugin-loader.ts");
 const PLUGIN_CHILD_MAIN = join(SRC, "plugins", "isolation", "plugin-child-main.ts");
 const importGraph = buildRuntimeImportGraph(SRC);
 
-function display(file: string): string {
-  return relative(SRC, file).split(sep).join("/");
-}
-
-function isProductionModule(file: string): boolean {
-  const name = display(file);
-  return !/(^|\/)__tests__\//u.test(name) && !/(^|\/)__probes__\//u.test(name) && !/\.test\.tsx?$/u.test(name);
-}
+const display = sourceDisplayPath;
+const isProductionModule = isProductionSourceModule;
 
 /** Whether a relative specifier written in `from` names `plugin-loader.ts`. */
 function namesPluginLoader(from: string, specifier: string): boolean {
