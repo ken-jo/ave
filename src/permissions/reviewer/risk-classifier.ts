@@ -37,6 +37,7 @@ import { isGloballyRoutableAddress } from "../../core/network-guard.js";
 import { PERMISSION_REVIEWER_SYSTEM_PROMPT } from "../../shared/permission-reviewer-framework.js";
 import { getDottedFieldValue } from "../../shared/dotted-field-value.js";
 import { extractShellCommands } from "../../shared/shell-command-fields.js";
+import { stripCommandPath, tokenizeShell, type ShellLeaf } from "../../shared/shell-tokenizer.js";
 import {
   formatSandboxCapabilityForPrompt,
   isDisposableSubstrateCapability,
@@ -332,6 +333,179 @@ const DESTRUCTIVE_SHELL_RE = new RegExp([
  */
 const REVERSIBLE_SHELL_RE =
   /^\s*(echo|touch|ls|cat|pwd|whoami|date|env|true|false)\b/i;
+
+// ─── Shell egress (disposable guest only) ───────────────────────────
+//
+// A disposable guest confines filesystem and process effects, not network
+// (`disposableContainerCapability` claims `network: false`). A shell command
+// that can carry data OUT of the guest is therefore not a guest-scoped effect,
+// and the guest rules below keep it at MEDIUM instead of the guest LOW. A
+// download INTO the guest (`pip install`, `git clone`, `curl -O`, a plain
+// `wget`) moves nothing out and stays LOW. The leaves come from the shared
+// shell tokenizer the host risk inspector uses, so wrappers (`timeout`,
+// `env`, `xargs`), compound commands and substitutions are seen the same way.
+// Anything the tokenizer cannot parse, or a verb hidden behind an expansion,
+// is treated as able to send — ambiguity reads MEDIUM, never LOW. Host grading
+// does not consult any of this.
+
+/** Verbs whose ordinary use opens a connection that carries caller data out. */
+const SHELL_EGRESS_VERBS: ReadonlySet<string> = new Set([
+  "nc", "ncat", "netcat", "socat", "telnet",
+  "ssh", "scp", "sftp", "ftp", "tftp",
+  "sendmail", "mail", "mailx", "mutt",
+  "rclone", "aws", "gsutil", "az", "gcloud",
+  // httpie/xh: request items (`k=v`, `@file`) send a body with no flag.
+  "http", "https", "xh",
+]);
+
+/** `<verb> <subcommand>` pairs that publish or push local content. */
+const SHELL_EGRESS_SUBCOMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["git", new Set(["push", "send-email"])],
+  ["npm", new Set(["publish"])],
+  ["pnpm", new Set(["publish"])],
+  ["yarn", new Set(["publish"])],
+  ["bun", new Set(["publish"])],
+  ["cargo", new Set(["publish"])],
+  ["gem", new Set(["push"])],
+  ["twine", new Set(["upload"])],
+  ["uv", new Set(["publish"])],
+  ["poetry", new Set(["publish"])],
+  ["docker", new Set(["push"])],
+  ["podman", new Set(["push"])],
+]);
+
+/** Shells whose `-c` operand is itself a command line to inspect. */
+const SHELL_INTERPRETERS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+
+/** curl options that send a request body, upload, or read options from a file. */
+const CURL_SEND_LONG_OPTIONS: ReadonlySet<string> = new Set([
+  "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode",
+  "--json", "--form", "--form-string", "--upload-file", "--mail-from",
+  "--mail-rcpt", "--quote", "--config",
+]);
+/** curl short options with the same effect (`-d`, `-F`, `-T`, `-Q`, `-K`). */
+const CURL_SEND_SHORT_OPTIONS: ReadonlySet<string> = new Set(["d", "F", "T", "Q", "K"]);
+/** curl short options that take a value: the rest of the cluster (or the next word) is that value. */
+const CURL_VALUE_SHORT_OPTIONS: ReadonlySet<string> = new Set([
+  "A", "b", "c", "C", "D", "e", "E", "H", "m", "o", "P", "r", "t", "u", "U", "w", "x", "y", "Y", "z",
+]);
+/** wget options that send a request body or run wgetrc commands. */
+const WGET_SEND_LONG_OPTIONS: ReadonlySet<string> = new Set([
+  "--post-data", "--post-file", "--body-data", "--body-file", "--execute",
+]);
+
+function isReadOnlyHttpMethod(method: string | undefined): boolean {
+  return method !== undefined && /^(GET|HEAD|OPTIONS)$/i.test(method);
+}
+
+function longOptionName(arg: string): string {
+  const eq = arg.indexOf("=");
+  return eq > 0 ? arg.slice(0, eq) : arg;
+}
+
+function longOptionValue(args: readonly string[], index: number): string | undefined {
+  const arg = args[index]!;
+  const eq = arg.indexOf("=");
+  return eq > 0 ? arg.slice(eq + 1) : args[index + 1];
+}
+
+function curlSendsData(args: readonly string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg.startsWith("--")) {
+      const name = longOptionName(arg);
+      if (CURL_SEND_LONG_OPTIONS.has(name)) return true;
+      if (name === "--request" && !isReadOnlyHttpMethod(longOptionValue(args, i))) return true;
+      continue;
+    }
+    if (!arg.startsWith("-") || arg.length < 2) continue;
+    for (let j = 1; j < arg.length; j++) {
+      const letter = arg[j]!;
+      if (CURL_SEND_SHORT_OPTIONS.has(letter)) return true;
+      if (letter === "X") {
+        const method = j + 1 < arg.length ? arg.slice(j + 1) : args[i + 1];
+        if (!isReadOnlyHttpMethod(method)) return true;
+        if (j + 1 >= arg.length) i++;
+        break;
+      }
+      if (CURL_VALUE_SHORT_OPTIONS.has(letter)) {
+        if (j + 1 >= arg.length) i++;
+        break;
+      }
+    }
+  }
+  return false;
+}
+
+function wgetSendsData(args: readonly string[]): boolean {
+  return args.some((arg, i) => {
+    if (arg === "-e") return true;
+    if (!arg.startsWith("--")) return false;
+    const name = longOptionName(arg);
+    if (WGET_SEND_LONG_OPTIONS.has(name)) return true;
+    return name === "--method" && !isReadOnlyHttpMethod(longOptionValue(args, i));
+  });
+}
+
+/** `host:path`, `user@host:path`, `host::module` or `rsync://` — a remote rsync operand. */
+function isRemoteRsyncOperand(arg: string): boolean {
+  if (arg.startsWith("-")) return false;
+  return /^rsync:\/\//i.test(arg) || /^[^/]*:/.test(arg);
+}
+
+function touchesNetworkDevice(paths: readonly string[]): boolean {
+  return paths.some((p) => /^\/dev\/(tcp|udp)\//.test(p));
+}
+
+const SHELL_EGRESS_MAX_DEPTH = 4;
+
+function shellLeafCanSendData(leaf: ShellLeaf, depth: number): boolean {
+  if (
+    touchesNetworkDevice(leaf.redirectTargets) ||
+    touchesNetworkDevice(leaf.inputRedirectTargets) ||
+    touchesNetworkDevice(leaf.argv)
+  ) {
+    return true;
+  }
+  const argv = leaf.argv;
+  if (argv.length === 0) return false;
+  // A verb chosen by an expansion could be any of the verbs below.
+  if (leaf.argvHasExpandableDollar[0] === true) return true;
+  const verb = stripCommandPath(argv[0]!);
+  const args = argv.slice(1);
+  if (SHELL_EGRESS_VERBS.has(verb)) return true;
+  const subcommands = SHELL_EGRESS_SUBCOMMANDS.get(verb);
+  if (subcommands !== undefined) return args.some((arg) => subcommands.has(arg));
+  if (verb === "curl" || verb === "wget") {
+    // An expanded or substituted operand can smuggle data into a URL, header
+    // or credential of an otherwise plain GET.
+    if (leaf.hasCommandSubstitution || leaf.hasProcessSubstitution) return true;
+    if (leaf.argvHasExpandableDollar.some(Boolean)) return true;
+    return verb === "curl" ? curlSendsData(args) : wgetSendsData(args);
+  }
+  if (verb === "rsync") return args.some(isRemoteRsyncOperand);
+  if (verb === "eval") return shellCommandCanSendData(args.join(" "), depth + 1);
+  if (SHELL_INTERPRETERS.has(verb)) {
+    const c = args.indexOf("-c");
+    if (c >= 0) {
+      const script = args[c + 1];
+      return script === undefined || shellCommandCanSendData(script, depth + 1);
+    }
+  }
+  return false;
+}
+
+/**
+ * True when a shell command line can send data out of the machine it runs on.
+ * Fails toward true: a parse error, an expanded verb, or nesting deeper than
+ * {@link SHELL_EGRESS_MAX_DEPTH} counts as able to send.
+ */
+function shellCommandCanSendData(command: string, depth = 0): boolean {
+  if (depth > SHELL_EGRESS_MAX_DEPTH) return true;
+  const { leaves, parseError } = tokenizeShell(command);
+  if (parseError) return true;
+  return leaves.some((leaf) => shellLeafCanSendData(leaf, depth));
+}
 
 /**
  * Hosts the host considers trusted by virtue of being Ave-owned or
@@ -747,7 +921,7 @@ function isDeepInsideAllowed(path: string, allowed: readonly string[]): boolean 
 }
 
 const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
-  // ── disposable-guest rules ──────────────────────────────
+  // ── disposable-guest rules (first-match, in this order) ──
   //
   // The executor routed this call to the workload broker's disposable Linux
   // guest (the operator-attested container is same-process and never
@@ -756,18 +930,39 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
   // host paths before anything runs. Grading such a call with the host's
   // allowed-dir geometry or the host's "no OS sandbox" floor describes a
   // substrate the effects never touch, which is how an unattended routine
-  // ended up holding `uname -m` and a write to the guest's /tmp. A
-  // destructive verb still reads MEDIUM: disposable is not the same as
-  // intended, and the headless lane turns MEDIUM into a structured denial
-  // rather than a prompt. Network is the guest's own egress and is graded by
-  // the network rules below, unchanged.
+  // ended up holding `uname -m` and a write to the guest's /tmp.
+  //
+  // The guest confines filesystem and process, NOT network, so a guest shell
+  // is graded in three ordered steps and the first match wins:
+  //   1. destructive verb            → MEDIUM (disposable is not the same as
+  //                                    intended; the headless lane turns
+  //                                    MEDIUM into a structured denial)
+  //   2. can send data out (egress)  → MEDIUM (see `shellCommandCanSendData`;
+  //                                    a download into the guest is not egress)
+  //   3. anything else               → LOW
+  // These rules run before the host shell rules, which never see a guest
+  // shell. Network-category tools are not graded here; they fall through to
+  // the network rules below exactly as on the host.
+  (ctx) => {
+    if (!isDisposableSubstrateCapability(ctx.sandboxCapability)) return null;
+    if (ctx.category !== "shell") return null;
+    const cmds = extractShellCommands(ctx.finalInput);
+    if (!cmds.some((cmd) => DESTRUCTIVE_SHELL_RE.test(cmd))) return null;
+    return { level: "medium", reason: "shell destructive verb inside disposable guest" };
+  },
+  (ctx) => {
+    if (!isDisposableSubstrateCapability(ctx.sandboxCapability)) return null;
+    if (ctx.category !== "shell") return null;
+    const cmds = extractShellCommands(ctx.finalInput);
+    if (!cmds.some((cmd) => shellCommandCanSendData(cmd))) return null;
+    return {
+      level: "medium",
+      reason: "shell can send data out of the disposable guest (egress is not confined)",
+    };
+  },
   (ctx) => {
     if (!isDisposableSubstrateCapability(ctx.sandboxCapability)) return null;
     if (ctx.category === "shell") {
-      const cmds = extractShellCommands(ctx.finalInput);
-      if (cmds.some((cmd) => DESTRUCTIVE_SHELL_RE.test(cmd))) {
-        return { level: "medium", reason: "shell destructive verb inside disposable guest" };
-      }
       return { level: "low", reason: "shell confined to disposable guest" };
     }
     if (ctx.category === "write") {

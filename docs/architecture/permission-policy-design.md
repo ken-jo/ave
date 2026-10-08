@@ -245,10 +245,16 @@ survives onto a host-routed call), and
 the reviewer capability to `disposable-container` (verified; filesystem and
 process confined, network not claimed) ahead of the host-shell plan, whose
 `none` describes a plain child that call never spawns. The rule classifier
-then grades guest-scoped effects as such: a non-destructive shell command,
-and a read or write of any guest path, is LOW; a destructive verb stays MEDIUM
-(a structured denial on the headless lane, an ask in the foreground); network
-verdicts are unchanged because egress is the guest's own policy. The
+then grades guest-scoped effects as such, first match wins: a destructive
+shell verb stays MEDIUM (a structured denial on the headless lane, an ask in
+the foreground); a shell command that can send data out of the guest stays
+MEDIUM, because the guest does not confine network (a request body or upload
+from `curl`/`wget`, an expanded `curl`/`wget` operand, `nc`/`socat`/`ssh`/`scp`/`sftp`/`ftp`,
+a remote `rsync`, `git push`, a package publish, `/dev/tcp`, or a command line
+the shell tokenizer cannot parse); any other shell command — including a
+download into the guest such as `pip install`, `git clone` or a plain
+`curl -O` — and a read or write of any guest path, is LOW. Network-category
+tools are graded by the network rules exactly as on the host. The
 operator-attested container never becomes a substrate: it is same-process, the
 shell is a plain child of the controller sharing its `~/.ave`, pid namespace
 and environment, so that route keeps the host-shell plan grading. Approval
