@@ -1,6 +1,6 @@
 # Plugin Deployment Model — Managed vs User-Installed
 
-**Status**: Phase 1.5 ✅ COMPLETE (2026-04-14) — see `docs/blueprints/phase1.5-closure-report.md`
+**Status**: Phase 1.5 ✅ COMPLETE (2026-04-14)
 **Owner**: Ave Platform Team
 **Last Updated**: 2026-04-13
 **Related**: `docs/architecture/architecture.md` §9.6, §14.2 Policy Enforcement, §6.3 Tool Permission Model
@@ -794,7 +794,7 @@ ipcMain.handle("ave:plugins:disable", async (_e, pluginId: string) => {
 
 ### Phase 1.5 — 경량 구현 ✅ **COMPLETE** (2026-04-14)
 
-**Closure report**: `docs/blueprints/phase1.5-closure-report.md`
+**Closure report**: 2026-09-23 제거 (git 히스토리 참조)
 
 **Scope** (all delivered):
 - ✅ `DeploymentMode` 타입 + `PluginManifest.deployment` 필드 (types.ts)
@@ -899,7 +899,6 @@ ipcMain.handle("ave:plugins:disable", async (_e, pluginId: string) => {
 - Ave architecture.md §14.2 Policy Enforcement
 - Ave architecture.md §6.3 Tool Permission Model (유사 정책 모델)
 - Ave tool-governance.md (MCP 거버넌스 — 유사 서명 검증 패턴 참조)
-- Ave .omc/plans/autopilot-phase1-indexer.md (Phase 1 인덱서 격상 청사진)
 
 ---
 

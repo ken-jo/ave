@@ -26,7 +26,7 @@ class FakeChild extends EventEmitter {
 
 describe("Electron Node-mode Vitest runner", () => {
   it("passes file URLs to worker preloads", async () => {
-    const configUrl = new URL("../../vitest.analysis.config.ts", import.meta.url);
+    const configUrl = new URL("../../config/vitest.analysis.config.ts", import.meta.url);
     const analysisConfig = (await import(configUrl.href)).default as { test: { execArgv: string[] } };
     const preloads = analysisConfig.test.execArgv.filter((argument) => argument.startsWith("--import="));
     expect(preloads).toContain(documentGuardImportArgument());
@@ -67,7 +67,7 @@ describe("Electron Node-mode Vitest runner", () => {
       "utf8",
     );
     const analysisConfig = readFileSync(
-      new URL("../../vitest.analysis.config.ts", import.meta.url),
+      new URL("../../config/vitest.analysis.config.ts", import.meta.url),
       "utf8",
     );
     const bunfig = readFileSync(new URL("../../bunfig.toml", import.meta.url), "utf8");
@@ -75,7 +75,7 @@ describe("Electron Node-mode Vitest runner", () => {
       /^import "\.\/scripts\/assert-electron-node-vitest\.mjs";$/m,
     );
     expect(vitestConfig).toMatch(
-      /^export \{ default \} from "\.\/vitest\.analysis\.config\.js";$/m,
+      /^export \{ default \} from "\.\/config\/vitest\.analysis\.config\.js";$/m,
     );
     expect(analysisConfig).not.toContain("assert-electron-node-vitest");
     expect(bunfig).toMatch(
