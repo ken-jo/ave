@@ -1,6 +1,5 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,9 +8,8 @@ import {
   HEADLESS_PACKAGED_MARKER_NAME,
   headlessPackagedMarkerPath,
 } from "../../scripts/lib/headless-packaged-marker.mjs";
-import { writeFixtureFile } from "./gate-script-runner.js";
+import { asarCliPath, writeFixtureFile } from "./gate-script-runner.js";
 
-const require = createRequire(import.meta.url);
 const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
 const roots: string[] = [];
 const packager = pathToFileURL(resolve("scripts/package-headless-runtime.mjs")).href;
@@ -122,7 +120,7 @@ function fixture({ headless = true } = {}) {
     writeFixtureFile(input, "node_modules/@img/sharp-linux-x64/lib/runtime.node", "decoder binding");
     chmodSync(join(input, "dist/src/main/headless.js"), 0o755);
   }
-  const packed = runNode([require.resolve("@electron/asar/bin/asar.js"), "pack", input, archive, "--unpack", "*.node"]);
+  const packed = runNode([asarCliPath(), "pack", input, archive, "--unpack", "*.node"]);
   expect(packed.error).toBeUndefined();
   expect(packed.status, packed.stderr).toBe(0);
   return { archive, unpacked, app };
@@ -172,7 +170,7 @@ describe("native packaged payload extraction", () => {
     chmodSync(join(unpacked, selectedBinding), 0o750);
     writeFixtureFile(unpacked, "runtime-assets/added.txt", "post-pack asset");
 
-    const headerExtraction = runNode([require.resolve("@electron/asar/bin/asar.js"), "extract", archive, `${app}-header`]);
+    const headerExtraction = runNode([asarCliPath(), "extract", archive, `${app}-header`]);
     expect(headerExtraction.status).toBe(1);
     expect(headerExtraction.stderr).toContain("win32-x64.node");
 
