@@ -9,6 +9,9 @@ import { PluginBundleLifecycle } from "../plugin-bundle-lifecycle.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { SkillStore } from "../../main/skill-store.js";
 import { PersonaPromptStore } from "../../main/persona-prompt-store.js";
+import { runCleanupWithHardTimeout } from "../../main/shutdown-timeout.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { HostApiGenerationScope } from "../plugin-host-effect-scope.js";
 import { PluginDeploymentGuard } from "../deployment-guard.js";
 import type { PackageKey } from "../../marketplace/sources/policy.js";
 import { uninstallPluginWithLifecycle } from "../uninstall-lifecycle.js";
@@ -4544,6 +4547,114 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     expect(await call).toMatchObject({ code: "plugin-runtime-shutdown" });
     expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
     await expect(f.runtime.call(PING, {})).rejects.toMatchObject({ code: "plugin-runtime-shutdown" });
+  });
+
+  it("shutdown rejects a call still waiting for admission behind a durable transition", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const atCommit = new Promise<void>((resolve) => { entered = resolve; });
+    const update = f.runtime.activatePreparedArtifact({
+      ...(await f.preparedInput()),
+      durableCommit: async () => { entered(); await held; return "committed"; },
+    }).then(() => undefined, () => undefined);
+    try {
+      await atCommit;
+      // Waits on the coordinator's transition barrier, before any lease.
+      const call = f.runtime.call(PING, {}).then(() => "resolved", (error: unknown) => error);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await f.runtime.stopAll();
+      const outcome = await Promise.race([call, new Promise((resolve) => setTimeout(() => resolve("pending"), 500))]);
+      expect(outcome).toMatchObject({ code: "plugin-runtime-shutdown" });
+    } finally {
+      release();
+      await update;
+    }
+  });
+
+  it("every dispatch route rejects with the typed shutdown error once shutdown has begun", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    await f.runtime.stopAll();
+    const shutdown = { code: "plugin-runtime-shutdown" };
+    await expect(f.runtime.call(PING, {})).rejects.toMatchObject(shutdown);
+    await expect(f.runtime.callFromUi(PING, {}, { userAction: true })).rejects.toMatchObject(shutdown);
+    await expect(f.runtime.callFromApp(PING, {})).rejects.toMatchObject(shutdown);
+    await expect(f.runtime.callDeclaredAppOnlyTool(PING, {})).rejects.toMatchObject(shutdown);
+    await expect(f.runtime.readUiResource(ID, "ui://attemptresources/card")).rejects.toMatchObject(shutdown);
+    await expect(f.runtime.withPluginInstanceLease(ID, async () => "reached")).rejects.toMatchObject(shutdown);
+    await expect(f.runtime.addPlugin(ID)).rejects.toMatchObject(shutdown);
+    expect(f.runtime.isShuttingDown()).toBe(true);
+  });
+
+  it("shutdown retires many stalled generations concurrently, inside the application's cleanup budget", async () => {
+    const f = await setup("success");
+    const internals = f.internals as unknown as {
+      buildHostApiIncarnation(...args: unknown[]): { commit(): void; deactivate(): void; drainOperations(): Promise<void>; disposers: Array<() => void>; lifecycleHookScope: unknown };
+      plugins: Map<string, unknown>;
+      disposers: Map<string, Array<() => void>>;
+    };
+    const finishOperations: Array<() => void> = [];
+    let stopStarts = 0;
+    const generations = 6;
+    for (let i = 0; i < generations; i += 1) {
+      const pluginId = `budget${i}`;
+      const manifest = { id: pluginId, name: pluginId, version: "1.0.0", description: "shutdown budget fixture", entry: "entry.mjs", tools: [] };
+      const incarnation = internals.buildHostApiIncarnation(pluginId, manifest, f.fixture.rootDir, new HostApiGenerationScope(pluginId), null);
+      // Each generation's stop hook never returns and its HostApi drain stalls.
+      (f.incarnations.at(-1) as unknown as { trackOperation(p: Promise<void>): void }).trackOperation(new Promise<void>((resolve) => { finishOperations.push(resolve); }));
+      incarnation.commit();
+      const instance = { handlers: {}, stop: () => { stopStarts += 1; return new Promise<void>(() => undefined); } };
+      internals.plugins.set(pluginId, {
+        manifest, instance, methods: new Map(), started: true,
+        lifecycleHookScope: incarnation.lifecycleHookScope,
+        deactivateHostApi: incarnation.deactivate,
+        drainHostApiOperations: incarnation.drainOperations,
+        arm: "child", confinement: "not-spawned",
+      });
+      internals.disposers.set(pluginId, incarnation.disposers);
+    }
+    vi.useFakeTimers();
+    try {
+      let report: { unfinished: readonly string[] } | undefined;
+      const result = runCleanupWithHardTimeout(async (signal) => {
+        report = await f.runtime.stopAll({ signal });
+      }, TOOL_TIMEOUT_POLICY.shutdownCleanupMs);
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.shutdownCleanupMs);
+      expect(await result).toEqual({ status: "completed" });
+      expect(stopStarts).toBe(generations);
+      expect(report).toEqual({ unfinished: [] });
+    } finally {
+      for (const finish of finishOperations) finish();
+      vi.useRealTimers();
+    }
+  });
+
+  it("names the generations still retiring when the application's shutdown deadline passes", async () => {
+    const f = await setup("hanging-tool");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    // The stop hook outlives the deadline.
+    const instance = f.constructed[0]!.instance as { stop?: () => Promise<void> };
+    const stop = instance.stop!;
+    let releaseStop!: () => void;
+    const stopHeld = new Promise<void>((resolve) => { releaseStop = resolve; });
+    instance.stop = async () => { await stopHeld; await stop(); };
+    const deadline = new AbortController();
+    const audits = f.audits;
+    const stopping = f.runtime.stopAll({ signal: deadline.signal });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    deadline.abort();
+    try {
+      expect(await stopping).toEqual({ unfinished: [ID] });
+      expect(audits).toContain("plugin_shutdown_retirement_incomplete");
+    } finally {
+      releaseStop();
+    }
   });
 
   it("a rejection after the plugin was registered leaves the registered generation running and disposes it once", async () => {

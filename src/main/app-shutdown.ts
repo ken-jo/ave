@@ -40,8 +40,8 @@ import { errorMessage } from "../shared/error-message.js";
 
 const log = createLogger("ave");
 let shutdownHost: BootHost | undefined;
-let bootPluginShutdown: (() => Promise<void>) | undefined;
-export function registerBootPluginShutdown(run: () => Promise<void>): void {
+let bootPluginShutdown: ((signal: AbortSignal) => Promise<void>) | undefined;
+export function registerBootPluginShutdown(run: (signal: AbortSignal) => Promise<void>): void {
   bootPluginShutdown = run;
 }
 export function configureAppShutdownHost(host: BootHost): void {
@@ -161,7 +161,7 @@ export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShu
   const result = await runCleanupWithHardTimeout(async (signal) => {
     const failures: unknown[] = [];
     const stages = [
-      () => bootPluginShutdown?.(),
+      () => bootPluginShutdown?.(signal),
       () => stopSubscriptionRuntimes(),
       () => forceKillAllTerminalsForShutdown(),
       () => forceKillAndDrainManagedChildProcesses(reason),
@@ -281,7 +281,9 @@ export async function runAppShutdownCleanup(options: {
       // NOT in the managed-child tracker (node-pty's IPty is not a
       // ChildProcess), so force them down here on the graceful path.
       await forceKillAllTerminalsForShutdown();
-      await svc.pluginRuntime.stopAll();
+      // Bounded by the same deadline as every other stage: plugin generations
+      // still retiring when it passes are named, and the backstop below ends them.
+      await svc.pluginRuntime.stopAll({ signal });
       if (signal.aborted) return;
       // Runtime stop hooks can return after scheduling TERM→KILL. Keep the app
       // alive for a bounded definitive-exit drain so ASRT/HOME finalizers run

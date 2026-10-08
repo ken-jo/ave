@@ -44,6 +44,7 @@ const runtimeTestState = vi.hoisted(() => ({
     isPluginEnabled: vi.fn(() => true),
     getApprovedPluginAccess: vi.fn(() => undefined),
     registerDisposer: vi.fn(),
+    isShuttingDown: vi.fn(() => false),
     assertPluginEventAccess: vi.fn(),
     assertPluginEventEmitAccess: vi.fn(),
     resolveToolOwner: vi.fn((toolName: string) => `${toolName}-owner`),
