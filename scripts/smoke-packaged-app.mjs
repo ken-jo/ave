@@ -19,6 +19,12 @@ import {
   linuxExecutablePreferenceSuffixes,
   pickBestByExactSuffix,
 } from "./lib/packaged-executable-selection.mjs";
+import {
+  launchSucceeded,
+  readProductionLogsSince,
+  reachedBootReadiness,
+  snapshotProductionLogs,
+} from "./lib/packaged-smoke-readiness.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
@@ -258,7 +264,7 @@ function smokeArgs(platform, env) {
     // GitHub's Linux runner needs a virtual display and often lacks a usable
     // Chromium sandbox. The smoke is about packaged app startup and dependency
     // pruning, so keep the launch environment deterministic.
-    args.push("--disable-gpu", "--no-sandbox");
+    args.push("--disable-gpu", "--no-sandbox", "--password-store=gnome-libsecret");
   }
   if (platform === "win32") {
     return prepareElectronLaunchArgs(args, env, {
@@ -380,6 +386,7 @@ function assertUpgradeProbe(probe) {
 
 async function runPackagedAppOnce(executable, timeoutMs, env, label) {
   const args = smokeArgs(process.platform, env);
+  const logSnapshot = snapshotProductionLogs(env.AVE_HOME);
   process.stdout.write(`[packaged-smoke] launching ${label}: ${executable} ${args.join(" ")}\n`);
 
   return await new Promise((resolvePromise, reject) => {
@@ -412,21 +419,25 @@ async function runPackagedAppOnce(executable, timeoutMs, env, label) {
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
 
+      const launchLog = readProductionLogsSince(env.AVE_HOME, logSnapshot);
+      const ready = reachedBootReadiness(launchLog);
+      const logTail = launchLog.slice(-4_000) || "(no production log entries from this launch)";
       if (MODULE_LOAD_FAILURE.test(output)) {
-        reject(new Error(`packaged app emitted module load failure:\n${output}`));
+        reject(new Error(`packaged app emitted module load failure (${label}):\n${output}\nproduction log tail:\n${logTail}`));
         return;
       }
+      if (!launchSucceeded({ ready, timedOut, code, signal })) {
+        reject(new Error(`packaged app did not boot successfully (${label}); ready=${ready} code=${code} signal=${signal ?? "none"}:\n${output}\nproduction log tail:\n${logTail}`));
+        return;
+      }
+      process.stdout.write(`[packaged-smoke] boot readiness confirmed (${label})\n`);
       if (timedOut) {
         process.stdout.write(`[packaged-smoke] app stayed up for ${timeoutMs}ms (${label})\n`);
         resolvePromise();
         return;
       }
-      if (code === 0) {
-        process.stdout.write(`[packaged-smoke] app exited cleanly (${label})\n`);
-        resolvePromise();
-        return;
-      }
-      reject(new Error(`packaged app exited early with code=${code} signal=${signal ?? "none"}:\n${output}`));
+      process.stdout.write(`[packaged-smoke] app exited cleanly (${label})\n`);
+      resolvePromise();
     });
   });
 }
@@ -483,8 +494,9 @@ function cleanupOwnedWindowsProtocolHandler(executable) {
 }
 async function launchSmoke(executable, timeoutMs) {
   assertWindowsPerMachineMarkerAbsent(executable);
-  const userDataDir = mkdtempSync(join(tmpdir(), "ave-packaged-smoke-"));
-  const aveHomeDir = mkdtempSync(join(tmpdir(), "ave-packaged-home-"));
+  const smokeTempRoot = process.platform === "win32" ? tmpdir() : "/tmp";
+  const userDataDir = mkdtempSync(join(smokeTempRoot, "ave-packaged-smoke-"));
+  const aveHomeDir = mkdtempSync(join(smokeTempRoot, "ave-packaged-home-"));
   const env = prepareElectronLaunchEnv({
     ...process.env,
     ELECTRON_ENABLE_LOGGING: "1",

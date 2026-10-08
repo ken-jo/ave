@@ -1,0 +1,15 @@
+{
+  "request": {
+    "id": 31,
+    "jsonrpc": "2.0",
+    "method": "ave/host/clearAuthPartition",
+    "params": {
+      "partition": "golden-auth"
+    }
+  },
+  "response": {
+    "id": 31,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

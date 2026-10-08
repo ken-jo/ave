@@ -1,0 +1,16 @@
+{
+  "request": {
+    "id": 46,
+    "jsonrpc": "2.0",
+    "method": "ave/host/withdrawAlert",
+    "params": {
+      "key": "mail-1",
+      "kind": "mail-reply"
+    }
+  },
+  "response": {
+    "id": 46,
+    "jsonrpc": "2.0",
+    "result": true
+  }
+}

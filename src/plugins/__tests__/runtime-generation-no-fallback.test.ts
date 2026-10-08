@@ -19,7 +19,6 @@ describe("PluginRuntime generation isolation", () => {
       version: "1.0.0",
       entry: "index.js",
       description: "Generation isolation test fixture.",
-      publisher: "Ave",
       tools: [],
     } as PluginManifest;
     const instance = { handlers: {} } as RuntimePlugin;
@@ -98,7 +97,6 @@ describe("PluginRuntime generation isolation", () => {
       version: "1.0.0",
       entry: "index.js",
       description: "Generation drain test fixture.",
-      publisher: "Ave",
       tools: [],
     } as PluginManifest;
     const instance = { handlers: { [method]: handler } } as RuntimePlugin;

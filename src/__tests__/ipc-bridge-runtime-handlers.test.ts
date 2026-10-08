@@ -1,6 +1,6 @@
 /**
- * IPC Bridge — ave:runtime:counts, ave:runtime:env, ave:marketplace:ping
- * handler smoke tests (PR #240).
+ * IPC Bridge — ave:runtime:counts, ave:runtime:env handler smoke tests
+ * (PR #240).
  *
  * Strategy: mirrors ipc-bridge-permissions.test.ts — register handlers via
  * registerIpcHandlers with mocked services, then invoke each handler directly
@@ -23,6 +23,7 @@ import { unusedNetworkFetch } from "./support/network-fetch-stubs.js";
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
 vi.mock("electron", () => ({
+  protocol: { handle: vi.fn() },
   ipcMain: {
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       handlers.set(channel, fn);
@@ -51,13 +52,6 @@ function makeServices(
     toolRegistrySize?: number;
     pluginIds?: string[];
     mcpServers?: Array<{ status: string }>;
-    marketplaceSettings?: {
-      backend: string;
-      cloudBaseUrl?: string;
-      cloudAllowPrivateNetwork?: boolean;
-    };
-    /** The transport the marketplace ping is expected to reach the network through. */
-    networkFetch?: typeof fetch;
   } = {},
 ) {
   const toolRegistrySize = overrides.toolRegistrySize ?? 5;
@@ -67,7 +61,6 @@ function makeServices(
     { status: "connected" },
     { status: "disconnected" },
   ];
-  const marketplaceSettings = overrides.marketplaceSettings ?? { backend: "mock" };
 
   return {
     pluginRuntime: {
@@ -84,7 +77,7 @@ function makeServices(
       getAll: vi.fn(),
       patch: vi.fn(),
       get: vi.fn((key: string) => {
-        if (key === "marketplace") return marketplaceSettings;
+        if (key === "marketplace") return {};
         return fakeLlmSettings();
       }),
       getSecret: vi.fn(),
@@ -117,7 +110,7 @@ function makeServices(
     // Defaulting to the throwing stub keeps the rest of the suite honest: a
     // handler that starts making a request shows up as a failure, not as a
     // real request from whatever machine runs the tests.
-    singleHopNetworkFetch: overrides.networkFetch ?? unusedNetworkFetch,
+    singleHopNetworkFetch: unusedNetworkFetch,
     idleScheduler: undefined,
     bashAstValidator: {} as any,
     auditService: {} as any,
@@ -218,162 +211,12 @@ describe("ave:runtime:env", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ave:marketplace:ping
-// ─────────────────────────────────────────────────────────────────────────────
-describe("ave:marketplace:ping", () => {
-  it("returns { configured: false, online: false } when backend is not real-cloud", async () => {
-    await setupHandlers(makeMockPermissionManager(), makeMockApprovalGate(), {
-      marketplaceSettings: { backend: "mock" },
-    });
-
-    const result = await invokeRegisteredHandler(handlers, "ave:marketplace:ping") as {
-      configured: boolean;
-      online: boolean;
-    };
-
-    expect(result.configured).toBe(false);
-    expect(result.online).toBe(false);
-  });
-
-  it("returns { configured: false } when backend is real-cloud but no base URL", async () => {
-    await setupHandlers(makeMockPermissionManager(), makeMockApprovalGate(), {
-      marketplaceSettings: {
-        backend: "real-cloud",
-        cloudBaseUrl: "",
-      },
-    });
-
-    const result = await invokeRegisteredHandler(handlers, "ave:marketplace:ping") as {
-      configured: boolean;
-      online: boolean;
-    };
-
-    expect(result.configured).toBe(false);
-  });
-
-  it("rejects unauthorized sender frames", async () => {
-    await setupHandlers();
-
-    const result = await invokeRegisteredHandlerWithEvent(handlers,
-      "ave:marketplace:ping",
-      untrustedEvent(),
-    );
-
-    expect(result).toEqual({ ok: false, error: "unauthorized-frame" });
-  });
-
-  it("returns { configured: true, online: false } when real-cloud fetch throws", async () => {
-    // `cloudAllowPrivateNetwork: true` selects the private-network arm, which
-    // skips the SSRF guard because the operator has already vouched for the
-    // endpoint. It does NOT skip the transport: both arms go out on the
-    // machine's configured network stack, so this is the transport to observe.
-    const networkFetch = vi.fn(async () => {
-      throw new Error("ECONNREFUSED");
-    });
-
-    await setupHandlers(makeMockPermissionManager(), makeMockApprovalGate(), {
-      marketplaceSettings: {
-        backend: "real-cloud",
-        cloudBaseUrl: "http://127.0.0.1:9999/",
-        cloudAllowPrivateNetwork: true,
-      },
-      networkFetch: networkFetch as unknown as typeof fetch,
-    });
-
-    const result = await invokeRegisteredHandler(handlers, "ave:marketplace:ping") as {
-      configured: boolean;
-      online: boolean;
-    };
-
-    expect(result.configured).toBe(true);
-    expect(result.online).toBe(false);
-    expect(networkFetch).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns { configured: true, online: true } when real-cloud fetch succeeds (ok=true)", async () => {
-    const networkFetch = vi.fn(async () => ({ ok: true }) as Response);
-
-    await setupHandlers(makeMockPermissionManager(), makeMockApprovalGate(), {
-      marketplaceSettings: {
-        backend: "real-cloud",
-        cloudBaseUrl: "http://127.0.0.1:9999/",
-        cloudAllowPrivateNetwork: true,
-      },
-      networkFetch: networkFetch as unknown as typeof fetch,
-    });
-
-    const result = await invokeRegisteredHandler(handlers, "ave:marketplace:ping") as {
-      configured: boolean;
-      online: boolean;
-    };
-
-    expect(result.configured).toBe(true);
-    expect(result.online).toBe(true);
-    expect(networkFetch).toHaveBeenCalledTimes(1);
-  });
-
-  it("coalesces concurrent real-cloud pings into one network request", async () => {
-    let resolveFetch: (value: Response) => void = () => undefined;
-    const networkFetch = vi.fn(
-      () =>
-        new Promise<Response>((resolve) => {
-          resolveFetch = resolve;
-        }),
-    );
-
-    await setupHandlers(makeMockPermissionManager(), makeMockApprovalGate(), {
-      marketplaceSettings: {
-        backend: "real-cloud",
-        cloudBaseUrl: "http://127.0.0.1:9999/",
-        cloudAllowPrivateNetwork: true,
-      },
-      networkFetch: networkFetch as unknown as typeof fetch,
-    });
-
-    const first = invokeRegisteredHandler(handlers, "ave:marketplace:ping") as Promise<{ configured: boolean; online: boolean }>;
-    const second = invokeRegisteredHandler(handlers, "ave:marketplace:ping") as Promise<{ configured: boolean; online: boolean }>;
-
-    expect(networkFetch).toHaveBeenCalledTimes(1);
-    resolveFetch({ ok: true } as Response);
-    await expect(first).resolves.toEqual({ configured: true, online: true });
-    await expect(second).resolves.toEqual({ configured: true, online: true });
-  });
-
-  it("serves near-repeat pings from the main-process cache", async () => {
-    const networkFetch = vi.fn(async () => ({ ok: true }) as Response);
-
-    await setupHandlers(makeMockPermissionManager(), makeMockApprovalGate(), {
-      marketplaceSettings: {
-        backend: "real-cloud",
-        cloudBaseUrl: "http://127.0.0.1:9999/",
-        cloudAllowPrivateNetwork: true,
-      },
-      networkFetch: networkFetch as unknown as typeof fetch,
-    });
-
-    const first = await invokeRegisteredHandler(handlers, "ave:marketplace:ping") as {
-      configured: boolean;
-      online: boolean;
-    };
-    const second = await invokeRegisteredHandler(handlers, "ave:marketplace:ping") as {
-      configured: boolean;
-      online: boolean;
-    };
-
-    expect(first).toEqual({ configured: true, online: true });
-    expect(second).toEqual({ configured: true, online: true });
-    expect(networkFetch).toHaveBeenCalledTimes(1);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// All three handlers — unified unauthorized-frame guard
+// Both handlers — unified unauthorized-frame guard
 // ─────────────────────────────────────────────────────────────────────────────
 describe("new runtime handlers — all reject unauthorized frames", () => {
   const channels = [
     "ave:runtime:counts",
     "ave:runtime:env",
-    "ave:marketplace:ping",
   ] as const;
 
   beforeEach(async () => {

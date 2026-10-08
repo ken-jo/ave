@@ -60,6 +60,7 @@ vi.mock("electron", () => {
   }
   const electron = {
     ipcMain,
+    protocol: { handle: () => {} },
     BrowserWindow,
     app: {
       getPath: () => "/tmp/ave-test",
@@ -146,7 +147,6 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "postTurnHookChain",
   "approvalGate",
   "rewireReviewerAgent",
-  "refreshMarketplaceFetcherConfig",
   "refreshActiveLlmWildcard",
   "refreshSandboxNetworkConfig",
   "starredStore",
@@ -161,7 +161,7 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "skillStore",
   "agentProfileStore",
   "personaPromptStore",
-  "refreshPluginNotifications",
+  "refreshPluginEventBridge",
   "pluginPaths",
   "clearAuthPartitionService",
   "listPluginAuthPartitionsService",
@@ -174,6 +174,8 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "shutdown",
   "startRoutinesScheduler",
   "startWorkBoardDueSoon",
+  "startAlerts",
+  "alertsService",
   "notificationService",
   "scriptHookManager",
 ];

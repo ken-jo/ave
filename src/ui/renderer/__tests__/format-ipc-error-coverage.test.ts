@@ -7,10 +7,11 @@
  * to the generic Korean fallback, leaking raw English kebab-case strings
  * to the UI — the exact anti-pattern PR #803 was meant to forbid.
  *
- * This test is the durable enforcement. It scans `src/ipc/domains/**`
+ * This test is the durable enforcement. It scans `src/ipc/domains/**`,
+ * the alert services whose results the handlers forward, and their shared result contract
  * for any `{ok:false, error:"<code>"}` literal and asserts each `<code>`
  * has a Korean mapping in `COMMON_IPC_ERROR_MESSAGES`. A new IPC handler
- * adding an unmapped code will fail CI here.
+ * or service adding an unmapped code will fail CI here.
  *
  * The grep regex matches the `{ok:false, error: "..."}` shape used
  * uniformly by `src/ipc/domains/*.ts`. Dynamic-code patterns like
@@ -30,6 +31,8 @@ import {
 
 const __dirname = resolve(fileURLToPath(import.meta.url), "..");
 const IPC_DOMAIN_DIR = resolve(__dirname, "../../../ipc/domains");
+const ALERT_SERVICE_DIR = resolve(__dirname, "../../../alerts");
+const ALERT_RESULT_CONTRACT = resolve(__dirname, "../../../shared/alerts-types.ts");
 
 function listTsFiles(dir: string): string[] {
   const out: string[] = [];
@@ -82,8 +85,11 @@ function extractDeclaredErrorUnionCodes(source: string): Set<string> {
 }
 
 describe("formatIpcError — full IPC error code coverage", () => {
-  it("every error code returned by src/ipc/domains/** has a Korean mapping", () => {
-    const files = listTsFiles(IPC_DOMAIN_DIR);
+  it.each([
+    { surface: "IPC handlers", files: listTsFiles(IPC_DOMAIN_DIR) },
+    { surface: "alert service results", files: listTsFiles(ALERT_SERVICE_DIR) },
+    { surface: "shared alert results", files: [ALERT_RESULT_CONTRACT] },
+  ])("every error code from $surface has a Korean mapping", ({ surface, files }) => {
     expect(files.length).toBeGreaterThan(0);
 
     const allCodes = new Set<string>();
@@ -100,15 +106,19 @@ describe("formatIpcError — full IPC error code coverage", () => {
     // Non-vacuity floor for the union extractor specifically: if its regex ever
     // stops matching, the codes it is here to catch would silently drop out of
     // `allCodes` and this suite would go green while the leak returned.
-    expect(
-      unionCodes.size,
-      "declared-error-union regex captured zero codes — the blind spot it closes is back",
-    ).toBeGreaterThan(5);
-    for (const code of ["path-not-allowed", "sensitive-path"]) {
+    if (surface === "IPC handlers") {
       expect(
-        unionCodes.has(code),
-        `"${code}" is no longer discovered by the union extractor`,
-      ).toBe(true);
+        unionCodes.size,
+        "declared-error-union regex captured zero codes — the blind spot it closes is back",
+      ).toBeGreaterThan(5);
+      for (const code of ["path-not-allowed", "sensitive-path"]) {
+        expect(unionCodes.has(code), `"${code}" is no longer discovered by the union extractor`).toBe(true);
+      }
+    } else {
+      // Each source must independently discover the failure that can reach the
+      // renderer through an unchanged service result, without a handler literal.
+      expect(allCodes.has("kind-not-registered")).toBe(true);
+      if (surface === "shared alert results") expect(unionCodes.has("kind-not-registered")).toBe(true);
     }
 
     const missing = [...allCodes]
@@ -124,10 +134,7 @@ describe("formatIpcError — full IPC error code coverage", () => {
     // Sanity floor — guards against future regex regression that silently
     // matches zero codes (and would otherwise pass with empty `allCodes`).
     // Skeptic Multi-Perspective from round-2 critic.
-    expect(
-      allCodes.size,
-      "regex captured zero codes — likely a regex regression (cluster review C-R2-Skeptic)",
-    ).toBeGreaterThan(50);
+    expect(allCodes.size, "error-code discovery must not be empty").toBeGreaterThan(surface === "IPC handlers" ? 50 : 0);
   });
 
   it("every common IPC error code resolves to a non-empty localized message", () => {

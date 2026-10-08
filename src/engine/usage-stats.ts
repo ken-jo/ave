@@ -172,13 +172,15 @@ function parseSubscriptionUsageSegments(entry: AuditTurnEntry): SubscriptionUsag
 
 function parseUsageSegments(entry: AuditTurnEntry): UsageSegment[] {
   if (entry.usageByModel?.length) {
-    return entry.usageByModel
-      .filter((segment) => isLLMVendor(segment.vendorProvider))
-      .map((segment) => ({
-        vendor: segment.vendorProvider as LLMVendor,
-        model: segment.vendorModel || "unknown",
-        tokenUsage: segment.tokenUsage,
-      }));
+    return entry.usageByModel.map((segment) => {
+      const model = segment.vendorModel || "unknown";
+      // A vendor id this build no longer knows (renamed or retired) still
+      // spent those tokens: keep the segment visible and unpriced, the same
+      // way parseRoute treats an unrecognised route.
+      return isLLMVendor(segment.vendorProvider)
+        ? { vendor: segment.vendorProvider, model, tokenUsage: segment.tokenUsage }
+        : { vendor: "unknown" as const, model: `${segment.vendorProvider}/${model}`, tokenUsage: segment.tokenUsage };
+    });
   }
   if (!entry.tokenUsage) return [];
   const { vendor, model } = parseRoute(entry.route);

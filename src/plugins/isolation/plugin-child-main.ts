@@ -16,10 +16,10 @@
  * it that could pick a different export.
  *
  * STDOUT IS THE PROTOCOL. A plugin that calls `console.log` or writes to
- * `process.stdout` directly would interleave unframed bytes into the stream and
- * desynchronise the host's decoder — a failure that looks like a corrupt plugin
- * rather than a stray log line, because the decoder resynchronises by
- * discarding and so eats the frame the log line landed in. Before any plugin
+ * `process.stdout` directly would interleave stray bytes into the stream — a
+ * failure that looks like a corrupt plugin rather than a stray log line,
+ * because the decoder drops a line it cannot parse, and a write without its own
+ * newline joins the next frame's line and takes that frame with it. Before any plugin
  * code can run, stdout is taken away from it: the real write is captured
  * privately for the framer and everything else is rebound to stderr, which the
  * host pipes and reads as diagnostics.
@@ -42,27 +42,25 @@ import {
 } from "./child-stream-multiplex.js";
 import {
   PLUGIN_INSTANCE_METHODS,
-  PLUGIN_INSTANCE_WIRE_VERSION,
   type PluginConstructParams,
   type PluginConstructResult,
   type PluginLifecycleHookName,
-  type ReadUiResourceParams,
-  type ReadUiResourceResult,
+  type PluginShutdownParams,
 } from "./plugin-instance-wire.js";
-import type {
-  HostApiChannel,
-  HostApiNotification,
-  HostApiReply,
-  HostApiRequest,
+import {
+  HOST_PROTOCOL_NOTIFICATIONS,
+  HOST_PROTOCOL_VERSIONS_SERVED,
+  HostApiBoundaryError,
+  isServedHostProtocolVersion,
+  type HostApiChannel,
+  type HostApiNotification,
+  type HostApiReply,
 } from "./host-api-wire.js";
 import {
-  RPC_INVALID_PARAMS,
   RPC_METHOD_NOT_FOUND,
   RPC_INTERNAL_ERROR,
 } from "../../mcp/protocol-constants.js";
 import { errorMessage } from "../../shared/error-message.js";
-
-/** JSON-RPC internal error, the code `StdioServerLoop` uses for a throwing handler. */
 
 /** What {@link servePluginChild} hands back so a caller can end it. */
 export interface PluginChildService {
@@ -118,13 +116,21 @@ export function servePluginChild(
   output: Writable,
 ): PluginChildService {
   let runtime: PluginChildRuntime | undefined;
+  // Named in this child's own diagnostics once construct has told it.
+  let constructedPluginId: string | undefined;
   const hostApiReplies = new PendingCallTable<HostApiReply>();
+  // This direction's own id space: the host allocates the ids of the requests
+  // it sends, and a response is matched against the table of the direction it
+  // arrived on, so the two can never be confused.
+  let nextRequestId = 0;
   // The MCP server writes whole frames into this and they are forwarded
-  // verbatim — nothing re-decodes them, so a forwarded chunk is always exactly
-  // one frame and can never split around another writer's.
+  // as they are — nothing re-decodes them, so a forwarded chunk is always
+  // exactly one frame and can never split around another writer's. They go
+  // through the stream's own writer so a tool result too large to frame is
+  // refused for its call instead of ending the channel at the host's reader.
   const mcpOut = new Writable({
     write(chunk: Buffer, _encoding, callback) {
-      output.write(chunk);
+      stream.forward(chunk);
       callback();
     },
   });
@@ -132,17 +138,47 @@ export function servePluginChild(
   // five lifecycle methods and the entire hostApi direction never reach it.
   const mcpIn = new PassThrough();
 
-  const stream = new FramedMessageStream(input as never, output, (message) =>
-    route(message),
+  const stream = new FramedMessageStream(
+    input as never,
+    output,
+    (message) => route(message),
+    (reason) => {
+      // A host that broke the framing is a host this child can no longer
+      // serve. Destroying stdin is what the process entry already treats as
+      // the host being gone, so the child exits the one way it always does.
+      process.stderr.write(`[plugin-child] ${reason}; ending\n`);
+      (input as NodeJS.ReadableStream & { destroy(): void }).destroy();
+    },
+    (dropped) => {
+      // Stderr, which the host already collects for this child: the dropped
+      // notification may itself be the `context.log` line that would have
+      // carried this.
+      process.stderr.write(
+        `[plugin-child] dropped a notification too large to frame ${JSON.stringify({
+          pluginId: constructedPluginId,
+          ...dropped,
+        })}\n`,
+      );
+    },
   );
 
   const channel: HostApiChannel = {
-    call(request: HostApiRequest): Promise<HostApiReply> {
-      stream.send(request);
+    call(method, params, onSent): Promise<HostApiReply> {
+      nextRequestId += 1;
+      const id = nextRequestId;
       // No deadline: a hostApi call may legitimately block on a human at the
       // approval gate (§7.5). It rejects when the host is gone, which is the
       // condition a deadline here would only be standing in for.
-      return hostApiReplies.register(request.callId, undefined, () => undefined);
+      const settled = hostApiReplies.register(String(id), undefined, () => undefined);
+      onSent?.(id);
+      try {
+        stream.send({ jsonrpc: "2.0", id, method, params });
+      } catch (error) {
+        // Refused before it was written (a request too large to frame), so no
+        // reply will ever come for it.
+        hostApiReplies.fail(String(id), error as Error);
+      }
+      return settled;
     },
     notify(notification: HostApiNotification): void {
       stream.send(notification);
@@ -153,19 +189,38 @@ export function servePluginChild(
     stream.send({ jsonrpc: "2.0", id, result });
   }
 
-  function replyError(id: unknown, code: number, message: string): void {
-    stream.send({ jsonrpc: "2.0", id, error: { code, message } });
+  function replyError(id: unknown, code: number, message: string, data?: unknown): void {
+    stream.send({
+      jsonrpc: "2.0",
+      id,
+      error: { code, message, ...(data !== undefined ? { data } : {}) },
+    });
   }
 
   async function construct(
     params: PluginConstructParams,
   ): Promise<PluginConstructResult> {
     if (runtime) throw new Error("[plugin-child] already constructed");
-    if (params.wire !== PLUGIN_INSTANCE_WIRE_VERSION) {
-      throw new Error(
-        `[plugin-child] instance wire ${String(params.wire)} != ${PLUGIN_INSTANCE_WIRE_VERSION}`,
+    // The reference runtime ships with the host, so the two served sets are
+    // equal by construction. The check exists so a stale bundle fails loudly
+    // instead of answering a version it does not speak.
+    const version = params.hostProtocol?.version;
+    if (!isServedHostProtocolVersion(version)) {
+      throw new HostApiBoundaryError(
+        "protocol-version-mismatch",
+        `[plugin-child] host protocol ${String(version)} is not one this runtime serves `
+          + `(${HOST_PROTOCOL_VERSIONS_SERVED.join(", ")})`,
+        { version: String(version), served: [...HOST_PROTOCOL_VERSIONS_SERVED] },
       );
     }
+    const capabilities: unknown = params.hostProtocol.capabilities;
+    if (!Array.isArray(capabilities) || !capabilities.every((entry) => typeof entry === "string")) {
+      throw new HostApiBoundaryError(
+        "argument-marshalling-rejected",
+        "[plugin-child] construct: hostProtocol.capabilities must be an array of method names",
+      );
+    }
+    constructedPluginId = params.context.pluginId;
     runtime = await startPluginChildRuntime({
       input: mcpIn,
       output: mcpOut,
@@ -176,15 +231,20 @@ export function servePluginChild(
     });
     const { instance } = runtime;
     return {
-      wire: PLUGIN_INSTANCE_WIRE_VERSION,
       // Filtered from the HOST's declared set rather than enumerated from the
       // instance: a child cannot announce a tool its manifest never declared,
       // which is the same set `buildMethodMap` derives in-process.
       implementedToolNames: params.declaredToolNames.filter(
         (name) => typeof instance.handlers[name] === "function",
       ),
-      servesUiResources: typeof instance.readUiResource === "function",
+      servesUiResources: runtime.servesUiResources,
       lifecycleHooks: describeLifecycleHooks(instance),
+      // Nothing, for a JavaScript plugin: an optional member it lacks answers
+      // `path-not-implemented` at the call, which is what it gets in-process
+      // from `typeof hostApi.hostFetch !== "function"` — there is no
+      // declaration for this runtime to report. A plugin that speaks the
+      // protocol itself names its hard needs here.
+      pluginProtocol: { requires: [] },
     };
   }
 
@@ -207,16 +267,13 @@ export function servePluginChild(
       case PLUGIN_INSTANCE_METHODS.stop:
         await instance.stop?.();
         return null;
-      case PLUGIN_INSTANCE_METHODS.readUiResource: {
-        const uri = (params as unknown as ReadUiResourceParams | undefined)?.uri;
-        if (typeof uri !== "string") {
-          throw new Error("[plugin-child] readUiResource requires a string 'uri'");
+      case PLUGIN_INSTANCE_METHODS.shutdown: {
+        const subscriptionId = (params as unknown as PluginShutdownParams | undefined)?.subscriptionId;
+        if (typeof subscriptionId !== "string") {
+          throw new Error("[plugin-child] shutdown requires a string 'subscriptionId'");
         }
-        if (typeof instance.readUiResource !== "function") {
-          throw new Error("[plugin-child] this plugin serves no ui resources");
-        }
-        const html = await instance.readUiResource(uri);
-        return { html } satisfies ReadUiResourceResult;
+        await runtime.runShutdownHandler(subscriptionId);
+        return null;
       }
       default:
         throw new Error(`[plugin-child] unknown instance method '${method}'`);
@@ -238,6 +295,12 @@ export function servePluginChild(
               id,
               RPC_INTERNAL_ERROR,
               errorMessage(error),
+              // A coded boundary refusal keeps its code, so the host can tell
+              // "this runtime does not speak that version" from a plugin that
+              // threw while constructing.
+              error instanceof HostApiBoundaryError
+                ? { code: error.code, name: error.name, ...(error.detail ? { detail: error.detail } : {}) }
+                : undefined,
             ),
         );
         return;
@@ -258,22 +321,25 @@ export function servePluginChild(
         mcpIn.write(frameMessage(message));
         return;
       }
-      case "host-api-reply":
-        hostApiReplies.settle(
-          message.callId as string,
-          message as unknown as HostApiReply,
-        );
+      case "response":
+        // Only the child's own `ave/host/*` requests are answered on this
+        // direction, so this is the one table a response can settle.
+        hostApiReplies.settle(String(message.id), message as unknown as HostApiReply);
         return;
-      case "host-api-notification":
+      case "notification":
+        // A `notifications/cancelled` arriving here would name a `tools/call`;
+        // the host sends none today, so it is dropped like any frame naming a
+        // request this side does not hold (§3.5).
+        if (message.method === HOST_PROTOCOL_NOTIFICATIONS.cancelled) return;
         runtime?.deliver(message as unknown as HostApiNotification);
         return;
-      case "host-api-request":
+      case "host-request":
         // The child never services hostApi calls. A host that sent one is
         // confused, and answering would put a second implementation of the
         // reverse channel in the least trustworthy process.
         replyError(
-          message.callId,
-          RPC_INVALID_PARAMS,
+          message.id,
+          RPC_METHOD_NOT_FOUND,
           "[plugin-child] not a hostApi server",
         );
         return;

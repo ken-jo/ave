@@ -1,0 +1,18 @@
+{
+  "request": {
+    "id": 30,
+    "jsonrpc": "2.0",
+    "method": "ave/host/openAuthPartitionViewer",
+    "params": {
+      "opts": {
+        "url": "https://mail.example.com/",
+        "windowTitle": "Mail"
+      }
+    }
+  },
+  "response": {
+    "id": 30,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "request": {
+    "id": "hand-built",
+    "jsonrpc": "2.0",
+    "method": "ave/host/config/get",
+    "params": {
+      "key": "region"
+    }
+  },
+  "response": {
+    "error": {
+      "code": -32000,
+      "data": {
+        "code": "path-not-dispatchable",
+        "detail": {
+          "path": "config.get"
+        },
+        "name": "HostApiBoundaryError"
+      },
+      "message": "[host-api-dispatcher] 'config.get' is answered in the child and must never be sent"
+    },
+    "id": "hand-built",
+    "jsonrpc": "2.0"
+  },
+  "trigger": "a child-local member sent as a request"
+}

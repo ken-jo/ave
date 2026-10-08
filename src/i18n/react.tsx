@@ -12,7 +12,7 @@
  *
  * Main process never imports this file, so React stays out of the main bundle.
  */
-import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
 import { type Locale } from "./locale.js";
 import { getLocale, setLocale as setRuntimeLocale, t as runtimeT } from "./runtime.js";
 import type { TranslateFn } from "./translate.js";
@@ -55,6 +55,11 @@ export function I18nProvider({ locale, setLocale, children }: I18nProviderProps)
   // consumers (`useTranslation`) re-render on a language switch WITHOUT
   // remounting — preserving component state (open chat, scroll position, …).
   setRuntimeLocale(locale);
+  // The document language follows the UI (screen readers, hyphenation, and
+  // the font fallback a locale's glyphs take), including installed locales.
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
   const value = useMemo<I18nContextValue>(
     () => ({ locale, setLocale, t: (key, vars) => runtimeT(key, vars) }),
     [locale, setLocale],

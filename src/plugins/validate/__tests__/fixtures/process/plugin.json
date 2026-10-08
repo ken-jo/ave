@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "validateprocess",
+  "version": "1.0.0",
+  "description": "Validator fixture: a plugin whose process is its own executable, a shell launcher that execs an interpreter on a protocol script.",
+  "extensions": {
+    "ai.agent-connector.ave": {
+      "displayName": "Validate Process",
+      "process": {
+        "command": "./bin/plugin",
+        "args": ["${PLUGIN_ROOT}/server.mjs", "--stdio"],
+        "env": {
+          "SMOKE_VENDOR_DIR": "${PLUGIN_ROOT}/vendor",
+          "SMOKE_STATE_DIR": "${PLUGIN_DATA}/state"
+        }
+      },
+      "requires": {
+        "minAppVersion": "0.13.0",
+        "hostProtocol": "2"
+      },
+      "tools": [
+        {
+          "name": "report_launch",
+          "description": "Report that the plugin's own program answered.",
+          "inputSchema": { "type": "object", "properties": {} }
+        }
+      ]
+    }
+  }
+}

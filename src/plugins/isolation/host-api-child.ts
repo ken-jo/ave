@@ -9,7 +9,7 @@
  * The mirror of `host-api-dispatcher.ts`: where the host decodes, this encodes,
  * and where the host encodes, this reconstructs. A plugin holding one of these
  * stubs sees the signature `public-contract.ts` publishes — a real `Response`, a
- * real `SpawnedPluginWorker` handle, a `bearer()` it can call — built out of the
+ * real `SpawnedPluginWorker` handle, a credential lease it can release — built out of the
  * JSON that actually crossed.
  *
  * THREE STUBS DO SOMETHING; THE REST RELAY. `storage.read` decodes a tagged byte
@@ -29,11 +29,8 @@
  * security rule sitting in the least-trusted process, which is a place a plugin
  * can edit.
  *
- * TWO PLACES A CHECK IS DELIBERATELY DUPLICATED, both named where they happen:
- * `emitEvent`'s capability test (to preserve a synchronous throw the wire cannot
- * carry) and `bearer()`-after-`release()` (because the key is a child-local
- * copy). Neither is a substitute for the host's decision; both are re-decided
- * host-side.
+ * The `emitEvent` capability test is duplicated to preserve a synchronous
+ * throw that the wire cannot carry; the host still makes the authority decision.
  *
  * TRAILING OPTIONALS ARE OMITTED, NOT SENT AS `undefined`. `describeNonJson`
  * refuses `undefined` INSIDE an array — there it does not mean absent, it
@@ -62,6 +59,7 @@ import type {
   FloatingPanelHandle,
   AudioCaptureRequest,
   WorkProposalResult,
+  AlertResult,
 } from "../public-contract.js";
 import type { HostApiCaller, PluginChildContext } from "./plugin-child-runtime.js";
 import {
@@ -77,7 +75,7 @@ import {
   decodeWireBinary,
   decodeWireHttpResponse,
   encodeWireBytes,
-  encodeWireRequestInit,
+  encodeHostFetchInit,
   type ConfigSubscriptionPath,
   type HostApiHandle,
   type HostApiPath,
@@ -128,10 +126,10 @@ function assertRelayable(path: HostApiPath): void {
 /**
  * Build this group's child-side stubs.
  *
- * Every stub goes through {@link HostApiCaller}, which is the one place the
- * envelope is stamped and the one place a reply's error identity is rebuilt.
- * A stub that assembled its own request would be a second place the generation
- * is claimed, and the generation is what the host checks the call against.
+ * Every stub goes through {@link HostApiCaller}, which is the one place a call
+ * becomes its `ave/host/*` request and the one place a reply's error identity
+ * is rebuilt. A stub that assembled its own request would be a second encoding
+ * of the method name and params that could disagree with the first.
  */
 export function createInteractionChildMembers(
   call: HostApiCaller,
@@ -161,13 +159,11 @@ export function createInteractionChildMembers(
 export interface ServiceChildMemberDeps {
   readonly pluginId: string;
   readonly manifest: PluginManifest;
-  /** Send one hostApi call and settle it. The runtime's single call path. */
-  readonly call: (path: HostApiPath, args: readonly unknown[]) => Promise<unknown>;
-  /** Hand over an `AbortSignal`, receive the id that crosses in its place. */
-  readonly openAbortChannel: (signal: AbortSignal) => {
-    readonly subscriptionId: string;
-    readonly release: () => void;
-  };
+  /**
+   * Send one hostApi call and settle it. The runtime's single call path; a
+   * `signal` cancels the request rather than crossing.
+   */
+  readonly call: HostApiCaller;
   /**
    * Register a child-side handler under a HOST-allocated id.
    *
@@ -184,7 +180,7 @@ export interface ServiceChildMemberDeps {
      * on its own, because it lives in the stub's closure rather than in the
      * entry.
      */
-    onRevoked?: () => void,
+    onRevoked?: (reason: "revoked" | "peer-gone") => void,
   ) => () => void;
   /**
    * `context.log`, so a failure with no caller left to throw at is still seen.
@@ -247,19 +243,6 @@ export function createServiceChildMembers(
     });
   };
 
-  /** Open an abort channel for an argument that carried a signal. */
-  const withAbortChannel = <T>(
-    signal: AbortSignal | undefined,
-    body: (channelId: string | undefined) => Promise<T>,
-  ): Promise<T> => {
-    if (!signal) return body(undefined);
-    // An ALREADY-aborted signal throws its own reason rather than opening a
-    // channel — the in-process call rejects immediately, and a round trip the
-    // host would be told to abort on arrival is a slower way to say the same
-    // thing. `openAbortChannel` owns that rule.
-    const channel = deps.openAbortChannel(signal);
-    return body(channel.subscriptionId).finally(channel.release);
-  };
 
   return {
     getSecret: async (...args) =>
@@ -282,6 +265,13 @@ export function createServiceChildMembers(
 
     withdrawWorkProposal: async (...args) =>
       call("withdrawWorkProposal", positional(args[0], args[1])) as Promise<boolean>,
+
+    // No local pre-check either: the host answers every refusal with a status.
+    raiseAlert: async (...args) =>
+      call("raiseAlert", positional(args[0])) as Promise<AlertResult>,
+
+    withdrawAlert: async (...args) =>
+      call("withdrawAlert", positional(args[0], args[1])) as Promise<boolean>,
 
     probePrivateHost: async (...args) =>
       call("probePrivateHost", positional(args[0], args[1])) as Promise<boolean>,
@@ -316,14 +306,11 @@ export function createServiceChildMembers(
 
     callLlm: async (...args) => {
       const options = args[1] as { signal?: AbortSignal; maxTokens?: number; systemPrompt?: string } | undefined;
-      return withAbortChannel(options?.signal, async (channelId) => {
-        const wire: WireCallLlmOptions = {
-          ...(options?.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
-          ...(options?.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
-          ...(channelId !== undefined ? { signalChannelId: channelId } : {}),
-        };
-        return (await call("callLlm", positional(args[0], wire))) as string;
-      });
+      const wire: WireCallLlmOptions = {
+        ...(options?.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+        ...(options?.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
+      };
+      return (await call("callLlm", positional(args[0], wire), options?.signal)) as string;
     },
 
     /**
@@ -333,93 +320,81 @@ export function createServiceChildMembers(
      */
     hostFetch: async (...args) => {
       const input = args[0] as string | URL;
-      const init = args[1] as RequestInit | undefined;
-      const signal = init?.signal ?? undefined;
-      return withAbortChannel(signal ?? undefined, async (channelId) => {
-        const wire = encodeWireRequestInit(
-          init,
-          // The signal was already handed to `withAbortChannel`; this closure
-          // only supplies the id it allocated, so one signal never opens two
-          // channels. Unreachable when `init.signal` is absent, and loud rather
-          // than cast if that ever stops being true.
-          () => {
-            if (channelId === undefined) {
-              throw new HostApiBoundaryError(
-                "argument-marshalling-rejected",
-                "[host-api-child] 'hostFetch': init.signal has no abort channel",
-              );
-            }
-            return channelId;
-          },
-          "hostFetch(init)",
-        );
-        const reply = await call("hostFetch", positional(String(input), wire));
-        return decodeWireHttpResponse(reply, "hostFetch(result)");
-      });
+      const init = args[1] as import("../public-contract.js").HostFetchInit | undefined;
+      const wire = await encodeHostFetchInit(init, "hostFetch(init)");
+      const reply = await call(
+        "hostFetch",
+        positional(String(input), wire),
+        init?.signal ?? undefined,
+      );
+      return decodeWireHttpResponse(reply, "hostFetch(result)");
     },
 
-    /**
-     * `resolveApiKey` hands back a lease, not a key holder. `bearer()` reads a
-     * child-local copy and `release()` drops it AND ends the host registration,
-     * so the host can unwire its own — the two-sided lifetime the contract
-     * declares.
-     */
+    /** Adopt the host's registration so release and closure share its id. */
     resolveApiKey: async (...args) => {
       const opts = args[0] as {
         purpose: WireResolveApiKeyOptions["purpose"];
         vendor?: WireResolveApiKeyOptions["vendor"];
+        exposure?: WireResolveApiKeyOptions["exposure"];
         signal?: AbortSignal;
       };
-      return withAbortChannel(opts?.signal, async (channelId) => {
-        const wire: WireResolveApiKeyOptions = {
-          purpose: opts.purpose,
-          ...(opts.vendor !== undefined ? { vendor: opts.vendor } : {}),
-          ...(channelId !== undefined ? { signalChannelId: channelId } : {}),
-        };
-        const lease = requireHandle(
-          await call("resolveApiKey", [wire]),
-          "resolveApiKey",
-        ) as unknown as WireApiKeyLease;
-        if (!lease.ok) return { ok: false as const, reason: lease.reason };
-        let key: string | undefined = lease.key;
-        const dispose = deps.adoptSubscription(
-          "resolveApiKey",
-          lease.handleId,
-          // A lease carries no events. One arriving means the host is pushing
-          // on a registration it has nothing to push for, which is reported
-          // rather than ignored: silently dropping it would hide a real
-          // disagreement about what this member's id means.
-          () => {
-            deps.report("hostApi.resolveApiKey: the host pushed an event on a lease", {
-              handleId: lease.handleId,
-            });
-          },
-          // The host revoked the lease. Drop the child's copy so a later
-          // `bearer()` cannot return a credential the host has already unwired.
-          // This is the whole reason the credential is held as a mutable
-          // closure variable rather than a constant.
-          () => {
-            key = undefined;
-          },
-        );
-        return {
-          ok: true as const,
-          vendor: lease.vendor,
-          ...(lease.baseUrl !== undefined ? { baseUrl: lease.baseUrl } : {}),
-          bearer: () => {
-            if (key === undefined) {
-              throw new Error(
-                `[plugin:${pluginId}] hostApi.resolveApiKey().bearer: lease already released`,
-              );
-            }
-            return key;
-          },
-          release: () => {
-            key = undefined;
-            dispose();
-          },
-        };
-      });
+      const wire: WireResolveApiKeyOptions = {
+        purpose: opts.purpose,
+        ...(opts.vendor !== undefined ? { vendor: opts.vendor } : {}),
+        ...(opts.exposure !== undefined ? { exposure: opts.exposure } : {}),
+      };
+      const lease = await call("resolveApiKey", [wire], opts?.signal) as WireApiKeyLease;
+      if (!lease.ok) return { ok: false as const, reason: lease.reason };
+      const handle = requireHandle(lease, "resolveApiKey") as WireApiKeyLease & { ok: true };
+      let closedReason: "revoked" | "peer-gone" | undefined;
+      let released = false;
+      const listeners = new Set<(reason: "revoked" | "peer-gone") => void>();
+      const dispose = deps.adoptSubscription(
+        "resolveApiKey",
+        handle.handleId,
+        // A lease carries no events. One arriving means the host is pushing
+        // on a registration it has nothing to push for, which is reported
+        // rather than ignored: silently dropping it would hide a real
+        // disagreement about what this member's id means.
+        () => {
+          deps.report("hostApi.resolveApiKey: the host pushed an event on a lease", {
+            handleId: handle.handleId,
+          });
+        },
+        // A closure before adoption is replayed by the child runtime.
+        (reason) => {
+          closedReason = reason;
+          if (!released) for (const listener of listeners) listener(reason);
+          listeners.clear();
+        },
+      );
+      const release = async () => {
+        if (released) return;
+        released = true;
+        listeners.clear();
+        dispose();
+      };
+      if (handle.exposure === "raw") return {
+        ok: true as const,
+        exposure: "raw" as const,
+        vendor: handle.vendor,
+        ...(handle.baseUrl !== undefined ? { baseUrl: handle.baseUrl } : {}),
+        key: handle.key,
+        release,
+      };
+      return {
+        ok: true as const,
+        exposure: "lease" as const,
+        leaseId: handle.handleId,
+        vendor: handle.vendor,
+        ...(handle.baseUrl !== undefined ? { baseUrl: handle.baseUrl } : {}),
+        onClosed: (listener: (reason: "revoked" | "peer-gone") => void) => {
+          if (closedReason) listener(closedReason);
+          else if (!released) listeners.add(listener);
+          return () => { listeners.delete(listener); };
+        },
+        release,
+      };
     },
 
     /**
@@ -572,7 +547,7 @@ export function createServiceChildMembers(
         }
         // This side does NOT let go here. The host owns the process, so the
         // host owns the news that it ended: it releases its own registration
-        // and the `subscription-closed` that follows drops this one. Disposing
+        // and the closed notification that follows drops this one. Disposing
         // here as well would be a second authority for one fact, and it was
         // only ever written because a host-side release could not reach the
         // child — which it now can.
@@ -633,10 +608,10 @@ function requireBytesOrText(pluginId: string, value: unknown): string | Uint8Arr
  * Build this group's child-side stubs.
  *
  * Every stub that crosses goes through {@link HostApiCaller}, which is the one
- * place the envelope is stamped and the one place a reply's error identity is
- * rebuilt. A stub that assembled its own request would be a second place the
- * generation is claimed, and the generation is what the host checks the call
- * against.
+ * place a call becomes its `ave/host/*` request and the one place a reply's
+ * error identity is rebuilt. A stub that assembled its own request would be a
+ * second encoding of the method name and params that could disagree with the
+ * first.
  */
 export function createStorageChildMembers(
   call: HostApiCaller,
@@ -739,7 +714,7 @@ interface ChildSubscriptionHandle {
 /** What the child runtime lends this group so it does not re-derive any of it. */
 export interface ConfigSubscriptionChildDeps {
   readonly pluginId: string;
-  /** The one place the envelope is stamped and the call id allocated. */
+  /** The one place a call becomes its `ave/host/*` request. */
   readonly call: HostApiCaller;
   /** The one child-side subscription ledger, shared with every other member. */
   readonly openSubscription: (
@@ -757,6 +732,12 @@ export interface ConfigSubscriptionChildDeps {
   readonly config: Record<string, unknown>;
   /** `context.log`, so an async failure with no caller to throw to is still seen. */
   readonly report: (message: string, meta?: unknown) => void;
+  /**
+   * The plugin's `onShutdown` handlers, by the id each registered under. The
+   * host runs one through `ave/instance/shutdown`, a request it awaits, so a
+   * handler is looked up and awaited rather than delivered as a payload.
+   */
+  readonly shutdownHandlers: Map<string, () => void | Promise<void>>;
 }
 
 /**
@@ -929,30 +910,30 @@ export function createConfigSubscriptionChildMembers(
     // (`lifetime: "host-terminated"`). The child still holds a ledger entry so
     // the registration dies with the host rather than outliving it, but the
     // plugin is given no disposer — matching the in-process signature exactly.
+    //
+    // No payload is ever delivered to it. The host runs the handler through
+    // `ave/instance/shutdown`, a request it awaits with a bound, so the
+    // handler's settling is the reply and a throw crosses as an error the
+    // host logs beside every other plugin's shutdown failure.
     onShutdown: (...args) => {
       const handler = requireFunctionArgument(pluginId, "onShutdown", "handler", args[0]);
       const subscription: ChildSubscriptionHandle = subscribe(
         deps,
         "onShutdown",
         (subscriptionId) => [subscriptionId],
-        () => {
-          void (async () => {
-            try {
-              await handler();
-            } catch (error) {
-              deps.report("hostApi.onShutdown: the plugin's handler threw", {
-                error: errorMessage(error),
-              });
-            } finally {
-              // The release is how the host learns the handler has finished —
-              // it is the reply to a fire-and-forget notification. It runs even
-              // when the handler threw, because a host that waits forever for a
-              // plugin that has already failed is the hang this replaces.
-              subscription.dispose();
-            }
-          })();
-        },
+        () => undefined,
       );
+      deps.shutdownHandlers.set(subscription.subscriptionId, async () => {
+        try {
+          await handler();
+        } finally {
+          // Ran once, whichever way it settled: the host fires shutdown once,
+          // and releasing the registration keeps its ledger entry from
+          // outliving the only thing it was for.
+          deps.shutdownHandlers.delete(subscription.subscriptionId);
+          subscription.dispose();
+        }
+      });
       return undefined;
     },
   };

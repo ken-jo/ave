@@ -160,9 +160,15 @@ export class ScriptHookManager {
   private pluginRegistries = new Map<string, readonly HookRegistryEntry[]>();
   private generation = 0;
   private generationAccess: PluginRuntimeGenerationAccess | undefined;
+  private readonly generationLeaseSources = new Map<string, (pluginId: string, activationId: string) => Promise<{ release(): void }>>();
 
   setPluginGenerationAccess(access: PluginRuntimeGenerationAccess): void {
     this.generationAccess = access;
+  }
+
+  registerGenerationLeaseSource(prefix: string, acquireExact: (pluginId: string, activationId: string) => Promise<{ release(): void }>): void {
+    if (!prefix || this.generationLeaseSources.has(prefix)) throw new Error("hook generation lease source is already registered or invalid");
+    this.generationLeaseSources.set(prefix, acquireExact);
   }
 
   /**
@@ -235,9 +241,11 @@ export class ScriptHookManager {
         event: entry.event,
         ...(entry.matcher !== undefined ? { matcher: entry.matcher } : {}),
         command: [...entry.command],
+        ...(entry.env ? { env: { ...entry.env } } : {}),
         source: "config",
         timeoutMs: entry.timeoutMs,
         owner: projection.owner,
+        confinement: projection.confinement,
       }));
       next.set(pluginProjectionKey(projection), Object.freeze(entries));
     }
@@ -519,20 +527,9 @@ export class ScriptHookManager {
     entries: readonly HookRegistryEntry[],
     operation: (activeEntries: HookRegistryEntry[]) => Promise<T>,
   ): Promise<T> {
-    const access = this.generationAccess;
-    if (!access) {
-      const pluginEntry = entries.find((entry) => entry.owner);
-      if (pluginEntry?.owner) {
-        throw new Error(
-          `plugin hook '${pluginEntry.id}' cannot run without generation leasing for ` +
-          `'${pluginEntry.owner.pluginId}' generation '${pluginEntry.owner.generationId}'`,
-        );
-      }
-      return operation([...entries]);
-    }
     const leases = new Map<
       string,
-      Awaited<ReturnType<PluginRuntimeGenerationAccess["acquireExact"]>>
+      { release(): void }
     >();
     const acquiredOwnerKeys = new Set<string>();
     try {
@@ -542,7 +539,12 @@ export class ScriptHookManager {
         const activationId = owner.activationId;
         const key = `${owner.pluginId}\0${activationId}`;
         if (acquiredOwnerKeys.has(key)) continue;
-        leases.set(key, await access.acquireExact(owner.pluginId, activationId));
+        const source = [...this.generationLeaseSources.entries()]
+          .filter(([prefix]) => owner.pluginId.startsWith(prefix))
+          .sort(([a], [b]) => b.length - a.length)[0]?.[1];
+        const acquire = source ?? this.generationAccess?.acquireExact.bind(this.generationAccess);
+        if (!acquire) throw new Error(`plugin hook '${entry.id}' cannot run without generation leasing for '${owner.pluginId}' generation '${owner.generationId}'`);
+        leases.set(key, await acquire(owner.pluginId, activationId));
         acquiredOwnerKeys.add(key);
       }
       return await operation([...entries]);
@@ -568,6 +570,7 @@ function toRunnable(entry: HookRegistryEntry): RunnableHook {
     id: entry.id,
     hookType: entry.event,
     command: entry.command,
+    ...(entry.env ? { env: entry.env } : {}),
     ...(entry.matcher !== undefined ? { matcher: entry.matcher } : {}),
     // For a config command, the forensic path is argv[0] (or the script arg).
     hookPath: entry.command[0],
@@ -576,6 +579,7 @@ function toRunnable(entry: HookRegistryEntry): RunnableHook {
     // verbatim argv for `commandIdentity` (no on-disk local-script sha exists).
     source: "config",
     ...(entry.owner ? { pluginOwner: entry.owner } : {}),
+    ...(entry.confinement ? { confinement: entry.confinement } : {}),
   };
 }
 

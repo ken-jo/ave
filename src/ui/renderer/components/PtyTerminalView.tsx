@@ -17,18 +17,39 @@
  * adds no i18n catalog keys.
  */
 import { useEffect, useRef } from "react";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { AveApi } from "../types.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { useOptionalTheme } from "../theme/ThemeProvider.js";
 
 /** Dim-yellow ANSI wrapper for host-emitted diagnostic lines in the buffer. */
 function diagnostic(text: string): string {
   return `\r\n\x1b[33m${text}\x1b[0m\r\n`;
 }
 
+/**
+ * xterm's canvas renderer cannot resolve CSS custom properties, so the ACTIVE
+ * theme tokens are read off the DOM and handed to xterm as concrete colors —
+ * no source-level color literal (color-token-gate compliant).
+ */
+function terminalTheme(host: HTMLElement): ITheme {
+  const readToken = (name: string, fallbackTriple: string): string => {
+    const raw = getComputedStyle(host).getPropertyValue(name).trim();
+    return `hsl(${raw || fallbackTriple})`;
+  };
+  return {
+    background: readToken("--background", "222.2 84% 4.9%"),
+    foreground: readToken("--foreground", "210 40% 98%"),
+  };
+}
+
 export function PtyTerminalView({ api, tabId }: { api: AveApi; tabId: string }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const termRef = useRef<Terminal | null>(null);
+  // Changes after the applied theme's values were written to :root — another
+  // theme or the same one updated in place.
+  const appliedRevision = useOptionalTheme()?.appliedRevision ?? 0;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -38,26 +59,16 @@ export function PtyTerminalView({ api, tabId }: { api: AveApi; tabId: string }) 
     if (!host || !terminalApi) return;
 
     let disposed = false;
-    // xterm's canvas renderer cannot resolve CSS custom properties, so read the
-    // ACTIVE theme tokens off the DOM at runtime and hand xterm concrete colors.
-    // This keeps the component theme-aware (a bundle switch re-tints it) without
-    // any source-level color literal (color-token-gate compliant).
-    const readToken = (name: string, fallbackTriple: string): string => {
-      const raw = getComputedStyle(host).getPropertyValue(name).trim();
-      return `hsl(${raw || fallbackTriple})`;
-    };
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 12,
       fontFamily:
         'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
-      theme: {
-        background: readToken("--background", "222.2 84% 4.9%"),
-        foreground: readToken("--foreground", "210 40% 98%"),
-      },
+      theme: terminalTheme(host),
       scrollback: 5000,
       allowProposedApi: true,
     });
+    termRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
@@ -114,11 +125,21 @@ export function PtyTerminalView({ api, tabId }: { api: AveApi; tabId: string }) 
       inputSub.dispose();
       offData();
       offExit();
+      termRef.current = null;
       term.dispose();
       // NOTE: PTY is intentionally NOT killed here — it survives unmount and is
       // torn down on tab close (closeWorkspaceTab → terminal.kill).
     };
   }, [api, tabId]);
+
+  // Re-tint the live terminal when the applied theme changes: its options take
+  // a new theme in place, so the shell, scrollback and cursor are kept.
+  useEffect(() => {
+    const term = termRef.current;
+    const host = hostRef.current;
+    if (!term || !host) return;
+    term.options.theme = terminalTheme(host);
+  }, [appliedRevision]);
 
   return (
     <div

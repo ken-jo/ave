@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 
 vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/asrt-sandbox.js")>(),
   wrapToolCommand: vi.fn(async (command: string) => ({
     argv: ["/bin/bash", "-c", command],
-    env: { ...process.env },
+    env: gitFixtureEnv(process.cwd()),
   })),
   cleanupAsrtSandboxAfterCommand: vi.fn(async () => {}),
   getDefaultSensitiveReadDenyPaths: () => [],

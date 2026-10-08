@@ -95,7 +95,7 @@ describe("ChatView", () => {
 
     fireEvent.click(marketplaceButton);
     await waitFor(() => {
-      expect(container.querySelector('[data-testid="marketplace:cta:open"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="git-marketplace"]')).not.toBeNull();
     });
   });
 
@@ -659,7 +659,7 @@ describe("ChatView", () => {
 
     await waitFor(() => {
       expect(container.textContent).toContain("first_permission_tool");
-      expect(container.textContent).toContain("플러그인");
+      expect(container.textContent).toContain("익스텐션");
       expect(container.textContent).toContain("첫 번째 승인 목적");
     });
 

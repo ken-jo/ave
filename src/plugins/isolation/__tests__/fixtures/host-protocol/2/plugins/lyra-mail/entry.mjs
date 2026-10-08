@@ -1,0 +1,31 @@
+/**
+ * The hostApi surface `lyra-mail` reaches (plugin-hostapi-protocol.md §9.2) — the
+ * UI-action members — each called once so the golden transcript beside this
+ * file shows every frame that surface puts on the wire.
+ */
+export const createPlugin = async (context) => {
+  const api = context.hostApi;
+  return {
+    handlers: {
+      exercise_host: async () => {
+        const redirect = await api.authRedirect.open();
+        const redirectParams = await api.authRedirect.wait({ handle: redirect.handle, timeoutMs: 120_000 });
+        await api.authRedirect.close({ handle: redirect.handle });
+        const signIn = await api.openAuthWindow({
+          url: "https://login.example.com/authorize",
+          completionUrlPatterns: ["https://login.example.com/done*"],
+          cookieHosts: ["login.example.com"],
+          persistPartition: "lyra-mail-auth",
+          returnFinalUrl: true,
+        });
+        await api.openAuthPartitionViewer({ url: "https://mail.example.com/", windowTitle: "Mail" });
+        await api.storage.writeEncrypted("tokens/cache.bin", "the token cache");
+        const tokenCache = await api.storage.readEncrypted("tokens/cache.bin");
+        const onCorporateNetwork = await api.probePrivateHost("intranet.example.com", { timeoutMs: 1_500 });
+        await api.clearAuthPartition("lyra-mail-auth");
+        return { redirect, redirectParams, signIn, tokenCache, onCorporateNetwork };
+      },
+      report_host: async () => ({}),
+    },
+  };
+};

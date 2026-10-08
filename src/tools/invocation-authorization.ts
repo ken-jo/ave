@@ -18,7 +18,7 @@ import type {
 } from "../permissions/host-shell-execution-plan.js";
 import type { HostShellExecutionPermitBinding } from "../permissions/host-shell-execution-permit.js";
 import { resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
-import { resolvePluginWritableRoot } from "../plugins/plugin-storage-layout.js";
+import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
 import {
   isRemoteControllerAuthorityCurrent,
   remoteControllerOriginOf,
@@ -842,10 +842,11 @@ export async function authorizeToolInvocation(
     // #885 v6 (§5.3): the untrusted `tool.writesToOwnSandbox` self-claim is no
     // longer threaded to the reviewer — the auto-LOW keys solely on the
     // HOST-computed `ownerPluginSandboxRoot` + host-verified path containment.
+    // A plugin whose data root is not the host's real directory gets no owner
+    // sandbox, so no auto-LOW: the stricter path.
+    const ownerPluginSandboxRoot = tool.pluginId ? resolveOwnerPluginSandboxRoot(tool.pluginId) : undefined;
     const sandboxAttestation = {
-      ...(tool.pluginId
-        ? { ownerPluginSandboxRoot: resolvePluginWritableRoot(tool.pluginId) }
-        : {}),
+      ...(ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot } : {}),
     };
     let foregroundMemorySkipChecked = false;
     if (

@@ -6,7 +6,7 @@
  * re-fire when an item's `due_at` actually changes. The board reader + storage
  * are in-memory fakes so no real `~/.ave` is touched; `emit` is captured.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   scanAndEmitDueSoon,
   DUE_SOON_EVENT,
@@ -20,6 +20,8 @@ import type {
   WorkItemResolved,
 } from "../../shared/work-board-types.js";
 import { okListReader } from "./board-test-fixtures.js";
+
+const raiseAlert = async () => ({ status: "disabled_by_user" as const });
 
 const NOW = Date.parse("2026-06-16T00:00:00.000Z");
 
@@ -55,12 +57,46 @@ function recorder() {
 }
 
 describe("scanAndEmitDueSoon", () => {
+  it("finishes and persists the bus pass even if alert delivery throws", async () => {
+    const dueAt = new Date(NOW + 60_000).toISOString();
+    const store = okListReader([item({ id: 1, due_at: dueAt }), item({ id: 2, due_at: dueAt })]);
+    const storage = memStorage();
+    const { emit, calls } = recorder();
+    await expect(scanAndEmitDueSoon(store, storage, emit, NOW, async () => { throw new Error("delivery failed"); }))
+      .rejects.toThrow("delivery failed");
+    expect(calls).toHaveLength(2);
+    await scanAndEmitDueSoon(store, storage, emit, NOW, raiseAlert);
+    expect(calls).toHaveLength(2);
+  });
+  it("raises a deadline identity on every scan while emitting the bus event only once", async () => {
+    const dueAt = new Date(NOW + 60 * 60_000).toISOString();
+    const store = okListReader([item({ id: 7, title: "Report", due_at: dueAt })]);
+    const storage = memStorage();
+    const { emit, calls } = recorder();
+    const raise = vi.fn(raiseAlert);
+    await scanAndEmitDueSoon(store, storage, emit, NOW, raise);
+    await scanAndEmitDueSoon(store, storage, emit, NOW + 5 * 60_000, raise);
+    expect(calls).toHaveLength(1);
+    expect(raise).toHaveBeenCalledTimes(2);
+    expect(raise).toHaveBeenNthCalledWith(1, {
+      kind: "due-soon", key: `7:${dueAt}`, slots: { title: "Report", itemId: "7" }, ttlMs: 60 * 60_000,
+    });
+    expect(raise).toHaveBeenNthCalledWith(2, expect.objectContaining({ key: `7:${dueAt}` }));
+  });
+
+  it("bounds a title by code points before entering the slot validator", async () => {
+    const raise = vi.fn(raiseAlert);
+    await scanAndEmitDueSoon(okListReader([item({
+      id: 7, title: "😀".repeat(250), due_at: new Date(NOW + 60_000).toISOString(),
+    })]), memStorage(), recorder().emit, NOW, raise);
+    expect(raise).toHaveBeenCalledWith(expect.objectContaining({ slots: { title: "😀".repeat(200), itemId: "7" } }));
+  });
   it("emits for an item due inside the next 24h", async () => {
     const dueIn1h = new Date(NOW + 60 * 60_000).toISOString();
     const store = okListReader([item({ id: 1, due_at: dueIn1h })]);
     const { emit, calls } = recorder();
 
-    const emitted = await scanAndEmitDueSoon(store, memStorage(), emit, NOW);
+    const emitted = await scanAndEmitDueSoon(store, memStorage(), emit, NOW, raiseAlert);
 
     expect(emitted).toHaveLength(1);
     expect(calls).toHaveLength(1);
@@ -79,7 +115,7 @@ describe("scanAndEmitDueSoon", () => {
     ]);
     const { emit, calls } = recorder();
 
-    const emitted = await scanAndEmitDueSoon(store, memStorage(), emit, NOW);
+    const emitted = await scanAndEmitDueSoon(store, memStorage(), emit, NOW, raiseAlert);
 
     expect(emitted).toHaveLength(0);
     expect(calls).toHaveLength(0);
@@ -91,8 +127,8 @@ describe("scanAndEmitDueSoon", () => {
     const storage = memStorage();
     const { emit, calls } = recorder();
 
-    await scanAndEmitDueSoon(store, storage, emit, NOW);
-    await scanAndEmitDueSoon(store, storage, emit, NOW + 5 * 60_000);
+    await scanAndEmitDueSoon(store, storage, emit, NOW, raiseAlert);
+    await scanAndEmitDueSoon(store, storage, emit, NOW + 5 * 60_000, raiseAlert);
 
     expect(calls).toHaveLength(1); // only the first scan fired
     // The dedupe map persisted exactly one key, retaining its first-notified instant.
@@ -107,8 +143,8 @@ describe("scanAndEmitDueSoon", () => {
     const storage = memStorage();
     const { emit, calls } = recorder();
 
-    await scanAndEmitDueSoon(okListReader([item({ id: 1, due_at: due1 })]), storage, emit, NOW);
-    await scanAndEmitDueSoon(okListReader([item({ id: 1, due_at: due2 })]), storage, emit, NOW);
+    await scanAndEmitDueSoon(okListReader([item({ id: 1, due_at: due1 })]), storage, emit, NOW, raiseAlert);
+    await scanAndEmitDueSoon(okListReader([item({ id: 1, due_at: due2 })]), storage, emit, NOW, raiseAlert);
 
     expect(calls).toHaveLength(2);
     // The stale key is pruned; only the current deadline survives.
@@ -122,13 +158,14 @@ describe("scanAndEmitDueSoon", () => {
     const { emit } = recorder();
 
     // First scan fires + records the key.
-    await scanAndEmitDueSoon(okListReader([item({ id: 1, due_at: dueIn1h })]), storage, emit, NOW);
+    await scanAndEmitDueSoon(okListReader([item({ id: 1, due_at: dueIn1h })]), storage, emit, NOW, raiseAlert);
     // Item later completed → no longer due-soon → key pruned.
     await scanAndEmitDueSoon(
       okListReader([item({ id: 1, due_at: dueIn1h, status: "completed" })]),
       storage,
       emit,
       NOW + 5 * 60_000,
+      raiseAlert,
     );
 
     const persisted = (await storage.readJson<Record<string, string>>(DUE_SOON_NOTIFIED_FILE)) ?? {};
@@ -141,7 +178,7 @@ describe("scanAndEmitDueSoon", () => {
     };
     const { emit, calls } = recorder();
 
-    const emitted = await scanAndEmitDueSoon(store, memStorage(), emit, NOW);
+    const emitted = await scanAndEmitDueSoon(store, memStorage(), emit, NOW, raiseAlert);
 
     expect(emitted).toHaveLength(0);
     expect(calls).toHaveLength(0);

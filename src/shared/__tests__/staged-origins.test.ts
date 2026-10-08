@@ -11,7 +11,7 @@
 import { describe, it, expect } from "vitest";
 
 import { isChatSendInputOrigin } from "../chat-origin.js";
-import { generatedEn } from "../../i18n/messages/generated/index.js";
+import { messages } from "../../i18n/messages/index.js";
 import {
   STAGED_ORIGIN_KINDS,
   isStagedSendOrigin,
@@ -28,6 +28,7 @@ const sampleSource: Record<string, string> = {
   "plugin-emitted": "overlay:meeting-detection",
   "app-emitted": "app:hr-mcp",
   "mcp-prompt-emitted": "mcp-prompt:hr-mcp",
+  "plugin-prompt-emitted": "plugin-prompt:writer-plugin:draft",
 };
 
 describe("staged-origin registry", () => {
@@ -37,6 +38,7 @@ describe("staged-origin registry", () => {
     expect(new Set(origins).size).toBe(origins.length);
     expect(new Set(tags).size).toBe(tags.length);
     expect(origins).toContain("mcp-prompt-emitted");
+    expect(origins).toContain("plugin-prompt-emitted");
   });
 
   it("keeps namespaces disjoint — a source matches at most one kind", () => {
@@ -130,7 +132,7 @@ describe("staged-origin registry", () => {
   // guidance descriptor is part of registration and its keys must actually
   // resolve — a typo would render as the raw key inside the system prompt.
   it("gives every registered origin resolvable guidance", () => {
-    const catalog = generatedEn as Record<string, string>;
+    const catalog = messages.en;
     for (const kind of STAGED_ORIGIN_KINDS) {
       expect(kind.guidance.tag).toMatch(/^[a-z][a-z0-9-]*$/);
       expect(kind.guidance.lineKeys.length).toBeGreaterThan(0);

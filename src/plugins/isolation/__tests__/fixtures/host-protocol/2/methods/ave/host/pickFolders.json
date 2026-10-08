@@ -1,0 +1,18 @@
+{
+  "request": {
+    "id": 35,
+    "jsonrpc": "2.0",
+    "method": "ave/host/pickFolders",
+    "params": {}
+  },
+  "response": {
+    "id": 35,
+    "jsonrpc": "2.0",
+    "result": {
+      "canceled": false,
+      "folders": [
+        "/validation/user/Documents"
+      ]
+    }
+  }
+}

@@ -43,7 +43,10 @@ if (!dock) {
 function main() {
   els.close.addEventListener("click", () => dock.requestClose());
 
-  applyTheme();
+  // Main sends the theme current when the window opens, then every later one —
+  // another theme, or the same one updated in place. Before the host has
+  // published any theme nothing arrives, and the stylesheet's fallbacks apply.
+  dock.onTheme(paintTheme);
 
   dock.onActivity((activity) => {
     if (!activity || typeof activity.summary !== "string") {
@@ -95,27 +98,20 @@ function slotElementId(panelId) {
   return `slot-${panelId}`;
 }
 
-async function applyTheme() {
-  try {
-    const theme = await dock.getTheme();
-    const tokens = theme && typeof theme === "object" ? theme.tokens : null;
-    if (!tokens || typeof tokens !== "object") return;
-    // Only the tokens this window actually uses. Copying the whole map onto a
-    // surface with five colours in it would make the dock's appearance depend
-    // on tokens nobody checked against a transparent background.
-    const pick = {
-      "--dock-fg": tokens["--ave-fg"],
-      "--dock-bg": tokens["--ave-bg-elevated"] ?? tokens["--ave-bg"],
-      "--dock-border": tokens["--ave-border"],
-      "--dock-accent": tokens["--ave-accent"],
-    };
-    for (const [name, value] of Object.entries(pick)) {
-      if (typeof value === "string" && value) document.documentElement.style.setProperty(name, value);
-    }
-  } catch {
-    // The stylesheet's fallbacks already cover this. A dock that refused to
-    // paint because the theme was not ready would be worse than one in
-    // default colours.
+function paintTheme(theme) {
+  const tokens = theme && typeof theme === "object" ? theme.tokens : null;
+  if (!tokens || typeof tokens !== "object") return;
+  // Only the tokens this window actually uses. Copying the whole map onto a
+  // surface with five colours in it would make the dock's appearance depend
+  // on tokens nobody checked against a transparent background.
+  const pick = {
+    "--dock-fg": tokens["--ave-fg"],
+    "--dock-bg": tokens["--ave-bg-elevated"] ?? tokens["--ave-bg"],
+    "--dock-border": tokens["--ave-border"],
+    "--dock-accent": tokens["--ave-accent"],
+  };
+  for (const [name, value] of Object.entries(pick)) {
+    if (typeof value === "string" && value) document.documentElement.style.setProperty(name, value);
   }
 }
 
@@ -154,6 +150,9 @@ async function mountSlot({ panelId, pluginId, entryUrl, partition, title, height
   const view = document.createElement("webview");
   view.setAttribute("src", dock.pluginShellUrl);
   view.setAttribute("preload", dock.pluginPreloadUrl);
+  // A request, as in the main window's plugin host: main's attach guard sets
+  // these anyway, from the preload table.
+  view.setAttribute("webpreferences", "contextIsolation=yes,nodeIntegration=no,sandbox=yes");
   // Main's, verbatim. The name is a hash of the plugin id and this file
   // deliberately does not know the rule — see the surface's comment.
   view.setAttribute("partition", partition);

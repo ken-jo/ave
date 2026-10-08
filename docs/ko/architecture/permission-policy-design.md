@@ -1,5 +1,10 @@
 # Permission Policy — Design Document (v2.3)
 
+> **플러그인 계약 부분 대체됨:** 아래 SDK 소유 스키마와 배포 순서는 당시의
+> 구현 기록입니다. 현재 플러그인은 앱 릴리스 태그의 호스트 계약 파일을
+> `contract/`에 그대로 복사하고, 새 계약 멤버에는 `requires.minAppVersion`을
+> 설정합니다. 현재 작성 절차는 [설계서 §5.6](../../design/multi-source-git-marketplace.md#56-plugin-contract-for-authors)을 따릅니다.
+
 > **Status:** Accepted v2.3 — implementation landed via PR #643 (v2.2 baseline) + PR #664/#860 (v2.3 reviewer-mode normalization); this document is the operating reference for the live permission stack. (Not "Ratified" because §15 hook-signing path is still a v1 deny-only baseline pending follow-up.)
 > **Issue:** #627 (implementation, closed) · #644 (v2.2 ratification) · #664 / #860 (v2.3 reviewer-mode normalization)
 > **Owner:** Permissions stack maintainers (`src/permissions/`, `src/boot/steps/reviewer-wiring.ts`)

@@ -270,27 +270,6 @@ function readLastCompleteLineSync(fd: number, boundary: number): string {
 }
 
 /**
- * Plugin install privilege-escalation audit (#1098). Emitted when a marketplace
- * install escalates the actor user → it-admin because the catalog installPolicy
- * is "admin". Typed (replaces an ad-hoc `JSON.stringify` blob in `input`) so
- * forensics can identify, from a single audit row: the catalog policy that drove
- * the escalation, the escalation source (`location`), and the EXACT catalog
- * snapshot used (`catalogSnapshotHash`) — the last closes the TOCTOU audit gap
- * where the audited policy and the installed artifact could otherwise diverge.
- */
-export interface PluginInstallEscalationAudit {
-  event: "plugin-install-escalation";
-  pluginId: string;
-  catalogPolicy: "admin";
-  actorOriginal: "user";
-  actorEscalated: "it-admin";
-  /** Internal call site that performed the escalation (e.g. "marketplace.install"). */
-  location: string;
-  /** sha256 over the canonical catalog item that drove escalation AND the install — pins the exact snapshot. */
-  catalogSnapshotHash: string;
-}
-
-/**
  * Token usage as persisted on an audit row. UsageDashboard / computeCost
  * contract, not raw AI SDK total input: Claude stores fresh input here and
  * cache in the cache fields; OpenAI / Gemini style providers keep provider
@@ -315,15 +294,13 @@ export interface AuditEntry {
 
   timestamp: string;
   sessionId: string;
-  type: "turn" | "tool_call" | "approval" | "warn" | "error" | "mcp_connect" | "mcp_apikey_set" | "kill_switch" | "dlp" | "info" | "diagnostics-export";
+  type: "turn" | "tool_call" | "approval" | "warn" | "error" | "mcp_connect" | "mcp_apikey_set" | "kill_switch" | "dlp" | "info" | "diagnostics-export" | "plugin_hostapi_denied";
   /** DLP hit payload — populated when type === "dlp" */
   dlp?: {
     byKind: Record<string, number>;
     totalRedactions: number;
     turnId: string;
   };
-  /** Plugin install privilege-escalation payload (#1098) — populated for install-escalation events. */
-  pluginInstall?: PluginInstallEscalationAudit;
   input?: string;
   output?: string;
   toolCalls?: Array<{
@@ -632,6 +609,7 @@ export class AuditLogger {
   private permissionAuditEpochTransition: Promise<void> | null = null;
   private permissionAuditAppendTail: Promise<void> = Promise.resolve();
   private permissionAuditAppendActive = 0;
+  private acceptingPermissionAuditWrites = true;
 
   constructor(auditDirOverride?: string, options: AuditLoggerOptions = {}) {
     this.auditDir = auditDirOverride ?? join(aveHome(), "audit");
@@ -781,7 +759,9 @@ export class AuditLogger {
   /** Stop accepting plain telemetry and drain the bounded writer queue. */
   async close(): Promise<void> {
     this.acceptingPlainWrites = false;
-    await this.flush();
+    this.acceptingPermissionAuditWrites = false;
+    await Promise.all([this.flush(), this.permissionAuditAppendTail]);
+    if (this.permissionAuditEpochTransition) await this.permissionAuditEpochTransition;
   }
 
   /** Queue state exposed for deterministic saturation and shutdown tests. */
@@ -1142,6 +1122,9 @@ export class AuditLogger {
    * line without O(n) full-file scans on every append.
    */
   appendPermissionAuditEntry(entry: PermissionAuditEntryInput): Promise<PermissionAuditEntry> {
+    if (!this.acceptingPermissionAuditWrites) {
+      return Promise.reject(new Error("permission audit logger is closed"));
+    }
     this.permissionAuditAppendActive += 1;
     const operation = this.permissionAuditAppendTail.then(
       () => this.appendPermissionAuditEntrySerialized(entry),

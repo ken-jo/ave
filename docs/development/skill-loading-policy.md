@@ -200,9 +200,9 @@ rendered (`src/prompts/system-prompt-builder.ts`), reusing the existing
 ## Front Matter
 
 A SKILL.md header is YAML, and is parsed as YAML. The fields it may carry are
-the SDK's `$defs/skillComponent` — `name` and `description` required,
-`triggers`, `license`, `compatibility`, `metadata` and `allowed-tools`
-optional — snapshotted at `schemas/sdk/skill-package.schema.json`. All of them
+`$defs/skillComponent` of the host-owned `schemas/skill-package.schema.json`
+— `name` and `description` required, `triggers`, `license`,
+`compatibility`, `metadata` and `allowed-tools` optional. All of them
 are kept on the skill record; the host does not re-validate the header against
 the schema, because admission belongs where publication is.
 

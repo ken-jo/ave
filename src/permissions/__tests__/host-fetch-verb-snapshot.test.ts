@@ -1,4 +1,4 @@
-import { createBootHostFixture } from "../../__tests__/support/host-runtime.js";
+import { createBootHostFixture, stationaryLeaseState } from "../../__tests__/support/host-runtime.js";
 /**
  * host-fetch-verb-snapshot.test.ts
  *
@@ -165,6 +165,7 @@ async function buildRealHostApi(): Promise<{
     host: createBootHostFixture(),
     projectRoot: "/tmp/ave-test/project",
     settingsService: {
+        ...stationaryLeaseState,
       get: vi.fn((key: string) => {
         if (key === "llm") return { provider: "openai" };
         if (key === "pluginConfigs") return {};
@@ -195,6 +196,7 @@ async function buildRealHostApi(): Promise<{
     routinesStore: { list: () => [] } as never,
     // This harness has no Work Board; the proposal verbs are not exercised here.
     getWorkBoardStore: () => undefined,
+    getAlertsService: () => undefined,
   });
 
   const createHostApi = harness.capturedRuntimeOptions?.createHostApi as

@@ -66,6 +66,7 @@ type ToastInput = {
   severity: ToastItem["severity"];
   message: string;
   ttlMs?: number;
+  sticky?: boolean;
   notification?: ToastItem["notification"];
 };
 
@@ -77,6 +78,7 @@ function createToastItem(id: string, input: ToastInput, defaultToastTtlMs: numbe
     message: input.message,
     ttlMs,
     expiresAt: Date.now() + ttlMs,
+    ...(input.sticky === true ? { sticky: true as const } : {}),
     notification: input.notification,
   };
 }
@@ -162,7 +164,7 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
   // a burst of install-result events from rendering multiple toasts at once.
   const visibleToast = toasts[0] ?? null;
   useEffect(() => {
-    if (visibleToast === null) return;
+    if (visibleToast === null || visibleToast.sticky) return;
     const delay = Math.max(0, visibleToast.expiresAt - Date.now());
     const id = setTimeout(() => {
       setToasts((prev) => {

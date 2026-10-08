@@ -73,7 +73,10 @@ export interface OverlayCardProps {
   onExpandedChange: (expanded: boolean) => void;
 
   /** `app` = an MCP App's `ui/message` staged for user confirmation (no turn in flight). */
-  kind?: "routine" | "plugin" | "app";
+  kind?: "routine" | "plugin" | "app" | "host";
+  /** Host-bound identity and resolved display name for a plugin card. */
+  pluginId?: string;
+  pluginDisplayName?: string;
 
   /**
    * A proposal is a question the user answers ONCE, so its card carries the
@@ -119,6 +122,8 @@ export function OverlayCard({
   expanded,
   onExpandedChange,
   kind = "routine",
+  pluginId,
+  pluginDisplayName,
   dispositions,
 }: OverlayCardProps) {
   const { t } = useTranslation();
@@ -143,6 +148,9 @@ export function OverlayCard({
   }, [firedAt]);
 
   const showNav = queueTotal >= 2;
+  const displayNameLabel = pluginDisplayName && pluginDisplayName !== pluginId
+    ? t("alerts.pluginDisplayName", { name: pluginDisplayName })
+    : null;
 
   return (
     <Card
@@ -152,52 +160,17 @@ export function OverlayCard({
       aria-live="polite"
       aria-atomic
     >
-      <CardHeader className="shrink-0 pb-2">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <CardTitle className="flex items-center gap-1.5 text-sm">
-              {running ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-action-view" />
-              ) : (
-                <span className="text-action-view">●</span>
-              )}
-              <span className="truncate">{title}</span>
-            </CardTitle>
-            <CardDescription className="mt-0.5 flex items-center gap-1 text-[11px]">
-              <span>
-                {running
-                  ? t("overlayCard.running")
-                  : kind === "plugin"
-                    ? t("overlayCard.pluginNotice")
-                    : kind === "app"
-                      ? t("overlayCard.appNotice")
-                      : t("overlayCard.routineDone")}
-              </span>
-              {!running && (
-                <>
-                  <span>·</span>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="cursor-default">{relTime}</span>
-                    </TooltipTrigger>
-                    <TooltipContent>{isoLabel}</TooltipContent>
-                  </Tooltip>
-                </>
-              )}
-              {showNav && (
-                <>
-                  <span>·</span>
-                  <span
-                    data-testid="routine-card-indicator"
-                    className="text-action-view"
-                  >
-                    {queueIndex}/{queueTotal}
-                  </span>
-                </>
-              )}
-            </CardDescription>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
+      <CardHeader className="shrink-0 space-y-0 pb-2">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <CardTitle className="flex min-w-14 flex-1 items-center gap-1.5 text-sm">
+            {running ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-action-view" />
+            ) : (
+              <span className="text-action-view">●</span>
+            )}
+            <span className="min-w-0 flex-1 truncate">{title}</span>
+          </CardTitle>
+          <div className="flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1">
             {showNav && (
               <>
                 <Button
@@ -237,6 +210,62 @@ export function OverlayCard({
             </Button>
           </div>
         </div>
+        <CardDescription className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-1 text-[11px]">
+          {kind === "plugin" && pluginId && (
+            <span className="contents" data-testid="plugin-provenance">
+              <span
+                className="max-w-full flex-none break-all font-medium tracking-tight text-foreground"
+                role="group"
+                aria-label={t("alerts.pluginIdOnly", { id: pluginId })}
+                title={t("alerts.pluginIdOnly", { id: pluginId })}
+                data-testid="plugin-provenance-id"
+              >
+                {t("alerts.pluginIdOnly", { id: pluginId })}
+              </span>
+              {displayNameLabel && (
+                <span
+                  className="min-w-14 max-w-full flex-1 truncate text-[10px] opacity-60"
+                  role="group"
+                  aria-label={displayNameLabel}
+                  title={displayNameLabel}
+                  data-testid="plugin-provenance-name"
+                >
+                  {displayNameLabel}
+                </span>
+              )}
+            </span>
+          )}
+          {!(kind === "plugin" && pluginId) && (
+            <span className="min-w-0 truncate">
+              {running
+                ? t("overlayCard.running")
+                : kind === "host"
+                  ? t("alerts.builtInNotice")
+                  : kind === "app"
+                    ? t("overlayCard.appNotice")
+                    : t("overlayCard.routineDone")}
+            </span>
+          )}
+          {!running && (
+            <>
+              {!(kind === "plugin" && pluginId) && <span className="shrink-0">·</span>}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="cursor-default whitespace-nowrap">{relTime}</span>
+                </TooltipTrigger>
+                <TooltipContent>{isoLabel}</TooltipContent>
+              </Tooltip>
+            </>
+          )}
+          {showNav && (
+            <>
+              <span>·</span>
+              <span data-testid="routine-card-indicator" className="text-action-view">
+                {queueIndex}/{queueTotal}
+              </span>
+            </>
+          )}
+        </CardDescription>
       </CardHeader>
       <CardContent className="min-h-0 overflow-hidden pt-0">
         {running ? (
@@ -324,7 +353,7 @@ export function OverlayCard({
               data-testid="overlay-card-primary-action"
               onClick={onPrimaryAction}
             >
-              {primaryActionLabel ?? (kind === "plugin" ? t("overlayCard.pluginPrimaryAction") : t("overlayCard.routinePrimaryAction"))}
+              {primaryActionLabel ?? (kind === "plugin" || kind === "host" ? t("overlayCard.pluginPrimaryAction") : t("overlayCard.routinePrimaryAction"))}
             </Button>
           </div>
         )}

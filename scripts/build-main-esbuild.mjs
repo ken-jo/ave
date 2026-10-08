@@ -20,6 +20,7 @@ import {
 import { assertHeadlessBundleBoundary, HEADLESS_CHILD_ENTRY_POINTS } from "./lib/headless-bundle-boundary.mjs";
 import { readBuildSourceIdentity } from "./lib/build-source-identity.mjs";
 import { MAIN_BUNDLE_EXTERNALS } from "./lib/main-bundle-externals.mjs";
+import { assertBundledDocumentInputs, assertPackagedDocumentInputs } from "./lib/document-consumer-guard.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -99,8 +100,10 @@ if (watchMode) {
   await ctx.watch();
   process.stdout.write(`[esbuild-main] watching -> ${outfile}\n`);
 } else {
+  assertPackagedDocumentInputs(JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8")), repoRoot);
   const sourceBeforeBuild = readBuildSourceIdentity(repoRoot);
   const result = await build(buildOptions);
+  assertBundledDocumentInputs(Object.keys(result.metafile.inputs), repoRoot);
 
   if (result.errors.length > 0) {
     process.stderr.write(`[esbuild-main] failed with ${result.errors.length} errors\n`);

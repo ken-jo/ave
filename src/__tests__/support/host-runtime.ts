@@ -1,5 +1,6 @@
 import type { BootHost, DesktopHostCapabilities } from "../../boot/host-runtime.js";
 import type { SecretEncryption } from "../../data/secret-document-store.js";
+import { directHostFetchTransport } from "./host-fetch-transport.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +9,13 @@ export const unavailableSecretEncryption: SecretEncryption = {
   getSelectedStorageBackend: () => "unknown",
   encryptString: () => { throw new Error("test-encryption-unavailable"); },
   decryptString: () => { throw new Error("test-encryption-unavailable"); },
+};
+
+/** Settings state with no writes for host tests that do not exercise invalidation. */
+export const stationaryLeaseState = {
+  getProviderConfigRevision: () => 0,
+  getSecretGeneration: (_key: string) => 0,
+  onLeaseStateChanged: (_listener: () => void) => () => {},
 };
 
 export function createBootHostFixture(overrides: Partial<BootHost> = {}): BootHost {
@@ -19,7 +27,7 @@ export function createBootHostFixture(overrides: Partial<BootHost> = {}): BootHo
     isPackaged: false,
     encryption: unavailableSecretEncryption,
     networkFetch: fetchUnavailable,
-    singleHopNetworkFetch: fetchUnavailable,
+    singleHopNetworkFetch: directHostFetchTransport(fetchUnavailable),
     llmFetch: fetchUnavailable,
     exit: () => { throw new Error("test-host-exit"); },
     close: async () => {},
@@ -41,7 +49,7 @@ export function createDesktopHostFixture(overrides: Partial<DesktopHostCapabilit
     installPluginPartition: () => {},
     revokePluginWebviews: unavailable,
     onBootShutdown: () => {},
-    notificationSupported: () => false,
+    initializeNotificationPresenter: () => false,
     notificationOptions: { isReady: () => false, isAnyWindowFocused: () => false, notificationActivationRegistration: null },
     powerMonitor: { getSystemIdleTime: () => 0, on: () => {}, removeAllListeners: () => {} },
     createAudioCaptureSurface: unavailable,

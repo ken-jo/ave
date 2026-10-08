@@ -15,7 +15,11 @@
 export const PLUGIN_SKILL_SELECTOR_PATTERN =
   "plugin:([a-z][a-z0-9-]{2,127}):([a-zA-Z_][a-zA-Z0-9_]*)";
 
+export const AGENT_PLUGIN_SKILL_SELECTOR_PATTERN =
+  "agent-plugin:([a-z][a-z0-9-]{0,62}):([a-z][a-z0-9-]{0,62})";
+
 const PLUGIN_SKILL_SELECTOR = new RegExp(`^${PLUGIN_SKILL_SELECTOR_PATTERN}$`);
+const AGENT_PLUGIN_SKILL_SELECTOR = new RegExp(`^${AGENT_PLUGIN_SKILL_SELECTOR_PATTERN}$`);
 
 /**
  * Parse a plugin skill selector. Returns `null` for a user skill name or for
@@ -32,4 +36,11 @@ export function parsePluginSkillSelector(
   const match = PLUGIN_SKILL_SELECTOR.exec(skillName);
   if (!match) return null;
   return { pluginId: match[1], localId: match[2] };
+}
+
+export function parseAgentPluginSkillSelector(
+  skillName: string,
+): { packageName: string; localId: string } | null {
+  const match = AGENT_PLUGIN_SKILL_SELECTOR.exec(skillName);
+  return match ? { packageName: match[1]!, localId: match[2]! } : null;
 }

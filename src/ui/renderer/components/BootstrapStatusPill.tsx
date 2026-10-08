@@ -66,14 +66,7 @@ export function BootstrapStatusPill({
     // Why the bootstrap was skipped lives in `title`, and hover text is not in
     // the accessibility tree — so the accessible name carries it too, or a
     // screen reader is told only that something can be dismissed.
-    //
-    // The sentence is translated from the closed code; `detail` is appended
-    // rather than interpolated, because it is the failed request's own text and
-    // is the same English in every locale.
-    const sentence = t(BOOTSTRAP_SKIP_MESSAGE_KEY[status.skipped.reason]);
-    const skippedTitle = status.skipped.detail
-      ? `${sentence} ${truncate(status.skipped.detail)}`
-      : sentence;
+    const skippedTitle = t(BOOTSTRAP_SKIP_MESSAGE_KEY[status.skipped.reason]);
     return (
       <ToolbarStatusPill
         tone="warning"

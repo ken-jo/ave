@@ -16,10 +16,10 @@
  *   - origin-chain.ts, runtime-admission.ts, detached-operation.ts, types.ts
  */
 
-import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginRegistryEntry, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, InstallPolicy, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension } from "../types.js";
+import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension, PluginRegistryTrust } from "../types.js";
 import { classifySubscription } from "../capabilities.js";
-import { normalizeInstallPolicy, parsePluginJson, buildManifestValidator, getDeclaredEmittedEvents } from "./manifest-validation.js";
-import { flattenAgentPluginsManifest } from "../public-contract.js";
+import { parsePluginJson, buildManifestValidator, getDeclaredEmittedEvents, recordManifestDocument } from "./manifest-validation.js";
+import { flattenAgentPluginsManifest, pluginEntryKind } from "../public-contract.js";
 import { isModelVisible } from "./tool-visibility.js";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, resolve, basename } from "node:path";
@@ -34,24 +34,44 @@ import { readPluginRegistry, updatePluginRegistry } from "../registry.js";
 import { isTrustedRegistryManifestPath } from "../registry-manifest-trust.js";
 import { createLogger } from "../../lib/logger.js";
 import { isDevModeUnlocked } from "../../boot/dev-flags.js";
-import { verifyInstallReceipt, installReceiptPath } from "../plugin-install-receipt.js";
+import {
+  installReceiptPath,
+  verifyInstallReceipt,
+  verifyInstallReceiptRaw,
+  type GitInstallRecord,
+  type PluginInstallReceipt,
+  type PluginRung,
+} from "../plugin-install-receipt.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFile } from "node:fs/promises";
-import { type PluginDeploymentGuard, type Actor, PluginDeploymentDeniedError, assertDisableAllowed } from "../deployment-guard.js";
+import { type PluginDeploymentGuard, PluginDeploymentDeniedError, assertDisableAllowed } from "../deployment-guard.js";
 import { pluginArtifactGenerationId } from "../plugin-artifact-identity.js";
 import { HostApiGenerationScope } from "../plugin-host-effect-scope.js";
-import { canonicalJSON } from "../whitelist/canonical-json.js";
+import { canonicalJSON } from "../secret-access/canonical-json.js";
+import { manifestAuthority } from "../../marketplace/resolve/manifest-rules.js";
+import { waitForPluginWorkersStopped } from "../../permissions/worker-spawn.js";
 import { materializePluginGenerationRoot, removeRetainedPluginGeneration } from "../plugin-contributions.js";
 import { appVersionSatisfiesMin } from "../../shared/semver-compare.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import type { PluginInstallFailureKind } from "../../shared/plugin-install-failure.js";
+import {
+  assertProcessEntryAdmitted,
+  ProcessEntryRequiresPinnedArtifactError,
+  ProcessEntryUnconfinedError,
+  resolveProcessLaunch,
+} from "../process-entry.js";
 import { revocationRegistry } from "../revocation/revocation-registry.js";
 import { isPluginRuntimeDetachedOperationError, PluginRuntimeDetachedOperationError } from "./detached-operation.js";
 import { ensurePluginDataDir, resolvePluginDataDir, resolveEntryPath, buildPluginContext, resolveRealEntryPath } from "./sandbox.js";
 import { buildImportUrl, buildMethodMap, importPluginFactory, declaredAppVisibleToolMethods } from "./plugin-loader.js";
 import { withPluginInstallLock, hasExclusivePluginLifecycleMutation, isPluginInstallLockHeld, withAllPluginInstallLocks, withResolvedPluginInstallLocks } from "../install-lifecycle.js";
 import { isOutOfProcessPlugin } from "../isolation/out-of-process-plugins.js";
-import { createOutOfProcessPluginFactory } from "../isolation/out-of-process-plugin.js";
+import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError } from "../isolation/out-of-process-plugin.js";
+import {
+  HOST_PROTOCOL_VERSIONS_SERVED,
+  IncompatibleHostProtocolError,
+  isServedHostProtocolVersion,
+} from "../isolation/host-api-wire.js";
 import { createPluginStorage, createPluginStorageAuditSink } from "../storage.js";
 import type { SecretEncryption } from "../../data/secret-document-store.js";
 import { runWithCeiling } from "../../tools/executor-ceiling.js";
@@ -74,7 +94,6 @@ const log = createLogger("plugin-runtime");
 export const MAX_UI_RESOURCE_HTML_BYTES = 4 * 1024 * 1024;
 
 
-export type { InstallPolicy };
 
 
 // Re-export public interface types so callers that do
@@ -95,10 +114,6 @@ export interface PluginCard {
   capabilities: string[];
   /** tool name → the tool's own `description` (#885 v6 — toolSchemas removed). */
   toolDescriptions?: Record<string, string>;
-  /** true when the plugin is protected from ordinary user uninstall/disable */
-  isManaged?: boolean;
-  /** Install policy declared in the manifest: "admin" (IT-managed) or "user" (anyone). */
-  installPolicy?: "admin" | "user";
   /** Runtime load status derived from loaded/failed/disabled runtime state. */
   loadStatus: "loaded" | "preparing" | "failed" | "disabled";
   /** Whether this plugin's tools are currently exposed to the model. */
@@ -114,7 +129,6 @@ export interface PluginCard {
   /** Manifest-declared sidebar UI metadata, even before the plugin is loaded. */
   uiExtensions?: PluginUiExtension[];
   version?: string;
-  publisher?: string;
   configSchema?: PluginConfigSchema;
   /** Optional declarative auth contract — see architecture.md §9.4a "Plugin-Owned OAuth — Host UI Surface". */
   auth?: PluginAuthSpec;
@@ -237,7 +251,7 @@ interface PreparedArtifactRuntimeActivationInput<T> {
   manifest: PluginManifest;
   receiptRaw: string;
   registryEntry: Readonly<
-    Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+    PluginRegistryTrust
   >;
   approvedPluginAccess?: PluginAccessSpec;
   durableCommit(): Promise<T>;
@@ -269,12 +283,13 @@ export interface PluginRuntimeOptions {
     pluginDataDir: string,
     incarnation: PluginHostApiIncarnation,
     installPluginId: string | null,
-    candidateRegistryEntry?: Readonly<Pick<PluginRegistryEntry, "installSource" | "manifestSha256">>,
+    candidateRegistryEntry?: Readonly<PluginRegistryTrust>,
     candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ) => PluginHostApi;
   deploymentGuard?: PluginDeploymentGuard;
   installReceiptCacheRoot?: string;
   auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
+  onMalformedCredentialSelector?: (pluginId: string) => void;
   /**
    * Fires when a plugin's tear-down path runs (`restartPlugin` stop phase,
    * `restartAll` stop phase per plugin, `disable`, `removePlugin`,
@@ -476,8 +491,6 @@ export function buildPluginCard(
     tools: filteredNames,
     capabilities: manifest.capabilities ?? [],
     toolDescriptions: Object.keys(toolDescriptions).length > 0 ? toolDescriptions : undefined,
-    isManaged: normalizeInstallPolicy(manifest) === "admin",
-    installPolicy: manifest.installPolicy ?? "user",
     loadStatus,
     active: state.active,
     runtimeLoaded: state.runtimeLoaded,
@@ -486,7 +499,6 @@ export function buildPluginCard(
     iconText: manifest.iconText,
     uiExtensions: uiExtensions && uiExtensions.length > 0 ? uiExtensions : undefined,
     version: manifest.version,
-    publisher: manifest.publisher,
     configSchema: manifest.configSchema,
     auth: manifest.auth,
     networkAccess: manifest.networkAccess,
@@ -1394,6 +1406,7 @@ export async function resolveManifestLoadPlan(opts: {
         approvedPluginAccess: entry.approvedPluginAccess as PluginAccessSpec | undefined,
         installSource: entry.installSource,
         manifestSha256: entry.manifestSha256,
+        ...(entry.origin ? { origin: entry.origin } : {}),
       }];
     }),
   );
@@ -1441,14 +1454,31 @@ export async function readEnabledManifestSnapshots(
 
 const BOOT_PREFLIGHT_CONCURRENCY = 4;
 
+/**
+ * What a lifecycle path hands the factory funnel: the JS module an `entry`
+ * plugin's runtime imports, or nothing more for a `process` plugin, whose launch
+ * is resolved against the context the lifecycle builds.
+ */
+type PluginFactorySource =
+  | { readonly kind: "entry"; readonly resolvedEntryPath: string }
+  | { readonly kind: "process" };
+
+/** What a verified install receipt proves about the bytes on disk. */
+export interface PluginIntegrityEvidence {
+  installSource: "marketplace" | "local-dev" | "git" | "folder";
+  signerKeyId: string | null;
+  artifactSha256: string | null;
+  /** The ladder rung the bytes came through (a folder install's is `folder`); `null` for any other install. */
+  rung: PluginRung | null;
+  /** The kind of git source the install came from; `null` for any other install. */
+  sourceOrigin: GitInstallRecord["sourceOrigin"] | null;
+}
+
 export type PluginIntegrityCheckResult =
   | {
       ok: true;
-      verified?: {
-        installSource: "marketplace" | "local-dev";
-        signerKeyId: string | null;
-        artifactSha256: string | null;
-      };
+      /** Absent when nothing was verified (no receipt cache root). */
+      verified?: PluginIntegrityEvidence;
     }
   | {
       ok: false;
@@ -1568,7 +1598,20 @@ export async function verifyPluginIntegrity(
   if (!receiptResult.ok) {
     return { ok: false, reason: receiptResult.reason };
   }
-  const { installSource, signerKeyId, artifactSha256 } = receiptResult.receipt;
+  const { installSource } = receiptResult.receipt;
+  if (receiptResult.receipt.installSource === "git" || receiptResult.receipt.installSource === "folder") {
+    const document: unknown = JSON.parse(await readFile(resolve(pluginRoot, "plugin.json"), "utf8"));
+    const authority = manifestAuthority(document);
+    const expected = receiptResult.receipt.installSource === "git"
+      ? receiptResult.receipt.git.authoritySha256
+      : receiptResult.receipt.folder.authoritySha256;
+    if (expected && (!authority || sha256Hex(canonicalJSON(authority)) !== expected)) {
+      return { ok: false, reason: "plugin authority differs from install review" };
+    }
+    if (!expected && authority?.sandbox !== undefined) {
+      return { ok: false, reason: "sandbox authority has no install review evidence" };
+    }
+  }
   if (installSource === "local-dev" && !isDevModeUnlocked()) {
     return {
       ok: false,
@@ -1577,7 +1620,18 @@ export async function verifyPluginIntegrity(
   }
   return {
     ok: true,
-    verified: { installSource, artifactSha256, signerKeyId },
+    verified: integrityEvidence(receiptResult.receipt),
+  };
+}
+
+/** The evidence a receipt that verified carries, for the audit and the process-entry gate. */
+function integrityEvidence(receipt: PluginInstallReceipt): PluginIntegrityEvidence {
+  return {
+    installSource: receipt.installSource,
+    artifactSha256: receipt.artifactSha256,
+    signerKeyId: receipt.signerKeyId,
+    rung: receipt.installSource === "git" ? receipt.git.rung : receipt.installSource === "folder" ? "folder" : null,
+    sourceOrigin: receipt.installSource === "git" ? receipt.git.sourceOrigin : null,
   };
 }
 
@@ -1662,13 +1716,14 @@ abstract class PluginRuntimeState {
     incarnation: PluginHostApiIncarnation,
     installPluginId: string | null,
     candidateRegistryEntry?: Readonly<
-      Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+      PluginRegistryTrust
     >,
     candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ) => PluginHostApi;
   protected readonly deploymentGuard?: PluginDeploymentGuard;
   protected readonly installReceiptCacheRoot?: string;
   protected readonly auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
+  protected readonly onMalformedCredentialSelector?: (pluginId: string) => void;
   protected readonly onDisable?: (pluginId: string) => void;
   protected readonly onPluginUiRevisionChange?: (pluginId: string) => void;
   protected readonly onEnable?: (pluginId: string) => void;
@@ -1678,6 +1733,49 @@ abstract class PluginRuntimeState {
   ) => Promise<void> | void;
   protected readonly preparePluginStart?: (context: PluginStartPreparationContext) => PluginStartPreparationReturn;
   protected plugins = new Map<string, LoadedPlugin>();
+  private readonly sandboxEnvelopes = new Map<string, Set<{
+    grants: ReturnType<typeof capturePluginSandboxGrant>[];
+    pluginRoot: string;
+    pluginDataDir: string;
+    active: boolean;
+    settled: Promise<void>;
+    resolveSettled: () => void;
+  }>>();
+
+  protected registerSandboxEnvelope(pluginId: string, paths: readonly string[], pluginRoot: string, pluginDataDir: string): {
+    assertCurrent(): void;
+    dispose(): void;
+  } {
+    let resolveSettled!: () => void;
+    const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
+    const record = { grants: paths.map(capturePluginSandboxGrant), pluginRoot, pluginDataDir, active: true, settled, resolveSettled };
+    const entries = this.sandboxEnvelopes.get(pluginId) ?? new Set<typeof record>();
+    entries.add(record);
+    this.sandboxEnvelopes.set(pluginId, entries);
+    return {
+      assertCurrent: () => {
+        if (!record.active || record.grants.some((grant) => !isPluginSandboxGrantCovered(grant, pluginRoot, pluginDataDir))) {
+          throw new Error("sandbox-grant-outside-ceiling");
+        }
+      },
+      dispose: () => {
+        entries.delete(record);
+        if (entries.size === 0) this.sandboxEnvelopes.delete(pluginId);
+        record.resolveSettled();
+      },
+    };
+  }
+
+  protected sandboxGrantWithdrawals(): Array<{ pluginId: string; settled: Promise<void[]> }> {
+    const affected: Array<{ pluginId: string; settled: Promise<void[]> }> = [];
+    for (const [pluginId, entries] of this.sandboxEnvelopes) {
+      if (![...entries].some((entry) => !entry.active || entry.grants.some((grant) =>
+        !isPluginSandboxGrantCovered(grant, entry.pluginRoot, entry.pluginDataDir)))) continue;
+      for (const entry of entries) entry.active = false;
+      affected.push({ pluginId, settled: Promise.all([...entries].map((entry) => entry.settled)) });
+    }
+    return affected;
+  }
   protected methodMap = new Map<string, { pluginId: string; handler: PluginToolHandler }>();
   protected readonly perf = new PerfStatsTracker();
   protected disposers = new Map<string, Array<() => void>>();
@@ -1839,6 +1937,7 @@ abstract class PluginRuntimeState {
       ? resolve(options.installReceiptCacheRoot)
       : undefined;
     this.auditLog = options.auditLog;
+    this.onMalformedCredentialSelector = options.onMalformedCredentialSelector;
     this.onDisable = options.onDisable;
     this.onPluginUiRevisionChange = options.onPluginUiRevisionChange;
     this.onEnable = options.onEnable;
@@ -1966,6 +2065,15 @@ abstract class PluginRuntimeState {
     return resolveEntryPath(pluginRoot, entry, this.hostRoot);
   }
 
+  /** The factory source a manifest names in a generation; throws for an `entry` path outside it. */
+  protected pluginFactorySource(manifest: PluginManifest, generationRoot: string): PluginFactorySource {
+    if (manifest.process !== undefined) return { kind: "process" };
+    return {
+      kind: "entry",
+      resolvedEntryPath: resolveRealEntryPath(this.resolveEntryPathForPlugin(generationRoot, manifest.entry)),
+    };
+  }
+
   protected ensureDataDir(pluginId: string, pluginRoot: string): string {
     return ensurePluginDataDir(pluginId, pluginRoot, this.pluginsRoot);
   }
@@ -1985,7 +2093,7 @@ abstract class PluginRuntimeState {
     hostEffects?: HostApiGenerationScope,
     installPluginId: string | null = this.requirePluginInstallClaim(pluginId),
     candidateRegistryEntry?: Readonly<
-      Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+      PluginRegistryTrust
     >,
     candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ): {
@@ -2476,10 +2584,10 @@ abstract class PluginRuntimeState {
   protected validatePreparedRegistryEntry(
     manifest: PluginManifest,
     registryEntry: Readonly<
-      Pick<PluginRegistryEntry, "installSource" | "manifestSha256">
+      PluginRegistryTrust
     > | undefined,
     manifestDocument: unknown,
-  ): Readonly<Pick<PluginRegistryEntry, "installSource" | "manifestSha256">> {
+  ): Readonly<PluginRegistryTrust> {
     if (!registryEntry) {
       throw new Error(`prepared artifact registry provenance missing for '${manifest.id}'`);
     }
@@ -2747,7 +2855,8 @@ abstract class PluginRuntimeState {
     pluginId: string,
     plugin: LoadedPlugin,
     context: string,
-  ): Promise<void> {
+    awaitDefinitiveStop = false,
+  ): Promise<boolean> {
     this.markFailed(pluginId);
     plugin.deactivateHostApi?.();
     for (const method of plugin.methods.keys()) {
@@ -2756,12 +2865,20 @@ abstract class PluginRuntimeState {
     this.plugins.delete(pluginId);
     this.runPluginDisposers(pluginId, context);
     this.onDisable?.(pluginId);
-    await this.stopAfterStartFailure(
-      pluginId,
-      plugin.instance,
-      plugin.lifecycleHookScope,
-    );
-    await this.drainPluginHostApiOperations(pluginId, plugin);
+    let stopped: boolean;
+    if (awaitDefinitiveStop) {
+      try {
+        await this.runPluginLifecycleHook(plugin.lifecycleHookScope, () => plugin.instance.stop?.());
+        stopped = true;
+      } catch (error) {
+        this.quarantinePluginLifecycle(pluginId, (error as Error).message);
+        stopped = false;
+      }
+    } else {
+      stopped = await this.stopAfterStartFailure(pluginId, plugin.instance, plugin.lifecycleHookScope);
+    }
+    const drained = await this.drainPluginHostApiOperations(pluginId, plugin);
+    return stopped && drained;
   }
 
   protected runPluginDisposers(pluginId: string, context: string): void {
@@ -2906,38 +3023,123 @@ abstract class PluginRuntimeState {
   }
 
   /**
-   * Plugin revocation gate (LOAD boundary). A plugin already on disk
-   * (installed before it was revoked, or sideloaded) must not silently keep
-   * running once the marketplace revocation registry blocks its exact
-   * version or drops it below the pinned minimum — mirrors
+   * Host protocol gate (LOAD boundary), the sibling of
+   * {@link markIncompatibleAppVersion} and run beside it on every load path.
+   * Returns `true` and marks the plugin failed when `requires.hostProtocol`
+   * is missing or names a version this app does not serve
+   * (plugin-hostapi-protocol.md §3.2).
+   *
+   * A distinct refusal from `incompatible-app-version`, so the Doctor can say
+   * "this plugin was built for a different protocol" rather than "update the
+   * app" — a newer app may have dropped the version rather than lacking it.
+   */
+  protected markIncompatibleHostProtocol(manifest: PluginManifest): boolean {
+    const declared = manifest.requires?.hostProtocol;
+    if (isServedHostProtocolVersion(declared)) return false;
+    this.refuseIncompatibleHostProtocol(
+      manifest,
+      new IncompatibleHostProtocolError(manifest.id, { declared: declared ?? null }),
+    );
+    return true;
+  }
+
+  /** Report an {@link IncompatibleHostProtocolError}, found before a spawn or at construct. */
+  protected refuseIncompatibleHostProtocol(
+    manifest: PluginManifest,
+    error: IncompatibleHostProtocolError,
+  ): void {
+    log.error(`${manifest.id} rejected — ${error.message}`);
+    this.auditLog?.("error", "plugin_incompatible_host_protocol", {
+      pluginId: manifest.id,
+      ...error.detail,
+      served: [...HOST_PROTOCOL_VERSIONS_SERVED],
+    });
+    this.markLoadRefused(manifest.id, {
+      summary: error.message,
+      reason: error.message,
+      // NOT locally reinstall-fixable — the same package speaks the same
+      // protocol after a reinstall.
+      kind: "incompatible-host-protocol",
+      displayName: manifest.name ?? manifest.id,
+    });
+  }
+
+  /**
+   * A `process` entry with no live sandbox that confines processes, found at
+   * spawn. Siblings of {@link refuseIncompatibleHostProtocol}, so every load
+   * path leaves a card the Doctor names rather than a generic failure.
+   */
+  protected markProcessEntryUnconfined(manifest: PluginManifest, error: ProcessEntryUnconfinedError): void {
+    log.error(`${manifest.id} rejected — ${error.message}`);
+    this.auditLog?.("error", "plugin_process_entry_unconfined", {
+      pluginId: manifest.id,
+      platform: process.platform,
+    });
+    this.markLoadRefused(manifest.id, {
+      summary: "This extension runs only under an OS sandbox that confines processes.",
+      reason: error.message,
+      // NOT reinstall-fixable: neither the sandbox setting nor the platform
+      // changes with a reinstall.
+      kind: "process-entry-unconfined",
+      displayName: manifest.name ?? manifest.id,
+    });
+  }
+
+  /** A `process` entry whose install the provenance gate refused (decision 35). */
+  protected markProcessEntryUnpinned(
+    manifest: PluginManifest,
+    error: ProcessEntryRequiresPinnedArtifactError,
+  ): void {
+    log.error(`${manifest.id} rejected — ${error.message}`);
+    this.auditLog?.("error", "plugin_process_entry_unpinned", { pluginId: manifest.id });
+    this.markLoadRefused(manifest.id, {
+      summary: "This extension requires an install pinned by a release or archive artifact.",
+      reason: error.message,
+      // NOT reinstall-fixable: the same source yields the same provenance.
+      kind: "process-entry-requires-pinned-artifact",
+      displayName: manifest.name ?? manifest.id,
+    });
+  }
+
+  /** Report a filesystem grant the host cannot give this plugin incarnation. */
+  protected refuseSandboxGrant(manifest: PluginManifest, error: PluginSandboxGrantError): void {
+    log.error(`${manifest.id} rejected — ${error.message}`);
+    this.markLoadRefused(manifest.id, {
+      summary: "Plugin filesystem grant is outside approved directories.",
+      reason: error.message,
+      kind: "sandbox-grant-outside-ceiling",
+      displayName: manifest.name ?? manifest.id,
+    });
+  }
+
+  /**
+   * Plugin revocation gate (LOAD boundary). A plugin whose installed version
+   * its bound source revoked (design §10.4) must not keep running — mirrors
    * `markIncompatibleAppVersion` immediately above, including the
    * "isolation" property: this plugin is skipped, every other plugin still
-   * loads normally.
-   *
-   * Fail-open by construction: `revocationRegistry.evaluate()` returns
-   * `allow` whenever no valid signed document has ever been obtained (see
-   * `revocation-registry.ts` for the fail-open/fail-closed rationale), so
-   * this method only ever blocks when a signed document actually says to.
+   * loads normally. The registry holds only each plugin's own source's
+   * revocations, fed from the marketplace snapshots before plugins load; an
+   * `uninstall` revocation is refused here too until the marketplace removes it.
    */
   protected markRevoked(manifest: PluginManifest): boolean {
-    const decision = revocationRegistry.evaluate(manifest.id, manifest.version);
+    const decision = revocationRegistry.evaluate("plugin", manifest.id, manifest.version);
     if (decision.kind === "allow") return false;
 
-    const reason = `plugin revoked — ${decision.reason}`;
+    const reason = `revoked by ${decision.sourceId}: ${decision.reason}`;
     log.error(`${manifest.id} rejected — ${reason}`);
     this.auditLog?.("error", "plugin_revoked", {
       pluginId: manifest.id,
       version: manifest.version,
-      ruleKind: decision.ruleKind,
+      sourceId: decision.sourceId,
+      action: decision.action,
       reason: decision.reason,
     });
     this.markLoadRefused(manifest.id, {
-      summary: decision.reason,
-      reason: decision.reason,
-      // NOT locally reinstall-fixable — a reinstall from the marketplace
-      // either re-fetches the same blocked version (the install path
-      // enforces the same registry) or is a genuine version upgrade, not a
-      // "repair". The Doctor must show the block reason and offer Remove.
+      summary: reason,
+      reason,
+      // NOT locally reinstall-fixable — the source offers no install of a
+      // revoked version, and moving to another version is an update, not a
+      // "repair". The Doctor must show the reason and offer Remove.
       kind: "plugin-revoked",
       displayName: manifest.name ?? manifest.id,
     });
@@ -3399,8 +3601,9 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
 
   protected abstract importPluginFactoryForLifecycle(
     pluginId: string,
-    resolvedEntryPath: string,
+    source: PluginFactorySource,
     manifest: PluginManifest,
+    verified: PluginIntegrityEvidence | undefined,
     bustCache?: boolean,
   ): Promise<RuntimePluginFactory | undefined>;
 
@@ -3721,12 +3924,16 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     const canCommit = () => opts.shouldCommit?.() ?? true;
     if (!canCommit()) return "cancelled";
     this.rememberPluginInstallAlias(manifest.id, plan.pluginIdHint);
+    // What this path verified, for the process-entry gate; `undefined` when
+    // there is no registry id to verify a receipt under.
+    let verified: PluginIntegrityEvidence | undefined;
     if (plan.pluginIdHint) {
       const integrityResult = await this.verifyReceiptAndDevGuard(
         plan.pluginIdHint,
         pluginRoot,
       );
       if (!canCommit()) return "cancelled";
+      if (integrityResult.ok) verified = integrityResult.verified;
       if (!integrityResult.ok) {
         // Keyed by the canonical manifest id — the caller already remembered
         // the manifest under it, so the registry-id key the receipt check uses
@@ -3744,6 +3951,12 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     // Plugin↔app minimum-version gate — HARD BLOCK at LOAD (see boot path).
     if (!canCommit()) return "cancelled";
     if (this.markIncompatibleAppVersion(manifest)) {
+      return "failed";
+    }
+
+    // Host protocol gate — HARD BLOCK at LOAD, beside the app-version gate.
+    if (!canCommit()) return "cancelled";
+    if (this.markIncompatibleHostProtocol(manifest)) {
       return "failed";
     }
 
@@ -3818,9 +4031,9 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       activationId,
       plan.pluginIdHint ?? manifest.id,
     );
-    let entryPath: string;
+    let source: PluginFactorySource;
     try {
-      entryPath = this.resolveEntryPathForPlugin(runtimeRoot, manifest.entry);
+      source = this.pluginFactorySource(manifest, runtimeRoot);
     } catch (err) {
       if (!canCommit()) {
         await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
@@ -3837,14 +4050,14 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return "failed";
     }
-    const resolvedEntryPath = resolveRealEntryPath(entryPath);
 
     let createPlugin: RuntimePluginFactory | undefined;
     try {
       createPlugin = await this.importPluginFactoryForLifecycle(
         manifest.id,
-        resolvedEntryPath,
+        source,
         manifest,
+        verified,
         opts.cacheBust,
       );
     } catch (err) {
@@ -3857,7 +4070,11 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         pluginId: manifest.id,
         reason: (err as Error).message,
       });
-      this.markFailed(manifest.id);
+      if (err instanceof ProcessEntryRequiresPinnedArtifactError) {
+        this.markProcessEntryUnpinned(manifest, err);
+      } else {
+        this.markFailed(manifest.id);
+      }
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return "failed";
     }
@@ -3919,7 +4136,17 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         return "cancelled";
       }
       log.error(`${manifest.id} createPlugin failed: %s`, (err as Error).message);
-      this.markFailed(manifest.id);
+      // A child whose `construct` named a host method this app does not serve
+      // is the same refusal as an unserved declared version, and says so.
+      if (err instanceof IncompatibleHostProtocolError) {
+        this.refuseIncompatibleHostProtocol(manifest, err);
+      } else if (err instanceof ProcessEntryUnconfinedError) {
+        this.markProcessEntryUnconfined(manifest, err);
+      } else if (err instanceof PluginSandboxGrantError) {
+        this.refuseSandboxGrant(manifest, err);
+      } else {
+        this.markFailed(manifest.id);
+      }
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return "failed";
     }
@@ -4546,21 +4773,20 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
   }
 
   /** Disable a loaded plugin at runtime. */
-  async disable(pluginId: string, actor: Actor = "user"): Promise<void> {
+  async disable(pluginId: string): Promise<void> {
     const canonicalPluginId = this.resolveKnownPluginId(pluginId);
     this.pendingRestartCancellations.get(canonicalPluginId)?.cancel();
     return withPluginInstallLock(canonicalPluginId, () =>
-      this.disableLocked(pluginId, canonicalPluginId, actor)
+      this.disableLocked(pluginId, canonicalPluginId)
     );
   }
 
   private async disableLocked(
     pluginId: string,
     canonicalPluginId: string,
-    actor: Actor,
   ): Promise<void> {
     if (this.deploymentGuard) {
-      const result = await this.deploymentGuard.canDisable(pluginId, actor);
+      const result = await this.deploymentGuard.canDisable(pluginId);
       if (!result.allowed) {
         throw new PluginDeploymentDeniedError(
           result.reason ?? `Plugin disable denied: ${pluginId}`,
@@ -4668,6 +4894,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     const manifestRaw = await readFile(manifestPath, "utf8");
     const manifestDocument: unknown = JSON.parse(manifestRaw);
     const manifest = flattenAgentPluginsManifest(manifestDocument);
+    recordManifestDocument(manifest, manifestDocument);
     if (manifest.id !== input.manifest.id || manifest.version !== input.manifest.version) {
       throw new Error(`prepared artifact manifest identity changed for '${input.manifest.id}'`);
     }
@@ -4725,11 +4952,18 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     );
     let createPlugin: RuntimePluginFactory | undefined;
     try {
-      const entryPath = this.resolveEntryPathForPlugin(payloadRoot, manifest.entry);
+      // The staged receipt is verified against the payload it materialised the
+      // same way a cached one is, so this path hands the gate evidence of its
+      // own rather than trusting the installer's word for it (decision 35).
+      const staged = await verifyInstallReceiptRaw(input.receiptRaw, installId, payloadRoot);
+      if (!staged.ok) {
+        throw new Error(`prepared artifact '${manifest.id}' receipt does not verify against its payload: ${staged.reason}`);
+      }
       createPlugin = await this.importPluginFactoryForLifecycle(
         manifest.id,
-        resolveRealEntryPath(entryPath),
+        this.pluginFactorySource(manifest, payloadRoot),
         manifest,
+        integrityEvidence(staged.receipt),
         true,
       );
     } catch (error) {
@@ -5014,11 +5248,39 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
    */
   protected async importPluginFactoryForLifecycle(
     pluginId: string,
-    resolvedEntryPath: string,
+    source: PluginFactorySource,
     manifest: PluginManifest,
+    verified: PluginIntegrityEvidence | undefined,
     bustCache?: boolean,
   ): Promise<RuntimePluginFactory | undefined> {
     this.assertPluginLifecycleAvailable(pluginId);
+    // FIRST, before routing: a `process` manifest without pinned provenance is
+    // refused on every activation path before any factory exists (decision
+    // 35). Each caller passes the evidence IT verified, or `undefined`.
+    assertProcessEntryAdmitted(manifest, verified);
+    if (source.kind !== pluginEntryKind(manifest)) {
+      throw new Error(`plugin '${pluginId}' factory source is '${source.kind}' but its manifest declares '${pluginEntryKind(manifest)}'`);
+    }
+    const outOfProcess = {
+      manifest,
+      auditLog: this.auditLog,
+      registerSandboxEnvelope: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) =>
+        this.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
+      ...(this.onMalformedCredentialSelector
+        ? { onMalformedCredentialSelector: this.onMalformedCredentialSelector }
+        : {}),
+    };
+    if (source.kind === "process") {
+      // Out of process by manifest shape, regardless of the census: there is
+      // no module the in-process arm could import. A contract property, not a
+      // routing exception. The launch is resolved against the generation and
+      // data directory the context names, which exist by the time the
+      // lifecycle calls the factory.
+      return async (context) => createOutOfProcessPluginFactory({
+        ...outOfProcess,
+        launch: { kind: "process", ...resolveProcessLaunch(manifest, context.pluginRoot, context.pluginDataDir) },
+      })(context);
+    }
     if (isOutOfProcessPlugin(pluginId)) {
       // No import happens in main for this plugin, so there is no ESM
       // evaluation to bound and nothing to quarantine: the child performs the
@@ -5026,8 +5288,12 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       // caller already applies. `bustCache` is irrelevant for the same reason —
       // a fresh process has an empty module registry, which is a stronger
       // cache-bust than a query parameter.
-      return createOutOfProcessPluginFactory({ manifest, entryPath: resolvedEntryPath });
+      return createOutOfProcessPluginFactory({
+        ...outOfProcess,
+        launch: { kind: "entry", entryPath: source.resolvedEntryPath },
+      });
     }
+    const { resolvedEntryPath } = source;
     try {
       return await runPluginImportWithTimeout(
         () => importPluginFactory(resolvedEntryPath, bustCache),
@@ -5252,9 +5518,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         this.markLoadRefused(plan.pluginIdHint, {
           summary: "Plugin manifest could not be loaded.",
           reason: (err as Error).message,
-          ...(reason === "manifest_schema"
-            ? { kind: "manifest-validation-error" as const }
-            : {}),
+          ...(reason === "manifest_schema" ? { kind: "manifest-validation-error" as const } : {}),
         });
       }
       return;
@@ -5299,6 +5563,11 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     if (this.markIncompatibleAppVersion(manifest)) {
       return;
     }
+    // Host protocol gate. Undeclared and unserved code is skipped before any
+    // factory activates.
+    if (this.markIncompatibleHostProtocol(manifest)) {
+      return;
+    }
     // Plugin revocation gate. Same LOAD-boundary shape as the
     // version gate immediately above: skip this plugin, keep loading
     // everything else (isolation).
@@ -5335,9 +5604,9 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       activationId,
       plan.pluginIdHint ?? manifest.id,
     );
-    let entryPath: string;
+    let source: PluginFactorySource;
     try {
-      entryPath = this.resolveEntryPathForPlugin(runtimeRoot, manifest.entry);
+      source = this.pluginFactorySource(manifest, runtimeRoot);
     } catch (err) {
       const reason = (err as Error).message;
       logPluginLifecycle("error", { pluginId: manifest.id, phase: PluginPhase.LOAD_FAIL, err, reason: "entry_path" }, "entry path rejected");
@@ -5350,13 +5619,15 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return;
     }
-    const resolvedEntryPath = resolveRealEntryPath(entryPath);
     let createPlugin: RuntimePluginFactory | undefined;
     try {
       createPlugin = await this.importPluginFactoryForLifecycle(
         manifest.id,
-        resolvedEntryPath,
+        source,
         manifest,
+        // The preflight's own verification; absent when the row had no
+        // registry id and so nothing was verified.
+        outcome.integrityResult?.ok ? outcome.integrityResult.verified : undefined,
       );
     } catch (err) {
       logPluginLifecycle("error", { pluginId: manifest.id, phase: PluginPhase.LOAD_FAIL, err, reason: "import" }, "import failed");
@@ -5364,7 +5635,11 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         pluginId: manifest.id,
         reason: (err as Error).message,
       });
-      this.markFailed(manifest.id);
+      if (err instanceof ProcessEntryRequiresPinnedArtifactError) {
+        this.markProcessEntryUnpinned(manifest, err);
+      } else {
+        this.markFailed(manifest.id);
+      }
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return;
     }
@@ -5413,7 +5688,15 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       await this.drainPluginHostApiOperations(manifest.id, {
         drainHostApiOperations: drainOperations,
       });
-      this.markFailed(manifest.id);
+      if (err instanceof IncompatibleHostProtocolError) {
+        this.refuseIncompatibleHostProtocol(manifest, err);
+      } else if (err instanceof ProcessEntryUnconfinedError) {
+        this.markProcessEntryUnconfined(manifest, err);
+      } else if (err instanceof PluginSandboxGrantError) {
+        this.refuseSandboxGrant(manifest, err);
+      } else {
+        this.markFailed(manifest.id);
+      }
       await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       logPluginLifecycle("error", { pluginId: manifest.id, phase: PluginPhase.LOAD_FAIL, err, reason: "factory" }, "plugin factory failed");
       return;
@@ -5882,6 +6165,14 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
   ): Promise<RestartPluginResult> {
     const canonicalPluginId = this.resolveKnownPluginId(pluginId);
     this.assertPluginLifecycleAvailable(canonicalPluginId);
+    if (!this.plugins.has(canonicalPluginId)
+      && this.loadFailureInfo.get(canonicalPluginId)?.installFailureKind === "sandbox-grant-outside-ceiling") {
+      try {
+        return (await this.addPlugin(canonicalPluginId)) === "preparing" ? "deferred" : "started";
+      } catch {
+        return "failed";
+      }
+    }
     if (
       hasExclusivePluginLifecycleMutation()
       && !isPluginInstallLockHeld(canonicalPluginId)
@@ -6069,28 +6360,30 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       activationId,
       receiptPluginId ?? pluginId,
     );
-    let entryPath: string;
+    let source: PluginFactorySource;
     try {
-      entryPath = this.resolveEntryPathForPlugin(runtimeRoot, manifest.entry);
+      source = this.pluginFactorySource(manifest, runtimeRoot);
     } catch (error) {
       await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err: error, reason: "entry_path" }, "entry path rejected during restart");
       return "failed";
     }
-    const resolvedEntryPath = resolveRealEntryPath(entryPath);
     // Cache-bust so restart imports the new bundle rather than memoized ESM.
     let createPlugin: RuntimePluginFactory | undefined;
     try {
       createPlugin = await this.importPluginFactoryForLifecycle(
         pluginId,
-        resolvedEntryPath,
+        source,
         manifest,
+        // Verified above only when there is a receipt id to verify under.
+        integrityResult.verified,
         true,
       );
       logPluginLifecycle("debug", { pluginId, phase: PluginPhase.RESTART_RELOAD_OK }, "module re-imported");
     } catch (err) {
       await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err }, "module re-import failed");
+      if (opts.throwOnFailure) throw err;
       return "failed";
     }
 
@@ -6371,6 +6664,63 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
 // ---------------------------------------------------------------------------
 
 export class PluginRuntime extends PluginRuntimeLifecycle {
+  private readonly pendingSandboxRetirements = new Map<string, Promise<void>>();
+
+  /** Retire incarnations whose reviewed path grants exceed the live approved roots. */
+  async retireSandboxGrantsOutsideCeiling(): Promise<string[]> {
+    const affected = this.sandboxGrantWithdrawals();
+    const outcomes = await Promise.allSettled(affected.map(({ pluginId, settled }) => {
+      let retirement = this.pendingSandboxRetirements.get(pluginId);
+      if (!retirement) {
+        retirement = Promise.resolve().then(() => this.retireSandboxGrantIncarnation(pluginId, settled));
+        this.pendingSandboxRetirements.set(pluginId, retirement);
+        void retirement.finally(() => {
+          if (this.pendingSandboxRetirements.get(pluginId) === retirement) {
+            this.pendingSandboxRetirements.delete(pluginId);
+          }
+        }).catch(() => {});
+      }
+      return retirement;
+    }));
+    const errors = outcomes.flatMap((outcome) => outcome.status === "rejected" ? [outcome.reason] : []);
+    if (errors.length > 0) throw new AggregateError(errors, "sandbox grant retirement failed");
+    return affected.map(({ pluginId }) => pluginId);
+  }
+
+  private async retireSandboxGrantIncarnation(pluginId: string, settled: Promise<void[]>): Promise<void> {
+    this.cancelPendingRestart(pluginId);
+    this.beginPluginLifecycleOperation(pluginId);
+    const plugin = this.plugins.get(pluginId);
+    const errors: unknown[] = [];
+    if (plugin) {
+      try {
+        errors.push(...(plugin.hostEffects?.retire() ?? []));
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        if (!await this.failClosedLoadedPlugin(pluginId, plugin, "sandbox ceiling withdrawal", true)) {
+          errors.push(new Error("sandbox grant incarnation did not stop cleanly"));
+        }
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    try {
+      await waitForPluginWorkersStopped(pluginId);
+    } catch (error) {
+      errors.push(error);
+    }
+    await settled;
+    this.markLoadRefused(pluginId, {
+      summary: "Plugin filesystem grant is outside approved directories.",
+      reason: "sandbox-grant-outside-ceiling",
+      kind: "sandbox-grant-outside-ceiling",
+      displayName: plugin?.manifest.name ?? this.knownPluginManifests.get(pluginId)?.name ?? pluginId,
+    });
+    if (errors.length > 0) throw new AggregateError(errors, "sandbox grant retirement failed");
+  }
+
   /** Release a same-plugin lifecycle lock held by dependency preparation. */
   cancelPendingRestart(pluginId: string): void {
     const canonicalPluginId = this.resolveKnownPluginId(pluginId);
@@ -6798,7 +7148,6 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         version: "1.0.0",
         entry: "index.js",
         description: "Test fixture",
-        publisher: "Test fixture",
         // #885 v6 — pure Tool[] (model-visible, matching the old tools[]-only shape).
         tools: [
           {
@@ -7079,9 +7428,12 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
               pluginRoot,
               manifest,
               receiptRaw,
+              // The whole trust the registry holds: without `origin` a re-enabled
+              // official plugin would lose its host-secret grant until restart.
               registryEntry: {
                 installSource: targetPlan.installSource,
                 manifestSha256: targetPlan.manifestSha256,
+                ...(targetPlan.origin ? { origin: targetPlan.origin } : {}),
               },
               approvedPluginAccess:
                 targetPlan.approvedPluginAccess
@@ -7264,6 +7616,8 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
   getPluginEntryDir(pluginId: string): string | undefined {
     const plugin = this.plugins.get(pluginId);
     if (!plugin) return undefined;
+    // A `process` entry has no JS module for the dev watcher to follow.
+    if (plugin.manifest.process !== undefined) return undefined;
     try {
       const entryPath = this.resolveEntryPathForPlugin(plugin.pluginRoot, plugin.manifest.entry);
       return dirname(entryPath);

@@ -27,6 +27,19 @@ describe("SubscriptionLedger", () => {
     expect(ledger.openCount).toBe(0);
   });
 
+  it("counts live registrations by kind after release and teardown", () => {
+    const ledger = new SubscriptionLedger<{ kind: "event" | "worker" }>("test");
+    ledger.adopt("event-1", { kind: "event" }, vi.fn());
+    ledger.adopt("event-2", { kind: "event" }, vi.fn());
+    ledger.adopt("worker-1", { kind: "worker" }, vi.fn());
+    expect(ledger.countWhere((entry) => entry.kind === "event")).toBe(2);
+    expect(ledger.countWhere((entry) => entry.kind === "worker")).toBe(1);
+    ledger.close("event-1", "disposed");
+    expect(ledger.countWhere((entry) => entry.kind === "event")).toBe(1);
+    ledger.end("peer-gone");
+    expect(ledger.countWhere(() => true)).toBe(0);
+  });
+
   it("survives a release that disposes itself", () => {
     const ledger = new SubscriptionLedger<string>("test");
     let reentered = 0;

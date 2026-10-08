@@ -137,6 +137,59 @@ describe("SecretDocumentStore atomicity and policy", () => {
     expect(store.get("toString")).toBeNull();
   });
 
+  it("moves an entry as stored, without decrypting it", async () => {
+    await new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() })
+      .set("llm.apiKey.old", "value");
+    const sealed = parseDocument(path).entries["llm.apiKey.old"];
+    const store = new SecretDocumentStore({
+      path,
+      policy: "packaged",
+      encryption: availableEncryption({ decryptString: () => { throw new Error("decrypt should not run"); } }),
+    });
+
+    await expect(store.move("llm.apiKey.old", "llm.apiKey.new")).resolves.toBe(true);
+
+    expect(parseDocument(path).entries).toEqual({ "llm.apiKey.new": sealed });
+  });
+
+  it("keeps the target entry when moving onto an existing key", async () => {
+    const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
+    await store.set("llm.apiKey.old", "old");
+    await store.set("llm.apiKey.new", "new");
+
+    await expect(store.move("llm.apiKey.old", "llm.apiKey.new")).resolves.toBe(true);
+
+    expect(store.get("llm.apiKey.new")).toBe("new");
+    expect(store.get("llm.apiKey.old")).toBeNull();
+  });
+
+  it("writes nothing when the moved key is absent, even with writes unavailable", async () => {
+    const store = new SecretDocumentStore({ path, policy: "packaged", encryption: unavailableEncryption() });
+    await expect(store.move("llm.apiKey.old", "llm.apiKey.new")).resolves.toBe(false);
+    expect(() => readFileSync(path, "utf-8")).toThrow();
+  });
+
+  it("writes nothing when the deleted key is absent, even with writes unavailable", async () => {
+    const store = new SecretDocumentStore({ path, policy: "packaged", encryption: unavailableEncryption() });
+    await expect(store.delete("marketplace.apiKey")).resolves.toBe(false);
+    expect(() => readFileSync(path, "utf-8")).toThrow();
+  });
+
+  it("preserves the old bytes when a move cannot be written", async () => {
+    await new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() })
+      .set("llm.apiKey.old", "value");
+    const original = readFileSync(path, "utf-8");
+    const failing = new SecretDocumentStore({
+      path,
+      policy: "packaged",
+      encryption: availableEncryption(),
+      runtime: { writeAtomic: () => { throw new Error("injected move failure"); } },
+    });
+
+    await expect(failing.move("llm.apiKey.old", "llm.apiKey.new")).rejects.toThrow("injected move failure");
+    expect(readFileSync(path, "utf-8")).toBe(original);
+  });
+
   it("serializes cross-process set/set", async () => {
     const first = spawnNode([childFixture, "set", path, "alpha", "one"]);
     const second = spawnNode([childFixture, "set", path, "beta", "two"]);

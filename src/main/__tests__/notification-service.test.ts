@@ -13,6 +13,7 @@ import {
   NotificationService,
   IPC_NOTIFICATION_TOAST,
   IPC_NOTIFICATION_CLICKED,
+  NOTIFICATION_KINDS,
   __test,
 } from "../notification-service.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
@@ -719,6 +720,66 @@ describe("NotificationService — plugin kind cooldown (#841)", () => {
     );
     expect(logs.filter((l) => l.includes('"event":"notification.suppressed"')).length).toBe(1);
     vi.restoreAllMocks();
+  });
+});
+
+describe("NotificationService — alert kind", () => {
+  it("is a valid kind with the plugin's 5s cooldown, counted apart from plugin fires", () => {
+    expect(NOTIFICATION_KINDS.has("alert")).toBe(true);
+    expect(__test.COOLDOWN_MS_BY_KIND.alert).toBe(5_000);
+    const win = makeMockWindow({ focused: false, minimized: false });
+    const factoryStub = makeNotificationFactoryStub();
+    const svc = new NotificationService({
+      getMainWindow: () => win as unknown as Electron.BrowserWindow,
+      auditLogger: makeMockAuditLogger(),
+      notificationFactory: factoryStub.factory,
+      isReady: () => true,
+      isTestEnv: () => false,
+      isAnyWindowFocused: () => false,
+    });
+    const perfBase = performance.now();
+    vi.spyOn(performance, "now").mockImplementation(() => perfBase);
+    svc.fire({ kind: "alert", title: "Mail needing a reply", body: "A mail that needs your reply arrived." });
+    svc.fire({ kind: "plugin", title: "legacy", body: "1" }); // its own slot
+    vi.spyOn(performance, "now").mockImplementation(() => perfBase + 1_000);
+    svc.fire({ kind: "alert", title: "b", body: "2" }); // suppressed
+    vi.spyOn(performance, "now").mockImplementation(() => perfBase + 5_500);
+    svc.fire({ kind: "alert", title: "c", body: "3" }); // succeeds
+    expect(factoryStub.calls.length).toBe(3);
+    vi.restoreAllMocks();
+  });
+
+  function alertService(win: ReturnType<typeof makeMockWindow> | null, focused: boolean | (() => boolean)) {
+    return new NotificationService({
+      getMainWindow: () => win as unknown as Electron.BrowserWindow,
+      auditLogger: makeMockAuditLogger(),
+      notificationFactory: makeNotificationFactoryStub().factory,
+      isReady: () => true,
+      isTestEnv: () => false,
+      isAnyWindowFocused: typeof focused === "function" ? focused : () => focused,
+    });
+  }
+
+  it("says ahead of a fire whether it would be an in-app toast", () => {
+    expect(alertService(makeMockWindow(), true).isFocusGateActive()).toBe(true);
+    expect(alertService(makeMockWindow(), false).isFocusGateActive()).toBe(false);
+    // A minimized or missing main window cannot show a toast.
+    expect(alertService(makeMockWindow({ minimized: true }), true).isFocusGateActive()).toBe(false);
+    expect(alertService(null, true).isFocusGateActive()).toBe(false);
+    expect(alertService(makeMockWindow(), () => { throw new Error("probe failed"); }).isFocusGateActive()).toBe(false);
+  });
+
+  it("marks a sticky toast, and only when asked", () => {
+    const win = makeMockWindow();
+    const svc = alertService(win, true);
+    svc.fire({ kind: "alert", title: "Meeting", body: "now", sticky: true });
+    expect(win.webContents.send).toHaveBeenLastCalledWith(
+      IPC_NOTIFICATION_TOAST,
+      expect.objectContaining({ kind: "alert", sticky: true }),
+    );
+    const plain = makeMockWindow();
+    alertService(plain, true).fire({ kind: "alert", title: "Mail", body: "new" });
+    expect(plain.webContents.send.mock.calls[0]![1]).not.toHaveProperty("sticky");
   });
 });
 

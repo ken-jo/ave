@@ -107,16 +107,27 @@ test.describe("workspace rail redesign", () => {
     // window-level, nothing dimmed, the transcript laid out underneath.
     await page.setViewportSize({ width: 460, height: 840 });
     await expect(motion).toHaveAttribute("data-panel-mode", "overlay");
-    await expect(page.getByTestId(TEST_IDS.chatViewRoot).getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
+    // "Inside the tile": the panel is portaled into its pane's panel slot
+    // (`pane-panel-slot`, 6a64316b5), beside the transcript rather than in it.
+    await expect(page.getByTestId("pane").getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
     await expect(page.getByTestId("workspace-rail-drawer")).toHaveCount(0);
     await expect(page.getByTestId("workspace-rail-drawer-backdrop")).toHaveCount(0);
+    // The reserve's width animates (--motion-layout): measure it settled, not
+    // mid-transition.
+    await expect.poll(() => motion.evaluate((element) =>
+      Math.round(element.getBoundingClientRect().width) === Math.round(Number.parseFloat((element as HTMLElement).style.width)))).toBe(true);
     // Floating means the transcript column is NOT narrowed by the panel: the
     // composer keeps more than (root − panel), which a docked column cannot.
     const composer = await page.getByTestId(TEST_IDS.composerTextarea).boundingBox();
     const root = await page.getByTestId(TEST_IDS.chatViewRoot).boundingBox();
+    const reserve = await motion.boundingBox();
     const panel = await page.getByTestId(TEST_IDS.chatSidePanel).boundingBox();
-    expect(panel?.width ?? 0).toBeGreaterThanOrEqual(Math.min(SIDE_PANEL_MIN_WIDTH, root?.width ?? 0));
-    expect(panel?.width ?? 0).toBeLessThanOrEqual(root?.width ?? 0);
+    const inset = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--shell-card-inset")));
+    expect(inset).toBeGreaterThan(0);
+    // The reserve is the card plus its air on each side; a tile narrower than
+    // the reserve gives the card all of itself but the air (shared/side-panel.ts).
+    expect(reserve?.width ?? Infinity).toBeLessThanOrEqual((root?.width ?? 0) + 1);
+    expect(Math.abs((panel?.width ?? 0) - Math.min(SIDE_PANEL_MIN_WIDTH, (reserve?.width ?? 0) - 2 * inset))).toBeLessThanOrEqual(1);
     expect(composer?.width ?? 0).toBeGreaterThan((root?.width ?? 0) - (panel?.width ?? 0));
 
     // Widen again → back to a docked column.

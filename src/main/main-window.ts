@@ -15,11 +15,10 @@ import { mainDir } from "./main-paths.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import {
   attachSideBrowserWebview,
-  configureSideBrowserWebviewAttach,
   isSideBrowserContents,
   takePendingSideBrowserSrc,
 } from "./side-browser-webview.js";
-import { configurePluginWebviewAttach } from "./plugin-webview-attach.js";
+import { configureMainWindowWebviewAttach } from "./plugin-webview-attach.js";
 import { getCommonChromeOptions } from "./window-chrome.js";
 import { getLastThemePayload } from "../shared/plugin-theme-cache.js";
 import { registerWindowEventListeners } from "./window-event-listeners.js";
@@ -43,6 +42,7 @@ import { MAIN_WINDOW_MIN_HEIGHT, MAIN_WINDOW_MIN_WIDTH } from "../shared/shell-g
 import { isAppUpdateInstallRequested } from "./app-update-install-intent.js";
 import { BOOTSTRAP_SPLASH, markBootstrapSplashShown } from "./bootstrap-splash.js";
 import { requestNativeChromeRefresh } from "./native-window-coordinator.js";
+import { preloadPreferences } from "./preload-bundles.js";
 import {
   getLastRendererReloadAt,
   getMainWindow,
@@ -157,9 +157,9 @@ export function createWindow(options: { showBootstrapSplash?: boolean; headless?
   // One-shot runs have no desktop surface and must not allocate a renderer.
   if (options.headless) return;
   const showBootstrapSplash = options.showBootstrapSplash ?? true;
-  const preloadPath = resolve(mainDir, "..", "preload.cjs");
-  if (!existsSync(preloadPath)) {
-    throw new Error(`[ave] preload.cjs not found at ${preloadPath} — run 'npm run build:preload' first`);
+  const hostPreload = preloadPreferences("preload");
+  if (!existsSync(hostPreload.preload)) {
+    throw new Error(`[ave] preload.cjs not found at ${hostPreload.preload} — run 'npm run build:preload' first`);
   }
 
   const win = new BrowserWindow({
@@ -175,14 +175,13 @@ export function createWindow(options: { showBootstrapSplash?: boolean; headless?
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      // sandbox:false required for Node built-ins (node:path, node:url) in preload.cjs
-      sandbox: false,
+      // The host preload and its sandbox (false: it needs Node built-ins), from the one table.
+      ...hostPreload,
       // render_html tool renders LLM-produced HTML inside an Electron
       // <webview>. The webview runs on its own webContents / OS process so
       // a malicious or runaway payload (e.g. `while(true){}`) can't freeze
       // the main UI. The <webview> tag is gated by webPreferences.webviewTag.
       webviewTag: true,
-      preload: preloadPath,
       // Pass the host's cached lastThemePayload + persisted appMode to the
       // renderer so ThemeProvider and the App shell can both init from frame 0
       // (no flash of fallback theme / wrong mode). See initialThemeArgs() and
@@ -270,24 +269,16 @@ export function createWindow(options: { showBootstrapSplash?: boolean; headless?
 
   const pendingSideBrowserWebviews: string[] = [];
   win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
-    // Plugin frames first. Both guards key on the partition and each ignores
-    // the other's, so order is not load-bearing — but a plugin frame reaching
-    // attach with its preferences untouched is the case that matters, and
-    // running it first keeps that obvious.
-    const pluginResult = configurePluginWebviewAttach({
-      webPreferences: webPreferences as Record<string, unknown>,
-      params: params as unknown as Record<string, string>,
-    });
-    if (pluginResult === "enforced") return;
-
-    const result = configureSideBrowserWebviewAttach({
+    // Plugin frames, MCP app frames and the side browser each have a guard that
+    // sets the guest's preferences in main; a guest no guard owns is refused.
+    const attach = configureMainWindowWebviewAttach({
       event,
       webPreferences: webPreferences as Record<string, unknown>,
-      params,
-      enqueueAllowedSrc: (src) => pendingSideBrowserWebviews.push(src),
+      params: params as unknown as Record<string, string>,
+      enqueueSideBrowserSrc: (src) => pendingSideBrowserWebviews.push(src),
     });
-    if (result === "blocked") {
-      log.warn({ src: params.src, partition: params.partition }, "blocked side browser webview attach");
+    if (attach.result === "blocked" || attach.result === "refused") {
+      log.warn({ src: params.src, partition: params.partition, owner: attach.owner }, "blocked webview attach");
     }
   });
   win.webContents.on("did-attach-webview", (_event, contents) => {

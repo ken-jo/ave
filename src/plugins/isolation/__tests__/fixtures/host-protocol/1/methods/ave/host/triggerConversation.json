@@ -1,0 +1,22 @@
+{
+  "request": {
+    "id": 42,
+    "jsonrpc": "2.0",
+    "method": "ave/host/triggerConversation",
+    "params": {
+      "spec": {
+        "prompt": "hello",
+        "source": "golden:trigger"
+      }
+    }
+  },
+  "response": {
+    "id": 42,
+    "jsonrpc": "2.0",
+    "result": {
+      "accepted": true,
+      "eventId": "event-1",
+      "source": "golden:trigger"
+    }
+  }
+}

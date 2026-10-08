@@ -15,7 +15,7 @@ import { installPluginPartitionPolicy } from "../main/html-preview-partition.js"
 import { pluginPartitionName } from "../shared/plugin-partition.js";
 import { revokePluginWebviewsForPlugin } from "../ipc/domains/plugins.js";
 import { ElectronAudioCaptureSurface } from "../main/audio-capture-surface.js";
-import { ElectronFloatingDockSurface } from "../main/floating-dock-surface.js";
+import { ElectronFloatingDockSurface, hostDockThemeSource } from "../main/floating-dock-surface.js";
 import { peekFloatingDock } from "./steps/plugin-runtime/host-api-factory.js";
 import { pickFoldersForPlugin } from "../main/host-api/pick-folders.js";
 import type { BootHost } from "./host-runtime.js";
@@ -51,7 +51,9 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
           void run().finally(() => app.quit());
         });
       },
-      notificationSupported: () => Notification.isSupported(),
+      // `isSupported()` creates Electron's notification presenter; see the
+      // contract on `DesktopHostCapabilities.initializeNotificationPresenter`.
+      initializeNotificationPresenter: () => Notification.isSupported(),
       notificationOptions: {
         isReady: () => app.isReady(),
         isAnyWindowFocused: () => BrowserWindow.getAllWindows().some((window) => !window.isDestroyed() && window.isFocused()),
@@ -64,7 +66,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       },
       powerMonitor: adaptPowerMonitor(powerMonitor),
       createAudioCaptureSurface: () => new ElectronAudioCaptureSurface(),
-      createFloatingDockSurface: () => new ElectronFloatingDockSurface(),
+      createFloatingDockSurface: () => new ElectronFloatingDockSurface(hostDockThemeSource),
       pickFolders: (pluginId, parentWindow) => pickFoldersForPlugin(pluginId, { parentWindow }),
       prepareRelease: prepareDesktopRelease,
       beforeShutdown: () => {

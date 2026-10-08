@@ -1,5 +1,10 @@
 # Plugin Theme Application — Unification
 
+> **대체된 구현 계획입니다.** 아래 SDK 배포와 PR 순서는 2026-05-12 당시 결정의
+> 기록이며 현재 구현 지침이 아닙니다. 플러그인은 앱 릴리스 태그의 계약 파일을
+> 복사하고 `requires.minAppVersion`을 선언합니다. 현재 계약은
+> [마켓플레이스 설계 §5.6](../../../design/multi-source-git-marketplace.md#56-plugin-contract-for-authors)을 따릅니다.
+
 - Status: Proposal (decided — implementation gated on PR sequence below)
 - Owner: arch
 - Date: 2026-05-12

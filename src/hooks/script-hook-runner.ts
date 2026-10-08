@@ -59,6 +59,9 @@ import type { DiscoveredHook } from "./hook-discovery.js";
 import type { PluginHookOwner } from "./hook-registry.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
+import { cleanupAsrtSandboxAfterCommand, isAsrtSandboxActive } from "../permissions/asrt-sandbox.js";
+import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
+import { bundledWrappedEnv, wrapBundledCommand } from "../sandbox/wrap-bundled-command.js";
 
 const log = createLogger("hook-runner");
 
@@ -87,6 +90,7 @@ export interface RunnableHook {
    * anything else is spawned directly with NO shell (argv[0] = program).
    */
   command: string[];
+  env?: Record<string, string>;
   /** Optional glob matcher — surfaced to the hook via `AVE_HOOK_MATCHER`. */
   matcher?: string;
   /** Path for audit/forensics — `.sh` abs path, or the resolved script arg. */
@@ -113,6 +117,7 @@ export interface RunnableHook {
    */
   commandIdentity?: string;
   pluginOwner?: PluginHookOwner;
+  confinement?: { kind: "bundled"; pluginId: string; dataDir: string; generationRoot: string };
 }
 
 /** sha256 (hex) of a verbatim command argv — the forensic anchor for a generic
@@ -195,7 +200,8 @@ export async function runOneHookScript(
   // the caller-supplied option, then the default. This lets a mixed chain run
   // each config entry on its own ceiling.
   const timeoutMs = runnable.timeoutMs ?? options.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
-  const cwd = options.cwd ?? process.cwd();
+  const confinement = runnable.confinement;
+  const cwd = confinement?.generationRoot ?? options.cwd ?? process.cwd();
   const start = Date.now();
 
   // Forensic anchors carried onto EVERY result this invocation produces. `source`
@@ -221,14 +227,16 @@ export async function runOneHookScript(
   });
 
   const hookEnv = buildHookEnv(payload, runnable.matcher);
-  const childEnvBase = buildSafeChildEnv(hookEnv);
+  const childEnvBase = buildSafeChildEnv({ ...runnable.env, ...hookEnv,
+    ...(confinement ? { PLUGIN_ROOT: confinement.generationRoot, PLUGIN_DATA: confinement.dataDir } : {}),
+  });
 
   // Decide the spawn shape. Legacy single `.sh` → resolved shell (Windows
   // interpreter resolution). Generic command → direct spawn, NO shell.
   let spawnCmd: string;
   let spawnArgs: string[];
-  let spawnEnv: Record<string, string>;
-  if (isLegacyShellScript(runnable.command)) {
+  let spawnEnv: NodeJS.ProcessEnv;
+  if (!confinement && isLegacyShellScript(runnable.command)) {
     let shell;
     try {
       shell = resolveShell();
@@ -255,8 +263,30 @@ export async function runOneHookScript(
     spawnEnv = childEnvBase;
   }
 
+  assertManagedChildProcessAdmissionOpen("hook:script");
+  let cleanupWrap: (() => void) | undefined;
+  if (confinement && isAsrtSandboxActive()) {
+    if (process.platform === "win32") return deny("sandbox unavailable: bundled hooks cannot run on Windows with the sandbox on");
+    const sandboxHome = createSandboxProcessHome();
+    try {
+      const wrapped = await wrapBundledCommand({ command: spawnCmd, args: spawnArgs,
+        sandboxHome, allowWrite: [confinement.dataDir], tempPrincipal: { kind: "plugin", id: confinement.pluginId } });
+      [spawnCmd, ...spawnArgs] = wrapped.argv;
+      spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, sandboxHome.env);
+      let cleaned = false;
+      cleanupWrap = () => {
+        if (cleaned) return;
+        cleaned = true;
+        void cleanupAsrtSandboxAfterCommand();
+        sandboxHome.cleanup();
+      };
+    } catch (error) {
+      sandboxHome.cleanup();
+      return deny(`sandbox unavailable: ${(error as Error).message}`);
+    }
+  }
+
   return new Promise<ScriptHookInvocationResult>((resolve) => {
-    assertManagedChildProcessAdmissionOpen("hook:script");
     const child = spawn(spawnCmd, spawnArgs, {
       cwd,
       // Allowlist env — do not leak ANTHROPIC_API_KEY, AWS_*, GITHUB_TOKEN
@@ -308,6 +338,7 @@ export async function runOneHookScript(
     const finish = (code: number | null): void => {
       if (settled) return;
       settled = true;
+      cleanupWrap?.();
       if (timer) clearTimeout(timer);
       if (timeoutFallback) clearTimeout(timeoutFallback);
       const stdout = Buffer.concat(stdoutChunks).toString("utf-8");
@@ -389,6 +420,7 @@ export async function runOneHookScript(
     child.on("error", (err: Error) => {
       if (settled) return;
       settled = true;
+      cleanupWrap?.();
       if (timer) clearTimeout(timer);
       if (timeoutFallback) clearTimeout(timeoutFallback);
       resolve({

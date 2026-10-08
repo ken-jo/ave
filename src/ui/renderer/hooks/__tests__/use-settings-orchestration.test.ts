@@ -23,10 +23,7 @@ function makeSettings(): AppSettings {
     chat: { systemPrompt: "", autoCompact: true },
     webSearch: { provider: "duckduckgo" },
     privacy: { piiRedactEnabled: false },
-    marketplace: {
-      cloudBaseUrl: "",
-      cloudAllowPrivateNetwork: false,
-    },
+    marketplace: { updateCheckEnabled: true },
   });
 }
 

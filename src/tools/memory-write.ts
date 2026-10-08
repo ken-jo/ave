@@ -1,6 +1,7 @@
 import { createDynamicTool, type Tool, type ToolExecutionContext } from "./base.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
-import { scrubSecretsForLLM } from "../shared/dlp.js";
+import { t } from "../i18n/index.js";
+import { modelBoundCredentialKind } from "../shared/dlp.js";
 
 /** Title length cap — memory titles are short labels, not prose. */
 export const MEMORY_WRITE_MAX_TITLE_CHARS = 120;
@@ -47,9 +48,9 @@ function memoryWriteProjectScope(ctx: ToolExecutionContext): { projectRoot?: str
   return projectRoot ? { projectRoot } : {};
 }
 
-function hasCredentialLikeContent(title: string, content: string): boolean {
-  const combined = `${title}\n${content}`;
-  return scrubSecretsForLLM(combined) !== combined;
+/** Why title and content would be refused as holding a credential, or null when they hold none. */
+function credentialLikeContent(title: string, content: string): "authorization-key" | "credential" | null {
+  return modelBoundCredentialKind(`${title}\n${content}`);
 }
 
 
@@ -162,9 +163,11 @@ export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
         };
       }
 
-      if (hasCredentialLikeContent(title, content)) {
+      const credential = credentialLikeContent(title, content);
+      if (credential !== null) {
         return {
-          output: "memory_write: title/content must not contain credentials, API keys, or tokens.",
+          // Name the reason: an Authorization-like key is refused even when its value is a plain URL (§18.8).
+          output: credential === "authorization-key" ? t("be_memoryWrite.authorizationKeyRejected") : t("be_memoryWrite.credentialRejected"),
           isError: true,
         };
       }

@@ -1,10 +1,13 @@
+import { createPluginRetirementPort } from "../retired-config.js";
+import type { RetiredPluginConfigRecord } from "../../shared/alerts-types.js";
+import { PluginUninstallCleanupJournal, pluginUninstallCleanupJournalPath } from "../plugin-uninstall-cleanup-journal.js";
 import { describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  cleanupFailedPluginInstallWithLifecycle,
+  type PluginUninstallLifecycleDeps,
   ensurePluginStateReadyForInstall,
   recoverPendingPluginUninstallCleanups,
   uninstallPluginWithLifecycle,
@@ -45,7 +48,6 @@ function makeDeps(pluginId: string, cacheRoot: string, uninstallError?: Error) {
         if (uninstallError) throw uninstallError;
         return { pluginId, uninstalled: true as const };
       }),
-      clearInstallFailureDiagnostic: vi.fn(),
     },
     pluginRuntime,
     settingsService: {
@@ -63,12 +65,68 @@ function makeDeps(pluginId: string, cacheRoot: string, uninstallError?: Error) {
       drainPluginInstallLockOperations,
     ),
     emitHostEvent: vi.fn(),
-    refreshPluginNotifications: vi.fn(),
+    refreshPluginEventBridge: vi.fn(),
     log: { warn: vi.fn() },
   };
 }
 
 describe("uninstallPluginWithLifecycle", () => {
+  it("captures before removal and replays a failed config phase without rewriting consumed choices", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-retaining-uninstall-"));
+    try {
+      const pluginId = "retired-fixture";
+      const deps = makeDeps(pluginId, join(root, "cache"));
+      let records: Record<string, RetiredPluginConfigRecord> = {};
+      const set = vi.fn(async (_key: string, value: typeof records) => { records = structuredClone(value); });
+      const retirement = createPluginRetirementPort({
+        settings: { get: () => structuredClone(records), set, getPluginConfig: () => ({ choice: true }) } as never,
+        marketplace: { getInstalledConfigManifest: async () => ({ manifest: { id: pluginId } as never, enabled: true, sourceId: "fixture" }) },
+        wildcard: () => ({}), appVersion: () => "0.12.0",
+      });
+      const journalPath = pluginUninstallCleanupJournalPath(deps.pluginPaths.cacheRoot);
+      deps.pluginMarketplace.uninstall.mockImplementation(async () => {
+        expect(new PluginUninstallCleanupJournal(journalPath).find(pluginId)?.retirement?.config).toEqual({ choice: true });
+        deps.pluginMarketplace.getInstalledVersion.mockResolvedValue(null);
+        return { pluginId, uninstalled: true };
+      });
+      deps.settingsService.deletePluginConfig.mockRejectedValueOnce(new Error("config write failed"));
+      await expect(uninstallPluginWithLifecycle(pluginId, { ...deps, retirement } as unknown as PluginUninstallLifecycleDeps, {
+        reason: "superseded", sourceId: "fixture", successors: { plugins: [{ pluginId: "successor-fixture" }], hostKinds: [] },
+      })).rejects.toThrow("incomplete post-commit cleanup");
+      expect(records[pluginId]?.config).toEqual({ choice: true });
+      expect(new PluginUninstallCleanupJournal(journalPath).find(pluginId)?.completedPhases).not.toContain("config");
+      // Consumption may finish while cleanup is pending. Its durable decision
+      // must survive the stale capture stored before registry removal.
+      records[pluginId]!.consumedBy = ["successor-fixture"];
+      const consumed = structuredClone(records[pluginId]);
+      set.mockClear();
+      await expect(recoverPendingPluginUninstallCleanups({ ...deps, retirement } as unknown as PluginUninstallLifecycleDeps)).resolves.toEqual([]);
+      expect(records[pluginId]).toEqual(consumed);
+      expect(set).not.toHaveBeenCalled();
+      expect(new PluginUninstallCleanupJournal(journalPath).find(pluginId)).toBeUndefined();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("recovers a prepared retaining journal after the manifest and runtime are gone", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-prepared-retirement-"));
+    try {
+      const pluginId = "retired-fixture";
+      const deps = makeDeps(pluginId, join(root, "cache"));
+      deps.pluginMarketplace.getInstalledVersion.mockResolvedValue(null);
+      deps.pluginRuntime.getPluginManifest.mockImplementation(() => { throw new Error("runtime gone"); });
+      const retirement = { capture: vi.fn(), writeIfAbsent: vi.fn(async () => undefined) };
+      const record: RetiredPluginConfigRecord = { config: { choice: true }, enabled: true, sourceId: null,
+        retiredAtAppVersion: "0.12.0", successors: { plugins: [], hostKinds: [] }, consumedBy: [] };
+      const path = pluginUninstallCleanupJournalPath(deps.pluginPaths.cacheRoot);
+      new PluginUninstallCleanupJournal(path).prepare({ pluginId, installPluginId: pluginId, secretKeys: [], authPartitions: [], cleanupCache: false, retirement: record });
+      await expect(recoverPendingPluginUninstallCleanups({ ...deps, retirement } as unknown as PluginUninstallLifecycleDeps)).resolves.toEqual([]);
+      expect(retirement.capture).not.toHaveBeenCalled();
+      expect(retirement.writeIfAbsent).toHaveBeenCalledWith(pluginId, record);
+      expect(deps.settingsService.deletePluginConfig).toHaveBeenCalledWith(pluginId);
+      expect(new PluginUninstallCleanupJournal(path).list()).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("deletes normal plugin cache and preserves shared cache directories", async () => {
     const root = mkdtempSync(join(tmpdir(), "ave-uninstall-cache-"));
     try {
@@ -232,62 +290,6 @@ describe("uninstallPluginWithLifecycle", () => {
       ]);
       expect(existsSync(join(cacheRoot, "canonical-plugin"))).toBe(false);
       expect(existsSync(join(cacheRoot, "marketplace-alias"))).toBe(false);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps failed-install retry serialized under the journaled install alias", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ave-failed-cleanup-alias-lock-"));
-    try {
-      const deps = makeDeps("canonical-plugin", join(root, ".cache"));
-      deps.pluginRuntime.resolvePluginId.mockReturnValue("canonical-plugin");
-      deps.pluginMarketplace.getInstalledVersion
-        .mockResolvedValueOnce("1.0.0")
-        .mockResolvedValue(null);
-      deps.clearAuthPartitionService.mockRejectedValueOnce(
-        new Error("partition still busy"),
-      );
-      await expect(
-        uninstallPluginWithLifecycle("marketplace-alias", deps),
-      ).rejects.toThrow(/incomplete post-commit cleanup/);
-      deps.clearAuthPartitionService.mockResolvedValue(undefined);
-
-      let releaseAliasLock!: () => void;
-      let aliasLockEntered!: () => void;
-      const aliasLockGate = new Promise<void>((resolve) => {
-        releaseAliasLock = resolve;
-      });
-      const aliasLockStarted = new Promise<void>((resolve) => {
-        aliasLockEntered = resolve;
-      });
-      const aliasHolder = withPluginInstallLock(
-        "marketplace-alias",
-        async () => {
-          aliasLockEntered();
-          await aliasLockGate;
-        },
-      );
-      await aliasLockStarted;
-
-      let cleanupSettled = false;
-      const cleanup = cleanupFailedPluginInstallWithLifecycle(
-        "canonical-plugin",
-        deps,
-      ).finally(() => {
-        cleanupSettled = true;
-      });
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(cleanupSettled).toBe(false);
-
-      releaseAliasLock();
-      await aliasHolder;
-      await expect(cleanup).resolves.toEqual({
-        pluginId: "canonical-plugin",
-        uninstalled: true,
-      });
-      expect(deps.pluginRuntime.removePlugin).not.toHaveBeenCalled();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -535,65 +537,6 @@ describe("uninstallPluginWithLifecycle", () => {
       ).resolves.toEqual({ pluginId: "agent-hub", uninstalled: true });
       expect(deps.pluginRuntime.removePluginWithCommit).toHaveBeenCalledOnce();
       expect(deps.settingsService.deletePluginConfig).toHaveBeenCalledOnce();
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps failed-install cleanup blocked until boot proves runtime quiescence", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ave-failed-install-cleanup-"));
-    try {
-      const deps = makeDeps("agent-hub", join(root, ".cache"));
-      const retirementFailure = new Error("retirement failed after purge");
-      deps.pluginMarketplace.getInstalledVersion.mockResolvedValue(null);
-      deps.pluginRuntime.removePlugin.mockRejectedValueOnce(retirementFailure);
-      deps.settingsService.deletePluginConfig.mockRejectedValueOnce(
-        new Error("config file locked"),
-      );
-
-      await expect(
-        cleanupFailedPluginInstallWithLifecycle("agent-hub", deps),
-      ).rejects.toThrow(/pending runtime retirement/);
-      const pending = JSON.parse(
-        await readFile(
-          join(root, ".cache", "plugin-uninstall-cleanup.json"),
-          "utf8",
-        ),
-      );
-      expect(pending.cleanups).toHaveLength(1);
-      expect(pending.cleanups[0]).toMatchObject({
-        pluginId: "agent-hub",
-        registryRemovalCommitted: true,
-        runtimeRetirementComplete: false,
-      });
-      expect(deps.settingsService.deletePluginConfig).not.toHaveBeenCalled();
-      expect(
-        deps.pluginMarketplace.clearInstallFailureDiagnostic,
-      ).not.toHaveBeenCalled();
-
-      await expect(
-        cleanupFailedPluginInstallWithLifecycle("agent-hub", deps),
-      ).rejects.toThrow(/runtime retirement cleanup is pending/);
-      expect(deps.pluginRuntime.removePlugin).toHaveBeenCalledOnce();
-      expect(deps.settingsService.deletePluginConfig).not.toHaveBeenCalled();
-
-      await expect(
-        recoverPendingPluginUninstallCleanups(deps),
-      ).resolves.toEqual(["agent-hub"]);
-      expect(deps.settingsService.deletePluginConfig).toHaveBeenCalledOnce();
-      await expect(
-        recoverPendingPluginUninstallCleanups(deps),
-      ).resolves.toEqual([]);
-      expect(
-        deps.pluginMarketplace.clearInstallFailureDiagnostic,
-      ).toHaveBeenCalledWith("agent-hub");
-      const completed = JSON.parse(
-        await readFile(
-          join(root, ".cache", "plugin-uninstall-cleanup.json"),
-          "utf8",
-        ),
-      );
-      expect(completed.cleanups).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

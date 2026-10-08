@@ -74,8 +74,8 @@ describe("PluginRuntime.reloadPlugin", () => {
       name: id,
       version: "1.0.0",
       description: "Test fixture.",
-      publisher: "Test fixture",
       entry: "entry.mjs",
+      requires: { hostProtocol: "2" },
       tools: [{ name: methodName, description: `${methodName} tool`, inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
     };
     const manifestPath = join(pluginDir, "plugin.json");

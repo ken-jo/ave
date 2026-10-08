@@ -2,14 +2,12 @@
 
 
 
-import type { BrowserWindow } from "electron";
 import type { PluginRuntime } from "../plugins/runtime.js";
 import type { SettingsService } from "../data/settings-store.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { activeHostApiVendor } from "./steps/refresh-active-llm-wildcard.js";
-import type { NotificationService } from "../main/notification-service.js";
 import { classifySubscription } from "../plugins/capabilities.js";
-import { type EventHandler, onEvent, offEvent } from "./types.js";
+import { onEvent } from "./types.js";
 import { createLogger } from "../lib/logger.js";
 const log = createLogger("ave");
 
@@ -125,142 +123,4 @@ export function buildManifestEventHints(
     }
   }
   return hints;
-}
-
-// The renderer event bridge (manifest.emittedEvents → CHANNELS.pluginBridge.event)
-// lives in `boot/steps/ipc-bridge.ts` — the only implementation, and the one
-// `boot/steps/conversation-wiring.ts` wires. A second, never-called copy used to
-// sit here; it has been deleted. Its private-namespace skip (the one behaviour
-// the live bridge lacked) moved into `collectPluginEventTypes` there.
-
-/**
- * Register OS notifications from manifest.notificationEvents declarations.
- *
- * Routes every plugin emit through {@link NotificationService} (#841) so
- * plugin notifications inherit:
- *   - per-kind cooldown (5 s for `plugin`) — defangs a runaway plugin
- *     emitting 30 events/sec from blasting OS toasts
- *   - 80-char body cap + ANSI/markdown/control-char stripping
- *   - in-app toast vs OS routing decision (NotificationService.fire picks
- *     based on `isAnyWindowFocused()` — #842, multi-window safe)
- *   - click-to-restore-minimized
- *   - structured `notification.fired` / `notification.suppressed` audit rows
- *
- * Per-event `bypassFocusGate?: boolean` (#843) opts out of the focus
- * suppression for critical surfaces (`meeting.starting-soon`,
- * `approval.deadline-imminent`, etc.) — the OS notification fires
- * regardless of any focused Ave window.
- *
- * The `mainWindow` parameter is retained for the early `isSupported()` /
- * destroyed-window guard; the actual fire pipeline goes through
- * `notificationService` (which has its own live `getMainWindow` getter for
- * the click-restore path).
- */
-export function registerPluginNotifications(
-  pluginRuntime: PluginRuntime,
-  mainWindow: BrowserWindow | null,
-  notificationService: NotificationService,
-  auditLogger?: Pick<AuditLogger, "log">,
-  supported = true,
-): () => void {
-  if (!mainWindow || !supported) return () => {};
-
-  const registered: Array<{ type: string; handler: EventHandler }> = [];
-  // Manifests come from JSON, so runtime validation is required. Multiple plugins
-  // can declare the same event as a notification, so register only once per event.
-  const registeredEvents = new Set<string>();
-
-  for (const { manifest } of pluginRuntime.listPluginManifests()) {
-    const pluginId = manifest.id;
-    const notificationEvents = Array.isArray(manifest.notificationEvents)
-      ? manifest.notificationEvents
-      : [];
-    for (const spec of notificationEvents) {
-      if (!spec || typeof spec !== "object") {
-        log.warn("boot: invalid notificationEvents spec (expected object), skipped: %s", spec);
-        continue;
-      }
-      const event = typeof spec.event === "string" ? spec.event.trim() : "";
-      if (!event) {
-        log.warn("boot: notificationEvents spec with missing/empty 'event' skipped: %s", spec);
-        continue;
-      }
-      if (spec.titleField !== undefined && typeof spec.titleField !== "string") {
-        log.warn(`boot: notificationEvents[${event}].titleField must be string, skipped`);
-        continue;
-      }
-      if (spec.bodyField !== undefined && typeof spec.bodyField !== "string") {
-        log.warn(`boot: notificationEvents[${event}].bodyField must be string, skipped`);
-        continue;
-      }
-      if (spec.bypassFocusGate !== undefined && typeof spec.bypassFocusGate !== "boolean") {
-        log.warn(`boot: notificationEvents[${event}].bypassFocusGate must be boolean, skipped`);
-        continue;
-      }
-      if (registeredEvents.has(event)) {
-        log.warn(`boot: duplicate notificationEvents entry for "${event}" — keeping first, skipping rest`);
-        continue;
-      }
-      registeredEvents.add(event);
-      const { titleField, bodyField, bypassFocusGate } = spec;
-      const handler: EventHandler = (data) => {
-        // Defensive: if the main window is destroyed between plugin emit and
-        // dispatch, the click-restore inside NotificationService no-ops, but
-        // we still audit the attempt so field telemetry can attribute
-        // emit-during-shutdown to the originating plugin.
-        //
-        // #843 — `bypassFocusGate` is a manifest signal that the event is a
-        // critical alert. A torn-down main window must NOT swallow such an
-        // alert (e.g. `incident.page` during shutdown). When bypass is set,
-        // fall through to NotificationService.fire; the OS notification still
-        // surfaces, and the internal `isDestroyed()` guards on click-restore
-        // handle the no-op safely.
-        if (mainWindow.isDestroyed() && bypassFocusGate !== true) {
-          try {
-            auditLogger?.log({
-              timestamp: new Date().toISOString(),
-              sessionId: "plugin-notification",
-              type: "info",
-              input: JSON.stringify({
-                event: "notification.suppressed",
-                kind: "plugin",
-                reason: "window-destroyed",
-                pluginId,
-                pluginEvent: event,
-              }),
-            });
-          } catch {
-            // audit failure must never block notification suppression
-          }
-          return;
-        }
-        const resolvedTitle = titleField ? getFieldByPath(data, titleField) : "";
-        const title = resolvedTitle || event;
-        const body = bodyField ? getFieldByPath(data, bodyField) : "";
-        // Route through NotificationService — inherits focus gate (#842
-        // multi-window-aware), cooldown, truncation, sanitization, click
-        // restore, and audit. `bypassFocusGate` (#843) passes through to
-        // FireOptions so meeting.starting-soon etc. fire regardless of focus.
-        notificationService.fire({
-          kind: "plugin",
-          title,
-          body,
-          bypassFocusGate: bypassFocusGate === true,
-        });
-      };
-      onEvent(event, handler);
-      registered.push({ type: event, handler });
-    }
-  }
-
-  return () => {
-    for (const { type, handler } of registered) offEvent(type, handler);
-  };
-}
-
-function getFieldByPath(data: unknown, path: string): string {
-  const parts = path.split(".");
-  let val: unknown = data;
-  for (const p of parts) val = (val as Record<string, unknown>)?.[p];
-  return typeof val === "string" ? val : "";
 }

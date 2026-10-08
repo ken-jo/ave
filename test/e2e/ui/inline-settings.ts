@@ -23,8 +23,12 @@ const WIDE_CONTENT_HEIGHT = 860;
 type MainWindowBounds = { x: number; y: number; width: number; height: number };
 const originalMainWindowBounds = new WeakMap<ElectronApplication, MainWindowBounds>();
 
-/** Resize the largest visible app window (the main window) to a wide size. */
-async function forceWideMainWindow(app: ElectronApplication): Promise<void> {
+/**
+ * Resize the largest visible app window (the main window) to a wide size.
+ * Exported for specs that open settings through the app rather than this
+ * helper; `closeInlineSettings` restores the bounds either way.
+ */
+export async function forceWideMainWindow(app: ElectronApplication): Promise<void> {
   const originalBounds = await app.evaluate(({ BrowserWindow }, size) => {
     const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.isVisible());
     const target = wins.sort(

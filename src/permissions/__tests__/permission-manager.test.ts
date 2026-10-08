@@ -316,6 +316,41 @@ describe("PermissionManager (B1 persistence)", () => {
     expect(result.layer).toBe(6);
   });
 
+  it("owner-unattended context keeps allow rules and durable grants ahead of the reviewer lane", async () => {
+    await pm.setModePersist("default");
+    await pm.addAlwaysAllowedPersist("write_report");
+    pm.setRules([{ pattern: "bash", action: "allow", source: "builtin" }]);
+
+    const grant = pm.checkDetailed("write_report", "builtin", "write", null, {
+      headless: true,
+      ownerUnattended: true,
+    });
+    expect(grant.decision).toBe("allow");
+    expect(grant.layer).toBe(5);
+
+    const rule = pm.checkDetailed("bash", "builtin", "shell", null, {
+      headless: true,
+      ownerUnattended: true,
+    });
+    expect(rule.decision).toBe("allow");
+    expect(rule.layer).toBe(3);
+
+    // Without a rule or grant the ask still takes the reviewer lane.
+    const unmatched = pm.checkDetailed("write_other", "builtin", "write", null, {
+      headless: true,
+      ownerUnattended: true,
+    });
+    expect(unmatched.decision).toBe("ask");
+    expect(unmatched.reviewer?.route).toBe("headless");
+
+    // A routine headless turn is unchanged: the same grant is not consulted.
+    const routine = pm.checkDetailed("write_report", "builtin", "write", null, {
+      headless: true,
+    });
+    expect(routine.decision).toBe("ask");
+    expect(routine.layer).toBe(6);
+  });
+
   it("uses approvalCacheKey for authority-sensitive allow-always cache hits", async () => {
     await pm.addAlwaysAllowedPersist("routine_schedule:scope:allow:meeting");
 

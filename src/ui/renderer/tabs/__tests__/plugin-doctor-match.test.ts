@@ -1,29 +1,43 @@
 /**
- * Binds the renderer's Doctor-repair target resolution to the shared catalog
- * lookup key. The result of `findPluginDoctorMarketplaceItem` is handed
- * straight to `installMarketplacePlugin`, so a normalization change decides
- * which package a repair actually installs.
- *
- * These assertions red when `shared/plugin-lookup-key.ts` loses a
- * normalization step — which is what makes the renderer side of the
- * consolidation covered rather than merely consistent-by-import.
+ * Plugin Doctor's repair: the entry it reinstalls, and what it asks the git
+ * marketplace for. The repair skips the update review only because it puts the
+ * version on disk back from the plugin's own source; these assertions red when
+ * it would pick another source, another kind, or the newer candidate.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
-  findPluginDoctorMarketplaceItem,
+  findPluginDoctorEntry,
+  findPluginProtocolUpdatePath,
   getPluginDoctorInstallKey,
+  repairPluginFromMarketplace,
 } from "../plugin-doctor-match.js";
-import type { MarketplaceItem } from "../../types.js";
+import type { CatalogEntryView, PackageStateView } from "../../../../shared/git-marketplace.js";
 import { pluginCardSummary as card } from "./test-helpers.js";
 
-function item(over: Partial<MarketplaceItem> & { id: string }): MarketplaceItem {
+function entry(name: string, state: PackageStateView, over: Partial<CatalogEntryView> = {}): CatalogEntryView {
   return {
-    name: over.id,
+    key: { sourceId: "ave", kind: "plugin", name },
+    sourceOrigin: "official",
+    sourceLabel: "Ave",
+    displayName: name,
     description: "",
-    packageSpec: over.id,
-    installed: false,
-    enabled: false,
+    keywords: [],
+    state,
+    required: false,
+    runsCode: true,
+    sourceBadges: [],
     ...over,
+  };
+}
+
+function market(entries: CatalogEntryView[]) {
+  return {
+    listCatalog: vi.fn(async () => ({ ok: true as const, value: { entries, counts: {} as never, sourceCount: 1, syncedAt: null } })),
+    planInstall: vi.fn(async () => ({ ok: true as const, value: { planId: "p1" } as never })),
+    executeInstall: vi.fn(async () => ({
+      ok: true as const,
+      value: { key: { sourceId: "ave", kind: "plugin" as const, name: "weather" }, version: "1.0.0", action: { action: "replace" as const, direction: "reinstall" as const, from: "1.0.0" }, rungs: [], connectionWarning: null },
+    })),
   };
 }
 
@@ -35,45 +49,79 @@ describe("getPluginDoctorInstallKey", () => {
 
   it("falls back to the plugin id when there is no alias", () => {
     expect(getPluginDoctorInstallKey(card({ id: "weather" }))).toBe("weather");
-    expect(getPluginDoctorInstallKey(card({ id: "weather", installAliases: [] }))).toBe("weather");
   });
 });
 
-describe("findPluginDoctorMarketplaceItem", () => {
-  it("matches an exact id literally", () => {
-    const catalog = [item({ id: "other" }), item({ id: "weather" })];
-    expect(findPluginDoctorMarketplaceItem(card({ id: "weather" }), catalog)?.id).toBe("weather");
+describe("findPluginDoctorEntry", () => {
+  it("finds the plugin's own installed entry by name", () => {
+    const entries = [entry("other", { state: "installed", version: "1.0.0" }), entry("weather", { state: "installed", version: "1.0.0" })];
+    expect(findPluginDoctorEntry(card({ id: "weather" }), entries)?.key).toEqual({ sourceId: "ave", kind: "plugin", name: "weather" });
   });
 
-  it("matches through the shared lookup key when the spellings differ", () => {
-    const catalog = [item({ id: "ave-plugin-ara", name: "Weather", packageSpec: "@ave/ave-plugin-ara@1.0.0" })];
-    expect(findPluginDoctorMarketplaceItem(card({ id: "weather" }), catalog)?.id)
-      .toBe("ave-plugin-ara");
+  it("skips another kind of the same name", () => {
+    const skill = entry("weather", { state: "installed", version: "1.0.0" }, { key: { sourceId: "ave", kind: "skill", name: "weather" } });
+    expect(findPluginDoctorEntry(card({ id: "weather" }), [skill])).toBeNull();
   });
 
-  it("matches on the package spec when id and name do not line up", () => {
-    const catalog = [item({ id: "wx-1", name: "Wx", packageSpec: "@ave/plugin-weather@2.0.0" })];
-    expect(findPluginDoctorMarketplaceItem(card({ id: "weather" }), catalog)?.id).toBe("wx-1");
+  it("returns null for a plugin bound to no source", () => {
+    const unbound = entry("weather", { state: "unbound", version: "1.0.0" }, { key: { sourceId: null, kind: "plugin", name: "weather" } });
+    expect(findPluginDoctorEntry(card({ id: "weather" }), [unbound])).toBeNull();
+  });
+});
+
+describe("findPluginProtocolUpdatePath", () => {
+  it("selects the newest eligible version from the installed plugin's own source", () => {
+    const entries = [
+      entry("weather", { state: "installed-elsewhere", sourceId: "ave", version: "1.0.0" }, { key: { sourceId: "other", kind: "plugin", name: "weather" } }),
+      entry("weather", { state: "update", from: "1.0.0", to: "2.0.0" }),
+    ];
+    expect(findPluginProtocolUpdatePath(card({ id: "weather" }), entries, [])).toEqual({
+      kind: "catalog", key: { sourceId: "ave", kind: "plugin", name: "weather" }, version: "2.0.0", from: "1.0.0",
+    });
   });
 
-  it("matches an install alias", () => {
-    const catalog = [item({ id: "ave-plugin-ara" })];
-    const plugin = card({ id: "com.acme.weather", name: "Acme", installAliases: ["weather"] });
-    expect(findPluginDoctorMarketplaceItem(plugin, catalog)?.id).toBe("ave-plugin-ara");
+  it("names the installed source repository when no eligible version is published", () => {
+    const installed = entry("weather", { state: "unavailable" });
+    expect(findPluginProtocolUpdatePath(card({ id: "weather" }), [installed], [
+      { id: "ave", label: "Source", transport: "git", url: "https://example.invalid/weather", path: null } as never,
+    ])).toEqual({ kind: "repository", sourceLabel: "Source", url: "https://example.invalid/weather" });
+    // A folder source is updated where it lives: its path is named.
+    expect(findPluginProtocolUpdatePath(card({ id: "weather" }), [installed], [
+      { id: "ave", label: "Folder", transport: "folder", url: null, path: "/opt/acme/market" } as never,
+    ])).toEqual({ kind: "repository", sourceLabel: "Folder", url: "/opt/acme/market" });
+    expect(findPluginProtocolUpdatePath(card({ id: "weather" }), [installed], [])).toEqual({ kind: "unavailable" });
+  });
+});
+
+describe("repairPluginFromMarketplace", () => {
+  it("reinstalls the version on disk, not the newer candidate", async () => {
+    const api = market([entry("weather", { state: "update", from: "1.0.0", to: "2.0.0" })]);
+    const repair = await repairPluginFromMarketplace(api, card({ id: "weather" }));
+    expect(repair.status).toBe("reinstalled");
+    expect(api.listCatalog).toHaveBeenCalledWith({ kind: "plugin", installedOnly: true });
+    expect(api.planInstall).toHaveBeenCalledWith({ sourceId: "ave", kind: "plugin", name: "weather", version: "1.0.0" });
+    expect(api.executeInstall).toHaveBeenCalledWith("p1");
   });
 
-  it("skips catalog entries that are not plugins", () => {
-    const catalog = [item({ id: "weather", pluginType: "skill" }), item({ id: "weather-b", name: "weather" })];
-    expect(findPluginDoctorMarketplaceItem(card({ id: "weather" }), catalog)?.id).toBe("weather-b");
+  it("installs the candidate when the version on disk cannot be read", async () => {
+    const api = market([entry("weather", { state: "installed", version: null })]);
+    await repairPluginFromMarketplace(api, card({ id: "weather" }));
+    expect(api.planInstall).toHaveBeenCalledWith({ sourceId: "ave", kind: "plugin", name: "weather" });
   });
 
-  it("returns null when no catalog entry corresponds", () => {
-    const catalog = [item({ id: "weather-pro" }), item({ id: "github" })];
-    expect(findPluginDoctorMarketplaceItem(card({ id: "weather" }), catalog)).toBeNull();
+  it("reports an unbound plugin without planning anything", async () => {
+    const api = market([]);
+    await expect(repairPluginFromMarketplace(api, card({ id: "weather" }))).resolves.toEqual({ status: "unbound" });
+    expect(api.planInstall).not.toHaveBeenCalled();
   });
 
-  it("does not match a different plugin that merely shares a prefix", () => {
-    const catalog = [item({ id: "git" })];
-    expect(findPluginDoctorMarketplaceItem(card({ id: "github" }), catalog)).toBeNull();
+  it("carries a failed plan's message", async () => {
+    const api = market([entry("weather", { state: "installed", version: "1.0.0" })]);
+    api.planInstall.mockResolvedValueOnce({ ok: false, code: "PACKAGE_INCOMPATIBLE", message: "ave does not list weather 1.0.0" } as never);
+    await expect(repairPluginFromMarketplace(api, card({ id: "weather" }))).resolves.toEqual({
+      status: "failed",
+      message: "ave does not list weather 1.0.0",
+    });
+    expect(api.executeInstall).not.toHaveBeenCalled();
   });
 });

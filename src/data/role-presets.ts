@@ -15,6 +15,7 @@ export interface RolePreset {
   systemPromptAdd: string;
   /** Marks the "no override" entry. */
   isDefault?: boolean;
+  origin?: { kind: "agent-plugin" | "plugin"; package: string; version: string };
 }
 
 export const DEFAULT_PERSONA_SELECTION: RolePreset = {
@@ -28,6 +29,7 @@ export interface ActiveRolePrompt {
   id?: string;
   name: string;
   systemPromptAdd: string;
+  origin?: { kind: "agent-plugin" | "plugin"; package: string; version: string };
 }
 
 /**

@@ -6,8 +6,9 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 188
+ * Fragments: 174
  */
+import { en as en_alerts } from "./alerts.js";
 import { en as en_app } from "./app.js";
 import { en as en_appearanceTab } from "./appearanceTab.js";
 import { en as en_approvalAttribution } from "./approvalAttribution.js";
@@ -42,6 +43,7 @@ import { en as en_be_mcpManager } from "./be_mcpManager.js";
 import { en as en_be_mcpResourceAttachment } from "./be_mcpResourceAttachment.js";
 import { en as en_be_mcpResourceTools } from "./be_mcpResourceTools.js";
 import { en as en_be_memoryManager } from "./be_memoryManager.js";
+import { en as en_be_memoryWrite } from "./be_memoryWrite.js";
 import { en as en_be_parentDirective } from "./be_parentDirective.js";
 import { en as en_be_permissionManager } from "./be_permissionManager.js";
 import { en as en_be_permissionModeApply } from "./be_permissionModeApply.js";
@@ -75,18 +77,14 @@ import { en as en_be_systemPromptBuilder } from "./be_systemPromptBuilder.js";
 import { en as en_be_telegramBridge } from "./be_telegramBridge.js";
 import { en as en_be_toolSearch } from "./be_toolSearch.js";
 import { en as en_be_tools } from "./be_tools.js";
-import { en as en_be_whitelistBootstrap } from "./be_whitelistBootstrap.js";
 import { en as en_be_windowDomain } from "./be_windowDomain.js";
 import { en as en_be_windowTitlebarShell } from "./be_windowTitlebarShell.js";
 import { en as en_bootstrapStatusPill } from "./bootstrapStatusPill.js";
 import { en as en_bottomActionRow } from "./bottomActionRow.js";
-import { en as en_catppuccinLatte } from "./catppuccinLatte.js";
-import { en as en_catppuccinMocha } from "./catppuccinMocha.js";
 import { en as en_chatPreviewRail } from "./chatPreviewRail.js";
 import { en as en_chatTab } from "./chatTab.js";
 import { en as en_chatView } from "./chatView.js";
 import { en as en_checkpointDivider } from "./checkpointDivider.js";
-import { en as en_cherryBlossom } from "./cherryBlossom.js";
 import { en as en_clipboardPaste } from "./clipboardPaste.js";
 import { en as en_codexSubscriptionCard } from "./codexSubscriptionCard.js";
 import { en as en_commandActions } from "./commandActions.js";
@@ -102,13 +100,10 @@ import { en as en_deferredQueuePanel } from "./deferredQueuePanel.js";
 import { en as en_devToolsPanel } from "./devToolsPanel.js";
 import { en as en_dockedApprovalCard } from "./dockedApprovalCard.js";
 import { en as en_errorBoundary } from "./errorBoundary.js";
-import { en as en_executiveGraphite } from "./executiveGraphite.js";
 import { en as en_fileEditDiff } from "./fileEditDiff.js";
-import { en as en_forest } from "./forest.js";
 import { en as en_formatIpcError } from "./formatIpcError.js";
 import { en as en_generalTab } from "./generalTab.js";
-import { en as en_gruvboxDarkHard } from "./gruvboxDarkHard.js";
-import { en as en_highContrast } from "./highContrast.js";
+import { en as en_gitMarketplace } from "./gitMarketplace.js";
 import { en as en_history } from "./history.js";
 import { en as en_htmlPreview } from "./htmlPreview.js";
 import { en as en_inputActionBar } from "./inputActionBar.js";
@@ -124,8 +119,6 @@ import { en as en_mcpTab } from "./mcpTab.js";
 import { en as en_memorySearchPanel } from "./memorySearchPanel.js";
 import { en as en_messageQueuePanel } from "./messageQueuePanel.js";
 import { en as en_messageQueueStore } from "./messageQueueStore.js";
-import { en as en_midnight } from "./midnight.js";
-import { en as en_nord } from "./nord.js";
 import { en as en_overlayCard } from "./overlayCard.js";
 import { en as en_overlayCardRegion } from "./overlayCardRegion.js";
 import { en as en_pendingAnswerDot } from "./pendingAnswerDot.js";
@@ -137,8 +130,6 @@ import { en as en_permissionsTab } from "./permissionsTab.js";
 import { en as en_pluginAuthSection } from "./pluginAuthSection.js";
 import { en as en_pluginConfigSchemaForm } from "./pluginConfigSchemaForm.js";
 import { en as en_pluginConfigTab } from "./pluginConfigTab.js";
-import { en as en_pluginGridButton } from "./pluginGridButton.js";
-import { en as en_pluginInstallDialog } from "./pluginInstallDialog.js";
 import { en as en_pluginPerfTab } from "./pluginPerfTab.js";
 import { en as en_pluginUninstallDialog } from "./pluginUninstallDialog.js";
 import { en as en_pluginUpdatesPill } from "./pluginUpdatesPill.js";
@@ -147,8 +138,8 @@ import { en as en_reasoningCard } from "./reasoningCard.js";
 import { en as en_remoteA2aActionButton } from "./remoteA2aActionButton.js";
 import { en as en_remoteSurfacesTab } from "./remoteSurfacesTab.js";
 import { en as en_rolesTab } from "./rolesTab.js";
-import { en as en_rosePine } from "./rosePine.js";
 import { en as en_routinePanel } from "./routinePanel.js";
+import { en as en_sandboxAuthority } from "./sandboxAuthority.js";
 import { en as en_savedToast } from "./savedToast.js";
 import { en as en_sessionGoalPanel } from "./sessionGoalPanel.js";
 import { en as en_sessionResumeDivider } from "./sessionResumeDivider.js";
@@ -159,7 +150,6 @@ import { en as en_sidebar } from "./sidebar.js";
 import { en as en_skillBadge } from "./skillBadge.js";
 import { en as en_slashPicker } from "./slashPicker.js";
 import { en as en_slashPickerPanel } from "./slashPickerPanel.js";
-import { en as en_solarizedLight } from "./solarizedLight.js";
 import { en as en_sparkline } from "./sparkline.js";
 import { en as en_spotlightTour } from "./spotlightTour.js";
 import { en as en_starredView } from "./starredView.js";
@@ -172,7 +162,6 @@ import { en as en_tailnetAccessTab } from "./tailnetAccessTab.js";
 import { en as en_telegramConnection } from "./telegramConnection.js";
 import { en as en_tokenCostBadge } from "./tokenCostBadge.js";
 import { en as en_tokenProgressRing } from "./tokenProgressRing.js";
-import { en as en_tokyoNight } from "./tokyoNight.js";
 import { en as en_toolActivity } from "./toolActivity.js";
 import { en as en_toolApprovalDialog } from "./toolApprovalDialog.js";
 import { en as en_toolDisplay } from "./toolDisplay.js";
@@ -183,7 +172,6 @@ import { en as en_unifiedSearchPanel } from "./unifiedSearchPanel.js";
 import { en as en_usageDashboard } from "./usageDashboard.js";
 import { en as en_useChatState } from "./useChatState.js";
 import { en as en_useMemorySearch } from "./useMemorySearch.js";
-import { en as en_usePluginMarketplace } from "./usePluginMarketplace.js";
 import { en as en_useSettingsOrchestration } from "./useSettingsOrchestration.js";
 import { en as en_useStarred } from "./useStarred.js";
 import { en as en_useStatusBarInstall } from "./useStatusBarInstall.js";
@@ -191,13 +179,12 @@ import { en as en_useStatusBarVendor } from "./useStatusBarVendor.js";
 import { en as en_userMessageEditor } from "./userMessageEditor.js";
 import { en as en_viewModeBanner } from "./viewModeBanner.js";
 import { en as en_viewPathNav } from "./viewPathNav.js";
-import { en as en_violetDark } from "./violetDark.js";
-import { en as en_violetLight } from "./violetLight.js";
 import { en as en_webTab } from "./webTab.js";
 import { en as en_workBoard } from "./workBoard.js";
 import { en as en_workGroup } from "./workGroup.js";
 
 export const generatedEn: Record<string, string> = {
+  ...en_alerts,
   ...en_app,
   ...en_appearanceTab,
   ...en_approvalAttribution,
@@ -232,6 +219,7 @@ export const generatedEn: Record<string, string> = {
   ...en_be_mcpResourceAttachment,
   ...en_be_mcpResourceTools,
   ...en_be_memoryManager,
+  ...en_be_memoryWrite,
   ...en_be_parentDirective,
   ...en_be_permissionManager,
   ...en_be_permissionModeApply,
@@ -265,18 +253,14 @@ export const generatedEn: Record<string, string> = {
   ...en_be_telegramBridge,
   ...en_be_toolSearch,
   ...en_be_tools,
-  ...en_be_whitelistBootstrap,
   ...en_be_windowDomain,
   ...en_be_windowTitlebarShell,
   ...en_bootstrapStatusPill,
   ...en_bottomActionRow,
-  ...en_catppuccinLatte,
-  ...en_catppuccinMocha,
   ...en_chatPreviewRail,
   ...en_chatTab,
   ...en_chatView,
   ...en_checkpointDivider,
-  ...en_cherryBlossom,
   ...en_clipboardPaste,
   ...en_codexSubscriptionCard,
   ...en_commandActions,
@@ -292,13 +276,10 @@ export const generatedEn: Record<string, string> = {
   ...en_devToolsPanel,
   ...en_dockedApprovalCard,
   ...en_errorBoundary,
-  ...en_executiveGraphite,
   ...en_fileEditDiff,
-  ...en_forest,
   ...en_formatIpcError,
   ...en_generalTab,
-  ...en_gruvboxDarkHard,
-  ...en_highContrast,
+  ...en_gitMarketplace,
   ...en_history,
   ...en_htmlPreview,
   ...en_inputActionBar,
@@ -314,8 +295,6 @@ export const generatedEn: Record<string, string> = {
   ...en_memorySearchPanel,
   ...en_messageQueuePanel,
   ...en_messageQueueStore,
-  ...en_midnight,
-  ...en_nord,
   ...en_overlayCard,
   ...en_overlayCardRegion,
   ...en_pendingAnswerDot,
@@ -327,8 +306,6 @@ export const generatedEn: Record<string, string> = {
   ...en_pluginAuthSection,
   ...en_pluginConfigSchemaForm,
   ...en_pluginConfigTab,
-  ...en_pluginGridButton,
-  ...en_pluginInstallDialog,
   ...en_pluginPerfTab,
   ...en_pluginUninstallDialog,
   ...en_pluginUpdatesPill,
@@ -337,8 +314,8 @@ export const generatedEn: Record<string, string> = {
   ...en_remoteA2aActionButton,
   ...en_remoteSurfacesTab,
   ...en_rolesTab,
-  ...en_rosePine,
   ...en_routinePanel,
+  ...en_sandboxAuthority,
   ...en_savedToast,
   ...en_sessionGoalPanel,
   ...en_sessionResumeDivider,
@@ -349,7 +326,6 @@ export const generatedEn: Record<string, string> = {
   ...en_skillBadge,
   ...en_slashPicker,
   ...en_slashPickerPanel,
-  ...en_solarizedLight,
   ...en_sparkline,
   ...en_spotlightTour,
   ...en_starredView,
@@ -362,7 +338,6 @@ export const generatedEn: Record<string, string> = {
   ...en_telegramConnection,
   ...en_tokenCostBadge,
   ...en_tokenProgressRing,
-  ...en_tokyoNight,
   ...en_toolActivity,
   ...en_toolApprovalDialog,
   ...en_toolDisplay,
@@ -373,7 +348,6 @@ export const generatedEn: Record<string, string> = {
   ...en_usageDashboard,
   ...en_useChatState,
   ...en_useMemorySearch,
-  ...en_usePluginMarketplace,
   ...en_useSettingsOrchestration,
   ...en_useStarred,
   ...en_useStatusBarInstall,
@@ -381,8 +355,6 @@ export const generatedEn: Record<string, string> = {
   ...en_userMessageEditor,
   ...en_viewModeBanner,
   ...en_viewPathNav,
-  ...en_violetDark,
-  ...en_violetLight,
   ...en_webTab,
   ...en_workBoard,
   ...en_workGroup,
