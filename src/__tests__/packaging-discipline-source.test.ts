@@ -964,7 +964,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(agents).toContain("UI edits start with `grep` before editing");
     expect(agents).toContain("app shells `*Window`");
     expect(agents).toContain("bodies `*Content`, and modals `*Dialog`");
-    expect(agents).toContain("marketplace API, `gh`, or local sources");
+    expect(agents).toContain("use the installed marketplace sources, `gh`, or");
     expect(agents).toContain("not WebSearch. After three identical failures, change approach");
     expect(agents).toContain("sender/frame/origin checks");
     expect(agents).toContain("DLP handling");

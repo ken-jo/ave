@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   computeCost,
   DEFAULT_PRICING,
+  effectiveContextWindow,
   FALLBACK_PRICING,
   lookupBillablePricingOptional,
   lookupPricing,
@@ -75,6 +76,51 @@ describe("shared pricing-data", () => {
       ).toBeCloseTo(36.75, 5);
     },
   );
+
+  it.each([
+    // [model, input, output, explicit cache read, total of 1M input + output + cache read + cache write]
+    ["claude-fable-5-1", 10, 50, 0.25, 72.75],
+    ["claude-fable-5", 10, 50, undefined, 73.5],
+    ["claude-opus-5-5", 4, 20, 0.2, 29.2],
+    ["claude-opus-5", 5, 25, undefined, 36.75],
+    ["claude-opus-4-8", 5, 25, undefined, 36.75],
+    ["claude-opus-4-7", 5, 25, undefined, 36.75],
+    ["claude-sonnet-5-5", 2, 10, 0.1, 14.6],
+    ["claude-sonnet-5", 2, 10, undefined, 14.7],
+  ] as const)(
+    "pins %s current standard pricing and its 1M window",
+    (model, input, output, cacheRead, total) => {
+      // Anthropic official pricing, checked 2026-10-08. Cache hits are 0.1× input
+      // unless the page says otherwise: Opus 5.5 and Sonnet 5.5 are 0.05×, Fable 5.1
+      // is 0.025× — those rows carry an explicit `cacheReadPer1M`. Cache writes are
+      // the derived 5m rate (1.25× input) for every row.
+      const p = lookupPricing("claude", model);
+      expect(p).not.toBe(FALLBACK_PRICING);
+      expect(p.inputPer1M).toBe(input);
+      expect(p.outputPer1M).toBe(output);
+      expect(p.cacheReadPer1M).toBe(cacheRead);
+      expect(p.cacheWritePer1M).toBeUndefined();
+      expect(effectiveContextWindow(p)).toBe(1_000_000);
+      expect(
+        computeCost(
+          {
+            inputTokens: 1_000_000,
+            outputTokens: 1_000_000,
+            cacheReadTokens: 1_000_000,
+            cacheWriteTokens: 1_000_000,
+          },
+          p,
+          "claude",
+        ),
+      ).toBeCloseTo(total, 5);
+    },
+  );
+
+  it("a dated snapshot of a current model resolves to its own row, not an older family", () => {
+    expect(lookupPricing("claude", "claude-opus-5-5-20271001").inputPer1M).toBe(4);
+    expect(lookupPricing("claude", "claude-sonnet-5-5-20271001").inputPer1M).toBe(2);
+    expect(lookupPricing("claude", "claude-fable-5-1-20271001").cacheReadPer1M).toBe(0.25);
+  });
 
   it("unknown vendor/model falls back to zero-cost FALLBACK_PRICING", () => {
     const p = lookupPricing("nope", "mystery-model");

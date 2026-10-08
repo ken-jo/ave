@@ -61,6 +61,8 @@ state durable constraints here and put detailed designs in their owning docs.
   covers code comments, JSDoc, module headers, `description` fields, test names
   and `describe`/`it` strings, documentation prose, and **commit messages** —
   messages travel with every clone and are permanent in `git log` and `blame`.
+  The tool-attribution trailers (`Co-Authored-By:`, `Claude-Session:`) are the one
+  exception; they carry no explanatory text.
 - Keep the reason, drop the attribution. A comment that justifies a decision by
   pointing at what another product does states the property that makes the
   decision right instead. If the reasoning cannot survive without the name, it
@@ -219,8 +221,8 @@ Keep task-specific inventories in issues rather than in this instruction file.
   affected plugin contract copies at an app release tag.
 - UI edits start with `grep` before editing. Component-name shapes are in
   `Naming` > `Events and handlers`.
-- Private or non-indexed assets use the marketplace API, `gh`, or local sources,
-  not WebSearch. After three identical failures, change approach.
+- Private or non-indexed assets use the installed marketplace sources, `gh`, or
+  local sources, not WebSearch. After three identical failures, change approach.
 - Top-level package imports used by unbundled runtime code (main, preload, CLI,
   or worker) belong in `dependencies`, not `devDependencies`. Renderer/UI-only
   packages bundled into `dist` by webpack/esbuild may remain in
