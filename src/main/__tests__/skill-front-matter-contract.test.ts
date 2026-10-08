@@ -1,5 +1,5 @@
 /**
- * SKILL.md front matter against the SDK component contract.
+ * SKILL.md front matter against the host-owned component contract.
  *
  * The host used to read a skill header with a line-at-a-time parser that kept
  * `name` and `description` and discarded the other five fields
@@ -7,14 +7,13 @@
  * particular was a field an author could write and nothing downstream would
  * ever see.
  *
- * What this suite pins is the join between the two repos: the fields survive
- * on both paths, the keyword hints reach the catalog and leave with the skill,
+ * This suite checks both delivery paths against the host schema: the fields
+ * survive, the keyword hints reach the catalog and leave with the skill,
  * and the host's name rule is the schema's name rule — read out of the
  * committed snapshot rather than restated here, so a test cannot agree with a
- * host constant that has drifted from the SDK.
+ * host constant that has drifted from the schema.
  */
 import { describe, it, expect, vi } from "vitest";
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
@@ -33,13 +32,13 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 const REPO_ROOT = resolvePath(fileURLToPath(new URL("../../..", import.meta.url)));
 
 /**
- * The committed snapshot of the SDK-owned skill package schema. Read as data:
+ * The host-owned skill package schema (design §5.6). Read as data:
  * the point of every assertion below is that the host constant equals what
  * this file says, so restating the pattern in the test would defeat it.
  */
 const skillComponent = (
   JSON.parse(
-    readFileSync(join(REPO_ROOT, "schemas/sdk/skill-package.schema.json"), "utf8"),
+    readFileSync(join(REPO_ROOT, "schemas/skill-package.schema.json"), "utf8"),
   ) as {
     $defs: {
       skillComponent: {
@@ -350,7 +349,7 @@ describe("skill front matter — triggers reach the catalog and leave with the s
 describe("skill name rule — one charset, and it is the schema's", () => {
   it("the host's charset is the pattern the SDK schema carries", () => {
     // Read, never restated: a literal here would pass against a host constant
-    // that had drifted away from the SDK, which is the whole failure this
+    // that had drifted away from the schema, which is the whole failure this
     // guards.
     expect(SKILL_NAME_ALLOWLIST.source).toBe(skillComponent.properties.name.pattern);
   });
@@ -360,7 +359,7 @@ describe("skill name rule — one charset, and it is the schema's", () => {
     // longer one at publication. The host does not re-police that: a name is
     // the author's, and a long directory name is not a safety property. If
     // this ever starts failing, the host has grown a length check that the
-    // SDK's description says it does not have.
+    // schema's description says it does not have.
     const ceiling = skillComponent.properties.name.maxLength;
     expect(ceiling).toBeGreaterThan(0);
     expect(SKILL_NAME_ALLOWLIST.test("a".repeat((ceiling as number) + 1))).toBe(true);
@@ -384,24 +383,5 @@ describe("skill name rule — one charset, and it is the schema's", () => {
     for (const name of ["", "has space", "dot.name", "../escape"]) {
       expect(SKILL_NAME_ALLOWLIST.test(name), name).toBe(false);
     }
-  });
-});
-
-describe("the SDK schema snapshot", () => {
-  it("is the file `sources.json` recorded", () => {
-    // The offline half of the drift gate, run on every pull request: the bytes
-    // on disk are the bytes whose hash was recorded when the snapshot was
-    // taken. It catches the edit-the-copy mistake — a rule "fixed" here
-    // instead of in the SDK. The other half (are these still the SDK's bytes?)
-    // needs the network and runs in `.github/workflows/sdk-schema-drift.yml`.
-    const sources = JSON.parse(
-      readFileSync(join(REPO_ROOT, "schemas/sdk/sources.json"), "utf8"),
-    ) as { ref: string; repository: string; files: Record<string, { sha256: string }> };
-    const raw = readFileSync(join(REPO_ROOT, "schemas/sdk/skill-package.schema.json"), "utf8");
-    expect(sources.repository).toBe("former_org/ave-plugin-sdk");
-    expect(sources.ref).toMatch(/^v\d+\.\d+\.\d+$/);
-    expect(createHash("sha256").update(raw, "utf8").digest("hex")).toBe(
-      sources.files["skill-package.schema.json"].sha256,
-    );
   });
 });

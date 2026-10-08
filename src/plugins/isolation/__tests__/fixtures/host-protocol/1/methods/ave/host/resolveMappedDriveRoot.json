@@ -1,0 +1,15 @@
+{
+  "request": {
+    "id": 36,
+    "jsonrpc": "2.0",
+    "method": "ave/host/resolveMappedDriveRoot",
+    "params": {
+      "drive": "Z:"
+    }
+  },
+  "response": {
+    "id": 36,
+    "jsonrpc": "2.0",
+    "result": "/Volumes/share"
+  }
+}

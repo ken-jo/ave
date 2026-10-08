@@ -21,12 +21,6 @@ export const INSTALLABLE_MARKETPLACE_PACKAGE_TYPES = [
 export type InstallableMarketplacePackageType =
   (typeof INSTALLABLE_MARKETPLACE_PACKAGE_TYPES)[number];
 
-const MARKETPLACE_PACKAGE_TYPE_SET = new Set<string>(MARKETPLACE_PACKAGE_TYPES);
-
-export function isMarketplacePackageType(value: unknown): value is MarketplacePackageType {
-  return typeof value === "string" && MARKETPLACE_PACKAGE_TYPE_SET.has(value);
-}
-
 export interface AssistantAgentSummary {
   name: string;
   description: string;

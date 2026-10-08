@@ -22,6 +22,8 @@
  * contract's "absent" signal), seeded as an empty map.
  */
 import type { WorkBoardStorage } from "./storage.js";
+import type { AlertInput, AlertResult } from "../plugins/public-contract.js";
+import { DUE_SOON_ALERT_KIND, DUE_SOON_TITLE_MAX_LENGTH } from "../alerts/host-kinds.js";
 import type {
   WorkItemListResult,
   WorkItemDueSoonEventPayload,
@@ -52,16 +54,17 @@ function notifiedKey(id: number, dueAt: string): string {
 }
 
 /**
- * Scan the board and emit `work_board.work_item.due_soon` for every
- * not-yet-completed item whose `due_at` is inside the half-open window
- * `[now, now + 24h)`, deduped by `(id, due_at)`. Returns the payloads emitted
- * on this scan (for logging / tests).
+ * Scan unfinished items due in `[now, now + 24h)`. Emit the bus event once
+ * while each `(id, due_at)` remains in that window, and retry alert delivery
+ * on every scan. Bus state is saved before delivery, so an alert refusal or
+ * delivery exception cannot suppress subscribers' events. Returns bus payloads.
  */
 export async function scanAndEmitDueSoon(
   store: DueSoonBoardReader,
   storage: WorkBoardStorage,
   emit: EmitFn,
   nowMs: number,
+  raise: (input: AlertInput) => Promise<AlertResult>,
 ): Promise<WorkItemDueSoonEventPayload[]> {
   const listed = await store.list();
   if (listed.status !== "ok") return [];
@@ -69,6 +72,7 @@ export async function scanAndEmitDueSoon(
   const prev = (await storage.readJson<DueSoonNotified>(DUE_SOON_NOTIFIED_FILE)) ?? {};
   const next: DueSoonNotified = {};
   const emitted: WorkItemDueSoonEventPayload[] = [];
+  const alerts: AlertInput[] = [];
   const nowIso = new Date(nowMs).toISOString();
 
   for (const item of listed.items) {
@@ -79,6 +83,18 @@ export async function scanAndEmitDueSoon(
     if (Number.isNaN(due) || due < nowMs || due >= nowMs + DUE_SOON_WINDOW_MS) continue;
 
     const key = notifiedKey(item.id, item.due_at);
+    // Delivery has its own identity table. Retrying lets a newly enabled kind
+    // fire, a rate-limited item try later, and an open card reappear at boot.
+    // The bus's once-per-deadline contract remains independent of delivery.
+    alerts.push({
+      kind: DUE_SOON_ALERT_KIND,
+      key,
+      slots: {
+        title: [...item.title].slice(0, DUE_SOON_TITLE_MAX_LENGTH).join(""),
+        itemId: String(item.id),
+      },
+      ttlMs: due - nowMs,
+    });
     // Retain still-due-soon keys; rebuilding `next` from scratch prunes any
     // key whose item left the window (completed/deleted/rescheduled).
     next[key] = prev[key] ?? nowIso;
@@ -97,5 +113,8 @@ export async function scanAndEmitDueSoon(
   if (JSON.stringify(prev) !== JSON.stringify(next)) {
     await storage.writeJson(DUE_SOON_NOTIFIED_FILE, next);
   }
+  // A refused alert is retried on the next scan. A thrown delivery error
+  // reaches the scheduler's error handler; the bus pass above is complete.
+  for (const input of alerts) await raise(input);
   return emitted;
 }

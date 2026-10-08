@@ -31,6 +31,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFi
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
+import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
@@ -59,6 +60,7 @@ import {
   buildSandboxConfig,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
+  appOwnedSandboxPrivateRoots,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
 } from "../asrt-sandbox.js";
@@ -237,11 +239,7 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
       // This fixture owns both parts inside the admitted root, so it tests the
       // disposable home without depending on the enclosing checkout layout.
       const cwd = mkdtempSync(join(tmpdir(), "asrt-git-"));
-      const gitEnv = Object.fromEntries(
-        Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
-      );
-      gitEnv.GIT_CONFIG_NOSYSTEM = "1";
-      gitEnv.GIT_CONFIG_GLOBAL = "/dev/null";
+      const gitEnv = gitFixtureEnv(cwd);
       try {
         execFileSync("git", ["init", "--quiet"], { cwd, env: gitEnv });
         execFileSync("git", [
@@ -981,8 +979,12 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   it("buildSandboxConfig unions the sensitive deny-list into filesystem.denyRead", () => {
     const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true });
     const sensitive = getDefaultSensitiveReadDenyPaths();
+    const privateRoots = appOwnedSandboxPrivateRoots();
     for (const p of sensitive) {
-      expect(config.filesystem.denyRead).toContain(p);
+      // On macOS the sandbox private roots reach ASRT as exact globs, which it
+      // re-emits after the allows minus a wrap's own directory under them.
+      const spelled = process.platform === "darwin" && privateRoots.includes(p) ? `${p.slice(0, -1)}[${p.slice(-1)}]` : p;
+      expect(config.filesystem.denyRead).toContain(spelled);
     }
     // Secrets is part of the floor (the prior single-entry deny is subsumed).
     expect(config.filesystem.denyRead).toContain(join(FAKE_AVE_HOME, "secrets"));

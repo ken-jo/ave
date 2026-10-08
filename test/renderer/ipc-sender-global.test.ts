@@ -62,8 +62,6 @@ const CHANNEL_MANIFEST: Record<string, "mutating" | "sensitive" | "public-read">
   "ave:memory:user-prefs:get": "sensitive",
   "ave:memory:user-prefs:update": "mutating",
   // Plugins
-  "ave:plugins:marketplace:list": "public-read",
-  "ave:plugins:install": "mutating",
   "ave:plugins:uninstall": "mutating",
   "ave:plugins:ui:list": "public-read",
   "ave:plugins:cards": "public-read",

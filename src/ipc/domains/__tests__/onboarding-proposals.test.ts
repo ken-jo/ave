@@ -71,7 +71,7 @@ async function setup(cards?: unknown[]) {
     pluginRuntime: {
       listPluginCards: vi.fn(() =>
         cards ?? [
-          { id: "meeting", loadStatus: "loaded", active: true, onboarding: meetingOnboarding },
+          { id: "meeting", name: "Meeting tools", loadStatus: "loaded", active: true, onboarding: meetingOnboarding },
         ]),
     },
     toolRegistry: { size: 0 },
@@ -131,6 +131,7 @@ describe("ave:onboarding:proposals:list-pending", () => {
     expect(staged[0]).toMatchObject({
       id: "proposal:meeting:first-task",
       title: "Record this meeting?",
+      pluginDisplayName: "Meeting tools",
       summary: "Recording, transcript and summary, in one step.",
       running: false,
       primaryActionLabel: "Start recording",

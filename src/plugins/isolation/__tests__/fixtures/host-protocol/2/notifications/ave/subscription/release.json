@@ -1,0 +1,10 @@
+{
+  "frame": {
+    "jsonrpc": "2.0",
+    "method": "notifications/ave/subscription/release",
+    "params": {
+      "subscriptionId": "<uuid-1>"
+    }
+  },
+  "from": "child"
+}

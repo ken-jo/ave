@@ -1,5 +1,6 @@
-import { test, expect } from './fixtures';
+import { test, expect } from './fixtures.js';
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
+import { captureCommandMenus, capturedCommandMenus } from "./command-menu.js";
 
 /**
  * E2E for the composer's command button.
@@ -17,60 +18,42 @@ import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
  * Requires `bun run build`. A missing trigger is a real regression, never a skip.
  */
 
-type MenuRow = { id: string; label: string; submenu?: MenuRow[] };
-type MenuPayload = { requestId: string; x: number; y: number; sections: Array<{ items: MenuRow[] }> };
+const payloads = capturedCommandMenus;
 
-/** Hold what the renderer hands the bridge, and keep the menu off the screen. */
-async function captureMenuPayloads(page: import('@playwright/test').Page): Promise<void> {
-  await page.evaluate(() => {
-    const ui = (window as unknown as { ave: { ui: Record<string, unknown> } }).ave.ui;
-    const captured: unknown[] = [];
-    (window as unknown as { __menuPayloads: unknown[] }).__menuPayloads = captured;
-    ui.showDynamicMenu = async (payload: unknown) => {
-      captured.push(payload);
-      return { ok: true };
-    };
-  });
-}
-
-const payloads = (page: import('@playwright/test').Page) =>
-  page.evaluate(() => (window as unknown as { __menuPayloads: MenuPayload[] }).__menuPayloads);
-
-test('command button: both the click and Cmd/Ctrl+K raise the menu', async ({ mainWindow }) => {
+test('command button: both the click and Cmd/Ctrl+K raise the menu', async ({ app, mainWindow }) => {
   const trigger = mainWindow.locator(testIdSelector(TEST_IDS.slashPickerTrigger));
   await expect(trigger).toBeVisible({ timeout: 60_000 });
-  await captureMenuPayloads(mainWindow);
+  await captureCommandMenus(app);
 
   await trigger.click();
-  await expect.poll(() => payloads(mainWindow).then((p) => p.length)).toBe(1);
+  await expect.poll(() => payloads(app).then((p) => p.length)).toBe(1);
 
   const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
   await mainWindow.keyboard.press(`${mod}+k`);
-  await expect.poll(() => payloads(mainWindow).then((p) => p.length)).toBe(2);
+  await expect.poll(() => payloads(app).then((p) => p.length)).toBe(2);
 
   // The menu drops from the button, so it is anchored to it rather than to the
   // pointer — the shortcut has no pointer to anchor to.
   const box = await trigger.boundingBox();
-  const [first] = await payloads(mainWindow) as MenuPayload[];
+  const [first] = await payloads(app);
   expect(Math.abs(first!.x - Math.round(box!.x))).toBeLessThanOrEqual(2);
   expect(Math.abs(first!.y - Math.round(box!.y + box!.height))).toBeLessThanOrEqual(2);
 });
 
-test('command button: shortcuts stay flat and the installed lists sit behind submenus', async ({ mainWindow }) => {
+test('command button: the persona and every list sit behind their own submenus', async ({ app, mainWindow }) => {
   const trigger = mainWindow.locator(testIdSelector(TEST_IDS.slashPickerTrigger));
   await expect(trigger).toBeVisible({ timeout: 60_000 });
-  await captureMenuPayloads(mainWindow);
+  await captureCommandMenus(app);
   await trigger.click();
-  await expect.poll(() => payloads(mainWindow).then((p) => p.length)).toBe(1);
+  await expect.poll(() => payloads(app).then((p) => p.length)).toBe(1);
 
-  const [payload] = await payloads(mainWindow) as MenuPayload[];
-  const [shortcuts, categories] = payload!.sections;
-
+  const [payload] = await payloads(app);
   // A native menu cannot filter as you type, so this shape IS the navigation:
-  // what the user reaches for constantly is one click away, and what depends on
-  // what is installed is one level down.
-  expect(shortcuts!.items.length).toBeGreaterThan(0);
-  expect(shortcuts!.items.every((row) => row.submenu === undefined)).toBe(true);
+  // one row per category, the persona first, and what depends on what is
+  // installed one level down. An empty category is left out, not shown empty.
+  expect(payload!.sections).toHaveLength(1);
+  const [categories] = payload!.sections;
+  expect(categories!.items[0]!.id).toBe('category:persona');
   expect(categories!.items.every((row) => (row.submenu?.length ?? 0) > 0)).toBe(true);
 
   const commands = categories!.items.find((row) => row.id === 'category:command');

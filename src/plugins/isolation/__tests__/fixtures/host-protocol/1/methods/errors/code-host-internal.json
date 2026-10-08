@@ -1,0 +1,23 @@
+{
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "ave/host/getSecret",
+    "params": {
+      "key": "service.token"
+    }
+  },
+  "response": {
+    "error": {
+      "code": -32000,
+      "data": {
+        "code": "host-internal",
+        "name": "Error"
+      },
+      "message": "the keychain daemon went away"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+  },
+  "trigger": "a host implementation that threw something outside the closed set"
+}

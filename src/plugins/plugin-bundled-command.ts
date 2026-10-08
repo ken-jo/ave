@@ -4,7 +4,7 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { isResolvedPathWithin } from "./plugin-storage-containment.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 
-function looksLikePath(token: string): boolean {
+export function isBundledPathLikeToken(token: string): boolean {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(token)) return false;
   return token.startsWith(".") || token.startsWith("~") || token.includes("/") || token.includes("\\");
 }
@@ -23,14 +23,23 @@ export function anchorBundledCommand(
   argv: readonly string[],
   baseFingerprint: string,
   label: string,
+  anchorIndexes?: readonly number[],
 ): { command: readonly string[]; fingerprint: string } {
   const rootReal = realpathSync(payloadRoot);
   const descriptorDirectory = dirname(resolve(rootReal, descriptorPath));
   const anchored = [...argv];
   const identities: string[] = [];
-  for (let index = 0; index < anchored.length; index += 1) {
+  const indexes = anchorIndexes ?? argv.map((_, index) => index);
+  const uniqueIndexes = new Set(indexes);
+  if (uniqueIndexes.size !== indexes.length || [...uniqueIndexes].some((index) => !Number.isInteger(index) || index < 0 || index >= argv.length)) {
+    throw new Error(`${label} anchor indexes are invalid`);
+  }
+  for (const index of [...uniqueIndexes].sort((left, right) => left - right)) {
     const token = anchored[index];
-    if (!looksLikePath(token)) continue;
+    if (!isBundledPathLikeToken(token)) {
+      if (anchorIndexes !== undefined) throw new Error(`${label} anchor token ${index} is not a package path`);
+      continue;
+    }
     if (token.startsWith("~") || isAbsolute(token) || /^[A-Za-z]:[\\/]/.test(token)) {
       throw new Error(`${label} command path must be relative to its bundled descriptor`);
     }

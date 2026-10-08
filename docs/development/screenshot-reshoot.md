@@ -18,13 +18,15 @@ exercise.
 
 ## Scope and counts
 
-71 tracked images, all inspected individually.
+71 tracked images, all inspected individually. The twelve `mp-*` images of the
+server marketplace were deleted with that server when the app switched to the
+git marketplace, which leaves 59; the counts below are after that removal.
 
 | Verdict | Count | Meaning |
 | --- | --- | --- |
 | `reshoot` | 7 | Must be re-captured. Redaction cannot fix it, or would destroy what the image is there to show. |
-| `redact` | 3 | One contiguous region carries the problem and is not the subject of the shot. |
-| `keep` | 20 | Nothing on screen identifies a third party or exposes a credential. |
+| `redact` | 2 | One contiguous region carries the problem and is not the subject of the shot. |
+| `keep` | 9 | Nothing on screen identifies a third party or exposes a credential. |
 | `superseded` | 17 | The internal-portal plugin page and its images are removed by the in-flight de-identification change. No capture work here. |
 | `replaced` | 24 | Re-captured from seeded data by the harness. |
 
@@ -159,7 +161,7 @@ panel over a fabricated corpus written straight into the plugin's own stores —
 one prep in `preps.json`, one finalised session under `sessions/`. Both were
 previously recorded as blocked, and both blockers were wrong; see item 4 below.
 
-The `mp-*`, `ah-*` and internal-portal keys are web/server screens from a
+The `ah-*` and internal-portal keys are web/server screens from a
 separate app and are out of the harness's scope by construction — but note that
 the `ah-*` images already in the tree are captured against clearly seeded
 identities, which is the standard the rest should meet.
@@ -247,11 +249,11 @@ the result before committing.
 | `meeting-record.png` | `meeting-record` | `/docs/plugins/meeting` | Briefing panel lists a mandatory internal training entry naming two employer sites. Retake with a fabricated day's agenda. |
 | `meeting-record-stt.png` | `meeting-record-stt` | `/docs/plugins/meeting` | Same briefing plus an interim transcription of a real meeting. Retake from the fabricated recording. |
 
-### `redact` — 3
+### `redact` — 2
 
-Redaction is sufficient on these three, and only these three, because the
+Redaction is sufficient on these two, and only these two, because the
 offending content is one contiguous region that is not what the image is there
-to show. **None of the three carries the identity overlay** — verified by
+to show. **Neither carries the identity overlay** — verified by
 amplification, which is what makes masking a complete fix rather than a partial
 one. Every image on the `reshoot` list fails at least one of those two
 conditions, most of them the first: the identifying content is the content the
@@ -261,7 +263,6 @@ screenshot exists to show.
 | --- | --- | --- | --- |
 | `agent-hub-my-work.png` | `agent-hub-my-work` | `/docs/plugins/agent-hub` | The board itself runs on seeded demo identities. Only the right-hand day-schedule column is real, pulled from a live calendar: mask that column. The subject of the shot is the personal board on the left, which is untouched. Note the plugin is decommissioned — confirm the page should still exist before spending effort. |
 | `agent-hub-team-board.png` | `agent-hub-team-board` | `/docs/plugins/agent-hub` | Same shape: seeded team rows, real right-hand schedule column. Mask the right column only. Same decommissioning question applies. |
-| `mp-admin-4.png` | `mp-admin-4` | `/docs/servers/marketplace/admin` | Mask the `Prefix` column of the key table. The screenshot exists to show that an admin can inventory and revoke keys, which the labels, roles, statuses and dates carry on their own. *Disagreement with the earlier pass: this is not clean. These are project-owned development keys on a server that rotates them, so exploitability is low and this is not an incident — but publishing a truncated prefix narrows a guess, and an admin key inventory should not be public regardless.* |
 
 ### `replaced` — 24
 
@@ -324,37 +325,22 @@ rather than read from anything on the capturing machine, and every address in
 them is at `example.invalid` — reserved by RFC 2606, so it cannot resolve to a
 real mailbox. Rule 7 of the guard enforces that mechanically; see below.
 
-### `keep` — 20
+### `keep` — 9
 
 Inspected and clear: nothing identifies a third party, and no credential is in
-frame. Two notes worth recording rather than acting on:
+frame. One note worth recording rather than acting on:
 
 - `chat-permission-directory.png` and `chat-permission-risk.png` used to show the
   publisher's own home directory path across several fields. That is the
   publisher's own identifier, not a third party's, so it was recorded as `owner`
   and not masked — but both have since been re-captured from seeded data and are
   on the `replaced` list above, which removes the path anyway.
-- `mp-plugin.png` shows a catalog card describing the internal-portal plugin.
-  That names the internal system the in-flight de-identification change is
-  generalising away from elsewhere in the docs. It is a policy question for that
-  change's owner, not a privacy finding, so it is left alone here.
 
 | File | `screenshots.ts` key | Docs page(s) |
 | --- | --- | --- |
 | `chat-app-update.png` | `chat-app-update` | `/docs/getting-started/updates` |
 | `chat-plugin-panel.png` | `chat-plugin-panel` | `/docs/chat/plugin-panel`<br>`/docs/getting-started/login` |
 | `outlook-logout.png` | `outlook-logout` | `/docs/plugins/lyra-mail` |
-| `mp-login.png` | `mp-login` | `/docs/servers/marketplace` |
-| `mp-plugin.png` | `mp-plugin` | `/docs/servers/marketplace/plugins` |
-| `mp-agents.png` | `mp-agents` | `/docs/servers/marketplace/agents` |
-| `mp-mcp.png` | `mp-mcp` | `/docs/servers/marketplace/mcp` |
-| `mp-skills.png` | `mp-skills` | `/docs/servers/marketplace/skills` |
-| `mp-publisher.png` | `mp-publisher` | `/docs/servers/marketplace/publisher` |
-| `mp-publisher-2.png` | `mp-publisher-2` | `/docs/servers/marketplace/publisher` |
-| `mp-admin.png` | `mp-admin` | `/docs/servers/marketplace/admin` |
-| `mp-admin-2.png` | `mp-admin-2` | `/docs/servers/marketplace/admin` |
-| `mp-admin-3.png` | `mp-admin-3` | `/docs/servers/marketplace/admin` |
-| `mp-admin-5.png` | `mp-admin-5` | `/docs/servers/marketplace/admin` |
 | `ah-dashboard.png` | `ah-dashboard` | `/docs/servers/agent-hub` |
 | `ah-workboard.png` | `ah-workboard` | `/docs/servers/agent-hub/workboard` |
 | `ah-worklog.png` | `ah-worklog` | `/docs/servers/agent-hub/workboard` |
@@ -381,7 +367,7 @@ merges.
 2. Build the scripted provider (done — see "The scripted provider") and capture
    what it unblocks. That is where `plugin-permission-grant` and the six `chat-*`
    replacements came from.
-3. Apply the three `redact` masks. Cheap, and removes real exposure immediately.
+3. Apply the two `redact` masks. Cheap, and removes real exposure immediately.
 4. Re-shoot the six `vega-helper-*` images (done — see the `replaced` table).
    Highest concentration of third-party content, and all six went at once.
 5. Re-shoot the `meeting-*` panel keys against a fabricated corpus (done — see

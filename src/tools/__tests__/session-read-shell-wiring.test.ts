@@ -3,8 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync, symlinkSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { getBuiltinShellSessionReadPolicy, getDefaultSensitiveReadDenyPaths, wrapToolCommand } from "../../permissions/asrt-sandbox.js";
+import { buildPerCommandSandboxCustomConfig, getBuiltinShellSessionReadPolicy, getDefaultSensitiveReadDenyPaths, wrapToolCommand } from "../../permissions/asrt-sandbox.js";
 import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability } from "../../permissions/sandbox-capability.js";
 import { getConfiguredSessionReadPolicy } from "../../permissions/sensitive-paths.js";
 import { sessionStorePath } from "../../shared/session-store-path.js";
@@ -42,6 +43,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
+const hostPlatform = process.platform;
 let root: string;
 let cwd: string;
 let profile: string;
@@ -63,6 +65,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 afterEach(async () => {
+  setProcessPlatform(hostPlatform);
   __resetActiveSandboxCapabilityForTest();
   vi.unstubAllEnvs();
   await cleanupTmpDir(root);
@@ -92,6 +95,24 @@ describe.skipIf(process.platform === "win32")("saved-session native shell policy
     expect(filesystem.allowRead).toContain(sessions);
     expect(filesystem.denyRead).toContain(root);
     expect(filesystem.denyWrite).toContain(sessions);
+  });
+
+  it.each([
+    ["bash", "linux", false], ["powershell", "linux", false], ["bash", "darwin", true], ["powershell", "darwin", true],
+  ] as const)("%s on %s: the wrap grants a protected write root only where the grant stays write-only", async (dialect, platform, granted) => {
+    // A bubblewrap write grant is a read-write bind over the deny's mask, so
+    // on Linux it would reopen reads the protected floor hides. The shell
+    // hands its roots to the wrap unchanged; the wrap's shared layer decides.
+    const protectedRoot = join(root, ".ssh", "work"); mkdirSync(protectedRoot, { recursive: true });
+    const ordinary = join(root, "ordinary"); mkdirSync(ordinary);
+    setProcessPlatform(platform);
+    await invoke(dialect, [protectedRoot, ordinary]);
+    const filesystem = vi.mocked(wrapToolCommand).mock.calls[0]![1]!.filesystem!;
+    expect(filesystem.denyRead).toContain(join(root, ".ssh"));
+    expect(filesystem.allowRead).not.toContain(protectedRoot);
+    const allowWrite = buildPerCommandSandboxCustomConfig(filesystem)?.filesystem?.allowWrite ?? [];
+    expect(allowWrite).toEqual(expect.arrayContaining([cwd, ordinary]));
+    expect(allowWrite.includes(protectedRoot)).toBe(granted);
   });
 
   it.each(["bash", "powershell"] as const)("%s pairs the configured read grant with nested exclusions and write protection", async (dialect) => {

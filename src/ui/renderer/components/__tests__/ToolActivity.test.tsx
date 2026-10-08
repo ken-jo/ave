@@ -130,6 +130,6 @@ describe("ToolActivityWorkspace", () => {
     expect(rows[0]).toHaveTextContent("0.3s");
     expect(rows[1]).toHaveTextContent("https://example.com/a");
     expect(rows[1]).toHaveTextContent(new Date(Date.UTC(2026, 0, 1, 12, 0, 0)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
-    expect(screen.getByTestId("chat-side-panel-activity-plugins")).toHaveTextContent("아직 호출한 플러그인이 없습니다.");
+    expect(screen.getByTestId("chat-side-panel-activity-plugins")).toHaveTextContent("아직 호출한 익스텐션이 없습니다.");
   });
 });

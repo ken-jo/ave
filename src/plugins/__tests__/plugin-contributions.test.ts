@@ -3,7 +3,7 @@ import { link, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { PluginManifest } from "../types.js";
+import type { EntryPluginManifest, PluginManifest } from "../types.js";
 import {
   materializePluginContributions,
   materializePluginGenerationRoot,
@@ -14,7 +14,7 @@ import {
 } from "../plugin-contributions.js";
 import { makeTestTreeWritable } from "./test-helpers.js";
 
-function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
+function manifest(overrides: Partial<EntryPluginManifest> = {}): PluginManifest {
   return {
     id: "bundle-host-test",
     name: "Bundle Host Test",

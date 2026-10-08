@@ -68,6 +68,7 @@ import {
   issueAuthorizationRequiredControl,
   type AuthorizationRequiredControl,
   type AuthorizationRequiredState,
+  type UnattendedTurnAuthority,
 } from "../../shared/authorization-required.js";
 
 const log = createLogger("ave");
@@ -176,6 +177,7 @@ export async function queryLoop(
       spawnDepth?: number;
       approvalReasonPrefix?: string;
       remoteControllerAuthority?: import("../../shared/chat-origin.js").RemoteControllerAuthority;
+      unattendedAuthority?: UnattendedTurnAuthority;
       a2aCausalContext?: A2AAgentCausalContext;
       inputOrigin: ChatInputOrigin;
       toolTrustOrigin: ToolTrustOrigin;
@@ -1832,7 +1834,15 @@ export async function queryLoop(
           },
           executionCwd: self.getSessionExecutionCwd(),
           permissionContext: {
-            headless: self.deps.headless,
+            // A host-issued unattended authority puts this ONE turn on the
+            // routine policy lane (reviewer-routed asks, deferred directory
+            // holds, fail-closed explicit host execution) while the owner's
+            // allow rules and durable grants keep applying. The loop's own
+            // `headless` flag stays untouched, so the turn keeps its ordinary
+            // tool, plugin, MCP, and egress scope.
+            ...(bounds.unattendedAuthority !== undefined
+              ? { headless: true, ownerUnattended: true }
+              : { headless: self.deps.headless }),
             approvalSurface: self.deps.approvalSurface,
             allowedPluginIds: new Set(scope.activePluginIds),
             additionalDirectories: self.getTurnAdditionalDirectories(),

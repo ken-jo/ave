@@ -13,6 +13,7 @@
  *   6. Genesis marker handling.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
@@ -156,6 +157,41 @@ describe("readStableRegularFileUtf8", () => {
 
   it("returns null only for an absent path", () => {
     expect(readStableRegularFileUtf8(join(workDir, "absent"), 1024, "fixture")).toBe(null);
+  });
+
+  it.skipIf(process.platform === "win32").each([
+    { ownership: "ordinary", requirePrivateOwnerFile: false },
+    { ownership: "owner-only", requirePrivateOwnerFile: true },
+  ])("rejects an $ownership FIFO without blocking", ({ requirePrivateOwnerFile }) => {
+    const fifoPath = join(workDir, `authority-${requirePrivateOwnerFile ? "private" : "ordinary"}`);
+    const created = spawnSync("mkfifo", [fifoPath], { encoding: "utf8" });
+    expect(created.status, created.stderr).toBe(0);
+    const moduleUrl = new URL("../hmac-chain.ts", import.meta.url).href;
+    const child = `
+      const [moduleUrl, fifoPath, privateFlag] = process.argv.slice(1);
+      const { readStableRegularFileUtf8 } = await import(moduleUrl);
+      try {
+        readStableRegularFileUtf8(fifoPath, 1024, "fixture", privateFlag === "true");
+        process.stderr.write("FIFO was accepted");
+        process.exit(2);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!message.includes("fixture path is not a stable regular file")) {
+          process.stderr.write(message);
+          process.exit(3);
+        }
+      }
+    `;
+    const result = spawnSync(process.execPath, [
+      "--import", "tsx", "--input-type=module", "-e", child,
+      moduleUrl, fifoPath, String(requirePrivateOwnerFile),
+    ], {
+      cwd: process.cwd(),
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      encoding: "utf8",
+      timeout: 2_000,
+    });
+    expect(result.status, result.error?.message ?? result.stderr).toBe(0);
   });
 });
 

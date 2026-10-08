@@ -108,7 +108,7 @@ export const ENV_BACKED_SETTINGS: readonly EnvBackedSetting[] = Object.freeze([
   //   pinned it keeps that pin rather than having a profile quietly override
   //   it.
   //
-  // `resolveUpdateCheckEnabled` and `resolveOfflineCacheEnabled` resolve
+  // `resolveUpdateCheckEnabled` and `resolveKeepArtifacts` resolve
   // through these functions, so the rule the UI reports is the rule the host
   // applies.
   {

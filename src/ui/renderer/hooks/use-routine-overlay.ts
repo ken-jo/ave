@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import type { getApi } from "../api-client.js";
 import type { RoutineFiredPayload } from "../../../shared/routines-types.js";
+import type { AlertCardClosedReason } from "../../../shared/alerts-types.js";
+import { ALERT_HOST_PLUGIN_ID } from "../../../shared/alerts-types.js";
 import type {
   OverlayContextValue,
   OverlayItem,
@@ -23,9 +25,13 @@ export interface UseRoutineOverlayResult {
    * threads this straight into OverlayContextProvider.
    */
   addFireRef: MutableRefObject<OverlayContextValue["addFire"] | null>;
+  /** The same for dismiss(), so main can withdraw a card it staged. */
+  dismissRef: MutableRefObject<OverlayContextValue["dismiss"] | null>;
   /** In-flight LLM routine sessions; OverlayContextProvider derives running flags. */
   runningRoutines: Set<string>;
   handlePluginPrimaryAction: (overlayItemId: string, chatGroupId: string) => Promise<void>;
+  /** The user closed an alert card without accepting it; main closes its identity. */
+  handleAlertDismiss: (overlayItemId: string) => void;
   handleRoutineAcknowledge: (routineId: string, firedAt: string) => void;
   handleProposalAnswer: (
     overlayItemId: string,
@@ -73,6 +79,7 @@ export function useRoutineOverlay({
   // addFire ref is populated by OverlayContextProvider during render
   // so the IPC subscription below can call it without prop-drilling
   const addFireRef = useRef<OverlayContextValue["addFire"] | null>(null);
+  const dismissRef = useRef<OverlayContextValue["dismiss"] | null>(null);
 
   const pushRoutineResult = useCallback((evt: RoutineFiredPayload) => {
     addFireRef.current?.({
@@ -151,22 +158,52 @@ export function useRoutineOverlay({
   // handlePluginPrimaryAction can look up pendingPrompt by id without needing
   // to reach into OverlayContext (App.tsx is the parent of OverlayContextProvider).
   const overlayItemsRef = useRef<Map<string, OverlayItem>>(new Map());
+  /** Ids changed while the initial alert snapshot is pending. */
+  const alertSnapshotChangesRef = useRef<Set<string> | null>(null);
 
   // Overlay IPC subscriptions: main pushes plugin OverlayItems via OVERLAY_V1.show.
   useEffect(() => {
     if (typeof api.onOverlayShow !== "function") return;
-    const unsubShow = api.onOverlayShow((item) => {
+    const show = (item: OverlayItem): void => {
       // The lookup handlePluginPrimaryAction reads by id; the queue takes the
       // same object.
       overlayItemsRef.current.set(item.id, item);
       addFireRef.current?.(item);
+    };
+    const changedDuringPull = new Set<string>();
+    alertSnapshotChangesRef.current = changedDuringPull;
+    const finishPull = () => {
+      if (alertSnapshotChangesRef.current === changedDuringPull) alertSnapshotChangesRef.current = null;
+    };
+    const unsubShow = api.onOverlayShow((item) => {
+      alertSnapshotChangesRef.current?.add(item.id);
+      show(item);
     });
+    // Alert cards staged before this window was listening — at boot, or
+    // before a reload. Subscribe to both changes first. A snapshot response
+    // can arrive after a newer push or user action, so those ids take precedence.
+    let pulled = true;
     const unsubDismiss = typeof api.onOverlayDismiss === "function"
       ? api.onOverlayDismiss((id) => {
+          // Main withdrew the card: it leaves the queue as well as the lookup,
+          // so no one can confirm a card whose prompt main no longer stands by.
+          alertSnapshotChangesRef.current?.add(id);
           overlayItemsRef.current.delete(id);
+          dismissRef.current?.(id);
         })
       : () => {};
-    return () => { unsubShow(); unsubDismiss(); };
+    if (api.alerts) {
+      void api.alerts.listOpen().then((cards) => {
+        if (pulled) for (const card of cards) {
+          if (!changedDuringPull.has(card.id)) show(card);
+        }
+      }).catch((err) => {
+        console.warn("[ave] alerts listOpen failed:", errorMessage(err));
+      }).finally(finishPull);
+    } else {
+      finishPull();
+    }
+    return () => { pulled = false; finishPull(); unsubShow(); unsubDismiss(); };
   }, [api]);
 
   // Insertion-overlay primary action handler (user confirm → main chat insert).
@@ -178,16 +215,26 @@ export function useRoutineOverlay({
   // click is the gate — neither may start a turn on its own. They differ only in
   // provenance, which rides the envelope already inside `pendingPrompt` and the send
   // mode (→ `plugin-emitted` / `app-emitted` trust origin in main).
+  const reportAlertClosed = useCallback(
+    (alertId: string, reason: AlertCardClosedReason) => {
+      void api.alerts?.cardClosed(alertId, reason).catch((err) => {
+        console.warn("[ave] alerts cardClosed failed:", errorMessage(err));
+      });
+    },
+    [api],
+  );
+
   const handlePluginPrimaryAction = useCallback(
     async (overlayItemId: string, chatGroupId: string) => {
       const item = overlayItemsRef.current.get(overlayItemId);
       if (!item) return;
 
       const { source, pendingPrompt, summary } = item;
-      // Only the two INSERTION sources reach this handler. A routine has its own
+      // Only the INSERTION sources reach this handler. A routine has its own
       // primary action, and a proposal answers rather than inserts — see
-      // `handleProposalAnswer`.
-      if (source.kind !== "plugin" && source.kind !== "app") return;
+      // `handleProposalAnswer`. An alert is a plugin's insertion card rendered
+      // by the host: same staged origin, same confirm.
+      if (source.kind !== "plugin" && source.kind !== "app" && source.kind !== "alert") return;
       if (!pendingPrompt) return;
 
       // Resolved from the card's ORIGIN, not from the surface that rendered
@@ -207,13 +254,15 @@ export function useRoutineOverlay({
       }
 
       // Clean up lookup ref
+      alertSnapshotChangesRef.current?.add(overlayItemId);
       overlayItemsRef.current.delete(overlayItemId);
 
       // Insert as imported_trigger entry — staged provenance preserved, NOT a plain
       // user bubble (architecture §9 plugin provenance contract; same rule for apps).
       tile.insertImportedTriggerEntry({
-        sessionId: source.eventId,
-        source: source.kind === "plugin" ? `plugin:${source.pluginId}` : `app:${source.serverId}`,
+        sessionId: source.kind === "alert" ? source.alertId : source.eventId,
+        source: source.kind === "app" ? `app:${source.serverId}`
+          : source.kind === "alert" && source.pluginId === ALERT_HOST_PLUGIN_ID ? `host:${source.kindId}` : `plugin:${source.pluginId}`,
         prompt: pendingPrompt,
         summary,
       });
@@ -223,10 +272,24 @@ export function useRoutineOverlay({
       // already represents the staged prompt.
       void tile.ask(
         pendingPrompt,
-        source.kind === "plugin" ? "trigger-import" : "app-message",
+        source.kind === "app" ? "app-message" : "trigger-import",
       );
+      if (source.kind === "alert") reportAlertClosed(source.alertId, "accepted");
     },
-    [registry],
+    [registry, reportAlertClosed],
+  );
+
+  // The user closed an alert card without accepting it. Main keeps the
+  // identity closed for the card's lifetime, so a re-raise does not bring it
+  // back.
+  const handleAlertDismiss = useCallback(
+    (overlayItemId: string) => {
+      const item = overlayItemsRef.current.get(overlayItemId);
+      alertSnapshotChangesRef.current?.add(overlayItemId);
+      overlayItemsRef.current.delete(overlayItemId);
+      if (item?.source.kind === "alert") reportAlertClosed(item.source.alertId, "dismissed");
+    },
+    [reportAlertClosed],
   );
 
   const handleRoutineAcknowledge = useCallback(
@@ -286,8 +349,10 @@ export function useRoutineOverlay({
 
   return {
     addFireRef,
+    dismissRef,
     runningRoutines,
     handlePluginPrimaryAction,
+    handleAlertDismiss,
     handleRoutineAcknowledge,
     handleProposalAnswer,
   };

@@ -278,6 +278,17 @@ export function buildPowerShellScript(lines) {
   return lines.join("\n");
 }
 
+/**
+ * `IOException.HResult` for a read on a registry key marked for deletion.
+ * .NET Framework's RegistryKey (Windows PowerShell 5.1, which runs the query
+ * script) passes the raw Win32 code ERROR_KEY_DELETED (1018) as the HResult;
+ * the win32 test observes it on a real key.
+ */
+export const REGISTRY_KEY_DELETED_ERROR = 1018;
+/** How long a registry key may stay marked for deletion before a query fails. */
+export const REGISTRY_PENDING_DELETION_SETTLE_MS = 10_000;
+const REGISTRY_PENDING_DELETION_POLL_MS = 250;
+
 export const REGISTRY_QUERY_SCRIPT = buildPowerShellScript([
   "$ErrorActionPreference = 'Stop'",
   "$hive = switch ($env:AVE_REGISTRY_HIVE) {",
@@ -329,6 +340,15 @@ export const REGISTRY_QUERY_SCRIPT = buildPowerShellScript([
   "    }",
   "  }",
   "  [PSCustomObject]@{ keyExists = $true; valueExists = $false; value = $null; valueKind = $null; entries = @($entries) } | ConvertTo-Json -Depth 6 -Compress",
+  "} catch {",
+  // A key another process is deleting fails reads with ERROR_KEY_DELETED,
+  // which .NET raises as an IOException carrying that code. It is reported
+  // as pending deletion so the caller can re-query once the deletion
+  // settles; every other error still fails the query.
+  "  $keyDeleted = $_.Exception",
+  "  while ($null -ne $keyDeleted -and -not ($keyDeleted -is [System.IO.IOException])) { $keyDeleted = $keyDeleted.InnerException }",
+  `  if ($null -eq $keyDeleted -or $keyDeleted.HResult -ne ${REGISTRY_KEY_DELETED_ERROR}) { throw }`,
+  "  [PSCustomObject]@{ keyExists = $false; pendingDeletion = $true; valueExists = $false; value = $null; valueKind = $null; entries = @() } | ConvertTo-Json -Depth 6 -Compress",
   "} finally {",
   "  if ($null -ne $key) { $key.Dispose() }",
   "  $baseKey.Dispose()",
@@ -506,8 +526,44 @@ async function registryQuery(
   if (mode === "tree")
     env.AVE_REGISTRY_DISPLAY_NAME_FILTER = displayNameFilter;
   if (mode === "value") env.AVE_REGISTRY_VALUE_NAME = valueName;
-  const result = await runPowerShellJson(REGISTRY_QUERY_SCRIPT, env);
-  return validateRegistryQueryResult(result, { hive, path, view, mode });
+  return await settleRegistryPendingDeletion(
+    async () =>
+      validateRegistryQueryResult(
+        await runPowerShellJson(REGISTRY_QUERY_SCRIPT, env),
+        { hive, path, view, mode },
+      ),
+    `${hive} ${view}-bit ${path}`,
+  );
+}
+
+/**
+ * Re-run a registry query while its key is marked for deletion. Such a key is
+ * being removed by another process (for example the uninstaller), so its
+ * state is not yet observable; the settled result is returned unchanged. A
+ * key that stays pending past the bound fails with the last observed state.
+ */
+export async function settleRegistryPendingDeletion(
+  runQuery,
+  label,
+  {
+    timeoutMs = REGISTRY_PENDING_DELETION_SETTLE_MS,
+    pollMs = REGISTRY_PENDING_DELETION_POLL_MS,
+    now = Date.now,
+    delay = (delayMs) =>
+      new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs)),
+  } = {},
+) {
+  const startedAt = now();
+  for (;;) {
+    const result = await runQuery();
+    if (result.pendingDeletion !== true) return result;
+    if (now() - startedAt >= timeoutMs) {
+      throw new Error(
+        `registry key stayed marked for deletion for ${timeoutMs} ms: ${label}; last state ${JSON.stringify(result)}`,
+      );
+    }
+    await delay(pollMs);
+  }
 }
 
 export function validateRegistryQueryResult(
@@ -525,6 +581,8 @@ export function validateRegistryQueryResult(
     Array.isArray(result) ||
     typeof result.keyExists !== "boolean" ||
     typeof result.valueExists !== "boolean" ||
+    (result.pendingDeletion !== undefined &&
+      typeof result.pendingDeletion !== "boolean") ||
     (result.valueKind !== null &&
       (typeof result.valueKind !== "string" ||
         result.valueKind.length === 0)) ||
@@ -532,6 +590,18 @@ export function validateRegistryQueryResult(
   ) {
     throw new Error(
       `registry query returned an invalid contract for ${hive} ${view}-bit ${path}: ${JSON.stringify(result)}`,
+    );
+  }
+  if (
+    result.pendingDeletion === true &&
+    (result.keyExists ||
+      result.valueExists ||
+      result.value !== null ||
+      result.valueKind !== null ||
+      result.entries.length !== 0)
+  ) {
+    throw new Error(
+      `registry query returned an invalid pending-deletion state for ${hive} ${view}-bit ${path}: ${JSON.stringify(result)}`,
     );
   }
   if (

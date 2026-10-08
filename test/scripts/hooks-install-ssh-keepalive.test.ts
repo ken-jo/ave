@@ -17,43 +17,14 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 
 const INSTALLER = resolve(
   fileURLToPath(new URL("../../scripts/hooks/install.mjs", import.meta.url)),
 );
 
-/**
- * The environment every `git` call here runs in, with the ambient one removed.
- *
- * These cases used to inherit `process.env` whole, and passed — until they ran
- * inside a `pre-push` hook, where git exports `GIT_DIR`, `GIT_WORK_TREE` and
- * `GIT_CONFIG_PARAMETERS` to what it invokes. `GIT_DIR` OUTRANKS `cwd`, so the
- * scratch repo's `git config --get` was answering out of the REAL repository,
- * and the first case's "no ssh command is set yet" premise was reading someone
- * else's setting.
- *
- * That is worth fixing rather than routing around, because it made the suite
- * pass in the one place it did not matter — a plain `bun run test` — and fail
- * in the one place these cases are actually about: a push.
- *
- * `HOME`/`GIT_CONFIG_GLOBAL` are redirected as well, so a developer's own
- * `core.sshCommand` in `~/.gitconfig` cannot decide the answer either.
- */
-function isolatedGitEnv(home: string): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key === "GIT_DIR" || key === "GIT_WORK_TREE" || key.startsWith("GIT_CONFIG")) {
-      delete env[key];
-    }
-  }
-  env.HOME = home;
-  env.GIT_CONFIG_GLOBAL = join(home, "gitconfig-that-does-not-exist");
-  env.GIT_CONFIG_SYSTEM = join(home, "gitconfig-system-that-does-not-exist");
-  return env;
-}
-
 function git(args: string[], cwd: string, home: string): string {
-  const result = spawnSync("git", args, { cwd, encoding: "utf-8", env: isolatedGitEnv(home) });
+  const result = spawnSync("git", args, { cwd, encoding: "utf-8", env: gitFixtureEnv(home) });
   return (result.stdout || "").trim();
 }
 
@@ -79,7 +50,7 @@ describe("hooks installer — push keepalive", () => {
     return spawnSync(process.execPath, [INSTALLER], {
       cwd,
       encoding: "utf-8",
-      env: { ...isolatedGitEnv(home), GIT_DIR: join(cwd, ".git"), GIT_WORK_TREE: cwd },
+      env: { ...gitFixtureEnv(home), GIT_DIR: join(cwd, ".git"), GIT_WORK_TREE: cwd },
     });
   }
 

@@ -1,15 +1,19 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 import { assertElectronNodeVitestRuntime } from "../../scripts/assert-electron-node-vitest.mjs";
 import { normalizeElectronNodeRuntime } from "../../scripts/normalize-electron-node-runtime.mjs";
+import { documentGuardImportArgument, guardedNodeOptions } from "../../scripts/lib/document-consumer-node-options.mjs";
 import {
   applyElectronVitestResult,
   createElectronVitestInvocation,
+  ensureGeneratedAssets,
+  missingGeneratedAssets,
   resolveElectronVitestRuntime,
   runVitestUnderElectron,
 } from "../../scripts/run-vitest-under-electron.mjs";
@@ -21,6 +25,42 @@ class FakeChild extends EventEmitter {
 }
 
 describe("Electron Node-mode Vitest runner", () => {
+  it("passes file URLs to worker preloads", async () => {
+    const configUrl = new URL("../../vitest.analysis.config.ts", import.meta.url);
+    const analysisConfig = (await import(configUrl.href)).default as { test: { execArgv: string[] } };
+    const preloads = analysisConfig.test.execArgv.filter((argument) => argument.startsWith("--import="));
+    expect(preloads).toContain(documentGuardImportArgument());
+    for (const argument of preloads) {
+      expect(argument).toMatch(/^--import=file:\/\//);
+      expect(fileURLToPath(argument.slice("--import=".length))).toBeTruthy();
+    }
+  });
+
+  it("preserves a preload path with spaces through NODE_OPTIONS", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave preload space "));
+    try {
+      const preloadPath = join(directory, "guard #1.mjs");
+      writeFileSync(preloadPath, 'process.env.AVE_PRELOAD_SPACE_TEST = "loaded";\n');
+      const argument = documentGuardImportArgument(preloadPath);
+      expect(argument).toBe(`--import=${pathToFileURL(preloadPath).href}`);
+      expect(argument).not.toContain(" ");
+      expect(fileURLToPath(argument.slice("--import=".length))).toBe(preloadPath);
+      const options = guardedNodeOptions("--trace-warnings", preloadPath);
+      expect(options).toBe(`--trace-warnings ${argument}`);
+      const child = spawnSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, [
+        "-e", "process.stdout.write(process.env.AVE_PRELOAD_SPACE_TEST ?? '')",
+      ], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", NODE_OPTIONS: options },
+        encoding: "utf8",
+      });
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(0);
+      expect(child.stdout).toBe("loaded");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("locks both test entrypoints to the runtime guard", () => {
     const vitestConfig = readFileSync(
       new URL("../../vitest.config.ts", import.meta.url),
@@ -119,7 +159,7 @@ describe("Electron Node-mode Vitest runner", () => {
           ELECTRON_RUN_AS_NODE: "1",
           KEEP: "yes",
           AVE_TEST_NODE_EXEC_PATH: "C:/runtime/node.exe",
-          NODE_OPTIONS: "--trace-warnings",
+          NODE_OPTIONS: guardedNodeOptions("--trace-warnings"),
         },
         shell: false,
         stdio: "inherit",
@@ -138,6 +178,101 @@ describe("Electron Node-mode Vitest runner", () => {
         vitestPath: "vitest",
       }),
     ).toThrow("[electron-vitest-runtime-invalid]");
+  });
+
+  it("runs the branding generator once for a worktree that lacks its outputs, and never for a complete one", () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-vitest-assets-"));
+    try {
+      const manifest = join("build", "generated-assets.json");
+      const write = (relative: string) => {
+        mkdirSync(join(root, relative, ".."), { recursive: true });
+        writeFileSync(join(root, relative), "x");
+      };
+      // A fresh worktree: no manifest at all. The generator is the one that
+      // knows the full list, so it must run and its manifest is then trusted.
+      expect(missingGeneratedAssets({ cwd: root })).toEqual([manifest]);
+      const runSync = vi.fn(() => {
+        write("build/icon.png");
+        write("build/tray-icon.png");
+        mkdirSync(join(root, "build"), { recursive: true });
+        writeFileSync(join(root, manifest), JSON.stringify(["build/icon.png", "build/tray-icon.png"]));
+        return { status: 0, error: undefined };
+      });
+      const log = vi.fn();
+      expect(ensureGeneratedAssets({
+        cwd: root,
+        generatorPath: "/generator.cjs",
+        nodeExecPath: "/node",
+        runSync,
+        log,
+      })).toEqual({ generated: true, missing: [manifest] });
+      expect(runSync).toHaveBeenCalledWith(
+        "/node",
+        ["/generator.cjs"],
+        expect.objectContaining({ cwd: root, shell: false, stdio: "inherit" }),
+      );
+      expect(log).toHaveBeenCalledTimes(1);
+
+      // Complete tree: nothing to do, and the generator is not touched.
+      expect(ensureGeneratedAssets({ cwd: root, runSync, log })).toEqual({
+        generated: false,
+        missing: [],
+      });
+      expect(runSync).toHaveBeenCalledTimes(1);
+
+      // One listed output gone (e.g. a partial clean): only that one is
+      // reported, and the generator runs again.
+      rmSync(join(root, "build/tray-icon.png"));
+      expect(missingGeneratedAssets({ cwd: root })).toEqual(["build/tray-icon.png"]);
+      ensureGeneratedAssets({ cwd: root, runSync, log });
+      expect(runSync).toHaveBeenCalledTimes(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed with a stable code when the generator fails or leaves outputs missing", () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-vitest-assets-"));
+    try {
+      expect(() => ensureGeneratedAssets({
+        cwd: root,
+        runSync: () => ({ status: 3, error: undefined }),
+        log: () => {},
+      })).toThrow("[electron-vitest-assets-unavailable] generator exited 3");
+      expect(() => ensureGeneratedAssets({
+        cwd: root,
+        runSync: () => ({ status: null, error: new Error("ENOENT node") }),
+        log: () => {},
+      })).toThrow("[electron-vitest-assets-unavailable] ENOENT node");
+      // A "successful" generator that did not actually produce the manifest is
+      // still an absence, not a pass.
+      expect(() => ensureGeneratedAssets({
+        cwd: root,
+        runSync: () => ({ status: 0, error: undefined }),
+        log: () => {},
+      })).toThrow("[electron-vitest-assets-unavailable] generator left assets missing");
+      // A corrupt manifest counts as missing rather than as "nothing listed".
+      mkdirSync(join(root, "build"), { recursive: true });
+      writeFileSync(join(root, "build", "generated-assets.json"), "{not json");
+      expect(missingGeneratedAssets({ cwd: root })).toEqual([join("build", "generated-assets.json")]);
+      writeFileSync(join(root, "build", "generated-assets.json"), JSON.stringify({ paths: [] }));
+      expect(missingGeneratedAssets({ cwd: root })).toEqual([join("build", "generated-assets.json")]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fills missing assets before the CLI entrypoint launches Vitest", () => {
+    const runnerSource = readFileSync(
+      new URL("../../scripts/run-vitest-under-electron.mjs", import.meta.url),
+      "utf8",
+    );
+    const mainBlock = runnerSource.indexOf("if (isMainModule()) {");
+    expect(mainBlock).toBeGreaterThanOrEqual(0);
+    const ensureCall = runnerSource.indexOf("ensureGeneratedAssets();", mainBlock);
+    const launch = runnerSource.indexOf("runVitestUnderElectron(process.argv.slice(2))", mainBlock);
+    expect(ensureCall).toBeGreaterThan(mainBlock);
+    expect(launch).toBeGreaterThan(ensureCall);
   });
 
   it("rejects partially injected runtime paths instead of ignoring them", async () => {
@@ -175,6 +310,7 @@ describe("Electron Node-mode Vitest runner", () => {
           ELECTRON_RUN_AS_NODE: "1",
           KEEP: "yes",
           AVE_TEST_NODE_EXEC_PATH: "C:/runtime/node.exe",
+          NODE_OPTIONS: guardedNodeOptions(),
         },
         shell: false,
       }),

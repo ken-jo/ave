@@ -18,6 +18,18 @@ import { toolExecutionContext as ctx } from "./tool-context-fixture.js";
 
 
 describe("routine_schedule tool — source marker", () => {
+  it("keeps plugin template attribution on an approval-gated schedule", async () => {
+    const { store, cleanup } = tempRoutinesStore();
+    try {
+      const tool = createRoutineScheduleTool(store);
+      expect(tool.category).toBe("write");
+      const result = await tool.execute({ execution: "llm-session", schedule: { at: futureIso() },
+        prePrompt: "Write a draft", source: "agent-plugin:writer-plugin:daily" }, ctx());
+      expect(result.isError).toBe(false);
+      expect(store.list()[0]?.source).toBe("agent-plugin:writer-plugin:daily");
+    } finally { await cleanup(); }
+  });
+
   it("stamps the source marker onto the persisted routine", async () => {
     const { store, cleanup } = tempRoutinesStore();
     try {

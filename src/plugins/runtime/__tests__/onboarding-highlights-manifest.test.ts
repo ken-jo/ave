@@ -6,7 +6,7 @@
  * the key the user's answer is stored under, so a duplicate would let one
  * card's "never" silence a card the user was never shown. The count is
  * re-checked here for the reason `hostSecrets` re-checks its own bounds: a
- * plugin shipped against a stale SDK schema must not widen what it declares.
+ * plugin using older contract files must not widen what it declares.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -114,7 +114,7 @@ describe("manifest onboarding.highlights cross-field checks", () => {
     ["a trailing separator", "permissions/"],
     // The real schema shapes these out first; the registry check is what
     // still refuses them when a permissive envelope lets the string through,
-    // which is the case a plugin shipped against a stale SDK schema is in.
+    // which is the case a plugin using older contract files is in.
     ["a tab segment opening with a digit", "2fa"],
     ["a section segment opening with a digit", "llm/2fa"],
   ])("rejects a settings action naming %s", async (_case, path) => {

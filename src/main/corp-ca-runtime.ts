@@ -37,7 +37,7 @@ export interface CorporateCaResult {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const CACHE_DIR = join(aveHome(), "certs");
+const cacheDir = (): string => join(aveHome(), "certs");
 
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -52,7 +52,7 @@ const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  */
 function cachePathFor(commonName: string): string {
   const digest = sha256Hex(commonName).slice(0, 16);
-  return join(CACHE_DIR, `corp-ca-${digest}.pem`);
+  return join(cacheDir(), `corp-ca-${digest}.pem`);
 }
 
 function readCacheIfFresh(cachePath: string): string | null {
@@ -82,7 +82,7 @@ function readCacheIfFresh(cachePath: string): string | null {
 // ─── Cache write ─────────────────────────────────────────────────────────────
 
 async function writeCacheSecure(pem: string, cachePath: string): Promise<void> {
-  mkdirSync(CACHE_DIR, { recursive: true });
+  mkdirSync(cacheDir(), { recursive: true });
   // §S4 discipline: 0o600 — owner read/write only
   const fd = await open(cachePath, "w", 0o600);
   try {
@@ -117,7 +117,7 @@ async function writeCacheSecure(pem: string, cachePath: string): Promise<void> {
  */
 export async function writeSubprocessTrustBundle(
   corporatePem: string | null,
-  bundlePath: string = join(CACHE_DIR, "corp-ca.pem"),
+  bundlePath: string = join(cacheDir(), "corp-ca.pem"),
 ): Promise<void> {
   if (!corporatePem) {
     await rm(bundlePath, { force: true });

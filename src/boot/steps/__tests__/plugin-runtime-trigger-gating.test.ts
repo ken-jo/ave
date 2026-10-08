@@ -55,6 +55,16 @@ describe("evaluateTriggerSpec deny branches", () => {
     expect(outcome.result.source).toContain("plugin:bad");
   });
 
+  it("denies a source containing -- for every plugin: that spelling is minted by the alert pipeline only", () => {
+    for (const source of ["overlay:host--due-soon", "overlay:plugin-a--reply", "overlay:a--"]) {
+      const outcome = evaluate({ spec: { source, prompt: "hi" } });
+      expect(outcome.kind).toBe("deny");
+      if (outcome.kind !== "deny") throw new Error("unreachable");
+      expect(outcome.result.reason).toBe("invalid_source");
+    }
+    expect(evaluate({ spec: { source: "overlay:plugin-a-reply", prompt: "hi" } }).kind).toBe("allow");
+  });
+
   it("denies an empty prompt with a valid source", () => {
     const outcome = evaluate({ spec: { source: "overlay:test", prompt: "   " } });
     expect(outcome.kind).toBe("deny");

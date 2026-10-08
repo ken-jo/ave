@@ -1,0 +1,18 @@
+{
+  "request": {
+    "id": 8,
+    "jsonrpc": "2.0",
+    "method": "ave/host/storage/rm",
+    "params": {
+      "options": {
+        "recursive": true
+      },
+      "relPath": "notes"
+    }
+  },
+  "response": {
+    "id": 8,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

@@ -19,6 +19,7 @@ import {
 } from "../../../i18n/index.js";
 import { I18nProvider } from "../../../i18n/react.js";
 import { getApi } from "../api-client.js";
+import { ensureInstalledContent } from "../installed-content.js";
 import type { AveApi } from "../types.js";
 
 /** `getApi()` throws when the preload bridge is absent; degrade gracefully. */
@@ -52,7 +53,8 @@ export function I18nSettingsProvider({ children }: { children: ReactNode }) {
     const requestAtStart = localeRequestRef.current;
     void (async () => {
       try {
-        const settings = await api.getSettings();
+        // Installed languages register first, so a selected one resolves to itself.
+        const [settings] = await Promise.all([api.getSettings(), ensureInstalledContent(api)]);
         if (cancelled || !mountedRef.current) return;
         if (localeRequestRef.current !== requestAtStart) return;
         await applyLocale(normalizeLocale(settings.appearance?.language));

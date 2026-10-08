@@ -135,12 +135,11 @@ describe("US-3c.2 — PluginRuntime.restartPlugin", () => {
       name: id,
       version: "1.0.0",
       description: "Test fixture.",
-      publisher: "Test fixture",
       entry: "entry.mjs",
       tools: [{ name: methodName, description: `${methodName} tool`, inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
     };
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedAgentPluginsDocument(manifest)), "utf-8");
     return manifestPath;
   }
 
@@ -239,6 +238,7 @@ describe("US-3c.2 — PluginRuntime.restartPlugin", () => {
 const ipcHandlers = new Map<string, (...args: unknown[]) => unknown>();
 
 vi.mock("electron", () => ({
+  protocol: { handle: vi.fn() },
   ipcMain: {
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       ipcHandlers.set(channel, fn);
@@ -259,7 +259,7 @@ import {
   makeRegisteredHandlerInvoker,
   untrustedEvent,
 } from "../../__tests__/test-helpers.js";
-import { agentPluginsDocument } from "./test-helpers.js";
+import { servedAgentPluginsDocument } from "./test-helpers.js";
 
 function makeServicesForListSecretKeys(secretsMap: Record<string, string | null>) {
   return {

@@ -9,7 +9,7 @@ export const en = {
     "and carries a resumeId; call this tool again with that resumeId to continue the SAME sub-agent from where it stopped, and keep " +
     "resuming until the result comes back without the incomplete marker. An incomplete result is not an answer — never report one to " +
     "the user as if the sub-agent had finished. " +
-    "Do not use as a fallback path for directly calling a specific tool/plugin. If the target tool is visible, call it directly; if not, activate it via request_plugin.",
+    "Do not use as a fallback path for directly calling a specific tool/extension. If the target tool is visible, call it directly; if not, activate it via request_plugin.",
   "be_agentSpawn.propTitleDescription":
     "Short title for the sub-agent (shown in the UI card header). Required when agentName is not provided.",
   "be_agentSpawn.propAgentNameDescription":
@@ -50,7 +50,7 @@ export const ko: Record<keyof typeof en, string> = {
     "결과로 요약 텍스트 + tool call 수 반환. sub-agent 가 완료 전에 라운드 예산에 도달하면 결과가 미완료로 표시되고 resumeId 가 함께 반환됩니다. " +
     "그 resumeId 로 이 도구를 다시 호출해 같은 sub-agent 를 중단 지점부터 이어가고, 미완료 표시가 사라질 때까지 재개를 반복하세요. " +
     "미완료 결과는 답이 아니므로 sub-agent 가 끝난 것처럼 사용자에게 보고하면 안 됩니다. " +
-    "특정 tool/plugin 을 직접 호출하라는 요청의 대체 경로로 사용하지 마세요. 요청 대상 도구가 현재 보이면 직접 호출하고, 보이지 않으면 request_plugin 으로 활성화하세요.",
+    "특정 tool/익스텐션을 직접 호출하라는 요청의 대체 경로로 사용하지 마세요. 요청 대상 도구가 현재 보이면 직접 호출하고, 보이지 않으면 request_plugin 으로 활성화하세요.",
   "be_agentSpawn.propTitleDescription":
     "sub-agent 의 짧은 제목 (UI 카드 헤더에 표시). agentName 이 없으면 필수입니다.",
   "be_agentSpawn.propAgentNameDescription":

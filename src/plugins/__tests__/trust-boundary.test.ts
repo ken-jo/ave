@@ -30,7 +30,7 @@ import {
   TestPluginRuntime as PluginRuntime,
   writeTestPluginRegistry,
 } from "./test-helpers.js";
-import { agentPluginsDocument } from "./test-helpers.js";
+import { servedAgentPluginsDocument } from "./test-helpers.js";
 
 const ENTRY_SOURCE = `export default async function createPlugin(ctx) {
   return { handlers: { tb_ping: async () => "pong" }, start: async () => {}, stop: async () => {} };
@@ -70,13 +70,12 @@ describe("Phase 1 — plugin trust boundary", () => {
       name: id,
       version: "1.0.0",
       description: "Test fixture.",
-      publisher: "Test fixture",
       entry: "entry.mjs",
       tools: [{ name: "tb_ping", description: "tb_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
     };
     if (opts?.installPolicy) manifest.installPolicy = opts.installPolicy;
     const manifestPath = join(pluginDir, "plugin.json");
-    await writeFile(manifestPath, JSON.stringify(agentPluginsDocument(manifest)), "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedAgentPluginsDocument(manifest)), "utf-8");
     return manifestPath;
   }
 
@@ -343,70 +342,27 @@ describe("Phase 1 — plugin trust boundary", () => {
 
   // ───────────────────────────── §Step 3 ─────────────────────────────
 
-  describe("installSource authoritative over manifest installPolicy", () => {
-    it("rejects user uninstall when registry installSource=admin even if manifest installPolicy=user (tampered)", async () => {
-      // Plugin physically lives under pluginsRoot but the manifest is
-      // stamped `installPolicy: "user"` (the tamper). The registry was
-      // recorded with installSource="admin" at install time — that record is
-      // authoritative.
-      const userDir = join(pluginsRoot, "p-tampered");
-      const manifestPath = await writePluginAt(userDir, "tb-tampered", {
-        installPolicy: "user",
-      });
-      await writeTestPluginRegistry({ registryPath }, [
-        { id: "tb-tampered", manifestPath, installSource: "admin" },
-      ]);
+  describe("no install record or manifest field locks a plugin (design §10.1)", () => {
+    it("lets the user remove a legacy admin entry, whichever signal once marked it", async () => {
+      // installSource="admin", the pre-#430 installedBy="admin" (migrated on
+      // read) and a manifest-only installPolicy="admin" each used to lock the
+      // plugin. Only the machine policy's requiredInstalls can now.
+      const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot, requiredInstalls: async () => [] });
+      const legacy = [
+        { id: "tb-tampered", entry: { installSource: "admin" as const }, installPolicy: "user" as const },
+        { id: "tb-legacy-admin", entry: { installedBy: "admin" as const }, installPolicy: "user" as const },
+        { id: "tb-legacy", entry: {}, installPolicy: "admin" as const },
+      ];
+      const entries = [];
+      for (const item of legacy) {
+        const manifestPath = await writePluginAt(join(pluginsRoot, item.id), item.id, { installPolicy: item.installPolicy });
+        entries.push({ id: item.id, manifestPath, ...item.entry });
+      }
+      await writeTestPluginRegistry({ registryPath }, entries);
 
-      const guard = new PluginDeploymentGuard({
-        registryPath,
-        pluginsRoot,
-      });
-      const result = await guard.canUninstall("tb-tampered", "user");
-
-      expect(result.allowed).toBe(false);
-      expect(result.reason).toMatch(/registry installSource="admin"/);
-    });
-
-    it("legacy installedBy='admin' migrates to installSource='admin' on read and is enforced", async () => {
-      // Pre-PR #430 entries with `installedBy: "admin"` are migrated to
-      // `installSource: "admin"` on read by readPluginRegistry. The guard
-      // sees the migrated value and treats it as authoritative. This pins
-      // the migration mapping for the admin-classification path.
-      const userDir = join(pluginsRoot, "p-legacy-admin");
-      const manifestPath = await writePluginAt(userDir, "tb-legacy-admin", {
-        installPolicy: "user",
-      });
-      await writeTestPluginRegistry({ registryPath }, [
-        { id: "tb-legacy-admin", manifestPath, installedBy: "admin" },
-      ]);
-
-      const guard = new PluginDeploymentGuard({
-        registryPath,
-        pluginsRoot,
-      });
-      const result = await guard.canUninstall("tb-legacy-admin", "user");
-
-      expect(result.allowed).toBe(false);
-      expect(result.reason).toMatch(/registry installSource="admin"/);
-    });
-
-    it("falls back to manifest installPolicy when registry has no installSource (legacy data with neither signal)", async () => {
-      // Legacy entry with no `installedBy` recorded — guard must not break;
-      // the manifest field is the only signal so it's used.
-      const userDir = join(pluginsRoot, "p-legacy");
-      const manifestPath = await writePluginAt(userDir, "tb-legacy", {
-        installPolicy: "admin",
-      });
-      await writeTestPluginRegistry({ registryPath }, [{ id: "tb-legacy", manifestPath }]);
-
-      const guard = new PluginDeploymentGuard({
-        registryPath,
-        pluginsRoot,
-      });
-      const result = await guard.canUninstall("tb-legacy", "user");
-
-      expect(result.allowed).toBe(false);
-      expect(result.reason).toMatch(/installPolicy="admin"/);
+      for (const item of legacy) {
+        await expect(guard.canUninstall(item.id)).resolves.toEqual({ allowed: true });
+      }
     });
   });
 

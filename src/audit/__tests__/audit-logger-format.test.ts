@@ -14,14 +14,9 @@ import {
   rmSync,
 } from "node:fs";
 import { join } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { vi } from "vitest";
-
-vi.mock("node:os", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("node:os")>();
-  return { ...orig, homedir: vi.fn(orig.homedir) };
-});
 
 import { AuditLogger, type AuditEntry } from "../audit-logger.js";
 
@@ -32,12 +27,14 @@ beforeEach(() => {
   testHome = mkdtempSync(join(tmpdir(), "ave-audit-fmt-"));
   auditDir = join(testHome, ".ave", "audit");
   mkdirSync(auditDir, { recursive: true });
-  vi.mocked(homedir).mockReturnValue(testHome);
+  // The logger's default directory, `<AVE_HOME>/audit`.
+  vi.stubEnv("AVE_HOME", join(testHome, ".ave"));
 });
 
 afterEach(async () => {
   if (existsSync(testHome)) await cleanupTmpDir(testHome);
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 function readLogLines(): AuditEntry[] {

@@ -1,0 +1,40 @@
+{
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "ave/host/hostFetch",
+    "params": {
+      "init": {
+        "body": {
+          "data": "ping",
+          "encoding": "utf8"
+        },
+        "headers": [
+          [
+            "content-type",
+            "text/plain"
+          ]
+        ],
+        "method": "POST"
+      },
+      "input": "https://api.example.com/ping"
+    }
+  },
+  "response": {
+    "error": {
+      "code": -32000,
+      "data": {
+        "code": "payload-too-large",
+        "detail": {
+          "byteLength": 16777217,
+          "limit": 16777216
+        },
+        "name": "HostApiBoundaryError"
+      },
+      "message": "[host-api-wire] hostFetch(result): 16777217 bytes exceeds the 16777216-byte boundary limit"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+  },
+  "trigger": "a hostFetch response body one byte over the boundary limit"
+}

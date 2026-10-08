@@ -8,7 +8,6 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { wireAnnouncementCheck } from "../steps/post-boot.js";
-import type { MarketplaceFetcher } from "../../plugins/marketplace.js";
 import type { SettingsService } from "../../data/settings-store.js";
 import { MARKETPLACE } from "../../shared/ipc-channels.js";
 import type { MarketplaceAnnouncement } from "../../shared/marketplace-announcements.js";
@@ -48,7 +47,6 @@ function harness(opts: {
   } as unknown as SettingsService;
 
   const listAnnouncements = vi.fn(async () => opts.announcements);
-  const marketplaceFetcher = { listAnnouncements } as unknown as MarketplaceFetcher;
 
   return {
     send,
@@ -58,9 +56,10 @@ function harness(opts: {
     },
     run: () =>
       wireAnnouncementCheck({
+        intervalMs: 1000,
         getMainWindow: () => mainWindow,
         settingsService,
-        marketplaceFetcher,
+        listAnnouncements,
       }),
   };
 }
@@ -105,24 +104,42 @@ describe("wireAnnouncementCheck", () => {
           ? {
               dismissedAnnouncementIds: [],
               updateCheckEnabled: false,
-              updateCheckIntervalMs: 1000,
             }
           : undefined,
       ),
     } as unknown as SettingsService;
-    const marketplaceFetcher = {
-      listAnnouncements: vi.fn(async () => [announcement(1)]),
-    } as unknown as MarketplaceFetcher;
+    const listAnnouncements = vi.fn(async () => [announcement(1)]);
 
     wireAnnouncementCheck({
+      intervalMs: 1000,
       getMainWindow: () => mainWindow,
       settingsService,
-      marketplaceFetcher,
+      listAnnouncements,
     });
     await Promise.resolve();
 
-    expect(marketplaceFetcher.listAnnouncements).not.toHaveBeenCalled();
+    expect(listAnnouncements).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("polls again every 6 hours by default (design §11)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { mainWindow } = makeWindow();
+      const settingsService = {
+        get: vi.fn(() => ({ dismissedAnnouncementIds: [] })),
+      } as unknown as SettingsService;
+      const listAnnouncements = vi.fn(async () => [announcement(1)]);
+      wireAnnouncementCheck({ getMainWindow: () => mainWindow, settingsService, listAnnouncements });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(listAnnouncements).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+      expect(listAnnouncements).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
+      expect(listAnnouncements).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("pushes the active announcement set on first run", async () => {
@@ -140,26 +157,25 @@ describe("wireAnnouncementCheck", () => {
       loading: false,
     });
     const settingsService = {
-      get: vi.fn(() => ({ dismissedAnnouncementIds: [], updateCheckIntervalMs: 1000 })),
+      get: vi.fn(() => ({ dismissedAnnouncementIds: [] })),
     } as unknown as SettingsService;
-    const marketplaceFetcher = {
-      listAnnouncements: vi.fn(async () => [announcement(1)]),
-    } as unknown as MarketplaceFetcher;
+    const listAnnouncements = vi.fn(async () => [announcement(1)]);
 
     wireAnnouncementCheck({
+      intervalMs: 1000,
       getMainWindow: () => mainWindow,
       settingsService,
-      marketplaceFetcher,
+      listAnnouncements,
     });
     await Promise.resolve();
 
-    expect(marketplaceFetcher.listAnnouncements).not.toHaveBeenCalled();
+    expect(listAnnouncements).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
 
     finishLoad();
 
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
-    expect(marketplaceFetcher.listAnnouncements).toHaveBeenCalledOnce();
+    expect(listAnnouncements).toHaveBeenCalledOnce();
   });
 
   it("filters out dismissed ids before pushing", async () => {
@@ -193,17 +209,15 @@ describe("wireAnnouncementCheck", () => {
       const settingsService = {
         get: vi.fn(() => ({
           dismissedAnnouncementIds: dismissed,
-          updateCheckIntervalMs: 1000,
         })),
       } as unknown as SettingsService;
-      const marketplaceFetcher = {
-        listAnnouncements: vi.fn(async () => [announcement(1), announcement(2)]),
-      } as unknown as MarketplaceFetcher;
+      const listAnnouncements = vi.fn(async () => [announcement(1), announcement(2)]);
 
       wireAnnouncementCheck({
+        intervalMs: 1000,
         getMainWindow: () => mainWindow,
         settingsService,
-        marketplaceFetcher,
+        listAnnouncements,
       });
       // Boot run.
       await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
@@ -236,17 +250,15 @@ describe("wireAnnouncementCheck", () => {
       const settingsService = {
         get: vi.fn(() => ({
           dismissedAnnouncementIds: [],
-          updateCheckIntervalMs: 1000,
         })),
       } as unknown as SettingsService;
-      const marketplaceFetcher = {
-        listAnnouncements: vi.fn(async () => [announcement(1)]),
-      } as unknown as MarketplaceFetcher;
+      const listAnnouncements = vi.fn(async () => [announcement(1)]);
 
       wireAnnouncementCheck({
+        intervalMs: 1000,
         getMainWindow: () => mainWindow,
         settingsService,
-        marketplaceFetcher,
+        listAnnouncements,
       });
       await vi.waitFor(() => expect(first.send).toHaveBeenCalledTimes(1));
 
@@ -272,17 +284,15 @@ describe("wireAnnouncementCheck", () => {
       const settingsService = {
         get: vi.fn(() => ({
           dismissedAnnouncementIds: [],
-          updateCheckIntervalMs: 1000,
         })),
       } as unknown as SettingsService;
-      const marketplaceFetcher = {
-        listAnnouncements: vi.fn(async () => announcements),
-      } as unknown as MarketplaceFetcher;
+      const listAnnouncements = vi.fn(async () => announcements);
 
       wireAnnouncementCheck({
+        intervalMs: 1000,
         getMainWindow: () => mainWindow,
         settingsService,
-        marketplaceFetcher,
+        listAnnouncements,
       });
       await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
 
@@ -306,14 +316,13 @@ describe("wireAnnouncementCheck", () => {
         dismissedAnnouncementIds: { invalid: true },
       })),
     } as unknown as SettingsService;
-    const marketplaceFetcher = {
-      listAnnouncements: vi.fn(async () => [announcement(1)]),
-    } as unknown as MarketplaceFetcher;
+    const listAnnouncements = vi.fn(async () => [announcement(1)]);
 
     wireAnnouncementCheck({
+      intervalMs: 1000,
       getMainWindow: () => mainWindow,
       settingsService,
-      marketplaceFetcher,
+      listAnnouncements,
     });
 
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
@@ -333,14 +342,13 @@ describe("wireAnnouncementCheck", () => {
         ],
       })),
     } as unknown as SettingsService;
-    const marketplaceFetcher = {
-      listAnnouncements: vi.fn(async () => [announcement(1), announcement(2)]),
-    } as unknown as MarketplaceFetcher;
+    const listAnnouncements = vi.fn(async () => [announcement(1), announcement(2)]);
 
     wireAnnouncementCheck({
+      intervalMs: 1000,
       getMainWindow: () => mainWindow,
       settingsService,
-      marketplaceFetcher,
+      listAnnouncements,
     });
 
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
@@ -356,20 +364,18 @@ describe("wireAnnouncementCheck", () => {
       const settingsService = {
         get: vi.fn(() => ({
           dismissedAnnouncementIds: [],
-          updateCheckIntervalMs: 1000,
         })),
       } as unknown as SettingsService;
-      const marketplaceFetcher = {
-        listAnnouncements: vi.fn(async () => {
+      const listAnnouncements = vi.fn(async () => {
           if (shouldFail) throw new Error("offline");
           return [announcement(1)];
-        }),
-      } as unknown as MarketplaceFetcher;
+        });
 
       wireAnnouncementCheck({
+        intervalMs: 1000,
         getMainWindow: () => mainWindow,
         settingsService,
-        marketplaceFetcher,
+        listAnnouncements,
       });
       await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
       expect(
@@ -398,17 +404,15 @@ describe("wireAnnouncementCheck", () => {
       const settingsService = {
         get: vi.fn(() => ({
           dismissedAnnouncementIds: [],
-          updateCheckIntervalMs: 1000,
         })),
       } as unknown as SettingsService;
-      const marketplaceFetcher = {
-        listAnnouncements: vi.fn(async () => announcements),
-      } as unknown as MarketplaceFetcher;
+      const listAnnouncements = vi.fn(async () => announcements);
 
       wireAnnouncementCheck({
+        intervalMs: 1000,
         getMainWindow: () => currentWindow,
         settingsService,
-        marketplaceFetcher,
+        listAnnouncements,
       });
       await vi.waitFor(() => expect(first.send).toHaveBeenCalledTimes(1));
 

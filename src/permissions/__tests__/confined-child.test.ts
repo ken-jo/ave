@@ -29,15 +29,27 @@ const admissionMock = vi.fn();
 // is false. Defaults to true so the composition cases below see the wrap.
 const sandboxActiveMock = vi.fn<() => boolean>();
 
-vi.mock("../asrt-sandbox.js", () => ({
+const TEMP_ROOT = "/home/u/.ave/sandbox/tmp";
+const HOME_ROOT = "/home/u/.ave/sandbox/home";
+const PRINCIPAL = { kind: "plugin", id: "x" } as const;
+// The principal's own directory, as the real `ensureSandboxTempPrincipalDir`
+// names it; named here so the cases can say which entry is the caller's.
+const TEMP_DIR = `${TEMP_ROOT}/plugin-78`;
+
+vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
+  // The real launcher, so the command line asserted below is the one ASRT gets.
+  sandboxTempEnvLaunch: (await importOriginal<typeof import("../asrt-sandbox.js")>()).sandboxTempEnvLaunch,
+  ensureSandboxTempPrincipalDir: (principal: { kind: string; id: string }) => ({
+    dir: `${TEMP_ROOT}/${principal.kind}-${Buffer.from(principal.id).toString("hex")}`,
+    root: TEMP_ROOT,
+  }),
   isAsrtSandboxActive: () => sandboxActiveMock(),
   wrapWorkerCommand: (command: string, options?: unknown) =>
     wrapWorkerCommandMock(command, options),
-  getDefaultSensitiveReadDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.ssh"],
+  // The floor carries the sandbox private roots, as the real one does on
+  // macOS and Linux; the primitive's own directories are re-allowed under it.
+  getDefaultSensitiveReadDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.ssh", TEMP_ROOT, HOME_ROOT],
   getDefaultSensitiveWriteDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.bashrc"],
-  // The temp root the primitive grants unconditionally. Named here so the
-  // allow-list cases can say which entry is the caller's and which is not.
-  appOwnedSandboxTempRoot: () => "/home/u/.ave/sandbox/tmp",
 }));
 vi.mock("../../main/managed-child-processes.js", () => ({
   assertManagedChildProcessAdmissionOpen: (label: string) => admissionMock(label),
@@ -79,6 +91,7 @@ describe("spawnConfinedChild", () => {
       args: [],
       label: "worker:x:main",
       grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL,
       baseEnv: {},
     });
 
@@ -92,31 +105,69 @@ describe("spawnConfinedChild", () => {
       args: [],
       label: "worker:x:main",
       grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL,
       allowRead: ["/data/in"],
       allowWrite: ["/data/out"],
       baseEnv: {},
     });
 
     const fs = lastFilesystem();
-    expect(fs.allowRead).toEqual(["/data/in"]);
-    // The temp root comes FIRST and is not the caller's — the primitive grants
-    // it the way it restates the deny floor, for the same reason: a caller that
-    // forgot would produce a child whose `os.tmpdir()` names a directory it
-    // cannot write, and that failure surfaces inside whatever library happened
-    // to want a temp file rather than at the spawn.
-    expect(fs.allowWrite).toEqual(["/home/u/.ave/sandbox/tmp", "/data/out"]);
+    // The temp directory comes FIRST and is not the caller's — the primitive
+    // grants it the way it restates the deny floor, for the same reason: a
+    // caller that forgot would produce a child whose `os.tmpdir()` names a
+    // directory it cannot write, and that failure surfaces inside whatever
+    // library happened to want a temp file rather than at the spawn.
+    expect(fs.allowRead).toEqual([TEMP_DIR, "/data/in"]);
+    expect(fs.allowWrite).toEqual([TEMP_DIR, "/data/out"]);
     expect(fs.denyRead).toContain("/home/u/.ssh");
   });
 
-  it("grants the temp root even when the caller passes no write paths", async () => {
+  it("grants its principal's temp directory alone and read-denies the shared root, with no caller paths", async () => {
     await spawnConfinedChild({
       command: "/usr/bin/python3",
       args: [],
       label: "worker:x:main",
       grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL,
       baseEnv: {},
     });
-    expect(lastFilesystem().allowWrite).toEqual(["/home/u/.ave/sandbox/tmp"]);
+    const fs = lastFilesystem();
+    expect(fs.allowWrite).toEqual([TEMP_DIR]);
+    expect(fs.allowRead).toEqual([TEMP_DIR]);
+    // Every other principal's directory is under the root, and ASRT's reads
+    // are deny-only: the floor's deny of it, restated whole, is what keeps the
+    // child from reading them all.
+    expect(fs.denyRead).toEqual(["/home/u/.ave/secrets", "/home/u/.ssh", TEMP_ROOT, HOME_ROOT]);
+    expect(fs.allowWrite).not.toContain(TEMP_ROOT);
+  });
+
+  it("sets TMPDIR, TMP and TEMP to that directory inside the wrap", async () => {
+    // ASRT puts its own `TMPDIR=<shared root>` ahead of the sandboxed command,
+    // so only an assignment made inside the wrap reaches the child.
+    await spawnConfinedChild({
+      command: "/usr/bin/python3",
+      args: ["-u"],
+      label: "worker:x:main",
+      grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL,
+      baseEnv: {},
+    });
+    const [cmdline] = wrapWorkerCommandMock.mock.calls.at(-1)!;
+    expect(cmdline).toBe(
+      `'/usr/bin/env' 'TMPDIR=${TEMP_DIR}' 'TMP=${TEMP_DIR}' 'TEMP=${TEMP_DIR}' '/usr/bin/python3' '-u'`,
+    );
+  });
+
+  it("refuses an allow-list spawn that names no temp principal, before any wrap", async () => {
+    await expect(spawnConfinedChild({
+      command: "/usr/bin/python3",
+      args: [],
+      label: "worker:x:main",
+      grantMode: "allow-list",
+      baseEnv: {},
+    })).rejects.toThrow(/needs the temp principal/);
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it("omits allow paths under deny-only, where ACLs grant reachability instead", async () => {
@@ -136,6 +187,9 @@ describe("spawnConfinedChild", () => {
     expect(fs.allowRead).toBeUndefined();
     expect(fs.allowWrite).toBeUndefined();
     expect(fs.denyRead).toContain("/home/u/.ave/secrets");
+    // The sandbox HOME's own TEMP is per process there; no env launcher.
+    const [cmdline] = wrapWorkerCommandMock.mock.calls.at(-1)!;
+    expect(cmdline).not.toContain("TMPDIR=");
   });
 
   it("quotes every token so a path with spaces cannot mis-split", async () => {
@@ -146,6 +200,7 @@ describe("spawnConfinedChild", () => {
       args: ["--root", "/data/my folder", "--flag"],
       label: "worker:x:main",
       grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL,
       baseEnv: {},
     });
 
@@ -168,6 +223,7 @@ describe("spawnConfinedChild", () => {
       args: [],
       label: "worker:x:main",
       grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL,
       baseEnv: {},
       onWrapped: () => order.push("onWrapped"),
     });
@@ -187,6 +243,7 @@ describe("spawnConfinedChild", () => {
       args: ["-m", "worker", "--socket", "/tmp/w.sock"],
       label: "worker:x:main",
       grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL,
       baseEnv: { PATH: "/usr/bin" },
       extraEnv: { HOME: "/home/u/.ave/sandbox/home" },
       onWrapped,
@@ -212,6 +269,7 @@ describe("spawnConfinedChild", () => {
       args: [],
       label: "worker:x:main",
       grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL,
       baseEnv: {},
       assertStillValid,
     });
@@ -231,6 +289,7 @@ describe("spawnConfinedChild", () => {
         args: [],
         label: "worker:x:main",
         grantMode: "allow-list",
+        tempPrincipal: PRINCIPAL,
         baseEnv: {},
         assertStillValid,
       }),
@@ -246,6 +305,7 @@ describe("spawnConfinedChild", () => {
         args: [],
         label: "worker:x:main",
         grantMode: "allow-list",
+        tempPrincipal: PRINCIPAL,
         baseEnv: {},
       }),
     ).rejects.toThrow(/empty argv/);
@@ -262,6 +322,7 @@ describe("spawnConfinedChild", () => {
       args: ["-u"],
       label: "worker:x:main",
       grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL,
       baseEnv: {},
     });
 
@@ -279,6 +340,7 @@ describe("spawnConfinedChild", () => {
       args: [],
       label: "worker:x:main",
       grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL,
       baseEnv: { HOME: "/home/u", KEEP: "1" },
       extraEnv: { HOME: "/sandbox/home" },
     });
@@ -295,6 +357,7 @@ describe("spawnConfinedChild", () => {
       args: [],
       label: "worker:meeting:main:asrt",
       grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL,
       baseEnv: {},
     });
     expect(admissionMock).toHaveBeenCalledWith("worker:meeting:main:asrt");

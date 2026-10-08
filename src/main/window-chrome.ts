@@ -27,7 +27,10 @@
 import type { BrowserWindowConstructorOptions } from "electron";
 import { TRAFFIC_LIGHT_POSITION } from "../shared/shell-geometry.js";
 
-export function getCommonChromeOptions(): Partial<BrowserWindowConstructorOptions> {
+/** The frame options every Ave window shares — never `webPreferences`, which each window sets from the preload table. */
+type CommonChromeOptions = Pick<BrowserWindowConstructorOptions, "frame" | "titleBarStyle" | "trafficLightPosition">;
+
+export function getCommonChromeOptions(): CommonChromeOptions {
   const isDarwin = process.platform === "darwin";
   return {
     frame: isDarwin,

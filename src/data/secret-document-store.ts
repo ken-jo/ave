@@ -44,7 +44,13 @@ type SecretEntry =
 
 interface SecretDocument {
   version: typeof DOCUMENT_VERSION;
+  mutation?: number;
   entries: Record<string, SecretEntry>;
+}
+
+export interface SecretDocumentIdentity {
+  fingerprint: string;
+  mutation: number | null;
 }
 
 interface SecretStoreRuntime {
@@ -107,6 +113,10 @@ function readWholeDescriptor(fd: number, size: number): Buffer {
  */
 function contentDigest(bytes: Buffer): Buffer {
   return createHash("sha256").update(bytes).digest();
+}
+
+function documentFingerprint(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 function readStableSecretFile(path: string): string {
@@ -261,6 +271,7 @@ function cloneDocument(document: SecretDocument): SecretDocument {
   }
   return {
     version: DOCUMENT_VERSION,
+    ...(document.mutation === undefined ? {} : { mutation: document.mutation }),
     entries,
   };
 }
@@ -271,10 +282,14 @@ function emptyDocument(): SecretDocument {
 
 function validateCanonicalDocument(value: unknown): SecretDocument {
   if (!isRecord(value)
-    || !hasOnlyKeys(value, ["version", "entries"])
+    || !hasOnlyKeys(value, ["version", "mutation", "entries"])
     || value.version !== DOCUMENT_VERSION
     || !isRecord(value.entries)) {
     throw new SecretDocumentValidationError("Invalid versioned secret document");
+  }
+  if (value.mutation !== undefined
+    && (!Number.isSafeInteger(value.mutation) || (value.mutation as number) < 1)) {
+    throw new SecretDocumentValidationError("Invalid secret document mutation counter");
   }
   const entries = Object.create(null) as Record<string, SecretEntry>;
   for (const [key, candidate] of Object.entries(value.entries)) {
@@ -295,7 +310,7 @@ function validateCanonicalDocument(value: unknown): SecretDocument {
       throw new SecretDocumentValidationError("Secret document contains an invalid entry encoding");
     }
   }
-  return { version: DOCUMENT_VERSION, entries };
+  return { version: DOCUMENT_VERSION, ...(value.mutation === undefined ? {} : { mutation: value.mutation as number }), entries };
 }
 
 function validateLegacyDocument(value: unknown): Record<string, string> {
@@ -352,7 +367,7 @@ function canonicalBytes(document: SecretDocument): string {
   const entries = Object.fromEntries(
     Object.keys(document.entries).sort().map((key) => [key, document.entries[key]]),
   );
-  return `${JSON.stringify({ version: DOCUMENT_VERSION, entries }, null, 2)}\n`;
+  return `${JSON.stringify({ version: DOCUMENT_VERSION, ...(document.mutation === undefined ? {} : { mutation: document.mutation }), entries }, null, 2)}\n`;
 }
 
 async function enqueueMutation<T>(path: string, callback: () => Promise<T>): Promise<T> {
@@ -374,6 +389,8 @@ export interface SecretDocumentStoreOptions {
   path: string;
   policy: SecretPolicy;
   encryption: SecretEncryption;
+  /** Runs synchronously after an atomic replacement, before lock release. */
+  onCommittedSecretsChanged?: (keys: readonly string[], before: SecretDocumentIdentity | null, after: SecretDocumentIdentity) => void;
   platform?: NodeJS.Platform;
   runtime?: Partial<SecretStoreRuntime>;
 }
@@ -386,6 +403,8 @@ export class SecretDocumentStore {
   private readonly externalKey: boolean;
   private readonly platform: NodeJS.Platform;
   private readonly runtime: SecretStoreRuntime;
+  private readonly onCommittedSecretsChanged?: (keys: readonly string[], before: SecretDocumentIdentity | null, after: SecretDocumentIdentity) => void;
+  private cachedIdentity?: { stamp: string; identity: SecretDocumentIdentity | null };
 
   constructor(options: SecretDocumentStoreOptions) {
     this.path = resolve(options.path);
@@ -395,6 +414,42 @@ export class SecretDocumentStore {
     this.policy = this.externalKey ? "packaged" : options.policy;
     this.platform = options.platform ?? process.platform;
     this.runtime = { ...DEFAULT_RUNTIME, ...options.runtime };
+    this.onCommittedSecretsChanged = options.onCommittedSecretsChanged;
+  }
+
+  /** Null means no document; malformed or regressed content is rejected above this layer. */
+  identity(): SecretDocumentIdentity | null {
+    if (this.runtime.read !== DEFAULT_RUNTIME.read || this.runtime.exists !== DEFAULT_RUNTIME.exists) {
+      return this.readIdentity();
+    }
+    const stamp = this.statStamp();
+    if (this.cachedIdentity?.stamp === stamp) return this.cachedIdentity.identity;
+    const identity = this.readIdentity();
+    // The stable reader verifies bytes and path identity. Do not cache a
+    // sample across a metadata transition that happened while it read.
+    const after = this.statStamp();
+    if (after === stamp) this.cachedIdentity = { stamp, identity };
+    return identity;
+  }
+
+  private statStamp(): string {
+    try {
+      const stat = lstatSync(this.path, { bigint: true });
+      if (!stat.isFile() || stat.size > BigInt(MAX_SECRET_DOCUMENT_BYTES)) {
+        throw new SecretDocumentValidationError("Secret document must be a bounded regular file");
+      }
+      return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+    } catch (error) {
+      if (isMissingPathError(error)) return "missing";
+      throw error;
+    }
+  }
+
+  private readIdentity(): SecretDocumentIdentity | null {
+    if (!this.runtime.exists(this.path)) return null;
+    const raw = this.runtime.read(this.path);
+    const state = parseStoredState(raw, false);
+    return { fingerprint: documentFingerprint(raw), mutation: state.document.mutation ?? null };
   }
 
   get(key: string): string | null {
@@ -431,15 +486,16 @@ export class SecretDocumentStore {
       this.assertWritesAvailable();
       this.upgradePlainEntries(document);
       document.entries[key] = this.encode(value);
-    });
+    }, { forceWrite: true, forceChangedKeys: [key] });
   }
 
+  /** Resolves `false`, without writing, when `key` is absent (like `move`). */
   async delete(key: string): Promise<boolean> {
     validateSecretKey(key);
     return this.mutate(false, (document) => {
+      if (!Object.hasOwn(document.entries, key)) return false;
       this.assertWritesAvailable();
       this.upgradePlainEntries(document);
-      if (!Object.hasOwn(document.entries, key)) return false;
       delete document.entries[key];
       return true;
     });
@@ -458,6 +514,24 @@ export class SecretDocumentStore {
         deleted += 1;
       }
       return deleted;
+    });
+  }
+
+  /**
+   * Move the entry stored under `from` to `to` in one write, as stored — the
+   * value is never decrypted. An entry already under `to` wins and `from` is
+   * dropped. Resolves `false`, without writing, when `from` is absent.
+   */
+  async move(from: string, to: string): Promise<boolean> {
+    validateSecretKey(from);
+    validateSecretKey(to);
+    return this.mutate(false, (document) => {
+      if (!Object.hasOwn(document.entries, from)) return false;
+      this.assertWritesAvailable();
+      this.upgradePlainEntries(document);
+      if (!Object.hasOwn(document.entries, to)) document.entries[to] = document.entries[from];
+      delete document.entries[from];
+      return true;
     });
   }
 
@@ -601,7 +675,7 @@ export class SecretDocumentStore {
       source: StoredState["kind"],
       modeWasRepaired: boolean,
     ) => T,
-    options: { repairModeBeforeRead?: boolean; rewriteLegacy?: boolean } = {},
+    options: { repairModeBeforeRead?: boolean; rewriteLegacy?: boolean; forceWrite?: boolean; forceChangedKeys?: readonly string[] } = {},
   ): Promise<T> {
     return enqueueMutation(this.path, async () => {
       let completed: MutationResult<T>;
@@ -618,12 +692,17 @@ export class SecretDocumentStore {
           const document = cloneDocument(state.document);
           const before = canonicalBytes(state.document);
           const value = callback(document, state.kind, modeWasRepaired);
-          const intended = canonicalBytes(document);
-          const contentChanged = intended !== before
+          const contentChanged = canonicalBytes(document) !== before
             || (options.rewriteLegacy === true && state.kind === "legacy");
-          const shouldWrite = contentChanged
+          const shouldWrite = (contentChanged || options.forceWrite === true)
             && (state.kind !== "absent" || Object.keys(document.entries).length > 0);
           if (shouldWrite) {
+            const previousMutation = state.document.mutation ?? 0;
+            if (previousMutation >= Number.MAX_SAFE_INTEGER) {
+              throw new SecretDocumentValidationError("Secret document mutation counter exhausted");
+            }
+            document.mutation = previousMutation + 1;
+            const intended = canonicalBytes(document);
             try {
               this.runtime.writeAtomic(this.path, intended, PRIVATE_FILE_MODE);
             } catch (error) {
@@ -637,7 +716,21 @@ export class SecretDocumentStore {
                 error,
               });
             }
+            const changedKeys = new Set([...Object.keys(state.document.entries), ...Object.keys(document.entries)]);
+            const changed = [...changedKeys].filter((key) => {
+              const beforeEntry = state.document.entries[key];
+              const afterEntry = document.entries[key];
+              return beforeEntry?.encoding !== afterEntry?.encoding || beforeEntry?.value !== afterEntry?.value;
+            });
+            if (changed.length === 0) changed.push(...(options.forceChangedKeys ?? Object.keys(document.entries)));
+            this.cachedIdentity = undefined;
+            this.onCommittedSecretsChanged?.(
+              changed,
+              state.raw === null ? null : { fingerprint: documentFingerprint(state.raw), mutation: state.document.mutation ?? null },
+              { fingerprint: documentFingerprint(intended), mutation: document.mutation },
+            );
           }
+          const intended = canonicalBytes(document);
           return {
             value,
             expected: shouldWrite

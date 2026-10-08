@@ -1,28 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { isIpcErrorResult, type AveApi, type MarketplaceItem } from "../types.js";
+import type { PackageUpdateView } from "../../../shared/git-marketplace.js";
+import { isIpcErrorResult, type AveApi } from "../types.js";
 import {
   createSkippedPluginUpdateMap,
-  isSkippedPluginUpdate,
+  isSkippedPackageUpdate,
+  packageUpdateSkipKey,
   putSkippedPluginUpdate,
   readSkippedPluginUpdates,
   type SkippedPluginUpdateMap,
 } from "../../../shared/skipped-plugin-updates.js";
 
-export interface PluginUpdateInfo {
-  pluginId: string;
-  pluginName?: string;
-  installedVersion: string;
-  latestVersion: string;
-  networkAccess?: MarketplaceItem["networkAccess"];
-}
-
+/**
+ * The installed packages with updates, as main last published them, minus the
+ * ones the user skipped. A required update ignores a skipped version
+ * (§18.7.2): it stays, and skipping records no version for it.
+ */
 export function useMarketplaceUpdates(api: AveApi) {
-  const [updates, setUpdates] = useState<PluginUpdateInfo[]>([]);
-  const updatesRef = useRef<PluginUpdateInfo[]>([]);
+  const [updates, setUpdates] = useState<PackageUpdateView[]>([]);
+  const updatesRef = useRef<PackageUpdateView[]>([]);
   const skippedUpdatesRef = useRef<SkippedPluginUpdateMap>(createSkippedPluginUpdateMap());
   const skipWriteRef = useRef(Promise.resolve());
 
-  const replaceUpdates = useCallback((next: PluginUpdateInfo[]) => {
+  const replaceUpdates = useCallback((next: PackageUpdateView[]) => {
     updatesRef.current = next;
     setUpdates(next);
   }, []);
@@ -50,20 +49,6 @@ export function useMarketplaceUpdates(api: AveApi) {
     };
   }, [api, replaceUpdates]);
 
-  const dismiss = useCallback(() => {
-    replaceUpdates([]);
-  }, [replaceUpdates]);
-
-  // Optimistically drop plugins that just updated successfully from the visible
-  // banner list. Used by the banner's partial-failure path so succeeded rows
-  // disappear while failed rows remain for retry. The host detector's next
-  // `marketplace:updates-available` broadcast remains the reconciling SOT.
-  const resolveUpdated = useCallback((pluginIds: string[]) => {
-    if (pluginIds.length === 0) return;
-    const resolved = new Set(pluginIds);
-    replaceUpdates(updatesRef.current.filter((update) => !resolved.has(update.pluginId)));
-  }, [replaceUpdates]);
-
   const skip = useCallback(async () => {
     const visibleUpdates = updatesRef.current;
     if (visibleUpdates.length === 0) return;
@@ -79,7 +64,8 @@ export function useMarketplaceUpdates(api: AveApi) {
         // must stay untouched for the no-change comparison below.
         const nextSkipped = readSkippedPluginUpdates(existingSkipped);
         for (const update of visibleUpdates) {
-          putSkippedPluginUpdate(nextSkipped, update.pluginId, update.latestVersion);
+          if (update.required === true) continue;
+          putSkippedPluginUpdate(nextSkipped, packageUpdateSkipKey(update.key), update.to);
         }
         if (sameSkippedPluginUpdates(existingSkipped, nextSkipped)) {
           skippedUpdatesRef.current = nextSkipped;
@@ -102,14 +88,14 @@ export function useMarketplaceUpdates(api: AveApi) {
     await nextWrite;
   }, [api, replaceUpdates]);
 
-  return { updates, dismiss, skip, resolveUpdated };
+  return { updates, skip };
 }
 
 function filterSkippedUpdates(
-  updates: PluginUpdateInfo[],
+  updates: PackageUpdateView[],
   skipped: SkippedPluginUpdateMap,
-): PluginUpdateInfo[] {
-  return updates.filter((update) => !isSkippedPluginUpdate(update, skipped));
+): PackageUpdateView[] {
+  return updates.filter((update) => update.required === true || !isSkippedPackageUpdate(update, skipped));
 }
 
 function sameSkippedPluginUpdates(

@@ -1,0 +1,18 @@
+{
+  "request": {
+    "id": 21,
+    "jsonrpc": "2.0",
+    "method": "ave/host/onEvent",
+    "params": {
+      "eventType": "golden.ping",
+      "handler": "<uuid-1>"
+    }
+  },
+  "response": {
+    "id": 21,
+    "jsonrpc": "2.0",
+    "result": {
+      "handleId": "<uuid-1>"
+    }
+  }
+}

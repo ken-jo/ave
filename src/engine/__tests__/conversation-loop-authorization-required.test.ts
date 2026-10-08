@@ -11,6 +11,7 @@ import { gateMutatingEffect } from "../../permissions/effect-enforcement.js";
 import {
   authorizationRequiredStateOf,
   issueAuthorizationRequiredControl,
+  issueUnattendedTurnAuthority,
 } from "../../shared/authorization-required.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { createAgentSpawnTool } from "../../tools/agent-spawn.js";
@@ -117,6 +118,137 @@ describe("ConversationLoop authorization-required terminal", () => {
     expect(loop.getHistory().getMessages().filter((message) =>
       message.role === "tool_result" && message.toolUseId === "blocked-write"
     )).toHaveLength(1);
+  });
+
+  it("routes the same ask through the unattended policy lane when the host issued that authority", async () => {
+    const registry = new ToolRegistry();
+    const execute = vi.fn(async () => ({ output: "should not execute", isError: false }));
+    registry.register(createDynamicTool({
+      name: "write_probe",
+      description: "Write probe",
+      source: "builtin",
+      category: "write",
+      jsonSchema: { type: "object", properties: {} },
+      execute,
+    }));
+
+    let providerCalls = 0;
+    const provider: LLMProvider = {
+      vendor: "openai",
+      async *streamTurn(): AsyncIterable<StreamEvent> {
+        providerCalls += 1;
+        if (providerCalls > 1) {
+          yield { type: "text_delta", text: "continuing after the denial" };
+          yield { type: "message_complete", stopReason: "end_turn" };
+          return;
+        }
+        yield { type: "tool_call", id: "unattended-write", name: "write_probe", input: {} };
+        yield { type: "message_complete", stopReason: "tool_use" };
+      },
+    };
+
+    temporaryDirectory = mkdtempSync(join(tmpdir(), "ave-loop-auth-"));
+    const permissionManager = new PermissionManager(
+      join(temporaryDirectory, "permissions.json"),
+    );
+    permissionManager.checkDetailed = () => ({
+      decision: "ask",
+      reason: "fixture requires explicit approval",
+      layer: 3,
+      forceModal: true,
+    });
+    const requestAndWait = vi.fn();
+    const loop = new ConversationLoop({
+      settingsService: {
+        get: () => fakeLlmSettings(),
+        getSecret: () => "test-key",
+      },
+      systemPromptBuilder: { build: () => "system" },
+      inputClassifier: new InputClassifier(),
+      routeEngine: new RouteEngine(),
+      toolRegistry: registry,
+      memoryManager: {
+        saveSession: () => {},
+        listSessions: () => [],
+      },
+      permissionManager,
+      approvalGate: { requestAndWait },
+      approvalSurface: "unavailable",
+      notificationService: { fire: vi.fn() },
+      disableSessionPersistence: true,
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    (loop as unknown as { provider: LLMProvider | null }).provider = provider;
+
+    const result = await loop.runTurn(
+      "write the file",
+      {},
+      undefined,
+      { inputOrigin: "user-keyboard", unattendedAuthority: issueUnattendedTurnAuthority() },
+    );
+
+    // The same fixture ask that terminates a plain windowless turn is answered
+    // on the routine lane here: a structured denial the model sees, no
+    // approval request, and no authorization-required terminal.
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.authorizationRequired).toBeUndefined();
+    expect(providerCalls).toBe(2);
+    expect(execute).not.toHaveBeenCalled();
+    expect(requestAndWait).not.toHaveBeenCalled();
+    const denial = loop.getHistory().getMessages().find((message) =>
+      message.role === "tool_result" && message.toolUseId === "unattended-write"
+    );
+    expect(denial).toBeDefined();
+    expect(String(denial?.content)).toContain("headless");
+  });
+
+  it("refuses an unattended authority this host did not issue, and a replay of one it did", async () => {
+    const registry = new ToolRegistry();
+    temporaryDirectory = mkdtempSync(join(tmpdir(), "ave-loop-auth-"));
+    const loop = new ConversationLoop({
+      settingsService: {
+        get: () => fakeLlmSettings(),
+        getSecret: () => "test-key",
+      },
+      systemPromptBuilder: { build: () => "system" },
+      inputClassifier: new InputClassifier(),
+      routeEngine: new RouteEngine(),
+      toolRegistry: registry,
+      memoryManager: {
+        saveSession: () => {},
+        listSessions: () => [],
+      },
+      permissionManager: new PermissionManager(join(temporaryDirectory, "permissions.json")),
+      approvalSurface: "unavailable",
+      disableSessionPersistence: true,
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+
+    await expect(loop.runTurn(
+      "write the file",
+      {},
+      undefined,
+      {
+        inputOrigin: "user-keyboard",
+        unattendedAuthority: { kind: "native-exec" } as never,
+      },
+    )).rejects.toThrow(/unattended authority this host did not issue/);
+
+    // A genuine authority is spent by its first turn; the retained loop's
+    // later turns cannot reuse the same object.
+    const provider: LLMProvider = {
+      vendor: "openai",
+      async *streamTurn(): AsyncIterable<StreamEvent> {
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "message_complete", stopReason: "end_turn" };
+      },
+    };
+    (loop as unknown as { provider: LLMProvider | null }).provider = provider;
+    const authority = issueUnattendedTurnAuthority();
+    const options = { inputOrigin: "user-keyboard" as const, unattendedAuthority: authority };
+    await expect(loop.runTurn("first", {}, undefined, options)).resolves.toMatchObject({
+      stopReason: "end_turn",
+    });
+    await expect(loop.runTurn("second", {}, undefined, options))
+      .rejects.toThrow(/did not issue for this turn/);
   });
 
   it("does not accept an unissued tool-result lookalike as host control", async () => {

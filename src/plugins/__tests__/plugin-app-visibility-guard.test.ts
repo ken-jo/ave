@@ -33,7 +33,6 @@ async function writeTempPlugin(opts: {
     name: "App visibility test",
     version: "1.0.0",
     description: "Test fixture.",
-    publisher: "Test fixture",
     entry: "dist/index.js",
     tools: [...new Set([...opts.modelTools, ...opts.appTools])].map((name) =>
       pureTool(name, [

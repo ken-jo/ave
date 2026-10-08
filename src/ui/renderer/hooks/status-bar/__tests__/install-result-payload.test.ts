@@ -22,12 +22,11 @@ import {
   IncompatibleAppVersionError,
   INCOMPATIBLE_APP_VERSION_CODE,
 } from "../../../../../plugins/public-contract.js";
+import { buildInstallFailureResult } from "../../../../../shared/plugin-install-result.js";
 import {
-  buildInstallFailureResult,
-  MarketplaceBackendDisabledError,
-  MARKETPLACE_DISABLED_CODE,
-} from "../../../../../shared/plugin-install-result.js";
-import { t } from "../../../../../i18n/runtime.js";
+  ProcessEntryRequiresPinnedArtifactError,
+  ProcessEntryUnconfinedError,
+} from "../../../../../plugins/process-entry.js";
 import type { PluginInstallResultPayload } from "../../../../../contract/app-contract.js";
 import type { AveApi } from "../../../types.js";
 import { useStatusBarInstall } from "../use-status-bar-install.js";
@@ -36,16 +35,10 @@ import { useStatusBarInstall } from "../use-status-bar-install.js";
  * Mount the real hook, push one real producer payload through the real
  * install-result subscription, and return the toast copy the user would see.
  */
-function toastCopyFor(
-  payload: PluginInstallResultPayload,
-  subscription:
-    | "onPluginInstallResult"
-    | "onAgentInstallResult"
-    | "onSkillInstallResult" = "onPluginInstallResult",
-): string {
+function toastCopyFor(payload: PluginInstallResultPayload): string {
   let deliver: ((p: PluginInstallResultPayload) => void) | null = null;
   const api = {
-    [subscription]: (h: (p: PluginInstallResultPayload) => void) => {
+    onPluginInstallResult: (h: (p: PluginInstallResultPayload) => void) => {
       deliver = h;
       return () => { deliver = null; };
     },
@@ -109,6 +102,15 @@ describe("install-result payload", () => {
     expect(toastCopyFor(payload)).toContain("disk full");
   });
 
+  it("keeps both process-entry refusals typed and localizes the install toast", () => {
+    const unpinned = buildInstallFailureResult("process-kit", new ProcessEntryRequiresPinnedArtifactError(), "addPlugin failed");
+    expect(unpinned.error).toBe("process-entry-requires-pinned-artifact");
+    expect(toastCopyFor(unpinned)).toContain("이 사본은 거부되었습니다. 릴리스를 고정한 마켓플레이스에서 설치하세요.");
+    const unconfined = buildInstallFailureResult("process-kit", new ProcessEntryUnconfinedError(), "addPlugin failed");
+    expect(unconfined.error).toBe("process-entry-unconfined");
+    expect(toastCopyFor(unconfined)).toContain("OS 도구 샌드박스 안에서만 실행합니다");
+  });
+
   it("falls back to the caller's message when the failure carries no text", () => {
     const payload = buildInstallFailureResult("sample", {}, "addPlugin failed");
 
@@ -126,31 +128,6 @@ describe("install-result payload", () => {
       expect(Object.keys(payload)).not.toContain("preparing");
     }
   });
-
-  it.each([
-    ["agent", "onAgentInstallResult"],
-    ["skill", "onSkillInstallResult"],
-  ] as const)(
-    "shows localized copy for a marketplace-disabled %s install, not the raw sentence",
-    (packageType, subscription) => {
-      // The agent/skill deep link used to hand-build `{ error: err.message }`,
-      // so this toast read "Agent marketplace install is unavailable:
-      // marketplace backend is disabled in this build." — untranslated English
-      // in a localized UI — while the IPC path for the SAME failure carried the
-      // `marketplace-disabled` code this consumer maps.
-      const payload = buildInstallFailureResult(
-        "sample",
-        new MarketplaceBackendDisabledError(packageType),
-        `${packageType} install failed`,
-      );
-
-      expect(payload.error).toBe(MARKETPLACE_DISABLED_CODE);
-      const copy = toastCopyFor(payload, subscription);
-      expect(copy).not.toContain("marketplace backend is disabled");
-      expect(copy).not.toContain(MARKETPLACE_DISABLED_CODE);
-      expect(copy).toContain(t("formatIpcError.marketplaceDisabled"));
-    },
-  );
 
   it("subscribes through the same bridge method the preload exposes", () => {
     const onPluginInstallResult = vi.fn(() => () => undefined);
