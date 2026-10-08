@@ -23,6 +23,12 @@ import { runtimeAssetPath } from "./main-paths.js";
 import { pluginPartitionName } from "../shared/plugin-partition.js";
 import { CHANNELS } from "../contract/app-contract.js";
 import { createLogger } from "../lib/logger.js";
+import { onEvent } from "../boot/types.js";
+import { getLastThemePayload } from "../shared/plugin-theme-cache.js";
+import { dockAssetArgs } from "../shared/floating-dock-args.js";
+import { pathToFileURL } from "node:url";
+import { preloadBundlePath, preloadPreferences } from "./preload-bundles.js";
+import { configurePluginWebviewAttach } from "./plugin-webview-attach.js";
 import type {
   DockActivity,
   DockBounds,
@@ -42,14 +48,41 @@ const log = createLogger("floating-dock");
  * with nothing in it has no state worth keeping alive, and a destroyed window
  * cannot be left floating by a bug in the visibility bookkeeping.
  */
+export interface ElectronFloatingDockSurfaceDeps {
+  /**
+   * Subscribe to the host theme broadcast (`host.theme.changed`, the payload
+   * plugin webviews receive). The dock's own chrome reads the theme once when
+   * its window loads; every later theme reaches it through this.
+   */
+  onThemeChanged(listener: (theme: unknown) => void): () => void;
+  /** The theme current now — the host renderer's last validated one — or null before the first. */
+  currentTheme(): unknown;
+}
+
+/**
+ * The host's theme feed, the one plugin webviews get: the validated
+ * `host.theme.changed` broadcast and the replay cache behind it. Main pushes
+ * both to the dock, so the dock asks nothing through the plugin-only
+ * `getTheme`, whose guard rightly refuses a non-plugin frame.
+ */
+export const hostDockThemeSource: ElectronFloatingDockSurfaceDeps = {
+  onThemeChanged: (listener) => onEvent("host.theme.changed", listener),
+  currentTheme: getLastThemePayload,
+};
+
 export class ElectronFloatingDockSurface implements FloatingDockSurface {
   #window: BrowserWindow | null = null;
   #emit: ((event: DockSurfaceEvent) => void) | null = null;
   /** Queued while the renderer is still loading; flushed on ready-to-show. */
   #pending: Array<{ channel: string; payload: unknown }> = [];
   #ready = false;
+  readonly #currentTheme: () => unknown;
 
-  constructor() {
+  constructor(deps: ElectronFloatingDockSurfaceDeps) {
+    this.#currentTheme = deps.currentTheme;
+    // The surface lives as long as the app, so this subscription is never undone.
+    // No window: nothing to repaint, and the next one is sent the current theme on opening.
+    deps.onThemeChanged((theme) => this.#post(CHANNELS.dock.theme, theme));
     // Registered ONCE, in the constructor, not per window: `show()` runs again
     // every time the dock comes back and per-window registration would stack a
     // second listener each time, so one click would report N closes.
@@ -107,13 +140,17 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
       webPreferences: {
         // `.cjs` because this package is `type: "module"` and a `.js` preload
         // would load as ESM, while the preload needs `require("electron")`.
-        preload: runtimeAssetPath("floating-dock-preload.cjs"),
+        // The dock's preload and its sandbox, from the one table: sandboxed,
+        // since the dock hosts plugin `<webview>` guests. The preload needs
+        // only `contextBridge` and `ipcRenderer`, both available there.
+        ...preloadPreferences("floatingDockPreload"),
+        // The sandboxed preload cannot resolve files itself (no `node:path`).
+        additionalArguments: dockAssetArgs({
+          pluginShellUrl: pathToFileURL(runtimeAssetPath("plugin-ui-shell.html")).toString(),
+          pluginPreloadUrl: pathToFileURL(preloadBundlePath("pluginPreload")).toString(),
+        }),
         contextIsolation: true,
         nodeIntegration: false,
-        // The dock hosts plugin `<webview>` guests, so its own renderer runs
-        // sandboxed too. The preload needs only `contextBridge` and
-        // `ipcRenderer`, both of which work in a sandboxed preload.
-        sandbox: true,
         webSecurity: true,
         allowRunningInsecureContent: false,
         spellcheck: false,
@@ -121,6 +158,20 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
       },
     });
     this.#window = win;
+    // The dock hosts only plugin cards. Each attaches under the same main-side
+    // guard as the main window's plugin frames (sandbox, isolation, no Node, no
+    // nested webviews), whatever the element asked for; anything else is refused.
+    win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
+      const enforced = configurePluginWebviewAttach({
+        webPreferences: webPreferences as Record<string, unknown>,
+        params: params as unknown as Record<string, string>,
+      });
+      if (enforced !== "enforced") event.preventDefault();
+    });
+    // The theme current now goes first, queued with anything later until the
+    // window is ready, so the chrome paints in it from the first frame it shows.
+    const opening = this.#currentTheme();
+    if (opening !== null) this.#post(CHANNELS.dock.theme, opening);
 
     // Above full-screen applications where the platform supports it. The
     // "floating" level is ignored elsewhere and `alwaysOnTop` still applies.

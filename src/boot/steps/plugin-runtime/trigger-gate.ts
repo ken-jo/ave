@@ -12,12 +12,13 @@ import type {
   ConversationTriggerResult,
   ConversationTriggerSpec,
 } from "../../../plugins/types.js";
-import { OVERLAY_TRIGGER_SOURCE_PATTERN } from "../../../shared/overlay-trigger-source.js";
+import { isPluginOverlaySource } from "../../../shared/overlay-trigger-source.js";
 import { CAPABILITY_HOST_OVERLAY } from "../../../plugins/capabilities.js";
 import { formatStagedEnvelope, stagedOriginFor } from "../../../shared/staged-origins.js";
 import { stripLeadingSlash } from "../../../shared/slash-sanitizer.js";
 import { stripUntrustedTags } from "../../../lib/strip-untrusted-tags.js";
 import { t } from "../../../i18n/index.js";
+import type { SuggestionLedger } from "../../../alerts/suggestion-ledger.js";
 
 /**
  * In-memory dedupe for `hostApi.triggerConversation()`. A plugin can set
@@ -71,8 +72,6 @@ const ALLOWED_PRIORITIES: ReadonlySet<"low" | "normal" | "high"> = new Set([
 ] as const);
 /** Bound dedupeKey length so a malicious / buggy plugin cannot bloat audit logs. */
 const MAX_DEDUPE_KEY_LEN = 128;
-/** Bound source length — same reason. dedupeKey was bounded; review caught source. */
-const MAX_SOURCE_LEN = 128;
 /**
  * Bound prompt length. The host trusts the plugin's templated-only contract
  * (a comment in `types.ts`) but offers no enforcement; capping prevents an
@@ -80,14 +79,15 @@ const MAX_SOURCE_LEN = 128;
  * generous for templated suggestions and tight enough to reject a body.
  */
 const MAX_PROMPT_LEN = 4096;
-// `SOURCE_PATTERN` is the strict shape required for the `source` field
-// of every overlay trigger spec. It's the SAME pattern used by the
-// trigger executor envelope, the IPC bridge's
-// originSource detection, and the permission manager's overlay-trigger
-// origin override — see `shared/overlay-trigger-source.ts` for the single
-// definition. Without this gate, malformed sources (`overlay:`,
-// `overlay:_x`, `overlay:Bad/Path`) could flow into audit logs and
-// system prompts where loose substrings would be confusing.
+// `isPluginOverlaySource` is the strict rule for the `source` field of every
+// overlay trigger spec: bounded length, the SAME pattern used by the trigger
+// executor envelope, the IPC bridge's originSource detection and the
+// permission manager's overlay-trigger origin override, and no `--` — the
+// spelling only the alert pipeline mints. See
+// `shared/overlay-trigger-source.ts` for the single definition. Without this
+// gate, malformed sources (`overlay:`, `overlay:_x`, `overlay:Bad/Path`) could
+// flow into audit logs and system prompts where loose substrings would be
+// confusing.
 
 /**
  * Per-plugin rate limit for `triggerConversation()`. A plugin that omits
@@ -288,6 +288,8 @@ export const triggerDenyAuditThrottle = new TriggerDenyAuditThrottle();
 export interface EvaluateTriggerSpecInput {
   /** Host delivery precondition, checked after input validation and before state changes. */
   assertDeliveryAvailable?: () => void;
+  /** Synchronously stage delivery before any acceptance budget is charged. */
+  stageDelivery?: (source: string) => void;
   spec: ConversationTriggerSpec | undefined | null;
   pluginId: string;
   capabilities: readonly string[];
@@ -295,6 +297,15 @@ export interface EvaluateTriggerSpecInput {
   rateLimiter: TriggerConversationRateLimiter;
   /** Burst-suppress identical denial audit rows. */
   denyAuditThrottle?: TriggerDenyAuditThrottle;
+  /**
+   * Present when the plugin's manifest declares an `alerts` block: only the
+   * `declared` sources are accepted, each at most once per window. The
+   * ledger must be loaded before the call.
+   */
+  suggestions?: {
+    declared: readonly string[];
+    ledger: Pick<SuggestionLedger, "isLimited" | "record">;
+  };
   auditLogger: { log(entry: AuditEntry): void };
   now?: () => number;
 }
@@ -361,13 +372,21 @@ export function evaluateTriggerSpec(
   }
   // A too-long source is rejected outright; the regex sees the original
   // string (no slice-before-validate). Same for prompt length.
-  if (source.length > MAX_SOURCE_LEN || !OVERLAY_TRIGGER_SOURCE_PATTERN.test(source)) {
+  if (!isPluginOverlaySource(source)) {
     auditDeny(`reason=invalid_source source=${source.slice(0, 32) || "<empty>"}`);
     return {
       kind: "deny",
       // Echo only the first 32 chars so a malicious 10MB source cannot
       // pin into the caller-visible result either.
       result: { accepted: false, reason: "invalid_source", source: source.slice(0, 32) },
+    };
+  }
+  const suggestions = input.suggestions;
+  if (suggestions && !suggestions.declared.includes(source)) {
+    auditDeny(`reason=source_not_declared source=${source}`);
+    return {
+      kind: "deny",
+      result: { accepted: false, reason: "source_not_declared", source },
     };
   }
   if (typeof spec?.prompt !== "string" || spec.prompt.trim().length === 0) {
@@ -392,6 +411,13 @@ export function evaluateTriggerSpec(
       result: { accepted: false, reason: "rate_limited", source },
     };
   }
+  if (suggestions && suggestions.ledger.isLimited(pluginId, source, now())) {
+    auditDeny(`reason=suggestion_limit source=${source}`);
+    return {
+      kind: "deny",
+      result: { accepted: false, reason: "suggestion_limit", source },
+    };
+  }
   if (dedupeKey && dedupe.has(pluginId, dedupeKey)) {
     auditDeny(`reason=duplicate dedupeKey=${dedupeKey}`);
     return {
@@ -400,11 +426,14 @@ export function evaluateTriggerSpec(
     };
   }
 
+  input.stageDelivery?.(source);
+
   // Allow path — record both bookkeeping operations BEFORE returning so the
   // caller never gets an "accepted=true" without the dedupe + rate window
   // having advanced.
   if (dedupeKey) dedupe.record(pluginId, dedupeKey);
   rateLimiter.record(pluginId, now());
+  suggestions?.ledger.record(pluginId, source, now());
 
   // Compose the success audit row with sanitized contextKeys — key names
   // can carry PII so we accept only keys matching a strict identifier shape

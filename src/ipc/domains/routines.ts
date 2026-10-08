@@ -65,6 +65,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     // execution handlers (LLM session or notification) fire identically to a
     // scheduled trigger — no separate renderer-only event path.
     const dispatched = await routinesScheduler.dispatchNow(id);
+    if (dispatched === "plugins-missing") return { ok: false, error: "plugins-missing" };
     if (!dispatched) return { ok: false, error: "routine-not-found" };
     return { ok: true };
   });

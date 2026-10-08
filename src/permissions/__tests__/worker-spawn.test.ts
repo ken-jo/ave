@@ -40,7 +40,10 @@ const lstatSyncMock = vi.fn<(path: unknown) => { isSymbolicLink: () => boolean }
 vi.mock("node:fs/promises", () => ({
   mkdir: (path: unknown, opts?: unknown) => mkdirMock(path, opts),
 }));
-vi.mock("node:fs", () => ({
+vi.mock("node:fs", async (importOriginal) => ({
+  // The real module underneath: the sandbox module's logger reaches for more
+  // of it than the cases below steer.
+  ...await importOriginal<typeof import("node:fs")>(),
   unlinkSync: (path: unknown) => unlinkSyncMock(path),
   rmdirSync: (path: unknown) => rmdirSyncMock(path),
   chmodSync: (path: unknown, mode: unknown) => chmodSyncMock(path, mode),
@@ -96,7 +99,13 @@ const grantWindowsWorkerFilesystemAccessMock = vi.fn<
     release: grantReleaseMock,
   }),
 );
-vi.mock("../asrt-sandbox.js", () => ({
+vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
+  // The real launcher and naming; the directory itself is not created.
+  sandboxTempEnvLaunch: (await importOriginal<typeof import("../asrt-sandbox.js")>()).sandboxTempEnvLaunch,
+  ensureSandboxTempPrincipalDir: (principal: { kind: string; id: string }) => ({
+    dir: `/tmp/ave-test-sandbox-tmp/${principal.kind}-${Buffer.from(principal.id).toString("hex")}`,
+    root: "/tmp/ave-test-sandbox-tmp",
+  }),
   isAsrtSandboxActive: () => gateActive,
   wrapWorkerCommand: (command: string, options?: unknown) =>
     wrapWorkerCommandMock(command, options),
@@ -106,9 +115,14 @@ vi.mock("../asrt-sandbox.js", () => ({
   grantWindowsWorkerFilesystemAccess: (opts: unknown) =>
     grantWindowsWorkerFilesystemAccessMock(opts),
   // The host-secret read floor restated on the worker wrap (#1365 SOT).
-  getDefaultSensitiveReadDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.ssh"],
+  // With the sandbox private roots, as the real floor carries them on POSIX.
+  getDefaultSensitiveReadDenyPaths: () => [
+    "/home/u/.ave/secrets",
+    "/home/u/.ssh",
+    "/tmp/ave-test-sandbox-tmp",
+    "/home/u/.ave/sandbox/home",
+  ],
   // The persistence-vector write floor restated on the worker wrap (#1449 SOT).
-  appOwnedSandboxTempRoot: () => "/tmp/ave-test-sandbox-tmp",
   getDefaultSensitiveWriteDenyPaths: () => [
     "/home/u/.ave/secrets",
     "/home/u/.ssh",
@@ -119,7 +133,7 @@ vi.mock("../asrt-sandbox.js", () => ({
 }));
 
 // Module imports AFTER the mocks.
-import { __resetActiveWrappedWorkersForTest, spawnWorker } from "../worker-spawn.js";
+import { __resetActiveWrappedWorkersForTest, spawnWorker, waitForPluginWorkersStopped } from "../worker-spawn.js";
 import { aveHome } from "../../shared/ave-home.js";
 import {
   resolveReviewerSandboxCapability,
@@ -322,14 +336,20 @@ describe("spawnWorker — gate ON (macOS)", () => {
       string,
       { filesystem: { allowWrite: string[]; allowRead: string[]; denyRead?: string[]; denyWrite?: string[] }; allowUnixSocketPath?: string; allowAllUnixSockets?: boolean },
     ];
-    // The confinement primitive prepends the temp root it grants every child,
-    // so the socket dir is the first path the CALLER contributed rather than
-    // the first path in the list.
+    // The confinement primitive prepends the temp directory of the worker's
+    // PLUGIN — the one its child and hooks get too — so the socket dir is the
+    // first path the CALLER contributed rather than the first in the list.
+    const pluginTempDir = `/tmp/ave-test-sandbox-tmp/plugin-${Buffer.from("local-indexer").toString("hex")}`;
     expect(options.filesystem.allowWrite).toContain(socketDir);
-    expect(options.filesystem.allowWrite[0]).toBe("/tmp/ave-test-sandbox-tmp");
+    expect(options.filesystem.allowWrite[0]).toBe(pluginTempDir);
+    expect(options.filesystem.allowWrite).not.toContain("/tmp/ave-test-sandbox-tmp");
+    expect(options.filesystem.denyRead).toContain("/tmp/ave-test-sandbox-tmp");
+    expect(cmdline.startsWith(`'/usr/bin/env' 'TMPDIR=${pluginTempDir}' `)).toBe(true);
     expect(options.filesystem.allowWrite).toContain(SANDBOX_HOME);
     expect(options.filesystem.allowRead).toContain(SANDBOX_HOME);
     expect(options.filesystem.allowWrite).toContain("/data/index");
+    // A plugin worker is plugin-owned code: its write roots are pinned.
+    expect((options.filesystem as { pinWriteRoots?: boolean }).pinWriteRoots).toBe(true);
     expect(options.filesystem.allowRead).toContain("/opt/worker");
     expect(options.filesystem.allowRead).toContain("/opt/scripts/embed.py");
     expect(options.allowUnixSocketPath).toBeUndefined();
@@ -397,7 +417,39 @@ describe("spawnWorker — gate ON (macOS)", () => {
 
 // ─── Gate ON (linux) — registers the socketDir; FS-jail-only wrap ───
 
+describe("spawnWorker — a symlinked control dir", () => {
+  // `chmod` follows a link, so the refusal must come before the mode is forced:
+  // the other order would change the mode of whatever the link points at.
+  it("refuses it before forcing any mode, so the host never chmods a link target", async () => {
+    setProcessPlatform("darwin");
+    gateActive = true;
+    chmodSyncMock.mockClear();
+    lstatSyncMock.mockImplementationOnce(() => ({ isSymbolicLink: () => true }));
+    await expect(spawnWorker({ pluginId: "local-indexer", workerId: "embed", command: "/opt/worker" }))
+      .rejects.toThrow(/refusing symlinked control dir/);
+    expect(chmodSyncMock).not.toHaveBeenCalled();
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("spawnWorker — gate ON (linux)", () => {
+  it("does not report plugin workers stopped until their process exits", async () => {
+    setProcessPlatform("linux");
+    gateActive = true;
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["/bin/bash", "-c", "wrapped"], env: { ...process.env } });
+    const child = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(child);
+    const worker = await spawnWorker({ pluginId: "sandbox-candidate", workerId: "index", command: "/opt/worker" });
+    let completed = false;
+    const waiting = waitForPluginWorkersStopped("sandbox-candidate").then(() => { completed = true; });
+    worker.stop();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    child.emit("exit", 0, null);
+    await waiting;
+    expect(completed).toBe(true);
+  });
+
   it("registers the socketDir on the shared config and wraps with the FS jail only (no per-command UDS option)", async () => {
     setProcessPlatform("linux");
     gateActive = true;

@@ -1,0 +1,15 @@
+{
+  "request": {
+    "id": 28,
+    "jsonrpc": "2.0",
+    "method": "ave/host/openExternalUrl",
+    "params": {
+      "url": "https://example.com/help"
+    }
+  },
+  "response": {
+    "id": 28,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

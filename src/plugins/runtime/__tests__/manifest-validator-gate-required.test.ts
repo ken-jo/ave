@@ -1,16 +1,21 @@
 /**
- * Manifest loading must use the SDK schema validator as the single source of truth.
+ * Manifest loading must use the host-owned schema validator as its source of truth.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildManifestValidator, parsePluginJson } from "../manifest-validation.js";
+
+const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
+vi.mock("../../../lib/logger.js", () => ({
+  createLogger: () => ({ info: vi.fn(), warn: (...a: unknown[]) => warn(...a), error: vi.fn(), debug: vi.fn() }),
+}));
 import { agentPluginsDocument } from "../../__tests__/test-helpers.js";
 
-describe("parsePluginJson — SDK schema validator required", () => {
+describe("parsePluginJson — host schema validator required", () => {
   let testDir: string;
   let manifestPath: string;
 
@@ -27,7 +32,6 @@ describe("parsePluginJson — SDK schema validator required", () => {
         entry: "dist/index.js",
         tools: [{ name: "validator_ping", description: "validator_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
         description: "Validator required test plugin",
-        publisher: "Test",
       })),
       "utf-8");
   });
@@ -46,26 +50,34 @@ describe("parsePluginJson — SDK schema validator required", () => {
     const validator = await buildManifestValidator();
     const manifest = await parsePluginJson(manifestPath, validator);
     expect(manifest.id).toBe("test-validator");
-    expect(manifest.installPolicy).toBe("user");
   });
 
-  it("fails closed instead of normalizing invalid installPolicy before SDK validation", async () => {
+  it("loads an installed manifest that still carries installPolicy and publisher, dropping them with one warning", async () => {
+    // Every official plugin installed before the git marketplace has both (design §5.3).
     await writeFile(
       manifestPath,
       JSON.stringify(agentPluginsDocument({
-        id: "test-validator",
-        name: "Validator Test",
+        id: "test-legacy",
+        name: "Legacy",
         version: "1.0.0",
         entry: "dist/index.js",
-        tools: [{ name: "validator_ping", description: "validator_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
-        description: "Validator required test plugin",
-        publisher: "Test",
-        installPolicy: "root",
+        tools: [{ name: "legacy_ping", description: "legacy_ping tool", inputSchema: { type: "object", properties: {} }, _meta: { ui: { visibility: ["model", "app"] } } }],
+        description: "Legacy plugin",
+        installPolicy: "admin",
+        publisher: "Ave Official",
       })),
       "utf-8");
-
+    warn.mockClear();
     const validator = await buildManifestValidator();
-    await expect(parsePluginJson(manifestPath, validator)).rejects.toThrow(/schema validation failed/);
+
+    const manifest = await parsePluginJson(manifestPath, validator);
+    await parsePluginJson(manifestPath, validator);
+
+    expect(manifest.id).toBe("test-legacy");
+    expect(manifest).not.toHaveProperty("installPolicy");
+    expect(manifest).not.toHaveProperty("publisher");
+    const retired = warn.mock.calls.filter(([message]) => String(message).includes("retired field"));
+    expect(retired).toEqual([[expect.stringContaining("ignoring retired field(s) installPolicy, publisher")]]);
   });
 
   it("#885 v6 — a pure app-only Tool loads and carries no uiActions map", async () => {
@@ -84,7 +96,6 @@ describe("parsePluginJson — SDK schema validator required", () => {
           },
         ],
         description: "Validator UI-only runtime method test plugin",
-        publisher: "Test",
       })),
       "utf-8");
 
@@ -113,7 +124,6 @@ describe("parsePluginJson — SDK schema validator required", () => {
           },
         ],
         description: "Validator UI action runtime method test plugin",
-        publisher: "Test",
       })),
       "utf-8");
 
@@ -141,7 +151,6 @@ describe("parsePluginJson — SDK schema validator required", () => {
           loginTool: "auth_login",
         },
         description: "Validator UI action auth test plugin",
-        publisher: "Test",
       })),
       "utf-8");
 

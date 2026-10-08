@@ -29,6 +29,7 @@ import { SKILL_SELECTOR_ALLOWLIST } from "../main/skill-store.js";
 import type { SkillOverlay } from "../main/skill-overlay.js";
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
+import { parseAgentPluginSkillSelector } from "../shared/plugin-skill-selector.js";
 const log = createLogger("ave");
 
 export interface SkillReadToolDeps {
@@ -107,6 +108,12 @@ export function createSkillReadTool(deps: SkillReadToolDeps): Tool {
 
       const selectorMatch = /^plugin:([^:]+):([^:]+)$/.exec(skillName);
       try {
+        if (parseAgentPluginSkillSelector(skillName)) {
+          if (!entry.agentPluginOwner) return errorResult("skill package identity is missing");
+          const resource = deps.store.readAgentPluginResource(skillName, entry.agentPluginOwner, resourcePath);
+          if (!resource) return errorResult(`resource not found: ${resourcePath}`);
+          return { output: JSON.stringify({ skillName, ...resource }), isError: false };
+        }
         if (selectorMatch) {
           if (!deps.acquirePluginGeneration) {
             return errorResult("skill_read: plugin generation access unavailable");

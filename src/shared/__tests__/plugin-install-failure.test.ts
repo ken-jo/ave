@@ -42,12 +42,27 @@ describe("isReinstallFixableFailureKind", () => {
     expect(isReinstallFixableFailureKind(undefined)).toBe(true);
   });
 
-  it("classifies catalog↔grant mismatch as NOT reinstall-fixable", () => {
-    expect(isReinstallFixableFailureKind("catalog-grant-mismatch")).toBe(false);
-  });
-
   it("classifies app-version incompatibility as NOT reinstall-fixable", () => {
     expect(isReinstallFixableFailureKind("incompatible-app-version")).toBe(false);
+  });
+
+  it("classifies host-protocol incompatibility as NOT reinstall-fixable", () => {
+    // Reinstalling fetches the same manifest naming the same protocol version;
+    // only a newer app, or a plugin release that speaks this one, changes it.
+    expect(isReinstallFixableFailureKind("incompatible-host-protocol")).toBe(false);
+  });
+
+  it("classifies both process-entry refusals as NOT reinstall-fixable", () => {
+    // Neither the sandbox setting and platform nor the install's provenance
+    // changes when the same version is reinstalled from the same source.
+    expect(isReinstallFixableFailureKind("process-entry-unconfined")).toBe(false);
+    expect(isReinstallFixableFailureKind("process-entry-requires-pinned-artifact")).toBe(false);
+  });
+
+  it("classifies a sandbox grant outside the ceiling as NOT reinstall-fixable", () => {
+    // Doctor reinstalls the version on disk, which preserves its declared
+    // grants. A narrower plugin update or a changed approval is a separate action.
+    expect(isReinstallFixableFailureKind("sandbox-grant-outside-ceiling")).toBe(false);
   });
 
   it("classifies a marketplace revocation block as NOT reinstall-fixable", () => {
@@ -71,8 +86,11 @@ describe("isReinstallFixableFailureKind", () => {
       "load-crash",
     ]);
     expect(notFixable).toEqual([
-      "catalog-grant-mismatch",
       "incompatible-app-version",
+      "incompatible-host-protocol",
+      "process-entry-unconfined",
+      "process-entry-requires-pinned-artifact",
+      "sandbox-grant-outside-ceiling",
       "plugin-revoked",
     ]);
   });

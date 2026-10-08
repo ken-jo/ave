@@ -2,7 +2,7 @@
  * Sandboxed PluginStorage — verifies path-traversal guards, ENOENT handling,
  * and JSON helpers stay scoped to pluginDataDir.
  */
-import { existsSync, mkdtempSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,8 +31,9 @@ const mockedElectron = vi.hoisted(() => {
 vi.mock("electron", () => ({ safeStorage: mockedElectron.safeStorage }));
 
 import { createPluginStorage } from "../storage.js";
+import { ensurePluginDataDir } from "../runtime/sandbox.js";
 import { PluginStorageEncryptionUnavailableError } from "../types.js";
-import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { cleanupTmpDir, removeLinkOnly } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const dirLinkType = process.platform === "win32" ? "junction" : "dir";
 
@@ -190,6 +191,73 @@ describe("createPluginStorage — the data root is never recreated", () => {
     const s = createPluginStorage("p", dataDir, mockedElectron.safeStorage);
     await s.writeJson("nested/deep/state.json", { ok: true });
     expect(existsSync(join(dataDir, "nested", "deep", "state.json"))).toBe(true);
+  });
+});
+
+/**
+ * The root's ancestors are trusted host paths and are resolved; the root itself
+ * must be the real directory the host created. A confined plugin can write
+ * inside its root, and a handle is built per request, so a root the plugin
+ * replaced with a link must not become the canonical root of the next handle.
+ */
+describe("createPluginStorage — the data root itself is the host's directory", () => {
+  it("refuses a root a plugin replaced with a link after the host created it, and writes nothing outside", () => {
+    rmSync(dataDir, { recursive: true });
+    symlinkSync(outsideDir, dataDir, dirLinkType);
+    try {
+      const rejections: string[] = [];
+      expect(() => createPluginStorage("p", dataDir, mockedElectron.safeStorage, (message) => {
+        rejections.push(message);
+      })).toThrow(/\[plugin-storage:p\] plugin data root is a symlink, not the directory the host created/);
+      expect(rejections).toEqual(["storage: rejected a data root that is not the host's directory"]);
+      expect(readdirSync(outsideDir)).toEqual([]);
+    } finally {
+      // The link goes on its own, before the recursive teardown can reach it:
+      // on Windows a recursive removal walks into a junction's target.
+      removeLinkOnly(dataDir);
+    }
+  });
+
+  it("refuses a dangling link in the root's place rather than calling the root absent", () => {
+    rmSync(dataDir, { recursive: true });
+    symlinkSync(join(outsideDir, "absent"), dataDir, dirLinkType);
+    try {
+      expect(() => createPluginStorage("p", dataDir, mockedElectron.safeStorage))
+        .toThrow(/plugin data root is a symlink/);
+      expect(existsSync(join(outsideDir, "absent"))).toBe(false);
+    } finally {
+      removeLinkOnly(dataDir);
+    }
+  });
+
+  it("resolves a root reached through a linked ancestor", async () => {
+    const realData = join(outsideDir, "volume", "data");
+    mkdirSync(realData, { recursive: true });
+    const linkedAncestor = `${dataDir}-ancestor`;
+    symlinkSync(join(outsideDir, "volume"), linkedAncestor, dirLinkType);
+    try {
+      const s = createPluginStorage("p", join(linkedAncestor, "data"), mockedElectron.safeStorage);
+      await s.writeJson("state.json", { ok: true });
+      expect(existsSync(join(realData, "state.json"))).toBe(true);
+    } finally {
+      removeLinkOnly(linkedAncestor);
+    }
+  });
+
+  it("is held to the same check at load: a missing root is created, a linked one is refused", () => {
+    const pluginsRoot = join(dataDir, "plugins");
+    expect(ensurePluginDataDir("fresh", join(pluginsRoot, "fresh", "current"), pluginsRoot))
+      .toBe(join(pluginsRoot, "fresh", "data"));
+    expect(existsSync(join(pluginsRoot, "fresh", "data"))).toBe(true);
+    mkdirSync(join(pluginsRoot, "taken"), { recursive: true });
+    symlinkSync(outsideDir, join(pluginsRoot, "taken", "data"), dirLinkType);
+    try {
+      expect(() => ensurePluginDataDir("taken", join(pluginsRoot, "taken", "current"), pluginsRoot))
+        .toThrow(/plugin 'taken': the plugin data root .* is a symlink, not the directory the host created/);
+      expect(readdirSync(outsideDir)).toEqual([]);
+    } finally {
+      removeLinkOnly(join(pluginsRoot, "taken", "data"));
+    }
   });
 });
 

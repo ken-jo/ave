@@ -830,7 +830,7 @@ describe("a turn parked on an approval, with two tiles", () => {
     });
     await waitFor(() => expect(laneCard(second!.element)).toHaveLength(1));
     expect(second!.element.querySelector('[data-testid="approval-lane-card"]')!.textContent)
-      .toContain("플러그인 요청 · mail-assistant");
+      .toContain("익스텐션 요청 · mail-assistant");
     // In the frame's lane — the same place an unowned overlay card is drawn.
     expect(laneCard(container)[0]!.closest('[data-testid="floating-right-lane"]')).not.toBeNull();
 

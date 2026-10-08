@@ -11,6 +11,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PRELOAD_BUNDLES } from "../shared/preload-bundles.js";
 
 export type RuntimePaths = {
   /** `dist/src` in a build; `src` as the source-tree fallback used by tests. */
@@ -43,7 +44,7 @@ export function resolveRuntimePathsFromModuleUrl(
     // ancestor in a source checkout.
     if (
       exists(join(candidate, "main", "main.js")) &&
-      (exists(join(candidate, "preload.cjs")) ||
+      (exists(join(candidate, PRELOAD_BUNDLES.preload.file)) ||
         exists(join(candidate, "main", "headless-manifest.json")))
     ) {
       const distSrcDir = candidate;

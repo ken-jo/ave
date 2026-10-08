@@ -127,9 +127,23 @@ export interface SpawnWorkerSpec {
    * future contract may discover it another way).
    */
   readonly udsArgName?: string | { readonly env: string };
+  /**
+   * The reads, among {@link allowReadPaths}, this worker may hold inside the
+   * protected read floor: its plugin's declared `hostDirectory` that pierces
+   * it. Set by the host from the plugin's reviewed declaration, never by the
+   * plugin. Absent, none.
+   */
+  readonly floorPierces?: readonly string[];
 }
 
 const activeWrappedWorkerKeys = new Set<string>();
+const workerExitWaiters = new Map<string, Promise<void>>();
+
+/** Resolve after every worker of this plugin has definitively exited. */
+export async function waitForPluginWorkersStopped(pluginId: string): Promise<void> {
+  const prefix = `${pluginId.length}:${pluginId}:`;
+  await Promise.all([...workerExitWaiters].filter(([key]) => key.startsWith(prefix)).map(([, ended]) => ended));
+}
 
 function wrappedWorkerKey(pluginId: string, workerId: string): string {
   return `${pluginId.length}:${pluginId}:${workerId}`;
@@ -143,17 +157,22 @@ function reserveWrappedWorker(pluginId: string, workerId: string): () => void {
     );
   }
   activeWrappedWorkerKeys.add(key);
+  let resolveExit!: () => void;
+  workerExitWaiters.set(key, new Promise<void>((resolve) => { resolveExit = resolve; }));
   let released = false;
   return () => {
     if (released) return;
     released = true;
     activeWrappedWorkerKeys.delete(key);
+    workerExitWaiters.delete(key);
+    resolveExit();
   };
 }
 
 /** Test-only reset for mocked children that do not emit a definitive exit. */
 export function __resetActiveWrappedWorkersForTest(): void {
   activeWrappedWorkerKeys.clear();
+  workerExitWaiters.clear();
 }
 
 /**
@@ -488,12 +507,14 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     await mkdir(socketDir, { recursive: true, mode: 0o700 });
     // `mkdir({recursive,mode})` only applies `mode` to dirs it CREATES — a
     // pre-existing leaf (e.g. left by an older build under a looser umask) keeps
-    // its old mode. Force 0o700 unconditionally, and reject a symlinked socketDir
-    // (a same-user attacker pre-seeding the path can't redirect the bind/binds).
-    chmodSync(socketDir, 0o700);
+    // its old mode. Reject a symlinked socketDir (a same-user attacker
+    // pre-seeding the path can't redirect the bind/binds) FIRST, then force
+    // 0o700: `chmod` follows a link, so the other order would change the mode
+    // of whatever the link points at before refusing it.
     if (lstatSync(socketDir).isSymbolicLink()) {
       throw new Error(`[worker-spawn] refusing symlinked control dir: ${socketDir}`);
     }
+    chmodSync(socketDir, 0o700);
   } catch (err) {
     releaseWorkerReservation();
     throw err instanceof Error ? err : new Error(String(err));
@@ -550,8 +571,14 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       args,
       label: `worker:${safePlugin}:${safeWorker}:asrt`,
       grantMode: "allow-list",
+      // A worker shares its plugin's temp directory, and no other plugin's.
+      tempPrincipal: { kind: "plugin", id: spec.pluginId },
       allowRead,
       allowWrite,
+      // A plugin worker is plugin-owned code: it may not remove or replace the
+      // host-created roots it writes into, its plugin's data root above all.
+      pinWriteRoots: true,
+      ...(spec.floorPierces !== undefined ? { floorPierces: spec.floorPierces } : {}),
       baseEnv,
       extraEnv: { ...sandboxHome.env },
       stdio: WORKER_STDIO,

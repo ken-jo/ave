@@ -31,6 +31,7 @@ import {
   canonicalizePathForMatch,
 } from "../sensitive-paths.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { aveHome } from "../../shared/ave-home.js";
 import { foldPathForMatch as fold } from "./test-helpers.js";
 import { verifyAveScratchDir } from "../../shared/ave-scratch.js";
 
@@ -494,12 +495,13 @@ describe("runtime allowed directories", () => {
 });
 
 describe("computeDefaultAllowedDirectories", () => {
-  it("includes process.cwd() and ~/.ave (modulo Layer 0)", () => {
+  it("includes process.cwd() and the Ave home (modulo Layer 0)", () => {
     const result = computeDefaultAllowedDirectories();
     expect(result.length).toBeGreaterThanOrEqual(1);
-    // ~/.ave is allowed here as a parent dir (sensitive *children* are
-    // hard-blocked by Layer 0 but the dir itself is fine).
-    const aveDir = fold(pathResolve(homedir(), ".ave"));
+    // The Ave home is allowed here as a parent dir (sensitive *children* are
+    // hard-blocked by Layer 0 but the dir itself is fine). Under the test
+    // runner it is this file's own home, not ~/.ave.
+    const aveDir = fold(aveHome());
     expect(result).toContain(aveDir);
   });
 
@@ -541,7 +543,7 @@ describe("computeDefaultAllowedDirectories", () => {
 
   it("has a runtime variant that preserves canonical filesystem case", () => {
     const result = computeDefaultRuntimeAllowedDirectories();
-    expect(result).toContain(canonicalizePathForMatch(pathResolve(homedir(), ".ave")));
+    expect(result).toContain(canonicalizePathForMatch(aveHome()));
   });
 });
 

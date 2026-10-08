@@ -21,6 +21,7 @@ import {
   WORK_BOARD,
   SETTINGS,
   OVERLAY_V1,
+  ALERTS,
 } from "../shared/ipc-channels.js";
 
 // Re-export the pre-existing per-domain SOT groups so `src/contract/` is the
@@ -34,6 +35,7 @@ export {
   WORK_BOARD,
   SETTINGS,
   OVERLAY_V1,
+  ALERTS,
 };
 
 /**
@@ -178,15 +180,12 @@ export const CHANNELS = {
     timeout: "ave:ask-user-question:timeout",
   },
   plugins: {
-    install: "ave:plugins:install",
-    rollback: "ave:plugins:rollback",
     uninstall: "ave:plugins:uninstall",
     setEnabled: "ave:plugins:set-enabled",
     installLocal: "ave:plugins:install-local",
     uiList: "ave:plugins:ui:list",
     uiReadModule: "ave:plugins:ui:read-module",
     cards: "ave:plugins:cards",
-    marketplaceList: "ave:plugins:marketplace:list",
     configGet: "ave:plugins:config:get",
     configSet: "ave:plugins:config:set",
     configSchemaGet: "ave:plugins:config:schema:get",
@@ -199,7 +198,6 @@ export const CHANNELS = {
     /** Trusted-renderer, AVE_E2E-only bundle generation observation. */
     e2eBundleSnapshot: "ave:plugins:e2e:bundle-snapshot",
     // Lifecycle event channels (main → renderer). Not registered via ipcMain.
-    installProgress: "ave:plugins:install-progress",
     installResult: "ave:plugins:install-result",
     uninstallResult: "ave:plugins:uninstall-result",
     enabledChanged: "ave:plugins:enabled-changed",
@@ -289,26 +287,85 @@ export const CHANNELS = {
     disarm: "ave:away-authority:disarm",
   },
   marketplace: {
-    ping: "ave:marketplace:ping",
     /** Legacy main-to-renderer update notification; kept byte-identical on wire. */
     updatesAvailable: "marketplace:updates-available",
   },
+  // Git runtime of the git marketplace (design §9, §13). Host-renderer only;
+  // installing downloads and runs a binary, so it needs a live keyboard gesture.
+  gitRuntime: {
+    status: "ave:git:runtime:status",
+    install: "ave:git:runtime:install",
+    progress: "git-runtime:progress", // event main→renderer (GitRuntimeProgress)
+  },
+  // The git marketplace (design §13): sources, catalog, install plans and
+  // execution. Host-renderer only; every answer is a GitMarketplaceResult.
+  gitMarketplace: {
+    sourcesList: "ave:marketplace:sources:list",
+    sourcesPreview: "ave:marketplace:sources:preview",
+    sourcesAdd: "ave:marketplace:sources:add",
+    sourcesAcknowledge: "ave:marketplace:sources:acknowledge",
+    sourcesPickFolder: "ave:marketplace:sources:pick-folder",
+    sourcesReveal: "ave:marketplace:sources:reveal",
+    sourcesRemove: "ave:marketplace:sources:remove",
+    sourcesSetEnabled: "ave:marketplace:sources:set-enabled",
+    sourcesRefresh: "ave:marketplace:sources:refresh",
+    sourcesAcceptRewrite: "ave:marketplace:sources:accept-rewrite",
+    sourcesSetToken: "ave:marketplace:sources:set-token",
+    sourcesDeleteToken: "ave:marketplace:sources:delete-token",
+    catalogList: "ave:marketplace:catalog:list",
+    packageDetail: "ave:marketplace:package:detail",
+    installPlan: "ave:marketplace:install:plan",
+    installExecute: "ave:marketplace:install:execute",
+    updatePlan: "ave:marketplace:update:plan",
+    uninstall: "ave:marketplace:uninstall",
+    directPreview: "ave:marketplace:direct:preview",
+    deepLinkTake: "ave:marketplace:deep-link:take",
+    bootInstallsNotice: "ave:marketplace:boot-installs:notice",
+    bootInstallsDismiss: "ave:marketplace:boot-installs:dismiss",
+    updatesStatus: "ave:marketplace:updates:status",
+    updatesCheck: "ave:marketplace:updates:check",
+    updatesApplyNow: "ave:marketplace:updates:apply-now",
+    componentsApprove: "ave:marketplace:components:approve",
+    syncProgress: "marketplace:sync-progress", // event main→renderer (SyncProgressView)
+    catalogChanged: "marketplace:catalog-changed", // event main→renderer
+    installProgress: "marketplace:install-progress", // event main→renderer (InstallProgressView)
+    deepLink: "marketplace:deep-link", // event main→renderer: a deep link waits in deepLinkTake
+    bootInstallsApplied: "marketplace:boot-installs-applied", // event main→renderer: a notice waits in bootInstallsNotice
+    updateStatusChanged: "marketplace:update-status", // event main→renderer (UpdateStatusView)
+  },
+  pluginStudio: {
+    availableParts: "ave:plugin-studio:parts:list",
+    listDrafts: "ave:plugin-studio:drafts:list",
+    readDraft: "ave:plugin-studio:drafts:read",
+    writeDraft: "ave:plugin-studio:drafts:write",
+    validateDraft: "ave:plugin-studio:drafts:validate",
+    connectorCopyPreview: "ave:plugin-studio:connector-copy:preview",
+    confirmConnectorCopy: "ave:plugin-studio:connector-copy:confirm",
+    importPackage: "ave:plugin-studio:import",
+    reviewDraft: "ave:plugin-studio:drafts:review",
+    exportDraft: "ave:plugin-studio:export",
+    exportInstalled: "ave:plugin-studio:installed:export",
+    exportToCheckout: "ave:plugin-studio:checkout:write",
+    previewInstallFromFile: "ave:plugin-studio:file:preview",
+    previewInstallDraft: "ave:plugin-studio:drafts:install-preview",
+    installFromFile: "ave:plugin-studio:file:install",
+  },
+  // Installed content packages of the git marketplace (blueprint P3): what the
+  // settings pickers list and the catalogs of installed languages. Host-renderer only.
+  marketplaceContent: {
+    installed: "ave:marketplace:content:installed",
+    languageMessages: "ave:marketplace:content:language-messages",
+  },
   agents: {
     list: "ave:agents:list",
-    install: "ave:agents:install",
     uninstall: "ave:agents:uninstall",
-    // Lifecycle event channels (main → renderer).
-    installProgress: "ave:agents:install-progress",
-    installResult: "ave:agents:install-result",
+    // Lifecycle event channel (main → renderer).
     uninstallResult: "ave:agents:uninstall-result",
   },
   skills: {
     list: "ave:skills:list",
-    install: "ave:skills:install",
     uninstall: "ave:skills:uninstall",
-    // Lifecycle event channels (main → renderer).
-    installProgress: "ave:skills:install-progress",
-    installResult: "ave:skills:install-result",
+    // Lifecycle event channel (main → renderer).
     uninstallResult: "ave:skills:uninstall-result",
   },
   mcp: {
@@ -402,8 +459,6 @@ export const CHANNELS = {
     // Registered in ipc/domains/plugins.ts and gated on validateHostRendererSender — it
     // mutates what the model reads next turn.
     uiModelContext: "ave:mcp:ui-model-context",
-    catalogList: "ave:mcp:catalog:list",
-    installFromMarketplace: "ave:mcp:install-from-marketplace",
     importClaudeDesktopPreview: "ave:mcp:import:claude-desktop:preview",
     importClaudeDesktopApply: "ave:mcp:import:claude-desktop:apply",
     // #885 b3 — INTERNAL: absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /
@@ -455,6 +510,8 @@ export const CHANNELS = {
     resize: "ave:dock:resize",
     /** Remove a plugin card. */
     unmount: "ave:dock:unmount",
+    /** The host theme changed (`host.theme.changed` payload); the dock repaints its own chrome. */
+    theme: "ave:dock:theme",
     /** Dock-to-main: the user pressed the dock's close control. */
     requestClose: "ave:dock:request-close",
     /** Dock-to-main: one slot's guest died. */
@@ -507,9 +564,6 @@ export const CHANNELS = {
     acpSubscriptionLogout: "ave:settings:acp-subscription:logout",
     marketplaceInstallProviderPreset: "ave:settings:marketplace:install-provider-preset",
     marketplaceUninstallProviderPreset: "ave:settings:marketplace:uninstall-provider-preset",
-    marketplaceSetApiKey: "ave:settings:marketplace:set-api-key",
-    marketplaceHasApiKey: "ave:settings:marketplace:has-api-key",
-    marketplaceDeleteApiKey: "ave:settings:marketplace:delete-api-key",
     setWebApiKey: "ave:settings:set-web-api-key",
     hasWebApiKey: "ave:settings:has-web-api-key",
     deleteWebApiKey: "ave:settings:delete-web-api-key",
@@ -709,13 +763,13 @@ export const CHANNELS = {
  * classification, or a public channel's payload shape) changes in a way an
  * external SDK/CLI must react to. Read-first callers pin this.
  */
-export const CONTRACT_VERSION = "1.2.0";
+export const CONTRACT_VERSION = "2.0.0";
 
 /**
  * The versioned allowlist of channels an external surface (SDK / CLI / local
  * API) MAY touch. Deliberately a small, mostly-read subset:
  *   - chat send + session list/history/get-history (renderer-parity reads + send)
- *   - plugin status/list + marketplace list
+ *   - plugin status/list
  *   - permission mode (READ only — mutation stays internal + gesture-gated)
  *   - usage summary/range
  *
@@ -729,7 +783,6 @@ export const PUBLIC_CHANNELS = [
   CHANNELS.chat.getHistory,
   CHANNELS.chat.sessionHistory,
   CHANNELS.plugins.cards,
-  CHANNELS.plugins.marketplaceList,
   PERMISSIONS.getMode,
   CHANNELS.usage.summary,
   CHANNELS.usage.range,
@@ -760,7 +813,6 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [CHANNELS.chat.getHistory]: "none",
   [CHANNELS.chat.sessionHistory]: "none",
   [CHANNELS.plugins.cards]: "none",
-  [CHANNELS.plugins.marketplaceList]: "none",
   [PERMISSIONS.getMode]: "none",
   [CHANNELS.usage.summary]: "none",
   [CHANNELS.usage.range]: "none",
@@ -790,6 +842,8 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   // Running a binary for the owner is its own decision, made at this keyboard
   // against a command the surface has already shown in full.
   [CHANNELS.tailnetObserver.configureServe]: "required",
+  // Installing the managed git downloads a binary the marketplace then runs.
+  [CHANNELS.gitRuntime.install]: "required",
   // Waiving the approval click for a whole account, and taking that waiver
   // back, is a grant decision — gated exactly like the click it replaces.
   [CHANNELS.tailnetObserver.setOwnDeviceAdmission]: "required",

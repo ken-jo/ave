@@ -1,6 +1,12 @@
 # Keyless Marketplace Signing — Design And Staged Plan
 
-Status: design, not implemented. This document exists because the alternative —
+Status: **superseded, not implemented** (2026-09-23). The multi-source git
+marketplace ([architecture](../architecture/proposals/multi-source-git-marketplace.md),
+[blueprint](./multi-source-git-marketplace.md)) removes artifact signatures and
+trust anchors by owner decision; nothing below is scheduled. Kept as the record
+of the signing analysis.
+
+Original status: design, not implemented. This document exists because the alternative —
 starting the migration and discovering the crux halfway — leaves the marketplace
 with two signature formats and no finished verifier.
 

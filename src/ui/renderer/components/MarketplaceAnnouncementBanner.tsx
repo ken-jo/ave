@@ -1,9 +1,10 @@
 // Non-blocking, dismissible banner showing marketplace announcements.
 
 import { Button } from "../../../components/ui/button.js";
-import type {
-  MarketplaceAnnouncement,
-  MarketplaceAnnouncementActionTarget,
+import {
+  announcementActionLabel,
+  type MarketplaceAnnouncement,
+  type MarketplaceAnnouncementActionTarget,
 } from "../../../shared/marketplace-announcements.js";
 import { MarqueeText } from "./MarqueeText.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -62,7 +63,7 @@ export function MarketplaceAnnouncementBanner({
             className={`h-auto px-2 py-0.5 text-xs ${palette.action}`}
             data-testid={`marketplace-announcement-action-${index}`}
           >
-            {action.label[locale]}
+            {announcementActionLabel(action, locale)}
           </Button>
         ))}
         <Button

@@ -399,6 +399,18 @@ const HOSTAPI_MARSHALLING: Record<string, MarshallingDecision> = {
     args: "kind: string, key: string",
     returns: "Promise<boolean>",
   },
+  // A kind id, a key and typed slot values across; a discriminated envelope
+  // back. The host renders the card, so nothing crossing is a handle.
+  raiseAlert: {
+    jsonRepresentable: true,
+    args: "input: AlertInput",
+    returns: "Promise<AlertResult>",
+  },
+  withdrawAlert: {
+    jsonRepresentable: true,
+    args: "kind: string, key: string",
+    returns: "Promise<boolean>",
+  },
   // ─── agentApproval.* ──────────────────────────────────────────────────────
   "agentApproval.request": {
     jsonRepresentable: true,
@@ -624,6 +636,8 @@ describe("hostApi marshalling — the surface a process boundary must carry", ()
         }),
       ],
       ["withdrawWorkProposal", await hostApi.withdrawWorkProposal("surface-probe", "surface-probe")],
+      ["raiseAlert", await hostApi.raiseAlert({ kind: "surface-probe", key: "surface-probe" })],
+      ["withdrawAlert", await hostApi.withdrawAlert("surface-probe", "surface-probe")],
     ];
 
     for (const [path, value] of observed) {

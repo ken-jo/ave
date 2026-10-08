@@ -286,12 +286,25 @@ const measuredInventory = readExpectedSourceFiles(
     return {
       status: 0,
       signal: null,
-      stdout: "src/tracked.test.ts\0src/untracked.test.ts\0",
+      stdout: args.includes("--others")
+        ? "src/tracked.test.ts\0src/untracked.test.ts\0"
+        : "src/tracked.test.ts\0",
       stderr: "",
     };
   },
   () => true,
 );
+let emptyTrackedRefused = false;
+try {
+  readExpectedSourceFiles((command, args) => ({
+    status: 0, signal: null,
+    stdout: args.includes("--others") ? "src/untracked.test.ts\0" : "",
+    stderr: "",
+  }), () => true);
+} catch (error) {
+  emptyTrackedRefused = /empty tracked TypeScript source inventory/.test(String(error));
+}
+check("an untracked-only inventory cannot establish coverage", emptyTrackedRefused);
 check(
   "the independent inventory asks Git for tracked and untracked intended sources",
   inventoryCommand === "git"

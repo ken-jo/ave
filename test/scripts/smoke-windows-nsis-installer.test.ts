@@ -28,7 +28,10 @@ import {
   normalizeToastActivatorClsid,
   parseExecutableFromCommand,
   parseJsonProcessResult,
+  REGISTRY_KEY_DELETED_ERROR,
+  REGISTRY_PENDING_DELETION_SETTLE_MS,
   REGISTRY_QUERY_SCRIPT,
+  settleRegistryPendingDeletion,
   validateRegistryQueryResult,
   waitForExactUninstallRegistrationRemoved,
 } from "../../scripts/smoke-windows-nsis-installer.mjs";
@@ -1852,4 +1855,174 @@ describe("ASRT provisioning precondition", () => {
     delete (raw.user as { sid?: string }).sid;
     expect(() => assertAsrtUserReady(raw)).toThrow(/user\.sid/);
   });
+});
+
+describe("registry keys marked for deletion", () => {
+  const pending = {
+    keyExists: false,
+    pendingDeletion: true,
+    valueExists: false,
+    value: null,
+    valueKind: null,
+    entries: [],
+  };
+  const absent = {
+    keyExists: false,
+    valueExists: false,
+    value: null,
+    valueKind: null,
+    entries: [],
+  };
+  const context = {
+    hive: "HKLM",
+    path: `${WINDOWS_UNINSTALL_REGISTRY_PATH}\\Ave`,
+    view: "64",
+    mode: "default",
+  };
+
+  function fakeClock() {
+    let current = 0;
+    const delays: number[] = [];
+    return {
+      delays,
+      now: () => current,
+      delay: async (ms: number) => {
+        delays.push(ms);
+        current += ms;
+      },
+    };
+  }
+
+  it("names Win32 ERROR_KEY_DELETED by the code RegistryKey reports", () => {
+    expect(REGISTRY_KEY_DELETED_ERROR).toBe(1018);
+    expect(REGISTRY_PENDING_DELETION_SETTLE_MS).toBe(10_000);
+  });
+
+  it("reports only ERROR_KEY_DELETED as pending and rethrows every other error", () => {
+    const catchBlock = REGISTRY_QUERY_SCRIPT.slice(
+      REGISTRY_QUERY_SCRIPT.indexOf("\n} catch {\n"),
+      REGISTRY_QUERY_SCRIPT.indexOf("\n} finally {\n"),
+    );
+    expect(catchBlock).toContain("[System.IO.IOException]");
+    expect(catchBlock).toContain(
+      `$keyDeleted.HResult -ne ${REGISTRY_KEY_DELETED_ERROR}) { throw }`,
+    );
+    expect(catchBlock).toContain("pendingDeletion = $true");
+    expect(catchBlock.indexOf("{ throw }")).toBeLessThan(
+      catchBlock.indexOf("pendingDeletion = $true"),
+    );
+  });
+
+  it("accepts the pending state only in its absent shape", () => {
+    expect(validateRegistryQueryResult(pending, context)).toBe(pending);
+    expect(() =>
+      validateRegistryQueryResult({ ...pending, keyExists: true }, context),
+    ).toThrow(/invalid pending-deletion state/);
+    expect(() =>
+      validateRegistryQueryResult(
+        { ...pending, valueExists: true, value: "x", valueKind: "String" },
+        context,
+      ),
+    ).toThrow(/invalid pending-deletion state/);
+    expect(() =>
+      validateRegistryQueryResult({ ...absent, pendingDeletion: "yes" }, context),
+    ).toThrow(/invalid contract/);
+  });
+
+  it("re-queries a pending key until its deletion settles and returns the settled state", async () => {
+    const clock = fakeClock();
+    const results = [pending, pending, absent];
+    let calls = 0;
+    const settled = await settleRegistryPendingDeletion(
+      async () => results[calls++],
+      "HKLM 64-bit test",
+      { now: clock.now, delay: clock.delay, pollMs: 250 },
+    );
+    expect(settled).toBe(absent);
+    expect(calls).toBe(3);
+    expect(clock.delays).toEqual([250, 250]);
+  });
+
+  it("settles every registry query the smoke makes", () => {
+    const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
+    const body = smoke.slice(
+      smoke.indexOf("async function registryQuery("),
+      smoke.indexOf("export async function settleRegistryPendingDeletion("),
+    );
+    expect(body).toContain("return await settleRegistryPendingDeletion(");
+    expect(body).toContain("await runPowerShellJson(REGISTRY_QUERY_SCRIPT, env)");
+    expect(body.match(/runPowerShellJson\(/g)).toHaveLength(1);
+  });
+
+  it("returns a settled state without waiting", async () => {
+    const clock = fakeClock();
+    const present = { ...absent, keyExists: true };
+    const settled = await settleRegistryPendingDeletion(
+      async () => present,
+      "HKLM 64-bit test",
+      { now: clock.now, delay: clock.delay },
+    );
+    expect(settled).toBe(present);
+    expect(clock.delays).toEqual([]);
+  });
+
+  it("fails with the observed state when the key never settles", async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    await expect(
+      settleRegistryPendingDeletion(
+        async () => {
+          calls += 1;
+          return pending;
+        },
+        "HKLM 64-bit test",
+        { now: clock.now, delay: clock.delay, timeoutMs: 1_000, pollMs: 250 },
+      ),
+    ).rejects.toThrow(
+      /stayed marked for deletion for 1000 ms: HKLM 64-bit test; last state .*"pendingDeletion":true/,
+    );
+    expect(calls).toBe(5);
+  });
+
+  it.runIf(process.platform === "win32")(
+    "observes ERROR_KEY_DELETED on a real key deleted under an open handle",
+    () => {
+      const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
+      if (!systemRoot) throw new Error("SystemRoot/WINDIR is required");
+      const keyPath = `SOFTWARE\\Ave-smoke-key-deleted-${randomUUID()}`;
+      const script = buildPowerShellScript([
+        "$ErrorActionPreference = 'Stop'",
+        "$base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Registry64)",
+        "$created = $base.CreateSubKey($env:AVE_TEST_KEY)",
+        "$created.SetValue('probe', 'x')",
+        "$created.Dispose()",
+        "$open = $base.OpenSubKey($env:AVE_TEST_KEY, $false)",
+        "$base.DeleteSubKeyTree($env:AVE_TEST_KEY)",
+        "try {",
+        "  $null = $open.GetValueNames()",
+        "  'no-error'",
+        "} catch {",
+        "  $e = $_.Exception",
+        "  while ($null -ne $e -and -not ($e -is [System.IO.IOException])) { $e = $e.InnerException }",
+        "  if ($null -eq $e) { 'not-io' } else { [string]$e.HResult }",
+        "} finally {",
+        "  $open.Dispose()",
+        "  $base.Dispose()",
+        "}",
+      ]);
+      const result = spawnSync(
+        join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        {
+          encoding: "utf8",
+          env: { ...process.env, AVE_TEST_KEY: keyPath },
+          timeout: 30_000,
+          windowsHide: true,
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe(String(REGISTRY_KEY_DELETED_ERROR));
+    },
+  );
 });

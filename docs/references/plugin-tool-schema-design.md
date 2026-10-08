@@ -15,8 +15,8 @@ action, or governance map.
 - `schemas/plugin-manifest.schema.json` owns the accepted manifest shape.
 - `src/plugins/runtime/manifest-validation.ts` owns Host cross-field checks and
   materialization.
-- `@ave/plugin-sdk` mechanically mirrors the public module and schema for
-  plugin-author builds; it owns no contract policy.
+- Plugin repositories vendor the public module and schema at an app release
+  tag into `contract/`; `contract/sources.json` records their source and hashes.
 
 ## Tool Shape
 

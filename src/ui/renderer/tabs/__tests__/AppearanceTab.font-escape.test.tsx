@@ -41,10 +41,9 @@ vi.mock("../../theme/index.js", async () => {
     ...actual,
     useTheme: () => {
       const [bundleId] = useState("tokyo-night");
-      return { bundleId, setBundle: vi.fn(), followSystem: false, setFollowSystem: vi.fn() };
+      return { bundleId, setBundle: vi.fn(), followSystem: false, setFollowSystem: vi.fn(), canFollowSystem: false };
     },
     BUNDLES: actual.BUNDLES ?? [],
-    VIOLET_PAIR_IDS: actual.VIOLET_PAIR_IDS ?? [],
   };
 });
 

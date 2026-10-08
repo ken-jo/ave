@@ -49,6 +49,34 @@ export interface ClaudeDesktopImportResult {
 }
 
 /**
+ * Why adding one imported server failed, for the sentence the renderer shows
+ * with its next action; the raw reason stays behind *Copy details*.
+ *   - `permission-denied`: Ave may not write its MCP settings file;
+ *   - `not-found`: the file or its folder is gone;
+ *   - `unreadable`: the file cannot be read, or is not valid;
+ *   - `other`: anything else (a governance refusal, an invalid entry).
+ */
+export type ClaudeDesktopImportFailure = "permission-denied" | "not-found" | "unreadable" | "other";
+
+export function importFailureKind(error: unknown): ClaudeDesktopImportFailure {
+  if (error instanceof SyntaxError) return "unreadable";
+  switch ((error as NodeJS.ErrnoException | null)?.code) {
+    case "EACCES":
+    case "EPERM":
+    case "EROFS":
+      return "permission-denied";
+    case "ENOENT":
+      return "not-found";
+    case "EISDIR":
+    case "ENOTDIR":
+    case "EIO":
+      return "unreadable";
+    default:
+      return "other";
+  }
+}
+
+/**
  * Heuristic: an env key is "suspected secret" if its uppercase form
  * contains any of these tokens. The list intentionally errs toward
  * false-positive — better to prompt the user once than silently persist

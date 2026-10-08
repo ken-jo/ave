@@ -36,6 +36,7 @@
  */
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { rmdirSync, unlinkSync } from "node:fs";
 import { rm } from "node:fs/promises";
 
 import { retryOnTransientFsLock } from "../../plugins/plugin-artifact-store.js";
@@ -43,6 +44,28 @@ import { retryOnTransientFsLock } from "../../plugins/plugin-artifact-store.js";
 /** Remove a test's scratch directory, retrying the transient lock codes. */
 export async function cleanupTmpDir(dir: string): Promise<void> {
   await retryOnTransientFsLock(() => rm(dir, { recursive: true, force: true }));
+}
+
+/**
+ * Remove the link at `path`, and never what it points to.
+ *
+ * No step recurses, so no platform's reading of a Windows junction can walk
+ * into the target, which is how a recursive `rmSync` of a directory holding a
+ * junction deleted the real scripts/ tree. `unlinkSync` removes a symlink or
+ * a junction and refuses a real directory. Where it refuses a junction too,
+ * `rmdirSync` without `recursive` removes it: RemoveDirectory deletes a
+ * junction's reparse point whatever its target holds. On anything else, a
+ * directory that is not empty, it throws.
+ */
+export function removeLinkOnly(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return;
+    if (code !== "EPERM" && code !== "EISDIR") throw error;
+    rmdirSync(path);
+  }
 }
 
 /**

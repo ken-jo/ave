@@ -52,7 +52,7 @@ describe("SystemPromptBuilder — inactive plugin catalog", () => {
       includeEgress: true,
     });
     const prompt = builder.build();
-    expect(prompt).toContain("## 사용 가능한 플러그인 (현재 턴 미선택 — request_plugin 으로 선택)");
+    expect(prompt).toContain("## 사용 가능한 익스텐션 (현재 턴 미선택 — request_plugin 으로 선택)");
     expect(prompt).toContain("**example-meeting**");
     expect(prompt).toContain("meeting_start, meeting_stop");
     expect(prompt).toContain("**docs-plugin**");
@@ -93,7 +93,7 @@ describe("SystemPromptBuilder — inactive plugin catalog", () => {
       includeEgress: true,
     });
     const prompt = builder.build();
-    expect(prompt).not.toContain("사용 가능한 플러그인");
+    expect(prompt).not.toContain("사용 가능한 익스텐션");
   });
 
   it("section omitted when all cards are active", () => {
@@ -112,7 +112,7 @@ describe("SystemPromptBuilder — inactive plugin catalog", () => {
       includeEgress: true,
     });
     const prompt = builder.build();
-    expect(prompt).not.toContain("사용 가능한 플러그인");
+    expect(prompt).not.toContain("사용 가능한 익스텐션");
   });
 
   it("omits user-disabled loaded plugins because request_plugin cannot select them", () => {

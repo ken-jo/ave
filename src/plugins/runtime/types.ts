@@ -8,6 +8,7 @@ import type {
   PluginAccessSpec,
   PluginManifest,
   PluginRegistryEntryInstallSource,
+  PluginRegistryEntryOrigin,
   PluginToolHandler,
   RuntimePlugin,
 } from "../types.js";
@@ -51,6 +52,8 @@ export type ManifestLoadPlan = {
   approvedPluginAccess?: PluginAccessSpec;
   installSource?: PluginRegistryEntryInstallSource;
   manifestSha256?: string;
+  /** The marketplace install this entry came from; a host-secret grant reads it (design §10.3). */
+  origin?: PluginRegistryEntryOrigin;
 };
 
 /**

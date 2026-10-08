@@ -2,10 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import type { BootContext } from "../context.js";
 import { assembleAppServices } from "../assemble-services.js";
 
-vi.mock("../plugins.js", () => ({
-  registerPluginNotifications: vi.fn(),
-}));
-
 vi.mock("../../main/auth-window-service.js", () => ({
   clearAuthPartition: vi.fn(),
   forgetTrackedPluginAuthPartitions: vi.fn(),
@@ -23,7 +19,6 @@ describe("assembleAppServices rationale shutdown", () => {
       runPluginShutdownHandlers: vi.fn(async () => {
         order.push("plugin-shutdown");
       }),
-      disposePluginNotifications: mark("plugin-notifications"),
       disposePluginEventBridge: mark("plugin-event-bridge"),
       preferenceRefreshService: { stop: mark("preference") },
       memoryMaintenanceCoordinator: { stop: mark("memory-maintenance") },
@@ -68,7 +63,6 @@ describe("assembleAppServices rationale shutdown", () => {
     expect(order).toEqual([
       "active-llm-wildcard",
       "plugin-shutdown",
-      "plugin-notifications",
       "plugin-event-bridge",
       "memory-maintenance",
       "preference",

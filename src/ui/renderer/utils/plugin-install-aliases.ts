@@ -1,4 +1,4 @@
-export function getPluginInstallAliases(
+function getPluginInstallAliases(
   pluginId: string,
   runtimeAliases: readonly string[] = [],
 ): string[] {

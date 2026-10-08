@@ -1,6 +1,6 @@
 # ave
 
-Ave App은 채팅, 워크 모드, 도구 호출, 플러그인, 로컬 상태, 권한 흐름을 하나의 데스크톱 환경에 통합하는 Electron 기반 에이전트 워크스페이스입니다. Manifest 기반 플러그인 런타임, 관리형 마켓플레이스 설치, 로컬/클라우드 검색, 회의·업무 보조 플로우, OS별 installer 빌드 파이프라인을 이 저장소에서 관리합니다.
+Ave App은 채팅, 워크 모드, 도구 호출, 익스텐션, 로컬 상태, 권한 흐름을 하나의 데스크톱 환경에 통합하는 Electron 기반 에이전트 워크스페이스입니다. Manifest 기반 익스텐션 런타임, 관리형 마켓플레이스 설치, 로컬/클라우드 검색, 회의·업무 보조 플로우, OS별 installer 빌드 파이프라인을 이 저장소에서 관리합니다.
 
 영문 README: [../../README.md](../../README.md)
 
@@ -8,10 +8,10 @@ Ave App은 채팅, 워크 모드, 도구 호출, 플러그인, 로컬 상태, �
 
 - Electron main/renderer/preload/plugin-preload 번들.
 - 실제 채팅 UI, 세션 resume/fork/branch/export/compact, inline `ask_user_question` 카드.
-- `~/.ave/plugins/registry.json` 기반 Manifest 동적 플러그인 로딩.
-- 관리형 마켓플레이스 플러그인 자동 install/refresh.
+- `~/.ave/plugins/registry.json` 기반 Manifest 동적 익스텐션 로딩.
+- 관리형 마켓플레이스 익스텐션 자동 install/refresh.
 - Local Indexer BM25/vector 결과와 cloud adapter 결과를 RRF로 융합하는 host-side retrieval.
-- 플러그인 UI 호스팅, IPC 브리지, 이벤트 계약, OS 알림, overlay trigger surface.
+- 익스텐션 UI 호스팅, IPC 브리지, 이벤트 계약, OS 알림, overlay trigger surface.
 - macOS Apple Silicon, Linux, Windows installer 빌드 스크립트와 GitHub Actions workflow.
 
 ## 작업 공간 — 타일로 나뉜 대화
@@ -34,19 +34,19 @@ Ave App은 채팅, 워크 모드, 도구 호출, 플러그인, 로컬 상태, �
 
 **사이드바.** 대화 행은 이름 변경, 읽지 않음으로 표시, 읽음으로 표시, 보관, 공유, 대화 복사, 삭제를 제공하고, 프로젝트 행은 고정·폴더 열기·제거와 함께 편집과 프로젝트 보관을 제공합니다. 턴이 진행 중인 대화의 행에는 응답 표시가 나타나고, 사용자가 보고 있지 않은 곳에서 턴이 끝나면(포커스되지 않은 타일, 또는 다른 화면에 가려진 타일) 사용자가 그 대화를 볼 때까지 안 읽음으로 표시합니다. 대화 탭의 목록은 남은 개수를 알리는 행으로 끝나지 않고 스크롤에 따라 다음 쪽을 이어서 보여 주며, 프로젝트 탭에서는 그룹마다 자기 단추로 펼치고 접으므로 프로젝트 하나가 길어져도 다른 프로젝트를 화면 밖으로 밀어내지 않습니다.
 
-**작업 패널.** 브라우저 탭은 세션이 방문한 사이트를 뷰어 위 목록으로 최신순으로 보여 주고, 각 행에 그 주소를 요청한 것인지 결과에서 받은 것인지 표시합니다. 파일 탭은 세션의 파일을 각 파일에 가해진 동작(읽음, 씀, 첨부, 도구)과 함께 나열하고, "변경된 파일" 세그먼트에서는 생성·수정·삭제·이동된 파일만 최신순으로 모아 각 행에 그 변경을 표시합니다. 활동 탭은 세션이 호출한 플러그인과 도구를 전부 나열하며, 플러그인·MCP 호출 정보는 대화 기록에서 복원하므로 세션을 다시 열어도 유지됩니다. 비어 있는 패널에는 요약 대시보드와 카테고리별 최신 항목을 표시하고, 여기서 활동 탭을 열 수 있습니다. 머리글의 도구 활동 버튼은 없어졌습니다.
+**작업 패널.** 브라우저 탭은 세션이 방문한 사이트를 뷰어 위 목록으로 최신순으로 보여 주고, 각 행에 그 주소를 요청한 것인지 결과에서 받은 것인지 표시합니다. 파일 탭은 세션의 파일을 각 파일에 가해진 동작(읽음, 씀, 첨부, 도구)과 함께 나열하고, "변경된 파일" 세그먼트에서는 생성·수정·삭제·이동된 파일만 최신순으로 모아 각 행에 그 변경을 표시합니다. 활동 탭은 세션이 호출한 익스텐션과 도구를 전부 나열하며, 익스텐션·MCP 호출 정보는 대화 기록에서 복원하므로 세션을 다시 열어도 유지됩니다. 비어 있는 패널에는 요약 대시보드와 카테고리별 최신 항목을 표시하고, 여기서 활동 탭을 열 수 있습니다. 머리글의 도구 활동 버튼은 없어졌습니다.
 
-## 플러그인 아키텍처
+## 익스텐션 아키텍처
 
-설치된 플러그인은 `~/.ave/plugins/<id>/plugin.json`에 위치하며, 활성 목록은 `~/.ave/plugins/registry.json`가 관리합니다. 메인 앱은 플러그인 구현을 직접 import하지 않고 `PluginRuntime`이 manifest를 읽어 host entry를 동적으로 로드합니다.
+설치된 익스텐션은 `~/.ave/plugins/<id>/plugin.json`에 위치하며, 활성 목록은 `~/.ave/plugins/registry.json`가 관리합니다. 메인 앱은 익스텐션 구현을 직접 import하지 않고 `PluginRuntime`이 manifest를 읽어 host entry를 동적으로 로드합니다.
 
 더 넓게 보면 `~/.ave/` 루트에는 여러 도메인에 걸치는 자원(`settings.json`, `audit.log`, `secrets/`)만 두고, 도메인 하나가 소유하는 자료는 모두 `~/.ave/<feature>/` 아래에 둡니다. 그래야 도메인 하나를 디렉토리 하나 단위로 백업하거나 지울 수 있습니다. 스킬 승인 기록은 `~/.ave/skills/approvals.json`에서, 고정한 메시지는 `~/.ave/sessions/starred.json`에서 읽습니다. 이전 버전이 루트에 남긴 파일은 처음 로드할 때 해당 namespace 로 옮깁니다.
 
-플러그인은 capability, method, UI extension, emitted event, subscription, notification event를 manifest에 선언합니다. 메인 프로세스는 IPC를 플러그인 method 호출로 브리지하고, lifecycle은 runtime이 `start`/`stop` 단위로 관리합니다.
+익스텐션은 capability, method, UI extension, emitted event, subscription, notification event를 manifest에 선언합니다. 메인 프로세스는 IPC를 익스텐션 method 호출로 브리지하고, lifecycle은 runtime이 `start`/`stop` 단위로 관리합니다.
 
-플러그인 자신의 시작 실패는 치명적 오류가 아니라 성능 저하로 다룹니다. 인스턴스는 그대로 남고 다른 플러그인의 도구 호출은 계속 동작하며, 실패한 플러그인을 호출하면 매번 실제 사유를 응답합니다. 세션 전체의 도구 호출을 닫는 것은 호스트 자신의 generation fence 가 실패했을 때뿐입니다.
+익스텐션 자신의 시작 실패는 치명적 오류가 아니라 성능 저하로 다룹니다. 인스턴스는 그대로 남고 다른 익스텐션의 도구 호출은 계속 동작하며, 실패한 익스텐션을 호출하면 매번 실제 사유를 응답합니다. 세션 전체의 도구 호출을 닫는 것은 호스트 자신의 generation fence 가 실패했을 때뿐입니다.
 
-대표 관리형 플러그인:
+대표 관리형 익스텐션:
 
 - `@ave/plugin-local-indexer`
 - `@ave/plugin-meeting`
@@ -59,7 +59,6 @@ Ave App은 채팅, 워크 모드, 도구 호출, 플러그인, 로컬 상태, �
 
 - Bun
 - Node.js `>=22.4`
-- git submodule (`packages/plugin-sdk`)
 
 ```bash
 git clone <repo-url>
@@ -91,9 +90,9 @@ bun run build
 bun run dist
 ```
 
-## 플러그인 Registry 조회 CLI
+## 익스텐션 Registry 조회 CLI
 
-Registry CLI는 실행 중인 호스트의 live state와 durable state가 어긋나지 않도록 조회 전용입니다. 설치와 상태 변경은 마켓플레이스 카드, `ave://install/<slug>` 딥링크, 또는 호스트 설정을 사용합니다. 로컬 개발에서는 unpackaged 앱을 실행하고 **Settings → Plugin Config → 개발자 도구 → 로컬 폴더에서 설치**에서 `plugin.json`이 포함된 빌드 폴더를 선택합니다.
+Registry CLI는 실행 중인 호스트의 live state와 durable state가 어긋나지 않도록 조회 전용입니다. 설치와 상태 변경은 마켓플레이스 카드, `ave://install/<slug>` 딥링크, 또는 호스트 설정을 사용합니다. 로컬 개발에서는 unpackaged 앱을 실행하고 **Settings → Extension Settings → 개발자 도구 → 로컬 폴더에서 설치**에서 `plugin.json`이 포함된 빌드 폴더를 선택합니다.
 
 ```bash
 bun run plugins:list
@@ -116,5 +115,5 @@ bun run start
 - 아키텍처: [../architecture/README.md](../architecture/README.md)
 - 디자인: [../design/README.md](../design/README.md)
 - 타일로 나뉜 채팅 그룹: [../design/tiled-chat-groups.md](../design/tiled-chat-groups.md)
-- 플러그인 개발: [현재 English guide](../guides/plugin-development.md)
+- 익스텐션 개발: [현재 English guide](../guides/plugin-development.md)
 - 프로덕션 릴리스 체크리스트: [../references/production-release-checklist.md](../references/production-release-checklist.md)

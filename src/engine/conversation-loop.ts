@@ -254,6 +254,7 @@ export class ConversationLoop {
    */
   private readonly turnSettledListeners = new Set<(sessionId: string) => void>();
   private activeSessionTransition: SessionTransitionLease | null = null;
+  private readonly sessionTransitionSettledListeners = new Set<() => void>();
 
   constructor(deps: ConversationLoopDeps) {
     this.deps = deps;
@@ -577,11 +578,18 @@ export class ConversationLoop {
       return await operation(lease);
     } finally {
       if (this.activeSessionTransition === lease) this.activeSessionTransition = null;
+      for (const listener of [...this.sessionTransitionSettledListeners]) listener();
     }
   }
 
   isSessionTransitioning(): boolean {
     return this.activeSessionTransition !== null;
+  }
+
+  /** Subscribe to a session transition ending (the activity coordinator's idle signal); returns the unsubscribe. */
+  onSessionTransitionSettled(listener: () => void): () => void {
+    this.sessionTransitionSettledListeners.add(listener);
+    return () => this.sessionTransitionSettledListeners.delete(listener);
   }
 
   newConversation(

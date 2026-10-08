@@ -1,8 +1,21 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync, lstatSync, statSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// `lstat` passes through, except for a path a case marks as swapped: there it
+// reports the directory that used to be at that path, which is what a swap
+// between the walk's `lstat` and its next call looks like from inside.
+const staleLstat = vi.hoisted(() => new Map<string, unknown>());
+vi.mock("node:fs/promises", async (original) => {
+  const real = await original<typeof import("node:fs/promises")>();
+  return {
+    ...real,
+    lstat: async (path: string, ...rest: unknown[]) =>
+      staleLstat.get(path) ?? (real.lstat as (...args: unknown[]) => Promise<unknown>)(path, ...rest),
+  };
+});
 
 import type { PluginPaths } from "../plugin-paths.js";
 import {
@@ -10,6 +23,7 @@ import {
   markRemovalTransactionRegistryCommitted,
   reconcileRemovalTransaction,
   reconcileRemovalTransactions,
+  restoreOwnerAccess,
   stageRemovalTransaction,
 } from "../plugin-removal-transaction.js";
 import { updatePluginRegistry } from "../registry.js";
@@ -212,4 +226,51 @@ describe("durable plugin removal transactions", () => {
     ]);
     expect(await readFile(outside, "utf-8")).toBe(JSON.stringify(journal));
   });
+});
+
+describe("restoring owner access before a staged plugin tree is removed", () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "ave-owner-access-"));
+    staleLstat.clear();
+  });
+  afterEach(async () => {
+    staleLstat.clear();
+    await chmod(join(root, "outside"), 0o700).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "opens an unreadable directory again, and leaves a link's target alone",
+    async () => {
+      const tree = join(root, "tree");
+      const outside = join(root, "outside");
+      await mkdir(join(tree, "locked", "deep"), { recursive: true });
+      await mkdir(outside);
+      await symlink(outside, join(tree, "link"));
+      await chmod(outside, 0o500);
+      await chmod(join(tree, "locked"), 0o000);
+      await restoreOwnerAccess(tree);
+      expect(statSync(join(tree, "locked")).mode & 0o700).toBe(0o700);
+      expect(statSync(outside).mode & 0o777).toBe(0o500);
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "refuses a directory swapped for a link after its lstat, readable or not, instead of following it",
+    async () => {
+      const outside = join(root, "outside");
+      await mkdir(outside);
+      for (const mode of [0o500, 0o000]) {
+        const swapped = join(root, `swapped-${mode.toString(8)}`);
+        await mkdir(swapped);
+        staleLstat.set(swapped, lstatSync(swapped));
+        await rm(swapped, { recursive: true });
+        await symlink(outside, swapped);
+        await chmod(outside, mode);
+        await expect(restoreOwnerAccess(swapped)).rejects.toMatchObject({ code: expect.stringMatching(/^(ELOOP|ENOTDIR)$/) });
+        expect(lstatSync(outside).mode & 0o777).toBe(mode);
+      }
+    },
+  );
 });

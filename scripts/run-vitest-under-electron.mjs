@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { guardedNodeOptions } from "./lib/document-consumer-node-options.mjs";
 
 const require = createRequire(import.meta.url);
 const FORWARDED_SIGNALS = Object.freeze(["SIGINT", "SIGTERM"]);
@@ -149,6 +150,7 @@ export function createElectronVitestInvocation(
       cwd,
       env: {
         ...env,
+        NODE_OPTIONS: guardedNodeOptions(env.NODE_OPTIONS),
         ELECTRON_RUN_AS_NODE: "1",
         AVE_TEST_NODE_EXEC_PATH: nodeExecPath,
       },

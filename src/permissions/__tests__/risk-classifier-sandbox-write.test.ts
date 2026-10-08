@@ -13,13 +13,15 @@
  *   (e) declared-but-empty pathFields (manifest mistake) → HIGH "not declared".
  */
 import { describe, it, expect } from "vitest";
-import { realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   RuleBasedRiskClassifier,
   type ToolInvocationContext,
 } from "../reviewer/risk-classifier.js";
 import { detectSandboxCapability } from "../sandbox-capability.js";
+import { resolveOwnerPluginSandboxRoot, resolvePluginWritableRoot } from "../../plugins/plugin-storage-layout.js";
 
 // Use realpath so the canonicalize step inside the classifier produces
 // the same string on darwin (/var → /private/var).
@@ -223,5 +225,56 @@ describe("RuleBasedRiskClassifier — OS-confined no-declared-write-path LOW", (
     );
     expect(v.level).toBe("high");
     expect(v.reason).toBe("write path not declared");
+  });
+});
+
+/**
+ * The owner sandbox root is host-derived, and the derivation is what must not
+ * be steerable: a confined plugin that replaced its data root with a link would
+ * otherwise make the link's target its "own" sandbox, since the classifier
+ * canonicalises the root.
+ */
+describe("the owner plugin sandbox root of a replaced data root", () => {
+  const rb = new RuleBasedRiskClassifier();
+
+  it.runIf(process.platform !== "win32")("derives no owner sandbox, so a write under the link target is not auto-LOW", () => {
+    const home = mkdtempSync(join(TMP, "ave-owner-root-"));
+    const previous = process.env.AVE_HOME;
+    process.env.AVE_HOME = join(home, ".ave");
+    try {
+      const outside = join(home, "outside");
+      mkdirSync(outside);
+      mkdirSync(join(home, ".ave", "plugins", PLUGIN_ID), { recursive: true });
+      symlinkSync(outside, resolvePluginWritableRoot(PLUGIN_ID));
+      const write = { finalInput: { path: join(outside, "token.bin") } };
+      // The hazard, measured: the lexical root alone canonicalises to the target.
+      expect(rb.classify(ctx({ ...write, ownerPluginSandboxRoot: resolvePluginWritableRoot(PLUGIN_ID) })).reason)
+        .toMatch(/owner plugin sandbox/);
+      // What the invocation sites now pass: the host-checked root, or nothing.
+      const owner = resolveOwnerPluginSandboxRoot(PLUGIN_ID);
+      expect(owner).toBeUndefined();
+      const verdict = rb.classify(ctx({ ...write, ...(owner !== undefined ? { ownerPluginSandboxRoot: owner } : {}) }));
+      expect(verdict.reason).not.toMatch(/owner plugin sandbox/);
+      expect(verdict.level).not.toBe("low");
+    } finally {
+      if (previous === undefined) delete process.env.AVE_HOME;
+      else process.env.AVE_HOME = previous;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the lexical root for a real directory, and for one not created yet", () => {
+    const home = mkdtempSync(join(TMP, "ave-owner-root-"));
+    const previous = process.env.AVE_HOME;
+    process.env.AVE_HOME = join(home, ".ave");
+    try {
+      expect(resolveOwnerPluginSandboxRoot(PLUGIN_ID)).toBe(resolvePluginWritableRoot(PLUGIN_ID));
+      mkdirSync(resolvePluginWritableRoot(PLUGIN_ID), { recursive: true });
+      expect(resolveOwnerPluginSandboxRoot(PLUGIN_ID)).toBe(resolvePluginWritableRoot(PLUGIN_ID));
+    } finally {
+      if (previous === undefined) delete process.env.AVE_HOME;
+      else process.env.AVE_HOME = previous;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

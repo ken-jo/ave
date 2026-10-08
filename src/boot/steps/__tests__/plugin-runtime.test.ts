@@ -1,4 +1,4 @@
-import { createBootHostFixture, createDesktopHostFixture } from "../../../__tests__/support/host-runtime.js";
+import { createBootHostFixture, createDesktopHostFixture, stationaryLeaseState } from "../../../__tests__/support/host-runtime.js";
 /**
  * plugin-runtime.test.ts
  *
@@ -14,7 +14,6 @@ import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 
 import { createTmpDirTracker } from "../../../__tests__/support/tmp-dir-teardown.js";
-import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
 
 const tmpDirs = createTmpDirTracker();
 
@@ -25,7 +24,9 @@ const runtimeTestState = vi.hoisted(() => ({
   browserWindows: [] as Array<{ isDestroyed: () => boolean; webContents: { send: (channel: string, payload: unknown) => void };
   }>,
   capturedRuntimeOptions: null as Record<string, unknown> | null,
-  readPluginRegistry: vi.fn(async () => ({ version: 1, plugins: [] })),
+  readPluginRegistry: vi.fn(async (): Promise<{ version: number; plugins: unknown[] }> => ({ version: 1, plugins: [] })),
+  /** The official snapshot's pins for any plugin@version the gate asks about. */
+  officialPins: vi.fn(async () => ["a".repeat(64)]),
   runtime: {
     // boot installs each loaded plugin's partition policy before starting any
     // of them, so the double needs the cheap half of startAll too.
@@ -107,6 +108,27 @@ vi.mock("../../../plugins/registry.js", () => ({
   readPluginRegistry: runtimeTestState.readPluginRegistry,
 }));
 
+vi.mock("../plugin-runtime/grant-evidence.js", () => ({
+  grantEvidenceReader: () => ({
+    officialPins: runtimeTestState.officialPins,
+    receiptArtifactSha256: async () => null,
+  }),
+}));
+
+/** An official install of the artifact the official snapshot pins (design §10.3). */
+function officialOrigin(name: string) {
+  return {
+    sourceId: "ave",
+    sourceOrigin: "official" as const,
+    commit: "c".repeat(40),
+    packagePath: `plugins/${name}`,
+    version: "1.0.0",
+    rung: "release" as const,
+    artifactSha256: "a".repeat(64),
+    installedAt: "2026-09-24T00:00:00.000Z",
+  };
+}
+
 import {
   auditApprovalViolation,
   declaresHostManagedPythonRuntime,
@@ -120,6 +142,21 @@ import { installPluginPartitionPolicy } from "../../../main/html-preview-partiti
 import { pluginPartitionName } from "../../../shared/plugin-partition.js";
 import { emitEvent } from "../../types.js";
 import { setAppShutdownStarted } from "../../../main/app-state.js";
+import { createHash } from "node:crypto";
+import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
+import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
+import { agentPluginsDocument } from "../../../plugins/__tests__/test-helpers.js";
+import type { PluginHostApi, PluginManifest } from "../../../plugins/types.js";
+
+/**
+ * The pin an installer records for `manifest`: the digest of its plugin.json
+ * document, tied to the manifest object the way the runtime ties it at parse.
+ */
+function pinDocument(manifest: object): string {
+  const document = agentPluginsDocument(manifest as Record<string, unknown>);
+  recordManifestDocument(manifest as PluginManifest, document);
+  return createHash("sha256").update(canonicalJSON(document)).digest("hex");
+}
 
 type TestHostApiIncarnation = {
   registerDisposer: (dispose: () => void) => void;
@@ -365,6 +402,7 @@ describe("initPluginRuntime partition policy", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -397,6 +435,7 @@ describe("initPluginRuntime partition policy", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const handler = vi.fn(async () => {});
@@ -426,6 +465,7 @@ describe("initPluginRuntime partition policy", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -458,6 +498,7 @@ describe("initPluginRuntime partition policy", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const onEnable = runtimeTestState.capturedRuntimeOptions?.onEnable as
@@ -514,6 +555,7 @@ describe("initPluginRuntime partition policy", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -544,6 +586,7 @@ describe("initPluginRuntime partition policy", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     // Post-`startAll` loop: every plugin that can render a UI view.
@@ -611,6 +654,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -643,6 +687,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -812,6 +857,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -843,6 +889,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -918,6 +965,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -949,6 +997,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1016,6 +1065,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -1047,6 +1097,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1079,6 +1130,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -1110,6 +1162,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1137,86 +1190,32 @@ describe("initPluginRuntime HostApi factory", () => {
     expect(evilApi).toHaveProperty("onEvent");
   });
 
-  // PR #894 review B6 — active-vendor cross-check in getSecret
-  it("B6 — getSecret denies non-active-vendor llm.apiKey.* even when allowlisted", async () => {
+  it("resolveApiKey denies a non-active vendor even when both keys are allowlisted", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
     const bootAuditLogger = { log: vi.fn() };
 
-    // #893 Stage 2 — seed the whitelist registry with a grant for plugin-b6
-    // so tier-3 lets the call through; B6 specifically exercises tier-4
-    // active-vendor cross-check inside getSecret.
-    const { whitelistRegistry, WhitelistCache } = await import(
-      "../../../plugins/whitelist/whitelist-registry.js"
-    );
-    const { WHITELIST_PRIMARY_KEY_ID } = await import(
-      "../../../plugins/marketplace-keys.js"
-    );
-    const { canonicalJSON } = await import(
-      "../../../plugins/whitelist/canonical-json.js"
-    );
-    const { generateKeyPairSync, sign, createHash } = await import(
-      "node:crypto"
-    );
-    const { mkdtempSync: mkdtempSyncOs } = await import("node:fs");
-    whitelistRegistry.resetForTesting();
-    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    const rawPub = publicKey.export({ type: "spki", format: "der" }).slice(-32);
-    // Ralph cycle 1 — production keys are frozen; tests inject via the
-    // singleton's dedicated helper.
-    whitelistRegistry.setPublicKeysForTesting({
-      [WHITELIST_PRIMARY_KEY_ID]: rawPub.toString("base64"),
-    });
-    const grantDoc = {
-      version: 1,
-      schemaVersion: 1,
-      issuedAt: "2026-05-17T00:00:00.000Z",
-      expiresAt: "2030-01-01T00:00:00.000Z",
-      pluginGrants: {
-        "plugin-b6": {
-          publisher: "test",
-          hostSecrets: { read: ["llm.apiKey.openai", "llm.apiKey.claude"] },
-          // Hash of the canonicalized manifest used below. The host now
-          // canonicalizes via the recursive `canonicalJSON` helper
-          // (Ralph cycle 1 fix to the manifest-sha pin) so the test
-          // mirrors the production path.
-          approvedManifestSha256: createHash("sha256")
-            .update(
-              canonicalJSON({
-                id: "plugin-b6",
-                config: {},
-                hostSecrets: {
-                  read: ["llm.apiKey.openai", "llm.apiKey.claude"],
-                },
-              }),
-            )
-            .digest("hex"),
-        },
-      },
+    // `meeting` is in the app's grant table and installed from the official
+    // source as the pinned artifact, so Tier 3 lets the call through and
+    // the lease gate reaches the active-vendor cross-check.
+    const b6Manifest = {
+      id: "meeting",
+      config: {},
+      networkAccess: { allowedDomains: ["api.openai.com", "api.anthropic.com"] },
+      hostSecrets: { read: ["llm.apiKey.openai", "llm.apiKey.claude"] },
     };
-    const grantBody = JSON.stringify(grantDoc);
-    const grantSig = sign(null, Buffer.from(grantBody, "utf-8"), privateKey);
-    const envelope = {
+    runtimeTestState.readPluginRegistry.mockResolvedValueOnce({
       version: 1,
-      iat: Math.floor(Date.now() / 1000),
-      artifact_sha256: createHash("sha256")
-        .update(Buffer.from(grantBody, "utf-8"))
-        .digest("hex"),
-      signatures: [
+      plugins: [
         {
-          key_id: WHITELIST_PRIMARY_KEY_ID,
-          alg: "ed25519",
-          sig: grantSig.toString("base64"),
+          id: "meeting",
+          manifestPath: "meeting/plugin.json",
+          enabled: true,
+          installSource: "user",
+          manifestSha256: pinDocument(b6Manifest),
+          origin: officialOrigin("meeting"),
         },
       ],
-    };
-    const cacheRoot = tmpDirs.track(mkdtempSyncOs("/tmp/ave-b6-whitelist-"));
-    const cache = new WhitelistCache(cacheRoot);
-    await cache.store({
-      body: grantBody,
-      signature: JSON.stringify(envelope),
-      meta: {},
     });
-    await whitelistRegistry.init({ networkFetch: unusedNetworkFetch, userDataDir: cacheRoot, online: false });
 
     const getSecretMock = vi.fn((key: string) => {
       if (key === "llm.apiKey.openai") return "sk-openai";
@@ -1228,6 +1227,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           // openai is the active vendor for this test
           if (key === "llm") return { provider: "openai" };
@@ -1261,6 +1261,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1274,50 +1275,38 @@ describe("initPluginRuntime HostApi factory", () => {
           },
           pluginDataDir: string,
         ) => {
-          getSecret: (key: string) => string | null;
+          resolveApiKey: NonNullable<PluginHostApi["resolveApiKey"]>;
         })
       | undefined;
     expect(createHostApi).toBeDefined();
 
     const pluginDataDir = tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"));
-    const api = invokeHostApiFactory(
-      createHostApi!,
-      "plugin-b6",
-      {
-        id: "plugin-b6",
-        config: {},
-        // Plugin allowlists BOTH vendors; without B6 it could read both.
-        hostSecrets: { read: ["llm.apiKey.openai", "llm.apiKey.claude"] },
-      },
-      pluginDataDir,
-    );
+    // The plugin allowlists BOTH vendors; without B6 it could read both.
+    const api = invokeHostApiFactory(createHostApi!, "meeting", b6Manifest, pluginDataDir);
 
-    // Active vendor (openai) — allowed
-    expect(await api.getSecret("llm.apiKey.openai")).toBe("sk-openai");
+    // Active vendor (openai) receives an opaque lease.
+    const lease = await api.resolveApiKey({ purpose: "llm", vendor: "openai" });
+    expect(lease).toMatchObject({ ok: true, exposure: "lease" });
+    if (lease.ok) lease.release();
 
     // Non-active vendor (claude) — denied even though allowlisted
-    expect(await api.getSecret("llm.apiKey.claude")).toBeNull();
+    expect(await api.resolveApiKey({ purpose: "llm", vendor: "anthropic" }))
+      .toEqual({ ok: false, reason: "vendor-mismatch" });
 
-    // Audit captured the Tier-4 deny. `vendor-mismatch` is the ONE token both
-    // host APIs now emit for this tier; `getSecret` used to rename it to
-    // `non-active-vendor`, so an operator pivoting on either saw half the traffic.
+    // Audit captures the denied vendor and the Tier-4 reason.
     const denyAudit = bootAuditLogger.log.mock.calls.find((c) => {
       const input = (c[0] as { input?: string }).input ?? "";
       return (
         input.includes("vendor-mismatch") &&
-        input.includes("llm.apiKey.claude")
+        input.includes("vendor=claude")
       );
     });
     expect(denyAudit).toBeDefined();
   });
 
-  it("getSecret denies non-active marketplace provider preset keys even when allowlisted", async () => {
+  it("getSecret grants no marketplace provider preset key: the grant table lists none", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
     const bootAuditLogger = { log: vi.fn() };
-    const { canonicalJSON } = await import(
-      "../../../plugins/whitelist/canonical-json.js"
-    );
-    const { createHash } = await import("node:crypto");
     const activeKey = "llm.marketplaceProvider.future-router.apiKey";
     const idleKey = "llm.marketplaceProvider.idle-router.apiKey";
     const manifest = {
@@ -1325,9 +1314,7 @@ describe("initPluginRuntime HostApi factory", () => {
       config: {},
       hostSecrets: { read: [activeKey, idleKey] },
     };
-    const manifestSha256 = createHash("sha256")
-      .update(canonicalJSON(manifest))
-      .digest("hex");
+    const manifestSha256 = pinDocument(manifest);
     runtimeTestState.readPluginRegistry.mockResolvedValueOnce({
       version: 1,
       plugins: [
@@ -1350,6 +1337,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") {
             return {
@@ -1394,6 +1382,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1419,13 +1408,16 @@ describe("initPluginRuntime HostApi factory", () => {
       tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")),
     );
 
-    expect(await api.getSecret(activeKey)).toBe("fr-secret");
+    // Allowlisted and even active, but no grant names the preset family
+    // (design §10.3), so neither key is read.
+    expect(await api.getSecret(activeKey)).toBeNull();
     expect(await api.getSecret(idleKey)).toBeNull();
+    expect(getSecretMock).not.toHaveBeenCalledWith(activeKey);
     expect(getSecretMock).not.toHaveBeenCalledWith(idleKey);
     expect(bootAuditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "warn",
-        input: expect.stringContaining("vendor-mismatch"),
+        input: expect.stringContaining("not-in-grant-table"),
       }),
     );
   });
@@ -1433,19 +1425,13 @@ describe("initPluginRuntime HostApi factory", () => {
   it("getSecret denies generic OpenAI-compatible host key while a marketplace preset is active", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
     const bootAuditLogger = { log: vi.fn() };
-    const { canonicalJSON } = await import(
-      "../../../plugins/whitelist/canonical-json.js"
-    );
-    const { createHash } = await import("node:crypto");
     const genericKey = "llm.apiKey.openai-compatible";
     const manifest = {
       id: "plugin-generic-compatible-secret",
       config: {},
       hostSecrets: { read: [genericKey] },
     };
-    const manifestSha256 = createHash("sha256")
-      .update(canonicalJSON(manifest))
-      .digest("hex");
+    const manifestSha256 = pinDocument(manifest);
     runtimeTestState.readPluginRegistry.mockResolvedValueOnce({
       version: 1,
       plugins: [
@@ -1466,6 +1452,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") {
             return {
@@ -1507,6 +1494,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1537,7 +1525,7 @@ describe("initPluginRuntime HostApi factory", () => {
     expect(bootAuditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "warn",
-        input: expect.stringContaining("vendor-mismatch"),
+        input: expect.stringContaining("provider-key-not-exportable"),
       }),
     );
   });
@@ -1553,6 +1541,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -1584,6 +1573,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1634,6 +1624,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -1672,6 +1663,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1717,30 +1709,25 @@ describe("initPluginRuntime HostApi factory", () => {
     expect(getHostSecretCounter("hostSecret_denied", "plugin-q", "plugin")).toBe(1);
   });
 
-  it("clears registry-entry cache on refresh failure so admin secret bypass fails closed (#959)", async () => {
+  it("clears registry-entry cache on refresh failure so a host-secret grant fails closed (#959)", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
-    const { canonicalJSON } = await import(
-      "../../../plugins/whitelist/canonical-json.js"
-    );
-    const { createHash } = await import("node:crypto");
     const manifest = {
-      id: "plugin-cache-fail",
-      installPolicy: "admin",
+      id: "meeting",
       config: {},
+      networkAccess: { allowedDomains: ["api.openai.com"] },
       hostSecrets: { read: ["llm.apiKey.openai"] },
     };
-    const manifestSha256 = createHash("sha256")
-      .update(canonicalJSON(manifest))
-      .digest("hex");
+    const manifestSha256 = pinDocument(manifest);
     runtimeTestState.readPluginRegistry.mockResolvedValueOnce({
       version: 1,
       plugins: [
         {
-          id: "plugin-cache-fail",
-          manifestPath: "plugin-cache-fail/plugin.json",
+          id: "meeting",
+          manifestPath: "meeting/plugin.json",
           enabled: true,
-          installSource: "admin",
+          installSource: "user",
           manifestSha256,
+          origin: officialOrigin("meeting"),
         },
       ],
     });
@@ -1749,6 +1736,7 @@ describe("initPluginRuntime HostApi factory", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "marketplace") return { installedProviderPresets: [] };
@@ -1783,6 +1771,7 @@ describe("initPluginRuntime HostApi factory", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
 
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1791,32 +1780,34 @@ describe("initPluginRuntime HostApi factory", () => {
           pluginId: string,
           manifest: {
             id: string;
-            installPolicy?: "admin" | "user";
             config?: Record<string, unknown>;
             hostSecrets?: { read?: string[] };
           },
           pluginDataDir: string,
         ) => {
-          getSecret: (key: string) => string | null;
+          resolveApiKey: NonNullable<PluginHostApi["resolveApiKey"]>;
         })
       | undefined;
     expect(createHostApi).toBeDefined();
 
     const api = invokeHostApiFactory(
       createHostApi!,
-      "plugin-cache-fail",
+      "meeting",
       manifest,
       tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")),
     );
-    expect(await api.getSecret("llm.apiKey.openai")).toBe("sk-openai");
+    const lease = await api.resolveApiKey({ purpose: "llm", vendor: "openai" });
+    expect(lease).toMatchObject({ ok: true, exposure: "lease" });
+    if (lease.ok) lease.release();
 
     runtimeTestState.readPluginRegistry.mockRejectedValue(
       new Error("registry unavailable"),
     );
-    emitEvent("plugin.installed", { pluginId: "plugin-cache-fail" });
+    emitEvent("plugin.installed", { pluginId: "meeting" });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(await api.getSecret("llm.apiKey.openai")).toBeNull();
+    expect(await api.resolveApiKey({ purpose: "llm", vendor: "openai" }))
+      .toEqual({ ok: false, reason: "not-whitelisted" });
   });
 });
 
@@ -1845,6 +1836,7 @@ describe("hostApi.hasRoutineBySource — prefix-scoped idempotency probe", () =>
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -1873,6 +1865,7 @@ describe("hostApi.hasRoutineBySource — prefix-scoped idempotency probe", () =>
       routinesStore: { list: () => records } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
     });
     const createHostApi = runtimeTestState.capturedRuntimeOptions
       ?.createHostApi as CreateHostApi | undefined;
@@ -1957,6 +1950,7 @@ describe("initPluginRuntime sandbox union ordering", () => {
     host: createRuntimeHost(),
       projectRoot: "/tmp/ave-test/project",
       settingsService: {
+        ...stationaryLeaseState,
         get: vi.fn((key: string) => {
           if (key === "llm") return { provider: "openai" };
           if (key === "pluginConfigs") return {};
@@ -1987,6 +1981,7 @@ describe("initPluginRuntime sandbox union ordering", () => {
       routinesStore: { list: () => [] } as never,
       // This harness has no Work Board; the proposal verbs are not exercised here.
       getWorkBoardStore: () => undefined,
+      getAlertsService: () => undefined,
       deferStart: true,
       refreshSandboxUnionDomains,
     });

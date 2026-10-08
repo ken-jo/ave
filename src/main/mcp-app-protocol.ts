@@ -40,22 +40,16 @@ import { escapeHtml } from "../shared/escape-html.js";
 
 export { MCP_APP_SCHEME };
 
-/** Must run before `app.ready` (see `early-boot-env.ts`). */
-export function registerMcpAppProtocolScheme(
-  protocolApi: Pick<Electron.Protocol, "registerSchemesAsPrivileged">,
-): void {
-  protocolApi.registerSchemesAsPrivileged([
-    {
-      scheme: MCP_APP_SCHEME,
-      privileges: {
-        standard: true, // real origin (not opaque) — required for header CSP + partition binding
-        secure: true,
-        supportFetchAPI: true,
-        corsEnabled: true,
-      },
-    },
-  ]);
-}
+/** Registered with the other privileged schemes in one call before `app.ready` (see `early-boot-env.ts`). */
+export const MCP_APP_CUSTOM_SCHEME: Electron.CustomScheme = Object.freeze({
+  scheme: MCP_APP_SCHEME,
+  privileges: Object.freeze({
+    standard: true, // real origin (not opaque) — required for header CSP + partition binding
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+  }),
+});
 
 type ProxySession = {
   serverId: string;

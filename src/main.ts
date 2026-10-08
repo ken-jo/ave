@@ -72,6 +72,7 @@ import { installNativeEditContextMenu } from "./main/native-edit-context-menu.js
 import { handleAveUri, aveDevLog } from "./main/ave-deep-link.js";
 import {
   EXEC_FAILURE_EXIT_CODE,
+  GUI_BOOT_FAILURE_EXIT_CODE,
   EXEC_LOCKED_EXIT_CODE,
   EXEC_USAGE_EXIT_CODE,
   execModeRequested,
@@ -143,6 +144,7 @@ const execRequest = parseExecFlags(process.argv, launchCwd);
 // without one. `bootstrap()` names it `BootLaunch`; the window needs the same
 // answer, so it is derived once here rather than re-tested at each site.
 const bootLaunch = execRequest === null ? "interactive" : "headless";
+let guiBootstrapFailed = false;
 
 async function main() {
   // A malformed `--exec` / `--set-secret` command line is answered before a
@@ -381,7 +383,7 @@ async function main() {
   }
 
   // §4.1 IPC Bridge — 반드시 index.html 로드 전에 등록 (renderer useEffect race 방지)
-  registerIpcHandlers(
+  const ipcRegistration = registerIpcHandlers(
     services,
     () => getMainWindow(),
     getAppWindows,
@@ -487,6 +489,9 @@ async function main() {
   // due-soon scanner after IPC + plugin bus are wired so the first emit of
   // `work_board.work_item.due_soon` reaches any subscribed consumer.
   services.startWorkBoardDueSoon?.();
+  // And the alerts expiry sweep, so a card whose lifetime ends is withdrawn
+  // from a renderer that is listening.
+  services.startAlerts?.();
 
   refreshApplicationMenu();
   ensureTray();
@@ -521,12 +526,16 @@ async function main() {
 
   // Process any ave:// URI that arrived before services were ready.
   // Deferred until after loadFile so IPC handlers are registered and the
-  // renderer's ave:plugins:install-result listener is active.
+  // renderer's deep-link listener is active.
   const pendingAveUri = getPendingAveUri();
   if (pendingAveUri) {
     void handleAveUri(pendingAveUri);
     setPendingAveUri(null);
   }
+
+  // The marketplace's boot sync and installs, then the periodic sync (design
+  // §7.3, §10.2). After the load so the renderer hears what they publish.
+  void ipcRegistration.gitMarketplace.startBackground();
 }
 
 // ave:// custom URI scheme.
@@ -659,11 +668,13 @@ if (!gotSingleInstanceLock) {
     installSideBrowserPartitionPolicy();
     void main().catch((error) => {
       log.error({ err: error }, "bootstrap failed");
-      // A headless run that never reached its turn must not exit 0: a runner
-      // would otherwise file an empty stream as a completed turn. A code the
-      // run already chose (usage, lock) is more specific and stays.
-      if (execRequest !== null && process.exitCode === undefined) {
-        process.exitCode = EXEC_FAILURE_EXIT_CODE;
+      // Preserve any code already chosen by the run. A failed interactive
+      // launch also needs a code that survives app.quit().
+      if (execRequest === null) guiBootstrapFailed = true;
+      if (process.exitCode === undefined) {
+        process.exitCode = execRequest === null
+          ? GUI_BOOT_FAILURE_EXIT_CODE
+          : EXEC_FAILURE_EXIT_CODE;
       }
       app.quit();
     });
@@ -776,12 +787,12 @@ app.on("activate", () => {
 
 // Electron's `quit()` ends the process with 0 whatever `process.exitCode`
 // says (verified on the packaged Linux build and the macOS dev build), so a
-// headless run's code reaches its caller only through `app.exit()`. `will-quit`
+// chosen failure code reaches its caller only through `app.exit()`. `will-quit`
 // is the one event every `quit()` path crosses AFTER the `before-quit` cleanup
 // has flushed the transcript, the audit log and the trace, which is why the
 // exec branch keeps `app.quit()` and the code is applied here rather than there.
 app.on("will-quit", (event) => {
-  if (execRequest === null) return;
+  if (execRequest === null && !guiBootstrapFailed) return;
   if (typeof process.exitCode !== "number") return;
   event.preventDefault();
   app.exit(process.exitCode);

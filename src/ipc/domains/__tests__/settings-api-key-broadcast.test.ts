@@ -291,44 +291,6 @@ describe("delete-web-api-key broadcast (MAJOR-3)", () => {
 
 // ─── MAJOR-3: marketplace:set/delete-api-key broadcast ───────────────
 
-describe("marketplace:set-api-key broadcast (MAJOR-3)", () => {
-  it("broadcasts SETTINGS.updated to all app windows after storing marketplace key", async () => {
-    const windows = [makeWindow(), makeWindow()];
-    const deps = makeDeps(windows);
-    const snapshot = { llm: { provider: "openai" } };
-    deps.settingsService.getAll.mockReturnValue(snapshot);
-
-    const { registerSettingsHandlers } = await import("../settings.js");
-    registerSettingsHandlers(deps as never);
-
-    await invoke("ave:settings:marketplace:set-api-key", "mkt-key-xyz");
-
-    expect(deps.settingsService.setSecret).toHaveBeenCalledWith("marketplace.apiKey", "mkt-key-xyz");
-    for (const win of windows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, snapshot);
-    }
-  });
-});
-
-describe("marketplace:delete-api-key broadcast (MAJOR-3)", () => {
-  it("broadcasts SETTINGS.updated to all app windows after deleting marketplace key", async () => {
-    const windows = [makeWindow(), makeWindow()];
-    const deps = makeDeps(windows);
-    const snapshot = { llm: { provider: "openai" } };
-    deps.settingsService.getAll.mockReturnValue(snapshot);
-
-    const { registerSettingsHandlers } = await import("../settings.js");
-    registerSettingsHandlers(deps as never);
-
-    await invoke("ave:settings:marketplace:delete-api-key");
-
-    expect(deps.settingsService.deleteSecret).toHaveBeenCalledWith("marketplace.apiKey");
-    for (const win of windows) {
-      expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, snapshot);
-    }
-  });
-});
-
 describe("marketplace provider preset runtime refresh", () => {
   it("refreshes both chat runtime providers after installing a provider preset", async () => {
     const windows: ReturnType<typeof makeWindow>[] = [];
@@ -386,7 +348,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
       settingsService: {
         ...baseDeps.settingsService,
         get: vi.fn((key: string) => {
-          if (key === "marketplace") return { cloudAllowPrivateNetwork: false };
+          if (key === "marketplace") return {};
           llmReads += 1;
           return llmReads === 1 ? prevLlm : nextLlm;
         }),
@@ -429,7 +391,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
       settingsService: {
         ...baseDeps.settingsService,
         get: vi.fn((key: string) => {
-          if (key === "marketplace") return { cloudAllowPrivateNetwork: false };
+          if (key === "marketplace") return {};
           llmReads += 1;
           return llmReads === 1 ? prevLlm : nextLlm;
         }),
@@ -484,7 +446,6 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
           }
           if (key === "marketplace") {
             return {
-              cloudAllowPrivateNetwork: false,
               installedProviderPresets: [
                 {
                   providerId: "router-a",
@@ -660,7 +621,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
       settingsService: {
         ...baseDeps.settingsService,
         get: vi.fn((key: string) => {
-          if (key === "marketplace") return { cloudAllowPrivateNetwork: false };
+          if (key === "marketplace") return {};
           llmReads += 1;
           return llmReads === 1 ? prevLlm : nextLlm;
         }),
@@ -735,7 +696,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
         getAll: vi.fn(() => ({ appearance: { language: "en" }, llm: currentLlm })),
         get: vi.fn((key: string) => {
           if (key === "llm") return currentLlm;
-          if (key === "marketplace") return { cloudAllowPrivateNetwork: false };
+          if (key === "marketplace") return {};
           if (key === "shortcuts") return { toggleWindow: null, enabled: false };
           if (key === "system") return { launchAtStartup: false, launchMinimized: false };
           return {};
@@ -799,7 +760,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
       settingsService: {
         ...baseDeps.settingsService,
         get: vi.fn((key: string) => {
-          if (key === "marketplace") return { cloudAllowPrivateNetwork: false };
+          if (key === "marketplace") return {};
           llmReads += 1;
           return llmReads === 1 ? prevLlm : nextLlm;
         }),
@@ -851,7 +812,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
               },
             };
           }
-          if (key === "marketplace") return { cloudAllowPrivateNetwork: false };
+          if (key === "marketplace") return {};
           if (key === "shortcuts") return { toggleWindow: null, enabled: false };
           if (key === "system") return { launchAtStartup: false, launchMinimized: false };
           return {};
@@ -924,71 +885,6 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
   });
 });
 
-// ─── PR #795 follow-up: settings:update triggers refreshMarketplaceFetcherConfig
-//     when the allowPrivateNetwork toggle changes so the live SSRF-bypass flag
-//     honors the "즉시 적용" UX badge instead of waiting for an app restart.
-describe("settings:update triggers refreshMarketplaceFetcherConfig on allowPrivateNetwork toggle", () => {
-  it("calls refreshMarketplaceFetcherConfig when the flag flips false → true", async () => {
-    const windows: ReturnType<typeof makeWindow>[] = [];
-    const refresh = vi.fn();
-    const baseDeps = makeDeps(windows);
-    // Key-based mock (robust to call order — the handler also reads E4's
-    // shortcuts/system keys). marketplace flag flips false→true after patch.
-    let patched = false;
-    const deps = {
-      ...baseDeps,
-      settingsService: {
-        ...baseDeps.settingsService,
-        get: vi.fn((key: string) => {
-          if (key === "llm") return { provider: "openai", vendors: { "azure-foundry": { baseUrl: null } } };
-          if (key === "marketplace") return { cloudAllowPrivateNetwork: patched };
-          if (key === "shortcuts") return { toggleWindow: null, enabled: false };
-          if (key === "system") return { launchAtStartup: false, launchMinimized: false };
-          return {};
-        }),
-        patch: vi.fn(async (p: unknown) => {
-          patched = true;
-          return p;
-        }),
-      },
-      refreshMarketplaceFetcherConfig: refresh,
-    };
-
-    const { registerSettingsHandlers } = await import("../settings.js");
-    registerSettingsHandlers(deps as never);
-
-    await invoke("ave:settings:update", { marketplace: { cloudAllowPrivateNetwork: true } });
-
-    expect(refresh).toHaveBeenCalledOnce();
-  });
-
-  it("does NOT call refreshMarketplaceFetcherConfig when the flag stays the same", async () => {
-    const windows: ReturnType<typeof makeWindow>[] = [];
-    const refresh = vi.fn();
-    const baseDeps = makeDeps(windows);
-    const deps = {
-      ...baseDeps,
-      settingsService: {
-        ...baseDeps.settingsService,
-        get: vi.fn((key: string) =>
-          key === "marketplace"
-            ? { cloudAllowPrivateNetwork: true }
-            : { provider: "openai", vendors: { "azure-foundry": { baseUrl: null } } },
-        ),
-        patch: vi.fn(async (p: unknown) => p),
-      },
-      refreshMarketplaceFetcherConfig: refresh,
-    };
-
-    const { registerSettingsHandlers } = await import("../settings.js");
-    registerSettingsHandlers(deps as never);
-
-    await invoke("ave:settings:update", { marketplace: { cloudAllowPrivateNetwork: true } });
-
-    expect(refresh).not.toHaveBeenCalled();
-  });
-});
-
 // ─── Minor-1 R2: broadcastSettingsSnapshot helper consolidation ───────────────
 
 describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers call it", () => {
@@ -1021,7 +917,7 @@ describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers ca
     let settings = {
       appearance: { language: "en" },
       llm: initialLlm,
-      marketplace: { cloudAllowPrivateNetwork: false },
+      marketplace: {},
       shortcuts: { toggleWindow: null, enabled: false },
       system: { launchAtStartup: false, launchMinimized: false },
     };
@@ -1097,7 +993,7 @@ describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers ca
     const snapshot = {
       appearance: { language: "ko" },
       llm: { provider: "openai", vendors: { "azure-foundry": { baseUrl: null } } },
-      marketplace: { cloudAllowPrivateNetwork: false },
+      marketplace: {},
     };
     const baseDeps = makeDeps([win]);
     const deps = {
@@ -1131,7 +1027,7 @@ describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers ca
     const snapshot = {
       appearance: { language: "ko" },
       llm: { provider: "openai", vendors: { "azure-foundry": { baseUrl: null } } },
-      marketplace: { cloudAllowPrivateNetwork: false },
+      marketplace: {},
     };
     const baseDeps = makeDeps([win]);
     const deps = {
@@ -1291,4 +1187,20 @@ describe("main-owned settings fields on ave:settings:update", () => {
     expect(result).toEqual({ ok: false, error });
     expect(deps.settingsService.patch).not.toHaveBeenCalled();
   });
+});
+
+describe("the server marketplace's theme and language lists", () => {
+  it.each(["installedThemeBundleIds", "installedLanguagePacks"])(
+    "refuses a patch that names marketplace.%s and writes nothing",
+    async (field) => {
+      const deps = makeDeps([makeWindow()]);
+      const { registerSettingsHandlers } = await import("../settings.js");
+      registerSettingsHandlers(deps as never);
+
+      const result = await invoke("ave:settings:update", { marketplace: { [field]: [], updateCheckEnabled: false } });
+
+      expect(result).toEqual({ ok: false, error: "legacy-marketplace-lists-main-owned" });
+      expect(deps.settingsService.patch).not.toHaveBeenCalled();
+    },
+  );
 });

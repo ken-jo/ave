@@ -90,7 +90,7 @@
     }
   } catch (err) {
     // Non-fatal — plugin still gets tokens via `host.theme.changed`
-    // event after mount. Just paint with SDK :root defaults.
+    // after mount, and its entry can load without an initial theme payload.
     console.warn("[ave:plugin-shell] theme prefetch failed", err);
   }
   try {

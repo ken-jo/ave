@@ -35,8 +35,10 @@ export interface ConversationActivityCoordinator {
    * owns surface turns and mutations. Binding the loop's transition state
    * here gives both paths one admission decision: once a transition begins,
    * every surface observes busy before any cleanup await can yield.
+   * `onSettled` subscribes to the loop's transitions ending, so
+   * {@link onIdle} hears a transition that ends outside every lease.
    */
-  bindSessionTransitionGuard(guard: () => boolean): () => void;
+  bindSessionTransitionGuard(guard: () => boolean, onSettled: (notify: () => void) => () => void): () => void;
   /**
    * Synchronously close surface admission and capture the existing owner.
    * The caller aborts when appropriate, drains `owner`, then acquires the
@@ -71,6 +73,16 @@ export interface ConversationActivityCoordinator {
    * listener may start the next turn without racing its own predecessor.
    */
   onTurnSettled(listener: () => void): () => void;
+  /**
+   * Subscribe to "the main conversation has just become idle": fired
+   * whenever {@link isBusy} becomes false from any of its four conditions —
+   * a turn settling, a mutation completing, a transition admission released,
+   * or a session transition ending. Listeners run after the condition is
+   * cleared. A subscriber that must not miss an idle moment subscribes first
+   * and then rechecks `isBusy()` (the marketplace's apply queue, design
+   * §18.7.4).
+   */
+  onIdle(listener: () => void): () => void;
 }
 
 /**
@@ -87,6 +99,8 @@ export function createConversationActivityCoordinator(
   let activeSessionTransitionAdmission: object | null = null;
   let sessionTransitionGuard: (() => boolean) | null = null;
   const turnSettledListeners = new Set<() => void>();
+  const idleListeners = new Set<() => void>();
+  let unsubscribeSettled: (() => void) | null = null;
 
   const notifyTurnSettled = (): void => {
     for (const listener of turnSettledListeners) listener();
@@ -98,6 +112,12 @@ export function createConversationActivityCoordinator(
     || isSessionTransitioning()
     || activeTurn !== null
     || activeMutation !== null;
+
+  /** Tell the idle listeners, when nothing keeps the conversation busy any more. */
+  const notifyIfIdle = (): void => {
+    if (isBusy()) return;
+    for (const listener of [...idleListeners]) listener();
+  };
 
   const allocateStreamId = () => {
     if (nextStreamId >= Number.MAX_SAFE_INTEGER) {
@@ -112,6 +132,7 @@ export function createConversationActivityCoordinator(
     const lease = Promise.resolve().then(factory).finally(() => {
       if (activeTurn === lease) activeTurn = null;
       notifyTurnSettled();
+      notifyIfIdle();
     });
     activeTurn = lease;
     return lease;
@@ -124,6 +145,7 @@ export function createConversationActivityCoordinator(
     if (isBusy()) return null;
     const lease = Promise.resolve().then(factory).finally(() => {
       if (activeMutation === lease) activeMutation = null;
+      notifyIfIdle();
     });
     activeMutation = lease;
     return lease;
@@ -134,10 +156,16 @@ export function createConversationActivityCoordinator(
     isBusy,
     activeTurn: () => activeTurn,
     activeMutation: () => activeMutation,
-    bindSessionTransitionGuard: (guard: () => boolean) => {
+    bindSessionTransitionGuard: (guard: () => boolean, onSettled: (notify: () => void) => () => void) => {
+      unsubscribeSettled?.();
       sessionTransitionGuard = guard;
+      const unsubscribe = onSettled(notifyIfIdle);
+      unsubscribeSettled = unsubscribe;
       return () => {
         if (sessionTransitionGuard === guard) sessionTransitionGuard = null;
+        if (unsubscribeSettled === unsubscribe) unsubscribeSettled = null;
+        unsubscribe();
+        notifyIfIdle();
       };
     },
     beginSessionTransitionAdmission: () => {
@@ -149,6 +177,7 @@ export function createConversationActivityCoordinator(
         owner,
         release: () => {
           if (activeSessionTransitionAdmission === token) activeSessionTransitionAdmission = null;
+          notifyIfIdle();
         },
       });
     },
@@ -158,6 +187,10 @@ export function createConversationActivityCoordinator(
     onTurnSettled: (listener: () => void) => {
       turnSettledListeners.add(listener);
       return () => turnSettledListeners.delete(listener);
+    },
+    onIdle: (listener: () => void) => {
+      idleListeners.add(listener);
+      return () => idleListeners.delete(listener);
     },
   };
 }

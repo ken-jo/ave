@@ -36,6 +36,8 @@ import { formatIpcError } from "../format-ipc-error.js";
 import { HEADER_BUTTON_CLASS } from "./PaneFrame.js";
 import { lookupBillablePricingOptional } from "../../../shared/pricing-data.js";
 import { McpPromptArgsDialog } from "../dialogs/McpPromptArgsDialog.js";
+import { AgentPluginPromptArgsDialog } from "../dialogs/AgentPluginPromptArgsDialog.js";
+import { formatAgentPluginTemplatePrompt, type AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
 import type { Attachment } from "../types/attachments.js";
 import type { AveApi } from "../types.js";
 import type { McpPromptEntry } from "./slash-picker-data.js";
@@ -572,6 +574,25 @@ export function ChatGroupSession({
   // has no `window.prompt`, and a composer draft would re-enter as
   // `user-keyboard`. An argument-less prompt skips the form entirely.
   const [mcpPromptAwaitingArgs, setMcpPromptAwaitingArgs] = useState<McpPromptEntry | null>(null);
+  const [pluginPromptAwaitingArgs, setPluginPromptAwaitingArgs] = useState<AgentPluginTemplatePrompt | null>(null);
+
+  const runPluginPrompt = useCallback(async (prompt: AgentPluginTemplatePrompt, args: string) => {
+    try {
+      const envelope = formatAgentPluginTemplatePrompt(prompt, args);
+      await handleAskRef.current?.(envelope, "plugin-prompt");
+    } catch {
+      pushTileNotice({ severity: "error", message: t(prompt.id.startsWith("extension:")
+        ? "agentPluginPrompt.extensionFailed" : "agentPluginPrompt.failed"), ttlMs: 10000 });
+    }
+  }, [handleAskRef, pushTileNotice, t]);
+
+  const handleRunPluginPrompt = useCallback((prompt: AgentPluginTemplatePrompt) => {
+    if (prompt.body.includes("{args}")) {
+      setPluginPromptAwaitingArgs(prompt);
+      return;
+    }
+    void runPluginPrompt(prompt, "");
+  }, [runPluginPrompt]);
 
   const runMcpPrompt = useCallback(
     async (prompt: McpPromptEntry, args: Record<string, string>) => {
@@ -859,6 +880,7 @@ export function ChatGroupSession({
         /* opts 의 inputOrigin / injectHint 가 그대로 handleAsk 4번째
            인자로 전달 — queue-auto inject path 활성. */
         onRunMcpPrompt={handleRunMcpPrompt}
+        onRunPluginPrompt={handleRunPluginPrompt}
         onEditSave={handleEditSave}
         onFork={handleFork}
         onReturnHere={handleReturnHere}
@@ -910,6 +932,14 @@ export function ChatGroupSession({
         prompt={mcpPromptAwaitingArgs}
         onCancel={() => setMcpPromptAwaitingArgs(null)}
         onSubmit={handleMcpPromptArgsSubmit}
+      />
+      <AgentPluginPromptArgsDialog
+        prompt={pluginPromptAwaitingArgs}
+        onCancel={() => setPluginPromptAwaitingArgs(null)}
+        onSubmit={(prompt, args) => {
+          setPluginPromptAwaitingArgs(null);
+          void runPluginPrompt(prompt, args);
+        }}
       />
     </ChatContextProvider>
   );

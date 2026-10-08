@@ -31,8 +31,9 @@ import {
   PluginMcpServer,
   type PluginToolDelegate,
 } from "../../mcp/plugin-mcp-server.js";
-import type { PluginUiResourceProvider } from "../../mcp/plugin-ui-resource-provider.js";
+import { createPluginUiResourceProvider } from "../../mcp/plugin-ui-resource-provider.js";
 import { describeNonJson } from "../../shared/json-representable.js";
+import { errorMessage } from "../../shared/error-message.js";
 import { RAW_RESULT_META } from "../../mcp/protocol-constants.js";
 import { resolvePluginSocketDir } from "../plugin-storage-layout.js";
 import type {
@@ -49,12 +50,17 @@ import {
   createStorageChildMembers,
 } from "./host-api-child.js";
 import {
+  FRAME_BYTES_MAX,
   HOSTAPI_PATH_CONTRACTS,
-  HOST_API_WIRE_VERSION,
+  HOST_PROTOCOL_NOTIFICATIONS,
+  fromHostApiRpcError,
+  hostApiMethodOf,
+  hostApiParamsOf,
   reconstructWireError,
   type HostApiChannel,
   type HostApiNotification,
   type HostApiPath,
+  type JsonRpcRequestId,
 } from "./host-api-wire.js";
 import {
   SubscriptionLedger,
@@ -87,19 +93,17 @@ export interface PluginChildContext {
   readonly aveHome: string;
   /** The already-resolved config object, not the schema. */
   readonly config?: Record<string, unknown>;
-  /** The incarnation this child serves. Stamped on every outbound message. */
-  readonly generationId: string;
   /**
    * The installed-plugin ids as of construction.
    *
    * `getInstalledPluginIds` is synchronous, so §3.1 answers it from a
    * host-pushed snapshot; this is the first push. Later ones arrive as
-   * `installed-plugins` notifications.
+   * installed-plugin snapshot notifications.
    */
   readonly installedPluginIds: readonly string[];
   /**
    * The allow-listed host preferences as of construction, split into `keys` and
-   * `values` exactly as the `preference-snapshot` notification splits them.
+   * `values` exactly as the preferences snapshot notification splits them.
    *
    * OPTIONAL, and the absence carries meaning rather than being a convenience:
    * `getAppPreference` is itself an OPTIONAL member of `PluginHostApi`, so "this
@@ -130,7 +134,7 @@ interface ChildSubscription {
    * one that matters. Absent for a registration whose only state is the handler
    * itself, which the ledger drops on its own.
    */
-  readonly onRevoked?: () => void;
+  readonly onRevoked?: (reason: "revoked" | "peer-gone") => void;
 }
 
 /** What `deliver` did, so a dropped notification is reported rather than silent. */
@@ -148,13 +152,17 @@ export interface PluginChildRuntimeOptions {
   readonly context: PluginChildContext;
   readonly channel: HostApiChannel;
   readonly loadFactory: PluginFactoryLoader;
-  /** Serves this plugin's declared `ui://` cards, when it declares any. */
-  readonly uiResources?: PluginUiResourceProvider;
 }
 
 export interface PluginChildRuntime {
   readonly instance: RuntimePlugin;
   readonly hostApi: PluginHostApi;
+  /**
+   * Whether MCP `resources/read` answers a card here: the plugin implements
+   * the hook AND its manifest declares a card. `construct` reports this, not
+   * the hook alone, so the host never routes a read to a server that refuses.
+   */
+  readonly servesUiResources: boolean;
   /** Live child-side registrations. Zero after {@link hostGone}. */
   readonly openSubscriptionCount: number;
   /**
@@ -188,28 +196,16 @@ export interface PluginChildRuntime {
      * must stop being spendable in the child, and the child cannot learn that
      * from an event because a revoked registration delivers none.
      */
-    onRevoked?: () => void,
+    onRevoked?: (reason: "revoked" | "peer-gone") => void,
   ): () => void;
-  /**
-   * The child end of an abort channel: hand over the `AbortSignal` an argument
-   * carried, receive the id that crosses in its place.
-   *
-   * Shared rather than per-member for the same reason the subscription ledger
-   * is: `hostFetch`, `callLlm` and `resolveApiKey` all take a signal, and three
-   * private listener maps would be three chances to leave a listener attached
-   * to a signal whose call ended.
-   *
-   * An ALREADY-aborted signal throws its own reason instead of opening a
-   * channel — that is what the in-process call does, and opening a channel the
-   * host would immediately be told to abort turns an instant rejection into a
-   * round trip.
-   */
-  openAbortChannel(signal: AbortSignal): {
-    readonly subscriptionId: string;
-    readonly release: () => void;
-  };
   /** Host → child notification. */
   deliver(notification: HostApiNotification): NotificationOutcome;
+  /**
+   * Run the `onShutdown` handler registered under `subscriptionId` and settle
+   * when it has — the child's half of `ave/instance/shutdown`. An id with no
+   * open registration is refused: the host names only ids the plugin gave it.
+   */
+  runShutdownHandler(subscriptionId: string): Promise<void>;
   /**
    * The host is gone. Every registration is dropped WITHOUT notifying, because
    * there is no longer anyone to notify — the case that turns a release into a
@@ -222,21 +218,27 @@ export interface PluginChildRuntime {
  * Send one hostApi call and settle it the way an in-process call settles: a
  * value, or a throw whose identity survived the wire.
  *
- * Every child-side stub goes through this. A stub that built its own request
- * would be a second place the envelope is stamped, and the envelope is what the
- * host checks the generation against.
+ * Every child-side stub goes through this, so the positional call becomes its
+ * `ave/host/*` method and params object in exactly one place.
+ *
+ * `signal` is how the three members that take an `AbortSignal` cancel. It does
+ * not cross: when it aborts, the child names the in-flight REQUEST in a
+ * `notifications/cancelled` and the host aborts the controller it holds for
+ * that request (§3.5). The call still settles through the host's reply, so the
+ * plugin sees the host's answer to the cancellation rather than a local guess
+ * at it.
  */
 export type HostApiCaller = (
   path: HostApiPath,
   args: readonly unknown[],
+  signal?: AbortSignal,
 ) => Promise<unknown>;
 
 export function createHostApiCaller(
   channel: HostApiChannel,
-  context: Pick<PluginChildContext, "pluginId" | "generationId">,
+  context: Pick<PluginChildContext, "pluginId">,
 ): HostApiCaller {
-  let nextCallId = 0;
-  return async (path, args) => {
+  return async (path, args, signal) => {
     const nonJson = describeNonJson(args, `${path}(args)`);
     if (nonJson) {
       // Refused here rather than sent, so the plugin sees the failure at its own
@@ -246,17 +248,38 @@ export function createHostApiCaller(
         `[plugin-child:${context.pluginId}] ${path}: argument cannot cross the boundary — ${nonJson}`,
       );
     }
-    nextCallId += 1;
-    const reply = await channel.call({
-      wire: HOST_API_WIRE_VERSION,
-      pluginId: context.pluginId,
-      generationId: context.generationId,
-      callId: `${context.pluginId}#${nextCallId}`,
-      path,
-      args,
-    });
-    if (reply.ok) return reply.value;
-    throw reconstructWireError(reply.error);
+    // An ALREADY-aborted signal throws its own reason without a round trip —
+    // that is what the in-process call does, and sending a request the host
+    // would immediately be told to cancel is a slower way to say the same thing.
+    if (signal?.aborted) throw signal.reason;
+    let requestId: JsonRpcRequestId | undefined;
+    const onAbort = (): void => {
+      if (requestId === undefined) return;
+      channel.notify({
+        jsonrpc: "2.0",
+        method: HOST_PROTOCOL_NOTIFICATIONS.cancelled,
+        params: { requestId, reason: errorMessage(signal?.reason) },
+      });
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      const reply = await channel.call(
+        hostApiMethodOf(path),
+        hostApiParamsOf(path, args),
+        (id) => {
+          requestId = id;
+        },
+      );
+      if ("error" in reply) throw reconstructWireError(fromHostApiRpcError(reply.error));
+      // A `void` member answers `null` because JSON-RPC requires a result and
+      // JSON has no `undefined`; the plugin is owed the `undefined` it would
+      // get in-process.
+      return HOSTAPI_PATH_CONTRACTS[path].result === "void" ? undefined : reply.result;
+    } finally {
+      // Detached once the call settles, whichever way: an abort after the
+      // reply names a request the host no longer holds.
+      signal?.removeEventListener("abort", onAbort);
+    }
   };
 }
 
@@ -339,20 +362,12 @@ export async function startPluginChildRuntime(
   const subscriptions = new SubscriptionLedger<ChildSubscription>(
     `plugin-child:${pluginId}`,
   );
-  // A second instance of the SAME primitive, not a second primitive: an abort
-  // channel is a registration with a different teardown, and keeping it in its
-  // own ledger stops an abort id colliding with a subscription id.
-  const abortChannels = new SubscriptionLedger<{ readonly detach: () => void }>(
-    `plugin-child:${pluginId}:abort`,
-  );
+  const pendingLeaseClosures = new Map<string, "revoked" | "peer-gone">();
   const log = (message: string, meta?: unknown): void => {
     channel.notify({
-      wire: HOST_API_WIRE_VERSION,
-      pluginId,
-      generationId: context.generationId,
-      kind: "log",
-      message,
-      meta,
+      jsonrpc: "2.0",
+      method: HOST_PROTOCOL_NOTIFICATIONS.log,
+      params: { message, meta },
     });
   };
   const releaseChildSubscription: SubscriptionRelease<ChildSubscription> = (
@@ -363,16 +378,14 @@ export async function startPluginChildRuntime(
     // A host revocation is the one close the MEMBER has to act on: the ledger
     // dropping the entry releases the handler, but not whatever the stub closed
     // over on the plugin's behalf.
-    if (reason === "revoked") subscription.onRevoked?.();
+    if (reason === "revoked" || reason === "peer-gone") subscription.onRevoked?.(reason);
     // Only a child-initiated dispose owes the host a message. `revoked` came
     // FROM the host and `peer-gone` means there is no host to tell.
     if (reason !== "disposed") return;
     channel.notify({
-      wire: HOST_API_WIRE_VERSION,
-      pluginId,
-      generationId: context.generationId,
-      kind: "subscription-release",
-      subscriptionId,
+      jsonrpc: "2.0",
+      method: HOST_PROTOCOL_NOTIFICATIONS.subscriptionRelease,
+      params: { subscriptionId },
     });
   };
   const openSubscription = (
@@ -394,40 +407,20 @@ export async function startPluginChildRuntime(
     path: HostApiPath,
     subscriptionId: string,
     handler: (payload: unknown) => void,
-    onRevoked?: () => void,
+    onRevoked?: (reason: "revoked" | "peer-gone") => void,
   ) => {
     subscriptions.adopt(
       subscriptionId,
       { path, handler, ...(onRevoked ? { onRevoked } : {}) },
       releaseChildSubscription,
     );
+    const pendingClosure = pendingLeaseClosures.get(subscriptionId);
+    if (pendingClosure) {
+      pendingLeaseClosures.delete(subscriptionId);
+      subscriptions.close(subscriptionId, pendingClosure);
+    }
     return () => {
       subscriptions.close(subscriptionId, "disposed");
-    };
-  };
-  const openAbortChannel = (signal: AbortSignal) => {
-    if (signal.aborted) throw signal.reason;
-    let subscriptionId = "";
-    const onAbort = () => {
-      channel.notify({
-        wire: HOST_API_WIRE_VERSION,
-        pluginId,
-        generationId: context.generationId,
-        kind: "abort",
-        subscriptionId,
-      });
-      abortChannels.close(subscriptionId, "disposed");
-    };
-    subscriptionId = abortChannels.open(
-      { detach: () => signal.removeEventListener("abort", onAbort) },
-      (entry) => entry.detach(),
-    );
-    signal.addEventListener("abort", onAbort, { once: true });
-    return {
-      subscriptionId,
-      release: () => {
-        abortChannels.close(subscriptionId, "disposed");
-      },
     };
   };
   const caller = createHostApiCaller(channel, context);
@@ -440,6 +433,7 @@ export async function startPluginChildRuntime(
    * captured it sees exactly what it sees today.
    */
   const config: Record<string, unknown> = { ...(context.config ?? {}) };
+  const shutdownHandlers = new Map<string, () => void | Promise<void>>();
   /**
    * The child's copy of the installed-plugin set, and the member that reads it.
    *
@@ -459,7 +453,7 @@ export async function startPluginChildRuntime(
    * The child's copy of the allow-listed host preferences, or `undefined` when
    * this host publishes none.
    *
-   * MUTATED IN PLACE by `preference-snapshot`, never rebound, for the same
+   * MUTATED IN PLACE by the preferences snapshot, never rebound, for the same
    * reason `config` is: the member below closes over it.
    */
   const appPreferences: Record<string, unknown> | undefined = context.appPreferences
@@ -476,7 +470,6 @@ export async function startPluginChildRuntime(
       pluginId,
       manifest,
       call: caller,
-      openAbortChannel,
       adoptSubscription,
       report: log,
     }),
@@ -486,6 +479,7 @@ export async function startPluginChildRuntime(
       openSubscription,
       config,
       report: log,
+      shutdownHandlers,
     }),
     ...createStorageChildMembers(caller, context),
     getInstalledPluginIds: () => [...installedPluginIds],
@@ -618,24 +612,40 @@ export async function startPluginChildRuntime(
     };
   };
 
-  const server = new PluginMcpServer(manifest, delegate, options.uiResources);
-  new StdioServerLoop(options.input, options.output, server).start();
+  // The plugin's `ui://` cards are MCP `resources/read`, behind the same gate
+  // the in-process loopback host builds — own namespace, declared only, policy
+  // from the manifest — with the instance's hook as the content. Absent when
+  // the plugin declares no card or implements no hook, so a read fails closed.
+  const readUiResource = instance.readUiResource?.bind(instance);
+  const uiResources =
+    readUiResource && manifest.uiResources && manifest.uiResources.length > 0
+      ? createPluginUiResourceProvider({
+          pluginId,
+          declarations: manifest.uiResources,
+          readHtml: async (uri) => await readUiResource(uri),
+        })
+      : undefined;
+  const server = new PluginMcpServer(manifest, delegate, uiResources);
+  // Fed only by the child's multiplexer, which has already bounded every line
+  // it forwards by the same limit.
+  new StdioServerLoop(options.input, options.output, server, FRAME_BYTES_MAX).start();
 
   return {
     instance,
     hostApi,
+    servesUiResources: uiResources !== undefined,
     get openSubscriptionCount() {
       return subscriptions.openCount;
     },
     openSubscription,
     adoptSubscription,
-    openAbortChannel,
     deliver(notification) {
-      if (notification.kind === "installed-plugins") {
-        installedPluginIds = [...notification.pluginIds];
+      if (notification.method === HOST_PROTOCOL_NOTIFICATIONS.installedPluginsSnapshot) {
+        installedPluginIds = [...notification.params.pluginIds];
         return "delivered";
       }
-      if (notification.kind === "config-snapshot") {
+      if (notification.method === HOST_PROTOCOL_NOTIFICATIONS.configSnapshot) {
+        const { keys, values } = notification.params;
         // MUTATED IN PLACE, never rebound: `createConfigSubscriptionChildMembers`
         // captured this object, so a fresh one would leave `config.get` reading
         // the record the construction push seeded and nothing would report it.
@@ -644,9 +654,9 @@ export async function startPluginChildRuntime(
         // itself and the host cannot enumerate keeps the value the child wrote
         // when its own `config.set` resolved, instead of being erased by a
         // snapshot that never knew about it.
-        for (const key of notification.keys) {
-          if (Object.hasOwn(notification.values, key)) {
-            config[key] = notification.values[key];
+        for (const key of keys) {
+          if (Object.hasOwn(values, key)) {
+            config[key] = values[key];
           } else {
             // Absent from `values` means unset, which is what `config.get`
             // answers `undefined` for. Deleted rather than assigned
@@ -656,7 +666,7 @@ export async function startPluginChildRuntime(
         }
         return "delivered";
       }
-      if (notification.kind === "preference-snapshot") {
+      if (notification.method === HOST_PROTOCOL_NOTIFICATIONS.preferencesSnapshot) {
         // Reported as a DROP through the outcome the union already has for
         // "this named something I do not hold". A host that pushes preferences
         // to a child it never seeded would otherwise leave `getAppPreference`
@@ -669,15 +679,16 @@ export async function startPluginChildRuntime(
         // defensive pair as the member's throw above, kept because the two
         // halves are wired by separate objects in tests.
         if (!appPreferences) return "unknown-subscription";
-        // MUTATED IN PLACE for the same reason `config-snapshot` is: the member
-        // above captured this object.
-        for (const key of notification.keys) {
-          if (Object.hasOwn(notification.values, key)) {
-            appPreferences[key] = notification.values[key];
+        // MUTATED IN PLACE for the same reason the config snapshot is: the
+        // member above captured this object.
+        const { keys, values } = notification.params;
+        for (const key of keys) {
+          if (Object.hasOwn(values, key)) {
+            appPreferences[key] = values[key];
           } else {
             // Absent from `values` means unset, which is what the reader
             // answers `undefined` for. `delete` rather than assigning
-            // `undefined` mirrors the `config-snapshot` handler above; through
+            // `undefined` mirrors the config snapshot handler above; through
             // this member the two are indistinguishable, so this is hygiene
             // rather than a behaviour anything can observe.
             delete appPreferences[key];
@@ -685,19 +696,34 @@ export async function startPluginChildRuntime(
         }
         return "delivered";
       }
-      if (notification.kind === "subscription-closed") {
-        return subscriptions.close(notification.subscriptionId, notification.reason)
-          ? "closed"
-          : "unknown-subscription";
+      if (notification.method === HOST_PROTOCOL_NOTIFICATIONS.subscriptionClosed) {
+        if (subscriptions.close(notification.params.subscriptionId, notification.params.reason)) return "closed";
+        if ((notification.params.subscriptionId.startsWith("lease_")
+          || notification.params.subscriptionId.startsWith("raw_")) && pendingLeaseClosures.size < 32) {
+          pendingLeaseClosures.set(notification.params.subscriptionId, notification.params.reason);
+          return "closed";
+        }
+        return "unknown-subscription";
       }
-      if (notification.kind !== "subscription-event") return "unknown-subscription";
-      const subscription = subscriptions.get(notification.subscriptionId);
+      if (notification.method !== HOST_PROTOCOL_NOTIFICATIONS.subscription) {
+        return "unknown-subscription";
+      }
+      const subscription = subscriptions.get(notification.params.subscriptionId);
       if (!subscription) return "unknown-subscription";
-      subscription.handler(notification.payload);
+      subscription.handler(notification.params.payload);
       return "delivered";
     },
+    async runShutdownHandler(subscriptionId) {
+      const run = shutdownHandlers.get(subscriptionId);
+      if (!run || !subscriptions.get(subscriptionId)) {
+        throw new Error(
+          `[plugin-child:${pluginId}] no open onShutdown registration '${subscriptionId}'`,
+        );
+      }
+      await run();
+    },
     hostGone() {
-      return subscriptions.end("peer-gone") + abortChannels.end("peer-gone");
+      return subscriptions.end("peer-gone");
     },
   };
 }

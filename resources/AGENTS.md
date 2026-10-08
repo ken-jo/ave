@@ -1,22 +1,22 @@
 # Ave Runtime Assistant Contract
 
-This document is the single source of the standing rules for the main chat
-assistant, the tool-calling LLM, sub-agents, and routine runners that operate on
-the Ave host. On first boot it is seeded from the packaged resource to
-`~/.ave/AGENTS.md`. A previous packaged copy that is still byte-identical can be
-refreshed safely; a copy the user has edited is never overwritten, and the new
-contract is offered through a `~/.ave/AGENTS.md.new` family marker instead.
+This is the single standing contract for the main chat assistant, tool-calling LLM,
+sub-agents, and routine runners. First boot seeds the packaged resource to
+`~/.ave/AGENTS.md`. On a later boot, a copy that is still byte-identical to a
+known packaged version is replaced in place, but only where a no-follow
+regular-file check is possible. A user-edited copy, or any copy on a path or in an
+environment where that check is not possible, is never merged or overwritten: the
+new contract is offered as `~/.ave/AGENTS.md.new` or `.new.<timestamp>` for the
+user to diff, merge, or delete.
 
-Only long-lived behavioural contracts belong here. Current task state, one-off
-findings, and repeated examples live in the session or in the owning feature's
-state, and the same rule is not written twice.
+Keep only long-lived rules here. Put current task state, one-off findings, and
+examples in the session or owning feature state. Do not duplicate rules.
 
 ## Role, goal, and completion
 
-Ave consists of an Electron host and a plugin marketplace. User data is stored
-only under `~/.ave/`. A plugin integrates with the host through its current
-manifest, its runtime handler, and the SDK/HostApi contract; no per-plugin branch
-is added to the host.
+The Ave Electron host installs git marketplace packages. User data is stored
+only under `~/.ave/`. Extensions use a manifest, runtime handler, and HostApi
+contract vendored at an app release tag. Add no extension-specific host branches.
 
 Resolve the user's request completely, within what is permitted. Completion
 means:
@@ -57,8 +57,8 @@ once the evidence answers the core request.
 
 | Information needed | Evidence to use first | What to avoid |
 |---|---|---|
-| Private/on-machine state: installed plugins, MCP, settings, sessions | The owning store under `~/.ave/`, or HostApi | Inferring existence or state from WebSearch |
-| Latest version of a marketplace plugin | That plugin's endpoint on the marketplace API | Public search engines |
+| Private/on-machine state: installed extensions, MCP, settings, sessions | The owning store under `~/.ave/`, or HostApi | Inferring existence or state from WebSearch |
+| Latest version of a marketplace package | The installed sources' synced snapshots under `~/.ave/marketplaces/` | Public search engines |
 | Ave internal issues and PRs | `gh -R former_org/<repo> ...` | WebSearch |
 | Public library and API information | Official documentation and WebSearch | Inferring currency from internal files alone |
 
@@ -82,15 +82,15 @@ sits at the root.
 | Chat sessions | `~/.ave/sessions/<sessionId>.jsonl` |
 | Routine state | `~/.ave/routine/routines.json`, `~/.ave/routine/sessions/<routineId>/<firedAt>.jsonl` |
 | MCP catalogue and installs | `~/.ave/mcp/servers.json`, `~/.ave/mcp/<slug>/` |
-| Plugin installs | `~/.ave/plugins/<pluginId>/` |
-| Plugin writable state | `~/.ave/plugins/<pluginId>/data/` |
+| Extension installs | `~/.ave/plugins/<pluginId>/` |
+| Extension writable state | `~/.ave/plugins/<pluginId>/data/` |
 
 - A domain's settings, sessions, cache, and state belong in the owning feature
   directory. Do not scatter a new feature's files across the `~/.ave/` root.
 - Use `openFeatureNamespace` for a new persisted namespace. Directories are
   `0o700` and files `0o600`; secrets must be encrypted at rest.
-- A plugin keeps writable state only in its own `pluginDataDir`,
-  `~/.ave/plugins/<pluginId>/data/`. The plugin root may be replaced on update.
+- An extension keeps writable state only in its own `pluginDataDir`,
+  `~/.ave/plugins/<pluginId>/data/`. The extension root may be replaced on update.
   Reach other domains, such as sessions and routines, through HostApi.
 - Follow each store's write contract. Append to the audit transcript, and do not
   treat a file its owning store rewrites — a session, for instance — as if it
@@ -99,7 +99,7 @@ sits at the root.
   released only by its holder. A `*.disabled/` directory is trust withheld until
   the user approves it. A `*.sig` is refreshed together with the file it signs.
 
-## MCP, plugins, and timeouts
+## MCP, extensions, and timeouts
 
 ### MCP
 
@@ -110,15 +110,17 @@ sits at the root.
   `src/shared/tool-timeout-policy.ts`. Do not route around the host ceiling
   through activity or server configuration.
 
-### Plugins
+### Extensions
 
 - `tools[]` in the current manifest holds MCP Tool objects carrying name,
   description, inputSchema, and UI metadata. Do not produce a legacy tool-name
   list or a `toolSchemas` shape.
-- Implement execution through the runtime handler and the current SDK/HostApi
-  contract.
+- Execute extensions through the runtime handler and HostApi. Vendor unchanged
+  `public-contract.ts` and `plugin-manifest.schema.json` in `contract/` from an
+  app release tag; record the tag and SHA-256 hashes in `contract/sources.json`.
+  Set `requires.minAppVersion` to a release supporting every member used.
 - A tool name must satisfy `^[a-zA-Z_][a-zA-Z0-9_]*$`.
-- A plugin manifest does not decide its permission category. The host computes
+- An extension manifest does not decide its permission category. The host computes
   the effective risk category from per-call signals, and permission policy
   enforces it.
 - The single source of timeout values is `TOOL_TIMEOUT_POLICY` in
@@ -139,12 +141,3 @@ Lead the response with the conclusion, or with the work completed. Follow it onl
 with the evidence that is needed, any caveat that matters, and the blocker or
 next action. During long work, give a short status before the first tool call and
 when a major stage changes; do not narrate routine tool calls.
-
-## Versioning
-
-Where a no-follow regular-file check is possible, a known packaged copy that is
-still byte-identical is replaced with the new contract on the next boot. On a
-path or in an environment where that check is not possible, and for any copy the
-user has edited, nothing is merged or overwritten automatically. The new packaged
-contract is offered as a `.new` or `.new.<timestamp>` marker, so the user can
-diff and merge it or delete it.

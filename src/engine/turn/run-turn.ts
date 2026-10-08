@@ -492,6 +492,7 @@ async function runTurnInSpan(
       ? {
           id: options.rolePrompt.id,
           name: options.rolePrompt.name,
+          ...(options.rolePrompt.origin ? { origin: options.rolePrompt.origin } : {}),
         }
       : undefined;
     // Staged (non-user-authored) input renders as an `imported_trigger` marker, not a

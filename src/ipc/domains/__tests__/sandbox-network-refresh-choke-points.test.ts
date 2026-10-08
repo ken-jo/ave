@@ -63,7 +63,7 @@ describe("ASRT choke-point 1 — ave:settings:update (settings.ts)", () => {
               vendors: { openai: { baseUrl: currentBaseUrl } },
             };
           }
-          if (key === "marketplace") return { cloudAllowPrivateNetwork: false };
+          if (key === "marketplace") return {};
           return {};
         }),
         patch: vi.fn(async () => {
@@ -150,7 +150,7 @@ describe("ASRT choke-point 2 — marketplace provider preset mutations (settings
             };
           }
           if (key === "marketplace") {
-            return { cloudAllowPrivateNetwork: false, installedProviderPresets: presets };
+            return { installedProviderPresets: presets };
           }
           return {};
         }),

@@ -5,6 +5,7 @@ import type { PluginContributionDeclaration, PluginManifest } from "./types.js";
 import { verifyInstallReceiptRaw } from "./plugin-install-receipt.js";
 import { canonicalZipEntryPathIdentity } from "./zip-entry-path.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { parseAgentPluginRoutineTemplates, parsePackagePrompt } from "../marketplace/content/agent-plugin-components.js";
 
 /**
  * Closed on purpose, and doing security work without looking like it.
@@ -18,7 +19,7 @@ import { sha256Hex } from "../lib/hex-digest-equal.js";
  * The union being closed is the entire enforcement. There is no separate
  * allowlist to fall back on, so widening it is not an incremental change.
  */
-type PluginContributionKind = "skill" | "hook" | "mcpServer";
+type PluginContributionKind = "skill" | "hook" | "mcpServer" | "prompt" | "routineTemplate";
 type PluginArchiveMemberKind = "file" | "directory" | "symlink" | "hardlink" | "device" | "other";
 
 export interface PluginArchiveMember {
@@ -102,17 +103,19 @@ export function normalizePluginContributionPath(
   return normalized;
 }
 
-function declarationsFor(manifest: Pick<PluginManifest, "skills" | "hooks" | "mcpServers">): Array<[PluginContributionKind, PluginContributionDeclaration[]]> {
+function declarationsFor(manifest: Pick<PluginManifest, "skills" | "hooks" | "mcpServers" | "prompts" | "routineTemplates">): Array<[PluginContributionKind, PluginContributionDeclaration[]]> {
   return [
     ["skill", manifest.skills ?? []],
     ["hook", manifest.hooks ?? []],
     ["mcpServer", manifest.mcpServers ?? []],
+    ["prompt", manifest.prompts ?? []],
+    ["routineTemplate", manifest.routineTemplates ?? []],
   ];
 }
 
 type ContributionManifest = Pick<
   PluginManifest,
-  "id" | "version" | "skills" | "hooks" | "mcpServers"
+  "id" | "version" | "skills" | "hooks" | "mcpServers" | "prompts" | "routineTemplates"
 >;
 
 /** Pure declaration validation shared by manifest load, packaging, and install. */
@@ -250,6 +253,13 @@ export async function materializePluginContributions(
     const files: MaterializedContributionFile[] = [];
     for (const path of selected.sort()) {
       const bytes = await readFile(resolve(pluginRoot, path));
+      if (declaration.kind === "prompt") {
+        const basename = path.split("/").at(-1)?.replace(/\.md$/u, "");
+        if (!path.endsWith(".md") || !basename) fail("invalid_prompt_path", manifest.id, `prompt:${declaration.localId}`, path);
+        parsePackagePrompt(bytes, path, basename);
+      } else if (declaration.kind === "routineTemplate") {
+        parseAgentPluginRoutineTemplates(bytes, path);
+      }
       files.push(Object.freeze({
         path,
         content: bytes.toString("utf8"),

@@ -31,7 +31,7 @@ import type { IpcMainInvokeEvent } from "electron";
 import { hostFrameEvent, pluginShellFrameEvent } from "../../__tests__/test-helpers.js";
 
 const { CHANNELS } = await import("../../contract/app-contract.js");
-const { ROUTINES, WORK_BOARD } = await import("../../shared/ipc-channels.js");
+const { ALERTS, ROUTINES, WORK_BOARD } = await import("../../shared/ipc-channels.js");
 const { setIsPackaged } = await import("../../boot/dev-flags.js");
 const { UNAUTHORIZED_FRAME } = await import("../gated.js");
 
@@ -120,6 +120,7 @@ function makeDeps(): never {
       onChange: vi.fn(),
     },
     pluginRuntime: {
+      retireSandboxGrantsOutsideCeiling: vi.fn(async () => []),
       getPluginManifest: vi.fn(() => null),
       getPluginRoot: vi.fn(() => null),
       getGenerationAccess: vi.fn(() => null),
@@ -176,7 +177,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["settings", CHANNELS.settings.setApiKey, ["anthropic", "k"]],
   ["settings", CHANNELS.shell.openExternal, ["https://example.com/"]],
   // Plugin management — the host settings screen, not the plugin bridge.
-  ["plugins", CHANNELS.plugins.install, [{}]],
+  ["plugins", CHANNELS.plugins.installLocal, []],
   ["plugins", CHANNELS.plugins.uninstall, ["p"]],
   ["plugins", CHANNELS.plugins.configSecretSet, ["p", "k", "v"]],
   ["plugins", CHANNELS.runtime.counts, []],
@@ -186,6 +187,8 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // call it would be minting its own plugin binding.
   ["plugins", CHANNELS.pluginBridge.registerWebview, [{ webContentsId: 1, pluginId: "p", entryUrl: "file:///x" }]],
   ["plugins", CHANNELS.host.pluginThemeNotify, [{}]],
+  // Draft bytes, local package selection and installation stay in the host renderer.
+  ...Object.values(CHANNELS.pluginStudio).map((channel): readonly [string, string, unknown[]] => ["plugin-studio", channel, []]),
   // Side chat runs arbitrary tools on a second loop.
   ["sidechat", CHANNELS.sidechat.send, [{ input: "x" }]],
   // Routines and the session tasks list.
@@ -199,6 +202,14 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // Work board items drive agent runs.
   ["work-board", WORK_BOARD.list, [{}]],
   ["work-board", WORK_BOARD.run, [{}]],
+  // Closing an alert card keeps its identity closed; the staged cards carry
+  // host-rendered prompts.
+  ["alerts", ALERTS.cardClosed, ["id", "dismissed"]],
+  ["alerts", ALERTS.listOpen, []],
+  ["alerts", ALERTS.removePredecessor, ["fixturemail:reply"]],
+  ["alerts", ALERTS.listKinds, []],
+  ["alerts", ALERTS.setKind, ["@host:due-soon", { enabled: true }]],
+  ["alerts", ALERTS.setOsNotificationsEnabled, [false]],
   // Saved prompts are user-authored content.
   ["prompts", CHANNELS.prompts.list, []],
   ["prompts", CHANNELS.prompts.save, [{}]],
@@ -218,6 +229,15 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // Window controls act on the host BrowserWindow the shell is embedded in.
   ["window", CHANNELS.window.minimize, []],
   ["window", CHANNELS.window.openHtmlPreview, [{ html: "<p>x</p>" }]],
+  // The update scheduler's status and *Check now* (design §18.9): a check syncs every source.
+  ["git-marketplace", CHANNELS.gitMarketplace.updatesStatus, []],
+  ["git-marketplace", CHANNELS.gitMarketplace.updatesCheck, []],
+  // The folder dialogs (design §18.9): a native folder chooser, and a folder source opened in the file manager.
+  ["git-marketplace", CHANNELS.gitMarketplace.sourcesPickFolder, []],
+  ["git-marketplace", CHANNELS.gitMarketplace.sourcesReveal, ["team"]],
+  // *Apply now* skips the idle gate; approving components runs an agent plugin's servers and hooks (§18.7.4, §18.7.5).
+  ["git-marketplace", CHANNELS.gitMarketplace.updatesApplyNow, []],
+  ["git-marketplace", CHANNELS.gitMarketplace.componentsApprove, [{ sourceId: "official", kind: "agent-plugin", name: "notes" }, "id", []]],
 ];
 
 beforeEach(async () => {
@@ -246,6 +266,9 @@ beforeEach(async () => {
     { registerUsageHandlers },
     { registerDevHandlers },
     { registerWindowHandlers },
+    { registerAlertsHandlers },
+    { registerPluginStudioHandlers },
+    { registerGitMarketplaceHandlers },
   ] = await Promise.all([
     import("../domains/chat.js"),
     import("../domains/settings.js"),
@@ -264,6 +287,9 @@ beforeEach(async () => {
     import("../domains/usage.js"),
     import("../domains/dev.js"),
     import("../domains/window.js"),
+    import("../domains/alerts.js"),
+    import("../domains/plugin-studio.js"),
+    import("../domains/git-marketplace.js"),
   ]);
   registerChatHandlers(deps);
   registerSettingsHandlers(deps);
@@ -282,6 +308,12 @@ beforeEach(async () => {
   registerUsageHandlers(deps);
   registerDevHandlers(deps);
   registerWindowHandlers(deps);
+  registerAlertsHandlers(deps, async () => ({} as never));
+  registerPluginStudioHandlers(deps, async () => null);
+  // Its other channels build the marketplace on the first request; this table drives only the scheduler's.
+  registerGitMarketplaceHandlers(deps, async () => null, async () => {
+    throw new Error("the git marketplace is not built in this suite");
+  });
 });
 
 describe("host-renderer-only IPC channels", () => {

@@ -23,7 +23,7 @@ import { TOOL_RESULT_READ_MAX_CHARS } from "../shared/bounded-tool-output.js";
 import { TOOL_RESULT_CHUNK_READER_METADATA_KEY } from "./tool-result-chunk.js";
 import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
-import { resolvePluginWritableRoot } from "../plugins/plugin-storage-layout.js";
+import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
 import type { Tool } from "./base.js";
 import type { HookRunner } from "../hooks/hook-runner.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
@@ -673,6 +673,9 @@ export async function executeAuthorizedToolInvocation(
         };
       }
     : undefined;
+  // Undefined for a builtin, and for a plugin whose data root is not the
+  // host's real directory — a replaced root grants nothing.
+  const ownerPluginSandboxRoot = tool.pluginId ? resolveOwnerPluginSandboxRoot(tool.pluginId) : undefined;
   const executionContext: ToolExecutionContext = {
     cwd: executionCwd,
     extraAllowedDirectories: [...new Set(invocationRuntimeAllowedDirectories)],
@@ -682,9 +685,7 @@ export async function executeAuthorizedToolInvocation(
     // write-jail to `~/.ave/plugins/<pluginId>/data`, the plugin's own
     // writable state, NOT the plugin root: the root holds the bundle the next
     // load imports into the main process. Builtins pass undefined.
-    ...(tool.pluginId
-      ? { ownerPluginSandboxRoot: resolvePluginWritableRoot(tool.pluginId) }
-      : {}),
+    ...(ownerPluginSandboxRoot !== undefined ? { ownerPluginSandboxRoot } : {}),
     ...(hostShellExecutionPlan ? { hostShellExecutionPlan } : {}),
     ...(executionRouteGrant ? { executionRouteGrant } : {}),
     ...(preparedShellInvocation ? { preparedShellInvocation } : {}),

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -145,5 +145,42 @@ describe("PersonaPromptStore", () => {
     writeFileSync(join(userDir, "bad.md"), "---\nid: default\nname: Bad\n---\nBody", "utf-8");
 
     await expect(store.list()).resolves.toEqual([]);
+  });
+
+  it("keeps package personas addressable and read-only without shadowing local ids", async () => {
+    const { userDir, store } = makeStore();
+    await store.save({ id: "reviewer", name: "My reviewer", systemPromptAdd: "Local body" });
+    const installed = (name: string, version: string) => ({
+      name, version,
+      content: {
+        kind: "agent-plugin" as const,
+        components: { skills: [], mcpServers: {}, prompts: [
+          { name: "reviewer", kind: "persona" as const, digest: "a".repeat(64) },
+          { name: "draft", kind: "template" as const, digest: "b".repeat(64) },
+        ], agents: [], routineTemplates: [], hooks: [] },
+        files: [
+          { path: "ai.agent-connector.ave/prompts/reviewer.md", data: Buffer.from("---\nname: reviewer\ndescription: Reviews\nkind: persona\n---\nPackage body") },
+          { path: "ai.agent-connector.ave/prompts/draft.md", data: Buffer.from("---\nname: draft\ndescription: Draft text\nkind: template\nargumentHint: Topic\n---\nDraft {args}") },
+        ],
+      },
+    });
+    store.setInstalledAgentPlugins([installed("first", "1.0.0"), installed("second", "2.0.0")]);
+    expect((await store.get("reviewer"))?.systemPromptAdd).toBe("Local body");
+    expect((await store.get("agent-plugin:first:reviewer"))?.origin).toEqual({ kind: "agent-plugin", package: "first", version: "1.0.0" });
+    expect((await store.get("agent-plugin:second:reviewer"))?.name).toBe("reviewer (second)");
+    expect((await store.list()).map((prompt) => prompt.id)).toHaveLength(3);
+    expect(store.listTemplates()).toMatchObject([
+      { id: "agent-plugin:first:draft", argumentHint: "Topic", body: "Draft {args}" },
+      { id: "agent-plugin:second:draft", argumentHint: "Topic", body: "Draft {args}" },
+    ]);
+    await expect(store.save({ id: "agent-plugin:first:reviewer", name: "x", systemPromptAdd: "x" })).rejects.toThrow("invalid persona prompt id");
+    await expect(store.delete("agent-plugin:first:reviewer")).rejects.toThrow("invalid persona prompt id");
+    rmSync(userDir, { recursive: true });
+    expect((await store.list()).map((prompt) => prompt.id)).toEqual([
+      "agent-plugin:first:reviewer", "agent-plugin:second:reviewer",
+    ]);
+    store.setInstalledAgentPlugins([]);
+    expect(await store.get("agent-plugin:first:reviewer")).toBeNull();
+    expect(store.listTemplates()).toEqual([]);
   });
 });

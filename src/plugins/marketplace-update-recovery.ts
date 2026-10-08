@@ -36,7 +36,7 @@ import {
 import type { PluginPaths } from "./plugin-paths.js";
 import { readPluginRegistry, updatePluginRegistry } from "./registry.js";
 import type { PluginRegistryEntry } from "./types.js";
-import { canonicalJSON } from "./whitelist/canonical-json.js";
+import { canonicalJSON } from "./secret-access/canonical-json.js";
 import { assertSafeArtifactSlug } from "./plugin-id.js";
 import { escapeRegExp } from "../shared/escape-reg-exp.js";
 import { UUID_SOURCE } from "../shared/uuid.js";
@@ -128,7 +128,6 @@ async function discardOwnedPluginRoot(
   );
   await retryOnTransientFsLock(() => rm(rootDir, { recursive: true, force: true }));
 }
-
 
 function assertOwnedBackupPath(
   paths: PluginPaths,
@@ -376,7 +375,7 @@ function assertPendingCleanupPath(paths: PluginPaths, pluginId: string, pending:
   );
 }
 
-export async function cleanupObsoletePluginBackup(paths: PluginPaths, pluginId: string): Promise<boolean> {
+async function cleanupObsoletePluginBackup(paths: PluginPaths, pluginId: string): Promise<boolean> {
   assertSafeArtifactSlug(pluginId);
   let cleaned = false;
   while (true) {

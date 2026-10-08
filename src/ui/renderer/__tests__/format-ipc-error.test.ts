@@ -6,6 +6,22 @@ import {
 import { t } from "../../../i18n/runtime.js";
 
 describe("formatIpcError (SOT — #830)", () => {
+  it.each([
+    ["invalid-arguments", "formatIpcError.invalidInput"],
+    ["no-alerts-service", "formatIpcError.notificationUnavailable"],
+    ["predecessor-not-removable", "alerts.predecessorNotRemovable"],
+    ["predecessor-policy-locked", "alerts.predecessorPolicyLocked"],
+    ["predecessor-removal-failed", "alerts.predecessorRemovalFailed"],
+  ])("localizes the alert IPC error %s", (code, messageKey) => {
+    expect(formatIpcError(code, undefined)).toBe(t(messageKey));
+    expect(formatIpcError(code, undefined)).not.toContain(code);
+  });
+
+  it("localizes an alert kind that disappeared before consent was submitted", () => {
+    expect(formatIpcError("kind-not-registered", undefined)).toBe(
+      "이 알림 유형은 더 이상 사용할 수 없습니다. 알림 설정을 새로고침해 주세요.",
+    );
+  });
   it("resolves a known common code from the default map", () => {
     // The map now holds translation keys; formatIpcError resolves them via t().
     expect(formatIpcError("invalid-key", undefined)).toBe(

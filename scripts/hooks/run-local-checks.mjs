@@ -16,6 +16,8 @@
 
 import { existsSync } from "node:fs";
 import { parsePrePushUpdates, readPrePushInput } from "./pre-push-ref-updates.mjs";
+import { checkPushedDocumentation } from "./pre-push-document-safety.mjs";
+import { withoutGitContext } from "../lib/git-process-environment.mjs";
 import { basename, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
@@ -29,9 +31,8 @@ import {
   getMissingPackageScripts,
 } from "./app-typecheck-gate.mjs";
 import {
+  classifyDocumentationChanges,
   isCanonicalGitPath,
-  isReviewOnlyDocumentationPath,
-  isSensitiveMarkdownPath,
 } from "./pre-push-markdown-policy.mjs";
 import { selectCommentOnlyAveAppFiles } from "./pre-push-comment-policy.mjs";
 import { selectTargetedAveAppVitestFiles } from "./pre-push-test-policy.mjs";
@@ -129,9 +130,9 @@ function captureOptional(cmd, args, cwd) {
   return (result.stdout || "").trim();
 }
 
-function run(cmd, args, cwd) {
+function run(cmd, args, cwd, env = process.env) {
   console.log("");
-  runCommand(cmd, args, { cwd, label: `checks ${basename(cwd)}` });
+  runCommand(cmd, args, { cwd, env, label: `checks ${basename(cwd)}` });
 }
 
 function available(...candidates) {
@@ -411,7 +412,7 @@ function decodeUtf8Strict(output) {
 function getChangedEntries(repoRoot, baseSha, localSha) {
   const result = spawnSync(
     commands.git,
-    ["diff", "--no-renames", "--name-status", "-z", `${baseSha}..${localSha}`, "--"],
+    ["diff", "--no-renames", "--raw", "-z", `${baseSha}..${localSha}`, "--"],
     {
       cwd: repoRoot,
       stdio: ["ignore", "pipe", "pipe"],
@@ -427,12 +428,13 @@ function getChangedEntries(repoRoot, baseSha, localSha) {
 
   const entries = [];
   for (let index = 0; index < fields.length; ) {
-    const status = fields[index++];
-    if (!/^[A-Z][0-9]*$/.test(status)) return null;
+    const raw = /^:([0-7]{6}) ([0-7]{6}) [0-9a-f]+ [0-9a-f]+ ([A-Z][0-9]*)$/i.exec(fields[index++]);
+    if (!raw) return null;
+    const [, oldMode, newMode, status] = raw;
     const pathCount = /^[RC]/.test(status) ? 2 : 1;
     if (index + pathCount > fields.length) return null;
     for (let pathIndex = 0; pathIndex < pathCount; pathIndex += 1) {
-      entries.push({ status, path: fields[index++] });
+      entries.push({ oldMode, newMode, status, path: fields[index++] });
     }
   }
   return entries;
@@ -503,14 +505,8 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocat
   if (noncanonicalPath) {
     return { docsOnly: false, reason: "noncanonical Git path requires full checks" };
   }
-  const sensitiveMarkdownPath = [...changedFiles].find(isSensitiveMarkdownPath);
-  if (sensitiveMarkdownPath) {
-    return {
-      docsOnly: false,
-      reason: `sensitive Markdown ${sensitiveMarkdownPath} requires full checks`,
-    };
-  }
-  if ([...changedFiles].some((file) => !isReviewOnlyDocumentationPath(file))) {
+  const documentation = classifyDocumentationChanges(changedEntries);
+  if (!documentation.docsOnly) {
     if (commentOnlyEligible) {
       const commentSelection = selectCommentOnlyAveAppFiles(
         changedEntries,
@@ -542,15 +538,17 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocat
     return {
       docsOnly: false,
       testOnly: false,
-      reason: targetedTestsReason || "non-review-only files changed",
+      reason: targetedTestsReason || documentation.reason,
     };
   }
-  return { docsOnly: true, reason: `${changedFiles.size} Markdown file(s) changed` };
+  return { ...documentation, pushedEntries: changedEntries };
 }
 
 // ---------------------------------------------------------------------------
 // Staged safety scan (merge markers, TLS-verification bypass)
 // ---------------------------------------------------------------------------
+
+const mergeMarkers = /^(<<<<<<< |=======|>>>>>>> )/m;
 
 function getStagedFiles(repoRoot) {
   const output = capture(
@@ -580,8 +578,6 @@ function runStagedSafetyChecks(repoRoot) {
   run(commands.git, ["diff", "--cached", "--check"], repoRoot);
   const files = getStagedFiles(repoRoot);
   const violations = [];
-  const mergeMarkers = /^(<<<<<<< |=======|>>>>>>> )/m;
-
   for (const relativePath of files) {
     const stagedContent = getStagedFileContent(repoRoot, relativePath);
     if (!stagedContent || stagedContent.includes(String.fromCharCode(0))) continue;
@@ -647,7 +643,8 @@ function runPackageScripts(dir, scriptNames, checkLabel) {
   }
   const packageManager = getPackageManager(dir);
   for (const scriptName of scriptNames) {
-    run(packageManager, ["run", scriptName], dir);
+    run(packageManager, ["run", scriptName], dir,
+      scriptName === "test" ? withoutGitContext() : process.env);
   }
 }
 
@@ -659,15 +656,6 @@ function runAppChecks(dir) {
   const bun = available(commands.bun);
   if (!bun) {
     throw new Error("bun is required for ave checks");
-  }
-  // The SDK lives outside this repo and is only present in a linked local
-  // layout, so its absence is a real state rather than a broken reference.
-  if (hasFile(join(dir, "packages", "plugin-sdk", "package.json"))) {
-    runPackageScripts(
-      join(dir, "packages", "plugin-sdk"),
-      ["check:drift", "build"],
-      "linked plugin-sdk checks"
-    );
   }
   ensureAppTestRuntimeAbi(dir);
   runAppTypecheckGate(dir, "full checks");
@@ -717,7 +705,7 @@ function runAppTargetedVitestChecks(dir, testFiles, supportTestFiles = []) {
   run(bun, ["run", "check:test-duplicates", "--", "--fail-on-duplicates"], dir);
   ensureAppTestRuntimeAbi(dir);
   const vitestArgs = targetTestFiles.map((file) => `./${file}`);
-  run(bun, ["run", "test:vitest", "--", "run", ...vitestArgs], dir);
+  run(bun, ["run", "test:vitest", "--", "run", ...vitestArgs], dir, withoutGitContext());
 }
 
 function runAppCommentOnlyChecks(dir) {
@@ -757,6 +745,9 @@ if (stage === "pre-commit") {
       ? classifyPrePushChanges(repoRoot, prePushUpdates, remote, remoteLocation)
       : { docsOnly: false };
   if (classification.docsOnly) {
+    checkPushedDocumentation(repoRoot, classification.pushedEntries);
+    run(commands.node, ["--test", "test/scripts/check-asrt-version-claims.test.mjs"], repoRoot);
+    run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot);
     console.log(
       `[checks] docs-only pre-push: skipping lint/typecheck/test/build (${classification.reason})`
     );

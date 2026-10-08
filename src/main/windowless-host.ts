@@ -15,6 +15,7 @@ export async function createWindowlessHost(projectRoot: string, host: BootHost) 
   const conversationSurfaceRuntime = createConversationSurfaceRuntime();
   conversationSurfaceRuntime.activity.bindSessionTransitionGuard(
     () => services.conversationLoop.isSessionTransitioning(),
+    (notify) => services.conversationLoop.onSessionTransitionSettled(notify),
   );
   const deps = {
     ...services,

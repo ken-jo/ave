@@ -2,205 +2,112 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PluginDeploymentGuard } from "../deployment-guard.js";
 import { mkdtempSync } from "node:fs";
-import { writeTestPluginRegistry } from "./test-helpers.js";
-import { agentPluginsDocument } from "./test-helpers.js";
+import type { PackageKey } from "../../marketplace/sources/policy.js";
+import { assertDisableAllowed, PluginDeploymentDeniedError, PluginDeploymentGuard } from "../deployment-guard.js";
+import { agentPluginsDocument, writeTestPluginRegistry, type TestRegistryEntry } from "./test-helpers.js";
 
 /**
- * Phase 1.5 test gate — PluginDeploymentGuard §7.2-§7.3
- *
- * Guard는 default-deny 정책: pluginsRoot 하위에 있는 플러그인만 "user"로 간주.
- * 그 외는 모두 "managed"로 간주하여 user actor의 제거/비활성화를 거부.
+ * Only the machine policy's `requiredInstalls` locks a plugin (design §10.1,
+ * §10.2): an entry naming the plugin and the source it is bound to. No
+ * manifest field and no registry `installSource` protects one.
  */
 describe("PluginDeploymentGuard", () => {
   let testDir: string;
   let registryPath: string;
-  let installedDir: string;
+  let pluginsRoot: string;
+  let required: PackageKey[];
 
   beforeEach(async () => {
     testDir = mkdtempSync(join(tmpdir(), "ave-guard-"));
-    await mkdir(testDir, { recursive: true });
     registryPath = join(testDir, "registry.json");
-    installedDir = join(testDir, "installed");
-    await mkdir(installedDir, { recursive: true });
+    pluginsRoot = join(testDir, "plugins");
+    await mkdir(pluginsRoot, { recursive: true });
+    required = [];
   });
 
   afterEach(async () => {
     await rm(testDir, { recursive: true, force: true });
   });
 
-  it("rejects user uninstalling a managed plugin (outside installedDir)", async () => {
-    const managedRoot = join(testDir, "bundle-root");
-    await mkdir(join(managedRoot, "p-managed"), { recursive: true });
-    const pluginManifest = join(managedRoot, "p-managed", "plugin.json");
-    await writeFile(pluginManifest, "{}", "utf-8");
-    await writeTestPluginRegistry({ registryPath }, [{ id: "p-managed", manifestPath: pluginManifest }]);
+  const guard = () => new PluginDeploymentGuard({ registryPath, pluginsRoot, requiredInstalls: async () => required });
 
-    const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
-    const result = await guard.canUninstall("p-managed", "user");
-
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toMatch(/Managed plugin/);
+  const origin = (sourceId: string) => ({
+    sourceId,
+    sourceOrigin: sourceId === "ave" ? "official" : "managed",
+    commit: "c".repeat(40),
+    packagePath: "plugins/wiki",
+    version: "1.0.0",
+    rung: "release",
+    artifactSha256: "d".repeat(64),
+    installedAt: "2026-09-24T00:00:00.000Z",
   });
 
-  it("allows user uninstalling a user-installed plugin (inside installedDir)", async () => {
-    const userDir = join(installedDir, "p-user");
-    await mkdir(userDir, { recursive: true });
-    const manifestPath = join(userDir, "plugin.json");
-    await writeFile(manifestPath, "{}", "utf-8");
-    await writeTestPluginRegistry({ registryPath }, [{ id: "p-user", manifestPath }]);
+  async function install(id: string, entry: Partial<TestRegistryEntry> = {}, manifest: Record<string, unknown> = {}): Promise<void> {
+    const dir = join(pluginsRoot, id);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "plugin.json"), JSON.stringify(agentPluginsDocument({ id, name: id, version: "1.0.0", entry: "index.js", ...manifest })), "utf-8");
+    await writeTestPluginRegistry({ registryPath }, [{ id, manifestPath: join(dir, "plugin.json"), ...entry }]);
+  }
 
-    const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
-    const result = await guard.canUninstall("p-user", "user");
+  it("locks a plugin a requiredInstalls entry names, from the source it is bound to", async () => {
+    await install("wiki", { origin: origin("corp") });
+    required = [{ kind: "plugin", name: "wiki", source: "corp" }];
 
-    expect(result.allowed).toBe(true);
+    await expect(guard().canUninstall("wiki")).resolves.toEqual({
+      allowed: false,
+      reason: "plugin wiki is required by policy (source corp); it cannot be uninstalled",
+    });
+    await expect(guard().canDisable("wiki")).resolves.toEqual({
+      allowed: false,
+      reason: "plugin wiki is required by policy (source corp); it cannot be disabled",
+    });
   });
 
-  it("always allows it-admin actor (trust boundary bypass)", async () => {
-    const managedRoot = join(testDir, "bundle-root");
-    await mkdir(join(managedRoot, "p-managed"), { recursive: true });
-    const pluginManifest = join(managedRoot, "p-managed", "plugin.json");
-    await writeFile(pluginManifest, "{}", "utf-8");
-    await writeTestPluginRegistry({ registryPath }, [{ id: "p-managed", manifestPath: pluginManifest }]);
-
-    const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
-    const result = await guard.canUninstall("p-managed", "it-admin");
-
-    expect(result.allowed).toBe(true);
+  it("does not lock the same name bound to another source, or to none", async () => {
+    required = [{ kind: "plugin", name: "wiki", source: "corp" }];
+    await install("wiki", { origin: origin("ave") });
+    await expect(guard().canUninstall("wiki")).resolves.toEqual({ allowed: true });
+    await install("wiki");
+    await expect(guard().canDisable("wiki")).resolves.toEqual({ allowed: true });
   });
 
-  it("rejects unknown pluginId with 'not found' reason", async () => {
+  it("reads the policy at each check", async () => {
+    await install("wiki", { origin: origin("corp") });
+    const checking = guard();
+    await expect(checking.canUninstall("wiki")).resolves.toEqual({ allowed: true });
+    required = [{ kind: "plugin", name: "wiki", source: "corp" }];
+    await expect(checking.canUninstall("wiki")).resolves.toMatchObject({ allowed: false });
+  });
+
+  it("grants nothing to a legacy admin entry or a manifest that still declares installPolicy", async () => {
+    await install("meeting", { installSource: "admin" }, { installPolicy: "admin" });
+    await expect(guard().canUninstall("meeting")).resolves.toEqual({ allowed: true });
+    await expect(guard().canDisable("meeting")).resolves.toEqual({ allowed: true });
+  });
+
+  it("rejects an unknown plugin id with a not-found reason", async () => {
     await writeTestPluginRegistry({ registryPath }, []);
-
-    const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
-    const result = await guard.canUninstall("missing", "user");
-
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toMatch(/not found/i);
+    await expect(guard().canUninstall("ghost")).resolves.toEqual({ allowed: false, reason: "Plugin not found: ghost" });
   });
 
-  it("SECURITY_GATE: prefix confusion — installed-foo/ is NOT under installed/", async () => {
-    const spoofDir = join(testDir, "installed-foo");
-    await mkdir(spoofDir, { recursive: true });
-    const manifestPath = join(spoofDir, "plugin.json");
-    await writeFile(manifestPath, "{}", "utf-8");
-    await writeTestPluginRegistry({ registryPath }, [{ id: "spoof", manifestPath }]);
-
-    const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
-    const result = await guard.canUninstall("spoof", "user");
-
-    // 'installed-foo'는 'installed/'의 prefix confusion. relative()가 '..'로 시작하는 값을
-    // 반환하므로 installedDir 하위가 아님 → managed로 판정 → 거부 (default-deny).
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toMatch(/Managed plugin/);
+  it("SECURITY_GATE: refuses an entry whose manifest is outside the plugins directory, including a prefix look-alike", async () => {
+    for (const [id, manifestPath] of [
+      ["spoof", join(testDir, "plugins-foo", "plugin.json")],
+      ["escape", "elsewhere/plugin.json"],
+    ] as const) {
+      await writeTestPluginRegistry({ registryPath }, [{ id, manifestPath }]);
+      const result = await guard().canUninstall(id);
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toMatch(/outside the plugins directory/);
+    }
   });
 
-  it("SECURITY_GATE: registry entry with relative path escaping installedDir → managed", async () => {
-    const escapeDir = join(testDir, "elsewhere");
-    await mkdir(escapeDir, { recursive: true });
-    const escapeManifest = join(escapeDir, "plugin.json");
-    await writeFile(escapeManifest, "{}", "utf-8");
-    // relative manifestPath가 registry dirname 기준으로 resolve되어 installedDir 밖으로 탈출.
-    await writeTestPluginRegistry({ registryPath }, [{ id: "escape", manifestPath: "elsewhere/plugin.json" }]);
-
-    const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
-    const result = await guard.canUninstall("escape", "user");
-
-    // default-deny: installedDir 밖에 있으므로 managed로 처리 → user actor 거부.
-    expect(result.allowed).toBe(false);
-  });
-
-  it("rejects admin plugin inside installedDir via manifest installPolicy field", async () => {
-    const userDir = join(installedDir, "p-managed-inside");
-    await mkdir(userDir, { recursive: true });
-    const manifestPath = join(userDir, "plugin.json");
-    await writeFile(
-      manifestPath,
-      JSON.stringify(agentPluginsDocument({ id: "p-managed-inside", installPolicy: "admin" })),
-      "utf-8",
-    );
-    await writeTestPluginRegistry({ registryPath }, [{ id: "p-managed-inside", manifestPath }]);
-
-    const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
-    const result = await guard.canUninstall("p-managed-inside", "user");
-
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toMatch(/installPolicy="admin"/);
-  });
-
-  it("allows user plugin inside installedDir with explicit installPolicy: user", async () => {
-    const userDir = join(installedDir, "p-user-explicit");
-    await mkdir(userDir, { recursive: true });
-    const manifestPath = join(userDir, "plugin.json");
-    await writeFile(
-      manifestPath,
-      JSON.stringify(agentPluginsDocument({ id: "p-user-explicit", installPolicy: "user" })),
-      "utf-8",
-    );
-    await writeTestPluginRegistry({ registryPath }, [{ id: "p-user-explicit", manifestPath }]);
-
-    const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
-    const result = await guard.canUninstall("p-user-explicit", "user");
-
-    expect(result.allowed).toBe(true);
-  });
-
-  it("absent installPolicy field in legacy manifest → allowed for user", async () => {
-    const userDir = join(installedDir, "p-legacy");
-    await mkdir(userDir, { recursive: true });
-    const manifestPath = join(userDir, "plugin.json");
-    // legacy manifest without installPolicy field
-    await writeFile(
-      manifestPath,
-      JSON.stringify({ id: "p-legacy", name: "Legacy", version: "0.9.0" }),
-      "utf-8",
-    );
-    await writeTestPluginRegistry({ registryPath }, [{ id: "p-legacy", manifestPath }]);
-
-    const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
-    const result = await guard.canUninstall("p-legacy", "user");
-
-    expect(result.allowed).toBe(true);
-  });
-
-  it("canInstall: rejects user installing a managed catalog item", async () => {
-    const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
-    const result = await guard.canInstall("p-managed", "user", "admin");
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toMatch(/installed by user/);
-  });
-
-  it("canInstall: allows user installing a non-managed catalog item", async () => {
-    const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
-    const result = await guard.canInstall("p-user", "user", "user");
-    expect(result.allowed).toBe(true);
-  });
-
-  it("canInstall: allows user installing when installPolicy field is absent", async () => {
-    const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
-    const result = await guard.canInstall("p-legacy", "user", undefined);
-    expect(result.allowed).toBe(true);
-  });
-
-  it("canInstall: always allows it-admin actor (trust boundary bypass)", async () => {
-    const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
-    const result = await guard.canInstall("p-managed", "it-admin", "admin");
-    expect(result.allowed).toBe(true);
-  });
-
-  it("canDisable mirrors canUninstall semantics", async () => {
-    const managedRoot = join(testDir, "bundle-root");
-    await mkdir(join(managedRoot, "p-managed"), { recursive: true });
-    const pluginManifest = join(managedRoot, "p-managed", "plugin.json");
-    await writeFile(pluginManifest, "{}", "utf-8");
-    await writeTestPluginRegistry({ registryPath }, [{ id: "p-managed", manifestPath: pluginManifest }]);
-
-    const guard = new PluginDeploymentGuard({ registryPath, pluginsRoot: installedDir });
-    const uninstall = await guard.canUninstall("p-managed", "user");
-    const disable = await guard.canDisable("p-managed", "user");
-
-    expect(uninstall.allowed).toBe(disable.allowed);
-    expect(uninstall.allowed).toBe(false);
+  it("assertDisableAllowed throws the denial for a required plugin and passes an enable", async () => {
+    await install("wiki", { origin: origin("corp") });
+    required = [{ kind: "plugin", name: "wiki", source: "corp" }];
+    await expect(assertDisableAllowed(false, "wiki", "wiki", guard())).rejects.toBeInstanceOf(PluginDeploymentDeniedError);
+    await expect(assertDisableAllowed(true, "wiki", "wiki", guard())).resolves.toBeUndefined();
+    await expect(assertDisableAllowed(false, null, "wiki", guard())).resolves.toBeUndefined();
   });
 });

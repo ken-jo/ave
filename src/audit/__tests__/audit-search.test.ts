@@ -1,21 +1,12 @@
 /**
  * AuditLogger.search() + getStats() — filter correctness, date range, pagination.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { finished } from "node:stream/promises";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-
-// Patch homedir so AuditLogger writes to a temp dir during tests.
-import { vi } from "vitest";
-
-vi.mock("node:os", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("node:os")>();
-  return { ...orig, homedir: vi.fn(orig.homedir) };
-});
 
 import { AuditLogger, type AuditEntry } from "../audit-logger.js";
 
@@ -42,7 +33,8 @@ beforeEach(() => {
   testHome = mkdtempSync(join(process.cwd(), ".ave-audit-test-"));
   auditDir = join(testHome, ".ave", "audit");
   mkdirSync(auditDir, { recursive: true });
-  vi.mocked(homedir).mockReturnValue(testHome);
+  // The logger's default directory, `<AVE_HOME>/audit`.
+  vi.stubEnv("AVE_HOME", join(testHome, ".ave"));
 });
 
 afterEach(async () => {
@@ -86,6 +78,7 @@ afterEach(async () => {
     await cleanupTmpDir(testHome);
   }
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("AuditLogger.search()", () => {

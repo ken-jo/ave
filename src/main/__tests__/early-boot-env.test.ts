@@ -33,8 +33,6 @@ const mockedElectron = vi.hoisted(() => ({
     isPackaged: false,
   },
   protocol: { registerSchemesAsPrivileged: vi.fn() },
-  registerPluginAssetProtocolScheme: vi.fn(),
-  registerMcpAppProtocolScheme: vi.fn(),
   ensureWorkspaceCwd: vi.fn(() => "/tmp/ave-workspace"),
 }));
 
@@ -44,12 +42,6 @@ vi.mock("electron", () => ({
 }));
 vi.mock("../ensure-workspace-cwd.js", () => ({
   ensureWorkspaceCwd: mockedElectron.ensureWorkspaceCwd,
-}));
-vi.mock("../plugin-asset-protocol.js", () => ({
-  registerPluginAssetProtocolScheme: mockedElectron.registerPluginAssetProtocolScheme,
-}));
-vi.mock("../mcp-app-protocol.js", () => ({
-  registerMcpAppProtocolScheme: mockedElectron.registerMcpAppProtocolScheme,
 }));
 
 import { runEarlyBootEnv } from "../early-boot-env.js";
@@ -98,8 +90,10 @@ describe("runEarlyBootEnv", () => {
     runEarlyBootEnv();
 
     expect(mockedElectron.ensureWorkspaceCwd).toHaveBeenCalledOnce();
-    expect(mockedElectron.registerPluginAssetProtocolScheme).toHaveBeenCalledOnce();
-    expect(mockedElectron.registerMcpAppProtocolScheme).toHaveBeenCalledOnce();
+    // Electron takes the privileged schemes in one call.
+    expect(mockedElectron.protocol.registerSchemesAsPrivileged).toHaveBeenCalledOnce();
+    expect(mockedElectron.protocol.registerSchemesAsPrivileged.mock.calls[0]![0].map((entry: { scheme: string }) => entry.scheme))
+      .toEqual(["ave-plugin", "ave-mcp-app", "ave-content"]);
     expect(mockedElectron.app.setName).toHaveBeenCalledWith("Ave");
     expect(mockedElectron.app.setAppUserModelId).toHaveBeenCalledWith("ai.agent-connector.ave");
   });

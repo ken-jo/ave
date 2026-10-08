@@ -1,17 +1,14 @@
 /**
  * Self-contained out-of-process MCP plugin server fixture
  * (untrusted-stdio-isolation test). Speaks the RC wire protocol over
- * Content-Length-framed stdin/stdout — NO project imports, so it runs as a real
+ * newline-delimited stdin/stdout — NO project imports, so it runs as a real
  * `node` subprocess without a build step. Mirrors what a real spawned plugin
  * (StdioServerLoop + PluginMcpServer) would do.
  */
 let buffer = Buffer.alloc(0);
 
 function write(message) {
-  const json = JSON.stringify(message);
-  const header = `Content-Length: ${Buffer.byteLength(json, "utf-8")}\r\n\r\n`;
-  process.stdout.write(Buffer.from(header, "ascii"));
-  process.stdout.write(Buffer.from(json, "utf-8"));
+  process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
 function handle(req) {
@@ -75,22 +72,13 @@ function handle(req) {
 process.stdin.on("data", (chunk) => {
   buffer = Buffer.concat([buffer, chunk]);
   for (;;) {
-    const headerEnd = buffer.indexOf("\r\n\r\n");
-    if (headerEnd === -1) break;
-    const header = buffer.subarray(0, headerEnd).toString("ascii");
-    const m = header.match(/Content-Length:\s*(\d+)/i);
-    if (!m) {
-      buffer = buffer.subarray(headerEnd + 4);
-      continue;
-    }
-    const len = parseInt(m[1], 10);
-    const start = headerEnd + 4;
-    if (buffer.length < start + len) break;
-    const body = buffer.subarray(start, start + len).toString("utf-8");
-    buffer = buffer.subarray(start + len);
+    const lineEnd = buffer.indexOf(0x0a);
+    if (lineEnd === -1) break;
+    const line = buffer.subarray(0, lineEnd).toString("utf-8");
+    buffer = buffer.subarray(lineEnd + 1);
     let req;
     try {
-      req = JSON.parse(body);
+      req = JSON.parse(line);
     } catch {
       continue;
     }

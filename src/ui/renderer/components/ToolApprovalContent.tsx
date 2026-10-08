@@ -530,6 +530,7 @@ export function ToolApprovalContent({
   open,
   request,
   conversationLabel,
+  narrowLaneScroll = false,
   pendingCount = 1,
   onDecide,
   onOpenPermanentDeny,
@@ -545,6 +546,8 @@ export function ToolApprovalContent({
    * raw session id is kept for the review details, where an id is useful.
    */
   conversationLabel: string;
+  /** Let a very narrow floating approval scroll as one card when its footer cannot fit. */
+  narrowLaneScroll?: boolean;
   pendingCount?: number;
   onDecide: (
     choice: ApprovalChoice,
@@ -992,7 +995,7 @@ export function ToolApprovalContent({
 
   return (
     <div
-      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${narrowLaneScroll ? "@max-[14rem]:flex-none" : ""}`}
       data-testid="tool-approval-panel"
       data-pending-count={pendingCount}
       data-approval-request-id={isRationaleApproval ? undefined : request.id}
@@ -1004,7 +1007,7 @@ export function ToolApprovalContent({
       onKeyDown={handlePanelKeyDown}
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="tool-approval-card">
-        <section className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-2 sm:px-4 sm:py-3">
+        <section className={`min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-2 sm:px-4 sm:py-3 ${narrowLaneScroll ? "@max-[14rem]:overscroll-auto" : ""}`}>
           <div className="space-y-2">
             {/* Identity strip — host-owned facts (toolName, source, category,
                 origin, risk chip), rendered for EVERY kind including a
@@ -1395,7 +1398,7 @@ export function ToolApprovalContent({
               </Button>
             </div>
             <div
-              className="grid min-w-0 grid-cols-3 gap-2 [&>button]:min-w-0 [&>button]:h-auto [&>button]:whitespace-normal [&>button]:break-words [&>button]:px-1 [&>button]:py-2 [&>button]:text-[11px] [&>button]:leading-tight"
+              className={`grid min-w-0 grid-cols-3 gap-2 [&>button]:min-w-0 [&>button]:h-auto [&>button]:whitespace-normal [&>button]:break-words [&>button]:px-1 [&>button]:py-2 [&>button]:text-[11px] [&>button]:leading-tight ${narrowLaneScroll ? "@max-[14rem]:grid-cols-1" : ""}`}
               data-testid="approval-decision-actions"
             >
               <Button

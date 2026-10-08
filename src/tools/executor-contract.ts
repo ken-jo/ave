@@ -128,7 +128,7 @@ export interface ToolPermissionContext {
  * Host-private auth-transition lifecycle for one governed plugin invocation.
  *
  * This deliberately travels through executor options rather than the plugin
- * permission context: plugins, manifests, SDK consumers, and HostApi handlers
+ * permission context: plugins, manifests, external callers, and HostApi handlers
  * must never be able to observe or supply it. The executor invokes
  * `beforeHandler` at its final no-await authorization boundary and settles the
  * result before releasing the governed-operation lease.
