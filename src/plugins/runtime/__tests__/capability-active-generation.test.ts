@@ -1011,6 +1011,10 @@ export default async function createPlugin() {
   it("keeps an unpublished blocked candidate retryable when prepared durable commit fails", async () => {
     const oldStopPath = join(root, "prepared-durable-failure-old-stop");
     const oldDisposer = vi.fn();
+    // The fixture hook fires for every consumer incarnation: the first is the
+    // old candidate's, the second the prepared replacement's.
+    const replacementDisposer = vi.fn();
+    let consumerIncarnations = 0;
     const fixture = await makeRealLifecycleBlockedRuntime({
       consumerEntrySource: `import { writeFile } from "node:fs/promises";
 export default async function createPlugin() {
@@ -1021,7 +1025,10 @@ export default async function createPlugin() {
   };
 }
 `,
-      onConsumerHostApiReady: (registerDisposer) => registerDisposer(oldDisposer),
+      onConsumerHostApiReady: (registerDisposer) => {
+        consumerIncarnations += 1;
+        registerDisposer(consumerIncarnations === 1 ? oldDisposer : replacementDisposer);
+      },
     });
     const oldRuntime = fixture.runtime.getRuntimeGenerationProjection(fixture.consumer.id);
     expect(oldRuntime).toBeDefined();
@@ -1038,6 +1045,8 @@ export default async function createPlugin() {
     await expect(access(oldRuntime!.pluginRoot)).resolves.toBeUndefined();
     await expect(access(oldStopPath)).rejects.toMatchObject({ code: "ENOENT" });
     expect(oldDisposer).not.toHaveBeenCalled();
+    // The uncommitted replacement is released, the old candidate is not.
+    expect(replacementDisposer).toHaveBeenCalledOnce();
 
     let oldReadySettled = false;
     void oldReady.finally(() => { oldReadySettled = true; });

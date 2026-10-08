@@ -1899,6 +1899,14 @@ abstract class PluginRuntimeState {
   protected toolInvocationDelegate: PluginToolInvocationDelegate | null = null;
   protected generationAccess: PluginRuntimeGenerationAccess | undefined;
   protected generationLifecycle: PluginRuntimeGenerationLifecycle | undefined;
+  /**
+   * The generation the coordinator committed for a plugin while the runtime
+   * map does not hold it: a publication step failed between the commit and
+   * the map swap. The runtime still owns its instance and incarnation, so
+   * shutdown reaches it here. Set at commit, cleared by the map swap, by its
+   * retirement, or when shutdown stops it — so it is stopped exactly once.
+   */
+  protected readonly committedUnmappedGenerations = new Map<string, PluginRuntimeGenerationProjection>();
   protected readonly pinnedGenerations =
     new AsyncLocalStorage<ReadonlyMap<string, string>>();
   /**
@@ -3398,6 +3406,10 @@ abstract class PluginRuntimeState {
   prepareRuntimeRetirement(
     runtime: PluginRuntimeGenerationProjection,
   ): readonly PluginRuntimeRetirementStep[] {
+    // Its owner is retiring it now; shutdown must not stop it a second time.
+    if (this.committedUnmappedGenerations.get(runtime.manifest.id) === runtime) {
+      this.committedUnmappedGenerations.delete(runtime.manifest.id);
+    }
     return Object.freeze([
       Object.freeze({
         phase: "runtime.authority" as const,
@@ -3606,6 +3618,7 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
     // The coordinator committed `runtime`: the attempt that built it hands its
     // resources to the committed generation, exactly once.
     const handOver = (): void => {
+      if (!published) this.committedUnmappedGenerations.set(pluginId, runtime);
       const handOff = this.commitHandoffs.get(runtime);
       this.commitHandoffs.delete(runtime);
       handOff?.();
@@ -3623,6 +3636,7 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
         this.methodMap = nextMethods;
         this.plugins = nextPlugins;
         this.disposers = nextDisposers;
+        this.committedUnmappedGenerations.delete(pluginId);
         this.rememberPluginManifest(pluginId, runtime.manifest, runtime.approvedPluginAccess);
         this.markPluginUiRevision(pluginId);
         this.failedPluginIds.delete(pluginId);
@@ -5403,7 +5417,10 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         arm: routed.arm,
         confinement: this.confinementReport(createPlugin),
       });
-      return withPluginInstallLock(manifest.id, async () => {
+      // Awaited here, inside the try: a rejection from the locked publication
+      // (preparation, the durable commit) must reach the catch below, which
+      // releases the candidate unless the coordinator committed it.
+      return await withPluginInstallLock(manifest.id, async () => {
         let displacedUnpublishedCandidate:
           | { plugin: LoadedPlugin; disposers: Array<() => void> | undefined }
           | undefined;
@@ -6359,7 +6376,25 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
   }
 
   async stopAll(): Promise<void> {
+    // A committed generation the map never received is stopped through its
+    // own retirement steps. The map entry for that plugin, if any, is either
+    // that same generation's boot entry or its predecessor, which the
+    // coordinator retires; stopping it here as well would run disposers and
+    // the drain a second time.
+    const committedUnmapped = [...this.committedUnmappedGenerations.values()];
+    this.committedUnmappedGenerations.clear();
+    const ownedElsewhere = new Set(committedUnmapped.map((runtime) => runtime.manifest.id));
+    for (const runtime of committedUnmapped) {
+      for (const step of this.prepareRuntimeRetirement(runtime)) {
+        try {
+          await step.run();
+        } catch (error) {
+          log.error(`${runtime.manifest.id} shutdown of committed generation failed (${step.phase}): ${errorMessage(error)}`);
+        }
+      }
+    }
     for (const plugin of this.plugins.values()) {
+      if (ownedElsewhere.has(plugin.manifest.id)) continue;
       await this.stopAfterStartFailure(
         plugin.manifest.id,
         plugin.instance,

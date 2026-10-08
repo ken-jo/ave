@@ -3,7 +3,7 @@ import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { createNoopHostApiForTests, PluginRuntime } from "../runtime.js";
-import { hashReceiptFiles, writeInstallReceipt } from "../plugin-install-receipt.js";
+import { hashReceiptFiles, installReceiptPath, writeInstallReceipt } from "../plugin-install-receipt.js";
 import { PluginPhase } from "../lifecycle-log.js";
 import { PluginBundleLifecycle } from "../plugin-bundle-lifecycle.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
@@ -4115,7 +4115,16 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     });
     const stops = () => constructed.reduce((total, record) => total + record.stops, 0);
     const card = () => runtime.listPluginCards().find((entry) => entry.id === ID);
-    return { fixture, runtime, internals, originalError, cleanupError, counts, timeline, audits, roots, removals, incarnations, constructed, exists, stops, card };
+    // What a prepared activation (update, re-enable) of the same artifact needs.
+    const preparedInput = async () => ({
+      installId: ID,
+      manifest: runtime.getPluginManifest(ID)!,
+      pluginRoot: written.pluginDir,
+      receiptRaw: await readFile(installReceiptPath(cacheRoot, ID), "utf8"),
+      registryEntry: { installSource: "user" as const },
+      durableCommit: async () => "committed",
+    });
+    return { fixture, runtime, internals, originalError, cleanupError, counts, timeline, audits, roots, removals, incarnations, constructed, exists, stops, card, preparedInput };
   }
 
   /**
@@ -4126,7 +4135,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
    */
   function bindNativeBundleLifecycle(
     f: Awaited<ReturnType<typeof setup>>,
-    faults: { loopbackPublish?: Error; contributionsUpdated?: Error } = {},
+    faults: { loopbackPrepare?: Error; loopbackPublish?: Error; contributionsUpdated?: Error } = {},
   ): PluginBundleLifecycle {
     const prepared = (pluginId: string, generationId: string) => ({
       pluginId,
@@ -4149,7 +4158,12 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       },
       revokeOperationGeneration: () => undefined,
       loopbackManager: {
-        prepareGeneration: async (manifest: PluginManifest, generationId: string) => prepared(manifest.id, generationId),
+        prepareGeneration: async (manifest: PluginManifest, generationId: string) => {
+          const fault = faults.loopbackPrepare;
+          faults.loopbackPrepare = undefined;
+          if (fault) throw fault;
+          return prepared(manifest.id, generationId);
+        },
         prepareRemoval: prepared,
         publishGeneration: (value: { published: boolean }) => {
           const fault = faults.loopbackPublish;
@@ -4179,6 +4193,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     f.runtime.setGenerationAccess(lifecycle);
     // Retire whatever the lifecycle still holds before the fixture is torn down.
     disposers.unshift(async () => {
+      faults.loopbackPrepare = undefined;
       faults.loopbackPublish = undefined;
       faults.contributionsUpdated = undefined;
       await lifecycle.deactivate(ID);
@@ -4390,7 +4405,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     ["after", "contributionsUpdated"],
   ] as const)("reload: a failure after the coordinator commit, %s the runtime publishes, leaves the committed replacement owning everything until removal", async (_when, point) => {
     const f = await setup("success");
-    const faults: { loopbackPublish?: Error; contributionsUpdated?: Error } = {};
+    const faults: { loopbackPrepare?: Error; loopbackPublish?: Error; contributionsUpdated?: Error } = {};
     const lifecycle = bindNativeBundleLifecycle(f, faults);
     await f.runtime.addPlugin(ID);
     faults[point] = f.originalError;
@@ -4412,6 +4427,54 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     expect(lifecycle.getActive(ID)).toBeUndefined();
     expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 2, drained: 2, stops: 2 });
     expect(await f.exists(replacementRoot)).toBe(false);
+  });
+
+  it.each(["preparation", "durable commit"] as const)("prepared activation releases its unpublished child when the %s rejects, and leaves the incumbent", async (point) => {
+    const f = await setup("success");
+    const faults: { loopbackPrepare?: Error } = {};
+    const lifecycle = bindNativeBundleLifecycle(f, faults);
+    await f.runtime.addPlugin(ID);
+    const incumbent = lifecycle.getActive(ID)!;
+    const input = await f.preparedInput();
+    if (point === "preparation") faults.loopbackPrepare = f.originalError;
+    else input.durableCommit = async () => { throw f.originalError; };
+    await expect(f.runtime.activatePreparedArtifact(input)).rejects.toBe(f.originalError);
+    expect(f.constructed).toHaveLength(2);
+    expect(lifecycle.getActive(ID)?.generationId).toBe(incumbent.generationId);
+    // The candidate is released once; the incumbent keeps serving.
+    expect(f.constructed[1]!.stops).toBe(1);
+    expect(f.incarnations[1]!.isActive()).toBe(false);
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+    await expect(f.constructed[1]!.ping({})).rejects.toThrow();
+    await expect(f.runtime.call(PING, {})).resolves.toBe("pong");
+    await f.runtime.removePlugin(ID);
+    await lifecycle.waitForRetirements();
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 2, drained: 2, stops: 2 });
+  });
+
+  // `add` and `reload` leave the committed generation outside the runtime map.
+  // `boot` keeps the same generation in the map too: it guards against the
+  // shutdown stopping it once from each place.
+  it.each(["add", "reload", "boot"] as const)("shutdown stops a %s generation the coordinator committed but the runtime map never received, exactly once", async (path) => {
+    const f = await setup("success");
+    const faults: { loopbackPublish?: Error } = {};
+    const lifecycle = bindNativeBundleLifecycle(f, faults);
+    if (path === "reload") await f.runtime.addPlugin(ID);
+    faults.loopbackPublish = f.originalError;
+    if (path === "boot") await f.runtime.startAll();
+    else if (path === "reload") await f.runtime.reloadPlugin(ID).catch(() => undefined);
+    else await f.runtime.addPlugin(ID).catch(() => undefined);
+    await lifecycle.waitForRetirements();
+    expect(lifecycle.getActive(ID)).toBeDefined();
+    const candidate = f.constructed.at(-1)!;
+    const prior = path === "reload" ? 1 : 0;
+    expect(candidate.stops).toBe(0);
+    await f.runtime.stopAll();
+    expect(candidate.stops).toBe(1);
+    expect(f.incarnations.at(-1)!.isActive()).toBe(false);
+    await expect(candidate.ping({})).rejects.toThrow();
+    // A reload's retired incumbent is not stopped or disposed again.
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: prior + 1, drained: prior + 1, stops: prior + 1 });
   });
 
   it("a rejection after the plugin was registered leaves the registered generation running and disposes it once", async () => {
