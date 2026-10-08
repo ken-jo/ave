@@ -50,6 +50,79 @@ const PREPARATION_PHASE_I18N_KEY: Record<string, string> = {
   error: "pluginConfigTab.prepPhaseError",
 };
 
+/** Doctor text for the arm a plugin's factory came from (§9.8 A1, decision 51). */
+const ARM_I18N_KEY: Record<NonNullable<PluginCardSummary["arm"]>, string> = {
+  child: "pluginConfigTab.armChild",
+  "in-process": "pluginConfigTab.armInProcess",
+};
+
+/** Doctor text for each confinement a plugin can report — one per value. */
+const CONFINEMENT_I18N_KEY: Record<NonNullable<PluginCardSummary["confinement"]>, string> = {
+  "macos-sandbox": "pluginConfigTab.confinementMacosSandbox",
+  "linux-bubblewrap": "pluginConfigTab.confinementLinuxBubblewrap",
+  "windows-srt": "pluginConfigTab.confinementWindowsSrt",
+  unconfined: "pluginConfigTab.confinementUnconfined",
+  "not-spawned": "pluginConfigTab.confinementNotSpawned",
+};
+
+/**
+ * Where a plugin runs and under which wrap: shown by the Doctor panel for a
+ * failed plugin and by the loaded-plugin row for a running one. Renders
+ * nothing when the card carries no arm — a failure before routing.
+ */
+function PluginRuntimeArm({ plugin, surface }: { plugin: PluginCardSummary; surface: "row" | "doctor" }) {
+  const { t } = useTranslation();
+  if (!plugin.arm || !plugin.confinement) return null;
+  const line = t("pluginConfigTab.runtimeArmLine", {
+    arm: t(ARM_I18N_KEY[plugin.arm]),
+    confinement: t(CONFINEMENT_I18N_KEY[plugin.confinement]),
+  });
+  if (surface === "row") {
+    return (
+      <div
+        data-testid={`plugin-config:row-arm:${plugin.id}`}
+        data-arm={plugin.arm}
+        data-confinement={plugin.confinement}
+        className="mt-0.5 line-clamp-1 text-[10px] text-muted-foreground"
+      >
+        {line}
+      </div>
+    );
+  }
+  return (
+    <p
+      data-testid={`plugin-config:doctor-arm:${plugin.id}`}
+      data-arm={plugin.arm}
+      data-confinement={plugin.confinement}
+      className="mt-1 break-words text-[11px] text-destructive/(--opacity-intense)"
+    >
+      <span className="font-medium">{t("pluginConfigTab.runtimeArmLabel")}</span>: {line}
+    </p>
+  );
+}
+
+/**
+ * The last refused update or restart of a RUNNING plugin (decision 52): one
+ * muted line on the loaded row. The plugin stays loaded at its running
+ * version, so this is not a failure state and the Doctor panel does not open.
+ */
+function PluginLastAttemptRefusal({ plugin }: { plugin: PluginCardSummary }) {
+  const { t } = useTranslation();
+  const refusal = plugin.lastAttemptRefusal;
+  if (plugin.loadStatus !== "loaded" || !refusal) return null;
+  return (
+    <div
+      data-testid={`plugin-config:row-refusal:${plugin.id}`}
+      data-attempt={refusal.attempt}
+      className="mt-0.5 line-clamp-2 break-words text-[10px] text-muted-foreground"
+    >
+      {refusal.attempt === "update"
+        ? t("pluginConfigTab.lastUpdateRefused", { message: refusal.message })
+        : t("pluginConfigTab.lastRestartRefused", { message: refusal.message })}
+    </div>
+  );
+}
+
 function isRuntimeCallablePlugin(plugin: PluginCardSummary): boolean {
   return plugin.runtimeLoaded ?? (plugin.loadStatus === "loaded");
 }
@@ -747,6 +820,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         {p.preparationStatus.message}
                       </div>
                     )}
+                    {p.loadStatus === "loaded" && <PluginRuntimeArm plugin={p} surface="row" />}
+                    <PluginLastAttemptRefusal plugin={p} />
                   </button>
                 ))}
               </div>
@@ -901,6 +976,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                                       ? t("pluginConfigTab.doctorLoadCrashDescription")
                                       : t("pluginConfigTab.doctorDescription")}
                         </p>
+                        <PluginRuntimeArm plugin={selectedPlugin} surface="doctor" />
                         {selectedPlugin.installFailureMessage ? (
                           <div className="mt-2 rounded border border-destructive/(--opacity-muted) bg-background/(--opacity-muted) px-2 py-1.5">
                             <p className="text-[10px] font-medium uppercase tracking-wide text-destructive">

@@ -40,6 +40,7 @@ import type { ChatSendInputOrigin } from "../../shared/chat-origin.js";
 import type { TailnetSharingOwnerApi } from "../../shared/tailnet-sharing.js";
 import type { TailnetObserverConfigApi } from "../../shared/tailnet-observer-config.js";
 import type { GitMarketplaceApi, PackageUpdateView } from "../../shared/git-marketplace.js";
+import type { PluginAttemptRefusal, PluginConfinementReport, PluginLoadArm } from "../../plugins/runtime/types.js";
 import type { PluginStudioApi } from "../../shared/plugin-studio.js";
 import type { GitRuntimeApi } from "../../shared/git-runtime.js";
 import type { InstalledContentApi } from "../../shared/installed-content.js";
@@ -187,6 +188,12 @@ export type PluginCardSummary = {
   installFailureKind?: PluginInstallFailureKind;
   /** User-visible install/load failure detail preserved for Doctor diagnostics. */
   installFailureMessage?: string;
+  /** The arm the plugin's factory came from (Doctor; §9.8 A1). */
+  arm?: PluginLoadArm;
+  /** The wrap the plugin's child was spawned under, or `not-spawned`. */
+  confinement?: PluginConfinementReport;
+  /** The last refused update or restart of this running plugin. */
+  lastAttemptRefusal?: PluginAttemptRefusal;
   /** Marketplace request slugs that should collapse onto this installed plugin. */
   installAliases?: string[];
 };

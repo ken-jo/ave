@@ -1445,3 +1445,133 @@ it("opens a requested plugin under the existing anchor and updates its unseen ba
   act(changed);
   await waitFor(() => expect(screen.queryByTestId("alert-unseen:meeting")).toBeNull());
 });
+
+/**
+ * The Doctor's arm and confinement, and a running plugin's refused attempt
+ * (`docs/design/plugin-hostapi-protocol.md` §9.8 A1, decisions 51 and 52).
+ */
+describe("PluginConfigTab — where a plugin runs, and a refused attempt", () => {
+  function showCards(cards: unknown[]): void {
+    Object.defineProperty(window, "ave", {
+      value: { plugins: { cards: vi.fn().mockResolvedValue(cards) }, pluginConfig: { get: mockGet, set: mockSet } },
+      writable: true,
+      configurable: true,
+    });
+  }
+  const base = { name: "Meeting", description: "Meeting plugin", sampleTools: [], capabilities: [], tools: [] };
+
+  it("shows a loaded plugin's arm and confinement on its row, and its refused restart as one muted line", async () => {
+    showCards([{
+      ...base,
+      id: "meeting",
+      loadStatus: "loaded" as const,
+      arm: "child" as const,
+      confinement: "macos-sandbox" as const,
+      lastAttemptRefusal: {
+        attempt: "restart" as const,
+        kind: "incompatible-host-protocol" as const,
+        message: "plugin 'meeting' declares no host protocol this app serves",
+        at: "2026-10-08T00:00:00.000Z",
+      },
+    }]);
+    render(<PluginConfigTab />);
+    const arm = await screen.findByTestId("plugin-config:row-arm:meeting");
+    expect(arm).toHaveTextContent("별도 프로세스 · macOS 샌드박스");
+    expect(arm).toHaveAttribute("data-confinement", "macos-sandbox");
+    const refusal = screen.getByTestId("plugin-config:row-refusal:meeting");
+    expect(refusal).toHaveTextContent("마지막 재시작 거부됨: plugin 'meeting' declares no host protocol this app serves");
+    expect(refusal).toHaveAttribute("data-attempt", "restart");
+    // Nothing failed: the plugin keeps its loaded state and the Doctor stays closed.
+    expect(screen.getByTestId("plugin-config:row-status:meeting")).toHaveTextContent("로드됨");
+    expect(screen.queryByTestId("plugin-config:doctor-panel:meeting")).toBeNull();
+  });
+
+  it("words a refused update differently from a refused restart", async () => {
+    showCards([{
+      ...base,
+      id: "meeting",
+      loadStatus: "loaded" as const,
+      arm: "child" as const,
+      confinement: "unconfined" as const,
+      lastAttemptRefusal: { attempt: "update" as const, kind: "incompatible-host-protocol" as const, message: "refused", at: "2026-10-08T00:00:00.000Z" },
+    }]);
+    render(<PluginConfigTab />);
+    expect(await screen.findByTestId("plugin-config:row-refusal:meeting")).toHaveTextContent("마지막 업데이트 거부됨: refused");
+    expect(screen.getByTestId("plugin-config:row-arm:meeting")).toHaveTextContent("별도 프로세스 · OS 샌드박스 없음");
+  });
+
+  it("names the arm and that no child existed in the Doctor panel of a plugin that failed after routing", async () => {
+    showCards([{
+      ...base,
+      id: "meeting",
+      loadStatus: "failed" as const,
+      installFailureKind: "sandbox-grant-outside-ceiling" as const,
+      installFailureMessage: "cannot widen the child's envelope for config key 'dataDirectory'",
+      arm: "child" as const,
+      confinement: "not-spawned" as const,
+    }]);
+    render(<PluginConfigTab />);
+    const arm = await screen.findByTestId("plugin-config:doctor-arm:meeting");
+    expect(within(screen.getByTestId("plugin-config:doctor-panel:meeting")).getByTestId("plugin-config:doctor-arm:meeting")).toBe(arm);
+    expect(arm).toHaveTextContent("실행 방식: 별도 프로세스 · 프로세스 시작 전");
+    // A failed plugin's row carries the status, not a running arm.
+    expect(screen.queryByTestId("plugin-config:row-arm:meeting")).toBeNull();
+  });
+
+  it.each([
+    ["macos-sandbox", "macOS 샌드박스"],
+    ["linux-bubblewrap", "Linux 샌드박스(bubblewrap)"],
+    ["windows-srt", "Windows 샌드박스"],
+    ["unconfined", "OS 샌드박스 없음"],
+  ] as const)("names a child spawned under %s in the Doctor panel", async (confinement, text) => {
+    showCards([{
+      ...base,
+      id: "meeting",
+      loadStatus: "failed" as const,
+      installFailureKind: "load-crash" as const,
+      installFailureMessage: "child exited code=1",
+      arm: "child" as const,
+      confinement,
+    }]);
+    render(<PluginConfigTab />);
+    expect(await screen.findByTestId("plugin-config:doctor-arm:meeting")).toHaveTextContent(`별도 프로세스 · ${text}`);
+  });
+
+  it("shows no arm for a failure before routing", async () => {
+    showCards([{
+      ...base,
+      id: "meeting",
+      loadStatus: "failed" as const,
+      installFailureKind: "incompatible-app-version" as const,
+      installFailureMessage: "plugin requires Ave >= 99.0.0",
+    }]);
+    render(<PluginConfigTab />);
+    await screen.findByTestId("plugin-config:doctor-panel:meeting");
+    expect(screen.queryByTestId("plugin-config:doctor-arm:meeting")).toBeNull();
+  });
+
+  it("has every Doctor key in both catalogs", async () => {
+    // A parity check cannot catch a key missing from both; this names them.
+    const { en } = await import("../../../i18n/messages/en.js");
+    const { ko } = await import("../../../i18n/messages/ko.js");
+    const keys = [
+      "pluginConfigTab.runtimeArmLabel",
+      "pluginConfigTab.runtimeArmLine",
+      "pluginConfigTab.armChild",
+      "pluginConfigTab.armInProcess",
+      "pluginConfigTab.confinementMacosSandbox",
+      "pluginConfigTab.confinementLinuxBubblewrap",
+      "pluginConfigTab.confinementWindowsSrt",
+      "pluginConfigTab.confinementUnconfined",
+      "pluginConfigTab.confinementNotSpawned",
+      "pluginConfigTab.lastUpdateRefused",
+      "pluginConfigTab.lastRestartRefused",
+    ];
+    for (const key of keys) {
+      expect((en as Record<string, string>)[key], `en ${key}`).toEqual(expect.any(String));
+      expect((ko as Record<string, string>)[key], `ko ${key}`).toEqual(expect.any(String));
+      expect((en as Record<string, string>)[key]!.length, `en ${key}`).toBeGreaterThan(0);
+      expect((ko as Record<string, string>)[key]!.length, `ko ${key}`).toBeGreaterThan(0);
+    }
+  });
+});

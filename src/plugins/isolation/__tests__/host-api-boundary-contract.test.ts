@@ -325,6 +325,13 @@ describe("the in-process loader's removal predicate is fed from the registry", (
       const loaded = runtime.listLoadedPluginArms();
       expect(loaded).toEqual([{ pluginId, arm: "child" }]);
       expect(allPluginsAreOutOfProcess(loaded)).toBe(true);
+      // The card the Doctor reads carries the same arm, and the wrap the spawn
+      // reported: the test process runs no OS sandbox, so the child is unwrapped.
+      expect(runtime.listPluginCards().find((card) => card.id === pluginId)).toMatchObject({
+        loadStatus: "loaded",
+        arm: "child",
+        confinement: "unconfined",
+      });
       // A generation the registry records as in-process — what the retained
       // in-process factory would produce — makes the predicate false, read
       // from the same registry rather than from a list of ids.

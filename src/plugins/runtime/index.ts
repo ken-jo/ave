@@ -23,7 +23,7 @@ import { flattenAgentPluginsManifest, pluginEntryKind } from "../public-contract
 import { isModelVisible } from "./tool-visibility.js";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, resolve, basename } from "node:path";
-import type { ManifestLoadPlan, PluginStartPreparationOutcome, PluginStartPreparationReturn, SinglePluginStartResult, ManifestSnapshot, LoadedPlugin, PluginLifecycleHookScope, PluginLoadArm, PluginConfinementReport } from "./types.js";
+import type { ManifestLoadPlan, PluginStartPreparationOutcome, PluginStartPreparationReturn, SinglePluginStartResult, ManifestSnapshot, LoadedPlugin, PluginLifecycleHookScope, PluginLoadArm, PluginConfinementReport, PluginAttemptRefusal } from "./types.js";
 import { logPluginLifecycle, PluginPhase } from "../lifecycle-log.js";
 import { t } from "../../i18n/index.js";
 import type { CommittedPluginGeneration, PluginRuntimeGenerationLifecycle, PluginRuntimeGenerationProjection, PluginRuntimeGenerationAccess, PluginRuntimeRetirementStep, PreparedPluginRuntimeGenerationPublication } from "../plugin-host-generation.js";
@@ -162,15 +162,6 @@ export interface PluginCard {
    * onto the canonical plugin card.
    */
   installAliases?: string[];
-}
-
-/** A refused update or restart of a running plugin, as the card carries it. */
-export interface PluginAttemptRefusal {
-  attempt: "update" | "restart";
-  kind: PluginInstallFailureKind;
-  message: string;
-  /** ISO-8601 time of the refusal. */
-  at: string;
 }
 
 export interface PluginPreparationStatus {

@@ -14,6 +14,7 @@ import type {
 } from "../types.js";
 import type { HostApiGenerationScope } from "../plugin-host-effect-scope.js";
 import type { SpawnConfinement } from "../../permissions/confined-child.js";
+import type { PluginInstallFailureKind } from "../../shared/plugin-install-failure.js";
 
 export type { PluginAccessSpec, PluginManifest, PluginToolHandler, RuntimePlugin };
 
@@ -38,6 +39,19 @@ export type PluginLoadArm = "child" | "in-process";
  * construction that failed before any child existed.
  */
 export type PluginConfinementReport = SpawnConfinement | "not-spawned";
+
+/**
+ * A refused update or restart of a RUNNING plugin, as the card carries it
+ * (decision 52). The incumbent keeps serving, so this is the attempt's record,
+ * never the plugin's load state.
+ */
+export interface PluginAttemptRefusal {
+  attempt: "update" | "restart";
+  kind: PluginInstallFailureKind;
+  message: string;
+  /** ISO-8601 time of the refusal. */
+  at: string;
+}
 
 /**
  * A fully-loaded plugin: manifest + running instance + registered handlers.
