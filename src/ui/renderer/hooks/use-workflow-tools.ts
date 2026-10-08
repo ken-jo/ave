@@ -151,6 +151,7 @@ export function useWorkflowTools(api: AveApi, options: WorkflowToolsOptions = {}
             toolCallCount: 0,
             toolUseId: event.toolUseId,
             childSessionId: event.childSessionId,
+            parentSessionId: event.parentSessionId,
           };
           return [...prev, fresh];
         }
@@ -174,6 +175,7 @@ export function useWorkflowTools(api: AveApi, options: WorkflowToolsOptions = {}
             errorMessage: event.message,
             toolUseId: event.toolUseId,
             childSessionId: event.childSessionId,
+            parentSessionId: event.parentSessionId,
             suspension: event.suspension,
           };
           return [...prev, synthetic];

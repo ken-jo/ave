@@ -36,4 +36,12 @@ export interface SubAgentSpawn {
    * and its resume(s) into one transcript in the sub-agent viewer.
    */
   childSessionId?: string;
+  /**
+   * The conversation that started this sub-agent, from the live frame. The
+   * viewer hydrates the persisted transcript under THIS origin: a panel can
+   * list agents started by its side chat as well as by its tile, and the host
+   * refuses a transcript read under the wrong origin. Absent on a row rebuilt
+   * from disk, which always belongs to the conversation that was opened.
+   */
+  parentSessionId?: string;
 }

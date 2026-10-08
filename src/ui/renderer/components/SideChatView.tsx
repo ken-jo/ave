@@ -48,6 +48,7 @@ import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js"
 import { useOptionalChatContext } from "../context/ChatContext.js";
 import { useApprovalSurface } from "../hooks/use-approval.js";
 import { useWorkflowTools } from "../hooks/use-workflow-tools.js";
+import type { SubAgentSpawn } from "../subagents/types.js";
 import { ApprovalDock } from "./permissions/ApprovalDock.js";
 import { QuestionOverlay } from "./QuestionOverlay.js";
 import { sessionOwnedBy } from "./chat-group-session-registry.js";
@@ -72,8 +73,9 @@ export interface SideChatOpenRequest {
 const NO_SEARCH_MATCHES: number[] = [];
 
 /**
- * The side loop's stream carries no sub-agent frames, so this panel learns of
- * no child session: the set is empty by construction. It still claims through
+ * The side chat claims approvals and questions for its own session only; a
+ * sub-agent it starts runs a child session whose cards keep the window's
+ * routing. The set is therefore empty by construction. It still claims through
  * the tile's own rule (`sessionOwnedBy`) so the two readers cannot drift.
  */
 const NO_CHILD_SESSIONS: ReadonlySet<string> = new Set();
@@ -99,9 +101,17 @@ interface SideChatViewProps {
    * says whether the user can see them.
    */
   shown?: boolean;
+  /**
+   * The sub-agents this side chat's own turns started, reported to the panel
+   * that hosts it. The panel's sub-agent tab is where every sub-agent is
+   * drawn, and its list otherwise holds only the tile's conversation — so
+   * without this a side chat's agents were kept by nobody (#2345). Reported
+   * empty when the side chat switches session or unmounts.
+   */
+  onSubAgentSpawnsChange?: ((spawns: readonly SubAgentSpawn[]) => void) | undefined;
 }
 
-export function SideChatView({ api, openRequest, onSessionsChanged, shown = true }: SideChatViewProps) {
+export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, onSubAgentSpawnsChange }: SideChatViewProps) {
   const { t } = useTranslation();
   // If side chat is unavailable (preload without the surface), surface a stable
   // disabled state rather than a broken composer.
@@ -123,6 +133,7 @@ export function SideChatView({ api, openRequest, onSessionsChanged, shown = true
       openRequest={openRequest}
       onSessionsChanged={onSessionsChanged}
       shown={shown}
+      onSubAgentSpawnsChange={onSubAgentSpawnsChange}
     />
   );
 }
@@ -133,6 +144,7 @@ function SideChatSession({
   openRequest,
   onSessionsChanged,
   shown,
+  onSubAgentSpawnsChange,
 }: SideChatViewProps & { sideChat: NonNullable<AveApi["sideChat"]>; shown: boolean }) {
   const { t } = useTranslation();
   // Called BEFORE `useMessageQueue` below, so the transcript's stream listener
@@ -179,17 +191,30 @@ function SideChatSession({
   // same reason the approvals are. The predicate reads the session through a
   // ref so the channel subscription survives a new or loaded session.
   const sessionIdRef = useRef(sessionId);
-  useLayoutEffect(() => {
-    sessionIdRef.current = sessionId;
-  }, [sessionId]);
   const ownsSession = useCallback(
     (id: string) => sessionIdRef.current !== null && sessionOwnedBy(sessionIdRef.current, NO_CHILD_SESSIONS, id),
     [],
   );
-  const { askQuestions, dismissAskQuestion } = useWorkflowTools(api, {
+  // The same subscription keeps the sub-agent frames this session's turns
+  // emit: the tile beside it drops them as another conversation's, so this is
+  // the only surface that holds them. They are handed to the panel below,
+  // whose sub-agent tab draws them.
+  const { askQuestions, dismissAskQuestion, subAgentSpawns, resetForNewSession } = useWorkflowTools(api, {
     ownsSession,
     drawsSession: ownsSession,
   });
+  useLayoutEffect(() => {
+    // A new or loaded side chat must not inherit the previous one's agents.
+    // Cleared in the same commit that moves the ownership predicate, so no
+    // frame can land between the two and be wiped or misattributed.
+    if (sessionIdRef.current !== sessionId) resetForNewSession();
+    sessionIdRef.current = sessionId;
+  }, [sessionId, resetForNewSession]);
+  useEffect(() => {
+    onSubAgentSpawnsChange?.(subAgentSpawns);
+  }, [onSubAgentSpawnsChange, subAgentSpawns]);
+  // A side chat that is gone keeps no agents on the panel's list.
+  useEffect(() => () => onSubAgentSpawnsChange?.([]), [onSubAgentSpawnsChange]);
   // What the tile beside this panel publishes to the window on the side
   // chat's behalf: the window leaves this session's questions to this panel
   // and marks the way here while a card waits off screen.
