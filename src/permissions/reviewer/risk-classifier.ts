@@ -614,7 +614,9 @@ export function screenEgressRequest(input: Record<string, unknown>): EgressScree
 //     any `/`): tar, rsync and cp-like tools open a connection for that form
 //     (`tar -cf host:/a.tar`). A local path positional never contains a `:`.
 //     git's scp-form clone and fetch sources are positionals with their own
-//     predicate and are kept.
+//     predicate and are kept. Toolchain flags handed to another tool (go
+//     `-ldflags`/`-gcflags`/`-asmflags`) are parsed into their own words and
+//     must be non-program flags; a cargo `--target` must be a triple.
 //   - WRAPPERS that run another program (`uv run`, `bundle exec`, `bun run`,
 //     `bun x`, `npx`, `pnpm exec`, `yarn dlx`, …) grade the wrapped argv as a
 //     command of its own.
@@ -629,7 +631,12 @@ export function screenEgressRequest(input: Record<string, unknown>): EgressScree
 //     abandoning a merge/rebase/pick (`--abort`, `--skip`, `--quit`) and the
 //     unlisted deleting forms (`gc`, `prune`, `reflog expire/delete`,
 //     `worktree remove/prune`, `notes remove/prune`, `update-ref -d`,
-//     `symbolic-ref -d`, `push --delete/--force/:ref/+ref`) are destructive.
+//     `symbolic-ref -d`, `push --delete/--force/:ref/+ref`) are destructive,
+//     as are a forced `+src:dst` refspec on fetch/pull and `checkout
+//     <tree-ish> <path>…` (two or more operands). Reflog-recoverable rewrites
+//     (`reset` without `--hard`, `commit --amend`, `rebase`) and removing
+//     regenerable state (`cargo clean`, `npm prune`, `apt-get purge`, `rmdir`)
+//     are not.
 //
 // Stated limits (also in permission-policy-design.md): a program the line
 // allows still runs code of its own — a script file given to an interpreter,
@@ -914,9 +921,79 @@ const CARGO_BUILD_SPEC: GuestArgvSpec = {
     "--target-dir", "--manifest-path", "--jobs", "--profile", "--color", "--message-format", "--exclude", "--depth"],
   short: "rqv",
   shortValues: "Fpj",
+  // A target is a built-in triple; a custom target spec file can name the
+  // linker to run.
+  valueChecks: { "--target": (value) => /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(value) && !value.endsWith(".json") },
   positional: isGuestLiteralWord,
   restAfterDoubleDash: true,
 };
+
+/**
+ * Splits a go tool-flags value the way the go command does: an optional
+ * `pattern=` prefix when the value does not start with `-`, then
+ * space-separated words with single or double quotes. Null when malformed.
+ */
+function splitGoToolFlags(value: string): string[] | null {
+  let rest = value;
+  if (rest !== "" && !rest.startsWith("-")) {
+    const eq = rest.indexOf("=");
+    if (eq < 0) return null;
+    rest = rest.slice(eq + 1);
+  }
+  const words: string[] = [];
+  const re = /\s*(?:'([^']*)'|"([^"]*)"|([^\s'"]+))/gy;
+  let match: RegExpExecArray | null;
+  while (re.lastIndex < rest.length && (match = re.exec(rest)) !== null) {
+    if (match[0].trim() === "") break;
+    words.push(match[1] ?? match[2] ?? match[3]!);
+  }
+  return rest.slice(re.lastIndex).trim() === "" ? words : null;
+}
+
+interface GoToolFlags {
+  /** Words allowed as they are (`-s`, `-N`). */
+  readonly flags: ReadonlySet<string>;
+  /** Flags taking the next word as a non-program value (`-X name=value`). */
+  readonly values: ReadonlySet<string>;
+  /** Allowed `-name=value` spellings, matched on the whole word. */
+  readonly assigned: RegExp;
+}
+// go tool link: strip, version stamping and internal linking only — never
+// `-extld`, `-extldflags`, `-linkmode=external`, `-installsuffix` or an
+// unknown flag, any of which can hand the build to another program.
+const GO_LDFLAGS_ALLOWED: GoToolFlags = {
+  flags: new Set(["-s", "-w", "-v", "-race", "-msan", "-asan"]),
+  values: new Set(["-X"]),
+  assigned: /^-(X=[A-Za-z0-9_.\/-]+=.*|buildid=[A-Za-z0-9_.\/=+-]*|linkmode=internal|compressdwarf=(true|false)|strictdups=[0-2])$/,
+};
+// go tool compile: optimisation, inlining and diagnostic switches.
+const GO_GCFLAGS_ALLOWED: GoToolFlags = {
+  flags: new Set(["-N", "-l", "-m", "-S", "-B", "-C", "-e", "-w", "-live", "-wb", "-race", "-K", "-h"]),
+  values: new Set([]),
+  assigned: /^-(m=[0-9]|d=[A-Za-z0-9_.,\/=]+|l=[0-9]|c=[0-9]+|spectre=[a-z,]*|trimpath=[A-Za-z0-9._\/~;=-]*)$/,
+};
+// go tool asm: defines and include directories only.
+const GO_ASMFLAGS_ALLOWED: GoToolFlags = {
+  flags: new Set(["-S", "-e", "-shared", "-dynlink"]),
+  values: new Set(["-D", "-I"]),
+  assigned: /^-(D=[A-Za-z0-9_]+(=[A-Za-z0-9_.-]*)?|I=[A-Za-z0-9._\/~-]+|spectre=[a-z,]*|trimpath=[A-Za-z0-9._\/~;=-]*)$/,
+};
+
+function isGoToolFlagsValue(value: string, allowed: GoToolFlags): boolean {
+  const words = splitGoToolFlags(value);
+  if (words === null) return false;
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]!;
+    if (allowed.flags.has(word) || allowed.assigned.test(word)) continue;
+    if (allowed.values.has(word)) {
+      const next = words[++i];
+      if (next === undefined || next.startsWith("-") || /:\/\//.test(next)) return false;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
 
 /** go flags are single-dash words (`-race`, `-o file`, `-tags=x`); no abbreviation. */
 const GO_BUILD_SPEC: GuestArgvSpec = {
@@ -926,6 +1003,13 @@ const GO_BUILD_SPEC: GuestArgvSpec = {
     "-p", "-bench", "-benchtime", "-coverprofile", "-coverpkg", "-covermode", "-C", "-cpu",
     "-parallel", "-buildvcs", "-skip", "-shuffle", "-f", "-go"],
   textValues: ["-tags", "-run", "-timeout", "-ldflags", "-gcflags", "-asmflags", "-bench", "-benchtime", "-skip"],
+  // The tool flags are parsed into their own words: a linker, compiler or
+  // assembler flag that names a program, plugin or option file is not LOW.
+  valueChecks: {
+    "-ldflags": (value) => isGoToolFlagsValue(value, GO_LDFLAGS_ALLOWED),
+    "-gcflags": (value) => isGoToolFlagsValue(value, GO_GCFLAGS_ALLOWED),
+    "-asmflags": (value) => isGoToolFlagsValue(value, GO_ASMFLAGS_ALLOWED),
+  },
   positional: (arg) => GO_PACKAGE_RE.test(arg) || GO_MODULE_RE.test(arg),
 };
 
@@ -975,7 +1059,7 @@ const GUEST_SUBCOMMAND_TOOLS: ReadonlyMap<string, ReadonlyMap<string, GuestArgvS
       flags: ["--watch", "--minify", "--sourcemap", "--bail", "--coverage", "--production"],
       values: ["--outdir", "--outfile", "--target", "--timeout", "--test-name-pattern"],
       textValues: ["--test-name-pattern", "-t"],
-      short: "t",
+      shortValues: "t",
       positional: isGuestLocalPath,
     }] as [string, GuestArgvSpec]),
   ])],
@@ -1237,6 +1321,22 @@ function gitClusterHas(arg: string, letters: string, valueLetters = ""): boolean
   return false;
 }
 
+/** Operands of `git checkout`, not counting the branch name a `-b`/`-B` takes. */
+function gitCheckoutOperands(rest: readonly string[]): number {
+  let operands = 0;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg === "--") return operands + rest.length - i - 1;
+    if (arg.startsWith("-") && arg.length > 1) {
+      // `-b name`, `-B name`, `-qb name`: the branch name is the option's value.
+      if (/^-[A-Za-z]*[bB]$/.test(arg)) i++;
+      continue;
+    }
+    operands++;
+  }
+  return operands;
+}
+
 /** The first argument that is not an option (`git reflog --verbose expire` → `expire`). */
 function firstOperand(args: readonly string[]): string | undefined {
   return args.find((arg) => !arg.startsWith("-"));
@@ -1260,8 +1360,13 @@ function isGuestDestructiveArgv(argv: readonly string[], depth: number): boolean
     if (sub === "clean") return true;
     if (sub === "reset") return rest.some((arg) => longOptionAbbreviates(arg, ["--hard"]));
     // `checkout -B` / `switch -C` reset an existing branch to a new start point.
+    // `git checkout <tree-ish> <path>…` overwrites the paths from the
+    // tree-ish, so two or more operands are destructive. A single operand
+    // (`git checkout f.txt`) cannot be told from a branch switch on the line
+    // and stays LOW: a stated limit.
     if (sub === "checkout") {
-      return rest.some((arg) => arg === "--" || arg === "." || gitClusterHas(arg, "fB", "b") || longOptionAbbreviates(arg, ["--force"]));
+      return rest.some((arg) => arg === "--" || arg === "." || gitClusterHas(arg, "fB", "b") || longOptionAbbreviates(arg, ["--force"])) ||
+        gitCheckoutOperands(rest) >= 2;
     }
     if (sub === "switch") {
       return rest.some((arg) => gitClusterHas(arg, "fC", "c") ||
@@ -1281,7 +1386,10 @@ function isGuestDestructiveArgv(argv: readonly string[], depth: number): boolean
     }
     if (sub === "tag") return rest.some((arg) => gitClusterHas(arg, "df", "mFun") || longOptionAbbreviates(arg, ["--delete", "--force"]));
     if (sub === "fetch" || sub === "pull") {
-      return rest.some((arg) => gitClusterHas(arg, "pPf", "jo") || longOptionAbbreviates(arg, ["--prune", "--prune-tags", "--force"]));
+      // `+src:dst` force-updates a local ref; a bare `+src` only updates
+      // remote-tracking refs, which the default refspec already forces.
+      return rest.some((arg) => gitClusterHas(arg, "pPf", "jo") || longOptionAbbreviates(arg, ["--prune", "--prune-tags", "--force"]) ||
+        (arg.startsWith("+") && arg.includes(":")));
     }
     if (sub === "remote") return ["remove", "rm", "prune"].includes(firstOperand(rest) ?? "");
     if (sub === "mv") return rest.some((arg) => gitClusterHas(arg, "f") || longOptionAbbreviates(arg, ["--force"]));

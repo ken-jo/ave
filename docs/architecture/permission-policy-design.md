@@ -259,7 +259,12 @@ is LOW. A guest shell is graded first match wins:
    `--remove-files`, git ref deletion and forced ref overwrite (`git branch
    -d`/`-D`/`--delete`/`-f`/`-M`/`-C`, `git tag -d`/`--delete`/`-f`, `git
    checkout -B`, `git switch -C`, `git fetch --prune`/`--prune-tags`/`--force`,
-   `git remote remove`/`prune`, `git mv -f`), abandoning an in-progress merge,
+   a forced refspec with a destination on `git fetch`/`git pull`
+   (`+main:main`; a bare `+main` only updates remote-tracking refs, which the
+   default refspec already forces), `git remote remove`/`prune`, `git mv -f`),
+   `git checkout <tree-ish> <path>…` (two or more operands; a single operand,
+   `git checkout f.txt`, cannot be told from a branch switch on the line and
+   stays LOW — a stated limit), abandoning an in-progress merge,
    rebase or pick (`--abort`, `--skip`, `--quit`), the deleting git forms
    that are not on the allowlist at all (`git gc`, `git prune`, `git reflog
    expire`/`delete`, `git worktree remove`/`prune`, `git notes
@@ -269,7 +274,13 @@ is LOW. A guest shell is graded first match wins:
    URL), whose effects cannot be graded from the line. Only deletion and
    discard verbs are destructive: a content edit, including emptying a file
    through a redirect (`> f`), `cp /dev/null f` or an editor (`sed -i d f`),
-   is a plain edit and is not graded as destructive in the guest.
+   is a plain edit and is not graded as destructive in the guest. History
+   rewrites the reflog can recover (`git reset` without `--hard`, `git commit
+   --amend`, `git rebase`) stay LOW; `git branch -f`/`-D` are destructive
+   because they can drop an unmerged ref the reflog of `HEAD` never held.
+   Removing regenerable state stays LOW too: build outputs and packages
+   (`cargo clean`, `mvn clean`, `npm prune`, `apt-get purge`/`autoremove`)
+   and `rmdir`, which only removes an empty directory, are not user work.
 2. **Not on the guest allowlist → MEDIUM**, because the guest does not
    confine network. A leaf is eligible at all only when everything it does is
    visible on the line: any `$` expansion or backtick, any `NAME=value`
@@ -283,7 +294,15 @@ is LOW. A guest shell is graded first match wins:
    and so does the same value after `--force-local`, which is admitted only
    for local archives. Options whose value is text rather than a file — a
    commit message, a format, a pattern, a date — are declared per tool and keep
-   only the URL check, so `git commit -m "fix: x"` stays LOW), and
+   only the URL check, so `git commit -m "fix: x"` stays LOW. Toolchain
+   flags passed through to another tool are parsed into their own words: go
+   `-ldflags` admits only `-s`, `-w`, `-X name=value`, `-buildid=`,
+   `-linkmode=internal` and similar, and `-gcflags`/`-asmflags` only
+   optimisation, diagnostic, define and include flags, so `-extld`,
+   `-extldflags`, `-linkmode=external`, `-importcfg` or any unknown tool
+   flag is not LOW; a cargo `--target` must be a built-in triple, never a
+   target spec file that can name the linker; `rustc -C`, `cargo rustc` and
+   `RUSTFLAGS` are not allowlisted), and
    every positional the tool's predicate — a bare package spec for installs
    (no URL, VCS or `@`-URL form, no source, registry, index or config
    option; a local path only as an editable target, `-e .`, or a requirement

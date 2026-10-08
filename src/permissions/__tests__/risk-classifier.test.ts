@@ -468,11 +468,45 @@ describe("RuleBasedRiskClassifier — disposable guest substrate", () => {
     // a forced push overwrites the remote ref: destructive before unlisted
     "git -C /workspace push --force",
     "git symbolic-ref -d HEAD",
+    // Sixth round (c5baed11, each graded LOW there): a forced refspec with a
+    // destination overwrites a local ref, and checkout with a tree-ish and
+    // paths overwrites those paths.
+    "git fetch origin +main:main",
+    "git fetch origin +refs/heads/x:refs/heads/x",
+    "git pull origin +main:main",
+    "git checkout HEAD f.txt",
+    "git checkout HEAD~1 src",
+    "git checkout v1 a b",
   ];
 
   it.each(GIT_REF_DESTRUCTIVE_COMMANDS)("git ref deletion or discard in the guest is MEDIUM as destructive: %s", (command) => {
     const v = rb.classify(ctx({ category: "shell", finalInput: { command }, sandboxCapability: guest }));
     expect({ level: v.level, reason: v.reason }).toEqual({ level: "medium", reason: GUEST_DESTRUCTIVE });
+  });
+
+  // Sixth round (c5baed11): a go tool-flags value is parsed into its own
+  // flags, so a linker, compiler or assembler flag that names a program,
+  // plugin or option file is not LOW; nor is a cargo custom target spec file,
+  // which can name the linker. The go rows and the target row graded LOW on
+  // c5baed11; the rustc, `cargo rustc` and RUSTFLAGS rows are guards.
+  const TOOLCHAIN_PROGRAM_COMMANDS = [
+    "go build -ldflags=-extld=./ld .",
+    "go build -ldflags='-extldflags=-fuse-ld=./ld' .",
+    "go test -ldflags=-extld=/tmp/x ./...",
+    "go build -ldflags=-linkmode=external .",
+    "go build -ldflags='-s -w -extld=./ld' .",
+    "go build -ldflags=all=-extld=./ld .",
+    "go build -gcflags=-importcfg=./x .",
+    "cargo build --target ./custom.json",
+    "rustc -C linker=./ld main.rs",
+    "rustc -Clink-arg=-fuse-ld=./ld main.rs",
+    "cargo rustc -- -C linker=./ld",
+    "RUSTFLAGS='-C linker=./ld' cargo build",
+  ];
+
+  it.each(TOOLCHAIN_PROGRAM_COMMANDS)("toolchain flag naming a program in the guest stays MEDIUM: %s", (command) => {
+    const v = rb.classify(ctx({ category: "shell", finalInput: { command }, sandboxCapability: guest }));
+    expect({ level: v.level, reason: v.reason }).toEqual({ level: "medium", reason: GUEST_UNLISTED });
   });
 
   // Ordinary guest work the verifier confirmed must stay LOW.
@@ -557,6 +591,33 @@ describe("RuleBasedRiskClassifier — disposable guest substrate", () => {
     "git grep -e 'TODO:' src",
     "tar --mtime='2024-01-01 10:00:00' -cf /tmp/a.tar b",
     "gradle test -x :app:lint",
+    // a bare `+src` only updates remote-tracking refs, which the default
+    // refspec already forces
+    "git fetch origin +main",
+    // stated limit: one checkout operand cannot be told from a branch switch
+    // on the line, so `git checkout f.txt` stays LOW
+    "git checkout f.txt",
+    "git checkout -b feature origin/feature",
+    // non-program go tool flags, and `bun test -t` as a value option
+    "go build -ldflags '-s -w' .",
+    "go build -ldflags=\"-X main.version=1.2.3 -s\" ./cmd/app",
+    "go build -ldflags=all=-s .",
+    "go build -gcflags='all=-N -l' .",
+    "go build -gcflags=-m=2 .",
+    "cargo build --target x86_64-unknown-linux-gnu",
+    "bun test -t 'adds numbers'",
+    // history rewrites the reflog can recover stay LOW (unlike `branch -D`)
+    "git reset HEAD~1",
+    "git reset --soft HEAD~1",
+    "git commit --amend --no-edit",
+    "git rebase main",
+    // removing regenerable state (build outputs, packages, an empty dir)
+    "cargo clean",
+    "mvn clean",
+    "npm prune",
+    "apt-get purge -y foo",
+    "apt-get autoremove -y",
+    "rmdir /workspace/empty",
   ];
 
   it.each(MUST_STAY_LOW)("ordinary guest work stays LOW: %s", (command) => {
@@ -578,7 +639,7 @@ describe("RuleBasedRiskClassifier — disposable guest substrate", () => {
   it("host grading of the same commands is untouched by the guest rules", () => {
     for (const command of [...EGRESS_COMMANDS, ...REVIEW_SENDING_MISSES, ...DOWNLOAD_COMMANDS, ...LOCAL_WORK_COMMANDS,
       ...VERIFIER_SAME_LINE_MISSES, ...GUEST_DESTRUCTIVE_COMMANDS, ...MUST_STAY_LOW, ...COMMAND_STRING_POSITIONALS, ...COMMAND_STRING_GUARDS,
-      ...REMOTE_ARCHIVE_COMMANDS, ...GIT_REF_DESTRUCTIVE_COMMANDS]) {
+      ...REMOTE_ARCHIVE_COMMANDS, ...GIT_REF_DESTRUCTIVE_COMMANDS, ...TOOLCHAIN_PROGRAM_COMMANDS]) {
       const v = rb.classify(ctx({ category: "shell", finalInput: { command }, sandboxCapability: host }));
       expect(v.reason, command).not.toMatch(/guest|egress/);
     }
