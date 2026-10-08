@@ -411,6 +411,20 @@ describe("SideChatView — the cards its own turn parks", () => {
     );
   });
 
+  it("stacks its approval over its question — the approval stays the topmost decision", async () => {
+    const { api, ask } = makeAskApi();
+    const surface = approvalSurfaceStub();
+    surface.queue = [approvalRequest({ id: "req-side-stack", sessionId: "side-9" }) as unknown as ApprovalRequest];
+    renderSurface(api, surface);
+    await waitFor(() => expect(surface.claims.ownerOf("side-9")).toBe("side-chat:side-9"));
+    ask(question("side-9"));
+    const view = within(screen.getByTestId("side-chat-view"));
+    const dock = view.getByTestId(TEST_IDS.approvalDock);
+    const overlay = view.getByTestId(TEST_IDS.questionOverlay);
+    // Same z-index for both, so the later one in the document paints on top.
+    expect(overlay.compareDocumentPosition(dock) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("withdraws its surface from the tile only when it unmounts", async () => {
     const { api } = makeAskApi();
     const { publishSideChatSurface, unmount } = renderSurface(api);

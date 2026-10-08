@@ -578,6 +578,37 @@ describe("ApprovalDock", () => {
     });
   });
 
+  it("hands focus to the question's first answer, not the focusable card that wraps it", async () => {
+    // The real AskUserQuestionCard is itself a tab stop (tabIndex=0) and sits
+    // before its answers in the document, so a document-order match would
+    // land on the card container instead of the first choice.
+    const request = makeRequest({ id: "req-question-card-container" });
+    const tree = (queue: ApprovalRequest[]) => (
+      <main data-testid={TEST_IDS.routeCanvas} data-approval-scope>
+        <div data-composer-placement="bottom">
+          <textarea data-testid={TEST_IDS.composerTextarea} />
+          <div data-testid={TEST_IDS.questionOverlay}>
+            <div role="group" tabIndex={0} data-testid="question-card">
+              <button type="button" role="option" tabIndex={0} data-testid="question-choice">
+                Today
+              </button>
+            </div>
+          </div>
+        </div>
+        <ApprovalDock conversationLabel="conversation" queue={queue} onDecide={vi.fn()} />
+      </main>
+    );
+    const { container, rerender } = render(tree([request]));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(container.querySelector(testIdSelector(TEST_IDS.denyButton)));
+    });
+
+    rerender(tree([]));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(container.querySelector('[data-testid="question-choice"]'));
+    });
+  });
+
   it("keeps Reject as the sole tab stop when approval is invalid", async () => {
     render(
       <ApprovalDock conversationLabel="conversation"

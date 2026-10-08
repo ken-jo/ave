@@ -720,8 +720,12 @@ export function ChatGroupSession({
   const pendingApprovals = routed ? [] : drawnApprovals;
   const composerAskQuestions = routed ? [] : drawnAskQuestions;
   const settleApprovalHead = routed ? drawnApprovals[0] ?? null : null;
+  // Both cards sit at the same z-index, so DOM order is the stacking order:
+  // the question first, the approval after it — the approval stays the
+  // topmost decision, as it is over the composer in ChatView.
   const settle: ReactNode = routed ? (
     <>
+      <QuestionOverlay api={api} requests={drawnAskQuestions} onResolved={dismissAskQuestion} />
       <ApprovalDock
         queue={drawnApprovals}
         conversationLabel={t("approvalAttribution.paneConversation", {
@@ -742,7 +746,6 @@ export function ChatGroupSession({
         }
         reviewerSuggestion={approvals.reviewerSuggestion}
       />
-      <QuestionOverlay api={api} requests={drawnAskQuestions} onResolved={dismissAskQuestion} />
     </>
   ) : null;
 

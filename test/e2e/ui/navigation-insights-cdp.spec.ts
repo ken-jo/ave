@@ -126,11 +126,27 @@ async function selectSettingsTab(
   await page.getByRole("tab", { name }).click();
 }
 
+/**
+ * Work board, routines and insights live in the sidebar's Features group
+ * (001bcb741), not as rail rows of their own: open the group, then the row.
+ */
+async function openFeatureRow(
+  page: import("@playwright/test").Page,
+  rowTestId: string,
+): Promise<void> {
+  const group = page.getByTestId("sidebar-group-features");
+  if ((await group.getAttribute("aria-expanded")) !== "true") await group.click();
+  await page.getByTestId(rowTestId).click();
+}
+
+const SESSION_ID = "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
+
 test.describe("navigation and monthly insights under CDP", () => {
   test.skip(!builtMainExists(), "dist/src/main/main.js not built; run bun run build first");
 
   test("uses one history navbar and shows monthly provider and model usage", async () => {
     const ctx = await launchSeededElectron({
+      sessionId: SESSION_ID,
       sessionTitle: "navigation and insights CDP",
       historyRows: [{
         index: 0,
@@ -151,11 +167,11 @@ test.describe("navigation and monthly insights under CDP", () => {
       expect(home.forwardDisabled).toBe(true);
       expect(home.legacyBackCount).toBe(0);
 
-      await ctx.page.getByTestId("toolbar-work-board").click();
+      await openFeatureRow(ctx.page, "toolbar-work-board");
       await expect(ctx.page.getByTestId("view-path-current-work-board")).toBeVisible();
       await expectNoLegacyBack(cdp);
 
-      await ctx.page.getByTestId("sidebar-starred").click();
+      await openFeatureRow(ctx.page, "sidebar-starred");
       await expect(ctx.page.getByTestId("view-path-current-insights")).toBeVisible();
       await expect(ctx.page.getByTestId("insights-monthly-usage-breakdown")).toBeVisible();
       await expect(ctx.page.getByTestId("insights-provider-usage")).toContainText("openai-compatible");
@@ -204,9 +220,11 @@ test.describe("navigation and monthly insights under CDP", () => {
       await expect(ctx.page.getByRole("tabpanel", { name: /Model|모델/ })).toBeVisible();
       await expectNoLegacyBack(cdp);
 
-      // A top-navbar departure must flush the inline Settings debounce before
-      // unmount. Reopening reads the saved value from disk on a fresh mount.
-      await ctx.page.getByTestId("sidebar-home").click();
+      // Leaving Settings for the conversation must flush the inline Settings
+      // debounce before unmount. Reopening reads the saved value from disk on a
+      // fresh mount. The Home row is gone (001bcb741); the conversation's own
+      // sidebar row is how a user returns to it.
+      await ctx.page.getByTestId(`sidebar-session-${SESSION_ID}`).click();
       await expect(ctx.page.getByTestId("view-path-current-home")).toBeVisible();
       await ctx.page.getByTestId("sidebar-settings").click();
       await selectSettingsTab(ctx.page, /Chat|채팅/);
@@ -229,7 +247,7 @@ test.describe("navigation and monthly insights under CDP", () => {
         name: t("privacyTab.piiRedactToggleLabel"),
       })).toHaveAttribute("aria-checked", nextPrivacyState);
 
-      await ctx.page.getByTestId("sidebar-starred").click();
+      await openFeatureRow(ctx.page, "sidebar-starred");
       await expect(ctx.page.getByTestId("view-path-current-insights")).toBeVisible();
       await ctx.page.setViewportSize({ width: 460, height: 900 });
       await expect(ctx.page.getByTestId(TEST_IDS.viewPathBack)).toBeVisible();
