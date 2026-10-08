@@ -4770,7 +4770,8 @@ code:
 `src/plugins/marketplace.ts:956`, the install flow's one call of the runtime's
 activation, which A1 makes translate `IncompatibleHostProtocolError`
 (`host-api-wire.ts:87`) into the **existing** `MarketplaceError("PACKAGE_INCOMPATIBLE",
-<the same message>, { reason: "host_protocol", name })` — the code exists
+<the same message>, { detail: { reason: "host_protocol", name } })` (the options
+object of `errors.ts:386-390`) — the code exists
 (`src/marketplace/errors.ts:39`), its `host_protocol` detail exists (`:304`; the catalog
 already produces it for an unserved version, `service.ts:1648`, `aggregate.ts:87`), and
 `MarketplaceError` is already imported there (`marketplace.ts:42`). The apply queue's
