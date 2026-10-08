@@ -164,7 +164,7 @@ function mergeHydratedTranscriptWithLiveTail(hydratedEntries: ChatEntry[], liveE
 
 function SubAgentTranscriptDetail({
   api,
-  parentSessionId,
+  parentSessionId: panelSessionId,
   spawn,
 }: {
   api: AveApi;
@@ -173,6 +173,9 @@ function SubAgentTranscriptDetail({
 }) {
   const { t } = useTranslation();
   const chatContext = useOptionalChatContext();
+  // The conversation that started THIS agent — the side chat's, for an agent
+  // its turn spawned — and the panel's conversation only for a restored row.
+  const parentSessionId = spawn.parentSessionId ?? panelSessionId;
   const hydrationKey = `${parentSessionId ?? ""}\u0001${spawn.childSessionId ?? ""}`;
   const [hydrated, setHydrated] = useState<{ key: string; entries: ChatEntry[] } | null>(null);
   useEffect(() => {
@@ -713,6 +716,20 @@ export function ChatSidePanel({
 }: ChatSidePanelProps) {
   const { t } = useTranslation();
 
+  // The sub-agents the side chat's own turns started. The tile's list above
+  // holds only the tile's conversation, and the tile drops a side chat's
+  // frames as another conversation's — so the side chat keeps them and hands
+  // them here, and the sub-agent tab draws both (#2345).
+  const [sideChatSubAgentSpawns, setSideChatSubAgentSpawns] = useState<readonly SubAgentSpawn[]>([]);
+  const panelSubAgentSpawns = useMemo(() => {
+    if (sideChatSubAgentSpawns.length === 0) return subAgentSpawns;
+    const listed = new Set(subAgentSpawns.map((spawn) => spawn.spawnId));
+    return [
+      ...subAgentSpawns,
+      ...sideChatSubAgentSpawns.filter((spawn) => !listed.has(spawn.spawnId)),
+    ];
+  }, [subAgentSpawns, sideChatSubAgentSpawns]);
+
   // ─── Tab-bar horizontal scroll / drag-pan (diagnosis ②) ──────────────────
   const tabScrollElRef = useRef<HTMLDivElement | null>(null);
   const wheelCleanupRef = useRef<(() => void) | null>(null);
@@ -1037,7 +1054,7 @@ export function ChatSidePanel({
             <SubAgentViewer
               api={api}
               {...(sessionId ? { parentSessionId: sessionId } : {})}
-              subAgentSpawns={subAgentSpawns}
+              subAgentSpawns={panelSubAgentSpawns}
             />
           ) : activeTab.kind === "activity" ? (
             <ToolActivityWorkspace activity={activity} />
@@ -1059,6 +1076,7 @@ export function ChatSidePanel({
                 openRequest={sideChatOpenRequest}
                 onSessionsChanged={onSessionsChanged}
                 shown={sideChatActive}
+                onSubAgentSpawnsChange={setSideChatSubAgentSpawns}
               />
             </div>
           ) : null}
