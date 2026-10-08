@@ -2,9 +2,12 @@
 
 This is the single standing contract for the main chat assistant, tool-calling LLM,
 sub-agents, and routine runners. First boot seeds the packaged resource to
-`~/.ave/AGENTS.md`. A byte-identical prior copy is refreshed in place. A
-user-edited copy is never overwritten: the new contract is offered as
-`~/.ave/AGENTS.md.new` or `.new.<timestamp>` for the user to diff, merge, or delete.
+`~/.ave/AGENTS.md`. On a later boot, a copy that is still byte-identical to a
+known packaged version is replaced in place, but only where a no-follow
+regular-file check is possible. A user-edited copy, or any copy on a path or in an
+environment where that check is not possible, is never merged or overwritten: the
+new contract is offered as `~/.ave/AGENTS.md.new` or `.new.<timestamp>` for the
+user to diff, merge, or delete.
 
 Keep only long-lived rules here. Put current task state, one-off findings, and
 examples in the session or owning feature state. Do not duplicate rules.
