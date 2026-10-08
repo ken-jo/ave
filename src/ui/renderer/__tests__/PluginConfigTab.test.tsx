@@ -1635,6 +1635,32 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
       expect(await screen.findByTestId("plugin-config:row-refusal:meeting")).toHaveTextContent("마지막 재시작 거부됨: secret save refused");
     });
 
+    it("keeps a newer card list when an older read answers after it", async () => {
+      // The first save's re-read is held; the second save commits and its
+      // re-read answers first with the refusal cleared. The held read then
+      // answers with the older, refused snapshot, which must not win.
+      let answerOlderRead!: (cards: unknown[]) => void;
+      const cards = vi.fn()
+        .mockResolvedValueOnce([loaded])
+        .mockImplementationOnce(() => new Promise((resolve) => { answerOlderRead = resolve; }))
+        .mockResolvedValue([loaded]);
+      const set = vi.fn()
+        .mockResolvedValueOnce({ ok: false, error: "plugin-config-save-failed", message: "Plugin config saved but runtime reload refused: older" })
+        .mockResolvedValue({ ok: true, config: { apiKey: "abc" } });
+      Object.defineProperty(window, "ave", { value: { plugins: { cards }, pluginConfig: { get: mockGet, set } }, writable: true, configurable: true });
+      render(<PluginConfigTab />);
+      await screen.findByTestId("plugin-config:row-arm:meeting");
+      fireEvent.click(screen.getByRole("button", { name: "저장" }));
+      await waitFor(() => expect(cards).toHaveBeenCalledTimes(2));
+      fireEvent.click(screen.getByRole("button", { name: "저장" }));
+      await waitFor(() => expect(cards).toHaveBeenCalledTimes(3));
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.queryByTestId("plugin-config:row-refusal:meeting")).toBeNull();
+      await act(async () => answerOlderRead([{ ...loaded, lastAttemptRefusal: refusalOf("restart", "older") }]));
+      expect(screen.queryByTestId("plugin-config:row-refusal:meeting")).toBeNull();
+      expect(screen.getByTestId("plugin-config:row-arm:meeting")).toBeInTheDocument();
+    });
+
     it("shows an update refused at activation when its failed install result arrives", async () => {
       const live = liveCards(loaded);
       let installResult: ((payload: { slug: string; success: boolean; error?: string }) => void) | undefined;

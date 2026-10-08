@@ -331,11 +331,18 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   // would still display the pre-install plugin set after a `ave://install`
   // deep-link landed (other plugin surfaces refresh via the same event but
   // the settings tab's local `plugins` state was a one-shot mount-time snapshot).
+  // Latest read wins: saves and install results each re-read the cards, and
+  // an older read answering after a newer one must not put its snapshot back
+  // (a cleared refusal reappearing). The caller still gets the cards it asked
+  // for; only the tab's list ignores a superseded answer.
+  const cardsReadTokenRef = useRef(0);
   const refreshPlugins = useCallback(async (
     options?: { preferInstallKey?: string },
   ): Promise<PluginCardSummary[] | null> => {
+    const token = ++cardsReadTokenRef.current;
     try {
       const cards = await window.ave.plugins.cards();
+      if (token !== cardsReadTokenRef.current) return cards;
       setPlugins(cards);
       setSelectedId((current) => {
         const preferredInstallKey = options?.preferInstallKey;
@@ -352,7 +359,9 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       });
       return cards;
     } catch (e) {
-      showBanner("error", errorMessage(e) || t("pluginConfigTab.errorLoadPlugins"));
+      if (token === cardsReadTokenRef.current) {
+        showBanner("error", errorMessage(e) || t("pluginConfigTab.errorLoadPlugins"));
+      }
       return null;
     } finally {
       setLoading(false);
