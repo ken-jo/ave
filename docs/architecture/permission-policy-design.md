@@ -246,26 +246,57 @@ the reviewer capability to `disposable-container` (verified; filesystem and
 process confined, network not claimed) ahead of the host-shell plan, whose
 `none` describes a plain child that call never spawns. The rule classifier
 then grades guest-scoped effects as such. A read or write of any guest path
-is LOW. A guest shell is graded first match wins: a destructive command
-(matched on raw text and on tokens, so quoted names, long options and `--`
-count) stays MEDIUM (a structured denial on the headless lane, an ask in the
-foreground); a command is LOW only when it tokenizes cleanly and every leaf,
-after wrapper unwrapping, is on the guest allowlist — file and build tools,
-package installs (`pip`/`uv`/`npm`/`bun`/`cargo`/`apt` install, ci, sync),
-`git` with a read/fetch subcommand and no program-running option, and
-`curl`/`wget` with exact GET-only options and a plain public URL with no
-query, fragment or userinfo; everything else stays MEDIUM, because the guest
-does not confine network. That includes any shell binary, `exec`, `eval`,
-`builtin`, `source`/`.`, BusyBox, aliases, a pipe or here-doc into a shell,
-unknown verbs, a verb chosen by an expansion, and input the tokenizer cannot
-parse. **The allowlist does not detect every way data can leave the guest.**
-Interpreters (`python`, `node`, `ruby`, `perl`, `php`, `java`, `awk`) are
-allowlisted with `-c`/`-e` or a script because guest work runs scripts, and so
-are build and test runners (`make`, `npm run`, `pytest`); traffic such a
-program opens itself, a git hook, and a tool reading a config file an earlier
-guest write planted (`.curlrc`, `.wgetrc`, `.git/config`) are not visible to
-argv inspection and rely on the guest's own egress policy. Network-category
-tools are graded by the network rules exactly as on the host. The
+is LOW. A guest shell is graded first match wins:
+
+1. **Destructive → MEDIUM** (a structured denial on the headless lane, an ask
+   in the foreground). Matched on raw text and on tokens, so quoted command
+   names, long options and `--` count; a dangerous long option matches when
+   its spelling is a prefix of the dangerous name, the way GNU and git resolve
+   abbreviations. This covers `rm`/`unlink`/`shred`/`truncate`/`dd`,
+   `find -delete`, `git clean`, `git reset --hard`, `git checkout -- <path>`
+   and `git checkout .`, `git restore` without `--staged`, `git stash
+   drop`/`clear`, `git branch -D`, rsync `--del*`/`--remove-source-files`, tar
+   `--remove-files`, and inline interpreter code (`python -c`, `node -e`,
+   `perl -e`, `ruby -e`, `php -r`, a program read from stdin or a `data:`
+   URL), whose effects cannot be graded from the line.
+2. **Not on the guest allowlist → MEDIUM**, because the guest does not
+   confine network. A leaf is eligible at all only when everything it does is
+   visible on the line: any `$` expansion or backtick, any `NAME=value`
+   environment assignment (including through `env`), `xargs`, or a
+   `/dev/tcp`/`/dev/udp` path makes it ineligible. An eligible leaf must then
+   match its tool's argv spec exactly: every option an exact allowlisted
+   spelling for that tool and subcommand (so an abbreviation or an unknown
+   letter in a short cluster fails, and no option value may carry a URL), and
+   every positional the tool's predicate — a bare package spec for installs
+   (no URL, path, VCS or `@`-URL form, no source, registry, index or config
+   option), a local path, a literal git clone/fetch source, or for
+   `curl`/`wget` a plain public URL with exact GET-only options. Wrappers that
+   run another program (`uv run`, `bundle exec`, `bun run`, `bun x`, `npx`,
+   `pnpm exec`, `yarn dlx`, …) grade the wrapped argv as a command of its own.
+   Everything else — any shell binary, `exec`, `eval`, `builtin`,
+   `source`/`.`, BusyBox, aliases, a pipe or here-doc into a shell, unknown
+   verbs, a path-qualified program outside the system bin directories, input
+   the tokenizer cannot parse — stays MEDIUM.
+3. **Otherwise LOW.**
+
+**This does not detect every way data can leave the guest.** These channels
+are not inspected and rely on the guest's own egress policy:
+
+- The literal URL path, hostname and DNS lookup of an allowed download or
+  clone are themselves a channel; a plain public URL is not proof that
+  nothing is carried.
+- Script files run by an allowlisted interpreter (`python3 x.py`,
+  `node x.js`), and build, test and package tools that run project or package
+  code (`make` including `make --eval` and `make SHELL=`, `npm run <script>`,
+  `pytest -p`, install and build scripts, git hooks).
+- awk's `/inet/tcp` special files.
+- Config files an earlier guest write planted (`.curlrc`, `.wgetrc`,
+  `pip.conf`, `.npmrc`, `.git/config`).
+- `git ext::` transports in a clone source are refused here and are also
+  blocked by git's default `protocol.ext.allow`.
+
+Network-category tools are graded by the network rules exactly as on the
+host. The
 operator-attested container never becomes a substrate: it is same-process, the
 shell is a plain child of the controller sharing its `~/.ave`, pid namespace
 and environment, so that route keeps the host-shell plan grading. Approval

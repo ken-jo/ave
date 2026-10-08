@@ -83,6 +83,12 @@ describe("evasion: an env assignment selects the interpreter", () => {
     expect(classify({ command: "GIT_EXTERNAL_DIFF=/bin/sh git diff" })).toBe("shell");
   });
 
+  it("GIT_CONFIG_PARAMETERS is not discarded as a leading assignment (it sets core.sshCommand, core.pager, …)", () => {
+    const command = "GIT_CONFIG_PARAMETERS=\"'core.pager'='cat'\" git log";
+    expect(isReadOnlyCommand(command)).toBe(false);
+    expect(classify({ command })).toBe("shell");
+  });
+
   it("escalates on an unlisted variable whose value is shaped like an interpreter", () => {
     expect(isReadOnlyCommand("SOMETHING_HOOK=/bin/bash cat f")).toBe(false);
   });

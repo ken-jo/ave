@@ -38,7 +38,7 @@ import { PERMISSION_REVIEWER_SYSTEM_PROMPT } from "../../shared/permission-revie
 import { getDottedFieldValue } from "../../shared/dotted-field-value.js";
 import { extractShellCommands } from "../../shared/shell-command-fields.js";
 import { stripCommandPath, tokenizeShell, type ShellLeaf } from "../../shared/shell-tokenizer.js";
-import { isReadOnlyShellLeaf, selectsExecutionTarget } from "./host-risk-inspector.js";
+import { isReadOnlyShellLeaf } from "./host-risk-inspector.js";
 import {
   formatSandboxCapabilityForPrompt,
   isDisposableSubstrateCapability,
@@ -590,77 +590,43 @@ export function screenEgressRequest(input: Record<string, unknown>): EgressScree
 // A disposable guest confines filesystem and process effects, not network
 // (`disposableContainerCapability` claims `network: false`). A guest shell is
 // therefore LOW only when it is POSITIVELY known to be local work or a plain
-// download into the guest; everything else — anything that can send data
-// out, and anything this table does not recognise — stays MEDIUM. A denylist
-// of sending forms cannot be closed (abbreviated options, file-backed headers,
-// BusyBox applets, shell-in-shell, aliases, DNS/ICMP payloads), so this is an
-// allowlist over the leaves of the shared shell tokenizer, after the same
-// wrapper unwrapping (`env`, `timeout`, `xargs`, `command`, …) every other
-// consumer sees.
+// download into the guest; everything else stays MEDIUM. The check is
+// structural, over the leaves of the shared shell tokenizer after the same
+// wrapper unwrapping (`env`, `timeout`, `command`, …) every other consumer
+// sees:
 //
-// Stated limits (also in permission-policy-design.md): an allowlisted program
-// that runs code of its own — an interpreter given `-c`/`-e` or a script, a
-// build or test runner (`make`, `npm run`, `pytest`), a git hook, or a
-// config file such as `.curlrc`, `.wgetrc` or `.git/config` planted by an
-// earlier guest write — can open a connection this argv inspection never
-// sees. That traffic is not detected here; it relies on the guest's own
-// egress policy. Host grading does not consult any of this.
+//   - ELIGIBILITY. A leaf with any expansion (`$VAR`, `${…}`, `$(…)`,
+//     backticks, arithmetic) anywhere in its words, assignments, redirects or
+//     here-doc body, any `NAME=value` environment assignment, an `xargs`
+//     wrapper (its argv comes from stdin), or a `/dev/tcp`/`/dev/udp` path is
+//     never LOW. What the command sends must be visible on the line.
+//   - ARGV SPECS. Every option must be an EXACT allowlisted spelling for that
+//     tool and subcommand — so an abbreviated long option (`--upload-p`), a
+//     stuck short form (`-ccore.x=y`) or an unknown letter in a cluster fails —
+//     and every positional must pass that tool's predicate (a bare package
+//     spec, a local path, a literal clone URL, a plain public download URL).
+//     No option value may carry a URL.
+//   - WRAPPERS that run another program (`uv run`, `bundle exec`, `bun run`,
+//     `bun x`, `npx`, `pnpm exec`, `yarn dlx`, …) grade the wrapped argv as a
+//     command of its own.
+//   - DESTRUCTIVE forms are matched on tokens (and on raw text): a dangerous
+//     long option matches when its spelling is a prefix of the dangerous name,
+//     the way GNU and git resolve abbreviations; a short cluster matches when
+//     it contains a dangerous letter. Inline interpreter code (`python -c`,
+//     `node -e`, `perl -e`, `ruby -e`, `php -r`) counts as destructive: its
+//     effects cannot be graded from the line.
+//
+// Stated limits (also in permission-policy-design.md): a program the line
+// allows still runs code of its own — a script file given to an interpreter,
+// a build or test runner and its project files (`make --eval`, `make SHELL=`,
+// `pytest -p`, `npm run <script>`), awk's `/inet/tcp`, a git hook, or a config
+// file such as `.curlrc`, `.wgetrc`, `pip.conf` or `.git/config` planted by
+// an earlier guest write — and the literal URL path, hostname and DNS lookup
+// of an allowed download or clone are themselves a channel. None of that is
+// detected here; it relies on the guest's own egress policy. Host grading
+// does not consult any of this.
 
 type GuestShellGrade = "local" | "destructive" | "unlisted";
-
-/** Verbs whose every form only reads or edits guest files or the shell's own state. */
-const GUEST_LOCAL_VERBS: ReadonlySet<string> = new Set([
-  // file tools
-  "mkdir", "rmdir", "touch", "cp", "mv", "ln", "chmod", "chown", "chgrp",
-  "install", "tee", "truncate", "split", "patch", "mktemp", "md5sum",
-  "sha1sum", "sha256sum", "sha512sum", "xxd", "od", "hexdump", "strings",
-  "unzip", "gzip", "gunzip", "zcat", "bzip2", "bunzip2", "xz", "unxz",
-  "zstd", "unzstd", "base64", "jq", "nproc", "free", "lscpu",
-  // shell state builtins that cannot run another command
-  "export", "set", "unset", "exit", "wait", "shift", "umask", "pushd", "popd",
-  "read", "local", "declare", "[",
-  // build and test tools
-  "make", "cmake", "ninja", "meson", "gcc", "g++", "cc", "c++", "clang",
-  "clang++", "ld", "ar", "javac", "rustc", "tsc", "pytest", "py.test",
-  // interpreters: allowed because the bench runs scripts; see stated limits
-  "python", "python3", "node", "ruby", "perl", "php", "java", "awk", "gawk",
-]);
-
-/** Subcommand-keyed tools: LOW only for a listed subcommand. */
-const GUEST_LOCAL_SUBCOMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ["pip", new Set(["install", "download", "uninstall", "list", "show", "freeze", "check", "wheel"])],
-  ["pip3", new Set(["install", "download", "uninstall", "list", "show", "freeze", "check", "wheel"])],
-  ["uv", new Set(["pip", "sync", "lock", "add", "remove", "run", "venv", "init", "build", "tree", "python"])],
-  ["npm", new Set(["install", "i", "ci", "test", "t", "run", "run-script", "start", "ls", "list",
-    "uninstall", "un", "remove", "rm", "update", "up", "init", "pack", "rebuild", "prune", "dedupe"])],
-  ["pnpm", new Set(["install", "i", "add", "remove", "rm", "run", "test", "build", "update"])],
-  ["yarn", new Set(["install", "add", "remove", "run", "test", "build"])],
-  ["bun", new Set(["install", "i", "add", "remove", "rm", "run", "test", "build"])],
-  ["cargo", new Set(["build", "b", "test", "t", "run", "r", "check", "c", "fetch", "clippy", "fmt",
-    "doc", "bench", "new", "init", "add", "remove", "update", "tree", "metadata", "install", "clean"])],
-  ["go", new Set(["build", "test", "run", "mod", "get", "install", "vet", "fmt", "env", "version",
-    "list", "generate", "clean", "work"])],
-  ["apt", new Set(["install", "update", "upgrade", "remove", "purge", "autoremove", "clean"])],
-  ["apt-get", new Set(["install", "update", "upgrade", "remove", "purge", "autoremove", "clean"])],
-  ["apk", new Set(["add", "del", "update", "upgrade"])],
-  ["dnf", new Set(["install", "update", "upgrade", "remove"])],
-  ["yum", new Set(["install", "update", "upgrade", "remove"])],
-  ["gem", new Set(["install", "uninstall", "list"])],
-  ["bundle", new Set(["install", "exec", "update"])],
-  ["conda", new Set(["install", "create", "remove", "list"])],
-]);
-
-/** `git` subcommands that read or fetch; every other subcommand (push, send-pack, an alias, …) is unlisted. */
-const GUEST_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set([
-  "clone", "fetch", "pull", "status", "log", "diff", "show", "checkout", "switch", "branch",
-  "add", "commit", "restore", "reset", "stash", "merge", "rebase", "tag", "init", "rev-parse",
-  "ls-files", "ls-tree", "cat-file", "describe", "blame", "grep", "mv", "rm", "apply",
-  "cherry-pick", "revert", "clean", "shortlog", "reflog", "submodule", "remote", "version",
-]);
-/** git global options that only locate the repository; any other global option (`-c`, `--exec-path`, …) is unlisted. */
-const GUEST_GIT_VALUE_GLOBALS: ReadonlySet<string> = new Set(["-C"]);
-const GUEST_GIT_FLAG_GLOBALS: ReadonlySet<string> = new Set(["--no-pager", "-P", "--bare", "--no-replace-objects"]);
-const GUEST_GIT_LONG_GLOBAL_PREFIXES = ["--git-dir=", "--work-tree="] as const;
 
 /** curl options of a plain GET download, exact spellings only (curl accepts abbreviations; this does not). */
 const CURL_GET_FLAG_OPTIONS: ReadonlySet<string> = new Set([
@@ -690,13 +656,12 @@ const WGET_GET_VALUE_OPTIONS: ReadonlySet<string> = new Set([
 const WGET_GET_SHORT_FLAGS: ReadonlySet<string> = new Set(["q", "c", "N", "S", "v", "4", "6"]);
 const WGET_GET_SHORT_VALUES: ReadonlySet<string> = new Set(["O", "P", "t", "T"]);
 
-/** Token-level destructive verbs (complements {@link DESTRUCTIVE_SHELL_RE} on raw text). */
-const GUEST_DESTRUCTIVE_VERBS: ReadonlySet<string> = new Set(["rm", "unlink", "shred", "dd", "sudo", "doas", "su"]);
-
 /**
  * True when every option is an exact allowlisted GET form and every operand is
- * a plain public http(s) URL the host's own fetch screen grades benign, with no
- * query, fragment or userinfo to carry data. A value-taking option consumes
+ * a plain public http(s) URL the host's own fetch screen grades benign and that
+ * has no query, fragment or userinfo. That narrows the obvious carriers; it
+ * does not make the URL path, hostname or DNS lookup safe (a stated limit).
+ * A value-taking option consumes
  * the rest of its short cluster, its `=value`, or the next word.
  */
 function isPlainGetDownload(
@@ -741,127 +706,674 @@ function isPlainDownloadUrl(value: string): boolean {
   return screenEgressRequest({ url: value }).outcome === "public-benign";
 }
 
-/** git with only repository-locating globals and a read/fetch subcommand that cannot run a command. */
-function isGuestLocalGitLeaf(args: readonly string[], expandable: readonly boolean[]): boolean {
-  let i = 0;
-  while (i < args.length && args[i]!.startsWith("-")) {
+
+/** Nesting limit for wrappers that run another program. */
+const GUEST_WRAPPER_MAX_DEPTH = 3;
+
+/**
+ * The options and positionals one tool (or one subcommand) accepts for LOW.
+ * Options match by exact spelling only. A value-taking option consumes its
+ * `=value`, the rest of its short cluster, or the next word.
+ */
+interface GuestArgvSpec {
+  readonly flags?: readonly string[];
+  readonly values?: readonly string[];
+  /** Short letters allowed in a cluster without a value. */
+  readonly short?: string;
+  /** Short letters that take a value. */
+  readonly shortValues?: string;
+  /** Every positional must pass; absent = no positional allowed. */
+  readonly positional?: (arg: string) => boolean;
+  /** Words after this many positionals are a program's own arguments. */
+  readonly restAfterPositionals?: number;
+  /** Words after a bare `--` are a program's own arguments. */
+  readonly restAfterDoubleDash?: boolean;
+}
+
+/** Values never carry a URL; a URL given to an option is a source or sink. */
+function isGuestOptionValue(value: string | undefined): boolean {
+  return value !== undefined && !/:\/\//.test(value) && !value.startsWith("@");
+}
+
+function matchesGuestArgvSpec(args: readonly string[], spec: GuestArgvSpec): boolean {
+  const flags = new Set(spec.flags ?? []);
+  const values = new Set(spec.values ?? []);
+  const short = spec.short ?? "";
+  const shortValues = spec.shortValues ?? "";
+  let positionals = 0;
+  for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
-    if (GUEST_GIT_VALUE_GLOBALS.has(arg)) { i += 2; continue; }
-    if (GUEST_GIT_FLAG_GLOBALS.has(arg)) { i++; continue; }
-    if (GUEST_GIT_LONG_GLOBAL_PREFIXES.some((prefix) => arg.startsWith(prefix))) { i++; continue; }
-    return false;
+    if (arg === "--") return spec.restAfterDoubleDash === true || args.slice(i + 1).every((rest) => spec.positional?.(rest) === true);
+    if (arg.startsWith("-") && arg.length > 1) {
+      if (flags.has(arg)) continue;
+      const eq = arg.indexOf("=");
+      const name = eq > 0 ? arg.slice(0, eq) : arg;
+      if (values.has(name)) {
+        const value = eq > 0 ? arg.slice(eq + 1) : args[++i];
+        if (!isGuestOptionValue(value)) return false;
+        continue;
+      }
+      if (arg.startsWith("--")) return false;
+      let consumed = false;
+      for (let j = 1; j < arg.length && !consumed; j++) {
+        const letter = arg[j]!;
+        if (short.includes(letter)) continue;
+        if (!shortValues.includes(letter)) return false;
+        const value = j + 1 < arg.length ? arg.slice(j + 1) : args[++i];
+        if (!isGuestOptionValue(value)) return false;
+        consumed = true;
+      }
+      continue;
+    }
+    if (spec.restAfterPositionals !== undefined && positionals >= spec.restAfterPositionals) return true;
+    if (spec.positional?.(arg) !== true) return false;
+    positionals++;
   }
-  const sub = args[i];
-  if (sub === undefined || expandable[i] === true || !GUEST_GIT_SUBCOMMANDS.has(sub)) return false;
-  const rest = args.slice(i + 1);
-  // Options that make a listed subcommand run a program or rewrite its config.
-  const runsProgram = rest.some((arg) =>
-    arg.startsWith("--upload-pack") || arg.startsWith("--receive-pack") || arg.startsWith("--exec") ||
-    arg.startsWith("--config") || arg === "--template" || arg.startsWith("--template="));
-  if (runsProgram) return false;
-  if ((sub === "clone" || sub === "fetch" || sub === "pull") && rest.some((arg) => arg === "-u" || arg === "-c")) return false;
-  if (sub === "rebase" && rest.some((arg) => arg === "-x" || /^-[A-Za-z]*x/.test(arg))) return false;
-  if (sub === "submodule" && rest.includes("foreach")) return false;
   return true;
 }
 
-/** Build goals and tasks that compile, test or install locally (no deploy/publish/upload). */
-const GUEST_BUILD_GOALS: ReadonlySet<string> = new Set([
-  "clean", "compile", "test", "package", "verify", "install", "validate", "build", "assemble",
-  "check", "run", "dependencies", "test-compile",
+/** A literal local path: no URL, no `host:` remote form, no option. */
+function isGuestLocalPath(arg: string): boolean {
+  return !arg.startsWith("-") && !/:\/\//.test(arg) && !/^[^/]*:/.test(arg);
+}
+
+/** Literal word without a URL (test names, script names, goals). */
+function isGuestLiteralWord(arg: string): boolean {
+  return !/:\/\//.test(arg) && !arg.startsWith("@");
+}
+
+const PY_SPEC_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,-]+\])?((===|==|!=|~=|>=|<=|>|<)[A-Za-z0-9.*+!_-]+(,(===|==|!=|~=|>=|<=|>|<)[A-Za-z0-9.*+!_-]+)*)?$/;
+const NPM_SPEC_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(@[A-Za-z0-9.^~<>=*+_-]+)?$/i;
+const CARGO_SPEC_RE = /^[A-Za-z0-9_-]+(@[A-Za-z0-9.^~<>=*+-]+)?$/;
+const GEM_SPEC_RE = /^[A-Za-z0-9_.-]+$/;
+const OS_PACKAGE_RE = /^[a-z0-9][a-z0-9.+_-]*(:[a-z0-9-]+)?(=[A-Za-z0-9.+:~_-]+)?(\/[a-z0-9.-]+)?$/;
+const CONDA_SPEC_RE = /^[A-Za-z0-9_.-]+((==|=|>=|<=|>|<|!=)[A-Za-z0-9.*_+-]+)*$/;
+const GO_MODULE_RE = /^[a-z0-9.-]+\.[a-z]{2,}(\/[A-Za-z0-9._~-]+)+(\/\.\.\.)?(@[A-Za-z0-9._+-]+)?$/;
+const GO_PACKAGE_RE = /^(\.{1,2}|\.{1,2}\/[A-Za-z0-9._~\/-]*|[A-Za-z0-9._~-]+(\/[A-Za-z0-9._~-]+)*)(\/\.\.\.)?$|^[A-Za-z0-9._\/-]+\.go$/;
+
+const PIP_INSTALL_SPEC: GuestArgvSpec = {
+  flags: ["--upgrade", "--user", "--quiet", "--verbose", "--no-cache-dir", "--no-deps", "--pre",
+    "--break-system-packages", "--no-build-isolation", "--prefer-binary", "--force-reinstall",
+    "--ignore-installed", "--disable-pip-version-check", "--no-input", "--no-warn-script-location",
+    "--no-compile", "--require-hashes", "--dry-run", "--system"],
+  values: ["--requirement", "--constraint", "--upgrade-strategy", "--root-user-action", "--only-binary",
+    "--no-binary", "--target", "--progress-bar", "--timeout", "--retries", "--dest", "--python"],
+  short: "UqvI",
+  shortValues: "rctdp",
+  positional: (arg) => PY_SPEC_RE.test(arg),
+};
+const PIP_QUERY_SPEC: GuestArgvSpec = {
+  flags: ["--verbose", "--files", "--outdated", "--uptodate", "--not-required", "--user", "--local", "--yes", "--quiet"],
+  values: ["--format", "--requirement"],
+  short: "vfoulyq",
+  shortValues: "r",
+  positional: (arg) => PY_SPEC_RE.test(arg),
+};
+const PIP_SUBCOMMANDS: ReadonlyMap<string, GuestArgvSpec> = new Map<string, GuestArgvSpec>([
+  ["install", PIP_INSTALL_SPEC], ["download", PIP_INSTALL_SPEC],
+  ["uninstall", PIP_QUERY_SPEC], ["list", PIP_QUERY_SPEC], ["show", PIP_QUERY_SPEC],
+  ["freeze", PIP_QUERY_SPEC], ["check", PIP_QUERY_SPEC], ["sync", { ...PIP_INSTALL_SPEC, positional: isGuestLocalPath }],
 ]);
 
-function isGuestLocalLeaf(leaf: ShellLeaf): boolean {
-  // An assignment that picks the program a verb runs (`LESSOPEN`, `BASH_ENV`,
-  // `LD_PRELOAD`, …) is the execution, whatever the verb is.
-  if (leaf.assignments.some(selectsExecutionTarget)) return false;
-  if (leaf.redirectTargets.some(isNetworkDevicePath) || leaf.inputRedirectTargets.some(isNetworkDevicePath)) {
-    return false;
+const NPM_INSTALL_SPEC: GuestArgvSpec = {
+  flags: ["--no-audit", "--no-fund", "--save-dev", "--save", "--save-exact", "--production",
+    "--legacy-peer-deps", "--no-save", "--silent", "--global", "--ignore-scripts", "--prefer-offline",
+    "--no-package-lock", "--workspaces", "--all", "--json", "--no-optional", "--frozen-lockfile",
+    "--no-frozen-lockfile", "--prod", "--recursive", "--offline", "--workspace-root", "--immutable",
+    "--dev", "--exact", "--check-files"],
+  values: ["--omit", "--include", "--loglevel", "--workspace", "--depth", "--filter"],
+  short: "DSEsgaPrdE",
+  shortValues: "wF",
+  positional: (arg) => NPM_SPEC_RE.test(arg),
+};
+/** Script runners: the script itself is the documented script limitation. */
+const NPM_SCRIPT_SPEC: GuestArgvSpec = {
+  flags: ["--silent", "--if-present", "--workspaces"],
+  values: ["--workspace"],
+  short: "s",
+  shortValues: "w",
+  positional: (arg) => /^[A-Za-z0-9:_.-]+$/.test(arg),
+  restAfterDoubleDash: true,
+};
+const PNPM_SCRIPT_SPEC: GuestArgvSpec = { ...NPM_SCRIPT_SPEC, restAfterPositionals: 1 };
+
+const CARGO_BUILD_SPEC: GuestArgvSpec = {
+  flags: ["--release", "--locked", "--frozen", "--offline", "--quiet", "--verbose", "--all-features",
+    "--no-default-features", "--workspace", "--all-targets", "--lib", "--bins", "--tests", "--benches",
+    "--examples", "--no-run", "--no-fail-fast", "--all", "--doc", "--check", "-vv"],
+  values: ["--features", "--package", "--bin", "--example", "--test", "--bench", "--target",
+    "--target-dir", "--manifest-path", "--jobs", "--profile", "--color", "--message-format", "--exclude", "--depth"],
+  short: "rqv",
+  shortValues: "Fpj",
+  positional: isGuestLiteralWord,
+  restAfterDoubleDash: true,
+};
+
+/** go flags are single-dash words (`-race`, `-o file`, `-tags=x`); no abbreviation. */
+const GO_BUILD_SPEC: GuestArgvSpec = {
+  flags: ["-v", "-x", "-n", "-a", "-race", "-msan", "-trimpath", "-short", "-cover", "-json",
+    "-failfast", "-benchmem", "-i", "-e", "-m", "-u", "-d", "-t"],
+  values: ["-o", "-tags", "-run", "-count", "-timeout", "-mod", "-ldflags", "-gcflags", "-asmflags",
+    "-p", "-bench", "-benchtime", "-coverprofile", "-coverpkg", "-covermode", "-C", "-cpu",
+    "-parallel", "-buildvcs", "-skip", "-shuffle", "-f", "-go"],
+  positional: (arg) => GO_PACKAGE_RE.test(arg) || GO_MODULE_RE.test(arg),
+};
+
+const OS_PACKAGE_SPEC: GuestArgvSpec = {
+  flags: ["--yes", "--assume-yes", "--quiet", "--no-install-recommends", "--no-install-suggests",
+    "--fix-broken", "--fix-missing", "--allow-downgrades", "--reinstall", "--only-upgrade", "--purge",
+    "--no-cache", "--update", "--assumeyes", "--nodocs", "-qq"],
+  values: ["--virtual"],
+  short: "yqfU",
+  shortValues: "t",
+  positional: (arg) => OS_PACKAGE_RE.test(arg),
+};
+
+const BUILD_GOAL_RE = /^(clean|compile|test|package|verify|install|validate|build|assemble|check|run|dependencies|test-compile|dependency:resolve|dependency:go-offline)$/;
+const MVN_SPEC: GuestArgvSpec = {
+  flags: ["--quiet", "--batch-mode", "--offline", "--errors", "--debug", "--update-snapshots",
+    "--no-transfer-progress", "-ntp", "--no-daemon", "--info", "--stacktrace", "--build-cache",
+    "--parallel", "--continue"],
+  values: ["--file", "-pl", "--projects", "--threads", "--console", "--exclude-task", "--project-dir"],
+  short: "qBoeXUis",
+  shortValues: "fTxp",
+  positional: (arg) => BUILD_GOAL_RE.test(arg),
+};
+
+/** Per-tool subcommand specs; the first positional is the subcommand. */
+const GUEST_SUBCOMMAND_TOOLS: ReadonlyMap<string, ReadonlyMap<string, GuestArgvSpec>> = new Map<string, ReadonlyMap<string, GuestArgvSpec>>([
+  ["pip", PIP_SUBCOMMANDS],
+  ["pip3", PIP_SUBCOMMANDS],
+  ["npm", new Map<string, GuestArgvSpec>([
+    ...["install", "i", "ci", "uninstall", "un", "remove", "rm", "update", "up", "dedupe", "prune",
+      "rebuild", "ls", "list", "pack"].map((sub) => [sub, NPM_INSTALL_SPEC] as [string, GuestArgvSpec]),
+    ...["test", "t", "start", "run", "run-script"].map((sub) => [sub, NPM_SCRIPT_SPEC] as [string, GuestArgvSpec]),
+    ["init", { flags: ["--yes"], short: "y" }],
+  ])],
+  ["pnpm", new Map<string, GuestArgvSpec>([
+    ...["install", "i", "add", "remove", "rm", "update", "up"].map((sub) => [sub, NPM_INSTALL_SPEC] as [string, GuestArgvSpec]),
+    ...["run", "test", "start"].map((sub) => [sub, PNPM_SCRIPT_SPEC] as [string, GuestArgvSpec]),
+  ])],
+  ["yarn", new Map<string, GuestArgvSpec>([
+    ...["install", "add", "remove"].map((sub) => [sub, NPM_INSTALL_SPEC] as [string, GuestArgvSpec]),
+    ...["run", "test"].map((sub) => [sub, PNPM_SCRIPT_SPEC] as [string, GuestArgvSpec]),
+  ])],
+  ["bun", new Map<string, GuestArgvSpec>([
+    ...["install", "i", "add", "remove", "rm", "update"].map((sub) => [sub, NPM_INSTALL_SPEC] as [string, GuestArgvSpec]),
+    ...["test", "build"].map((sub) => [sub, {
+      flags: ["--watch", "--minify", "--sourcemap", "--bail", "--coverage", "--production"],
+      values: ["--outdir", "--outfile", "--target", "--timeout", "--test-name-pattern"],
+      short: "t",
+      positional: isGuestLocalPath,
+    }] as [string, GuestArgvSpec]),
+  ])],
+  ["cargo", new Map<string, GuestArgvSpec>([
+    ...["build", "b", "check", "c", "test", "t", "bench", "clippy", "doc", "run", "r", "clean", "fetch",
+      "tree", "metadata", "fmt"].map((sub) => [sub, CARGO_BUILD_SPEC] as [string, GuestArgvSpec]),
+    ["install", { flags: ["--locked", "--force", "--offline", "--quiet"], values: ["--version", "--vers", "--root", "--features", "--bin"],
+      short: "fq", shortValues: "F", positional: (arg) => CARGO_SPEC_RE.test(arg) }],
+    ...["add", "remove"].map((sub) => [sub, { flags: ["--dev", "--build", "--optional"], values: ["--features", "--package"],
+      shortValues: "Fp", positional: (arg: string) => CARGO_SPEC_RE.test(arg) }] as [string, GuestArgvSpec]),
+    ...["new", "init"].map((sub) => [sub, { flags: ["--lib", "--bin"], values: ["--name", "--edition", "--vcs"],
+      positional: isGuestLocalPath }] as [string, GuestArgvSpec]),
+  ])],
+  ["go", new Map<string, GuestArgvSpec>([
+    ...["build", "vet", "list", "clean", "generate", "install", "get"].map((sub) => [sub, GO_BUILD_SPEC] as [string, GuestArgvSpec]),
+    ["test", { ...GO_BUILD_SPEC, flags: [...GO_BUILD_SPEC.flags!, "-args"] }],
+    ["run", { ...GO_BUILD_SPEC, restAfterPositionals: 1 }],
+    ["version", { flags: ["-m", "-v"], positional: isGuestLocalPath }],
+    ["env", { flags: ["-json"], positional: (arg) => /^[A-Z0-9_]+$/.test(arg) }],
+  ])],
+  ["apt", new Map<string, GuestArgvSpec>(["install", "update", "upgrade", "remove", "purge", "autoremove", "clean", "dist-upgrade"]
+    .map((sub) => [sub, OS_PACKAGE_SPEC] as [string, GuestArgvSpec]))],
+  ["apt-get", new Map<string, GuestArgvSpec>(["install", "update", "upgrade", "remove", "purge", "autoremove", "clean", "dist-upgrade"]
+    .map((sub) => [sub, OS_PACKAGE_SPEC] as [string, GuestArgvSpec]))],
+  ["apk", new Map<string, GuestArgvSpec>(["add", "del", "update", "upgrade"].map((sub) => [sub, OS_PACKAGE_SPEC] as [string, GuestArgvSpec]))],
+  ["dnf", new Map<string, GuestArgvSpec>(["install", "update", "upgrade", "remove"].map((sub) => [sub, OS_PACKAGE_SPEC] as [string, GuestArgvSpec]))],
+  ["yum", new Map<string, GuestArgvSpec>(["install", "update", "upgrade", "remove"].map((sub) => [sub, OS_PACKAGE_SPEC] as [string, GuestArgvSpec]))],
+  ["gem", new Map<string, GuestArgvSpec>(["install", "uninstall", "list"].map((sub) => [sub, {
+    flags: ["--no-document", "--user-install", "--conservative", "--quiet"], values: ["--version"],
+    short: "Nq", shortValues: "v", positional: (arg: string) => GEM_SPEC_RE.test(arg),
+  }] as [string, GuestArgvSpec]))],
+  ["bundle", new Map<string, GuestArgvSpec>(["install", "update", "check", "list"].map((sub) => [sub, {
+    flags: ["--quiet", "--frozen", "--deployment", "--local", "--prefer-local"], values: ["--jobs", "--retry", "--gemfile"],
+    shortValues: "j", positional: (arg: string) => GEM_SPEC_RE.test(arg),
+  }] as [string, GuestArgvSpec]))],
+  ["conda", new Map<string, GuestArgvSpec>(["install", "create", "remove", "list"].map((sub) => [sub, {
+    flags: ["--yes", "--quiet"], values: ["--name", "--prefix", "--file"],
+    short: "yq", shortValues: "npf", positional: (arg: string) => CONDA_SPEC_RE.test(arg),
+  }] as [string, GuestArgvSpec]))],
+]);
+
+/** uv: `uv pip <pip subcommand>`, project commands, and `uv run` (a wrapper). */
+const UV_SUBCOMMANDS: ReadonlyMap<string, GuestArgvSpec> = new Map<string, GuestArgvSpec>([
+  ["sync", { flags: ["--frozen", "--locked", "--no-dev", "--all-extras", "--dev", "--quiet", "--all-packages",
+    "--no-install-project", "--inexact", "--no-editable"], values: ["--extra", "--group", "--python", "--package"],
+    short: "q", shortValues: "p" }],
+  ["lock", { flags: ["--locked", "--frozen", "--upgrade", "--check"], values: ["--upgrade-package", "--python"],
+    short: "U", shortValues: "Pp" }],
+  ...["add", "remove"].map((sub) => [sub, { flags: ["--dev", "--no-sync", "--frozen", "--locked"],
+    values: ["--group", "--optional", "--python", "--extra"], shortValues: "p",
+    positional: (arg: string) => PY_SPEC_RE.test(arg) }] as [string, GuestArgvSpec]),
+  ["venv", { flags: ["--seed", "--quiet", "--clear", "--system-site-packages"], values: ["--python", "--prompt"],
+    short: "q", shortValues: "p", positional: isGuestLocalPath }],
+  ["init", { flags: ["--lib", "--app", "--package", "--no-readme", "--bare"], values: ["--name", "--python"],
+    shortValues: "p", positional: isGuestLocalPath }],
+  ["build", { flags: ["--wheel", "--sdist", "--quiet"], values: ["--out-dir"], short: "q", shortValues: "o",
+    positional: isGuestLocalPath }],
+  ["tree", { flags: ["--frozen", "--locked"], values: ["--depth"], shortValues: "d" }],
+]);
+
+// git: repository-locating globals only, then a per-subcommand spec.
+const GIT_PATH_SPEC: GuestArgvSpec = { positional: isGuestLocalPath, restAfterDoubleDash: false };
+/** A literal clone/fetch source: http(s)/ssh/git URL, scp form or local path; never a transport helper (`ext::`). */
+function isGuestGitSource(arg: string): boolean {
+  if (/::/.test(arg) || /^ext:/i.test(arg) || arg.startsWith("-")) return false;
+  return /^(https?|ssh|git):\/\//i.test(arg) || /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._\/~-]+$/.test(arg) || isGuestLocalPath(arg);
+}
+const GIT_REF_RE = /^\+?[A-Za-z0-9._\/~^@{}-]+(:[A-Za-z0-9._\/~^@{}-]*)?$/;
+const GIT_SUBCOMMANDS: ReadonlyMap<string, GuestArgvSpec> = new Map<string, GuestArgvSpec>([
+  ["clone", { flags: ["--single-branch", "--no-single-branch", "--recurse-submodules", "--recursive",
+    "--shallow-submodules", "--quiet", "--no-checkout", "--sparse", "--no-tags", "--bare", "--progress"],
+    values: ["--depth", "--branch", "--filter", "--origin", "--shallow-since"], short: "qn", shortValues: "bo",
+    positional: isGuestGitSource }],
+  ["fetch", { flags: ["--all", "--prune", "--tags", "--unshallow", "--quiet", "--no-tags", "--force", "--progress",
+    "--prune-tags"], values: ["--depth", "--shallow-since"], short: "ptqf",
+    positional: (arg) => isGuestGitSource(arg) || GIT_REF_RE.test(arg) }],
+  ["pull", { flags: ["--ff-only", "--rebase", "--no-rebase", "--quiet", "--all", "--tags", "--no-edit", "--ff",
+    "--no-ff", "--autostash", "--progress"], values: ["--depth"], short: "rq",
+    positional: (arg) => isGuestGitSource(arg) || GIT_REF_RE.test(arg) }],
+  ["status", { flags: ["--short", "--branch", "--porcelain", "--ignored", "--long", "-uno", "-uall", "--untracked-files=no",
+    "--untracked-files=all", "--untracked-files=normal"], short: "sbz", positional: isGuestLocalPath }],
+  ["checkout", { flags: ["--quiet", "--detach", "--track", "--no-track"], values: ["-b", "-B"], short: "qt",
+    positional: (arg) => GIT_REF_RE.test(arg) }],
+  ["switch", { flags: ["--quiet", "--detach", "--track", "--no-track"], values: ["--create", "-c", "-C"], short: "qt",
+    positional: (arg) => GIT_REF_RE.test(arg) }],
+  ["branch", { flags: ["--all", "--remotes", "--list", "--verbose", "-vv", "--show-current", "--merged",
+    "--no-merged"], values: ["--set-upstream-to", "--sort", "--format"], short: "arlvdm", shortValues: "u",
+    positional: (arg) => GIT_REF_RE.test(arg) }],
+  ["add", { flags: ["--all", "--update", "--intent-to-add", "--force", "--verbose", "--dry-run"], short: "AuNfvn",
+    positional: isGuestLocalPath, restAfterDoubleDash: true }],
+  ["commit", { flags: ["--all", "--quiet", "--allow-empty", "--amend", "--no-edit", "--no-verify", "--signoff"],
+    values: ["--message", "--file", "--author", "--date"], short: "aqsn", shortValues: "mF" }],
+  ["restore", { flags: ["--staged", "--quiet"], values: ["--source"], short: "Sq", shortValues: "s",
+    positional: isGuestLocalPath, restAfterDoubleDash: true }],
+  ["reset", { flags: ["--soft", "--mixed", "--quiet", "--keep", "--merge"], short: "q",
+    positional: (arg) => GIT_REF_RE.test(arg) || isGuestLocalPath(arg), restAfterDoubleDash: true }],
+  ["stash", { flags: ["--include-untracked", "--keep-index", "--quiet", "--index"], values: ["--message"],
+    short: "ukq", shortValues: "m", positional: (arg) => /^(push|save|list|show|pop|apply|stash@\{\d+\}|\d+)$/.test(arg) }],
+  ["merge", { flags: ["--no-ff", "--ff-only", "--ff", "--no-edit", "--abort", "--continue", "--squash", "--quiet",
+    "--no-commit"], values: ["--message"], short: "q", shortValues: "m", positional: (arg) => GIT_REF_RE.test(arg) }],
+  ["rebase", { flags: ["--continue", "--abort", "--skip", "--autostash", "--quiet", "--no-autostash"],
+    values: ["--onto"], short: "q", positional: (arg) => GIT_REF_RE.test(arg) }],
+  ...["cherry-pick", "revert"].map((sub) => [sub, { flags: ["--no-edit", "--no-commit", "--continue", "--abort",
+    "--skip"], short: "nx", positional: (arg: string) => GIT_REF_RE.test(arg) }] as [string, GuestArgvSpec]),
+  ["tag", { flags: ["--list", "--annotate", "--force", "--delete"], values: ["--message"], short: "lafd", shortValues: "m",
+    positional: (arg) => GIT_REF_RE.test(arg) }],
+  ["init", { flags: ["--quiet", "--bare"], values: ["--initial-branch"], short: "q", shortValues: "b",
+    positional: isGuestLocalPath }],
+  ["mv", { flags: ["--force", "--dry-run", "--verbose"], short: "fnvk", positional: isGuestLocalPath }],
+  ["rm", { flags: ["--cached", "--quiet", "--dry-run"], short: "rqn", positional: isGuestLocalPath, restAfterDoubleDash: true }],
+  ["apply", { flags: ["--check", "--stat", "--3way", "--index", "--cached", "--reverse", "--verbose"], values: ["-p"],
+    short: "R3v", positional: isGuestLocalPath }],
+  ["grep", { flags: ["--line-number", "--ignore-case", "--files-with-matches", "--count", "--cached", "--untracked",
+    "--no-index", "--word-regexp", "--extended-regexp", "--fixed-strings", "--invert-match", "--recurse-submodules"],
+    values: ["-e", "--max-depth"], short: "nilwEFcvhHIrPz", shortValues: "eABC", positional: isGuestLiteralWord,
+    restAfterDoubleDash: true }],
+  ["submodule", { flags: ["--init", "--recursive", "--quiet", "--remote", "--depth"], short: "q",
+    positional: (arg) => /^(update|init|status|sync|summary)$/.test(arg) || isGuestLocalPath(arg) }],
+  ["remote", { flags: ["--verbose"], short: "v",
+    positional: (arg) => /^(add|show|get-url|set-url|rename|remove|prune)$/.test(arg) || isGuestGitSource(arg) || GIT_REF_RE.test(arg) }],
+  ["clean", GIT_PATH_SPEC],
+  ["version", {}],
+]);
+
+/** Splits `git [globals] <sub> <args>`; null when a global could change what git runs (`-c`, `--exec-path`, …). */
+function splitGitInvocation(args: readonly string[]): { sub: string; rest: readonly string[]; index: number } | null {
+  let i = 0;
+  while (i < args.length && args[i]!.startsWith("-")) {
+    const arg = args[i]!;
+    if (arg === "-C" || arg === "--git-dir" || arg === "--work-tree") { i += 2; continue; }
+    if (/^--(git-dir|work-tree)=/.test(arg) || ["--no-pager", "-P", "--bare", "--no-replace-objects"].includes(arg)) { i++; continue; }
+    return null;
   }
-  // The host's read-only classification (verb table, mutating flags, sed/awk
-  // program scan, execution-selecting assignments) — a read-only leaf is local.
-  if (isReadOnlyShellLeaf(leaf, { ignoreRedirects: true })) return true;
-  const argv = leaf.argv;
-  if (argv.length === 0) return leaf.strippedWrappers.length === 0;
-  if (leaf.argvHasExpandableDollar[0] === true) return false;
-  if (argv.some(isNetworkDevicePath)) return false;
-  const verb = stripCommandPath(argv[0]!);
+  const sub = args[i];
+  return sub === undefined ? null : { sub, rest: args.slice(i + 1), index: i };
+}
+
+/** True when the long option spelling abbreviates (or equals) one of the names. */
+function longOptionAbbreviates(arg: string, names: readonly string[]): boolean {
+  if (!arg.startsWith("--") || arg === "--") return false;
+  const spelling = arg.split("=", 1)[0]!;
+  return names.some((name) => name.startsWith(spelling));
+}
+
+/** True when a short cluster (`-xfD`) contains one of the letters. */
+function shortClusterHas(arg: string, letters: string): boolean {
+  return /^-[^-]/.test(arg) && [...arg.slice(1)].some((letter) => letters.includes(letter));
+}
+
+/** Wrappers that run another program: returns the wrapped argv, or null. */
+function unwrapGuestRunner(argv: readonly string[]): readonly string[] | null {
+  const verb = stripCommandPath(argv[0] ?? "");
   const args = argv.slice(1);
-  const expandable = leaf.argvHasExpandableDollar.slice(1);
-  if (verb === "sed") {
-    // `-i` edits a guest file; the program itself must still pass the host
-    // scan that rejects its write/execute commands.
-    const kept = argv.map((_, k) => k).filter((k) => !/^(-i\S*|--in-place(=.*)?)$/.test(argv[k]!));
-    return isReadOnlyShellLeaf({
-      ...leaf,
-      argv: kept.map((k) => argv[k]!),
-      argvHasExpandableDollar: kept.map((k) => leaf.argvHasExpandableDollar[k] === true),
-    }, { ignoreRedirects: true });
+  const after = (sub: readonly string[], flags: readonly string[]): readonly string[] | null => {
+    let i = sub.length;
+    if (!sub.every((word, k) => args[k] === word)) return null;
+    while (i < args.length && args[i]!.startsWith("-")) {
+      if (args[i] === "--") { i++; break; }
+      if (!flags.includes(args[i]!)) return [];
+      i++;
+    }
+    return args.slice(i);
+  };
+  if (verb === "npx" || verb === "bunx") return after([], ["--yes", "-y", "--no-install"]);
+  if (verb === "uv" && args[0] === "run") return after(["run"], ["--frozen", "--locked", "--no-sync", "--isolated", "-q", "--quiet"]);
+  if (verb === "uvx") return after([], ["-q", "--quiet"]);
+  if (verb === "bundle" && args[0] === "exec") return after(["exec"], []);
+  if (verb === "bun" && (args[0] === "run" || args[0] === "x")) return after([args[0]], ["--bun", "--silent"]);
+  if ((verb === "pnpm" && (args[0] === "exec" || args[0] === "dlx")) ||
+      (verb === "yarn" && (args[0] === "dlx" || args[0] === "exec")) ||
+      (verb === "npm" && args[0] === "exec") ||
+      (verb === "poetry" && args[0] === "run") ||
+      (verb === "pipx" && args[0] === "run")) {
+    return after([args[0]], ["--yes", "-y", "--silent"]);
   }
-  if (verb === "tar") {
-    // `host:archive` is a remote archive over rsh; the listed options run a program.
-    return !args.some((arg) => arg.includes(":") ||
-      /^--(to-command|use-compress-program|checkpoint-action|info-script|new-volume-script|rsh-command|rmt-command)/.test(arg) ||
-      /^-[A-Za-z]*[IF]/.test(arg));
+  return null;
+}
+
+/**
+ * Python's own options: the module named by `-m` (stuck or clustered, as in
+ * `-mtwine` or `-um pip`), whether `-c` gives inline code, and the first
+ * positional (the script, or `-` for stdin).
+ */
+function parsePythonInvocation(args: readonly string[]): { module?: string; moduleArgs: readonly string[]; inline: boolean; script?: string } {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "-" || !arg.startsWith("-")) return { moduleArgs: [], inline: false, script: arg };
+    if (arg === "--") return { moduleArgs: [], inline: false, ...(args[i + 1] === undefined ? {} : { script: args[i + 1] }) };
+    if (arg.startsWith("--")) continue;
+    for (let j = 1; j < arg.length; j++) {
+      const letter = arg[j]!;
+      if (letter === "c") return { moduleArgs: [], inline: true };
+      if (letter === "m") {
+        const stuck = arg.slice(j + 1);
+        const module = stuck.length > 0 ? stuck : args[i + 1];
+        const rest = args.slice(stuck.length > 0 ? i + 1 : i + 2);
+        return { ...(module === undefined ? {} : { module }), moduleArgs: rest, inline: false };
+      }
+      if ("WX".includes(letter)) {
+        if (j + 1 >= arg.length) i++;
+        break;
+      }
+    }
   }
-  if (verb === "zip") return !args.some((arg) => arg.startsWith("-TT") || arg.startsWith("--unzip-command"));
-  if (verb === "rsync") {
-    return !args.some((arg) => /^(-e|--rsh|--rsync-path)/.test(arg) ||
-      (!arg.startsWith("-") && (/^rsync:\/\//i.test(arg) || /^[^/]*:/.test(arg))));
+  return { moduleArgs: [], inline: false };
+}
+
+const INTERPRETER_VERSION_ARGS: ReadonlySet<string> = new Set(["-V", "--version", "-v", "-h", "--help"]);
+
+/**
+ * Interpreter code that is on the line rather than in a file: an inline-code
+ * flag, a `data:`/URL module, or a program read from stdin (`-`, a here-doc,
+ * a pipe). Its effects cannot be graded from the line.
+ */
+function hasInlineInterpreterCode(verb: string, args: readonly string[]): boolean {
+  const versionOnly = args.length > 0 && args.every((arg) => INTERPRETER_VERSION_ARGS.has(arg));
+  if (/^python[0-9.]*$/.test(verb)) {
+    const python = parsePythonInvocation(args);
+    if (python.inline) return true;
+    if (python.module !== undefined) return false;
+    return !versionOnly && (python.script === undefined || python.script === "-");
   }
-  if (verb === "git") return isGuestLocalGitLeaf(args, expandable);
-  if (verb === "curl" || verb === "wget") {
-    if (leaf.hasCommandSubstitution || leaf.hasProcessSubstitution || expandable.some(Boolean)) return false;
-    return verb === "curl"
-      ? isPlainGetDownload(args, CURL_GET_FLAG_OPTIONS, CURL_GET_VALUE_OPTIONS, CURL_GET_SHORT_FLAGS, CURL_GET_SHORT_VALUES)
-      : isPlainGetDownload(args, WGET_GET_FLAG_OPTIONS, WGET_GET_VALUE_OPTIONS, WGET_GET_SHORT_FLAGS, WGET_GET_SHORT_VALUES);
+  if (verb === "node" || verb === "nodejs") {
+    if (args.some((arg) => shortClusterHas(arg, "ep") || longOptionAbbreviates(arg, ["--eval", "--print"]))) return true;
+    if (args.some((arg) => /data:|:\/\//.test(arg))) return true;
+    const script = args.find((arg) => !arg.startsWith("-"));
+    return !versionOnly && (script === undefined || args.includes("-"));
   }
-  if ((verb === "python" || verb === "python3") && args[0] === "-m") {
-    const module = args[1];
-    if (module === "pip") return isListedSubcommand("pip", args.slice(2), expandable.slice(2));
-    // Publishing modules send local content by design.
-    return module !== undefined && module !== "twine";
+  if (verb === "perl" || verb === "ruby" || verb === "php") {
+    const letters = verb === "perl" ? "eE" : verb === "ruby" ? "e" : "rBRFE";
+    if (args.some((arg) => shortClusterHas(arg, letters))) return true;
+    const script = args.find((arg) => !arg.startsWith("-"));
+    return !versionOnly && (script === undefined || args.includes("-"));
   }
-  if (verb === "mvn" || verb === "gradle" || verb === "gradlew") {
-    return args.every((arg, k) => arg.startsWith("-") ? !/^-(D|-define)?.*(deploy|publish|upload)/i.test(arg)
-      : expandable[k] !== true && GUEST_BUILD_GOALS.has(arg));
-  }
-  if (GUEST_LOCAL_VERBS.has(verb)) return true;
-  if (GUEST_LOCAL_SUBCOMMANDS.has(verb)) return isListedSubcommand(verb, args, expandable);
   return false;
 }
 
-/** The first non-option argument must be a listed, literal subcommand. */
-function isListedSubcommand(verb: string, args: readonly string[], expandable: readonly boolean[]): boolean {
-  const index = args.findIndex((arg) => !arg.startsWith("-"));
-  if (index < 0 || expandable[index] === true) return false;
-  const sub = args[index]!;
-  if (verb === "uv" && sub === "pip") return isListedSubcommand("pip", args.slice(index + 1), expandable.slice(index + 1));
-  return GUEST_LOCAL_SUBCOMMANDS.get(verb)?.has(sub) === true;
+/** System program directories; a path-qualified verb elsewhere is a file the guest may have written. */
+const SYSTEM_BIN_RE = /^\/(usr\/(local\/)?)?s?bin\/[^/]+$/;
+
+/**
+ * The verb an argv[0] names for the allowlist, or null. A URL or `host:` form
+ * is never a verb. A path outside the system bin directories is a file the
+ * guest may have written, so only interpreters and project wrapper scripts —
+ * which run files anyway (the script limitation) — keep their name.
+ */
+function guestVerbOf(word: string): string | null {
+  if (word.includes(":")) return null;
+  if (!word.includes("/")) return word;
+  const base = stripCommandPath(word);
+  if (SYSTEM_BIN_RE.test(word)) return base;
+  return /^(python[0-9.]*|pip3?|node|pytest|gradlew|mvnw)$/.test(base) ? base : null;
+}
+
+function isGuestDestructiveArgv(argv: readonly string[], depth: number): boolean {
+  const verb = stripCommandPath(argv[0] ?? "");
+  const args = argv.slice(1);
+  if (["rm", "unlink", "shred", "dd", "sudo", "doas", "su", "truncate"].includes(verb) || verb.startsWith("mkfs")) return true;
+  if (verb === "find") return args.some((arg) => arg === "-delete");
+  if (verb === "rsync") {
+    return args.some((arg) => longOptionAbbreviates(arg, ["--del", "--delete", "--delete-before", "--delete-during",
+      "--delete-delay", "--delete-after", "--delete-excluded", "--delete-missing-args", "--remove-source-files"]));
+  }
+  if (verb === "tar") return args.some((arg) => longOptionAbbreviates(arg, ["--remove-files"]));
+  if (hasInlineInterpreterCode(verb, args)) return true;
+  if (verb === "git") {
+    const git = splitGitInvocation(args);
+    if (git === null) return false;
+    const { sub, rest } = git;
+    if (sub === "clean") return true;
+    if (sub === "reset") return rest.some((arg) => longOptionAbbreviates(arg, ["--hard"]));
+    if (sub === "checkout") {
+      return rest.some((arg) => arg === "--" || arg === "." || shortClusterHas(arg, "f") || longOptionAbbreviates(arg, ["--force"]));
+    }
+    if (sub === "switch") return rest.some((arg) => shortClusterHas(arg, "f") || longOptionAbbreviates(arg, ["--force", "--discard-changes"]));
+    if (sub === "restore") {
+      const staged = rest.some((arg) => shortClusterHas(arg, "S") || longOptionAbbreviates(arg, ["--staged"]));
+      const worktree = rest.some((arg) => shortClusterHas(arg, "W") || longOptionAbbreviates(arg, ["--worktree"]));
+      return !staged || worktree;
+    }
+    if (sub === "stash") return rest.some((arg) => arg === "drop" || arg === "clear");
+    if (sub === "branch") {
+      const force = rest.some((arg) => shortClusterHas(arg, "f") || longOptionAbbreviates(arg, ["--force"]));
+      const del = rest.some((arg) => shortClusterHas(arg, "d") || longOptionAbbreviates(arg, ["--delete"]));
+      return rest.some((arg) => shortClusterHas(arg, "D")) || (force && del);
+    }
+    if (sub === "rm") return !rest.some((arg) => arg === "--cached");
+    return false;
+  }
+  const wrapped = depth < GUEST_WRAPPER_MAX_DEPTH ? unwrapGuestRunner(argv) : null;
+  return wrapped !== null && wrapped.length > 0 && isGuestDestructiveArgv(wrapped, depth + 1);
 }
 
 function isNetworkDevicePath(value: string): boolean {
   return /^\/dev\/(tcp|udp)\//.test(value);
 }
 
-function isGuestDestructiveLeaf(leaf: ShellLeaf): boolean {
-  const verb = leaf.argv[0];
-  if (verb === undefined) return false;
-  const name = stripCommandPath(verb);
-  if (GUEST_DESTRUCTIVE_VERBS.has(name) || name.startsWith("mkfs")) return true;
-  return name === "find" && leaf.argv.includes("-delete");
+/** Options of a compiler that name a program, plugin or option file to run. */
+const COMPILER_ARG_RE = /^-(O[0-3sgz]?|g[0-3]?|c|S|E|o|I.*|L.*|l.*|D.*|U.*|W[a-z][^,]*|std=.*|f(?!plugin)(?!use-ld=.*\/)[a-z][a-z0-9+-]*(=[^,]*)?|m[a-z0-9-]+(=[^,]*)?|pthread|shared|static|pie|no-pie|v|x|include|isystem.*|M[MDFTPG]?|pedantic.*|w|rdynamic|march=.*)$/;
+
+const GUEST_LITERAL_VERBS: ReadonlySet<string> = new Set([
+  "mkdir", "rmdir", "touch", "cp", "mv", "ln", "chmod", "chown", "chgrp", "install", "tee", "split",
+  "patch", "mktemp", "md5sum", "sha1sum", "sha256sum", "sha512sum", "xxd", "od", "hexdump", "strings",
+  "unzip", "gzip", "gunzip", "zcat", "bzip2", "bunzip2", "xz", "unxz", "zstd", "unzstd", "base64", "jq",
+  "nproc", "free", "lscpu", "set", "unset", "exit", "wait", "shift", "umask", "pushd", "popd", "read", "[",
+  "make", "ninja", "meson", "pytest", "py.test", "tsc", "awk", "gawk",
+]);
+
+function isGuestLocalArgv(leaf: ShellLeaf, argv: readonly string[], depth: number): boolean {
+  if (argv.length === 0) return leaf.strippedWrappers.length === 0;
+  if (argv.some(isNetworkDevicePath)) return false;
+  const verb = guestVerbOf(argv[0]!);
+  if (verb === null) return false;
+  const args = argv.slice(1);
+  const wrapped = unwrapGuestRunner(argv);
+  if (wrapped !== null) {
+    return depth < GUEST_WRAPPER_MAX_DEPTH && wrapped.length > 0 && isGuestLocalArgv(leaf, wrapped, depth + 1);
+  }
+  // The host's read-only classification (verb table, mutating flags, sed
+  // program scan, git inspection flags) — a read-only leaf is local.
+  if (isReadOnlyShellLeaf({ ...leaf, argv: [...argv], argvHasExpandableDollar: argv.map(() => false) }, { ignoreRedirects: true })) {
+    return true;
+  }
+  if (GUEST_LITERAL_VERBS.has(verb)) return true;
+  if (verb === "sed") {
+    // `-i` edits a guest file; the program itself must still pass the host
+    // scan that rejects its write/execute commands.
+    const kept = argv.filter((arg) => !/^(-i\S*|--in-place(=.*)?)$/.test(arg));
+    return isReadOnlyShellLeaf({ ...leaf, argv: kept, argvHasExpandableDollar: kept.map(() => false) }, { ignoreRedirects: true });
+  }
+  if (/^python[0-9.]*$/.test(verb)) {
+    const python = parsePythonInvocation(args);
+    if (python.module === "pip") return isGuestSubcommandArgv(PIP_SUBCOMMANDS, python.moduleArgs);
+    // Publishing modules send local content by design.
+    return python.module !== "twine";
+  }
+  if (verb === "node" || verb === "ruby" || verb === "perl" || verb === "php") return true;
+  if (verb === "java" || verb === "javac") {
+    return !args.some((arg) => arg.startsWith("@") || arg.startsWith("-XX:On") || arg.startsWith("-J"));
+  }
+  if (["gcc", "g++", "cc", "c++", "clang", "clang++"].includes(verb)) {
+    return args.every((arg) => arg.startsWith("-") ? COMPILER_ARG_RE.test(arg) : isGuestLocalPath(arg) && !arg.startsWith("@"));
+  }
+  if (verb === "rustc") {
+    return matchesGuestArgvSpec(args, { flags: ["--test", "-O", "-g"], values: ["--edition", "-o", "--crate-type", "--crate-name",
+      "--out-dir", "-L"], positional: isGuestLocalPath });
+  }
+  if (verb === "cmake") {
+    return args.every((arg, k) => {
+      if (arg.startsWith("-D")) {
+        const name = arg.slice(2).split(/[=:]/, 1)[0]!;
+        return !name.startsWith("CMAKE_") || /^CMAKE_(BUILD_TYPE|INSTALL_PREFIX|EXPORT_COMPILE_COMMANDS)$/.test(name);
+      }
+      const previous = args[k - 1];
+      if (previous !== undefined && ["-S", "-B", "-G", "--build", "-j", "--parallel", "--config", "--target", "-t", "--install", "--prefix"].includes(previous)) {
+        return isGuestOptionValue(arg);
+      }
+      if (arg.startsWith("-")) {
+        return ["-S", "-B", "-G", "--build", "-j", "--parallel", "--config", "--target", "-t", "--install", "--prefix",
+          "--fresh", "-Wno-dev", "--verbose"].includes(arg) || /^-[SBG]\S/.test(arg);
+      }
+      return isGuestLocalPath(arg);
+    });
+  }
+  if (verb === "mvn" || verb === "mvnw" || verb === "gradle" || verb === "gradlew") return matchesGuestArgvSpec(args, MVN_SPEC);
+  if (verb === "curl") return isPlainGetDownload(args, CURL_GET_FLAG_OPTIONS, CURL_GET_VALUE_OPTIONS, CURL_GET_SHORT_FLAGS, CURL_GET_SHORT_VALUES);
+  if (verb === "wget") return isPlainGetDownload(args, WGET_GET_FLAG_OPTIONS, WGET_GET_VALUE_OPTIONS, WGET_GET_SHORT_FLAGS, WGET_GET_SHORT_VALUES);
+  if (verb === "tar") {
+    // A dashless first argument is an old-style cluster (`xzf`, `xIf`).
+    const words = args.length > 0 && !args[0]!.startsWith("-") ? [`-${args[0]}`, ...args.slice(1)] : args;
+    return matchesGuestArgvSpec(words, {
+      flags: ["--extract", "--create", "--list", "--gzip", "--gunzip", "--bzip2", "--xz", "--zstd", "--verbose",
+        "--exclude-vcs", "--no-same-owner", "--no-same-permissions", "--preserve-permissions", "--overwrite",
+        "--keep-old-files", "--skip-old-files", "--wildcards", "--numeric-owner", "--totals", "--auto-compress",
+        "--to-stdout", "--one-top-level", "--null"],
+      values: ["--file", "--directory", "--strip-components", "--exclude", "--owner", "--group", "--mode", "--mtime",
+        "--sort", "--files-from", "--exclude-from"],
+      short: "cxtuarzjJavpkhSmOWP",
+      shortValues: "fCTX",
+      positional: isGuestLocalPath,
+    });
+  }
+  if (verb === "zip") {
+    return matchesGuestArgvSpec(args, { flags: ["--recurse-paths", "--quiet", "--junk-paths"], short: "rqjyXD0123456789x",
+      positional: isGuestLocalPath });
+  }
+  if (verb === "rsync") {
+    return matchesGuestArgvSpec(args, {
+      flags: ["--archive", "--verbose", "--compress", "--recursive", "--progress", "--partial", "--human-readable",
+        "--dry-run", "--checksum", "--update", "--quiet", "--stats", "--times", "--perms", "--links", "--hard-links",
+        "--relative", "--itemize-changes", "--whole-file", "--sparse", "--one-file-system", "--prune-empty-dirs",
+        "--no-perms", "--no-owner", "--no-group", "--mkpath", "--inplace", "--append", "--ignore-existing",
+        "--existing", "--size-only", "--copy-links"],
+      values: ["--exclude", "--include", "--exclude-from", "--info", "--chmod"],
+      short: "avzrPhnpogtlDHAXucqiWSxRmL",
+      positional: isGuestLocalPath,
+    });
+  }
+  if (verb === "git") {
+    const git = splitGitInvocation(args);
+    if (git === null) return false;
+    const spec = GIT_SUBCOMMANDS.get(git.sub);
+    if (spec === undefined) {
+      // Inspection subcommands keep the host's read-only flag allowlist.
+      return isReadOnlyShellLeaf({ ...leaf, argv: ["git", git.sub, ...git.rest], argvHasExpandableDollar: [] }, { ignoreRedirects: true });
+    }
+    return matchesGuestArgvSpec(git.rest, spec);
+  }
+  if (verb === "uv") {
+    if (args[0] === "pip") return isGuestSubcommandArgv(PIP_SUBCOMMANDS, args.slice(1));
+    if (args[0] === "python") return matchesGuestArgvSpec(args.slice(1), { positional: (arg) => /^(install|list|find|pin|[A-Za-z]*-?[0-9][0-9.]*)$/.test(arg) });
+    return isGuestSubcommandArgv(UV_SUBCOMMANDS, args);
+  }
+  if (verb === "yarn") {
+    // `yarn <script>`: a bare word that is not a yarn command runs a package
+    // script (the documented script limitation); every other yarn command is
+    // unlisted unless its spec says otherwise.
+    const sub = args.find((arg) => !arg.startsWith("-"));
+    if (sub !== undefined && !YARN_COMMANDS.has(sub) && /^[A-Za-z0-9:_.-]+$/.test(sub)) {
+      return args.indexOf(sub) === 0;
+    }
+  }
+  if (verb === "go" && args[0] === "mod") {
+    return matchesGuestArgvSpec(args.slice(1), { flags: ["-x", "-v", "-json", "-e"],
+      positional: (arg) => /^(download|tidy|verify|graph|why|vendor|init)$/.test(arg) || GO_MODULE_RE.test(arg) || GO_PACKAGE_RE.test(arg) });
+  }
+  const subcommands = GUEST_SUBCOMMAND_TOOLS.get(verb);
+  return subcommands !== undefined && isGuestSubcommandArgv(subcommands, args);
+}
+
+/** Built-in yarn commands (v1 and berry); a bare word outside this set is a package script. */
+const YARN_COMMANDS: ReadonlySet<string> = new Set([
+  "add", "audit", "autoclean", "bin", "cache", "check", "config", "create", "dedupe", "dlx", "exec", "explain",
+  "generate-lock-entry", "global", "help", "import", "info", "init", "install", "licenses", "link", "list",
+  "login", "logout", "node", "npm", "outdated", "owner", "pack", "patch", "plugin", "policies", "publish",
+  "rebuild", "remove", "run", "search", "set", "stage", "tag", "team", "test", "unlink", "unplug", "up",
+  "upgrade", "upgrade-interactive", "version", "versions", "why", "workspace", "workspaces",
+]);
+
+/** The first word must be a listed subcommand; every word after it must fit that subcommand's spec. */
+function isGuestSubcommandArgv(subcommands: ReadonlyMap<string, GuestArgvSpec>, args: readonly string[]): boolean {
+  const sub = args[0];
+  if (sub === undefined) return false;
+  const spec = subcommands.get(sub);
+  return spec !== undefined && matchesGuestArgvSpec(args.slice(1), spec);
+}
+
+/**
+ * Whether a leaf is eligible for guest LOW at all: everything it does must be
+ * visible on the line. Expansions, environment assignments, `xargs` and
+ * network device paths are not.
+ */
+function isGuestEligibleLeaf(leaf: ShellLeaf): boolean {
+  if (leaf.hasExpansion || leaf.hasCommandSubstitution || leaf.hasProcessSubstitution) return false;
+  if (leaf.assignments.length > 0) return false;
+  if (leaf.strippedWrappers.includes("xargs")) return false;
+  return !leaf.redirectTargets.some(isNetworkDevicePath) && !leaf.inputRedirectTargets.some(isNetworkDevicePath);
 }
 
 /**
  * Grade one guest shell command line. `destructive` takes precedence; a line
- * is `local` only when it tokenizes cleanly and every leaf is allowlisted.
+ * is `local` only when it tokenizes cleanly and every leaf is eligible and
+ * allowlisted.
  */
 function gradeDisposableGuestShellCommand(command: string): GuestShellGrade {
   if (DESTRUCTIVE_SHELL_RE.test(command)) return "destructive";
   const { leaves, parseError } = tokenizeShell(command);
-  if (!parseError && leaves.some(isGuestDestructiveLeaf)) return "destructive";
+  if (!parseError && leaves.some((leaf) => isGuestDestructiveArgv(leaf.argv, 0))) return "destructive";
   if (parseError || leaves.length === 0) return "unlisted";
-  return leaves.every(isGuestLocalLeaf) ? "local" : "unlisted";
+  return leaves.every((leaf) => isGuestEligibleLeaf(leaf) && isGuestLocalArgv(leaf, leaf.argv, 0)) ? "local" : "unlisted";
 }
 
 function extractNetworkMethod(input: Record<string, unknown>): string | null {

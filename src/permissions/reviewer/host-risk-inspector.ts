@@ -327,7 +327,7 @@ const EXECUTION_SELECTING_ENV_NAMES: ReadonlySet<string> = new Set([
   "GIT_PROXY_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_TEXTCONV",
   "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_DIR", "GIT_WORK_TREE",
   "GIT_INDEX_FILE", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
-  "GIT_CONFIG_COUNT", "GIT_ATTR_NOSYSTEM", "GIT_NAMESPACE",
+  "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_ATTR_NOSYSTEM", "GIT_NAMESPACE",
   // Shell / interpreter selection and startup hooks
   "SHELL", "BASH_ENV", "ENV", "IFS", "PATH", "CDPATH", "SHELLOPTS",
   "BASH_FUNC_", "PS4", "PROMPT_COMMAND",
@@ -516,7 +516,7 @@ export function isReadOnlyShellLeaf(
  *     This catches an execution-selecting variable this list has not learned
  *     about yet, which is the failure mode a pure name list cannot cover.
  */
-export function selectsExecutionTarget(assignment: string): boolean {
+function selectsExecutionTarget(assignment: string): boolean {
   const eq = assignment.indexOf("=");
   if (eq <= 0) return false;
   const name = assignment.slice(0, eq);
