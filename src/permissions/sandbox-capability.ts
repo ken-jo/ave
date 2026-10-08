@@ -63,7 +63,9 @@ export type SandboxKind =
   | "asrt"
   /**
    * The invocation executes inside a host-issued disposable Linux guest (the
-   * workload broker or an operator-attested container), not in this process.
+   * workload broker only — the operator-attested container is same-process
+   * and never earns this kind; see {@link DisposableSubstrate}), not in this
+   * process.
    * The guest owns its filesystem and process tree; the controller host, its
    * profile and its environment are unreachable from it. Network is the
    * guest's own policy and is NOT claimed as confined.

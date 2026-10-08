@@ -44,7 +44,8 @@ describe("Operational session paths in the model context", () => {
   });
 
   it("offers the scratch directory only while the host verifies it as app-owned", () => {
-    vi.stubEnv("AVE_HOME", undefined);
+    // Keep the runner's isolated AVE_HOME: clearing it would resolve the
+    // application home to the person's real ~/.ave, which the test guard refuses.
     const scratch = join(tmpdir(), "ave-scratch-verified");
     vi.mocked(verifyAveScratchDir).mockReturnValue({ ok: true, path: scratch });
 
