@@ -245,15 +245,26 @@ survives onto a host-routed call), and
 the reviewer capability to `disposable-container` (verified; filesystem and
 process confined, network not claimed) ahead of the host-shell plan, whose
 `none` describes a plain child that call never spawns. The rule classifier
-then grades guest-scoped effects as such, first match wins: a destructive
-shell verb stays MEDIUM (a structured denial on the headless lane, an ask in
-the foreground); a shell command that can send data out of the guest stays
-MEDIUM, because the guest does not confine network (a request body or upload
-from `curl`/`wget`, an expanded `curl`/`wget` operand, `nc`/`socat`/`ssh`/`scp`/`sftp`/`ftp`,
-a remote `rsync`, `git push`, a package publish, `/dev/tcp`, or a command line
-the shell tokenizer cannot parse); any other shell command — including a
-download into the guest such as `pip install`, `git clone` or a plain
-`curl -O` — and a read or write of any guest path, is LOW. Network-category
+then grades guest-scoped effects as such. A read or write of any guest path
+is LOW. A guest shell is graded first match wins: a destructive command
+(matched on raw text and on tokens, so quoted names, long options and `--`
+count) stays MEDIUM (a structured denial on the headless lane, an ask in the
+foreground); a command is LOW only when it tokenizes cleanly and every leaf,
+after wrapper unwrapping, is on the guest allowlist — file and build tools,
+package installs (`pip`/`uv`/`npm`/`bun`/`cargo`/`apt` install, ci, sync),
+`git` with a read/fetch subcommand and no program-running option, and
+`curl`/`wget` with exact GET-only options and a plain public URL with no
+query, fragment or userinfo; everything else stays MEDIUM, because the guest
+does not confine network. That includes any shell binary, `exec`, `eval`,
+`builtin`, `source`/`.`, BusyBox, aliases, a pipe or here-doc into a shell,
+unknown verbs, a verb chosen by an expansion, and input the tokenizer cannot
+parse. **The allowlist does not detect every way data can leave the guest.**
+Interpreters (`python`, `node`, `ruby`, `perl`, `php`, `java`, `awk`) are
+allowlisted with `-c`/`-e` or a script because guest work runs scripts, and so
+are build and test runners (`make`, `npm run`, `pytest`); traffic such a
+program opens itself, a git hook, and a tool reading a config file an earlier
+guest write planted (`.curlrc`, `.wgetrc`, `.git/config`) are not visible to
+argv inspection and rely on the guest's own egress policy. Network-category
 tools are graded by the network rules exactly as on the host. The
 operator-attested container never becomes a substrate: it is same-process, the
 shell is a plain child of the controller sharing its `~/.ave`, pid namespace

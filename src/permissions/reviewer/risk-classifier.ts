@@ -38,6 +38,7 @@ import { PERMISSION_REVIEWER_SYSTEM_PROMPT } from "../../shared/permission-revie
 import { getDottedFieldValue } from "../../shared/dotted-field-value.js";
 import { extractShellCommands } from "../../shared/shell-command-fields.js";
 import { stripCommandPath, tokenizeShell, type ShellLeaf } from "../../shared/shell-tokenizer.js";
+import { isReadOnlyShellLeaf, selectsExecutionTarget } from "./host-risk-inspector.js";
 import {
   formatSandboxCapabilityForPrompt,
   isDisposableSubstrateCapability,
@@ -334,178 +335,6 @@ const DESTRUCTIVE_SHELL_RE = new RegExp([
 const REVERSIBLE_SHELL_RE =
   /^\s*(echo|touch|ls|cat|pwd|whoami|date|env|true|false)\b/i;
 
-// ─── Shell egress (disposable guest only) ───────────────────────────
-//
-// A disposable guest confines filesystem and process effects, not network
-// (`disposableContainerCapability` claims `network: false`). A shell command
-// that can carry data OUT of the guest is therefore not a guest-scoped effect,
-// and the guest rules below keep it at MEDIUM instead of the guest LOW. A
-// download INTO the guest (`pip install`, `git clone`, `curl -O`, a plain
-// `wget`) moves nothing out and stays LOW. The leaves come from the shared
-// shell tokenizer the host risk inspector uses, so wrappers (`timeout`,
-// `env`, `xargs`), compound commands and substitutions are seen the same way.
-// Anything the tokenizer cannot parse, or a verb hidden behind an expansion,
-// is treated as able to send — ambiguity reads MEDIUM, never LOW. Host grading
-// does not consult any of this.
-
-/** Verbs whose ordinary use opens a connection that carries caller data out. */
-const SHELL_EGRESS_VERBS: ReadonlySet<string> = new Set([
-  "nc", "ncat", "netcat", "socat", "telnet",
-  "ssh", "scp", "sftp", "ftp", "tftp",
-  "sendmail", "mail", "mailx", "mutt",
-  "rclone", "aws", "gsutil", "az", "gcloud",
-  // httpie/xh: request items (`k=v`, `@file`) send a body with no flag.
-  "http", "https", "xh",
-]);
-
-/** `<verb> <subcommand>` pairs that publish or push local content. */
-const SHELL_EGRESS_SUBCOMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ["git", new Set(["push", "send-email"])],
-  ["npm", new Set(["publish"])],
-  ["pnpm", new Set(["publish"])],
-  ["yarn", new Set(["publish"])],
-  ["bun", new Set(["publish"])],
-  ["cargo", new Set(["publish"])],
-  ["gem", new Set(["push"])],
-  ["twine", new Set(["upload"])],
-  ["uv", new Set(["publish"])],
-  ["poetry", new Set(["publish"])],
-  ["docker", new Set(["push"])],
-  ["podman", new Set(["push"])],
-]);
-
-/** Shells whose `-c` operand is itself a command line to inspect. */
-const SHELL_INTERPRETERS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
-
-/** curl options that send a request body, upload, or read options from a file. */
-const CURL_SEND_LONG_OPTIONS: ReadonlySet<string> = new Set([
-  "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode",
-  "--json", "--form", "--form-string", "--upload-file", "--mail-from",
-  "--mail-rcpt", "--quote", "--config",
-]);
-/** curl short options with the same effect (`-d`, `-F`, `-T`, `-Q`, `-K`). */
-const CURL_SEND_SHORT_OPTIONS: ReadonlySet<string> = new Set(["d", "F", "T", "Q", "K"]);
-/** curl short options that take a value: the rest of the cluster (or the next word) is that value. */
-const CURL_VALUE_SHORT_OPTIONS: ReadonlySet<string> = new Set([
-  "A", "b", "c", "C", "D", "e", "E", "H", "m", "o", "P", "r", "t", "u", "U", "w", "x", "y", "Y", "z",
-]);
-/** wget options that send a request body or run wgetrc commands. */
-const WGET_SEND_LONG_OPTIONS: ReadonlySet<string> = new Set([
-  "--post-data", "--post-file", "--body-data", "--body-file", "--execute",
-]);
-
-function isReadOnlyHttpMethod(method: string | undefined): boolean {
-  return method !== undefined && /^(GET|HEAD|OPTIONS)$/i.test(method);
-}
-
-function longOptionName(arg: string): string {
-  const eq = arg.indexOf("=");
-  return eq > 0 ? arg.slice(0, eq) : arg;
-}
-
-function longOptionValue(args: readonly string[], index: number): string | undefined {
-  const arg = args[index]!;
-  const eq = arg.indexOf("=");
-  return eq > 0 ? arg.slice(eq + 1) : args[index + 1];
-}
-
-function curlSendsData(args: readonly string[]): boolean {
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!;
-    if (arg.startsWith("--")) {
-      const name = longOptionName(arg);
-      if (CURL_SEND_LONG_OPTIONS.has(name)) return true;
-      if (name === "--request" && !isReadOnlyHttpMethod(longOptionValue(args, i))) return true;
-      continue;
-    }
-    if (!arg.startsWith("-") || arg.length < 2) continue;
-    for (let j = 1; j < arg.length; j++) {
-      const letter = arg[j]!;
-      if (CURL_SEND_SHORT_OPTIONS.has(letter)) return true;
-      if (letter === "X") {
-        const method = j + 1 < arg.length ? arg.slice(j + 1) : args[i + 1];
-        if (!isReadOnlyHttpMethod(method)) return true;
-        if (j + 1 >= arg.length) i++;
-        break;
-      }
-      if (CURL_VALUE_SHORT_OPTIONS.has(letter)) {
-        if (j + 1 >= arg.length) i++;
-        break;
-      }
-    }
-  }
-  return false;
-}
-
-function wgetSendsData(args: readonly string[]): boolean {
-  return args.some((arg, i) => {
-    if (arg === "-e") return true;
-    if (!arg.startsWith("--")) return false;
-    const name = longOptionName(arg);
-    if (WGET_SEND_LONG_OPTIONS.has(name)) return true;
-    return name === "--method" && !isReadOnlyHttpMethod(longOptionValue(args, i));
-  });
-}
-
-/** `host:path`, `user@host:path`, `host::module` or `rsync://` — a remote rsync operand. */
-function isRemoteRsyncOperand(arg: string): boolean {
-  if (arg.startsWith("-")) return false;
-  return /^rsync:\/\//i.test(arg) || /^[^/]*:/.test(arg);
-}
-
-function touchesNetworkDevice(paths: readonly string[]): boolean {
-  return paths.some((p) => /^\/dev\/(tcp|udp)\//.test(p));
-}
-
-const SHELL_EGRESS_MAX_DEPTH = 4;
-
-function shellLeafCanSendData(leaf: ShellLeaf, depth: number): boolean {
-  if (
-    touchesNetworkDevice(leaf.redirectTargets) ||
-    touchesNetworkDevice(leaf.inputRedirectTargets) ||
-    touchesNetworkDevice(leaf.argv)
-  ) {
-    return true;
-  }
-  const argv = leaf.argv;
-  if (argv.length === 0) return false;
-  // A verb chosen by an expansion could be any of the verbs below.
-  if (leaf.argvHasExpandableDollar[0] === true) return true;
-  const verb = stripCommandPath(argv[0]!);
-  const args = argv.slice(1);
-  if (SHELL_EGRESS_VERBS.has(verb)) return true;
-  const subcommands = SHELL_EGRESS_SUBCOMMANDS.get(verb);
-  if (subcommands !== undefined) return args.some((arg) => subcommands.has(arg));
-  if (verb === "curl" || verb === "wget") {
-    // An expanded or substituted operand can smuggle data into a URL, header
-    // or credential of an otherwise plain GET.
-    if (leaf.hasCommandSubstitution || leaf.hasProcessSubstitution) return true;
-    if (leaf.argvHasExpandableDollar.some(Boolean)) return true;
-    return verb === "curl" ? curlSendsData(args) : wgetSendsData(args);
-  }
-  if (verb === "rsync") return args.some(isRemoteRsyncOperand);
-  if (verb === "eval") return shellCommandCanSendData(args.join(" "), depth + 1);
-  if (SHELL_INTERPRETERS.has(verb)) {
-    const c = args.indexOf("-c");
-    if (c >= 0) {
-      const script = args[c + 1];
-      return script === undefined || shellCommandCanSendData(script, depth + 1);
-    }
-  }
-  return false;
-}
-
-/**
- * True when a shell command line can send data out of the machine it runs on.
- * Fails toward true: a parse error, an expanded verb, or nesting deeper than
- * {@link SHELL_EGRESS_MAX_DEPTH} counts as able to send.
- */
-function shellCommandCanSendData(command: string, depth = 0): boolean {
-  if (depth > SHELL_EGRESS_MAX_DEPTH) return true;
-  const { leaves, parseError } = tokenizeShell(command);
-  if (parseError) return true;
-  return leaves.some((leaf) => shellLeafCanSendData(leaf, depth));
-}
 
 /**
  * Hosts the host considers trusted by virtue of being Ave-owned or
@@ -756,6 +585,285 @@ export function screenEgressRequest(input: Record<string, unknown>): EgressScree
   return { outcome: "public-benign" };
 }
 
+// ─── Disposable-guest shell allowlist ───────────────────────────────
+//
+// A disposable guest confines filesystem and process effects, not network
+// (`disposableContainerCapability` claims `network: false`). A guest shell is
+// therefore LOW only when it is POSITIVELY known to be local work or a plain
+// download into the guest; everything else — anything that can send data
+// out, and anything this table does not recognise — stays MEDIUM. A denylist
+// of sending forms cannot be closed (abbreviated options, file-backed headers,
+// BusyBox applets, shell-in-shell, aliases, DNS/ICMP payloads), so this is an
+// allowlist over the leaves of the shared shell tokenizer, after the same
+// wrapper unwrapping (`env`, `timeout`, `xargs`, `command`, …) every other
+// consumer sees.
+//
+// Stated limits (also in permission-policy-design.md): an allowlisted program
+// that runs code of its own — an interpreter given `-c`/`-e` or a script, a
+// build or test runner (`make`, `npm run`, `pytest`), a git hook, or a
+// config file such as `.curlrc`, `.wgetrc` or `.git/config` planted by an
+// earlier guest write — can open a connection this argv inspection never
+// sees. That traffic is not detected here; it relies on the guest's own
+// egress policy. Host grading does not consult any of this.
+
+type GuestShellGrade = "local" | "destructive" | "unlisted";
+
+/** Verbs whose every form only reads or edits guest files or the shell's own state. */
+const GUEST_LOCAL_VERBS: ReadonlySet<string> = new Set([
+  // file tools
+  "mkdir", "rmdir", "touch", "cp", "mv", "ln", "chmod", "chown", "chgrp",
+  "install", "tee", "truncate", "split", "patch", "mktemp", "md5sum",
+  "sha1sum", "sha256sum", "sha512sum", "xxd", "od", "hexdump", "strings",
+  "unzip", "gzip", "gunzip", "zcat", "bzip2", "bunzip2", "xz", "unxz",
+  "zstd", "unzstd", "base64", "jq", "nproc", "free", "lscpu",
+  // shell state builtins that cannot run another command
+  "export", "set", "unset", "exit", "wait", "shift", "umask", "pushd", "popd",
+  "read", "local", "declare", "[",
+  // build and test tools
+  "make", "cmake", "ninja", "meson", "gcc", "g++", "cc", "c++", "clang",
+  "clang++", "ld", "ar", "javac", "rustc", "tsc", "pytest", "py.test",
+  // interpreters: allowed because the bench runs scripts; see stated limits
+  "python", "python3", "node", "ruby", "perl", "php", "java", "awk", "gawk",
+]);
+
+/** Subcommand-keyed tools: LOW only for a listed subcommand. */
+const GUEST_LOCAL_SUBCOMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["pip", new Set(["install", "download", "uninstall", "list", "show", "freeze", "check", "wheel"])],
+  ["pip3", new Set(["install", "download", "uninstall", "list", "show", "freeze", "check", "wheel"])],
+  ["uv", new Set(["pip", "sync", "lock", "add", "remove", "run", "venv", "init", "build", "tree", "python"])],
+  ["npm", new Set(["install", "i", "ci", "test", "t", "run", "run-script", "start", "ls", "list",
+    "uninstall", "un", "remove", "rm", "update", "up", "init", "pack", "rebuild", "prune", "dedupe"])],
+  ["pnpm", new Set(["install", "i", "add", "remove", "rm", "run", "test", "build", "update"])],
+  ["yarn", new Set(["install", "add", "remove", "run", "test", "build"])],
+  ["bun", new Set(["install", "i", "add", "remove", "rm", "run", "test", "build"])],
+  ["cargo", new Set(["build", "b", "test", "t", "run", "r", "check", "c", "fetch", "clippy", "fmt",
+    "doc", "bench", "new", "init", "add", "remove", "update", "tree", "metadata", "install", "clean"])],
+  ["go", new Set(["build", "test", "run", "mod", "get", "install", "vet", "fmt", "env", "version",
+    "list", "generate", "clean", "work"])],
+  ["apt", new Set(["install", "update", "upgrade", "remove", "purge", "autoremove", "clean"])],
+  ["apt-get", new Set(["install", "update", "upgrade", "remove", "purge", "autoremove", "clean"])],
+  ["apk", new Set(["add", "del", "update", "upgrade"])],
+  ["dnf", new Set(["install", "update", "upgrade", "remove"])],
+  ["yum", new Set(["install", "update", "upgrade", "remove"])],
+  ["gem", new Set(["install", "uninstall", "list"])],
+  ["bundle", new Set(["install", "exec", "update"])],
+  ["conda", new Set(["install", "create", "remove", "list"])],
+]);
+
+/** `git` subcommands that read or fetch; every other subcommand (push, send-pack, an alias, …) is unlisted. */
+const GUEST_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  "clone", "fetch", "pull", "status", "log", "diff", "show", "checkout", "switch", "branch",
+  "add", "commit", "restore", "reset", "stash", "merge", "rebase", "tag", "init", "rev-parse",
+  "ls-files", "ls-tree", "cat-file", "describe", "blame", "grep", "mv", "rm", "apply",
+  "cherry-pick", "revert", "clean", "shortlog", "reflog", "submodule", "remote", "version",
+]);
+/** git global options that only locate the repository; any other global option (`-c`, `--exec-path`, …) is unlisted. */
+const GUEST_GIT_VALUE_GLOBALS: ReadonlySet<string> = new Set(["-C"]);
+const GUEST_GIT_FLAG_GLOBALS: ReadonlySet<string> = new Set(["--no-pager", "-P", "--bare", "--no-replace-objects"]);
+const GUEST_GIT_LONG_GLOBAL_PREFIXES = ["--git-dir=", "--work-tree="] as const;
+
+/** curl options of a plain GET download, exact spellings only (curl accepts abbreviations; this does not). */
+const CURL_GET_FLAG_OPTIONS: ReadonlySet<string> = new Set([
+  "--remote-name", "--remote-name-all", "--location", "--silent", "--show-error", "--fail",
+  "--fail-with-body", "--insecure", "--compressed", "--progress-bar", "--verbose",
+  "--create-dirs", "--remote-header-name", "--head", "--include", "--http1.1", "--http2",
+  "--ipv4", "--ipv6", "--no-progress-meter", "--retry-connrefused", "--retry-all-errors",
+]);
+const CURL_GET_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "--output", "--output-dir", "--retry", "--retry-delay", "--retry-max-time",
+  "--connect-timeout", "--max-time", "--continue-at", "--max-filesize", "--max-redirs",
+]);
+const CURL_GET_SHORT_FLAGS: ReadonlySet<string> = new Set(["O", "L", "s", "S", "f", "k", "v", "J", "I", "i", "#", "4", "6"]);
+const CURL_GET_SHORT_VALUES: ReadonlySet<string> = new Set(["o", "m", "C"]);
+
+/** wget options of a plain GET download, exact spellings only. */
+const WGET_GET_FLAG_OPTIONS: ReadonlySet<string> = new Set([
+  "--quiet", "--no-verbose", "--verbose", "--continue", "--timestamping", "--no-check-certificate",
+  "--retry-connrefused", "--show-progress", "--no-clobber", "--no-parent", "--no-directories",
+  "--no-host-directories", "--server-response", "--https-only", "--inet4-only", "--inet6-only",
+  "-nv", "-nc", "-np", "-nd", "-nH",
+]);
+const WGET_GET_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "--output-document", "--directory-prefix", "--tries", "--timeout", "--waitretry", "--progress",
+  "--cut-dirs", "--max-redirect",
+]);
+const WGET_GET_SHORT_FLAGS: ReadonlySet<string> = new Set(["q", "c", "N", "S", "v", "4", "6"]);
+const WGET_GET_SHORT_VALUES: ReadonlySet<string> = new Set(["O", "P", "t", "T"]);
+
+/** Token-level destructive verbs (complements {@link DESTRUCTIVE_SHELL_RE} on raw text). */
+const GUEST_DESTRUCTIVE_VERBS: ReadonlySet<string> = new Set(["rm", "unlink", "shred", "dd", "sudo", "doas", "su"]);
+
+/**
+ * True when every option is an exact allowlisted GET form and every operand is
+ * a plain public http(s) URL the host's own fetch screen grades benign, with no
+ * query, fragment or userinfo to carry data. A value-taking option consumes
+ * the rest of its short cluster, its `=value`, or the next word.
+ */
+function isPlainGetDownload(
+  args: readonly string[],
+  flags: ReadonlySet<string>,
+  values: ReadonlySet<string>,
+  shortFlags: ReadonlySet<string>,
+  shortValues: ReadonlySet<string>,
+): boolean {
+  let urls = 0;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg.startsWith("--") || flags.has(arg)) {
+      const eq = arg.indexOf("=");
+      const name = eq > 0 ? arg.slice(0, eq) : arg;
+      if (flags.has(name) && eq < 0) continue;
+      if (!values.has(name)) return false;
+      if (eq < 0) i++;
+      continue;
+    }
+    if (arg.startsWith("-") && arg.length > 1) {
+      for (let j = 1; j < arg.length; j++) {
+        const letter = arg[j]!;
+        if (shortFlags.has(letter)) continue;
+        if (!shortValues.has(letter)) return false;
+        if (j + 1 >= arg.length) i++;
+        break;
+      }
+      continue;
+    }
+    if (!isPlainDownloadUrl(arg)) return false;
+    urls++;
+  }
+  return urls > 0;
+}
+
+function isPlainDownloadUrl(value: string): boolean {
+  if (!/^https?:\/\//i.test(value)) return false;
+  const target = extractNetworkTarget({ url: value });
+  if (target === null || target.kind !== "url" || target.hasUserInfo) return false;
+  if (target.query !== "" || target.fragment !== "") return false;
+  return screenEgressRequest({ url: value }).outcome === "public-benign";
+}
+
+/** git with only repository-locating globals and a read/fetch subcommand that cannot run a command. */
+function isGuestLocalGitLeaf(args: readonly string[], expandable: readonly boolean[]): boolean {
+  let i = 0;
+  while (i < args.length && args[i]!.startsWith("-")) {
+    const arg = args[i]!;
+    if (GUEST_GIT_VALUE_GLOBALS.has(arg)) { i += 2; continue; }
+    if (GUEST_GIT_FLAG_GLOBALS.has(arg)) { i++; continue; }
+    if (GUEST_GIT_LONG_GLOBAL_PREFIXES.some((prefix) => arg.startsWith(prefix))) { i++; continue; }
+    return false;
+  }
+  const sub = args[i];
+  if (sub === undefined || expandable[i] === true || !GUEST_GIT_SUBCOMMANDS.has(sub)) return false;
+  const rest = args.slice(i + 1);
+  // Options that make a listed subcommand run a program or rewrite its config.
+  const runsProgram = rest.some((arg) =>
+    arg.startsWith("--upload-pack") || arg.startsWith("--receive-pack") || arg.startsWith("--exec") ||
+    arg.startsWith("--config") || arg === "--template" || arg.startsWith("--template="));
+  if (runsProgram) return false;
+  if ((sub === "clone" || sub === "fetch" || sub === "pull") && rest.some((arg) => arg === "-u" || arg === "-c")) return false;
+  if (sub === "rebase" && rest.some((arg) => arg === "-x" || /^-[A-Za-z]*x/.test(arg))) return false;
+  if (sub === "submodule" && rest.includes("foreach")) return false;
+  return true;
+}
+
+/** Build goals and tasks that compile, test or install locally (no deploy/publish/upload). */
+const GUEST_BUILD_GOALS: ReadonlySet<string> = new Set([
+  "clean", "compile", "test", "package", "verify", "install", "validate", "build", "assemble",
+  "check", "run", "dependencies", "test-compile",
+]);
+
+function isGuestLocalLeaf(leaf: ShellLeaf): boolean {
+  // An assignment that picks the program a verb runs (`LESSOPEN`, `BASH_ENV`,
+  // `LD_PRELOAD`, …) is the execution, whatever the verb is.
+  if (leaf.assignments.some(selectsExecutionTarget)) return false;
+  if (leaf.redirectTargets.some(isNetworkDevicePath) || leaf.inputRedirectTargets.some(isNetworkDevicePath)) {
+    return false;
+  }
+  // The host's read-only classification (verb table, mutating flags, sed/awk
+  // program scan, execution-selecting assignments) — a read-only leaf is local.
+  if (isReadOnlyShellLeaf(leaf, { ignoreRedirects: true })) return true;
+  const argv = leaf.argv;
+  if (argv.length === 0) return leaf.strippedWrappers.length === 0;
+  if (leaf.argvHasExpandableDollar[0] === true) return false;
+  if (argv.some(isNetworkDevicePath)) return false;
+  const verb = stripCommandPath(argv[0]!);
+  const args = argv.slice(1);
+  const expandable = leaf.argvHasExpandableDollar.slice(1);
+  if (verb === "sed") {
+    // `-i` edits a guest file; the program itself must still pass the host
+    // scan that rejects its write/execute commands.
+    const kept = argv.map((_, k) => k).filter((k) => !/^(-i\S*|--in-place(=.*)?)$/.test(argv[k]!));
+    return isReadOnlyShellLeaf({
+      ...leaf,
+      argv: kept.map((k) => argv[k]!),
+      argvHasExpandableDollar: kept.map((k) => leaf.argvHasExpandableDollar[k] === true),
+    }, { ignoreRedirects: true });
+  }
+  if (verb === "tar") {
+    // `host:archive` is a remote archive over rsh; the listed options run a program.
+    return !args.some((arg) => arg.includes(":") ||
+      /^--(to-command|use-compress-program|checkpoint-action|info-script|new-volume-script|rsh-command|rmt-command)/.test(arg) ||
+      /^-[A-Za-z]*[IF]/.test(arg));
+  }
+  if (verb === "zip") return !args.some((arg) => arg.startsWith("-TT") || arg.startsWith("--unzip-command"));
+  if (verb === "rsync") {
+    return !args.some((arg) => /^(-e|--rsh|--rsync-path)/.test(arg) ||
+      (!arg.startsWith("-") && (/^rsync:\/\//i.test(arg) || /^[^/]*:/.test(arg))));
+  }
+  if (verb === "git") return isGuestLocalGitLeaf(args, expandable);
+  if (verb === "curl" || verb === "wget") {
+    if (leaf.hasCommandSubstitution || leaf.hasProcessSubstitution || expandable.some(Boolean)) return false;
+    return verb === "curl"
+      ? isPlainGetDownload(args, CURL_GET_FLAG_OPTIONS, CURL_GET_VALUE_OPTIONS, CURL_GET_SHORT_FLAGS, CURL_GET_SHORT_VALUES)
+      : isPlainGetDownload(args, WGET_GET_FLAG_OPTIONS, WGET_GET_VALUE_OPTIONS, WGET_GET_SHORT_FLAGS, WGET_GET_SHORT_VALUES);
+  }
+  if ((verb === "python" || verb === "python3") && args[0] === "-m") {
+    const module = args[1];
+    if (module === "pip") return isListedSubcommand("pip", args.slice(2), expandable.slice(2));
+    // Publishing modules send local content by design.
+    return module !== undefined && module !== "twine";
+  }
+  if (verb === "mvn" || verb === "gradle" || verb === "gradlew") {
+    return args.every((arg, k) => arg.startsWith("-") ? !/^-(D|-define)?.*(deploy|publish|upload)/i.test(arg)
+      : expandable[k] !== true && GUEST_BUILD_GOALS.has(arg));
+  }
+  if (GUEST_LOCAL_VERBS.has(verb)) return true;
+  if (GUEST_LOCAL_SUBCOMMANDS.has(verb)) return isListedSubcommand(verb, args, expandable);
+  return false;
+}
+
+/** The first non-option argument must be a listed, literal subcommand. */
+function isListedSubcommand(verb: string, args: readonly string[], expandable: readonly boolean[]): boolean {
+  const index = args.findIndex((arg) => !arg.startsWith("-"));
+  if (index < 0 || expandable[index] === true) return false;
+  const sub = args[index]!;
+  if (verb === "uv" && sub === "pip") return isListedSubcommand("pip", args.slice(index + 1), expandable.slice(index + 1));
+  return GUEST_LOCAL_SUBCOMMANDS.get(verb)?.has(sub) === true;
+}
+
+function isNetworkDevicePath(value: string): boolean {
+  return /^\/dev\/(tcp|udp)\//.test(value);
+}
+
+function isGuestDestructiveLeaf(leaf: ShellLeaf): boolean {
+  const verb = leaf.argv[0];
+  if (verb === undefined) return false;
+  const name = stripCommandPath(verb);
+  if (GUEST_DESTRUCTIVE_VERBS.has(name) || name.startsWith("mkfs")) return true;
+  return name === "find" && leaf.argv.includes("-delete");
+}
+
+/**
+ * Grade one guest shell command line. `destructive` takes precedence; a line
+ * is `local` only when it tokenizes cleanly and every leaf is allowlisted.
+ */
+function gradeDisposableGuestShellCommand(command: string): GuestShellGrade {
+  if (DESTRUCTIVE_SHELL_RE.test(command)) return "destructive";
+  const { leaves, parseError } = tokenizeShell(command);
+  if (!parseError && leaves.some(isGuestDestructiveLeaf)) return "destructive";
+  if (parseError || leaves.length === 0) return "unlisted";
+  return leaves.every(isGuestLocalLeaf) ? "local" : "unlisted";
+}
+
 function extractNetworkMethod(input: Record<string, unknown>): string | null {
   for (const key of ["method", "httpMethod", "verb"]) {
     const value = input[key];
@@ -934,30 +1042,30 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
   //
   // The guest confines filesystem and process, NOT network, so a guest shell
   // is graded in three ordered steps and the first match wins:
-  //   1. destructive verb            → MEDIUM (disposable is not the same as
-  //                                    intended; the headless lane turns
-  //                                    MEDIUM into a structured denial)
-  //   2. can send data out (egress)  → MEDIUM (see `shellCommandCanSendData`;
-  //                                    a download into the guest is not egress)
-  //   3. anything else               → LOW
+  //   1. destructive (raw text or token) → MEDIUM (disposable is not the same
+  //                                       as intended; the headless lane turns
+  //                                       MEDIUM into a structured denial)
+  //   2. not on the guest allowlist       → MEDIUM (may send data out; see
+  //                                       `gradeDisposableGuestShellCommand`)
+  //   3. allowlisted local work/download  → LOW
   // These rules run before the host shell rules, which never see a guest
   // shell. Network-category tools are not graded here; they fall through to
   // the network rules below exactly as on the host.
   (ctx) => {
     if (!isDisposableSubstrateCapability(ctx.sandboxCapability)) return null;
     if (ctx.category !== "shell") return null;
-    const cmds = extractShellCommands(ctx.finalInput);
-    if (!cmds.some((cmd) => DESTRUCTIVE_SHELL_RE.test(cmd))) return null;
+    const grades = extractShellCommands(ctx.finalInput).map(gradeDisposableGuestShellCommand);
+    if (!grades.includes("destructive")) return null;
     return { level: "medium", reason: "shell destructive verb inside disposable guest" };
   },
   (ctx) => {
     if (!isDisposableSubstrateCapability(ctx.sandboxCapability)) return null;
     if (ctx.category !== "shell") return null;
-    const cmds = extractShellCommands(ctx.finalInput);
-    if (!cmds.some((cmd) => shellCommandCanSendData(cmd))) return null;
+    const grades = extractShellCommands(ctx.finalInput).map(gradeDisposableGuestShellCommand);
+    if (grades.length > 0 && grades.every((grade) => grade === "local")) return null;
     return {
       level: "medium",
-      reason: "shell can send data out of the disposable guest (egress is not confined)",
+      reason: "shell outside the disposable-guest allowlist (may send data out; egress is not confined)",
     };
   },
   (ctx) => {

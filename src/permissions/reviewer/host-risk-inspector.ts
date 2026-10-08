@@ -516,7 +516,7 @@ export function isReadOnlyShellLeaf(
  *     This catches an execution-selecting variable this list has not learned
  *     about yet, which is the failure mode a pure name list cannot cover.
  */
-function selectsExecutionTarget(assignment: string): boolean {
+export function selectsExecutionTarget(assignment: string): boolean {
   const eq = assignment.indexOf("=");
   if (eq <= 0) return false;
   const name = assignment.slice(0, eq);
