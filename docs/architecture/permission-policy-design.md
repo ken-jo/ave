@@ -258,7 +258,10 @@ is LOW. A guest shell is graded first match wins:
    drop`/`clear`, `git branch -D`, rsync `--del*`/`--remove-source-files`, tar
    `--remove-files`, and inline interpreter code (`python -c`, `node -e`,
    `perl -e`, `ruby -e`, `php -r`, a program read from stdin or a `data:`
-   URL), whose effects cannot be graded from the line.
+   URL), whose effects cannot be graded from the line. Only deletion and
+   discard verbs are destructive: a content edit, including emptying a file
+   through a redirect (`> f`), `cp /dev/null f` or an editor (`sed -i d f`),
+   is a plain edit and is not graded as destructive in the guest.
 2. **Not on the guest allowlist → MEDIUM**, because the guest does not
    confine network. A leaf is eligible at all only when everything it does is
    visible on the line: any `$` expansion or backtick, any `NAME=value`
@@ -268,11 +271,19 @@ is LOW. A guest shell is graded first match wins:
    spelling for that tool and subcommand (so an abbreviation or an unknown
    letter in a short cluster fails, and no option value may carry a URL), and
    every positional the tool's predicate — a bare package spec for installs
-   (no URL, path, VCS or `@`-URL form, no source, registry, index or config
-   option), a local path, a literal git clone/fetch source, or for
+   (no URL, VCS or `@`-URL form, no source, registry, index or config
+   option; a local path only as an editable target, `-e .`, or a requirement
+   or constraint file, `-r requirements.txt`), a local path word (path
+   characters only, so never a command string), a literal git clone/fetch
+   source, or for
    `curl`/`wget` a plain public URL with exact GET-only options. Wrappers that
    run another program (`uv run`, `bundle exec`, `bun run`, `bun x`, `npx`,
    `pnpm exec`, `yarn dlx`, …) grade the wrapped argv as a command of its own.
+   A tool whose first positional is a subcommand names the allowed words
+   explicitly (`git submodule update|init|status|sync`, never `foreach`), and
+   options that name a program to run (`sort --compress-program`, `split
+   --filter`, `install --strip-program`, `rg --pre`, `fd --exec`, `ag
+   --pager`) are refused even on verbs that are otherwise local.
    Everything else — any shell binary, `exec`, `eval`, `builtin`,
    `source`/`.`, BusyBox, aliases, a pipe or here-doc into a shell, unknown
    verbs, a path-qualified program outside the system bin directories, input
@@ -288,12 +299,18 @@ are not inspected and rely on the guest's own egress policy:
 - Script files run by an allowlisted interpreter (`python3 x.py`,
   `node x.js`), and build, test and package tools that run project or package
   code (`make` including `make --eval` and `make SHELL=`, `npm run <script>`,
-  `pytest -p`, install and build scripts, git hooks).
+  `pytest -p`, install and build scripts, git hooks), and programs run from
+  a module reference (`go run <module>@latest`).
 - awk's `/inet/tcp` special files.
-- Config files an earlier guest write planted (`.curlrc`, `.wgetrc`,
-  `pip.conf`, `.npmrc`, `.git/config`).
+- Files an earlier guest write planted: config files (`.curlrc`, `.wgetrc`,
+  `pip.conf`, `.npmrc`, `.git/config`) and requirement or constraint files
+  (`pip install -r requirements.txt` reads `--index-url` and URL lines from
+  the file).
 - `git ext::` transports in a clone source are refused here and are also
   blocked by git's default `protocol.ext.allow`.
+
+A listening server such as `python -m http.server` is inbound only and is not
+egress.
 
 Network-category tools are graded by the network rules exactly as on the
 host. The
