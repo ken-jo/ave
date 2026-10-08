@@ -16,7 +16,7 @@ import {
   writeTestPlugin,
   writeTestPluginRegistry,
 } from "./test-helpers.js";
-import { agentPluginsDocument, patchAveFields } from "./test-helpers.js";
+import { agentPluginsDocument, childProcessGate, patchAveFields } from "./test-helpers.js";
 import { manifestDocumentSha256 } from "../runtime/manifest-validation.js";
 import type { PluginManifest } from "../types.js";
 import { canonicalJSON } from "../secret-access/canonical-json.js";
@@ -1353,7 +1353,14 @@ describe("PluginRuntime.disable", () => {
     ).not.toThrow();
   });
 
-  it("blocks load-time event subscriptions to later-loaded plugins without pluginAccess", async () => {
+  // Before Admission the plugin ran in this heap and its synchronous
+  // `hostApi.onEvent` threw out of `createPlugin`, failing the load. Every
+  // `entry` plugin is now a child (§9.8 A1), where a subscription is a request
+  // the host answers after the fact (`host-api-child.ts` `subscribe`): the host
+  // refuses it and no subscription exists, and the plugin keeps loading. The
+  // property — no event of another plugin without pluginAccess — is asserted
+  // at the host, where the refusal now happens.
+  it("refuses load-time event subscriptions to later-loaded plugins without pluginAccess", async () => {
     const calendarManifestPath = await writePluginWithEntry(
       "calendar",
       "calendar_today",
@@ -1385,6 +1392,8 @@ describe("PluginRuntime.disable", () => {
       { id: "email", manifestPath: emailManifestPath, enabled: true },
     ]);
 
+    const refused: Array<{ pluginId: string; type: string; message: string }> = [];
+    const subscribed: Array<{ pluginId: string; type: string }> = [];
     let runtime!: PluginRuntime;
     runtime = makeGenerationBoundRuntime({
       hostRoot: testDir,
@@ -1398,14 +1407,26 @@ describe("PluginRuntime.disable", () => {
       createHostApi: (pluginId) =>
         ({
           emitEvent: () => {},
-          onEvent: (type) => runtime.assertPluginEventAccess(pluginId, type),
+          onEvent: (type) => {
+            try {
+              runtime.assertPluginEventAccess(pluginId, type);
+            } catch (error) {
+              refused.push({ pluginId, type, message: (error as Error).message });
+              throw error;
+            }
+            subscribed.push({ pluginId, type });
+            return () => {};
+          },
           getSecret: () => null,
         }) as unknown as import("../types.js").PluginHostApi,
     });
     await expect(runtime.load()).resolves.toBeUndefined();
-    expect(runtime.listPluginIds()).not.toContain("calendar");
+    await vi.waitFor(() => expect(refused).toHaveLength(1));
+    expect(refused[0]).toMatchObject({ pluginId: "calendar", type: "email.analyzed" });
+    expect(() => runtime.assertPluginEventAccess("calendar", "email.analyzed")).toThrow(refused[0]!.message);
+    expect(subscribed).toEqual([]);
     expect(runtime.listPluginCards()).toContainEqual(
-      expect.objectContaining({ id: "calendar", loadStatus: "failed" }),
+      expect.objectContaining({ id: "calendar", loadStatus: "loaded", arm: "child" }),
     );
   });
 
@@ -1852,8 +1873,17 @@ export default async function createPlugin({ hostApi }) {
       onDisable: (pluginId) => disabled.push(pluginId),
       createHostApi: (pluginId, _manifest, _pluginDataDir, incarnation) => ({
         emitEvent: () => {},
+        // Once-only, as production's `registerOwnedDisposer` is: the
+        // incarnation runs it at teardown, and since every `entry` plugin is a
+        // child (§9.8 A1) the session's subscription ledger also returns it
+        // when the child ends — two owners of one registration, one effect.
         onEvent: () => {
-          const dispose = () => disposed.push(pluginId);
+          let done = false;
+          const dispose = () => {
+            if (done) return;
+            done = true;
+            disposed.push(pluginId);
+          };
           incarnation.registerDisposer(dispose);
           return dispose;
         },
@@ -1970,7 +2000,7 @@ export default async function createPlugin({ hostApi }) {
     await writeFile(
       join(slowDir, "entry.mjs"),
       `export default async function createPlugin() {
-  return { handlers: { p_start_slow_peer_ping: async () => "ok" }, start: async () => new Promise((resolve) => setTimeout(resolve, 250)) };
+  return { handlers: { p_start_slow_peer_ping: async () => "ok" }, start: async () => new Promise((resolve) => setTimeout(resolve, 1_000)) };
 }\n`,
       "utf-8",
     );
@@ -2002,7 +2032,7 @@ export default async function createPlugin({ hostApi }) {
       "utf-8");
     await writeFile(
       slowManifestPath,
-      JSON.stringify(servedPluginDocument(manifestFor(slowId, "p_start_slow_peer_ping", 1_000))),
+      JSON.stringify(servedPluginDocument(manifestFor(slowId, "p_start_slow_peer_ping", 5_000))),
       "utf-8");
     await writeFile(
       registryPath,
@@ -2017,7 +2047,7 @@ export default async function createPlugin({ hostApi }) {
     );
 
     let timedHostApi: { getSecret(key: string): null } | undefined;
-    let timedIncarnation: { isLifecycleHookActive(): boolean } | undefined;
+    let timedIncarnation: { isActive(): boolean; isLifecycleHookActive(): boolean } | undefined;
     const runtime = makeGenerationBoundRuntime({
       hostRoot: testDir,
       registryPath,
@@ -2059,9 +2089,16 @@ export default async function createPlugin({ hostApi }) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect(timedIncarnation?.isLifecycleHookActive()).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    expect(settled).toBe(false);
     expect(timedHostApi).toBeDefined();
+    // The plugin is a child (§9.8 A1), so the hook scope opens at construct,
+    // a spawn before `start()` and its 30 ms timer: wait for the revocation
+    // itself, then hold the ordering — it lands while the peer is still
+    // starting, not when startAll settles.
+    const revokeDeadline = Date.now() + 5_000;
+    while (timedIncarnation!.isActive() && Date.now() < revokeDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(settled).toBe(false);
     expect(() => timedHostApi!.getSecret("late-write")).toThrow(
       /no longer active/,
     );
@@ -2791,97 +2828,79 @@ export default async function createPlugin({ hostApi }) {
     await mkdir(staleDir, { recursive: true });
     const staleManifestPath = join(staleDir, "plugin.json");
 
-    let startEntered!: () => void;
-    const startEnteredPromise = new Promise<void>((resolve) => {
-      startEntered = resolve;
-    });
-    let rejectStart!: () => void;
-    const startGate = new Promise<void>((_, reject) => {
-      rejectStart = () => reject(new Error("stale start failed"));
-    });
-    let staleStopped!: () => void;
-    const staleStoppedPromise = new Promise<void>((resolve) => {
-      staleStopped = resolve;
-    });
-    const controls = new Map([
-      [pluginId, { startEntered, startGate, staleStopped }],
-    ]);
-    const globalWithControls = globalThis as typeof globalThis & {
-      __aveRuntimeTestControls?: typeof controls;
-    };
-    globalWithControls.__aveRuntimeTestControls = controls;
-
-    try {
-      await writeFile(
-        join(staleDir, "entry.mjs"),
-        `const controls = globalThis.__aveRuntimeTestControls.get(${JSON.stringify(pluginId)});
+    // The stale start runs in its plugin child (§9.8 A1); the test steers it
+    // through files under its own temp root rather than a shared global.
+    const gate = await childProcessGate(join(testDir, "stale-start-gate"));
+    await writeFile(
+      join(staleDir, "entry.mjs"),
+      `${gate.moduleSource}
 export default async function createPlugin() {
   return {
     handlers: { ${JSON.stringify(methodName)}: async () => "stale" },
     start: async () => {
-      controls.startEntered();
-      await controls.startGate;
+      gate.signal("start-entered");
+      if (await gate.waitFor("start-outcome") === "reject") throw new Error("stale start failed");
     },
-    stop: async () => { controls.staleStopped(); },
+    stop: async () => { gate.signal("stale-stopped"); },
   };
 }
 `,
-        "utf-8",
-      );
-      await writeFile(
-        staleManifestPath,
-        JSON.stringify(servedPluginDocument({
-          id: pluginId,
-          name: pluginId,
-          version: "1.0.0",
-          entry: "entry.mjs",
-          tools: [
-            {
-              name: methodName,
-              description: `${methodName} tool`,
-              inputSchema: { type: "object", properties: {} },
-              _meta: { ui: { visibility: ["model", "app"] } },
-            },
-          ],
-          description: "stale start fixture",
-        })),
-        "utf-8");
-      await writeFile(
-        registryPath,
-        JSON.stringify({
-          version: 1,
-          plugins: [
-            { id: pluginId, manifestPath: staleManifestPath, enabled: true },
-          ],
-        }),
-        "utf-8",
-      );
+      "utf-8",
+    );
+    await writeFile(
+      staleManifestPath,
+      JSON.stringify(servedPluginDocument({
+        id: pluginId,
+        name: pluginId,
+        version: "1.0.0",
+        entry: "entry.mjs",
+        tools: [
+          {
+            name: methodName,
+            description: `${methodName} tool`,
+            inputSchema: { type: "object", properties: {} },
+            _meta: { ui: { visibility: ["model", "app"] } },
+          },
+        ],
+        description: "stale start fixture",
+      })),
+      "utf-8");
+    await writeFile(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        plugins: [
+          { id: pluginId, manifestPath: staleManifestPath, enabled: true },
+        ],
+      }),
+      "utf-8",
+    );
 
-      let resolvePrepare!: () => void;
-      const preparePromise = new Promise<void>((resolve) => {
-        resolvePrepare = resolve;
-      });
-      let firstPrepare = true;
-      const runtime = makeRuntimeWithPreparation(
-        ({ pluginId: requestedId }) => {
-          if (requestedId !== pluginId || !firstPrepare) return undefined;
-          firstPrepare = false;
-          return preparePromise;
-        },
-      );
+    let resolvePrepare!: () => void;
+    const preparePromise = new Promise<void>((resolve) => {
+      resolvePrepare = resolve;
+    });
+    let firstPrepare = true;
+    const runtime = makeRuntimeWithPreparation(
+      ({ pluginId: requestedId }) => {
+        if (requestedId !== pluginId || !firstPrepare) return undefined;
+        firstPrepare = false;
+        return preparePromise;
+      },
+    );
 
-      await expect(runtime.addPlugin(pluginId)).resolves.toBe("preparing");
-      resolvePrepare();
-      await startEnteredPromise;
+    await expect(runtime.addPlugin(pluginId)).resolves.toBe("preparing");
+    resolvePrepare();
+    await gate.waitFor("start-entered");
 
-      await runtime.removePlugin(pluginId);
+    await runtime.removePlugin(pluginId);
 
-      const freshDir = join(installedDir, `${pluginId}-fresh`);
-      await mkdir(freshDir, { recursive: true });
-      const freshManifestPath = join(freshDir, "plugin.json");
-      await writeFile(
-        join(freshDir, "entry.mjs"),
-        `export default async function createPlugin() {
+    const freshDir = join(installedDir, `${pluginId}-fresh`);
+    await mkdir(freshDir, { recursive: true });
+    const freshManifestPath = join(freshDir, "plugin.json");
+    await writeFile(
+      join(freshDir, "entry.mjs"),
+      `export default async function createPlugin() {
   return {
     handlers: { ${JSON.stringify(methodName)}: async () => "fresh" },
     start: async () => {},
@@ -2889,51 +2908,48 @@ export default async function createPlugin() {
   };
 }
 `,
-        "utf-8",
-      );
-      await writeFile(
-        freshManifestPath,
-        JSON.stringify(servedPluginDocument({
-          id: pluginId,
-          name: pluginId,
-          version: "1.0.1",
-          entry: "entry.mjs",
-          tools: [
-            {
-              name: methodName,
-              description: `${methodName} tool`,
-              inputSchema: { type: "object", properties: {} },
-              _meta: { ui: { visibility: ["model", "app"] } },
-            },
-          ],
-          description: "fresh start fixture",
-        })),
-        "utf-8");
-      await writeFile(
-        registryPath,
-        JSON.stringify({
-          version: 1,
-          plugins: [
-            { id: pluginId, manifestPath: freshManifestPath, enabled: true },
-          ],
-        }),
-        "utf-8",
-      );
+      "utf-8",
+    );
+    await writeFile(
+      freshManifestPath,
+      JSON.stringify(servedPluginDocument({
+        id: pluginId,
+        name: pluginId,
+        version: "1.0.1",
+        entry: "entry.mjs",
+        tools: [
+          {
+            name: methodName,
+            description: `${methodName} tool`,
+            inputSchema: { type: "object", properties: {} },
+            _meta: { ui: { visibility: ["model", "app"] } },
+          },
+        ],
+        description: "fresh start fixture",
+      })),
+      "utf-8");
+    await writeFile(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        plugins: [
+          { id: pluginId, manifestPath: freshManifestPath, enabled: true },
+        ],
+      }),
+      "utf-8",
+    );
 
-      await expect(runtime.addPlugin(pluginId)).resolves.toBe("started");
-      await expect(runtime.call(methodName)).resolves.toBe("fresh");
+    await expect(runtime.addPlugin(pluginId)).resolves.toBe("started");
+    await expect(runtime.call(methodName)).resolves.toBe("fresh");
 
-      rejectStart();
-      await staleStoppedPromise;
+    await gate.signal("start-outcome", "reject");
+    await gate.waitFor("stale-stopped");
 
-      const failedPluginIds = (
-        runtime as unknown as { failedPluginIds: Set<string> }
-      ).failedPluginIds;
-      expect(failedPluginIds.has(pluginId)).toBe(false);
-      await expect(runtime.call(methodName)).resolves.toBe("fresh");
-    } finally {
-      delete globalWithControls.__aveRuntimeTestControls;
-    }
+    const failedPluginIds = (
+      runtime as unknown as { failedPluginIds: Set<string> }
+    ).failedPluginIds;
+    expect(failedPluginIds.has(pluginId)).toBe(false);
+    await expect(runtime.call(methodName)).resolves.toBe("fresh");
   });
 
   it("restartPlugin keeps the existing plugin loaded when dependency preparation fails", async () => {

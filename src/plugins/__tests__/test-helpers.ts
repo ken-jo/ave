@@ -9,7 +9,7 @@ import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
 import { mkdtempSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -514,6 +514,67 @@ export async function writeTestPluginRegistry(
     JSON.stringify({ version: 1, plugins: entries }),
     "utf-8",
   );
+}
+
+/**
+ * A gate between a test and the plugin code it loads.
+ *
+ * Every `entry` plugin runs in a plugin child (§9.8 A1), so the test and the
+ * plugin no longer share a heap and a deferred promise parked on `globalThis`
+ * cannot reach the plugin. A signal here is a file in a directory the test
+ * owns (its own temp root, never a global or the user's home): one side
+ * writes it whole, by rename, and the other polls for it. `moduleSource` is
+ * the plugin side — paste it at the top of a fixture module and call
+ * `gate.signal(name)` / `await gate.waitFor(name)` there.
+ */
+export interface ChildProcessGate {
+  readonly moduleSource: string;
+  signal(name: string, value?: string): Promise<void>;
+  waitFor(name: string, timeoutMs?: number): Promise<string>;
+}
+
+export async function childProcessGate(dir: string): Promise<ChildProcessGate> {
+  await mkdir(dir, { recursive: true });
+  const at = (name: string): string => {
+    if (!/^[a-z0-9-]+$/.test(name)) throw new Error(`gate signal '${name}' is not a plain name`);
+    return join(dir, name);
+  };
+  return {
+    moduleSource: `import { existsSync as __gateExists, readFileSync as __gateRead, renameSync as __gateRename, writeFileSync as __gateWrite } from "node:fs";
+import { join as __gateJoin } from "node:path";
+const __gateDir = ${JSON.stringify(dir)};
+const gate = {
+  signal(name, value = "") {
+    const path = __gateJoin(__gateDir, name);
+    __gateWrite(path + ".tmp", value);
+    __gateRename(path + ".tmp", path);
+  },
+  async waitFor(name) {
+    const path = __gateJoin(__gateDir, name);
+    while (!__gateExists(path)) await new Promise((resolve) => setTimeout(resolve, 5));
+    return __gateRead(path, "utf8");
+  },
+};
+`,
+    signal: async (name, value = "") => {
+      const path = at(name);
+      await writeFile(`${path}.tmp`, value, "utf8");
+      await rename(`${path}.tmp`, path);
+    },
+    waitFor: async (name, timeoutMs = 10_000) => {
+      const path = at(name);
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        try {
+          return await readFile(path, "utf8");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        if (Date.now() >= deadline) throw new Error(`plugin never signalled '${name}' within ${timeoutMs} ms`);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    },
+  };
 }
 
 export function makeTestPluginRuntime(

@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
 import { SkillStore } from "../../../main/skill-store.js";
 import {
+  childProcessGate,
   makeTestPluginRuntime,
   makeTestTreeWritable,
 } from "../../__tests__/test-helpers.js";
@@ -500,32 +501,17 @@ export default async function createPlugin() {
   it("starts independent capability layers in parallel", async () => {
     const firstId = "parallel-start-a";
     const secondId = "parallel-start-b";
-    const firstGate = deferredGate();
-    const secondGate = deferredGate();
-    const entered = new Set<string>();
-    const testGlobals = globalThis as typeof globalThis & {
-      __aveCapabilityStartGates?: Record<string, {
-        entered(): void;
-        promise: Promise<void>;
-      }>;
-    };
-    testGlobals.__aveCapabilityStartGates = {
-      [firstId]: {
-        entered: () => entered.add(firstId),
-        promise: firstGate.promise,
-      },
-      [secondId]: {
-        entered: () => entered.add(secondId),
-        promise: secondGate.promise,
-      },
-    };
-    const entrySource = (id: string, toolName: string) => `export default async function createPlugin() {
+    // Each start runs in its plugin child (§9.8 A1), so the gate is files under
+    // this test's temp root. Neither start returns until both have entered: a
+    // serial start would never let the second one in.
+    const gate = await childProcessGate(join(root, "parallel-start-gate"));
+    const entrySource = (id: string, toolName: string) => `${gate.moduleSource}
+export default async function createPlugin() {
   return {
     handlers: { ${JSON.stringify(toolName)}: async () => "pong" },
     start: async () => {
-      const gate = globalThis.__aveCapabilityStartGates[${JSON.stringify(id)}];
-      gate.entered();
-      await gate.promise;
+      gate.signal(${JSON.stringify(`entered-${id}`)});
+      await gate.waitFor("release");
     },
     stop: async () => {},
   };
@@ -544,14 +530,13 @@ export default async function createPlugin() {
     const runtime = makeRuntime();
     const starting = runtime.startAll();
     try {
-      await vi.waitFor(() => {
-        expect([...entered].sort()).toEqual([firstId, secondId]);
-      });
+      await Promise.all([
+        gate.waitFor(`entered-${firstId}`),
+        gate.waitFor(`entered-${secondId}`),
+      ]);
     } finally {
-      firstGate.resolve();
-      secondGate.resolve();
+      await gate.signal("release");
       await starting;
-      delete testGlobals.__aveCapabilityStartGates;
     }
     expect(runtime.listPluginIds().sort()).toEqual([firstId, secondId]);
   });
@@ -766,27 +751,19 @@ export default async function createPlugin() {
   });
 
   it("serializes a blocked consumer retry with a queued remove and reinstall", async () => {
-    const consumerStartGate = deferredGate();
-    const consumerStartEntered = deferredGate();
-    const testGlobals = globalThis as typeof globalThis & {
-      __aveCapabilityRetryStartGate?: {
-        entered(): void;
-        promise: Promise<void>;
-      };
-    };
-    testGlobals.__aveCapabilityRetryStartGate = {
-      entered: consumerStartEntered.resolve,
-      promise: consumerStartGate.promise,
-    };
+    // The consumer's start runs in its plugin child (§9.8 A1): it signals and
+    // waits through files under this test's temp root.
+    const gate = await childProcessGate(join(root, "queued-retry-gate"));
     const consumer = await writePlugin({
       id: "queued-retry-consumer",
       requires: { capabilities: ["calendar-source"] },
-      entrySource: `export default async function createPlugin() {
+      entrySource: `${gate.moduleSource}
+export default async function createPlugin() {
   return {
     handlers: { queued_retry_consumer_ping: async () => "pong" },
     start: async () => {
-      globalThis.__aveCapabilityRetryStartGate.entered();
-      await globalThis.__aveCapabilityRetryStartGate.promise;
+      gate.signal("start-entered");
+      await gate.waitFor("release");
     },
     stop: async () => {},
   };
@@ -809,7 +786,7 @@ export default async function createPlugin() {
       await runtime.startAll();
       providerPreparation.resolve();
       await expect(runtime.waitForPluginReady(provider.id)).resolves.toBeUndefined();
-      await consumerStartEntered.promise;
+      await gate.waitFor("start-entered");
 
       let removeSettled = false;
       removing = runtime.removePlugin(consumer.id).then(() => {
@@ -820,16 +797,15 @@ export default async function createPlugin() {
       // waits rather than tearing down/replacing its candidate mid-start.
       expect(removeSettled).toBe(false);
 
-      consumerStartGate.resolve();
+      await gate.signal("release");
       await removing;
       expect(runtime.listPluginIds()).toEqual([provider.id]);
 
       await expect(runtime.addPlugin(consumer.id)).resolves.toBe("started");
       await expect(runtime.call(consumer.toolName)).resolves.toBe("pong");
     } finally {
-      consumerStartGate.resolve();
+      await gate.signal("release");
       await removing;
-      delete testGlobals.__aveCapabilityRetryStartGate;
     }
   });
 
