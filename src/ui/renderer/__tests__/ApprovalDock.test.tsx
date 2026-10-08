@@ -8,7 +8,8 @@
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, fireEvent, waitFor } from "@testing-library/react";
-import { ApprovalDock, blockingSurfaceCovers } from "../components/permissions/ApprovalDock.js";
+import { ApprovalDock, ApprovalLaneCard, blockingSurfaceCovers } from "../components/permissions/ApprovalDock.js";
+import { FloatingRightLane } from "../components/FloatingRightLane.js";
 import type { ApprovalRequest, PermissionEvaluationContext } from "../types.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 
@@ -56,6 +57,25 @@ describe("ApprovalDock", () => {
         list: vi.fn().mockResolvedValue([]),
       },
     });
+  });
+
+  it("preserves lane approval height and scrolls the whole card in a very narrow pane", () => {
+    const { container } = render(
+      <FloatingRightLane>
+        <ApprovalLaneCard conversationLabel="conversation" queue={[makeRequest()]} onDecide={vi.fn()} />
+      </FloatingRightLane>,
+    );
+    const lane = container.querySelector<HTMLElement>('[data-testid="floating-right-lane"]')!;
+    const approval = container.querySelector<HTMLElement>('[data-testid="approval-lane-card"]')!;
+    const panel = approval.querySelector<HTMLElement>('[data-testid="tool-approval-panel"]')!;
+    const body = approval.querySelector<HTMLElement>('[data-testid="tool-approval-card"] > section')!;
+    const actions = approval.querySelector<HTMLElement>('[data-testid="approval-decision-actions"]')!;
+    expect(lane.classList.contains("@container")).toBe(true);
+    expect(lane.classList.contains("[&>*]:shrink-0")).toBe(true);
+    expect(approval.classList.contains("@max-[14rem]:overflow-y-auto")).toBe(true);
+    expect(panel.classList.contains("@max-[14rem]:flex-none")).toBe(true);
+    expect(body.classList.contains("@max-[14rem]:overscroll-auto")).toBe(true);
+    expect(actions.classList.contains("@max-[14rem]:grid-cols-1")).toBe(true);
   });
 
   it("renders without crashing with empty queue", () => {

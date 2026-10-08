@@ -38,7 +38,7 @@ import type {
   handleChatSessionHistory,
   handleChatSend,
 } from "../ipc/handlers/chat.js";
-import type { handlePluginCards, handleMarketplaceList } from "../ipc/handlers/plugins.js";
+import type { handlePluginCards } from "../ipc/handlers/plugins.js";
 import type { handleGetMode, handleSetPermissionMode } from "../ipc/handlers/permissions.js";
 import type { handleUsageSummary, handleUsageRange } from "../ipc/handlers/usage.js";
 
@@ -58,8 +58,6 @@ export type SessionHistoryResult = ReturnType<typeof handleChatSessionHistory>;
 export type SendMessageResult = Awaited<ReturnType<typeof handleChatSend>>;
 /** Installed plugin cards ({@link handlePluginCards}). */
 export type ListPluginsResult = Awaited<ReturnType<typeof handlePluginCards>>;
-/** Marketplace catalog listing ({@link handleMarketplaceList}). */
-export type ListMarketplaceResult = Awaited<ReturnType<typeof handleMarketplaceList>>;
 /** Current permission mode, read-only ({@link handleGetMode}). */
 export type PermissionModeResult = ReturnType<typeof handleGetMode>;
 /** Applied permission mode after an approval-mediated set ({@link handleSetPermissionMode}). */
@@ -102,8 +100,6 @@ export interface AveClient {
   sendMessage(payload: ExternalChatSendPayload): Promise<SendMessageResult>;
   /** List installed plugin cards. */
   listPlugins(): Promise<ListPluginsResult>;
-  /** List the marketplace catalog. */
-  listMarketplace(): Promise<ListMarketplaceResult>;
   /** Read the current permission mode (mutation is not on this facade). */
   getPermissionMode(): Promise<PermissionModeResult>;
   /**
@@ -151,9 +147,6 @@ export function createAveClient(api: LocalApi<string>, origin: ExternalOrigin = 
     },
     async listPlugins() {
       return (await call(CHANNELS.plugins.cards)) as ListPluginsResult;
-    },
-    async listMarketplace() {
-      return (await call(CHANNELS.plugins.marketplaceList)) as ListMarketplaceResult;
     },
     async getPermissionMode() {
       return (await call(PERMISSIONS.getMode)) as PermissionModeResult;

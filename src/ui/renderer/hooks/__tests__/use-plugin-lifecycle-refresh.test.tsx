@@ -10,14 +10,12 @@ function renderLifecycleHook() {
   const { api, emitPluginInstallResult, emitBootstrapStatus } = makeMockAveApi();
   const refreshViews = vi.fn();
   const refreshCards = vi.fn();
-  const refreshMarketplace = vi.fn();
   renderHook(() =>
     usePluginLifecycleRefresh({
       api: api as unknown as AveApi,
       pluginCards: [],
       refreshViews,
       refreshCards,
-      refreshMarketplace,
     }),
   );
   return {
@@ -25,14 +23,12 @@ function renderLifecycleHook() {
     emitBootstrapStatus,
     refreshViews,
     refreshCards,
-    refreshMarketplace,
   };
 }
 
 describe("usePluginLifecycleRefresh", () => {
   it("refreshes cards when a plugin install fails so Doctor cards can appear", () => {
-    const { emitPluginInstallResult, refreshViews, refreshCards, refreshMarketplace } =
-      renderLifecycleHook();
+    const { emitPluginInstallResult, refreshViews, refreshCards } = renderLifecycleHook();
 
     act(() => {
       emitPluginInstallResult({ slug: "meeting", success: false, error: "install failed" });
@@ -40,12 +36,10 @@ describe("usePluginLifecycleRefresh", () => {
 
     expect(refreshCards).toHaveBeenCalledTimes(1);
     expect(refreshViews).not.toHaveBeenCalled();
-    expect(refreshMarketplace).not.toHaveBeenCalled();
   });
 
   it("refreshes plugin surfaces when managed bootstrap completes with failures", () => {
-    const { emitBootstrapStatus, refreshViews, refreshCards, refreshMarketplace } =
-      renderLifecycleHook();
+    const { emitBootstrapStatus, refreshViews, refreshCards } = renderLifecycleHook();
 
     act(() => {
       emitBootstrapStatus({
@@ -57,6 +51,5 @@ describe("usePluginLifecycleRefresh", () => {
 
     expect(refreshCards).toHaveBeenCalledTimes(1);
     expect(refreshViews).toHaveBeenCalledTimes(1);
-    expect(refreshMarketplace).toHaveBeenCalledTimes(1);
   });
 });

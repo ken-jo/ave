@@ -544,6 +544,33 @@ describe("usage-stats", () => {
     expect(summary.perVendor[0].totalTokens).toBe(11_000);
   });
 
+  it("keeps a per-model segment whose vendor id this build no longer knows", () => {
+    // Audit rows are history: one written under a since-renamed vendor id
+    // (nousResearch → nous-research) still spent its tokens.
+    const entries: AuditTurnEntry[] = [
+      {
+        timestamp: new Date().toISOString(),
+        sessionId: "renamed-vendor",
+        type: "turn",
+        route: "nousResearch/DeepHermes-3-Llama-3-3-70B-Preview",
+        tokenUsage: { inputTokens: 1_000, outputTokens: 100 },
+        usageByModel: [
+          {
+            vendorProvider: "nousResearch",
+            vendorModel: "DeepHermes-3-Llama-3-3-70B-Preview",
+            tokenUsage: { inputTokens: 1_000, outputTokens: 100 },
+          },
+        ],
+      },
+    ];
+
+    const summary = computeUsageSummary(entries, new Date());
+    expect(summary.perVendor[0].vendor).toBe("unknown");
+    expect(summary.perVendor[0].totalTokens).toBe(1_100);
+    expect(summary.perVendor[0].unknownCostTurns).toBe(1);
+    expect(summary.perModel[0].model).toBe("nousResearch/DeepHermes-3-Llama-3-3-70B-Preview");
+  });
+
   it("uses per-model audit breakdown for mixed-provider fallback turns", () => {
     const entries: AuditTurnEntry[] = [
       {

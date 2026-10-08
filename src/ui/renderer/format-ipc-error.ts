@@ -1,14 +1,13 @@
 
 
-
-
-
 import { t } from "../../i18n/runtime.js";
 
 export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // ── Trust / intent gate ──
   "user-keyboard-required": "formatIpcError.userKeyboardRequired",
   "unauthorized": "formatIpcError.unauthorized",
+  "process-entry-unconfined": "formatIpcError.processEntryUnconfined",
+  "process-entry-requires-pinned-artifact": "formatIpcError.processEntryRequiresPinnedArtifact",
   // "unauthorized-frame" lives below in the frame-trust gate section with a
 
   "missing-input-origin": "formatIpcError.missingInputOrigin",
@@ -19,6 +18,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // all of them need a message rather than leaking the kebab-case code.
   "missing-app-envelope": "formatIpcError.missingAppEnvelope",
   "missing-mcp-prompt-envelope": "formatIpcError.missingMcpPromptEnvelope",
+  "missing-plugin-prompt-envelope": "formatIpcError.missingPluginPromptEnvelope",
   // The mirror case: the text CARRIES a staged envelope while the send claims a
   // non-staged origin.
   "origin-envelope-mismatch": "formatIpcError.originEnvelopeMismatch",
@@ -73,6 +73,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "a2a-remote-operation-rejected": "formatIpcError.remoteA2aOperationRejected",
   "a2a-remote-settings-main-owned": "formatIpcError.managed",
   "applied-migrations-main-owned": "formatIpcError.managed",
+  "legacy-marketplace-lists-main-owned": "formatIpcError.managed",
   "missing-durable-confirm": "formatIpcError.missingDurableConfirm",
   // Windows-only IPC (sandboxWindowsInstall) refused on a non-win32 platform.
   "not-applicable": "formatIpcError.notApplicable",
@@ -84,6 +85,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-dynamic-menu": "formatIpcError.invalidPayload",
   "invalid-params": "formatIpcError.invalidParams",
   "invalid-input": "formatIpcError.invalidInput",
+  "invalid-arguments": "formatIpcError.invalidInput",
   "invalid-answer": "formatIpcError.invalidInput",
   "invalid-proposal-key": "formatIpcError.invalidInput",
   "invalid-disposition": "formatIpcError.invalidValue",
@@ -218,6 +220,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "memory-consolidation-service-unavailable": "rolesTab.errorLongTermMemoryConsolidationUnavailable",
   "memory-consolidation-failed": "rolesTab.errorLongTermMemoryConsolidationFailed",
   "routine-not-found": "formatIpcError.routineNotFound",
+  "plugins-missing": "formatIpcError.pluginsMissing",
   "no-user-message": "formatIpcError.noUserMessage",
   "last-message-not-user": "formatIpcError.lastMessageNotUser",
   "no-scheduler": "formatIpcError.noScheduler",
@@ -226,16 +229,19 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "plugin-not-loaded": "formatIpcError.pluginNotLoaded",
   "plugin-bundle-lifecycle-unavailable": "formatIpcError.noEngine",
   "contribution-trust-update-failed": "formatIpcError.writeFailed",
+  "contribution-trust-review-stale": "formatIpcError.contributionReviewStale",
   "unknown-plugin-id": "formatIpcError.unknownPluginId",
   // The target Electron webview was already destroyed or is not registered
   // as a live plugin panel. Reuse the established not-registered wording.
   "webview-not-live": "formatIpcError.notRegistered",
+  "installed-content-unavailable": "formatIpcError.installedContentUnavailable",
+  "language-not-installed": "formatIpcError.languageNotInstalled",
+  "invalid-locale": "formatIpcError.invalidInput",
   "invalid-bundle-id": "formatIpcError.invalidBundleId",
   "invalid-entry-url": "formatIpcError.invalidEntryUrl",
   "entry-url-outside-install-root": "formatIpcError.entryUrlOutsideInstallRoot",
   "install-failed": "formatIpcError.installFailed",
   "uninstall-failed": "formatIpcError.uninstallFailed",
-  "marketplace-disabled": "formatIpcError.marketplaceDisabled",
   // Uninstall refusals from the `ave://` deep link (#1967). Both used to be
   // broadcast as English sentences with no `message` half, so the toast fell
   // through to `${error}` and printed them verbatim in a localized UI.
@@ -253,16 +259,6 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // their own formatter. This generic key is the fallback for callers that
   // surface the bare code.
   "incompatible-app-version": "formatIpcError.incompatibleAppVersion",
-  // marketplace revocation registry blocked this exact `slug@version`
-  // or the version is below the plugin's pinned minimum (install-time twin
-  // of the `plugin-revoked` Doctor panel case for the LOAD-boundary gate).
-  "plugin-revoked": "formatIpcError.pluginRevoked",
-  // Signed admission catalog did not authorise this `slug@version`. The
-  // OPPOSITE polarity to `plugin-revoked` above: that one fires because the
-  // marketplace said "not this version", this one because the distributor
-  // said nothing we could verify — the catalog was unreachable, expired, or
-  // does not list this version. Separate copy because the remedies differ.
-  "plugin-not-admitted": "formatIpcError.pluginNotAdmitted",
   // A plugin webview that survived a runtime replacement no longer owns the
   // active binding. The existing frame-trust message gives the correct user
   // remediation (refresh the window or restart the app) without exposing the
@@ -300,6 +296,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "provider-not-installed": "formatIpcError.providerNotInstalled",
   "unknown-provider": "formatIpcError.unknownProvider",
   "reviewer-rewire-failed": "formatIpcError.reviewerRewireFailed",
+  // The preset change is saved; the provider refresh that applies it failed.
+  "provider-preset-refresh-failed": "formatIpcError.providerPresetRefreshFailed",
   // ── Tutorial-C — tour:{start,mark-complete,dismiss} validation ──
   "invalid-scenario-id": "formatIpcError.invalidScenarioId",
   "write-failed": "formatIpcError.writeFailed",
@@ -335,6 +333,11 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-tool-name": "formatIpcError.invalidToolName",
   "tool-call-failed": "formatIpcError.toolCallFailed",
   "notification-unavailable": "formatIpcError.notificationUnavailable",
+  "no-alerts-service": "formatIpcError.notificationUnavailable",
+  "kind-not-registered": "alerts.kindNotRegistered",
+  "predecessor-not-removable": "alerts.predecessorNotRemovable",
+  "predecessor-policy-locked": "alerts.predecessorPolicyLocked",
+  "predecessor-removal-failed": "alerts.predecessorRemovalFailed",
 
   // ── Misc IO / system ──
   "no-window": "formatIpcError.noWindow",
@@ -369,11 +372,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
 
 export interface FormatIpcErrorOptions {
 
-
-
   codeMap?: Record<string, string>;
-
-
 
   fallbackContext?: string;
 }

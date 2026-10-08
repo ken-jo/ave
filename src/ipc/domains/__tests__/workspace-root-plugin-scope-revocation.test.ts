@@ -77,8 +77,10 @@ import {
   setActivePluginSurfacePermissionScope,
 } from "../../../boot/plugin-surface-permissions.js";
 
+const retireSandboxGrantsOutsideCeiling = vi.fn(async () => [] as string[]);
 const deps = {
   auditLogger: { log: vi.fn() },
+  pluginRuntime: { retireSandboxGrantsOutsideCeiling },
   getMainWindow: () => null,
   memoryManager: {
     allowProjectRoot: vi.fn(),
@@ -124,9 +126,28 @@ afterAll(async () => {
 beforeEach(() => {
   additionalDirectories.value = [root];
   pendingWorkspaceRootRemovals.value = [];
+  retireSandboxGrantsOutsideCeiling.mockReset().mockResolvedValue([]);
 });
 
 describe("workspace-root removal sweeps the plugin surface scope", () => {
+  it("waits for sandbox retirement before acknowledging root removal", async () => {
+    let release!: () => void;
+    const stopped = new Promise<void>((resolve) => { release = resolve; });
+    retireSandboxGrantsOutsideCeiling.mockImplementationOnce(async () => {
+      await stopped;
+      return ["sandbox-candidate"];
+    });
+    let acknowledged = false;
+    const removal = invoke(CHANNELS.workspace.removeRoot, root).then((result) => {
+      acknowledged = true;
+      return result as { ok: boolean };
+    });
+    await vi.waitFor(() => expect(retireSandboxGrantsOutsideCeiling).toHaveBeenCalledOnce());
+    expect(acknowledged).toBe(false);
+    release();
+    expect((await removal).ok).toBe(true);
+  });
+
   it("drops a plugin's session grant under the removed root", async () => {
     const scope = createPluginSurfacePermissionScope({
       readPersistedDirectories: () => additionalDirectories.value,

@@ -92,7 +92,6 @@ describe("manifest validation — auth cross-field", () => {
       name: "Test Plugin",
       version: "1.0.0",
       description: "auth fixture",
-      publisher: "tests",
       entry: "dist/hostPlugin.js",
       tools: [
         pureTool("test_status", ["app"]),

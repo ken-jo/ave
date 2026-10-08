@@ -75,8 +75,6 @@ interface PluginManifest {
 
   // ── 문서/메타 ──
   description?: string;    // LLM 카탈로그·UI에 표시되는 1줄 요약 (≤280자)
-  publisher?: string;      // 퍼블리셔 식별자 (예: "example-publisher")
-  installPolicy?: "admin" | "user"; // 설치 정책. 배포 경로는 marketplace 단일 경로.
   dependencies?: Array<string | { pluginId: string; versionRange?: string; required?: boolean }>;
   pluginAccess?: {
     plugins: Array<{ pluginId: string; tools?: string[]; events?: string[] }>;
@@ -122,7 +120,7 @@ interface Tool {
 | 위치 | 필드 |
 |------|------|
 | 최상위 (portable) | `$schema`(필수), `name`(필수 — 플러그인 식별자), `version`, `description`, `author`, `homepage`, `repository`, `license`, `keywords` |
-| `extensions["ai.agent-connector.ave"]` | `displayName`, `entry`, `tools`, `capabilities`, `ui`, `auth`, `networkAccess`, `configSchema`, `skills`, `hooks`, `mcpServers`, `publisher`, `installPolicy`, `requires`, … |
+| `extensions["ai.agent-connector.ave"]` | `displayName`, `entry`, `tools`, `capabilities`, `ui`, `auth`, `networkAccess`, `configSchema`, `skills`, `hooks`, `mcpServers`, `requires`, … |
 
 - **플러그인 식별자는 최상위 `name`** 이다. 예전 `id` 필드는 없어졌다.
 - **사람이 읽는 표시 이름은 `displayName`** (namespace 안). 생략하면 `name` 이 쓰인다.
@@ -154,8 +152,6 @@ interface Tool {
   "extensions": {
     "ai.agent-connector.ave": {
       "displayName": "Ave Meeting",
-      "installPolicy": "admin",
-      "publisher": "example-publisher",
       "startupTimeoutMs": 5000,
       "entry": "../../../node_modules/@ave/plugin-meeting/dist/hostPlugin.js",
       "tools": [
@@ -348,13 +344,12 @@ interface Tool {
 - **독립 메커니즘** — `eventSubscriptions` 와 자동 연결되지 않음. 알림을 받으려면 같은 이벤트를 `eventSubscriptions` 에도 넣는 것이 안전.
 - 여러 플러그인이 같은 `event` 를 선언하면 첫 번째만 등록되고 이후는 경고 후 무시.
 
-#### installPolicy / dependencies / pluginAccess / publisher
+#### dependencies / pluginAccess
 
-- `installPolicy: "admin"` 플러그인은 관리자 정책 설치 대상이며 publish/승인 게이트를 통과해야 합니다.
-- `installPolicy` 미지정은 `"user"`로 처리됩니다.
 - `dependencies` 는 함께 설치/고려해야 하는 플러그인 관계이며 delivery mode가 아닙니다.
 - `pluginAccess` 는 다른 플러그인의 tool/event 접근을 명시적으로 승인하는 grant입니다.
-- 배포 경로는 marketplace 단일 경로이며 `deployment`, `deliveryMode`, `bundled`, `bundleDependencies`는 공개 매니페스트 필드로 사용하지 않습니다.
+- 배포는 git 마켓플레이스로 하며 `deployment`, `deliveryMode`, `bundled`, `bundleDependencies`는 공개 매니페스트 필드로 사용하지 않습니다.
+- `installPolicy`와 `publisher`는 폐기된 필드입니다. 마켓플레이스 설치는 이 필드가 있는 매니페스트를 필드 이름을 밝혀 거부하고, 이미 설치된 매니페스트는 경고 한 번과 함께 필드를 무시한 채 로드합니다.
 
 ### 역참조 방지 체크리스트
 
@@ -645,7 +640,7 @@ Ave 플러그인에는 **세 개의 독립 네임스페이스**가 있습니다.
 1. **하나의 tool, visibility 배열로 surface 결정** — `["model"]` = LLM 전용, `["app"]` = renderer 전용(app-only), `["model","app"]` = 겸용. app-only tool 은 governed executor 를 우회하는 app-only dispatch 경로로만 호출된다.
 2. **auth 메서드는 app-only** — `auth.statusTool`, `auth.loginTool`, `auth.logoutTool` 이 가리키는 tool 은 visibility 가 **정확히 `["app"]`** 이어야 하며 (model 노출 금지), 아니면 로드 거부됩니다.
 3. **도구 이름 제한 없음** — 접미사(`_delete`, `_send` 등)로 app-visibility 를 막지 않습니다. 어떤 메서드든 플러그인의 판단에 따라 `"app"` visibility 로 노출할 수 있지만, auth status polling 을 제외한 app-only action 은 host preload 가 확인한 active user activation 이 있어야 실행됩니다.
-4. **파괴적 동작을 app-visible 로 노출하는 플러그인은 자체 UI에서 확인 다이얼로그를 구현해야 합니다** (예: "정말 삭제하시겠습니까?"). 호스트는 active user activation 과 visibility/audit 경계만 강제하며, 도메인별 확인 문구와 상세 UX 는 코드 리뷰·마켓플레이스 심사 단계에서 검증합니다.
+4. **파괴적 동작을 app-visible 로 노출하는 플러그인은 자체 UI에서 확인 다이얼로그를 구현해야 합니다** (예: "정말 삭제하시겠습니까?"). 호스트는 active user activation 과 visibility/audit 경계만 강제하며, 도메인별 확인 문구와 상세 UX 는 코드 리뷰와 마켓플레이스 저장소의 리뷰에서 검증합니다.
 5. AI(ConversationLoop)가 개시한 도구 호출은 별개로 `ApprovalGate` / `PermissionManager` 의 확인 UX 를 거칩니다 — visibility 정책과 무관하게 그대로 유지됩니다.
 6. 실제 위험 작업(파일시스템 민감 경로, 샌드박스 탈출 등)은 호스트의 `sensitive-paths.ts` · 샌드박스 계층에서 차단합니다. 이름 패턴이 아닌 작업의 실체로 막습니다.
 
@@ -710,23 +705,17 @@ OS 네이티브 알림으로 승격할 이벤트를 선언합니다.
 
 ---
 
-## Marketplace 배포 및 무결성
+## 마켓플레이스 배포 및 무결성
 
-플러그인 개발자는 매니페스트 sidecar 서명을 직접 생성하지 않습니다. 배포 검증은 marketplace upload/publish 단계에서 수행되고, Ave 호스트는 marketplace가 발급한 artifact envelope을 설치 시점에 ed25519로 검증합니다.
-
-### installPolicy 정책
-
-| `installPolicy` | 게시/설치 정책 |
-|---------------------- |----------------------------------------------------------------------------------------------- |
-| `"admin"` | marketplace admin review 후 공개. 호스트는 서명된 artifact envelope과 설치 영수증을 검증합니다. |
-| `"user"` (또는 미지정) | marketplace publish 경로로 게시. 호스트는 동일하게 envelope과 설치 영수증을 검증합니다. |
+플러그인은 git 마켓플레이스로 게시합니다([퍼블리싱 가이드](./marketplace-publishing.md)). 업로드·승인 대기열·퍼블리셔 키는 없습니다. 게시는 저장소 머지이고, 저장소의 브랜치 보호가 검토입니다.
 
 ### 검증 메커니즘
 
-- 설치 시점: artifact zip bytes의 `artifact_sha256` 및 marketplace envelope signature 검증.
-- 로드 시점: 설치 시 기록한 `install-receipt.json` 의 파일 해시와 디스크 파일을 비교해 로컬 변조를 차단.
-- trust anchor는 SDK가 아니라 host runtime의 `src/plugins/marketplace-keys.ts` 에 있습니다.
-- 개발 중 직접 manifest path를 로드하는 테스트/dev 경로는 marketplace install receipt가 없으므로 배포 검증 경로와 분리됩니다.
+- 설치 시점: 패키지 설명자가 고정한 아티팩트(release·archive는 sha256 고정 필수, tree는 고정 커밋의 `plugin.json`·`dist/`·`assets/`)를 받아, 스테이징한 `plugin.json`이 설명자의 `minAppVersion`·권한 필드와 같은지 확인합니다. 다르면 `MANIFEST_MISMATCH`로 멈춥니다.
+- 로드 시점: 설치 시 기록한 `install-receipt.json` 의 파일 해시와 디스크 파일을 비교해 로컬 변조를 차단합니다.
+- 어떤 플러그인도 스스로를 잠그지 못합니다. 제거·비활성화를 막는 것은 시스템 정책 파일의 `marketplaces.requiredInstalls` 항목뿐이고, 그 항목이 가리키는 소스에서 설치된 플러그인만 잠급니다.
+- 자기 네임스페이스 밖의 호스트 시크릿은 앱의 `HOST_SECRET_GRANTS` 표(`src/plugins/secret-access/grants.ts`)만 부여합니다. 공식 스냅숏이 고정한 아티팩트로 설치된 공식 플러그인이, 매니페스트 `hostSecrets.read`에 선언한 활성 벤더의 LLM 키를 읽는 경우입니다. 프로바이더 프리셋 키는 표에 없고, 로컬 개발 설치는 해당하지 않습니다.
+- 개발 중 직접 manifest path를 로드하는 테스트/dev 경로는 마켓플레이스 설치 영수증이 없으므로 배포 검증 경로와 분리됩니다.
 
 ---
 
@@ -839,7 +828,7 @@ const hostApi: PluginHostApi = {
 ```
 ave/plugins/installed/{plugin-id}/
   plugin.json          ← 매니페스트 (AJV 검증 대상)
-  install-receipt.json ← marketplace 설치 시 기록된 파일 해시 영수증
+  install-receipt.json ← 마켓플레이스 설치 시 기록된 파일 해시 영수증
   (+ 필요 시 번들 파일)
 ```
 
@@ -896,10 +885,11 @@ Meeting / Microsoft 365 (Outlook 메일+캘린더) / Local Indexer 의 실제 �
   - [ ] `onEvent` disposer 보관 or `onShutdown` 에서 정리
   - [ ] `stop()` 에서 파이프라인 flush (또는 `onShutdown` 훅)
   - [ ] Electron IPC 직접 사용 금지
-- [ ] **Marketplace 배포**
-  - [ ] zip artifact가 `plugin.json` 과 빌드 산출물을 포함
-  - [ ] marketplace publish/upload API 또는 UI로 게시
-  - [ ] `installPolicy: "admin"` 플러그인은 admin review 완료 후 공개
+- [ ] **마켓플레이스 배포**
+  - [ ] `extensions["ai.agent-connector.ave"].requires.minAppVersion` 이 설명자의 `minAppVersion` 과 같음
+  - [ ] 설명자의 `authority` 가 `plugin.json` 권한 필드와 같음
+  - [ ] release/archive 아티팩트는 sha256 고정, tree 는 `plugin.json`·`dist/`·`assets/` 만
+  - [ ] `checkMarketplaceRepository` 저장소 검사 통과
 - [ ] **테스트**
   - [ ] HostApi 모킹 시 `callLlm` / `logEvent` / `onShutdown` 포함
   - [ ] `onEvent` 모킹이 disposer 를 반환하도록
@@ -913,8 +903,7 @@ Meeting / Microsoft 365 (Outlook 메일+캘린더) / Local Indexer 의 실제 �
 1. **`notificationEvents.event ⊂ eventSubscriptions` 교차 검증** — 선언했지만 구독하지 않아 알림이 절대 뜨지 않는 상태 경고가 없음.
 2. **`capabilities` enum 화** — 현재 `lyra-mail-consumer` 만 런타임에서 강제. 나머지는 자유 문자열. 정책 게이트 확장 필요.
 3. **`eventSubscriptions` 민감 이벤트 allowlist / 네임스페이스 정책** — 임의 플러그인이 `email.*`, `calendar.*` 같은 타 플러그인 네임스페이스를 구독할 수 있음.
-4. **프로덕션 marketplace 공개키 회전** — `src/plugins/marketplace-keys.ts` 의 POC 키는 프로덕션 릴리스 전 실제 운영 키로 교체해야 함.
-5. **`ui[]` kind 별 필드 규약** 은 스키마가 담고 있지만, 실제 로더는 엄격한 fallback 처리(`entry ?? page`)를 하므로 일부 오탈자가 silent 하게 넘어갈 여지가 남음.
+4. **`ui[]` kind 별 필드 규약** 은 스키마가 담고 있지만, 실제 로더는 엄격한 fallback 처리(`entry ?? page`)를 하므로 일부 오탈자가 silent 하게 넘어갈 여지가 남음.
 
 ---
 
@@ -922,7 +911,7 @@ Meeting / Microsoft 365 (Outlook 메일+캘린더) / Local Indexer 의 실제 �
 
 - [아키텍처 문서 §9 — Plugin System & UI Extension](../architecture/architecture.md#9-plugin-system--ui-extension)
 - [CLAUDE.md](../../../CLAUDE.md)
-- `src/plugins/types.ts`, `src/plugins/runtime.ts`, `src/plugins/marketplace.ts`, `src/plugins/plugin-install-receipt.ts`, `src/plugins/publisher-keys.ts`
+- `src/plugins/types.ts`, `src/plugins/runtime.ts`, `src/plugins/marketplace.ts`, `src/plugins/plugin-install-receipt.ts`, `src/marketplace/resolve/plugin-ladder.ts`, `src/plugins/secret-access/grants.ts`
 - `src/boot.ts`, `src/boot/conversation.ts` (callLlm 레이트리밋), `src/boot/plugins.ts` (notification / eventSubscriptions)
 - `schemas/plugin.schema.json`
 - Meeting / Microsoft 365 (lyra-mail) / Local Indexer 플러그인 저장소 (현행 사용 예제)

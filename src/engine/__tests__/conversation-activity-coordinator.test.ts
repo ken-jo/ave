@@ -5,7 +5,7 @@ describe("ConversationActivityCoordinator", () => {
   it("treats a session transition as busy before deferred surface work can enter", async () => {
     const coordinator = createConversationActivityCoordinator();
     let transitioning = true;
-    coordinator.bindSessionTransitionGuard(() => transitioning);
+    coordinator.bindSessionTransitionGuard(() => transitioning, () => () => undefined);
     let turnEntered = false;
     let mutationEntered = false;
 
@@ -136,5 +136,58 @@ describe("ConversationActivityCoordinator onTurnSettled", () => {
     coordinator.onTurnSettled(() => { notified += 1; });
     await coordinator.trackMutation(async () => {});
     expect(notified).toBe(0);
+  });
+
+  describe("onIdle (design §18.7.4)", () => {
+    it("fires when a session mutation with no turn completes", async () => {
+      const coordinator = createConversationActivityCoordinator();
+      const fired: boolean[] = [];
+      coordinator.onIdle(() => fired.push(coordinator.isBusy()));
+      let finish!: () => void;
+      const mutation = coordinator.trackMutation(() => new Promise<void>((resolve) => { finish = resolve; }));
+      expect(coordinator.isBusy()).toBe(true);
+      await Promise.resolve();
+      expect(fired).toEqual([]);
+      finish();
+      await mutation;
+      expect(fired).toEqual([false]);
+    });
+
+    it("fires when a transition admission is released, and when a turn settles", async () => {
+      const coordinator = createConversationActivityCoordinator();
+      let count = 0;
+      coordinator.onIdle(() => { count += 1; });
+      const admission = coordinator.beginSessionTransitionAdmission();
+      admission?.release();
+      expect(count).toBe(1);
+      await coordinator.trackTurn(async () => undefined);
+      expect(count).toBe(2);
+    });
+
+    it("fires when a bound loop's session transition ends, and not while something else keeps it busy", async () => {
+      const coordinator = createConversationActivityCoordinator();
+      let transitioning = true;
+      let settled: (() => void) | null = null;
+      coordinator.bindSessionTransitionGuard(() => transitioning, (notify) => {
+        settled = notify;
+        return () => { settled = null; };
+      });
+      let count = 0;
+      coordinator.onIdle(() => { count += 1; });
+      settled!();
+      expect(count).toBe(0);
+      transitioning = false;
+      settled!();
+      expect(count).toBe(1);
+    });
+
+    it("stops after unsubscribe", async () => {
+      const coordinator = createConversationActivityCoordinator();
+      let count = 0;
+      const off = coordinator.onIdle(() => { count += 1; });
+      off();
+      await coordinator.trackTurn(async () => undefined);
+      expect(count).toBe(0);
+    });
   });
 });

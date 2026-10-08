@@ -27,14 +27,9 @@ import {
   readdirSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { basename, join } from "node:path";
-
-vi.mock("node:os", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("node:os")>();
-  return { ...orig, homedir: vi.fn(orig.homedir) };
-});
 
 import { AuditLogger } from "../audit-logger.js";
 import {
@@ -62,7 +57,8 @@ beforeEach(() => {
   auditLoggers = [];
   auditDir = join(testHome, ".ave", "audit");
   mkdirSync(auditDir, { recursive: true });
-  vi.mocked(homedir).mockReturnValue(testHome);
+  // The logger's default directory, `<AVE_HOME>/audit`.
+  vi.stubEnv("AVE_HOME", join(testHome, ".ave"));
 });
 
 afterEach(async () => {
@@ -74,6 +70,7 @@ afterEach(async () => {
     await cleanupTmpDir(testHome);
   }
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 function readPermissionAuditLines(file: string): string[] {

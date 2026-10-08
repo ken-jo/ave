@@ -42,7 +42,7 @@ function makeSettings(): AppSettings {
     },
     chat: { systemPrompt: "sp", autoCompact: true },
     webSearch: { provider: "duckduckgo" },
-    marketplace: { backend: "real-cloud", cloudBaseUrl: "https://m.example.com" },
+    marketplace: { git: { mode: "system" }, updateCheckEnabled: false },
     routine: {},
     privacy: { piiRedactEnabled: false },
     updates: { autoCheckEnabled: true },

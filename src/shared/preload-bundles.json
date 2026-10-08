@@ -1,0 +1,37 @@
+{
+  "preload": {
+    "entry": "src/preload.ts",
+    "file": "preload.cjs",
+    "build": "webpack",
+    "sandbox": false,
+    "runsIn": "main, link and auth windows (their shells need Node built-ins in the preload)"
+  },
+  "pluginPreload": {
+    "entry": "src/plugin-preload.ts",
+    "file": "plugin-preload.cjs",
+    "build": "webpack",
+    "sandbox": true,
+    "runsIn": "plugin <webview> guests (session frame preload; the attach guard enforces the sandbox)"
+  },
+  "mcpAppPreload": {
+    "entry": "src/mcp-app-preload.ts",
+    "file": "mcp-app-preload.cjs",
+    "build": "webpack",
+    "sandbox": true,
+    "runsIn": "MCP app <webview> guests (session frame preload on each ave-mcp-app partition)"
+  },
+  "floatingDockPreload": {
+    "entry": "src/floating-dock-preload.ts",
+    "file": "floating-dock-preload.cjs",
+    "build": "webpack",
+    "sandbox": true,
+    "runsIn": "floating dock window"
+  },
+  "audioCaptureWindowPreload": {
+    "entry": "src/audio-capture-window-preload.cjs",
+    "file": "audio-capture-window-preload.cjs",
+    "build": "copy",
+    "sandbox": false,
+    "runsIn": "audio capture window"
+  }
+}

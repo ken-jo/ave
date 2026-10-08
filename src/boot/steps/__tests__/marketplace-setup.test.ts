@@ -1,13 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BootContext } from "../../context.js";
 
 const state = vi.hoisted(() => {
-  const canonicalAppVersion = "0.5.10";
   return {
-    electronAppVersion: "0.0",
-    canonicalAppVersion,
-    fetcherConfigs: [] as Array<Record<string, unknown>>,
-    getAveAppVersion: vi.fn(() => canonicalAppVersion),
+    storeArgs: null as unknown[] | null,
     refreshActiveLlmWildcard: vi.fn(),
     disposeRefreshActiveLlmWildcard: vi.fn(),
     refreshDeps: null as {
@@ -19,28 +18,17 @@ const state = vi.hoisted(() => {
 
 vi.mock("electron", () => ({
   app: {
-    getVersion: vi.fn(() => state.electronAppVersion),
+    getVersion: vi.fn(() => "0.0"),
     getPath: vi.fn(() => "/tmp/ave-marketplace-setup-test"),
   },
 }));
 
-vi.mock("../../../shared/app-version.js", () => ({
-  getAveAppVersion: state.getAveAppVersion,
-}));
-
-vi.mock("../../../plugins/cloud-marketplace-fetcher.js", () => ({
-  CloudMarketplaceFetcher: class {
-    constructor(config: unknown) {
-      state.fetcherConfigs.push(config as Record<string, unknown>);
-    }
-
-    updateAllowPrivateNetwork(): void {}
-  },
-}));
-
 vi.mock("../../../plugins/marketplace.js", () => ({
-  DisabledMarketplaceFetcher: class {},
-  PluginMarketplaceService: class {},
+  PluginMarketplaceService: class {
+    constructor(...args: unknown[]) {
+      state.storeArgs = args;
+    }
+  },
 }));
 
 vi.mock("../refresh-active-llm-wildcard.js", () => ({
@@ -65,7 +53,9 @@ vi.mock("../../../lib/logger.js", () => ({
   })),
 }));
 
-import { setupMarketplace } from "../marketplace-setup.js";
+import { removeRetiredMarketplaceCaches, retiredMarketplaceCachePaths, setupMarketplace } from "../marketplace-setup.js";
+
+let root: string;
 
 function makeContext(
   activeChatRuntime: { kind: "api" } | { kind: "subscription"; provider: "codex" } = { kind: "api" },
@@ -74,46 +64,40 @@ function makeContext(
     settingsService: {
       get: vi.fn((key: string) => {
         if (key === "llm") return { provider: "openai", activeChatRuntime };
-        if (key === "marketplace") {
-          return {
-            cloudBaseUrl: "https://marketplace.example.com",
-            cloudAllowPrivateNetwork: false,
-          };
-        }
+        if (key === "marketplace") return {};
         return {};
       }),
       getSecret: vi.fn(() => undefined),
       getAll: vi.fn(() => ({})),
     },
-    pluginPaths: {},
+    host: { userDataPath: join(root, "userData") },
+    pluginPaths: { cacheRoot: join(root, "home", "plugins", ".cache") },
     deploymentGuard: {},
-    bootAuditLogger: {},
     pluginRuntime: { cancelAllPendingRestarts: vi.fn() },
   } as unknown as BootContext;
 }
 
-describe("setupMarketplace app-version resolver wiring", () => {
+describe("setupMarketplace wiring", () => {
   beforeEach(() => {
-    state.fetcherConfigs.length = 0;
-    state.getAveAppVersion.mockClear();
+    root = mkdtempSync(join(tmpdir(), "ave-marketplace-setup-"));
+    vi.stubEnv("AVE_HOME", join(root, "home"));
+    state.storeArgs = null;
     state.refreshActiveLlmWildcard.mockClear();
     state.disposeRefreshActiveLlmWildcard.mockClear();
     state.refreshDeps = null;
   });
 
-  it("passes the canonical Ave app version to CloudMarketplaceFetcher", async () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("builds the plugin store over the plugin paths and deployment guard alone", async () => {
     const ctx = makeContext();
 
     await setupMarketplace(ctx);
 
-    expect(state.fetcherConfigs).toEqual([
-      expect.objectContaining({
-        baseUrl: "https://marketplace.example.com",
-        appVersion: state.canonicalAppVersion,
-        allowPrivateNetwork: false,
-      }),
-    ]);
-    expect(state.getAveAppVersion).toHaveBeenCalledOnce();
+    expect(state.storeArgs).toEqual([ctx.pluginPaths, ctx.deploymentGuard]);
     expect(state.refreshActiveLlmWildcard).toHaveBeenCalledOnce();
     expect(ctx.disposeRefreshActiveLlmWildcard).toBe(state.disposeRefreshActiveLlmWildcard);
   });
@@ -132,5 +116,38 @@ describe("setupMarketplace app-version resolver wiring", () => {
 
     state.refreshDeps!.cancelPendingRestarts();
     expect(ctx.pluginRuntime.cancelAllPendingRestarts).toHaveBeenCalledOnce();
+  });
+});
+
+describe("retired marketplace caches", () => {
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "ave-marketplace-setup-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("removes what the server marketplace left and keeps every live install and version cache", async () => {
+    const home = join(root, "home");
+    const input = { userDataPath: join(root, "userData"), home, pluginCacheRoot: join(home, "plugins", ".cache") };
+    const retired = retiredMarketplaceCachePaths(input);
+    const kept = [
+      join(home, "plugins", ".cache", "meeting", "2.1.0"),
+      join(home, "plugins", "meeting"),
+      join(home, "mcp", "context7"),
+      join(home, "mcp", ".cache", "context7"),
+      join(home, "skills", "pdf"),
+      join(input.userDataPath, "Local Storage"),
+    ];
+    for (const dir of [...retired, ...kept]) mkdirSync(dir, { recursive: true });
+
+    await removeRetiredMarketplaceCaches(retired);
+
+    expect(retired.filter((dir) => existsSync(dir))).toEqual([]);
+    expect(kept.filter((dir) => !existsSync(dir))).toEqual([]);
+    expect(retired).toContain(join(input.userDataPath, "marketplace-whitelist"));
+    expect(retired).toContain(join(home, "plugins", ".cache", ".tarballs"));
+    await expect(removeRetiredMarketplaceCaches(retired)).resolves.toBeUndefined();
   });
 });

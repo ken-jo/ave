@@ -3,7 +3,7 @@
  *
  * Deliberately thin: every security-relevant piece below is the REAL production
  * module, so this test cannot pass against a reimplementation.
- *   - registerMcpAppProtocolScheme      (main/mcp-app-protocol.ts)
+ *   - MCP_APP_CUSTOM_SCHEME             (main/mcp-app-protocol.ts)
  *   - installMcpAppPartitionPolicy      (main/html-preview-partition.ts)
  *       → installs the CDN gate, the `ave-mcp-app://` protocol handler that
  *         serves the sandbox-proxy document with its CSP response header, and
@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 import { installMcpAppPartitionPolicy } from "../../../../src/main/html-preview-partition.js";
 import {
   createMcpAppProxySession,
-  registerMcpAppProtocolScheme,
+  MCP_APP_CUSTOM_SCHEME,
 } from "../../../../src/main/mcp-app-protocol.js";
 import { mcpAppPartitionName } from "../../../../src/shared/mcp-app-partition.js";
 
@@ -33,7 +33,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER_ID = "e2e-mcp-server";
 
 // Must run before app.ready — same as production (early-boot-env.ts).
-registerMcpAppProtocolScheme(protocol);
+protocol.registerSchemesAsPrivileged([MCP_APP_CUSTOM_SCHEME]);
 
 // Surface every renderer/webview console line so the spec can assert on the
 // handshake markers emitted by host.ts and inner-app.ts.

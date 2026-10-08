@@ -15,7 +15,7 @@ import { createBootHostFixture } from "../../__tests__/support/host-runtime.js";
  *      must not silently drop or rename a service.
  *   2. CONSTRUCTION-ORDER invariants — the documented ordering guarantees that
  *      matter for correctness (approvalGate / permissionManager / routinesStore
- *      / whitelist registry all built BEFORE initPluginRuntime; the plugin
+ *      built and revocations fed BEFORE initPluginRuntime; the plugin
  *      runtime built before the ConversationLoop; the ConversationLoop built
  *      before the late-bound SubAgentRunner). Captured via call-order recording
  *      on the mocked seams.
@@ -27,9 +27,9 @@ import { createBootHostFixture } from "../../__tests__/support/host-runtime.js";
  * modules, every store/service class, MCP, ASRT sandbox). The OS sandbox gate
  * is held OFF (settings `osToolSandbox:false`, no `AVE_SANDBOX_ENABLED`) so the
  * boot takes the deterministic skip path and never touches @anthropic-ai/
- * sandbox-runtime. The marketplace fetcher resolves to the disabled variant
- * (no `cloudBaseUrl`), which is why mcp/agent/skill artifact stores are absent
- * from the graph — that is faithful current behavior for an unconfigured host.
+ * sandbox-runtime. The server marketplace fetcher is always the disabled
+ * variant (packages arrive through the git marketplace), which is why the
+ * mcp/agent/skill artifact stores are absent from the graph.
  *
  * COVERAGE CAVEAT: this locks the service-assembly SHAPE + ordering, not the
  * runtime behavior of each wired closure (those closures capture mocked deps
@@ -117,8 +117,7 @@ vi.mock("../services.js", () => ({
         get: vi.fn((key: string) => {
           switch (key) {
             case "marketplace":
-              return { cloudBaseUrl: undefined, cloudAllowPrivateNetwork: false,
-              };
+              return {};
             case "llm":
               return { provider: "openai", vendors: { openai: { model: "gpt", baseUrl: undefined } },
               };
@@ -217,33 +216,15 @@ vi.mock("../tools.js", () => ({
   wireIdleScheduler: vi.fn(async () => ({ stop: vi.fn() })),
 }));
 
-vi.mock("../plugins.js", () => ({
-  registerPluginNotifications: vi.fn(() => h.disposer()),
-}));
-
-vi.mock("../managed-marketplace.js", () => ({
-  runManagedBootstrap: vi.fn(async (input: unknown) => {
-    h.captured["managedBootstrapInput"] = input;
-    h.rec("managedPreStartSync");
-  }),
-}));
-
 // Captures the dep bag each uninstall-lifecycle entry point receives FROM
 // bootstrap(). These are the real closures boot.ts builds; the module behind
 // them is stubbed so boot stays hermetic, but the arguments are production's.
 vi.mock("../../plugins/uninstall-lifecycle.js", () => ({
   recoverPendingPluginUninstallCleanups: vi.fn(async (deps: unknown) => {
     h.captured["recoverCleanupDeps"] = deps;
+    h.rec("uninstallCleanupReplay");
     return [] as string[];
   }),
-  ensurePluginStateReadyForInstall: vi.fn(async (_pluginId: string, deps: unknown) => {
-    h.captured["ensureInstallReadyDeps"] = deps;
-  }),
-  removeQuiescentPluginResidualState: vi.fn(
-    async (_input: unknown, _commit: unknown, deps: unknown) => {
-      h.captured["delistedRemovalDeps"] = deps;
-    },
-  ),
 }));
 
 vi.mock("../steps/plugin-runtime.js", () => ({
@@ -252,6 +233,7 @@ vi.mock("../steps/plugin-runtime.js", () => ({
     return {
       pluginRuntime: {
         listPluginIds: vi.fn(() => [] as string[]),
+        resolvePluginId: vi.fn((pluginId: string) => pluginId),
         getPluginManifest: vi.fn(() => null),
         setWildcardConfigOverride: vi.fn(),
         clearWildcardConfigOverride: vi.fn(),
@@ -268,6 +250,7 @@ vi.mock("../steps/plugin-runtime.js", () => ({
       },
       runPluginShutdownHandlers: vi.fn(async () => {}),
       pluginPaths: {
+        registryPath: "/tmp/ave-boot-test/plugins/registry.json",
         pluginsRoot: "/tmp/ave-boot-test/plugins",
         cacheRoot: "/tmp/ave-boot-test/plugins/.cache",
       },
@@ -292,27 +275,12 @@ vi.mock("../../plugins/plugin-bundle-lifecycle.js", () => ({
   },
 }));
 
-// The three signed registries are mocked together: each one otherwise reaches
-// the public document CDN from a unit run, and the `online` flag boot hands
-// them is what the service-connection assertions below read.
-vi.mock("../steps/whitelist-bootstrap.js", () => ({
-  wireWhitelistRegistry: vi.fn(async (input: { online?: boolean }) => {
-    h.captured["whitelistOnline"] = input.online;
-    h.rec("whitelist");
-  }),
-}));
-
+// The revocation feed is mocked so the headless assertions below can read
+// what boot hands it.
 vi.mock("../steps/revocation-bootstrap.js", () => ({
-  wireRevocationRegistry: vi.fn(async (input: { online?: boolean }) => {
-    h.captured["revocationOnline"] = input.online;
+  feedRevocationsFromSnapshots: vi.fn(async (input: { home: string; pluginRegistryPath: string }) => {
+    h.captured["revocationFeed"] = { home: input.home, pluginRegistryPath: input.pluginRegistryPath };
     h.rec("revocation");
-  }),
-}));
-
-vi.mock("../steps/admission-bootstrap.js", () => ({
-  wireAdmissionRegistry: vi.fn(async (input: { online?: boolean }) => {
-    h.captured["admissionOnline"] = input.online;
-    h.rec("admission");
   }),
 }));
 
@@ -332,7 +300,6 @@ vi.mock("../steps/post-boot.js", () => ({
       autoUpdaterStop: vi.fn(),
     };
   }),
-  wireUpdateCheck: vi.fn(),
   wireAnnouncementCheck: vi.fn(),
 }));
 
@@ -354,6 +321,14 @@ vi.mock("../steps/refresh-active-llm-wildcard.js", () => ({
 
 vi.mock("../steps/watcher-telemetry-collector.js", () => ({
   startWatcherTelemetryCollector: vi.fn(() => ({ stop: vi.fn() })),
+}));
+
+vi.mock("../steps/alerts-setup.js", () => ({
+  setupAlerts: vi.fn(async (ctx: { alertsService: unknown }) => {
+    h.rec("alertsSetup");
+    ctx.alertsService = { start: vi.fn(), stop: vi.fn() };
+    return () => {};
+  }),
 }));
 
 vi.mock("../steps/work-board-migration.js", () => ({
@@ -422,11 +397,21 @@ vi.mock("../../main/routines-store.js", () => ({
 }));
 vi.mock("../../main/routines-scheduler.js", () => ({
   RoutinesScheduler: class {
+    constructor(_store: unknown, getInstalledPluginIds: () => Promise<readonly string[]>) {
+      h.captured["routineInstalledPluginIds"] = getInstalledPluginIds;
+    }
     onLlmSession = vi.fn();
     onNotification = vi.fn();
     start = vi.fn();
     stop = vi.fn();
   },
+}));
+vi.mock("../../plugins/registry.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../plugins/registry.js")>(),
+  readPluginRegistry: vi.fn(async () => ({ plugins: [
+    { id: "updating-plugin", pendingUpdate: { transactionId: "update" } },
+    { id: "disabled-plugin", enabled: false },
+  ] })),
 }));
 vi.mock("../../main/work-board-store.js", () => ({
   WorkBoardStore: class {
@@ -470,7 +455,8 @@ vi.mock("../../main/agent-profile-store.js", () => ({
 }));
 vi.mock("../../main/persona-prompt-store.js", () => ({ PersonaPromptStore: class {},
 }));
-vi.mock("../../main/storage/feature-namespace.js", () => ({
+vi.mock("../../main/storage/feature-namespace.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../main/storage/feature-namespace.js")>(),
   openFeatureNamespace: vi.fn(() => ({ dir: "/tmp/ave-boot-test/work-board",
   })),
 }));
@@ -486,7 +472,6 @@ vi.mock("../../memory/preference-refresh-service.js", () => ({
     stop = vi.fn();
   },
 }));
-
 
 vi.mock("../../memory/memory-consolidation-service.js", () => ({
   MemoryConsolidationService: class {},
@@ -535,19 +520,10 @@ vi.mock("../../work-board/work-memory.js", () => ({
 
 // ── plugins/* ────────────────────────────────────────────────────────────────
 vi.mock("../../plugins/marketplace.js", () => ({
-  DisabledMarketplaceFetcher: class {},
   PluginMarketplaceService: class {},
-}));
-vi.mock("../../plugins/cloud-marketplace-fetcher.js", () => ({
-  CloudMarketplaceFetcher: class {
-    updateAllowPrivateNetwork = vi.fn();
-  },
 }));
 vi.mock("../../plugins/plugin-artifact-store.js", () => ({
   PluginArtifactStore: class {},
-}));
-vi.mock("../../plugins/publisher-keys.js", () => ({
-  getBundledPublicKeys: vi.fn(() => ({})),
 }));
 vi.mock("../../plugins/orphan-uninstall-sweeper.js", () => ({
   sweepOrphanUninstallDirs: vi.fn(async () => ({ swept: [], failed: [] })),
@@ -569,17 +545,33 @@ vi.mock("../../permissions/sandbox-capability.js", () => ({
   setSandboxRequestedAtBoot: vi.fn(),
   setSandboxBootOutcome: vi.fn(),
 }));
-vi.mock("../../permissions/asrt-sandbox.js", () => ({
-  initializeAsrtSandbox: vi.fn(async () => {}),
-  useAppOwnedSandboxTempRoot: vi.fn(() => "/tmp/ave-test-sandbox-tmp"),
-  checkAsrtDependencies: vi.fn(async () => ({ errors: [], warnings: [] })),
-  isAsrtLinuxRuntimeProbeError: vi.fn(() => false),
-  isAsrtSandboxActive: vi.fn(() => false),
-  updateAsrtSandboxConfig: vi.fn(async () => {}),
-  computeUnionAllowedDomains: vi.fn(() => []),
-  normalizeUnionForAsrt: vi.fn(() => []),
-  computeDynamicEndpointHosts: vi.fn(() => []),
-}));
+vi.mock("../../permissions/asrt-sandbox.js", async () => {
+  // The boot step sweeps both private roots and creates the HOME root, so they
+  // live under a directory this file owns in the OS temp dir — never the real
+  // AVE_HOME — whose parent can be created.
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { mkdirSync } = await import("node:fs");
+  const roots = join(tmpdir(), "ave-bootstrap-integration-sandbox");
+  return {
+    appOwnedSandboxTempRoot: vi.fn(() => join(roots, "tmp")),
+    appOwnedSandboxHomeRoot: vi.fn(() => join(roots, "home")),
+    sandboxTempPrincipalDirsInUse: () => new Set<string>(),
+    ensureSandboxPrivateRoot: (root: string) => {
+      mkdirSync(root, { recursive: true, mode: 0o700 });
+      return root;
+    },
+    initializeAsrtSandbox: vi.fn(async () => {}),
+    useAppOwnedSandboxTempRoot: vi.fn(() => "/tmp/ave-test-sandbox-tmp"),
+    checkAsrtDependencies: vi.fn(async () => ({ errors: [], warnings: [] })),
+    isAsrtLinuxRuntimeProbeError: vi.fn(() => false),
+    isAsrtSandboxActive: vi.fn(() => false),
+    updateAsrtSandboxConfig: vi.fn(async () => {}),
+    computeUnionAllowedDomains: vi.fn(() => []),
+    normalizeUnionForAsrt: vi.fn(() => []),
+    computeDynamicEndpointHosts: vi.fn(() => []),
+  };
+});
 vi.mock("../../permissions/permission-settings-store.js", () => ({
   readPermissionSettings: vi.fn(() => ({
     permissions: { additionalDirectories: [] },
@@ -624,8 +616,17 @@ vi.mock("../../ipc/domains/permissions.js", () => ({
 }));
 
 import { bootstrap, type AppServices } from "../../boot.js";
-import { runManagedBootstrap } from "../managed-marketplace.js";
-import { wireAnnouncementCheck, wireUpdateCheck } from "../steps/post-boot.js";
+import { wireAnnouncementCheck } from "../steps/post-boot.js";
+
+// Boot resolves `~/.ave` through `AVE_HOME` (the retired-cache sweep in
+// marketplace-setup removes directories under it), so both boots below run
+// against a scratch home, never the developer's own.
+const savedAveHome = process.env["AVE_HOME"];
+process.env["AVE_HOME"] = "/tmp/ave-boot-test/ave-home";
+afterAll(() => {
+  if (savedAveHome === undefined) delete process.env["AVE_HOME"];
+  else process.env["AVE_HOME"] = savedAveHome;
+});
 
 /**
  * Node reports a listener leak through `process.emitWarning`, so the spy has to
@@ -690,13 +691,68 @@ describe("bootstrap() integration lock", () => {
     else process.env["AVE_SANDBOX_ENABLED"] = savedSandboxEnv;
   });
 
+  it("reads installed routine plugins from the live registry including pending updates and disabled entries", async () => {
+    const getIds = h.captured["routineInstalledPluginIds"] as () => Promise<readonly string[]>;
+    expect(await getIds()).toEqual(["updating-plugin", "disabled-plugin"]);
+    const { readPluginRegistry } = await import("../../plugins/registry.js");
+    expect(readPluginRegistry).toHaveBeenLastCalledWith("/tmp/ave-boot-test/plugins/registry.json");
+    vi.mocked(readPluginRegistry).mockResolvedValueOnce({ version: 1, plugins: [] });
+    expect(await getIds()).toEqual([]);
+  });
+
+  it("dispatches a routine whose canonical plugin ID differs from its registry install ID", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { RoutinesStore } = await vi.importActual<typeof import("../../main/routines-store.js")>("../../main/routines-store.js");
+    const { RoutinesScheduler } = await vi.importActual<typeof import("../../main/routines-scheduler.js")>("../../main/routines-scheduler.js");
+    const { readPluginRegistry } = await import("../../plugins/registry.js");
+    const dir = await mkdtemp(join(tmpdir(), "ave-routine-alias-"));
+    try {
+      const store = new RoutinesStore(join(dir, "routines.json"));
+      const routine = await store.add({
+        trigger: "schedule",
+        execution: "llm-session",
+        prePrompt: "Use the installed plugin",
+        schedule: { at: new Date(Date.now() - 1000).toISOString() },
+        scope: {
+          pluginIds: { mode: "allow", ids: ["manifest-fresh"] },
+          forcedPluginIds: [],
+          directories: [],
+        },
+      });
+      vi.mocked(readPluginRegistry).mockResolvedValueOnce({
+        version: 1,
+        plugins: [{ id: "catalog-fresh", manifestPath: join(dir, "plugin.json") }],
+      });
+      vi.mocked(services.pluginRuntime.resolvePluginId).mockImplementationOnce((id) => {
+        expect(id).toBe("catalog-fresh");
+        return "manifest-fresh";
+      });
+      const getIds = h.captured["routineInstalledPluginIds"] as () => Promise<readonly string[]>;
+      const scheduler = new RoutinesScheduler(store, getIds);
+      const fired = vi.fn();
+      scheduler.onLlmSession(fired);
+      await scheduler.checkAndFire();
+      expect(fired).toHaveBeenCalledOnce();
+      const persisted = new RoutinesStore(join(dir, "routines.json"));
+      await persisted.load();
+      const record = persisted.list().find((entry) => entry.id === routine.id);
+      expect(record).toMatchObject({ id: routine.id, lastFiredAt: expect.any(String) });
+      expect(record?.lastSkippedReason).toBeUndefined();
+      expect(record?.needsAttention).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("assembles the exact AppServices key set (C18 must not drop/rename a service)", () => {
     expect(Object.keys(services).sort()).toMatchInlineSnapshot(`
       [
         "a2aRemoteRuntime",
-        "agentArtifactStore",
         "agentProfileStore",
         "agentsDocMergeService",
+        "alertsService",
         "approvalGate",
         "askUserQuestionGate",
         "auditLogger",
@@ -717,7 +773,6 @@ describe("bootstrap() integration lock", () => {
         "inputClassifier",
         "listPluginAuthPartitionsService",
         "mcpAppModelContext",
-        "mcpArtifactStore",
         "mcpManager",
         "memoryCaptureService",
         "memoryConsolidationService",
@@ -736,8 +791,7 @@ describe("bootstrap() integration lock", () => {
         "pythonPath",
         "pythonRuntime",
         "refreshActiveLlmWildcard",
-        "refreshMarketplaceFetcherConfig",
-        "refreshPluginNotifications",
+        "refreshPluginEventBridge",
         "refreshSandboxNetworkConfig",
         "registerPluginEventBridge",
         "releaseChatGroupLoop",
@@ -759,9 +813,9 @@ describe("bootstrap() integration lock", () => {
         "sideChatConversationLoop",
         "sideChatMemoryManager",
         "singleHopNetworkFetch",
-        "skillArtifactStore",
         "skillStore",
         "starredStore",
+        "startAlerts",
         "startRoutinesScheduler",
         "startWorkBoardDueSoon",
         "systemPromptBuilder",
@@ -777,14 +831,15 @@ describe("bootstrap() integration lock", () => {
   it("enforces the documented construction-order invariants", () => {
     // Core services are the foundation — everything else depends on them.
     assertBefore("core", "approvalGate");
-    // §B1/§F7 + cluster M1 + Routines-SOT + #893 Stage 2: the ApprovalGate,
-    // PermissionManager, RoutinesStore, and whitelist registry are ALL built
-    // before initPluginRuntime, because the per-plugin HostApi factory wires
-    // against each of them at plugin construction time.
+    // §B1/§F7 + cluster M1 + Routines-SOT: the ApprovalGate,
+    // PermissionManager, and RoutinesStore are ALL built before
+    // initPluginRuntime, because the per-plugin HostApi factory wires against
+    // each of them at plugin construction time.
     assertBefore("approvalGate", "initPluginRuntime");
     assertBefore("permissionManager", "initPluginRuntime");
     assertBefore("routinesStore", "initPluginRuntime");
-    assertBefore("whitelist", "initPluginRuntime");
+    // Revocations reach the load gate before any plugin can load.
+    assertBefore("revocation", "initPluginRuntime");
     // The plugin runtime exists before the ConversationLoop is composed (the
     // loop captures pluginRuntime among its deps).
     assertBefore("initPluginRuntime", "conversationLoop");
@@ -792,8 +847,11 @@ describe("bootstrap() integration lock", () => {
     // reuses the loop's dep set.
     assertBefore("conversationLoop", "subAgentRunner");
     assertBefore("lifecycleBound", "retirementsRecovered");
-    assertBefore("retirementsRecovered", "managedPreStartSync");
-    assertBefore("managedPreStartSync", "startPlugins");
+    assertBefore("retirementsRecovered", "startPlugins");
+    // Plugins register their alert kinds as they start, and a boot-time
+    // uninstall replay must find the alerts pipeline listening.
+    assertBefore("alertsSetup", "uninstallCleanupReplay");
+    assertBefore("alertsSetup", "startPlugins");
   });
 
   // ── plugin-state cleanup dep bag ────────────────────────────────────────
@@ -807,9 +865,8 @@ describe("bootstrap() integration lock", () => {
   // silently emits nothing.
   //
   // boot.ts used to hand-spell the dep bag three times and pass `emitHostEvent`
-  // in exactly ONE of them. These assertions drive the REAL closures bootstrap()
-  // built — including the two it hands to runManagedBootstrap — and check the
-  // arguments that actually reach the lifecycle module.
+  // in exactly ONE of them. These assertions drive the REAL closure bootstrap()
+  // built and check the arguments that actually reach the lifecycle module.
   describe("plugin-state cleanup dep bag", () => {
     function bagFor(key: string): Record<string, unknown> {
       const bag = h.captured[key];
@@ -820,61 +877,6 @@ describe("bootstrap() integration lock", () => {
     it("gives boot-time cleanup recovery the host event emitter", () => {
       expect(typeof bagFor("recoverCleanupDeps")["emitHostEvent"]).toBe("function");
     });
-
-    it("gives the managed pre-start install-readiness check the host event emitter", async () => {
-      const input = h.captured["managedBootstrapInput"] as {
-        ensurePluginStateReadyForInstall: (pluginId: string) => Promise<void>;
-      };
-      await input.ensurePluginStateReadyForInstall("managed-plugin");
-
-      expect(typeof bagFor("ensureInstallReadyDeps")["emitHostEvent"]).toBe("function");
-    });
-
-    it("gives delisted admin removal the host event emitter", async () => {
-      const input = h.captured["managedBootstrapInput"] as {
-        removeDelistedAdminInstall: (
-          removal: { pluginId: string; secretKeys: readonly string[] },
-          commit: () => Promise<void>,
-        ) => Promise<void>;
-      };
-      await input.removeDelistedAdminInstall(
-        { pluginId: "delisted-plugin", secretKeys: [] },
-        async () => {},
-      );
-
-      expect(typeof bagFor("delistedRemovalDeps")["emitHostEvent"]).toBe("function");
-    });
-
-    it("spells one identical cleanup service set at every boot entry point", async () => {
-      // The three bags are one value set, not three capabilities. Compare the
-      // KEYS: a fourth boot wiring that hand-spells a subset (which is exactly
-      // how emitHostEvent went missing) shows up here as a key-set mismatch.
-      const managed = h.captured["managedBootstrapInput"] as {
-        ensurePluginStateReadyForInstall: (pluginId: string) => Promise<void>;
-        removeDelistedAdminInstall: (
-          removal: { pluginId: string; secretKeys: readonly string[] },
-          commit: () => Promise<void>,
-        ) => Promise<void>;
-      };
-      await managed.ensurePluginStateReadyForInstall("managed-plugin");
-      await managed.removeDelistedAdminInstall(
-        { pluginId: "delisted-plugin", secretKeys: [] },
-        async () => {},
-      );
-
-      // `pluginMarketplace` is genuinely not part of the set: the delisted
-      // remover takes `PluginStateCleanupDeps`, which omits it by type. Every
-      // OTHER key is the shared set.
-      const keysOf = (key: string) =>
-        Object.keys(bagFor(key)).filter((k) => k !== "pluginMarketplace").sort();
-      const recover = keysOf("recoverCleanupDeps");
-      expect(keysOf("ensureInstallReadyDeps")).toEqual(recover);
-      expect(keysOf("delistedRemovalDeps")).toEqual(recover);
-      // And that shared set is the one the module needs to do its job.
-      expect(recover).toContain("emitHostEvent");
-      expect(recover).toContain("drainPluginInstallLockOperationsService");
-      expect(recover).toContain("clearAuthPartitionService");
-    });
   });
 
   it("exposes the deferred lifecycle handles main.ts drives after boot", () => {
@@ -882,7 +884,7 @@ describe("bootstrap() integration lock", () => {
     expect(typeof services.startRoutinesScheduler).toBe("function");
     expect(typeof services.startWorkBoardDueSoon).toBe("function");
     expect(typeof services.registerPluginEventBridge).toBe("function");
-    expect(typeof services.refreshPluginNotifications).toBe("function");
+    expect(typeof services.refreshPluginEventBridge).toBe("function");
   });
 
   it("wires the core, conversation, and plugin-runtime seams into the graph", () => {
@@ -892,11 +894,6 @@ describe("bootstrap() integration lock", () => {
     expect(services.pluginRuntime).toBeDefined();
     expect(services.toolRegistry).toBeDefined();
     expect(services.settingsService).toBeDefined();
-    // Unconfigured marketplace (no cloudBaseUrl) → the disabled fetcher path,
-    // so the signed-artifact stores are intentionally absent from the graph.
-    expect(services.mcpArtifactStore).toBeUndefined();
-    expect(services.agentArtifactStore).toBeUndefined();
-    expect(services.skillArtifactStore).toBeUndefined();
   });
 
   it("keeps rationale interactive while wiring the subscription runtime across execution loops", () => {
@@ -959,14 +956,7 @@ describe("bootstrap() integration lock", () => {
   });
 
   it("opens the host's own service connections (interactive launch is unchanged)", () => {
-    // Every registry resolves `online` from its own default, so boot passes
-    // nothing and each step keeps deciding.
-    expect(h.captured["whitelistOnline"]).toBeUndefined();
-    expect(h.captured["revocationOnline"]).toBeUndefined();
-    expect(h.captured["admissionOnline"]).toBeUndefined();
-    expect(vi.mocked(runManagedBootstrap)).toHaveBeenCalled();
     expect(h.captured["discretionaryEgress"]).toBe(true);
-    expect(vi.mocked(wireUpdateCheck)).toHaveBeenCalled();
     expect(vi.mocked(wireAnnouncementCheck)).toHaveBeenCalled();
     expect(
       (h.captured["mainConversationDeps"] as Record<string, unknown>)["approvalSurface"],
@@ -978,12 +968,11 @@ describe("bootstrap() integration lock", () => {
  * A headless `--exec` boot opens no DISCRETIONARY service connection.
  *
  * The rule is one fact — the `launch` argument — and this suite is what proves
- * each consequence comes off it: the marketplace catalog is not read, the
- * admission warm-up is skipped, and neither the release check, the telemetry
- * uploaders nor the two marketplace polls are started. It also proves the two
- * halves of the boundary that are NOT discretionary: the whitelist and
- * revocation documents are still refreshed, because one fails closed and the
- * other fails open, and plugins on disk still load. The interactive boot above
+ * each consequence comes off it: neither the release check, the telemetry
+ * uploaders nor the announcement poll are started. (The git marketplace's sync starts with the window, in main.ts, so
+ * a headless boot never reaches it.) It also proves the halves of the
+ * boundary that are NOT discretionary: revocations are still fed from the
+ * local snapshots, and plugins on disk still load. The interactive boot above
  * is the control; both run against the same mocked seams.
  */
 describe("bootstrap() headless launch opens no discretionary service connection", () => {
@@ -995,8 +984,6 @@ describe("bootstrap() headless launch opens no discretionary service connection"
     delete process.env["AVE_SANDBOX_ENABLED"];
     // The interactive boot above already called each of these, and recorded its
     // own ordering; the assertions here are about what THIS boot does.
-    vi.mocked(runManagedBootstrap).mockClear();
-    vi.mocked(wireUpdateCheck).mockClear();
     vi.mocked(wireAnnouncementCheck).mockClear();
     h.order.length = 0;
     (h.captured["shutdownHooks"] as string[]).length = 0;
@@ -1015,26 +1002,17 @@ describe("bootstrap() headless launch opens no discretionary service connection"
     else process.env["AVE_SANDBOX_ENABLED"] = savedSandboxEnv;
   });
 
-  it("does not read the marketplace catalog at boot", () => {
-    expect(vi.mocked(runManagedBootstrap)).not.toHaveBeenCalled();
-  });
-
-  it("skips the admission warm-up but still refreshes the plugin trust chain", () => {
-    // Admission is consulted at install and re-checked there, so warming it at
-    // boot is only latency. The whitelist fails closed and the revocation list
-    // fails open, so skipping either would take a control with it — both keep
-    // resolving `online` from their own default.
-    expect(h.captured["admissionOnline"]).toBe(false);
-    expect(h.captured["whitelistOnline"]).toBeUndefined();
-    expect(h.captured["revocationOnline"]).toBeUndefined();
+  it("still feeds the plugin trust chain", () => {
+    // Revocations and host-secret grants read only local snapshots.
+    expect(h.order).toContain("revocation");
+    expect(h.captured["revocationFeed"]).toEqual({ home: expect.any(String), pluginRegistryPath: expect.stringMatching(/registry\.json$/u) });
   });
 
   it("starts neither the release check nor the telemetry uploaders", () => {
     expect(h.captured["discretionaryEgress"]).toBe(false);
   });
 
-  it("schedules neither marketplace poll", () => {
-    expect(vi.mocked(wireUpdateCheck)).not.toHaveBeenCalled();
+  it("does not schedule the announcement poll", () => {
     expect(vi.mocked(wireAnnouncementCheck)).not.toHaveBeenCalled();
   });
 

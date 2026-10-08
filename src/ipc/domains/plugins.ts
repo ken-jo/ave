@@ -5,6 +5,9 @@
  *         ave:marketplace:ping, ave:host:plugin-theme-notify,
  *         ave:notification:clicked
  */
+import { createPluginRetirementPort, type PluginConfigRetention } from "../../plugins/retired-config.js";
+import { ContributionTrustReviewStaleError } from "../../plugins/plugin-contribution-trust.js";
+import { getAveAppVersion } from "../../shared/app-version.js";
 import { dialog, ipcMain, webContents } from "electron";
 import { t } from "../../i18n/index.js";
 import { randomUUID } from "node:crypto";
@@ -20,7 +23,6 @@ import { getDeclaredEmittedEvents } from "../../plugins/runtime/manifest-validat
 import { stripSecretFields } from "../../plugins/config-schema.js";
 import { shouldBlockPluginSecretRead, validateApiKeyLikeSecretValue } from "../../plugins/secret-shape.js";
 import { emitPluginConfigChange, SECRET_REDACTED_SENTINEL } from "../../plugins/config-change-bus.js";
-import { runManagedBootstrap } from "../../boot/managed-marketplace.js";
 import { latestBootstrapStatus } from "../../boot/bootstrap-status.js";
 import { isDevModeUnlocked, isE2eTestRuntime } from "../../boot/dev-flags.js";
 import {
@@ -60,6 +62,7 @@ import {
   createLoopbackToolCallSource,
 } from "../../mcp/mcp-ui-tool-call.js";
 import type { McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
+import type { ClaudeDesktopImportFailure } from "../../mcp/claude-desktop-import.js";
 import { parseUiMessageIntent, type McpUiMessageOutcome } from "../../mcp/mcp-ui-message.js";
 import { parseMcpAppDownload, type McpUiDownloadOutcome } from "../../mcp/mcp-app-download.js";
 import type { McpUiModelContextOutcome } from "../../mcp/mcp-app-model-context.js";
@@ -82,7 +85,6 @@ import {
   MCP_PROMPT_ARG_VALUE_MAX_CHARS,
   MCP_PROMPT_NAME_MAX_CHARS,
 } from "../../shared/mcp-prompt-bounds.js";
-import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 // The MCP-app `ui/message` staging path reuses the plugin overlay gate's rate limiter
 // (one mechanism for "staged conversation proposals") and the same overlay push channel.
 import {
@@ -93,34 +95,28 @@ import {
 import { OVERLAY_V1 } from "../../shared/ipc-channels.js";
 import {
   drainPluginInstallLockOperations,
-  installMarketplacePluginWithLifecycle,
-  rollbackMarketplacePluginWithLifecycle,
   withPluginInstallLock,
 } from "../../plugins/install-lifecycle.js";
 import { shouldRestartAfterPluginConfigWrite } from "../../plugins/config-restart-policy.js";
 import {
-  cleanupFailedPluginInstallWithLifecycle,
   ensurePluginStateReadyForInstall,
   uninstallPluginWithLifecycle,
 } from "../../plugins/uninstall-lifecycle.js";
+import { buildInstallFailureResult } from "../../shared/plugin-install-result.js";
 import {
-  buildInstallFailureResult,
-  MarketplaceBackendDisabledError,
-  MARKETPLACE_DISABLED_CODE,
-} from "../../shared/plugin-install-result.js";
+  ProcessEntryRequiresPinnedArtifactError,
+  ProcessEntryUnconfinedError,
+  PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE,
+  PROCESS_ENTRY_UNCONFINED_CODE,
+} from "../../plugins/process-entry.js";
 import { aveHome } from "../../shared/ave-home.js";
-import type { NetworkAccessAcknowledgement } from "../../shared/network-access.js";
-import { isPluginInstallFailureKind, type PluginInstallFailureKind } from "../../shared/plugin-install-failure.js";
 import { isPathWithin } from "../../plugins/plugin-storage-containment.js";
 import {
   handlePluginBundleE2eSnapshot,
   handlePluginCards,
-  handleMarketplaceList,
 } from "../handlers/plugins.js";
 import { errorMessage } from "../../shared/error-message.js";
 const log = createLogger("ave");
-const MARKETPLACE_PING_TIMEOUT_MS = TOOL_TIMEOUT_POLICY.marketplaceHttpTimeoutMs;
-const MARKETPLACE_PING_CACHE_TTL_MS = 10_000;
 
 export {
   getLastThemePayload,
@@ -128,8 +124,6 @@ export {
   validateThemePayload,
 };
 export type { SafeThemePayload };
-
-type MarketplacePingResult = { configured: boolean; online: boolean };
 
 function pluginConfigError(
   error: string,
@@ -143,26 +137,6 @@ function asPlainRecord(value: unknown): Record<string, unknown> {
     return value as Record<string, unknown>;
   }
   return {};
-}
-
-function parseNetworkAccessAcknowledgement(value: unknown): NetworkAccessAcknowledgement | undefined {
-  const input = asPlainRecord(value);
-  const rawDomains = input.allowedDomains;
-  if (!Array.isArray(rawDomains)) return undefined;
-  const allowedDomains = rawDomains
-    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-    .map((entry) => entry.trim());
-  return {
-    allowedDomains,
-    ...(input.allowPrivateNetworks === true ? { allowPrivateNetworks: true as const } : {}),
-  };
-}
-
-function parseDoctorCleanupKind(value: unknown): PluginInstallFailureKind | undefined {
-  const input = asPlainRecord(value);
-  const doctorCleanup = asPlainRecord(input.doctorCleanup);
-  const kind = doctorCleanup.installFailureKind;
-  return isPluginInstallFailureKind(kind) ? kind : undefined;
 }
 
 function sanitizeNotificationContextRef(value: unknown): NotificationContextRef | undefined {
@@ -231,7 +205,7 @@ export function publishHostThemeChanged(safe: SafeThemePayload): void {
 /**
  * Push the cached theme payload to a freshly registered webview so the
  * plugin paints with the active tokens from first frame instead of the
- * SDK `:root` fallback. Returns the payload that was sent (or null when
+ * plugin's `:root` fallback. Returns the payload that was sent (or null when
  * the cache is empty / wc destroyed) so callers can log lifecycle.
  *
  * Synchronous between `register-webview` returning OK and this call, so
@@ -297,7 +271,6 @@ function clearPendingEntryUrl(webContentsId: number): void {
   for (const resolve of resolvers) resolve({ ok: false, error: "not-registered" });
 }
 
-
 export function unregisterPluginWebview(
   webContentsId: number,
   revokeSession: (appSessionId: string) => void,
@@ -321,28 +294,27 @@ export function revokePluginWebviewsForPlugin(
   }
 }
 
-export function registerPluginsHandlers(deps: IpcDeps): void {
+/**
+ * The cleanup services and install-state preparation every plugin install or
+ * uninstall runs, shared by these handlers and the git marketplace's.
+ */
+export function pluginLifecycleServices(deps: IpcDeps) {
+  const retirement = createPluginRetirementPort({
+    settings: deps.settingsService,
+    marketplace: deps.pluginMarketplace,
+    wildcard: () => deps.pluginRuntime.getWildcardConfigOverride(),
+    appVersion: getAveAppVersion,
+  });
   const {
     pluginRuntime,
     pluginMarketplace,
     settingsService,
-    auditLogger,
-    refreshPluginNotifications,
+    refreshPluginEventBridge,
     pluginPaths,
     clearAuthPartitionService,
     listPluginAuthPartitionsService,
     forgetPluginAuthPartitionsService,
-    mcpArtifactStore,
-    agentArtifactStore,
-    skillArtifactStore,
-    getMainWindow,
-    getAppWindows,
   } = deps;
-  const broadcastPluginLifecycleEvent = (channel: string, payload: unknown) => {
-    for (const win of getAppWindows?.() ?? [getMainWindow()]) {
-      sendToWindow(win, channel, payload, log);
-    }
-  };
   const requireCleanupServices = () => {
     if (
       !pluginPaths
@@ -365,100 +337,48 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       pluginMarketplace,
       pluginRuntime,
       settingsService,
+      retirement,
       ...cleanupServices,
       drainPluginInstallLockOperationsService:
         drainPluginInstallLockOperations,
-      refreshPluginNotifications,
+      refreshPluginEventBridge,
       emitHostEvent,
       log,
     });
   };
-  let marketplacePingCache:
-    | { key: string; result: MarketplacePingResult; timestampMs: number }
-    | null = null;
-  let marketplacePingInflight:
-    | { key: string; promise: Promise<MarketplacePingResult> }
-    | null = null;
-
-  const runMarketplacePing = async (): Promise<MarketplacePingResult> => {
-    const settings = settingsService.get("marketplace");
-    if (settings.backend !== "real-cloud" || !settings.cloudBaseUrl) {
-      return { configured: false, online: false };
-    }
-
-    const base = settings.cloudBaseUrl.replace(/\/?$/, "/");
-    const key = `${settings.backend}|${base}|${settings.cloudAllowPrivateNetwork === true}`;
-    const now = Date.now();
-    if (
-      marketplacePingCache &&
-      marketplacePingCache.key === key &&
-      now - marketplacePingCache.timestampMs < MARKETPLACE_PING_CACHE_TTL_MS
-    ) {
-      return marketplacePingCache.result;
-    }
-    if (marketplacePingInflight?.key === key) {
-      return marketplacePingInflight.promise;
-    }
-
-    const promise = (async (): Promise<MarketplacePingResult> => {
-      try {
-        const url = new URL("api/v1/health", base).toString();
-        let res: Response;
-        if (settings.cloudAllowPrivateNetwork === true) {
-          const ctrl = new AbortController();
-          const timer = setTimeout(() => ctrl.abort(), MARKETPLACE_PING_TIMEOUT_MS);
-          try {
-            res = await deps.singleHopNetworkFetch(url, { signal: ctrl.signal });
-          } finally {
-            clearTimeout(timer);
-          }
-        } else {
-          const { fetchPublicHttpResponse } = await import("../../core/network-guard.js");
-          res = await fetchPublicHttpResponse(url, {
-            timeoutMs: MARKETPLACE_PING_TIMEOUT_MS,
-            fetchImpl: deps.singleHopNetworkFetch,
-          });
-        }
-        const result = { configured: true, online: res.ok } as const;
-        marketplacePingCache = { key, result, timestampMs: Date.now() };
-        return result;
-      } catch (err) {
-        // Periodic health probes are user-visible via the status dot. Logging
-        // every timeout at warn level turns transient network latency into log
-        // noise while update-check/catalog fetches still report actionable
-        // marketplace failures on their own paths.
-        log.debug("marketplace ping failed: %s", errMessage(err));
-        const result = { configured: true, online: false } as const;
-        marketplacePingCache = { key, result, timestampMs: Date.now() };
-        return result;
-      } finally {
-        if (marketplacePingInflight?.key === key) {
-          marketplacePingInflight = null;
-        }
-      }
-    })();
-    marketplacePingInflight = { key, promise };
-    return promise;
-  };
-  // Bootstrap retry
-  ipcMain.handle(CHANNELS.bootstrap.retry, async (e) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.bootstrap.retry, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const marketplace = settingsService.get("marketplace");
-    await runManagedBootstrap({
+  /** Uninstall through the runtime generation barrier with journaled cleanup (see the uninstall handler). */
+  const uninstall = (pluginId: string, retain?: PluginConfigRetention) =>
+    uninstallPluginWithLifecycle(pluginId, {
       pluginMarketplace,
-      ensurePluginStateReadyForInstall: ensureInstallStateReady,
-      mainWindow: getMainWindow(),
-      marketplace,
-      mode: "repair-missing-only",
-      activatePreparedArtifact: (prepared) =>
-        pluginRuntime.activatePreparedArtifact(prepared),
-    });
-    return { ok: true } as const;
-  });
+      pluginRuntime,
+      settingsService,
+      ...requireCleanupServices(),
+      retirement,
+      drainPluginInstallLockOperationsService:
+        drainPluginInstallLockOperations,
+      refreshPluginEventBridge,
+      emitHostEvent,
+      log,
+    }, retain);
+  return { ensureInstallStateReady, uninstall, retirement };
+}
 
+export function registerPluginsHandlers(deps: IpcDeps): void {
+  const {
+    pluginRuntime,
+    pluginMarketplace,
+    settingsService,
+    auditLogger,
+    refreshPluginEventBridge,
+    getMainWindow,
+    getAppWindows,
+  } = deps;
+  const broadcastPluginLifecycleEvent = (channel: string, payload: unknown) => {
+    for (const win of getAppWindows?.() ?? [getMainWindow()]) {
+      sendToWindow(win, channel, payload, log);
+    }
+  };
+  const { ensureInstallStateReady, uninstall: uninstallPlugin } = pluginLifecycleServices(deps);
   // Late-mount sync for the bootstrap status event. On a cold boot the whole
   // start → complete/error sequence is emitted while the window still shows
   // the splash document, so the renderer pulls the recorded snapshot once it
@@ -471,115 +391,18 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     return latestBootstrapStatus();
   });
 
-  ipcMain.handle(CHANNELS.plugins.install, async (e, pluginId: string, options?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.plugins.install, e); return UNAUTHORIZED_FRAME; }
-    const lifecycleSlug = pluginId;
-    const installOptions = asPlainRecord(options);
-    const expectedVersionValue = installOptions.expectedVersion;
-    const networkAccessAcknowledgement = parseNetworkAccessAcknowledgement(
-      installOptions.networkAccessAcknowledgement,
-    );
-    if (expectedVersionValue !== undefined && typeof expectedVersionValue !== "string") {
-      throw new Error("expectedVersion must be a string when provided");
-    }
-    const expectedVersion = typeof expectedVersionValue === "string" ? expectedVersionValue.trim() || undefined : undefined;
-    let result: { pluginId: string; installed: true; unchanged?: true } | null = null;
-    // IPC is pure transport — actor decisions live inside
-    // PluginMarketplaceService.install (catalog → admin escalation).
-    // deployment-guard §7.3: "IPC 핸들러에서 actor를 직접 받지 말 것 —
-    // 'it-admin'은 ManagedPluginInstaller 같은 내부 플로우에서만 사용."
-    try {
-      result = await installMarketplacePluginWithLifecycle({
-        requestedPluginId: pluginId,
-        eventSlug: lifecycleSlug,
-        expectedVersion,
-        networkAccessAcknowledgement,
-        pluginRuntime,
-        pluginMarketplace,
-        ensurePluginStateReadyForInstall: ensureInstallStateReady,
-        broadcastInstallProgress: (payload) =>
-          broadcastPluginLifecycleEvent(CHANNELS.plugins.installProgress, payload),
-        emitPluginInstalled: (payload) => emitHostEvent("plugin.installed", payload),
-        refreshPluginNotifications,
-      });
-    } catch (err) {
-      broadcastPluginLifecycleEvent(
-        CHANNELS.plugins.installResult,
-        buildInstallFailureResult(lifecycleSlug, err, "addPlugin failed"),
-      );
-      throw err;
-    }
-    broadcastPluginLifecycleEvent(CHANNELS.plugins.installResult, { slug: lifecycleSlug, success: true });
-    return result;
-  });
-
-  ipcMain.handle(CHANNELS.plugins.rollback, async (e, pluginId: string) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.plugins.rollback, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const normalizedPluginId = typeof pluginId === "string" ? pluginId.trim() : "";
-    if (!normalizedPluginId) throw new Error("pluginId is required for rollback");
-    return rollbackMarketplacePluginWithLifecycle({
-      pluginId: normalizedPluginId,
-      pluginRuntime,
-      pluginMarketplace,
-      ensurePluginStateReadyForInstall: ensureInstallStateReady,
-    });
-  });
-
-  ipcMain.handle(CHANNELS.plugins.uninstall, async (e, pluginId: string, rawOptions?: unknown) => {
+  ipcMain.handle(CHANNELS.plugins.uninstall, async (e, pluginId: string) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.plugins.uninstall, e); return UNAUTHORIZED_FRAME; }
     const broadcastUninstallResult = (payload: { slug: string; success: boolean; error?: string }) => {
       broadcastPluginLifecycleEvent(CHANNELS.plugins.uninstallResult, payload);
     };
     try {
-      const doctorCleanupKind = parseDoctorCleanupKind(rawOptions);
-      const matchingFailure = doctorCleanupKind
-        ? pluginMarketplace
-            .getInstallFailureDiagnostics()
-            .find((failure) => failure.id === pluginId && failure.installFailureKind === doctorCleanupKind)
-        : undefined;
-      const canCleanupSyntheticFailure = matchingFailure
-        ? await pluginMarketplace.getInstalledVersion(pluginId)
-            .then((installedVersion) => installedVersion === null)
-            .catch((err) => {
-              log.warn(`doctor cleanup refused for '${pluginId}': cannot prove plugin is absent: ${errMessage(err)}`);
-              return false;
-            })
-        : false;
-      if (matchingFailure && canCleanupSyntheticFailure) {
-        const result = await cleanupFailedPluginInstallWithLifecycle(pluginId, {
-          pluginMarketplace,
-          pluginRuntime,
-          settingsService,
-          ...requireCleanupServices(),
-          drainPluginInstallLockOperationsService:
-            drainPluginInstallLockOperations,
-          refreshPluginNotifications,
-          emitHostEvent,
-          log,
-        });
-        broadcastUninstallResult({ slug: pluginId, success: true });
-        return result;
-      }
-
       // Lifecycle ordering lives in uninstallPluginWithLifecycle: durable
       // marketplace removal runs inside the runtime generation barrier, then
       // journaled config/secret/auth/cache cleanup completes or stays
       // explicitly retryable. This preserves the Windows EBUSY defense while
       // preventing a partial cleanup from being reported as success.
-      const result = await uninstallPluginWithLifecycle(pluginId, {
-        pluginMarketplace,
-        pluginRuntime,
-        settingsService,
-        ...requireCleanupServices(),
-        drainPluginInstallLockOperationsService:
-          drainPluginInstallLockOperations,
-        refreshPluginNotifications,
-        emitHostEvent,
-        log,
-      });
+      const result = await uninstallPlugin(pluginId);
       broadcastUninstallResult({ slug: pluginId, success: true });
       return result;
     } catch (err) {
@@ -656,7 +479,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
           throw new Error(`atomic local install committed without active runtime: ${result.pluginId}`);
         }
         emitHostEvent("plugin.installed", { pluginId: result.pluginId, source: "local-dev" });
-        refreshPluginNotifications?.();
+        refreshPluginEventBridge?.();
         broadcastPluginLifecycleEvent(CHANNELS.plugins.installResult, {
           slug: result.pluginId,
           success: true,
@@ -667,6 +490,12 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
           CHANNELS.plugins.installResult,
           buildInstallFailureResult(pluginId, err, "addPlugin failed"),
         );
+        if (err instanceof ProcessEntryUnconfinedError) {
+          return { ok: false, error: PROCESS_ENTRY_UNCONFINED_CODE } as const;
+        }
+        if (err instanceof ProcessEntryRequiresPinnedArtifactError) {
+          return { ok: false, error: PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE } as const;
+        }
         throw err;
       }
     });
@@ -753,19 +582,31 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     ) {
       return { ok: false, error: "invalid-contribution-trust-request" };
     }
+    // An approval names the reviewed artifact generation and the approval digest the row showed (design §18.7.5);
+    // a revoke only narrows trust and takes neither.
+    const generationId = value.generationId;
+    const approvalDigest = value.approvalDigest;
+    const sha256 = /^[a-f0-9]{64}$/u;
+    if (approved
+      ? typeof generationId !== "string" || !sha256.test(generationId) || !(approvalDigest === null || (typeof approvalDigest === "string" && sha256.test(approvalDigest)))
+      : generationId !== undefined || approvalDigest !== undefined) {
+      return { ok: false, error: "invalid-contribution-trust-request" };
+    }
     const lifecycle = deps.pluginBundleLifecycle;
     if (!lifecycle) return { ok: false, error: "plugin-bundle-lifecycle-unavailable" };
     try {
+      const binding = approved ? { generationId: generationId as string, approvalDigest: approvalDigest as string | null } : null;
       if (kind === "hook") {
-        if (approved) await lifecycle.approveHook(pluginId, localId);
+        if (binding) await lifecycle.approveHook(pluginId, localId, binding);
         else await lifecycle.revokeHook(pluginId, localId);
-      } else if (approved) {
-        await lifecycle.approveMcpServer(pluginId, localId);
+      } else if (binding) {
+        await lifecycle.approveMcpServer(pluginId, localId, binding);
       } else {
         await lifecycle.revokeMcpServer(pluginId, localId);
       }
       return { ok: true, pluginId, localId, kind, approved };
     } catch (error) {
+      if (error instanceof ContributionTrustReviewStaleError) return { ok: false, error: "contribution-trust-review-stale", message: errMessage(error) };
       return { ok: false, error: "contribution-trust-update-failed", message: errMessage(error) };
     }
   });
@@ -793,14 +634,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     };
   });
 
-  ipcMain.handle(CHANNELS.marketplace.ping, async (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.marketplace.ping, e); return UNAUTHORIZED_FRAME; }
-    return runMarketplacePing();
-  });
-
-  // read-only, sender guard optional
-  ipcMain.handle(CHANNELS.plugins.marketplaceList, () => handleMarketplaceList(deps));
-
   ipcMain.handle(CHANNELS.agents.list, async (e) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.agents.list, e);
@@ -824,60 +657,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
     const skills = deps.skillStore?.listCatalogSync() ?? [];
     return { skills };
-  });
-
-  ipcMain.handle(CHANNELS.agents.install, async (e, slug: string) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.agents.install, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const trimmed = typeof slug === "string" ? slug.trim() : "";
-    if (!trimmed) return { ok: false, error: "invalid-slug", message: "slug is required" } as const;
-    if (!agentArtifactStore) {
-      // Same error object the deep-link path throws, so both paths reach the
-      // renderer with the identical stable code rather than two hand-written
-      // copies of the sentence.
-      return {
-        ok: false,
-        error: MARKETPLACE_DISABLED_CODE,
-        message: new MarketplaceBackendDisabledError("agent").message,
-      } as const;
-    }
-    try {
-      const { installAgentPackageFromMarketplace } = await import("../../agents/agent-installer.js");
-      broadcastPluginLifecycleEvent(CHANNELS.agents.installProgress, { slug: trimmed, phase: "installing" });
-      const result = await installAgentPackageFromMarketplace(trimmed, {
-        fetcher: pluginMarketplace.getFetcher(),
-        store: agentArtifactStore,
-        registryPath: path.resolve(aveHome(), "agents", "registry.json"),
-        onProgress: (evt) => {
-          if (evt.phase === "downloading") {
-            broadcastPluginLifecycleEvent(CHANNELS.agents.installProgress, {
-              slug: trimmed,
-              phase: "downloading",
-              bytesDownloaded: evt.bytesDownloaded,
-              bytesTotal: evt.bytesTotal,
-            });
-          } else {
-            broadcastPluginLifecycleEvent(CHANNELS.agents.installProgress, { slug: trimmed, phase: evt.phase });
-          }
-        },
-      });
-      emitHostEvent("agent.installed", { agentId: result.agentId, slug: result.slug, source: "marketplace" });
-      broadcastPluginLifecycleEvent(CHANNELS.agents.installResult, {
-        slug: result.slug,
-        agentId: result.agentId,
-        success: true,
-      });
-      return { ok: true as const, slug: result.slug, agentId: result.agentId, version: result.version, installed: true as const };
-    } catch (err) {
-      const message = (err as Error).message ?? "Agent install failed";
-      broadcastPluginLifecycleEvent(
-        CHANNELS.agents.installResult,
-        buildInstallFailureResult(trimmed, err, "Agent install failed"),
-      );
-      return { ok: false as const, error: "install-failed", message };
-    }
   });
 
   ipcMain.handle(CHANNELS.agents.uninstall, async (e, slug: string) => {
@@ -907,57 +686,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         buildInstallFailureResult(trimmed, err, "Agent uninstall failed"),
       );
       return { ok: false as const, error: "uninstall-failed", message };
-    }
-  });
-
-  ipcMain.handle(CHANNELS.skills.install, async (e, slug: string) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.skills.install, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const trimmed = typeof slug === "string" ? slug.trim() : "";
-    if (!trimmed) return { ok: false, error: "invalid-slug", message: "slug is required" } as const;
-    if (!skillArtifactStore) {
-      return {
-        ok: false,
-        error: MARKETPLACE_DISABLED_CODE,
-        message: new MarketplaceBackendDisabledError("skill").message,
-      } as const;
-    }
-    try {
-      const { installSkillPackageFromMarketplace } = await import("../../skills/skill-installer.js");
-      broadcastPluginLifecycleEvent(CHANNELS.skills.installProgress, { slug: trimmed, phase: "installing" });
-      const result = await installSkillPackageFromMarketplace(trimmed, {
-        fetcher: pluginMarketplace.getFetcher(),
-        store: skillArtifactStore,
-        registryPath: path.resolve(aveHome(), "skills", "registry.json"),
-        onProgress: (evt) => {
-          if (evt.phase === "downloading") {
-            broadcastPluginLifecycleEvent(CHANNELS.skills.installProgress, {
-              slug: trimmed,
-              phase: "downloading",
-              bytesDownloaded: evt.bytesDownloaded,
-              bytesTotal: evt.bytesTotal,
-            });
-          } else {
-            broadcastPluginLifecycleEvent(CHANNELS.skills.installProgress, { slug: trimmed, phase: evt.phase });
-          }
-        },
-      });
-      emitHostEvent("skill.installed", { skillId: result.skillId, slug: result.slug, source: "marketplace" });
-      broadcastPluginLifecycleEvent(CHANNELS.skills.installResult, {
-        slug: result.slug,
-        skillId: result.skillId,
-        success: true,
-      });
-      return { ok: true as const, slug: result.slug, skillId: result.skillId, version: result.version, installed: true as const };
-    } catch (err) {
-      const message = (err as Error).message ?? "Skill install failed";
-      broadcastPluginLifecycleEvent(
-        CHANNELS.skills.installResult,
-        buildInstallFailureResult(trimmed, err, "Skill install failed"),
-      );
-      return { ok: false as const, error: "install-failed", message };
     }
   });
 
@@ -1292,7 +1020,10 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     if (!checkSetApiKeyRateLimit(String(serverId))) {
       throw new Error("Rate limit exceeded: ave:mcp:config:set-api-key (5/min per server)");
     }
-    return deps.mcpManager.setApiKey(serverId, apiKey);
+    const bundled = deps.mcpManager.bundledCredentialRefForConfigId(serverId);
+    return bundled
+      ? deps.mcpManager.setBundledApiKey(bundled.packageRef, bundled.server, apiKey)
+      : deps.mcpManager.setApiKey(serverId, apiKey);
   });
   ipcMain.handle(CHANNELS.mcp.configRemove, async (e, serverId: string) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configRemove, e); return UNAUTHORIZED_FRAME; }
@@ -1538,8 +1269,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     //    the app's own words), so a card cannot dress its popup up as a host alert
     //    ("Ave 보안 경고: 다시 로그인하세요") and phish the user.
     //  · DELIVERY POLICY — no `bypassFocusGate`, no `urgent`. `bypassFocusGate` is an
-    //    opt-in *manifest* signal (notification-service.ts / boot/plugins.ts): reviewable
-    //    ahead of time and covered by `manifestSha256`. An untrusted iframe may ask for
+    //    opt-in *manifest* signal (an alerts kind's `osNotification`, src/alerts/service.ts):
+    //    reviewable ahead of time and covered by `manifestSha256`. An untrusted iframe may ask for
     //    attention; it does not get to rule that its alert outranks the focus gate, nor
     //    to skip the per-kind cooldown that keeps one app from starving every other
     //    plugin's real alerts. `urgent` is not passed either, so the kind's default
@@ -2095,55 +1826,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     return { ok: true as const };
   });
 
-  ipcMain.handle(CHANNELS.mcp.catalogList, async (e) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.mcp.catalogList, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const all = await pluginMarketplace.list();
-    return all.filter((p) => p.pluginType === "mcp");
-  });
-
-  ipcMain.handle(CHANNELS.mcp.installFromMarketplace, async (e, slug: string) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.mcp.installFromMarketplace, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    if (!mcpArtifactStore) {
-      return {
-        ok: false,
-        error: "marketplace-disabled",
-        message: "MCP marketplace install is unavailable: marketplace backend is disabled in this build.",
-      } as const;
-    }
-    if (typeof slug !== "string" || slug.trim().length === 0) {
-      return { ok: false, error: "invalid-slug", message: "slug is required" } as const;
-    }
-    try {
-      const { installMcpFromMarketplace } = await import("../../mcp/mcp-marketplace-install.js");
-      const result = await installMcpFromMarketplace(slug.trim(), {
-        fetcher: pluginMarketplace.getFetcher(),
-        store: mcpArtifactStore,
-        registerConfig: (config) => deps.mcpManager.addConfig(config),
-      });
-      return {
-        ok: true as const,
-        slug: slug.trim(),
-        installDir: result.installDir,
-        connected: result.connected,
-        warning: result.warning,
-        needsCredential: result.needsCredential,
-        authMode: result.authMode,
-      };
-    } catch (err) {
-      return {
-        ok: false as const,
-        error: "install-failed",
-        message: (err as Error).message ?? "MCP install failed",
-      };
-    }
-  });
-
   ipcMain.handle(CHANNELS.mcp.importClaudeDesktopPreview, async (e, raw: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.mcp.importClaudeDesktopPreview, e);
@@ -2169,7 +1851,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         auditUnauthorized(auditLogger, CHANNELS.mcp.importClaudeDesktopApply, e);
         return UNAUTHORIZED_FRAME;
       }
-      const { parseClaudeDesktopConfig } = await import("../../mcp/claude-desktop-import.js");
+      const { importFailureKind, parseClaudeDesktopConfig } = await import("../../mcp/claude-desktop-import.js");
       const policy = payload?.conflictPolicy ?? "skip";
       const parsed = parseClaudeDesktopConfig(typeof payload?.raw === "string" ? payload.raw : "");
       const seenIds = new Set<string>();
@@ -2182,12 +1864,10 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
       const existing = await deps.mcpManager.getConfigs();
       const existingIds = new Set(existing.map((s) => s.id));
-      const results: Array<{
-        id: string;
-        action: "added" | "skipped-conflict" | "overwritten" | "failed";
-        reason?: string;
-        warning?: string;
-      }> = [];
+      const results: Array<
+        | { id: string; action: "added" | "skipped-conflict" | "overwritten"; reason?: string; warning?: string }
+        | { id: string; action: "failed"; failure: ClaudeDesktopImportFailure; reason: string; warning?: string }
+      > = [];
       for (const entry of dedupedEntries) {
         const conflictedAtStart = existingIds.has(entry.id);
         if (conflictedAtStart) {
@@ -2202,6 +1882,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
             results.push({
               id: entry.id,
               action: "failed",
+              failure: importFailureKind(err),
               reason: (err as Error).message ?? "remove failed",
             });
             continue;
@@ -2220,6 +1901,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
           results.push({
             id: entry.id,
             action: "failed",
+            failure: importFailureKind(err),
             reason: (err as Error).message ?? "addConfig failed",
             warning: entry.warning,
           });
@@ -2548,7 +2230,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   // shell asks, regardless of when preload listeners were set up.
   //
   // Returns `null` when the host hasn't broadcast yet (extreme cold-
-  // boot window). The shell falls back to SDK CSS-side defaults in
+  // boot window). The plugin falls back to its CSS defaults in
   // that case.
   ipcMain.handle(CHANNELS.pluginBridge.getTheme, (e) => {
     if (!validatePluginFrame(e)) {

@@ -1994,7 +1994,7 @@ export async function runToolInvocation(
     // their filesystem operands are parsed from the command string. Native
     // host tools and plugin tools both declare
     // path-bearing arguments on Tool.pathFields; plugin entries are copied
-    // from SDK manifest authority metadata by plugin-tool-adapter.
+    // from host-validated manifest authority metadata by plugin-tool-adapter.
     if (canonicalTargets.length > 0 && !brokeredFileRouteSelected) {
       while (true) {
         // Re-run the Layer 1 predicate each iteration: applyApprovedDirectory

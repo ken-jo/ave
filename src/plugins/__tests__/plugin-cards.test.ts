@@ -16,7 +16,7 @@ import {
   TestPluginRuntime as PluginRuntime,
 } from "./test-helpers.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { agentPluginsDocument } from "./test-helpers.js";
+import { servedAgentPluginsDocument } from "./test-helpers.js";
 
 function writePlugin(root: string, id: string, opts: {
   name: string;
@@ -50,7 +50,6 @@ function writePlugin(root: string, id: string, opts: {
     name: opts.name,
     version: "1.0.0",
     description: "Test fixture.",
-    publisher: "Test fixture",
     entry: "index.mjs",
     icon: opts.icon,
     iconText: opts.iconText,
@@ -67,7 +66,7 @@ function writePlugin(root: string, id: string, opts: {
     ),
     ui: opts.ui,
   };
-  writeFileSync(join(dir, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)));
+  writeFileSync(join(dir, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)));
   const handlers = opts.tools
     .map((t) => `  ${t}: async () => ({ ok: true })`)
     .join(",\n");
@@ -333,12 +332,11 @@ describe("PluginRuntime.listPluginCards — Phase 1.5 Option C catalog", () => {
     mkdirSync(failedDir, { recursive: true });
     writeFileSync(
       join(failedDir, "plugin.json"),
-      JSON.stringify(agentPluginsDocument({
+      JSON.stringify(servedAgentPluginsDocument({
         id: "example-failed",
         name: "Failed",
         version: "1.0.0",
         description: "Test fixture.",
-        publisher: "Test fixture",
         entry: "index.mjs",
         tools: ["failed_read"],
       })));

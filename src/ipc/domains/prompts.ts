@@ -2,6 +2,7 @@ import { ipcMain } from "electron";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
+import { broadcastPromptsUpdated } from "../prompt-broadcast.js";
 
 const PROMPTS_UPDATED = CHANNELS.prompts.updated;
 
@@ -28,13 +29,6 @@ function normalizePromptPatch(value: unknown): {
   };
 }
 
-function broadcastPromptsUpdated(deps: IpcDeps): void {
-  for (const win of deps.getAppWindows?.() ?? [deps.getMainWindow()]) {
-    if (!win || win.isDestroyed()) continue;
-    win.webContents.send(PROMPTS_UPDATED);
-  }
-}
-
 export function registerPromptHandlers(deps: IpcDeps): void {
   const { auditLogger, personaPromptStore } = deps;
 
@@ -47,8 +41,9 @@ export function registerPromptHandlers(deps: IpcDeps): void {
       id: prompt.id,
       name: prompt.name,
       systemPromptAdd: prompt.systemPromptAdd,
+      ...(prompt.origin ? { origin: prompt.origin } : {}),
     }));
-    return { prompts };
+    return { prompts, templates: personaPromptStore?.listTemplates() ?? [] };
   });
 
   ipcMain.handle(CHANNELS.prompts.listSummaries, async (event) => {

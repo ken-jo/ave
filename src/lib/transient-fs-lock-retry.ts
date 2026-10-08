@@ -1,3 +1,5 @@
+import { rename as fsRename } from "node:fs/promises";
+
 /**
  * Single authority for the Windows transient-file-lock retry policy.
  *
@@ -100,3 +102,22 @@ export const DIRECTORY_OP_LOCK_CODES: ReadonlySet<string> = new Set([
   "ENOTEMPTY",
   "EEXIST",
 ]);
+
+/**
+ * Rename a directory into place, retrying transient Windows locks on the
+ * background budget. On other platforms, and for any other code, the first
+ * error propagates (an absent source stays distinguishable from a locked one).
+ */
+export async function renameDirectory(from: string, to: string): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await fsRename(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const retryable = process.platform === "win32" && code !== undefined && DIRECTORY_OP_LOCK_CODES.has(code) && attempt < BACKGROUND_ATTEMPTS;
+      if (!retryable) throw error;
+      await new Promise((resolve) => setTimeout(resolve, transientFsLockDelayMs(attempt)));
+    }
+  }
+}

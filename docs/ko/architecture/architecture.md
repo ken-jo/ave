@@ -1521,7 +1521,7 @@ artifact 와 save data 를 함께 보관한다 (호스트 root 에 끼어들지 
 ├── governance/          # MCP / 플러그인 admin 정책
 ├── mcp/                 # MCP servers config + install dir
 │   ├── servers.json
-│   └── <slug>/          # marketplace install
+│   └── <slug>/          # 마켓플레이스 MCP 패키지 파일
 └── plugins/             # 모든 플러그인 (user / managed 구분 없이 flat)
     ├── registry.json
     └── <plugin-id>/     # install artifact + plugin save data
@@ -2330,6 +2330,7 @@ DLP 통계는 audit NDJSON에서 `type = "dlp"` 엔트리만 집계한다.
 - **CSP + toolbar shell**: main IPC handler 는 renderer payload 를 그대로 로드하지 않고 `src/shared/render-html-preview.ts` 의 CSP-first host shell 로 재구성한 뒤 `data:` URL 로 로드한다. host shell 은 상단 toolbar 와 JavaScript 허용 토글만 소유하고, LLM HTML 은 sandboxed `iframe srcdoc` 안에 넣는다. 토글은 iframe sandbox 의 `allow-scripts` 와 CSP 문서를 재로딩할 뿐 parent/window 권한을 열지 않는다.
 - **테마 토큰 주입**: renderer 는 현재 `--background`, `--foreground`, `--primary`, `--muted`, `--border` 등 Ave theme token 을 preview payload 에 싣고, shell 은 같은 token 을 host toolbar 와 iframe 문서 앞부분에 주입한다.
 - **효과**: 악성 플러그인 HTML 이 외부 서버로 데이터를 유출하거나 원격 스크립트를 로드하는 것을 OS 네트워크 계층에서 차단한다.
+- **테마는 스냅샷**: 열린 preview 는 만들어질 때의 테마를 유지하고, 새 preview 는 현재 테마를 쓴다. LLM HTML 은 opaque-origin sandbox 의 `iframe srcdoc` 별도 문서이고 스크립트가 꺼진 경우가 많다. 그래서 iframe 요소에 변수를 설정해 상속시키거나 parent 가 내부 DOM 에 접근하는 방식은 통하지 않는다. 실시간 갱신에는 문서 안의 메시지 수신기가 필요한데, scripts-disabled 경로에서는 그것이 동작하지 않는다. preview 를 다시 로드하면 문서 상태를 잃는다.
 
 ### 6.6.6 Playwright-Electron E2E 테스트 인프라 (E4 PR #135)
 
@@ -2417,6 +2418,40 @@ ThemeProvider.tsx (renderer)
   임의 CSS 주입 차단 (자세한 검증은 `validateThemePayload`)
 - registry 외 webContents 로 누출 없음 — `pluginWebviewRegistry` 등록된
   webContentsId 만 순회
+
+**호스트 소유 표면**: 같은 ID 의 테마가 제자리에서 갱신된 경우를 포함해, 테마 값을
+복사하는 모든 표면은 호스트 렌더러가 적용한 테마를 따른다.
+- 플로팅 독은 plugin 전용 `getTheme` 를 묻지 않는다. 그 guard 는 plugin frame 만
+  통과시킨다. 대신 main 이 창을 열 때 캐시된 테마를 보내고, 이후의 `host.theme.changed`
+  를 `ave:dock:theme` 로 전달한다 (`hostDockThemeSource`,
+  `src/main/floating-dock-surface.ts`).
+- MCP 앱 카드는 `:root` 에 이미 쓰인 테마(`appliedBundle` / `appliedRevision`)로
+  host context 를 만든다. 그래서 앱은 한 테마의 shell 과 다른 테마의 토큰을 함께 받지 않는다.
+- HTML preview 는 스냅샷이다 (§6.6.5).
+
+**sandboxed preload**: sandboxed frame 에서 도는 preload 는 `electron` 과 Node 모듈
+`events`, `timers`, `url` 만 require 할 수 있다. 그런 frame 은 플로팅 독 창, plugin webview,
+MCP 앱 webview 다. 독의 plugin shell / preload URL 처럼 디스크에서 경로를 풀어야 하는 값은
+main 이 풀어 창 인자(`additionalArguments`, `src/shared/floating-dock-args.ts`)로 넘긴다.
+preload 마다 파일과 sandbox 모드는 표 하나(`src/shared/preload-bundles.json`)에서 온다.
+창은 `preloadPreferences(id)` 를 펼치고, session 은 `preloadBundlePath(id)` 를 등록하며,
+webpack 은 행마다 preload config 를 만든다. `test/scripts/preload-sites.test.ts` 는 `src` 를
+TypeScript 컴파일러로 읽는다. 창은 해석된 Electron 타입으로 찾고, electron 은 import, `require`,
+await 한 dynamic import 를 따라간다. 표에 묶는 지점은 창 `webPreferences`, `registerPreloadScript`,
+guest `sandbox` 대입, 그리고 JSX, `createElement`, `document.createElement` + `setAttribute`, HTML
+문자열 리터럴, HTML sink(`innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`,
+`parseFromString`, `createContextualFragment`, `setHTMLUnsafe`, `dangerouslySetInnerHTML`)로 만든
+`<webview>` 다. 이 지점에서 읽을 수 없는 형태는 거부한다. 계산된 키, `webPreferences` 를 담을 수 있는
+타입의 spread, 리터럴이 아닌 options 나 `webpreferences` 요청, 값으로 쓰이거나 상속되거나
+`Reflect.construct` 에 넘겨진 창 클래스, binding 으로 await 하지 않은 electron dynamic import, 태그
+이름을 보간하거나 markup 을 담을 수 있는 값을 보간한 HTML 이 그 대상이다. 이 형태 밖에서 Electron 에
+닿는 코드는 검사하지 않는다. guest 설정을 실제로 강제하는 것은 main 의 attach guard 다.
+`<webview>` 를 품는 창은 guest 설정을 main 에서 정한다. 메인 창은 plugin, MCP 앱, side browser
+partition 을 각자의 guard 로 넘기고(`configureMainWindowWebviewAttach`) 그 밖의 partition 은
+거부한다. `build` 안의 `check-sandboxed-preloads` 는 표가 분류하지 않은 preload 를
+webpack 이 빌드하거나, 어떤 행 뒤에 webpack config 나 asset 복사가 없으면 실패한다. 그다음 표의
+각 행이 빌드한 파일을 검사한다. sandboxed preload 는 위 모듈만 require 할 수 있고 chunk 를
+가질 수 없다. `dist/src` 의 다른 파일은 훑지 않는다.
 
 **초기 상태 — pull-on-load (1차 메커니즘)**: plugin-ui-shell 이 plugin 모듈
 dynamic-import 직전에 `await window.avePlugin.getTheme()` 으로 호스트의 캐시된
@@ -2590,7 +2625,7 @@ composer/status 영역에 붙여 사용자가 질문과 선택지를 즉시 확�
 | `plugin-perf` | 플러그인 성능 | `PluginPerfTab.tsx` | 플러그인 성능 대시보드 |
 | `mcp` | MCP 서버 | `McpTab.tsx` | MCP 서버 등록 관리 |
 | `plugin-config` | 플러그인 설정 | `PluginConfigTab.tsx` | 플러그인별 설정 (configSchema 기반 폼 또는 raw key-value) |
-| `marketplace` | 마켓플레이스 | `MarketplaceTab.tsx` | 마켓플레이스 URL·API 키·private network 허용 |
+| `marketplace` | 마켓플레이스 | `git-marketplace/GitMarketplaceTab.tsx` | git 마켓플레이스 소스·카탈로그·설치·업데이트, git 런타임, 업데이트 확인·아티팩트 보관 설정 |
 
 > **Note (Routine v2):** `RoutinePanel.tsx` 는 SettingsDialog 탭이 **아니다**. Routine v2 도입 이후 RoutinePanel 은 상단 액션바 햄버거 메뉴의 `루틴` 항목에서 여는 내장 메인 뷰로 동작한다. SettingsDialog 에는 더 이상 routine 탭이 존재하지 않는다.
 
@@ -3073,8 +3108,6 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
     "ai.agent-connector.ave": {
   "displayName": "Ave Meeting",
   "entry": "dist/hostPlugin.js",
-  "publisher": "example-publisher",
-  "installPolicy": "user",
   "startupTimeoutMs": 8000,
 
   "tools": [
@@ -3165,12 +3198,10 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 | `tools[]._meta["ave/operationPolicy"]` | `PluginToolOperationPolicy`                     | operation별 최소 risk와 read/write 제약을 선언한다. 권한 확장이 아니라 제한만 가능하다.                                                                                                                                                                                                                                                                                           |
 | `skills`, `hooks`, `mcpServers`           | `Array<{ id, path }>`                           | 서명된 artifact 안의 plugin-owned contribution. Host가 상대 경로와 namespace를 검증하고 원자적 lifecycle로 투영한다. |
 | `capabilities` | **closed enum** (`src/plugins/capabilities.ts`) | `mail-source` / `calendar-source` / `meeting-recorder` / `knowledge-index` (emit namespace 게이트), `host:overlay` (HostApi `triggerConversation` 게이트) 는 enforced. `lyra-mail-consumer`, `background-watcher` 는 advisory/self-identification label. |
-| `deployment` | `"managed" \| "user"` | managed 는 ed25519 서명 필수 (fail-closed); user 는 warn-on-missing. |
 | `startupTimeoutMs` | integer (1~60000) | `Promise.race` 기반 start() 하드 타임아웃. 초과 시 fail-soft drop. |
 | `eventSubscriptions` | `string[]` | 호스트 이벤트 구독 대상. `memory.private.*` / `settings.apiKey.*` / `audit.*` / `dlp.*` (`PLUGIN_PRIVATE_NAMESPACES`) 는 **거부**. public namespace (`meeting` / `calendar` / `email` / `index`) 는 허용, 그 외는 warn. (2026-05-11: `task` 는 host owner 폐기로 retire. 플러그인-소유 namespace 는 host 가 의도적으로 알지 않으므로 신규 추가 안 함 — open-source-readiness 룰.) |
 | `notificationEvents` | `Array<{ event, titleField?, bodyField? }>` | `registerPluginNotifications()` 가 manifest 만 읽어 OS 알림 핸들러를 자동 배선. |
 | `ui` | `PluginUiExtension[]` | UI slot 마운트 명세. manifest slot key 는 현재 historical `"sidebar"` 값을 사용하지만, 렌더링 표면은 플러그인 뷰/분리 창 경로가 담당한다. |
-| `publisher` | string | 감사 로그·마켓플레이스 표시. |
 | `onboarding` | `PluginOnboardingSpec` (선택) | 첫 실행 안내 선언. `firstTask` 는 투어 직후 제안할 한 건, `highlights[]` 는 기능 소개·신규 기능 홍보를 최대 5건이며 각 항목의 `id` 는 플러그인 안에서 유일해야 한다. 모두 inert metadata 다. 호스트가 타일 오버레이 카드로 한 번씩 물어보고 사용자의 답(승인 / 다음에 다시 보기 / 그만 보기)을 `~/.ave/onboarding/proposals.json` 에 `<pluginId>:<proposalId>` 키로 기록한다. 승인했을 때 벌어지는 일은 `action` 이 정하며 (`composer` 프리필 / `settings` 탭 이동 / 없음), 턴을 시작하거나 도구를 호출하지 않는다. |
 | `configSchema` | `PluginConfigSchema` (선택) | JSON Schema draft-07 subset으로 Host의 typed config form을 선언한다.                                                                                                                                                                                                                                                                                                              |
 
@@ -3185,9 +3216,9 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 >
 > 회귀 사례 (issue #92): pre-fix 호스트가 `dependencies[]` 를 recursive auto-install 시도하던 시절, `vega-helper` (user policy) 가 `lyra-mail` (admin policy) 를 `required: false` 로 선언했음에도 user actor 로 lyra-mail install 이 cascade 되어 admin-guard 가 차단 → user 가 vega-helper 를 설치 못 함. Fix 는 cascade install 자체를 제거하고 hard-required 미설치만 명확한 preflight 로 거부하도록 단순화. Plugin System CI 의 invariant: marketplace install path 는 declared `dependencies[]` 를 **재귀적으로 install 하지 않는다**.
 
-**마켓플레이스 검증:** 플러그인 repo는 sidecar signature를 만들지 않는다. Marketplace upload API가 zip/manifest/schema/version/policy/dependency/access를 검증하고 최종 artifact envelope에 서명한다. Host는 설치 시 envelope를 검증하고 install receipt를 저장한다.
+**마켓플레이스 검증:** 플러그인은 git 마켓플레이스로 게시한다([설계서](../design/multi-source-git-marketplace.md)). Host는 스냅숏 커밋이 고정한 아티팩트(release·archive는 sha256, 또는 고정 트리)를 받아, 스테이징한 `plugin.json`이 설명자의 `minAppVersion`·권한 필드와 같은지 확인하고 폐기된 `installPolicy`·`publisher`가 있으면 거부한 뒤 install receipt를 저장한다. 설치된 매니페스트에 남은 두 필드는 로더가 경고 한 번과 함께 무시한다.
 
-**검증 플로우:** marketplace envelope verification → install receipt file-hash verification → JSON.parse → `flattenAgentPluginsManifest` (문서 → flat 투영) → 문서 대상 Host-owned AJV schema → cross-field (Tool name/visibility/auth/operation policy, contribution id/path, `startupTimeoutMs > 0`) → capability enforcement → entry import. 각 단계 실패 시 해당 플러그인 fail-soft drop.
+**검증 플로우:** install receipt file-hash verification → JSON.parse → `flattenAgentPluginsManifest` (문서 → flat 투영) → 문서 대상 Host-owned AJV schema → cross-field (Tool name/visibility/auth/operation policy, contribution id/path, `startupTimeoutMs > 0`) → capability enforcement → entry import. 각 단계 실패 시 해당 플러그인 fail-soft drop.
 
 부트 preflight는 install receipt 검증을 manifest 파싱보다 먼저 수행한다. Receipt hash와 manifest 검증은 제한된 동시성으로 겹쳐 실행하되, 성공 결과와 실패 상태는 registry 순서대로 반영한다. 무결성 검증에 실패한 payload는 tool/event 소유권이나 dependency capability 계산에 들어가지 않으며, 통과한 manifest는 해당 부트에서 한 번만 파싱한다.
 
@@ -3262,7 +3293,7 @@ boot 시 `PluginRuntime.startAll()`은 로드된 플러그인을 순차 `await`�
 - `onEnable(pluginId)` — 플러그인이 "loaded + started" 상태에 도달한 직후 발화한다(`onDisable`과 대칭). 호스트는 이 콜백으로 `syncPluginToolRegistryForPlugin(pluginRuntime, toolRegistry, pluginId)`를 호출해 `onDisable`이 비운 해당 플러그인의 ToolRegistry 항목만 다시 채운다. 발화 지점: `restartPlugin` start 성공, `restartAll` start 성공 (per plugin), `addPlugin` fresh-load branch의 `instantiateAndStartSinglePlugin` start 성공, `reloadPlugin` start 성공.
 - `onActiveStateChange(pluginId, enabled)` — 사용자 활성/비활성 토글에서만 발화하며 runtime unload가 아니다. 비활성화 시 호스트는 ConversationLoop transient scope만 정리하고 ToolRegistry는 유지한다. 따라서 auth/config/UI 호출은 계속 runtime 도구를 실행할 수 있고, 모델 노출만 ConversationLoop tool scope에서 차단된다.
 
-이 lifecycle 계약은 "post-boot lifecycle event ⇒ ToolRegistry 자동 재동기화"를 보장한다. 따라서 `hostApi.config.set` wrapper / IPC `ave:plugins:config:set` / dev-reload watcher / managed-marketplace `restartAll` 등 모든 외부 caller는 별도의 `syncPluginToolRegistry` 호출이 필요 없다. 호출자 측에서 sync를 잊으면 `onDisable`이 ToolRegistry에서 도구를 지운 직후 그대로 비어 있는 상태가 되어 chat-surface가 `도구를 찾을 수 없습니다: <tool>` 에러를 노출하는 회귀(PR #760)가 발생하는데, `onEnable` 콜백이 이를 contract-level에서 닫는다.
+이 lifecycle 계약은 "post-boot lifecycle event ⇒ ToolRegistry 자동 재동기화"를 보장한다. 따라서 `hostApi.config.set` wrapper / IPC `ave:plugins:config:set` / dev-reload watcher / 마켓플레이스 설치·업데이트 등 모든 외부 caller는 별도의 `syncPluginToolRegistry` 호출이 필요 없다. 호출자 측에서 sync를 잊으면 `onDisable`이 ToolRegistry에서 도구를 지운 직후 그대로 비어 있는 상태가 되어 chat-surface가 `도구를 찾을 수 없습니다: <tool>` 에러를 노출하는 회귀(PR #760)가 발생하는데, `onEnable` 콜백이 이를 contract-level에서 닫는다.
 
 부트 초기 1회는 예외다. `startAll()` 직후 boot는 `syncPluginToolRegistry(pluginRuntime, toolRegistry)`로 ToolRegistry를 일괄 채우므로 `startAll`이 매 플러그인마다 `onEnable`을 발화하지 않는다. `plugin.installed` 호스트 이벤트 listener는 partition policy 설치 책임만 유지하고 ToolRegistry sync는 더 이상 호출하지 않는다 (`onEnable`이 cover). `plugin.uninstalled` listener는 `onEnable`이 cover하지 못하는 ghost-tool sweep 책임(설치 해제 후 stale 항목 제거)을 위해 full `syncPluginToolRegistry`를 유지한다.
 
@@ -3632,140 +3663,52 @@ sequenceDiagram
     CLIENT->>SERVER: shutdown (세션 종료)
 ```
 
-### 9.6 Plugin Deployment Model — Managed vs User-Installed
+### 9.6 Plugin Deployment Model — git 마켓플레이스와 필수 설치
 
-상세 설계는 `docs/architecture/plugin-deployment-model.md`를 따른다. 동일한 Plugin System 위에서 동작하지만 **lifecycle, 권한, UI, 감사**가 모두 다른 두 deployment 모드를 구분한다.
+플러그인과 다른 모든 패키지 종류는 git 마켓플레이스로 들어온다(`src/marketplace/`,
+[설계서](../design/multi-source-git-marketplace.md)). 앱은 소스마다 저장소를 동기화해
+읽은 커밋을 고정하고, 그 커밋이 가리키는 바이트(sha256으로 고정한 release·archive, 또는
+고정 트리)로만 설치한다. 소스가 지정하는 모든 git 원격과 다운로드는 하나의 네트워크
+게이트를 지난다. 게이트는 기기 정책을 적용한 뒤 각 주소의 분류를 검사한다. 다운로드와
+http(s) git은 검사한 주소에만 연결한다. ssh git은 git을 실행하기 전에 검사하며, ssh 자신의
+이후 조회는 묶이지 않는다. 프록시는 자기 주소에서 검사하고 그 너머는 신뢰한다. 평문 http,
+사내망, 이 컴퓨터 대상은 소스 주소마다 한 번 확인하고, 메타데이터와 라우팅 불가 주소는 항상
+거부한다(설계서 §7.4). 마켓플레이스 호출은 각각 하나의 작업으로, 그 작업이 시작된 뒤 갱신이
+적용한 정책 아래에서 돈다. 잠금 순서는 마켓플레이스 작업이 어떤 플러그인 수명 주기 잠금보다
+먼저다. 플러그인 잠금을 잡고 마켓플레이스를 부르는 코드는 먼저 작업 하나에 들어간 뒤 그 안에서
+플러그인 잠금을 잡는다(설계서 §12). 한 패키지의 설치·제거·업데이트는 그 패키지의 잠금도
+작업 다음, 플러그인 잠금 전에 잡는다. 선행 플러그인 제거도 두 패키지의 잠금을 같은 순서로
+잡고, 플러그인 잠금을 쥔 채 요청한 패키지 잠금은 기다리지 않고 실패한다. 호출자는 패키지
+잠금을 모두 한 요청으로 잡는다(`app/keyed-mutex.ts`). 받은 리스는 콜백이 도는 동안만 살고,
+쥔 패키지 아래에서만 일을 돌리며 확장되지 않는다. 리스 없이 다시 요청하면 기다리지 않고 실패한다. 관리형 패키지·회사 배포 모드·서명된 관리 정책은 없다.
 
-```mermaid
-graph TB
-    subgraph "managed (회사 배포)"
-        M1["IT Admin API<br/>(enterprise marketplace)"]
-        M2["Managed Policy<br/>(서명된 JSON)"]
-        M3["ensureManagedInstalled<br/>(boot 시 auto-sync)"]
-        M4["~/.ave/plugins/&lt;id&gt;/<br/>(installedBy=admin, 사용자 삭제 불가)"]
-        M1 --> M2 --> M3 --> M4
-    end
+설치된 패키지는 부팅 때와 하루에 한 번 스스로 업데이트된다. 한 번에 하나씩, 대화 턴·세션
+변경·세션 전환이 돌지 않을 때만(`ConversationActivityCoordinator.onIdle`) 적용하고, 에이전트
+플러그인은 MCP 호출이 빠질 때까지 기다린다. 업데이트는 동의 지문(authority, MCP 서버, 훅,
+런처, 매니페스트의 버전 문자열만 정규화한 패키지 트리를 덮는 번들 서버·훅마다의 승인
+다이제스트)이 설치된 버전을 검토한
+기준선과 같을 때만 자동 적용된다. 카탈로그로 한 번, 무엇이든 활성화하기 전에 스테이징한
+바이트로 다시 확인한다. 동의 변화는 절대 자동 적용하지 않고 사용자의 검토를 기다린다. 구성
+요소 승인은 승인 다이제스트가 같을 때만 새 세대로 이어진다. `requiredInstalls` 업데이트는
+정책이 검토한 것으로 보고, 새 구성 요소는 승인되지 않은 채 둔다. 큐에 든 업데이트가 지닌
+어떤 것도 그것을 허가하지 않는다. 차례가 오면 잠금 아래에서 그때의 정책과 스위치로 다시
+판정한다(설계서 §7.3, §15.6).
 
-    subgraph "user (자율 설치)"
-        U1["User 명시 액션<br/>(설치 UI / URL)"]
-        U2["Policy allowlist<br/>/ denylist 검증"]
-        U3["PluginMarketplaceService<br/>(수동 install)"]
-        U4["~/.ave/plugins/&lt;id&gt;/<br/>(installedBy=user, 사용자 자유 관리)"]
-        U1 --> U2 --> U3 --> U4
-    end
+| 항목 | 규칙 |
+|---|---|
+| **소스** | 공식(`ave`, 앱 내장), 관리형(시스템 정책 파일의 `marketplaces.additional`), 사용자 지정, 직접(git 폴더 하나) |
+| **처음 설치** | 앱의 `DEFAULT_INSTALLS`와 정책의 `defaultInstalls`: 부팅 때 한 번 설치하고 기록. 사용자가 지운 것은 다시 설치하지 않음 |
+| **필수 설치** | 정책의 `requiredInstalls`: 부팅 때 설치·업데이트. 그 항목이 가리키는 소스에서 설치된 패키지만 제거·비활성화가 막힘(`PluginDeploymentGuard`, 확인할 때마다 정책 파일을 읽음) |
+| **매니페스트** | `installPolicy`·`publisher`는 폐기. 설치는 필드 이름을 밝혀 거부하고, 이미 설치된 매니페스트는 경고 한 번과 함께 무시 |
+| **호스트 시크릿** | 앱의 `HOST_SECRET_GRANTS` 표만 부여. 공식 스냅숏이 고정한 아티팩트로 설치된 공식 플러그인에 한함. 프로바이더 프리셋 키는 부여하지 않고, 로컬 개발 설치는 해당 없음 |
+| **폐기** | 소스마다 `policy/revocations.json`. 그 소스에서 설치된 것만 비활성화·제거. 부팅 때와 백그라운드 동기화마다 적용 |
+| **Directory** | `~/.ave/plugins/<id>/` 단일 root. registry 항목의 `origin`이 소스·커밋·버전·단계를 기록 |
 
-    subgraph "PluginRuntime"
-        GUARD["PluginDeploymentGuard<br/>(uninstall / disable 정책 체크)"]
-    end
-
-    M4 --> GUARD
-    U4 --> GUARD
-    GUARD --> RUN["공통 runtime<br/>(HostApi 동일)"]
-```
-
-**핵심 구분**
-
-| 항목 | managed | user |
-| ----------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| **소스** | enterprise marketplace API (mTLS + SSO) | 사용자 직접 (URL, local file, enterprise store의 자율 항목) |
-| **설치 시점** | Ave boot 시 Managed Policy Sync에서 자동 | 사용자 명시 액션 |
-| **삭제 권한** | 회사만 (`PluginDeploymentGuard.canUninstall()` = false) | 사용자 자유 |
-| **업데이트** | 정책 push 시 강제 | 사용자 opt-in |
-| **서명 검증** | **[Phase 3 계획]** corporate Root CA 필수 (실패 시 load 거부). 현 스키마는 서명 필드 미지원. | **[Phase 3 계획]** 정책에 따라 `warn` / `require` / `off` |
-| **Directory** | `~/.ave/plugins/<id>/` (단일 root, `installedBy=admin` 메타데이터로 분류) | `~/.ave/plugins/<id>/` (단일 root, `installedBy=user` 메타데이터로 분류) |
-| **Manifest 필드** | `deployment: "managed"`, `publisher` | `deployment: "user"` |
-| **Settings UI** | lock icon + "회사 배포" 표시, 제거 / 비활성화 버튼 잠금 | 정상 토글 |
-| **차단 시나리오** | 정책 `deny_list` 발행 → 다음 boot 시 자동 제거 | 정책 매치 시 즉시 비활성화 |
-| **감사 로깅** | managed sync 이벤트는 enterprise 감사 endpoint push 대상 | 로컬 audit log 중심 |
-| **오프라인** | 최근 정책 cache (TTL 7일), 30일 초과 시 보수 모드 | 항상 사용 가능 |
-
-**Manifest 확장 (§9.2 보강)**
-
-```json
-{
-  "id": "ave-plugin-docs",
-  "name": "Ave Docs Plugin",
-  "version": "0.2.0",
-  "entry": "dist/index.js",
-  "tools": ["document_scan", "document_search", "..."],
-  "description": "Document processing and semantic search plugin.",
-  "installPolicy": "admin",
-  "publisher": "example-publisher"
-}
-```
-
-> `tools[]` 는 lower snake_case LLM tool name이며 (`lyramail_calendar_today`, `lyramail_email_start_watcher` 등), boot/runtime registration 경로에서도 동일한 이름이 그대로 전달된다. dotted form은 이벤트 이름에만 사용한다.
-
-**Phase 3 계획 (미구현):** managed 매니페스트에 서명/게시 메타데이터를 추가한다. 구체적으로는 `publisherId`, `publishedAt` (ISO 8601), `signature` (base64 ECDSA-P256-SHA256), `signatureAlgorithm`, `minAppVersion`/`maxAppVersion`. 현재 스키마는 이 필드를 수용하지 않으며, runtime이 서명을 검증하지도 않는다.
-
-**Boot Sequence 확장 (§4.2 보강)**
-
-```
-Step 0:    Runtime Coordinator Wire-up                    [Phase 1 완료]
-           └─ host-owned runtime coordinator 인스턴스만 주입
-Step 0.5:  Managed Policy Sync                            [Phase 1.5 설계]
-           ├─ ssoToken 확보 (§14.2 Auth)
-           ├─ fetchPolicy(sso) from IT Admin API
-           ├─ verifyPolicySignature() — corporate CA 공개키
-           ├─ policy cache 갱신 (7일 TTL)
-           └─ offline fallback: last-valid cache
-Step 0.6:  Managed Plugin Installer                       [Phase 1.5 설계]
-           ├─ diff: installed/managed vs policy.enforcements
-           ├─ install / update / remove
-           ├─ hash + signature 검증 → 파일 무결성
-           └─ 실패 시 기존 버전 유지 + 사용자 알림
-Step 1-8:  기존 boot sequence
-```
-
-`uv` materialize 와 Python dependency sync 는 앱 부팅 Step 0 이 아니라, plugin
+`uv` materialize 와 Python dependency sync 는 앱 부팅 단계가 아니라, plugin
 install/start 경계에서 해당 플러그인의 `python-requirements.lock` content +
-OS/arch key 기반 공유 venv 로 준비한다. 따라서 managed/user plugin 설치 정책은
-host asset 배포와 plugin-owned runtime dependency 준비를 분리해서 다룬다.
+OS/arch key 기반 공유 venv 로 준비한다.
 
-**Runtime 제약**: `PluginRuntime.uninstall(id)` 및 `disable(id)`는 `PluginDeploymentGuard` 통과 후만 실행된다. managed 플러그인은 기본적으로 uninstall / disable 요청을 거부한다.
-
-**User Install Policy**는 다섯 가지 중 하나를 선언한다.
-
-- `allow` — 모든 user 설치 허용
-- `deny` — 모든 user 설치 차단 (kiosk 모드)
-- `allowlist` — 지정 id만 허용
-- `denylist` — 지정 id 제외 모두 허용
-- `ask` — 사용자 승인 + IT 알림
-
-**정책 파일 구조** (`~/.ave/governance/managed-policy.json`)
-
-```json
-{
-  "version": "2026-04-13T21:00:00Z",
-  "signer": "example-ca",
-  "signature": "base64(ECDSA(policy_body))",
-  "enforcements": {
-    "managedPlugins": [
-      {
-        "id": "ave-plugin-local-indexer",
-        "version": "0.2.0",
-        "source": "https://internal.your-corp.example/ave/marketplace/api/v1/plugins/ave-plugin-local-indexer/0.2.0",
-        "sha256": "...",
-        "forceInstall": true,
-        "autoUpdate": true
-      }
-    ],
-    "userInstallPolicy": "allowlist",
-    "userAllowlist": ["mcp-notion", "mcp-jira", "personal-habit-tracker"],
-    "requireUserSignature": false
-  },
-  "denyList": [
-    { "id": "compromised-plugin", "reason": "CVE-2026-xxxx", "revokedAt": "2026-04-13T20:00:00Z" }
-  ],
-  "nextCheckAt": "2026-04-14T21:00:00Z"
-}
-```
-
-**Phase 분리**
-
-- **Phase 1.5**: deployment mode 타입 + manifest 확장 + `PluginDeploymentGuard` 경량 구현 + UI 잠금 표시
-- **Phase 2**: Managed Policy Sync + Installer + IT Admin API 실연결 + SSO 토큰 경로
-- **Phase 3**: ECDSA 서명 검증 + corporate CA 체인 + 오프라인 cache TTL + enterprise 감사 endpoint 연동
+**Runtime 제약**: `PluginRuntime.uninstall(id)` 및 `disable(id)`는 `PluginDeploymentGuard` 통과 후만 실행된다. 거부 사유는 `requiredInstalls` 하나뿐이다.
 
 ### 9.7 Plugin UI bridge namespaces (added in v0.x)
 
@@ -4433,25 +4376,13 @@ flowchart TB
 
 ## 15. Security Hardening — 구현 완료 항목
 
-### 15.1 Host 기반 마켓플레이스 trust anchor
+### 15.1 git 마켓플레이스 신뢰 근거
 
-마켓플레이스 artifact envelope 검증에 사용되는 Ed25519 공개 키는 host runtime이 소유한다. `@ave/plugin-sdk`는 플러그인 authoring type contract만 제공하며 trust anchor를 포함하지 않는다.
-
-**파일**: `src/plugins/publisher-keys.ts`
-
-| 항목 | 내용 |
-|--------- |-------------------------------------------------------------------------------------------------- |
-| 키 형식 | Ed25519 원시 32바이트 (base64) |
-| 소스 | `MARKETPLACE_PUBLIC_KEYS` from `src/plugins/marketplace-keys.ts` |
-| 실패 정책 | Envelope 검증 실패 또는 install receipt hash mismatch 시 로드 거부 (fail-closed) |
-| 로테이션 | Host release가 새 trust anchor를 포함. 장기적으로 signed key metadata/TUF-style rotation 도입 가능 |
-
-```typescript
-// src/plugins/publisher-keys.ts (요약)
-import { MARKETPLACE_PUBLIC_KEYS } from "./marketplace-keys.js";
-
-export function getBundledPublicKeys(): Record<string, Buffer>; // raw ed25519 키
-```
+마켓플레이스 서명 키와 artifact envelope은 없다. 설치가 믿는 것은 동기화한 소스
+스냅숏의 커밋과, 그 커밋의 설명자가 고정한 sha256(release·archive) 또는 트리다.
+스테이징한 `plugin.json`이 설명자의 `minAppVersion`·권한 필드와 다르면 설치를 멈춘다
+(`MANIFEST_MISMATCH`). `@ave/plugin-sdk`는 플러그인 authoring type contract만
+제공한다.
 
 **Install receipt schema (v2)**: `PluginInstallReceipt` (schemaVersion 2) 는 `installSource: "marketplace" | "local-dev"` 필드로 설치 경로를 구분한다. `local-dev` 영수증은 `isDevModeUnlocked()` 게이트가 false 인 환경(packaged 빌드 또는 AVE_DEV 미설정)에서 `verifyReceiptAndDevGuard` 가 로드를 거부한다. v1 영수증(PR #421 이전 설치분)은 `verifyInstallReceipt` 가 read-time 으로 v2 로 정규화하며, `signerKeyId` 가 `"dev:"` prefix 이면 `local-dev`, 아니면 `marketplace` 로 분류된다.
 
@@ -4459,31 +4390,10 @@ export function getBundledPublicKeys(): Record<string, Buffer>; // raw ed25519 �
 
 ---
 
-### 15.2 Marketplace Admin CSRF 보호 (F3)
+### 15.2 Marketplace Admin CSRF 보호 (F3) — 서버와 함께 제거
 
-Marketplace FastAPI 서버는 Bearer 토큰 기반 REST API에 대해 `CSRFOriginMiddleware`를 적용한다. 쿠키 세션이 아닌 API 키 인증 환경에서 크로스-오리진 폼/fetch 제출을 차단한다.
-
-**파일**: `agent-marketplace/server/src/ave_marketplace/csrf.py`
-
-**설계 원칙**:
-- 안전 메서드(GET, HEAD, OPTIONS)는 무조건 통과
-- 상태 변경 메서드(POST, PUT, DELETE 등): `Origin` 헤더가 허용 목록에 없으면 **403 거부** (fail-closed)
-- `Origin`이 없거나 `"null"`인 경우: `Sec-Fetch-Site`를 폴백으로 확인. `same-origin` / `same-site` / `none`이 아니면 거부
-- `cors_origins`가 비어 있으면 미들웨어 등록 자체를 금지 (`ValueError` 발생) — 설정 오류를 시작 시점에 포착
-
-```python
-# 등록 조건: cors_origins가 비어 있지 않을 때만
-if settings.cors_origins:
-    app.add_middleware(CSRFOriginMiddleware, allowed_origins=settings.cors_origins)
-```
-
-| 케이스 | 결과 |
-|----------------------------------------------- | ---- |
-| GET + 임의 Origin | 허용 |
-| POST + 허용된 Origin | 허용 |
-| POST + 미허용 Origin | 403 |
-| POST + Origin 없음 + Sec-Fetch-Site=same-origin | 허용 |
-| POST + Origin="null" + Sec-Fetch-Site 없음 | 403 |
+마켓플레이스 서버의 관리 API와 그 CSRF 미들웨어는 git 마켓플레이스 전환으로
+서버 마켓플레이스가 제거되면서 앱의 경계에서 사라졌다.
 
 ---
 

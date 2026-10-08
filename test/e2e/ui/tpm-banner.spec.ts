@@ -222,7 +222,7 @@ test.describe("TPM warning / destructive banner", () => {
   // -------------------------------------------------------------------------
   // Case 4 — dark / light theme screenshot (visual regression anchor)
   // -------------------------------------------------------------------------
-  test("TPM warning banner renders in dark and light themes", async () => {
+  test("TPM warning banner renders in both compiled themes", async () => {
     // Use 160K tokens on nano → stable warning banner for screenshot
     const ctx = await launchWithTokens({ tokensIn: 160_000, vendor: "openai", model: "gpt-5.4-nano" });
     const { page } = ctx;
@@ -238,19 +238,18 @@ test.describe("TPM warning / destructive banner", () => {
       const tpmText = page.locator("span.font-semibold").filter({ hasText: TPM_LABEL });
       await expect(tpmText).toBeVisible({ timeout: 10_000 });
 
-      // Dark theme screenshot
+      // The compiled bundles; every other theme is an installed package.
       await page.evaluate(() => {
-        document.documentElement.setAttribute("data-theme-bundle", "tokyo-night");
+        document.documentElement.setAttribute("data-theme-bundle", "gallery");
       });
       await page.waitForTimeout(200);
-      await page.screenshot({ path: "test-results/tpm-banner-dark.png", fullPage: false });
+      await page.screenshot({ path: "test-results/tpm-banner-gallery.png", fullPage: false });
 
-      // Light theme screenshot
       await page.evaluate(() => {
-        document.documentElement.setAttribute("data-theme-bundle", "violet-light");
+        document.documentElement.setAttribute("data-theme-bundle", "moonstone");
       });
       await page.waitForTimeout(200);
-      await page.screenshot({ path: "test-results/tpm-banner-light.png", fullPage: false });
+      await page.screenshot({ path: "test-results/tpm-banner-moonstone.png", fullPage: false });
 
       // Both screenshots taken without error — visual regression anchor established.
       // Banner still visible after theme swap.

@@ -1810,6 +1810,9 @@ interface SpawnResult {
  *   - `allowWrite: writePaths` — the namespace-scoped write-jail derived by
  *     {@link ../permissions/sandbox-write-jail.js deriveSandboxWritePaths}
  *     (owner plugin sandbox root ∪ allowed directories), NOT the bare cwd.
+ *     On Linux the wrap withholds a root under a protected read deny, because
+ *     a bubblewrap write bind would reopen the deny
+ *     (asrt-sandbox.ts buildPerCommandSandboxCustomConfig).
  *   - read-jail HOME-leak fix: `denyRead: [$HOME]` then re-allow the cwd and
  *     the write paths via `allowRead`. ASRT's denyRead takes precedence over
  *     allowRead's parent, so this denies the broad home dir while keeping the
@@ -1841,14 +1844,15 @@ export async function spawnWithSandbox(
   // Deny HOME and project invocation reads through the shared policy, which
   // preserves protected denies while admitting scoped work and saved history.
   const sandboxWritePaths = [...writePaths, homePath];
-  const { allowRead, denyRead } = getBuiltinShellReadPolicy(
-    [resolvedCwd, ...sandboxWritePaths, ...preparedShellExecutableReadPaths(prepared)], home,
+  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy(
+    [resolvedCwd, ...sandboxWritePaths, ...preparedShellExecutableReadPaths(prepared)], home, homePath,
   );
   const filesystem = {
     allowWrite: sandboxWritePaths,
     allowRead,
     denyRead,
     denyWrite: getDefaultSensitiveWriteDenyPaths(),
+    floorPierces,
   };
 
   const abortController = new AbortController();
@@ -2903,12 +2907,13 @@ async function spawnPowerShellWithSandbox(
 
   const home = process.env["HOME"];
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
-  const { allowRead, denyRead } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths], home);
+  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths], home, sandboxHome.path);
   const filesystem = {
     allowWrite: sandboxWritePaths,
     allowRead,
     denyRead,
     denyWrite: getDefaultSensitiveWriteDenyPaths(),
+    floorPierces,
   };
 
   const abortController = new AbortController();

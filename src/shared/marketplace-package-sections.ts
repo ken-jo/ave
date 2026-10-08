@@ -15,7 +15,7 @@ export const MARKETPLACE_ASSET_PACKAGE_TYPES = [
 export type MarketplaceAssetPackageType =
   (typeof MARKETPLACE_ASSET_PACKAGE_TYPES)[number];
 
-export type MarketplacePackageFilter = "all" | MarketplacePackageType;
+type MarketplacePackageFilter = "all" | MarketplacePackageType;
 
 export interface MarketplacePackageFilterOption {
   value: MarketplacePackageFilter;
@@ -31,9 +31,12 @@ export interface MarketplacePackageSectionDefinition {
   trustLabelKeys: readonly string[];
 }
 
+const PACKAGE_VOCABULARY_KINDS = { plugin: "extension", "agent-plugin": "plugin" } as const;
+const CODE_PACKAGE_SECTION_LABELS = { extension: "Extensions", plugin: "Plugins" } as const;
+
 export const MARKETPLACE_PACKAGE_TYPE_LABELS: Readonly<Record<MarketplacePackageType, string>> =
   Object.freeze({
-    plugin: "Plugins",
+    plugin: CODE_PACKAGE_SECTION_LABELS[packageVocabularyKind("plugin")],
     mcp: "MCP",
     agent: "Agents",
     skill: "Skills",
@@ -85,7 +88,15 @@ export function isMarketplaceAssetPackageType(
   return typeof value === "string" && MARKETPLACE_ASSET_PACKAGE_TYPE_SET.has(value);
 }
 
-export function marketplacePackageLabel(packageType: MarketplacePackageType): string {
+/** The catalog kind is already present on catalog and installed marketplace rows. */
+export function packageVocabularyKind(kind: "plugin" | "agent-plugin"): "extension" | "plugin" {
+  return PACKAGE_VOCABULARY_KINDS[kind];
+}
+
+export function marketplacePackageLabel(packageType: MarketplacePackageType | "agent-plugin"): string {
+  if (packageType === "plugin" || packageType === "agent-plugin") {
+    return CODE_PACKAGE_SECTION_LABELS[packageVocabularyKind(packageType)];
+  }
   return MARKETPLACE_PACKAGE_TYPE_LABELS[packageType];
 }
 

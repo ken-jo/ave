@@ -31,7 +31,6 @@ const MANIFEST: PluginManifest = {
   name: "Integrity Fixture",
   version: "1.0.0",
   description: "load-time integrity fixture",
-  publisher: "test",
   entry: "dist/index.js",
   tools: [],
 };

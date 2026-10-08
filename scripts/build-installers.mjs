@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { hostRuntimeAssetSummary } from "./packaged-runtime-assets.mjs";
 import { installerUvTargetFor } from "./uv-targets.mjs";
+import { assertPackagedDocumentInputs } from "./lib/document-consumer-guard.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
@@ -295,6 +296,7 @@ async function main() {
   const { selected, publish, skipBuild, skipCodeSign, skipNativeRebuild, fast, dirOnly } = parseArgs(
     process.argv.slice(2),
   );
+  assertPackagedDocumentInputs(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")), root);
   for (const target of selected) {
     assertNativeTarget(target);
   }

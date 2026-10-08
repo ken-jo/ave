@@ -110,7 +110,7 @@ export const SETTINGS_SECTIONS: Record<SettingsTab, readonly string[]> = {
   ],
   mcp: ["mcp-servers"],
   "plugin-config": ["plugin-config-installed", "plugin-config-performance"],
-  marketplace: ["marketplace-inventory", "marketplace-maintenance", "marketplace-advanced"],
+  marketplace: ["marketplace-inventory", "marketplace-maintenance"],
   about: ["about-system-info"],
 };
 

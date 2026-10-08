@@ -1,507 +1,132 @@
-# Ave 마켓플레이스 퍼블리싱 가이드 (prod)
+# Git 마켓플레이스에 게시하기
 
-> **상태**: Phase 2-final + git-based bootstrap 반영 (2026-04-27)
-> **대상**: enterprise prod 마켓플레이스에 플러그인 / MCP 서버를 게시하는 퍼블리셔
-> **선행 읽음**: [현재 English Plugin Development Guide](../../guides/plugin-development.md)
-> **로컬 dev 루프**: 이 문서는 prod 흐름입니다. dev 환경에서 동일 흐름을 검증하려면 [`local-marketplace-testing.md`](./local-marketplace-testing.md). 마켓플레이스 우회 시나리오는 [`local-plugin-development.md`](./local-plugin-development.md).
+> **상태**: 현행 (2026-09-25). [멀티 소스 git 마켓플레이스](../blueprints/multi-source-git-marketplace.md)
+> 전환 때 제거된 서버 마켓플레이스의 퍼블리셔 흐름을 대신합니다. 영어 원문
+> [../../guides/marketplace-publishing.md](../../guides/marketplace-publishing.md)이
+> 기준이고, 이 문서는 그 한국어 미러입니다. 내용이 다르면 영어 원문을 따릅니다.
 
----
+마켓플레이스는 git 저장소입니다. 앱은 git으로 저장소를 읽고, 읽은 내용을 커밋에
+고정하며, 그 커밋이 가리키는 바이트로만 패키지를 설치합니다. 업로드·승인 대기열·퍼블리셔
+키는 없습니다. 게시는 머지이고, 저장소의 브랜치 보호가 검토입니다. 아래 형식은 모두
+[설계서](../design/multi-source-git-marketplace.md)가 소유하며, 이 문서는 작성자를
+위한 안내입니다.
 
-## ⚡ 빠른 시작 (TL;DR)
+## 어떤 마켓플레이스인가
 
-**managed (권장)** — git-based bootstrap
+| 소스 | 누가 추가하나 | 할 수 있는 것 |
+|---|---|---|
+| 공식(`ave`) | 앱에 내장 | 플러그인이 호스트 시크릿 부여를 받을 수 있는 유일한 소스(§10.3) |
+| 관리형 | 시스템 정책 파일(`marketplaces.additional`) | 정책의 `defaultInstalls`·`requiredInstalls`에 패키지를 올릴 수 있음 |
+| 사용자 지정 | 사용자, 설정 → 마켓플레이스 → 추가 | 일반 설치 |
+| 직접 | 사용자, git 폴더 하나에서 | 패키지 하나, 인덱스 없음 |
 
-1. 본인 플러그인 레포에서 `package.json` 버전 bump + `bun run build`
-2. `dist/` + `plugin.json` 커밋, 메인 브랜치에 머지
-3. `agent-marketplace` 의 `MANAGED_SOURCES` 에 본 레포가 등록되어 있는지 확인 (없으면 마켓플레이스 PR 한 번 필요)
-4. 마켓플레이스 서버가 다음 부팅 (또는 admin 트리거) 시 자동 publish — **zip / CLI / 사이닝 작업 불필요**
+실행 중에 패키지가 할 수 있는 일은 소스와 상관없이 같습니다. 어떤 패키지도 스스로를
+잠그거나, 스스로에게 시크릿을 부여하거나, 다른 소스의 패키지를 폐기할 수 없습니다.
 
-**ad-hoc** — CLI publish
-
-```bash
-cd <your-plugin-repo>
-bun run build
-ave-publish \
-  --marketplace-url https://marketplace.example.com \
-  --api-key "$AVE_PUBLISHER_KEY" \
-  --slug my-plugin --version 1.2.3 \
-  --plugin-dir .
-```
-
-`installPolicy: "admin"` 매니페스트는 publisher 키가 admin 역할이거나 admin 승인 필요.
-
-**per-plugin CI** — git tag 가 SoT (ave-plugin-* 레포 기본)
-
-```bash
-# 1. plugin.json 의 version 을 PR 으로 올림 (마켓플레이스 catalog 가 자동 bump 안 함)
-#    예: "version": "0.1.0" → "0.1.25"
-# 2. 머지 후 main 에서 매칭 SemVer tag 푸시
-git checkout main && git pull
-git tag v0.1.25 -m "release 0.1.25"
-git push origin v0.1.25
-# → 레포의 .github/workflows/publish.yml 가 tag-push 만 듣고 catalog 에 publish
-#   tag semver 와 plugin.json.version 일치 검증 후 zip + POST
-```
-
-**branch push 는 publish 안 함** — 의도된 release tag 만 트리거. 이게 source 의 `plugin.json.version` 과 catalog 의 version 을 항상 일치시키는 결정적 룰. 자세한 것은 [`plugin-tool-schema-design.md` 의 version SoT 박스](../references/plugin-tool-schema-design.md#2-pluginmanifest-필드별-스펙) 참조.
-
-**서명 키 모델**: 런타임 trust root 는 앱 호스트가 소유합니다. SDK 는 타입/소스 계약만 제공하며, 앱의 `src/plugins/marketplace-keys.ts` 와 서버 `MARKETPLACE_SIGNING_PRIVATE_KEY_*` 가 짝을 이룹니다.
-
-상세 흐름 / 검증 / 트러블슈팅은 아래 본문 참고.
-
----
-
-## 한 줄 요약
-
-Ave 마켓플레이스는 **세 가지 publish 채널**을 운영합니다:
-
-1. **Git-based bootstrap (managed 플러그인 권장)**: 퍼블리셔가 자기 git 레포에 빌드 산출물(`plugin.json` + `dist/`)을 커밋 → 마켓플레이스 서버가 부팅 시 git pull → 서버 사이드에서 deterministic zip 패키징 + ed25519 서명 → DB UPSERT. **퍼블리셔는 zip 도, CLI publish 도 만들 필요 없음**. (Go 모듈 프록시 스타일)
-2. **CLI publish (ad-hoc / non-managed)**: `ave-publish` 로 사인된 zip 을 직접 업로드. 서버가 envelope 서명 후 카탈로그 등록.
-3. **Per-plugin CI publish (git tag SoT)**: 각 `ave-plugin-*` 레포의 `publish.yml` 워크플로우가 SemVer git tag (`v*.*.*`) 푸시를 트리거로 받아 `POST /api/v1/plugins/<slug>/versions` 직접 호출. 채널 2 와 같은 엔드포인트지만 **사람이 CLI 를 돌리지 않고**, **마켓플레이스 폴링 없고**, **플러그인 저자가 plugin.json.version 을 통제**한다는 점이 다름. enforcement 는 plugin repo CI 에서만 일어나며 호스트는 catalog 만 trust.
+## 저장소 구조
 
 ```
-[퍼블리셔 repo: bun build → version bump → git push (또는 commit only)]
-                              ↓
-[agent-marketplace 서버: bootstrap on startup]
-   git pull → deterministic zip → ed25519 dual-sign → DB UPSERT (approval_state="approved")
-                              ↓
-[Ave 앱: 카탈로그 → 다운로드 → envelope 검증 → 추출]
+marketplace.json                 인덱스 (schemas/marketplace/index.schema.json)
+policy/revocations.json          선택 (schemas/marketplace/revocations.schema.json)
+<kind dir>/<name>/ave-package.json   패키지마다 설명자 하나 (package.schema.json)
+<kind dir>/<name>/...            패키지 파일
 ```
 
----
-
-## 목차
-
-1. [전제 조건](#전제-조건)
-2. [채널 선택](#채널-선택)
-3. [퍼블리셔 API 키와 서버 서명 키](#퍼블리셔-api-키와-서버-서명-키)
-4. [플러그인 매니페스트 작성](#플러그인-매니페스트-작성)
-5. [MCP 서버 매니페스트 작성](#mcp-서버-매니페스트-작성)
-6. [채널 1 — Git-based bootstrap](#채널-1--git-based-bootstrap)
-7. [채널 2 — CLI publish](#채널-2--cli-publish)
-8. [채널 3 — Per-plugin CI publish (git tag SoT)](#채널-3--per-plugin-ci-publish-git-tag-sot)
-9. [Ave 앱 사이드 확인](#ave-앱-사이드-확인)
-10. [개발 환경 셋업](#개발-환경-셋업)
-11. [트러블슈팅](#트러블슈팅)
-
----
-
-## 전제 조건
-
-- Ave 마켓플레이스 서버 접근 권한 (enterprise prod URL 은 운영팀에 문의 / 로컬 dev 는 `http://127.0.0.1:8000`)
-- Channel 1 (bootstrap) 사용 시: 마켓플레이스 서버가 접근 가능한 git 레포에 산출물 커밋 권한 + `agent-marketplace` 의 `MANAGED_SOURCES` 등록 PR
-- Channel 2 (CLI publish) 사용 시: 퍼블리셔 API 키 발급 (관리자에게 요청)
-- Channel 3 (per-plugin CI) 사용 시: plugin repo 의 `.github/workflows/publish.yml` 가 마켓플레이스 secret (`MARKETPLACE_API_KEY`) 을 가진 상태 + tag push 권한
-- `agent-marketplace/cli` 빌드 (CLI 사용 시) — `ave-publish` 바이너리
-
----
-
-## 채널 선택
-
-| 항목 | Channel 1 — Git Bootstrap | Channel 2 — CLI Publish | Channel 3 — Per-plugin CI |
-|------|-------------------------|-------------------------|---------------------------|
-| 권장 시점 | managed enterprise 플러그인 (long-lived, 정식 등록) | ad-hoc 외부 플러그인, 단발성 게시, third-party | `ave-plugin-*` 레포 (저자가 release version 통제) |
-| 등록 절차 | `agent-marketplace` 서버의 `MANAGED_SOURCES` 에 슬러그 등록 PR + 운영팀 머지/배포 | 퍼블리셔 API 키 발급 → `ave-publish login` | repo 에 `MARKETPLACE_API_KEY` secret + `publish.yml` 워크플로우 |
-| 매번 publish 작업 | git push + 서버 재배포 (또는 운영팀 트리거) | `ave-publish publish <zip> --slug <s>` | plugin.json.version PR + `git tag vX.Y.Z && git push origin vX.Y.Z` |
-| version SoT | git 레포의 plugin.json (서버가 git pull 시점에 읽음) | `ave-publish publish` 인자 또는 zip 안의 plugin.json | git tag (= plugin.json.version, CI 가 일치 검증) |
-| 매니페스트 서명 (`plugin.json.sig`) | 현재 bootstrap 은 `.sig` 를 zip 에 번들하지 않음 → `installPolicy: "user"` 권장 (`admin` 정책은 별도 서명 파이프라인 필요) | 퍼블리셔가 zip 안에 직접 포함 가능 | 서버 envelope dual-sign (채널 2 와 동일) |
-| `installPolicy: "admin"` | bootstrap 자동 `approved` | `pending_review` → admin approve 필요 | `pending_review` → admin approve 필요 (채널 2 와 동일) |
-| 검증 | 서버 부팅 로그 + Ave 앱 마켓플레이스 탭 | `ave-publish list/show` + 앱 탭 | GitHub Actions run + 앱 탭 |
-
-기본 권장: **enterprise 정식 플러그인은 Channel 1**, **`ave-plugin-*` 레포는 Channel 3**, **외부/단발성은 Channel 2**.
-
----
-
-## 퍼블리셔 API 키와 서버 서명 키
-
-서로 다른 두 종류의 키를 혼동하지 마세요.
-
-### A. **퍼블리셔 API 키** (인증용 — Channel 2 만 필요)
-
-운영팀이 admin 콘솔(또는 admin API)로 발급합니다. 퍼블리셔가 직접 생성하지 않습니다.
-
-```bash
-# CLI 가 받은 키를 저장:
-ave-publish login --base-url https://<your-marketplace-host>
-# → 프롬프트로 API key 입력
-# → ~/.ave/marketplace-cli.json (mode 0600) 에 저장
-```
-
-`agent-marketplace/cli/src/lib/config.ts` 가 `~/.ave/marketplace-cli.json` (mode 0o600) 으로 저장. 키 무효화는 admin 측에서 즉시 가능 — 이미 게시된 버전은 영향 없음.
-
-### B. **서버 서명 키** (artifact 서명용 — 운영팀만)
-
-마켓플레이스 서버가 publish 받은 모든 zip 을 ed25519 envelope 으로 자동 서명할 때 쓰는 키. 운영팀이 관리하며 일반 퍼블리셔는 다룰 일 없음.
-
-```bash
-# 운영팀의 키 생성 절차 (참고용):
-cd agent-marketplace/server
-uv run python -m ave_marketplace.keygen --key-id prod-v2 --out-file schemas/keys/prod-v2.pub
-# → stderr 에 base64 private key 와 env-var block 출력
-# → schemas/keys/prod-v2.pub 에 base64 공개키 저장
-```
-
-env 주입은 per-key 형식 — `MARKETPLACE_SIGNING_PRIVATE_KEY_<KEY_ID_UPPER_UNDERSCORE>`:
-
-```
-MARKETPLACE_SIGNING_PRIVATE_KEY_PROD_V2=<base64>
-```
-
-서버는 `MARKETPLACE_SIGNING_PRIVATE_KEY_*` 형태로 잡히는 모든 키로 서명합니다. 클라이언트(`ave`)는 envelope 의 시그니처 중 하나라도 호스트에 내장된 publisher key set (`src/plugins/marketplace-keys.ts`) 에 매칭되면 OK. 키 회전은 서버 서명 키와 앱 호스트 trust anchor 를 함께 배포하는 방식으로 처리합니다.
-
-**프로덕션 환경 보호**: `AVE_ENV=production` 인 서버는 POC 키(`poc-v1` 등 공개 키 ID) 가 등록되어 있으면 부팅을 거절합니다 (`agent-marketplace/server/src/ave_marketplace/signing.py` 참조).
-
----
-
-## 플러그인 매니페스트 작성
-
-`plugin.json` 의 현재 계약은 [English Plugin Development Guide §Manifest Basics](../../guides/plugin-development.md#manifest-basics)와 [`plugin-manifest.schema.json`](../../../schemas/plugin-manifest.schema.json)을 참조하세요. 한국어 [`plugin-development.md`](./plugin-development.md)는 역사 보존용입니다. 마켓플레이스 게시 관점에서 **반드시** 챙겨야 하는 필드:
-
-| 필드 | 비고 |
-|------|------|
-| `$schema` | `"https://${AVE_SCHEMA_HOST}/schemas/plugin.schema.json"` — 서버가 이 값을 보고 일반 플러그인으로 분류. dev 기본 `ave.local`, prod 빌드 시 운영팀이 `AVE_SCHEMA_HOST=<prod-host>` 로 build-time 치환 (agent-marketplace#54). URL 자체는 fetch 되지 않는 식별자 |
-| `id` | 마켓플레이스 카탈로그 키 (manifest `id` = catalog `slug`). 게시 후 변경 불가. flat (`agent-hub`) 또는 도트 (`com.example.agent-hub`) 모두 허용 |
-| `version` | semver. 서버가 `(plugin_id, version)` 유니크 + sha256 immutability 강제 — 동일 버전 + 다른 sha256 은 거절 |
-| `tools` | LLM tool 이름 배열. 다른 플러그인과 namespace 충돌 시 publish 시점 거절 |
-| `installPolicy` | `"admin"` (관리형 — 사용자 임의 제거 불가, 대신 카탈로그와 강제 동기화되어 게시를 내리면 부팅 시 제거된다) / `"user"` (사용자 직접 설치). bootstrap 채널에서 admin policy 는 §채널-선택 표 참고 |
-| `publisher` | 사람이 읽는 식별자 — UI 카드에 표시 |
-
-### 의존성 / pluginAccess
-
-```jsonc
-{
-  "dependencies": [
-    "ave-plugin-shared-utils",
-    { "pluginId": "ave-plugin-lyra-cal", "versionRange": "^1.0.0", "required": false }
-  ],
-  "pluginAccess": {
-    "plugins": [{ "pluginId": "calendar", "tools": ["calendar_today"] }]
-  }
-}
-```
-
-서버는 의존성 그래프를 검증하지 않습니다 — 누락된 의존성은 Ave 앱 install 시점에 사용자에게 안내됩니다.
-
----
-
-## MCP 서버 매니페스트 작성
-
-MCP 서버는 일반 플러그인과 별개의 스키마(`mcp.schema.json`)를 사용합니다. 핵심 차이는 **`runtime` 블록**:
-
-```jsonc
-{
-  "$schema": "https://${AVE_SCHEMA_HOST}/schemas/mcp.schema.json",
-  "id": "weather-mcp",
-  "name": "Weather MCP",
-  "version": "1.0.0",
-  "main": "dist/server.js",
-  "runtime": {
-    "transport": "stdio",
-    "command": "node",
-    "args": ["$PLUGIN_DIR/dist/server.js"],
-    "env": { "WEATHER_API_BASE": "https://api.example.com" },
-    "auth": "api-key"
-  }
-}
-```
-
-### `runtime` 필드 요약 (agent-marketplace#52)
-
-| 필드 | stdio | http | 설명 |
-|------|-------|------|------|
-| `transport` | ✅ `"stdio"` | ✅ `"http"` | 전송 방식 |
-| `command` | ✅ 필수 | — | `node`, `python`, `uvx`, 또는 패키징된 실행파일. Marketplace `uvx` 런타임은 `--from package==version` 또는 `package==version` 형태의 exact pin 필수 |
-| `args` | 선택 | — | 호스트 치환 토큰 사용 가능: `$PLUGIN_DIR`, `$PYTHON`, `$NODE` |
-| `env` | 선택 | — | 기본 env 변수. 사용자가 mcp-servers.json 에서 override 가능 |
-| `url` | — | ✅ 필수 | Streamable HTTP 엔드포인트 |
-| `auth` | 선택 | 선택 | `"none"` / `"api-key"` / `"sso"`. api-key/sso 는 Ave 앱이 사용자에게 prompt |
-| `allowPrivateNetworks` | — | 선택 | loopback / RFC1918 허용 (enterprise 배포 시) |
-
-### 시크릿 정책
-
-**runtime 블록에는 절대 시크릿을 넣지 마세요.** 카탈로그는 공개 채널이며 어떤 자격 증명도 카탈로그에 들어가서는 안 됩니다. `auth: "api-key"` 로 표시하면 Ave 앱이 install 시점에 사용자에게 키를 요구하고 OS keychain 에 암호화 저장합니다.
-
----
-
-## 채널 1 — Git-based bootstrap
-
-### 1-1. `MANAGED_SOURCES` 등록
-
-`agent-marketplace/server/src/ave_marketplace/bootstrap.py` 의 `MANAGED_SOURCES` 리스트에 슬러그 추가하는 PR:
-
-```python
-MANAGED_SOURCES: list[dict[str, Any]] = [
-    # ... 기존 항목 ...
-    dict(
-        slug="myplugin",                                # plugin.json `id` 와 일치
-        repo=_repo_path("ave-plugin-myplugin"),        # 워크스페이스 root 기준 디렉토리명
-        display_name="My Plugin",
-        description="...",
-        category="productivity",
-        plugin_type="plugin",                           # "plugin" | "mcp"
-        install_policy="user",                          # 명시 — 생략하면 admin 으로 fallback
-        deployment="user",                              # 명시 — 동일
-    ),
-]
-```
-
-> ⚠️ `install_policy` / `deployment` 를 둘 다 생략하면 `admin`/`managed` 로 간주됩니다 (`bootstrap.py:643-646` fallback). 의도된 admin 플러그인이 아니면 반드시 `"user"` 명시.
-
-### 1-2. 레포에 빌드 산출물 커밋
-
-```bash
-cd ave-plugin-myplugin
-bun run build
-# package.json version bump
-npm version patch --no-git-tag-version
-
-git add plugin.json dist/ package.json
-git commit -m "release: v0.1.1"
-git push origin main
-```
-
-> bootstrap 은 working tree 의 `dist/` 를 봅니다. 로컬에서는 commit 없이도 동작 (working tree fallback). prod 에서는 서버가 git pull 하므로 push 가 필요.
-
-### 1-3. 서버가 패키징하는 것
-
-`bootstrap.py:_build_plugin_zip_from_repo` 동작:
-
-- **번들 대상**: `plugin.json` + `dist/**` + `worker/**` + `resources/**` + `assets/**` + filtered `node_modules/**` (`npm ls --omit=dev --all --parseable` 로 production closure 산출 — vsce 스타일)
-- **자동 제외**: `.map`, `.d.ts`, `__pycache__/`, `*.pyc`, `node_modules/.bin`, `.cache`, `.vite`, `.package-lock.json`
-- **결정성**: 1980-01-01 타임스탬프, ZIP_DEFLATED — 같은 입력은 항상 같은 sha256
-- **매니페스트 동기화**: 매니페스트의 `version` 필드를 `package.json` 의 version 으로 강제 덮어쓰기
-
-### 1-4. 서버 재배포
-
-운영팀이 마켓플레이스 서버를 재시작하면 부트스트랩이 git pull 후 새 버전을 publish 합니다.
-
-```
-bootstrap: myplugin@0.1.1 published (123456 bytes, abcdef012345…)
-```
-
-`(plugin_id, version)` 이 같은데 sha256 이 다르면 거절:
-
-```
-myplugin@0.1.1: immutable artifact mismatch (existing 0123456789ab != rebuilt fedcba987654)
-```
-
-→ 반드시 새 버전으로 bump.
-
----
-
-## 채널 2 — CLI publish
-
-### 2-1. CLI 빌드
-
-```bash
-cd agent-marketplace/cli
-bun install                # 또는 npm install — 둘 다 동작
-bun run build              # → ./bin/ave-publish
-npm link                   # 선택 — 전역 등록 (bun 은 link subcommand 가 다름)
-```
-
-### 2-2. 인증
-
-```bash
-ave-publish login --base-url https://<your-marketplace-host>
-# API key 입력 (운영팀에서 발급받은 값)
-ave-publish status        # 서버 health + login state 출력
-```
-
-### 2-3. zip 빌드 + publish
-
-```bash
-cd ave-plugin-myplugin
-bun run build
-
-# zip 루트에 plugin.json 위치해야 함 — 서브폴더 들어가면 거절
-zip -r myplugin-0.1.0.zip plugin.json dist/ icons/
-# 서명을 했다면
-zip -r myplugin-0.1.0.zip plugin.json plugin.json.sig dist/ icons/
-
-ave-publish publish myplugin-0.1.0.zip --slug myplugin
-# 서버 응답 예: { "plugin_id": 7, "version": "0.1.0", "sha256": "abc..." }
-```
-
-### 2-4. CLI 전체 명령
-
-```
-ave-publish login                                  # base URL + API key 저장
-ave-publish logout                                 # ~/.ave/marketplace-cli.json 삭제
-ave-publish status                                 # health + login state
-ave-publish list [--json]                          # 카탈로그 목록
-ave-publish show <slug> [--json]                   # 플러그인 상세
-ave-publish publish <zip> --slug <slug>            # zip 업로드
-                                  [--base-url <url>]    # 저장된 값 override
-                                  [--key <key>]         # 저장된 API 키 override
-                                  [--json]
-ave-publish yank <slug> <version> [--json]         # admin: 버전 회수
-ave-publish approve pending [--json]               # admin: 대기 목록
-ave-publish approve <publish-id> [--json]          # admin: 승인
-ave-publish reject <publish-id> --reason <text> [--json]  # admin: 거절
-```
-
-> ⚠️ **로컬 dev 검증 도구 없음**. `lvm validate` / `lvm zip-validate` 같은 매니페스트 / zip 검증 CLI subcommand 는 현재 존재하지 않습니다. publish 직전 검증은 (a) 매니페스트 unit 테스트 (`bun run test` — SDK 의 `validate-manifest`), (b) `ave-publish publish` 의 client-side guard (.zip 매직, 50 MB 상한), (c) 서버 측 `zip_validator` (path traversal / symlink / 압축비 / max uncompressed size). publish 후 거절되면 [트러블슈팅](#트러블슈팅) 참고.
-
-### 2-5. 서버가 publish 시 검증하는 것
-
-1. zip 매직 + 50 MB 상한
-2. `zip_validator` — 절대경로/심볼릭 링크/압축 비율 거절
-3. 매니페스트 추출 후 schema validation (`$schema` 값으로 plugin / mcp 분류)
-4. `(plugin_id, version)` 중복 + sha256 immutability
-5. `tools[]` namespace 충돌 검사 (agent-marketplace#51)
-6. ed25519 envelope 생성 — 서버 sign-key 들로 dual-sign
-7. 카탈로그 등록 — `installPolicy: "admin"` 이면 `approval_state="pending_review"`, 아니면 `"approved"`
-
-### 2-6. 관리형 (managed) 게시
-
-`installPolicy: "admin"` 으로 publish 한 버전은 `pending_review` 상태로 들어가 카탈로그에 노출되지 않습니다. admin 이 `ave-publish approve <publish-id>` (또는 admin UI) 로 승격해야 사용자에게 보입니다. dev 환경에서 빠르게 테스트하려면 `installPolicy: "user"` 로 publish 하거나 직접 approve.
-
-## 채널 3 — Per-plugin CI publish (git tag SoT)
-
-> **요약**: 채널 1/2 와 같은 `POST /api/v1/plugins/<slug>/versions` 엔드포인트를 쓰지만 **트리거 surface 와 SoT 가 다름** — 마켓플레이스 폴링도 없고 사람이 CLI 를 돌리지도 않고, plugin repo 의 tag-push 가 직접 publish 를 일으킨다. 모든 `ave-plugin-*` 레포에 동일하게 적용되는 contract (vega-helper 가 첫 도입, meeting/lyra-mail/local-indexer 순차 fan-out).
->
-> **이 룰의 enforcement 위치**: 각 plugin repo 의 `.github/workflows/publish.yml` 워크플로우. 호스트와 마켓플레이스 backend 는 catalog 만 trust 할 뿐 tag↔manifest 일치를 직접 강제하지 않는다 — discipline 은 publisher CI 에 있다.
-
-### 3-1. 트리거 + 흐름
-
-`ave-plugin-*` 레포의 `.github/workflows/publish.yml` 은 `on.push.tags: ['v*.*.*']` 만 listen — branch push 는 publish 안 함. 워크플로우 게이트 (PR 머지 후 첫 release 도 동일 순서로 통과해야 함):
-
-1. trigger ref 가 `refs/tags/v*` 인지 (workflow_dispatch 에서 non-tag dispatch 거절)
-2. tag 가 strict SemVer (`vMAJOR.MINOR.PATCH`) 인지 — `v1.2-rc1` / `v..` / `v1.2.foo` 거절
-3. `plugin.json.version` 이 non-empty string 인지 (type-strict, 누락 → 명확한 에러)
-4. tag semver 와 `plugin.json.version` 일치 — mismatch → "bump plugin.json on main BEFORE pushing the tag" 에러
-5. tagged commit 이 `origin/main` 에서 reachable — off-main tag (`git tag vX.Y.Z <branch-tip>`) 거절 (defense-in-depth, off-main 우회 차단)
-6. `bun install --frozen-lockfile` + `bun run build` 통과
-7. `POST /api/v1/plugins/<slug>/versions` 가 201 반환
-8. 409 (already exists) 의 경우 catalog 에 stored 된 `commit_hash` 가 `${{ github.sha }}` 와 일치하는지 — 다르면 fail loud (silent re-publish 차단)
-
-상세 룰 박스: [`plugin-tool-schema-design.md` §2 SoT 박스](../references/plugin-tool-schema-design.md#2-pluginmanifest-필드별-스펙).
-
-### 3-2. version SoT 요약
-
-- 마켓플레이스 backend 는 version 을 자동 bump 하지 않음 (이전 `bump_version.py` 는 deprecated, 6 개 plugin repo 에서 순차 제거 중)
-- 플러그인 저자가 release 의도 시 plugin.json 을 PR 으로 올림 → main 머지 → 매칭 tag 푸시
-- 결과: source manifest 와 catalog version 항상 일치, 사이드로드 (`Settings → 로컬 폴더에서 설치`) 와 마켓플레이스 install 은 같은 `plugin.json` + `dist/` 레이아웃을 공유 (install-receipt 의 `installSource` / `signerKeyId` / `artifactSha256` 은 의도적으로 다르며 trust 표면 분리 목적)
-
-### 3-3. release 절차 예시 (vega-helper 0.1.25)
-
-```bash
-cd ave-plugin-vega-helper
-# (a) plugin.json (+ package.json) 의 version 을 0.1.25 로 PR
-git checkout -b release/0.1.25
-# 직접 수정하든, 아래 스니펫이든 무방 — 핵심은 plugin.json.version 이 0.1.25
-node -e 'const m=require("./plugin.json"); m.version="0.1.25"; require("fs").writeFileSync("plugin.json", JSON.stringify(m,null,2)+"\n")'
-git commit -am "chore(release): 0.1.25"
-git push origin release/0.1.25
-# → PR 머지
-
-# (b) main 으로 가서 tag 푸시
-git checkout main && git pull
-git tag v0.1.25 -m "release 0.1.25"
-git push origin v0.1.25
-# → publish.yml 가 tag-push 만 listen 해서 트리거됨
-```
-
-### 3-4. 시크릿 / 매니페스트 안전 정책
-
-> ⚠️ `plugin.json` 과 `dist/` 산출물은 **공개 채널**이며 마켓플레이스 immutability 로 인해 한 번 publish 되면 회수 불가 (admin yank 만 가능, 이미 다운로드한 사용자에겐 영향 없음). 다음을 매니페스트 / 번들에 절대 포함하지 말 것:
->
-> - API 키, OAuth client secret, 서버 토큰, 내부 인증서, `.env` 파일
-> - enterprise-only URL 이나 internal endpoint hard-code (호스트가 `hostApi.getSecret()` 또는 plugin manifest 의 `auth: "api-key"` 로 주입하게 함)
-> - 사용자 PII / 테스트 데이터
->
-> 시크릿 처리 패턴은 §시크릿 정책 (MCP 섹션 line 217 근처) 참조 — 일반 플러그인도 동일하게 적용. backend 의 `(plugin_id, version)` 중복 + sha256 immutability 가드 (§2-5) 가 *이미 publish 된* artifact 의 회수를 막는다는 점을 인지할 것.
-
-### 3-5. 버전 점프 / leapfrog
-
-`plugin.json.version` 은 플러그인 저자가 결정하지만 backend 가 `(plugin_id, version)` 중복 + `not strictly greater` 거절을 강제하므로 **monotonic** 만 통과한다. 이론적 leapfrog (예: `0.1.10` → `999.999.999`) 는 backend 가 거절하지 않는다 — 운영팀의 admin yank 또는 pre-publish 리뷰가 유일한 회복 경로이며, dev 환경에선 신중하게 bump 하라.
-
-### 3-6. 이전 동작 (deprecated, 참고용)
-
-`bump_version.py` 가 catalog 의 latest version + 1 으로 plugin.json 을 in-place rewrite 한 뒤 publish. CI workdir 안에서만 일어나서 source 는 stale 한 채 catalog 만 진행 → 사이드로드한 플러그인에 false-positive "업데이트 있음" 배너. tag-as-SoT 도입으로 근본 해결.
-
----
-
-## Ave 앱 사이드 확인
-
-### 마켓플레이스 엔드포인트 설정
-
-Ave 앱 → 설정 → **마켓플레이스** 탭:
-
-| 필드 | 값 |
-|------|----|
-| 서버 URL | prod URL (`https://marketplace.former-site.invalid`) 또는 운영팀이 안내한 enterprise URL |
-| API 키 | 보통 빈 값 — read-only catalog/download 엔드포인트는 인증 없음 |
-| 사설 네트워크 허용 | loopback/RFC1918 서버를 사용할 때만 켬 |
-
-> URL/API key/사설 네트워크 토글 변경은 모두 **앱 재시작 필요** (fetcher 가 boot.ts 에서 한 번만 잡힘). 같은 URL 에서 catalog refresh 만 원하면 부트스트랩 배너의 "다시 시도".
-
-### 다운로드/설치 동작
-
-1. 사용자가 마켓플레이스 탭에서 플러그인 카드 → "설치"
-2. 앱이 `GET /api/v1/plugins/<slug>/versions/<version>/download` 호출, `X-Plugin-SHA256` 헤더로 sha256 받음
-3. `GET /api/v1/plugins/<slug>/versions/<version>/download.sig` 로 envelope 별도 fetch
-4. envelope 검증 — 키 ID 가 앱 호스트의 내장 publisher key set 에 매칭되어야 통과
-5. **검증된 tarball atomic write→rename**: `writeFile(tmpPath) + rename(tmpPath, tarballPath)` (`marketplace-installer.ts:298-312`) — 이 단계에서는 zip 이 verified-cache 위치(`tarballPath`)에만 안전하게 자리잡습니다
-6. 이어서 install/registry 단계가 `~/.ave/plugins/<id>/` 로 추출, `~/.ave/plugins/registry.json` 업데이트 → `pluginRuntime.restartAll()`
-
-### MCP 서버 install (ave#267)
-
-MCP 서버 마켓플레이스 install 의 consumer-side 구현은 **2026-04 시점 머지 완료** (`src/mcp/mcp-marketplace-install.ts`). 카탈로그에서 MCP 카드 → 설치 시 앱이 zip 다운로드 → envelope 검증 → 추출 → `mcp-servers.json` 자동 등록까지 수행. 사용자 수동 편집 불요.
-
-`runtime.auth = "api-key"` / `"sso"` 인 경우 install 직후 Ave 앱이 사용자에게 prompt 후 OS keychain 에 저장합니다.
-
----
-
-## 개발 환경 셋업
-
-prod publish 절차를 dev 에서 검증하려면 [`local-marketplace-testing.md`](./local-marketplace-testing.md) 참고. 핵심만 요약:
-
-```bash
-# 1) 서버 (AVE_MARKETPLACE_LOAD_DOTENV=1 필수 — main.py:12-17)
-cd agent-marketplace/server
-uv sync && cp .env.example .env && uv run alembic upgrade head
-AVE_MARKETPLACE_LOAD_DOTENV=1 \
-  uv run uvicorn ave_marketplace.main:create_app --factory --reload --host 127.0.0.1 --port 8000
-
-# 2) ave
-cd ../ave
-bun run start
-# 또는: bun run dev   (AVE_DEV=1 + hot-reload + DevTools 자동)
-```
-
-마켓플레이스 서명 키는 앱 호스트의 내장 trust set 이 검증합니다. SDK 에서 keys subpath 를 import 하지 않습니다.
-
-| 플래그 | 효과 |
-|--------|------|
-| `AVE_DEV=1` | 개발자 도구와 hot reload 활성화. `bun run dev`가 자동 설정하며 `bun run start`는 설정하지 않음 |
-| `AVE_DEV_RELOAD=1` | `dist/` watch + reloadPlugin (수동 export) |
-
-⚠️ `AVE_DEV*` 플래그는 packaged 빌드에서 무시되고 감사 대상이 됩니다. Marketplace envelope/receipt 검증과 entry containment는 unpackaged 빌드에서도 우회되지 않습니다.
-
----
-
-## 트러블슈팅
-
-| 증상 | 원인 / 해결 |
-|------|-------------|
-| `signature verification failed` (앱) | 서버가 zip 을 앱 호스트 trust set 밖의 키로 서명. 서버 `MARKETPLACE_SIGNING_PRIVATE_KEY_*` 와 앱 `src/plugins/marketplace-keys.ts` 를 함께 확인. |
-| 카탈로그에 새 버전 안 보임 | (a) `installPolicy: "admin"` + CLI publish → `pending_review` 상태. admin approve 필요. (b) 카나리 롤아웃 비대상 — `rollout_percent` 확인. (c) bootstrap 서버 `bootstrap_status="failed"` |
-| 부트스트랩 배너 빨간색 (`catalog fetch failed`) | (a) 마켓플레이스 URL 오타 / 서버 다운. (b) 사설 네트워크인데 toggle 안 켜짐. 배너 "다시 시도" 로 재호출. (c) `localhost` IPv6 우선순위 → `127.0.0.1` 권장 |
-| envelope 또는 receipt 무결성 검증 실패 | 정상 marketplace 경로로 새 버전을 다시 publish/install하고 Host trust set과 publisher key ID를 확인. 검증 우회 토글은 없음 |
-| `plugin_type="plugin"` 으로 등록됐는데 MCP 서버였음 | 매니페스트 `$schema` URI 가 `mcp.schema.json` 이 아니라 `plugin.schema.json` 으로 들어감 → 매니페스트 수정 후 새 버전 재게시 |
-| `tool_name namespace conflict` (publish 시) | 다른 플러그인이 같은 tool 이름 등록. publisher prefix 추가 (예: `myplugin_search`) |
-| `(plugin_id, version) duplicate` (publish 시) | 동일 버전 재업로드 차단. version bump 후 재시도 |
-| `<slug>@<v>: immutable artifact mismatch (...)` (bootstrap) | 같은 버전인데 dist/ 내용 변경. bump 또는 dev DB 리셋 |
-| `AVE_MARKETPLACE_LOAD_DOTENV=1` 누락 → 서명 키 미주입 | dev 환경에서 자주 발생. 위 §개발 환경 셋업 참고 |
-
----
-
-## 관련 자료
-
-- [`local-plugin-development.md`](./local-plugin-development.md) — 마켓플레이스 우회 시나리오 (제한적)
-- [`local-marketplace-testing.md`](./local-marketplace-testing.md) — **권장 dev 루프** (이 문서의 dev 버전)
-- [`plugin-development.md`](./plugin-development.md) — 매니페스트 + HostApi + 빌드/테스트 깊은 레퍼런스
-- `agent-marketplace/server/README.md` — 서명 키 ID 회전, POC 키 정책
-- `agent-marketplace/cli/src/index.ts` — CLI 서브커맨드 SoT
+`marketplace.json`은 마켓플레이스 이름을 정하고 패키지마다 `kind`, `name`, `path`를
+나열합니다. 패키지 항목은 `versions[]`(최신순)를 가질 수 있고, 각 항목은 `version`을
+그 버전을 게시한 `commit`에 고정합니다. `versions[]`가 없으면 앱은 동기화한 커밋의
+설명자를 읽습니다. 종류는 `plugin`, `mcp`, `skill`, `agent`, `theme`, `font`,
+`language`, `provider`, `messaging-connection`입니다. 이름은 소문자·하이픈이고,
+마켓플레이스 안에서 종류마다 유일합니다.
+
+`ave-package.json`에는 `schemaVersion: 1`, `kind`, `name`, `version`,
+`minAppVersion`과 종류별 `payload`가 있습니다.
+
+| 종류 | payload와 파일 |
+|---|---|
+| `skill` | `entry: "SKILL.md"`; `scripts/`, `references/`, `assets/`, `LICENSE`, `NOTICE` |
+| `agent` | `entry: "AGENTS.md"`만 |
+| `theme` | `entry: "theme.json"`과 선택적 미리보기 이미지. 대비 규칙을 강제합니다 |
+| `font` | `entry: "font.json"`, `LICENSE`, `files/` 아래 글꼴 파일(`.woff2`, `.woff`, `.ttf`, `.otf`) |
+| `language` | `locale`, `language.json`, `messages.json`(영어 카탈로그의 인터페이스 키만) |
+| `provider` | `entry: "provider.json"`(프로바이더 프리셋) |
+| `messaging-connection` | `entry: "connection.json"` |
+| `mcp` | `server`(정확한 버전의 stdio 런처 `npx`/`uvx`/`docker`, 패키지 안의 `server/…` 명령, 또는 Streamable HTTP) 또는 공식 MCP `server.json`을 가리키는 `serverJson` |
+| `plugin` | `authority`(`plugin.json`에서 복사)와 `artifact` 고정값 |
+
+SVG는 모든 종류에서 거부합니다. 크기·파일 수 제한은 설계서 §5.4에 있습니다.
+
+## 플러그인
+
+플러그인의 `artifact`는 바이트를 어디서 가져올지 정합니다. 앱은 다음 순서로 시도합니다.
+
+1. `release` — GitHub 릴리스 자산. `sha256` 고정이 있을 때만 씁니다.
+2. `archive` — https zip. `sha256` 고정이 있을 때만 씁니다.
+3. `tree` — 고정 커밋에서 패키지의 `plugin.json`, `dist/`, `assets/`(그 밖의 파일은
+   둘 수 없음).
+
+전송이나 체크섬이 실패하면 다음 단계로 넘어갑니다. 스테이징한 `plugin.json`이 설명자와
+다르면 설치가 멈춥니다(`MANIFEST_MISMATCH`). `extensions["ai.agent-connector.ave"].requires.minAppVersion`은
+필수이고 설명자의 `minAppVersion`과 같아야 하며, 권한 필드(`capabilities`,
+`networkAccess`, `hostSecrets`, `pluginAccess`, `auth`, `requires`)는 모두 설명자의
+사본과 같아야 합니다. 폐기된 `installPolicy`나 `publisher`를 선언한 매니페스트는 필드
+이름을 밝혀 거부합니다.
+
+호스트 시크릿 부여는 공식 스냅숏이 고정한 release나 archive로 설치된 공식 플러그인만,
+앱의 `HOST_SECRET_GRANTS` 표에 있는 키에 한해 받습니다. tree 설치는 받지 못합니다(설계서 §10.3).
+
+## MCP 서버
+
+MCP 패키지는 앱이 직접 실행하는 코드가 아니라 서버 구성을 설치합니다. 런처 패키지는
+정확한 버전을 고정해야 합니다(`@scope/name@1.2.3`, `name==1.2.3`, `latest`가 아닌
+이미지 태그나 digest). 패키지 안의 명령은 고정 커밋의 `server/` 파일에서 실행되고,
+설치 때 `$PLUGIN_DIR`, `$DATA_DIR`(`~/.ave/mcp-data/<name>`, 업데이트해도 유지),
+`$NODE`를 채웁니다. 서버를 구성할 수 있는지는 여전히 MCP 거버넌스가 정합니다. 거버넌스
+정책이 승인하지 않은 서버는 `PACKAGE_POLICY_BLOCKED`로 거부합니다.
+
+## 업데이트, 회수(yank), 폐기
+
+- **업데이트:** 새 `version`을 게시합니다. 사용자는 다음 동기화 뒤에 봅니다. 업데이트
+  검토 화면은 커밋 범위와 권한 변화를 보여 주고, 새 네트워크 호스트·시크릿·권한은
+  사용자의 명시적인 결정을 받아야 합니다.
+- **회수:** `versions[]` 항목에 `yanked: { reason, at }`을 넣습니다. 회수한 버전은
+  제안하지 않고, 이미 설치된 것은 그대로 둡니다.
+- **단계적 배포:** 버전에 `rollout: { percent }`. 프리릴리스 버전은 카나리 빌드를
+  고른 사용자에게만 갑니다.
+- **폐기:** `policy/revocations.json`에 `{ kind, name, versions, reason, at, action }`을
+  나열합니다. 이 소스에서 설치된 것에만 적용되고, `action`은 `disable` 또는
+  `uninstall`입니다.
+
+게시한 버전은 `yanked`와 `rollout` 말고는 바꿀 수 없습니다.
+
+## 저장소 검사
+
+앱의 규칙은 `checkMarketplaceRepository`(`src/marketplace/repository-check.ts`)로
+내보냅니다. 공식 저장소는 이를 `tools/vendor/`에 넣어 추가 규칙과 함께 CI에서 돌리며,
+다른 마켓플레이스도 똑같이 할 수 있습니다. 결과가 비었으면 앱이 모든 패키지를 그대로
+받아들인다는 뜻입니다.
+
+## 패키지로 연결하기
+
+`ave://install/<kind>/<name>@<source>`와 `ave://uninstall/<kind>/<name>@<source>`는
+마켓플레이스 탭에서 그 패키지를 엽니다. `ave://marketplace/add?url=<저장소>`는 추가
+대화상자를 엽니다. 링크는 사용자가 확인하는 화면을 열 뿐입니다. 서버 시절의
+`ave://install/<slug>` 형식은 무시합니다.
+
+## 조직
+
+관리자는 시스템 정책 파일의 `marketplaces` 섹션(설계서 §12)으로 사내 마켓플레이스를
+추가하고 패키지를 필수로 지정합니다. `additional`은 소스를 등록하고,
+`defaultInstalls`는 패키지를 한 번 설치하며, `requiredInstalls`는 패키지를 설치·업데이트된
+상태로 유지하고 제거·비활성화를 막습니다. 필수 항목은 그 항목이 가리키는 소스에서
+설치된 패키지만 잠급니다.
+
+## 구현 위치
+
+- `schemas/marketplace/*.schema.json`
+- `src/marketplace/catalog/validate.ts` — 인덱스·설명자 검증
+- `src/marketplace/content/kinds.ts`, `src/marketplace/content/rules.ts` — 콘텐츠 종류
+- `src/marketplace/resolve/plugin-ladder.ts`, `src/marketplace/resolve/manifest-rules.ts` — 플러그인
+- `src/marketplace/resolve/mcp.ts` — MCP 서버
+- `src/marketplace/repository-check.ts` — 저장소 검사
+- `src/marketplace/sources/policy.ts` — 시스템 정책 파일

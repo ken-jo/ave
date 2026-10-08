@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { readBuildSourceIdentity } from "../../scripts/lib/build-source-identity.mjs";
+import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 
 function png(level, fill = 0x40) {
   const chunk = (name, body) => {
@@ -30,8 +31,7 @@ function png(level, fill = 0x40) {
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "ave-build-identity-"));
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3 }));
-  const env = { ...process.env };
-  for (const name of Object.keys(env)) if (name.startsWith("GIT_")) delete env[name];
+  const env = gitFixtureEnv(root);
   const git = (...args) => execFileSync("git", ["-C", root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", ...args], { env, encoding: "utf8" });
   git("init", "--quiet");
   mkdirSync(join(root, "build"));

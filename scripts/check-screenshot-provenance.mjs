@@ -68,6 +68,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { withoutGitContext } from "./lib/git-process-environment.mjs";
 
 const rootArgIndex = process.argv.indexOf("--root");
 const ROOT = rootArgIndex >= 0
@@ -141,16 +142,7 @@ function listHarnessSources(dir, out = []) {
 // invoked from a hook would otherwise report on whichever repository git was
 // busy with rather than the one it was pointed at. Dropping them leaves ROOT as
 // the only thing that selects a repository.
-const AMBIENT_GIT_VARS = [
-  "GIT_DIR",
-  "GIT_WORK_TREE",
-  "GIT_COMMON_DIR",
-  "GIT_INDEX_FILE",
-  "GIT_OBJECT_DIRECTORY",
-  "GIT_PREFIX",
-];
-const GIT_ENV = { ...process.env };
-for (const name of AMBIENT_GIT_VARS) delete GIT_ENV[name];
+const GIT_ENV = withoutGitContext();
 
 function git(args) {
   return spawnSync("git", ["-C", ROOT, ...args], { encoding: "utf-8", env: GIT_ENV });
@@ -210,6 +202,9 @@ const seededAccounts = new Set(
 );
 
 const tracked = listTrackedImages();
+if (tracked.length === 0) {
+  fail(`git ls-files returned no tracked images under ${PUBLIC_DIR}/.`);
+}
 const trackedSet = new Set(tracked);
 const declaredSet = new Set(Object.keys(images));
 

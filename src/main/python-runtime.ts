@@ -23,6 +23,7 @@ import { readPluginRegistry, resolveManifestPathsFromRegistry } from "../plugins
 import type { PluginManifest } from "../plugins/types.js";
 import { resolveUvTarget, type UvTarget } from "../../scripts/uv-targets.mjs";
 import { aveHome } from "../shared/ave-home.js";
+import { proxyUrlFromPacEntry } from "../shared/pac-proxy.js";
 import {
   assertManagedChildProcessAdmissionOpen,
   trackManagedChildProcess,
@@ -68,7 +69,7 @@ interface ReadySentinel {
 
 
 
-const AVE_RUNTIME_DIR = path.join(aveHome(), "runtime");
+const aveRuntimeDir = (): string => path.join(aveHome(), "runtime");
 const UV_STDERR_TAIL_LIMIT_CHARS = 12_000;
 // Co-locate uv cache with the venv so hardlinks from cache → site-packages stay
 // on the same physical volume. NTFS hardlinks fail cross-volume with EXDEV
@@ -156,18 +157,6 @@ const UV_EGRESS_PROBE_URLS = [
   "https://astral.sh/",
 ] as const;
 
-/** `PROXY host:port` and friends, as the scheme a subprocess env expects. */
-function proxyUrlFromPacEntry(entry: string): string | null {
-  const [kind, endpoint] = entry.trim().split(/\s+/, 2);
-  if (!endpoint) return null;
-  switch (kind?.toUpperCase()) {
-    case "PROXY": return `http://${endpoint}`;
-    case "HTTPS": return `https://${endpoint}`;
-    case "SOCKS5": return `socks5://${endpoint}`;
-    default: return null;
-  }
-}
-
 /**
  * The proxy environment for the uv subprocess, derived from what the OS says.
  *
@@ -218,7 +207,7 @@ export class PythonRuntimeBootstrapper {
   constructor(private readonly options: PythonRuntimeBootstrapperOptions = {}) {}
 
   private runtimeDir(): string {
-    return this.options.runtimeDir ?? AVE_RUNTIME_DIR;
+    return this.options.runtimeDir ?? aveRuntimeDir();
   }
 
   private venvDir(): string {
@@ -527,7 +516,7 @@ export class PythonRuntimeBootstrapper {
     const lockBytes = Buffer.isBuffer(lockFile) ? lockFile : Buffer.from(lockFile);
     const lockHash = sha256Hex(lockBytes).slice(0, 24);
     const uvTarget = this.getCurrentUvTarget();
-    return path.join(AVE_RUNTIME_DIR, "python-envs", `${uvTarget.dir}-py312-${lockHash}`);
+    return path.join(aveRuntimeDir(), "python-envs", `${uvTarget.dir}-py312-${lockHash}`);
   }
 
   // ─── private: 실행 헬퍼 ──────────────────────────

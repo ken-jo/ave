@@ -1,0 +1,28 @@
+{
+  "request": {
+    "id": "budget-219",
+    "jsonrpc": "2.0",
+    "method": "ave/host/hasRoutineBySource",
+    "params": {
+      "source": "nightly"
+    }
+  },
+  "response": {
+    "error": {
+      "code": -32000,
+      "data": {
+        "code": "rate-limited",
+        "detail": {
+          "method": "hasRoutineBySource",
+          "retryAfterMs": 100
+        },
+        "name": "HostApiBoundaryError",
+        "retryAfterMs": 100
+      },
+      "message": "Host API rate limit exceeded."
+    },
+    "id": "budget-219",
+    "jsonrpc": "2.0"
+  },
+  "trigger": "the in-flight ceiling was exhausted before the host method ran"
+}

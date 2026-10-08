@@ -868,3 +868,23 @@ describe("RoutinesStore v2 — corrupt routines.json recovery", () => {
     }
   });
 });
+
+describe("persisted missing-plugin status validation", () => {
+  it.each([
+    { lastSkippedReason: "unknown" },
+    { lastSkippedMinuteUTC: 123 },
+    { needsAttention: true },
+    { needsAttention: { missingPluginIds: [] } },
+    { needsAttention: { missingPluginIds: [42] } },
+    { needsAttention: { missingPluginIds: ["../private"] } },
+  ])("drops malformed status %j while preserving a neighbouring routine", async (patch) => {
+    const { store, dir, cleanup } = tempRoutinesStore();
+    try {
+      const good = await store.add({ trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(join(dir, "routines.json"), JSON.stringify({ version: 2, routines: [good, { ...good, id: "bad", ...patch }] }));
+      await store.load();
+      expect(store.list().map((routine) => routine.id)).toEqual([good.id]);
+    } finally { await cleanup(); }
+  });
+});

@@ -28,4 +28,5 @@
 - `composer-redesign-message-queue.md` — 대체됨(Superseded); 결정 기록
 - `openharness-selective-borrow-plan.md` — OpenHarness MIT 재사용·출처 근거 (LICENSE 가 인용)
 - `host-structure-alignment.md` — #1409/#1411 호스트 구조 정렬, 이행 완료
+- [`multi-source-git-marketplace.md`](./multi-source-git-marketplace.md) — 멀티 소스 git 마켓플레이스 실행 계획(0~6단계 완료, 7단계 남음). 영어 원문: [`../../blueprints/multi-source-git-marketplace.md`](../../blueprints/multi-source-git-marketplace.md)
 - `agent-hub-implementation-plan.md`, Phase 1.5/2/3 보고서, `autopilot-phase1-indexer.md`, `composer-redesign-mockup.html` — 2026-09-23 제거 (git 히스토리 참조)

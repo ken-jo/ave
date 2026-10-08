@@ -6,12 +6,11 @@ import { requireDesktopHost } from "./host-runtime.js";
  * The key set here is a LOCKED contract: it must match the C3 bootstrap
  * integration snapshot exactly (same names, same construction). This module owns
  * the deferred lifecycle closures main.ts drives after boot
- * (`startRoutinesScheduler`, `startWorkBoardDueSoon`, `refreshPluginNotifications`,
+ * (`startRoutinesScheduler`, `startWorkBoardDueSoon`, `refreshPluginEventBridge`,
  * `registerPluginEventBridge`, `shutdown`) — they read + mutate the context so
- * the plugin-notification / event-bridge disposers and the due-soon timer stay
+ * the event-bridge disposer and the due-soon timer stay
  * live across window recreation and are torn down deterministically on quit.
  */
-import { registerPluginNotifications } from "./plugins.js";
 import {
   forgetTrackedPluginAuthPartitions as forgetPluginAuthPartitionsService,
   getTrackedPluginAuthPartitions as listPluginAuthPartitionsService,
@@ -67,9 +66,6 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     getPluginToolInvoker: () => ctx.lateBinding.pluginToolInvokerRef.fn,
     requestPluginOperationGrant: ctx.requestPluginOperationGrant,
     revokePluginOperationSession: ctx.revokePluginOperationSession,
-    mcpArtifactStore: ctx.mcpArtifactStore,
-    agentArtifactStore: ctx.agentArtifactStore,
-    skillArtifactStore: ctx.skillArtifactStore,
     idleScheduler: ctx.idleScheduler,
     preferenceRefreshService: ctx.preferenceRefreshService,
     agentsDocMergeService: ctx.agentsDocMergeService,
@@ -82,12 +78,12 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     approvalGate: ctx.approvalGate,
     rewireReviewerAgent: ctx.rewireReviewerAgent,
     getApprovalSentenceSelector: () => ctx.approvalSentenceSelector,
-    refreshMarketplaceFetcherConfig: ctx.refreshMarketplaceFetcherConfig,
     refreshActiveLlmWildcard: ctx.refreshActiveLlmWildcard,
     refreshSandboxNetworkConfig: ctx.refreshSandboxNetworkConfig,
     routinesStore: ctx.routinesStore,
     routinesScheduler: ctx.routinesScheduler,
     workBoardStore: ctx.workBoardStore,
+    alertsService: ctx.alertsService,
     workBoardEngine: ctx.workBoardEngine,
     workBoardReport: ctx.workBoardReporter,
     sessionTasksStore: ctx.sessionTasksStore,
@@ -115,10 +111,8 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     listPluginAuthPartitionsService,
     startRoutinesScheduler: () => ctx.routinesScheduler.start(),
     startWorkBoardDueSoon: ctx.startWorkBoardDueSoon,
-    refreshPluginNotifications: () => {
-      ctx.disposePluginNotifications();
-      ctx.disposePluginNotifications = registerPluginNotifications(ctx.pluginRuntime, ctx.pluginEventBridgeWindow, ctx.notificationService, ctx.bootAuditLogger, ctx.host.desktop?.notificationSupported() ?? false,
-      );
+    startAlerts: () => ctx.alertsService.start(),
+    refreshPluginEventBridge: () => {
       ctx.replacePluginEventBridge(ctx.pluginEventBridgeWindow);
     },
     registerPluginEventBridge: ctx.replacePluginEventBridge,
@@ -145,7 +139,6 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
 
         // Direct callers bypass the app-level plugin-shutdown phase.
         attempt(disposeActiveLlmWildcard);
-        attempt(() => ctx.disposePluginNotifications());
         attempt(() => ctx.disposePluginEventBridge());
         attempt(() => ctx.autoUpdaterStop?.());
         attempt(() => ctx.telemetry?.stop());
@@ -157,6 +150,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
         attempt(() => ctx.a2aRemoteRuntime?.dispose());
         attempt(() => ctx.routinesScheduler.stop());
         if (ctx.dueSoonTimer) attempt(() => clearInterval(ctx.dueSoonTimer));
+        attempt(() => ctx.alertsService.stop());
 
         attempt(() => ctx.conversationLoop.abortCurrentTurn(new Error("application shutdown"),
           ),

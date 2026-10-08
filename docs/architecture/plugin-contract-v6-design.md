@@ -1,5 +1,11 @@
 # Plugin Contract v6 — Pure MCP Tool Object (single SoT) + MCP Isolation Parity (#885)
 
+> Historical implementation design. Its tool-shape decisions remain useful,
+> but its SDK package and release instructions are superseded by
+> [the app release tag contract](../design/multi-source-git-marketplace.md#56-plugin-contract-for-authors).
+> Plugins vendor the two host files and declare `requires.minAppVersion` for
+> members introduced by later app releases.
+
 > Status: **Implemented; amended 2026-07-23** — decisions §0 ratified by the maintainer 2026-07-09
 > (surface model + proprietary-field minimization ratified same day, second round).
 > The 2026-07-23 amendment adds one signed, restriction-only, colocated key,

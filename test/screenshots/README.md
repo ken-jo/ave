@@ -139,7 +139,7 @@ with a precise blocker beats a misleading placeholder capture.
 
 ### Out of scope: web/server keys
 
-`mp-*` (marketplace), `ah-dashboard`/`ah-workboard`/`ah-worklog`/`ah-inbox`/
+`ah-dashboard`/`ah-workboard`/`ah-worklog`/`ah-inbox`/
 `ah-report`/`ah-subscription` (Agent Hub **server** dashboard — distinct from
 the `agent-hub-my-work`/`agent-hub-team-board` **plugin** panel keys, which
 render inside this Electron app), and `ep-*` (internal ORION portal) are

@@ -1,13 +1,11 @@
 /**
  * First-boot bootstrap status surface.
  *
- * The managed plugin bootstrap (`ensureManagedInstalled`) runs once at boot
- * and is graceful by design: marketplace unreachable, per-plugin install
- * failures, or signature rejections never throw out of `boot()`. Pre-Phase
- * 2d those outcomes were silent — only `log.warn` lines, nothing the
- * user could see — so a first-launch with the marketplace server down or
- * misconfigured looked like the app was working but actually had zero
- * managed plugins loaded.
+ * The marketplace boot pass (default and required installs, design §10.2)
+ * runs once after boot and is graceful by design: an unreachable source or a
+ * per-package install failure never throws out of `boot()`. Without a status
+ * those outcomes would be silent — only `log.warn` lines, nothing the user
+ * could see.
  *
  * This module emits a status snapshot to the renderer over
  * `CHANNELS.bootstrap.status` — the contract is the only place that channel

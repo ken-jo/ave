@@ -31,7 +31,7 @@ import { useInlineSlashMenu } from "../hooks/use-inline-slash-menu.js";
 import { useResourceMention } from "../hooks/use-resource-mention.js";
 import { useSlashPickerRuntime } from "../hooks/use-slash-picker-runtime.js";
 import type { QuickAction } from "./command-actions.js";
-import type { PluginEntry } from "./PluginGridButton.js";
+import type { PluginEntry } from "../types.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import type { SubscriptionImageAttachmentLimits } from "../../../shared/subscription-runtime.js";
 import { subscriptionImageAttachmentLimitViolation } from "../utils/subscription-runtime-ui-policy.js";
@@ -42,7 +42,6 @@ import {
   type SuggestedRepliesSnapshot,
 } from "../hooks/use-suggested-replies.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
-
 
 export interface ComposerHandle {
   focus(): void;
@@ -123,7 +122,6 @@ export interface ComposerProps {
   openExternal?: (path: string) => Promise<unknown>;
   onSend: (intent: UserKeyboardIntentSnapshot) => void;
 
-
   disabled?: boolean;
   /** False when the active runtime cannot accept original local image input. */
   imagesEnabled?: boolean;
@@ -145,8 +143,6 @@ export interface ComposerProps {
    * Spec: `docs/architecture/proposals/suggested-replies-ghost-text.md` §6.2.
    */
   suggestedReplies?: SuggestedRepliesSnapshot;
-
-
 
   commandActions?: QuickAction[];
   /** Installed plugins surfaced under the inline menu's `plugin` category. */
@@ -223,7 +219,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const textRef = useRef(text);
   textRef.current = text;
 
-
   // because `e.nativeEvent.isComposing` is only available inside keydown — the
   // ghost render path needs the value at render time, not just on key events.
   const [isComposing, setIsComposing] = useState(false);
@@ -270,7 +265,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     accept: inlineAccept,
     close: inlineClose,
   } = inlineSlash;
-
 
   const captureUserKeyboardIntent = useCallback((): UserKeyboardIntentSnapshot => {
     const api = (globalThis as typeof globalThis & {
@@ -719,7 +713,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       }
 
       if (e.key === "Enter" && !e.shiftKey) {
-
 
         if (e.metaKey || e.ctrlKey) {
           e.preventDefault();

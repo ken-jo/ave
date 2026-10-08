@@ -10,13 +10,15 @@
  * What it exposes, and why each one is here:
  *
  *   `pluginShellUrl` / `pluginPreloadUrl` — the dock mounts plugin cards as
- *     `<webview>`s pointed at the same shell the sidebar uses. Resolved HERE,
- *     in the entry module, because `__dirname` is `dist/src/` only in the
- *     bundled entry — the same constraint `preload.ts` documents.
+ *     `<webview>`s pointed at the same shell the sidebar uses. Main resolves
+ *     them (`runtimeAssetPath`) and passes them as window arguments, because
+ *     this sandboxed preload cannot load `node:path` to resolve them itself.
  *   `ensurePartition` / `registerWebview` — the existing plugin-UI handshake,
  *     unchanged. Main re-validates the entry URL against the install root, so
  *     the dock renderer asking is not the dock renderer being trusted.
- *   `getTheme` — so a card paints in the user's theme from its first frame.
+ *   `onTheme` — the dock's own chrome paints from the theme main sends: the
+ *     current one when the window opens, then each later one. Not the plugin
+ *     `getTheme` query, whose guard admits plugin frames only.
  *   the dock channels — the host's activity line and slot lifecycle.
  *
  * What it does NOT expose: any way to move, resize or re-level the window. The
@@ -24,17 +26,13 @@
  * the bound that makes an always-on-top plugin surface safe to offer.
  */
 import { contextBridge, ipcRenderer } from "electron";
-import { resolve as pathResolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { CHANNELS } from "./contract/app-contract.js";
+import { readDockAssetArgs } from "./shared/floating-dock-args.js";
 
-function safeResolveFileUrl(relative: string): string {
-  try {
-    return pathToFileURL(pathResolve(__dirname, relative)).toString();
-  } catch {
-    return "";
-  }
-}
+// The window is sandboxed: this preload may require only `electron`, `events`,
+// `timers` and `url` (no `node:path`), so main resolves the asset URLs and
+// passes them as arguments (`floating-dock-args.ts`).
+const assets = readDockAssetArgs(process.argv);
 
 /** One main-to-dock subscription, returning its own unsubscribe. */
 function subscribe<T>(channel: string, handler: (payload: T) => void): () => void {
@@ -44,8 +42,8 @@ function subscribe<T>(channel: string, handler: (payload: T) => void): () => voi
 }
 
 const dockBridge = {
-  pluginShellUrl: safeResolveFileUrl("plugin-ui-shell.html"),
-  pluginPreloadUrl: safeResolveFileUrl("plugin-preload.cjs"),
+  pluginShellUrl: assets.pluginShellUrl,
+  pluginPreloadUrl: assets.pluginPreloadUrl,
 
   /**
    * Install a plugin partition's session policy BEFORE its `<webview>` exists.
@@ -64,13 +62,13 @@ const dockBridge = {
     entryUrl: string;
   }): Promise<unknown> => ipcRenderer.invoke(CHANNELS.pluginBridge.registerWebview, payload),
 
-  getTheme: (): Promise<unknown> => ipcRenderer.invoke(CHANNELS.pluginBridge.getTheme),
-
   onActivity: (handler: (activity: unknown) => void) =>
     subscribe(CHANNELS.dock.activity, handler),
   onMount: (handler: (slot: unknown) => void) => subscribe(CHANNELS.dock.mount, handler),
   onResize: (handler: (change: unknown) => void) => subscribe(CHANNELS.dock.resize, handler),
   onUnmount: (handler: (slot: unknown) => void) => subscribe(CHANNELS.dock.unmount, handler),
+  /** The host theme current when the window opened, then each later one (main sends both). */
+  onTheme: (handler: (theme: unknown) => void) => subscribe(CHANNELS.dock.theme, handler),
 
   /** The user pressed the dock's close control. */
   requestClose: (): void => {

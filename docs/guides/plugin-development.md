@@ -1,35 +1,44 @@
-# Plugin Development Guide
+# Extension Development Guide
 
-This guide describes how to build Ave plugins against the current host
+This guide describes how to build Ave extensions against the current host
 runtime. Korean source history is preserved in the
 [Korean historical reference](../ko/guides/plugin-development.md).
 
-## Plugin Model
+## Extension Model
 
-An Ave plugin is an installable package with a manifest, optional UI bundle,
+An Ave extension is an installable package with a manifest, optional UI bundle,
 optional tools, optional settings schema, and declared host capabilities. The
 host owns installation, policy, loading, UI containment, and tool execution.
 
-Plugins should add workflow capability without assuming direct filesystem,
+Extensions should add workflow capability without assuming direct filesystem,
 network, or process access. Those operations must be declared and routed through
 host APIs or tool execution.
 
 ## Manifest Basics
 
-Every plugin package needs a `plugin.json` manifest. The Host owns the canonical
+Every extension package needs a `plugin.json` manifest. The Host owns the canonical
 shape in `schemas/plugin-manifest.schema.json` and the complete TypeScript/JSDoc
-authoring contract in `src/plugins/public-contract.ts`. `@ave/plugin-sdk`
-publishes generated mirrors of those two Host files.
+authoring contract in `src/plugins/public-contract.ts`. Vendor both files
+unchanged into `contract/` at an app release tag, and record their hashes in
+`contract/sources.json`.
 
 The manifest should include:
 
-- stable plugin id;
+- stable extension id;
 - display name and version;
-- runtime entry point and optional UI declarations;
+- exactly one way to produce its process, `entry` or `process` (below), and
+  optional UI declarations;
 - pure MCP `Tool[]` objects with colocated input schemas;
 - required capabilities;
 - settings schema if configurable;
-- marketplace metadata if published.
+- `requires.minAppVersion`, which a marketplace install requires.
+
+A JavaScript extension leaves `requires.hostProtocol` out: the host's own runtime
+speaks the extension protocol for it. An extension that declares one (a positive integer
+written as a string, such as `"1"`) is refused with `incompatible-host-protocol`
+by an app that does not serve that version, and an app whose schema predates the
+field rejects the manifest outright, so its `minAppVersion` must name a release
+that knows the field.
 
 `tools[]` is the only callable surface. The retired `uiTool`, `uiTools`,
 `uiAction`, `uiActions`, top-level `operationGovernance`, and top-level
@@ -44,14 +53,78 @@ scope, final audit, and read/write receipt flow; arbitrary hook commands cannot
 participate in that proof.
 
 `keywords[]` is retired and schema-rejected. Model guidance belongs in
-plugin-owned instruction bundles declared by `manifest.skills`; callable
+extension-owned instruction bundles declared by `manifest.skills`; callable
 behavior remains in typed `tools[]`. Skills can guide the model to the relevant
 Tool, while the Host's bounded tool catalog and `tool_search` control schema
 exposure. The Host does not dispatch or silently preload Tools from keywords.
 
+### `entry` or `process`
+
+An extension declares exactly one of two keys under `extensions["ai.agent-connector.ave"]`.
+A manifest with both, or with neither, is rejected.
+
+```jsonc
+"entry": "dist/hostPlugin.js"                        // a JS module the host's own runtime loads
+"process": {                                         // a program that speaks the extension protocol itself
+  "command": "./bin/plugin",
+  "args": ["--stdio", "${PLUGIN_ROOT}/vendor"],
+  "env": { "PLUGIN_LOG_LEVEL": "info", "PLUGIN_STATE_DIR": "${PLUGIN_DATA}/state" }
+}
+```
+
+A `process` extension is a program in any language. It reads and writes the
+JSON-RPC channel that `schemas/plugin-host-protocol/2/protocol.schema.json`
+describes on its own stdin and stdout, starting with `ave/instance/construct`,
+whose `entryPath` is the resolved absolute path of `command`. Its rules:
+
+- `command` is a path inside the package, written `./…` or `${PLUGIN_ROOT}/…`,
+  naming a regular file. A bare program name (`python`, `node`) is rejected,
+  because an extension gets no `PATH` search; so are an absolute path, `..`
+  and `=`. Ship the interpreter's launcher in the package, or a script with a
+  shebang.
+- `args` and `env` values may use two placeholders. `${PLUGIN_ROOT}/…` must
+  name a file or directory the package contains, and must not leave the
+  package through a symlink. `${PLUGIN_DATA}` and `${PLUGIN_DATA}/…` stay inside
+  the extension's data directory, whose leaf may not exist yet, and may not
+  pass through a symlink there, even one that points inside it. The data
+  directory's parents are host paths and are resolved, links included, but the
+  data directory itself must be the real directory Ave created: the extension
+  cannot remove or rename it, and one replaced by a link is refused.
+  Any other `${…}` is rejected, and so is an argument that looks like a path
+  but uses neither placeholder: name it through one of them. Any other `env`
+  value is passed to the program as an opaque literal.
+- `env` names may not be ones the host reserves, in any letter case:
+  `PLUGIN_ROOT` and `PLUGIN_DATA`, which the host sets to the real paths of the
+  package and the data directory; loader and interpreter variables such as
+  `PATH`, `HOME`, `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS`,
+  `BASH_ENV`, `PYTHONPATH`; and launcher, proxy and trust-store prefixes such as
+  `NODE_`, `PYTHON`, `UV_`, `PIP_`, `HTTPS_PROXY` and `SSL_CERT_`. Set such a
+  variable from your own launcher inside the process instead. The program
+  starts from the host's minimal environment, not the user's.
+- `requires.minAppVersion` must be `0.13.0` or newer, the first release that
+  runs a `process` extension, and `requires.hostProtocol` must be `"2"`.
+
+Three refusals apply to a `process` extension, each with what to do:
+
+- `process-entry-requires-pinned-artifact`: the extension is installed and run
+  only from a marketplace release or archive pinned by its sha256 hash. A
+  direct or local development install of one is refused at install, and so is
+  a marketplace version that would come from the package's git tree. An
+  installed copy without that pin is refused when it starts: remove it, then
+  install it from a marketplace that pins its release.
+- `MANIFEST_MISMATCH` at a marketplace install: the package's
+  `ave-package.json` does not publish the extension the way a `process` entry
+  requires. Its `platforms` must be listed without `win32`, its `artifact` must
+  pin a `release` or an `archive` by `sha256` and declare no `tree`, and its
+  `minAppVersion` must be `0.13.0` or newer. The message names the field; the
+  marketplace's owner fixes it.
+- `process-entry-unconfined`: the program runs only inside the OS Tool Sandbox
+  on macOS or Linux. With the sandbox off it is refused, and it cannot run on
+  Windows, whose sandbox does not confine the processes a program starts.
+
 ## HostApi Boundaries
 
-Plugin code receives a host bridge. It must use that bridge for operations such
+Extension code receives a host bridge. It must use that bridge for operations such
 as:
 
 - reading declared preferences;
@@ -61,36 +134,66 @@ as:
 - subscribing to allowed events;
 - rendering UI in declared slots.
 
-The caller plugin identity is bound by the host factory. Plugins must not pass
-or spoof another plugin id.
+The caller extension identity is bound by the host factory. Extensions must not pass
+or spoof another extension id.
 
-## UI Plugins
+A JavaScript extension reaches the bridge through the `PluginHostApi` object it is
+handed. Underneath, each member is a JSON-RPC `ave/host/*` request on the
+extension's own stdio, and `schemas/plugin-host-protocol/2/protocol.schema.json`
+(protocol `2`, the version the host serves) describes every method, notification
+and error code of that channel. The file is generated from the host's own sources
+at each app release, so it describes what the host actually serves. To validate a frame, compile a method's `params`,
+`result`, `errors` or `events` sub-schema (for example
+`#/$defs/methods/ave~1host~1storage~1read/params`), not the method entry, which
+groups them under names that are not JSON Schema keywords; with Ajv, set
+`allowUnionTypes: true`, because a field that takes more than one type (a
+request id, a nullable value) is a type array. The host does not yet admit a
+extension that speaks the protocol without its JavaScript runtime; every extension
+today is a JavaScript `entry`.
 
-Plugin UI loads in a host-owned shell. The host resolves the plugin entry URL,
-pre-paints theme tokens, and calls the plugin mount function. A plugin UI should
+Beside the schema, `schemas/plugin-host-protocol/2/protocol-client.ts` is the same
+protocol as TypeScript: every named type and every method's params and result,
+the `HostMethod`, `InstanceMethod`, `HostNotification` and `HostProtocolErrorCode`
+unions, and `createHostClient(transport)`, which has one typed method per
+`ave/host/*` request named by its path (`ave/host/storage/read` is
+`client.storage.read(params)`). It is generated from the committed schema, imports
+nothing and names no app version; pin it by sha256 from the release tag, as you
+pin the schema. A JavaScript author who does not use the reference runtime pairs it
+with their own stdio loop: implement `HostClientTransport` so that `request`
+writes one newline-delimited JSON-RPC request with a fresh `id` to stdout and
+resolves with the matching reply's `result` (or rejects with its `error`), and
+`notify` writes a frame with no `id`; then, for each line read from stdin, answer
+`ave/instance/*` and MCP requests yourself, hand a reply to the pending `request`
+with its `id`, and route `isHostNotification(frame)` frames to the plugin. The client does
+not validate replies; validate with the schema where you need to.
+
+## UI Extensions
+
+Extension UI loads in a host-owned shell. The host resolves the extension entry URL,
+pre-paints theme tokens, and calls the extension mount function. An extension UI should
 render within the provided root and use the bridge for host interaction.
 
-If the entry cannot load, the shell shows English fallback errors. A blank plugin
+If the entry cannot load, the shell shows English fallback errors. A blank extension
 surface is considered a regression.
 
 ### Panel Width
 
 The host gives the panel the full width of the main pane and does not cap it,
-so the plugin owns its own measure. The rules — cap with `max-width` and never
+so the extension owns its own measure. The rules — cap with `max-width` and never
 a fixed `width`, the 448px floor, the width tiers, and wide content scrolling
 inside its own container — live in [`DESIGN.md`](../DESIGN.md) under
-*Plugin surfaces* and *Responsive behavior*. That document is the source of
+*Extension surfaces* and *Responsive behavior*. That document is the source of
 truth; this guide does not restate the numbers.
 
 This is the host-mounted **sidebar panel** surface (`ui[]` in the manifest). It is
-not the only one: a plugin can also ship an **MCP App** — an interactive `ui://`
+not the only one: an extension can also ship an **MCP App** — an interactive `ui://`
 card the host renders next to a tool result, built on the standard
 `@modelcontextprotocol/ext-apps` library rather than a Ave bridge. See
 [Authoring an MCP App](./mcp-app-authoring.md).
 
-## Tool Plugins
+## Tool Extensions
 
-Plugin tools are normalized into the host tool registry. A tool definition must
+Extension tools are normalized into the host tool registry. A tool definition must
 provide:
 
 - name;
@@ -101,54 +204,74 @@ provide:
 - execution handler;
 - required capabilities.
 
-The Host classifies risk for each invocation. A plugin cannot assign its own
+The Host classifies risk for each invocation. An extension cannot assign its own
 permission category or lower a Host verdict. Tools are executed only after
-permission resolution; the plugin runtime does not own the approval gate.
+permission resolution; the extension runtime does not own the approval gate.
 
 ## Settings
 
-Plugins may expose a settings schema. The renderer displays settings through the
+Extensions may expose a settings schema. The renderer displays settings through the
 host settings UI and persists values through host storage. Secret values should
 use secret fields and should not be copied into logs, audit output, or docs.
 
 ## Marketplace And Installation
 
-Marketplace installation should verify package metadata, manifest validity, and
-managed-plugin policy. Managed plugins cannot be removed or downgraded by normal
-user-installed plugin paths.
+Extensions are published through git marketplaces
+([Publishing To A Git Marketplace](./marketplace-publishing.md)). An install
+stages the pinned artifact (release, archive or tree), checks the staged
+`plugin.json` against the package descriptor, and refuses a manifest that
+declares the retired `installPolicy` or `publisher` fields. An installed
+manifest that still carries them loads with one warning; its next update
+replaces it.
 
-The catalog is the authority for a managed plugin, in both directions: boot sync
-installs and updates them without asking, and removes one the marketplace has
-stopped publishing. Removal needs the plugin to be confirmed gone by its own
-catalog endpoint, so an unreachable or degraded marketplace leaves installs
-untouched.
+No extension protects itself. Only the machine's system policy file can keep a
+extension installed: a `marketplaces.requiredInstalls` entry locks the extension
+installed from the source it names against uninstall and disable, and updates
+it at boot.
 
-Local development install paths are useful during plugin authoring, but
-production install flows should go through the marketplace or an approved local
-package source.
+Host secrets beyond the extension's own namespace come only from the app's
+`HOST_SECRET_GRANTS` table (`src/plugins/secret-access/grants.ts`): an official
+extension installed from the artifact its snapshot pins, reading an LLM key its
+manifest declares in `hostSecrets.read` for the active vendor. Provider-preset
+keys are not in the table, and a local development install never qualifies.
+
+Local development installs (`installLocal`) are for authoring; to test the
+marketplace path, serve a repository to a development build
+([Testing A Marketplace Locally](./local-marketplace-testing.md)).
 
 ## Auth Windows
 
-Plugins that need interactive login should use the host auth-window service.
+Extensions that need interactive login should use the host auth-window service.
 The host creates the partition, collects cookies or tokens according to policy,
-and clears the partition when requested. Plugins must not embed arbitrary auth
+and clears the partition when requested. Extensions must not embed arbitrary auth
 flows in renderer code.
 
 ## Testing Checklist
 
-Before publishing or merging a plugin change:
+Before publishing or merging an extension change:
 
-- validate `plugin.json` with manifest tests;
+- run the plugin validator on the extension directory: `bun run plugin:validate
+  <dir>` in this repository, or the vendored `node tools/vendor/ave-plugin-validate.js
+  <dir>` in a plugin repository. It checks `plugin.json` against the host's
+  manifest schema and protocol rules, drives the extension through the host
+  protocol over a real child process (construct, lifecycle hooks, MCP discovery
+  and tool calls, stdout discipline, exit on stdin close), and cross-checks event
+  and UI-bridge names against the manifest. A `process` extension runs its own
+  executable there, unconfined and from your directory, so its report marks
+  sandbox confinement and the install's sha256 pin as not exercised (the app
+  checks both), and on Windows its protocol step is not run. It prints one
+  JSON report row per check to stdout and exits non-zero when a check fails;
+  pass `--tool-args <file.json>` for tools whose input requires arguments;
 - run tool-schema lint where applicable;
 - verify settings schema rendering;
-- verify install, update, remove, and managed-plugin behavior;
+- verify install, update and remove from a local git marketplace;
 - verify permission prompts for write, shell, network, and out-of-directory
   reads;
-- verify plugin UI error fallback and theme token application.
+- verify extension UI error fallback and theme token application.
 
 ## Language Policy
 
-Default plugin examples, docs, logs, and visible fallback copy should be English.
-Korean plugin docs may live under `docs/ko` or plugin-local localization files.
+Default extension examples, docs, logs, and visible fallback copy should be English.
+Korean extension docs may live under `docs/ko` or extension-local localization files.
 Runtime Korean support should be implemented through locale catalogs or explicit
 keyword/intent support, not by making English default docs Korean-only.

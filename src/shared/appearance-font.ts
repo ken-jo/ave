@@ -41,7 +41,9 @@ export interface AppearanceFontSettings {
 
 
 const _FONT_FAMILY_RE = /^[\p{L}\p{N} ,"'_-]+$/u;
-const _FONT_FAMILY_MAX = 200;
+// Room for an installed font's stack: `"ave-font-<64-char package name>", `
+// followed by the host stack is 210 characters.
+const _FONT_FAMILY_MAX = 256;
 
 export function isValidFontFamilyOverride(value: unknown): value is string {
   return typeof value === "string"

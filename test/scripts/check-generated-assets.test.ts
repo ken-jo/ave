@@ -5,30 +5,13 @@ import { dirname, join, resolve } from "node:path";
 import { deflateSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeFixtureFile as write } from "./gate-script-runner.js";
+import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 
 const REPO_ROOT = process.cwd();
 const SCRIPT = resolve(REPO_ROOT, "scripts/check-generated-assets.mjs");
 const MANIFEST = "build/generated-assets.json";
 const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
 const roots: string[] = [];
-
-// Git exports these to hooks, and they outrank `-C`. The suite itself runs
-// from the pre-push hook, so inheriting them would point both the fixtures and
-// the guard at this repository instead of the temporary one.
-const AMBIENT_GIT_VARS = [
-  "GIT_DIR",
-  "GIT_WORK_TREE",
-  "GIT_COMMON_DIR",
-  "GIT_INDEX_FILE",
-  "GIT_OBJECT_DIRECTORY",
-  "GIT_PREFIX",
-] as const;
-
-function envWithout(names: readonly string[]): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const name of names) delete env[name];
-  return env;
-}
 
 /**
  * Env for the cases that build throwaway repositories whose bytes they control.
@@ -42,13 +25,11 @@ function envWithout(names: readonly string[]): NodeJS.ProcessEnv {
  * exists for. Forcing there turned a documented encoder difference into a
  * failure and blocked every push from a non-Windows machine.
  */
-function forcedEnv(names: readonly string[]): NodeJS.ProcessEnv {
-  const env = envWithout(names);
-  env.AVE_GENERATED_ASSETS_FORCE = "1";
-  return env;
+function forcedEnv(home: string): NodeJS.ProcessEnv {
+  return { ...gitFixtureEnv(home), AVE_GENERATED_ASSETS_FORCE: "1" };
 }
 
-function run(root: string, env: NodeJS.ProcessEnv = forcedEnv(AMBIENT_GIT_VARS)) {
+function run(root: string, env: NodeJS.ProcessEnv = forcedEnv(root)) {
   return spawnSync(nodeCommand, [SCRIPT, "--root", root], {
     cwd: REPO_ROOT,
     encoding: "utf-8",
@@ -70,7 +51,7 @@ function git(root: string, args: string[]) {
       "commit.gpgsign=false",
       ...args,
     ],
-    { encoding: "utf-8", env: forcedEnv(AMBIENT_GIT_VARS) },
+    { encoding: "utf-8", env: forcedEnv(root) },
   );
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
@@ -290,7 +271,7 @@ describe("check-generated-assets", () => {
     // file which git ignores, and an inert value proves nothing.
     const gitDir = spawnSync("git", ["-C", REPO_ROOT, "rev-parse", "--absolute-git-dir"], {
       encoding: "utf-8",
-      env: forcedEnv(AMBIENT_GIT_VARS),
+      env: forcedEnv(root),
     }).stdout.trim();
     expect(gitDir).not.toBe("");
 
@@ -307,15 +288,15 @@ describe("check-generated-assets", () => {
     expect(result.stdout).toContain("[generated-assets] OK");
   });
 
-  it("skips where there is no committed state to compare against", () => {
+  it("fails where there is no committed state to compare against", () => {
     const root = mkdtempSync(join(tmpdir(), "ave-generated-assets-bare-"));
     roots.push(root);
     writeManifest(root, ["build/installerIcon.ico"]);
 
     const result = run(root);
 
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("[generated-assets] SKIP");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("cannot verify the Git work tree");
   });
 });
 
@@ -366,7 +347,7 @@ describe("generated-asset manifest", () => {
     // cannot answer and the guard's platform skip is the correct outcome. On
     // Windows — where the installer icons are actually consumed — the
     // comparison runs for real, which is where the regression would surface.
-    const result = run(REPO_ROOT, envWithout(AMBIENT_GIT_VARS));
+    const result = run(REPO_ROOT, gitFixtureEnv(REPO_ROOT));
 
     expect(result.stderr).toBe("");
     expect(result.status).toBe(0);

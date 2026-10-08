@@ -116,6 +116,8 @@ export type ChokepointKind =
   | "hasRoutineBySource" // prefix-scoped boolean probe of the routines SOT
   | "proposeWork" // persists a recommended-work card the user will see
   | "withdrawWorkProposal" // retracts one of the caller's own cards
+  | "raiseAlert" // puts a host-rendered alert card or notification in front of the user
+  | "withdrawAlert" // retracts one of the caller's own alerts
   | "getAppPreference" // reads an allow-listed host preference
   | "probePrivateHost" // DNS presence probe (UX hint; no persistence, no egress body)
   | "resolveApiKey" // leases/reads a host-managed credential (no persisted mutation)
@@ -186,6 +188,10 @@ export const CHOKEPOINT_EFFECT: Record<StaticChokepointKind, Effect> = {
   // boundary the effect gate exists for.
   proposeWork: "write",
   withdrawWorkProposal: "write",
+  // WRITE for the same reason: an alert puts a card or a notification in
+  // front of the user that they did not initiate.
+  raiseAlert: "write",
+  withdrawAlert: "write",
   // Structural-completeness vocabulary — writes (egress / persist / session).
   callLlm: "write",
   openAuthPartitionViewer: "write",
@@ -399,6 +405,12 @@ export const HOSTAPI_EFFECT_BY_PATH: Record<string, HostApiEffectSpec> = {
   proposeWork: { kind: "proposeWork", async: true, targetFromArgs: objectStringField("kind"),
   },
   withdrawWorkProposal: { kind: "withdrawWorkProposal", async: true, targetFromArgs: firstStringArg,
+  },
+  // The declared kind is the pivot here too; the key and slot values are not
+  // recorded.
+  raiseAlert: { kind: "raiseAlert", async: true, targetFromArgs: objectStringField("kind"),
+  },
+  withdrawAlert: { kind: "withdrawAlert", async: true, targetFromArgs: firstStringArg,
   },
   getAppPreference: { kind: "getAppPreference", targetFromArgs: firstStringArg,
   },

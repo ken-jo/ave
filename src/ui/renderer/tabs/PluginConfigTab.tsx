@@ -8,20 +8,21 @@ import { Switch } from "../../../components/ui/switch.js";
 import { sanitizePluginConfig, sanitizePluginConfigKey } from "../../../shared/plugin-config.js";
 import { getApi } from "../api-client.js";
 import { getHostMarketplaceApi } from "../host-marketplace-api.js";
-import type { InstallInFlight, InstallPhase, InstallProgressPayload } from "../hooks/use-plugin-marketplace.js";
 import type {
   AveApi,
   PluginCardSummary,
   PluginContributionTrustRow,
-  PluginMarketplaceUninstallOptions,
 } from "../types.js";
 import { PluginAuthSection } from "../components/PluginAuthSection.js";
 import { usePluginAuthStatuses } from "../hooks/use-plugin-auth-status.js";
 import { PluginUninstallDialog } from "../dialogs/PluginUninstallDialog.js";
 import {
-  findPluginDoctorMarketplaceItem,
   getPluginDoctorInstallKey,
+  repairPluginFromMarketplace,
+  resolvePluginProtocolUpdatePath,
+  type PluginProtocolUpdatePath,
 } from "./plugin-doctor-match.js";
+import { requestUpdateReview } from "./git-marketplace/update-review-request.js";
 import { PluginConfigSchemaForm } from "./PluginConfigSchemaForm.js";
 import { PluginPerfTab } from "./PluginPerfTab.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
@@ -29,24 +30,16 @@ import { useNotifySaved } from "../context/SavedToastContext.js";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
 import { isPluginInstallKey } from "../utils/plugin-install-aliases.js";
 import { SettingsPageHeader } from "../components/PageShell.js";
-import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
-import { buildNetworkAccessAcknowledgement } from "../../../shared/network-access.js";
 import { isReinstallFixableFailureKind } from "../../../shared/plugin-install-failure.js";
-import { formatBytes } from "../../../lib/turn-summary-format.js";
 import { errorMessage } from "../../../shared/error-message.js";
+
+import { useAlertKinds } from "../hooks/use-alert-kinds.js";
+import { PluginAlertsSection } from "./PluginAlertsSection.js";
+import { ALERT_HOST_PLUGIN_ID } from "../../../shared/alerts-types.js";
 
 type KV = { key: string; value: string };
 type BannerType = "error" | "success" | "warning";
-
-const INSTALL_PHASE_I18N_KEY: Record<InstallPhase, string> = {
-  installing: "pluginConfigTab.phaseInstalling",
-  downloading: "pluginConfigTab.phaseDownloading",
-  verifying: "pluginConfigTab.phaseVerifying",
-  registering: "pluginConfigTab.phaseRegistering",
-  restarting: "pluginConfigTab.phaseRestarting",
-  preparing: "pluginConfigTab.phasePreparing",
-};
 
 const PREPARATION_PHASE_I18N_KEY: Record<string, string> = {
   pending: "pluginConfigTab.prepPhasePending",
@@ -56,15 +49,6 @@ const PREPARATION_PHASE_I18N_KEY: Record<string, string> = {
   ready: "pluginConfigTab.prepPhaseReady",
   error: "pluginConfigTab.prepPhaseError",
 };
-
-function formatInstallProgress(progress: InstallProgressPayload): string {
-  if (progress.phase !== "downloading") return t(INSTALL_PHASE_I18N_KEY[progress.phase]);
-  const received = formatBytes(progress.bytesDownloaded);
-  if (typeof progress.bytesTotal !== "number" || progress.bytesTotal <= 0) {
-    return t("pluginConfigTab.downloadingBytes", { received });
-  }
-  return t("pluginConfigTab.downloadingBytesOf", { received, total: formatBytes(progress.bytesTotal) });
-}
 
 function isRuntimeCallablePlugin(plugin: PluginCardSummary): boolean {
   return plugin.runtimeLoaded ?? (plugin.loadStatus === "loaded");
@@ -83,23 +67,6 @@ function findRefreshedDoctorPlugin(
 
 function isDoctorRepairLoaded(plugin: PluginCardSummary | undefined): boolean {
   return plugin?.loadStatus === "loaded" && isRuntimeCallablePlugin(plugin);
-}
-
-async function resolvePluginDoctorInstallKey(plugin: PluginCardSummary): Promise<string> {
-  const fallback = getPluginDoctorInstallKey(plugin);
-  let api: ReturnType<typeof getApi>;
-  try {
-    api = getApi();
-  } catch {
-    return fallback;
-  }
-
-  try {
-    const marketplace = await api.listMarketplacePlugins();
-    return findPluginDoctorMarketplaceItem(plugin, marketplace)?.id ?? fallback;
-  } catch {
-    return fallback;
-  }
 }
 
 function clampProgressPct(value: unknown): number | null {
@@ -165,7 +132,9 @@ function entriesToConfig(entries: KV[]): Record<string, unknown> {
   return sanitizePluginConfig(out);
 }
 
-export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
+export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: AveApi; initialPluginId?: string | null; onNavigate?: (tab: string) => void } = {}) {
+  const alertsApi = api ?? (() => { try { return getApi(); } catch { return null; } })();
+  const alerts = useAlertKinds(alertsApi);
   const { t } = useTranslation();
   // Pull the dialog-wide "저장되었습니다" notifier so every successful
   // plugin-config write — manual key/value editor save, schema-form save,
@@ -173,8 +142,10 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
   // gaze without each tab having to roll its own banner.
   const notifySaved = useNotifySaved();
   const [plugins, setPlugins] = useState<PluginCardSummary[]>([]);
-  const [installInFlight, setInstallInFlight] = useState<InstallInFlight>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  useEffect(() => { if (initialPluginId) setSelectedId(initialPluginId); }, [initialPluginId]);
+  const unseen = new Map<string, number>();
+  for (const row of alerts.rows) { if (!row.choice.seenByUser) unseen.set(row.pluginId, (unseen.get(row.pluginId) ?? 0) + 1); }
   const [uninstallTarget, setUninstallTarget] = useState<PluginCardSummary | null>(null);
   // Tools list is collapsed by default — plugins that declare many tools
   // would otherwise dominate the detail panel. Reset to collapsed on
@@ -207,6 +178,7 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [doctoringId, setDoctoringId] = useState<string | null>(null);
+  const [protocolUpdatePath, setProtocolUpdatePath] = useState<PluginProtocolUpdatePath | null>(null);
   const [banner, setBanner] = useState<{ type: BannerType; msg: string } | null>(null);
   const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showBanner = useCallback((type: BannerType, msg: string) => {
@@ -249,13 +221,21 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
     const key = `${row.kind}:${row.localId}`;
     setTrustUpdating(key);
     try {
+      // An approval binds to the generation and digest this row showed (design §18.7.5).
       const result = await getApi().setPluginContributionTrust({
         pluginId: row.pluginId,
         localId: row.localId,
         kind: row.kind,
         approved,
+        ...(approved ? { generationId: row.generationId, approvalDigest: row.approvalDigest } : {}),
       });
       if (!result.ok) {
+        if (result.error === "contribution-trust-review-stale") {
+          // The package changed since this list was read: say so, and show what is installed now.
+          showBanner("error", t("gitMarketplace.error.planExpired.packageChanged"));
+          await refreshContributionTrust(row.pluginId);
+          return;
+        }
         showBanner("error", result.message ?? t("pluginConfigTab.contributionTrustError"));
         return;
       }
@@ -349,25 +329,9 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
       return;
     }
     const unsubs: Array<() => void> = [];
-    if (typeof api.onPluginInstallProgress === "function") {
-      unsubs.push(
-        api.onPluginInstallProgress((payload) => {
-          setInstallInFlight((prev) => ({ ...prev, [payload.slug]: payload }));
-          if (payload.phase === "preparing") {
-            void refreshPlugins({ preferInstallKey: payload.slug });
-          }
-        }),
-      );
-    }
     if (typeof api.onPluginInstallResult === "function") {
       unsubs.push(
-        api.onPluginInstallResult(({ slug, success }) => {
-          setInstallInFlight((prev) => {
-            if (!(slug in prev)) return prev;
-            const next = { ...prev };
-            delete next[slug];
-            return next;
-          });
+        api.onPluginInstallResult(({ success }) => {
           if (success) {
             void refreshPlugins();
           }
@@ -479,6 +443,16 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
   }, [selectedId, entries, showBanner, notifySaved, t]);
 
   const selectedPlugin = plugins.find((p) => p.id === selectedId);
+  useEffect(() => {
+    let current = true;
+    setProtocolUpdatePath(null);
+    if (selectedPlugin?.loadStatus === "failed" && selectedPlugin.installFailureKind === "incompatible-host-protocol") {
+      void resolvePluginProtocolUpdatePath((api ?? getApi()).gitMarketplace, selectedPlugin)
+        .then((path) => { if (current) setProtocolUpdatePath(path); })
+        .catch(() => { if (current) setProtocolUpdatePath({ kind: "unavailable" }); });
+    }
+    return () => { current = false; };
+  }, [api, selectedId, selectedPlugin?.loadStatus, selectedPlugin?.installFailureKind]);
   const selectedPluginActive = selectedPlugin
     ? (selectedPlugin.active ?? selectedPlugin.loadStatus !== "disabled")
     : false;
@@ -549,7 +523,12 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
       showBanner("success", t("pluginConfigTab.successLocalInstall", { pluginId: result.pluginId }));
       void refreshPlugins();
     } catch (e) {
-      showBanner("error", errorMessage(e) || t("pluginConfigTab.errorLocalInstall"));
+      const message = errorMessage(e);
+      showBanner("error", message.includes("process-entry-requires-pinned-artifact")
+        ? t("formatIpcError.processEntryRequiresPinnedArtifact")
+        : message.includes("process-entry-unconfined")
+          ? t("formatIpcError.processEntryUnconfined")
+          : message || t("pluginConfigTab.errorLocalInstall"));
     } finally {
       setLocalInstalling(false);
     }
@@ -558,8 +537,8 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
   const handleDoctorPlugin = useCallback(async (plugin: PluginCardSummary) => {
     setDoctoringId(plugin.id);
     try {
-      // Cause-aware Doctor. NOT-locally-fixable failures (catalog↔grant mismatch,
-      // app-version incompatibility) cannot be repaired by reinstalling — a
+      // Cause-aware Doctor. NOT-reinstall-fixable failures (sandbox grant outside
+      // its ceiling, app-version incompatibility) cannot be repaired by reinstalling — a
       // reinstall re-fetches the same broken/too-new package and re-fails. Refresh
       // the source of truth, but keep the outcome explicitly unresolved unless the
       // runtime now reports a loaded card.
@@ -576,44 +555,28 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
       }
 
       // Reinstall-fixable failure (stale/pre-v6 on-disk manifest, missing/corrupt
-      // files, generic load error) → automatically attempt reinstalling the latest
-      // marketplace version. One attempt, no loop: on failure we surface the cause
-      // and the Remove button in the Doctor panel stays available as the fallback.
-      const installKey = await resolvePluginDoctorInstallKey(plugin);
-      const networkAccessAcknowledgement = buildNetworkAccessAcknowledgement(plugin.networkAccess);
-      const result = networkAccessAcknowledgement
-        ? await getHostMarketplaceApi().installMarketplacePlugin(installKey, undefined, {
-            networkAccessAcknowledgement,
-          })
-        : await getHostMarketplaceApi().installMarketplacePlugin(installKey);
-      if (!result.ok) {
-        // Auto-repair could not complete (no marketplace version, latest still
-        // invalid, network unreachable). Fall back to naming the cause; Remove
-        // remains the user-initiated exit.
-        showBanner("error", result.message ?? result.error ?? t("pluginConfigTab.errorDoctor"));
+      // files, generic load error) → reinstall the version on disk from the
+      // plugin's own marketplace source. One attempt, no loop: on failure we
+      // surface the cause and the Remove button in the Doctor panel stays
+      // available as the fallback.
+      const repair = await repairPluginFromMarketplace(getApi().gitMarketplace, plugin);
+      if (repair.status === "unbound") {
+        showBanner("warning", t("pluginConfigTab.doctorNoSource", { displayName: plugin.name }));
+        return;
+      }
+      if (repair.status === "failed") {
+        showBanner("error", repair.message || t("pluginConfigTab.errorDoctor"));
         return;
       }
 
-      const preferredInstallKey = result.pluginId || installKey;
-      const refreshedCards = await refreshPlugins({ preferInstallKey: preferredInstallKey });
+      const installKey = getPluginDoctorInstallKey(plugin);
+      const refreshedCards = await refreshPlugins({ preferInstallKey: installKey });
       if (!refreshedCards) return;
-      const refreshedPlugin = findRefreshedDoctorPlugin(
-        refreshedCards,
-        plugin,
-        [preferredInstallKey, installKey],
-      );
+      const refreshedPlugin = findRefreshedDoctorPlugin(refreshedCards, plugin, [installKey]);
       if (!isDoctorRepairLoaded(refreshedPlugin)) {
-        // The install reported success but replaced nothing: the marketplace
-        // carries the same version already on disk, so the reinstall could
-        // only put the broken bundle back. Saying "no local repair available"
-        // here reads as an unexplained dead end — name the actual reason, so
-        // the user knows they are waiting on a publisher, not on a retry.
-        showBanner(
-          "warning",
-          result.unchanged
-            ? t("pluginConfigTab.doctorNoNewerPackage", { displayName: plugin.name })
-            : t("pluginConfigTab.doctorDiagnosticUnresolved", { displayName: plugin.name }),
-        );
+        // The same bytes went back on disk and still do not load: the fix is
+        // the publisher's, not a retry.
+        showBanner("warning", t("pluginConfigTab.doctorDiagnosticUnresolved", { displayName: plugin.name }));
         return;
       }
       showBanner("success", t("pluginConfigTab.successDoctor", { displayName: plugin.name }));
@@ -627,15 +590,7 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
   const handleUninstall = useCallback(async (pluginId: string, displayName: string) => {
     setSaving(true);
     try {
-      const doctorCleanupKind = uninstallTarget?.id === pluginId ? uninstallTarget.installFailureKind : undefined;
-      const uninstallOptions: PluginMarketplaceUninstallOptions | undefined =
-        doctorCleanupKind
-          ? { doctorCleanup: { installFailureKind: doctorCleanupKind } }
-          : undefined;
-      const marketplaceApi = getHostMarketplaceApi();
-      const result = uninstallOptions
-        ? await marketplaceApi.uninstallMarketplacePlugin(pluginId, uninstallOptions)
-        : await marketplaceApi.uninstallMarketplacePlugin(pluginId);
+      const result = await getHostMarketplaceApi().uninstallMarketplacePlugin(pluginId);
       if (!result.ok) {
         showBanner("error", result.message ?? t("pluginConfigTab.errorUninstall"));
         return;
@@ -649,7 +604,7 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
       setSaving(false);
       setUninstallTarget(null);
     }
-  }, [showBanner, t, uninstallTarget]);
+  }, [showBanner, t]);
 
   return (
     <div className="flex min-w-0 flex-1 min-h-0 flex-col gap-3">
@@ -737,8 +692,8 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                     }`}
                   >
                     <div className="flex items-center gap-1 min-w-0">
-                      {p.isManaged && <span title={t("pluginConfigTab.managedPluginTitle")}>🔒</span>}
                       <span className="min-w-0 line-clamp-1">{p.name}</span>
+                      {!!unseen.get(p.id) && <span data-testid={`alert-unseen:${p.id}`} aria-label={t("alerts.unseenCount", { count: unseen.get(p.id)! })} className="shrink-0 rounded-full bg-primary px-1.5 text-[10px] text-primary-foreground">{unseen.get(p.id)}</span>}
                     </div>
                     <div className="flex items-center gap-1 mt-0.5">
                       {p.loadStatus === "loaded" && (
@@ -794,31 +749,6 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                     )}
                   </button>
                 ))}
-                {/* Skeleton rows for installs the main process is still
-                    pipelining. The slug is removed from `installInFlight`
-                    when the install-result event lands and `refreshPlugins`
-                    promotes it into a real `plugins` entry. */}
-                {Object.entries(installInFlight)
-                  .filter(([slug]) => !plugins.some((p) => isPluginInstallKey(p.id, slug, p.installAliases)))
-                  .map(([slug, progress]) => (
-                    <div
-                      key={`in-flight:${slug}`}
-                      className="flex w-full animate-pulse items-center gap-2 rounded border border-dashed border-muted px-2 py-1.5 text-xs text-muted-foreground"
-                      aria-label={t("pluginConfigTab.installingAriaLabel", { slug })}
-                      aria-live="polite"
-                    >
-                      <span
-                        className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
-                        aria-hidden="true"
-                      />
-                      <span className="flex min-w-0 flex-col">
-                        <span className="line-clamp-1 [overflow-wrap:anywhere]">{slug}</span>
-                        <span className="line-clamp-1 [overflow-wrap:anywhere] text-[9px] opacity-70">
-                          {formatInstallProgress(progress)}
-                        </span>
-                      </span>
-                    </div>
-                  ))}
               </div>
             </ScrollArea>
           </div>
@@ -834,27 +764,6 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-1">
                       <h3 className="min-w-0 break-words text-sm font-semibold">{selectedPlugin.name}</h3>
-                      {selectedPlugin.isManaged && (
-                        <span className="inline-flex items-center gap-0.5 rounded-full bg-info/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-info">🔒 {t("pluginConfigTab.badgeManaged")}</span>
-                      )}
-                      {selectedPlugin.installPolicy === "admin" && (
-                        <span
-                          className="inline-flex items-center gap-0.5 rounded-full border border-destructive/(--opacity-muted) bg-destructive/(--opacity-subtle) px-1.5 py-px text-[9px] font-medium text-destructive"
-                          title={t("pluginConfigTab.adminOnlyTitle")}
-                          aria-label={t("pluginConfigTab.adminOnlyAriaLabel")}
-                        >
-                          🔐 {t("pluginConfigTab.badgeAdminOnly")}
-                        </span>
-                      )}
-                      {selectedPlugin.installPolicy === "user" && (
-                        <span
-                          className="inline-flex items-center gap-0.5 rounded-full border border-border bg-muted px-1.5 py-px text-[9px] font-medium text-muted-foreground"
-                          title={t("pluginConfigTab.userInstallableTitle")}
-                          aria-label={t("pluginConfigTab.userInstallableAriaLabel")}
-                        >
-                          {t("pluginConfigTab.badgeUserInstallable")}
-                        </span>
-                      )}
                       {selectedPlugin.loadStatus && (
                         selectedPlugin.loadStatus === "loaded" ? (
                           <span
@@ -891,9 +800,6 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                       <span className="font-mono text-[10px] text-muted-foreground">{selectedPlugin.id}</span>
                       {selectedPlugin.version && (
                         <span className="text-[10px] text-muted-foreground">· v{selectedPlugin.version}</span>
-                      )}
-                      {selectedPlugin.publisher && (
-                        <span className="text-[10px] text-muted-foreground">· {selectedPlugin.publisher}</span>
                       )}
                     </div>
                     {selectedPlugin.description && (
@@ -937,8 +843,7 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                       variant="destructive"
                       className="h-7 text-xs px-2"
                       onClick={() => setUninstallTarget(selectedPlugin)}
-                      disabled={saving || selectedPlugin.isManaged}
-                      title={selectedPlugin.isManaged ? t("pluginConfigTab.managedCannotRemoveTitle") : undefined}
+                      disabled={saving}
                     >
                       {t("pluginConfigTab.uninstallButton")}
                     </Button>
@@ -955,10 +860,16 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 space-y-0.5">
                         <p className="text-xs font-medium text-destructive">
-                          {selectedPlugin.installFailureKind === "catalog-grant-mismatch"
-                            ? t("pluginConfigTab.doctorGrantMismatchTitle")
-                            : selectedPlugin.installFailureKind === "incompatible-app-version"
-                              ? t("pluginConfigTab.doctorIncompatibleAppTitle")
+                          {selectedPlugin.installFailureKind === "incompatible-app-version"
+                            ? t("pluginConfigTab.doctorIncompatibleAppTitle")
+                            : selectedPlugin.installFailureKind === "process-entry-unconfined"
+                              ? t("pluginConfigTab.doctorProcessEntryUnconfinedTitle")
+                            : selectedPlugin.installFailureKind === "process-entry-requires-pinned-artifact"
+                              ? t("pluginConfigTab.doctorProcessEntryUnpinnedTitle")
+                            : selectedPlugin.installFailureKind === "incompatible-host-protocol"
+                              ? t("pluginConfigTab.doctorIncompatibleProtocolTitle")
+                              : selectedPlugin.installFailureKind === "sandbox-grant-outside-ceiling"
+                                ? t("pluginConfigTab.doctorSandboxGrantTitle")
                               : selectedPlugin.installFailureKind === "manifest-validation-error"
                                 ? t("pluginConfigTab.doctorManifestValidationTitle")
                                 : selectedPlugin.installFailureKind === "plugin-revoked"
@@ -970,10 +881,16 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                                       : t("pluginConfigTab.doctorTitle")}
                         </p>
                         <p className="text-[11px] text-destructive/(--opacity-intense)">
-                          {selectedPlugin.installFailureKind === "catalog-grant-mismatch"
-                            ? t("pluginConfigTab.doctorGrantMismatchDescription")
-                            : selectedPlugin.installFailureKind === "incompatible-app-version"
-                              ? t("pluginConfigTab.doctorIncompatibleAppDescription")
+                          {selectedPlugin.installFailureKind === "incompatible-app-version"
+                            ? t("pluginConfigTab.doctorIncompatibleAppDescription")
+                            : selectedPlugin.installFailureKind === "process-entry-unconfined"
+                              ? t("pluginConfigTab.doctorProcessEntryUnconfinedDescription")
+                            : selectedPlugin.installFailureKind === "process-entry-requires-pinned-artifact"
+                              ? t("pluginConfigTab.doctorProcessEntryUnpinnedDescription")
+                            : selectedPlugin.installFailureKind === "incompatible-host-protocol"
+                              ? t("pluginConfigTab.doctorIncompatibleProtocolDescription")
+                              : selectedPlugin.installFailureKind === "sandbox-grant-outside-ceiling"
+                                ? t("pluginConfigTab.doctorSandboxGrantDescription")
                               : selectedPlugin.installFailureKind === "manifest-validation-error"
                                 ? t("pluginConfigTab.doctorManifestValidationDescription")
                                 : selectedPlugin.installFailureKind === "plugin-revoked"
@@ -990,10 +907,36 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                               {t("pluginConfigTab.doctorFailureDetailLabel")}
                             </p>
                             <p className="mt-1 break-words font-mono text-[10.5px] leading-snug text-destructive/(--opacity-intense)">
-                              {selectedPlugin.installFailureMessage}
+                              {selectedPlugin.installFailureKind === "process-entry-unconfined"
+                                ? t("formatIpcError.processEntryUnconfined")
+                                : selectedPlugin.installFailureKind === "process-entry-requires-pinned-artifact"
+                                  ? t("formatIpcError.processEntryRequiresPinnedArtifact")
+                                  : selectedPlugin.installFailureMessage}
                             </p>
                           </div>
                         ) : null}
+                        {selectedPlugin.installFailureKind === "incompatible-host-protocol" && protocolUpdatePath && (
+                          <div className="mt-2 text-xs" data-testid={`plugin-config:protocol-update:${selectedPlugin.id}`}>
+                            {protocolUpdatePath.kind === "catalog" ? (
+                              <Button size="sm" variant="outline" onClick={() => {
+                                requestUpdateReview([{ key: protocolUpdatePath.key }]);
+                                onNavigate?.("marketplace");
+                              }}>
+                                {t("pluginConfigTab.protocolUpdateCatalog", { version: protocolUpdatePath.version })}
+                              </Button>
+                            ) : protocolUpdatePath.kind === "repository" ? (
+                              <div>
+                                <p>{t("pluginConfigTab.protocolUpdateRepository", { source: protocolUpdatePath.sourceLabel })}</p>
+                                <p className="break-all font-mono">{protocolUpdatePath.url}</p>
+                                {protocolUpdatePath.url.startsWith("https://") && (
+                                  <Button size="sm" variant="outline" onClick={() => void getApi().openExternalUrl(protocolUpdatePath.url)}>
+                                    {t("pluginConfigTab.protocolOpenRepository")}
+                                  </Button>
+                                )}
+                              </div>
+                            ) : <p>{t("pluginConfigTab.protocolUpdateUnavailable")}</p>}
+                          </div>
+                        )}
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
                         <Button
@@ -1301,6 +1244,7 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
                     </div>
                   </>
                 )}
+                {alertsApi?.alerts && <PluginAlertsSection pluginId={selectedPlugin.id} rows={alerts.rows} api={alertsApi.alerts} osEnabled={alerts.osEnabled} refresh={alerts.refresh} />}
               </>
             ) : (
               <p className="text-xs text-muted-foreground">{t("pluginConfigTab.selectPluginHint")}</p>
@@ -1308,6 +1252,8 @@ export function PluginConfigTab({ api }: { api?: AveApi } = {}) {
           </div>
         </div>
       )}
+      {alerts.failed && <div role="alert" className="text-xs text-destructive">{t("alerts.loadFailed")} <Button size="sm" variant="outline" onClick={() => void alerts.refresh()}>{t("alerts.retry")}</Button></div>}
+      {alertsApi?.alerts && alerts.loaded && <PluginAlertsSection pluginId={ALERT_HOST_PLUGIN_ID} rows={alerts.rows} api={alertsApi.alerts} osEnabled={alerts.osEnabled} refresh={alerts.refresh} />}
       {/* Performance section — the former standalone plugin-perf tab was
           merged here ("성능만 병합"); it renders as a section below the
           config content and pulls its own perf stats via the api. */}

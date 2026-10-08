@@ -66,7 +66,7 @@ const FEATURE_ID = "skills";
 const FILE_NAME = "approvals.json";
 const LEGACY_ROOT_FILE = "skill-approvals.json";
 
-const DEFAULT_PATH = resolve(aveHome(), FEATURE_ID, FILE_NAME);
+const defaultPath = (): string => resolve(aveHome(), FEATURE_ID, FILE_NAME);
 
 /**
  * Hash the approval material so a record binds to exactly what the user said yes
@@ -130,7 +130,7 @@ export class SkillApprovalsStore {
   private cache: Map<string, string> | null = null; // record key → material hash
   private readonly filePath: string;
 
-  constructor(filePath: string = DEFAULT_PATH) {
+  constructor(filePath: string = defaultPath()) {
     this.filePath = filePath;
   }
 
@@ -139,7 +139,7 @@ export class SkillApprovalsStore {
     // explicit path (tests, fixtures) is not talking about `~/.ave` at all,
     // and migrating the real user's file underneath such a call would be a
     // side effect nobody asked for.
-    if (this.filePath === DEFAULT_PATH) {
+    if (this.filePath === defaultPath()) {
       adoptLegacyRootFileSync(FEATURE_ID, FILE_NAME, LEGACY_ROOT_FILE);
     }
     const file = await readFileOrEmpty(this.filePath);

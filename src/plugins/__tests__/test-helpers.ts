@@ -1,15 +1,17 @@
 /**
  * Shared helpers for marketplace test fixtures.
  *
- * Tests construct `PluginMarketplaceService` with the (paths, fetcher,
+ * Tests construct `PluginMarketplaceService` with the (paths,
  * deploymentGuard?) shape. registry.json lives at the root of pluginsRoot,
  * so tests pick a single tmp root and the helper derives the rest.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import { execFile } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import { promisify } from "node:util";
 import type { ValidateFunction } from "ajv";
 import { resolveAddFormats, resolveAjv } from "../config-schema.js";
 import type { PluginPaths } from "../plugin-paths.js";
@@ -19,7 +21,6 @@ import {
   PluginMarketplaceService,
   type PreparedMarketplacePluginActivation,
 } from "../marketplace.js";
-import type { MarketplaceFetcher } from "../marketplace-fetcher.js";
 import {
   createNoopHostApiForTests,
   PluginRuntime,
@@ -36,16 +37,37 @@ import type {
 } from "../plugin-host-generation.js";
 import type { ActivePluginGeneration } from "../plugin-generation-coordinator.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
+import { HOST_PROTOCOL_VERSIONS_SERVED } from "../isolation/host-api-wire.js";
 
 type GenerationCommitScope = <T>(operation: () => Promise<T>) => Promise<T>;
 
-/** Restore owner write access before deleting immutable generation fixtures. */
+const execFileAsync = promisify(execFile);
+
+/**
+ * Restore owner write access before deleting immutable generation fixtures.
+ *
+ * On darwin a fixture may also carry the user-immutable flag (`uchg`), which
+ * refuses both `chmod` and `rm`, so it is cleared first and again once every
+ * directory is listable — the first pass cannot reach below a `000` directory.
+ * Best effort, like the rest of the teardown: `chflags -R` reports entries it
+ * could not reach, and the second pass is what reaches them.
+ */
 export async function makeTestTreeWritable(root: string): Promise<void> {
+  if (process.platform === "darwin") await clearUserImmutable(root);
+  await restoreOwnerModes(root);
+  if (process.platform === "darwin") await clearUserImmutable(root);
+}
+
+async function clearUserImmutable(root: string): Promise<void> {
+  await execFileAsync("/usr/bin/chflags", ["-R", "-P", "nouchg", root]).catch(() => undefined);
+}
+
+async function restoreOwnerModes(root: string): Promise<void> {
   await chmod(root, 0o700).catch(() => undefined);
   const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
   await Promise.all(entries
     .filter((entry) => entry.isDirectory())
-    .map((entry) => makeTestTreeWritable(join(root, entry.name))));
+    .map((entry) => restoreOwnerModes(join(root, entry.name))));
 }
 
 /**
@@ -67,17 +89,6 @@ export const activateAndCommitPreparedPluginForTest: PreparedMarketplacePluginAc
 export const preparedActivationOptionsForTest = Object.freeze({
   activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
 });
-export const preparedManagedActivationOptionsForTest = Object.freeze({
-  mode: "pre-start-sync" as const,
-  ensurePluginStateReadyForInstall: async (_pluginId: string) => undefined,
-  // Registry-removal commit only. What the real remover does around that commit
-  // is pinned in marketplace-managed-bootstrap.test.ts, which binds the actual
-  // `removeQuiescentPluginResidualState` instead of this default.
-  removeDelistedAdminInstall: async (
-    _removal: { pluginId: string; secretKeys: readonly string[] },
-    commitRegistryRemoval: () => Promise<void>,
-  ) => { await commitRegistryRemoval(); },
-});
 
 /**
  * Storage/unit-test service with an explicit test lifecycle default. Keeping
@@ -85,40 +96,6 @@ export const preparedManagedActivationOptionsForTest = Object.freeze({
  * options without weakening the production method signatures or runtime gate.
  */
 export class TestPluginMarketplaceService extends PluginMarketplaceService {
-  override install(...args: Parameters<PluginMarketplaceService["install"]>) {
-    const [pluginId, onProgress, options] = args;
-    return super.install(
-      pluginId,
-      onProgress,
-      options ?? preparedActivationOptionsForTest,
-    );
-  }
-
-  override ensureManagedInstalled(
-    ...args: Parameters<PluginMarketplaceService["ensureManagedInstalled"]>
-  ) {
-    return super.ensureManagedInstalled(
-      args[0] ?? preparedManagedActivationOptionsForTest,
-    );
-  }
-
-  override installPlugin(...args: Parameters<PluginMarketplaceService["installPlugin"]>) {
-    const [pluginId, version, options] = args;
-    return super.installPlugin(
-      pluginId,
-      version,
-      options ?? preparedActivationOptionsForTest,
-    );
-  }
-
-  override rollbackPlugin(...args: Parameters<PluginMarketplaceService["rollbackPlugin"]>) {
-    const [pluginId, options] = args;
-    return super.rollbackPlugin(
-      pluginId,
-      options ?? preparedActivationOptionsForTest,
-    );
-  }
-
   override installLocal(...args: Parameters<PluginMarketplaceService["installLocal"]>) {
     const [sourcePath, options] = args;
     return super.installLocal(
@@ -200,9 +177,9 @@ export function makeTestManifest(
     name: overrides.id,
     version: "0.0.0",
     description: "test fixture",
-    publisher: "tests",
     entry: "dist/hostPlugin.js",
     ...(rest as Partial<PluginManifest>),
+    requires: { hostProtocol: "2", ...overrides.requires },
     tools,
   };
 }
@@ -425,6 +402,20 @@ export function agentPluginsDocument(
   return top;
 }
 
+/** Backfill the served protocol for runtime fixtures while preserving explicit overrides. */
+export function servedAgentPluginsDocument(
+  manifest: Readonly<Record<string, unknown>> | PluginManifest,
+): Record<string, unknown> {
+  const requires = (manifest as Record<string, unknown>).requires;
+  if (requires !== undefined && (typeof requires !== "object" || requires === null || Array.isArray(requires))) {
+    return agentPluginsDocument(manifest);
+  }
+  return agentPluginsDocument({
+    ...manifest,
+    requires: { hostProtocol: HOST_PROTOCOL_VERSIONS_SERVED[0], ...requires },
+  });
+}
+
 /**
  * A writer for the `plugin.json` a manifest-validation suite parses.
  *
@@ -508,6 +499,8 @@ export interface TestRegistryEntry {
   installSource?: "admin" | "user" | "local-dev";
   installedBy?: "admin" | "user";
   _devLinked?: boolean;
+  /** The git source binding of a git install (design §15.1). */
+  origin?: unknown;
 }
 
 export async function writeTestPluginRegistry(
@@ -828,14 +821,8 @@ export class TestPluginRuntime extends PluginRuntime {
   }
 }
 
-export function makeTestPluginMarketplaceService(
-  rootDir: string,
-  fetcher: MarketplaceFetcher,
-): PluginMarketplaceService {
-  return new TestPluginMarketplaceService(
-    makeTestPluginPaths({ rootDir }),
-    fetcher,
-  );
+export function makeTestPluginMarketplaceService(rootDir: string): PluginMarketplaceService {
+  return new TestPluginMarketplaceService(makeTestPluginPaths({ rootDir }));
 }
 
 /**
