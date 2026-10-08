@@ -283,7 +283,14 @@ is LOW. A guest shell is graded first match wins:
    explicitly (`git submodule update|init|status|sync`, never `foreach`), and
    options that name a program to run (`sort --compress-program`, `split
    --filter`, `install --strip-program`, `rg --pre`, `fd --exec`, `ag
-   --pager`) are refused even on verbs that are otherwise local.
+   --pager`) are refused even on verbs that are otherwise local. That
+   program-option guard is the host's own: the host read-only classification
+   (`host-risk-inspector.ts`) uses the same check, so on the host too a
+   read-only verb handed a program (`sort --compress-program` and its
+   abbreviations, `ag --pager`, `rg --pre`/`--hostname-bin`, `fd --exec`/`-x`)
+   is an execution, not a read. The host also resolves GNU getopt
+   abbreviations of write flags (`sed --in-pl`, `sort --out`) and treats
+   `GIT_CONFIG_PARAMETERS` as an execution-selecting environment variable.
    Everything else — any shell binary, `exec`, `eval`, `builtin`,
    `source`/`.`, BusyBox, aliases, a pipe or here-doc into a shell, unknown
    verbs, a path-qualified program outside the system bin directories, input

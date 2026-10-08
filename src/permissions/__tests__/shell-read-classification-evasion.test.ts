@@ -89,6 +89,43 @@ describe("evasion: an env assignment selects the interpreter", () => {
     expect(classify({ command })).toBe("shell");
   });
 
+  it.each([
+    // an option names a program for a read-only verb to run
+    "sort --compress-program=/workspace/x.sh /workspace/big.txt",
+    "sort --compress-prog=/workspace/x.sh /workspace/big.txt",
+    "sort --compress /workspace/x.sh /workspace/big.txt",
+    "ag --pager /workspace/x.sh secret /workspace",
+    "ag --pag=/workspace/x.sh secret /workspace",
+    // GNU getopt_long resolves an abbreviated write flag to the full flag
+    "sed --in-pl=.bak 's/a/b/' /workspace/f",
+    "sort --out=/workspace/sorted /workspace/f",
+    "sort --outp /workspace/sorted /workspace/f",
+  ])("a read-only verb handed a program or an abbreviated write flag is not a read: %s", (command) => {
+    expect(isReadOnlyCommand(command)).toBe(false);
+    expect(classify({ command })).toBe("shell");
+  });
+
+  it.each([
+    // already escalated before the shared program-option guard; must stay so
+    "rg --pre /workspace/x.sh secret /workspace",
+    "rg --hostname-bin=/workspace/x.sh secret",
+    "fd -x /workspace/x.sh",
+    "fd . /workspace --exec /workspace/x.sh",
+  ])("program-running options already escalated stay escalated: %s", (command) => {
+    expect(isReadOnlyCommand(command)).toBe(false);
+  });
+
+  it.each([
+    "sort -n /workspace/f",
+    "sort --numeric-sort --reverse /workspace/f",
+    "ag secret /workspace",
+    "rg --pretty secret /workspace",
+    "sed -n 1p /workspace/f",
+    "fd -e ts . /workspace",
+  ])("the same verbs without a program or write flag stay reads: %s", (command) => {
+    expect(isReadOnlyCommand(command)).toBe(true);
+  });
+
   it("escalates on an unlisted variable whose value is shaped like an interpreter", () => {
     expect(isReadOnlyCommand("SOMETHING_HOOK=/bin/bash cat f")).toBe(false);
   });

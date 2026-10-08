@@ -38,7 +38,12 @@ import { PERMISSION_REVIEWER_SYSTEM_PROMPT } from "../../shared/permission-revie
 import { getDottedFieldValue } from "../../shared/dotted-field-value.js";
 import { extractShellCommands } from "../../shared/shell-command-fields.js";
 import { stripCommandPath, tokenizeShell, type ShellLeaf } from "../../shared/shell-tokenizer.js";
-import { isReadOnlyShellLeaf } from "./host-risk-inspector.js";
+import {
+  isReadOnlyShellLeaf,
+  longOptionAbbreviates,
+  namesProgramToRun,
+  shortClusterHas,
+} from "./host-risk-inspector.js";
 import {
   formatSandboxCapabilityForPrompt,
   isDisposableSubstrateCapability,
@@ -1079,18 +1084,6 @@ function splitGitInvocation(args: readonly string[]): { sub: string; rest: reado
   return sub === undefined ? null : { sub, rest: args.slice(i + 1), index: i };
 }
 
-/** True when the long option spelling abbreviates (or equals) one of the names. */
-function longOptionAbbreviates(arg: string, names: readonly string[]): boolean {
-  if (!arg.startsWith("--") || arg === "--") return false;
-  const spelling = arg.split("=", 1)[0]!;
-  return names.some((name) => name.startsWith(spelling));
-}
-
-/** True when a short cluster (`-xfD`) contains one of the letters. */
-function shortClusterHas(arg: string, letters: string): boolean {
-  return /^-[^-]/.test(arg) && [...arg.slice(1)].some((letter) => letters.includes(letter));
-}
-
 /** Wrappers that run another program: returns the wrapped argv, or null. */
 function unwrapGuestRunner(argv: readonly string[]): readonly string[] | null {
   const verb = stripCommandPath(argv[0] ?? "");
@@ -1243,29 +1236,6 @@ function isNetworkDevicePath(value: string): boolean {
 /** Options of a compiler that name a program, plugin or option file to run. */
 const COMPILER_ARG_RE = /^-(O[0-3sgz]?|g[0-3]?|c|S|E|o|I.*|L.*|l.*|D.*|U.*|W[a-z][^,]*|std=.*|f(?!plugin)(?!use-ld=.*\/)[a-z][a-z0-9+-]*(=[^,]*)?|m[a-z0-9-]+(=[^,]*)?|pthread|shared|static|pie|no-pie|v|x|include|isystem.*|M[MDFTPG]?|pedantic.*|w|rdynamic|march=.*)$/;
 
-/**
- * Options of otherwise local or read-only verbs that name a program or a
- * command line to run (`sort --compress-program`, `rg --pre`, `fd --exec`,
- * `split --filter`, `install --strip-program`). The literal-verb list below and
- * the host's read-only table admit these verbs with any arguments, so the
- * program-taking options are refused here, prefix-matched like an abbreviation.
- */
-const GUEST_PROGRAM_OPTIONS: ReadonlyMap<string, { readonly long: readonly string[]; readonly short?: string }> = new Map([
-  ["sort", { long: ["--compress-program"] }],
-  ["rg", { long: ["--pre"] }],
-  ["fd", { long: ["--exec", "--exec-batch"], short: "xX" }],
-  ["ag", { long: ["--pager"] }],
-  ["split", { long: ["--filter"] }],
-  ["install", { long: ["--strip-program"] }],
-]);
-
-function namesGuestProgram(verb: string, args: readonly string[]): boolean {
-  const options = GUEST_PROGRAM_OPTIONS.get(verb);
-  if (options === undefined) return false;
-  return args.some((arg) => longOptionAbbreviates(arg, options.long) ||
-    (options.short !== undefined && shortClusterHas(arg, options.short)));
-}
-
 const GUEST_LITERAL_VERBS: ReadonlySet<string> = new Set([
   "mkdir", "rmdir", "touch", "cp", "mv", "ln", "chmod", "chown", "chgrp", "install", "tee", "split",
   "patch", "mktemp", "md5sum", "sha1sum", "sha256sum", "sha512sum", "xxd", "od", "hexdump", "strings",
@@ -1284,7 +1254,7 @@ function isGuestLocalArgv(leaf: ShellLeaf, argv: readonly string[], depth: numbe
   if (wrapped !== null) {
     return depth < GUEST_WRAPPER_MAX_DEPTH && wrapped.length > 0 && isGuestLocalArgv(leaf, wrapped, depth + 1);
   }
-  if (namesGuestProgram(verb, args)) return false;
+  if (namesProgramToRun(verb, args)) return false;
   // The host's read-only classification (verb table, mutating flags, sed
   // program scan, git inspection flags) — a read-only leaf is local.
   if (isReadOnlyShellLeaf({ ...leaf, argv: [...argv], argvHasExpandableDollar: argv.map(() => false) }, { ignoreRedirects: true })) {
