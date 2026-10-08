@@ -137,6 +137,9 @@ export async function dispatchReviewerForHeadless(
       ...(hostShellExecutionPlan === undefined
         ? {}
         : { hostShellExecutionPlan }),
+      ...(context.disposableSubstrate === undefined
+        ? {}
+        : { disposableSubstrate: context.disposableSubstrate }),
     },
     {
       allowedPluginIds: context.allowedPluginIds
@@ -255,6 +258,9 @@ export async function dispatchReviewerForInteractiveAuto(
         ...(hostShellExecutionPlan === undefined
           ? {}
           : { hostShellExecutionPlan }),
+        ...(context.disposableSubstrate === undefined
+          ? {}
+          : { disposableSubstrate: context.disposableSubstrate }),
       },
       {
         allowedPluginIds: context.allowedPluginIds

@@ -139,6 +139,8 @@ export interface ShellLeaf {
   hasInputRedirect: boolean;
   hasCommandSubstitution: boolean;
   hasProcessSubstitution: boolean;
+  /** Any parameter, arithmetic or command expansion in the leaf's words, assignments, redirects or here-doc body. */
+  hasExpansion: boolean;
   argvHasExpandableDollar: boolean[];
   strippedWrappers: string[];
   assignments: string[];
@@ -158,6 +160,9 @@ export function commandLeaf(command: ShellCommand, effective = effectiveShellCom
     hasInputRedirect: command.redirects.some((redirect) => redirect.effect === "read"),
     hasCommandSubstitution: allWords.some((word) => wordParts(word).some((part) => part.kind === "substitution" && !part.process)),
     hasProcessSubstitution: allWords.some((word) => wordParts(word).some((part) => part.kind === "substitution" && part.process)),
+    hasExpansion: allWords.some((word) => wordParts(word).some((part) =>
+      part.kind === "parameter" || part.kind === "parameter-choice" ||
+      part.kind === "arithmetic-data" || part.kind === "substitution")),
     argvHasExpandableDollar: effective.words.map((word) => word.parts.some((part) => part.kind !== "literal")),
     strippedWrappers: [...effective.wrappers],
     assignments: [...command.assignments, ...effective.environment].map((assignment) => `${assignment.name}=${displayShellWord(assignment.value)}`),

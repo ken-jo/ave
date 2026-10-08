@@ -22,6 +22,7 @@ import {
 } from "./reviewer/risk-classifier.js";
 import {
   resolveReviewerSandboxCacheState,
+  type DisposableSubstrate,
   type ReviewerSandboxCacheState,
 } from "./sandbox-capability.js";
 import {
@@ -363,6 +364,8 @@ export interface ReviewerDispatchInput {
   workerId?: string;
   /** Executor-sealed substrate for canonical builtin shell invocations only. */
   hostShellExecutionPlan?: HostShellExecutionPlan;
+  /** Executor-selected disposable guest for this invocation (shell or canonical file route). */
+  disposableSubstrate?: DisposableSubstrate;
 }
 
 /** Host-only assessment evidence; structural lookalikes cannot grant persistence. */
@@ -434,7 +437,9 @@ function sameReviewerSandboxCacheState(
     ac.confines?.process === bc.confines?.process &&
     ac.confines?.network === bc.confines?.network &&
     canonicalStringify(a.hostShellExecutionPlan ?? null) ===
-      canonicalStringify(b.hostShellExecutionPlan ?? null)
+      canonicalStringify(b.hostShellExecutionPlan ?? null) &&
+    canonicalStringify(a.disposableSubstrate ?? null) ===
+      canonicalStringify(b.disposableSubstrate ?? null)
   );
 }
 // LLM caller retry wiring lives in conversation-loop.ts scope.
@@ -1535,7 +1540,7 @@ export class PermissionManager {
     const readSandboxCacheState = (): ReviewerSandboxCacheState =>
       resolveReviewerSandboxCacheState(
         input.source, toolName, input.mcpServerId, input.workerId,
-        input.pluginId, input.hostShellExecutionPlan,
+        input.pluginId, input.hostShellExecutionPlan, input.disposableSubstrate,
       );
     let sandboxCacheState = readSandboxCacheState();
     const buildReviewerContext = (

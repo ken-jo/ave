@@ -12,9 +12,12 @@
  * }
  * ```
  *
- * Default at runtime: `process.cwd()` ∪ `~/.ave/` MINUS Layer 0 deny
- * paths (Layer 0 always wins; ~/.ave/secrets is denied even if the
- * caller's allowed list contains ~/.ave/).
+ * Default at runtime: `process.cwd()` ∪ `~/.ave/` ∪ the verified
+ * application scratch directory (`shared/ave-scratch.ts`) MINUS Layer 0
+ * deny paths (Layer 0 always wins; ~/.ave/secrets is denied even if the
+ * caller's allowed list contains ~/.ave/). The platform temp roots are NOT
+ * a Layer 1 default; the conversation loop adds them to its per-turn base
+ * set (`base-allowed-directories.ts`), which is a separate, stated tradeoff.
  *
  * Frozen-canonical contract: callers MUST pre-canonicalize the input
  * path via `canonicalizePathForMatch` from `./sensitive-paths.js` and
@@ -31,6 +34,7 @@ import {
 } from "./sensitive-paths.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { aveHome } from "../shared/ave-home.js";
+import { verifyAveScratchDir } from "../shared/ave-scratch.js";
 
 /**
  * Directory addition pre-flight result.
@@ -65,7 +69,9 @@ function normalizePolicySeparators(p: string): string {
 /**
  * Compute the host-default allow-list at boot.
  *
- * Default = `process.cwd()` ∪ `homedir()/.ave` MINUS Layer 0 deny paths.
+ * Default = `process.cwd()` ∪ `homedir()/.ave` ∪ the application scratch
+ * directory (only while `verifyAveScratchDir` holds: a directory the app
+ * created with `0o700` and still owns) MINUS Layer 0 deny paths.
  * Returns canonicalized + case-folded entries ready to be passed to
  * {@link isPathAllowed}.
  */
@@ -83,7 +89,8 @@ export function computeDefaultRuntimeAllowedDirectories(cwd: string = process.cw
 }
 
 function computeDefaultAllowedDirectoryEntries(cwd: string, foldCase: boolean): string[] {
-  const candidates = [cwd, aveHome()];
+  const scratch = verifyAveScratchDir();
+  const candidates = [cwd, aveHome(), ...(scratch.ok ? [scratch.path] : [])];
   const out: string[] = [];
   const seen = new Set<string>();
   for (const raw of candidates) {

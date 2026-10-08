@@ -83,6 +83,49 @@ describe("evasion: an env assignment selects the interpreter", () => {
     expect(classify({ command: "GIT_EXTERNAL_DIFF=/bin/sh git diff" })).toBe("shell");
   });
 
+  it("GIT_CONFIG_PARAMETERS is not discarded as a leading assignment (it sets core.sshCommand, core.pager, …)", () => {
+    const command = "GIT_CONFIG_PARAMETERS=\"'core.pager'='cat'\" git log";
+    expect(isReadOnlyCommand(command)).toBe(false);
+    expect(classify({ command })).toBe("shell");
+  });
+
+  it.each([
+    // an option names a program for a read-only verb to run
+    "sort --compress-program=/workspace/x.sh /workspace/big.txt",
+    "sort --compress-prog=/workspace/x.sh /workspace/big.txt",
+    "sort --compress /workspace/x.sh /workspace/big.txt",
+    "ag --pager /workspace/x.sh secret /workspace",
+    "ag --pag=/workspace/x.sh secret /workspace",
+    // GNU getopt_long resolves an abbreviated write flag to the full flag
+    "sed --in-pl=.bak 's/a/b/' /workspace/f",
+    "sort --out=/workspace/sorted /workspace/f",
+    "sort --outp /workspace/sorted /workspace/f",
+  ])("a read-only verb handed a program or an abbreviated write flag is not a read: %s", (command) => {
+    expect(isReadOnlyCommand(command)).toBe(false);
+    expect(classify({ command })).toBe("shell");
+  });
+
+  it.each([
+    // already escalated before the shared program-option guard; must stay so
+    "rg --pre /workspace/x.sh secret /workspace",
+    "rg --hostname-bin=/workspace/x.sh secret",
+    "fd -x /workspace/x.sh",
+    "fd . /workspace --exec /workspace/x.sh",
+  ])("program-running options already escalated stay escalated: %s", (command) => {
+    expect(isReadOnlyCommand(command)).toBe(false);
+  });
+
+  it.each([
+    "sort -n /workspace/f",
+    "sort --numeric-sort --reverse /workspace/f",
+    "ag secret /workspace",
+    "rg --pretty secret /workspace",
+    "sed -n 1p /workspace/f",
+    "fd -e ts . /workspace",
+  ])("the same verbs without a program or write flag stay reads: %s", (command) => {
+    expect(isReadOnlyCommand(command)).toBe(true);
+  });
+
   it("escalates on an unlisted variable whose value is shaped like an interpreter", () => {
     expect(isReadOnlyCommand("SOMETHING_HOOK=/bin/bash cat f")).toBe(false);
   });
@@ -124,12 +167,26 @@ describe("evasion: a read-only git subcommand carries a writing flag", () => {
     expect(isReadOnlyCommand("git show --frobnicate")).toBe(false);
   });
 
+  // `reflog` is an inspection subcommand, but its expire/delete forms rewrite
+  // the reflog. `expire --all` and `delete HEAD@{1}` graded read on b77d98d0;
+  // `--expire=now` was already escalated by the inspection flag allow-list.
+  it.each([
+    "git reflog expire --all",
+    "git reflog expire --expire=now --all",
+    "git reflog delete HEAD@{1}",
+  ])("git reflog expire/delete is not a read: %s", (command) => {
+    expect(isReadOnlyCommand(command)).toBe(false);
+    expect(classify({ command })).toBe("shell");
+  });
+
   it("keeps ordinary inspection forms read", () => {
     expect(isReadOnlyCommand("git status")).toBe(true);
     expect(isReadOnlyCommand("git log --oneline -5")).toBe(true);
     expect(isReadOnlyCommand("git diff HEAD -- src/index.ts")).toBe(true);
     expect(isReadOnlyCommand("git show abc123 --stat")).toBe(true);
     expect(isReadOnlyCommand("git blame -w src/index.ts")).toBe(true);
+    expect(isReadOnlyCommand("git reflog")).toBe(true);
+    expect(isReadOnlyCommand("git reflog show HEAD")).toBe(true);
   });
 
   it("runs path containment on the git write flag", () => {

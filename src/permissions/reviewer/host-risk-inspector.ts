@@ -142,6 +142,9 @@ const MUTATING_FLAGS: ReadonlyMap<string, ReadonlySet<string> | null> = new Map(
   ["split",    null],  // always writes output files (xaa… / prefix-based)
 ]);
 
+/** Verbs parsed by GNU getopt_long, which accepts any unambiguous abbreviation of a long option. */
+const GNU_ABBREVIATING_VERBS: ReadonlySet<string> = new Set(["sed", "sort"]);
+
 /**
  * Short mutating flag letters per verb, for cluster/glued-suffix detection
  * (mode 2 above). Keyed by the same verb names as {@link MUTATING_FLAGS}.
@@ -327,7 +330,7 @@ const EXECUTION_SELECTING_ENV_NAMES: ReadonlySet<string> = new Set([
   "GIT_PROXY_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_TEXTCONV",
   "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_DIR", "GIT_WORK_TREE",
   "GIT_INDEX_FILE", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
-  "GIT_CONFIG_COUNT", "GIT_ATTR_NOSYSTEM", "GIT_NAMESPACE",
+  "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_ATTR_NOSYSTEM", "GIT_NAMESPACE",
   // Shell / interpreter selection and startup hooks
   "SHELL", "BASH_ENV", "ENV", "IFS", "PATH", "CDPATH", "SHELLOPTS",
   "BASH_FUNC_", "PS4", "PROMPT_COMMAND",
@@ -340,6 +343,43 @@ const EXECUTION_SELECTING_ENV_NAMES: ReadonlySet<string> = new Set([
   // Command-option overrides that can smuggle execution or mutation flags
   "GREP_OPTIONS", "TAR_OPTIONS", "POSIXLY_CORRECT_EXEC",
 ]);
+
+/** True when the long option spelling abbreviates (or equals) one of the names. */
+export function longOptionAbbreviates(arg: string, names: readonly string[]): boolean {
+  if (!arg.startsWith("--") || arg === "--") return false;
+  const spelling = arg.split("=", 1)[0]!;
+  return names.some((name) => name.startsWith(spelling));
+}
+
+/** True when a short cluster (`-xfD`) contains one of the letters. */
+export function shortClusterHas(arg: string, letters: string): boolean {
+  return /^-[^-]/.test(arg) && [...arg.slice(1)].some((letter) => letters.includes(letter));
+}
+
+/**
+ * Options that name a program or command line for an otherwise read-only or
+ * local verb. A call carrying one runs that program, so it is never a read —
+ * on the host (this module's read-only table) or in a disposable guest (the
+ * guest allowlist reuses this check). Long options match by prefix, the way
+ * getopt_long resolves an abbreviation (`--compress-prog`); short options
+ * match anywhere in a cluster.
+ */
+const PROGRAM_OPTIONS: ReadonlyMap<string, { readonly long: readonly string[]; readonly short?: string }> = new Map([
+  ["sort", { long: ["--compress-program"] }],
+  ["ag", { long: ["--pager"] }],
+  ["rg", { long: ["--pre", "--hostname-bin"] }],
+  ["fd", { long: ["--exec", "--exec-batch"], short: "xX" }],
+  ["split", { long: ["--filter"] }],
+  ["install", { long: ["--strip-program"] }],
+]);
+
+/** True when `verb` is given an option that names a program for it to run. */
+export function namesProgramToRun(verb: string, args: readonly string[]): boolean {
+  const options = PROGRAM_OPTIONS.get(verb);
+  if (options === undefined) return false;
+  return args.some((arg) => longOptionAbbreviates(arg, options.long) ||
+    (options.short !== undefined && shortClusterHas(arg, options.short)));
+}
 
 /** Signals the host owns about the observed call. The inspector reads ONLY these. */
 export interface HostRiskSignals {
@@ -491,6 +531,9 @@ export function isReadOnlyShellLeaf(
   }
 
   const verb = stripCommandPath(argv[0]!);
+  // An option that hands the verb a program to run makes the leaf an
+  // execution, whatever the verb's read-only table says.
+  if (namesProgramToRun(verb, argv.slice(1))) return false;
   if (verb === "git") {
     return isReadOnlyGitLeaf(argv);
   }
@@ -542,6 +585,9 @@ function isReadOnlyGitLeaf(argv: readonly string[]): boolean {
   const sub = argv[1];
   if (typeof sub !== "string") return false;
   if (READ_ONLY_GIT_SUBCOMMANDS.has(sub)) {
+    // `git reflog expire` / `git reflog delete` rewrite the reflog; only its
+    // show/list/exists forms read. Any such word escalates, wherever it sits.
+    if (sub === "reflog" && argv.slice(2).some((t) => t === "expire" || t === "delete")) return false;
     // The subcommand name is not the whole answer: `git diff
     // --output=~/.ssh/authorized_keys` writes, `git show --ext-diff` execs.
     // Every FLAG must be in the read-only allow-list; non-flag tokens are
@@ -661,10 +707,15 @@ function hasMutatingFlag(
     // Mode 1: exact token.
     if (flagSet.has(arg)) return true;
 
-    // Mode 2: `--flag=value` prefix for long flags.
+    // Mode 2: `--flag=value` prefix for long flags, and for GNU getopt_long
+    // verbs an abbreviated spelling (`sed --in-pl`, `sort --out=f`), which the
+    // tool resolves to the full flag.
     if (arg.startsWith("--")) {
       const eq = arg.indexOf("=");
       if (eq > 0 && flagSet.has(arg.slice(0, eq))) return true;
+      if (GNU_ABBREVIATING_VERBS.has(verb) && longOptionAbbreviates(arg, [...flagSet].filter((flag) => flag.startsWith("--")))) {
+        return true;
+      }
       continue; // long flag — skip short-cluster check
     }
 

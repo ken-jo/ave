@@ -5,7 +5,10 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import {
   __resetActiveSandboxCapabilityForTest,
   detectSandboxCapability,
+  disposableContainerCapability,
   formatSandboxCapabilityForPrompt,
+  isDisposableSubstrateCapability,
+  resolveReviewerSandboxCacheState,
   __resetSandboxRequestedAtBootForTest,
   isActiveSandboxFilesystemContained,
   isActiveSandboxFilesystemContainedForPluginEffects,
@@ -187,6 +190,64 @@ describe("sandbox-capability — setActiveSandboxCapability publish", () => {
 });
 
 // ─── SandboxKind union members ───────────────────────────────────────────────
+
+describe("sandbox-capability — disposable substrate", () => {
+  const substrate = { authority: "workload-broker" as const, id: "1".repeat(64) };
+
+  it("resolves a routed builtin shell to the disposable guest, ahead of the host-shell plan", () => {
+    const plan = getHostShellExecutionPlan();
+    expect(plan.capability.kind).toBe("none");
+    const cap = resolveReviewerSandboxCapability("builtin", "bash", undefined, undefined, undefined, plan, substrate);
+    expect(cap.kind).toBe("disposable-container");
+    expect(cap.confidence).toBe("verified");
+    expect(cap.confines).toEqual({ filesystem: true, process: true, network: false });
+    expect(cap.reason).toContain(substrate.id.slice(0, 12));
+    expect(isDisposableSubstrateCapability(cap)).toBe(true);
+    expect(isWeakSandbox(cap)).toBe(false);
+  });
+
+  it("resolves a routed canonical file tool to the disposable guest instead of the in-process default", () => {
+    const cap = resolveReviewerSandboxCapability("builtin", "read_file", undefined, undefined, undefined, undefined, substrate);
+    expect(cap.kind).toBe("disposable-container");
+    expect(resolveReviewerSandboxCapability("builtin", "read_file").kind).toBe("none");
+  });
+
+  it("relaxes filesystem and process categories but never network", () => {
+    const cap = disposableContainerCapability(substrate);
+    expect(sandboxRelaxesCategory(cap, "shell")).toBe(true);
+    expect(sandboxRelaxesCategory(cap, "write")).toBe(true);
+    expect(sandboxRelaxesCategory(cap, "read")).toBe(true);
+    expect(sandboxRelaxesCategory(cap, "network")).toBe(false);
+  });
+
+  it("keys the reviewer cache by the guest so a host verdict never serves a guest call", () => {
+    const state = resolveReviewerSandboxCacheState("builtin", "bash", undefined, undefined, undefined, undefined, substrate);
+    expect(state.substrate).toBe("disposable-container");
+    expect(state.disposableSubstrate).toEqual(substrate);
+    expect(state.capability.kind).toBe("disposable-container");
+    const host = resolveReviewerSandboxCacheState("builtin", "bash");
+    expect(host.substrate).toBe("host-shell");
+    expect(host.disposableSubstrate).toBeUndefined();
+  });
+
+  it("is not a disposable substrate without verified full filesystem + process confinement", () => {
+    expect(isDisposableSubstrateCapability(undefined)).toBe(false);
+    expect(isDisposableSubstrateCapability({
+      kind: "disposable-container", confidence: "assumed", platform: "linux", reason: "x",
+      confines: { filesystem: true, process: true, network: false },
+    })).toBe(false);
+    expect(isDisposableSubstrateCapability({
+      kind: "disposable-container", confidence: "verified", platform: "linux", reason: "x",
+      confines: { filesystem: true, process: false, network: false },
+    })).toBe(false);
+  });
+
+  it("labels the guest in the reviewer prompt", () => {
+    expect(formatSandboxCapabilityForPrompt(disposableContainerCapability(substrate))).toMatch(
+      /^executionSandbox=disposable-container \(verified, linux\) confines\[net:✗ fs:✓ proc:✓\]/,
+    );
+  });
+});
 
 describe("sandbox-capability — SandboxKind union members", () => {
   it("SandboxKind type includes 'asrt', 'partial' and 'fs-only' (compile-time check via assignment)", () => {
