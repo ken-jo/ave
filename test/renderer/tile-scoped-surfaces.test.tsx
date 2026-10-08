@@ -1519,6 +1519,63 @@ describe("opening a conversation while another is mid-turn", () => {
     });
   });
 
+  it("New Chat while a turn runs starts the conversation beside the busy tile (#2348)", async () => {
+    const pendingSend = deferred<{ ok: true }>();
+    const { container, api, releasedGroupIds } = await renderApp(withOtherSession);
+    api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
+
+    await submitChatMessage(container, "아직 답하는 중");
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
+
+    // The rail's first action stays live: the focused tile's turn is not the
+    // window's, and it used to switch New Chat off for every tile at once.
+    const newChat = container.querySelector('[data-testid="sidebar-new-chat"]') as HTMLButtonElement;
+    expect(newChat.disabled).toBe(false);
+    await act(async () => { fireEvent.click(newChat); });
+
+    // The busy tile keeps its conversation and its turn; the new one is a
+    // group of its own beside it, and nothing was released to make room.
+    await waitFor(() => expect(collectTiles(container)).toHaveLength(2));
+    expect(collectTiles(container).map((tile) => tile.chatGroupId)).toContain(MAIN_CHAT_GROUP_ID);
+    expect(mountedTileIds(container)).toContain(MAIN_CHAT_GROUP_ID);
+    expect(releasedGroupIds()).toEqual([]);
+
+    await act(async () => {
+      pendingSend.resolve({ ok: true });
+      await pendingSend.promise;
+    });
+  });
+
+  it("New Chat at the ceiling with every tile busy refuses out loud instead of going dead (#2348)", async () => {
+    const { container, api, releasedGroupIds } = await renderApp(withOtherSession);
+    const pending: Array<{ resolve: (value: { ok: true }) => void }> = [];
+    api.chatSend.mockImplementation(async () => {
+      const gate = deferred<{ ok: true }>();
+      pending.push(gate);
+      return gate.promise;
+    });
+    const tiles = await splitIntoNTiles(container, MAX_CHAT_GROUPS);
+    for (const [index, tile] of tiles.entries()) {
+      await focusTile(tile);
+      await submitChatMessage(tile.element, `${index + 1}번째`);
+    }
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(MAX_CHAT_GROUPS));
+    const before = mountedTileIds(container);
+
+    const newChat = container.querySelector('[data-testid="sidebar-new-chat"]') as HTMLButtonElement;
+    expect(newChat.disabled).toBe(false);
+    await act(async () => { fireEvent.click(newChat); });
+
+    expect(releasedGroupIds()).toEqual([]);
+    expect(mountedTileIds(container)).toEqual(before);
+    await waitFor(() => expect(container.textContent).toContain("비워 둘 수 있는 대화가 없습니다"));
+
+    await act(async () => {
+      for (const gate of pending) gate.resolve({ ok: true });
+      await Promise.resolve();
+    });
+  });
+
   it("clicking the streaming conversation's own row is navigation, not a load", async () => {
     const pendingSend = deferred<{ ok: true }>();
     const { container, api } = await renderApp(withOtherSession);

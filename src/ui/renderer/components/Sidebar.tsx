@@ -137,8 +137,12 @@ export interface SidebarProps {
    */
   modelConfigured?: boolean | null;
   onOpenSettings: () => void;
+  /**
+   * Start a conversation. Always offered: the window decides where it goes —
+   * the focused tile when it is idle, a tile of its own beside it when that
+   * one is mid-turn — so the sidebar has no turn state to gate it on.
+   */
   onNewChat: () => void;
-  streaming: boolean;
   /**
    * Collapse state is owned by the shell (App.tsx). The collapse/expand toggle
    * is the FIRST button in the cluster strip next to the traffic lights (see
@@ -1221,7 +1225,6 @@ function ProjectSessionList({
   sessions,
   currentSessionId,
   conversationSurfaceVisible,
-  streaming,
   onLoadSession,
   onOpenWorkBoardItem,
   onOpenSideChat,
@@ -1256,7 +1259,6 @@ function ProjectSessionList({
    * to be the page the user is on.
    */
   conversationSurfaceVisible: boolean;
-  streaming: boolean;
   onLoadSession?: (sessionId: string) => boolean | void | Promise<boolean | void>;
   onNewChatForProject?: (project: { projectRoot?: string; projectName?: string }) => void | Promise<void>;
   onRefreshProjects?: () => void | Promise<void>;
@@ -1581,14 +1583,13 @@ function ProjectSessionList({
     const root = project.projectRoot;
     const archived = Boolean(projectActions?.isArchived(root));
     return {
-      ...(!streaming
-        ? {
-            "project.new-chat": () => void onNewChatForProject?.({
-              ...(root ? { projectRoot: root } : {}),
-              projectName: project.projectName,
-            }),
-          }
-        : {}),
+      // Offered while a turn runs too: the window starts the conversation
+      // beside a busy tile rather than in it, so a running turn is no reason
+      // to take the folder's own first action away.
+      "project.new-chat": () => void onNewChatForProject?.({
+        ...(root ? { projectRoot: root } : {}),
+        projectName: project.projectName,
+      }),
       ...(onToggleProjectPin && root
         ? { [pinnedLabelFor(root)]: () => onToggleProjectPin(root) }
         : {}),
@@ -1749,8 +1750,8 @@ function ProjectSessionList({
             <div
               className={[
                 "group flex w-full min-w-0 items-center rounded-md transition-colors",
-                streaming ? "cursor-not-allowed opacity-50" : "hover:bg-muted",
-                archived && !streaming ? "opacity-70" : "",
+                "hover:bg-muted",
+                archived ? "opacity-70" : "",
               ].filter(Boolean).join(" ")}
               data-archived={archived ? "true" : undefined}
               onContextMenu={(event) => openNativeContextMenu(event, "project", projectMenuHandlers(project))}
@@ -1772,12 +1773,10 @@ function ProjectSessionList({
               ) : (
                 <button
                   type="button"
-                  disabled={streaming}
                   className={[
                     "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-foreground",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                    streaming ? "cursor-not-allowed" : "",
-                  ].filter(Boolean).join(" ")}
+                  ].join(" ")}
                   title={project.projectRoot ?? t("sidebar.newProjectChat", { project: displayName })}
                   data-testid={`sidebar-project-${projectTestId(project.projectRoot, project.projectName)}`}
                   onClick={openProject}
@@ -1979,7 +1978,6 @@ export function Sidebar({
   modelConfigured = null,
   onNewChat,
   onNewChatForProject,
-  streaming,
   collapsed,
   overlay = false,
   onToggleCollapse,
@@ -2323,7 +2321,6 @@ export function Sidebar({
                 size="icon"
                 className={`${RAIL_CONTROL_SIZE_CLASS} aspect-square p-0 shrink-0`}
                 onClick={onNewChat}
-                disabled={streaming}
                 aria-label={t("mainToolbar.newChat")}
                 data-testid="sidebar-new-chat"
               >
@@ -2337,7 +2334,6 @@ export function Sidebar({
             variant="default"
             className="w-full h-9 gap-2"
             onClick={onNewChat}
-            disabled={streaming}
             data-testid="sidebar-new-chat"
           >
             <Plus className="h-4 w-4" />
@@ -2486,7 +2482,6 @@ export function Sidebar({
                     projects={projects}
                     currentSessionId={currentSessionId}
                     conversationSurfaceVisible={activeView === "home"}
-                    streaming={streaming}
                     onLoadSession={onLoadSession}
                     onOpenWorkBoardItem={onOpenWorkBoardItem}
                     onOpenSideChat={onOpenSideChat}

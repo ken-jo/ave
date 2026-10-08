@@ -581,6 +581,14 @@ conversation and clears the persisted window-active session, so the next launch
 would open blank instead of where the user left off. A group whose tile has not
 published counts as busy — an unanswerable question is not an idle one.
 
+New Chat — the rail button, a folder row, the folder menu's "new chat" — takes
+the same ladder. An idle focused group starts the conversation in place; a
+mid-turn one gets a fresh group beside it, which hydrates an empty conversation
+under the window's active project (set in the same commit that mounts the
+tile). At the ceiling with nothing idle to set aside, the refusal is the same
+toast the sidebar rows give. None of these controls is disabled while a turn
+runs: the turn belongs to one tile, never to the window.
+
 **Mounted is not drawn.** A tile mounts for every leaf of the live tree; the
 view decides only which of them gets a box. A leaf with no box is hidden with
 `display:none` rather than unmounted, because unmounting takes down the stream
