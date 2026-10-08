@@ -245,8 +245,8 @@ interface RungBytes {
 /** Whether any hop a rung's downloads were admitted on was plain http, redirects included. */
 class HopTransport {
   plainHttp = false;
-  readonly onHop = (hop: URL): void => {
-    if (hop.protocol === "http:") this.plainHttp = true;
+  readonly onHop = (hop: string): void => {
+    if (hop.startsWith("http:")) this.plainHttp = true;
   };
 }
 

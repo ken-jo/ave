@@ -30,8 +30,8 @@ export interface DownloadOptions {
    * private repository's host hides what it will not serve without one.
    */
   tokenMissing?: boolean;
-  /** Each hop the gate admitted, the first URL and every redirect target. */
-  onHop?: (hop: URL) => void;
+  /** Each hop that answered past the gate's checks, the first URL and every redirect target. */
+  onHop?: (hop: string) => void;
 }
 
 function statusError(url: string, status: number, tokenMissing: boolean): MarketplaceError {

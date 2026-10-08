@@ -275,7 +275,7 @@ describe("NetworkGate.fetch", () => {
       "http://1.0.0.1/blob": ok,
     });
     const hops: string[] = [];
-    const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset", { official: false, catalog: CATALOG, onHop: (hop) => hops.push(hop.href) });
+    const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset", { official: false, catalog: CATALOG, onHop: (hop) => hops.push(hop) });
     expect(response.status).toBe(200);
     expect(hops).toEqual(["https://1.1.1.1/asset", "http://1.0.0.1/blob"]);
 
@@ -283,8 +283,64 @@ describe("NetworkGate.fetch", () => {
     const refused: string[] = [];
     const blocked = fakeTransport({ "https://1.1.1.1/asset": redirect("https://1.0.0.1/blob") });
     const load = policy({ block: [parseSourcePattern("host:1.0.0.1")] });
-    expect(await codeOf(gate(load, false, blocked.transport).fetch("https://1.1.1.1/asset", { official: false, catalog: CATALOG, onHop: (hop) => refused.push(hop.href) }))).toBe("SOURCE_POLICY_BLOCKED");
+    expect(await codeOf(gate(load, false, blocked.transport).fetch("https://1.1.1.1/asset", { official: false, catalog: CATALOG, onHop: (hop) => refused.push(hop) }))).toBe("SOURCE_POLICY_BLOCKED");
     expect(refused).toEqual(["https://1.1.1.1/asset"]);
+  });
+
+  it("hands the observer a snapshot: mutating it changes nothing that is requested or where the sign-in goes", async () => {
+    const { transport, calls } = fakeTransport({
+      "https://1.1.1.1/asset": redirect("/asset-2"),
+      "https://1.1.1.1/asset-2": ok,
+    });
+    const tamper = (hop: unknown): void => {
+      // A URL object handed over would let this redirect the request (and its Authorization) elsewhere.
+      try {
+        (hop as { href: string }).href = "https://1.0.0.1/stolen";
+      } catch {
+        // A string snapshot cannot be assigned to.
+      }
+    };
+    const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset", {
+      official: false,
+      catalog: CATALOG,
+      headers: { authorization: "Bearer canary", cookie: "c=canary" },
+      onHop: tamper,
+    });
+    expect(calls.map((call) => call.url)).toEqual(["https://1.1.1.1/asset", "https://1.1.1.1/asset-2"]);
+    expect(calls.every((call) => call.headers.get("authorization") === "Bearer canary")).toBe(true);
+    expect(response.status).toBe(200);
+  });
+
+  it("isolates an observer that throws: the download and the gate's decision are unchanged", async () => {
+    const { transport, calls } = fakeTransport({
+      "https://1.1.1.1/asset": redirect("http://1.0.0.1/blob"),
+      "http://1.0.0.1/blob": ok,
+    });
+    const seen: string[] = [];
+    const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset", {
+      official: false,
+      catalog: CATALOG,
+      onHop: (hop) => {
+        seen.push(String(hop));
+        throw new Error("observer broke");
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("bytes");
+    expect(calls.map((call) => call.url)).toEqual(["https://1.1.1.1/asset", "http://1.0.0.1/blob"]);
+    expect(seen).toEqual(["https://1.1.1.1/asset", "http://1.0.0.1/blob"]);
+  });
+
+  it("does not report a hop the address check refuses (§18.2.4)", async () => {
+    const { transport, calls } = fakeTransport(
+      { "https://1.1.1.1/asset": redirect("http://meta.example/blob"), "http://meta.example/blob": ok },
+      { "meta.example": ["169.254.169.254"] },
+    );
+    const seen: string[] = [];
+    await expect(gate(undefined, false, transport).fetch("https://1.1.1.1/asset", { official: false, catalog: CATALOG, onHop: (hop) => seen.push(String(hop)) })).rejects.toThrow();
+    // The metadata hop was resolved and refused: nothing connected to it, and it is not reported.
+    expect(calls.map((call) => call.url)).toEqual(["https://1.1.1.1/asset"]);
+    expect(seen).toEqual(["https://1.1.1.1/asset"]);
   });
 
   it("resolves each hop exactly once, in the transport, and connects only to the answers the rule keeps (§18.2.4)", async () => {
