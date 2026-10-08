@@ -127,7 +127,7 @@
     "@ai-sdk/openai": "^4.0.60",
     "@ai-sdk/openai-compatible": "~3.0.44",
     "@ai-sdk/otel": "^1.0.93",
-    "@anthropic-ai/sandbox-runtime": "0.0.75",
+    "@anthropic-ai/sandbox-runtime": "0.0.76",
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@openai/codex": "0.153.4",
@@ -157,7 +157,7 @@
   },
   "devDependencies": {
     "@ai-sdk/devtools": "^1.0.15",
-    "@electron/asar": "3.4.1",
+    "@electron/asar": "4.3.0",
     "@electron/rebuild": "^4.0.3",
     "@playwright/test": "^1.48.0",
     "@tailwindcss/cli": "^4.2.4",

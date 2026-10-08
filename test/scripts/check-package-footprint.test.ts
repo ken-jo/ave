@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { writeFixtureFile } from "./gate-script-runner.js";
+import { asarCliPath, writeFixtureFile } from "./gate-script-runner.js";
 
 const require = createRequire(import.meta.url);
 const { resolveBuildAssets } = require("../../scripts/lib/build-assets.mjs") as {
@@ -30,7 +30,7 @@ function fixture(outputDirectory: string, mac: boolean) {
     schemaVersion: 1, entry: "main.js", files: [{ path: "main.js", bytes: 0 }],
   }));
   mkdirSync(resources, { recursive: true });
-  const pack = spawnSync(node, [require.resolve("@electron/asar/bin/asar.js"), "pack", input, appAsar], {
+  const pack = spawnSync(node, [asarCliPath(), "pack", input, appAsar], {
     encoding: "utf8", timeout: 15_000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
   });
   expect(pack.error).toBeUndefined();
