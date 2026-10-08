@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { PluginRuntime } from "../runtime.js";
+import { createNoopHostApiForTests, PluginRuntime } from "../runtime.js";
+import { hashReceiptFiles, writeInstallReceipt } from "../plugin-install-receipt.js";
 import { PluginPhase } from "../lifecycle-log.js";
 import { PluginDeploymentGuard } from "../deployment-guard.js";
 import type { PackageKey } from "../../marketplace/sources/policy.js";
@@ -3942,5 +3943,232 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
       parked.releaseAll();
       await add;
     }
+  });
+});
+
+/**
+ * An attempt owns what it took until the plugin is registered (§9.8 A1):
+ * the unpublished root, the HostApi incarnation and, once the factory
+ * returned, the instance whose child is running. Every failure or
+ * cancellation on that span releases each exactly once — the child stopped,
+ * the incarnation retired and drained, the root removed — and a failed
+ * cleanup never replaces the error it compensated for. Real children and
+ * receipt-backed immutable roots; host-side seams count each release and
+ * inject the faults.
+ */
+describe("PluginRuntime load attempts release what they own exactly once", () => {
+  const ID = "attemptresources";
+  const PING = "attemptresources_ping";
+  const WORKING = `export default async () => ({ handlers: { ${PING}: async () => "pong" }, start: async () => {}, stop: async () => {} });\n`;
+  type Mode =
+    | "success" | "factory-crash" | "start-crash" | "directory-crash" | "hostapi-crash" | "duplicate"
+    | "mapping-crash" | "cancel" | "cancel-mapping-crash" | "publication-crash" | "cleanup-error" | "incumbent-crash";
+  type Constructed = { instance: { handlers: Record<string, (...args: unknown[]) => Promise<unknown>>; stop?: () => Promise<void> }; stops: number; ping: (...args: unknown[]) => Promise<unknown> };
+  type Internals = {
+    materializeImmutableRuntimeRoot(...args: unknown[]): Promise<string>;
+    removeUnpublishedRuntimeRoot(pluginId: string, root: string): Promise<void>;
+    buildHostApiIncarnation(...args: unknown[]): { drainOperations: () => Promise<void> };
+    ensureDataDir(...args: unknown[]): string;
+    methodMap: Map<string, { pluginId: string; handler: () => Promise<unknown> }>;
+    requireCapabilityCommitLifecycle(...args: unknown[]): object;
+    runPluginLifecycleHook(scope: unknown, hook: () => unknown): Promise<unknown>;
+  };
+  const disposers: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    for (const dispose of disposers.splice(0)) await dispose();
+  });
+
+  async function setup(mode: Mode) {
+    const fixture = await makeTestPluginRuntimeFixture({ prefix: "ave-attempt-resources-" });
+    const originalError = new Error(`original ${mode} error`);
+    const cleanupError = new Error("root cleanup failed");
+    const counts = { disposed: 0, drained: 0 };
+    const roots: string[] = [];
+    const removals: string[] = [];
+    const incarnations: Array<{ isActive(): boolean }> = [];
+    const constructed: Constructed[] = [];
+    const entrySource = mode === "factory-crash"
+      ? 'throw new Error("entry construction failed");\n'
+      : mode === "start-crash"
+        ? WORKING.replace("start: async () => {}", 'start: async () => { throw new Error("child start failed"); }')
+        : WORKING;
+    const written = await writeTestPlugin(fixture, { id: ID, tools: [PING], entrySource });
+    const cacheRoot = join(fixture.rootDir, "receipts");
+    await writeInstallReceipt(cacheRoot, {
+      schemaVersion: 3,
+      pluginId: ID,
+      version: written.manifest.version,
+      installSource: "marketplace",
+      artifactSha256: "a".repeat(64),
+      signerKeyId: "fixture-v1",
+      admission: null,
+      installedAt: new Date(0).toISOString(),
+      files: await hashReceiptFiles(written.pluginDir, ["entry.mjs", "plugin.json"]),
+    });
+    await writeTestPluginRegistry(fixture, [{ id: ID, manifestPath: written.manifestPath }]);
+    const runtime = makeTestPluginRuntime(fixture, {
+      installReceiptCacheRoot: cacheRoot,
+      createHostApi: (...args) => {
+        const incarnation = args[3];
+        incarnations.push(incarnation);
+        incarnation.registerDisposer(() => { counts.disposed += 1; });
+        if (mode === "hostapi-crash") throw originalError;
+        return createNoopHostApiForTests(args[0], args[1], args[2]);
+      },
+    });
+    const internals = runtime as unknown as Internals;
+    // The shared fixture substitutes the root materializer; these cases need
+    // the real receipt-backed generation root, so the class methods return.
+    delete (internals as Partial<Internals>).materializeImmutableRuntimeRoot;
+    delete (internals as Partial<Internals>).removeUnpublishedRuntimeRoot;
+    const materialize = internals.materializeImmutableRuntimeRoot.bind(runtime);
+    internals.materializeImmutableRuntimeRoot = async (...args) => {
+      const root = await materialize(...args);
+      roots.push(root);
+      return root;
+    };
+    const removeRoot = internals.removeUnpublishedRuntimeRoot.bind(runtime);
+    internals.removeUnpublishedRuntimeRoot = async (pluginId, root) => {
+      removals.push(root);
+      if (mode === "cleanup-error") throw cleanupError;
+      await removeRoot(pluginId, root);
+    };
+    const build = internals.buildHostApiIncarnation.bind(runtime);
+    internals.buildHostApiIncarnation = (...args) => {
+      const result = build(...args);
+      const drain = result.drainOperations;
+      result.drainOperations = async () => { counts.drained += 1; await drain(); };
+      return result;
+    };
+    if (mode === "directory-crash" || mode === "cleanup-error") {
+      internals.ensureDataDir = () => { throw originalError; };
+    }
+    if (mode === "duplicate") {
+      internals.methodMap.set(PING, { pluginId: "attemptresources-foreign", handler: async () => "foreign" });
+    }
+    if (mode === "publication-crash") {
+      const requireLifecycle = internals.requireCapabilityCommitLifecycle.bind(runtime);
+      internals.requireCapabilityCommitLifecycle = (...args) => new Proxy(requireLifecycle(...args), {
+        get: (target, key) => key === "replaceRuntime"
+          ? async () => { throw originalError; }
+          : Reflect.get(target, key),
+      });
+    }
+    const hook = internals.runPluginLifecycleHook.bind(runtime);
+    internals.runPluginLifecycleHook = async (scope, invoke) => {
+      const result = await hook(scope, invoke);
+      if (result && typeof result === "object" && "handlers" in result) {
+        const instance = result as Constructed["instance"];
+        const record: Constructed = { instance, stops: 0, ping: instance.handlers[PING]! };
+        const stop = instance.stop?.bind(instance);
+        instance.stop = async () => { record.stops += 1; await stop?.(); };
+        constructed.push(record);
+        // A host-side fault after the factory returned: reading the instance's
+        // handlers throws while the runtime maps its tools.
+        if (mode === "mapping-crash" || mode === "cancel-mapping-crash" || (mode === "incumbent-crash" && constructed.length === 1)) {
+          Object.defineProperty(instance, "handlers", { configurable: true, get: () => { throw originalError; } });
+        }
+        if (mode === "cancel" || mode === "cancel-mapping-crash") await runtime.removePlugin(ID);
+        if (mode === "incumbent-crash" && constructed.length === 1) await runtime.addPlugin(ID);
+      }
+      return result;
+    };
+    const exists = (root: string) => access(root).then(() => true, () => false);
+    disposers.push(async () => {
+      internals.removeUnpublishedRuntimeRoot = removeRoot;
+      await runtime.stopAll();
+      for (const record of constructed) if (record.stops === 0) await record.instance.stop?.();
+      await makeTestTreeWritable(fixture.rootDir);
+      await rm(fixture.rootDir, { recursive: true, force: true });
+    });
+    const stops = () => constructed.reduce((total, record) => total + record.stops, 0);
+    const card = () => runtime.listPluginCards().find((entry) => entry.id === ID);
+    return { runtime, originalError, cleanupError, counts, roots, removals, incarnations, constructed, exists, stops, card };
+  }
+
+  const failures: Record<"boot" | "add", Mode[]> = {
+    boot: ["factory-crash", "start-crash", "directory-crash", "hostapi-crash", "duplicate", "mapping-crash"],
+    add: ["factory-crash", "start-crash", "directory-crash", "hostapi-crash", "duplicate", "mapping-crash", "cancel", "publication-crash"],
+  };
+  const cases = (["boot", "add"] as const).flatMap((path) => failures[path].map((mode) => [path, mode] as const));
+
+  it.each(["boot", "add"] as const)("%s success hands everything to the registered plugin", async (path) => {
+    const f = await setup("success");
+    if (path === "boot") await f.runtime.startAll();
+    else await f.runtime.addPlugin(ID);
+    expect(f.runtime.listPluginIds()).toContain(ID);
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 0, drained: 0, stops: 0 });
+    expect(f.removals).toEqual([]);
+    expect(await f.exists(f.roots[0]!)).toBe(true);
+    await expect(f.runtime.call(PING, {})).resolves.toBe("pong");
+    await f.runtime.removePlugin(ID);
+    expect(f.counts.disposed).toBe(1);
+    expect(f.stops()).toBe(1);
+  });
+
+  it.each(cases)("%s %s releases the attempt's root, incarnation and child exactly once", async (path, mode) => {
+    const f = await setup(mode);
+    let failure: unknown;
+    if (path === "boot") await f.runtime.startAll();
+    else await f.runtime.addPlugin(ID).catch((error: unknown) => { failure = error; });
+    expect(f.roots).toHaveLength(1);
+    if (path === "add") expect(failure).toBeDefined();
+    if (path === "add" && ["directory-crash", "hostapi-crash", "mapping-crash", "publication-crash"].includes(mode)) {
+      expect(failure).toBe(f.originalError);
+    }
+    expect(f.runtime.listPluginIds()).not.toContain(ID);
+    expect(f.stops()).toBe(f.constructed.length);
+    for (const record of f.constructed) await expect(record.ping({})).rejects.toThrow();
+    if (f.incarnations.length > 0) {
+      expect(f.counts.disposed).toBe(1);
+      expect(f.incarnations.every((incarnation) => !incarnation.isActive())).toBe(true);
+    }
+    if (f.incarnations.length > 0 && mode !== "hostapi-crash") expect(f.counts.drained).toBe(1);
+    expect(f.removals).toEqual([f.roots[0]]);
+    expect(await f.exists(f.roots[0]!)).toBe(false);
+  });
+
+  it("releases a cancelled add's child after a host fault, and reports nothing for it", async () => {
+    const f = await setup("cancel-mapping-crash");
+    const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBe(f.originalError);
+    expect(f.card()).toBeUndefined();
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+    expect(f.removals).toEqual(f.roots);
+    expect(await f.exists(f.roots[0]!)).toBe(false);
+    await expect(f.constructed[0]!.ping({})).rejects.toThrow();
+  });
+
+  it("releases a crashed boot attempt's own child while a same-id add is published, and keeps the add", async () => {
+    const f = await setup("incumbent-crash");
+    await f.runtime.startAll();
+    expect(f.constructed).toHaveLength(2);
+    expect(f.incarnations).toHaveLength(2);
+    expect(f.runtime.listPluginIds()).toContain(ID);
+    await expect(f.runtime.call(PING, {})).resolves.toBe("pong");
+    expect(f.incarnations[0]!.isActive()).toBe(false);
+    expect(f.incarnations[1]!.isActive()).toBe(true);
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+    expect(f.removals).toEqual([f.roots[0]]);
+    expect(await f.exists(f.roots[0]!)).toBe(false);
+    expect(await f.exists(f.roots[1]!)).toBe(true);
+    await expect(f.constructed[0]!.ping({})).rejects.toThrow();
+  });
+
+  it("rejects with the original add error and records the crash when compensating cleanup fails", async () => {
+    const f = await setup("cleanup-error");
+    const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBe(f.originalError);
+    expect(f.card()).toMatchObject({
+      loadStatus: "failed",
+      installFailureKind: "load-crash",
+      installFailureMessage: f.originalError.message,
+      arm: "child",
+      confinement: "not-spawned",
+    });
+    // The cleanup failure is kept with the error, not reported in its place.
+    expect((failure as Error).cause).toBeInstanceOf(AggregateError);
+    expect(((failure as Error).cause as AggregateError).errors).toEqual([f.cleanupError]);
   });
 });

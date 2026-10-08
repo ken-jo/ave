@@ -4107,28 +4107,29 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       return await this.addSinglePluginAttempt(plan, manifest, approvedPluginAccess, opts, attempt);
     } catch (err) {
       if (attempt.routed) {
-        if (opts.shouldCommit?.() ?? true) await this.abandonCrashedPluginLoad(attempt, err);
-        else await this.releaseAbandonedAttempt(attempt);
+        const cleanupFailures = opts.shouldCommit?.() ?? true
+          ? await this.abandonCrashedPluginLoad(attempt, err)
+          : await this.releaseAttempt(attempt, "cancelled plugin add");
+        attachCleanupFailures(err, cleanupFailures);
       }
       throw err;
     }
   }
 
   /**
-   * Release whatever the crashed attempt had already taken, then report it.
+   * Release whatever the crashed attempt still owns, then report it.
    *
-   * The candidate runtime root is on disk and the HostApi incarnation may be
-   * live but unpublished; neither has an owner once the attempt is abandoned.
-   * Teardown is skipped for a plugin that already reached `this.plugins` — the
-   * throw came after it was published, so it is running and must not be pulled
-   * out from under its own tools. `listPluginCards()` reads `this.plugins`
-   * ahead of `failedPluginIds`, so that plugin still projects as loaded. The
-   * report carries where the attempt ran when it had been routed.
+   * What the attempt owns is its own: a plugin already registered for this id
+   * — another attempt's generation, or this one's after it handed ownership
+   * over — is never touched (see {@link PluginLoadAttemptResources}). The
+   * report carries where the attempt ran when it had been routed. A cleanup
+   * that fails is logged and returned; it never replaces the crash it was
+   * compensating for.
    */
   protected async abandonCrashedPluginLoad(
     resources: PluginLoadAttemptResources,
     err: unknown,
-  ): Promise<void> {
+  ): Promise<unknown[]> {
     const { pluginId } = resources;
     const reason = errorMessage(err);
     logPluginLifecycle(
@@ -4137,29 +4138,77 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       `plugin load crashed: ${reason}`,
     );
     this.auditLog?.("error", "plugin_load_crashed", { pluginId, reason });
-    await this.releaseAbandonedAttempt(resources);
+    const cleanupFailures = await this.releaseAttempt(resources, "crashed plugin load");
     this.markLoadRefused(pluginId, {
       summary: "Plugin crashed while loading.",
       reason,
       kind: "load-crash",
       displayName: this.knownPluginManifests.get(pluginId)?.name ?? pluginId,
     }, resources);
+    return cleanupFailures;
   }
 
-  /** The teardown half of {@link abandonCrashedPluginLoad}, alone for a cancelled attempt. */
-  protected async releaseAbandonedAttempt(resources: PluginLoadAttemptResources): Promise<void> {
-    const { pluginId, runtimeRoot, incarnation } = resources;
-    if (incarnation && !this.plugins.has(pluginId)) {
-      incarnation.deactivate();
-      incarnation.hostEffects.discard();
-      this.runDisposerList(incarnation.disposers, "crashed plugin load");
-      await this.drainPluginHostApiOperations(pluginId, {
-        drainHostApiOperations: incarnation.drainOperations,
+  /**
+   * Release everything `attempt` still owns, each resource exactly once: the
+   * field is cleared before its step runs, so a second call — or a throw
+   * part-way — never repeats one. Order: the HostApi incarnation stops
+   * answering, the constructed instance is stopped (ending its child), the
+   * incarnation's disposers run and its operations drain, then the unpublished
+   * root is removed. Every step runs even if an earlier one fails; failures
+   * are logged, audited and returned, never thrown, so the caller's own
+   * outcome — a failed card, a cancellation, the original error — stands.
+   */
+  protected async releaseAttempt(
+    attempt: PluginLoadAttemptResources,
+    context: string,
+  ): Promise<unknown[]> {
+    const { pluginId } = attempt;
+    const failures: unknown[] = [];
+    const step = async (action: () => unknown): Promise<void> => {
+      try {
+        await action();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+    const { incarnation, constructed, runtimeRoot } = attempt;
+    attempt.incarnation = undefined;
+    attempt.constructed = undefined;
+    attempt.runtimeRoot = undefined;
+    if (incarnation) {
+      await step(() => incarnation.deactivate());
+      await step(() => {
+        if (incarnation.hostEffects.isPreparing()) incarnation.hostEffects.discard();
       });
     }
-    if (runtimeRoot) {
-      await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
+    if (constructed) {
+      await step(() => this.stopAfterStartFailure(pluginId, constructed.instance, constructed.lifecycleHookScope));
     }
+    if (incarnation) {
+      await step(() => this.runDisposerList(incarnation.disposers, context));
+      await step(() => this.drainPluginHostApiOperations(pluginId, {
+        drainHostApiOperations: incarnation.drainOperations,
+      }));
+    }
+    if (runtimeRoot) {
+      await step(() => this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot));
+    }
+    for (const failure of failures) {
+      log.error(`${pluginId} attempt cleanup failed (${context}): ${errorMessage(failure)}`);
+      this.auditLog?.("error", "plugin_attempt_cleanup_failed", {
+        pluginId,
+        context,
+        reason: errorMessage(failure),
+      });
+    }
+    return failures;
+  }
+
+  /** Hand what the attempt owns to the registered plugin; the attempt releases nothing after this. */
+  protected handOverAttempt(attempt: PluginLoadAttemptResources): void {
+    attempt.incarnation = undefined;
+    attempt.constructed = undefined;
+    attempt.runtimeRoot = undefined;
   }
 
   private async addSinglePluginAttempt(
@@ -4344,10 +4393,11 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         pluginDataDir,
         hostEffects,
       );
-    // From the factory's invocation on, every exit below releases the root and
-    // the incarnation itself before it returns or throws; the attempt keeps
-    // only its routing, for the report.
-    attempt.runtimeRoot = undefined;
+    // The attempt owns the root, the incarnation and — once the factory
+    // returns — the instance, until the plugin is registered; every exit
+    // below releases them through `releaseAttempt`, and a throw nobody here
+    // caught is released by the add wrapper.
+    attempt.incarnation = { deactivate, disposers, drainOperations, hostEffects };
 
     let instance: RuntimePlugin;
     try {
@@ -4372,26 +4422,18 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         },
       );
     } catch (err) {
-      deactivate();
-      hostEffects.discard();
       if (err instanceof PluginFactoryTimeoutError) {
         this.quarantinePluginLifecycle(manifest.id, err.message);
       }
-      this.runDisposerList(disposers, "failed add factory");
-      await this.drainPluginHostApiOperations(manifest.id, {
-        drainHostApiOperations: drainOperations,
-      });
-      if (!canCommit()) {
-        await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
-        return "cancelled";
-      }
+      await this.releaseAttempt(attempt, "failed add factory");
+      if (!canCommit()) return "cancelled";
       log.error(`${manifest.id} createPlugin failed: %s`, (err as Error).message);
       // A child whose `construct` named a host method this app does not serve
       // is the same refusal as an unserved declared version, and says so.
       this.reportAttemptFactoryFailure(manifest, err, attempt);
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       return "failed";
     }
+    attempt.constructed = { instance, lifecycleHookScope };
 
     const methods = buildMethodMap(manifest, instance, (toolName) =>
       logPluginLifecycle(
@@ -4400,30 +4442,18 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         "tool disabled — missing handler",
       ),
     );
-    for (const toolName of methods.keys()) {
+    const foreignTool = (): string | undefined => [...methods.keys()].find((toolName) => {
       const owner = this.methodMap.get(toolName)?.pluginId;
-      if (owner && owner !== manifest.id) {
-        deactivate();
-        hostEffects.discard();
-        await this.stopAfterStartFailure(manifest.id, instance, lifecycleHookScope);
-        this.runDisposerList(disposers, "duplicate add method");
-        await this.drainPluginHostApiOperations(manifest.id, {
-          drainHostApiOperations: drainOperations,
-        });
-        await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
-        throw new Error(`Duplicate plugin method registered: ${toolName}`);
-      }
+      return owner !== undefined && owner !== manifest.id;
+    });
+    const duplicateBeforeStart = foreignTool();
+    if (duplicateBeforeStart) {
+      await this.releaseAttempt(attempt, "duplicate add method");
+      throw new Error(`Duplicate plugin method registered: ${duplicateBeforeStart}`);
     }
 
     if (!canCommit()) {
-      deactivate();
-      hostEffects.discard();
-      await this.stopAfterStartFailure(manifest.id, instance, lifecycleHookScope);
-      this.runDisposerList(disposers, "stale add factory");
-      await this.drainPluginHostApiOperations(manifest.id, {
-        drainHostApiOperations: drainOperations,
-      });
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+      await this.releaseAttempt(attempt, "stale add factory");
       return "cancelled";
     }
 
@@ -4440,55 +4470,27 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         );
         startupMs = Date.now() - startedAt;
       } catch (err) {
-        deactivate();
-        hostEffects.discard();
         if (err instanceof PluginStartupTimeoutError) {
           this.quarantinePluginLifecycle(manifest.id, err.message);
         }
         if (!canCommit()) {
-          await this.stopAfterStartFailure(manifest.id, instance, lifecycleHookScope);
-          this.runDisposerList(disposers, "stale add start");
-          await this.drainPluginHostApiOperations(manifest.id, {
-            drainHostApiOperations: drainOperations,
-          });
-          await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+          await this.releaseAttempt(attempt, "stale add start");
           return "cancelled";
         }
         log.error(`start during addPlugin failed: %s`, (err as Error).message);
         this.markFailed(manifest.id, undefined, undefined, attempt);
-        await this.stopAfterStartFailure(manifest.id, instance, lifecycleHookScope);
-        this.runDisposerList(disposers, "failed add start");
-        await this.drainPluginHostApiOperations(manifest.id, {
-          drainHostApiOperations: drainOperations,
-        });
-        await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+        await this.releaseAttempt(attempt, "failed add start");
         return "failed";
       }
     }
     if (!canCommit()) {
-      deactivate();
-      hostEffects.discard();
-      await this.stopAfterStartFailure(manifest.id, instance, lifecycleHookScope);
-      this.runDisposerList(disposers, "stale add commit");
-      await this.drainPluginHostApiOperations(manifest.id, {
-        drainHostApiOperations: drainOperations,
-      });
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+      await this.releaseAttempt(attempt, "stale add commit");
       return "cancelled";
     }
-    for (const toolName of methods.keys()) {
-      const owner = this.methodMap.get(toolName)?.pluginId;
-      if (owner && owner !== manifest.id) {
-        deactivate();
-        hostEffects.discard();
-        await this.stopAfterStartFailure(manifest.id, instance, lifecycleHookScope);
-        this.runDisposerList(disposers, "duplicate add method");
-        await this.drainPluginHostApiOperations(manifest.id, {
-          drainHostApiOperations: drainOperations,
-        });
-        await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
-        throw new Error(`Duplicate plugin method registered: ${toolName}`);
-      }
+    const duplicateBeforeCommit = foreignTool();
+    if (duplicateBeforeCommit) {
+      await this.releaseAttempt(attempt, "duplicate add method");
+      throw new Error(`Duplicate plugin method registered: ${duplicateBeforeCommit}`);
     }
     const candidate: PluginRuntimeGenerationProjection = Object.freeze({
       activationId,
@@ -4518,14 +4520,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         }),
       );
     } catch (error) {
-      deactivate();
-      if (hostEffects.isPreparing()) hostEffects.discard();
-      await this.stopAfterStartFailure(manifest.id, instance, lifecycleHookScope);
-      this.runDisposerList(disposers, "failed add publication");
-      await this.drainPluginHostApiOperations(manifest.id, {
-        drainHostApiOperations: drainOperations,
-      });
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+      await this.releaseAttempt(attempt, "failed add publication");
       if (!canCommit()) return "cancelled";
       const missing = this.capabilityDependencies().missing(manifest);
       if (missing.length > 0) {
@@ -4541,6 +4536,9 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       }
       throw error;
     }
+    // Registered: the published generation owns the root, the incarnation
+    // and the instance from here on.
+    this.handOverAttempt(attempt);
     this.inactivePluginIds.delete(manifest.id);
     this.perf.recordStartup(manifest.id, startupMs);
     this.resolveCapabilityBlockedRetry(manifest.id);
@@ -5467,9 +5465,34 @@ const BOOT_START_CANCELLED = "plugin start cancelled";
  * manifest is in hand — a crash before that point is still attributable.
  */
 /**
+ * Keep a failed compensation with the error it compensated for. The caller
+ * still rejects with the original error object; when that error has no
+ * `cause` yet, the cleanup failures become it. Either way they were already
+ * logged and audited by `releaseAttempt`, so nothing is lost and nothing is
+ * reported instead of the original.
+ */
+function attachCleanupFailures(error: unknown, failures: readonly unknown[]): void {
+  if (failures.length === 0 || !(error instanceof Error) || error.cause !== undefined) return;
+  Object.defineProperty(error, "cause", {
+    value: new AggregateError([...failures], "plugin attempt cleanup failed after this error"),
+    configurable: true,
+    writable: true,
+    enumerable: false,
+  });
+}
+
+/**
  * One boot or add attempt to load a plugin. The object is the attempt's
  * identity: it is created per attempt, never shared or looked up by plugin
  * id, and handed explicitly to every report the attempt makes.
+ *
+ * It also OWNS what the attempt has taken and not yet handed over: the
+ * unpublished root, the HostApi incarnation and, once the factory returned,
+ * the constructed instance (whose child is running). Each is set when taken
+ * and cleared when the plugin is registered — ownership then passes to the
+ * registered generation — or when {@link PluginRuntimeCapabilityLifecycle.releaseAttempt}
+ * releases it, so every exit releases each resource exactly once, whichever
+ * path or throw it leaves by.
  */
 type PluginLoadAttemptResources = {
   pluginId: string;
@@ -5482,6 +5505,11 @@ type PluginLoadAttemptResources = {
     disposers: Array<() => void>;
     drainOperations: () => Promise<void>;
     hostEffects: HostApiGenerationScope;
+  };
+  /** The instance the factory returned, until registered or stopped. */
+  constructed?: {
+    instance: RuntimePlugin;
+    lifecycleHookScope: PluginLifecycleHookScope;
   };
 };
 class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
@@ -5883,36 +5911,24 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         },
       );
     } catch (err) {
-      deactivate();
-      hostEffects.discard();
       if (err instanceof PluginFactoryTimeoutError) {
         this.quarantinePluginLifecycle(manifest.id, err.message);
       }
-      this.runDisposerList(disposers, "failed load factory");
-      await this.drainPluginHostApiOperations(manifest.id, {
-        drainHostApiOperations: drainOperations,
-      });
+      await this.releaseAttempt(resources, "failed load factory");
       this.reportAttemptFactoryFailure(manifest, err, resources);
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
       logPluginLifecycle("error", { pluginId: manifest.id, phase: PluginPhase.LOAD_FAIL, err, reason: "factory" }, "plugin factory failed");
       return;
     }
+    // The attempt owns the instance (and its running child) until the plugin
+    // is registered; a throw before then is released by the boot wrapper.
+    resources.constructed = { instance, lifecycleHookScope };
 
     const methods = buildMethodMap(manifest, instance, (toolName) =>
       logPluginLifecycle("warn", { pluginId: manifest.id, phase: PluginPhase.REGISTER_TOOL_SKIP, toolName, reason: "missing_handler" }, "tool disabled — missing handler"),
     );
     for (const toolName of methods.keys()) {
       if (this.methodMap.has(toolName)) {
-        deactivate();
-        hostEffects.discard();
-        await this.stopAfterStartFailure(manifest.id, instance, lifecycleHookScope);
-        this.runDisposerList(disposers, "duplicate load method");
-        await this.drainPluginHostApiOperations(manifest.id, {
-          drainHostApiOperations: drainOperations,
-        });
-        await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
-        resources.incarnation = undefined;
-        resources.runtimeRoot = undefined;
+        await this.releaseAttempt(resources, "duplicate load method");
         const reason = `Duplicate plugin method registered: ${toolName}`;
         logPluginLifecycle("error", { pluginId: manifest.id, phase: PluginPhase.LOAD_FAIL, reason: "duplicate_tool_name" }, reason);
         this.auditLog?.("error", "plugin_duplicate_tool_name", { pluginId: manifest.id, toolName });
@@ -5945,6 +5961,9 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       arm: routed.arm,
       confinement: this.confinementReport(createPlugin),
     });
+    // Registered: the loaded plugin owns the root, the incarnation and the
+    // instance from here on.
+    this.handOverAttempt(resources);
     this.disposers.set(manifest.id, disposers);
     this.markPluginUiRevision(manifest.id);
     this.failedPluginIds.delete(manifest.id);
