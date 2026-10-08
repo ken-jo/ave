@@ -45,8 +45,22 @@ export interface PluginRuntimeGenerationProjection {
   readonly confinement: PluginConfinementReport;
 }
 
+export interface PreparedPluginRuntimeRemovalPublication {
+  readonly pluginId: string;
+  publish(): void;
+}
+
 export interface PreparedPluginRuntimeGenerationPublication {
   readonly pluginId: string;
+  /**
+   * The generation coordinator has committed this candidate: its pointer now
+   * names it. The lifecycle calls this first in the coordinator's publication
+   * turn, before any projection publishes, because from that moment the
+   * committed generation — not the load attempt that built the projection —
+   * owns its instance, HostApi incarnation and root, even if a later
+   * publication step fails. Idempotent; `publish()` implies it.
+   */
+  handOver(): void;
   publish(): void;
 }
 

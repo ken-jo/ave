@@ -820,6 +820,9 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
         (predecessor) => this.retireWithRetries(predecessor),
         pluginId,
         () => {
+          // The coordinator pointer names the candidate now: ownership of the
+          // runtime projection moves before any publication step can fail.
+          preparedRuntime.handOver();
           this.deps.loopbackManager.publishGeneration(preparedLoopback);
           preparedRuntime.publish();
           preparedSkills.publish();
@@ -853,6 +856,11 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           );
           throw committedError;
         }
+        // Committed and published, but a post-commit step (the contributions
+        // notification) failed before readiness was scheduled. Nothing else
+        // will ever open or reject the candidate's dispatch barrier, so settle
+        // it here: calls fail visibly with this fault instead of waiting.
+        published?.markDispatchUnavailable(error);
         this.recordPostCommitFault(
           pluginId,
           candidate.generationId,

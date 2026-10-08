@@ -412,7 +412,7 @@ describe("prepared artifact install identity", () => {
       runtime.setConfigOverride(pluginId, incumbentConfig);
       const publicationSpy = phase.failsPublication
         ? vi.spyOn(runtime, "prepareRuntimeGeneration").mockImplementation(
-          () => ({ publish: () => { throw failure; } }) as never,
+          () => ({ handOver: () => undefined, publish: () => { throw failure; } }) as never,
         )
         : undefined;
       const failedPrepared = await writePreparedPlugin(

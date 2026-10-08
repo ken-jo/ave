@@ -5,6 +5,10 @@ import { join, relative } from "node:path";
 import { createNoopHostApiForTests, PluginRuntime } from "../runtime.js";
 import { hashReceiptFiles, writeInstallReceipt } from "../plugin-install-receipt.js";
 import { PluginPhase } from "../lifecycle-log.js";
+import { PluginBundleLifecycle } from "../plugin-bundle-lifecycle.js";
+import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
+import { SkillStore } from "../../main/skill-store.js";
+import { PersonaPromptStore } from "../../main/persona-prompt-store.js";
 import { PluginDeploymentGuard } from "../deployment-guard.js";
 import type { PackageKey } from "../../marketplace/sources/policy.js";
 import { uninstallPluginWithLifecycle } from "../uninstall-lifecycle.js";
@@ -4111,7 +4115,77 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     });
     const stops = () => constructed.reduce((total, record) => total + record.stops, 0);
     const card = () => runtime.listPluginCards().find((entry) => entry.id === ID);
-    return { runtime, originalError, cleanupError, counts, timeline, audits, roots, removals, incarnations, constructed, exists, stops, card };
+    return { fixture, runtime, internals, originalError, cleanupError, counts, timeline, audits, roots, removals, incarnations, constructed, exists, stops, card };
+  }
+
+  /**
+   * The production bundle lifecycle (coordinator, commit closure, post-commit
+   * handling) over the fixture's runtime, with inert loopback and MCP
+   * projections. `faults` injects a one-shot failure at a named point.
+   */
+  function bindNativeBundleLifecycle(
+    f: Awaited<ReturnType<typeof setup>>,
+    faults: { loopbackPublish?: Error; contributionsUpdated?: Error } = {},
+  ): PluginBundleLifecycle {
+    const prepared = (pluginId: string, generationId: string) => ({
+      pluginId,
+      generationId,
+      tools: [],
+      registryReplacement: { publish: () => undefined, cancel: () => undefined, replacementTools: [] },
+      published: false,
+      disconnectPredecessor: false,
+    });
+    let loopbackFault = faults.loopbackPublish;
+    let notifyFault = faults.contributionsUpdated;
+    const lifecycle = new PluginBundleLifecycle({
+      pluginRuntime: f.runtime,
+      receiptCacheRoot: join(f.fixture.rootDir, "receipts"),
+      skillStore: new SkillStore({ userDir: join(f.fixture.rootDir, "native-skills") }),
+      personaPromptStore: new PersonaPromptStore({ userDir: join(f.fixture.rootDir, "native-prompts") }),
+      hookManager: new ScriptHookManager(),
+      onContributionsUpdated: () => {
+        const fault = notifyFault;
+        notifyFault = undefined;
+        if (fault) throw fault;
+      },
+      revokeOperationGeneration: () => undefined,
+      loopbackManager: {
+        prepareGeneration: async (manifest: PluginManifest, generationId: string) => prepared(manifest.id, generationId),
+        prepareRemoval: prepared,
+        publishGeneration: (value: { published: boolean }) => {
+          const fault = loopbackFault;
+          loopbackFault = undefined;
+          if (fault) throw fault;
+          value.published = true;
+        },
+        postPublishGeneration: () => undefined,
+        discardGeneration: async () => undefined,
+        retireGeneration: async () => undefined,
+      } as never,
+      mcpManager: {
+        bundledServerIdsForPlugin: () => [],
+        prepareBundledGeneration: async () => ({
+          records: [],
+          predecessorServerIds: [],
+          predecessorToolNames: [],
+          registryReplacement: { publish: () => undefined, cancel: () => undefined, replacementTools: [] },
+          published: false,
+        }),
+        publishBundledGeneration: () => undefined,
+        discardBundledGeneration: async () => undefined,
+        retirePublishedMcpReplacement: async () => undefined,
+        disconnectBundledGeneration: async () => undefined,
+      } as never,
+    });
+    f.runtime.setGenerationAccess(lifecycle);
+    // Retire whatever the lifecycle still holds before the fixture is torn down.
+    disposers.unshift(async () => {
+      loopbackFault = undefined;
+      notifyFault = undefined;
+      await lifecycle.deactivate(ID);
+      await lifecycle.waitForRetirements();
+    });
+    return lifecycle;
   }
 
   const failures: Record<"boot" | "add", Mode[]> = {
@@ -4241,6 +4315,59 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     else await f.runtime.addPlugin(ID).catch(() => undefined);
     // Authority ends first; the disposers run only after the child stopped.
     expect(f.timeline).toEqual(["deactivate", "stop", "discard", "disposer", "drain", "root"]);
+  });
+
+  it("a publication failure after the coordinator commit, before the runtime publishes, leaves the committed generation owning everything", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f, { loopbackPublish: f.originalError });
+    const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
+    expect((failure as Error).cause).toBe(f.originalError);
+    expect(lifecycle.getActive(ID)).toBeDefined();
+    // The runtime never published it, yet the attempt released nothing.
+    expect(f.runtime.listPluginIds()).not.toContain(ID);
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 0, drained: 0, stops: 0 });
+    expect(f.incarnations[0]!.isActive()).toBe(true);
+    expect(f.removals).toEqual([]);
+    expect(await f.exists(f.roots[0]!)).toBe(true);
+    expect(f.audits).not.toContain("plugin_load_crashed");
+    expect(f.card()?.installFailureKind).toBeUndefined();
+  });
+
+  it("a normal removal retires a committed generation the runtime never published, exactly once", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f, { loopbackPublish: f.originalError });
+    await f.runtime.addPlugin(ID).catch(() => undefined);
+    await f.runtime.removePlugin(ID);
+    await lifecycle.waitForRetirements();
+    expect(lifecycle.getActive(ID)).toBeUndefined();
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+    expect(f.incarnations[0]!.isActive()).toBe(false);
+    expect(await f.exists(f.roots[0]!)).toBe(false);
+    await expect(f.constructed[0]!.ping({})).rejects.toThrow();
+  });
+
+  it("a post-commit notification failure settles dispatch: a normal call fails visibly instead of hanging", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f, { contributionsUpdated: f.originalError });
+    await expect(f.runtime.addPlugin(ID)).rejects.toBe(f.originalError);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const call = f.runtime.call(PING, {}).then(() => "served", () => "rejected");
+    const pending = new Promise<"pending">((resolve) => { timer = setTimeout(() => resolve("pending"), 2_000); });
+    const outcome = await Promise.race([call, pending]);
+    clearTimeout(timer);
+    expect(outcome).toBe("rejected");
+  });
+
+  it("the lifecycle's post-commit error stays the add's outcome when onEnable then throws too", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f, { contributionsUpdated: f.originalError });
+    const secondary = new Error("onEnable failed");
+    (f.runtime as unknown as { onEnable: () => void }).onEnable = () => { throw secondary; };
+    const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBe(f.originalError);
+    // The second failure is reported on its own.
+    expect(f.audits).toContain("plugin_add_follow_up_failed");
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 0, drained: 0, stops: 0 });
   });
 
   it("a rejection after the plugin was registered leaves the registered generation running and disposes it once", async () => {

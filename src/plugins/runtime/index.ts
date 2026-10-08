@@ -26,7 +26,7 @@ import { dirname, isAbsolute, resolve, basename } from "node:path";
 import type { ManifestLoadPlan, PluginStartPreparationOutcome, PluginStartPreparationReturn, SinglePluginStartResult, ManifestSnapshot, LoadedPlugin, PluginLifecycleHookScope, PluginLoadArm, PluginConfinementReport, PluginAttemptRefusal } from "./types.js";
 import { logPluginLifecycle, PluginPhase } from "../lifecycle-log.js";
 import { t } from "../../i18n/index.js";
-import type { CommittedPluginGeneration, PluginRuntimeGenerationLifecycle, PluginRuntimeGenerationProjection, PluginRuntimeGenerationAccess, PluginRuntimeRetirementStep, PreparedPluginRuntimeGenerationPublication } from "../plugin-host-generation.js";
+import type { CommittedPluginGeneration, PluginRuntimeGenerationLifecycle, PluginRuntimeGenerationProjection, PluginRuntimeGenerationAccess, PluginRuntimeRetirementStep, PreparedPluginRuntimeGenerationPublication, PreparedPluginRuntimeRemovalPublication } from "../plugin-host-generation.js";
 import { resolveDependencies } from "../dependency-resolver.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { ValidateFunction } from "ajv";
@@ -3528,11 +3528,13 @@ abstract class PluginRuntimeState {
 abstract class PluginRuntimePublicationState extends PluginRuntimeState {
   /**
    * The add attempt that built a candidate projection, keyed by that exact
-   * projection object. Publishing the projection registers the plugin, and at
-   * that moment the attempt's resources become the registered generation's —
-   * whatever the publication does or throws afterwards.
+   * projection object. Ownership changes where the generation coordinator
+   * commits the candidate: the lifecycle calls the prepared publication's
+   * `handOver()` in that turn, before any projection publishes, and from then
+   * on the committed generation owns the attempt's resources — whatever a
+   * later publication step does or throws.
    */
-  protected readonly registrationHandoffs = new WeakMap<PluginRuntimeGenerationProjection, () => void>();
+  protected readonly commitHandoffs = new WeakMap<PluginRuntimeGenerationProjection, () => void>();
 
   getRuntimeGenerationProjection(pluginId: string): PluginRuntimeGenerationProjection | undefined {
     const plugin = this.plugins.get(pluginId);
@@ -3601,21 +3603,26 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
       : `${pluginId}\0${predecessorGenerationId}`;
     const publishHostEffects = runtime.hostEffects?.preparePublish();
     let published = false;
+    // The coordinator committed `runtime`: the attempt that built it hands its
+    // resources to the committed generation, exactly once.
+    const handOver = (): void => {
+      const handOff = this.commitHandoffs.get(runtime);
+      this.commitHandoffs.delete(runtime);
+      handOff?.();
+    };
     return Object.freeze({
       pluginId,
+      handOver,
       publish: () => {
         if (published) return;
+        // Publishing is only done for a committed generation.
+        handOver();
         this.plugins.get(pluginId)?.hostEffects?.supersede();
         publishHostEffects?.();
         this.publishValidatedPluginInstallAlias(pluginId, runtime.installId ?? undefined);
         this.methodMap = nextMethods;
         this.plugins = nextPlugins;
         this.disposers = nextDisposers;
-        // Registered: hand the attempt's resources over now, before any later
-        // step of this publication or of the lifecycle around it can reject.
-        const handOff = this.registrationHandoffs.get(runtime);
-        this.registrationHandoffs.delete(runtime);
-        handOff?.();
         this.rememberPluginManifest(pluginId, runtime.manifest, runtime.approvedPluginAccess);
         this.markPluginUiRevision(pluginId);
         this.failedPluginIds.delete(pluginId);
@@ -3644,7 +3651,7 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
   prepareRuntimeRemoval(
     pluginId: string,
     predecessorGenerationId: string | undefined,
-  ): PreparedPluginRuntimeGenerationPublication {
+  ): PreparedPluginRuntimeRemovalPublication {
     const nextMethods = new Map(this.methodMap);
     for (const [toolName, entry] of nextMethods) {
       if (entry.pluginId === pluginId) nextMethods.delete(toolName);
@@ -4042,6 +4049,18 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         );
         retirementError = await this.captureCommittedRetirementFailure(canonicalPluginId, retirement, "plugin removal");
       }
+    } else if (this.generationLifecycle?.getActive(canonicalPluginId)) {
+      // The coordinator committed a generation whose runtime publication then
+      // failed, so the runtime map never named it. That generation owns the
+      // instance, incarnation and root; only its retirement releases them.
+      const { retirement } = await this.requireCapabilityCommitLifecycle("plugin removal").deactivateWithCommit(
+        canonicalPluginId,
+        async () => undefined,
+        this.capabilityDependencyCommitScope(() => {
+          this.assertNoActiveCapabilityDependents(canonicalPluginId, "remove");
+        }),
+      );
+      retirementError = await this.captureCommittedRetirementFailure(canonicalPluginId, retirement, "plugin removal");
     } else if (
       !this.knownPluginManifests.has(canonicalPluginId) &&
       !this.failedPluginIds.has(canonicalPluginId) &&
@@ -4107,9 +4126,10 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
    * report itself (data directory, HostApi incarnation, a duplicate tool, a
    * rejected publication) is reported here as a crashed load, unless the
    * attempt was cancelled, and the add still rejects with it. A throw after
-   * the plugin was registered is not the attempt's: the registered generation
-   * keeps running and owns its failure (the generation lifecycle records a
-   * post-commit fault), so the attempt neither releases nor refuses anything.
+   * the coordinator committed the generation is not the attempt's: the
+   * committed generation owns its resources and its failure (the lifecycle
+   * records a post-commit fault and settles dispatch), and a normal removal
+   * retires it, so the attempt neither releases nor refuses anything.
    *
    * The add always rejects with the very error object it caught. That object
    * is never modified: cleanup failures are logged and audited where they
@@ -4126,8 +4146,8 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     try {
       return await this.addSinglePluginAttempt(plan, manifest, approvedPluginAccess, opts, attempt);
     } catch (err) {
-      if (attempt.registered) {
-        log.error(`${manifest.id} add rejected after the plugin was registered; the registered generation keeps running: ${errorMessage(err)}`);
+      if (attempt.handedOver) {
+        log.error(`${manifest.id} add rejected after its generation was committed; the committed generation owns it: ${errorMessage(err)}`);
       } else if (attempt.routed) {
         if (opts.shouldCommit?.() ?? true) {
           await this.abandonCrashedPluginLoad(attempt, err);
@@ -4252,14 +4272,15 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
   }
 
   /**
-   * Hand what the attempt owns to the registered plugin; the attempt releases
-   * nothing after this, and a later rejection is the registered generation's.
+   * Hand what the attempt owns to the committed generation (add) or the
+   * registered plugin (boot); the attempt releases nothing after this, and a
+   * later rejection is that owner's.
    */
   protected handOverAttempt(attempt: PluginLoadAttemptResources): void {
     attempt.incarnation = undefined;
     attempt.constructed = undefined;
     attempt.runtimeRoot = undefined;
-    attempt.registered = true;
+    attempt.handedOver = true;
   }
 
   private async addSinglePluginAttempt(
@@ -4559,11 +4580,11 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       arm: routed.arm,
       confinement: this.confinementReport(createPlugin),
     });
-    // Publishing `candidate` registers the plugin; ownership passes at that
-    // exact moment (see `registrationHandoffs`), not when this await settles,
-    // because the lifecycle can still reject after it registered.
-    let rejectedAfterRegistration: { error: unknown } | undefined;
-    this.registrationHandoffs.set(candidate, () => this.handOverAttempt(attempt));
+    // Ownership passes when the coordinator commits `candidate` (see
+    // `commitHandoffs`), not when this await settles: the lifecycle can
+    // still reject after the commit, before or after the runtime publishes.
+    let rejectedAfterCommit: { error: unknown } | undefined;
+    this.commitHandoffs.set(candidate, () => this.handOverAttempt(attempt));
     try {
       await generationLifecycle.replaceRuntime(
         candidate,
@@ -4576,7 +4597,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         }),
       );
     } catch (error) {
-      if (!attempt.registered) {
+      if (!attempt.handedOver) {
         await this.releaseAttempt(attempt, "failed add publication");
         if (!canCommit()) return "cancelled";
         const missing = this.capabilityDependencies().missing(manifest);
@@ -4593,22 +4614,40 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         }
         throw error;
       }
-      // Registered before the rejection: the generation is live and owns
-      // every resource, and the lifecycle recorded its post-commit fault.
-      // Finish what registration implies below, then reject with the error.
-      rejectedAfterRegistration = { error };
+      // Committed before the rejection: the generation owns every resource,
+      // and the lifecycle recorded its post-commit fault and settled its
+      // dispatch. Finish what the commit implies below, then reject with it.
+      rejectedAfterCommit = { error };
     } finally {
-      this.registrationHandoffs.delete(candidate);
+      this.commitHandoffs.delete(candidate);
     }
-    // A resolved publication registered the plugin even when the lifecycle
-    // published it without this runtime's registration step.
+    // A resolved publication committed the generation even when the lifecycle
+    // did not call this runtime's hand-over step itself.
     this.handOverAttempt(attempt);
-    this.inactivePluginIds.delete(manifest.id);
-    this.perf.recordStartup(manifest.id, startupMs);
-    this.resolveCapabilityBlockedRetry(manifest.id);
-    this.onEnable?.(manifest.id);
-    if (rejectedAfterRegistration) throw rejectedAfterRegistration.error;
-    return "started";
+    if (!rejectedAfterCommit) {
+      this.finishCommittedAdd(manifest.id, startupMs);
+      return "started";
+    }
+    // The lifecycle's error is the add's outcome. A failure in the bookkeeping
+    // that follows is a second, separate failure: reported, never instead.
+    try {
+      this.finishCommittedAdd(manifest.id, startupMs);
+    } catch (followUpError) {
+      log.error(`${manifest.id} bookkeeping after a committed add failed: ${errorMessage(followUpError)}`);
+      this.auditAttemptEvent("plugin_add_follow_up_failed", {
+        pluginId: manifest.id,
+        reason: errorMessage(followUpError),
+      });
+    }
+    throw rejectedAfterCommit.error;
+  }
+
+  /** What a committed add implies for the runtime's own bookkeeping. */
+  private finishCommittedAdd(pluginId: string, startupMs: number): void {
+    this.inactivePluginIds.delete(pluginId);
+    this.perf.recordStartup(pluginId, startupMs);
+    this.resolveCapabilityBlockedRetry(pluginId);
+    this.onEnable?.(pluginId);
   }
 
   /** Capability providers are successfully started, actively admitted generations. */
@@ -5536,8 +5575,8 @@ const BOOT_START_CANCELLED = "plugin start cancelled";
  * It also OWNS what the attempt has taken and not yet handed over: the
  * unpublished root, the HostApi incarnation and, once the factory returned,
  * the constructed instance (whose child is running). Each is set when taken
- * and cleared when the plugin is registered — ownership then passes to the
- * registered generation — or when {@link PluginRuntimeCapabilityLifecycle.releaseAttempt}
+ * and cleared when ownership passes on — to the generation the coordinator
+ * committed (add) or the registered plugin (boot) — or when {@link PluginRuntimeCapabilityLifecycle.releaseAttempt}
  * releases it, so every exit releases each resource exactly once, whichever
  * path or throw it leaves by.
  */
@@ -5559,11 +5598,12 @@ type PluginLoadAttemptResources = {
     lifecycleHookScope: PluginLifecycleHookScope;
   };
   /**
-   * Set at the moment the plugin is registered. From then on a failure,
-   * even one the attempt's own await surfaces, belongs to the registered
-   * plugin: the attempt releases nothing and records no refusal.
+   * Set at the moment ownership leaves the attempt: when the coordinator
+   * commits an add's generation, or when boot registers the plugin. From then
+   * on a failure, even one the attempt's own await surfaces, belongs to that
+   * owner: the attempt releases nothing and records no refusal.
    */
-  registered?: true;
+  handedOver?: true;
 };
 class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
   /**
@@ -5769,7 +5809,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     try {
       await this.instantiatePreflightedPlugin(outcome, enabledManifestSnapshots, resources);
     } catch (err) {
-      if (resources.registered) {
+      if (resources.handedOver) {
         log.error(`${resources.pluginId} load threw after the plugin was registered; the registered plugin keeps running: ${errorMessage(err)}`);
         return;
       }
