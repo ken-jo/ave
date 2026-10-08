@@ -514,6 +514,9 @@ function SideChatSession({
           </div>
         </ComposerFrame>
       </div>
+      {/* Same z-index for both cards, so DOM order stacks them: the approval
+          comes last and stays the topmost decision, as it does in ChatView. */}
+      <QuestionOverlay api={api} requests={askQuestions} onResolved={dismissAskQuestion} />
       <ApprovalDock
         queue={pendingApprovals}
         conversationLabel={t("chatPreviewRail.sideChat.title")}
@@ -525,7 +528,6 @@ function SideChatSession({
         interactionLocked={approvalHead !== null && approvals.lockedRequestId === approvalHead.id}
         reviewerSuggestion={approvals.reviewerSuggestion}
       />
-      <QuestionOverlay api={api} requests={askQuestions} onResolved={dismissAskQuestion} />
     </div>
   );
 }
