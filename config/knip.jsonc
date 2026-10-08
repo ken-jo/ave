@@ -85,7 +85,7 @@
     }
   },
   "vitest": {
-    "config": "vitest.analysis.config.ts"
+    "config": "config/vitest.analysis.config.ts"
   },
   // The declaration supplies test TypeScript types for a Node test helper.
   // The runtime import names its .mjs sibling, so the file graph misses it.

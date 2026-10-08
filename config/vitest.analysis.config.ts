@@ -3,11 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizePath } from "vite";
 import { defineConfig } from "vitest/config";
-import { electronNodeNormalizerArgument } from "./scripts/run-vitest-under-electron.mjs";
-import { documentGuardImportArgument } from "./scripts/lib/document-consumer-node-options.mjs";
-import { assertAllowedDocumentRead } from "./scripts/lib/document-consumer-guard.mjs";
+import { electronNodeNormalizerArgument } from "../scripts/run-vitest-under-electron.mjs";
+import { documentGuardImportArgument } from "../scripts/lib/document-consumer-node-options.mjs";
+import { assertAllowedDocumentRead } from "../scripts/lib/document-consumer-guard.mjs";
 
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rootPath = (p: string) => path.resolve(ROOT, p);
 
 const testFileGlob = "**/*.{test,spec}.{ts,tsx}";
@@ -65,6 +65,9 @@ function isAveHomeGuardSeam(id: string): boolean {
 }
 
 export default defineConfig({
+  // This file lives under config/; anchor every path at the repository root
+  // so the config behaves the same from any working directory.
+  root: ROOT,
   plugins: [{
     name: "document-input-guard",
     enforce: "pre",
@@ -82,7 +85,7 @@ export default defineConfig({
     },
   }],
   test: {
-    globalSetup: ["./vitest.globalSetup.ts"],
+    globalSetup: [rootPath("config/vitest.globalSetup.ts")],
     // Boot integration fixtures assert calls recorded by their beforeAll setup.
     // Individual suites own mock cleanup between cases.
     clearMocks: false,
@@ -145,7 +148,7 @@ export default defineConfig({
           // pins the runtime locale to Korean for node tests so the existing
           // Korean assertions stay valid. Tests that specifically exercise the
           // i18n default (English) set the locale explicitly themselves.
-          setupFiles: ["./src/i18n/testing/vitest-ambient-intl.ts", "./src/__tests__/vitest-ave-home.ts"],
+          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts")],
           include: [
             `src/**/__tests__/${testFileGlob}`,
             `test/${testFileGlob}`,
@@ -166,7 +169,7 @@ export default defineConfig({
           // t() with English as the default; this setup pins the runtime
           // locale to Korean for renderer tests so the existing Korean
           // assertions stay valid (and also verify the Korean catalog wiring).
-          setupFiles: ["./src/i18n/testing/vitest-ambient-intl.ts", "./src/__tests__/vitest-ave-home.ts"],
+          setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts")],
           include: rendererTestGlobs,
           exclude: baseExclude,
         },

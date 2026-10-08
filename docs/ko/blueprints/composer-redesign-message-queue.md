@@ -24,7 +24,7 @@
 
 ## Mockup
 
-[composer-redesign-mockup.html](./composer-redesign-mockup.html) 참조. 3 시나리오 (idle / LLM busy / 최대 노출) 와 2-row layout (TOP=환경, BOTTOM=Turn) 분리.
+초기 목업(`composer-redesign-mockup.html`)은 이 설계가 대체되면서 제거됐다. 요지: 3 시나리오 (idle / LLM busy / 최대 노출) 와 2-row layout (TOP=환경, BOTTOM=Turn) 분리.
 
 ## Layout 명세 (v6)
 

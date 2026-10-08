@@ -176,7 +176,7 @@ describe("check-test-coverage", () => {
   it("keeps the quality scripts and v8 provider wired as a regression guard", () => {
     const packageJson = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8"));
     const vitestAnalysisConfig = fs.readFileSync(
-      path.resolve("vitest.analysis.config.ts"),
+      path.resolve("config/vitest.analysis.config.ts"),
       "utf8",
     );
     const coverageGateScript = fs.readFileSync(path.resolve("scripts/run-test-coverage-gate.mjs"), "utf8");
