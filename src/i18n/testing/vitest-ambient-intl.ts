@@ -32,7 +32,7 @@
  * make the sweep prove nothing. Suites with zone-specific fixtures re-pin
  * around their own assertions and restore afterwards.
  *
- * Wired via `setupFiles` for both projects in vitest.analysis.config.ts; it
+ * Wired via `setupFiles` for both projects in config/vitest.analysis.config.ts; it
  * runs once per test file (fresh module registry), so both are set before any
  * module under test formats anything.
  */

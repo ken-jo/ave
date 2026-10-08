@@ -40,7 +40,7 @@ import {
   type RunOwner,
 } from "./support/test-run-dirs.js";
 import { useScratchLinks, useTempDirs } from "./test-helpers.js";
-import { setup } from "../../vitest.globalSetup.js";
+import { setup } from "../../config/vitest.globalSetup.js";
 
 const RUN_ENV = [
   "HOME", "USERPROFILE", "AVE_HOME", "AVE_TEST_RUN_HOME", "AVE_TEST_SANDBOX_BASE", "TZ", "LC_ALL", "LANG",

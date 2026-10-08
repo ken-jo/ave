@@ -66,7 +66,7 @@ app.whenReady().then(() => {
   const args = process.argv.slice(2);
   const child = spawn(
     "bunx",
-    ["playwright", "test", ...(args.length ? args : ["test/e2e/ui/live-model-turn.spec.ts"])],
+    ["playwright", "test", "--config", "config/playwright.config.ts", ...(args.length ? args : ["test/e2e/ui/live-model-turn.spec.ts"])],
     {
       stdio: ["ignore", "pipe", "pipe"],
       shell: process.platform === "win32",

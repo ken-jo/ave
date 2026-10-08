@@ -74,7 +74,7 @@ first:
 
 ```bash
 bun run build
-bunx playwright test test/e2e/ui/git-marketplace-lifecycle.spec.ts
+bun run test:ui-e2e test/e2e/ui/git-marketplace-lifecycle.spec.ts
 ```
 
 ## Implementation Anchors
