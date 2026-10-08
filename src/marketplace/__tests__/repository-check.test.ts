@@ -176,6 +176,17 @@ describe("checkMarketplaceRepository", () => {
     expect(messages).toContainEqual(expect.stringContaining("installPolicy is no longer supported"));
   });
 
+  it("accepts a custom source whose plugin is pinned over its own plain-http host (§18.2.3)", () => {
+    const files = validFiles();
+    const http = { release: { url: "http://git.corp.example/root/api/v4/projects/7/packages/generic/alpha/1.0.0/alpha-1.0.0.zip", sha256: SHA } };
+    const alpha = files.get("plugins/alpha/ave-package.json") as { payload: { artifact: unknown } };
+    alpha.payload.artifact = http;
+    const entry = index(files).packages.find((candidate) => candidate.name === "alpha")!;
+    (entry.versions as Array<Record<string, unknown>>)[0]!.artifact = http;
+    const released = new Map([["alpha@1.0.0", { name: "alpha", version: "1.0.0", extensions: { "ai.agent-connector.ave": authority() } }]]);
+    expect(checkMarketplaceRepository(tree(files), { sourceId: "corp", official: false, alertsReleaseVersion: "0.13.0", releasedManifests: released })).toEqual([]);
+  });
+
   it("holds each released plugin.json to its index version when the caller supplies it", () => {
     const manifest = (patch: Record<string, unknown>, at = "1.0.0") => ({ name: "alpha", version: at, extensions: { "ai.agent-connector.ave": { ...authority(), ...patch } } });
     const released = (entries: Array<[string, unknown]>) => ({ ...OFFICIAL, releasedManifests: new Map(entries) });

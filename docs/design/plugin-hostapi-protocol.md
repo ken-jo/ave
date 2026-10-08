@@ -5110,10 +5110,22 @@ README.md                                # how to add the source; the policy exa
   for the API and the design requires for the package file (UNVERIFIED below); a
   project that is not public forces every user onto `token-unencrypted` (§18.2.2),
   which this design does not plan for.
+  **Found when C1 was prepared (2026-10-09):** the descriptor schema still held
+  `release.url` and `archive.url` to `httpsUrl` (`^https://`), so every app through
+  `v0.13.0` and `main` refused this pin (`/payload/artifact/release/url must match
+  pattern "^https://[^\s]+$"`), although §18.2.3 (marketplace design decision 5)
+  accepts catalog-supplied http downloads and the Delivery row already labels them
+  (`src/marketplace/app/views.ts`, `rungViews`). `schemas/marketplace/package.2.schema.json`
+  now gives those two fields `downloadUrl` (`^https?://`); every other URL in the
+  schema stays https-only. An http source is itself a §18 feature that ships in
+  0.14.0, so the company source serves **0.14.0 and later**; on 0.12/0.13 the two
+  plugins install only from a folder or a direct install.
 - **The checker.** `tools/vendor/marketplace-check.js` is the ave
   `checkMarketplaceRepository` bundle (`src/marketplace/repository-check.ts:287`),
   vendored with the official repository's recipe (`tools/vendor.mjs`, `sources.json`
-  pinned at `v0.13.0`; §9.7 fact 17 and decision 45 for the recipe) — built on a
+  pinned at the first ave ref that accepts the http pin above — the `v0.14.0`
+  tag once it exists, the merge commit of that schema change until then; a `v0.13.0`
+  bundle refuses every pin this source writes; §9.7 fact 17 and decision 45 for the recipe) — built on a
   developer machine with bun and an ave checkout and **committed**; GitLab CI runs
   `vendor.mjs check` (hashes) and the checker on every MR, and `vendor.mjs verify --app`
   (rebuild) is a local pre-pin step, because whether the company runner can reach GitHub to
@@ -5607,7 +5619,12 @@ MCP request metadata), and the single merge order of decision 27.
   `GET /<root>/api/v4/version` answers 401 anonymously, while the project and its
   releases list answer 200 (2026-10-03). C1's release URL rests on the first; the
   alternative is every user confirming `token-unencrypted`, which the plan does not
-  adopt. Verified by downloading C2's first package file from a clean intranet host.
+  adopt. Verified by downloading C2's first package file from a clean intranet host;
+  the C2/C3 release job also downloads its own upload anonymously and fails when it
+  cannot. Partly resolved 2026-10-09: an authenticated `GET /<root>/api/v4/version`
+  reports GitLab 18.11.11, and an anonymous http `git ls-remote` of the public `orion`
+  project succeeds; https on the host answers a different site, not GitLab, so every
+  URL stays plain http.
 - (§9.8) Whether the company GitLab runner can reach `github.com` to clone ave for
   `vendor.mjs verify --app`. C1 therefore commits the checker bundle and runs only
   `check` in CI; if the runner can clone, `verify` joins the pipeline.
