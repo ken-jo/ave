@@ -28,8 +28,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const factory = vi.hoisted(() => ({
   specs: [] as Array<{ launch: { kind: string; entryPath?: string; command?: string }; childEntryPath?: string }>,
-  /** Replace the factory's product with a stub, for a case whose real factory would spawn. */
-  stub: false,
+  /**
+   * Record the spec and hand back an inert plugin instead of the real factory's
+   * product, for a case that asserts the launch the routing resolved and would
+   * otherwise spawn a process.
+   */
+  recordOnly: false,
 }));
 const sandbox = vi.hoisted(() => ({ active: false }));
 
@@ -39,7 +43,7 @@ vi.mock("../../isolation/out-of-process-plugin.js", async (importOriginal) => {
     ...actual,
     createOutOfProcessPluginFactory: (spec: Parameters<typeof actual.createOutOfProcessPluginFactory>[0]) => {
       factory.specs.push(spec as never);
-      if (factory.stub) return async () => ({ handlers: {} });
+      if (factory.recordOnly) return async () => ({ handlers: {} });
       return actual.createOutOfProcessPluginFactory(spec);
     },
   };
@@ -175,7 +179,7 @@ function processGeneration(): { root: string; dataDir: string } {
 
 beforeEach(() => {
   factory.specs.length = 0;
-  factory.stub = false;
+  factory.recordOnly = false;
   sandbox.active = false;
 });
 afterEach(() => setProcessPlatform(hostPlatform));
@@ -217,8 +221,8 @@ describe("(ii) an admitted process manifest routes to its process launch", () =>
     setProcessPlatform(platform);
     sandbox.active = true;
     // The launch is resolved when the lifecycle invokes the factory; the
-    // factory's product is stubbed so the case does not spawn.
-    factory.stub = true;
+    // factory only records it here, so the case does not spawn.
+    factory.recordOnly = true;
     const routed = await routing().importPluginFactoryForLifecycle(
       PLUGIN_ID,
       { kind: "process" },
