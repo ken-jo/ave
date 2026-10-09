@@ -2004,6 +2004,13 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   opt-in 제거). ASRT 0.0.76 srt-win 은 dedicated `srt-sandbox` user ACL backend
   로 filesystem rules 를 적용하고 WFP + loopback proxy 로 egress 를 제한하는
   **filesystem+network partial** 샌드박스다. process 격리는 제공하지 않는다.
+  플러그인 사이의 격리도 제공하지 않는다: 모든 confined process (모든 플러그인의
+  child·worker·hook·MCP server 포함) 가 하나의 `srt-sandbox` 계정으로 실행되므로,
+  Windows 샌드박스는 플러그인을 호스트로부터만 격리하고 플러그인끼리는 격리하지
+  않는다. 서드파티 플러그인도 이 조건으로 Windows 에서 실행된다 — owner 결정
+  (2026-10-10) 에 따른 수용된 위험이며, ASRT per-plugin identity 를 기다린다
+  (`docs/design/plugin-hostapi-protocol.md` §9.8 A2, decision 63). 플러그인 간
+  파일시스템 격리 (`denyPluginsRoot`) 는 macOS·Linux 에만 있다.
   srt-win.exe 는 **번들** (asarUnpack vendor/**) 이라 **다운로드가 없다** —
   활성화는 _오직_ 명시적 consent 버튼이 호출하는 1회 self-elevating UAC 설치만
   트리거한다. Windows 계정 로그아웃은 요구하지 않는다.

@@ -299,13 +299,16 @@ export interface PerCommandFilesystem {
    */
   readonly floorPierces?: readonly string[];
   /**
-   * Refuse this wrap the plugins root, `<AVE_HOME>/plugins`: every plugin's
-   * code, data, generation payloads and receipts, and the registry. Set by
-   * every wrap of plugin-owned or third-party code — the plugin child, its
-   * workers, bundled hooks and MCP stdio servers — never by a wrap of the
-   * user's own shell or tools. The floor does not cover the root, and ASRT's
-   * reads are deny-only, so without it any such process reads every other
-   * plugin's data.
+   * Refuse this wrap every root that holds a plugin's code or data
+   * ({@link ensurePluginOwnedReadRoots}): the plugins root, `<AVE_HOME>/plugins`
+   * — every plugin's code, data, generation payloads and receipts, and the
+   * registry — and the two roots of agent plugins, `<AVE_HOME>/agent-plugin-data`
+   * (each one's data) and `<AVE_HOME>/packages/agent-plugin` (each one's
+   * installed versions). Set by every wrap of plugin-owned or third-party code
+   * — the plugin child, its workers, bundled hooks and MCP stdio servers —
+   * never by a wrap of the user's own shell or tools. The floor covers none of
+   * these roots, and ASRT's reads are deny-only, so without it any such process
+   * reads every other plugin's data.
    *
    * The wrap's own directories stay reachable because an `allowRead` entry
    * inside a covering deny is re-allowed: seatbelt's later allow, bubblewrap's
@@ -314,7 +317,10 @@ export interface PerCommandFilesystem {
    * none. On Linux a read re-allow of a directory that holds a write root
    * would shadow that root's writable bind, and {@link hardenLinuxSandboxWrap}
    * puts the write back. A plugin installed after the wrap is covered as well:
-   * the deny is the root, not a list of what was in it.
+   * the deny is the root, not a list of what was in it — which is why each
+   * root is created before the wrap: Linux's bwrap skips a read deny on a path
+   * that is not there, so a root made later would be visible to every process
+   * wrapped before it.
    *
    * macOS and Linux only, and refused on Windows: ASRT applies a Windows deny
    * as an ACE for the ONE `srt-sandbox` account every confined process runs
@@ -561,6 +567,24 @@ function exactSeatbeltDenyGlob(root: string): string {
   return `${real.slice(0, -1)}[${real.slice(-1)}]`;
 }
 
+/**
+ * The roots {@link PerCommandFilesystem.denyPluginsRoot} refuses, each created
+ * (`0o700`) if absent so the deny exists on Linux before anything is installed
+ * under it. Their layouts are owned elsewhere: the plugins root by
+ * `plugin-paths.ts`; an agent plugin's data by the `agent-plugin-data` feature
+ * namespace (`agent-plugin-hook-runtime.ts`, `agent-plugin-mcp-runtime.ts`);
+ * its installed versions by the content store's `<packages>/<kind>/<name>/<version>`
+ * (`content/store.ts`) under `<AVE_HOME>/packages` (`marketplace-content.ts`).
+ * What a wrap owns under them — an agent plugin's generation and data for its
+ * hook or bundled server — is re-allowed by the caller, as for the plugins root.
+ */
+function ensurePluginOwnedReadRoots(): string[] {
+  const home = aveHome();
+  const roots = [resolvePluginPaths().pluginsRoot, join(home, "agent-plugin-data"), join(home, "packages", "agent-plugin")];
+  for (const root of roots) mkdirSync(root, { recursive: true, mode: 0o700 });
+  return roots;
+}
+
 export function buildPerCommandSandboxCustomConfig(
   filesystem: PerCommandFilesystem | undefined,
 ): Partial<SandboxRuntimeConfig> | undefined {
@@ -590,14 +614,14 @@ export function buildPerCommandSandboxCustomConfig(
   // A per-command deny REPLACES the shared one, so the trusted custom denies
   // are restated here once for every wrap rather than by each composer.
   if (filesystem.denyRead !== undefined) {
-    const pluginsRoot = filesystem.denyPluginsRoot === true ? [resolvePluginPaths().pluginsRoot] : [];
+    const pluginRoots = filesystem.denyPluginsRoot === true ? ensurePluginOwnedReadRoots() : [];
     fs.denyRead = asrtReadDenyPaths(
-      [...new Set([...filesystem.denyRead, ...pluginsRoot, ...(_baseTrustedSettings?.denyRead ?? [])])],
-      // The plugins root is spelled exactly for the reason the private roots
-      // are: a wrap whose reads include an ancestor of it (a worker's or a
+      [...new Set([...filesystem.denyRead, ...pluginRoots, ...(_baseTrustedSettings?.denyRead ?? [])])],
+      // The plugin roots are spelled exactly for the reason the private roots
+      // are: a wrap whose reads include an ancestor of one (a worker's or a
       // bundled process's host temp directory, above a test `AVE_HOME`) would
       // otherwise lose its own plugin directories to the re-emitted deny.
-      [...appOwnedSandboxPrivateRoots(), ...pluginsRoot],
+      [...appOwnedSandboxPrivateRoots(), ...pluginRoots],
     );
   }
   if (filesystem.allowWrite !== undefined) fs.allowWrite = writeRootsOutsideReadDenies(filesystem.allowWrite, floor);

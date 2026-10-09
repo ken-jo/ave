@@ -42,9 +42,11 @@ import { shellQuote } from "../lib/shell-resolver.js";
  * How the child's filesystem access is granted.
  *
  * `allow-list` puts the paths in the ASRT command itself (macOS seatbelt,
- * Linux bwrap `--bind`). `deny-only` is Windows, where reachability is granted
- * out of band by ACLs against a holder process, so the wrap carries the deny
- * floor and nothing else — passing allow paths there would imply a
+ * Linux bwrap `--bind`). `deny-only` is Windows, where reachability is an ACL
+ * question decided outside the wrap — for a worker, a grant against its holder
+ * process (`worker-spawn.ts`); for a plugin child, no grant at all, only the
+ * directories' existing ACLs (`spawnConfinedPluginChild`) — so the wrap carries
+ * the deny floor and nothing else: passing allow paths there would imply a
  * confinement the wrap does not perform.
  */
 type ConfinementGrantMode = "allow-list" | "deny-only";

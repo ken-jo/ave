@@ -828,15 +828,26 @@ export interface ObservedPluginChild {
  *
  * On Windows ASRT 0.0.76 supports no per-exec allow grants at all — passing any
  * makes `wrapWorkerCommand` throw — so the wrap carries the deny floor alone
- * (`grantMode: "deny-only"`) and reachability is an ACL question. §4's Windows
- * residual stands unchanged and is not softened here: srt-win confines
- * filesystem and network but NOT process creation, so a confined plugin child
- * on Windows can still spawn. Nor is one plugin's child kept from another's
- * directories there: every confined process runs as the one `srt-sandbox`
- * account, so the ACL that grants plugin A's child its data grants it to every
- * confined process while A runs, and a deny would take it from A as well.
- * Admitting third-party plugins on Windows is the separate owner decision §7.4
- * names, not something this spawn resolves.
+ * (`grantMode: "deny-only"`) and reachability is an ACL question. This spawn
+ * makes no ACL grant: the session config grants nothing either
+ * (`sandbox-init.ts` passes no `allowRead`/`allowWrite`), and the only Windows
+ * grant in the app is a worker's, held for that worker's lifetime by its holder
+ * process (`grantWindowsWorkerFilesystemAccess`, `worker-spawn.ts`). So what
+ * the child reaches of its own root and data is whatever the directories'
+ * existing ACLs give the `srt-sandbox` account — under the default
+ * `<AVE_HOME>` in the user's profile, nothing — plus whatever a live worker's
+ * grant covers.
+ *
+ * §4's Windows residual stands unchanged and is not softened here: srt-win
+ * confines filesystem and network but NOT process creation, so a confined
+ * plugin child on Windows can still spawn. Nor are plugins isolated from each
+ * other there, and by owner decision (2026-10-10) none is attempted: every
+ * confined process runs as the one `srt-sandbox` account, so a grant to one
+ * plugin's worker is visible to every confined process while it is held, and a
+ * deny on a neighbour's directory would take it from that neighbour's own
+ * processes too. Third-party plugins run on Windows under that shared identity
+ * — sandboxed from the host as configured, not from each other — an accepted
+ * risk pending ASRT per-plugin identity (plugin-hostapi-protocol.md §9.8 A2).
  */
 export async function spawnConfinedPluginChild(
   spec: ConfinedPluginChildSpec,

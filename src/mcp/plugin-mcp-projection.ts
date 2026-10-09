@@ -178,16 +178,25 @@ function buildProjection(
   return Object.freeze({ owner: Object.freeze(owner), serverId, config, approval: Object.freeze(approval), approvalDigest });
 }
 
-/** Build an approval from a host-resolved bundled configuration. */
+/**
+ * Build an approval from a host-resolved bundled configuration. A stdio server
+ * of an agent plugin carries its plugin's two host-resolved roots: the data
+ * directory it writes, and the generation it runs from — the one directory
+ * under the refused `<AVE_HOME>/packages/agent-plugin` it reads
+ * (`PerCommandFilesystem.denyPluginsRoot`).
+ */
 export function prepareBundledMcpProjection(
   owner: PluginMcpOwner,
   rawConfig: unknown,
   approvalDigest: string | null,
-  pluginDataDir?: string,
+  roots?: { readonly pluginDataDir: string; readonly bundledPayloadRoot: string },
 ): PreparedPluginMcpProjection {
   const projection = buildProjection(owner, parseStaticConfig(rawConfig, `bundled MCP '${owner.localId}'`), approvalDigest);
-  if (pluginDataDir === undefined || projection.config.transport !== "stdio") return projection;
-  return Object.freeze({ ...projection, config: Object.freeze({ ...projection.config, pluginDataDir }) });
+  if (roots === undefined || projection.config.transport !== "stdio") return projection;
+  return Object.freeze({
+    ...projection,
+    config: Object.freeze({ ...projection.config, pluginDataDir: roots.pluginDataDir, bundledPayloadRoot: roots.bundledPayloadRoot }),
+  });
 }
 
 /** Static parse/fingerprint preparation. It performs no spawn, network, discovery, or registration. */

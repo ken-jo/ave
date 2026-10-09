@@ -238,11 +238,21 @@ describe("the plugins root, refused to plugin-owned wraps", () => {
     })?.filesystem?.denyRead;
   }
 
-  it("adds the root to the wrap's read denies, spelled exactly on macOS so an allowed ancestor cannot re-emit it over the wrap's own", () => {
-    const plugins = join(root, ".ave", "plugins");
-    mkdirSync(plugins, { recursive: true });
-    expect(denyFor("linux")).toEqual([plugins]);
-    expect(denyFor("darwin")).toEqual([`${plugins.slice(0, -1)}[${plugins.slice(-1)}]`]);
+  it("adds every plugin-owned root to the wrap's read denies, spelled exactly on macOS so an allowed ancestor cannot re-emit it over the wrap's own", () => {
+    const ave = join(root, ".ave");
+    // The plugins root, and the two roots of agent plugins: their data and
+    // their installed versions.
+    const roots = [join(ave, "plugins"), join(ave, "agent-plugin-data"), join(ave, "packages", "agent-plugin")];
+    expect(denyFor("linux")).toEqual(roots);
+    expect(denyFor("darwin")).toEqual(roots.map((path) => `${path.slice(0, -1)}[${path.slice(-1)}]`));
+  });
+
+  it("creates each root before the wrap, since bubblewrap skips a deny on a path that is not there", () => {
+    rmSync(join(root, ".ave"), { recursive: true, force: true });
+    denyFor("linux");
+    for (const path of [join(root, ".ave", "plugins"), join(root, ".ave", "agent-plugin-data"), join(root, ".ave", "packages", "agent-plugin")]) {
+      expect(existsSync(path), path).toBe(true);
+    }
   });
 
   it("adds nothing without the flag", () => {
@@ -419,35 +429,53 @@ describe("a confined child cannot reach user data through a grant", () => {
   });
 
   /**
-   * Plugins live under `<AVE_HOME>/plugins`, which the floor does not cover.
-   * Every wrap of plugin-owned code is refused that root and re-allowed its
-   * own directories inside it (`PerCommandFilesystem.denyPluginsRoot`).
+   * Plugins live under `<AVE_HOME>/plugins`, and agent plugins keep their
+   * data under `<AVE_HOME>/agent-plugin-data` and their installed versions
+   * under `<AVE_HOME>/packages/agent-plugin`; the floor covers none of them.
+   * Every wrap of plugin-owned code is refused all three and re-allowed its
+   * own directories inside them (`PerCommandFilesystem.denyPluginsRoot`).
    */
   function pluginsLayout() {
-    const plugins = join(root, ".ave", "plugins");
+    const ave = join(root, ".ave");
+    const plugins = join(ave, "plugins");
     const own = join(plugins, "own");
     const ownData = join(own, "data");
     const generation = join(plugins, ".cache", "own", "generations", "g", "payload");
     const neighbourData = join(plugins, "neighbour", "data");
-    for (const dir of [ownData, generation, neighbourData]) mkdirSync(dir, { recursive: true });
+    const agentData = join(ave, "agent-plugin-data");
+    const agentPackages = join(ave, "packages", "agent-plugin");
+    const ownAgentData = join(agentData, "own");
+    const ownAgentGeneration = join(agentPackages, "own", "1.0.0");
+    const neighbourAgentData = join(agentData, "neighbour");
+    const neighbourAgentGeneration = join(agentPackages, "neighbour", "1.0.0");
+    for (const dir of [ownData, generation, neighbourData, ownAgentData, ownAgentGeneration, neighbourAgentData, neighbourAgentGeneration]) {
+      mkdirSync(dir, { recursive: true });
+    }
     writeFileSync(join(own, "code.txt"), "own-code");
     writeFileSync(join(generation, "hook.txt"), "own-generation");
-    writeFileSync(join(neighbourData, "s"), SECRET);
+    writeFileSync(join(ownAgentGeneration, "hook.txt"), "own-agent-generation");
+    for (const dir of [neighbourData, neighbourAgentData, neighbourAgentGeneration]) writeFileSync(join(dir, "s"), SECRET);
     writeFileSync(join(plugins, "registry.json"), SECRET);
-    rmSync(join(ownData, "written"), { force: true });
-    return { plugins, own, ownData, generation, neighbourData };
+    for (const dir of [ownData, ownAgentData]) rmSync(join(dir, "written"), { force: true });
+    return {
+      plugins, own, ownData, generation, neighbourData,
+      agentData, agentPackages, ownAgentData, ownAgentGeneration, neighbourAgentData, neighbourAgentGeneration,
+    };
   }
 
-  const pluginsProbe = (layout: ReturnType<typeof pluginsLayout>, ownReads: readonly string[]) => [
+  const pluginsProbe = (layout: ReturnType<typeof pluginsLayout>, ownReads: readonly string[], ownData = layout.ownData) => [
     `cat ${join(layout.neighbourData, "s")}`,
     `cat ${join(layout.plugins, "registry.json")}`,
     `ls ${layout.plugins}`,
+    `cat ${join(layout.neighbourAgentData, "s")}`,
+    `cat ${join(layout.neighbourAgentGeneration, "s")}`,
+    `ls ${layout.agentData} ${layout.agentPackages}`,
     ...ownReads.map((file) => `cat ${file}; echo`),
-    `echo own-written > ${join(layout.ownData, "written")} && cat ${join(layout.ownData, "written")}`,
+    `echo own-written > ${join(ownData, "written")} && cat ${join(ownData, "written")}`,
     "echo probe-finished",
   ].join("; ");
 
-  function expectOnlyOwnPlugin(stdout: string, layout: ReturnType<typeof pluginsLayout>, ownBytes: readonly string[]): void {
+  function expectOnlyOwnPlugin(stdout: string, ownData: string, ownBytes: readonly string[]): void {
     expect(stdout, "the probe did not run to completion").toContain("probe-finished");
     expect(stdout).not.toContain(SECRET);
     expect(stdout).not.toContain("neighbour");
@@ -456,8 +484,17 @@ describe("a confined child cannot reach user data through a grant", () => {
     // otherwise have left it read-only.
     for (const bytes of ownBytes) expect(stdout).toContain(bytes);
     expect(stdout).toContain("own-written");
-    expect(readFileSync(join(layout.ownData, "written"), "utf-8").trim()).toBe("own-written");
+    expect(readFileSync(join(ownData, "written"), "utf-8").trim()).toBe("own-written");
   }
+
+  it("the probe reads every neighbour sentinel when nothing confines it", () => {
+    if (!sandboxRuns) return;
+    const layout = pluginsLayout();
+    const run = spawnSync("/bin/sh", ["-c", pluginsProbe(layout, [])], { encoding: "utf-8" });
+    // Three neighbour sentinels and the registry, read; the listings name the neighbour.
+    expect(run.stdout.split(SECRET).length - 1).toBe(4);
+    expect(run.stdout).toContain("neighbour");
+  });
 
   it("as a plugin child whose root holds its data directory: the data stays writable and the neighbour unread", async () => {
     if (!sandboxRuns) return;
@@ -483,7 +520,7 @@ describe("a confined child cannot reach user data through a grant", () => {
       child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf-8"); });
       await new Promise<void>((resolve) => child.once("close", () => resolve()));
       await cleanupAsrtSandboxAfterCommand();
-      expectOnlyOwnPlugin(stdout, layout, ["own-code"]);
+      expectOnlyOwnPlugin(stdout, layout.ownData, ["own-code"]);
     } finally {
       home.cleanup();
     }
@@ -508,7 +545,34 @@ describe("a confined child cannot reach user data through a grant", () => {
         timeout: 30_000,
       });
       await cleanupAsrtSandboxAfterCommand();
-      expectOnlyOwnPlugin(run.stdout, layout, ["own-generation"]);
+      expectOnlyOwnPlugin(run.stdout, layout.ownData, ["own-generation"]);
+    } finally {
+      home.cleanup();
+    }
+  });
+
+  it("as an agent plugin's hook or bundled server: its version and data are its own, a neighbour agent plugin's are not", async () => {
+    if (!sandboxRuns) return;
+    const layout = pluginsLayout();
+    const home = createSandboxProcessHome();
+    try {
+      // The roots `agent-plugin-hook-runtime.ts` and `agent-plugin-mcp.ts`
+      // hand the wrap: the installed version it runs from, the data it writes.
+      const { argv, env } = await wrapBundledCommand({
+        command: "/bin/sh",
+        args: ["-c", pluginsProbe(layout, [join(layout.ownAgentGeneration, "hook.txt")], layout.ownAgentData)],
+        sandboxHome: home,
+        allowWrite: [layout.ownAgentData],
+        ownPluginReads: [layout.ownAgentGeneration],
+        tempPrincipal: { kind: "plugin", id: "agent-plugin/own" },
+      });
+      const run = spawnSync(argv[0]!, argv.slice(1), {
+        env: bundledWrappedEnv({ PATH: process.env.PATH ?? "/usr/bin:/bin" }, env, home.env),
+        encoding: "utf-8",
+        timeout: 30_000,
+      });
+      await cleanupAsrtSandboxAfterCommand();
+      expectOnlyOwnPlugin(run.stdout, layout.ownAgentData, ["own-agent-generation"]);
     } finally {
       home.cleanup();
     }

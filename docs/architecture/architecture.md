@@ -1175,6 +1175,19 @@ Windows srt-win provides filesystem and network confinement but no process
 confinement, so shell/process relaxation must remain stricter than filesystem
 or network-bearing tool relaxation.
 
+Isolation between plugins is a macOS and Linux property. There every wrap of
+plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
+stdio server — refuses the plugin roots (`<AVE_HOME>/plugins`,
+`<AVE_HOME>/agent-plugin-data`, `<AVE_HOME>/packages/agent-plugin`) and
+re-allows only its own directories (`PerCommandFilesystem.denyPluginsRoot`).
+On Windows every confined process, every plugin included, runs as the one
+`srt-sandbox` account: the sandbox confines plugins against the host as
+configured, not against each other, and a worker's ACL grant is visible to every
+confined process while it is held. By owner decision (2026-10-10) third-party
+plugins run on Windows on those terms, an accepted risk pending an ASRT
+per-plugin identity (`docs/design/plugin-hostapi-protocol.md` §9.8 A2,
+decision 63).
+
 Plugin read-relaxation is narrower than the host-shell capability. The
 foreground plugin effect-boundary may replace a pre-exec ask only when
 `hostClassifiesRisk` is enabled and

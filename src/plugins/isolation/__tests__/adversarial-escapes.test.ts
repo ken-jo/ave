@@ -89,6 +89,15 @@ const SENTINEL_NAME = "sentinel.txt";
 const SECRETS_SENTINEL = "the host secret no plugin child may read";
 const NEIGHBOUR_SENTINEL = "the neighbour's own bytes, which no other plugin may read";
 const LATE_SENTINEL = "a plugin installed after the child spawned";
+
+/**
+ * A neighbour agent plugin's data (`agent-plugin-data/<name>`) and installed
+ * version (`packages/agent-plugin/<name>/<version>`): outside the plugins root,
+ * refused to every plugin-owned wrap all the same.
+ */
+function agentPluginNeighbourDirs(aveHome: string): string[] {
+  return [join(aveHome, "agent-plugin-data", NEIGHBOUR_ID), join(aveHome, "packages", "agent-plugin", NEIGHBOUR_ID, "1.0.0")];
+}
 /** What the fixture's in-sandbox controls write into its own data directory (`entry.mjs`). */
 const OWN_BYTES = "the adversarial plugin's own bytes";
 const OWN_SECRET = "the adversarial plugin's own stored secret";
@@ -167,6 +176,10 @@ beforeAll(async () => {
   mkdirSync(neighbourDataDir, { recursive: true, mode: 0o700 });
   writeFileSync(join(secretsDir, SENTINEL_NAME), SECRETS_SENTINEL, "utf-8");
   writeFileSync(join(neighbourDataDir, SENTINEL_NAME), NEIGHBOUR_SENTINEL, "utf-8");
+  for (const agentDir of agentPluginNeighbourDirs(aveHome)) {
+    mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(agentDir, SENTINEL_NAME), NEIGHBOUR_SENTINEL, "utf-8");
+  }
   // Staged outside the checkout, where a bare `electron` specifier has no
   // `node_modules` to walk up into.
   cpSync(FIXTURE_SOURCE, pluginRoot, { recursive: true });
@@ -531,6 +544,24 @@ describe("the four escapes, against the production factory under the real wrap",
           expect(lateRead.ok, JSON.stringify(lateRead)).toBe(false);
           expect(deniedReadCodes()).toContain(lateRead.code);
           expect(JSON.stringify(late)).not.toContain(LATE_SENTINEL);
+
+          // An agent plugin's data and installed version, outside the plugins
+          // root: refused by the same flag (`asrt-sandbox.ts`,
+          // `ensurePluginOwnedReadRoots`), each with its unconfined control.
+          for (const agentDir of agentPluginNeighbourDirs(staged.aveHome)) {
+            expect(readFileSync(join(agentDir, SENTINEL_NAME), "utf-8")).toBe(NEIGHBOUR_SENTINEL);
+            const agent = await call(spawned, "escape_secrets", {
+              expectConfined: true,
+              secretsDir: staged.secretsDir,
+              otherDataDir: agentDir,
+              sentinelName: SENTINEL_NAME,
+              otherPluginId: NEIGHBOUR_ID,
+            });
+            const agentRead = (agent.filesystem as Record<string, { ok: boolean; code?: string }>).readOtherData!;
+            expect(agentRead.ok, `${agentDir}: ${JSON.stringify(agentRead)}`).toBe(false);
+            expect(deniedReadCodes()).toContain(agentRead.code);
+            expect(JSON.stringify(agent)).not.toContain(NEIGHBOUR_SENTINEL);
+          }
         }
       } finally {
         await spawned.instance.stop?.();
@@ -552,26 +583,33 @@ describe("the four escapes, against the production factory under the real wrap",
       expect(execFileSync("/bin/cat", [join(staged.neighbourDataDir, SENTINEL_NAME)], { encoding: "utf-8" })).toBe(
         NEIGHBOUR_SENTINEL,
       );
+      for (const agentDir of agentPluginNeighbourDirs(staged.aveHome)) {
+        expect(execFileSync("/bin/cat", [join(agentDir, SENTINEL_NAME)], { encoding: "utf-8" })).toBe(NEIGHBOUR_SENTINEL);
+      }
       const spawned = await spawnInstalled(staged.fixture);
       try {
-        const result = await call(spawned, "escape_worker", {
-          expectConfined: true,
-          otherDataDir: staged.neighbourDataDir,
-          sentinelName: SENTINEL_NAME,
-          otherPluginId: NEIGHBOUR_ID,
-          command: "/bin/cat",
-        });
-        // The control inside the sandbox: granted its plugin's data directory,
-        // the worker prints what the child wrote there.
-        expect(result.own, JSON.stringify(result.own)).toMatchObject({
-          ok: true,
-          value: { stdout: OWN_BYTES, exit: 0 },
-        });
-        const other = result.other as { ok: boolean; value?: { stdout: string; stderr: string; exit: unknown } };
-        expect(other.ok, JSON.stringify(other)).toBe(true);
-        expect(other.value!.exit, JSON.stringify(other)).not.toBe(0);
-        expect(other.value!.stdout).toBe("");
-        expect(JSON.stringify(result)).not.toContain(NEIGHBOUR_SENTINEL);
+        // The plugins root's neighbour, then an agent plugin's data and
+        // installed version outside it.
+        for (const otherDataDir of [staged.neighbourDataDir, ...agentPluginNeighbourDirs(staged.aveHome)]) {
+          const result = await call(spawned, "escape_worker", {
+            expectConfined: true,
+            otherDataDir,
+            sentinelName: SENTINEL_NAME,
+            otherPluginId: NEIGHBOUR_ID,
+            command: "/bin/cat",
+          });
+          // The control inside the sandbox: granted its plugin's data directory,
+          // the worker prints what the child wrote there.
+          expect(result.own, JSON.stringify(result.own)).toMatchObject({
+            ok: true,
+            value: { stdout: OWN_BYTES, exit: 0 },
+          });
+          const other = result.other as { ok: boolean; value?: { stdout: string; stderr: string; exit: unknown } };
+          expect(other.ok, `${otherDataDir}: ${JSON.stringify(other)}`).toBe(true);
+          expect(other.value!.exit, `${otherDataDir}: ${JSON.stringify(other)}`).not.toBe(0);
+          expect(other.value!.stdout).toBe("");
+          expect(JSON.stringify(result)).not.toContain(NEIGHBOUR_SENTINEL);
+        }
       } finally {
         await spawned.instance.stop?.();
       }

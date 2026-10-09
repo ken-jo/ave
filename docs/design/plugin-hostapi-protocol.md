@@ -100,7 +100,7 @@ has the process. This track makes the contract match it.
 | 2 | Contract is language neutral | **Yes** | The reverse channel becomes JSON-RPC 2.0 (`ave/host/*`) with a host-published JSON Schema (§3, §6): an Ave peer channel beside MCP, so a non-JS plugin needs a JSON-RPC library or the generated client next to its MCP server library (§3.1). A plugin may ship its own executable instead of a JS entry (§2.1). |
 | 3 | Same plugin loads in several hosts | **Partial, deliberately** | The manifest is already an Agent Plugins 1.0.0 document with `extensions["ai.agent-connector.ave"]` (`schemas/plugin-manifest.schema.json:5`, `public-contract.ts:36-37`). Skills, hooks and `mcpServers` contributions are portable. The `ave/host/*` surface is Ave-only by design: audio capture, floating dock, auth partitions and work proposals have no portable equivalent, and pretending otherwise would produce a lowest-common-denominator API. |
 | 4 | Host and plugins release independently through version and capability negotiation, plus report-and-ignore for unknown fields | **Yes** | `ave/instance/construct` carries the host protocol version and the capability list, and the MCP half negotiates per request (`2026-07-28`); unknown optional fields are reported and ignored; unknown methods fail loudly (§3.2, §3.3). |
-| 5 | Host isolates and sandboxes at the boundary | **Yes on macOS/Linux; filesystem+network only on Windows** | ASRT (`architecture.md:1013-1020`). The Windows process-confinement gap is decided in decision 3 (§13): admission does not depend on it, and a `process` entry is refused on Windows (§2.2, §7.3). |
+| 5 | Host isolates and sandboxes at the boundary | **Yes on macOS/Linux; filesystem+network against the host only on Windows** | ASRT (`architecture.md:1013-1020`). The Windows process-confinement gap is decided in decision 3 (§13): admission does not depend on it, and a `process` entry is refused on Windows (§2.2, §7.3). On Windows plugins are not isolated from each other: every confined process shares one sandbox account (decision 63). |
 | 6 | Run-time errors are covered by `$schema` editor validation, a validate CLI and clear failure at load | **Yes** | Manifest schema already exists; the protocol schema and a host-built validate CLI are added (§6, §10). |
 
 Non-goals:
@@ -159,7 +159,7 @@ Both forms go through `spawnConfinedChild` and nowhere else
 |---|---|---|---|
 | macOS | ASRT `sandbox-exec` profile, allow-list grant mode | filesystem, process, network | `architecture.md:1014-1017`, `confined-child.ts:42-44` |
 | Linux | ASRT bwrap `--bind` / `--unshare-net`, allow-list grant mode | filesystem, process, network | same; UDS reachability `worker-spawn.ts:17-22` |
-| Windows | srt-win with per-process ACL grants, deny-only grant mode | filesystem, network. **No process confinement** | `architecture.md:1018-1020`, `confined-child.ts:43-46`, `out-of-process-plugin.ts:970` |
+| Windows | srt-win, one shared `srt-sandbox` account; deny-only grant mode; ACL grants only for a delegated worker, held by its holder process | filesystem, network, against the host. **No process confinement; no isolation between plugins** (decision 63) | `architecture.md:1018-1020`, `confined-child.ts:43-46`, `out-of-process-plugin.ts:970` |
 
 The child is confined exactly as much as the host is: `features.osToolSandbox` decides for
 the host's own tools, its workers and its plugin children alike; when it is off the child
@@ -1672,6 +1672,7 @@ the cutoff is not softened by an id exception, a method heuristic or a retained 
 | Arbitrary executable via `process` entry | a pinned release or archive artifact only (§2.1); a wrap whose published `confines` includes `process` (never srt-win); refused when the sandbox is off; the command must be inside the plugin root (Agent Plugins rule); no `PATH` search for a marketplace plugin. |
 | Envelope widening via the manifest `sandbox` block | closed `hostDirectory` allow-list; `userChosenDirectory` requires a user-set absolute path; deny-floor piercing requires install-time approval (§2.2). |
 | Windows: no process confinement | unchanged from `architecture.md:1018-1020`; admission does not depend on it (decision 3); a `process` entry is refused on Windows because srt-win is a wrap that does not confine processes (§2.2); the Doctor names the confinement each plugin runs under. |
+| Windows: one sandbox identity for every plugin | none by design (decision 63): every confined process — each plugin's child, workers, and the host's own tools — runs as the one `srt-sandbox` account, so a worker's grant is visible to every confined process while held and no deny can separate plugins; `denyPluginsRoot` is refused there. Inter-plugin isolation is a macOS and Linux property only (§9.8 A2). |
 | Confused deputy through the host's own credentials | `hostFetch` attaches a lease only to a URL that is inside the lease's host-derived **audience** (§4.1.3) *and* passes the plugin's own allow-list; the allow-list alone is not enough, because it says where the plugin may send its traffic, not where the host's key may go. The lease id is per plugin incarnation and is `lease-unavailable` on any other connection; every host-injected credential header is cleared on an origin change and re-authorised per hop, including Azure `api-key` (§4.1.3); a caller cannot supply a credential header on a leased request (§4.1.4). Matches the MCP security guidance on token passthrough ([MCP security best practices](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices)). |
 | A lease outlives the decision that granted it | the host registry ends it on permission revocation, secret rotation, vendor or endpoint change, plugin update/disable/uninstall and incarnation end, with epoch fencing after every await and abort of active uses (§4.1.2). Request cancellation is a separate mechanism and never stands in for it. |
 | A raw grant is inferred from an old manifest string | raw issuance requires the reviewed authority and the reviewing app version ≥ X in the receipt, plus the unchanged provenance evaluator (§4.1.6). |
@@ -5019,6 +5020,26 @@ fixture or by the independent verification of it rather than decided around it:
   verification also found the two detours the first fix left: a worker the child asked
   for printed the neighbour's data (now row 1a by delegation), and a hook could copy it
   into the data directory the child reads.
+- **An agent plugin's directories sat outside that root, and were readable too.** An
+  agent plugin keeps its data under `<AVE_HOME>/agent-plugin-data/<name>` (the
+  feature namespace `agent-plugin-hook-runtime.ts` and `agent-plugin-mcp-runtime.ts`
+  open) and its installed versions under `<AVE_HOME>/packages/agent-plugin/<name>/<version>`
+  (the content store's `<kind>/<name>/<version>` layout, `content/store.ts`); the floor
+  covers neither, so an `entry` child, its workers and every bundled hook or server
+  could read them. The same flag now refuses both roots beside the plugins root
+  (`ensurePluginOwnedReadRoots`, `asrt-sandbox.ts`), each created before the wrap
+  because bubblewrap skips a deny on a path that is not there. No `entry` plugin owns
+  anything under them; an agent plugin's own hook or stdio server re-allows its own
+  version and data — the hook through its generation root and data directory, the
+  server through `bundledPayloadRoot`, which `resolveRuntimeMcp` (`agent-plugin-mcp.ts`)
+  now sets to the version it runs from. Measured under the real wrap on macOS (seatbelt)
+  and on Linux (bubblewrap 0.12.0, `node:24-trixie`, arm64), with a neighbour sentinel in
+  each root and failing before the change on both: the plugin child and its
+  delegated worker (row 1a, `adversarial-escapes.test.ts`), a child, an entry plugin's
+  hook and an agent plugin's hook or server (`asrt-protected-write-roots.test.ts`), and
+  the hook runner end to end with its generation under each root
+  (`bundled-hook-asrt.smoke.test.ts`, which also turns red when the deny or the own-read
+  re-allow is removed from `wrap-bundled-command.ts`).
 - **On Linux a read re-allow could take a plugin's data directory away.** ASRT masks
   the denied root with a tmpfs and binds the write roots back before the read
   re-allows, so a plugin whose root holds its data directory got the root's read-only
@@ -5026,12 +5047,42 @@ fixture or by the independent verification of it rather than decided around it:
   mount the re-allow covered again right after it, except a write under one of the
   wrap's write denies (`linux-sandbox-wrap.ts`, `replayShadowedMounts`); the row-1a
   control writes and reads back the child's own data inside the sandbox.
-- **Windows has no deny between plugins, and none is added.** Every confined process
-  there runs as the one `srt-sandbox` account and ASRT applies a deny as an ACE for that
-  account, so a deny on a neighbour's directory would take it from the neighbour's own
-  child too; `denyPluginsRoot` is refused on Windows. Reach between plugins on Windows
-  is decided by the ACL grants alone: a plugin's directories are granted to that account
-  while its child runs. Row 1a there asserts a neighbour that is not running.
+- **On Windows plugins are not isolated from each other, by owner decision
+  (2026-10-10).** All plugins, third-party ones included, run there in the one shared
+  `srt-sandbox` identity: sandboxed from the host as configured, not from each other.
+  This is an accepted risk pending an ASRT per-plugin identity; no install gate,
+  warning, serialization or source restriction stands in for it. The facts it rests on,
+  for the ASRT 0.0.76 we ship (its README, `windows-sandbox-utils.js`, and the srt-win
+  source): every sandboxed process runs as that one account,
+  started through `CreateProcessWithLogonW` and a `CreateRestrictedToken` token without
+  restricting SIDs; an allow is a session-level ACL grant to that account's SID; a
+  per-execution deny is a holder-refcounted ACE on the same SID. So a deny on plugin A's
+  neighbour also takes their own directories from a concurrently running plugin B's
+  processes, and anything granted to A's processes is readable by B's while it is held —
+  which is why `denyPluginsRoot` is refused on Windows (`asrt-sandbox.ts`) and nothing
+  replaces it. Upstream `@anthropic-ai/sandbox-runtime` releases through 0.0.79 (checked
+  2026-10-10) still offer no per-execution identity, and per-execution `allowRead` /
+  `allowWrite` remain unsupported on Windows.
+
+  What the code grants a Windows plugin child, read from the code rather than assumed:
+  nothing. The child's wrap is deny-only (`grantMode: "deny-only"`,
+  `out-of-process-plugin.ts`), carrying the sensitive deny floor and no allow; the
+  session config passes no `allowRead` or `allowWrite` (`buildSandboxConfig` from
+  `sandbox-init.ts`), so ASRT's session grant is empty; the app's one Windows grant,
+  `grantWindowsWorkerFilesystemAccess`, is called only for a delegated worker
+  (`worker-spawn.ts`), against that worker's holder process and for its lifetime. A child
+  therefore reaches its own root and data only where the directories' existing ACLs
+  already admit the `srt-sandbox` account — or while one of its plugin's workers holds a
+  grant on them, which every other confined process then shares. The default
+  `<AVE_HOME>` lies in the user profile, whose ACL (read on a Windows 11 host,
+  2026-10-10: `SYSTEM`, `Administrators` and the owner, inherited into `.ave`) admits no
+  such account; an `<AVE_HOME>` on a volume whose inherited ACL grants `Users` or
+  `Authenticated Users` is readable by every confined process, every plugin's included.
+  **Not measured:** a plugin child actually spawned under srt-win. The verification host
+  has no `srt-sandbox` account provisioned (that needs the elevated, machine-wide
+  `windows-install`), and no CI run has measured it (the repository's last workflow run
+  is from 2026-09-22, before A2), so whether an `entry` child under the default `<AVE_HOME>` can load its own entry at
+  all with the sandbox on, and what row 1a measures on Windows, are unverified.
 - **The fixture declares `capabilities: ["external-auth-consumer"]`.** Without it
   `hostFetch` is refused by the capability check before the allow-list is reached, and
   row 2 would prove the wrong layer. Row 2 asserts the allow-list's own audit detail:
@@ -5621,12 +5672,13 @@ What Ave should not adopt, and why:
 | 60 | **P7 order.** Public release → fourteen-day notice (§9.3's rule, applied to the server) → `.github` `marketplace-publish.yml` deleted → plugin repositories' GitHub publish workflows deleted → the web author page rewritten for format 2 → server stopped with volumes kept → Cloudflare route removed → repositories archived one release cycle later with the catalog exported to `project-history/`. Steps 3 and 5 are code and can merge now; step 4 is plugin-repository code that waits for the owner's go-ahead (decision 49); 1 waits for Actions; 2, 6–8 are the owner's. | Users must have the replacement source before the old one answers nothing; the catalog export is the only record of what the server served. |
 | 61 | **0.14.0 carries no protocol boundary.** Admission changes no protocol schema; the `2/v0.14.0` candidate differs from `v0.13.0`'s copy by `$id` only; §9.3's notice rule does not apply to the release, only to the server (decision 60), because no protocol version is retired. | The arm change is inside the host's promise (§2.1); the notice rule is keyed to a retired protocol version, and none is. What 0.14.0 does refuse anew — a manifest without a served `hostProtocol` on the prepared-activation and restart paths (fact 12, decision 52) — is the rule 0.12.0 announced for every path, now applied by the child factory's check, and R1's release note names it. |
 | 62 | **Migration of old-server `orion` and `git` installs (designer, 2026-10-08, on the review's recommendation).** Both packages are **required** through policy (`requiredInstalls` from the company source): a package that is not installed is installed by the boot step, and an existing install — unbound (old server) or bound to another source — is switched through the idle apply queue after boot (`src/marketplace/boot-installs/run.ts:199-200`; the `switch` candidate of `src/marketplace/app/service.ts:2242-2250`, built for a required package installed from another source or from none), never by an immediate boot install. `defaultInstalls` is not the migration path, because it skips an existing package bound to no source (`run.ts:219-225`). An unmanaged install (no policy) migrates by an explicit user-driven source switch: add the source, open the package there and install it, which replaces the unbound install (§16.4); the source's README states it. | A first draft listed `git` in `defaultInstalls` and claimed both would bind at the next boot, which `run.ts:225` contradicts; requiring both is what makes the managed migration automatic, at the cost that the policy, not the user, then owns each package's presence (§18.6), which the administrator chooses knowingly. |
+| 63 | **Windows: plugins are not isolated from each other (owner, 2026-10-10).** On Windows every plugin, third-party ones included, runs in the one shared `srt-sandbox` identity: sandboxed from the host as configured, not from each other. The app adds no install gate, warning or confirmation, serialization of plugin processes, or marketplace-source restriction on Windows; the sandbox capability report says "against the host" there (`permissions.ts` `sandboxCapability`, `sandbox-capability-info.ts`), and every inter-plugin claim in this design and the blueprint is scoped to macOS and Linux. It is an accepted risk, pending an ASRT per-plugin (per-execution) identity, and is re-decided when one exists (§9.8 A2, *As implemented*). | ASRT 0.0.76 runs every sandboxed process as one account, without restricting SIDs; its allows are session-level grants and its per-execution denies holder-refcounted ACEs, both on that account's SID, so a deny between plugins takes each plugin's own directories from it as well, and a grant to one is visible to all while held. Upstream `@anthropic-ai/sandbox-runtime` releases through 0.0.79 (checked 2026-10-10) add no per-execution identity. Rejected by the owner: an install gate, warning or confirmation for third-party plugins on Windows, serializing plugin processes, and restricting Windows to some marketplace sources — third-party plugins run on Windows. Rejected on the facts: a deny-based partition, which removes each plugin's own access (above). |
 
 ### Owner decisions still open
 
 None as design decisions. Decisions 8-11 and 22 record the owner's decisions of
-2026-09-27 and decisions 48-49 those of 2026-10-03; decisions 12-21, 23-26, 27-47 and
-50-62 are the designer's, made so the implementer decides no security or migration
+2026-09-27, decisions 48-49 those of 2026-10-03 and decision 63 that of 2026-10-10;
+decisions 12-21, 23-26, 27-47 and 50-62 are the designer's, made so the implementer decides no security or migration
 semantics, and each review round's findings are either resolved above or rejected in
 the section they name; decision 5 names a role, not a person, so nothing waits on the
 owner. The owner delegated the Publication decisions (27-46, and 47 under the same

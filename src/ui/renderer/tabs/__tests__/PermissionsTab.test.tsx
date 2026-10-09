@@ -1154,8 +1154,8 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
           enabled: true,
           available: true,
           kind: "partial" as const,
-          reason: "ASRT (srt-win) confines filesystem access and network egress; process isolation is unavailable on Windows; needs a one-time admin install",
-          potentialReason: "ASRT (srt-win) confines filesystem access and network egress; process isolation is unavailable on Windows; needs a one-time admin install",
+          reason: "ASRT (srt-win) confines filesystem access and network egress against the host; every confined process, plugins included, runs as one shared sandbox account, so plugins are not isolated from each other; process isolation is unavailable on Windows; needs a one-time admin install",
+          potentialReason: "ASRT (srt-win) confines filesystem access and network egress against the host; every confined process, plugins included, runs as one shared sandbox account, so plugins are not isolated from each other; process isolation is unavailable on Windows; needs a one-time admin install",
           runtime: {
             available: false,
             kind: "none" as const,
