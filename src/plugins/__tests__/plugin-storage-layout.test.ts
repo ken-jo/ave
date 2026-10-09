@@ -8,8 +8,11 @@
  */
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { spawn, type ExecFileException, type ExecFileOptions } from "node:child_process";
+import { once } from "node:events";
+import { createConnection } from "node:net";
 import { join, resolve, sep } from "node:path";
 import {
   PLUGIN_DATA_DIR_NAME,
@@ -34,12 +37,20 @@ import { PLUGIN_DATA_FIXTURE, readPluginDataFixture, seedPluginDataFixture } fro
  * with `lockRenameEndingWith`; every other `rename` passes through, so the
  * rest of this suite runs against the real filesystem.
  */
-const renameLock = vi.hoisted(() => ({ lockRenameEndingWith: undefined as string | undefined }));
+const renameLock = vi.hoisted(() => ({
+  lockRenameEndingWith: undefined as string | undefined,
+  beforeMove: undefined as { to: string; run: () => Promise<void> } | undefined,
+}));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
     rename: async (from: Parameters<typeof actual.rename>[0], to: Parameters<typeof actual.rename>[1]) => {
+      const before = renameLock.beforeMove;
+      if (before && String(to) === before.to) {
+        renameLock.beforeMove = undefined;
+        await before.run();
+      }
       const suffix = renameLock.lockRenameEndingWith;
       if (suffix !== undefined && String(to).endsWith(suffix)) {
         renameLock.lockRenameEndingWith = undefined;
@@ -48,6 +59,27 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       return actual.rename(from, to);
     },
   };
+});
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, execFile: (file: string, args: string[], options: ExecFileOptions,
+    callback: (error: ExecFileException | null, stdout: string, stderr: string) => void) => {
+    const run = async () => {
+      const before = renameLock.beforeMove;
+      if (before && args[1] === before.to) {
+        renameLock.beforeMove = undefined;
+        await before.run();
+      }
+      if (renameLock.lockRenameEndingWith && args[1]?.endsWith(renameLock.lockRenameEndingWith)) {
+        renameLock.lockRenameEndingWith = undefined;
+        callback(Object.assign(new Error("resource busy"), { code: 1, cmd: file }), "", "EBUSY\n");
+        return;
+      }
+      actual.execFile(file, args, { ...options, encoding: "utf8" }, callback);
+    };
+    void run().catch((error: Error) => callback(Object.assign(error, { cmd: file }), "", ""));
+  } };
 });
 
 const PLUGIN_ID = "ave-plugin-layout-fixture";
@@ -259,7 +291,104 @@ describe("carryPluginSocketDirs", () => {
   });
 
   afterEach(async () => {
+    renameLock.beforeMove = undefined;
     await rm(root, { recursive: true, force: true });
+  });
+
+  it.runIf(process.platform !== "win32")("keeps a live child's bound socket reachable through a merge", async () => {
+    await rm(root, { recursive: true, force: true });
+    root = await mkdtemp("/tmp/lvsc-");
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, "sockets"), { recursive: true });
+    await mkdir(join(to, "sockets"), { recursive: true });
+    await writeFile(join(to, "sockets", "other"), "new entry");
+    const inode = statSync(join(from, "sockets")).ino;
+    const child = spawn(process.execPath, ["-e", `
+      const net = require('node:net');
+      net.createServer(socket => socket.end('alive')).listen(process.argv[1], () => console.log('ready'));
+    `, join(from, "sockets", "live.sock")], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const stopped = once(child, "exit");
+    try {
+      await once(child.stdout!, "data");
+      await carryPluginSocketDirs(from, to, { onConflict: "reject" });
+      expect(statSync(join(to, "sockets")).ino).toBe(inode);
+      const socket = createConnection(join(to, "sockets", "live.sock"));
+      try {
+        const [data] = await once(socket, "data");
+        expect(String(data)).toBe("alive");
+      } finally { socket.destroy(); }
+    } finally {
+      child.kill();
+      await stopped;
+    }
+  });
+
+  it("moves a nested link as an entry without following its target", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    const outside = join(root, "outside");
+    await mkdir(join(from, "run"), { recursive: true });
+    await mkdir(join(to, "run"), { recursive: true });
+    await mkdir(outside);
+    await writeFile(join(outside, "foreign"), "untouched");
+    await symlink(outside, join(to, "run", "linked"), process.platform === "win32" ? "junction" : "dir");
+    await carryPluginSocketDirs(from, to, { onConflict: "reject" });
+    expect((await lstat(join(to, "run", "linked"))).isSymbolicLink()).toBe(true);
+    expect(await readdir(outside)).toEqual(["foreign"]);
+  });
+
+  it.each(["run", "sockets"])("preflights a linked %s root without touching its target", async (name) => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    const outside = join(root, "outside");
+    await mkdir(join(from, name), { recursive: true });
+    await mkdir(to);
+    await mkdir(outside);
+    await writeFile(join(outside, "foreign"), "untouched");
+    await symlink(outside, join(to, name), process.platform === "win32" ? "junction" : "dir");
+
+    await expect(carryPluginSocketDirs(from, to, { onConflict: "reject" })).rejects.toThrow(/directory|symlink/);
+    expect(await readdir(outside)).toEqual(["foreign"]);
+    expect(await readdir(join(from, name))).toEqual([]);
+    expect((await lstat(join(to, name))).isSymbolicLink()).toBe(true);
+  });
+
+  it("rejects a conflict in sockets before moving run", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    for (const parent of [from, to]) {
+      await mkdir(join(parent, "sockets"), { recursive: true });
+      await writeFile(join(parent, "sockets", "same.sock"), parent);
+    }
+    await mkdir(join(from, "run"));
+    const inode = statSync(join(from, "run")).ino;
+    await expect(carryPluginSocketDirs(from, to, { onConflict: "reject" })).rejects.toThrow(/both roots/);
+    expect(existsSync(join(from, "run"))).toBe(true);
+    expect(existsSync(join(to, "run"))).toBe(false);
+    expect(statSync(join(from, "run")).ino).toBe(inode);
+  });
+
+  it.each(["run", "sockets"])("never overwrites a late %s entry", async (name) => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, name), { recursive: true });
+    await mkdir(join(to, name), { recursive: true });
+    const sourceEntry = join(from, name, "late");
+    const targetEntry = join(to, name, "late");
+    if (name === "run") await mkdir(targetEntry);
+    else await writeFile(targetEntry, "destination");
+    let lateInode: number | undefined;
+    renameLock.beforeMove = { to: sourceEntry, run: async () => {
+      if (name === "run") await mkdir(sourceEntry);
+      else await writeFile(sourceEntry, "newly bound");
+      lateInode = statSync(sourceEntry).ino;
+    } };
+
+    await expect(carryPluginSocketDirs(from, to, { onConflict: "reject" })).rejects.toThrow();
+    expect(statSync(sourceEntry).ino).toBe(lateInode);
+    expect(existsSync(targetEntry)).toBe(true);
+    if (name === "sockets") expect(readFileSync(sourceEntry, "utf8")).toBe("newly bound");
   });
 
   it("moves run/ and sockets/ as the same directories and leaves data/ alone", async () => {

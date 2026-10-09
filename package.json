@@ -36,7 +36,7 @@
   "main": "dist/src/main/main.js",
   "scripts": {
     "postinstall": "node scripts/fetch-uv.mjs && node scripts/register-ave-protocol.mjs && node scripts/hooks/install.mjs",
-    "build:main": "node scripts/build-main-esbuild.mjs",
+    "build:main": "node scripts/build-rename-entry.mjs && node scripts/build-main-esbuild.mjs",
     "build:webpack": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs",
     "build:renderer": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs --config-name renderer",
     "build:styles": "tailwindcss --input src/styles.css --output dist/src/styles.css --minify",
@@ -50,7 +50,7 @@
     "dev": "node scripts/run-electron-dev.mjs",
     "plugins:list": "tsx scripts/plugins-cli.ts list",
     "cli": "tsx scripts/ave-cli.ts",
-    "test:prepare": "bun run build:icons",
+    "test:prepare": "bun run build:icons && node scripts/build-rename-entry.mjs",
     "test:vitest": "node scripts/run-vitest-under-electron.mjs",
     "test:plugin-bundle-inputs": "node --import ./scripts/lib/document-consumer-guard.mjs --test scripts/plugin-bundle-e2e-inputs.test.mjs",
     "test": "bun run test:prepare && bun run test:vitest -- run",
@@ -290,6 +290,11 @@
       }
     ],
     "extraResources": [
+      {
+        "from": "resources/rename-entry/${arch}",
+        "to": "rename-entry/${arch}",
+        "filter": ["ave-rename-entry", "ave-rename-entry.exe"]
+      },
       {
         "from": "build/icon.png",
         "to": "icon.png"

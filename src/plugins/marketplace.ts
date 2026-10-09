@@ -1482,6 +1482,7 @@ export class PluginMarketplaceService {
       );
       // The predecessor is still the live generation here, and its sockets
       // are in the root about to be removed.
+      if (existsSync(snapshot.installDir)) await carryPluginSocketDirs(backupDir, snapshot.installDir, { onConflict: "reject" });
       await carryPluginSocketDirs(snapshot.installDir, backupDir, { onConflict: "reject" });
     }
     await rm(snapshot.installDir, { recursive: true, force: true });

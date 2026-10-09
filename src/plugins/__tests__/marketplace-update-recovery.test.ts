@@ -19,6 +19,18 @@ import { PARKED_PLUGIN_STATE_SUBDIR, TOMBSTONE_SUBDIR } from "../installed-entry
 import type { PluginPaths } from "../plugin-paths.js";
 import { PLUGIN_DATA_FIXTURE, readPluginDataFixture, seedPluginDataFixture } from "./test-helpers.js";
 
+const carryFault = vi.hoisted(() => ({ destination: undefined as string | undefined }));
+vi.mock("../../lib/rename-entry-exclusive.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/rename-entry-exclusive.js")>();
+  return { ...actual, renameEntryExclusive: async (...args: Parameters<typeof actual.renameEntryExclusive>) => {
+    if (args[1] === carryFault.destination) {
+      carryFault.destination = undefined;
+      throw Object.assign(new Error("entry move refused"), { code: "EIO" });
+    }
+    await actual.renameEntryExclusive(...args);
+  } };
+});
+
 describe("marketplace pending-update recovery", () => {
   let root: string;
   let paths: PluginPaths;
@@ -75,6 +87,7 @@ describe("marketplace pending-update recovery", () => {
   });
 
   afterEach(async () => {
+    carryFault.destination = undefined;
     await rm(root, { recursive: true, force: true });
     warnSpy.mockRestore();
   });
@@ -403,6 +416,64 @@ describe("marketplace pending-update recovery", () => {
   // that generation still bound to them. Whichever root holds them, the
   // restored root must end up with the same directories.
   describe("socket directories", () => {
+    it("retains both roots after a midway failure and converges on the next boot", async () => {
+      const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
+      const live = join(paths.pluginsRoot, pluginId);
+      const backupDir = join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`);
+      await mkdir(join(backupDir, "dist"), { recursive: true });
+      await writeFile(join(backupDir, "plugin.json"), oldManifest);
+      await writeFile(join(backupDir, "dist", "index.js"), oldDist);
+      await mkdir(join(backupDir, "run", "original"), { recursive: true });
+      await mkdir(join(live, "run", "a"), { recursive: true });
+      await mkdir(join(live, "run", "b"));
+      const original = statSync(join(backupDir, "run")).ino;
+      const firstLeaf = statSync(join(live, "run", "a")).ino;
+      const secondLeaf = statSync(join(live, "run", "b")).ino;
+      await preparePendingPluginUpdate(paths, entry, {
+        kind: "marketplace", recoveryBackupDir: backupDir, recoveryBackupMode: "rename",
+      });
+      await writeFile(join(live, "plugin.json"), JSON.stringify({ id: pluginId, version: "2.0.0" }));
+      carryFault.destination = join(backupDir, "run", "b");
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [], unresolved: [pluginId] });
+      expect(statSync(join(backupDir, "run")).ino).toBe(original);
+      expect(statSync(join(backupDir, "run", "a")).ino).toBe(firstLeaf);
+      expect(statSync(join(live, "run", "b")).ino).toBe(secondLeaf);
+      expect((await readPluginRegistry(paths.registryPath)).plugins[0]?.pendingUpdate).toBeDefined();
+
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
+      expect(statSync(join(live, "run")).ino).toBe(original);
+      expect(statSync(join(live, "run", "a")).ino).toBe(firstLeaf);
+      expect(statSync(join(live, "run", "b")).ino).toBe(secondLeaf);
+      expect(existsSync(backupDir)).toBe(false);
+      expect((await readPluginRegistry(paths.registryPath)).plugins[0]?.pendingUpdate).toBeUndefined();
+    });
+
+    it.each(["rename", "copy"] as const)("preserves the original run inode after an interrupted merge during %s restore", async (mode) => {
+      const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
+      const backupDir = mode === "rename"
+        ? join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`)
+        : join(paths.pluginsRoot, ".cache", "local-install-rollback", `${pluginId}-1-2`);
+      await mkdir(join(backupDir, "dist"), { recursive: true });
+      await writeFile(join(backupDir, "plugin.json"), oldManifest);
+      await writeFile(join(backupDir, "dist", "index.js"), oldDist);
+      await preparePendingPluginUpdate(paths, entry, {
+        kind: mode === "rename" ? "marketplace" : "local-dev",
+        recoveryBackupDir: backupDir,
+        recoveryBackupMode: mode,
+      });
+      const live = join(paths.pluginsRoot, pluginId);
+      await writeFile(join(live, "plugin.json"), JSON.stringify({ id: pluginId, version: "2.0.0" }));
+      // One destination leaf already moved into the original directory; the
+      // next move failed before the original directory reached the live path.
+      await mkdir(join(backupDir, "run", "already-moved"), { recursive: true });
+      await mkdir(join(live, "run", "not-yet-moved"), { recursive: true });
+      const inode = statSync(join(backupDir, "run")).ino;
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
+      expect(statSync(join(live, "run")).ino).toBe(inode);
+      expect(await readdir(join(live, "run"))).toEqual(["already-moved", "not-yet-moved"]);
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [], unresolved: [] });
+    });
+
     it("come back from a copy-mode backup into the restored root", async () => {
       const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
       const backupDir = join(paths.pluginsRoot, ".cache", "local-install-rollback", `${pluginId}-1-1`);

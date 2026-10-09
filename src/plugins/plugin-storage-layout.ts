@@ -18,7 +18,7 @@
  */
 import { lstat, readdir, rename, rm, rmdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
+import { renameEntryExclusive } from "../lib/rename-entry-exclusive.js";
 import { aveHome } from "../shared/ave-home.js";
 import { PluginDataRootError, resolvePluginDataRoot } from "./plugin-storage-containment.js";
 
@@ -375,17 +375,20 @@ const PLUGIN_SOCKET_DIR_NAMES: readonly string[] = [
  * and the source moves into place. Whichever side is empty, nothing is
  * dropped and no live directory is replaced by a newer one.
  *
- * Only the same entry name on both sides is a real conflict, decided before
- * anything moves by the caller's policy, which has no default for the reason
+ * Only the same entry name on both sides is a real conflict. Preflight checks
+ * both directories before anything moves, using the caller's policy, which
+ * has no default for the reason
  * {@link PluginDataCarryPolicy} has none:
  *  - `reject` — an INSTALL transaction. Two sockets claiming one name means
  *    the transaction's bookkeeping is wrong; it throws to its rollback with
- *    both sides untouched;
+ *    both sides untouched for a conflict present at preflight;
  *  - `keep-destination` — RECOVERY, which must always reach a terminal
  *    disposition. Sockets are not state, so the destination's entry replaces
  *    the source's. With no destination root at all, nothing moves.
+ * A later entrant is refused by the exclusive rename. Earlier completed moves
+ * remain in the owned roots so a retry or recovery can finish the carry.
  *
- * Renamed through {@link renameDirectory}, which already retries the transient
+ * Renamed through {@link renameEntryExclusive}, which retries the transient
  * Windows lock codes (reporting each retry through `policy.onRetry`); callers
  * do not wrap it again.
  */
@@ -397,10 +400,26 @@ export async function carryPluginSocketDirs(
     readonly onRetry?: (attempt: number, code: string) => void;
   },
 ): Promise<void> {
+  if (isSamePluginPath(fromRoot, toRoot)) return;
   // Recovery may discard a root while no live root survives (a cleanup after
   // an uninstall): nothing is bound there to hand the sockets to.
   if (policy.onConflict === "keep-destination" && !await pathExists(toRoot)) return;
-  const move = (from: string, to: string): Promise<void> => renameDirectory(from, to, policy.onRetry);
+  const move = (from: string, to: string): Promise<void> => renameEntryExclusive(from, to, policy.onRetry);
+  // Check every root and both names before the first mutation. A linked root
+  // would make readdir/entry moves operate on a tree outside the plugin.
+  await assertSocketDirectory(fromRoot);
+  await assertSocketDirectory(toRoot);
+  for (const name of PLUGIN_SOCKET_DIR_NAMES) {
+    const source = resolve(fromRoot, name);
+    const target = resolve(toRoot, name);
+    const sourceExists = await assertSocketDirectory(source);
+    const targetExists = await assertSocketDirectory(target);
+    if (sourceExists && targetExists && policy.onConflict === "reject") {
+      for (const entry of await readdir(target)) {
+        if (await pathExists(resolve(source, entry))) throw socketConflict(name, entry, source, target);
+      }
+    }
+  }
   for (const name of PLUGIN_SOCKET_DIR_NAMES) {
     const source = resolve(fromRoot, name);
     const target = resolve(toRoot, name);
@@ -408,25 +427,24 @@ export async function carryPluginSocketDirs(
     // Bounded: a worker that recreates the destination between the merge and
     // the final rename makes that rename fail, and the merge runs again.
     for (let attempt = 1; ; attempt += 1) {
-      if (await pathExists(target)) {
-        const entries = await readdir(target);
-        const conflicts: string[] = [];
-        for (const entry of entries) {
-          if (await pathExists(resolve(source, entry))) conflicts.push(entry);
-        }
-        if (conflicts.length > 0 && policy.onConflict === "reject") {
-          throw new Error(
-            `[plugin-storage-layout] both roots hold ${name}/${conflicts[0]}; refusing to `
-              + `merge ${target} into ${source}`,
-          );
-        }
-        for (const entry of entries) {
-          if (conflicts.includes(entry)) await rm(resolve(source, entry), { recursive: true, force: true });
-          await move(resolve(target, entry), resolve(source, entry));
-        }
-        await rmdir(target);
-      }
       try {
+        if (await assertSocketDirectory(target)) {
+          const entries = await readdir(target);
+          const conflicts: string[] = [];
+          for (const entry of entries) {
+            if (await pathExists(resolve(source, entry))) conflicts.push(entry);
+          }
+          if (conflicts.length > 0 && policy.onConflict === "reject") {
+            throw socketConflict(name, conflicts[0]!, source, target);
+          }
+          for (const entry of entries) {
+            if (conflicts.includes(entry)) await rm(resolve(source, entry), { recursive: true, force: true });
+            // The OS refuses an entry created after preflight, including an empty
+            // worker directory. An ordinary rename would silently replace it.
+            await move(resolve(target, entry), resolve(source, entry));
+          }
+          await rmdir(target);
+        }
         await move(source, target);
         break;
       } catch (error) {
@@ -434,6 +452,21 @@ export async function carryPluginSocketDirs(
         if (attempt >= 3 || (code !== "ENOTEMPTY" && code !== "EEXIST")) throw error;
       }
     }
+  }
+}
+
+function socketConflict(name: string, entry: string, source: string, target: string): Error {
+  return new Error(`[plugin-storage-layout] both roots hold ${name}/${entry}; refusing to merge ${target} into ${source}`);
+}
+
+async function assertSocketDirectory(path: string): Promise<boolean> {
+  try {
+    const entry = await lstat(path);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error(`Plugin socket root is not a real directory: ${path}`);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
   }
 }
 

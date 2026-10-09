@@ -108,8 +108,8 @@ function recoveryDataCarry(paths: PluginPaths, pluginId: string): PluginDataCarr
 }
 
 /**
- * Recovery keeps whichever socket directory the surviving root already has:
- * sockets are not state, and recovery must always reach a disposition.
+ * Recovery keeps destination entries on a same-name conflict while retaining
+ * the original directory's identity.
  */
 const RECOVERY_SOCKET_CARRY = { onConflict: "keep-destination" } as const;
 
@@ -324,6 +324,10 @@ export async function recoverPendingPluginUpdate(
   // plugin's data directory into it leaves the state there; it goes back into
   // the backup that becomes the live root before anything is removed.
   await retryOnTransientFsLock(() => carryPluginDataDir(installDir, backupDir, recoveryDataCarry(paths, pluginId)));
+  // An interrupted merge may leave the original directory in the backup.
+  // Finish that direction first, so reversing the carry cannot replace its
+  // inode with the temporary directory created at the promoted root.
+  await carryPluginSocketDirs(backupDir, installDir, RECOVERY_SOCKET_CARRY);
   // Called at runtime too (a failed local install restores its predecessor
   // through here), where the predecessor is live and bound to these.
   await carryPluginSocketDirs(installDir, backupDir, RECOVERY_SOCKET_CARRY);

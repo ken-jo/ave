@@ -2,12 +2,13 @@
 # native/windows-job/) or the folder classifier (`-Helper path-kind`,
 # native/windows-path-kind/). Both use the installed C++ build tools and
 # download nothing.
-param([string]$Arch = "x64", [switch]$FailureFixture, [ValidateSet("job", "path-kind")][string]$Helper = "job")
+param([string]$Arch = "x64", [switch]$FailureFixture, [ValidateSet("job", "path-kind", "rename-entry")][string]$Helper = "job")
 $ErrorActionPreference = "Stop"
 if ($Arch -notin @("x64", "arm64")) { throw "Unsupported job launcher architecture: $Arch" }
 if ($FailureFixture -and $Helper -ne "job") { throw "The failure fixture belongs to the job launcher" }
 $root = Split-Path $PSScriptRoot -Parent
 $out = Join-Path $root "resources/windows-$Helper/$Arch"
+if ($Helper -eq "rename-entry") { $out = Join-Path $root "resources/rename-entry/$Arch" }
 New-Item -ItemType Directory -Force $out | Out-Null
 $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
 if (!(Test-Path $vswhere)) { throw "Windows job launcher requires the C++ build tools" }
@@ -15,8 +16,11 @@ $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudi
 if (!$installation) { throw "Windows job launcher requires the C++ build tools" }
 $devcmd = Join-Path $installation "Common7/Tools/VsDevCmd.bat"
 $source = if ($Helper -eq "job") { Join-Path $root "native/windows-job/launcher.cpp" } else { Join-Path $root "native/windows-path-kind/path-kind.cpp" }
+if ($Helper -eq "rename-entry") { $source = Join-Path $root "native/rename-entry/rename-entry.cpp" }
 $name = if ($Helper -eq "path-kind") { "ave-path-kind.exe" } elseif ($FailureFixture) { "ave-job-failure.exe" } else { "ave-job.exe" }
+if ($Helper -eq "rename-entry") { $name = "ave-rename-entry.exe" }
 $object = if ($Helper -eq "job") { "launcher.obj" } else { "path-kind.obj" }
+if ($Helper -eq "rename-entry") { $object = "rename-entry.obj" }
 # Import the compiler environment without passing checkout paths through cmd.
 # UTF-16 preserves environment values containing non-ASCII user/profile paths.
 $setup = New-Object System.Diagnostics.ProcessStartInfo

@@ -402,6 +402,9 @@ export class PluginArtifactStore {
           if (hadOldDir) {
             try {
               await retryOnTransientFsLock(() => carryPluginDataDir(installDir, oldDir, { onConflict: "reject" }));
+              // Complete any interrupted forward merge before reversing it:
+              // the original directory may still be in the old root.
+              if (existsSync(installDir)) await carryPluginSocketDirs(oldDir, installDir, { onConflict: "reject" });
               await carryPluginSocketDirs(installDir, oldDir, {
                 onConflict: "reject",
                 onRetry: (attempt, code) =>
