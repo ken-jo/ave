@@ -1747,7 +1747,23 @@ its evidence.
   protocol `1`.
 - **Large payloads.** `hostFetch` bodies and storage reads are buffered and capped at 16
   MiB. A plugin that needs more streams through its own `spawnWorker` or through
-  storage in chunks. No chunked body streaming in protocol `1` or `2`.
+  storage in chunks. No chunked body streaming in protocol `1` or `2`. A **download**
+  above the cap is fetched as HTTP `Range` slices, each within it, and appended to a
+  file under the plugin's data directory. `range` is an ordinary request header the
+  host carries onto every gated hop, a cross-origin redirect included. What a hop does
+  drop is decided in `runHostFetchHops` (`src/main/host-fetch-guard.ts`) on two
+  independent rules. A cross-origin hop drops `CREDENTIAL_HEADERS` (`authorization`,
+  `proxy-authorization`, `cookie`, `api-key`, `x-api-key`,
+  `ocp-apim-subscription-key`) and `anthropic-version`. Separately, any 303 hop, and
+  any 301/302 hop after a POST, same-origin or not, turns the request into a bodyless
+  GET and drops `content-type` and `content-length` with the body. A `206` comes back with its
+  `content-range`. A server that ignores `Range` answers `200` whole, which the cap
+  refuses with `payload-too-large` before allocating it, and the refused body is
+  cancelled rather than left open. Pinned by
+  `host-api-service-members.test.ts` (a body over the cap refused whole, then carried
+  intact in slices across the real child encoder and host decoder) and
+  `host-fetch-guard.test.ts` (`range` kept across a cross-origin hop). `meeting`'s
+  managed FFmpeg download (27-80 MB archives) is the consumer.
 - **Multipart bodies and the STT upload budget (decision 21; a Lease prerequisite for
   `meeting`).** At `f1a8d191e` a `FormData` body does not cross the wire: the child
   encodes `init` immediately (`host-api-child.ts:324-333`) and `asWireBody` accepts only
