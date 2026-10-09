@@ -582,6 +582,98 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
     ).rejects.toMatchObject({ code: "payload-too-large" });
   });
 
+  // A refusal at the ceiling has to END the body, not merely stop reading it:
+  // an unread, uncancelled stream keeps the upstream socket open until GC, and
+  // a server that ignores Range sends exactly that oversized 200.
+  describe("cancels the upstream body it refuses", () => {
+    function endlessBody(): { body: ReadableStream<Uint8Array>; cancelled: Promise<unknown>; pulledBytes: () => number } {
+      let pulled = 0;
+      let onCancel!: (reason: unknown) => void;
+      const cancelled = new Promise<unknown>((resolveCancel) => { onCancel = resolveCancel; });
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulled += 1024 * 1024;
+          controller.enqueue(new Uint8Array(1024 * 1024));
+        },
+        cancel(reason) {
+          onCancel(reason);
+        },
+      });
+      return { body, cancelled, pulledBytes: () => pulled };
+    }
+    const within = <T,>(promise: Promise<T>) =>
+      Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("body was never cancelled")), 2_000))]);
+
+    it("when the running total crosses the ceiling", async () => {
+      const upstream = endlessBody();
+      const harness = await createServiceHarness({ hostFetch: async () => new Response(upstream.body) });
+
+      await expect(harness.child.hostApi.hostFetch!("https://example.test/endless"))
+        .rejects.toMatchObject({ code: "payload-too-large" });
+
+      await expect(within(upstream.cancelled)).resolves.toMatchObject({ code: "payload-too-large" });
+      expect(upstream.pulledBytes()).toBeLessThanOrEqual(WIRE_BYTES_MAX + 2 * 1024 * 1024);
+    });
+
+    it("when content-length alone refuses it, before a byte is read", async () => {
+      const upstream = endlessBody();
+      const harness = await createServiceHarness({
+        hostFetch: async () => new Response(upstream.body, {
+          headers: { "content-length": String(WIRE_BYTES_MAX + 1) },
+        }),
+      });
+
+      await expect(harness.child.hostApi.hostFetch!("https://example.test/declared"))
+        .rejects.toMatchObject({ code: "payload-too-large" });
+
+      await expect(within(upstream.cancelled)).resolves.toMatchObject({ code: "payload-too-large" });
+    });
+  });
+
+  // §8: "A plugin that needs more streams ... in chunks. No chunked body
+  // streaming in protocol 1 or 2." For a download that means HTTP Range: the
+  // body above the ceiling is refused whole, and the same bytes arrive intact
+  // as slices under it, through the child's encoder and the host's decoder.
+  it("refuses a body above the ceiling whole and carries it intact as Range slices", async () => {
+    const resource = new Uint8Array(WIRE_BYTES_MAX * 2 + 12_345);
+    for (let i = 0; i < resource.byteLength; i += 1) resource[i] = (i * 31 + (i >>> 13)) & 0xff;
+    const hostFetch = vi.fn(async (_input: string | URL, init?: RequestInit) => {
+      const match = /^bytes=(\d+)-(\d+)$/u.exec(new Headers(init?.headers).get("range") ?? "");
+      if (!match) {
+        return new Response(resource.slice(), { headers: { "content-length": String(resource.byteLength) } });
+      }
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), resource.byteLength - 1);
+      return new Response(resource.slice(start, end + 1), {
+        status: 206,
+        headers: { "content-range": `bytes ${start}-${end}/${resource.byteLength}` },
+      });
+    });
+    const harness = await createServiceHarness({ hostFetch });
+
+    await expect(harness.child.hostApi.hostFetch!("https://example.test/asset"))
+      .rejects.toMatchObject({ code: "payload-too-large" });
+
+    const slice = WIRE_BYTES_MAX / 2;
+    const received: Uint8Array[] = [];
+    let offset = 0;
+    let total = Number.POSITIVE_INFINITY;
+    while (offset < total) {
+      const response = await harness.child.hostApi.hostFetch!("https://example.test/asset", {
+        headers: { range: `bytes=${offset}-${offset + slice - 1}` },
+      });
+      expect(response.status).toBe(206);
+      const [, start, end, size] = /^bytes (\d+)-(\d+)\/(\d+)$/u
+        .exec(response.headers.get("content-range") ?? "") ?? [];
+      expect(Number(start)).toBe(offset);
+      total = Number(size);
+      received.push(new Uint8Array(await response.arrayBuffer()));
+      offset = Number(end) + 1;
+    }
+    expect(Buffer.compare(Buffer.concat(received), Buffer.from(resource))).toBe(0);
+    expect(received.length).toBe(5);
+  });
+
   it("replies with the contract's effect-boundary-denied code", async () => {
     const harness = await createServiceHarness({
       hostFetch: async () => {
