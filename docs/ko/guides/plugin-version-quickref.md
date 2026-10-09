@@ -8,8 +8,9 @@
 
 ## release 하는 법
 
-1. `plugins/<name>/source/` 를 바꾸고 `plugin.json` 과 `package.json` 의 `version` 을 같은 값으로 올리는 PR 을 머지합니다.
+1. `plugins/<name>/source/` 를 바꾸고 `plugin.json` 과 `package.json` 의 `version` 을 같은 값으로 올리는 PR 을 머지합니다. 앱 0.12.0 이상용 플러그인은 `requires.hostProtocol: "2"` 를 선언합니다.
 2. 머지 후 release workflow 가:
+   - 계약·검사기가 앱 태그에 고정되어 있고 프로토콜 2 스키마가 해시와 함께 벤더링되어 있는지 확인한 뒤 (아니면 게시 거부),
    - 머지 커밋에서 `<name>-<version>.zip` 을 빌드하고,
    - `<name>-v<version>` 태그를 만들어 그 release 에 zip 을 올리고,
    - 설명자 (`plugins/<name>/ave-package.json`) 에 zip 의 sha256 을 고정하는 PR 을 엽니다.
@@ -31,7 +32,7 @@
 
 ## 앱 버전 호환
 
-- 플러그인은 앱의 `src/plugins/public-contract.ts` 와 `schemas/plugin-manifest.schema.json` 을 **앱 릴리스 태그**에서 수정 없이 `contract/` 로 벤더링합니다. `contract/sources.json` 이 출처 저장소·태그·두 파일의 해시를 기록합니다. 모노레포는 루트 `contract/` 하나를 `@ave/plugin-contract` 로 공유하며, `bun run contract:sync -- contract --ref <앱 태그> --app <ave 체크아웃>` 으로 갱신하고 `bun run contract:check` 로 검증합니다.
+- 플러그인은 앱의 `src/plugins/public-contract.ts`, `schemas/plugin-manifest.schema.json`, `schemas/plugin-host-protocol/2/protocol.schema.json` 세 파일을 **앱 릴리스 태그**에서 수정 없이 `contract/` 로 벤더링합니다. `contract/sources.json` 이 출처 저장소·태그·파일별 해시를 기록합니다. 모노레포는 루트 `contract/` 하나를 `@ave/plugin-contract` 로 공유하며, `bun run contract:sync -- contract --ref <앱 태그> --app <ave 체크아웃>` 으로 갱신하고 `bun run contract:check` 로 검증합니다.
 - 새 계약 멤버를 쓰는 플러그인은 그 멤버를 처음 실은 앱 릴리스를 `plugin.json` 의 `requires.minAppVersion` 에 선언하고, 설명자의 `minAppVersion` 도 같은 값으로 둡니다. 호스트는 설치·로드 시 이 최솟값을 강제합니다.
 
 ## 머지 전 검사

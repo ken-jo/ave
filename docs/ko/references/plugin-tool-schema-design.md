@@ -616,7 +616,7 @@ CSS `initial` 키워드로 렌더되어 invisible regression 이 된다.
    참조. SDK 가 없으므로 `primeTheme` / `useTheme` 는 패키지에서 import 하지 않고
    플러그인 소스에 복사해 둔다. 공식 마켓플레이스 모노레포
    [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace) 의
-   `templates/plugin/README.md` 가 현재 예시이고, 공식 플러그인
+   `templates/extension/README.md` 가 현재 예시이고, 공식 플러그인
    (`plugins/<name>/source/src/ui/prime-theme.js` 등) 이 원본이다.
 
 ```ts
@@ -884,7 +884,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 
 ### 5.1 Meeting Recorder (`meeting`)
 
-**파일:** `ave-plugin-meeting/src/hostPlugin.ts`
+**파일:** `ken-jo/agent-marketplace` 의 `plugins/meeting/source/src/hostPlugin.ts`
 
 **주요 handler:** `meeting_start` / `meeting_push_chunk` / `meeting_stop` / `meeting_transcript` / `meeting_sessions`.
 
@@ -895,7 +895,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 
 ### 5.2 Local Indexer (`local-indexer`)
 
-**파일:** `ave-plugin-local-indexer/src/hostPlugin.ts:210-303`
+**파일:** `ken-jo/agent-marketplace` 의 `plugins/local-indexer/source/src/hostPlugin.ts`
 
 - `capabilities: ["knowledge-index"]`.
 - Python subprocess (30s 폴링) 로 FileWatcher 대신 운영 — `index_scan` 은 멱등 설계.
@@ -904,18 +904,15 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 
 ### 5.3 LYRA Mail (`lyra-mail`)
 
-**파일:** `ave-plugin-lyra-mail/src/hostPlugin.ts`
+**파일:** `ken-jo/agent-marketplace` 의 `plugins/lyra-mail/source/src/hostPlugin.ts`
 
 - `capabilities: ["mail-source", "calendar-source", "lyra-mail-consumer"]`.
 - 인증은 플러그인 자체 MSAL + safeStorage 경로가 소유한다. Host 는 provider-specific token HostApi 를 제공하지 않는다.
 - 메일/캘린더 mutation tool 의 effective category(`write`/`network`)는 host 가 invocation 별로 분류하고, UI 호출이 필요하면 `_meta.ui.visibility` 에 `"app"` 을 추가한다.
 
-### 5.4 Agent Hub (`agent-hub`)
+### 5.4 Agent Hub (`agent-hub`) — 은퇴
 
-**파일:** `ave-plugin-hydra/src/hostPlugin.ts`
-
-- `capabilities: ["host:overlay"]` — overlay staging 호출의 단일 런타임 게이트.
-- 다른 플러그인에 대한 작업 요청과 결과 수신은 이벤트 요청/응답 계약으로 구현한다. 직접 tool 호출 권한은 제공하지 않는다.
+Agent Hub 플러그인과 `ave-plugin-hydra` 저장소는 폐기되었다. 현행 플러그인 소스가 없으므로 케이스스터디에서 뺀다. 최소 예제는 같은 모노레포의 `plugins/hello-world/source/src/hostPlugin.ts` 를 본다.
 
 ---
 
@@ -1083,9 +1080,9 @@ export const createPlugin: RuntimePluginFactory = async (context) => {
 
 ### 플러그인 계약 벤더링 (현행)
 
-`@ave/plugin-sdk` 와 `ave-plugin-sdk` 저장소는 은퇴(archive)했다. 호스트가 계약을 소유한다. `src/plugins/public-contract.ts` (공개 타입·JSDoc) 와 `schemas/plugin-manifest.schema.json` (매니페스트 스키마) 이 정본이고, 호스트는 이 스키마를 앱 안에서 직접 읽는다.
+`@ave/plugin-sdk` 와 `ave-plugin-sdk` 저장소는 은퇴(archive)했다. 호스트가 계약을 소유한다. `src/plugins/public-contract.ts` (공개 타입·JSDoc), `schemas/plugin-manifest.schema.json` (매니페스트 스키마), `schemas/plugin-host-protocol/2/protocol.schema.json` (호스트 프로토콜 2 스키마) 가 정본이다. 매니페스트 스키마는 호스트가 앱 안의 이 파일을 직접 읽는다.
 
-플러그인 저장소는 두 파일을 **앱 릴리스 태그**에서 수정 없이 `contract/` 로 복사하고, `contract/sources.json` 에 출처 저장소·태그·파일별 sha256 을 기록한다. 공식 마켓플레이스 모노레포 [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace) 는 루트 `contract/` 를 `@ave/plugin-contract` 패키지로 두고, `plugins/<name>/source/` 의 각 플러그인이 `file:` 의존성으로 참조한다. 복사본은 손으로 고치지 않고 `bun run contract:sync -- contract --ref <앱 태그> --app <ave 체크아웃>` 으로 새 태그를 동기화하며, `bun run contract:check` 가 기록된 해시와 대조한다.
+플러그인 저장소는 세 파일을 **앱 릴리스 태그**에서 수정 없이 `contract/` 로 복사하고, `contract/sources.json` 에 출처 저장소·태그·파일별 sha256 을 기록한다. 공식 마켓플레이스 모노레포 [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace) 는 루트 `contract/` 를 `@ave/plugin-contract` 패키지로 두고, `plugins/<name>/source/` 의 각 플러그인이 `file:` 의존성으로 참조한다. 복사본은 손으로 고치지 않고 `bun run contract:sync -- contract --ref <앱 태그> --app <ave 체크아웃>` 으로 새 태그를 동기화하며, `bun run contract:check` 가 기록된 해시와 대조한다.
 
 ```jsonc
 // plugins/<name>/source/package.json (agent-marketplace)
@@ -1096,4 +1093,4 @@ export const createPlugin: RuntimePluginFactory = async (context) => {
 }
 ```
 
-새 계약 멤버를 쓰는 플러그인은 그 멤버를 처음 실은 앱 릴리스를 `requires.minAppVersion` 에 선언한다. 호스트가 설치·로드 시 이 최솟값을 강제한다.
+새 계약 멤버를 쓰는 플러그인은 그 멤버를 처음 실은 앱 릴리스를 `requires.minAppVersion` 에 선언한다. 호스트가 설치·로드 시 이 최솟값을 강제한다. 앱 0.12.0 이상용 플러그인은 `requires.hostProtocol: "2"` 도 선언한다.

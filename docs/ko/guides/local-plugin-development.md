@@ -52,11 +52,11 @@ bun run dev
 
 ## 2. 플러그인 스캐폴드
 
-공식 마켓플레이스 모노레포 [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace)의 `templates/plugin/`에서 시작합니다. 예전 `ave-plugin-template` 저장소는 보관(archive)되었습니다.
+공식 마켓플레이스 모노레포 [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace)의 `templates/extension/`에서 시작합니다. 예전 `ave-plugin-template` 저장소는 보관(archive)되었습니다.
 
 ```bash
 # agent-marketplace 체크아웃에서
-cp -R templates/plugin plugins/<yourname>/source
+cp -R templates/extension plugins/<yourname>/source
 # package.json 의 file: 경로 두 개 (`../../` → `../../../`) 를 새 깊이에 맞춤
 (cd tools/plugin-build && bun install)   # 빌드 헬퍼, 처음 한 번
 cd plugins/<yourname>/source

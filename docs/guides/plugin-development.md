@@ -18,17 +18,20 @@ host APIs or tool execution.
 
 Every extension package needs a `plugin.json` manifest. The Host owns the canonical
 shape in `schemas/plugin-manifest.schema.json` and the complete TypeScript/JSDoc
-authoring contract in `src/plugins/public-contract.ts`. Vendor both files
+authoring contract in `src/plugins/public-contract.ts`. Vendor those two files
+and the host protocol schema `schemas/plugin-host-protocol/2/protocol.schema.json`
 unchanged into `contract/` at an app release tag, and record their hashes in
-`contract/sources.json`. The retired `@ave/plugin-sdk` package is not a
+`contract/sources.json`. An extension for app 0.12.0 or later declares
+`extensions["ai.agent-connector.ave"].requires.hostProtocol: "2"`. The retired `@ave/plugin-sdk` package is not a
 contract source.
 
 Official extensions live in the official marketplace monorepo
-`ken-jo/agent-marketplace` under `plugins/<name>/source/` (meeting, lyra-mail,
-local-indexer, vega-helper); their `src/hostPlugin.ts` files are the current
-HostApi usage references. A new extension starts from `templates/plugin/` in
-that repository. The former per-plugin `ave-plugin-*` repositories for these
-extensions and `ave-plugin-template` are archived.
+`ken-jo/agent-marketplace` under `plugins/<name>/source/` (hello-world,
+local-indexer, meeting, lyra-mail); their `src/hostPlugin.ts` files are the
+current HostApi usage references. A new extension starts from
+`templates/extension/` in that repository. The former per-plugin
+`ave-plugin-*` repositories and `ave-plugin-template` are archived, and the
+vega-helper extension is retired.
 
 The manifest should include:
 
