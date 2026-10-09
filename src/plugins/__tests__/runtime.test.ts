@@ -61,11 +61,12 @@ function makeGenerationBoundRuntime(
 }
 
 /**
- * Phase 1.5 F-round §F5: direct unit tests for `PluginRuntime.disable()`.
+ * Phase 1.5 F-round §F5: direct unit tests for disabling a plugin through
+ * `PluginRuntime.setPluginEnabled(id, false)`, the one disable path.
  * Uses a real tmp-dir fixture with a minimal ESM plugin entry so the full
  * load → disable path is exercised (not mocks).
  */
-describe("PluginRuntime.disable", () => {
+describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   let testDir: string;
   let installedDir: string;
   let registryPath: string;
@@ -229,7 +230,7 @@ describe("PluginRuntime.disable", () => {
     expect(runtime.listPluginIds()).toContain("p-user");
     expect(runtime.listToolNames()).toContain("p_user_hello");
 
-    await runtime.disable("p-user");
+    await runtime.setPluginEnabled("p-user", false);
 
     expect(runtime.listPluginIds()).not.toContain("p-user");
     expect(runtime.listToolNames()).not.toContain("p_user_hello");
@@ -250,7 +251,7 @@ describe("PluginRuntime.disable", () => {
     const runtime = makeRuntime();
     await runtime.startAll();
 
-    await expect(runtime.disable("p-required")).rejects.toThrow(
+    await expect(runtime.setPluginEnabled("p-required", false)).rejects.toThrow(
       /required by policy \(source corp\); it cannot be disabled/,
     );
 
@@ -273,7 +274,7 @@ describe("PluginRuntime.disable", () => {
     const runtime = makeRuntime();
     await runtime.startAll();
 
-    await runtime.disable("p-managed");
+    await runtime.setPluginEnabled("p-managed", false);
 
     expect(runtime.listPluginIds()).not.toContain("p-managed");
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
@@ -291,18 +292,17 @@ describe("PluginRuntime.disable", () => {
     const runtime = makeRuntime();
     await runtime.startAll();
 
-    await expect(runtime.disable("p-missing")).rejects.toThrow(/not found/i);
+    await expect(runtime.setPluginEnabled("p-missing", false)).rejects.toThrow(/not found/i);
 
     // Existing plugin still loaded
     expect(runtime.listPluginIds()).toContain("p-existing");
   });
 
   /**
-   * `setPluginEnabled` is the writer the renderer toggle actually reaches
-   * (`ave:plugins:set-enabled` → `PluginRuntime.setPluginEnabled`);
-   * `disable()` has no production caller. Both mutate the same registry
-   * `enabled` field, so both must consult the deployment guard — otherwise a
-   * required plugin could be switched off from the settings tab.
+   * `setPluginEnabled` is the one writer of the registry `enabled` field, and
+   * the one the renderer toggle reaches (`ave:plugins:set-enabled` →
+   * `PluginRuntime.setPluginEnabled`). It must consult the deployment guard —
+   * otherwise a required plugin could be switched off from the settings tab.
    */
   function makeRuntimeWithGuard(): {
     runtime: PluginRuntime;

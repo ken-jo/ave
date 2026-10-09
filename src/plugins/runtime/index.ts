@@ -44,7 +44,7 @@ import {
 } from "../plugin-install-receipt.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFile } from "node:fs/promises";
-import { type PluginDeploymentGuard, PluginDeploymentDeniedError, assertDisableAllowed } from "../deployment-guard.js";
+import { type PluginDeploymentGuard, assertDisableAllowed } from "../deployment-guard.js";
 import { pluginArtifactGenerationId } from "../plugin-artifact-identity.js";
 import { HostApiGenerationScope } from "../plugin-host-effect-scope.js";
 import { canonicalJSON } from "../secret-access/canonical-json.js";
@@ -5354,118 +5354,6 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         `reloadPlugin failed for ${canonicalPluginId}: ${result ?? "not-loaded"}`,
       );
     }
-  }
-
-  /** Disable a loaded plugin at runtime. */
-  async disable(pluginId: string): Promise<void> {
-    const canonicalPluginId = this.resolveKnownPluginId(pluginId);
-    this.pendingRestartCancellations.get(canonicalPluginId)?.cancel();
-    return withPluginInstallLock(canonicalPluginId, () =>
-      this.disableLocked(pluginId, canonicalPluginId)
-    );
-  }
-
-  private async disableLocked(
-    pluginId: string,
-    canonicalPluginId: string,
-  ): Promise<void> {
-    if (this.deploymentGuard) {
-      const result = await this.deploymentGuard.canDisable(pluginId);
-      if (!result.allowed) {
-        throw new PluginDeploymentDeniedError(
-          result.reason ?? `Plugin disable denied: ${pluginId}`,
-        );
-      }
-    }
-    if (!this.plugins.has(canonicalPluginId)) {
-      throw new Error(`Plugin not loaded: ${pluginId}`);
-    }
-    this.assertNoActiveCapabilityDependents(canonicalPluginId, "disable");
-    const generationLifecycle = this.requireCapabilityCommitLifecycle("plugin disable");
-    const plugin = this.plugins.get(canonicalPluginId)!;
-    const persistDisable = async (): Promise<void> => {
-      if (!this.registryPath) return;
-      await updatePluginRegistry(this.registryPath, (registry) => {
-        const aliases = new Set([
-          canonicalPluginId,
-          ...(this.knownInstallAliases.get(canonicalPluginId) ?? []),
-        ]);
-        const entry = registry.plugins.find((candidate) => aliases.has(candidate.id));
-        if (entry) entry.enabled = false;
-      });
-    };
-    let retirement: Promise<void> = Promise.resolve();
-    let committedCleanupError: unknown;
-    let unpublishedCleanup: (() => Promise<void>) | undefined;
-    if (this.isUnpublishedLoadedCandidate(canonicalPluginId, plugin, generationLifecycle)) {
-      const commitScope = this.capabilityDependencyCommitScope(() => {
-        this.assertNoActiveCapabilityDependents(canonicalPluginId, "disable");
-      });
-      await generationLifecycle.runInLifecycleQueue(canonicalPluginId, () =>
-        commitScope(async () => {
-          // Keep the preparing candidate and its readiness promise intact when
-          // the durable registry write fails. Once it commits, disable wins and
-          // the exact local candidate may be discarded.
-          await persistDisable();
-          this.pendingRestartPreparations.delete(canonicalPluginId);
-          this.clearCapabilityBlockedRetry(
-            canonicalPluginId,
-            `plugin '${canonicalPluginId}' capability dependency wait was cancelled by disable`,
-          );
-          this.beginPluginLifecycleOperation(canonicalPluginId);
-          this.preparation.clearFor(canonicalPluginId);
-          try {
-            unpublishedCleanup = this.detachUnpublishedLoadedCandidate(
-              canonicalPluginId,
-              plugin,
-              "unpublished plugin disable",
-            );
-          } catch (error) {
-            committedCleanupError = error;
-          }
-        }),
-      );
-    } else {
-      this.pendingRestartPreparations.delete(canonicalPluginId);
-      this.clearCapabilityBlockedRetry(
-        canonicalPluginId,
-        `plugin '${canonicalPluginId}' capability dependency wait was cancelled by disable`,
-      );
-      this.beginPluginLifecycleOperation(canonicalPluginId);
-      this.preparation.clearFor(canonicalPluginId);
-      const committed = await generationLifecycle.deactivateWithCommit(
-        canonicalPluginId,
-        persistDisable,
-        this.capabilityDependencyCommitScope(() => {
-          this.assertNoActiveCapabilityDependents(canonicalPluginId, "disable");
-        }),
-      );
-      retirement = committed.retirement;
-    }
-
-    this.disabledPluginIds.add(canonicalPluginId);
-    this.failedPluginIds.delete(canonicalPluginId);
-    this.invalidatePluginUiRevision(canonicalPluginId);
-    this.onDisable?.(canonicalPluginId);
-    if (unpublishedCleanup) {
-      try {
-        await unpublishedCleanup();
-      } catch (error) {
-        committedCleanupError = committedCleanupError === undefined
-          ? error
-          : new AggregateError(
-              [
-                committedCleanupError instanceof Error
-                  ? committedCleanupError
-                  : new Error(String(committedCleanupError)),
-                error instanceof Error ? error : new Error(String(error)),
-              ],
-              `plugin '${canonicalPluginId}' committed disable cleanup failed`,
-            );
-      }
-    }
-    if (committedCleanupError !== undefined) throw committedCleanupError;
-    await this.settleCommittedRetirement(canonicalPluginId, retirement, "plugin disable");
   }
 
   /** Prepare and atomically publish one immutable marketplace generation. */
