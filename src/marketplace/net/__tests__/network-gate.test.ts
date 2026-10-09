@@ -414,7 +414,7 @@ describe("NetworkGate.fetch", () => {
       expect(tracked.state.cancelled).toBe(true);
     });
 
-    it("logs the hop's origin and the thrown value's class, never the signed query or the observer's message", async () => {
+    it("logs the hop's origin and a fixed kind, never the signed query or the observer's message", async () => {
       const { transport } = fakeTransport({ "https://1.1.1.1/asset/path-secret?sig=canary-secret-7f3a": ok });
       const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset/path-secret?sig=canary-secret-7f3a", {
         official: false,
@@ -430,7 +430,34 @@ describe("NetworkGate.fetch", () => {
       expect(text).not.toContain("path-secret");
       expect(text).not.toContain("canary-message-91b2");
       expect(text).toContain("https://1.1.1.1");
-      expect(text).toContain("TypeError");
+      expect(text).toContain(": error");
+    });
+
+    it("logs a fixed kind, never a string the thrown value chose: a canary in constructor.name stays out of the raw logger args", async () => {
+      class Smuggling extends Error {}
+      Object.defineProperty(Smuggling, "name", { value: "sigCanaryCtor5d2e" });
+      const thrownValues: unknown[] = [
+        new Smuggling("x"),
+        // A non-Error whose constructor carries the canary.
+        new (Object.defineProperty(class {}, "name", { value: "sigCanaryCtor5d2e" }))(),
+        // A Proxy whose getPrototypeOf trap throws: unreadable, and still no escape.
+        new Proxy({}, { getPrototypeOf: () => { throw new Error("sigCanaryCtor5d2e"); } }),
+        "sigCanaryCtor5d2e",
+      ];
+      for (const thrown of thrownValues) {
+        const { transport } = fakeTransport({ "https://1.1.1.1/asset": ok });
+        const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset", {
+          official: false,
+          catalog: CATALOG,
+          onHop: () => {
+            throw thrown;
+          },
+        });
+        expect(response.status).toBe(200);
+      }
+      const text = JSON.stringify(logged.warn);
+      expect(text).not.toContain("sigCanaryCtor5d2e");
+      expect(logged.warn.map((args) => String(args[0]).replace(/^.*: /u, ""))).toEqual(["error", "non-error-object", "unreadable", "primitive"]);
     });
   });
 

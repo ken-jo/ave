@@ -445,8 +445,8 @@ export class NetworkGate {
  * Hand an observer its hop. The step is total: nothing the observer throws,
  * and nothing that describing the failure throws, reaches the download, whose
  * answered body the caller still reads or cancels. The diagnostic names only
- * the hop's origin and the thrown value's kind: a path or query can carry a
- * signature, and an observer's message can quote one.
+ * the hop's origin and a fixed kind (`ThrownKind`): a path or query can carry
+ * a signature, and any string on the thrown value can quote one.
  */
 function observeHop(onHop: (hop: string) => void, hop: string): void {
   try {
@@ -460,14 +460,22 @@ function observeHop(onHop: (hop: string) => void, hop: string): void {
   }
 }
 
-/** The class of a thrown value, read without converting it: no `toString`, `message` or `name` runs. */
-function thrownKind(error: unknown): string {
-  if (typeof error !== "object" || error === null) return typeof error;
-  const prototype: unknown = Object.getPrototypeOf(error);
-  if (prototype === null) return "null-prototype object";
-  const constructor = Object.getOwnPropertyDescriptor(prototype, "constructor")?.value;
-  const name = typeof constructor === "function" ? Object.getOwnPropertyDescriptor(constructor, "name")?.value : undefined;
-  return typeof name === "string" && /^[A-Za-z_$][\w$]{0,63}$/u.test(name) ? name : "object";
+/**
+ * What a hop observer threw, as one of a closed set. No string is taken from
+ * the thrown value: its name, message and constructor are the observer's to
+ * choose, so any of them can quote a credential.
+ */
+type ThrownKind = "error" | "non-error-object" | "primitive" | "unreadable";
+
+function thrownKind(error: unknown): ThrownKind {
+  if (typeof error !== "object" && typeof error !== "function") return "primitive";
+  if (error === null) return "primitive";
+  try {
+    // A Proxy's getPrototypeOf trap runs here, and may throw.
+    return error instanceof Error ? "error" : "non-error-object";
+  } catch {
+    return "unreadable";
+  }
 }
 
 /** `getaddrinfo` failures: the name has no address, or no resolver answered. */
