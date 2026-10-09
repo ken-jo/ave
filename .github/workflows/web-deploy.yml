@@ -13,6 +13,9 @@ permissions:
   contents: read
 
 jobs:
+  # The guard literal must equal package.json build.publish owner/repo; an
+  # `if:` cannot read a file, so test/scripts/repository-identity.test.ts
+  # fails when the two disagree instead of letting both jobs skip silently.
   build:
     if: github.repository == 'former_org/ave'
     runs-on: ubuntu-latest
