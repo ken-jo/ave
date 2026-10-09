@@ -43,6 +43,7 @@
  */
 import { isAbsolute } from "node:path";
 import { describeNonJson } from "../../shared/json-representable.js";
+import { INVOCATION_META } from "../../mcp/protocol-constants.js";
 import { EffectBoundaryDeniedError } from "../../permissions/effect-enforcement.js";
 import { ManifestIntegrityError } from "../../permissions/manifest-integrity.js";
 import { PluginRuntimeDetachedOperationError } from "../runtime/detached-operation.js";
@@ -2005,6 +2006,27 @@ export interface HostApiDispatcherOptions {
   readonly reportBudgetAudit?: (entry: HostApiBudgetAudit) => void;
   /** Injectable so a handler can be exercised without the whole table. */
   readonly table?: Record<HostApiPath, HostApiPathHandler>;
+  /**
+   * The async context of the host tool invocation a request belongs to, by
+   * the token the child carried in `params._meta[INVOCATION_META]`.
+   *
+   * A request carrying a token of a `tools/call` still in flight runs inside
+   * that invocation's context, so the effect gate, effect ledger and origin
+   * the host bound for the call apply to it as they do to an in-process
+   * handler's hostApi call. Without a token, or with one that names no call in
+   * flight, it runs in no invocation — the same as an in-process plugin's
+   * work outside a tool call (lifecycle, timers it scheduled at start).
+   */
+  readonly resolveInvocation?: (token: string) => (<R>(fn: () => R) => R) | undefined;
+}
+
+/** The invocation token a request carries in `params._meta`, if it is a string. */
+function invocationTokenOf(params: unknown): string | undefined {
+  if (!params || typeof params !== "object" || Array.isArray(params)) return undefined;
+  const meta = (params as { _meta?: unknown })._meta;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return undefined;
+  const token = (meta as Record<string, unknown>)[INVOCATION_META];
+  return typeof token === "string" ? token : undefined;
 }
 
 class HostApiRateLimitError extends HostApiBoundaryError {
@@ -2083,10 +2105,13 @@ export class HostApiDispatcher {
       if (handler.contract.lifetime !== "none") {
         reservation = this.reserveSubscription(handler.path);
       }
-      const value = await handler.invoke(
+      const invoke = () => handler.invoke(
         { path: handler.path, args, signal: controller.signal },
         this.scopeFor(handler.path, reservation),
       );
+      const token = invocationTokenOf(request.params);
+      const inInvocation = token === undefined ? undefined : this.options.resolveInvocation?.(token);
+      const value = await (inInvocation ? inInvocation(invoke) : invoke());
       // `null` for a `void` member, and for an absent value: JSON-RPC requires
       // `result`, and JSON has no `undefined` to put in it.
       return { jsonrpc: "2.0", id, result: this.checkResult(handler, value) ?? null };

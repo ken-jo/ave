@@ -28,6 +28,7 @@
  * ({@link PluginChildTransport.close}) starts the link's one termination
  * sequence, and the transport starts it at most once in its lifetime.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Readable, Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { createLogger } from "../../lib/logger.js";
@@ -48,6 +49,7 @@ import {
 } from "./plugin-instance-wire.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import {
+  INVOCATION_META,
   MCP_PROTOCOL_VERSION,
   META_CLIENT_CAPABILITIES,
   META_PROTOCOL_VERSION,
@@ -173,7 +175,7 @@ export interface ChildLink {
 }
 
 export interface PluginChildTransportOptions
-  extends Omit<HostApiDispatcherOptions, "notifications" | "shutdownChild"> {
+  extends Omit<HostApiDispatcherOptions, "notifications" | "shutdownChild" | "resolveInvocation"> {
   readonly link: ChildLink;
 }
 
@@ -208,11 +210,21 @@ export class PluginChildTransport {
   });
   /** Faults a live child reported while its termination sequence was running. */
   readonly terminationFaults: string[] = [];
+  /**
+   * The async context of every `tools/call` still in flight, by the token the
+   * call carried (`_meta[INVOCATION_META]`). A hostApi request the child makes
+   * while serving that call names the token, and runs in this context: the
+   * invocation's effect gate, effect ledger and origin, exactly as an
+   * in-process handler's hostApi call does. An entry lives exactly as long as
+   * its call.
+   */
+  private readonly invocations = new Map<string, <R>(fn: () => R) => R>();
 
   constructor(options: PluginChildTransportOptions) {
     this.link = options.link;
     this.dispatcher = new HostApiDispatcher({
       ...options,
+      resolveInvocation: (token) => this.invocations.get(token),
       notifications: {
         deliver: (notification) => this.sendToChild(notification),
       },
@@ -309,7 +321,22 @@ export class PluginChildTransport {
           + "the transport is the only producer of MCP request metadata",
       );
     }
-    return await this.send(method, { ...params, _meta: pluginChildRequestMeta() }, timeoutMs);
+    if (method !== "tools/call") {
+      return await this.send(method, { ...params, _meta: pluginChildRequestMeta() }, timeoutMs);
+    }
+    // Taken HERE, in the caller's async chain: the tool handler that called
+    // this runs inside the host's per-invocation context.
+    const token = randomUUID();
+    this.invocations.set(token, AsyncLocalStorage.snapshot());
+    try {
+      return await this.send(
+        method,
+        { ...params, _meta: { ...pluginChildRequestMeta(), [INVOCATION_META]: token } },
+        timeoutMs,
+      );
+    } finally {
+      this.invocations.delete(token);
+    }
   }
 
   /**

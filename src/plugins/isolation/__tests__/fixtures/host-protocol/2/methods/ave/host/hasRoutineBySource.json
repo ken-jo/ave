@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/hasRoutineBySource",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "source": "golden:daily"
     }
   },

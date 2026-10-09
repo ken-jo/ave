@@ -57,6 +57,19 @@ export const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
  */
 export const RAW_RESULT_META = "ave/rawResult";
 
+/**
+ * `_meta` key naming the host tool invocation a child's work belongs to.
+ *
+ * The host puts an opaque, per-call token on every `tools/call` it sends an
+ * out-of-process plugin. The child carries the same token on each hostApi
+ * request it makes while serving that call, and the host runs the request in
+ * the invocation's own async context. That context holds the effect gate
+ * (foreground approval or headless deny), the effect ledger and the
+ * invocation origin; without the token a child's hostApi request arrives in
+ * the context of the pipe that delivered it, which is none of them.
+ */
+export const INVOCATION_META = "ave/invocation";
+
 // ─── JSON-RPC 2.0 codes ───
 export const RPC_INVALID_PARAMS = -32602;
 export const RPC_METHOD_NOT_FOUND = -32601;

@@ -4,14 +4,17 @@
     "jsonrpc": "2.0",
     "method": "ave/host/onPluginsChanged",
     "params": {
-      "handler": "<uuid-1>"
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
+      "handler": "<uuid-2>"
     }
   },
   "response": {
     "id": 22,
     "jsonrpc": "2.0",
     "result": {
-      "handleId": "<uuid-1>"
+      "handleId": "<uuid-2>"
     }
   }
 }

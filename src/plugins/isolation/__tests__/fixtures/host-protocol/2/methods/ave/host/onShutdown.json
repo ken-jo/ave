@@ -4,7 +4,10 @@
     "jsonrpc": "2.0",
     "method": "ave/host/onShutdown",
     "params": {
-      "handler": "<uuid-1>"
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
+      "handler": "<uuid-2>"
     }
   },
   "response": {

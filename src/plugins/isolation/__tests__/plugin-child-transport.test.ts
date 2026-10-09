@@ -102,12 +102,15 @@ describe("the transport is the one producer of MCP request metadata", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ method: "tools/call" });
     const params = sent[0]!.params as Record<string, unknown>;
-    expect(params._meta).toEqual({
+    // A tools/call also names the host invocation it serves, by a fresh
+    // opaque token (see INVOCATION_META); every other key is the S1 metadata.
+    const { "ave/invocation": invocation, ...s1 } = params._meta as Record<string, unknown>;
+    expect(invocation).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(s1).toEqual({
       "io.modelcontextprotocol/protocolVersion": "2026-07-28",
       "io.modelcontextprotocol/clientCapabilities": {},
     });
-    expect(Object.keys(params._meta as object)).toHaveLength(2);
-    expect(params._meta).toEqual(pluginChildRequestMeta());
+    expect(s1).toEqual(pluginChildRequestMeta());
     // The caller's params cross beside it, untouched.
     expect(params).toMatchObject({ name: "speak", arguments: { text: "hi" } });
     transport.close("case over");

@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/clearAuthPartition",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "partition": "golden-auth"
     }
   },
