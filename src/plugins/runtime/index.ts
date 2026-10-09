@@ -8364,9 +8364,10 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
       const loadStatus = this.preparation.isPreparing(pluginId)
         || this.capabilityBlockedPluginIds.has(pluginId)
         ? "preparing"
-        // #1176 active/inactive — a runtime-toggled inactive plugin stays in
-        // `this.plugins` (loaded) but reports "disabled" so the UI reflects the
-        // active/inactive state, not the load state.
+        // #1176 active/inactive — a disabled plugin reports "disabled"
+        // whatever its load state. Disable retires the generation, so the card
+        // also carries `runtimeLoaded: false`; the settings switch keys off
+        // "disabled" so the plugin can still be enabled again.
         : !enabled
           ? "disabled"
           : runtimeLoaded
