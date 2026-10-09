@@ -40,7 +40,9 @@ import {
 } from "./child-stream-multiplex.js";
 import {
   HostApiDispatcher,
+  runOutsideInvocation,
   type HostApiDispatcherOptions,
+  type InvocationContextRunner,
 } from "./host-api-dispatcher.js";
 import type { HostApiNotification, HostApiRequest } from "./host-api-wire.js";
 import {
@@ -56,6 +58,17 @@ import {
 } from "../../mcp/protocol-constants.js";
 
 const log = createLogger("plugin-child-transport");
+
+/**
+ * How many settled `tools/call` invocations one connection keeps resolvable.
+ *
+ * A settled invocation stays resolvable so that work its handler left running
+ * keeps the invocation's gate (decision 63). The bound caps what a long-lived
+ * generation holds. When a call settles past it, the oldest settled entry is
+ * dropped, and a later request naming that entry is refused, never run
+ * ungated. Calls still in flight are never dropped.
+ */
+export const SETTLED_INVOCATIONS_MAX = 1024;
 
 /** A JSON-RPC error as it arrives from the child. */
 interface JsonRpcErrorBody {
@@ -175,7 +188,7 @@ export interface ChildLink {
 }
 
 export interface PluginChildTransportOptions
-  extends Omit<HostApiDispatcherOptions, "notifications" | "shutdownChild" | "resolveInvocation"> {
+  extends Omit<HostApiDispatcherOptions, "notifications" | "shutdownChild" | "invocations"> {
   readonly link: ChildLink;
 }
 
@@ -215,16 +228,25 @@ export class PluginChildTransport {
    * call carried (`_meta[INVOCATION_META]`). A hostApi request the child makes
    * while serving that call names the token, and runs in this context: the
    * invocation's effect gate, effect ledger and origin, exactly as an
-   * in-process handler's hostApi call does. An entry lives exactly as long as
-   * its call.
+   * in-process handler's hostApi call does.
    */
-  private readonly invocations = new Map<string, <R>(fn: () => R) => R>();
+  private readonly liveInvocations = new Map<string, InvocationContextRunner>();
+  /**
+   * The same, for calls that have settled, oldest first. Work a handler left
+   * running after it returned still names its token. In-process that work
+   * keeps the invocation's frame, so it must resolve here too. Released when
+   * the channel closes, and bounded by {@link SETTLED_INVOCATIONS_MAX}.
+   */
+  private readonly settledInvocations = new Map<string, InvocationContextRunner>();
 
   constructor(options: PluginChildTransportOptions) {
     this.link = options.link;
     this.dispatcher = new HostApiDispatcher({
       ...options,
-      resolveInvocation: (token) => this.invocations.get(token),
+      invocations: {
+        resolve: (token) => this.liveInvocations.get(token) ?? this.settledInvocations.get(token),
+        toolCallsInFlight: () => this.liveInvocations.size,
+      },
       notifications: {
         deliver: (notification) => this.sendToChild(notification),
       },
@@ -245,7 +267,11 @@ export class PluginChildTransport {
     this.stream = new FramedMessageStream(
       options.link.input,
       options.link.output,
-      (message) => this.route(message),
+      // Everything off the pipe starts outside any invocation. The data
+      // callback would otherwise run in the context the child was spawned
+      // in, which is a finished tool call's when a call restarted the plugin.
+      // Only a request's own token puts it back in an invocation.
+      (message) => runOutsideInvocation(() => this.route(message)),
       // A child that broke the framing is killed like one that stopped
       // answering: nothing it writes after an unbounded line can be trusted to
       // start on a line boundary.
@@ -327,7 +353,8 @@ export class PluginChildTransport {
     // Taken HERE, in the caller's async chain: the tool handler that called
     // this runs inside the host's per-invocation context.
     const token = randomUUID();
-    this.invocations.set(token, AsyncLocalStorage.snapshot());
+    const invocation: InvocationContextRunner = AsyncLocalStorage.snapshot();
+    this.liveInvocations.set(token, invocation);
     try {
       return await this.send(
         method,
@@ -335,8 +362,29 @@ export class PluginChildTransport {
         timeoutMs,
       );
     } finally {
-      this.invocations.delete(token);
+      this.liveInvocations.delete(token);
+      this.retainSettled(token, invocation);
     }
+  }
+
+  /**
+   * Keep a settled call's context resolvable for the rest of the channel's
+   * life (see {@link settledInvocations}). Nothing is kept once the channel
+   * has closed: no request can arrive on it.
+   */
+  private retainSettled(token: string, invocation: InvocationContextRunner): void {
+    if (this.closedReason !== undefined) return;
+    this.settledInvocations.set(token, invocation);
+    if (this.settledInvocations.size > SETTLED_INVOCATIONS_MAX) {
+      const oldest = this.settledInvocations.keys().next();
+      if (!oldest.done) this.settledInvocations.delete(oldest.value);
+    }
+  }
+
+  /** The channel is closed. No request can name an invocation now. */
+  private releaseInvocations(): void {
+    this.liveInvocations.clear();
+    this.settledInvocations.clear();
   }
 
   /**
@@ -410,6 +458,7 @@ export class PluginChildTransport {
     this.link.terminate(reason);
     this.pending.rejectAll(reason);
     this.dispatcher.childGone();
+    this.releaseInvocations();
   }
 
   /**
@@ -429,6 +478,7 @@ export class PluginChildTransport {
     this.logPartialFrame();
     this.pending.rejectAll(reason);
     this.dispatcher.childGone();
+    this.releaseInvocations();
   }
 
   /**

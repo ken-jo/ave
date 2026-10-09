@@ -62,11 +62,12 @@ export const RAW_RESULT_META = "ave/rawResult";
  *
  * The host puts an opaque, per-call token on every `tools/call` it sends an
  * out-of-process plugin. The child carries the same token on each hostApi
- * request it makes while serving that call, and the host runs the request in
- * the invocation's own async context. That context holds the effect gate
- * (foreground approval or headless deny), the effect ledger and the
- * invocation origin; without the token a child's hostApi request arrives in
- * the context of the pipe that delivered it, which is none of them.
+ * request it makes for that call, including requests from work the handler
+ * left running after it returned. The host runs the request in the
+ * invocation's own async context, which holds the effect gate (foreground
+ * approval or headless deny), the effect ledger and the invocation origin. The
+ * host keeps that context resolvable after the call settles. A request without
+ * the token runs outside any invocation (`plugin-hostapi-protocol.md` §3.3).
  */
 export const INVOCATION_META = "ave/invocation";
 

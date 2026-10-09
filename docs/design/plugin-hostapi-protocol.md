@@ -531,16 +531,34 @@ Rules:
 - `_meta` on any params/result is reserved for MCP and host use; a plugin's own
   metadata goes under a reverse-domain key, matching MCP `_meta` conventions.
 - **Invocation token (decision 63).** Every `tools/call` the host sends carries
-  `_meta["ave/invocation"]`: an opaque token, fresh per call, valid while that call
-  is in flight. A child carries the same token in `params._meta["ave/invocation"]`
-  of each `ave/host/*` request it makes while serving the call, and the host runs that
-  request in the invocation's own context: its effect gate (foreground approval,
-  headless deny), effect ledger and origin, exactly as an in-process handler's hostApi
-  call inherits them. A request without the token, or with one naming no call in
-  flight, runs outside any invocation, which is what an in-process plugin's work outside
-  a tool call does. The reference child runtime (`plugin-child-runtime.ts`) carries it
-  for every handler; a child of another language that omits it gets no invocation for
-  its hostApi calls.
+  `_meta["ave/invocation"]`, an opaque token that is fresh per call. A child carries
+  the same token in `params._meta["ave/invocation"]` of each `ave/host/*` request it
+  makes for that call. The host runs the request in the invocation's own context: its
+  effect gate (foreground approval, headless deny), its effect ledger and its origin,
+  exactly as an in-process handler's hostApi call inherits them.
+  - The token stays valid after the call settles, for the life of the connection. This
+    covers work the handler scheduled and left running after it returned. In-process,
+    a timer keeps the invocation's frame, so a headless invocation's late write is
+    denied and a foreground one's still asks the user. The host keeps each settled
+    call's context until the connection closes, up to 1024 settled calls per connection
+    (oldest dropped first; calls in flight are never dropped).
+  - A request naming a token the connection never issued, or no longer holds, is
+    refused with `argument-marshalling-rejected`. It never runs with less gating than
+    its invocation had.
+  - A request without the token runs outside any invocation, which is where an
+    in-process plugin's work outside a tool call runs (lifecycle hooks, timers set at
+    start). The host sets that context explicitly. It does not inherit the context of
+    whatever delivered the frame, which is the context the child was spawned in, and
+    that context is a finished tool call's when the call restarted the plugin
+    (`config.set`).
+  - Leaving the token out is the child's choice, so a child can run a gated write
+    ungated by omitting it. The host cannot tell such a write from honest background
+    work, so it does not refuse it. When a gated write arrives without a token while a
+    `tools/call` is in flight on the same connection, the host logs a warning
+    (`host-api-dispatcher`) naming the plugin, the path and the in-flight count.
+  - The reference child runtime (`plugin-child-runtime.ts`) carries the token for every
+    handler. A child written in another language that omits it gets no invocation for
+    its hostApi calls.
 
 Additive changes (new optional field, new method, new capability) do not bump the host
 protocol version. Renaming, removing, changing a type, or changing a default does.
@@ -5567,7 +5585,7 @@ What Ave should not adopt, and why:
 | 60 | **P7 order.** Public release → fourteen-day notice (§9.3's rule, applied to the server) → `.github` `marketplace-publish.yml` deleted → plugin repositories' GitHub publish workflows deleted → the web author page rewritten for format 2 → server stopped with volumes kept → Cloudflare route removed → repositories archived one release cycle later with the catalog exported to `project-history/`. Steps 3 and 5 are code and can merge now; step 4 is plugin-repository code that waits for the owner's go-ahead (decision 49); 1 waits for Actions; 2, 6–8 are the owner's. | Users must have the replacement source before the old one answers nothing; the catalog export is the only record of what the server served. |
 | 61 | **0.14.0 carries no protocol boundary.** Admission changes no protocol schema; the `2/v0.14.0` candidate differs from `v0.13.0`'s copy by `$id` only; §9.3's notice rule does not apply to the release, only to the server (decision 60), because no protocol version is retired. | The arm change is inside the host's promise (§2.1); the notice rule is keyed to a retired protocol version, and none is. What 0.14.0 does refuse anew — a manifest without a served `hostProtocol` on the prepared-activation and restart paths (fact 12, decision 52) — is the rule 0.12.0 announced for every path, now applied by the child factory's check, and R1's release note names it. |
 | 62 | **Migration of old-server `orion` and `git` installs (designer, 2026-10-08, on the review's recommendation).** Both packages are **required** through policy (`requiredInstalls` from the company source): a package that is not installed is installed by the boot step, and an existing install — unbound (old server) or bound to another source — is switched through the idle apply queue after boot (`src/marketplace/boot-installs/run.ts:199-200`; the `switch` candidate of `src/marketplace/app/service.ts:2242-2250`, built for a required package installed from another source or from none), never by an immediate boot install. `defaultInstalls` is not the migration path, because it skips an existing package bound to no source (`run.ts:219-225`). An unmanaged install (no policy) migrates by an explicit user-driven source switch: add the source, open the package there and install it, which replaces the unbound install (§16.4); the source's README states it. | A first draft listed `git` in `defaultInstalls` and claimed both would bind at the next boot, which `run.ts:225` contradicts; requiring both is what makes the managed migration automatic, at the cost that the policy, not the user, then owns each package's presence (§18.6), which the administrator chooses knowingly. |
-| 63 | **An out-of-process tool's hostApi call runs in its host invocation.** The transport mints `_meta["ave/invocation"]` for each `tools/call` and keeps an `AsyncLocalStorage.snapshot()` of the caller's context until the call settles (`plugin-child-transport.ts`); the child runtime binds the token for the handler's async chain and stamps it on each hostApi request (`plugin-child-runtime.ts`); the dispatcher runs a request carrying a live token inside that snapshot (`host-api-dispatcher.ts`). Additive within protocol `2` (§3.3). Pinned by `invocation-context.test.ts` over a link that carries no async context. | After Admission A1 every entry plugin runs as a child, and a child's hostApi request reached the host in the context of the pipe, not the invocation: `gateMutatingEffect` read "no invocation" and passed every gated write unasked, so a plugin tool's `raiseAlert` (and any other host-classified write) skipped the foreground approval and the headless deny (blueprint `plugin-process-isolation.md` §7 Q5 expected it to survive the boundary). Rejected: gating every child write with no context (it would also gate lifecycle work an in-process plugin does freely); trusting a child-chosen token without the host's live table (a child could name a call that has settled). |
+| 63 | **An out-of-process tool's hostApi call runs in its host invocation.** The transport mints `_meta["ave/invocation"]` for each `tools/call` and keeps an `AsyncLocalStorage.snapshot()` of the caller's context. It keeps the snapshot for the life of the connection: settled calls are kept too, up to `SETTLED_INVOCATIONS_MAX` (1024, oldest dropped first), and all are released at close (`plugin-child-transport.ts`). The child runtime binds the token for the handler's async chain, including work the handler leaves running, and stamps it on each hostApi request (`plugin-child-runtime.ts`). The dispatcher runs a request in the snapshot its token names, refuses a token the connection does not hold, and runs a tokenless request in a context captured at module load, where no store is entered (`runOutsideInvocation`, `host-api-dispatcher.ts`). The transport also routes every frame off the pipe through that context. Residual: a child can still omit the token and run a gated write ungated. The host does not refuse it, but logs a warning when such a write arrives while a `tools/call` is in flight on the connection. Additive within protocol `2` (§3.3). Pinned by `invocation-context.test.ts`, over a link that delivers in its spawn context, and by `plugin-child-transport.test.ts`. | After Admission A1 every entry plugin runs as a child. A child's hostApi request reached the host in the context of the pipe, not the invocation, so `gateMutatingEffect` read "no invocation" and passed every gated write unasked. A plugin tool's `raiseAlert`, or any other host-classified write, skipped both the foreground approval and the headless deny (blueprint `plugin-process-isolation.md` §7 Q5 expected it to survive the boundary). The pipe's context is the one the child was SPAWNED in, not a neutral one. A child restarted from inside a tool call (`config.set` → `restartPlugin`) would run every tokenless request of its generation in that finished invocation: a headless deny, a foreground allow-once grant and session attribution, and a growing effect ledger. Rejected: dropping a call's context when it settles (a handler's timer then ran fail-open, while in-process the same code is denied headless); gating every child write that has no context (it would also gate lifecycle work an in-process plugin does freely); refusing a tokenless gated write while a call is in flight (honest background work runs beside tool calls, and the host cannot tell the two apart); exiting individual stores instead of using one root context (the pipe also carries the install-lock, registry and lifecycle stores, and a list of stores to exit goes stale). |
 
 ### Owner decisions still open
 

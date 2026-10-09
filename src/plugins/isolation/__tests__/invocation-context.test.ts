@@ -12,12 +12,19 @@
  * raised its alert with no approval, and would have done so in a headless
  * routine too.
  *
+ * Two more things follow from matching in-process behavior. Work a handler
+ * leaves running after it returns keeps its invocation, because an in-process
+ * timer keeps the invocation's frame. And work that belongs to no invocation
+ * (lifecycle hooks, timers set at start) sees none, even when the child was
+ * spawned from inside a tool call.
+ *
  * The link below delivers every frame through a callback bound at link
- * creation, so no async context crosses it, exactly as with a real child. The
- * child end is the real child runtime; the host end is the real session, the
- * bound dispatch table and the real effect gate.
+ * creation, so no async context crosses it except the one the link was made
+ * in. That matches a real child: its pipe's data callback runs in the context
+ * the child was spawned in. The child end is the real child runtime; the host
+ * end is the real session, the bound dispatch table and the real effect gate.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncResource } from "node:async_hooks";
 import { PassThrough } from "node:stream";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -50,6 +57,17 @@ const MANIFEST: PluginManifest = {
   ],
 };
 
+/**
+ * What a late call (made after its tool returned) got back, as the plugin saw
+ * it: "raised", or the name of the error it was refused with. The plugin
+ * module runs in this process, so it reports through a global.
+ */
+const LATE_OUTCOMES = "__invocationContextLateOutcomes";
+
+function lateOutcomes(): string[] {
+  return (globalThis as Record<string, unknown>)[LATE_OUTCOMES] as string[];
+}
+
 const ENVELOPE = {
   read: [`/plugins/${PLUGIN_ID}`, `/plugins/${PLUGIN_ID}/data`],
   write: [`/plugins/${PLUGIN_ID}/data`],
@@ -67,10 +85,16 @@ beforeAll(() => {
   handlers: {
     raise: async () => context.hostApi.raiseAlert({ kind: "reply", key: "now" }),
     raise_after_return: async () => {
-      setTimeout(() => { context.hostApi.raiseAlert({ kind: "reply", key: "late" }).catch(() => undefined); }, 0);
+      setTimeout(() => {
+        context.hostApi.raiseAlert({ kind: "reply", key: "late" }).then(
+          () => globalThis.${LATE_OUTCOMES}.push("raised"),
+          (error) => globalThis.${LATE_OUTCOMES}.push(error.name),
+        );
+      }, 0);
       return "returned";
     },
   },
+  start: async () => { await context.hostApi.raiseAlert({ kind: "reply", key: "start" }); },
   stop: async () => undefined,
 });
 `,
@@ -78,8 +102,13 @@ beforeAll(() => {
   );
 });
 
+beforeEach(() => {
+  (globalThis as Record<string, unknown>)[LATE_OUTCOMES] = [];
+});
+
 afterAll(() => {
   rmSync(moduleDir, { recursive: true, force: true });
+  delete (globalThis as Record<string, unknown>)[LATE_OUTCOMES];
 });
 
 /**
@@ -202,18 +231,59 @@ describe("an out-of-process tool's hostApi call runs in its host invocation", ()
     }
   });
 
-  it("gives a call made after the tool returned no invocation, as in-process background work", async () => {
+  it("keeps a headless invocation's deny for a call made after the tool returned", async () => {
     const probe = await openProbe();
     try {
       await expect(runWithEffectGateContext(
         { headless: true, approvalSurface: "unavailable", toolName: "raise_after_return" },
         async () => await probe.session.instance.handlers.raise_after_return!(),
       )).resolves.toBe("returned");
-      await vi.waitFor(() => expect(probe.raised).toHaveLength(1));
-      // Its token named a call no longer in flight, so it borrowed nothing:
-      // not the returned call's headless deny, nor its tool identity.
-      expect(probe.raised).toEqual([{ key: "late", toolName: undefined }]);
+      await vi.waitFor(() => expect(lateOutcomes()).toHaveLength(1));
+      // In-process, the timer keeps the invocation's frame and the gate
+      // refuses. A settled call's token must not open a way around that.
+      expect(lateOutcomes()).toEqual(["EffectBoundaryDeniedError"]);
       expect(probe.requestAndWait).not.toHaveBeenCalled();
+      expect(probe.raised).toEqual([]);
+    } finally {
+      await probe.session.teardown("case over");
+    }
+  });
+
+  it("asks the user for a foreground call made after the tool returned, attributed to that tool", async () => {
+    const probe = await openProbe();
+    try {
+      await expect(runWithEffectGateContext(
+        { headless: false, approvalSurface: "interactive", toolName: "raise_after_return", sessionId: "session-2" },
+        async () => await probe.session.instance.handlers.raise_after_return!(),
+      )).resolves.toBe("returned");
+      await vi.waitFor(() => expect(lateOutcomes()).toHaveLength(1));
+      expect(lateOutcomes()).toEqual(["raised"]);
+      expect(probe.requestAndWait).toHaveBeenCalledTimes(1);
+      expect(probe.requestAndWait.mock.calls[0]![0]).toMatchObject({
+        toolName: "raise_after_return",
+        sessionId: "session-2",
+        approvalScope: "raiseAlert",
+      });
+      expect(probe.raised).toEqual([{ key: "late", toolName: "raise_after_return" }]);
+    } finally {
+      await probe.session.teardown("case over");
+    }
+  });
+});
+
+describe("a request that names no invocation runs in none", () => {
+  // `config.set` from inside a tool restarts the plugin, so the new child is
+  // spawned in that tool's invocation, and its pipe delivers in it. The
+  // child's lifecycle work belongs to no invocation, whatever the spawn's was.
+  it.each<[string, Parameters<typeof runWithEffectGateContext>[0]]>([
+    ["headless", { headless: true, approvalSurface: "unavailable", toolName: "config_set" }],
+    ["foreground", { headless: false, approvalSurface: "interactive", toolName: "config_set", sessionId: "session-3" }],
+  ])("ignores the %s invocation the child was spawned in", async (_label, spawnedIn) => {
+    const probe = await runWithEffectGateContext(spawnedIn, () => openProbe());
+    try {
+      await probe.session.instance.start!();
+      expect(probe.requestAndWait).not.toHaveBeenCalled();
+      expect(probe.raised).toEqual([{ key: "start", toolName: undefined }]);
     } finally {
       await probe.session.teardown("case over");
     }

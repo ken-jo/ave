@@ -231,9 +231,10 @@ export interface PluginChildRuntime {
  */
 /**
  * The host invocation token of the `tools/call` this child is serving, for the
- * async chain of that call's handler. Every hostApi request made in that chain
- * carries it back (`_meta[INVOCATION_META]`), so the host runs the request in
- * the invocation it belongs to — its effect gate, effect ledger and origin.
+ * async chain of that call's handler, including timers the handler leaves
+ * running after it returns. Every hostApi request made in that chain carries it
+ * back (`_meta[INVOCATION_META]`), so the host runs the request in the
+ * invocation it belongs to — its effect gate, effect ledger and origin.
  * One plugin per child, so one store per process.
  */
 const invocationScope = new AsyncLocalStorage<string>();
