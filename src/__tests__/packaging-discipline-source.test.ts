@@ -243,6 +243,40 @@ describe("installer smoke and packaging discipline", () => {
     expect(smokeScript).toContain("prompts");
   });
 
+  it("refuses to build or attach release assets from a repository package.json does not publish to", () => {
+    const jobs = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
+    const gate = "node scripts/check-release-repository.mjs";
+
+    /** The one step in `body` that runs the gate, held to an exact shape: the
+     *  run block is the gate and nothing else, so `|| true`, `|| :`,
+     *  `set +e` or any other way to swallow its exit status fails here. */
+    function gateStep(id: string): string {
+      const body = jobs.get(id);
+      if (body === undefined) throw new Error(`build-installers.yml has no ${id} job`);
+      expect(jobRunCommands(body).filter((command) => command.includes(gate)), id).toEqual([
+        `set -euo pipefail\n${gate}`,
+      ]);
+      const at = body.indexOf(gate);
+      const step = body.slice(body.lastIndexOf("\n      - ", at), body.indexOf("\n      - ", at));
+      expect(step, id).toContain("\n        shell: bash\n");
+      expect(step, id).not.toContain("continue-on-error");
+      expect(body.indexOf("uses: actions/checkout@"), id).toBeLessThan(at);
+      return step;
+    }
+
+    // Before the installer matrix: tag builds only, like the tag checks beside it.
+    const profile = gateStep("release-profile");
+    expect(profile.match(/^\s+if:.*$/gmu)).toEqual(["        if: github.event_name == 'push'"]);
+    expect(jobs.get("installers")).toMatch(/^ {4}needs: release-profile$/mu);
+
+    // Before anything is downloaded or attached: unconditional.
+    const publishStep = gateStep("publish-release");
+    expect(publishStep).not.toMatch(/^\s+if:/mu);
+    const publish = jobs.get("publish-release") as string;
+    expect(publish.indexOf(gate)).toBeLessThan(publish.indexOf("uses: actions/download-artifact@"));
+    expect(publish.indexOf(gate)).toBeLessThan(publish.indexOf("uses: softprops/action-gh-release@"));
+  });
+
   it("keeps privileged workflows on trusted default-branch events", () => {
     for (const path of [
       ".github/workflows/e2e.yml",
