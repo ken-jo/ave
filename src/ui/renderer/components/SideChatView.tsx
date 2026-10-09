@@ -48,7 +48,6 @@ import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js"
 import { useOptionalChatContext } from "../context/ChatContext.js";
 import { useApprovalSurface } from "../hooks/use-approval.js";
 import { useWorkflowTools } from "../hooks/use-workflow-tools.js";
-import type { SubAgentSpawn } from "../subagents/types.js";
 import { ApprovalDock } from "./permissions/ApprovalDock.js";
 import { QuestionOverlay } from "./QuestionOverlay.js";
 import { sessionOwnedBy } from "./chat-group-session-registry.js";
@@ -102,16 +101,16 @@ interface SideChatViewProps {
    */
   shown?: boolean;
   /**
-   * The sub-agents this side chat's own turns started, reported to the panel
-   * that hosts it. The panel's sub-agent tab is where every sub-agent is
-   * drawn, and its list otherwise holds only the tile's conversation — so
-   * without this a side chat's agents were kept by nobody (#2345). Reported
-   * empty when the side chat switches session or unmounts.
+   * The session this side chat holds, reported to the panel that hosts it
+   * whenever it changes. The panel keeps the sub-agents that session's turns
+   * start (#2345) and draws them in its sub-agent tab. The panel, not this
+   * view, owns them: closing the side-chat tab unmounts the view while its
+   * loop — and the agents it started — keeps running in main.
    */
-  onSubAgentSpawnsChange?: ((spawns: readonly SubAgentSpawn[]) => void) | undefined;
+  onSessionIdChange?: ((sessionId: string) => void) | undefined;
 }
 
-export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, onSubAgentSpawnsChange }: SideChatViewProps) {
+export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, onSessionIdChange }: SideChatViewProps) {
   const { t } = useTranslation();
   // If side chat is unavailable (preload without the surface), surface a stable
   // disabled state rather than a broken composer.
@@ -133,7 +132,7 @@ export function SideChatView({ api, openRequest, onSessionsChanged, shown = true
       openRequest={openRequest}
       onSessionsChanged={onSessionsChanged}
       shown={shown}
-      onSubAgentSpawnsChange={onSubAgentSpawnsChange}
+      onSessionIdChange={onSessionIdChange}
     />
   );
 }
@@ -144,7 +143,7 @@ function SideChatSession({
   openRequest,
   onSessionsChanged,
   shown,
-  onSubAgentSpawnsChange,
+  onSessionIdChange,
 }: SideChatViewProps & { sideChat: NonNullable<AveApi["sideChat"]>; shown: boolean }) {
   const { t } = useTranslation();
   // Called BEFORE `useMessageQueue` below, so the transcript's stream listener
@@ -195,26 +194,16 @@ function SideChatSession({
     (id: string) => sessionIdRef.current !== null && sessionOwnedBy(sessionIdRef.current, NO_CHILD_SESSIONS, id),
     [],
   );
-  // The same subscription keeps the sub-agent frames this session's turns
-  // emit: the tile beside it drops them as another conversation's, so this is
-  // the only surface that holds them. They are handed to the panel below,
-  // whose sub-agent tab draws them.
-  const { askQuestions, dismissAskQuestion, subAgentSpawns, resetForNewSession } = useWorkflowTools(api, {
+  const { askQuestions, dismissAskQuestion } = useWorkflowTools(api, {
     ownsSession,
     drawsSession: ownsSession,
   });
   useLayoutEffect(() => {
-    // A new or loaded side chat must not inherit the previous one's agents.
-    // Cleared in the same commit that moves the ownership predicate, so no
-    // frame can land between the two and be wiped or misattributed.
-    if (sessionIdRef.current !== sessionId) resetForNewSession();
     sessionIdRef.current = sessionId;
-  }, [sessionId, resetForNewSession]);
-  useEffect(() => {
-    onSubAgentSpawnsChange?.(subAgentSpawns);
-  }, [onSubAgentSpawnsChange, subAgentSpawns]);
-  // A side chat that is gone keeps no agents on the panel's list.
-  useEffect(() => () => onSubAgentSpawnsChange?.([]), [onSubAgentSpawnsChange]);
+    // Told in the same commit the predicate moves, so the panel's agent list
+    // follows the session without a frame landing in between.
+    if (sessionId !== null) onSessionIdChange?.(sessionId);
+  }, [sessionId, onSessionIdChange]);
   // What the tile beside this panel publishes to the window on the side
   // chat's behalf: the window leaves this session's questions to this panel
   // and marks the way here while a card waits off screen.
