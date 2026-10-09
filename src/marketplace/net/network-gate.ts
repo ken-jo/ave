@@ -40,7 +40,6 @@ import { ConfirmationRequiredError, MarketplaceError, isMarketplaceError, type E
 import { folderPolicyBlock, policyBlock, type MarketplacePolicy, type PolicySource } from "../sources/policy.js";
 import type { SourceWarning } from "../sources/warnings.js";
 import { createMarketplaceLogger } from "../log.js";
-import { errorMessage } from "../../shared/error-message.js";
 import type { FolderNetwork } from "./source-input.js";
 import { normalizeDownloadPath, normalizeSourceHost, type NormalizedSourceUrl, type PatternTarget } from "./source-url.js";
 
@@ -442,13 +441,33 @@ export class NetworkGate {
   }
 }
 
-/** Hand an observer its hop; an observer's failure is logged and never reaches the download. */
+/**
+ * Hand an observer its hop. The step is total: nothing the observer throws,
+ * and nothing that describing the failure throws, reaches the download, whose
+ * answered body the caller still reads or cancels. The diagnostic names only
+ * the hop's origin and the thrown value's kind: a path or query can carry a
+ * signature, and an observer's message can quote one.
+ */
 function observeHop(onHop: (hop: string) => void, hop: string): void {
   try {
     onHop(hop);
   } catch (error) {
-    log.warn(`download hop observer failed for ${hop}: ${errorMessage(error)}`);
+    try {
+      log.warn(`download hop observer failed for ${new URL(hop).origin}: ${thrownKind(error)}`);
+    } catch {
+      // Describing the failure failed as well (a value no conversion accepts); the download is unaffected.
+    }
   }
+}
+
+/** The class of a thrown value, read without converting it: no `toString`, `message` or `name` runs. */
+function thrownKind(error: unknown): string {
+  if (typeof error !== "object" || error === null) return typeof error;
+  const prototype: unknown = Object.getPrototypeOf(error);
+  if (prototype === null) return "null-prototype object";
+  const constructor = Object.getOwnPropertyDescriptor(prototype, "constructor")?.value;
+  const name = typeof constructor === "function" ? Object.getOwnPropertyDescriptor(constructor, "name")?.value : undefined;
+  return typeof name === "string" && /^[A-Za-z_$][\w$]{0,63}$/u.test(name) ? name : "object";
 }
 
 /** `getaddrinfo` failures: the name has no address, or no resolver answered. */

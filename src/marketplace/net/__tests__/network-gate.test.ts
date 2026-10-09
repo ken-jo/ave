@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AddressCheckedFetch } from "../../../core/network-guard.js";
 import { ConfirmationRequiredError, MarketplaceError } from "../../errors.js";
 import { FIXTURE_POLICY_PATH, policyLoad as policy, policySource } from "../../__tests__/fixtures/policy.js";
@@ -6,6 +6,18 @@ import type { PolicyLoad } from "../../sources/policy.js";
 import type { SourceWarning } from "../../sources/warnings.js";
 import { NetworkGate, downloadUrlForPolicy, type CatalogSource } from "../network-gate.js";
 import { normalizeSourceUrl, parseSourcePattern } from "../source-url.js";
+import { downloadBounded } from "../../resolve/download.js";
+
+/** What the gate logs, unscrubbed: a test of what it hands the logger, not of the scrubber. */
+const logged = vi.hoisted(() => ({ warn: [] as unknown[][] }));
+vi.mock("../../log.js", () => ({
+  createMarketplaceLogger: () => ({
+    debug: () => undefined,
+    info: () => undefined,
+    warn: (...args: unknown[]) => void logged.warn.push(args),
+    error: () => undefined,
+  }),
+}));
 
 const NONE: ReadonlySet<SourceWarning> = new Set();
 const OFFICIAL = { official: true, acknowledged: NONE };
@@ -329,6 +341,97 @@ describe("NetworkGate.fetch", () => {
     expect(await response.text()).toBe("bytes");
     expect(calls.map((call) => call.url)).toEqual(["https://1.1.1.1/asset", "http://1.0.0.1/blob"]);
     expect(seen).toEqual(["https://1.1.1.1/asset", "http://1.0.0.1/blob"]);
+  });
+
+  describe("a failing observer", () => {
+    beforeEach(() => {
+      logged.warn.length = 0;
+    });
+
+    /** A body that answers once and then ends, or never ends, recording whether it was read to the end or cancelled. */
+    function trackedBody(ends: boolean) {
+      const state = { closed: false, cancelled: false };
+      let sent = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (!sent) {
+            sent = true;
+            controller.enqueue(new TextEncoder().encode("bytes"));
+          } else if (ends) {
+            controller.close();
+            state.closed = true;
+          }
+          // An unending body stays silent after its first chunk.
+        },
+        cancel() {
+          state.cancelled = true;
+        },
+      });
+      return { state, body };
+    }
+
+    const nullPrototype = (): unknown => Object.create(null);
+    const throwingToString = (): unknown => ({ toString: () => { throw new Error("toString broke"); } });
+    const throwingGetter = (): unknown => Object.defineProperty(new Error(), "message", { get: () => { throw new Error("getter broke"); } });
+    const cases: Array<[string, () => unknown]> = [
+      ["a null-prototype object", nullPrototype],
+      ["a value whose toString throws", throwingToString],
+      ["an Error whose message getter throws", throwingGetter],
+      ["an Error quoting a credential", () => new Error("sig=canary-secret-7f3a")],
+    ];
+
+    it.each(cases)("lets the download complete when the observer throws %s, and reads the body to its end", async (_label, thrown) => {
+      const tracked = trackedBody(true);
+      const { transport } = fakeTransport({ "https://1.1.1.1/asset?sig=canary-secret-7f3a": () => new Response(tracked.body, { status: 200 }) });
+      const bytes = await downloadBounded("https://1.1.1.1/asset?sig=canary-secret-7f3a", {
+        gate: gate(undefined, false, transport),
+        catalog: CATALOG,
+        official: false,
+        maxBytes: 1024,
+        stallMs: 50,
+        onHop: () => {
+          throw thrown();
+        },
+      });
+      expect(bytes.toString("utf8")).toBe("bytes");
+      expect(tracked.state.closed).toBe(true);
+    });
+
+    it.each(cases)("cancels an unending body at the stall deadline when the observer throws %s", async (_label, thrown) => {
+      const tracked = trackedBody(false);
+      const { transport } = fakeTransport({ "https://1.1.1.1/asset": () => new Response(tracked.body, { status: 200 }) });
+      const download = downloadBounded("https://1.1.1.1/asset", {
+        gate: gate(undefined, false, transport),
+        catalog: CATALOG,
+        official: false,
+        maxBytes: 1024,
+        stallMs: 50,
+        onHop: () => {
+          throw thrown();
+        },
+      });
+      await expect(download).rejects.toMatchObject({ code: "SOURCE_UNREACHABLE", detail: { reason: "timeout" } });
+      expect(tracked.state.cancelled).toBe(true);
+    });
+
+    it("logs the hop's origin and the thrown value's class, never the signed query or the observer's message", async () => {
+      const { transport } = fakeTransport({ "https://1.1.1.1/asset/path-secret?sig=canary-secret-7f3a": ok });
+      const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset/path-secret?sig=canary-secret-7f3a", {
+        official: false,
+        catalog: CATALOG,
+        onHop: () => {
+          throw new TypeError("token canary-message-91b2 rejected");
+        },
+      });
+      expect(response.status).toBe(200);
+      const text = JSON.stringify(logged.warn);
+      expect(logged.warn).toHaveLength(1);
+      expect(text).not.toContain("canary-secret-7f3a");
+      expect(text).not.toContain("path-secret");
+      expect(text).not.toContain("canary-message-91b2");
+      expect(text).toContain("https://1.1.1.1");
+      expect(text).toContain("TypeError");
+    });
   });
 
   it("does not report a hop the address check refuses (§18.2.4)", async () => {
