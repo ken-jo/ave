@@ -597,7 +597,11 @@ disabled while a turn runs: the turn belongs to one tile, never to the window.
 Deleting a conversation a tile holds resets THAT tile to a fresh conversation
 under the project it was in — not the focused tile, which may show another
 conversation entirely. Main refuses to delete a conversation mid-turn, so the
-holder is always idle.
+holder is always idle. If main refuses the fresh conversation under that
+project (its folder has left the workspace), the refusal is shown and the tile
+restarts unscoped — it never stays on the deleted session. Any refused
+`chatNew` is shown the same way and leaves the tile on what its loop still
+holds, never on a blank transcript that claims a conversation.
 
 **Mounted is not drawn.** A tile mounts for every leaf of the live tree; the
 view decides only which of them gets a box. A leaf with no box is hidden with

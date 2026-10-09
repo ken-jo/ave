@@ -15,7 +15,7 @@ import { DevComponentLabels } from "./components/DevComponentLabels.js";
 import { UnifiedSearchPanel } from "./components/UnifiedSearchPanel.js";
 import { PluginUiHostView } from "../../plugin-ui-host.js";
 import { ChatGroupSession, type ChatGroupEnvironment } from "./components/ChatGroupSession.js";
-import { ChatGroupSessionRegistry, useChatGroupSession, useTileSessions, tileHoldingSession, overlayCardTile, pendingAnswers as selectPendingAnswers, type OverlayCardPlacement } from "./components/chat-group-session-registry.js";
+import { ChatGroupSessionRegistry, useChatGroupSession, useTileSessions, tileHoldingSession, pruneGroupRequests, overlayCardTile, pendingAnswers as selectPendingAnswers, type OverlayCardPlacement } from "./components/chat-group-session-registry.js";
 import { leafIds } from "./components/pane-tree.js";
 import type { ChatEntry } from "../../lib/chat-stream-state.js";
 // The away surfaces for an MCP-app card that left its home mount — one singleton
@@ -330,19 +330,17 @@ export function App() {
   // under. Handed to that one tile, not set on the window: the window's
   // project follows the tile once the tile holds the conversation, so a
   // refused adoption or a refused `chatNew` leaves the window where it was.
-  // Read by the tile at hydration; dropped once it holds a conversation.
+  // Read by the tile at hydration; dropped once it holds a conversation or
+  // its group is gone — see `pruneGroupRequests`.
   const [freshProjectByGroup, setFreshProjectByGroup] =
     useState<ReadonlyMap<string, ProjectIdentity>>(() => new Map());
+  const liveGroupIds = useMemo(
+    () => new Set(chatGroups.groups.map((group) => group.id)),
+    [chatGroups.groups],
+  );
   useEffect(() => {
-    setFreshProjectByGroup((current) => {
-      const settled = [...current.keys()].filter((chatGroupId) =>
-        tileSessions.some((tile) => tile.chatGroupId === chatGroupId && tile.sessionId !== ""));
-      if (settled.length === 0) return current;
-      const next = new Map(current);
-      for (const chatGroupId of settled) next.delete(chatGroupId);
-      return next;
-    });
-  }, [tileSessions]);
+    setFreshProjectByGroup((current) => pruneGroupRequests(current, liveGroupIds, tileSessions));
+  }, [liveGroupIds, tileSessions]);
 
   const focusTileHolding = useCallback((sessionId: string): boolean => {
     const holder = tileHoldingSession(tileSessions, sessionId);
@@ -735,7 +733,9 @@ export function App() {
           ? t("chatPreviewRail.addProjectRoot")
           : operation === "remove"
             ? t("sidebar.projectMenuRemove")
-            : t("sidebar.projectsLabel"),
+            : operation === "new-chat"
+              ? t("mainToolbar.newChat")
+              : t("sidebar.projectsLabel"),
       }),
       ttlMs: 10_000,
     });
@@ -1236,9 +1236,12 @@ export function App() {
     }
     // The tile starts it: chatNew has to reach the FOCUSED tile's loop, and
     // the reset has to land on that tile's transcript.
-    await focusedSession.startNewChat(nextProject
+    const started = await focusedSession.startNewChat(nextProject
       ? { projectRoot: nextProject.projectRoot, projectName: nextProject.projectName }
       : undefined);
+    // Refused: the tile said why and still holds what it held, so the window
+    // stays on that conversation's project and view.
+    if (!started) return;
     if (nextProject) setActiveProject(nextProject);
     setActiveView("home");
   }, [
@@ -1308,7 +1311,13 @@ export function App() {
           const tile = holder ? chatGroupSessions.read(holder.chatGroupId) : undefined;
           if (holder && tile) {
             const { projectRoot, projectName } = tile.currentSessionProject;
-            await tile.startNewChat(projectRoot ? { projectRoot, projectName } : undefined);
+            const scoped = projectRoot ? { projectRoot, projectName } : undefined;
+            const started = await tile.startNewChat(scoped);
+            // Main refuses a conversation in a folder that has left the
+            // workspace (the tile has said so). The tile must not stay on the
+            // deleted session, so it restarts unscoped — the default project
+            // main always accepts.
+            if (!started && scoped) await tile.startNewChat(undefined);
             if (holder.chatGroupId === chatGroupsRef.current.focusedId) setActiveView("home");
           }
         }

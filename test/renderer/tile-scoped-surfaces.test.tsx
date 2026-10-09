@@ -1626,24 +1626,25 @@ describe("opening a conversation while another is mid-turn", () => {
       return { ...rendered, pendingSend };
     }
 
+    /** The project the last `chatNew` asked for, or "(unscoped)" when none was. */
+    const lastChatNewRoot = (api: MockAveApi) =>
+      (api.chatNew.mock.calls.at(-1)?.[0] as { projectRoot?: string } | undefined)?.projectRoot ?? "(unscoped)";
+
     /**
-     * The project the tile adopted beside the busy one started its conversation
-     * under, once it hydrated: what it asked `chatNew` for, or "(unscoped)"
-     * when it asked for no project at all.
+     * The tile adopted beside the busy one starts its conversation under
+     * `expected`. Waits on that very state, so a wrong project reports the
+     * project it got rather than a timeout.
      */
-    async function newChatProject(rendered: Awaited<ReturnType<typeof busyInProjectA>>) {
+    async function expectAdoptedTileProject(
+      rendered: Awaited<ReturnType<typeof busyInProjectA>>,
+      expected: string,
+    ) {
       await waitFor(() => expect(collectTiles(rendered.container)).toHaveLength(2));
-      const adopted = collectTiles(rendered.container)
-        .map((tile) => tile.chatGroupId)
-        .find((id) => id !== MAIN_CHAT_GROUP_ID)!;
-      await waitFor(() => expect(rendered.api.chatGroup(adopted).chatGetHistory).toHaveBeenCalled());
-      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
-      const project = rendered.api.chatNew.mock.calls.at(-1)?.[0] as { projectRoot?: string } | undefined;
+      await waitFor(() => expect(lastChatNewRoot(rendered.api)).toBe(expected));
       await act(async () => {
         rendered.pendingSend.resolve({ ok: true });
         await rendered.pendingSend.promise;
       });
-      return project?.projectRoot ?? "(unscoped)";
     }
 
     const railNewChat = (container: HTMLElement) =>
@@ -1654,34 +1655,34 @@ describe("opening a conversation while another is mid-turn", () => {
     it("New Chat stays in the busy conversation's project", async () => {
       const rendered = await busyInProjectA();
       await act(async () => { fireEvent.click(railNewChat(rendered.container)); });
-      expect(await newChatProject(rendered)).toBe("/proj-a");
+      await expectAdoptedTileProject(rendered, "/proj-a");
     });
 
     it("a folder row starts the conversation in that folder", async () => {
       const rendered = await busyInProjectA();
       await act(async () => { fireEvent.click(folderRow(rendered.container)); });
-      expect(await newChatProject(rendered)).toBe("/proj-b");
+      await expectAdoptedTileProject(rendered, "/proj-b");
     });
 
     it("the folder menu's New Chat starts the conversation in that folder", async () => {
       const rendered = await busyInProjectA();
       await act(async () => { fireEvent.contextMenu(folderRow(rendered.container)); });
       await act(async () => { rendered.chooseNativeMenuCommand("project.new-chat"); });
-      expect(await newChatProject(rendered)).toBe("/proj-b");
+      await expectAdoptedTileProject(rendered, "/proj-b");
     });
 
     it("a chatNew main refuses leaves the window on the project it was on", async () => {
       const rendered = await busyInProjectA();
       rendered.api.chatNew.mockResolvedValueOnce({ ok: false, error: "project-not-allowed" } as never);
       await act(async () => { fireEvent.click(folderRow(rendered.container)); });
-      expect(await newChatProject(rendered)).toBe("/proj-b");
+      await expectAdoptedTileProject(rendered, "/proj-b");
+      // The refusal is said out loud, not read as a blank success.
+      await waitFor(() => expect(rendered.container.textContent).toContain("허용되지 않은 프로젝트입니다."));
       // The adopted tile holds no conversation; the next New Chat must not
       // inherit the folder the refused one asked for.
       rendered.api.chatNew.mockClear();
       await act(async () => { fireEvent.click(railNewChat(rendered.container)); });
-      await waitFor(() => expect(rendered.api.chatNew).toHaveBeenCalled());
-      expect((rendered.api.chatNew.mock.calls.at(-1)?.[0] as { projectRoot?: string } | undefined)?.projectRoot)
-        .toBe("/proj-a");
+      await waitFor(() => expect(lastChatNewRoot(rendered.api)).toBe("/proj-a"));
     });
 
     it("a New Chat refused at the ceiling leaves the window on the project it was on", async () => {
@@ -1717,9 +1718,29 @@ describe("opening a conversation while another is mid-turn", () => {
       // The turns are over; the focused tile starts the next conversation in
       // place, under the project the window is actually on.
       await act(async () => { fireEvent.click(railNewChat(rendered.container)); });
-      await waitFor(() => expect(rendered.api.chatNew).toHaveBeenCalled());
-      expect((rendered.api.chatNew.mock.calls.at(-1)?.[0] as { projectRoot?: string } | undefined)?.projectRoot)
-        .toBe("/proj-a");
+      await waitFor(() => expect(lastChatNewRoot(rendered.api)).toBe("/proj-a"));
+    });
+
+    it("an idle New Chat main refuses keeps the conversation, the project and says why", async () => {
+      const rendered = await renderApp(projectWindow as never);
+      const projectsTab = await waitFor(() => {
+        const tab = rendered.container.querySelector<HTMLElement>('[data-testid="sidebar-tab-projects"]');
+        expect(tab).not.toBeNull();
+        return tab!;
+      });
+      await act(async () => { fireEvent.mouseDown(projectsTab, { button: 0 }); });
+      await waitFor(() => expect(folderRow(rendered.container)).not.toBeNull());
+      await waitFor(() => expect(rendered.container.textContent).toContain("hello"));
+      rendered.api.chatNew.mockResolvedValueOnce({ ok: false, error: "project-not-allowed" } as never);
+
+      await act(async () => { fireEvent.click(folderRow(rendered.container)); });
+      await waitFor(() => expect(rendered.container.textContent).toContain("허용되지 않은 프로젝트입니다."));
+      // The loop still holds the /proj-a conversation, so the tile still shows
+      // it, and the window did not move to the folder main refused.
+      expect(rendered.container.textContent).toContain("hello");
+      rendered.api.chatNew.mockClear();
+      await act(async () => { fireEvent.click(railNewChat(rendered.container)); });
+      await waitFor(() => expect(lastChatNewRoot(rendered.api)).toBe("/proj-a"));
     });
   });
 
@@ -1774,6 +1795,57 @@ describe("opening a conversation while another is mid-turn", () => {
       pendingSend.resolve({ ok: true });
       await pendingSend.promise;
     });
+  });
+
+  it("a deleted conversation whose folder main now refuses restarts its tile unscoped, and says why (#2348)", async () => {
+    const OTHER_GROUP = "group-2";
+    const rendered = await renderApp({
+      hasApiKey: true,
+      nativeContextMenu: true,
+      workspaceRoots: [{ path: "/ws", isDefault: true }, { path: "/proj-a", isDefault: false }],
+      sessions: [
+        { id: MOCK_DEFAULT_SESSION_ID, title: "주 대화", modifiedAt: new Date(2, 0, 2).toISOString() },
+        // Listed without its folder so the Chats tab shows the row; the
+        // tile's own project comes from its loop's history below.
+        { id: `session-${OTHER_GROUP}`, title: "옆 타일 대화", modifiedAt: new Date(2, 0, 1).toISOString() },
+      ],
+      // Every group's loop reads this history under its own id, so the tile
+      // beside main holds a /proj-a conversation.
+      history: {
+        sessionId: MOCK_DEFAULT_SESSION_ID,
+        projectRoot: "/proj-a",
+        projectName: "proj-a",
+        messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }],
+      },
+    } as never);
+    const { api, container } = rendered;
+    const groupImpl = api.chatGroup.getMockImplementation()!;
+    const groupChatNew = vi.fn(async (_project?: { projectRoot?: string }) => ({ ok: true }) as { ok: boolean; error?: string });
+    // The folder has left the workspace: main refuses a conversation there.
+    groupChatNew.mockResolvedValueOnce({ ok: false, error: "project-not-allowed" });
+    api.chatGroup.mockImplementation((id: string) => {
+      const made = groupImpl(id) as ReturnType<typeof groupImpl> & { chatNew?: unknown };
+      if (id === OTHER_GROUP) made.chatNew = groupChatNew;
+      return made;
+    });
+    (api as unknown as { chatSessionDelete: unknown }).chatSessionDelete =
+      vi.fn(async () => ({ ok: true, wasLoaded: true }));
+
+    await splitIntoTwoTiles(container);
+    const row = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>(`[data-testid="sidebar-session-session-${OTHER_GROUP}"]`);
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    await act(async () => { fireEvent.contextMenu(row); });
+    await act(async () => { rendered.chooseNativeMenuCommand("conversation.delete"); });
+
+    // Refused under its folder, said out loud, then started unscoped: the tile
+    // does not stay on a session that no longer exists.
+    await waitFor(() => expect(groupChatNew).toHaveBeenCalledTimes(2));
+    expect(groupChatNew.mock.calls[0]?.[0]).toMatchObject({ projectRoot: "/proj-a" });
+    expect(groupChatNew.mock.calls[1]?.[0]).toBeUndefined();
+    await waitFor(() => expect(container.textContent).toContain("허용되지 않은 프로젝트입니다."));
   });
 
   it("clicking the streaming conversation's own row is navigation, not a load", async () => {

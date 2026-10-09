@@ -232,6 +232,11 @@ export function ChatGroupSession({
       : undefined),
     [freshSource],
   );
+  const onProjectError = env.onProjectError;
+  const reportChatNewRefused = useCallback(
+    (error: string) => onProjectError?.("new-chat", error),
+    [onProjectError],
+  );
 
   // The tile's conversation, readable by the sub-agent frame filter before
   // useCurrentSession (below) has run this render.
@@ -352,6 +357,7 @@ export function ChatGroupSession({
     onSessionsChanged: env.refreshSessions,
     resumeWindowActiveSession: chatGroupId === MAIN_CHAT_GROUP_ID,
     freshProject: freshTileProject,
+    onChatNewRefused: reportChatNewRefused,
     focusSessionHolder: env.focusChatGroup,
   });
   // Written at commit, not in render: a render may be thrown away, and the
@@ -564,14 +570,22 @@ export function ChatGroupSession({
 
   const startNewChat = useCallback(
     async (project?: { projectRoot?: string; projectName?: string }) => {
-      if (streaming) { console.warn("new chat blocked during streaming"); return; }
-      await api.chatNew(project);
+      if (streaming) { console.warn("new chat blocked during streaming"); return false; }
+      const created = await api.chatNew(project);
+      if (!created.ok) {
+        // Main kept the loop on what it held, so the tile keeps showing that:
+        // a blank transcript would claim a fresh conversation that does not
+        // exist. The refusal is said out loud, never read as success.
+        reportChatNewRefused(created.error);
+        return false;
+      }
       clearForNewChat();
       resetForNewSession();
       await refreshSessionId();
       await env.refreshSessions();
+      return true;
     },
-    [api, streaming, clearForNewChat, resetForNewSession, refreshSessionId, env],
+    [api, streaming, clearForNewChat, resetForNewSession, refreshSessionId, env, reportChatNewRefused],
   );
 
   const handleAttachmentWarning = useCallback((message: string) => {
