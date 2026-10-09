@@ -1161,6 +1161,72 @@ describe("PluginConfigTab — auth UI", () => {
     });
   });
 
+  it("keeps the switch for a disabled plugin whose runtime is retired, so it can be re-enabled", async () => {
+    // What the runtime reports after a disable: the generation is retired, so
+    // nothing is loaded (`runtimeLoaded: false`), and the card is `disabled`.
+    // The switch is the only way back to enabled.
+    let enabled = false;
+    const disabledCard = () => ({
+      id: "retired-plugin",
+      name: "Retired Plugin",
+      description: "Disabled and retired",
+      sampleTools: [],
+      capabilities: [],
+      tools: [],
+      loadStatus: enabled ? ("loaded" as const) : ("disabled" as const),
+      active: enabled,
+      runtimeLoaded: enabled,
+    });
+    const cards = vi.fn(async () => [disabledCard()]);
+    const setPluginEnabled = vi.fn(async (_id: string, next: boolean) => {
+      enabled = next;
+      return { ok: true as const };
+    });
+
+    Object.defineProperty(window, "ave", {
+      value: {
+        plugins: { cards },
+        pluginConfig: {
+          get: vi.fn(async () => ({ ok: true as const, config: {} })),
+          set: vi.fn(async () => ({ ok: true as const, config: {} })),
+          listSecretKeys: vi.fn(async () => ({ ok: true as const, keys: [] })),
+        },
+      },
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "aveApi", {
+      value: {
+        onPluginEvent: vi.fn(() => () => undefined),
+        onPluginEnabledChanged: vi.fn(() => () => undefined),
+        setPluginEnabled,
+        listPluginUiExtensions: vi.fn(async () => []),
+      },
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "aveHost", {
+      value: { takePluginMarketplaceApi: () => null },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab />);
+
+    const toggle = await screen.findByTestId("plugin-config:enabled-toggle:retired-plugin");
+    expect(toggle).toHaveAttribute("data-state", "unchecked");
+    expect(toggle).not.toBeDisabled();
+    expect(screen.queryByText("실행 불가")).toBeNull();
+
+    fireEvent.click(toggle);
+    await waitFor(() => {
+      expect(setPluginEnabled).toHaveBeenCalledWith("retired-plugin", true);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("plugin-config:enabled-toggle:retired-plugin")).toHaveAttribute("data-state", "checked");
+    });
+  });
+
   it("does not render an active-state switch for failed plugins", async () => {
     const cards = vi.fn(async () => [
       {

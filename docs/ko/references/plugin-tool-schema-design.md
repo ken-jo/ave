@@ -317,7 +317,7 @@ interface Tool {
 | 고정값 불일치 또는 `MANIFEST_MISMATCH` | 설치 거부. |
 | receipt 누락/불일치 | **드롭 (fail-closed)**. `plugin_integrity_rejected` 감사 이벤트 기록. |
 
-신뢰 근거는 서명 키가 아니라 동기화한 커밋과 그 고정값이다. `@ave/plugin-sdk`는 type/source-only 계약이며 키를 포함하지 않는다.
+신뢰 근거는 서명 키가 아니라 동기화한 커밋과 그 고정값이다. 플러그인이 벤더링한 `contract/`(앱 릴리스 태그의 `public-contract.ts`와 매니페스트 스키마)는 type/source-only 계약이며 키를 포함하지 않는다.
 
 **`installLocal` (개발자 sideload) 패키징 — host 가 자동 제외하는 경로**: host 의 `buildSideloadCopyFilter` (`src/plugins/sideload-filter.ts`) 는 install 시 다음 subtree 를 건너뛴다 — 플러그인 런타임에 무관하면서 staging 단계에서 깨지는 컨텐츠라 자동 제외:
 
@@ -583,25 +583,25 @@ Invalid tool name 'meeting.start' in plugin 'meeting' at 'tools[0]' (/path/to/pl
 
 ### 2.6 UI Styling Tokens — `--ave-*` 화이트리스트
 
-플러그인 UI 는 호스트가 broadcast 하는 17 개의 `--ave-*` 디자인 토큰만 사용해야
+플러그인 UI 는 호스트가 broadcast 하는 `--ave-*` 디자인 토큰만 사용해야
 한다 (architecture.md §6.7.1 의 `host.theme.changed` 흐름 참조). 호스트의
-`validateThemePayload` (`src/ipc/domains/plugins.ts` `PLUGIN_TOKEN_NAMES`) 가
-broadcast 시점에 같은 화이트리스트로 silently drop 하므로, 그 외 토큰을 참조하면
-런타임에 CSS `initial` 키워드로 렌더되어 invisible regression 이 된다.
+`validateThemePayload` (`src/shared/plugin-theme-cache.ts`) 가 broadcast 시점에
+화이트리스트 밖의 토큰을 silently drop 하므로, 그 외 토큰을 참조하면 런타임에
+CSS `initial` 키워드로 렌더되어 invisible regression 이 된다.
+
+> `@ave/plugin-sdk` 는 은퇴했다. 예전 SDK 가 배포하던 UI 토큰 명단·hook·컴포넌트
+> 패키지는 더 이상 없고, 아래 규칙은 호스트 계약과 플러그인 자체 소스로 지킨다.
 
 **Authoring 규칙**:
 
-1. **참조** — `var(--ave-bg)` / `var(--ave-fg-muted)` 등. 17 개 SoT 는 SDK
-   `@ave/plugin-sdk/ui/tokens` 의 `AVE_TOKEN_NAMES` 가 canonical (host 의
-   `PLUGIN_TOKEN_NAMES` 는 broadcast-side mirror). 두 곳은 lockstep 갱신 — 한쪽만
-   추가하면 broadcast 가 새 토큰을 drop 하거나 SDK 가 정의되지 않은 토큰을 노출.
+1. **참조** — `var(--ave-bg)` / `var(--ave-fg-muted)` 등. 토큰 명단의 SoT 는
+   호스트 `src/shared/plugin-ui-tokens.ts` 의 `AVE_TOKEN_NAMES` 하나다. 호스트의
+   payload 검증과 broadcast 가 모두 이 명단을 쓴다.
 2. **재정의 금지** — 플러그인 코드 어디서도 `--ave-*: ...` 선언 (예: `:root`
    override) 을 두면 안 된다. 호스트가 canonical 값의 owner. 재정의는 chat-theme
    / accent toolbar / dark-light 전환 등 host-driven UX 와 충돌.
 3. **번들 경로** — JSX 속성 안 quoted string (`stroke="var(--ave-fg)"`) 은
-   build-time validator 가 못 보는 위치다 (string strip 단계에서 erase). 토큰
-   참조는 항상 `injectTokenCss` 의 template-literal CSS 블록에 두자. SDK 컴포넌트
-   가 모두 같은 패턴.
+   문자열 스캔 검사가 놓치기 쉬운 위치다. 토큰 참조는 CSS 블록에 모아 두자.
 4. **Mount contract — `primeTheme` 가 첫 await** (Decision 2026-05-12) —
    플러그인의 `mount()` (또는 entry module) 는 React render / vanilla DOM
    build 이전에 `primeTheme(bridge, opts?)` 를 호출해야 한다. 이 헬퍼가
@@ -613,11 +613,15 @@ broadcast 시점에 같은 화이트리스트로 silently drop 하므로, 그 �
    구독 금지 — drift 회귀 케이스). React 측은 `useTheme(bridge, opts?)` 가
    `primeTheme` 위의 얇은 wrapper 라 동일 옵션 surface 를 갖는다. 자세한
    결정 근거 + 마이그레이션 시퀀스는 `docs/architecture/proposals/2026-05-12-plugin-theme-unification.md`
-   참조.
+   참조. SDK 가 없으므로 `primeTheme` / `useTheme` 는 패키지에서 import 하지 않고
+   플러그인 소스에 복사해 둔다. 공식 마켓플레이스 모노레포
+   [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace) 의
+   `templates/extension/README.md` 가 현재 예시이고, 공식 플러그인
+   (`plugins/<name>/source/src/ui/prime-theme.js` 등) 이 원본이다.
 
 ```ts
 // React 플러그인 — App 최상위
-import { useTheme } from "@ave/plugin-sdk/ui/hooks/useTheme";
+import { useTheme } from "./vendor/useTheme"; // 공식 플러그인에서 복사
 
 function App({ bridge, rootEl,
 }: { bridge: PluginBridge; rootEl?: HTMLElement;
@@ -630,7 +634,7 @@ function App({ bridge, rootEl,
 }
 
 // Vanilla 플러그인 — embedded mount entry
-import { primeTheme } from "@ave/plugin-sdk/ui/hooks/primeTheme";
+import { primeTheme } from "./prime-theme.js"; // 공식 플러그인에서 복사
 
 export function mount(host: PluginHost): PluginInstance {
   const { dispose } = primeTheme(host.bridge, {
@@ -642,64 +646,15 @@ export function mount(host: PluginHost): PluginInstance {
 }
 ```
 
-**Build-time validator** (SDK v3.8.0+):
+**SoT 와 검사 (현행)**:
 
-```ts
-// scripts/check-ui-tokens.mjs
-import { validateTokenUsage, validateTokenDefinitions,
-} from "@ave/plugin-sdk/ui/tokens/validate";
-
-const css = readFileSync("src/ui/MyComponent.tsx", "utf8");
-const usage = validateTokenUsage(css);
-if (!usage.ok) {
-  console.error("Unknown --ave-* references:", usage.unknown);
-  process.exit(1);
-}
-const defs = validateTokenDefinitions(css);
-if (!defs.ok) {
-  console.error("Plugins must not redefine --ave-* tokens:", defs.forbiddenRedefinitions,
-  );
-  process.exit(1);
-}
-```
-
-순수 string-scan (postcss 의존성 0). `ave-plugin-template` 의
-`scripts/check-ui-tokens.mjs` + `.github/workflows/validate-ui-tokens.yml` 이
-canonical 예시 — 새 플러그인은 템플릿에서 fork 하면 자동 보호.
-
-**SoT 동기화 정책**:
-
-- SDK `AVE_TOKEN_NAMES` (canonical) ← host `PLUGIN_TOKEN_NAMES` 가 lockstep.
-- `ave-plugin-sdk` 의 `scripts/sync-from-host.mjs` 가 host plugins.ts 에서 토큰
-  명단을 추출해 SDK `src/ui/tokens/index.ts` 에 반영 (drift-check workflow 가
-  매일 + PR 마다 실행) — 호스트만 갱신 후 SDK 동기화 누락 케이스 차단.
-- 새 토큰 추가 시: host `PLUGIN_TOKEN_NAMES` + SDK `AVE_TOKEN_NAMES` +
-  `ave-tokens.css :root` + first consumer (or reserved 마커) 한 PR 안에서
-  lockstep. 위반 시 architect P0 follow-up.
-
-**Import 패턴 (SDK v3.10.0+)**:
-
-플러그인이 SDK UI primitive 를 쓸 때는 **per-component subpath** 가 canonical.
-barrel `@ave/plugin-sdk/ui` 는 모든 컴포넌트의 `injectTokenCss` side-effect 를
-끌어와 tree-shake 안 됨 → 한 컴포넌트만 써도 전체가 번들됨.
-
-```ts
-// canonical
-import { Stack, Inline } from "@ave/plugin-sdk/ui/components/Stack";
-import { Toggle } from "@ave/plugin-sdk/ui/components/Toggle";
-
-// legacy / prototyping
-import { Stack, Toggle } from "@ave/plugin-sdk/ui";
-```
-
-자세한 subpath 목록 + dedup-by-id 계약은 `ave-plugin-sdk` README "UI imports".
-번들 크기 절감 효과는 host-provided React 결정 (`ave-plugin-sdk` issue #103) 후
-의미가 커짐 — 그 전엔 React 1MB 가 dominant 라 subpath 효과가 시각적으로 안
-드러남. 그러나 import 자체는 항상 subpath 가 정도.
-
-> Subpath 명단의 SoT 는 `ave-plugin-sdk/package.json` 의 `exports` 필드 —
-> 본 문서의 예시는 illustrative. SDK 가 새 컴포넌트를 추가하거나 경로를
-> rename 하면 SDK CHANGELOG / README 가 권위 있는 참조.
+- 토큰 명단은 호스트 `AVE_TOKEN_NAMES` 하나다. 새 토큰은 호스트 PR 하나에서
+  추가하고, 플러그인은 그 토큰을 앱 릴리스로만 받는다.
+- 예전 SDK 의 build-time validator (`@ave/plugin-sdk/ui/tokens/validate`),
+  `ave-plugin-template` 의 `scripts/check-ui-tokens.mjs`, SDK UI 컴포넌트
+  (`@ave/plugin-sdk/ui/components/*`), SDK 의 호스트 동기화 스크립트는 SDK·템플릿
+  저장소와 함께 보관(archive)되었다. 대체 패키지는 없다. 같은 검사나 컴포넌트가
+  필요하면 플러그인이 자기 소스에 둔다.
 
 ---
 
@@ -929,7 +884,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 
 ### 5.1 Meeting Recorder (`meeting`)
 
-**파일:** `ave-plugin-meeting/src/hostPlugin.ts`
+**파일:** `ken-jo/agent-marketplace` 의 `plugins/meeting/source/src/hostPlugin.ts`
 
 **주요 handler:** `meeting_start` / `meeting_push_chunk` / `meeting_stop` / `meeting_transcript` / `meeting_sessions`.
 
@@ -940,7 +895,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 
 ### 5.2 Local Indexer (`local-indexer`)
 
-**파일:** `ave-plugin-local-indexer/src/hostPlugin.ts:210-303`
+**파일:** `ken-jo/agent-marketplace` 의 `plugins/local-indexer/source/src/hostPlugin.ts`
 
 - `capabilities: ["knowledge-index"]`.
 - Python subprocess (30s 폴링) 로 FileWatcher 대신 운영 — `index_scan` 은 멱등 설계.
@@ -949,18 +904,15 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 
 ### 5.3 LYRA Mail (`lyra-mail`)
 
-**파일:** `ave-plugin-lyra-mail/src/hostPlugin.ts`
+**파일:** `ken-jo/agent-marketplace` 의 `plugins/lyra-mail/source/src/hostPlugin.ts`
 
 - `capabilities: ["mail-source", "calendar-source", "lyra-mail-consumer"]`.
 - 인증은 플러그인 자체 MSAL + safeStorage 경로가 소유한다. Host 는 provider-specific token HostApi 를 제공하지 않는다.
 - 메일/캘린더 mutation tool 의 effective category(`write`/`network`)는 host 가 invocation 별로 분류하고, UI 호출이 필요하면 `_meta.ui.visibility` 에 `"app"` 을 추가한다.
 
-### 5.4 Agent Hub (`agent-hub`)
+### 5.4 Agent Hub (`agent-hub`) — 은퇴
 
-**파일:** `ave-plugin-hydra/src/hostPlugin.ts`
-
-- `capabilities: ["host:overlay"]` — overlay staging 호출의 단일 런타임 게이트.
-- 다른 플러그인에 대한 작업 요청과 결과 수신은 이벤트 요청/응답 계약으로 구현한다. 직접 tool 호출 권한은 제공하지 않는다.
+Agent Hub 플러그인과 `ave-plugin-hydra` 저장소는 폐기되었다. 현행 플러그인 소스가 없으므로 케이스스터디에서 뺀다. 최소 예제는 같은 모노레포의 `plugins/hello-world/source/src/hostPlugin.ts` 를 본다.
 
 ---
 
@@ -1020,7 +972,8 @@ HostApi 에 새 메서드를 추가하려면:
 | `PluginManifest` 타입 | `src/plugins/types.ts` |
 | `PluginHostApi` 인터페이스 | `src/plugins/types.ts` |
 | 플러그인 런타임 (로딩·주입·AJV·설치 영수증 검증) | `src/plugins/runtime.ts` |
-| Manifest JSON Schema | `@ave/plugin-sdk/schemas/plugin-manifest.schema.json` |
+| Manifest JSON Schema | `schemas/plugin-manifest.schema.json` |
+| 플러그인 공개 계약 (타입·JSDoc) | `src/plugins/public-contract.ts` |
 | Capability taxonomy | `src/plugins/capabilities.ts` |
 | Marketplace artifact ladder | `src/marketplace/resolve/plugin-ladder.ts` |
 | Install receipt integrity | `src/plugins/plugin-install-receipt.ts` |
@@ -1055,7 +1008,7 @@ import { createPlugin } from "./hostPlugin";
 export default createPlugin;
 
 // src/hostPlugin.ts
-import type { RuntimePluginFactory } from "@ave/plugin-sdk";
+import type { RuntimePluginFactory } from "@ave/plugin-contract"; // 벤더링한 contract/
 
 export const createPlugin: RuntimePluginFactory = async (context) => {
   const { hostApi, config, log } = context;
@@ -1125,15 +1078,19 @@ export const createPlugin: RuntimePluginFactory = async (context) => {
 - [ ] 각 `tools[]` Tool 객체에 `description` (10자 이상), `inputSchema`, `_meta.ui.visibility`, 필요 시 `_meta["ave/pathFields"]`
 - [ ] marketplace publish/upload 경로로 artifact를 게시
 
-### @ave/plugin-sdk (현행)
+### 플러그인 계약 벤더링 (현행)
 
-호스트와 활성 플러그인 (`meeting` / `local-indexer` / `lyra-mail` / `orion-classic` / `vega-helper` / `agent-hub`) 은 released git tag 로 고정한 `@ave/plugin-sdk` 를 사용한다. 호스트는 SDK 패키지의 `schemas/plugin-manifest.schema.json` 을 런타임에 resolve 하며, app-local schema extension 이나 플러그인별 path alias 를 두지 않는다. SDK 태그는 manifest schema, 공개 타입, `host:overlay` capability enum 의 단일 배포 단위다.
+`@ave/plugin-sdk` 와 `ave-plugin-sdk` 저장소는 은퇴(archive)했다. 호스트가 계약을 소유한다. `src/plugins/public-contract.ts` (공개 타입·JSDoc), `schemas/plugin-manifest.schema.json` (매니페스트 스키마), `schemas/plugin-host-protocol/2/protocol.schema.json` (호스트 프로토콜 2 스키마) 가 정본이다. 매니페스트 스키마는 호스트가 앱 안의 이 파일을 직접 읽는다.
+
+플러그인 저장소는 세 파일을 **앱 릴리스 태그**에서 수정 없이 `contract/` 로 복사하고, `contract/sources.json` 에 출처 저장소·태그·파일별 sha256 을 기록한다. 공식 마켓플레이스 모노레포 [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace) 는 루트 `contract/` 를 `@ave/plugin-contract` 패키지로 두고, `plugins/<name>/source/` 의 각 플러그인이 `file:` 의존성으로 참조한다. 복사본은 손으로 고치지 않고 `bun run contract:sync -- contract --ref <앱 태그> --app <ave 체크아웃>` 으로 새 태그를 동기화하며, `bun run contract:check` 가 기록된 해시와 대조한다.
 
 ```jsonc
-// package.json
+// plugins/<name>/source/package.json (agent-marketplace)
 {
-  "dependencies": {
-    "@ave/plugin-sdk": "github:former_org/ave-plugin-sdk#v5.0.3",
+  "devDependencies": {
+    "@ave/plugin-contract": "file:../../../contract",
   },
 }
 ```
+
+새 계약 멤버를 쓰는 플러그인은 그 멤버를 처음 실은 앱 릴리스를 `requires.minAppVersion` 에 선언한다. 호스트가 설치·로드 시 이 최솟값을 강제한다. 앱 0.12.0 이상용 플러그인은 `requires.hostProtocol: "2"` 도 선언한다.
