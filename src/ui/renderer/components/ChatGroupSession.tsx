@@ -142,6 +142,12 @@ export interface ChatGroupEnvironment {
 
   // project binding
   activeProject: React.ComponentProps<typeof ChatView>["activeProject"];
+  /**
+   * The project a group adopted for New Chat was asked to start under, by
+   * group id. A tile listed here hydrates its fresh conversation under that
+   * project instead of the window's.
+   */
+  freshProjectByGroup: ReadonlyMap<string, NonNullable<React.ComponentProps<typeof ChatView>["activeProject"]>>;
   workspaceProjects: React.ComponentProps<typeof ChatView>["workspaceProjects"];
   onNewChatForProject: React.ComponentProps<typeof ChatView>["onNewChatForProject"];
   onRefreshProjects: React.ComponentProps<typeof ChatView>["onRefreshProjects"];
@@ -216,12 +222,15 @@ export function ChatGroupSession({
 
   const api = useMemo(() => chatGroupApi(windowApi, chatGroupId), [windowApi, chatGroupId]);
   // Stable identity: the hook re-hydrates when this changes, and the default
-  // (unscoped) project is no project at all.
+  // (unscoped) project is no project at all. A project handed to this group
+  // for New Chat wins over the window's — including the default one.
+  const requestedProject = env.freshProjectByGroup.get(chatGroupId);
+  const freshSource = requestedProject ?? env.activeProject;
   const freshTileProject = useMemo(
-    () => (env.activeProject && !env.activeProject.isDefault
-      ? { projectRoot: env.activeProject.projectRoot, projectName: env.activeProject.projectName }
+    () => (freshSource && !freshSource.isDefault
+      ? { projectRoot: freshSource.projectRoot, projectName: freshSource.projectName }
       : undefined),
-    [env.activeProject],
+    [freshSource],
   );
 
   // The tile's conversation, readable by the sub-agent frame filter before

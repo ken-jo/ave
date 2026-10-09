@@ -326,6 +326,24 @@ export function App() {
   const [pendingSessionDrop, setPendingSessionDrop] =
     useState<{ chatGroupId: string; sessionId: string } | null>(null);
 
+  // The project a group adopted for New Chat must start its conversation
+  // under. Handed to that one tile, not set on the window: the window's
+  // project follows the tile once the tile holds the conversation, so a
+  // refused adoption or a refused `chatNew` leaves the window where it was.
+  // Read by the tile at hydration; dropped once it holds a conversation.
+  const [freshProjectByGroup, setFreshProjectByGroup] =
+    useState<ReadonlyMap<string, ProjectIdentity>>(() => new Map());
+  useEffect(() => {
+    setFreshProjectByGroup((current) => {
+      const settled = [...current.keys()].filter((chatGroupId) =>
+        tileSessions.some((tile) => tile.chatGroupId === chatGroupId && tile.sessionId !== ""));
+      if (settled.length === 0) return current;
+      const next = new Map(current);
+      for (const chatGroupId of settled) next.delete(chatGroupId);
+      return next;
+    });
+  }, [tileSessions]);
+
   const focusTileHolding = useCallback((sessionId: string): boolean => {
     const holder = tileHoldingSession(tileSessions, sessionId);
     if (holder === undefined) return false;
@@ -1202,12 +1220,18 @@ export function App() {
     if (streaming) {
       // The focused tile is mid-turn, and a new chat on its loop is the same
       // mid-turn swap `reachSession` refuses. The same ladder applies: the new
-      // conversation gets a group of its own beside the busy one. That tile
-      // hydrates a fresh conversation under the window's active project, so
-      // the project is set first — in the same tick, hence the same commit
-      // that mounts the tile. At the ceiling the refusal is said out loud.
-      if (nextProject) setActiveProject(nextProject);
-      if (adoptGroupBeside(chatGroupsRef.current.focusedId) !== null) setActiveView("home");
+      // conversation gets a group of its own beside the busy one. At the
+      // ceiling the refusal is said out loud and nothing else changes.
+      const adopted = adoptGroupBeside(chatGroupsRef.current.focusedId);
+      if (adopted === null) return;
+      // The tile hydrates its fresh conversation under the project handed to
+      // it — in the same commit that mounts it. The window's project is not
+      // touched here: it follows that tile once the tile holds a conversation,
+      // so a `chatNew` main refuses leaves it where it was.
+      if (nextProject) {
+        setFreshProjectByGroup((current) => new Map(current).set(adopted, nextProject));
+      }
+      setActiveView("home");
       return;
     }
     // The tile starts it: chatNew has to reach the FOCUSED tile's loop, and
@@ -1273,13 +1297,25 @@ export function App() {
           }
           return;
         }
-        // Deleting the LOADED conversation leaves the loop pointed at a file
-        // that is gone, so start a fresh one rather than leaving it dangling.
-        if (result.wasLoaded) await handleNewChat();
+        // Deleting a LOADED conversation leaves the loop that held it pointed
+        // at a file that is gone, so THAT tile starts a fresh one, under the
+        // project it was in. Not the focused tile: the conversation it shows
+        // may be another one entirely, and replacing it — or, mid-turn,
+        // opening a tile beside it — answers a question nobody asked. Main
+        // refuses to delete a conversation mid-turn, so the holder is idle.
+        if (result.wasLoaded) {
+          const holder = tileHoldingSession(tileSessions, sessionId);
+          const tile = holder ? chatGroupSessions.read(holder.chatGroupId) : undefined;
+          if (holder && tile) {
+            const { projectRoot, projectName } = tile.currentSessionProject;
+            await tile.startNewChat(projectRoot ? { projectRoot, projectName } : undefined);
+            if (holder.chatGroupId === chatGroupsRef.current.focusedId) setActiveView("home");
+          }
+        }
         await refreshSessions();
       },
     };
-  }, [api, sessions, tileSessions, refreshSessions, handleExport, handleImportAndLoad, handleNewChat]);
+  }, [api, sessions, tileSessions, chatGroupSessions, refreshSessions, handleExport, handleImportAndLoad, setActiveView]);
   // A turn that ends where the user is not looking marks its row; looking
   // at a conversation reads it. The sidebar's bold rows come from here.
   useTurnAttention({
@@ -1429,6 +1465,7 @@ export function App() {
     commandActions, slashPickerOpen, onSlashPickerOpenChange: setSlashPickerOpen,
     approvalSentenceInterceptSubmit: interceptApprovalSentence,
     activeProject: activeProject ?? defaultWorkspaceProject,
+    freshProjectByGroup,
     workspaceProjects,
     onNewChatForProject,
     onRefreshProjects: refreshWorkspaceProjects,
@@ -1450,7 +1487,7 @@ export function App() {
     handleExport, handleImport, pluginEntries, handleViewSelectWithDoctor, appMode,
     commandActions, slashPickerOpen,
     interceptApprovalSentence,
-    activeProject, defaultWorkspaceProject, workspaceProjects,
+    activeProject, defaultWorkspaceProject, freshProjectByGroup, workspaceProjects,
     onNewChatForProject, refreshWorkspaceProjects, handleProjectError,
     pendingAnswers,
   ]);

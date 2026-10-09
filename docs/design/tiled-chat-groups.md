@@ -583,14 +583,21 @@ published counts as busy — an unanswerable question is not an idle one.
 
 New Chat — the rail button, a folder row, the folder menu's "new chat" — takes
 the same ladder. An idle focused group starts the conversation in place; a
-mid-turn one gets a fresh group beside it, which hydrates an empty conversation
-under the window's active project (set in the same commit that mounts the
-tile). The window follows the focused tile's project only once that tile holds
-a conversation: a tile that has not published or hydrated has no project to
-report, and reading its silence as "the default project" would reset the
-project the new tile is about to start under. At the ceiling with nothing idle to set aside, the refusal is the same
-toast the sidebar rows give. None of these controls is disabled while a turn
-runs: the turn belongs to one tile, never to the window.
+mid-turn one gets a fresh group beside it, and the requested project is handed
+to that group (in the same commit that mounts its tile), which hydrates its
+empty conversation under it. The window's own project is not set on the way:
+it follows the focused tile's project, and only once that tile holds a
+conversation. A tile that has not published or hydrated has no project to
+report — reading its silence as "the default project" would reset the window —
+and a refused adoption or a `chatNew` main refuses therefore leaves the window
+on the project it was on. At the ceiling with nothing idle to set aside, the
+refusal is the same toast the sidebar rows give. None of these controls is
+disabled while a turn runs: the turn belongs to one tile, never to the window.
+
+Deleting a conversation a tile holds resets THAT tile to a fresh conversation
+under the project it was in — not the focused tile, which may show another
+conversation entirely. Main refuses to delete a conversation mid-turn, so the
+holder is always idle.
 
 **Mounted is not drawn.** A tile mounts for every leaf of the live tree; the
 view decides only which of them gets a box. A leaf with no box is hidden with
