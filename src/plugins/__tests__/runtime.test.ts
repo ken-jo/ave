@@ -61,7 +61,7 @@ function makeGenerationBoundRuntime(
 }
 
 /**
- * Phase 1.5 F-round §F5: direct unit tests for disabling a plugin through
+ * Direct unit tests for disabling a plugin through
  * `PluginRuntime.setPluginEnabled(id, false)`, the one disable path.
  * Uses a real tmp-dir fixture with a minimal ESM plugin entry so the full
  * load → disable path is exercised (not mocks).
@@ -3655,7 +3655,7 @@ describe("PluginRuntime lifecycle log emission", () => {
     vi.restoreAllMocks();
   });
 
-  async function writeFakePlugin(id: string): Promise<string> {
+  async function writeLifecycleLogPlugin(id: string, entrySource?: string): Promise<string> {
     const methodName = `${id.replace(/[^a-zA-Z0-9_]/g, "_")}_hello`;
     const { manifestPath } = await writeTestPlugin(
       {
@@ -3673,7 +3673,7 @@ describe("PluginRuntime lifecycle log emission", () => {
             _meta: { ui: { visibility: ["model", "app"] } },
           },
         ],
-        entrySource: makeTestPluginEntrySource({
+        entrySource: entrySource ?? makeTestPluginEntrySource({
           [methodName]: JSON.stringify("hi"),
         }),
       },
@@ -3682,7 +3682,7 @@ describe("PluginRuntime lifecycle log emission", () => {
   }
 
   it("emits LOAD_START phase for each plugin entry during load()", async () => {
-    const manifestPath = await writeFakePlugin("lifecycle-log-test");
+    const manifestPath = await writeLifecycleLogPlugin("lifecycle-log-test");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "lifecycle-log-test", manifestPath, enabled: true },
     ]);
@@ -3711,7 +3711,7 @@ describe("PluginRuntime lifecycle log emission", () => {
   });
 
   it("emits LOAD_OK phase after a plugin successfully loads", async () => {
-    const manifestPath = await writeFakePlugin("lifecycle-log-ok");
+    const manifestPath = await writeLifecycleLogPlugin("lifecycle-log-ok");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "lifecycle-log-ok", manifestPath, enabled: true },
     ]);
@@ -3738,7 +3738,7 @@ describe("PluginRuntime lifecycle log emission", () => {
   });
 
   it("emits RESTART_REQUEST phase when restartPlugin is called", async () => {
-    const manifestPath = await writeFakePlugin("lifecycle-log-restart");
+    const manifestPath = await writeLifecycleLogPlugin("lifecycle-log-restart");
     await writeTestPluginRegistry({ registryPath }, [
       { id: "lifecycle-log-restart", manifestPath, enabled: true },
     ]);
@@ -3764,6 +3764,69 @@ describe("PluginRuntime lifecycle log emission", () => {
     });
     expect(hasRestartRequest).toBe(true);
     spyLog.mockRestore();
+  });
+
+  it("reports a successful stop during normal plugin retirement", async () => {
+    const pluginId = "lifecycle-log-stop";
+    const manifestPath = await writeLifecycleLogPlugin(pluginId);
+    await writeTestPluginRegistry({ registryPath }, [
+      { id: pluginId, manifestPath, enabled: true },
+    ]);
+    const runtime = makeGenerationBoundRuntime({
+      hostRoot: testDir,
+      registryPath,
+      pluginsRoot: installedDir,
+    });
+    await runtime.startAll();
+    await runtime.waitForPluginReady(pluginId);
+
+    const spyLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await runtime.setPluginEnabled(pluginId, false);
+      expect(runtime.isPluginEnabled(pluginId)).toBe(false);
+      expect(runtime.listPluginIds()).not.toContain(pluginId);
+      expect(spyLog).toHaveBeenCalledWith(
+        "[plugin-lifecycle] plugin stopped",
+        { pluginId, phase: PluginPhase.STOP_OK },
+      );
+    } finally {
+      spyLog.mockRestore();
+      await runtime.stopAll();
+    }
+  });
+
+  it("reports a stop failure during normal plugin retirement", async () => {
+    const pluginId = "lifecycle-log-stop-fail";
+    const manifestPath = await writeLifecycleLogPlugin(pluginId, `export default function createPlugin() {
+  return {
+    handlers: { lifecycle_log_stop_fail_hello: async () => "hi" },
+    stop() { throw new Error("stop rejected"); }
+  };
+}
+`);
+    await writeTestPluginRegistry({ registryPath }, [
+      { id: pluginId, manifestPath, enabled: true },
+    ]);
+    const runtime = makeGenerationBoundRuntime({
+      hostRoot: testDir,
+      registryPath,
+      pluginsRoot: installedDir,
+    });
+    await runtime.startAll();
+    await runtime.waitForPluginReady(pluginId);
+
+    const spyError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await expect(runtime.setPluginEnabled(pluginId, false)).rejects.toThrow(/retirement failed/);
+      expect(runtime.isPluginEnabled(pluginId)).toBe(false);
+      expect(spyError).toHaveBeenCalledWith(
+        "[plugin-lifecycle] plugin stop failed",
+        expect.objectContaining({ pluginId, phase: PluginPhase.STOP_FAIL, err: expect.any(Error) }),
+      );
+    } finally {
+      spyError.mockRestore();
+      await runtime.stopAll();
+    }
   });
 });
 

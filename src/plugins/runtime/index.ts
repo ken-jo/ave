@@ -2961,11 +2961,11 @@ abstract class PluginRuntimeState {
           );
         }),
       ]);
-      logPluginLifecycle("debug", { pluginId, phase: PluginPhase.STOP_OK }, "stopped after start failure");
+      logPluginLifecycle("debug", { pluginId, phase: PluginPhase.STOP_OK }, "plugin stopped");
       return true;
     } catch (err) {
       this.quarantinePluginLifecycle(pluginId, (err as Error).message);
-      logPluginLifecycle("error", { pluginId, phase: PluginPhase.STOP_FAIL, err }, "stop after start failure failed");
+      logPluginLifecycle("error", { pluginId, phase: PluginPhase.STOP_FAIL, err }, "plugin stop failed");
       return false;
     } finally {
       if (timer) clearTimeout(timer);
