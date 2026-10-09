@@ -12,7 +12,7 @@ import { VIEW_FIXTURE_ID } from '../fixtures/e2e-plugins/view-fixture.js';
  *     scopes the capture to one element; omitted `locator` captures the
  *     full window.
  *   - `skip: "<reason>"`: honest skip — the harness cannot realistically
- *     seed this state today. See README.md "Skip list" for the categorized
+ *     seed this state today. See README.md "Capture coverage" for the categorized
  *     rationale (live OAuth, real STT, external signals, etc). Keys outside
  *     this harness entirely are listed at the bottom of this file.
  *
