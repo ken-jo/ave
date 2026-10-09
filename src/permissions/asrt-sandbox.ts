@@ -392,9 +392,16 @@ let _baseTrustedSettings: TrustedSandboxSettings | undefined;
  * wrapped afterwards — the candidate's own workers, started from
  * `onPublished` — was generated without the allow while the candidate still
  * held it. Maintained by {@link registerWorkerUnixSocketDir} / its unregister;
- * every caller pairs one unregister with each successful register.
+ * every caller pairs one unregister with each successful register. A register
+ * resolves only after the dir's push has landed, so a resolved holder never
+ * wraps a child without the allow.
  */
-const _workerUnixSocketDirs = new Map<string, number>();
+interface WorkerUnixSocketDirEntry {
+  holders: number;
+  /** Settles when the push that first added this dir to the shared config lands or fails. */
+  readonly pushed: Promise<void>;
+}
+const _workerUnixSocketDirs = new Map<string, WorkerUnixSocketDirEntry>();
 
 /**
  * Merge the live worker-UDS state into a base {@link TrustedSandboxSettings} to
@@ -2065,20 +2072,38 @@ export async function registerWorkerUnixSocketDir(socketDir: string): Promise<vo
       "registerWorkerUnixSocketDir: ASRT sandbox is not active (initialize at boot first)",
     );
   }
-  const holders = _workerUnixSocketDirs.get(socketDir) ?? 0;
-  _workerUnixSocketDirs.set(socketDir, holders + 1);
-  if (holders > 0) return;
+  const existing = _workerUnixSocketDirs.get(socketDir);
+  if (existing !== undefined) {
+    // A later holder resolves only once the FIRST holder's push has landed: it
+    // is about to wrap a child, and a wrap generated before the push would
+    // carry no allow. If that push fails, the whole entry is rolled back and
+    // every waiter fails with it, so no caller believes it holds a dir that
+    // was never pushed.
+    existing.holders += 1;
+    await existing.pushed;
+    return;
+  }
+  let resolvePushed!: () => void;
+  let rejectPushed!: (error: unknown) => void;
+  const pushed = new Promise<void>((resolvePush, rejectPush) => {
+    resolvePushed = resolvePush;
+    rejectPushed = rejectPush;
+  });
+  // Observed here so a failed push with no waiter is not an unhandled rejection.
+  pushed.catch(() => undefined);
+  const entry: WorkerUnixSocketDirEntry = { holders: 1, pushed };
+  _workerUnixSocketDirs.set(socketDir, entry);
   try {
     const SandboxManager = await loadSandboxManager();
     SandboxManager.updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings)));
   } catch (error) {
-    // A caller that sees this throw treats the dir as not registered and will
-    // not release it, so the holder added above is taken back here.
-    const current = _workerUnixSocketDirs.get(socketDir) ?? 0;
-    if (current > 1) _workerUnixSocketDirs.set(socketDir, current - 1);
-    else _workerUnixSocketDirs.delete(socketDir);
+    // Every holder of this entry — this caller and any waiter — sees the
+    // throw, treats the dir as not registered, and will not release it.
+    if (_workerUnixSocketDirs.get(socketDir) === entry) _workerUnixSocketDirs.delete(socketDir);
+    rejectPushed(error);
     throw error;
   }
+  resolvePushed();
 }
 
 /**
@@ -2088,10 +2113,10 @@ export async function registerWorkerUnixSocketDir(socketDir: string): Promise<vo
  * a dead holder's allowance does not linger and a live one's is not dropped.
  */
 export async function unregisterWorkerUnixSocketDir(socketDir: string): Promise<void> {
-  const holders = _workerUnixSocketDirs.get(socketDir);
-  if (holders === undefined) return;
-  if (holders > 1) {
-    _workerUnixSocketDirs.set(socketDir, holders - 1);
+  const entry = _workerUnixSocketDirs.get(socketDir);
+  if (entry === undefined) return;
+  if (entry.holders > 1) {
+    entry.holders -= 1;
     return;
   }
   _workerUnixSocketDirs.delete(socketDir);

@@ -363,42 +363,73 @@ const PLUGIN_SOCKET_DIR_NAMES: readonly string[] = [
  * moved, never re-created — is the one that child can reach. This is the move
  * `data/` already gets for the same reason.
  *
- * The destination already holding one is decided by the caller's policy, with
- * no default, for the reason {@link PluginDataCarryPolicy} has none:
+ * WHEN THE DESTINATION ALREADY HOLDS ONE. That is not a bookkeeping error by
+ * itself: a live generation's worker may `mkdir run/<workerId>` at the
+ * destination path in the window between a root rename and this carry, and a
+ * recovery runs while the live predecessor's workers keep doing so. Which
+ * side wins is decided by contents, never by location, the way
+ * {@link carryPluginDataDir}'s rule 1 decides an empty `data/`:
  *
- *  - `reject` — an INSTALL transaction. A staged payload never ships a runtime
- *    directory (`isPluginRuntimeDirName` refuses it) and the restore paths
- *    rebuild the root they carry into with {@link pluginPayloadCopyFilter}, so
- *    a socket directory there means the transaction's bookkeeping is wrong.
- *  - `keep-destination` — RECOVERY, which is handed whatever an interrupted
- *    transaction left and must reach a terminal disposition. These directories
- *    are not state and nothing reads their contents back, so the destination's
- *    directory stays and the source's goes with the root it sits in; with no
- *    destination root at all, nothing moves.
+ *  1. an EMPTY side holds nothing bound and goes. An empty destination is
+ *     removed and the source moves in whole (the source's directory is the one
+ *     a child's sandbox may hold); an empty source is removed and the
+ *     destination stays;
+ *  2. two non-empty sides are MERGED entry by entry — `run/<workerId>/`,
+ *     `sockets/<name>` — each entry moved by rename, so a live worker's leaf
+ *     keeps its identity. Only the same entry name on both sides is a real
+ *     conflict, and the caller's policy, which has no default for the reason
+ *     {@link PluginDataCarryPolicy} has none, decides it:
+ *      - `reject` — an INSTALL transaction. Two sockets claiming one name means
+ *        the transaction's bookkeeping is wrong, and it throws to its rollback;
+ *      - `keep-destination` — RECOVERY, which must always reach a terminal
+ *        disposition. Sockets are not state, so the destination's entry stays
+ *        and the source's goes with the root it sits in. With no destination
+ *        root at all, nothing moves.
  *
  * Renamed through {@link renameDirectory}, which already retries the transient
- * Windows lock codes; callers do not wrap it again.
+ * Windows lock codes (reporting each retry through `policy.onRetry`); callers
+ * do not wrap it again.
  */
 export async function carryPluginSocketDirs(
   fromRoot: string,
   toRoot: string,
-  policy: { onConflict: "reject" | "keep-destination" },
+  policy: {
+    readonly onConflict: "reject" | "keep-destination";
+    readonly onRetry?: (attempt: number, code: string) => void;
+  },
 ): Promise<void> {
   // Recovery may discard a root while no live root survives (a cleanup after
   // an uninstall): nothing is bound there to hand the sockets to.
   if (policy.onConflict === "keep-destination" && !await pathExists(toRoot)) return;
+  const move = (from: string, to: string): Promise<void> => renameDirectory(from, to, policy.onRetry);
   for (const name of PLUGIN_SOCKET_DIR_NAMES) {
     const source = resolve(fromRoot, name);
     const target = resolve(toRoot, name);
     if (!await pathExists(source)) continue;
-    if (await pathExists(target)) {
-      if (policy.onConflict === "keep-destination") continue;
-      throw new Error(
-        `[plugin-storage-layout] both roots hold a plugin socket directory; refusing to `
-          + `replace ${target} with ${source}`,
-      );
+    if (!await pathExists(target)) {
+      await move(source, target);
+      continue;
     }
-    await renameDirectory(source, target);
+    if (await isEmptyDirectory(target)) {
+      await rmdir(target);
+      await move(source, target);
+      continue;
+    }
+    if (await isEmptyDirectory(source)) {
+      await rmdir(source);
+      continue;
+    }
+    for (const entry of await readdir(source)) {
+      const entryTarget = resolve(target, entry);
+      if (await pathExists(entryTarget)) {
+        if (policy.onConflict === "keep-destination") continue;
+        throw new Error(
+          `[plugin-storage-layout] both roots hold ${name}/${entry}; refusing to `
+            + `replace ${entryTarget} with ${resolve(source, entry)}`,
+        );
+      }
+      await move(resolve(source, entry), entryTarget);
+    }
   }
 }
 

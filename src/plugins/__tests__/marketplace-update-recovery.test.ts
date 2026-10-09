@@ -452,6 +452,30 @@ describe("marketplace pending-update recovery", () => {
       expect(await readFile(join(live, "sockets", "egress.sock"), "utf-8")).toBe("live");
     });
 
+    // Recovery at runtime: the live predecessor's worker has already made
+    // its leaf at the live root while another live leaf still sits in the
+    // backup. Neither may be dropped for being in the "wrong" root.
+    it("merge a backup's live worker leaf into a live root that already has one", async () => {
+      const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
+      const backupDir = join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`);
+      await preparePendingPluginUpdate(paths, entry, {
+        kind: "marketplace",
+        recoveryBackupDir: backupDir,
+        recoveryBackupMode: "rename",
+      });
+      const live = join(paths.pluginsRoot, pluginId);
+      await mkdir(join(backupDir, "run", "w1"), { recursive: true });
+      await writeFile(join(backupDir, "run", "w1", "control.sock"), "w1");
+      await mkdir(join(live, "run", "w2"), { recursive: true });
+      const w1 = statSync(join(backupDir, "run", "w1")).ino;
+
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
+      expect(statSync(join(live, "run", "w1")).ino).toBe(w1);
+      expect(await readFile(join(live, "run", "w1", "control.sock"), "utf-8")).toBe("w1");
+      expect(existsSync(join(live, "run", "w2"))).toBe(true);
+      expect(existsSync(backupDir)).toBe(false);
+    });
+
     it("are handed to a live root that still matches its receipt", async () => {
       const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
       const backupDir = join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`);

@@ -12,17 +12,27 @@ import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
  * (`rename(<id>.tmp-…, <installDir>)`). Every other `rename` passes through,
  * so the rest of this suite runs against the real filesystem.
  */
-const swapFault = vi.hoisted(() => ({ failRenameInto: undefined as string | undefined }));
+const swapFault = vi.hoisted(() => ({
+  failRenameInto: undefined as string | undefined,
+  /** Runs once, right after the swap rename into this root succeeds. */
+  afterRenameInto: undefined as { root: string; run: () => Promise<void> } | undefined,
+}));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
     rename: async (from: Parameters<typeof actual.rename>[0], to: Parameters<typeof actual.rename>[1]) => {
-      if (swapFault.failRenameInto !== undefined && String(to) === swapFault.failRenameInto && String(from).includes(".tmp-")) {
+      const isSwap = String(from).includes(".tmp-");
+      if (swapFault.failRenameInto !== undefined && String(to) === swapFault.failRenameInto && isSwap) {
         swapFault.failRenameInto = undefined;
         throw Object.assign(new Error(`EBUSY: resource busy or locked, rename '${String(from)}' -> '${String(to)}'`), { code: "EBUSY" });
       }
-      return actual.rename(from, to);
+      await actual.rename(from, to);
+      const after = swapFault.afterRenameInto;
+      if (after !== undefined && String(to) === after.root && isSwap) {
+        swapFault.afterRenameInto = undefined;
+        await after.run();
+      }
     },
   };
 });
@@ -442,7 +452,10 @@ describe("PluginMarketplaceService.installLocal", () => {
   // activated (its `sockets/` and `run/` materialised at the final root) before
   // the durable commit replaces that root.
   describe("socket directories of the already-activated candidate", () => {
-    afterEach(() => { swapFault.failRenameInto = undefined; });
+    afterEach(() => {
+      swapFault.failRenameInto = undefined;
+      swapFault.afterRenameInto = undefined;
+    });
 
     const activateLikeTheRuntime: PreparedMarketplacePluginActivation = async (prepared) => {
       const granted = materialiseCandidateRuntimeDirsForTest(prepared.installId, prepared.pluginRoot, pluginsDir);
@@ -520,6 +533,41 @@ describe("PluginMarketplaceService.installLocal", () => {
         .toMatchObject({ version: "1.2.3" });
       expect(liveInodes(installDir)).toEqual(predecessorInodes);
       expect(await readFile(join(installDir, "sockets", "egress.sock"), "utf-8")).toBe("predecessor");
+    });
+
+    // A live worker creating its control-socket leaf at the promoted root in
+    // the window between the swap rename and the carry back: two non-empty
+    // `run/` directories, merged entry by entry rather than refused.
+    it("merge with a worker leaf created at the promoted root during the swap", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
+      const installDir = join(pluginsDir, "test-plugin");
+      await mkdir(join(installDir, "run", "w1"), { recursive: true });
+      await writeFile(join(installDir, "run", "w1", "control.sock"), "w1");
+      const w1 = statSync(join(installDir, "run", "w1")).ino;
+      await writeFile(
+        join(sourceDir, "plugin.json"),
+        JSON.stringify(agentPluginsDocument({
+          id: "test-plugin",
+          name: "Test Plugin",
+          version: "2.0.0",
+          description: "fixture v2",
+          entry: "dist/hostPlugin.js",
+        })),
+        "utf-8");
+      swapFault.afterRenameInto = {
+        root: installDir,
+        run: async () => { await mkdir(join(installDir, "run", "w2"), { recursive: true }); },
+      };
+
+      await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
+
+      expect(swapFault.afterRenameInto).toBeUndefined();
+      expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8")))
+        .toMatchObject({ version: "2.0.0" });
+      expect(statSync(join(installDir, "run", "w1")).ino).toBe(w1);
+      expect(await readFile(join(installDir, "run", "w1", "control.sock"), "utf-8")).toBe("w1");
+      expect(existsSync(join(installDir, "run", "w2"))).toBe(true);
     });
 
     // The swap itself failing: the live root is already gone and the catch

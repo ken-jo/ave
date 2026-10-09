@@ -6,8 +6,8 @@
  * never at the plugin root, because the root holds the bundle the next load
  * imports into the Electron main process.
  */
-import { afterEach, beforeEach, describe, it, expect } from "vitest";
-import { existsSync, statSync } from "node:fs";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
@@ -28,6 +28,27 @@ import {
 import { aveHome } from "../../shared/ave-home.js";
 import { isPathWithin, isResolvedPathWithin } from "../plugin-storage-containment.js";
 import { PLUGIN_DATA_FIXTURE, readPluginDataFixture, seedPluginDataFixture } from "./test-helpers.js";
+
+/**
+ * One armed, one-shot transient lock on the next `rename` into a path ending
+ * with `lockRenameEndingWith`; every other `rename` passes through, so the
+ * rest of this suite runs against the real filesystem.
+ */
+const renameLock = vi.hoisted(() => ({ lockRenameEndingWith: undefined as string | undefined }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    rename: async (from: Parameters<typeof actual.rename>[0], to: Parameters<typeof actual.rename>[1]) => {
+      const suffix = renameLock.lockRenameEndingWith;
+      if (suffix !== undefined && String(to).endsWith(suffix)) {
+        renameLock.lockRenameEndingWith = undefined;
+        throw Object.assign(new Error(`EBUSY: resource busy or locked, rename '${String(from)}'`), { code: "EBUSY" });
+      }
+      return actual.rename(from, to);
+    },
+  };
+});
 
 const PLUGIN_ID = "ave-plugin-layout-fixture";
 
@@ -275,31 +296,105 @@ describe("carryPluginSocketDirs", () => {
     expect(existsSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME))).toBe(false);
   });
 
-  it("refuses to replace a socket directory the target root already holds", async () => {
+  // Which side wins is decided by contents, never by location: a live
+  // worker can `mkdir run/<id>` at either root while a swap is in flight.
+  it("replaces an EMPTY destination with the source directory itself", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
     await mkdir(join(from, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
+    await writeFile(join(from, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "live");
     await mkdir(join(to, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
+    const sourceInode = statSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME)).ino;
 
-    await expect(carryPluginSocketDirs(from, to, { onConflict: "reject" })).rejects.toThrow(/both roots hold a plugin socket directory/);
+    await carryPluginSocketDirs(from, to, { onConflict: "reject" });
 
-    expect(existsSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME))).toBe(true);
+    expect(statSync(join(to, PLUGIN_OWN_SOCKET_DIR_NAME)).ino).toBe(sourceInode);
+    expect(existsSync(join(to, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"))).toBe(true);
+    expect(existsSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME))).toBe(false);
   });
 
-  it("keeps the destination's directory under the recovery policy and leaves the source's in place", async () => {
+  it("drops an EMPTY source and keeps the destination", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, PLUGIN_WORKER_RUN_DIR_NAME), { recursive: true });
+    await mkdir(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w2"), { recursive: true });
+    const kept = statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME)).ino;
+
+    await carryPluginSocketDirs(from, to, { onConflict: "reject" });
+
+    expect(statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME)).ino).toBe(kept);
+    expect(existsSync(join(from, PLUGIN_WORKER_RUN_DIR_NAME))).toBe(false);
+  });
+
+  it.each(["reject", "keep-destination"] as const)(
+    "merges two non-empty sides entry by entry under %s, each entry the same directory",
+    async (onConflict) => {
+      const from = join(root, "old");
+      const to = join(root, "new");
+      await mkdir(join(from, PLUGIN_WORKER_RUN_DIR_NAME, "w1"), { recursive: true });
+      await writeFile(join(from, PLUGIN_WORKER_RUN_DIR_NAME, "w1", "control.sock"), "w1");
+      await mkdir(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w2"), { recursive: true });
+      const w1 = statSync(join(from, PLUGIN_WORKER_RUN_DIR_NAME, "w1")).ino;
+      const w2 = statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w2")).ino;
+
+      await carryPluginSocketDirs(from, to, { onConflict });
+
+      expect(statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w1")).ino).toBe(w1);
+      expect(statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w2")).ino).toBe(w2);
+      expect(existsSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w1", "control.sock"))).toBe(true);
+    },
+  );
+
+  it("refuses the same entry on both sides under reject", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
     await mkdir(join(from, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
-    await mkdir(join(from, PLUGIN_WORKER_RUN_DIR_NAME), { recursive: true });
     await mkdir(join(to, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
-    const kept = statSync(join(to, PLUGIN_OWN_SOCKET_DIR_NAME)).ino;
-    const moved = statSync(join(from, PLUGIN_WORKER_RUN_DIR_NAME)).ino;
+    await writeFile(join(from, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "source");
+    await writeFile(join(to, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "destination");
+
+    await expect(carryPluginSocketDirs(from, to, { onConflict: "reject" }))
+      .rejects.toThrow(/both roots hold sockets\/egress\.sock/);
+
+    expect(existsSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"))).toBe(true);
+  });
+
+  it("keeps the destination's entry for the same name under keep-destination", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
+    await mkdir(join(to, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
+    await writeFile(join(from, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "source");
+    await writeFile(join(to, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "destination");
 
     await carryPluginSocketDirs(from, to, { onConflict: "keep-destination" });
 
-    expect(statSync(join(to, PLUGIN_OWN_SOCKET_DIR_NAME)).ino).toBe(kept);
-    expect(statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME)).ino).toBe(moved);
-    expect(existsSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME))).toBe(true);
+    expect(readFileSync(join(to, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "utf8")).toBe("destination");
+  });
+
+  // renameDirectory retries a Windows lock on its own; the caller still has
+  // to be able to log the contention it no longer wraps.
+  it("reports each retried Windows lock through onRetry", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
+    await mkdir(to);
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    renameLock.lockRenameEndingWith = `${sep}new${sep}${PLUGIN_OWN_SOCKET_DIR_NAME}`;
+    const retries: Array<[number, string]> = [];
+    try {
+      await carryPluginSocketDirs(from, to, {
+        onConflict: "reject",
+        onRetry: (attempt, code) => retries.push([attempt, code]),
+      });
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      renameLock.lockRenameEndingWith = undefined;
+    }
+
+    expect(retries).toEqual([[1, "EBUSY"]]);
+    expect(existsSync(join(to, PLUGIN_OWN_SOCKET_DIR_NAME))).toBe(true);
   });
 
   it("moves nothing under the recovery policy when no destination root survives", async () => {

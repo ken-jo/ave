@@ -1099,9 +1099,10 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
   // the allow away from the candidate: every child wrapped afterwards (the
   // candidate's own workers, started from onPublished) is generated from the
   // shared config at that moment.
-  it("keeps a directory allowed until its LAST holder releases it", async () => {
-    if (!(await asrtCanInitialize())) return;
-    if (process.platform !== "darwin" && process.platform !== "linux") return;
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "keeps a directory allowed until its LAST holder releases it",
+    async (context) => {
+    if (!(await asrtCanInitialize())) return context.skip();
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const allowed = (): readonly string[] => SandboxManager.getConfig()?.network.allowUnixSockets ?? [];
 
@@ -1120,4 +1121,61 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
       await resetAsrtSandbox();
     }
   }, 60_000);
+
+  // Two holders arriving together: the second must not resolve — and go on to
+  // wrap a child — before the first holder's push has landed.
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "resolves a concurrent second holder only after the first push has landed",
+    async (context) => {
+      if (!(await asrtCanInitialize())) return context.skip();
+      const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+      const allowed = (): readonly string[] => SandboxManager.getConfig()?.network.allowUnixSockets ?? [];
+
+      await initializeAsrtSandbox({ allowedDomains: ["example.com"], strictAllowlist: true });
+      try {
+        const first = registerWorkerUnixSocketDir("/run/plugin-y/sockets");
+        let allowedWhenSecondResolved: readonly string[] | undefined;
+        const second = registerWorkerUnixSocketDir("/run/plugin-y/sockets")
+          .then(() => { allowedWhenSecondResolved = allowed(); });
+        await Promise.all([first, second]);
+        expect(allowedWhenSecondResolved).toContain("/run/plugin-y/sockets");
+      } finally {
+        await resetAsrtSandbox();
+      }
+    },
+    60_000,
+  );
+
+  // The first push failing: every concurrent holder fails with it and the
+  // count is rolled back whole, so the next holder pushes again rather than
+  // joining an entry whose dir was never pushed.
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "fails every concurrent holder of a failed first push and rolls the count back whole",
+    async (context) => {
+      if (!(await asrtCanInitialize())) return context.skip();
+      const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+      const allowed = (): readonly string[] => SandboxManager.getConfig()?.network.allowUnixSockets ?? [];
+
+      await initializeAsrtSandbox({ allowedDomains: ["example.com"], strictAllowlist: true });
+      const update = vi.spyOn(SandboxManager, "updateConfig");
+      try {
+        update.mockImplementationOnce(() => { throw new Error("push refused"); });
+        const outcomes = await Promise.allSettled([
+          registerWorkerUnixSocketDir("/run/plugin-z/sockets"),
+          registerWorkerUnixSocketDir("/run/plugin-z/sockets"),
+        ]);
+        expect(outcomes.map((outcome) => outcome.status)).toEqual(["rejected", "rejected"]);
+        expect(allowed()).not.toContain("/run/plugin-z/sockets");
+
+        await registerWorkerUnixSocketDir("/run/plugin-z/sockets");
+        expect(allowed()).toContain("/run/plugin-z/sockets");
+        await unregisterWorkerUnixSocketDir("/run/plugin-z/sockets");
+        expect(allowed()).not.toContain("/run/plugin-z/sockets");
+      } finally {
+        update.mockRestore();
+        await resetAsrtSandbox();
+      }
+    },
+    60_000,
+  );
 });
