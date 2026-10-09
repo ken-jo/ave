@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AddressCheckedFetch } from "../../../core/network-guard.js";
 import { ConfirmationRequiredError, MarketplaceError } from "../../errors.js";
 import { FIXTURE_POLICY_PATH, policyLoad as policy, policySource } from "../../__tests__/fixtures/policy.js";
@@ -6,6 +6,18 @@ import type { PolicyLoad } from "../../sources/policy.js";
 import type { SourceWarning } from "../../sources/warnings.js";
 import { NetworkGate, downloadUrlForPolicy, type CatalogSource } from "../network-gate.js";
 import { normalizeSourceUrl, parseSourcePattern } from "../source-url.js";
+import { downloadBounded } from "../../resolve/download.js";
+
+/** What the gate logs, unscrubbed: a test of what it hands the logger, not of the scrubber. */
+const logged = vi.hoisted(() => ({ warn: [] as unknown[][] }));
+vi.mock("../../log.js", () => ({
+  createMarketplaceLogger: () => ({
+    debug: () => undefined,
+    info: () => undefined,
+    warn: (...args: unknown[]) => void logged.warn.push(args),
+    error: () => undefined,
+  }),
+}));
 
 const NONE: ReadonlySet<SourceWarning> = new Set();
 const OFFICIAL = { official: true, acknowledged: NONE };
@@ -267,6 +279,198 @@ describe("NetworkGate.fetch", () => {
     expect(calls[0]!.headers.get("authorization")).toBe("Bearer secret");
     expect(calls[1]!.headers.get("authorization")).toBeNull();
     expect(calls[1]!.headers.get("cookie")).toBeNull();
+  });
+
+  it("tells the caller of every hop it admitted, so an https download redirected to http is known to be plain http (§15.2)", async () => {
+    const { transport } = fakeTransport({
+      "https://1.1.1.1/asset": redirect("http://1.0.0.1/blob"),
+      "http://1.0.0.1/blob": ok,
+    });
+    const hops: string[] = [];
+    const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset", { official: false, catalog: CATALOG, onHop: (hop) => hops.push(hop) });
+    expect(response.status).toBe(200);
+    expect(hops).toEqual(["https://1.1.1.1/asset", "http://1.0.0.1/blob"]);
+
+    // A hop the gate refuses is never reported.
+    const refused: string[] = [];
+    const blocked = fakeTransport({ "https://1.1.1.1/asset": redirect("https://1.0.0.1/blob") });
+    const load = policy({ block: [parseSourcePattern("host:1.0.0.1")] });
+    expect(await codeOf(gate(load, false, blocked.transport).fetch("https://1.1.1.1/asset", { official: false, catalog: CATALOG, onHop: (hop) => refused.push(hop) }))).toBe("SOURCE_POLICY_BLOCKED");
+    expect(refused).toEqual(["https://1.1.1.1/asset"]);
+  });
+
+  it("hands the observer a snapshot: mutating it changes nothing that is requested or where the sign-in goes", async () => {
+    const { transport, calls } = fakeTransport({
+      "https://1.1.1.1/asset": redirect("/asset-2"),
+      "https://1.1.1.1/asset-2": ok,
+    });
+    const tamper = (hop: unknown): void => {
+      // A URL object handed over would let this redirect the request (and its Authorization) elsewhere.
+      try {
+        (hop as { href: string }).href = "https://1.0.0.1/stolen";
+      } catch {
+        // A string snapshot cannot be assigned to.
+      }
+    };
+    const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset", {
+      official: false,
+      catalog: CATALOG,
+      headers: { authorization: "Bearer canary", cookie: "c=canary" },
+      onHop: tamper,
+    });
+    expect(calls.map((call) => call.url)).toEqual(["https://1.1.1.1/asset", "https://1.1.1.1/asset-2"]);
+    expect(calls.every((call) => call.headers.get("authorization") === "Bearer canary")).toBe(true);
+    expect(response.status).toBe(200);
+  });
+
+  it("isolates an observer that throws: the download and the gate's decision are unchanged", async () => {
+    const { transport, calls } = fakeTransport({
+      "https://1.1.1.1/asset": redirect("http://1.0.0.1/blob"),
+      "http://1.0.0.1/blob": ok,
+    });
+    const seen: string[] = [];
+    const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset", {
+      official: false,
+      catalog: CATALOG,
+      onHop: (hop) => {
+        seen.push(String(hop));
+        throw new Error("observer broke");
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("bytes");
+    expect(calls.map((call) => call.url)).toEqual(["https://1.1.1.1/asset", "http://1.0.0.1/blob"]);
+    expect(seen).toEqual(["https://1.1.1.1/asset", "http://1.0.0.1/blob"]);
+  });
+
+  describe("a failing observer", () => {
+    beforeEach(() => {
+      logged.warn.length = 0;
+    });
+
+    /** A body that answers once and then ends, or never ends, recording whether it was read to the end or cancelled. */
+    function trackedBody(ends: boolean) {
+      const state = { closed: false, cancelled: false };
+      let sent = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (!sent) {
+            sent = true;
+            controller.enqueue(new TextEncoder().encode("bytes"));
+          } else if (ends) {
+            controller.close();
+            state.closed = true;
+          }
+          // An unending body stays silent after its first chunk.
+        },
+        cancel() {
+          state.cancelled = true;
+        },
+      });
+      return { state, body };
+    }
+
+    const nullPrototype = (): unknown => Object.create(null);
+    const throwingToString = (): unknown => ({ toString: () => { throw new Error("toString broke"); } });
+    const throwingGetter = (): unknown => Object.defineProperty(new Error(), "message", { get: () => { throw new Error("getter broke"); } });
+    const cases: Array<[string, () => unknown]> = [
+      ["a null-prototype object", nullPrototype],
+      ["a value whose toString throws", throwingToString],
+      ["an Error whose message getter throws", throwingGetter],
+      ["an Error quoting a credential", () => new Error("sig=canary-secret-7f3a")],
+    ];
+
+    it.each(cases)("lets the download complete when the observer throws %s, and reads the body to its end", async (_label, thrown) => {
+      const tracked = trackedBody(true);
+      const { transport } = fakeTransport({ "https://1.1.1.1/asset?sig=canary-secret-7f3a": () => new Response(tracked.body, { status: 200 }) });
+      const bytes = await downloadBounded("https://1.1.1.1/asset?sig=canary-secret-7f3a", {
+        gate: gate(undefined, false, transport),
+        catalog: CATALOG,
+        official: false,
+        maxBytes: 1024,
+        stallMs: 50,
+        onHop: () => {
+          throw thrown();
+        },
+      });
+      expect(bytes.toString("utf8")).toBe("bytes");
+      expect(tracked.state.closed).toBe(true);
+    });
+
+    it.each(cases)("cancels an unending body at the stall deadline when the observer throws %s", async (_label, thrown) => {
+      const tracked = trackedBody(false);
+      const { transport } = fakeTransport({ "https://1.1.1.1/asset": () => new Response(tracked.body, { status: 200 }) });
+      const download = downloadBounded("https://1.1.1.1/asset", {
+        gate: gate(undefined, false, transport),
+        catalog: CATALOG,
+        official: false,
+        maxBytes: 1024,
+        stallMs: 50,
+        onHop: () => {
+          throw thrown();
+        },
+      });
+      await expect(download).rejects.toMatchObject({ code: "SOURCE_UNREACHABLE", detail: { reason: "timeout" } });
+      expect(tracked.state.cancelled).toBe(true);
+    });
+
+    it("logs the hop's origin and a fixed kind, never the signed query or the observer's message", async () => {
+      const { transport } = fakeTransport({ "https://1.1.1.1/asset/path-secret?sig=canary-secret-7f3a": ok });
+      const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset/path-secret?sig=canary-secret-7f3a", {
+        official: false,
+        catalog: CATALOG,
+        onHop: () => {
+          throw new TypeError("token canary-message-91b2 rejected");
+        },
+      });
+      expect(response.status).toBe(200);
+      const text = JSON.stringify(logged.warn);
+      expect(logged.warn).toHaveLength(1);
+      expect(text).not.toContain("canary-secret-7f3a");
+      expect(text).not.toContain("path-secret");
+      expect(text).not.toContain("canary-message-91b2");
+      expect(text).toContain("https://1.1.1.1");
+      expect(text).toContain(": error");
+    });
+
+    it("logs a fixed kind, never a string the thrown value chose: a canary in constructor.name stays out of the raw logger args", async () => {
+      class Smuggling extends Error {}
+      Object.defineProperty(Smuggling, "name", { value: "sigCanaryCtor5d2e" });
+      const thrownValues: unknown[] = [
+        new Smuggling("x"),
+        // A non-Error whose constructor carries the canary.
+        new (Object.defineProperty(class {}, "name", { value: "sigCanaryCtor5d2e" }))(),
+        // A Proxy whose getPrototypeOf trap throws: unreadable, and still no escape.
+        new Proxy({}, { getPrototypeOf: () => { throw new Error("sigCanaryCtor5d2e"); } }),
+        "sigCanaryCtor5d2e",
+      ];
+      for (const thrown of thrownValues) {
+        const { transport } = fakeTransport({ "https://1.1.1.1/asset": ok });
+        const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset", {
+          official: false,
+          catalog: CATALOG,
+          onHop: () => {
+            throw thrown;
+          },
+        });
+        expect(response.status).toBe(200);
+      }
+      const text = JSON.stringify(logged.warn);
+      expect(text).not.toContain("sigCanaryCtor5d2e");
+      expect(logged.warn.map((args) => String(args[0]).replace(/^.*: /u, ""))).toEqual(["error", "non-error-object", "unreadable", "primitive"]);
+    });
+  });
+
+  it("does not report a hop the address check refuses (§18.2.4)", async () => {
+    const { transport, calls } = fakeTransport(
+      { "https://1.1.1.1/asset": redirect("http://meta.example/blob"), "http://meta.example/blob": ok },
+      { "meta.example": ["169.254.169.254"] },
+    );
+    const seen: string[] = [];
+    await expect(gate(undefined, false, transport).fetch("https://1.1.1.1/asset", { official: false, catalog: CATALOG, onHop: (hop) => seen.push(String(hop)) })).rejects.toThrow();
+    // The metadata hop was resolved and refused: nothing connected to it, and it is not reported.
+    expect(calls.map((call) => call.url)).toEqual(["https://1.1.1.1/asset"]);
+    expect(seen).toEqual(["https://1.1.1.1/asset"]);
   });
 
   it("resolves each hop exactly once, in the transport, and connects only to the answers the rule keeps (§18.2.4)", async () => {

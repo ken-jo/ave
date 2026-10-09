@@ -39,6 +39,7 @@ import {
 import { ConfirmationRequiredError, MarketplaceError, isMarketplaceError, type EnteredTargetWarningView } from "../errors.js";
 import { folderPolicyBlock, policyBlock, type MarketplacePolicy, type PolicySource } from "../sources/policy.js";
 import type { SourceWarning } from "../sources/warnings.js";
+import { createMarketplaceLogger } from "../log.js";
 import type { FolderNetwork } from "./source-input.js";
 import { normalizeDownloadPath, normalizeSourceHost, type NormalizedSourceUrl, type PatternTarget } from "./source-url.js";
 
@@ -91,7 +92,17 @@ export interface GatedFetchInit extends GateSubject {
   signal?: AbortSignal;
   timeoutMs?: number;
   maxRedirects?: number;
+  /**
+   * Told of each hop that answered after passing every check, lexical and
+   * address: the first URL and every redirect target, as a string snapshot
+   * of what was requested. A caller learns from it which transport the bytes
+   * actually travelled over (§15.2 Delivery). It only observes: what it
+   * throws is logged and changes neither the gate's decision nor the download.
+   */
+  onHop?: (hop: string) => void;
 }
+
+const log = createMarketplaceLogger("marketplace-network-gate");
 
 const CROSS_ORIGIN_STRIPPED_HEADERS = ["authorization", "cookie"];
 
@@ -390,7 +401,7 @@ export class NetworkGate {
     } catch {
       throw new MarketplaceError("SOURCE_URL_REJECTED", "download URL is malformed");
     }
-    const { official, catalog, method = "GET", headers = {}, signal, timeoutMs, maxRedirects } = init;
+    const { official, catalog, method = "GET", headers = {}, signal, timeoutMs, maxRedirects, onHop } = init;
     // Policy first, so a blocked host is reported as blocked, not as a DNS failure.
     this.checkPolicy(downloadUrlForPolicy(start), { official }, "download");
     const origin = start.origin;
@@ -408,7 +419,11 @@ export class NetworkGate {
       if (hop.origin !== origin) {
         for (const name of CROSS_ORIGIN_STRIPPED_HEADERS) hopHeaders.delete(name);
       }
-      return this.options.transport(hop.href, { ...hopInit, headers: hopHeaders }, select);
+      const requested = hop.href;
+      // The transport applies the address check (`select`); a hop is reported only once it answered past it.
+      const response = await this.options.transport(requested, { ...hopInit, headers: hopHeaders }, select);
+      if (onHop) observeHop(onHop, requested);
+      return response;
     };
     try {
       return await fetchAddressCheckedResponse(rawUrl, {
@@ -423,6 +438,43 @@ export class NetworkGate {
     } catch (error) {
       throw mapGuardError(error, start.host);
     }
+  }
+}
+
+/**
+ * Hand an observer its hop. The step is total: nothing the observer throws,
+ * and nothing that describing the failure throws, reaches the download, whose
+ * answered body the caller still reads or cancels. The diagnostic names only
+ * the hop's origin and a fixed kind (`ThrownKind`): a path or query can carry
+ * a signature, and any string on the thrown value can quote one.
+ */
+function observeHop(onHop: (hop: string) => void, hop: string): void {
+  try {
+    onHop(hop);
+  } catch (error) {
+    try {
+      log.warn(`download hop observer failed for ${new URL(hop).origin}: ${thrownKind(error)}`);
+    } catch {
+      // Describing the failure failed as well (a value no conversion accepts); the download is unaffected.
+    }
+  }
+}
+
+/**
+ * What a hop observer threw, as one of a closed set. No string is taken from
+ * the thrown value: its name, message and constructor are the observer's to
+ * choose, so any of them can quote a credential.
+ */
+type ThrownKind = "error" | "non-error-object" | "primitive" | "unreadable";
+
+function thrownKind(error: unknown): ThrownKind {
+  if (typeof error !== "object" && typeof error !== "function") return "primitive";
+  if (error === null) return "primitive";
+  try {
+    // A Proxy's getPrototypeOf trap runs here, and may throw.
+    return error instanceof Error ? "error" : "non-error-object";
+  } catch {
+    return "unreadable";
   }
 }
 

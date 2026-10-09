@@ -30,6 +30,8 @@ export interface DownloadOptions {
    * private repository's host hides what it will not serve without one.
    */
   tokenMissing?: boolean;
+  /** Each hop that answered past the gate's checks, the first URL and every redirect target. */
+  onHop?: (hop: string) => void;
 }
 
 function statusError(url: string, status: number, tokenMissing: boolean): MarketplaceError {
@@ -51,6 +53,7 @@ async function gatedGet(url: string, options: Omit<DownloadOptions, "maxBytes" |
     official: options.official,
     ...(options.headers ? { headers: options.headers } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.onHop ? { onHop: options.onHop } : {}),
   });
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined);

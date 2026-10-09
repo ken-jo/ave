@@ -312,7 +312,8 @@ export interface RungView {
 }
 
 export type RungOutcomeView =
-  | { rung: RungKindView; outcome: "used" }
+  /** `unencrypted`: the bytes travelled over plain http on some hop, redirects included (§15.2). */
+  | { rung: RungKindView; outcome: "used"; unencrypted: boolean }
   | { rung: RungKindView; outcome: "skipped"; reason: string }
   | { rung: RungKindView; outcome: "failed"; code: string; message: string };
 

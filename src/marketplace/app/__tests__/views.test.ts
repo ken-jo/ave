@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { authorityDelta, authorityView, sourceStatus, widensAuthority } from "../views.js";
+import { normalizeSourceUrl } from "../../net/source-url.js";
+import { authorityDelta, authorityView, rungOutcomeViews, rungViews, sourceStatus, stagedRungViews, widensAuthority } from "../views.js";
 
 describe("filesystem authority review", () => {
   const base = authorityView({ capabilities: [] });
@@ -64,5 +65,32 @@ describe("source status", () => {
   it("shows a failure recorded without a detail by its code alone", () => {
     const state = { pinnedCommit: null, enabled: true, lastSync: { at, result: "SOURCE_UNREACHABLE" as const } };
     expect(sourceStatus(state, false, false, false)).toEqual({ state: "unreachable", code: "SOURCE_UNREACHABLE", cached: false });
+  });
+});
+
+describe("Delivery label after a download (§15.2, §18.2.3)", () => {
+  const SOURCE = normalizeSourceUrl("https://1.1.1.1/acme/market");
+  const https = { archive: { url: "https://1.1.1.1/alpha.zip", sha256: "a".repeat(64) } };
+
+  it("predicts from the declared URL, and labels the rung whose staged bytes arrived over plain http", () => {
+    const predicted = rungViews(https, "plugins/alpha", false, SOURCE);
+    expect(predicted.find((item) => item.rung === "archive")?.unencrypted).toBe(false);
+    // A redirect to http is known only once the bytes are staged.
+    const staged = stagedRungViews(predicted, { rung: "archive", unencrypted: true });
+    expect(staged.find((item) => item.rung === "archive")?.unencrypted).toBe(true);
+    expect(staged.filter((item) => item.rung !== "archive")).toEqual(predicted.filter((item) => item.rung !== "archive"));
+    expect(stagedRungViews(predicted, { rung: "archive", unencrypted: false })).toEqual(predicted);
+  });
+
+  it("carries the transport onto the used rung of the outcome only", () => {
+    const outcomes = [
+      { rung: "release" as const, outcome: "failed" as const, code: "SOURCE_UNREACHABLE", message: "HTTP 404" },
+      { rung: "archive" as const, outcome: "used" as const },
+    ];
+    expect(rungOutcomeViews(outcomes, true)).toEqual([
+      { rung: "release", outcome: "failed", code: "SOURCE_UNREACHABLE", message: "HTTP 404" },
+      { rung: "archive", outcome: "used", unencrypted: true },
+    ]);
+    expect(rungOutcomeViews(outcomes, false)[1]).toEqual({ rung: "archive", outcome: "used", unencrypted: false });
   });
 });
