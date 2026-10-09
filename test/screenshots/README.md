@@ -10,7 +10,7 @@ This harness lives entirely under `test/screenshots/**` (plus the standalone
 runner `scripts/capture-screenshots.mjs`) and does **not** modify the
 `config/playwright.config.ts` or the `test/e2e/**` UI E2E suite it sits
 next to. It has its own `test/screenshots/playwright.config.ts` so it never
-runs as part of `bun run test:ui-e2e` / CI's `ui-e2e.yml` — this is a docs
+runs as part of `bun run test:ui-e2e` — this is a docs
 asset generator, not a regression suite.
 
 It does, however, **import and reuse** helpers from `test/e2e/ui/seeded-electron.ts`

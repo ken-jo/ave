@@ -1141,7 +1141,7 @@ the successors without the host naming any plugin.
 | Marketplace | `src/marketplace/sources/{snapshot,sync}.ts`, `catalog/{types,validate,aggregate}.ts`, `app/{service,views,revocations}.ts`, `repository-check.ts`, `schemas/marketplace/revocations-by-app.schema.json` | snapshot format version, raw conditional entries, `effectiveRevocations` accessor for every reader |
 | Uninstall | `src/plugins/uninstall-lifecycle.ts`, `src/plugins/plugin-uninstall-cleanup-journal.ts`, `src/marketplace/app/service.ts` (`applyRevocations` writes the retired record; `uninstall` passes `retain`), `src/marketplace/app/ports.ts` (`InstallerPorts.plugin.uninstall(name, retain?)`), `src/ipc/domains/git-marketplace.ts:151` (installer port), `src/ipc/domains/plugins.ts` | retired record written at revocation time; internal `retain` option captured at prepare and persisted in the journal record; the journal's `has(pluginId)` port gates retired-record removal |
 | Routines | `src/boot/routine.ts`, `src/main/routines-scheduler.ts`, `RoutinePanel.tsx`, `src/shared/routines-types.ts` | `plugins-missing` skip, `needsAttention` |
-| Retirement of host references | `src/plugins/isolation/out-of-process-plugins.ts:417-428, :856` (`OUT_OF_PROCESS_PLUGIN_IDS` census), `src/ui/renderer/onboarding/default-tour-scenarios.ts:183-212, :316-345, :360-371`, `test/screenshots/plugin-seed.ts:224`, `test/screenshots/matrix.ts`, `test/e2e/ui/fixtures.ts:25-29`, `test/e2e/ui/plugin-load.spec.ts:15-19`, `.github/workflows/e2e.yml:59-67`, the `ALLOWED_FILE_LITERALS` entry in the decoupling audit | the last literals go in the follow-on release PR, after the index entry is deleted |
+| Retirement of host references | `src/plugins/isolation/out-of-process-plugins.ts:417-428, :856` (`OUT_OF_PROCESS_PLUGIN_IDS` census), `src/ui/renderer/onboarding/default-tour-scenarios.ts:183-212, :316-345, :360-371`, `test/screenshots/plugin-seed.ts:224`, `test/screenshots/matrix.ts`, `test/e2e/ui/fixtures.ts:25-29`, `test/e2e/ui/plugin-load.spec.ts:15-19`, the `ALLOWED_FILE_LITERALS` entry in the decoupling audit | the last literals go in the follow-on release PR, after the index entry is deleted |
 | Docs | `docs/architecture/architecture.md` (Plugin Runtime), `docs/references/overlay-trigger.md`, `CHANGELOG.md` | contract, deprecations, the opt-in loss |
 | i18n | `src/i18n/messages/generated/alerts.ts` | `alerts.*`, `be_alerts.*` |
 
@@ -1384,8 +1384,7 @@ CDP checks (port 9222 against a built app; the `test/e2e/ui` harness):
   focused, the toast appears instead, unless the kind bypasses.
 - `test/screenshots/matrix.ts` re-keys the `vega-helper-*` cards to
   `alert-*` with `source: { kind: "alert", … }`; `test/e2e/ui/fixtures.ts`
-  `E2E_PLUGIN_REPOS` and `plugin-load.spec.ts` drop `vega-helper`;
-  `.github/workflows/e2e.yml:59-67` stops checking it out.
+  `E2E_PLUGIN_REPOS` and `plugin-load.spec.ts` drop `vega-helper`.
 
 ## Pull request plan
 

@@ -176,10 +176,10 @@ const VERIFICATION_CHECKS: ReadonlyArray<{ script: string; file: string }> = [
  *  has a gap that no test closes: a workflow that compiles by calling some
  *  other tool directly, under a spelling nobody has written here, is not
  *  recognised, and the ordering invariant would let a hygiene gate precede it.
- *  These two are what `.github/workflows/` calls today — `bunx playwright test`
- *  in e2e.yml, and `tsc --noEmit`, which is
- *  `bun run typecheck`'s body and is listed so a workflow inlining it is still
- *  seen. */
+ *  `tsc --noEmit` is `bun run typecheck`'s body and is listed so a workflow
+ *  inlining it is still seen. No workflow calls `playwright test` today; it
+ *  stays listed so a workflow that adds the Playwright suite back is still
+ *  recognised as a verification step. */
 const DIRECT_TOOL_INVOCATIONS = ["tsc --noEmit", "playwright test"];
 
 /** Names that appear only in a step which compiles, builds, or executes the
@@ -320,7 +320,6 @@ describe("installer smoke and packaging discipline", () => {
 
   it("keeps privileged workflows on trusted default-branch events", () => {
     for (const path of [
-      ".github/workflows/e2e.yml",
       ".github/workflows/a2a-p4-5-packaged-evidence.yml",
       ".github/workflows/web-deploy.yml",
     ]) {
@@ -336,46 +335,23 @@ describe("installer smoke and packaging discipline", () => {
     expect(signing).toContain("environment: release-signing");
     expect(signing).toContain("merge-base --is-ancestor");
 
-    const coreCi = readRepoFile(".github/workflows/ci.yml");
-    expect(coreCi).not.toContain("AVE_REPO_READ_TOKEN");
     const webCi = readRepoFile(".github/workflows/web-ci.yml");
     expect(webCi).not.toContain("CLOUDFLARE_API_TOKEN");
   });
 
-  it("keeps private E2E acquisition separate from candidate execution", () => {
-    const workflow = readRepoFile(".github/workflows/e2e.yml");
-    const stage = workflow.slice(
-      workflow.indexOf("  stage-inputs:"),
-      workflow.indexOf("  e2e:"),
-    );
-    const execute = workflow.slice(workflow.indexOf("  e2e:"));
-
-    expect(stage).toContain("secrets.AVE_REPO_READ_TOKEN");
-    expect(stage).toContain("path: stage-policy");
-    expect(stage).toContain("ref: ${{ github.workflow_sha }}");
-    expect(stage).toContain('bash stage-policy/scripts/check-e2e-archive-tree.sh "$repo" "$actual"');
-    expect(stage).not.toContain("ls-files -s");
-    expect(stage).toContain("git -C \"$repo\" archive");
-    expect(stage).toContain("manifest.tsv");
-    expect(stage).toContain("artifact-digest");
-    for (const forbidden of [
-      "bun install",
-      "bun run build",
-      "playwright test",
-      "node scripts/",
-      "npm ",
-    ]) {
-      expect(stage).not.toContain(forbidden);
+  it("keeps every workflow self-contained: no cross-repository read token", () => {
+    // The retired nightly E2E workflow checked out other (since archived)
+    // repositories with this token. Verification is app-complete now; a
+    // workflow that needs another repository's source is a regression.
+    const workflows = readdirSync(resolve(root, ".github/workflows"))
+      .filter((name) => /\.ya?ml$/u.test(name));
+    expect(workflows.length).toBeGreaterThan(0);
+    for (const name of workflows) {
+      expect(
+        readRepoFile(`.github/workflows/${name}`),
+        `${name} reads another repository through AVE_REPO_READ_TOKEN`,
+      ).not.toContain("AVE_REPO_READ_TOKEN");
     }
-
-    expect(execute).toContain("Download staged E2E inputs");
-    expect(execute).toContain("EXPECTED_MANIFEST_SHA256");
-    expect(execute).toContain("sha256sum \"$archive\"");
-    expect(execute).toContain("tar -xzf \"$archive\" -C sources");
-    expect(execute).toContain("bun install --frozen-lockfile");
-    expect(execute).toContain("bunx playwright test");
-    expect(execute).not.toContain("secrets.");
-    expect(execute).not.toContain("AVE_REPO_READ_TOKEN");
   });
 
   it("deploys only a digest-bound web export on the protected runner", () => {

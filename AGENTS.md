@@ -274,8 +274,9 @@ For production code and consumed documentation changes, pre-push runs
 `bun run typecheck`, full `bun run test`, and `bun run build` once. Documentation prose
 with no test or build consumer takes the static-policy path. Do not
 manually duplicate the full trio. After failure, rerun only failed or invalidated
-checks; the next push performs the complete gate. Full Playwright E2E belongs to
-CI/release; locally run only changed-flow specs unless the task requires more.
+checks; the next push performs the complete gate. No CI workflow runs Playwright;
+full Playwright E2E (`bun run test:ui-e2e`) belongs to release validation, and
+locally run only changed-flow specs unless the task requires more.
 An eligible test-only push uses the hook's targeted Vitest path; CI still runs
 its full checks for that change.
 

@@ -53,8 +53,9 @@ documents read by native or non-Node processes, or through `openAsBlob`, in
 `scripts/hooks/documentation-references.json`; the read guard cannot see them.
 Every `main` push runs the full app suite in CI as a backstop. Do not duplicate
 the trio around a successful push. If a check fails, fix it and rerun
-only the failed or invalidated checks before pushing again. Full Playwright E2E runs in CI/release
-validation; UI changes require the targeted local flow check above. Never
+only the failed or invalidated checks before pushing again. No CI workflow runs Playwright;
+full Playwright E2E (`bun run test:ui-e2e`) is release validation, and UI changes
+require the targeted local flow check above. Never
 bypass hooks with `--no-verify` or a hook-skip environment variable.
 
 ## Architecture
