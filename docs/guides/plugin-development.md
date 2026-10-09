@@ -18,9 +18,20 @@ host APIs or tool execution.
 
 Every extension package needs a `plugin.json` manifest. The Host owns the canonical
 shape in `schemas/plugin-manifest.schema.json` and the complete TypeScript/JSDoc
-authoring contract in `src/plugins/public-contract.ts`. Vendor both files
+authoring contract in `src/plugins/public-contract.ts`. Vendor those two files
+and the host protocol schema `schemas/plugin-host-protocol/2/protocol.schema.json`
 unchanged into `contract/` at an app release tag, and record their hashes in
-`contract/sources.json`.
+`contract/sources.json`. An extension for app 0.12.0 or later declares
+`extensions["ai.agent-connector.ave"].requires.hostProtocol: "2"`. The retired `@ave/plugin-sdk` package is not a
+contract source.
+
+Official extensions live in the official marketplace monorepo
+`ken-jo/agent-marketplace` under `plugins/<name>/source/` (hello-world,
+local-indexer, meeting, lyra-mail); their `src/hostPlugin.ts` files are the
+current HostApi usage references. A new extension starts from
+`templates/extension/` in that repository. The former per-plugin
+`ave-plugin-*` repositories and `ave-plugin-template` are archived, and the
+vega-helper extension is retired.
 
 The manifest should include:
 
@@ -33,12 +44,12 @@ The manifest should include:
 - settings schema if configurable;
 - `requires.minAppVersion`, which a marketplace install requires.
 
-A JavaScript extension leaves `requires.hostProtocol` out: the host's own runtime
-speaks the extension protocol for it. An extension that declares one (a positive integer
-written as a string, such as `"1"`) is refused with `incompatible-host-protocol`
-by an app that does not serve that version, and an app whose schema predates the
-field rejects the manifest outright, so its `minAppVersion` must name a release
-that knows the field.
+Every extension, JavaScript or `process`, declares `requires.hostProtocol`
+(a positive integer written as a string). App 0.12.0 and later serve only `"2"`
+and refuse an extension that declares no protocol, or one it does not serve,
+with `incompatible-host-protocol` before anything is spawned. An app whose
+schema predates the field rejects the manifest outright, so `minAppVersion`
+must name a release that serves the declared protocol (`"0.12.0"` for `"2"`).
 
 `tools[]` is the only callable surface. The retired `uiTool`, `uiTools`,
 `uiAction`, `uiActions`, top-level `operationGovernance`, and top-level
