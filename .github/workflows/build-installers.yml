@@ -265,6 +265,14 @@ jobs:
             echo "Checkout HEAD does not equal immutable event source SHA" >&2
             exit 1
           fi
+      # The installers' app-update.yml carries package.json build.publish.
+      # Attaching them from any other repository would ship an update feed
+      # that points away from where they were released (e.g. an old owner).
+      - name: Verify package.json publish repository is this repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/check-release-repository.mjs
       - name: Verify protected annotated tag still resolves to event SHA
         shell: bash
         env:

@@ -318,6 +318,29 @@ describe("installer smoke and packaging discipline", () => {
     expect(smokeScript).toContain("prompts");
   });
 
+  it("refuses to attach release assets from a repository package.json does not publish to", () => {
+    const publish = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get(
+      "publish-release",
+    );
+    if (publish === undefined) throw new Error("build-installers.yml has no publish-release job");
+    const gate = "node scripts/check-release-repository.mjs";
+
+    expect(jobRunCommands(publish).filter((command) => command.includes(gate))).toHaveLength(1);
+    const step = publish.slice(
+      publish.lastIndexOf("\n      - ", publish.indexOf(gate)),
+      publish.indexOf("\n      - ", publish.indexOf(gate)),
+    );
+    // Unconditional and fatal: no `if:`, no continue-on-error, no `|| true`.
+    expect(step).not.toMatch(/^\s+if:/mu);
+    expect(step).not.toContain("continue-on-error");
+    expect(step).not.toContain("|| true");
+    // After the checkout of the event SHA it reads package.json from, before
+    // anything is downloaded or attached.
+    expect(publish.indexOf("uses: actions/checkout@")).toBeLessThan(publish.indexOf(gate));
+    expect(publish.indexOf(gate)).toBeLessThan(publish.indexOf("uses: actions/download-artifact@"));
+    expect(publish.indexOf(gate)).toBeLessThan(publish.indexOf("uses: softprops/action-gh-release@"));
+  });
+
   it("keeps privileged workflows on trusted default-branch events", () => {
     for (const path of [
       ".github/workflows/e2e.yml",
