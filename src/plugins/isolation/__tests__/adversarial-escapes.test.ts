@@ -544,7 +544,10 @@ describe("the four escapes, against the production factory under the real wrap",
         const audit = await auditTexts(spawned.host.audit);
         const denials = audit.filter((row) => row.startsWith(`[plugin:${PLUGIN_ID}] host_fetch_denied`));
         expect(denials, JSON.stringify(audit)).toHaveLength(1);
-        expect(denials[0]).toContain("not-allowed.invalid");
+        // The allow-list's own detail, not merely "denied": `.invalid` never
+        // resolves, so the SSRF layer behind the allow-list would deny it too,
+        // and only this line tells the two apart.
+        expect(denials[0]).toContain("https://not-allowed.invalid not in networkAccess.allowedDomains");
         expect(audit.some((row) => row.includes(" host_fetch ") && !row.includes("host_fetch_denied"))).toBe(false);
       } finally {
         await spawned.instance.stop?.();
