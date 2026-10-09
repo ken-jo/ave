@@ -6,6 +6,10 @@
  *
  *  1. `escape_secrets` — read `<AVE_HOME>/secrets/` and another plugin's data
  *     directory, and ask the host for another plugin's secret beside its own;
+ *     its own data directory is written and read back first, the in-sandbox
+ *     control that the paths and the probe work;
+ *     `escape_worker` asks the host for a delegated worker that reads the
+ *     other plugin's data, after one that reads its own;
  *  2. `escape_network` — a raw socket and a global `fetch` to a loopback
  *     listener, and a `hostFetch` to a host outside `allowedDomains`;
  *  3. `escape_electron` — every module form that could hand back Electron's
@@ -28,7 +32,7 @@
  * executable.
  */
 import { once } from "node:events";
-import { readdirSync, readFileSync, writeSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
@@ -38,6 +42,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const PROBE_TIMEOUT_MS = 5_000;
 /** The id the forged frame carries: a string, so it can never meet the runtime's numeric ids. */
 const FORGED_REQUEST_ID = "adversarial-forged-getSecret";
+/** What the controls write into the plugin's own data directory and read back. */
+const OWN_BYTES = "the adversarial plugin's own bytes";
 
 /** A synchronous probe's answer: its value, or the error's code. */
 function attempt(probe) {
@@ -73,6 +79,15 @@ async function escapeSecrets(context, args) {
   const sentinelName = args.sentinelName ?? "sentinel.txt";
   const secretsDir = args.secretsDir ?? join(context.aveHome, "secrets");
   const otherDataDir = args.otherDataDir ?? join(context.aveHome, "plugins", otherPluginId, "data");
+  // The control inside the sandbox: the child writes and re-reads its own data
+  // directory. A denial that looked like a missing path (bubblewrap answers
+  // ENOENT) would otherwise pass for a wrong path, and a data directory the
+  // wrap left read-only would go unseen.
+  const ownFile = join(context.pluginDataDir, sentinelName);
+  const own = {
+    write: attempt(() => writeFileSync(ownFile, OWN_BYTES, "utf-8")),
+    read: attempt(() => readFileSync(ownFile, "utf-8")),
+  };
   const filesystem = {
     listSecrets: attempt(() => readdirSync(secretsDir)),
     readSecret: attempt(() => readFileSync(join(secretsDir, sentinelName), "utf-8")),
@@ -99,9 +114,52 @@ async function escapeSecrets(context, args) {
   return {
     attempt: "escape_secrets",
     outcome: reached.length === 0 ? "confined" : "unconfined",
+    own,
     filesystem,
     secrets,
   };
+}
+
+/**
+ * One delegated worker that prints a file: its stdout, stderr and exit, or
+ * `timeout` when it has not exited within `waitMs`.
+ */
+async function workerReads(context, workerId, command, file, allowReadPaths, waitMs) {
+  return attemptAsync(async () => {
+    const worker = await context.hostApi.spawnWorker({ workerId, command, args: [file], allowReadPaths, allowWritePaths: [] });
+    let stdout = "";
+    let stderr = "";
+    worker.onStdout((chunk) => { stdout += chunk; });
+    worker.onStderr((chunk) => { stderr += chunk; });
+    const exit = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve("timeout"), waitMs);
+      worker.onExit(({ code }) => {
+        clearTimeout(timer);
+        resolve(code);
+      });
+    });
+    if (exit === "timeout") worker.stop();
+    return { stdout, stderr, exit };
+  });
+}
+
+async function escapeWorker(context, args) {
+  const otherPluginId = args.otherPluginId ?? "neighbour";
+  const sentinelName = args.sentinelName ?? "sentinel.txt";
+  const otherDataDir = args.otherDataDir ?? join(context.aveHome, "plugins", otherPluginId, "data");
+  const command = args.command ?? "/bin/cat";
+  const waitMs = args.waitMs ?? PROBE_TIMEOUT_MS;
+  // The control: the same command, granted the plugin's own data directory,
+  // prints what the child wrote there. A worker that cannot print it proves
+  // nothing by failing to print the neighbour's.
+  const ownFile = join(context.pluginDataDir, sentinelName);
+  writeFileSync(ownFile, OWN_BYTES, "utf-8");
+  const own = await workerReads(context, "adversarial-own", command, ownFile, [context.pluginDataDir], waitMs);
+  // The escape: no grant at all, so only what the wrap leaves readable is read.
+  const other = await workerReads(context, "adversarial-other", command, join(otherDataDir, sentinelName), [], waitMs);
+  const reached = other.ok && other.value.exit === 0 && other.value.stdout.length > 0 ? ["worker(otherData)"] : [];
+  if (args.expectConfined === true && reached.length > 0) throw escaped("escape_worker", reached.join(", "));
+  return { attempt: "escape_worker", outcome: reached.length === 0 ? "confined" : "unconfined", own, other };
 }
 
 // ── 2. direct egress ─────────────────────────────────────────────────────────
@@ -348,6 +406,7 @@ async function escapePatch(context, args) {
 export const createPlugin = async (context) => ({
   handlers: {
     escape_secrets: (args) => escapeSecrets(context, args ?? {}),
+    escape_worker: (args) => escapeWorker(context, args ?? {}),
     escape_network: (args) => escapeNetwork(context, args ?? {}),
     escape_electron: () => escapeElectron(),
     escape_patch: (args) => escapePatch(context, args ?? {}),

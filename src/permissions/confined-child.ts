@@ -83,14 +83,12 @@ export interface ConfinedChildSpec {
    */
   readonly floorPierces?: readonly string[];
   /**
-   * Reads this child is refused beyond the protected floor, appended to it in
-   * BOTH modes. Under `allow-list` an `allowRead` entry inside one of these is
-   * still re-allowed — ASRT's reads are deny-only, and the re-allow inside a
-   * covering deny is the rule — so a caller can deny a shared root and keep
-   * the child's own directory within it. Under `deny-only` nothing re-allows,
-   * so a caller there must name only paths the child may not read at all.
+   * Refuse the child the plugins root beyond the protected floor, its own
+   * directories re-allowed through `allowRead`. Carried to the wrap as
+   * `PerCommandFilesystem.denyPluginsRoot` (`asrt-sandbox.ts`), which says why
+   * and why Windows refuses it: set only under `allow-list`.
    */
-  readonly denyRead?: readonly string[];
+  readonly denyPluginsRoot?: boolean;
   /** Secret-stripped base environment the child starts from. */
   readonly baseEnv: NodeJS.ProcessEnv;
   /** Overlaid last — the sandbox process HOME, which must win. */
@@ -237,12 +235,18 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
   denyWrite: string[];
   pinWriteRoots?: boolean;
   floorPierces?: readonly string[];
+  denyPluginsRoot?: boolean;
 } {
   const floor = {
-    denyRead: [...getDefaultSensitiveReadDenyPaths(), ...(spec.denyRead ?? [])],
+    denyRead: getDefaultSensitiveReadDenyPaths(),
     denyWrite: getDefaultSensitiveWriteDenyPaths(),
   };
-  if (spec.grantMode === "deny-only") return floor;
+  if (spec.grantMode === "deny-only") {
+    if (spec.denyPluginsRoot === true) {
+      throw new Error(`[confined-child] ${spec.label}: denyPluginsRoot needs an allow-list confinement to re-allow the child's own directories`);
+    }
+    return floor;
+  }
   if (temp === undefined) throw new Error(`[confined-child] ${spec.label}: an allow-list confinement was built without its temp directory`);
   // The temp directory is granted here for the same reason the deny floor is
   // restated here: no caller should have to remember it, and one that forgot
@@ -259,6 +263,7 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
     denyWrite: floor.denyWrite,
     ...(spec.pinWriteRoots === true ? { pinWriteRoots: true } : {}),
     ...(spec.floorPierces !== undefined ? { floorPierces: spec.floorPierces } : {}),
+    ...(spec.denyPluginsRoot === true ? { denyPluginsRoot: true } : {}),
   };
 }
 

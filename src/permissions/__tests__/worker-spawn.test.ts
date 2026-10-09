@@ -350,6 +350,9 @@ describe("spawnWorker — gate ON (macOS)", () => {
     expect(options.filesystem.allowWrite).toContain("/data/index");
     // A plugin worker is plugin-owned code: its write roots are pinned.
     expect((options.filesystem as { pinWriteRoots?: boolean }).pinWriteRoots).toBe(true);
+    // And it reads no plugin's directory but the grants it was given: the
+    // plugins root is refused, those grants re-allowed inside it.
+    expect((options.filesystem as { denyPluginsRoot?: boolean }).denyPluginsRoot).toBe(true);
     expect(options.filesystem.allowRead).toContain("/opt/worker");
     expect(options.filesystem.allowRead).toContain("/opt/scripts/embed.py");
     expect(options.allowUnixSocketPath).toBeUndefined();
@@ -708,6 +711,9 @@ describe("spawnWorker — Windows with gate ON", () => {
     expect(options.binShell).toBe("powershell");
     expect(options.filesystem.allowRead).toBeUndefined();
     expect(options.filesystem.allowWrite).toBeUndefined();
+    // No plugins-root deny on Windows: there it would be an ACE for the one
+    // account every confined process runs as.
+    expect((options.filesystem as { denyPluginsRoot?: boolean }).denyPluginsRoot).toBeUndefined();
     expect(options.filesystem.denyRead).toContain("/home/u/.ave/secrets");
     expect(options.filesystem.denyWrite).toContain("/home/u/.zshrc");
 

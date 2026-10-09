@@ -1115,6 +1115,16 @@ describe("the factory's launch reaches the spawn as decided", () => {
         // reads its own environment before the sandbox command runs.
         expect(spec.baseEnv).toEqual(buildSafeChildEnv());
         expect(Object.keys(spec.extraEnv).sort()).toEqual(sandboxHomeKeys);
+        // Every other plugin's directories are refused, and the child's own —
+        // its root and data directory — are the re-allows inside that deny.
+        const reach = spawnConfinedChild.mock.calls[0]![0] as {
+          grantMode: string;
+          denyPluginsRoot?: boolean;
+          allowRead: string[];
+        };
+        expect(reach.grantMode).toBe("allow-list");
+        expect(reach.denyPluginsRoot).toBe(true);
+        expect(reach.allowRead).toEqual(expect.arrayContaining([root, join(root, "data")]));
         for (const name of ["SMOKE_VENDOR_DIR", "PLUGIN_ROOT", "PLUGIN_DATA", "ELECTRON_RUN_AS_NODE"]) {
           expect(spec.baseEnv).not.toHaveProperty(name);
           expect(spec.extraEnv).not.toHaveProperty(name);

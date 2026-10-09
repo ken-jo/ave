@@ -157,6 +157,15 @@ export interface McpStdioServerConfig extends McpServerConfigBase {
   cwd?: string;
   /** Host-owned, package-stable writable directory for a bundled server. */
   pluginDataDir?: string;
+  /**
+   * HOST-POPULATED: the retained generation payload a plugin-bundled server
+   * runs from. Every wrapped stdio server is refused the plugins root, where
+   * that payload lives, so this is the one directory under it a bundled server
+   * reads. Set only by `preparePluginMcpGeneration`; a value from any other
+   * source is dropped at connect (`McpManager.connectServer`) and never
+   * crosses to the renderer.
+   */
+  bundledPayloadRoot?: string;
   /** Safe env var name that receives apiKey at process launch. */
   apiKeyEnv?: string;
   /**
@@ -236,7 +245,7 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
  */
 export type McpServerConfigDto = DistributiveOmit<
   McpServerConfig,
-  "apiKey" | "headers" | "env" | "args" | "sandboxRoot" | "cwd" | "pluginDataDir"
+  "apiKey" | "headers" | "env" | "args" | "sandboxRoot" | "cwd" | "pluginDataDir" | "bundledPayloadRoot"
 > & { bundled?: { kind: "plugin" | "agent-plugin"; name: string; server: string } };
 
 /**

@@ -23,15 +23,16 @@
         },
         {
           "name": "escape_secrets",
-          "description": "Read the host's secrets directory and another plugin's data directory.",
+          "description": "Write and read back its own data directory, then read the host's secrets directory and another plugin's data directory.",
           "inputSchema": {
             "type": "object",
             "properties": {
+              "ownDataDir": { "type": "string" },
               "secretsDir": { "type": "string" },
               "otherDataDir": { "type": "string" },
               "sentinelName": { "type": "string" }
             },
-            "required": ["secretsDir", "otherDataDir", "sentinelName"]
+            "required": ["ownDataDir", "secretsDir", "otherDataDir", "sentinelName"]
           }
         },
         {

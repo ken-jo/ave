@@ -16,8 +16,11 @@
  * THE CONTROLS RUN FIRST, and an escape case asserts nothing until its control
  * held: the sentinel is readable from the test process, the listener accepts a
  * connection from it, a full Electron main process (`control-electron-main.cjs`
- * — the same binary with `ELECTRON_RUN_AS_NODE` removed) reports the API, and
- * `patch()` really replaces `globalThis.fetch` where it runs. A probe that
+ * — the same binary with `ELECTRON_RUN_AS_NODE` removed) runs the fixture's own
+ * detector and it reports the API usable, and `patch()` really replaces
+ * `globalThis.fetch` where it runs. Inside the sandbox, the child writes and
+ * reads back its own data directory, and a worker it asks for prints it, before
+ * either is held to failing on a neighbour's. A probe that
  * cannot be shown live is no evidence, so a control that fails or cannot start
  * fails the file.
  *
@@ -84,6 +87,9 @@ const PYTHON_SMOKE_ID = "python-smoke";
 const SENTINEL_NAME = "sentinel.txt";
 const SECRETS_SENTINEL = "the host secret no plugin child may read";
 const NEIGHBOUR_SENTINEL = "the neighbour's own bytes, which no other plugin may read";
+const LATE_SENTINEL = "a plugin installed after the child spawned";
+/** What the fixture's in-sandbox controls write into its own data directory (`entry.mjs`). */
+const OWN_BYTES = "the adversarial plugin's own bytes";
 const OWN_SECRET = "the adversarial plugin's own stored secret";
 const NEIGHBOUR_SECRET = "the neighbour's stored secret";
 const DENIED_URL = "https://not-allowed.invalid/escape";
@@ -147,7 +153,10 @@ const controls: Record<"secrets" | "network" | "electron" | "patch", "held" | un
 };
 
 beforeAll(async () => {
-  const root = mkdtempSync(join(tmpdir(), "adversarial-escapes-"));
+  // Short on macOS, whose temp directory is deep: escape 1a's worker binds its
+  // control socket under `<AVE_HOME>/plugins/<id>/run/<worker>/`, and a path
+  // past `sun_path` is refused before any worker starts.
+  const root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : tmpdir(), "adv-"));
   const aveHome = join(root, ".ave");
   const secretsDir = join(aveHome, "secrets");
   const neighbourDataDir = join(aveHome, "plugins", NEIGHBOUR_ID, "data");
@@ -413,11 +422,16 @@ describe("the controls, which must hold before any escape is asserted", () => {
     async () => {
       // The test process is NOT this control: it runs as Node itself.
       expect(process.env.ELECTRON_RUN_AS_NODE).toBe("1");
-      expect(await runElectronControl()).toEqual({
-        BrowserWindow: "function",
-        defaultSession: "object",
-        ipcMain: "object",
-      });
+      const control = (await runElectronControl()) as {
+        detector: { outcome: string; usable: string[] };
+      };
+      expect(control).toMatchObject({ BrowserWindow: "function", defaultSession: "object", ipcMain: "object" });
+      // The detector row 3 relies on, run where the API is real, finds it and
+      // uses it: "no-usable-api" below is that detector's answer, not its blind spot.
+      expect(control.detector.outcome).toBe("usable-api");
+      expect(control.detector.usable).toEqual(
+        expect.arrayContaining(["requireBare", "requireBare.newBrowserWindow", "requireBare.defaultSession", "requireBare.ipcMainHandle"]),
+      );
       controls.electron = "held";
     },
     90_000,
@@ -455,6 +469,10 @@ describe("the four escapes, against the production factory under the real wrap",
           sentinelName: SENTINEL_NAME,
           otherPluginId: NEIGHBOUR_ID,
         });
+        // The control inside the sandbox: the child wrote its own data directory
+        // and read the bytes back, so the reads below fail for being someone
+        // else's, not for a wrong path or a data directory left read-only.
+        expect(result.own).toEqual({ write: { ok: true }, read: { ok: true, value: OWN_BYTES } });
         const filesystem = result.filesystem as Record<string, { ok: boolean; code?: string; value?: unknown }>;
         // Both reads fail with the substrate's own error and return no bytes.
         for (const probe of ["readSecret", "readOtherData"]) {
@@ -484,6 +502,67 @@ describe("the four escapes, against the production factory under the real wrap",
         );
         expect(audit).toContain(`[plugin:${PLUGIN_ID}] pluginSecret_read key=plugin.${PLUGIN_ID}.key`);
         expect(audit.filter((row) => row.startsWith(`[plugin:${NEIGHBOUR_ID}]`))).toEqual([]);
+
+        // A plugin installed AFTER this child spawned is refused too: the deny
+        // is the plugins root, not a list of what was in it. Windows has no
+        // such deny (`PerCommandFilesystem.denyPluginsRoot`).
+        if (process.platform !== "win32") {
+          const lateDataDir = join(staged.aveHome, "plugins", "lateplugin", "data");
+          mkdirSync(lateDataDir, { recursive: true, mode: 0o700 });
+          writeFileSync(join(lateDataDir, SENTINEL_NAME), LATE_SENTINEL, "utf-8");
+          expect(readFileSync(join(lateDataDir, SENTINEL_NAME), "utf-8")).toBe(LATE_SENTINEL);
+          const late = await call(spawned, "escape_secrets", {
+            expectConfined: true,
+            secretsDir: staged.secretsDir,
+            otherDataDir: lateDataDir,
+            sentinelName: SENTINEL_NAME,
+            otherPluginId: NEIGHBOUR_ID,
+          });
+          const lateRead = (late.filesystem as Record<string, { ok: boolean; code?: string }>).readOtherData!;
+          expect(lateRead.ok, JSON.stringify(lateRead)).toBe(false);
+          expect(deniedReadCodes()).toContain(lateRead.code);
+          expect(JSON.stringify(late)).not.toContain(LATE_SENTINEL);
+        }
+      } finally {
+        await spawned.instance.stop?.();
+      }
+    },
+    120_000,
+  );
+
+  // Escape 1a by delegation: the child asks the host for a worker that reads
+  // what it cannot. `/bin/cat` is the worker; Windows workers run as the same
+  // single sandbox account as the child and have no neighbour deny to measure.
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "1a by delegation: a worker the child asks for reads its own grant and not a neighbour's data",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      expect(controls.secrets, "the secrets control did not hold").toBe("held");
+      // The control outside the sandbox: the same command prints the
+      // neighbour's sentinel when nothing confines it.
+      expect(execFileSync("/bin/cat", [join(staged.neighbourDataDir, SENTINEL_NAME)], { encoding: "utf-8" })).toBe(
+        NEIGHBOUR_SENTINEL,
+      );
+      const spawned = await spawnInstalled(staged.fixture);
+      try {
+        const result = await call(spawned, "escape_worker", {
+          expectConfined: true,
+          otherDataDir: staged.neighbourDataDir,
+          sentinelName: SENTINEL_NAME,
+          otherPluginId: NEIGHBOUR_ID,
+          command: "/bin/cat",
+        });
+        // The control inside the sandbox: granted its plugin's data directory,
+        // the worker prints what the child wrote there.
+        expect(result.own, JSON.stringify(result.own)).toMatchObject({
+          ok: true,
+          value: { stdout: OWN_BYTES, exit: 0 },
+        });
+        const other = result.other as { ok: boolean; value?: { stdout: string; stderr: string; exit: unknown } };
+        expect(other.ok, JSON.stringify(other)).toBe(true);
+        expect(other.value!.exit, JSON.stringify(other)).not.toBe(0);
+        expect(other.value!.stdout).toBe("");
+        expect(JSON.stringify(result)).not.toContain(NEIGHBOUR_SENTINEL);
       } finally {
         await spawned.instance.stop?.();
       }
@@ -674,9 +753,15 @@ describe("the four escapes, against the production factory under the real wrap",
       const spawned = await spawnInstalled(installed);
       try {
         const secrets = await call(spawned, "escape_secrets", {
+          ownDataDir: pluginDataDir,
           secretsDir: staged.secretsDir,
           otherDataDir: staged.neighbourDataDir,
           sentinelName: SENTINEL_NAME,
+        });
+        // The in-sandbox control, as for the JavaScript child.
+        expect(secrets.own).toEqual({
+          write: { ok: true, value: null },
+          read: { ok: true, value: "the python-smoke plugin's own bytes" },
         });
         const filesystem = secrets.filesystem as Record<string, { ok: boolean; code?: string; value?: unknown }>;
         for (const probe of ["readSecret", "readOtherData"]) {

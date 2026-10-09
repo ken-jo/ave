@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import type { ActivePluginGeneration } from "../plugins/plugin-generation-coordinator.js";
 import type { McpServerApproval, McpServerConfig } from "./types.js";
 import { anchorBundledCommand } from "../plugins/plugin-bundled-command.js";
@@ -224,6 +225,9 @@ export function preparePluginMcpGeneration(
         ...parsed,
         command: anchored.command[0]!,
         args: anchored.command.slice(1),
+        // The root the command was anchored in, canonical as the anchor is:
+        // the one directory under the refused plugins root this server reads.
+        bundledPayloadRoot: realpathSync(payloadRoot),
       });
     }
     if (!approvalDigests.has(contribution.localId)) throw new Error(`plugin MCP '${contribution.localId}' has no approval digest`);

@@ -216,6 +216,49 @@ describe("the shared layer withholds grants under the protected floor", () => {
  * XDG_CONFIG_HOME on Linux — and a trusted custom deny. Runs on macOS and on
  * Linux with bubblewrap.
  */
+describe("the plugins root, refused to plugin-owned wraps", () => {
+  let root: string;
+  beforeAll(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), "ave-plugins-root-")));
+  });
+  afterEach(() => {
+    setProcessPlatform(hostPlatform);
+    vi.unstubAllEnvs();
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  function denyFor(platform: NodeJS.Platform) {
+    vi.stubEnv("AVE_HOME", join(root, ".ave"));
+    setProcessPlatform(platform);
+    return buildPerCommandSandboxCustomConfig({
+      allowRead: [join(root, ".ave", "plugins", "own")],
+      denyRead: [],
+      denyWrite: [],
+      denyPluginsRoot: true,
+    })?.filesystem?.denyRead;
+  }
+
+  it("adds the root to the wrap's read denies, spelled exactly on macOS so an allowed ancestor cannot re-emit it over the wrap's own", () => {
+    const plugins = join(root, ".ave", "plugins");
+    mkdirSync(plugins, { recursive: true });
+    expect(denyFor("linux")).toEqual([plugins]);
+    expect(denyFor("darwin")).toEqual([`${plugins.slice(0, -1)}[${plugins.slice(-1)}]`]);
+  });
+
+  it("adds nothing without the flag", () => {
+    vi.stubEnv("AVE_HOME", join(root, ".ave"));
+    expect(buildPerCommandSandboxCustomConfig({ denyRead: [], denyWrite: [] })?.filesystem?.denyRead).toEqual([]);
+  });
+
+  it("is refused on Windows, where a deny is an ACE for the one account every confined process shares", () => {
+    expect(() => denyFor("win32")).toThrow(/denyPluginsRoot is refused on Windows/);
+  });
+
+  it("is refused without the read floor restated, which a per-command deny replaces", () => {
+    expect(() => buildPerCommandSandboxCustomConfig({ denyPluginsRoot: true })).toThrow(/needs denyRead restated/);
+  });
+});
+
 describe("a confined child cannot reach user data through a grant", () => {
   let root: string;
   let userData: string;
@@ -359,6 +402,7 @@ describe("a confined child cannot reach user data through a grant", () => {
         sandboxHome: home,
         // Lands in the bundled wrap's allowRead as well.
         allowWrite: [sessions],
+        ownPluginReads: [],
         tempPrincipal: { kind: "mcp", id: "protected-write-roots" },
       });
       const run = spawnSync(argv[0]!, argv.slice(1), {
@@ -369,6 +413,102 @@ describe("a confined child cannot reach user data through a grant", () => {
       await cleanupAsrtSandboxAfterCommand();
       expect(run.stdout).toContain("probe-finished");
       expect(run.stdout).not.toContain(SECRET);
+    } finally {
+      home.cleanup();
+    }
+  });
+
+  /**
+   * Plugins live under `<AVE_HOME>/plugins`, which the floor does not cover.
+   * Every wrap of plugin-owned code is refused that root and re-allowed its
+   * own directories inside it (`PerCommandFilesystem.denyPluginsRoot`).
+   */
+  function pluginsLayout() {
+    const plugins = join(root, ".ave", "plugins");
+    const own = join(plugins, "own");
+    const ownData = join(own, "data");
+    const generation = join(plugins, ".cache", "own", "generations", "g", "payload");
+    const neighbourData = join(plugins, "neighbour", "data");
+    for (const dir of [ownData, generation, neighbourData]) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(own, "code.txt"), "own-code");
+    writeFileSync(join(generation, "hook.txt"), "own-generation");
+    writeFileSync(join(neighbourData, "s"), SECRET);
+    writeFileSync(join(plugins, "registry.json"), SECRET);
+    rmSync(join(ownData, "written"), { force: true });
+    return { plugins, own, ownData, generation, neighbourData };
+  }
+
+  const pluginsProbe = (layout: ReturnType<typeof pluginsLayout>, ownReads: readonly string[]) => [
+    `cat ${join(layout.neighbourData, "s")}`,
+    `cat ${join(layout.plugins, "registry.json")}`,
+    `ls ${layout.plugins}`,
+    ...ownReads.map((file) => `cat ${file}; echo`),
+    `echo own-written > ${join(layout.ownData, "written")} && cat ${join(layout.ownData, "written")}`,
+    "echo probe-finished",
+  ].join("; ");
+
+  function expectOnlyOwnPlugin(stdout: string, layout: ReturnType<typeof pluginsLayout>, ownBytes: readonly string[]): void {
+    expect(stdout, "the probe did not run to completion").toContain("probe-finished");
+    expect(stdout).not.toContain(SECRET);
+    expect(stdout).not.toContain("neighbour");
+    // The controls: its own directories are still its own, the data directory
+    // writable — on Linux a read re-allow of a directory holding it would
+    // otherwise have left it read-only.
+    for (const bytes of ownBytes) expect(stdout).toContain(bytes);
+    expect(stdout).toContain("own-written");
+    expect(readFileSync(join(layout.ownData, "written"), "utf-8").trim()).toBe("own-written");
+  }
+
+  it("as a plugin child whose root holds its data directory: the data stays writable and the neighbour unread", async () => {
+    if (!sandboxRuns) return;
+    const layout = pluginsLayout();
+    const home = createSandboxProcessHome();
+    try {
+      const { child } = await spawnConfinedChild({
+        command: "/bin/sh",
+        args: ["-c", pluginsProbe(layout, [join(layout.own, "code.txt")])],
+        label: "protected-write-roots",
+        grantMode: "allow-list",
+        tempPrincipal: { kind: "plugin", id: "own" },
+        // The shape of a plugin installed where its data lives: the root is
+        // read, the data directory inside it written.
+        allowRead: [layout.own, layout.ownData, home.path],
+        allowWrite: [layout.ownData, home.path],
+        pinWriteRoots: true,
+        denyPluginsRoot: true,
+        baseEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+        extraEnv: { ...home.env },
+      });
+      let stdout = "";
+      child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf-8"); });
+      await new Promise<void>((resolve) => child.once("close", () => resolve()));
+      await cleanupAsrtSandboxAfterCommand();
+      expectOnlyOwnPlugin(stdout, layout, ["own-code"]);
+    } finally {
+      home.cleanup();
+    }
+  });
+
+  it("as a bundled hook: its generation and data are its own, another plugin's data and the registry are not", async () => {
+    if (!sandboxRuns) return;
+    const layout = pluginsLayout();
+    const home = createSandboxProcessHome();
+    try {
+      const { argv, env } = await wrapBundledCommand({
+        command: "/bin/sh",
+        args: ["-c", pluginsProbe(layout, [join(layout.generation, "hook.txt")])],
+        sandboxHome: home,
+        allowWrite: [layout.ownData],
+        ownPluginReads: [layout.generation],
+        tempPrincipal: { kind: "plugin", id: "own" },
+      });
+      const run = spawnSync(argv[0]!, argv.slice(1), {
+        env: bundledWrappedEnv({ PATH: process.env.PATH ?? "/usr/bin:/bin" }, env, home.env),
+        encoding: "utf-8",
+        timeout: 30_000,
+      });
+      await cleanupAsrtSandboxAfterCommand();
+      expectOnlyOwnPlugin(run.stdout, layout, ["own-generation"]);
     } finally {
       home.cleanup();
     }

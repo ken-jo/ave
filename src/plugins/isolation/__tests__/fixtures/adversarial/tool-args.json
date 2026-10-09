@@ -1,5 +1,6 @@
 {
   "escape_secrets": { "expectConfined": false },
+  "escape_worker": { "expectConfined": false, "waitMs": 200 },
   "escape_network": { "expectConfined": false, "port": 9 },
   "escape_electron": { "expectConfined": false },
   "escape_patch": { "expectConfined": false }

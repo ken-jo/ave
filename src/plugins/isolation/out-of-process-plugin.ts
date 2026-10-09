@@ -28,7 +28,7 @@
  * projection — is untouched and cannot tell the difference, which is exactly
  * why the five plugins that are not the pilot keep loading as they did.
  */
-import { mkdirSync, readdirSync, statSync, type Dirent } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { ENV_NAME_RE } from "../../mcp/safe-names.js";
 import { ProcessEntryUnconfinedError, type ProcessLaunch } from "../process-entry.js";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
@@ -64,7 +64,6 @@ import {
   isSensitivePath,
 } from "../../permissions/sensitive-paths.js";
 import { aveHome } from "../../shared/ave-home.js";
-import { resolvePluginPaths } from "../plugin-paths.js";
 import { HOST_DIRECTORY_CATALOG, hostDirectoryFloorPierces } from "../sandbox-authority.js";
 import type {
   PluginManifest,
@@ -767,46 +766,6 @@ export interface ObservedPluginChild {
 }
 
 /**
- * The other plugins' directories this child is refused, beyond the floor.
- *
- * macOS and Linux deny the plugins root as a whole: `envelope.read` names the
- * child's own root and data directory, and an `allowRead` inside a covering
- * deny is re-allowed (seatbelt's later allow; bubblewrap's bind over the
- * tmpfs), so the child keeps its own and a plugin installed after this spawn is
- * covered too. Windows carries the floor alone (`grantMode: "deny-only"`) and
- * re-allows nothing, so a deny on the root would take the child's own code
- * away: there every directory under the root is denied by name except one that
- * holds, or lies inside, a path of this child's own envelope. A plugin
- * installed after the spawn is outside that list until the child is next
- * spawned — the Windows half is a snapshot, the macOS and Linux half is not.
- */
-export function pluginNeighbourReadDenies(
-  envelope: DelegatedWorkerConfinement,
-  platform: NodeJS.Platform = process.platform,
-): string[] {
-  const { pluginsRoot } = resolvePluginPaths();
-  if (platform !== "win32") return [pluginsRoot];
-  const own = [...envelope.read, ...envelope.write].map((path) => caseFoldForMatch(canonicalizePathForMatch(path)));
-  let entries: Dirent[];
-  try {
-    entries = readdirSync(pluginsRoot, { withFileTypes: true });
-  } catch (error) {
-    // No plugins root yet means no neighbour to deny.
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
-  return entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => join(pluginsRoot, entry.name))
-    .filter((directory) => {
-      const folded = caseFoldForMatch(canonicalizePathForMatch(directory));
-      return !own.some(
-        (path) => isPathAllowed(path, { directories: [folded] }) || isPathAllowed(folded, { directories: [path] }),
-      );
-    });
-}
-
-/**
  * Spawn the child under ASRT.
  *
  * Filesystem grants, and why each is the size it is:
@@ -858,24 +817,26 @@ export function pluginNeighbourReadDenies(
  *    covering deny and is inert without one (see `asrt-sandbox.ts`). Plugins
  *    are installed under `<AVE_HOME>/plugins` (`plugin-paths.ts`), which the
  *    shared floor does NOT cover: it names `<AVE_HOME>/secrets` and its
- *    siblings, not the plugins root. So this spawn adds its own read deny,
- *    {@link pluginNeighbourReadDenies}: the whole plugins root on macOS and
- *    Linux, where the child's own root and data directory — already in
- *    `envelope.read` — are re-allowed inside it, and every OTHER plugin's
- *    directory by name on Windows, where nothing re-allows. That deny is what
- *    makes "cannot read another plugin's data directory" true rather than
- *    aspirational; Admission's adversarial fixture measured a child listing
- *    and reading a neighbour's data before it existed
- *    (`adversarial-escapes.test.ts`, escape 1a). A declared `hostDirectory`
- *    grant widens the floor for that plugin.
+ *    siblings, not the plugins root. So this spawn refuses the whole root on
+ *    macOS and Linux (`denyPluginsRoot`, `asrt-sandbox.ts`), and the child's
+ *    own root, data and socket directories — already in `envelope.read` — are
+ *    re-allowed inside it. That deny is what makes "cannot read another
+ *    plugin's data directory" true rather than aspirational; Admission's
+ *    adversarial fixture measured a child listing and reading a neighbour's
+ *    data before it existed (`adversarial-escapes.test.ts`, escape 1a). A
+ *    declared `hostDirectory` grant widens the floor for that plugin.
  *
  * On Windows ASRT 0.0.76 supports no per-exec allow grants at all — passing any
  * makes `wrapWorkerCommand` throw — so the wrap carries the deny floor alone
  * (`grantMode: "deny-only"`) and reachability is an ACL question. §4's Windows
  * residual stands unchanged and is not softened here: srt-win confines
  * filesystem and network but NOT process creation, so a confined plugin child
- * on Windows can still spawn. Admitting third-party plugins on Windows is the
- * separate owner decision §7.4 names, not something this spawn resolves.
+ * on Windows can still spawn. Nor is one plugin's child kept from another's
+ * directories there: every confined process runs as the one `srt-sandbox`
+ * account, so the ACL that grants plugin A's child its data grants it to every
+ * confined process while A runs, and a deny would take it from A as well.
+ * Admitting third-party plugins on Windows is the separate owner decision §7.4
+ * names, not something this spawn resolves.
  */
 export async function spawnConfinedPluginChild(
   spec: ConfinedPluginChildSpec,
@@ -988,8 +949,8 @@ export async function spawnConfinedPluginChild(
       allowRead: [...spec.envelope.read, sandboxHome.path],
       allowWrite: [...spec.envelope.write, sandboxHome.path],
       // Every other plugin's code and data: the floor does not cover the
-      // plugins root, so this spawn does.
-      denyRead: pluginNeighbourReadDenies(spec.envelope),
+      // plugins root, so this spawn does wherever a deny can re-allow.
+      ...(process.platform === "win32" ? {} : { denyPluginsRoot: true }),
       // The envelope names a floor-piercing host directory only when the
       // plugin's reviewed declaration asked for it.
       floorPierces: spec.envelope.read.filter((path) => hostDirectoryFloorPierces().includes(path)),

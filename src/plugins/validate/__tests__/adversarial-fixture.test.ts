@@ -62,6 +62,7 @@ const STANDARD_ROWS = [
   "discover.capabilities",
   "tools.list",
   "tools.call:escape_secrets",
+  "tools.call:escape_worker",
   "tools.call:escape_network",
   "tools.call:escape_electron",
   "tools.call:escape_patch",
@@ -161,13 +162,34 @@ describe("the adversarial fixture under the validate CLI", () => {
       const raw = frame.result?._meta?.["ave/rawResult"] as { attempt?: string } | undefined;
       if (raw?.attempt) results.set(raw.attempt, raw as Record<string, unknown>);
     }
-    expect([...results.keys()].sort()).toEqual(["escape_electron", "escape_network", "escape_patch", "escape_secrets"]);
+    expect([...results.keys()].sort()).toEqual([
+      "escape_electron",
+      "escape_network",
+      "escape_patch",
+      "escape_secrets",
+      "escape_worker",
+    ]);
 
     // The validation host answers every key with the same stored value
     // (`validation-host.ts`), so the foreign key is answered here — the probe is
     // live, and nothing about the gate is claimed by this harness.
     expect(results.get("escape_secrets")).toMatchObject({
+      own: { write: { ok: true }, read: { ok: true, value: "the adversarial plugin's own bytes" } },
       secrets: { foreign: { ok: true, value: "the-stored-secret" }, own: { ok: true, value: "the-stored-secret" } },
+    });
+    // The worker probe is live too: both workers were asked for and granted a
+    // handle. The validation host's scripted workers speak only when the run
+    // fires them, after the call, so each probe waited out `waitMs`; the wrap
+    // suite is where a worker prints, and is held to the refusal.
+    const workerSpawns = hostRequests
+      .filter((frame) => frame.method === "ave/host/spawnWorker")
+      .map((frame) => JSON.stringify(frame.params));
+    expect(workerSpawns).toHaveLength(2);
+    expect(workerSpawns[0]).toContain('"workerId":"adversarial-own"');
+    expect(workerSpawns[1]).toContain('"workerId":"adversarial-other"');
+    expect(results.get("escape_worker")).toMatchObject({
+      own: { ok: true, value: { stdout: "", exit: "timeout" } },
+      other: { ok: true, value: { stdout: "", exit: "timeout" } },
     });
     expect(results.get("escape_network")).toMatchObject({
       hostFetch: { url: "https://not-allowed.invalid/escape", ok: true, value: 200 },

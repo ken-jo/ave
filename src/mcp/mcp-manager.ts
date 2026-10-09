@@ -351,7 +351,8 @@ export class McpManager {
     // always sets sandboxRoot" is established here (deny-by-default A.a). Any
     // value that rode in on `config` (e.g. a tampered servers.json) is dropped
     // and overwritten with the host-derived per-server root.
-    const { pluginDataDir: _untrustedDataDir, ...managedConfig } = config.transport === "stdio" ? config : { ...config, pluginDataDir: undefined };
+    const { pluginDataDir: _untrustedDataDir, bundledPayloadRoot: _untrustedPayloadRoot, ...managedConfig } =
+      config.transport === "stdio" ? config : { ...config, pluginDataDir: undefined, bundledPayloadRoot: undefined };
     const connectConfig =
       managedConfig.transport === "stdio"
         ? { ...managedConfig, sandboxRoot: await this.ensureStdioSandboxRoot(config.id) }
@@ -1199,11 +1200,12 @@ export class McpManager {
     // - headers: may contain bearer/session tokens
     // - env: may contain injected credentials
     // - args: may embed secrets on stdio command lines
-    // - sandboxRoot, cwd and pluginDataDir: host-derived filesystem paths; never renderer concerns
-    //   and never sourced from renderer input.
+    // - sandboxRoot, cwd, pluginDataDir and bundledPayloadRoot: host-derived filesystem paths;
+    //   never renderer concerns and never sourced from renderer input.
     const { apiKey: _apiKey, headers: _headers, env: _env, args: _args, ...rest } =
       config;
-    const { sandboxRoot: _sandboxRoot, cwd: _cwd, pluginDataDir: _pluginDataDir, ...safe } = rest as Record<string, unknown>;
+    const { sandboxRoot: _sandboxRoot, cwd: _cwd, pluginDataDir: _pluginDataDir, bundledPayloadRoot: _bundledPayloadRoot, ...safe } =
+      rest as Record<string, unknown>;
     return safe as McpServerConfigDto;
   }
 

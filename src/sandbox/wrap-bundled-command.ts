@@ -15,6 +15,13 @@ export interface BundledWrapInput {
   args: readonly string[];
   sandboxHome: { path: string; env: Record<string, string> };
   allowWrite: readonly string[];
+  /**
+   * The directories of the process's own plugin it reads, re-allowed inside
+   * the plugins-root deny: a hook's generation root, a bundled server's
+   * payload root. Empty for a server that belongs to no plugin, which then
+   * reads nothing under the root.
+   */
+  ownPluginReads: readonly string[];
   /** Whose temp directory the process gets: its plugin for a hook, its server for an MCP stdio server. */
   tempPrincipal: SandboxTempPrincipal;
 }
@@ -36,13 +43,17 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
   const result = await wrapWorkerCommand(cmdline, {
     filesystem: {
       allowWrite: [temp.dir, input.sandboxHome.path, ...input.allowWrite],
-      allowRead: [temp.dir, input.sandboxHome.path, ...input.allowWrite, ...(tmpDir ? [tmpDir] : [])],
+      allowRead: [temp.dir, input.sandboxHome.path, ...input.ownPluginReads, ...input.allowWrite, ...(tmpDir ? [tmpDir] : [])],
       denyRead: getDefaultSensitiveReadDenyPaths(),
       denyWrite: getDefaultSensitiveWriteDenyPaths(),
       // Bundled hooks and MCP stdio servers are plugin-owned (or third-party)
       // code, and every root they write into is one the host created: a
       // plugin's data root, a server's sandbox root, the process HOME.
       pinWriteRoots: true,
+      // And none of them reads another plugin's directories: a hook writes its
+      // plugin's data root, which that plugin's child reads, so a hook that
+      // could read a neighbour's data could hand it to the child.
+      denyPluginsRoot: true,
     },
   });
   if (!result.argv[0]) {

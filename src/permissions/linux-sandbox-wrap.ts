@@ -89,20 +89,118 @@ function mountIdentity(target: string): string {
   throw new Error("Linux sandbox wrapper cannot establish mount identity");
 }
 
+/** The two lists of the wrap's own filesystem section that decide a re-allow. */
+export interface LinuxWrapFilesystem {
+  /** The wrap's read re-allows, as handed to ASRT. */
+  readonly allowRead?: readonly string[];
+  /** The wrap's write denies, as handed to ASRT. */
+  readonly denyWrite?: readonly string[];
+}
+
+interface WrapperOption {
+  readonly option: string;
+  readonly operands: readonly string[];
+  /** Mount identity of the target, for the mount options only. */
+  readonly identity?: string;
+}
+
+function isAtOrUnder(path: string, ancestor: string): boolean {
+  return path === ancestor || path.startsWith(ancestor === "/" ? "/" : `${ancestor}/`);
+}
+
+/**
+ * Put back what a read re-allow shadows.
+ *
+ * ASRT masks a read-denied directory with a tmpfs and then, inside it, binds
+ * the write roots back first and the read re-allows after them. When a
+ * re-allow names a directory that HOLDS a write root — a plugin child reading
+ * its own root with its data directory inside — the read-only bind of the
+ * parent lands on top of the child's writable bind, and the data directory
+ * becomes read-only. Every mount made inside the re-allowed directory since
+ * the last mount at or above it is therefore made again right after it, in
+ * order, so the subtree ends as it was before the re-allow covered it. A write
+ * bind under one of the wrap's write denies is not put back: there the deny's
+ * own read-only bind, emitted later, is the answer ASRT intends.
+ */
+function replayShadowedMounts(options: readonly WrapperOption[], filesystem: LinuxWrapFilesystem): WrapperOption[] {
+  const reallows = new Set((filesystem.allowRead ?? []).map((path) => mountIdentity(path)));
+  const writeDenies = (filesystem.denyWrite ?? []).map((path) => mountIdentity(path));
+  const out = [...options];
+  for (let index = 0; index < out.length; index++) {
+    const reallow = out[index]!;
+    if (reallow.option !== "--ro-bind" || reallow.identity === undefined || !reallows.has(reallow.identity)) continue;
+    if (resolve(reallow.operands[0]!) !== resolve(reallow.operands[1]!)) continue;
+    const target = reallow.identity;
+    let covering = index - 1;
+    while (covering >= 0) {
+      const identity = out[covering]!.identity;
+      if (identity !== undefined && isAtOrUnder(target, identity)) break;
+      covering--;
+    }
+    const shadowed = out.slice(covering + 1, index).filter((candidate) => {
+      if (candidate.identity === undefined || candidate.identity === target || !isAtOrUnder(candidate.identity, target)) {
+        return false;
+      }
+      return !(candidate.option === "--bind" && writeDenies.some((deny) => isAtOrUnder(candidate.identity!, deny)));
+    });
+    out.splice(index + 1, 0, ...shadowed);
+  }
+  return out;
+}
+
+/** {@link replayShadowedMounts} over the wrapper's command line; the line itself when nothing was shadowed. */
+function replayShadowedWrap(command: string, filesystem: LinuxWrapFilesystem): string {
+  if ((filesystem.allowRead ?? []).length === 0) return command;
+  const words = parseWrappedWords(command);
+  if (basename(words[0]?.value ?? "") !== "bwrap") {
+    throw new Error("Linux sandbox wrapper does not invoke bubblewrap");
+  }
+  const options: WrapperOption[] = [];
+  let index = 1;
+  while (index < words.length && words[index]?.value !== "--") {
+    const option = words[index]!.value;
+    if (!Object.hasOwn(BWRAP_OPTION_ARITY, option)) {
+      throw new Error(`Linux sandbox wrapper has an unsupported option: ${option}`);
+    }
+    const arity = BWRAP_OPTION_ARITY[option as keyof typeof BWRAP_OPTION_ARITY];
+    if (index + arity >= words.length || words.slice(index + 1, index + arity + 1).some((word) => word.value === "--")) {
+      throw new Error(`Linux sandbox wrapper has a missing operand: ${option}`);
+    }
+    const operands = words.slice(index + 1, index + arity + 1).map((word) => word.value);
+    const mounts = ["--tmpfs", "--bind", "--ro-bind", "--dev", "--proc"].includes(option);
+    const target = operands.at(-1);
+    if (mounts && (target === undefined || !isAbsolute(target))) {
+      throw new Error(`Linux sandbox wrapper has an invalid mount target: ${option}`);
+    }
+    options.push(mounts ? { option, operands, identity: mountIdentity(resolve(target!)) } : { option, operands });
+    index += arity + 1;
+  }
+  if (words[index]?.value !== "--") throw new Error("Linux sandbox wrapper has no command separator");
+  const replayed = replayShadowedMounts(options, filesystem);
+  if (replayed.length === options.length) return command;
+  const optionText = replayed.flatMap((entry) => [entry.option, ...entry.operands]).map(quoteShellWord).join(" ");
+  return `${command.slice(0, words[1]!.start)}${optionText} ${command.slice(words[index]!.start)}`;
+}
+
 /**
  * A read-denied directory is a writable tmpfs in the Linux wrapper. Its
  * write-deny bind is skipped because the host directory is hidden, leaving the
  * child able to create files in that tmpfs. Remount a mask only when it is the
  * final mount at its exact target. A later write bind at that same target is an
  * intentional grant; a nested bind is a separate mount and stays writable.
+ *
+ * Before that, a write root a read re-allow of its parent shadowed is bound
+ * again ({@link replayShadowedMounts}), when the wrap's own `filesystem` is
+ * known.
  */
 export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; readonly env: NodeJS.ProcessEnv }>(
   wrapped: T,
+  filesystem: LinuxWrapFilesystem = {},
 ): T {
   if (wrapped.argv.length !== 3 || wrapped.argv[1] !== "-c") {
     throw new Error("Linux sandbox wrapper has an unexpected command shape");
   }
-  const command = wrapped.argv[2];
+  const command = replayShadowedWrap(wrapped.argv[2], filesystem);
   const words = parseWrappedWords(command);
   if (basename(words[0]?.value ?? "") !== "bwrap") {
     throw new Error("Linux sandbox wrapper does not invoke bubblewrap");
@@ -144,7 +242,9 @@ export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; read
     if (final === "special") throw new Error("Linux sandbox wrapper replaces a mask with an unsupported mount");
     return final === "mask";
   }).map(([, path]) => path);
-  if (remountTargets.length === 0) return wrapped;
+  if (remountTargets.length === 0) {
+    return command === wrapped.argv[2] ? wrapped : { ...wrapped, argv: [wrapped.argv[0], wrapped.argv[1], command] };
+  }
 
   const remounts = remountTargets
     .flatMap((path) => ["--remount-ro", path])

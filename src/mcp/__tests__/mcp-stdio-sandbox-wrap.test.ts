@@ -236,6 +236,7 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
       sandboxRoot,
       cwd: "/tmp/package-generation",
       pluginDataDir,
+      bundledPayloadRoot: "/tmp/package-generation",
       env: { PLUGIN_ROOT: "/tmp/package-generation", PLUGIN_DATA: pluginDataDir },
     };
     const client = new McpClient(config, gov, new ToolRegistry(), unusedNetworkFetch);
@@ -288,6 +289,11 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     // (the process HOME, the server sandbox root, the plugin data root) are
     // pinned, so it cannot remove or replace one with a link.
     expect((options.filesystem as { pinWriteRoots?: boolean }).pinWriteRoots).toBe(true);
+    // Nor does it read another plugin's directories: the plugins root is
+    // refused, and the one directory under it a bundled server reads — its
+    // generation payload — is the re-allow inside that deny.
+    expect((options.filesystem as { denyPluginsRoot?: boolean }).denyPluginsRoot).toBe(true);
+    expect(options.filesystem.allowRead).toContain("/tmp/package-generation");
 
     // spawn ran the WRAPPED argv with shell:false + a writable stdin pipe.
     const [spawnedCmd, spawnedArgs, spawnOpts] = spawnMock.mock.calls[0] as [
@@ -348,6 +354,9 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     expect(options.filesystem.allowWrite).not.toContain(SANDBOX_TEMP_ROOT);
     expect(options.filesystem.allowWrite).not.toContain(process.env.HOME);
     expect(options.filesystem.allowWrite).not.toContain(process.cwd());
+    // A server of no plugin is refused the plugins root and re-allowed nothing in it.
+    expect((options.filesystem as { denyPluginsRoot?: boolean }).denyPluginsRoot).toBe(true);
+    expect(options.filesystem.allowRead.some((path) => path.startsWith(join(aveHome(), "plugins")))).toBe(false);
 
     await client.disconnect();
   });

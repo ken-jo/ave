@@ -4959,12 +4959,13 @@ probes run from the packaged runtime's Node — the packaged executable with
 `ELECTRON_RUN_AS_NODE=1`, which is exactly what the production factory spawns
 (`out-of-process-plugin.ts:678-690`) — as a script from a temporary root, and report the
 same four shapes as row 3; and **the packaged control is the packaged application's own
-main process**: launched through the Playwright driver the repository already uses for
-an installed build (`scripts/a2a-p4-5-live/ui-driver.mjs:40-41`,
-`electron.launch({ executablePath, … })` with `buildPackagedUiEnvironment()` — an
-environment allow-list that leaves `ELECTRON_RUN_AS_NODE` out and establishes no
-profile of its own, `scripts/a2a-p4-5-live/ui-driver-environment.mjs:11-15`), so the A2
-launch adds the profile isolation and platform flags the other launchers apply
+main process**: launched through Playwright, `electron.launch({ executablePath, … })`,
+the driver the repository already uses for an installed build. The A2 gate owns its own
+copy of the launcher's environment: `packagedEscapeGateEnvironment()`
+(`scripts/lib/packaged-escape-gate-environment.mjs`), an allow-list that leaves
+`ELECTRON_RUN_AS_NODE` out, carries no `AVE_A2A_EVIDENCE_*` key, imports nothing from
+another harness, and establishes no profile of its own; `packaging-discipline-source.test.ts`
+pins the list. So the A2 launch adds the profile isolation and platform flags the other launchers apply
 (`--user-data-dir` and a temporary `AVE_HOME`, `test/e2e/ui/seeded-electron.ts:245-259`;
 the Windows no-sandbox environment and the deleted `ELECTRON_RUN_AS_NODE`,
 `scripts/lib/electron-launch-options.mjs:77-87`), and asked in the main process —
@@ -4995,25 +4996,49 @@ UNVERIFIED until the first run, and a control that cannot be launched fails the 
 rather than passing it. The gate runs after the packaged smoke in `build-installers.yml`,
 under the same condition, so an unsigned macOS candidate skips both.
 
-*As implemented (2026-10-09).* Four things the text above did not say, each found by
-the fixture rather than decided around it:
+*As implemented (2026-10-09).* What the text above did not say, each found by the
+fixture or by the independent verification of it rather than decided around it:
 
 - **Another plugin's data directory was readable.** Plugins are installed under
   `<AVE_HOME>/plugins` (`plugin-paths.ts`), which the shared read floor does not cover,
   and ASRT's reads are deny-only — so on macOS a confined child listed and read a
-  neighbour's `data/` (escape 1a, first run). The spawn now adds its own read deny
-  (`pluginNeighbourReadDenies`, `out-of-process-plugin.ts`, carried by a new
-  `ConfinedChildSpec.denyRead`): the whole plugins root on macOS and Linux, inside which
-  the child's own root and data directory are re-allowed by `envelope.read`; on Windows,
-  where `deny-only` re-allows nothing, every other plugin's directory by name, a
-  snapshot taken at spawn. The claim now holds for the plugin child; a plugin's
-  delegated workers and bundled hooks keep the floor alone, as before.
+  neighbour's `data/` (escape 1a, first run). Every wrap of plugin-owned or third-party
+  code now refuses the whole plugins root, through one flag the shared layer applies,
+  `PerCommandFilesystem.denyPluginsRoot` (`asrt-sandbox.ts`): the plugin child, its
+  delegated workers (`worker-spawn.ts`), bundled hooks and MCP stdio servers
+  (`wrap-bundled-command.ts`). Each re-allows only its own directories inside the deny —
+  the child its envelope, a worker the grants the dispatcher held to that envelope, a
+  hook its generation and data, a bundled server its generation payload
+  (`McpStdioServerConfig.bundledPayloadRoot`, set by `preparePluginMcpGeneration`
+  and dropped from any other source at connect); a server of no plugin re-allows
+  nothing there. On macOS the root is spelled exactly, as the private roots are, so a
+  wrap reading the host temp directory above a test `AVE_HOME` keeps its own. The deny
+  is the root, so a plugin installed after a spawn is covered (row 1a asserts it). The
+  verification also found the two detours the first fix left: a worker the child asked
+  for printed the neighbour's data (now row 1a by delegation), and a hook could copy it
+  into the data directory the child reads.
+- **On Linux a read re-allow could take a plugin's data directory away.** ASRT masks
+  the denied root with a tmpfs and binds the write roots back before the read
+  re-allows, so a plugin whose root holds its data directory got the root's read-only
+  bind over the data's writable one (EROFS). `hardenLinuxSandboxWrap` now binds every
+  mount the re-allow covered again right after it, except a write under one of the
+  wrap's write denies (`linux-sandbox-wrap.ts`, `replayShadowedMounts`); the row-1a
+  control writes and reads back the child's own data inside the sandbox.
+- **Windows has no deny between plugins, and none is added.** Every confined process
+  there runs as the one `srt-sandbox` account and ASRT applies a deny as an ACE for that
+  account, so a deny on a neighbour's directory would take it from the neighbour's own
+  child too; `denyPluginsRoot` is refused on Windows. Reach between plugins on Windows
+  is decided by the ACL grants alone: a plugin's directories are granted to that account
+  while its child runs. Row 1a there asserts a neighbour that is not running.
 - **The fixture declares `capabilities: ["external-auth-consumer"]`.** Without it
   `hostFetch` is refused by the capability check before the allow-list is reached, and
-  row 2 would prove the wrong layer.
+  row 2 would prove the wrong layer. Row 2 asserts the allow-list's own audit detail:
+  `.invalid` never resolves, so the SSRF guard behind it would refuse as well.
 - **The planted package carries `vendored-electron/package.json`** (`"type":
   "commonjs"`, `"main": "index.js"`), because the checkout's own `package.json` is
-  `"type": "module"` and would make `index.js` an ES module under the CLI harness.
+  `"type": "module"` and would make `index.js` an ES module under the CLI harness. The
+  row-3 control runs the fixture's own `probeElectron()` in a full main process and
+  requires it to report `usable-api`.
 - **What the child sees of a refusal is the boundary's, not the host's.** A refused
   `hostFetch` reaches the child as `Host request failed.`, so the reason is asserted on
   the host's audit row (`host_fetch_denied`), and the transport records no call. A
@@ -5021,12 +5046,13 @@ the fixture rather than decided around it:
   `fetch` and `HOSTAPI_DISPATCH_TABLE`, entry by entry.
 
 The shared gate helper is `src/plugins/isolation/__tests__/sandbox-cases.ts`. The Python
-smoke serves `escape_secrets` and `escape_network` beside `echo`, and its golden was
-re-recorded for the larger tool list.
+smoke serves `escape_secrets` (with its own-data control) and `escape_network` beside
+`echo`, and its golden was re-recorded for the larger tool list.
 
 *Lock suites.* `packaging-discipline-source.test.ts` reads executable discovery from
 `scripts/lib/packaged-executable-selection.mjs`, which the packaged smoke and the gate
-now share, and pins the gate's workflow step; the rest are unchanged.
+share, pins the gate's workflow step, and pins the gate's own environment allow-list;
+the rest are unchanged.
 
 ##### G0 and G1. `git` prerequisites (decision 22; specified, not started)
 

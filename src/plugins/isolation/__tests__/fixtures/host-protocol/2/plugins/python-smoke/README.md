@@ -19,7 +19,8 @@ stdin and stdout.
 - Beside `echo` it serves `escape_secrets` and `escape_network`, Admission's
   escapes 1 and 2 (`plugin-hostapi-protocol.md` §9.8 A2) from a child that is
   not JavaScript: a read of the host's secrets directory and of another
-  plugin's data directory, and a raw socket to a loopback listener. They
+  plugin's data directory, after a write and read-back of its own as the
+  in-sandbox control, and a raw socket to a loopback listener. They
   report what the platform answered; `adversarial-escapes.test.ts` runs them
   under the real wrap and asserts the refusals.
 - `expected.jsonl` is its golden transcript, recorded by

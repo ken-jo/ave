@@ -578,6 +578,11 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       // A plugin worker is plugin-owned code: it may not remove or replace the
       // host-created roots it writes into, its plugin's data root above all.
       pinWriteRoots: true,
+      // Nor read what its plugin's child cannot: the plugins root is refused,
+      // and only the paths this worker was granted — which the dispatcher holds
+      // to the child's own envelope — are re-allowed inside it. Without this a
+      // child refused a neighbour's data could ask for a worker that reads it.
+      denyPluginsRoot: true,
       ...(spec.floorPierces !== undefined ? { floorPierces: spec.floorPierces } : {}),
       baseEnv,
       extraEnv: { ...sandboxHome.env },

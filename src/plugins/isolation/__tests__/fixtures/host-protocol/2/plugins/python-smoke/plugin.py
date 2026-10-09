@@ -72,15 +72,16 @@ TOOLS = [
     # report every answer; the confined suite asserts them.
     types.Tool(
         name="escape_secrets",
-        description="Read the host's secrets directory and another plugin's data directory.",
+        description="Write and read back its own data directory, then read the host's secrets directory and another plugin's data directory.",
         input_schema={
             "type": "object",
             "properties": {
+                "ownDataDir": {"type": "string"},
                 "secretsDir": {"type": "string"},
                 "otherDataDir": {"type": "string"},
                 "sentinelName": {"type": "string"},
             },
-            "required": ["secretsDir", "otherDataDir", "sentinelName"],
+            "required": ["ownDataDir", "secretsDir", "otherDataDir", "sentinelName"],
         },
     ),
     types.Tool(
@@ -95,6 +96,7 @@ TOOLS = [
 ]
 TOOL_NAMES = [tool.name for tool in TOOLS]
 ESCAPE_TIMEOUT_S = 5
+OWN_BYTES = "the python-smoke plugin's own bytes"
 
 
 def attempt(probe):
@@ -111,6 +113,11 @@ def read_text(path):
         return handle.read()
 
 
+def write_text(path, text):
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
 def connect(port):
     with socket.create_connection(("127.0.0.1", port), timeout=ESCAPE_TIMEOUT_S):
         return "connected"
@@ -123,8 +130,15 @@ def run_tool(name, arguments):
         secrets_dir = arguments["secretsDir"]
         other_dir = arguments["otherDataDir"]
         sentinel = arguments["sentinelName"]
+        own_file = os.path.join(arguments["ownDataDir"], sentinel)
         return {
             "attempt": "escape_secrets",
+            # The in-sandbox control: its own data directory, written and read
+            # back, so the refusals below are not a wrong path's ENOENT.
+            "own": {
+                "write": attempt(lambda: write_text(own_file, OWN_BYTES)),
+                "read": attempt(lambda: read_text(own_file)),
+            },
             "filesystem": {
                 "listSecrets": attempt(lambda: sorted(os.listdir(secrets_dir))),
                 "readSecret": attempt(lambda: read_text(os.path.join(secrets_dir, sentinel))),

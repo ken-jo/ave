@@ -220,3 +220,91 @@ it.each([
     env: {},
   })).toThrow(/unsupported/);
 });
+
+/**
+ * A plugin installed where its data lives: the plugins root is read-denied, the
+ * plugin's root is a read re-allow inside it, and its data directory — inside
+ * that root — is a write root. ASRT binds the write first and the read re-allow
+ * after it, so the read-only bind of the parent covers the writable one.
+ */
+function pluginRootHoldingData() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-floor-plugin-")));
+  temporaryRoots.push(root);
+  const plugins = join(root, "plugins");
+  const pluginRoot = join(plugins, "example");
+  const pluginData = join(pluginRoot, "data");
+  mkdirSync(pluginData, { recursive: true });
+  mkdirSync(join(plugins, "neighbour", "data"), { recursive: true });
+  return { plugins, pluginRoot, pluginData };
+}
+
+/** The last mount whose target is `path` or one of its ancestors: what the child sees there. */
+function finalMountCovering(words: readonly string[], path: string): readonly string[] | undefined {
+  let found: readonly string[] | undefined;
+  for (let index = 0; index < words.length && words[index] !== "--"; index++) {
+    const option = words[index];
+    const arity = option === "--bind" || option === "--ro-bind" ? 2 : option === "--tmpfs" || option === "--remount-ro" ? 1 : 0;
+    const target = words[index + arity];
+    if (arity > 0 && option !== "--remount-ro" && (path === target || path.startsWith(`${target}/`))) {
+      found = words.slice(index, index + arity + 1);
+    }
+  }
+  return found;
+}
+
+it.runIf(process.platform !== "win32")(
+  "binds a write root again after a read re-allow of the directory that holds it",
+  async () => {
+    const { plugins, pluginRoot, pluginData } = pluginRootHoldingData();
+    const generated = await wrapCommandWithSandboxLinux({
+      command: "printf 'plugin command'",
+      needsNetworkRestriction: false,
+      readConfig: { denyOnly: [plugins], allowWithinDeny: [pluginRoot, pluginData] },
+      writeConfig: { allowOnly: [pluginData], denyWithinAllow: [] },
+      allowAllUnixSockets: true,
+    });
+    try {
+      const parse = (command: string) => execFileSync("/bin/bash", ["-c", `set -- ${command}; printf '%s\\n' "$@"`], {
+        encoding: "utf8",
+      }).trimEnd().split("\n");
+      // What ASRT emits on its own: the parent's read-only bind is the last
+      // mount over the data directory.
+      const unhardened = parse(hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", generated], env: {} }).argv[2]!);
+      expect(finalMountCovering(unhardened, pluginData)).toEqual(["--ro-bind", pluginRoot, pluginRoot]);
+      // Told which reads are re-allows, the hardener puts the write back on top.
+      const words = parse(
+        hardenLinuxSandboxWrap(
+          { argv: ["/bin/bash", "-c", generated], env: {} },
+          { allowRead: [pluginRoot, pluginData], denyWrite: [] },
+        ).argv[2]!,
+      );
+      expect(finalMountCovering(words, pluginData)).toEqual(["--bind", pluginData, pluginData]);
+      expect(finalMountCovering(words, join(pluginRoot, "plugin.json"))).toEqual(["--ro-bind", pluginRoot, pluginRoot]);
+      // The rest of the plugins root stays masked, read-only.
+      expect(finalMountCovering(words, join(plugins, "neighbour", "data"))).toEqual(["--tmpfs", plugins]);
+      expect(words.some((word, index) => word === "--remount-ro" && words[index + 1] === plugins)).toBe(true);
+      expect(words.at(-1)).toContain("plugin command");
+    } finally {
+      cleanupBwrapMountPoints();
+    }
+  },
+);
+
+it.runIf(process.platform !== "win32")("does not put back a write root that one of the wrap's write denies covers", () => {
+  const { plugins, pluginRoot, pluginData } = pluginRootHoldingData();
+  const command = `bwrap --ro-bind / / --bind '${pluginData}' '${pluginData}' --tmpfs '${plugins}' `
+    + `--bind '${pluginData}' '${pluginData}' --ro-bind '${pluginRoot}' '${pluginRoot}' -- /bin/sh -c 'true'`;
+  const replayed = hardenLinuxSandboxWrap(
+    { argv: ["/bin/bash", "-c", command], env: {} },
+    { allowRead: [pluginRoot], denyWrite: [] },
+  );
+  expect(replayed.argv[2]).toMatch(new RegExp(`'--ro-bind' '${pluginRoot}' '${pluginRoot}' '--bind' '${pluginData}' '${pluginData}'`));
+  const denied = hardenLinuxSandboxWrap(
+    { argv: ["/bin/bash", "-c", command], env: {} },
+    { allowRead: [pluginRoot], denyWrite: [pluginRoot] },
+  );
+  expect(denied.argv[2]).not.toMatch(new RegExp(`'${pluginRoot}' '${pluginRoot}' '--bind'`));
+  // A read-only bind that is not one of the wrap's re-allows is not a re-allow.
+  const notReallowed = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} }, { allowRead: [pluginData] });
+  expect(notReallowed.argv[2]).not.toMatch(new RegExp(`'${pluginRoot}' '${pluginRoot}' '--bind'`));
+});

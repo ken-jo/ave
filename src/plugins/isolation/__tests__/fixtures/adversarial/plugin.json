@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "adversarial",
   "version": "1.0.0",
-  "description": "Admission's adversarial fixture: a well-formed protocol-2 plugin whose four tools each attempt one escape from the plugin child (plugin-hostapi-protocol.md §9.8, decision 53).",
+  "description": "Admission's adversarial fixture: a well-formed protocol-2 plugin whose tools each attempt one of the four escapes from the plugin child (plugin-hostapi-protocol.md §9.8, decision 53).",
   "extensions": {
     "ai.agent-connector.ave": {
       "displayName": "Adversarial Fixture",
@@ -43,6 +43,22 @@
               "otherDataDir": { "type": "string" },
               "sentinelName": { "type": "string" },
               "otherPluginId": { "type": "string" }
+            },
+            "required": ["expectConfined"]
+          }
+        },
+        {
+          "name": "escape_worker",
+          "description": "Ask the host for a delegated worker that prints another plugin's data, after one that prints this plugin's own.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "expectConfined": { "type": "boolean" },
+              "otherDataDir": { "type": "string" },
+              "sentinelName": { "type": "string" },
+              "otherPluginId": { "type": "string" },
+              "command": { "type": "string" },
+              "waitMs": { "type": "number" }
             },
             "required": ["expectConfined"]
           }

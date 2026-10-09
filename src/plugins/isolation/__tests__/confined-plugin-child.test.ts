@@ -122,7 +122,6 @@ import {
   createOutOfProcessPluginFactory,
   derivePluginChildEnvelope,
   PluginSandboxGrantError,
-  pluginNeighbourReadDenies,
   type ObservedPluginChild,
 } from "../out-of-process-plugin.js";
 import {
@@ -1208,47 +1207,6 @@ describe("the host decides how far a plugin child reaches", () => {
       configValue: (key) => (key === "indexStorageRoot" ? "" : undefined),
     });
     expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
-  });
-});
-
-/**
- * Every other plugin's directory, refused beyond the floor.
- *
- * The shared floor names `<AVE_HOME>/secrets` and its siblings, not
- * `<AVE_HOME>/plugins`, so without this a confined child listed and read a
- * neighbour's data (`adversarial-escapes.test.ts`, escape 1a, measured on
- * darwin/arm64 before the deny existed). The kernel half is measured there;
- * these cases pin what the spawn asks for on each platform, including the
- * Windows branch no runner here can execute.
- */
-describe("the other plugins' directories, refused beyond the floor", () => {
-  it("denies the whole plugins root on macOS and Linux, where the child's own directories are re-allowed inside it", () => {
-    const fx = fixture!;
-    const envelope = baseEnvelope(fx);
-    for (const platform of ["darwin", "linux"] as const) {
-      expect(pluginNeighbourReadDenies(envelope, platform)).toEqual([join(fx.aveHome, "plugins")]);
-    }
-    // The re-allow is the envelope's own read half, both directories inside
-    // the denied root.
-    expect(envelope.read).toEqual(expect.arrayContaining([fx.pluginRoot, fx.pluginDataDir]));
-  });
-
-  it("names every other plugin's directory on Windows, where nothing re-allows, and never the child's own", () => {
-    const fx = fixture!;
-    const second = installPlugin(fx, "a-second-plugin");
-    // A file in the root is not a plugin and is left to the floor.
-    writeFileSync(join(fx.aveHome, "plugins", "registry.json"), "{}", "utf-8");
-    const denied = pluginNeighbourReadDenies(baseEnvelope(fx), "win32");
-    expect(denied.sort()).toEqual(
-      [second.pluginRoot, dirname(fx.neighbourBundleDir)].sort(),
-    );
-    expect(denied).not.toContain(fx.pluginRoot);
-  });
-
-  it("names nothing on Windows before any plugin root exists", () => {
-    const fx = fixture!;
-    rmSync(join(fx.aveHome, "plugins"), { recursive: true, force: true });
-    expect(pluginNeighbourReadDenies({ read: [], write: [] }, "win32")).toEqual([]);
   });
 });
 
@@ -4209,6 +4167,7 @@ async function runBundledWrapToExit(
       args: [probe],
       sandboxHome,
       allowWrite: [],
+      ownPluginReads: [],
       tempPrincipal: principal,
     });
     try {

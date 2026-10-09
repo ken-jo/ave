@@ -38,7 +38,7 @@ import {
   prepareElectronLaunchEnv,
 } from "./lib/electron-launch-options.mjs";
 import { findPackagedExecutable } from "./lib/packaged-executable-selection.mjs";
-import { buildPackagedUiEnvironment } from "./a2a-p4-5-live/ui-driver-environment.mjs";
+import { packagedEscapeGateEnvironment } from "./lib/packaged-escape-gate-environment.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = join(root, "src", "plugins", "isolation", "__tests__", "fixtures", "adversarial");
@@ -127,7 +127,7 @@ async function measureProbes(executable, scratch) {
       + "process.stdout.write(`${JSON.stringify(await probeElectron())}\\n`);\n",
     "utf8",
   );
-  const env = { ...buildPackagedUiEnvironment(), ELECTRON_RUN_AS_NODE: "1", AVE_HOME: join(scratch, ".ave") };
+  const env = { ...packagedEscapeGateEnvironment(), ELECTRON_RUN_AS_NODE: "1", AVE_HOME: join(scratch, ".ave") };
   const { code, signal, stdout, stderr } = await run(executable, [runner], env, PROBE_TIMEOUT_MS);
   const line = stdout.split("\n").find((entry) => entry.startsWith("{"));
   if (code !== 0 || line === undefined) {
@@ -165,7 +165,7 @@ async function measureControl(executable, scratch) {
   const userDataDir = join(scratch, "user-data");
   mkdirSync(userDataDir, { recursive: true });
   const env = prepareElectronLaunchEnv({
-    ...buildPackagedUiEnvironment(),
+    ...packagedEscapeGateEnvironment(),
     HOME: join(scratch, "home"),
     USERPROFILE: join(scratch, "home"),
     AVE_HOME: join(scratch, ".ave"),

@@ -26,6 +26,8 @@ const mockGetState = vi.fn().mockReturnValue({
   registeredTools: [],
 });
 const mockAuditLog = vi.fn();
+/** The config each client was constructed with: what reaches the spawn. */
+const constructedConfigs: unknown[] = [];
 const mockValidateServer = vi.fn(() => ({ valid: true as const }));
 
 vi.mock("../mcp-client.js", () => ({
@@ -33,6 +35,9 @@ vi.mock("../mcp-client.js", () => ({
     connect = mockConnect;
     disconnect = mockDisconnect;
     getState = mockGetState;
+    constructor(config: unknown) {
+      constructedConfigs.push(config);
+    }
   },
 }));
 
@@ -281,6 +286,7 @@ describe("McpManager — getConfigs()", () => {
         env: { SECRET_TOKEN: "abc123", PATH: "/usr/bin" },
         cwd: "/sealed/package",
         pluginDataDir: "/private/data",
+        bundledPayloadRoot: "/sealed/payload",
       },
     ];
     await writeFile(testConfigPath, JSON.stringify({ servers }), "utf-8");
@@ -297,9 +303,32 @@ describe("McpManager — getConfigs()", () => {
     expect(result[1]).not.toHaveProperty("env");
     expect(result[1]).not.toHaveProperty("cwd");
     expect(result[1]).not.toHaveProperty("pluginDataDir");
+    expect(result[1]).not.toHaveProperty("bundledPayloadRoot");
     expect(result[1]).toHaveProperty("apiKeyEnv", "OPENAI_API_KEY");
     expect(result[0].id).toBe("http-srv");
     expect(result[1].id).toBe("stdio-srv");
+  });
+
+  it("drops host-only filesystem roots that ride in on an external config before the client sees it", async () => {
+    const server: McpServerConfig = {
+      id: "external-stdio",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "tool@1.0.0"],
+      // A tampered servers.json naming a plugin's directories: a write root,
+      // and a read re-allow inside the plugins root every wrap is refused.
+      pluginDataDir: "/home/u/.ave/plugins/neighbour/data",
+      bundledPayloadRoot: "/home/u/.ave/plugins/neighbour",
+    };
+    await writeFile(testConfigPath, JSON.stringify({ servers: [server] }), "utf-8");
+    const mgr = await makeManager();
+    constructedConfigs.length = 0;
+    await mgr.connectServer(server);
+    expect(constructedConfigs).toHaveLength(1);
+    const reached = constructedConfigs[0] as Record<string, unknown>;
+    expect(reached).not.toHaveProperty("pluginDataDir");
+    expect(reached).not.toHaveProperty("bundledPayloadRoot");
+    expect(reached.sandboxRoot).toEqual(expect.any(String));
   });
 
   it("falls back to a legacy .bak when the main config file exists but is corrupt", async () => {

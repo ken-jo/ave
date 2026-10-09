@@ -193,29 +193,37 @@ describe("spawnConfinedChild", () => {
     expect(cmdline).not.toContain("TMPDIR=");
   });
 
-  it.each(["allow-list", "deny-only"] as const)(
-    "appends the caller's own read denies to the floor under %s, never in place of it",
-    async (grantMode) => {
-      await spawnConfinedChild({
+  it("carries the plugins-root deny to the wrap under allow-list, beside the floor and never in place of it", async () => {
+    await spawnConfinedChild({
+      command: "/usr/bin/node",
+      args: [],
+      label: "plugin-child:x",
+      grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL,
+      allowRead: ["/home/u/.ave/plugins/x"],
+      denyPluginsRoot: true,
+      baseEnv: {},
+    });
+    const filesystem = lastFilesystem();
+    expect((filesystem as unknown as { denyPluginsRoot?: boolean }).denyPluginsRoot).toBe(true);
+    expect(filesystem.denyRead).toEqual(["/home/u/.ave/secrets", "/home/u/.ssh", TEMP_ROOT, HOME_ROOT]);
+    // The child's own directory is the re-allow inside it.
+    expect(filesystem.allowRead).toContain("/home/u/.ave/plugins/x");
+  });
+
+  it("refuses the plugins-root deny under deny-only, where nothing would re-allow the child's own directories", async () => {
+    await expect(
+      spawnConfinedChild({
         command: "/usr/bin/node",
         args: [],
-        label: "plugin-child:x",
-        grantMode,
-        tempPrincipal: PRINCIPAL,
-        allowRead: ["/home/u/.ave/plugins/x"],
-        denyRead: ["/home/u/.ave/plugins"],
+        label: "worker:x:w:asrt-win",
+        grantMode: "deny-only",
+        denyPluginsRoot: true,
         baseEnv: {},
-      });
-      // The same floor in both modes, with the caller's deny after it.
-      expect(lastFilesystem().denyRead).toEqual([
-        "/home/u/.ave/secrets",
-        "/home/u/.ssh",
-        TEMP_ROOT,
-        HOME_ROOT,
-        "/home/u/.ave/plugins",
-      ]);
-    },
-  );
+      }),
+    ).rejects.toThrow(/denyPluginsRoot needs an allow-list confinement/);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
 
   it("quotes every token so a path with spaces cannot mis-split", async () => {
     // ASRT runs this through a shell, so an unquoted path becomes two arguments
