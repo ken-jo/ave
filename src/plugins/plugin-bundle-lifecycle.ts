@@ -934,6 +934,14 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     const retirement = hasPredecessor ? published.retired : Promise.resolve();
     const finalizePostCommit = async (): Promise<void> => {
       let dispatchReady = true;
+      // Admission closed (host shutdown): dispatch never opens, nothing more
+      // starts, and a step refused for that reason is not a fault.
+      const stoppedByShutdown = (): boolean => {
+        const closed = this.coordinator.admissionClosedError(pluginId);
+        if (!closed) return false;
+        published.markDispatchUnavailable(closed);
+        return true;
+      };
       if (hasPredecessor) {
         try {
           // A replacement's onPublished hook may start write-capable workers.
@@ -955,14 +963,10 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           );
         }
       }
-      // Admission closed (host shutdown) while the predecessor retired: none
-      // of the deferred work below — startup, loopback post-publication, MCP
-      // connection and publication — may begin, and dispatch never opens.
-      const closedBeforeStartup = this.coordinator.admissionClosedError(pluginId);
-      if (closedBeforeStartup) {
-        published.markDispatchUnavailable(closedBeforeStartup);
-        return;
-      }
+      // Admission closed while the predecessor retired: none of the deferred
+      // work below — startup, loopback post-publication, MCP connection and
+      // publication — may begin.
+      if (stoppedByShutdown()) return;
       if (dispatchReady) {
         try {
           // Only host-owned generation-fence faults reach this catch. A plugin
@@ -975,16 +979,13 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
             () => this.deps.pluginRuntime.postPublishRuntimeGeneration(candidate.state.runtime),
           );
         } catch (error) {
+          if (stoppedByShutdown()) return;
           dispatchReady = false;
           published.markDispatchUnavailable(error);
           this.recordPostCommitFault(pluginId, candidate.generationId, "runtime-post-publish", error);
         }
       }
-      const closedAfterStartup = this.coordinator.admissionClosedError(pluginId);
-      if (closedAfterStartup) {
-        published.markDispatchUnavailable(closedAfterStartup);
-        return;
-      }
+      if (stoppedByShutdown()) return;
       try {
         this.deps.loopbackManager.postPublishGeneration(preparedLoopback);
       } catch (error) {
@@ -996,6 +997,9 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
         // internal publication/contract fault and receives durable health state.
         await this.projectApprovedMcp(candidate);
       } catch (error) {
+        // A publication refused because admission closed while it waited
+        // (quiesce) is shutdown, not an internal publication fault.
+        if (stoppedByShutdown()) return;
         this.recordPostCommitFault(pluginId, candidate.generationId, "mcp-publication", error);
       }
       if (dispatchReady) {

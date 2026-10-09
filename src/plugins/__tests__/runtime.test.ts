@@ -4637,7 +4637,9 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.shutdownCleanupMs);
       expect(await result).toEqual({ status: "completed" });
       expect(stopStarts).toBe(generations);
-      expect(report).toEqual({ unfinished: [] });
+      // Every stop hook timed out, so every generation is named for the
+      // backstop — reported inside the budget, not after it.
+      expect(report).toEqual({ unfinished: Array.from({ length: generations }, (_, i) => `budget${i}`) });
     } finally {
       for (const finish of finishOperations) finish();
       vi.useRealTimers();
@@ -4993,6 +4995,98 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const refused = await update;
     expect(isCommittedPluginGenerationPublicationError(refused)).toBe(true);
     expect(classifyApplyError(refused)).toEqual({ state: "applied-not-running" });
+  });
+
+  it("names a generation whose retirement phase failed at shutdown as unfinished", async () => {
+    const f = await setup("success");
+    await f.runtime.addPlugin(ID);
+    const instance = f.constructed[0]!.instance as { stop?: () => Promise<void> };
+    const stop = instance.stop;
+    instance.stop = async () => { throw new Error("child stop failed"); };
+    let report: { unfinished: readonly string[] };
+    try {
+      report = await f.runtime.stopAll({ signal: new AbortController().signal });
+    } finally {
+      // The fixture's own teardown stops the child.
+      instance.stop = stop;
+    }
+    expect(report).toEqual({ unfinished: [ID] });
+    expect(f.audits).toContain("plugin_shutdown_retirement_incomplete");
+  });
+
+  it.each(["add", "boot"] as const)("names an %s candidate whose cleanup failed at shutdown as unfinished", async (route) => {
+    const f = await setup("success");
+    if (route === "add") bindNativeBundleLifecycle(f);
+    const hook = f.internals.runPluginLifecycleHook;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inFactory = new Promise<void>((resolve) => { entered = resolve; });
+    f.internals.runPluginLifecycleHook = async (scope, invoke) => {
+      const result = await hook(scope, invoke);
+      if (result && typeof result === "object" && "handlers" in result) {
+        entered();
+        await held;
+      }
+      return result;
+    };
+    const building = (route === "add" ? f.runtime.addPlugin(ID) : f.runtime.load()).then(() => undefined, () => undefined);
+    await inFactory;
+    // Releasing the candidate's unpublished root fails.
+    f.internals.removeUnpublishedRuntimeRoot = async () => { throw f.cleanupError; };
+    const stopping = f.runtime.stopAll({ signal: new AbortController().signal });
+    setTimeout(release, 50);
+    const report = await stopping;
+    await building;
+    expect(f.constructed.map((record) => record.stops)).toEqual([1]);
+    expect(report).toEqual({ unfinished: [ID] });
+    expect(f.audits).toContain("plugin_shutdown_retirement_incomplete");
+  });
+
+  it("records no post-commit fault for an MCP publication refused because shutdown began while it waited", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const internals = lifecycle as unknown as {
+      deps: { mcpManager: { prepareBundledGeneration: (...args: unknown[]) => Promise<unknown> } };
+      coordinator: { runPostCommitWithGeneration: (pluginId: string, generationId: string, operation: () => Promise<unknown>) => Promise<unknown> };
+      recordPostCommitFault: (...args: unknown[]) => void;
+    };
+    const faults = vi.spyOn(internals, "recordPostCommitFault");
+    const prepareMcp = internals.deps.mcpManager.prepareBundledGeneration.bind(internals.deps.mcpManager);
+    let releasePrepare!: () => void;
+    const prepareHeld = new Promise<void>((resolve) => { releasePrepare = resolve; });
+    let prepareEntered!: () => void;
+    const inPrepare = new Promise<void>((resolve) => { prepareEntered = resolve; });
+    internals.deps.mcpManager.prepareBundledGeneration = async (...args) => {
+      prepareEntered();
+      await prepareHeld;
+      return prepareMcp(...args);
+    };
+    const incumbent = lifecycle.getActive(ID)!.generationId;
+    const update = f.runtime.activatePreparedArtifact(await f.preparedInput()).then(() => undefined, () => undefined);
+    await inPrepare;
+    const candidate = lifecycle.getActive(ID)!.generationId;
+    expect(candidate).not.toBe(incumbent);
+    // A lease on the candidate, so its MCP publication (quiesce) waits to drain.
+    let releaseLease!: () => void;
+    const leaseHeld = new Promise<void>((resolve) => { releaseLease = resolve; });
+    let leased!: () => void;
+    const inLease = new Promise<void>((resolve) => { leased = resolve; });
+    const lease = internals.coordinator.runPostCommitWithGeneration(ID, candidate, async () => { leased(); await leaseHeld; });
+    await inLease;
+    releasePrepare();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const deadline = new AbortController();
+    const stopping = f.runtime.stopAll({ signal: deadline.signal });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    deadline.abort();
+    await stopping;
+    releaseLease();
+    await lease;
+    await update;
+    await lifecycle.waitForRetirements().catch(() => undefined);
+    expect(faults.mock.calls.filter((call) => call[2] === "mcp-publication")).toEqual([]);
   });
 
   it("a rejection after the plugin was registered leaves the registered generation running and disposes it once", async () => {

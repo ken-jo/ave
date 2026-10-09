@@ -1214,8 +1214,11 @@ type PluginRuntimeShutdownReport = Readonly<{ unfinished: readonly string[] }>;
  */
 type PluginCandidateConstruction = {
   readonly pluginId: string;
+  /** Fulfils once the operation settled and released what it built; rejects if that release failed. */
   settled: Promise<void>;
   releaseForShutdown?: () => Promise<void>;
+  /** Failures of releasing what the operation built, wherever the release ran. */
+  readonly cleanupFailures: unknown[];
 };
 
 /** `work`'s value, or `undefined` as soon as `signal` aborts (the work keeps running). */
@@ -1992,6 +1995,20 @@ abstract class PluginRuntimeState {
   isShuttingDown(): boolean {
     return this.runtimeShutdownAdmission.signal.aborted;
   }
+
+  /**
+   * Close admission — in the runtime and in the generation coordinator every
+   * consumer acquires through — without stopping anything. Idempotent;
+   * `stopAll` begins with it. The application's shutdown calls it earlier,
+   * before it disconnects MCP, so no post-commit MCP publication or new
+   * dispatch opens in between; calls already admitted keep running.
+   */
+  beginShutdown(): void {
+    this.runtimeShutdownAdmission.abort();
+    this.generationLifecycle?.closeAdmission(
+      (pluginId) => new PluginRuntimeShutdownError(pluginId, "generation admission"),
+    );
+  }
   /**
    * Lifecycle operations building a candidate generation the coordinator has
    * not committed: a prepared update or an add. Once shutdown begins their
@@ -2004,11 +2021,17 @@ abstract class PluginRuntimeState {
     pluginId: string,
     start: (construction: PluginCandidateConstruction) => Promise<T>,
   ): Promise<T> {
-    const construction: PluginCandidateConstruction = { pluginId, settled: Promise.resolve() };
+    const construction: PluginCandidateConstruction = { pluginId, settled: Promise.resolve(), cleanupFailures: [] };
     const work = start(construction);
-    construction.settled = work.then(() => undefined, () => undefined);
+    construction.settled = work.then(() => undefined, () => undefined).then(() => {
+      if (construction.cleanupFailures.length > 0) {
+        throw new AggregateError(construction.cleanupFailures, `plugin '${pluginId}' candidate cleanup failed`);
+      }
+    });
     this.candidateConstructions.add(construction);
-    void construction.settled.then(() => this.candidateConstructions.delete(construction));
+    void construction.settled
+      .finally(() => this.candidateConstructions.delete(construction))
+      .catch(() => undefined);
     return work;
   }
   protected readonly pinnedGenerations =
@@ -4340,13 +4363,10 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
   ): Promise<SinglePluginStartResult> {
     const attempt: PluginLoadAttemptResources = { pluginId: manifest.id };
     this.clearFailureDiagnostics(manifest.id);
-    return this.trackCandidateConstruction(manifest.id, () => this.runSinglePluginAddAttempt(
-      plan,
-      manifest,
-      approvedPluginAccess,
-      opts,
-      attempt,
-    ));
+    return this.trackCandidateConstruction(manifest.id, (construction) => {
+      attempt.cleanupFailures = construction.cleanupFailures;
+      return this.runSinglePluginAddAttempt(plan, manifest, approvedPluginAccess, opts, attempt);
+    });
   }
 
   private async runSinglePluginAddAttempt(
@@ -4477,6 +4497,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     if (runtimeRoot) {
       await step(() => this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot));
     }
+    attempt.cleanupFailures?.push(...failures);
     for (const failure of failures) {
       log.error(`${pluginId} attempt cleanup failed (${context}): ${errorMessage(failure)}`);
       this.auditAttemptEvent("plugin_attempt_cleanup_failed", {
@@ -5600,6 +5621,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
           manifest.id,
           generationId,
         ));
+        construction.cleanupFailures.push(...failures);
         if (failures.length === 1) throw failures[0];
         if (failures.length > 1) {
           throw new AggregateError(failures, `prepared candidate '${manifest.id}:${generationId}' cleanup failed`);
@@ -5872,6 +5894,11 @@ type PluginLoadAttemptResources = {
    * owner: the attempt releases nothing and records no refusal.
    */
   handedOver?: true;
+  /**
+   * Where {@link PluginRuntimeCapabilityLifecycle.releaseAttempt} records its
+   * failures, when the attempt is a tracked construction shutdown reports on.
+   */
+  cleanupFailures?: unknown[];
 };
 class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
   /**
@@ -6077,8 +6104,10 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     // Shutdown began: no child is constructed for a plugin it never saw.
     if (this.isShuttingDown()) return;
     // Tracked so shutdown waits for a load already constructing a child.
-    await this.trackCandidateConstruction(resources.pluginId, () =>
-      this.admitPreflightedPluginAttempt(outcome, enabledManifestSnapshots, resources));
+    await this.trackCandidateConstruction(resources.pluginId, (construction) => {
+      resources.cleanupFailures = construction.cleanupFailures;
+      return this.admitPreflightedPluginAttempt(outcome, enabledManifestSnapshots, resources);
+    });
   }
 
   private async admitPreflightedPluginAttempt(
@@ -6698,10 +6727,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
   }
 
   private async stopAllWithin(signal: AbortSignal): Promise<PluginRuntimeShutdownReport> {
-    this.runtimeShutdownAdmission.abort();
-    this.generationLifecycle?.closeAdmission(
-      (pluginId) => new PluginRuntimeShutdownError(pluginId, "generation admission"),
-    );
+    this.beginShutdown();
     // `finished` only when the work succeeded: a retirement or candidate
     // release that failed (its payload possibly still on disk) is reported
     // with the unfinished ones.
@@ -6763,13 +6789,22 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     return Object.freeze({ unfinished: Object.freeze(unfinished) });
   }
 
+  /**
+   * Run every phase in order, a failed one included, then reject if any
+   * failed: shutdown names the plugin as unfinished.
+   */
   private async runShutdownRetirement(runtime: PluginRuntimeRetirementView): Promise<void> {
+    const failures: unknown[] = [];
     for (const step of this.prepareRuntimeRetirement(runtime)) {
       try {
         await step.run();
       } catch (error) {
         log.error(`${runtime.manifest.id} shutdown retirement failed (${step.phase}): ${errorMessage(error)}`);
+        failures.push(error);
       }
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `plugin '${runtime.manifest.id}' shutdown retirement failed`);
     }
   }
 

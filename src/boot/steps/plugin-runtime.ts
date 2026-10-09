@@ -530,6 +530,7 @@ export async function initPluginRuntime(
   });
   registerBootPluginShutdown({
     runShutdownHandlers: runPluginShutdownHandlers,
+    closeAdmission: () => pluginRuntime.beginShutdown(),
     stopRuntime: (signal) => pluginRuntime.stopAll({ signal }),
   });
 

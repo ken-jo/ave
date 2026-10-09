@@ -46,6 +46,8 @@ let shutdownHost: BootHost | undefined;
  */
 export interface BootPluginShutdown {
   runShutdownHandlers(): Promise<void>;
+  /** Close plugin admission without stopping anything (before MCP disconnects). */
+  closeAdmission(): void;
   stopRuntime(signal: AbortSignal): Promise<unknown>;
 }
 let bootPluginShutdown: BootPluginShutdown | undefined;
@@ -175,9 +177,12 @@ export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShu
     const failures: unknown[] = [];
     const stages = [
       () => bootPluginShutdown?.runShutdownHandlers(),
-      // As on the normal path, MCP disconnects before the plugin runtime
-      // stops: no bundled MCP call is still in flight into a generation the
-      // runtime is retiring, since shutdown does not cancel those calls.
+      // As on the normal path: plugin admission closes, so no post-commit MCP
+      // publication opens a connection once MCP is gone; then MCP disconnects
+      // before the plugin runtime stops, so no bundled MCP call is still in
+      // flight into a generation the runtime is retiring (shutdown does not
+      // cancel those calls).
+      () => bootPluginShutdown?.closeAdmission(),
       () => bootMcpDisconnect?.(),
       () => bootPluginShutdown?.stopRuntime(signal),
       () => stopSubscriptionRuntimes(),
@@ -273,6 +278,11 @@ export async function runAppShutdownCleanup(options: {
       await stopSubscriptionRuntimes();
       subscriptionRuntimesStopped = true;
       if (signal.aborted) return;
+      // Plugin admission closes before services shut down — MCP disconnects
+      // there — so no post-commit MCP publication or new plugin dispatch can
+      // open after it. Calls already admitted keep running; the runtime
+      // itself stops further below.
+      svc.pluginRuntime.beginShutdown();
       await svc.shutdown?.();
       if (signal.aborted) return;
       // Service shutdown aborts active turns, after which no new background
