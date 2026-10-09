@@ -319,21 +319,10 @@ describe("installer smoke and packaging discipline", () => {
   });
 
   it("keeps privileged workflows on trusted default-branch events", () => {
-    for (const path of [
-      ".github/workflows/a2a-p4-5-packaged-evidence.yml",
-      ".github/workflows/web-deploy.yml",
-    ]) {
-      const workflow = readRepoFile(path);
-      expect(workflow).toContain("repository_dispatch:");
-      expect(workflow).not.toContain("workflow_dispatch:");
-      expect(workflow).not.toContain("pull_request:");
-    }
-
-    const signing = readRepoFile(
-      ".github/workflows/a2a-p4-5-packaged-evidence.yml",
-    );
-    expect(signing).toContain("environment: release-signing");
-    expect(signing).toContain("merge-base --is-ancestor");
+    const deploy = readRepoFile(".github/workflows/web-deploy.yml");
+    expect(deploy).toContain("repository_dispatch:");
+    expect(deploy).not.toContain("workflow_dispatch:");
+    expect(deploy).not.toContain("pull_request:");
 
     const webCi = readRepoFile(".github/workflows/web-ci.yml");
     expect(webCi).not.toContain("CLOUDFLARE_API_TOKEN");
@@ -474,38 +463,17 @@ describe("installer smoke and packaging discipline", () => {
       "check:gate-core",
     ]);
 
-    // `test:a2a-p4-5:evidence` is on the verification side on purpose. It
-    // asserts over the release-signing workflow's source, but it also exercises
-    // the release-tooling libraries, so its failure means code is wrong.
     // Sorted, because VERIFIES_THE_CODE is sorted and `matched` returns marker
     // order — this pins the set, not the step order. The step order is pinned
-    // by the ordering scan above and by "keeps the release-tooling suite last
-    // among the verification steps" below.
+    // by the ordering scan above. A2A verification is part of the vitest suite
+    // that `check:test-coverage` runs; there is no separate evidence step.
     expect(matched(commands, VERIFIES_THE_CODE)).toEqual([
       "bun run build",
-      "bun run test:a2a-p4-5:evidence",
-      "bun run test:ci-tooling",
       "bun run typecheck",
       "check:test-coverage",
       "check:typecheck-tests",
       "check:typecheck-tests:self-test",
     ]);
-  });
-
-  it("keeps the release-tooling suite last among the verification steps", () => {
-    // ci.yml says so beside the step: a narrow `node --test` suite placed
-    // ahead of the vitest suite would skip it. `matched` returns marker order,
-    // not step order, so the assertion above cannot see this; the index does.
-    const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
-    const commands = jobRunCommands(jobs.get("build-and-test") as string);
-    const last = lastCommandIndex(commands, VERIFIES_THE_CODE);
-    expect(last).toBeGreaterThanOrEqual(0);
-    expect(
-      commands[last],
-      "ci.yml: build-and-test now ends its verification with a step other " +
-        "than the release-tooling suite. That suite is narrow and fast; " +
-        "anything it precedes is a step it can skip.",
-    ).toContain("test:a2a-p4-5:evidence");
   });
 
   it("keeps the web screenshot gate out of the static-export build job", () => {

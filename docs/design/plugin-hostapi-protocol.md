@@ -4959,11 +4959,11 @@ probes run from the packaged runtime's Node — the packaged executable with
 `ELECTRON_RUN_AS_NODE=1`, which is exactly what the production factory spawns
 (`out-of-process-plugin.ts:678-690`) — as a script from a temporary root, and report the
 same four shapes as row 3; and **the packaged control is the packaged application's own
-main process**: launched through the Playwright driver the repository already uses for
-an installed build (`scripts/a2a-p4-5-live/ui-driver.mjs:40-41`,
-`electron.launch({ executablePath, … })` with `buildPackagedUiEnvironment()` — an
-environment allow-list that leaves `ELECTRON_RUN_AS_NODE` out and establishes no
-profile of its own, `scripts/a2a-p4-5-live/ui-driver-environment.mjs:11-15`), so the A2
+main process**: launched through Playwright's Electron driver against the installed build
+(`electron.launch({ executablePath, … })` with an environment allow-list that leaves
+`ELECTRON_RUN_AS_NODE` out and establishes no profile of its own — the shape the A2A
+packaged-live driver used before that external evidence path was removed on
+2026-10-09; the A2 gate owns its own copy of the launcher), so the A2
 launch adds the profile isolation and platform flags the other launchers apply
 (`--user-data-dir` and a temporary `AVE_HOME`, `test/e2e/ui/seeded-electron.ts:245-259`;
 the Windows no-sandbox environment and the deleted `ELECTRON_RUN_AS_NODE`,
