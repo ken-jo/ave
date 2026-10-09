@@ -16,7 +16,7 @@
  * Deliberately a dependency-free leaf so the receipt verifier, the permission
  * layer, and the tool executor can all agree on the same directory names.
  */
-import { lstat, readdir, rename, rmdir } from "node:fs/promises";
+import { lstat, readdir, rename, rm, rmdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
 import { aveHome } from "../shared/ave-home.js";
@@ -366,25 +366,24 @@ const PLUGIN_SOCKET_DIR_NAMES: readonly string[] = [
  * WHEN THE DESTINATION ALREADY HOLDS ONE. That is not a bookkeeping error by
  * itself: a live generation's worker may `mkdir run/<workerId>` at the
  * destination path in the window between a root rename and this carry, and a
- * recovery runs while the live predecessor's workers keep doing so. Which
- * side wins is decided by contents, never by location, the way
- * {@link carryPluginDataDir}'s rule 1 decides an empty `data/`:
+ * recovery runs while the live predecessor's workers keep doing so. The
+ * SOURCE directory always keeps its identity, because it is the one the
+ * running children were wrapped against: every caller carries the directory
+ * that was moved away from the live path back toward it. So the destination's
+ * entries — `run/<workerId>/`, `sockets/<name>` — move INTO the source by
+ * rename (each keeping its own identity), the emptied destination is removed,
+ * and the source moves into place. Whichever side is empty, nothing is
+ * dropped and no live directory is replaced by a newer one.
  *
- *  1. an EMPTY side holds nothing bound and goes. An empty destination is
- *     removed and the source moves in whole (the source's directory is the one
- *     a child's sandbox may hold); an empty source is removed and the
- *     destination stays;
- *  2. two non-empty sides are MERGED entry by entry — `run/<workerId>/`,
- *     `sockets/<name>` — each entry moved by rename, so a live worker's leaf
- *     keeps its identity. Only the same entry name on both sides is a real
- *     conflict, and the caller's policy, which has no default for the reason
- *     {@link PluginDataCarryPolicy} has none, decides it:
- *      - `reject` — an INSTALL transaction. Two sockets claiming one name means
- *        the transaction's bookkeeping is wrong, and it throws to its rollback;
- *      - `keep-destination` — RECOVERY, which must always reach a terminal
- *        disposition. Sockets are not state, so the destination's entry stays
- *        and the source's goes with the root it sits in. With no destination
- *        root at all, nothing moves.
+ * Only the same entry name on both sides is a real conflict, decided before
+ * anything moves by the caller's policy, which has no default for the reason
+ * {@link PluginDataCarryPolicy} has none:
+ *  - `reject` — an INSTALL transaction. Two sockets claiming one name means
+ *    the transaction's bookkeeping is wrong; it throws to its rollback with
+ *    both sides untouched;
+ *  - `keep-destination` — RECOVERY, which must always reach a terminal
+ *    disposition. Sockets are not state, so the destination's entry replaces
+ *    the source's. With no destination root at all, nothing moves.
  *
  * Renamed through {@link renameDirectory}, which already retries the transient
  * Windows lock codes (reporting each retry through `policy.onRetry`); callers
@@ -406,29 +405,34 @@ export async function carryPluginSocketDirs(
     const source = resolve(fromRoot, name);
     const target = resolve(toRoot, name);
     if (!await pathExists(source)) continue;
-    if (!await pathExists(target)) {
-      await move(source, target);
-      continue;
-    }
-    if (await isEmptyDirectory(target)) {
-      await rmdir(target);
-      await move(source, target);
-      continue;
-    }
-    if (await isEmptyDirectory(source)) {
-      await rmdir(source);
-      continue;
-    }
-    for (const entry of await readdir(source)) {
-      const entryTarget = resolve(target, entry);
-      if (await pathExists(entryTarget)) {
-        if (policy.onConflict === "keep-destination") continue;
-        throw new Error(
-          `[plugin-storage-layout] both roots hold ${name}/${entry}; refusing to `
-            + `replace ${entryTarget} with ${resolve(source, entry)}`,
-        );
+    // Bounded: a worker that recreates the destination between the merge and
+    // the final rename makes that rename fail, and the merge runs again.
+    for (let attempt = 1; ; attempt += 1) {
+      if (await pathExists(target)) {
+        const entries = await readdir(target);
+        const conflicts: string[] = [];
+        for (const entry of entries) {
+          if (await pathExists(resolve(source, entry))) conflicts.push(entry);
+        }
+        if (conflicts.length > 0 && policy.onConflict === "reject") {
+          throw new Error(
+            `[plugin-storage-layout] both roots hold ${name}/${conflicts[0]}; refusing to `
+              + `merge ${target} into ${source}`,
+          );
+        }
+        for (const entry of entries) {
+          if (conflicts.includes(entry)) await rm(resolve(source, entry), { recursive: true, force: true });
+          await move(resolve(target, entry), resolve(source, entry));
+        }
+        await rmdir(target);
       }
-      await move(resolve(source, entry), entryTarget);
+      try {
+        await move(source, target);
+        break;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (attempt >= 3 || (code !== "ENOTEMPTY" && code !== "EEXIST")) throw error;
+      }
     }
   }
 }

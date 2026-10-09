@@ -544,6 +544,7 @@ describe("PluginMarketplaceService.installLocal", () => {
       const installDir = join(pluginsDir, "test-plugin");
       await mkdir(join(installDir, "run", "w1"), { recursive: true });
       await writeFile(join(installDir, "run", "w1", "control.sock"), "w1");
+      const run = statSync(join(installDir, "run")).ino;
       const w1 = statSync(join(installDir, "run", "w1")).ino;
       await writeFile(
         join(sourceDir, "plugin.json"),
@@ -565,6 +566,9 @@ describe("PluginMarketplaceService.installLocal", () => {
       expect(swapFault.afterRenameInto).toBeUndefined();
       expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8")))
         .toMatchObject({ version: "2.0.0" });
+      // The run/ root the live children were wrapped against, not the one the
+      // worker made in the window.
+      expect(statSync(join(installDir, "run")).ino).toBe(run);
       expect(statSync(join(installDir, "run", "w1")).ino).toBe(w1);
       expect(await readFile(join(installDir, "run", "w1", "control.sock"), "utf-8")).toBe("w1");
       expect(existsSync(join(installDir, "run", "w2"))).toBe(true);

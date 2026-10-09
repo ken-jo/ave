@@ -467,9 +467,11 @@ describe("marketplace pending-update recovery", () => {
       await mkdir(join(backupDir, "run", "w1"), { recursive: true });
       await writeFile(join(backupDir, "run", "w1", "control.sock"), "w1");
       await mkdir(join(live, "run", "w2"), { recursive: true });
+      const run = statSync(join(backupDir, "run")).ino;
       const w1 = statSync(join(backupDir, "run", "w1")).ino;
 
       expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
+      expect(statSync(join(live, "run")).ino).toBe(run);
       expect(statSync(join(live, "run", "w1")).ino).toBe(w1);
       expect(await readFile(join(live, "run", "w1", "control.sock"), "utf-8")).toBe("w1");
       expect(existsSync(join(live, "run", "w2"))).toBe(true);

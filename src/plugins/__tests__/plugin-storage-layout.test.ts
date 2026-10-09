@@ -313,16 +313,21 @@ describe("carryPluginSocketDirs", () => {
     expect(existsSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME))).toBe(false);
   });
 
-  it("drops an EMPTY source and keeps the destination", async () => {
+  // An EMPTY source is still the directory the running children were wrapped
+  // against (a bubblewrap child holds it by bind mount), so it is the
+  // destination's entries that move, never the source that is dropped.
+  it("keeps an EMPTY source's identity and moves the destination's entries into it", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
     await mkdir(join(from, PLUGIN_WORKER_RUN_DIR_NAME), { recursive: true });
     await mkdir(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w2"), { recursive: true });
-    const kept = statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME)).ino;
+    const sourceInode = statSync(join(from, PLUGIN_WORKER_RUN_DIR_NAME)).ino;
+    const w2 = statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w2")).ino;
 
     await carryPluginSocketDirs(from, to, { onConflict: "reject" });
 
-    expect(statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME)).ino).toBe(kept);
+    expect(statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME)).ino).toBe(sourceInode);
+    expect(statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w2")).ino).toBe(w2);
     expect(existsSync(join(from, PLUGIN_WORKER_RUN_DIR_NAME))).toBe(false);
   });
 
@@ -334,11 +339,13 @@ describe("carryPluginSocketDirs", () => {
       await mkdir(join(from, PLUGIN_WORKER_RUN_DIR_NAME, "w1"), { recursive: true });
       await writeFile(join(from, PLUGIN_WORKER_RUN_DIR_NAME, "w1", "control.sock"), "w1");
       await mkdir(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w2"), { recursive: true });
+      const run = statSync(join(from, PLUGIN_WORKER_RUN_DIR_NAME)).ino;
       const w1 = statSync(join(from, PLUGIN_WORKER_RUN_DIR_NAME, "w1")).ino;
       const w2 = statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w2")).ino;
 
       await carryPluginSocketDirs(from, to, { onConflict });
 
+      expect(statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME)).ino).toBe(run);
       expect(statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w1")).ino).toBe(w1);
       expect(statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w2")).ino).toBe(w2);
       expect(existsSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w1", "control.sock"))).toBe(true);
@@ -356,7 +363,9 @@ describe("carryPluginSocketDirs", () => {
     await expect(carryPluginSocketDirs(from, to, { onConflict: "reject" }))
       .rejects.toThrow(/both roots hold sockets\/egress\.sock/);
 
-    expect(existsSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"))).toBe(true);
+    // Refused before anything moved: both sides exactly as they were.
+    expect(readFileSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "utf8")).toBe("source");
+    expect(readFileSync(join(to, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "utf8")).toBe("destination");
   });
 
   it("keeps the destination's entry for the same name under keep-destination", async () => {
