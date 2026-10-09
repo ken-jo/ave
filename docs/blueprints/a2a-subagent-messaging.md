@@ -1524,10 +1524,29 @@ verification never contacts either. The official protocol pin stays
 | Two Ave hosts end to end | `src/main/__tests__/a2a-remote-in-app-roundtrip.test.ts` |
 
 `bun run test:a2a` runs the checker and every A2A, sub-agent, parent-directive
-and `agent_send` suite; CI runs the same suites inside the full test run. In the round-trip test the control
-plane and the receiver's public TLS ingress are modelled at their interfaces
-(`A2ARouteControlPlaneClient`, and the strict transport's request seam after its
-DNS pin); everything between them is production code.
+and `agent_send` suite; CI runs the same suites inside the full test run.
+
+The round-trip test runs the production client, durable journal, strict pinned
+transport and boot-owned receiver (exact-replay handler, sub-agent handler,
+durable task store) on a real loopback listener. Its stand-ins, all listed in
+the test's header, are:
+
+- outside the app: the DNS answer (the transport's `lookup` seam), the
+  receiver's TLS tunnel (the transport's `request` seam, which forwards plain
+  HTTP to loopback, so certificate validation is not exercised), the route
+  control plane (`A2ARouteControlPlaneClient`) and the sub-agent's LLM work (a
+  deterministic lifecycle runner);
+- host services: Electron `safeStorage` (a sealing fake), the on-disk namespace
+  store (in-memory namespaces, kept across restarts), both approval prompts,
+  the caller's authorizer without its depth check (so the client's own depth-0
+  stop is what is proved), the caller's secret resolver, and the receiver's
+  settings, profile store, session context and audit sink.
+
+DNS pinning is exercised there: each request must reach the tunnel with the
+one address the transport vetted, and a name that resolves to loopback opens
+no socket. The transport's retry, deadline, repeated-lookup and zeroize rules
+stay in `a2a-remote-transport.test.ts`; the address classifier in
+`src/core/__tests__/network-guard.test.ts`.
 
 #### D8 post-routing decision review (retained creation depth-1, 2026-07-18)
 

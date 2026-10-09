@@ -1,19 +1,46 @@
 /**
  * App-complete proof of agent-to-agent messaging between two Ave hosts.
  *
- * Both ends are the production objects: the outbound `A2ARemoteClient` with its
- * durable journal and the strict HTTPS transport, and the boot-owned remote
- * receiver (`maybeStartRemoteA2AReceiverServer` → `A2AExactReplayHandler` →
- * `A2ASubAgentHandler` → durable task store) on a real loopback listener. The
- * only stand-ins are the three things that live outside the app:
+ * Production code on the path: the outbound `A2ARemoteClient` with its durable
+ * journal (`A2ARemoteDurableStore`) and the strict pinned HTTPS transport
+ * (`createA2AStrictTransport`: address eligibility, single pinned lookup,
+ * header and size rules), and the boot-owned remote receiver
+ * (`createA2ARemoteRuntime` → `maybeStartRemoteA2AReceiverServer` →
+ * `A2AExactReplayHandler` → `A2ASubAgentHandler` → durable task store) on a
+ * real loopback listener.
  *
- * - the TLS-terminating tunnel in front of the receiver (the receiver's own
- *   design delegates public ingress to it), modelled by handing the strict
- *   transport's request to the loopback listener after its DNS pin;
- * - the route control plane (formerly Agent Hub), modelled as an in-process
- *   resolver that issues the same no-store snapshot shape;
- * - the sub-agent's LLM work, modelled as a deterministic lifecycle runner at
- *   the runner boundary, so task state transitions are exact.
+ * Every stand-in, exactly:
+ *
+ * - outside the app:
+ *   - DNS: the transport's `lookup` seam returns a fixed public answer
+ *     (`PINNED_PUBLIC_ADDRESS`), or the ineligible answer one case injects;
+ *   - the TLS-terminating tunnel in front of the receiver (`trustedTunnel`):
+ *     it records the address the transport pinned, then hands the request to
+ *     the loopback listener over plain HTTP and surfaces the socket's connect
+ *     as the TLS handshake. Certificate validation is therefore not exercised;
+ *   - the route control plane (formerly Agent Hub): an in-process resolver
+ *     that issues the same no-store snapshot shape;
+ *   - the sub-agent's LLM work: a deterministic `LifecycleRunner` at the
+ *     runner boundary, so task state transitions are exact;
+ * - host services the app would supply:
+ *   - Electron `safeStorage`: the `encryption` fake (`sealed:` prefix) both
+ *     durable stores seal through;
+ *   - the on-disk namespace store: in-memory namespaces (`memoryNamespace`)
+ *     for the caller journal, the receiver's remote store and its task store,
+ *     kept across the restart cases so recovery reads what was persisted;
+ *   - the user's approval prompts: the caller's mutation approver and the
+ *     receiver's `agentActionApprover` approve and record every request;
+ *   - the caller's authorizer: the production predicate (project, target,
+ *     interface) without its depth check, so the depth case proves the
+ *     client's own depth-0 hard stop;
+ *   - the caller's secret resolver: the bearer comes from memory instead of
+ *     the settings secret store, with its zeroize counted;
+ *   - the receiver's settings, profile store, session context and audit sink:
+ *     plain objects with the fields the receiver reads.
+ *
+ * The caller's client is constructed directly rather than through
+ * `createA2ARemoteRuntime`; the runtime's gate wiring is covered by
+ * a2a-remote-gates.test.ts.
  *
  * This replaces the retired packaged-live / external-SDK evidence path: every
  * guarantee here runs in the ordinary vitest suite with no network, secret or
@@ -226,6 +253,8 @@ class LifecycleRunner implements A2ASubAgentLifecycleRunner {
 
 interface ObservedRequest {
   hostname: string;
+  /** What the transport's one pinned lookup handed the socket. */
+  pinned: { address: string; family: number } | null;
   path: string;
   headers: Record<string, string>;
   body: Buffer;
@@ -240,11 +269,14 @@ interface ObservedRequest {
  */
 function trustedTunnel(port: () => number, observed: ObservedRequest[]): typeof httpsRequest {
   const forward = (options: RequestOptions, callback?: (response: IncomingMessage) => void) => {
-    (options.lookup as unknown as (host: string, opts: object, done: () => void) => void)(
-      String(options.hostname),
-      {},
-      () => undefined,
-    );
+    let pinned: ObservedRequest["pinned"] = null;
+    (options.lookup as unknown as (
+      host: string,
+      opts: object,
+      done: (error: Error | null, address: string, family: number) => void,
+    ) => void)(String(options.hostname), {}, (error, address, family) => {
+      if (!error) pinned = { address, family };
+    });
     const request = httpRequest({
       host: "127.0.0.1",
       port: port(),
@@ -258,6 +290,7 @@ function trustedTunnel(port: () => number, observed: ObservedRequest[]): typeof 
     (request as unknown as { end: (chunk?: unknown) => typeof request }).end = (chunk?: unknown) => {
       observed.push({
         hostname: String(options.hostname),
+        pinned,
         path: String(options.path),
         headers: Object.fromEntries(
           Object.entries(options.headers ?? {}).map(([key, value]) => [key.toLowerCase(), String(value)]),
@@ -474,13 +507,18 @@ afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()!();
 });
 
-async function world(options: { bearer?: string; controlPlane?: (revision: number) => A2ARouteSnapshot } = {}) {
+async function world(options: {
+  bearer?: string;
+  controlPlane?: (revision: number) => A2ARouteSnapshot;
+  dnsAnswer?: { address: string; family: 4 | 6 };
+} = {}) {
+  const { dnsAnswer = { address: PINNED_PUBLIC_ADDRESS, family: 4 }, ...callerOptions } = options;
   const receiverState = { remote: memoryNamespace(), tasks: memoryNamespace(), runner: new LifecycleRunner() };
   let receiver = await startReceiver(receiverState);
   cleanups.push(async () => { await receiver.dispose(); });
   const observed: ObservedRequest[] = [];
   const strict = createA2AStrictTransport({
-    lookup: async () => [{ address: PINNED_PUBLIC_ADDRESS, family: 4 }],
+    lookup: async () => [dnsAnswer],
     request: trustedTunnel(() => receiver.port, observed),
   });
   const network = { dropNextResponse: false };
@@ -495,7 +533,7 @@ async function world(options: { bearer?: string; controlPlane?: (revision: numbe
     },
   };
   const callerNamespace = memoryNamespace();
-  const outbound = caller({ namespace: callerNamespace, transport, ...options });
+  const outbound = caller({ namespace: callerNamespace, transport, ...callerOptions });
   return {
     receiverState,
     get receiver() { return receiver; },
@@ -551,6 +589,11 @@ describe("A2A agent-to-agent messaging between two in-app Ave hosts", () => {
     expect(w.outbound.approvals).toEqual(["initial-send"]);
     expect(w.receiver.approvals).toHaveLength(1);
     expect(w.observed[1]!.headers).not.toHaveProperty("a2a-extensions");
+    // Both sockets were pinned to the one DNS answer the transport vetted.
+    expect(w.observed.map((request) => request.pinned)).toEqual([
+      { address: PINNED_PUBLIC_ADDRESS, family: 4 },
+      { address: PINNED_PUBLIC_ADDRESS, family: 4 },
+    ]);
     expect(dropped(w.receiver)).toEqual([]);
   });
 
@@ -665,6 +708,21 @@ describe("A2A agent-to-agent messaging between two in-app Ave hosts", () => {
     expect(w.outbound.zeroized.count).toBe(1);
     expect(w.observed).toEqual([]);
     expect(w.receiver.runner.counts.spawns).toBe(0);
+  });
+
+  it("never dials a route whose DNS answer rebinds to a loopback address", async () => {
+    // The receiver really is listening on loopback; a name that resolves there
+    // must not reach it. The transport refuses the answer before any socket.
+    // The client cannot tell a refusal from a lost send by the thrown error, so
+    // it journals the attempt as outcome-unknown (transport-ambiguous) rather
+    // than claiming nothing left.
+    const w = await world({ dnsAnswer: { address: "127.0.0.1", family: 4 } });
+    const result = await w.outbound.client.execute(initialSend("rebound", "complete: anything"));
+    expect(result).toMatchObject({ ok: false, outcome: "unknown-manual-reconciliation-required" });
+    expect(!result.ok && result.record?.stage).toBe("outcome-unknown");
+    expect(w.observed).toEqual([]);
+    expect(w.receiver.runner.counts.spawns).toBe(0);
+    expect(w.receiver.approvals).toEqual([]);
   });
 
   it("refuses remote task creation from a depth-1 child before authorization, approval, route or socket", async () => {

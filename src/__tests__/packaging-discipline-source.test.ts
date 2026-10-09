@@ -275,6 +275,16 @@ describe("installer smoke and packaging discipline", () => {
     ]);
   });
 
+  it("keeps the unsigned-build input and the single pinned release publisher", () => {
+    const workflow = readRepoFile(".github/workflows/build-installers.yml");
+
+    expect(workflow).toContain("skip_code_sign:");
+    expect(workflow).toContain("publish-release:");
+    expect(workflow).toContain(
+      "softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3",
+    );
+  });
+
   it("smoke-launches the packaged app before uploading installer artifacts", () => {
     const workflow = readRepoFile(".github/workflows/build-installers.yml");
     const smokeScript = readRepoFile("scripts/smoke-packaged-app.mjs");
