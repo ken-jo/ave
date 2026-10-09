@@ -35,16 +35,8 @@ export const A2A_REMOTE_MAX_RESPONSE_BYTES = 64 * 1_024;
 export const A2A_REMOTE_MAX_REQUEST_BYTES = 1_024 * 1_024;
 export const A2A_REMOTE_MAX_HISTORY_LENGTH = 64;
 
-// The external route-control schema retains its historical owner-prefixed
-// field names. Compose those names at the boundary so the host runtime stays
-// implementation-neutral while still enforcing byte-exact wire compatibility.
-const CONTROL_PLANE_HEAD_WIRE_KEY = ["agent", "hub", "head", "sha"].join("_");
-const CONTROL_PLANE_LOCK_WIRE_KEY = ["agent", "hub", "lock", "digest", "sha256"].join("_");
-
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:~-]{0,255}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
-const COMMIT_SHA = /^[a-f0-9]{40}$/;
-const A2A_TCK_TAG = /^v?[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/;
 
 export interface A2ARemoteLineage {
   targetAgentId: number;
@@ -68,19 +60,7 @@ export interface A2ARouteSnapshot extends A2ARemoteLineage {
   interfaceHealthObservationId: number;
   healthObservedAt: string;
   healthExpiresAt: string;
-  wireConformanceArtifactId: string;
-  wireConformanceArtifactDigestSha256: string;
   servedSpecObservationId: number;
-  wireConformanceEvidenceId: number;
-  controlPlaneHeadSha: string;
-  aveAppHeadSha: string;
-  remoteServerHeadSha: string;
-  a2aTckTag: string;
-  a2aTckCommitSha: string;
-  controlPlaneLockDigestSha256: string;
-  aveAppLockDigestSha256: string;
-  remoteServerLockDigestSha256: string;
-  a2aTckLockDigestSha256: string;
   a2aSpecificationUri: typeof A2A_SPECIFICATION_URI;
   issuedAt: string;
   expiresAt: string;
@@ -122,17 +102,7 @@ export interface A2ARouteSnapshotWire {
   protocol_binding: "JSONRPC";
   protocol_version: "1.0";
   auth_scheme: "Bearer";
-  wire_conformance_artifact_id: string;
-  wire_conformance_artifact_digest_sha256: string;
   served_spec_observation_id: number;
-  wire_conformance_evidence_id: number;
-  ave_app_head_sha: string;
-  remote_server_head_sha: string;
-  a2a_tck_tag: string;
-  a2a_tck_commit_sha: string;
-  ave_app_lock_digest_sha256: string;
-  remote_server_lock_digest_sha256: string;
-  a2a_tck_lock_digest_sha256: string;
   a2a_specification_uri: typeof A2A_SPECIFICATION_URI;
 }
 
@@ -370,19 +340,12 @@ export function parseA2ARouteSnapshot(
     "credential_external_version", "advertised_interface_id",
     "interface_health_observation_id", "health_observed_at", "health_expires_at",
     "protocol_binding", "protocol_version", "auth_scheme",
-    "wire_conformance_artifact_id", "wire_conformance_artifact_digest_sha256",
-    "served_spec_observation_id", "wire_conformance_evidence_id",
-    CONTROL_PLANE_HEAD_WIRE_KEY, "ave_app_head_sha", "remote_server_head_sha",
-    "a2a_tck_tag", "a2a_tck_commit_sha",
-    CONTROL_PLANE_LOCK_WIRE_KEY, "ave_app_lock_digest_sha256",
-    "remote_server_lock_digest_sha256", "a2a_tck_lock_digest_sha256",
-    "a2a_specification_uri",
+    "served_spec_observation_id", "a2a_specification_uri",
   ];
   if (!hasExactKeys(value, required)) throw new Error("a2a-route-snapshot-fields-invalid");
   const idFields = [
     value.snapshot_id, value.operation_id, value.attempt_id, value.caller_generation_id,
     value.credential_provider, value.credential_external_version,
-    value.wire_conformance_artifact_id,
   ];
   if (!idFields.every(boundedId)) throw new Error("a2a-route-snapshot-id-invalid");
   const numericIds = [
@@ -390,7 +353,7 @@ export function parseA2ARouteSnapshot(
     value.intended_credential_revision_id, value.credential_revision_id,
     value.credential_revision_version, value.advertised_interface_id,
     value.interface_health_observation_id, value.route_policy_version,
-    value.served_spec_observation_id, value.wire_conformance_evidence_id,
+    value.served_spec_observation_id,
     ...(expected.predecessorCredentialRevisionId === undefined
       ? [] : [value.predecessor_credential_revision_id]),
   ];
@@ -401,27 +364,7 @@ export function parseA2ARouteSnapshot(
     !digest(value.agent_card_digest_sha256)
     || !digest(value.route_policy_digest_sha256)
     || !digest(value.extension_spec_digest_sha256)
-    || !digest(value.wire_conformance_artifact_digest_sha256)
-    || !digest(value[CONTROL_PLANE_LOCK_WIRE_KEY])
-    || !digest(value.ave_app_lock_digest_sha256)
-    || !digest(value.remote_server_lock_digest_sha256)
-    || !digest(value.a2a_tck_lock_digest_sha256)
   ) throw new Error("a2a-route-snapshot-digest-invalid");
-  if (
-    typeof value[CONTROL_PLANE_HEAD_WIRE_KEY] !== "string"
-    || !COMMIT_SHA.test(value[CONTROL_PLANE_HEAD_WIRE_KEY])
-    || typeof value.ave_app_head_sha !== "string"
-    || !COMMIT_SHA.test(value.ave_app_head_sha)
-    || typeof value.remote_server_head_sha !== "string"
-    || !COMMIT_SHA.test(value.remote_server_head_sha)
-    || typeof value.a2a_tck_commit_sha !== "string"
-    || !COMMIT_SHA.test(value.a2a_tck_commit_sha)
-  ) throw new Error("a2a-route-snapshot-head-invalid");
-  if (
-    typeof value.a2a_tck_tag !== "string"
-    || value.a2a_tck_tag.length > 64
-    || !A2A_TCK_TAG.test(value.a2a_tck_tag)
-  ) throw new Error("a2a-route-snapshot-tck-tag-invalid");
   if (!timestamp(value.issued_at) || !timestamp(value.expires_at)) {
     throw new Error("a2a-route-snapshot-time-invalid");
   }
@@ -490,19 +433,7 @@ export function parseA2ARouteSnapshot(
     interfaceHealthObservationId: wire.interface_health_observation_id,
     healthObservedAt: wire.health_observed_at,
     healthExpiresAt: wire.health_expires_at,
-    wireConformanceArtifactId: wire.wire_conformance_artifact_id,
-    wireConformanceArtifactDigestSha256: wire.wire_conformance_artifact_digest_sha256,
     servedSpecObservationId: wire.served_spec_observation_id,
-    wireConformanceEvidenceId: wire.wire_conformance_evidence_id,
-    controlPlaneHeadSha: value[CONTROL_PLANE_HEAD_WIRE_KEY] as string,
-    aveAppHeadSha: wire.ave_app_head_sha,
-    remoteServerHeadSha: wire.remote_server_head_sha,
-    a2aTckTag: wire.a2a_tck_tag,
-    a2aTckCommitSha: wire.a2a_tck_commit_sha,
-    controlPlaneLockDigestSha256: value[CONTROL_PLANE_LOCK_WIRE_KEY] as string,
-    aveAppLockDigestSha256: wire.ave_app_lock_digest_sha256,
-    remoteServerLockDigestSha256: wire.remote_server_lock_digest_sha256,
-    a2aTckLockDigestSha256: wire.a2a_tck_lock_digest_sha256,
     a2aSpecificationUri: A2A_SPECIFICATION_URI,
     routePolicyVersion: wire.route_policy_version,
     routePolicyDigestSha256: wire.route_policy_digest_sha256,

@@ -476,6 +476,7 @@ for (const [needle, label] of [
   // must name its in-app proofs, not an external evidence gate.
   ["In-app verification (owner decision 2026-10-09)", "in-app verification section"],
   ["src/main/__tests__/a2a-remote-in-app-roundtrip.test.ts", "two-host in-app round trip"],
+  ["They are neither required nor optional legacy fields", "strict snapshot evidence removal"],
   ["explicit two-stage transaction", "two-stage journal"],
   ["absent, not null placeholders", "prepared stage snapshot exclusion"],
   ["at the earlier of client-observed", "encrypted payload deletion boundary"],
@@ -664,6 +665,9 @@ for (const [needle, label] of [
   ["worker result arriving after that CAS", "late commit suppression"],
   ["Authentication and ordinary A2A authorization MUST complete", "auth ordering"],
   ["Required conformance vectors", "wire vectors"],
+  ["Verification is app-complete", "in-app conformance policy"],
+  ["Route snapshots MUST NOT carry external verification provenance", "runtime evidence exclusion"],
+  ["route eligibility MUST NOT depend on it", "external evidence gate exclusion"],
   [officialSpec, "official specification pin"],
 ]) {
   requireText(normalizedSpec, needle, label);

@@ -6,7 +6,7 @@
 - Status: normative implementation contract, re-locked 2026-07-17 after removing
   the unowned DNS assumption; live activation is prohibited until
   these exact checked-in specification bytes are independently provisioned and
-  their SHA-256 digest is pinned by both route policy and the packaged client
+  their SHA-256 digest is pinned by both route policy and the client
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**,
 **SHOULD**, **SHOULD NOT**, **RECOMMENDED**, **NOT RECOMMENDED**, **MAY**, and
@@ -72,12 +72,14 @@ parameters, exact Agent Card digest, and exact pinned-specification digest befor
 an initial Send route is eligible. A route with `required: true` therefore fails
 this Ave profile just as a missing or malformed entry does.
 
-Before enabling a live route, Agent Hub and the packaged Ave client MUST receive
+Before enabling a live route, the control plane and the client MUST receive
 the exact specification bytes through independently bounded provisioning paths,
 verify identical bytes and SHA-256, and pin the digest. The UUID URN is an opaque
 protocol identifier and MUST NOT be dereferenced or treated as an endpoint. A
 route MUST NOT become eligible merely because the identifier is declared or the
-interface is reachable. Updating normative bytes requires a new extension URI.
+interface is reachable. Changes to normative wire behavior require a new
+extension URI. Any specification-byte update MUST be provisioned and pinned
+again before enabling a route.
 
 ## Activation
 
@@ -447,17 +449,24 @@ new requests before replay-store access and MUST NOT authorize a stale credentia
 solely to retrieve a result.
 
 The extension does not replace TLS, bearer authentication, Agent Card signature
-verification, foreground approval, Agent Hub route eligibility, per-operation
+verification, foreground approval, route eligibility, per-operation
 no-store resolve, D8 depth enforcement, or the host's encrypted recovery payload.
 No extension field can widen a network, size, deadline, history, or retention
 bound.
 
 ## Required conformance vectors
 
-A pinned-head wire suite MUST record the packaged-client commit, Agent Hub commit,
-remote-server commit, exact A2A v1.0 TCK release and full commit, this specification
-SHA-256, Agent Card hash, and test artifact SHA-256. It MUST prove all of the
-following with zero skipped cases:
+Verification is app-complete: the in-app wire, client, receiver, and replay-store
+suites MUST prove the following with zero skipped cases. The production
+agent-to-agent path is exercised by
+`src/main/__tests__/a2a-remote-in-app-roundtrip.test.ts`; protocol vectors are
+covered by `src/api/__tests__/a2a-p4-5-wire.test.ts` and the focused client and
+replay-store suites listed in the blueprint's in-app verification section.
+These checks require no external service, packaged capture, repository checkout,
+upstream conformance-kit release or commit, dependency-lock hash, or test-artifact
+hash. Route snapshots MUST NOT carry external verification provenance, and route
+eligibility MUST NOT depend on it. Exact Agent Card, route-policy, and provisioned
+specification digests remain mandatory runtime checks.
 
 1. First send returns JSON-RPC `result: { message: Message }`; exact replay before
    and after server restart returns the same oneof branch and

@@ -22,7 +22,7 @@
 
 Sub-agents are in-process child `ConversationLoop`s (`src/engine/subagent-runner.ts`); a second in-process loop is an established pattern (side-chat, `src/ipc/domains/sidechat.ts`). No official A2A SDK ships an in-memory transport and none documents multi-agent hosting — a loopback HTTP mesh would tax every intra-process hop (JSON-RPC + TCP + SSE) for an external consumer that does not exist until ph3/ph4. The bus preserves A2A v1.0 **data shapes** (Task/Message/Part/Artifact) and **state machine** so the ph3 wire binding is a projection, not a redesign.
 
-**Accepted risk (stated honestly):** ph1-2 cannot run the official a2a-tck conformance kit (no wire). Mitigation: vendor v1.0 types as the compile-time contract AND port the TCK's state-transition assertions as in-process unit tests. This narrows but does not close the drift risk; ph3 runs the real TCK.
+**Accepted risk:** in-process state-transition tests and vendored v1.0 types constrain protocol drift without proving interoperability with an external implementation. Ph3 adds in-app wire vectors and production agent-to-agent round trips; external conformance-kit runs are not required.
 
 ## Engine reality the design is built on (verified)
 
@@ -84,9 +84,9 @@ The workspace rail renders a budget-suspended run as `done`: the done event hard
 
 | Phase | Scope | Effort | Gate |
 |---|---|---|---|
-| **ph1** | Vendor v1.0 types; Task-state mapping; `suspension` type evolution (+ MAX_RESUMES decoupling prep); child→parent push (queueGuidance + mailbox + D3 wake); renderer `waiting` state (live-bug fix); TCK state-transition unit tests | M (~2-3wk) | host minor release |
+| **ph1** | Vendor v1.0 types; Task-state mapping; `suspension` type evolution (+ MAX_RESUMES decoupling prep); child→parent push (queueGuidance + mailbox + D3 wake); renderer `waiting` state (live-bug fix); state-transition unit tests | M (~2-3wk) | host minor release |
 | **ph2** | agent_send sibling messaging (parent-mediated); active-recipient round-boundary steering + idle mailbox reuse; per-tree budget + hop TTL; DLP chokepoint on Parts; audit edges; question-wait (reason: question) | M | next host minor |
-| **ph3** | Loopback wire binding: one 127.0.0.1 server path-multiplexing N handlers; Agent Card endpoint; protocol-version negotiation; SSE capability gating; A2A task TTL→CANCELED (D6); **official a2a-tck conformance**; re-evaluate the JavaScript SDK server glue; local external-host smoke against one A2A client | L | opt-in flag, default OFF |
+| **ph3** | Loopback wire binding: one 127.0.0.1 server path-multiplexing N handlers; Agent Card endpoint; protocol-version negotiation; SSE capability gating; A2A task TTL→CANCELED (D6); in-app wire vectors and production agent-to-agent round trips | L | opt-in flag, default OFF |
 | **ph4** | External interop / Agent Hub: durable administrator-reviewed Agent Card registry; explicit trust-key, credential, discovery, and health stages; later host↔Agent Hub remote routing. Plugin integration is outside this roadmap. D8 remains unchanged unless a separate policy decision is accepted after routing exists. | XL | separate opt-in |
 
 ### Ph3 loopback listener and route-family opt-ins (locked 2026-07-13)
@@ -131,7 +131,7 @@ The wire age-out policy is fixed and does not change D6's rule against an intern
 - **Race-safe expiry:** at a deadline, the handler acquires the existing per-Task lock, refetches the record, reconciles the runner first, refetches again, and rechecks state, timestamp, ownership, and deadline. It cancels the runner before persisting `CANCELED`. The terminal transition is message-less so a full 64-Message history cannot strand a successfully canceled run in `INPUT_REQUIRED`.
 - **Failure behavior:** a runner-cancel or storage failure preserves the current Task state, is audited without Message content, and retries after 60 seconds. There is no hot loop and no Task-schema TTL field; the persisted status timestamp remains the sole deadline source.
 
-Ph3 wire verification is app-complete (owner decision, 2026-10-09). `src/api/__tests__/a2a-router.test.ts` drives the production JSON-RPC router and bearer boundary over a real loopback listener: Agent Card, version negotiation, JSON-RPC id/params/method validation and the error mapping. `src/main/__tests__/a2a-remote-in-app-roundtrip.test.ts` addresses the real Agent Card, `A2ASubAgentHandler`, durable Task store and runner lifecycle from a second in-app host and covers COMPLETED, INPUT_REQUIRED continuation, CANCELED, prompt-free GetTask, and rejected authentication with zero mutation. The earlier external checks — the pinned upstream TCK run and the official Python SDK smoke — were removed with that decision because they needed a checkout and a package index outside the app.
+Ph3 wire verification is app-complete (owner decision, 2026-10-09). `src/api/__tests__/a2a-router.test.ts` drives the production JSON-RPC router and bearer boundary over a real loopback listener: Agent Card, version negotiation, JSON-RPC id/params/method validation and the error mapping. `src/main/__tests__/a2a-remote-in-app-roundtrip.test.ts` drives the production outbound client, transport, receiver, `A2ASubAgentHandler`, and durable Task store from a second in-app host, with a deterministic runner for agent work. It covers COMPLETED, INPUT_REQUIRED continuation, CANCELED, prompt-free GetTask, and rejected authentication with zero mutation. The earlier external conformance-kit run and external-client smoke were removed with that decision because they needed a checkout and a package index outside the app.
 
 ### Ph4 decomposition: P4-1 admission and P4-2 durable registry (locked 2026-07-15)
 
@@ -1182,8 +1182,8 @@ are obtained out of band rather than embedded in an Agent Card.
   health observation produced without a Task payload or credential disclosure.
   Health proves only the declared interface's bounded DNS/TLS/HTTP reachability;
   it neither changes trust, proves the bearer remains valid, nor proves replay
-  semantics or extension conformance. Exact-send-replay conformance is separate
-  pinned-head wire-vector evidence. The direct client still performs TLS,
+  semantics or extension conformance. Exact-send-replay behavior is verified
+  separately by the in-app wire and replay-store suites. The direct client still performs TLS,
   snapshot, authorization, and authentication checks on every operation.
 - A revocation committed before the no-store resolve completes blocks the
   operation. The only unavoidable cross-plane gap is a revocation that commits
@@ -1318,9 +1318,9 @@ are obtained out of band rather than embedded in an Agent Card.
   exact-send-replay extension entry with `required: false` and exact parameters,
   and route policy explicitly mandates that identifier
   `urn:uuid:383a1d70-5c3b-42d9-a65d-9f084b7a1a44` and the
-  route policy pins the provisioned specification digest plus a passing pinned-head
-  wire-conformance artifact. Advertised-interface health proves only declaration
-  reachability and never supplies this evidence. The server must durably map the
+  route policy pins the provisioned specification digest. Advertised-interface
+  health proves only declaration reachability and never proves replay conformance.
+  The server must durably map the
   same authenticated caller, initial `SendMessage` Message ID, byte-for-byte
   identical serialized HTTP body, and semantic intent hash to one complete A2A
   v1 `SendMessageResponse` oneof wrapper: exactly `{ message: Message }` or
@@ -1483,7 +1483,7 @@ are obtained out of band rather than embedded in an Agent Card.
 | Ownership | generic host-owned remote A2A client and control-plane interfaces; no plugin, HostApi, Marketplace, vega-helper, meeting, local-indexer, or plugin-SDK dependency |
 | Plane separation | Agent Hub issues only bounded no-store route snapshots; packet capture plus Hub response/storage/log/audit assertions prove every Task payload, response, Task/context ID, artifact, `secret_reference`, raw reference derivative, and secret stays outside Hub and every Task method travels only between the client host and exact remote A2A server |
 | Opt-in | separate immutable boot gate defaults OFF; disabled mode performs zero control-plane, secret, DNS, socket, listener, or Task-journal effect and does not change ph3 loopback behavior |
-| Eligibility | one immutable unambiguous no-store snapshot proves active target + active exact trust-key revision + active exact credential binding/revision ID and bounded version/provider/external_version metadata + current advertised-interface declaration/reachability health + explicit host/operation route policy + separately pinned exact-send-replay specification digest and pinned-head wire-conformance artifact; health is never replay-conformance evidence, trusted or healthy alone is never enough, and every Send/Get/continue/Cancel resolves again as the last control-plane gate before data-plane I/O |
+| Eligibility | one immutable unambiguous no-store snapshot proves active target + active exact trust-key revision + active exact credential binding/revision ID and bounded version/provider/external_version metadata + current advertised-interface declaration/reachability health + explicit host/operation route policy + separately pinned exact-send-replay specification digest; health is never replay-conformance evidence, trusted or healthy alone is never enough, and every Send/Get/continue/Cancel resolves again as the last control-plane gate before data-plane I/O |
 | Host authorization | new-mutation order is gate/depth/explicit target+interface host authorization -> foreground approval -> prepared journal for every mutation, with an encrypted exact-body record+pointer only for initial Send and metadata+semantic hash only for continuation/Cancel -> OS-safe local secret preparation -> final no-store resolve -> exact immutable-lineage and intended-revision proof plus CAS snapshot-metadata attachment -> immediate socket; identity drift requires reapproval and zero data-plane I/O; failed-preparation/orphan body cleanup is initial-Send-only; GetTask and exact replay omit only the prompt and still perform fresh local authorization, attempt journal, local secret preparation, final resolve, and snapshot attachment before the socket |
 | Protocol | A2A v1.0, public HTTPS/443, exact `JSONRPC` (JSON-RPC) binding, non-streaming, Bearer only; exact supported interface and per-interface `1.0` negotiation; `A2A-Version: 1.0` on every request without activating any extension; Agent Card declares the exact profile with `required: false`, while Ave route policy mandates its exact presence/params/Card/spec digests for eligible initial Send; `urn:uuid:383a1d70-5c3b-42d9-a65d-9f084b7a1a44` activation is sent only for an initial Send and exact replay of it, never continuation/Get/Cancel; every activated success and `-32090..-32094` error echoes it, only `-32092` carries Retry-After, and all errors are full JSON-RPC envelopes with exact request ID; absent/malformed route-policy-mandated contract is ineligible; additional `required: true` extensions fail closed while unrelated optional extensions are ignored without negotiation/echo/execution |
 | Credential | snapshot exposes only exact binding/revision ID plus bounded version/provider/external_version metadata; P4-3's internal keyed fingerprint is never returned; an out-of-band provisioned OS-safe local resolver maps the exact revision per operation but cannot pre-prove bearer bytes; no `secret_reference`, secret, or derivative in Hub response, journal, logs, audit, traces, metrics, errors, or crash reports; wrong bearer yields one fixed auth failure with zero retry/fallback and rotation/revocation mismatch is zero data-plane I/O |
@@ -1514,6 +1514,16 @@ behind its default-OFF boot gates and the contract above; a deployment that
 turns it on supplies its own control plane and remote endpoint, and the app's
 verification never contacts either. The official protocol pin stays
 `https://a2a-protocol.org/v1.0.0/specification/`.
+
+Route snapshots contain runtime authorization, credential, health, and pinned
+specification fields only. External verification artifact IDs/digests, evidence
+IDs, client/control-plane/server commits and dependency-lock digests, and upstream
+conformance-kit tags/commits/lock digests are removed from both snapshot schemas
+and validators. They are neither required nor optional legacy fields: a snapshot
+containing them is rejected by exact key validation. No default or fabricated
+evidence replaces them. A send with those fields absent must reach the receiving
+agent, as proved by the round-trip regression; all remaining required fields
+continue to fail closed when missing or invalid.
 
 | Guarantee | In-app proof |
 | --- | --- |
@@ -1606,4 +1616,4 @@ Design inputs: A2A v1.0 spec + official SDK survey (2026-07-10 research, npm-reg
 
 P4-3 security references: [A2A specification](https://a2a-protocol.org/latest/specification/), [Node.js HTTPS](https://nodejs.org/api/https.html), [JWS (RFC 7515)](https://www.rfc-editor.org/rfc/rfc7515.html), [JWK (RFC 7517)](https://www.rfc-editor.org/rfc/rfc7517.html), [JWT BCP algorithm-verification guidance (RFC 8725)](https://www.rfc-editor.org/rfc/rfc8725.html), [HTTP caching (RFC 9111)](https://www.rfc-editor.org/rfc/rfc9111.html), [TLS service identity (RFC 9525)](https://www.rfc-editor.org/rfc/rfc9525.html), [WHATWG URL](https://url.spec.whatwg.org/), [OWASP SSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html), and [OWASP Secrets Management](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html).
 
-P4-5 protocol references: the official [A2A v1.0.0 release](https://github.com/a2aproject/A2A/releases/tag/v1.0.0), immutable [A2A v1.0 specification](https://a2a-protocol.org/v1.0.0/specification/), [A2A extension guide](https://a2a-protocol.org/latest/topics/extensions/), [Agent Discovery guidance](https://a2a-protocol.org/latest/topics/agent-discovery/), [v1.0 interface changes](https://a2a-protocol.org/latest/whats-new-v1/), and the checked-in [Ave exact-send-replay v1 profile](../protocols/ave-a2a-exact-send-replay.md). Every wire-conformance artifact pins the official TCK release/tag, full commit, and dependency-lock hash used by the run; a mutable TCK branch is not evidence.
+P4-5 protocol references: the official [A2A v1.0.0 release](https://github.com/a2aproject/A2A/releases/tag/v1.0.0), immutable [A2A v1.0 specification](https://a2a-protocol.org/v1.0.0/specification/), [A2A extension guide](https://a2a-protocol.org/latest/topics/extensions/), [Agent Discovery guidance](https://a2a-protocol.org/latest/topics/agent-discovery/), [v1.0 interface changes](https://a2a-protocol.org/latest/whats-new-v1/), and the checked-in [Ave exact-send-replay v1 profile](../protocols/ave-a2a-exact-send-replay.md). Verification uses the in-app suites above and does not require an upstream conformance-kit checkout or its release, commit, or dependency-lock hash.

@@ -120,19 +120,7 @@ function snapshot(credentialRevisionId: number): A2ARouteSnapshot {
     interfaceHealthObservationId: 7,
     healthObservedAt: "2026-07-16T00:00:00.000Z",
     healthExpiresAt: "2099-01-01T00:00:00.000Z",
-    wireConformanceArtifactId: "in-app-roundtrip",
-    wireConformanceArtifactDigestSha256: DIGEST,
     servedSpecObservationId: 8,
-    wireConformanceEvidenceId: 9,
-    controlPlaneHeadSha: "1".repeat(40),
-    aveAppHeadSha: "2".repeat(40),
-    remoteServerHeadSha: "3".repeat(40),
-    a2aTckTag: "v1.0.0",
-    a2aTckCommitSha: "4".repeat(40),
-    controlPlaneLockDigestSha256: DIGEST,
-    aveAppLockDigestSha256: DIGEST,
-    remoteServerLockDigestSha256: DIGEST,
-    a2aTckLockDigestSha256: DIGEST,
     a2aSpecificationUri: A2A_SPECIFICATION_URI,
     issuedAt: "2026-07-16T00:00:00.000Z",
     expiresAt: "2099-01-01T00:00:00.000Z",
@@ -550,6 +538,17 @@ async function world(options: {
 }
 
 describe("A2A agent-to-agent messaging between two in-app Ave hosts", () => {
+  it("delivers an agent message without external conformance metadata", async () => {
+    const w = await world();
+    const sent = await w.outbound.client.execute(initialSend("no-evidence", "complete: verify in-app messaging"));
+    const task = taskOf(sent);
+    expect(task.status.state).toBe(A2ATaskState.COMPLETED);
+    expect(sent.ok && sent.record.stage).toBe("settled");
+    expect(w.observed).toHaveLength(1);
+    expect(w.receiver.runner.prompts).toEqual(["complete: verify in-app messaging"]);
+    expect(w.receiver.runner.counts).toEqual({ spawns: 1, resumes: 0, cancels: 0 });
+  });
+
   it("delivers SendMessage to the remote agent over the strict transport and reads it back prompt-free", async () => {
     const w = await world();
     const sent = await w.outbound.client.execute(initialSend("deliver", "complete: summarize the branch"));
