@@ -23,7 +23,8 @@ function runGate(repository: string | undefined, script = SCRIPT, cwd = process.
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.GITHUB_REPOSITORY;
   if (repository !== undefined) env.GITHUB_REPOSITORY = repository;
-  return spawnSync(process.execPath, [script], { cwd, encoding: "utf8", env });
+  const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+  return spawnSync(nodeCommand, [script], { cwd, encoding: "utf8", env });
 }
 
 describe("release repository gate", () => {
