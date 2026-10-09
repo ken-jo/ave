@@ -1750,11 +1750,13 @@ its evidence.
   storage in chunks. No chunked body streaming in protocol `1` or `2`. A **download**
   above the cap is fetched as HTTP `Range` slices, each within it, and appended to a
   file under the plugin's data directory. `range` is an ordinary request header the
-  host carries onto every gated hop, a cross-origin redirect included: that hop drops
-  `CREDENTIAL_HEADERS` (`authorization`, `proxy-authorization`, `cookie`, `api-key`,
-  `x-api-key`, `ocp-apim-subscription-key`) and `anthropic-version`, and a 303 (or a
-  301/302 after a POST) also drops `content-type` and `content-length` with the body
-  (`src/main/host-fetch-guard.ts`, `runHostFetchHops`). A `206` comes back with its
+  host carries onto every gated hop, a cross-origin redirect included. What a hop does
+  drop is decided in `runHostFetchHops` (`src/main/host-fetch-guard.ts`) on two
+  independent rules. A cross-origin hop drops `CREDENTIAL_HEADERS` (`authorization`,
+  `proxy-authorization`, `cookie`, `api-key`, `x-api-key`,
+  `ocp-apim-subscription-key`) and `anthropic-version`. Separately, any 303 hop, and
+  any 301/302 hop after a POST, same-origin or not, turns the request into a bodyless
+  GET and drops `content-type` and `content-length` with the body. A `206` comes back with its
   `content-range`. A server that ignores `Range` answers `200` whole, which the cap
   refuses with `payload-too-large` before allocating it, and the refused body is
   cancelled rather than left open. Pinned by
