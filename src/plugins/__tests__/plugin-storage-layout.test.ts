@@ -253,7 +253,7 @@ describe("carryPluginSocketDirs", () => {
     const inodes = [PLUGIN_WORKER_RUN_DIR_NAME, PLUGIN_OWN_SOCKET_DIR_NAME]
       .map((name) => statSync(join(from, name)).ino);
 
-    await carryPluginSocketDirs(from, to);
+    await carryPluginSocketDirs(from, to, { onConflict: "reject" });
 
     expect([PLUGIN_WORKER_RUN_DIR_NAME, PLUGIN_OWN_SOCKET_DIR_NAME].map((name) => statSync(join(to, name)).ino))
       .toEqual(inodes);
@@ -269,7 +269,7 @@ describe("carryPluginSocketDirs", () => {
     await mkdir(join(from, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
     await mkdir(to);
 
-    await carryPluginSocketDirs(from, to);
+    await carryPluginSocketDirs(from, to, { onConflict: "reject" });
 
     expect(existsSync(join(to, PLUGIN_OWN_SOCKET_DIR_NAME))).toBe(true);
     expect(existsSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME))).toBe(false);
@@ -281,9 +281,35 @@ describe("carryPluginSocketDirs", () => {
     await mkdir(join(from, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
     await mkdir(join(to, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
 
-    await expect(carryPluginSocketDirs(from, to)).rejects.toThrow(/both roots hold a plugin socket directory/);
+    await expect(carryPluginSocketDirs(from, to, { onConflict: "reject" })).rejects.toThrow(/both roots hold a plugin socket directory/);
 
     expect(existsSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME))).toBe(true);
+  });
+
+  it("keeps the destination's directory under the recovery policy and leaves the source's in place", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
+    await mkdir(join(from, PLUGIN_WORKER_RUN_DIR_NAME), { recursive: true });
+    await mkdir(join(to, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
+    const kept = statSync(join(to, PLUGIN_OWN_SOCKET_DIR_NAME)).ino;
+    const moved = statSync(join(from, PLUGIN_WORKER_RUN_DIR_NAME)).ino;
+
+    await carryPluginSocketDirs(from, to, { onConflict: "keep-destination" });
+
+    expect(statSync(join(to, PLUGIN_OWN_SOCKET_DIR_NAME)).ino).toBe(kept);
+    expect(statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME)).ino).toBe(moved);
+    expect(existsSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME))).toBe(true);
+  });
+
+  it("moves nothing under the recovery policy when no destination root survives", async () => {
+    const from = join(root, "old");
+    await mkdir(join(from, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
+
+    await carryPluginSocketDirs(from, join(root, "gone"), { onConflict: "keep-destination" });
+
+    expect(existsSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME))).toBe(true);
+    expect(existsSync(join(root, "gone"))).toBe(false);
   });
 });
 

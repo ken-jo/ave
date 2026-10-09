@@ -363,18 +363,36 @@ const PLUGIN_SOCKET_DIR_NAMES: readonly string[] = [
  * moved, never re-created — is the one that child can reach. This is the move
  * `data/` already gets for the same reason.
  *
- * These directories are not state and nothing reads their contents back, so
- * the destination already holding one is a bookkeeping error rather than a
- * merge to decide: a staged payload never ships a runtime directory
- * (`isPluginRuntimeDirName` refuses it), and the restore paths rebuild the
- * root they carry into with {@link pluginPayloadCopyFilter}. It throws.
+ * The destination already holding one is decided by the caller's policy, with
+ * no default, for the reason {@link PluginDataCarryPolicy} has none:
+ *
+ *  - `reject` — an INSTALL transaction. A staged payload never ships a runtime
+ *    directory (`isPluginRuntimeDirName` refuses it) and the restore paths
+ *    rebuild the root they carry into with {@link pluginPayloadCopyFilter}, so
+ *    a socket directory there means the transaction's bookkeeping is wrong.
+ *  - `keep-destination` — RECOVERY, which is handed whatever an interrupted
+ *    transaction left and must reach a terminal disposition. These directories
+ *    are not state and nothing reads their contents back, so the destination's
+ *    directory stays and the source's goes with the root it sits in; with no
+ *    destination root at all, nothing moves.
+ *
+ * Renamed through {@link renameDirectory}, which already retries the transient
+ * Windows lock codes; callers do not wrap it again.
  */
-export async function carryPluginSocketDirs(fromRoot: string, toRoot: string): Promise<void> {
+export async function carryPluginSocketDirs(
+  fromRoot: string,
+  toRoot: string,
+  policy: { onConflict: "reject" | "keep-destination" },
+): Promise<void> {
+  // Recovery may discard a root while no live root survives (a cleanup after
+  // an uninstall): nothing is bound there to hand the sockets to.
+  if (policy.onConflict === "keep-destination" && !await pathExists(toRoot)) return;
   for (const name of PLUGIN_SOCKET_DIR_NAMES) {
     const source = resolve(fromRoot, name);
     const target = resolve(toRoot, name);
     if (!await pathExists(source)) continue;
     if (await pathExists(target)) {
+      if (policy.onConflict === "keep-destination") continue;
       throw new Error(
         `[plugin-storage-layout] both roots hold a plugin socket directory; refusing to `
           + `replace ${target} with ${source}`,

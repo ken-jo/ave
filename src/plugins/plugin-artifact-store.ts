@@ -402,7 +402,7 @@ export class PluginArtifactStore {
           if (hadOldDir) {
             try {
               await retryOnTransientFsLock(() => carryPluginDataDir(installDir, oldDir, { onConflict: "reject" }));
-              await retryOnTransientFsLock(() => carryPluginSocketDirs(installDir, oldDir));
+              await carryPluginSocketDirs(installDir, oldDir, { onConflict: "reject" });
             } catch (carryBackErr) {
               throw new ArtifactRollbackError(
                 `${failedStep} and plugin data return both failed: ${safeSlug}`,
@@ -445,10 +445,7 @@ export class PluginArtifactStore {
             });
             // The socket directories the already-spawned candidate was granted
             // live in the root that just went aside; see carryPluginSocketDirs.
-            await retryOnTransientFsLock(() => carryPluginSocketDirs(oldDir, installDir), {
-              onRetry: (attempt, code) =>
-                log.warn({ safeSlug, attempt, code }, "retrying plugin socket-dir carry into promoted root under fs lock"),
-            });
+            await carryPluginSocketDirs(oldDir, installDir, { onConflict: "reject" });
           } catch (carryErr) {
             return discardPromotedRoot(carryErr, "artifact data carry");
           }

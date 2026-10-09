@@ -1080,15 +1080,44 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
     if (process.platform !== "darwin" && process.platform !== "linux") return;
 
     await initializeAsrtSandbox({ allowedDomains: ["example.com"], strictAllowlist: true });
-    // First register pushes the dir; a duplicate register is a no-op (idempotent).
+    // First register pushes the dir; a second holder of it only adds a holder.
     await registerWorkerUnixSocketDir("/run/worker-a");
     await registerWorkerUnixSocketDir("/run/worker-a");
-    // Unregister of an unknown dir is a no-op; the known dir unregisters cleanly.
+    // Unregister of an unknown dir is a no-op; each holder releases once.
     await unregisterWorkerUnixSocketDir("/run/unknown");
+    await unregisterWorkerUnixSocketDir("/run/worker-a");
     await unregisterWorkerUnixSocketDir("/run/worker-a");
     // Reset clears the live worker set so the next init starts clean.
     await resetAsrtSandbox();
     // After teardown a register must throw again (no stale base settings).
     await expect(registerWorkerUnixSocketDir("/run/worker-a")).rejects.toThrow(/not active/);
+  }, 60_000);
+
+  // A plugin's `sockets/` and `run/` are per plugin, so during an update or a
+  // restart the candidate child registers the directories its predecessor
+  // still holds, and the predecessor retires first. Its release must not take
+  // the allow away from the candidate: every child wrapped afterwards (the
+  // candidate's own workers, started from onPublished) is generated from the
+  // shared config at that moment.
+  it("keeps a directory allowed until its LAST holder releases it", async () => {
+    if (!(await asrtCanInitialize())) return;
+    if (process.platform !== "darwin" && process.platform !== "linux") return;
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const allowed = (): readonly string[] => SandboxManager.getConfig()?.network.allowUnixSockets ?? [];
+
+    await initializeAsrtSandbox({ allowedDomains: ["example.com"], strictAllowlist: true });
+    try {
+      await registerWorkerUnixSocketDir("/run/plugin-x/sockets"); // predecessor
+      await registerWorkerUnixSocketDir("/run/plugin-x/sockets"); // candidate
+      expect(allowed()).toContain("/run/plugin-x/sockets");
+
+      await unregisterWorkerUnixSocketDir("/run/plugin-x/sockets"); // predecessor retires
+      expect(allowed()).toContain("/run/plugin-x/sockets");
+
+      await unregisterWorkerUnixSocketDir("/run/plugin-x/sockets"); // candidate exits
+      expect(allowed()).not.toContain("/run/plugin-x/sockets");
+    } finally {
+      await resetAsrtSandbox();
+    }
   }, 60_000);
 });

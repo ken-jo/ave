@@ -377,13 +377,24 @@ export interface WrapOptions {
 let _baseTrustedSettings: TrustedSandboxSettings | undefined;
 
 /**
- * Live set of host-allocated worker control-socket DIRECTORIES currently
- * registered for UDS access (see the WORKER UDS header). Each entry contributes
- * a macOS `allowUnixSockets` `(subpath <dir>)` allow; their presence also turns
- * on the Linux `allowAllUnixSockets` weakening (path-blind seccomp re-permit).
- * Maintained by {@link registerWorkerUnixSocketDir} / its unregister.
+ * Live host-allocated socket DIRECTORIES currently registered for UDS access
+ * (see the WORKER UDS header), each with the number of holders that registered
+ * it. Each entry contributes a macOS `allowUnixSockets` `(subpath <dir>)`
+ * allow; their presence also turns on the Linux `allowAllUnixSockets`
+ * weakening (path-blind seccomp re-permit).
+ *
+ * COUNTED, not a set: one directory has more than one holder at a time. A
+ * plugin's `sockets/` and `run/` are per PLUGIN, not per generation, so during
+ * an update or restart the candidate child registers the same directories the
+ * predecessor still holds, and the predecessor retires FIRST
+ * (`plugin-bundle-lifecycle.ts` awaits retirement before the candidate's
+ * `onPublished`). A set dropped the directory on that release, so every child
+ * wrapped afterwards — the candidate's own workers, started from
+ * `onPublished` — was generated without the allow while the candidate still
+ * held it. Maintained by {@link registerWorkerUnixSocketDir} / its unregister;
+ * every caller pairs one unregister with each successful register.
  */
-const _workerUnixSocketDirs = new Set<string>();
+const _workerUnixSocketDirs = new Map<string, number>();
 
 /**
  * Merge the live worker-UDS state into a base {@link TrustedSandboxSettings} to
@@ -396,7 +407,7 @@ function withWorkerUnixSockets(
   base: TrustedSandboxSettings,
 ): TrustedSandboxSettings {
   if (_workerUnixSocketDirs.size === 0) return base;
-  const dirs = [..._workerUnixSocketDirs];
+  const dirs = [..._workerUnixSocketDirs.keys()];
   return {
     ...base,
     allowUnixSocketDirs: [
@@ -2042,7 +2053,8 @@ export async function updateAsrtSandboxConfig(
  * <dir>)` allow — the dir, NOT the socket file, which gives EPERM). Linux: the
  * dir is path-ignored by seccomp; its presence forces the trusted
  * `allowAllUnixSockets` weakening on (the `--bind` of the writable dir scopes
- * WHERE). No-op when the gate is off or already registered.
+ * WHERE). A directory another holder already registered only gains a holder;
+ * the config is pushed when the first one arrives.
  *
  * TRUSTED-ONLY: `socketDir` must be a host-allocated path (a plugin sandbox-root
  * subtree), never a plugin/manifest/MCP-supplied value.
@@ -2053,21 +2065,36 @@ export async function registerWorkerUnixSocketDir(socketDir: string): Promise<vo
       "registerWorkerUnixSocketDir: ASRT sandbox is not active (initialize at boot first)",
     );
   }
-  if (_workerUnixSocketDirs.has(socketDir)) return;
-  _workerUnixSocketDirs.add(socketDir);
-  const SandboxManager = await loadSandboxManager();
-  SandboxManager.updateConfig(
-    buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings)),
-  );
+  const holders = _workerUnixSocketDirs.get(socketDir) ?? 0;
+  _workerUnixSocketDirs.set(socketDir, holders + 1);
+  if (holders > 0) return;
+  try {
+    const SandboxManager = await loadSandboxManager();
+    SandboxManager.updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings)));
+  } catch (error) {
+    // A caller that sees this throw treats the dir as not registered and will
+    // not release it, so the holder added above is taken back here.
+    const current = _workerUnixSocketDirs.get(socketDir) ?? 0;
+    if (current > 1) _workerUnixSocketDirs.set(socketDir, current - 1);
+    else _workerUnixSocketDirs.delete(socketDir);
+    throw error;
+  }
 }
 
 /**
- * Drop a worker control-socket dir's UDS allowance and push the rebuilt SHARED
- * config. Idempotent. Called by {@link spawnWorker} on worker exit/stop so a
- * dead worker's socket allowance does not linger on the shared config.
+ * Release one holder of a socket dir's UDS allowance; the last release drops it
+ * and pushes the rebuilt SHARED config. Unknown dirs are a no-op. Called by
+ * {@link spawnWorker} on worker exit/stop and by a plugin child's teardown, so
+ * a dead holder's allowance does not linger and a live one's is not dropped.
  */
 export async function unregisterWorkerUnixSocketDir(socketDir: string): Promise<void> {
-  if (!_workerUnixSocketDirs.delete(socketDir)) return;
+  const holders = _workerUnixSocketDirs.get(socketDir);
+  if (holders === undefined) return;
+  if (holders > 1) {
+    _workerUnixSocketDirs.set(socketDir, holders - 1);
+    return;
+  }
+  _workerUnixSocketDirs.delete(socketDir);
   // If the sandbox was already torn down, there is nothing to update — the
   // reset cleared the live config and the worker set; this is a no-op.
   if (!active || _baseTrustedSettings === undefined) return;
