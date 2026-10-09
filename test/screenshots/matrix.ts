@@ -1,6 +1,6 @@
 import type { ElectronApplication, Page } from 'playwright';
 import { openInlineSettings } from '../e2e/ui/inline-settings.js';
-import type { CaptureViewport, ScriptedScript } from './fixtures.js';
+import { expect, type CaptureViewport, type ScriptedScript } from './fixtures.js';
 import { VIEW_FIXTURE_ID } from '../fixtures/e2e-plugins/view-fixture.js';
 
 /**
@@ -360,12 +360,10 @@ export const scenarios: Record<string, ScenarioEntry> = {
       [SEEDED_NOTE_PATH]: SEEDED_NOTE_BODY,
       [SEEDED_SUMMARY_PATH]: SEEDED_SUMMARY_BODY,
     },
-    // The caption this key carries promises tool execution AND thinking tokens
-    // arriving, so the capture has to land inside a turn, not after one: the
-    // first turn reads a file, and the second streams its reasoning slowly
-    // enough that the finished tool row and a growing thinking body share the
-    // frame. Only the second turn has reasoning, so the "thinking..." header the
-    // steps click is unambiguously the live one.
+    // Capture the completed file read while the next response is in flight.
+    // The active work group owns the single thinking status; reasoning cards
+    // appear only after the turn settles. Slow reasoning keeps that status and
+    // the finished tool row in the same frame.
     scriptedScript: {
       turns: [
         {
@@ -417,26 +415,16 @@ export const scenarios: Record<string, ScenarioEntry> = {
     steps: async ({ page }) => {
       await openWorkMode(page);
       await sendChatMessage(page, '노트에 정리해 둔 읽을 자료들 좀 요약해 줘.');
-      // The first turn's read has finished — its row carries a duration badge,
-      // which only appears once the tool returned.
-      await page
-        .locator('[data-testid="tool-duration"]')
-        .first()
-        .waitFor({ state: 'visible', timeout: 30_000 });
-      // ReasoningCard.tsx starts collapsed and expands only on click, streaming
-      // or not, so the live thinking body is behind one click. The entry is
-      // still the turn's last one at this point, so it holds that open state
-      // until the turn ends and the transcript re-groups it.
-      const liveThinking = page.getByText('생각 중...', { exact: false }).first();
-      await liveThinking.waitFor({ state: 'visible', timeout: 30_000 });
-      await liveThinking.click();
-      // Mid-stream by construction: this clause is roughly two thirds through
-      // the scripted reasoning, so the frame is taken with a couple of lines
-      // already rendered and the rest still arriving.
-      await page.getByText('등대 관리와', { exact: false }).first().waitFor({
-        state: 'visible',
-        timeout: 20_000,
-      });
+      const workGroup = page.getByTestId('work-group').filter({
+        has: page.getByTestId('tool-duration'),
+      }).first();
+      // The duration badge proves the first read returned. Keep the active
+      // group open: clicking its thinking header would hide the tool row, and
+      // the current UI does not expose a live reasoning body to wait for.
+      await expect(workGroup.getByTestId('tool-duration').first()).toBeVisible({ timeout: 30_000 });
+      const liveThinking = workGroup.getByRole('button', { name: '생각 중...', exact: true });
+      await expect(liveThinking).toBeVisible({ timeout: 30_000 });
+      await expect(liveThinking).toHaveAttribute('aria-expanded', 'true');
     },
   },
 

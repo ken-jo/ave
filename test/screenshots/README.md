@@ -105,22 +105,29 @@ Navigation to a panel goes through the sidebar rail (`openPluginPanel` in
 **work mode** (the harness default) the panel opens inline, so it is
 screenshottable; the plugin's view renders inside an Electron `<webview>`.
 
-## Skip list
+## Capture coverage
 
 ### App screens the harness cannot seed (marked `skip` in matrix.ts)
 
 | Key(s) | Reason |
 |---|---|
-| `chat-todo-queue`, `chat-tool-thinking`, `chat-permission-llm-review`, `chat-permission-directory`, `chat-permission-risk`, `chat-question-card` | Require an **in-flight LLM turn** (tool calls, reviewer deferrals, thinking-token streaming, ask-user cards). No deterministic mock-provider turn exists in this repo today — would need a scripted fake-provider fixture. |
 | `meeting-record`, `meeting-record-stt`, `meeting-outlook-mail*` (2 keys) | Need live audio, a completed STT recording or Outlook OAuth. |
 | `outlook-login-trigger`, `outlook-login-window`, `outlook-login-after`, `outlook-logout` | Every reachable state is past the live Microsoft OAuth window. |
-| `vega-helper-*` (6 keys) | **Host-rendered notification cards** emitted when a detector fires on a real external signal; nothing in the harness can fire one. |
 | `agent-hub-my-work`, `agent-hub-team-board` | **No agent-hub plugin bundle exists**; nothing to install. |
 
-### Capturable today
+### Scenarios with capture steps
+
+Conversational scenarios use the local scripted endpoint in `fixtures.ts`.
+It serves fixed responses and records unexpected requests as violations, which
+fail the capture. These steps still need a successful local app run before a
+new image is published.
 
 | Key | Notes |
 |---|---|
+| `chat-tool-thinking` | A finished file read and the active work group's thinking status. Raw reasoning stays hidden until the turn settles; the capture keeps the group open so the tool row remains visible. |
+| `chat-todo-queue`, `chat-question-card` | A seeded task list and message queue during a scripted response, or a scripted question with fixed choices. |
+| `chat-permission-llm-review`, `chat-permission-directory`, `chat-permission-risk` | Scripted tool calls and reviewer replies drive the host's review and approval states. |
+| `alert-*` (6 keys) | Host notification cards seeded through the alert IPC channel; action variants also run a scripted conversation. |
 | `chat-app-update` | Seeded via the real `ave:update:state` IPC channel (`app.evaluate` → `webContents.send`), matching the shape in `src/shared/update-state.ts`. Captures the `[data-testid="app-update-badge-available"]` element. |
 | `chat-plugin-panel` | The view fixture's sidebar panel open inline, showing its mount-time tool result (`executionMode: 'allow'`, so no approval card covers it). |
 | `plugin-permission-grant` | The "Approve Tool Execution" host card raised by the view fixture's mount-time tool call (reviewer kept ON via `keepReviewer`). Cropped to `[data-testid="tool-approval-panel"]`. |
@@ -150,9 +157,7 @@ so was explicitly out of scope for this task.
 
 ## Re-running after theme changes
 
-This branch (`feat/ui-depth-tokens`) changes `src/styles.css` / theme bundles /
-shadcn primitives. This harness does not touch any of those files — it just
-needs `bun run build` run first so the current theme is compiled into the
-bundle before capture (the plugin-panel captures show the moonstone default).
+Run `bun run build` after changing `src/styles.css`, theme bundles, or shared
+primitives so captures use the current theme.
 Re-run the full matrix (`node scripts/capture-screenshots.mjs`) after any theme
 change to refresh the PNGs against the final theme.

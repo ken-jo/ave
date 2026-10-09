@@ -1,5 +1,5 @@
 /**
- * The plugin the Playwright suite seeds by default.
+ * The plugin the local UI suite seeds by default.
  *
  * It replaces the copies of sibling plugin repositories (local-indexer and
  * meeting) the suite used to read from the workspace: those repositories are
@@ -18,13 +18,13 @@ export const VIEW_FIXTURE_ID = "viewfixture";
 export const VIEW_FIXTURE_VIEW_KEY = `plugin:${VIEW_FIXTURE_ID}:viewfixture_control`;
 export const VIEW_FIXTURE_TOOL = "viewfixture_ping";
 /** Only the plugin's handler can put this in a transcript; a prompt that names the tool cannot. */
-export const VIEW_FIXTURE_DISPATCH_MARKER = `e2e-stub:${VIEW_FIXTURE_ID}:${VIEW_FIXTURE_TOOL}`;
+export const VIEW_FIXTURE_DISPATCH_MARKER = `e2e-fixture:${VIEW_FIXTURE_ID}:${VIEW_FIXTURE_TOOL}`;
 
 const VIEW_FIXTURE_MANIFEST = {
   id: VIEW_FIXTURE_ID,
   name: "View Fixture",
   version: "1.0.0",
-  description: "In-repository plugin with one sidebar view and one tool, for the Playwright suite.",
+  description: "In-repository plugin with one sidebar view and one tool, for local UI verification.",
   entry: "dist/hostPlugin.js",
   requires: { minAppVersion: "0.12.0", hostProtocol: "2" },
   tools: [{
@@ -50,7 +50,7 @@ const VIEW_FIXTURE_FILES: Readonly<Record<string, string>> = {
   "dist/hostPlugin.js": `export default function createPlugin() {
   return {
     handlers: {
-      ${VIEW_FIXTURE_TOOL}: async (args) => ({ ok: true, stub: ${JSON.stringify(VIEW_FIXTURE_DISPATCH_MARKER)}, args }),
+      ${VIEW_FIXTURE_TOOL}: async (args) => ({ ok: true, marker: ${JSON.stringify(VIEW_FIXTURE_DISPATCH_MARKER)}, args }),
     },
     start() {},
     stop() {}
