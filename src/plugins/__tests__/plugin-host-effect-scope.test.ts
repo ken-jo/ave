@@ -20,6 +20,23 @@ function generationAccess(activeGenerationId: { current: string }): PluginRuntim
 }
 
 describe("HostApiGenerationScope", () => {
+  it("runs each disposer once on retirement and retries only the ones that failed", () => {
+    const scope = new HostApiGenerationScope("orion-api");
+    let flakyCalls = 0;
+    const steady = vi.fn();
+    scope.registerDisposer(steady);
+    scope.registerDisposer(() => {
+      flakyCalls += 1;
+      if (flakyCalls === 1) throw new Error("transient cleanup failure");
+    });
+    expect(scope.retire()).toHaveLength(1);
+    expect(scope.retire()).toEqual([]);
+    expect(steady).toHaveBeenCalledTimes(1);
+    expect(flakyCalls).toBe(2);
+    expect(scope.retire()).toEqual([]);
+    expect(flakyCalls).toBe(2);
+  });
+
   it("queues reversible signals, rejects writes, and opens only after exact publish", async () => {
     const active = { current: "g1" };
     const scope = new HostApiGenerationScope("orion-api");

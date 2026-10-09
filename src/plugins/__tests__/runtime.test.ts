@@ -20,6 +20,8 @@ import { ToolExecutor } from "../../tools/executor.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
+import { classifyApplyError } from "../../marketplace/updates/apply.js";
+import { isCommittedPluginGenerationPublicationError } from "../committed-generation-publication-error.js";
 import { PluginDeploymentGuard } from "../deployment-guard.js";
 import type { PackageKey } from "../../marketplace/sources/policy.js";
 import { uninstallPluginWithLifecycle } from "../uninstall-lifecycle.js";
@@ -4845,6 +4847,152 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       releaseStop();
       await removal;
     }
+  });
+
+  it("a boot load constructing a child when shutdown begins releases it instead of registering it", async () => {
+    const f = await setup("success");
+    const hook = f.internals.runPluginLifecycleHook;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inFactory = new Promise<void>((resolve) => { entered = resolve; });
+    // The factory has returned and its child runs; registration is next.
+    f.internals.runPluginLifecycleHook = async (scope, invoke) => {
+      const result = await hook(scope, invoke);
+      if (result && typeof result === "object" && "handlers" in result) {
+        entered();
+        await held;
+      }
+      return result;
+    };
+    const loading = f.runtime.load();
+    await inFactory;
+    const deadline = new AbortController();
+    const stopping = f.runtime.stopAll({ signal: deadline.signal });
+    setTimeout(release, 50);
+    const report = await stopping;
+    await loading;
+    expect(f.runtime.listPluginIds()).not.toContain(ID);
+    expect(f.constructed.map((record) => record.stops)).toEqual([1]);
+    expect(f.incarnations[0]!.isActive()).toBe(false);
+    expect(report).toEqual({ unfinished: [] });
+  });
+
+  it("starts no deferred post-commit work in a generation whose predecessor retires after shutdown began", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inIntegration = new Promise<void>((resolve) => { entered = resolve; });
+    // Holds the incumbent, so the replacement's deferred startup waits for it.
+    const integration = f.runtime.withPluginInstanceLease(ID, async () => { entered(); await held; })
+      .then(() => undefined, () => undefined);
+    await inIntegration;
+    const postPublish = vi.spyOn(f.runtime, "postPublishRuntimeGeneration");
+    const mcpManager = (lifecycle as unknown as { deps: { mcpManager: { prepareBundledGeneration: (...args: unknown[]) => Promise<unknown> } } }).deps.mcpManager;
+    const mcpPrepare = vi.spyOn(mcpManager, "prepareBundledGeneration");
+    const incumbent = lifecycle.getActive(ID)!.generationId;
+    // The activation returns once its deferred work is done; it is committed
+    // as soon as the pointer moves.
+    const update = f.runtime.activatePreparedArtifact(await f.preparedInput());
+    await vi.waitFor(() => expect(lifecycle.getActive(ID)?.generationId).not.toBe(incumbent));
+    const deadline = new AbortController();
+    const stopping = f.runtime.stopAll({ signal: deadline.signal });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    deadline.abort();
+    await stopping;
+    release();
+    await integration;
+    await update;
+    expect(postPublish).not.toHaveBeenCalled();
+    expect(mcpPrepare).not.toHaveBeenCalled();
+  });
+
+  it("runs each generation disposer once and retries only the ones that failed", async () => {
+    const f = await setup("success");
+    let flakyCalls = 0;
+    const steady = vi.fn();
+    const view = {
+      manifest: { id: "disposerretry", name: "disposerretry", version: "1.0.0", description: "fixture", entry: "entry.mjs", tools: [] },
+      instance: { handlers: {} },
+      disposers: [steady, () => {
+        flakyCalls += 1;
+        if (flakyCalls === 1) throw new Error("transient cleanup failure");
+      }],
+    };
+    const effects = () => f.runtime.prepareRuntimeRetirement(view as never)
+      .find((step) => step.phase === "runtime.effects")!.run();
+    await expect(effects()).rejects.toThrow(/effects retirement failed/);
+    await effects();
+    expect(steady).toHaveBeenCalledTimes(1);
+    expect(flakyCalls).toBe(2);
+  });
+
+  /** A prepared update held in its durable commit whose candidate cleanup fails. */
+  async function heldUpdateWithFailingCleanup(f: Awaited<ReturnType<typeof setup>>) {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const atCommit = new Promise<void>((resolve) => { entered = resolve; });
+    const update = f.runtime.activatePreparedArtifact({
+      ...(await f.preparedInput()),
+      durableCommit: async () => { entered(); await held; return "committed"; },
+    }).then(() => undefined, (error: unknown) => error);
+    await atCommit;
+    (f.runtime as unknown as { drainPluginHostApiOperations: () => Promise<void> }).drainPluginHostApiOperations =
+      async () => { throw f.cleanupError; };
+    return { update, release };
+  }
+
+  it("reports a prepared candidate whose cleanup failed at shutdown as unfinished", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const { update, release } = await heldUpdateWithFailingCleanup(f);
+    const deadline = new AbortController();
+    try {
+      expect(await f.runtime.stopAll({ signal: deadline.signal })).toEqual({ unfinished: [ID] });
+      expect(f.audits).toContain("plugin_shutdown_retirement_incomplete");
+    } finally {
+      release();
+      await update;
+    }
+  });
+
+  it("keeps the durable-commit marker when a withheld candidate's runtime cleanup fails", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const { update, release } = await heldUpdateWithFailingCleanup(f);
+    await f.runtime.stopAll({ signal: new AbortController().signal });
+    release();
+    const refused = await update;
+    expect(isCommittedPluginGenerationPublicationError(refused)).toBe(true);
+    expect(classifyApplyError(refused)).toEqual({ state: "applied-not-running" });
+  });
+
+  it("keeps the durable-commit marker when a withheld candidate's lifecycle cleanup fails", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const loopback = (lifecycle as unknown as { deps: { loopbackManager: { discardGeneration: () => Promise<void> } } }).deps.loopbackManager;
+    loopback.discardGeneration = async () => { throw f.cleanupError; };
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const atCommit = new Promise<void>((resolve) => { entered = resolve; });
+    const update = f.runtime.activatePreparedArtifact({
+      ...(await f.preparedInput()),
+      durableCommit: async () => { entered(); await held; return "committed"; },
+    }).then(() => undefined, (error: unknown) => error);
+    await atCommit;
+    await f.runtime.stopAll({ signal: new AbortController().signal });
+    release();
+    const refused = await update;
+    expect(isCommittedPluginGenerationPublicationError(refused)).toBe(true);
+    expect(classifyApplyError(refused)).toEqual({ state: "applied-not-running" });
   });
 
   it("a rejection after the plugin was registered leaves the registered generation running and disposes it once", async () => {

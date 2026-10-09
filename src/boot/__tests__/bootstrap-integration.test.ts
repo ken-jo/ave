@@ -97,6 +97,7 @@ vi.mock("electron", async () => {
 vi.mock("../../main/app-shutdown.js", () => ({
   configureAppShutdownHost: vi.fn(),
   registerBootPluginShutdown: vi.fn(),
+  registerBootMcpDisconnect: vi.fn(),
   registerShutdownHook: vi.fn((name: string) => {
     (h.captured["shutdownHooks"] as string[]).push(name);
   }),

@@ -528,9 +528,9 @@ export async function initPluginRuntime(
     onPluginUiRevisionChange: input.onPluginUiRevisionChange,
     createHostApi,
   });
-  registerBootPluginShutdown(async (signal) => {
-    await runPluginShutdownHandlers();
-    await pluginRuntime.stopAll({ signal });
+  registerBootPluginShutdown({
+    runShutdownHandlers: runPluginShutdownHandlers,
+    stopRuntime: (signal) => pluginRuntime.stopAll({ signal }),
   });
 
   // AC1.2 — periodic purge of stale ApprovalIssuerRegistry entries.

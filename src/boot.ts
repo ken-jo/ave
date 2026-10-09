@@ -54,7 +54,7 @@ import { forgetTrackedPluginAuthPartitions, getTrackedPluginAuthPartitions } fro
 import { createPluginRetirementPort } from "./plugins/retired-config.js";
 import { recoverPendingPluginUninstallCleanups } from "./plugins/uninstall-lifecycle.js";
 import { drainPluginInstallLockOperations } from "./plugins/install-lifecycle.js";
-import { registerShutdownHook, configureAppShutdownHost } from "./main/app-shutdown.js";
+import { registerBootMcpDisconnect, registerShutdownHook, configureAppShutdownHost } from "./main/app-shutdown.js";
 
 import { type AppServices, emitEvent as emitHostEvent, onEvent } from "./boot/types.js";
 import { startWatcherTelemetryCollector } from "./boot/steps/watcher-telemetry-collector.js";
@@ -801,6 +801,9 @@ export async function bootstrap(
 
   // §9.5: MCP servers + signed marketplace artifact stores.
   await setupMcp(ctx);
+  // An interrupted bootstrap disconnects MCP before it stops the plugin
+  // runtime, as the normal shutdown does (see runIncompleteBootShutdown).
+  registerBootMcpDisconnect(() => ctx.mcpManager.disconnectAll());
 
   // Skills, Hook runtime, and external MCP manager now all exist. Bind the
   // lifecycle callback and replay boot-loaded plugins because initial startAll

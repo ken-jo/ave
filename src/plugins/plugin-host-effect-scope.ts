@@ -261,13 +261,19 @@ export class HostApiGenerationScope {
     this.disposeAll();
   }
 
+  /**
+   * Retire the scope, running each registered disposer once. A disposer that
+   * throws stays registered, so a retried retirement runs only the ones that
+   * failed.
+   */
   retire(): readonly Error[] {
-    if (this.state === "retired") return [];
-    this.state = "retired";
-    this.queuedSignals.length = 0;
-    this.publishActions.length = 0;
-    this.supersedeActions.length = 0;
-    return this.disposeAll();
+    if (this.state !== "retired") {
+      this.state = "retired";
+      this.queuedSignals.length = 0;
+      this.publishActions.length = 0;
+      this.supersedeActions.length = 0;
+    }
+    return this.disposeAll({ keepFailed: true });
   }
 
   private invoke(
@@ -325,15 +331,15 @@ export class HostApiGenerationScope {
     return method.apply(receiver, args);
   }
 
-  private disposeAll(): Error[] {
+  private disposeAll(options: { keepFailed?: boolean } = {}): Error[] {
     const errors: Error[] = [];
     for (const dispose of [...this.disposers].reverse()) {
       try {
         dispose();
+        this.disposers.delete(dispose);
       } catch (error) {
         errors.push(error instanceof Error ? error : new Error(String(error)));
-      } finally {
-        this.disposers.delete(dispose);
+        if (!options.keepFailed) this.disposers.delete(dispose);
       }
     }
     return errors;

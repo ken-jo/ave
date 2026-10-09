@@ -911,6 +911,16 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
         }
       }
       if (cleanupErrors.length > 0) {
+        if (isCommittedPluginGenerationPublicationError(error)) {
+          // Durably committed: the marker is what keeps every caller from
+          // rolling that commit back, so a cleanup failure must not hide it.
+          for (const cleanupError of cleanupErrors) {
+            log.error(
+              `plugin '${pluginId}' candidate '${candidate.generationId}' cleanup failed after a durable commit: ${errorMessage(cleanupError)}`,
+            );
+          }
+          throw error;
+        }
         throw new AggregateError(
           [error, ...cleanupErrors],
           `plugin generation commit and candidate cleanup failed: ${pluginId}:${candidate.generationId}`,
@@ -945,6 +955,14 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           );
         }
       }
+      // Admission closed (host shutdown) while the predecessor retired: none
+      // of the deferred work below — startup, loopback post-publication, MCP
+      // connection and publication — may begin, and dispatch never opens.
+      const closedBeforeStartup = this.coordinator.admissionClosedError(pluginId);
+      if (closedBeforeStartup) {
+        published.markDispatchUnavailable(closedBeforeStartup);
+        return;
+      }
       if (dispatchReady) {
         try {
           // Only host-owned generation-fence faults reach this catch. A plugin
@@ -961,6 +979,11 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           published.markDispatchUnavailable(error);
           this.recordPostCommitFault(pluginId, candidate.generationId, "runtime-post-publish", error);
         }
+      }
+      const closedAfterStartup = this.coordinator.admissionClosedError(pluginId);
+      if (closedAfterStartup) {
+        published.markDispatchUnavailable(closedAfterStartup);
+        return;
       }
       try {
         this.deps.loopbackManager.postPublishGeneration(preparedLoopback);
@@ -1094,6 +1117,8 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
   private async projectApprovedMcp(
     generation: ActivePluginGeneration<HostPluginGenerationState>,
   ): Promise<void> {
+    // No MCP connection or publication once admission has closed (shutdown).
+    if (this.coordinator.isAdmissionClosed()) return;
     let prepared: Awaited<ReturnType<McpManager["prepareBundledGeneration"]>> | undefined;
     try {
       prepared = await this.deps.mcpManager.prepareBundledGeneration(
@@ -1101,6 +1126,12 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
         generation.state.mcpServers,
         this.mcpTrust,
       );
+      if (this.coordinator.isAdmissionClosed()) {
+        const unpublished = prepared;
+        prepared = undefined;
+        await this.deps.mcpManager.discardBundledGeneration(unpublished);
+        return;
+      }
       const publication = prepared;
       await this.coordinator.quiesce(
         generation.pluginId,

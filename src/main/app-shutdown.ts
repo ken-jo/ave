@@ -40,9 +40,22 @@ import { errorMessage } from "../shared/error-message.js";
 
 const log = createLogger("ave");
 let shutdownHost: BootHost | undefined;
-let bootPluginShutdown: ((signal: AbortSignal) => Promise<void>) | undefined;
-export function registerBootPluginShutdown(run: (signal: AbortSignal) => Promise<void>): void {
-  bootPluginShutdown = run;
+/**
+ * The plugin side of stopping an interrupted bootstrap, in the order the
+ * normal shutdown uses: plugin shutdown handlers first, the runtime last.
+ */
+export interface BootPluginShutdown {
+  runShutdownHandlers(): Promise<void>;
+  stopRuntime(signal: AbortSignal): Promise<unknown>;
+}
+let bootPluginShutdown: BootPluginShutdown | undefined;
+let bootMcpDisconnect: (() => Promise<void>) | undefined;
+export function registerBootPluginShutdown(shutdown: BootPluginShutdown): void {
+  bootPluginShutdown = shutdown;
+}
+/** Registered once the bootstrap has an MCP manager to disconnect. */
+export function registerBootMcpDisconnect(disconnect: () => Promise<void>): void {
+  bootMcpDisconnect = disconnect;
 }
 export function configureAppShutdownHost(host: BootHost): void {
   shutdownHost = host;
@@ -161,7 +174,12 @@ export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShu
   const result = await runCleanupWithHardTimeout(async (signal) => {
     const failures: unknown[] = [];
     const stages = [
-      () => bootPluginShutdown?.(signal),
+      () => bootPluginShutdown?.runShutdownHandlers(),
+      // As on the normal path, MCP disconnects before the plugin runtime
+      // stops: no bundled MCP call is still in flight into a generation the
+      // runtime is retiring, since shutdown does not cancel those calls.
+      () => bootMcpDisconnect?.(),
+      () => bootPluginShutdown?.stopRuntime(signal),
       () => stopSubscriptionRuntimes(),
       () => forceKillAllTerminalsForShutdown(),
       () => forceKillAndDrainManagedChildProcesses(reason),

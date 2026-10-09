@@ -4,6 +4,7 @@ import {
   type ActivePluginGeneration,
 } from "../plugin-generation-coordinator.js";
 import { CommittedPluginGenerationPublicationError } from "../committed-generation-publication-error.js";
+import { classifyApplyError } from "../../marketplace/updates/apply.js";
 
 interface GenerationState {
   label: string;
@@ -154,6 +155,66 @@ describe("PluginGenerationCoordinator", () => {
     await expect(coordinator.commit(generation("g3"), durableCommit)).rejects.toMatchObject({ code: "host-shutdown" });
     expect(durableCommit).not.toHaveBeenCalled();
     expect(coordinator.getActive("bundle-host-test")?.generationId).toBe("g1");
+  });
+
+  it.each(["acquire", "acquireExact"] as const)("%s grants no lease once admission has closed, whichever turn the closure lands in", async (method) => {
+    const shutdown = (pluginId: string) => Object.assign(new Error(`${pluginId} is shutting down`), { code: "host-shutdown" });
+    const late: number[] = [];
+    // Close admission at every turn offset after the candidate's readiness
+    // opens; a lease handed out after the closure ran is a violation.
+    for (let turns = 0; turns < 24; turns += 1) {
+      const coordinator = new PluginGenerationCoordinator<{ label: string }>();
+      const transition = await coordinator.commit(generation("g1"), async () => undefined);
+      let closed = false;
+      // Observed where the lease is created, in the same turn.
+      const internals = coordinator as unknown as { createLease: (...args: unknown[]) => unknown };
+      const createLease = internals.createLease.bind(coordinator);
+      internals.createLease = (...args) => {
+        if (closed) late.push(turns);
+        return createLease(...args);
+      };
+      const waiting = method === "acquire"
+        ? coordinator.acquire("bundle-host-test")
+        : coordinator.acquireExact("bundle-host-test", "g1");
+      const outcome = waiting.then((lease) => lease.release(), () => undefined);
+      void transition.markDispatchReady();
+      for (let turn = 0; turn < turns; turn += 1) await Promise.resolve();
+      coordinator.closeAdmission(shutdown);
+      closed = true;
+      await outcome;
+    }
+    expect(late).toEqual([]);
+  });
+
+  it("classifies a candidate withheld at shutdown after its durable commit as committed but not running", async () => {
+    const coordinator = new PluginGenerationCoordinator<{ label: string }>();
+    await publishReady(coordinator, generation("g1"));
+    let finishCommit!: () => void;
+    const durable = new Promise<void>((resolve) => { finishCommit = resolve; });
+    let durableEntered!: () => void;
+    const atDurable = new Promise<void>((resolve) => { durableEntered = resolve; });
+    const held = coordinator.commit(generation("g2"), async () => { durableEntered(); await durable; });
+    await atDurable;
+    coordinator.closeAdmission((pluginId) => new Error(`${pluginId} is shutting down`));
+    finishCommit();
+    const refused = await held.then(() => undefined, (error: unknown) => error) as CommittedPluginGenerationPublicationError;
+    expect(refused).toBeInstanceOf(CommittedPluginGenerationPublicationError);
+    expect(refused.outcome).toEqual({ state: "inactive" });
+    expect(refused.message).toMatch(/not published/);
+    // Staged, not yet active: never reported as an update that applied.
+    expect(classifyApplyError(refused)).toEqual({ state: "applied-not-running" });
+  });
+
+  it("starts no post-commit work and publishes no projection once admission has closed", async () => {
+    const coordinator = new PluginGenerationCoordinator<{ label: string }>();
+    await publishReady(coordinator, generation("g1"));
+    coordinator.closeAdmission((pluginId) => Object.assign(new Error(`${pluginId} is shutting down`), { code: "host-shutdown" }));
+    const startup = vi.fn(async () => undefined);
+    await expect(coordinator.runPostCommitWithGeneration("bundle-host-test", "g1", startup)).rejects.toMatchObject({ code: "host-shutdown" });
+    expect(startup).not.toHaveBeenCalled();
+    const publish = vi.fn();
+    await expect(coordinator.quiesce("bundle-host-test", "g1", async () => undefined, publish)).rejects.toMatchObject({ code: "host-shutdown" });
+    expect(publish).not.toHaveBeenCalled();
   });
 
   it("lists a predecessor as retiring until its leases drain and its retirement finishes", async () => {

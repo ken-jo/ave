@@ -141,6 +141,11 @@ export class PluginGenerationCoordinator<TState = unknown> {
     return this.admissionClosure !== undefined;
   }
 
+  /** The error admission refuses `pluginId` with once closed; undefined while open. */
+  admissionClosedError(pluginId: string): Error | undefined {
+    return this.admissionClosure?.reason(pluginId);
+  }
+
   /** Generations whose retirement has begun and not yet finished. */
   listRetiring(): readonly RetiringPluginGeneration<TState>[] {
     return Object.freeze(
@@ -207,6 +212,9 @@ export class PluginGenerationCoordinator<TState = unknown> {
       }
       generation = candidate;
     }
+    // Checked where the lease is granted: admission may have closed in the
+    // turns between the last wait and this one.
+    this.assertAdmissionOpen(pluginId);
     return this.createLease(state, generation);
   }
 
@@ -248,6 +256,8 @@ export class PluginGenerationCoordinator<TState = unknown> {
     generationId: string,
     operation: () => Promise<T>,
   ): Promise<T> {
+    // Post-commit startup is new work in the generation: none once closed.
+    this.assertAdmissionOpen(pluginId);
     const state = this.stateFor(pluginId);
     const generation = state.active;
     if (!generation || generation.generationId !== generationId) {
@@ -403,6 +413,8 @@ export class PluginGenerationCoordinator<TState = unknown> {
               markDispatchReady: async () => { throw refusal; },
               markDispatchUnavailable: () => undefined,
             }),
+            undefined,
+            "withheld",
           );
         }
         // Linearization point: durable state and the immutable generation
@@ -514,12 +526,16 @@ export class PluginGenerationCoordinator<TState = unknown> {
 
     try {
       try {
+        // A projection publication (an MCP or Hook projection, a trust change)
+        // is a publication: none once admission has closed.
+        this.assertAdmissionOpen(pluginId);
         const active = state.active;
         if (!active || active.generationId !== expectedGenerationId) {
           throw new Error(`plugin '${pluginId}' generation changed before projection transition`);
         }
         await this.waitForDrain(state, expectedGenerationId);
         await prepare();
+        this.assertAdmissionOpen(pluginId);
         publish();
       } finally {
         state.pendingTransitions -= 1;
