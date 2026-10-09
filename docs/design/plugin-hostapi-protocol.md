@@ -4991,7 +4991,9 @@ macOS arm64 (2026-10-09, `scripts/packaged-escape-gate.mjs` against an unpacked
 which the gate passes on macOS because a first `safeStorage` call under an identity the
 login keychain has not seen holds the main process on an access prompt): control
 `function`/`object`/`object`, probes `44.3.0`, `MODULE_NOT_FOUND`, an inert namespace,
-a path string, no usable form. The Linux and Windows helpers and packaged values are
+a path string, no usable form; and under vitest on Linux arm64 (2026-10-09, bubblewrap
+0.12.0 in a `node:24-trixie` container), the wrap suite 11/11 with the Electron control
+under `xvfb-run -a`. The Windows helper, and the Linux and Windows packaged values, are
 UNVERIFIED until the first run, and a control that cannot be launched fails the gate
 rather than passing it. The gate runs after the packaged smoke in `build-installers.yml`,
 under the same condition, so an unsigned macOS candidate skips both.

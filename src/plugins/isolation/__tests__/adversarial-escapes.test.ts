@@ -27,8 +27,9 @@
  * WHERE IT RUNS. Escapes 1, 2 and 4 need a live sandbox and are gated by
  * `sandboxCasesRun()` — `AVE_REQUIRE_SANDBOX_CASES=1` on the confinement jobs
  * turns "cannot measure" into a failure. Escape 3 needs no sandbox (the child
- * is `process.execPath` under `ELECTRON_RUN_AS_NODE=1` whether wrapped or not)
- * and runs everywhere its control can start: macOS and Windows directly, Linux
+ * is `process.execPath` under `ELECTRON_RUN_AS_NODE=1` whether wrapped or not),
+ * is spawned unwrapped as the default host spawns it, and runs everywhere its
+ * control can start: macOS and Windows directly, Linux
  * under a display or `xvfb-run -a`. Off CI, a Linux host with neither reports
  * the Electron control and row 3 not exercised (`it.runIf`), never passed.
  */
@@ -323,9 +324,17 @@ function contextFor(installed: Installed, host: ProductionHost, config: Record<s
   };
 }
 
-/** An installed plugin, through the production factory, observed from its spawn. */
-async function spawnInstalled(installed: Installed, config: Record<string, unknown> = {}): Promise<Spawned> {
-  await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+/**
+ * An installed plugin, through the production factory, observed from its spawn:
+ * wrapped, as a host with the OS sandbox on spawns it, unless `wrapped` is
+ * false, as a host with the sandbox off (the default) does.
+ */
+async function spawnInstalled(
+  installed: Installed,
+  config: Record<string, unknown> = {},
+  { wrapped = true }: { readonly wrapped?: boolean } = {},
+): Promise<Spawned> {
+  if (wrapped) await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
   const host = productionHost(installed, config);
   let stdout = "";
   let observed: ObservedPluginChild | undefined;
@@ -640,9 +649,12 @@ describe("the four escapes, against the production factory under the real wrap",
     async () => {
       expect(controls.electron, "the Electron control did not hold").toBe("held");
       // Escape 3 needs no sandbox: the claim is about `process.execPath` under
-      // `ELECTRON_RUN_AS_NODE=1`, which the factory spawns wrapped or not. With
-      // the sandbox available it runs wrapped, as production does.
-      const spawned = await spawnInstalled(staged.fixture);
+      // `ELECTRON_RUN_AS_NODE=1`, which the factory spawns wrapped or not. It
+      // runs unwrapped, as a host with the sandbox off — the default — spawns
+      // it, which is also where a child that lost the variable would come up as
+      // a full main process and answer, rather than be stopped by the wrap
+      // before the probe could report.
+      const spawned = await spawnInstalled(staged.fixture, {}, { wrapped: false });
       try {
         const result = await call(spawned, "escape_electron", { expectConfined: true });
         expect(result).toMatchObject({
