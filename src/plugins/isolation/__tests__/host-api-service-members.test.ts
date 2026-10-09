@@ -582,6 +582,50 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
     ).rejects.toMatchObject({ code: "payload-too-large" });
   });
 
+  // §8: "A plugin that needs more streams ... in chunks. No chunked body
+  // streaming in protocol 1 or 2." For a download that means HTTP Range: the
+  // body above the ceiling is refused whole, and the same bytes arrive intact
+  // as slices under it, through the child's encoder and the host's decoder.
+  it("refuses a body above the ceiling whole and carries it intact as Range slices", async () => {
+    const resource = new Uint8Array(WIRE_BYTES_MAX * 2 + 12_345);
+    for (let i = 0; i < resource.byteLength; i += 1) resource[i] = (i * 31 + (i >>> 13)) & 0xff;
+    const hostFetch = vi.fn(async (_input: string | URL, init?: RequestInit) => {
+      const match = /^bytes=(\d+)-(\d+)$/u.exec(new Headers(init?.headers).get("range") ?? "");
+      if (!match) {
+        return new Response(resource.slice(), { headers: { "content-length": String(resource.byteLength) } });
+      }
+      const start = Number(match[1]);
+      const end = Math.min(Number(match[2]), resource.byteLength - 1);
+      return new Response(resource.slice(start, end + 1), {
+        status: 206,
+        headers: { "content-range": `bytes ${start}-${end}/${resource.byteLength}` },
+      });
+    });
+    const harness = await createServiceHarness({ hostFetch });
+
+    await expect(harness.child.hostApi.hostFetch!("https://example.test/asset"))
+      .rejects.toMatchObject({ code: "payload-too-large" });
+
+    const slice = WIRE_BYTES_MAX / 2;
+    const received: Uint8Array[] = [];
+    let offset = 0;
+    let total = Number.POSITIVE_INFINITY;
+    while (offset < total) {
+      const response = await harness.child.hostApi.hostFetch!("https://example.test/asset", {
+        headers: { range: `bytes=${offset}-${offset + slice - 1}` },
+      });
+      expect(response.status).toBe(206);
+      const [, start, end, size] = /^bytes (\d+)-(\d+)\/(\d+)$/u
+        .exec(response.headers.get("content-range") ?? "") ?? [];
+      expect(Number(start)).toBe(offset);
+      total = Number(size);
+      received.push(new Uint8Array(await response.arrayBuffer()));
+      offset = Number(end) + 1;
+    }
+    expect(Buffer.compare(Buffer.concat(received), Buffer.from(resource))).toBe(0);
+    expect(received.length).toBe(5);
+  });
+
   it("replies with the contract's effect-boundary-denied code", async () => {
     const harness = await createServiceHarness({
       hostFetch: async () => {
