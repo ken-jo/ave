@@ -15,9 +15,6 @@
  */
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
-import { configureHostResources } from "../main/host-resources.js";
-
-configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
 
 // Nothing here loads the isolation guard (or anything that imports it): a
 // module loaded by a setup file is already evaluated when the test file's

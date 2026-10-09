@@ -100,7 +100,6 @@ export function resolveShellTimeoutMs(timeoutSeconds: number): number {
 }
 
 export const TOOL_TIMEOUT_POLICY = {
-  pluginSocketRenameMs: 5_000,
   shellDefaultMs: 120_000,
   // A brokered shell spends this headroom outside the command's semantic
   // timeout: exact-identity handshake, terminal/cleanup receipt delivery, and

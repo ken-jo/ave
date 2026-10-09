@@ -22,7 +22,7 @@
 //   - launches electron dist/src/main/main.js after initial build
 //   - restarts electron when dist/src/main/main.js changes (debounced)
 
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, watch, copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { waitForAllFirstBuilds } from "./lib/dev-watcher-gate.mjs";
@@ -36,8 +36,6 @@ import {
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import electronPath from "electron";
-
-execFileSync(process.execPath, [fileURLToPath(new URL("./build-rename-entry.mjs", import.meta.url))], { stdio: "inherit" });
 
 function escapePowerShellSingleQuoted(value) {
   return String(value).replace(/'/g, "''");

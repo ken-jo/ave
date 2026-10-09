@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { spawn, type ExecFileException, type ExecFileOptions } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createConnection } from "node:net";
 import { join, resolve, sep } from "node:path";
@@ -40,6 +40,7 @@ import { PLUGIN_DATA_FIXTURE, readPluginDataFixture, seedPluginDataFixture } fro
 const renameLock = vi.hoisted(() => ({
   lockRenameEndingWith: undefined as string | undefined,
   beforeMove: undefined as { to: string; run: () => Promise<void> } | undefined,
+  unlinkFailure: undefined as string | undefined,
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -58,28 +59,22 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       }
       return actual.rename(from, to);
     },
-  };
-});
-
-vi.mock("node:child_process", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:child_process")>();
-  return { ...actual, execFile: (file: string, args: string[], options: ExecFileOptions,
-    callback: (error: ExecFileException | null, stdout: string, stderr: string) => void) => {
-    const run = async () => {
+    link: async (from: string, to: string) => {
       const before = renameLock.beforeMove;
-      if (before && args[1] === before.to) {
+      if (before && to === before.to) {
         renameLock.beforeMove = undefined;
         await before.run();
       }
-      if (renameLock.lockRenameEndingWith && args[1]?.endsWith(renameLock.lockRenameEndingWith)) {
-        renameLock.lockRenameEndingWith = undefined;
-        callback(Object.assign(new Error("resource busy"), { code: 1, cmd: file }), "", "EBUSY\n");
-        return;
+      return actual.link(from, to);
+    },
+    unlink: async (path: string) => {
+      if (path === renameLock.unlinkFailure) {
+        renameLock.unlinkFailure = undefined;
+        throw Object.assign(new Error("entry unlink refused"), { code: "EIO" });
       }
-      actual.execFile(file, args, { ...options, encoding: "utf8" }, callback);
-    };
-    void run().catch((error: Error) => callback(Object.assign(error, { cmd: file }), "", ""));
-  } };
+      return actual.unlink(path);
+    },
+  };
 });
 
 const PLUGIN_ID = "ave-plugin-layout-fixture";
@@ -292,10 +287,11 @@ describe("carryPluginSocketDirs", () => {
 
   afterEach(async () => {
     renameLock.beforeMove = undefined;
+    renameLock.unlinkFailure = undefined;
     await rm(root, { recursive: true, force: true });
   });
 
-  it.runIf(process.platform !== "win32")("keeps a live child's bound socket reachable through a merge", async () => {
+  it.skipIf(process.platform === "win32").each(["old", "new"])("keeps a live child's bound socket in %s reachable through a merge", async (boundRoot) => {
     await rm(root, { recursive: true, force: true });
     root = await mkdtemp("/tmp/lvsc-");
     const from = join(root, "old");
@@ -307,7 +303,7 @@ describe("carryPluginSocketDirs", () => {
     const child = spawn(process.execPath, ["-e", `
       const net = require('node:net');
       net.createServer(socket => socket.end('alive')).listen(process.argv[1], () => console.log('ready'));
-    `, join(from, "sockets", "live.sock")], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    `, join(root, boundRoot, "sockets", "live.sock")], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
     const stopped = once(child, "exit");
     try {
       await once(child.stdout!, "data");
@@ -369,26 +365,55 @@ describe("carryPluginSocketDirs", () => {
     expect(statSync(join(from, "run")).ino).toBe(inode);
   });
 
-  it.each(["run", "sockets"])("never overwrites a late %s entry", async (name) => {
+  it("never overwrites a socket bound after preflight", async () => {
+    const name = "sockets";
     const from = join(root, "old");
     const to = join(root, "new");
     await mkdir(join(from, name), { recursive: true });
     await mkdir(join(to, name), { recursive: true });
     const sourceEntry = join(from, name, "late");
     const targetEntry = join(to, name, "late");
-    if (name === "run") await mkdir(targetEntry);
-    else await writeFile(targetEntry, "destination");
+    await writeFile(targetEntry, "destination");
     let lateInode: number | undefined;
     renameLock.beforeMove = { to: sourceEntry, run: async () => {
-      if (name === "run") await mkdir(sourceEntry);
-      else await writeFile(sourceEntry, "newly bound");
+      await writeFile(sourceEntry, "newly bound");
       lateInode = statSync(sourceEntry).ino;
     } };
 
     await expect(carryPluginSocketDirs(from, to, { onConflict: "reject" })).rejects.toThrow();
     expect(statSync(sourceEntry).ino).toBe(lateInode);
     expect(existsSync(targetEntry)).toBe(true);
-    if (name === "sockets") expect(readFileSync(sourceEntry, "utf8")).toBe("newly bound");
+    expect(readFileSync(sourceEntry, "utf8")).toBe("newly bound");
+  });
+
+  it("finishes an interrupted link-then-unlink without losing the socket inode", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, "sockets"), { recursive: true });
+    await mkdir(join(to, "sockets"), { recursive: true });
+    const entry = join(to, "sockets", "live.sock");
+    await writeFile(entry, "live");
+    const inode = statSync(entry).ino;
+    renameLock.unlinkFailure = entry;
+    await expect(carryPluginSocketDirs(from, to, { onConflict: "reject" })).rejects.toThrow(/unlink refused/);
+    expect(statSync(entry).ino).toBe(inode);
+    expect(statSync(join(from, "sockets", "live.sock")).ino).toBe(inode);
+    await carryPluginSocketDirs(from, to, { onConflict: "reject" });
+    expect(statSync(entry).ino).toBe(inode);
+    expect(existsSync(join(from, "sockets"))).toBe(false);
+  });
+
+  it("refuses child-writable directory entries before moving run", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, "run"), { recursive: true });
+    await mkdir(join(from, "sockets"));
+    await mkdir(join(to, "sockets", "nested"), { recursive: true });
+    const inode = statSync(join(from, "run")).ino;
+    await expect(carryPluginSocketDirs(from, to, { onConflict: "reject" })).rejects.toThrow(/socket entry is a directory/);
+    expect(statSync(join(from, "run")).ino).toBe(inode);
+    expect(existsSync(join(to, "run"))).toBe(false);
+    expect(existsSync(join(to, "sockets", "nested"))).toBe(true);
   });
 
   it("moves run/ and sockets/ as the same directories and leaves data/ alone", async () => {

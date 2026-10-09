@@ -13,12 +13,13 @@
  * the plugin `data/` only, so plugin code cannot rewrite the bundle the next
  * load imports into the Electron main process.
  *
- * Deliberately a dependency-free leaf so the receipt verifier, the permission
- * layer, and the tool executor can all agree on the same directory names.
+ * Shared by receipt verification, permissions and runtime-directory mutations
+ * so their paths and host-side serialization agree.
  */
-import { lstat, readdir, rename, rm, rmdir } from "node:fs/promises";
+import { link, lstat, readdir, rename, rm, rmdir, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { renameEntryExclusive } from "../lib/rename-entry-exclusive.js";
+import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
+import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { aveHome } from "../shared/ave-home.js";
 import { PluginDataRootError, resolvePluginDataRoot } from "./plugin-storage-containment.js";
 
@@ -339,6 +340,21 @@ const PLUGIN_SOCKET_DIR_NAMES: readonly string[] = [
 ];
 
 /**
+ * Queue host mutations of one plugin's runtime directories. The lifecycle
+ * lock admits reentrant work, so it cannot exclude a worker allocation inside
+ * the same lifecycle operation. Reuse the filesystem queue for this short
+ * section; never hold it while starting or waiting for a child.
+ */
+export function withPluginRuntimeDirQueue<T>(pluginRoot: string, operation: () => Promise<T>): Promise<T> {
+  return withInProcessFileQueue(pluginRuntimeDirKey(pluginRoot), operation);
+}
+
+function pluginRuntimeDirKey(pluginRoot: string): string {
+  const path = resolve(pluginRoot);
+  return process.platform === "win32" ? path.toLowerCase() : path;
+}
+
+/**
  * Move a plugin root's socket directories (`run/`, `sockets/`) from one root
  * to another, next to the {@link carryPluginDataDir} the same swap performs.
  *
@@ -370,8 +386,8 @@ const PLUGIN_SOCKET_DIR_NAMES: readonly string[] = [
  * SOURCE directory always keeps its identity, because it is the one the
  * running children were wrapped against: every caller carries the directory
  * that was moved away from the live path back toward it. So the destination's
- * entries — `run/<workerId>/`, `sockets/<name>` — move INTO the source by
- * rename (each keeping its own identity), the emptied destination is removed,
+ * entries — `run/<workerId>/`, `sockets/<name>` — move INTO the source,
+ * each keeping its own identity; the emptied destination is removed,
  * and the source moves into place. Whichever side is empty, nothing is
  * dropped and no live directory is replaced by a newer one.
  *
@@ -385,10 +401,12 @@ const PLUGIN_SOCKET_DIR_NAMES: readonly string[] = [
  *  - `keep-destination` — RECOVERY, which must always reach a terminal
  *    disposition. Sockets are not state, so the destination's entry replaces
  *    the source's. With no destination root at all, nothing moves.
- * A later entrant is refused by the exclusive rename. Earlier completed moves
- * remain in the owned roots so a retry or recovery can finish the carry.
+ * Host worker allocation shares the runtime-directory queue, so no worker
+ * directory can arrive between preflight and the moves. A child may still
+ * bind a socket file; link-then-unlink refuses an existing name atomically.
+ * Earlier completed moves remain in the owned roots for retry or recovery.
  *
- * Renamed through {@link renameEntryExclusive}, which retries the transient
+ * Directories use {@link renameDirectory}, which retries the transient
  * Windows lock codes (reporting each retry through `policy.onRetry`); callers
  * do not wrap it again.
  */
@@ -401,57 +419,97 @@ export async function carryPluginSocketDirs(
   },
 ): Promise<void> {
   if (isSamePluginPath(fromRoot, toRoot)) return;
-  // Recovery may discard a root while no live root survives (a cleanup after
-  // an uninstall): nothing is bound there to hand the sockets to.
-  if (policy.onConflict === "keep-destination" && !await pathExists(toRoot)) return;
-  const move = (from: string, to: string): Promise<void> => renameEntryExclusive(from, to, policy.onRetry);
-  // Check every root and both names before the first mutation. A linked root
-  // would make readdir/entry moves operate on a tree outside the plugin.
-  await assertSocketDirectory(fromRoot);
-  await assertSocketDirectory(toRoot);
-  for (const name of PLUGIN_SOCKET_DIR_NAMES) {
-    const source = resolve(fromRoot, name);
-    const target = resolve(toRoot, name);
-    const sourceExists = await assertSocketDirectory(source);
-    const targetExists = await assertSocketDirectory(target);
-    if (sourceExists && targetExists && policy.onConflict === "reject") {
-      for (const entry of await readdir(target)) {
-        if (await pathExists(resolve(source, entry))) throw socketConflict(name, entry, source, target);
-      }
-    }
-  }
-  for (const name of PLUGIN_SOCKET_DIR_NAMES) {
-    const source = resolve(fromRoot, name);
-    const target = resolve(toRoot, name);
-    if (!await pathExists(source)) continue;
-    // Bounded: a worker that recreates the destination between the merge and
-    // the final rename makes that rename fail, and the merge runs again.
-    for (let attempt = 1; ; attempt += 1) {
-      try {
-        if (await assertSocketDirectory(target)) {
-          const entries = await readdir(target);
-          const conflicts: string[] = [];
-          for (const entry of entries) {
-            if (await pathExists(resolve(source, entry))) conflicts.push(entry);
+  const roots = [fromRoot, toRoot].map(pluginRuntimeDirKey).sort();
+  await withPluginRuntimeDirQueue(roots[0]!, () => withPluginRuntimeDirQueue(roots[1]!, async () => {
+    // Recovery may discard a root while no live root survives (a cleanup after
+    // an uninstall): nothing is bound there to hand the sockets to.
+    if (policy.onConflict === "keep-destination" && !await pathExists(toRoot)) return;
+    const move = (from: string, to: string): Promise<void> => renameDirectory(from, to, policy.onRetry);
+    // Check every root and both names before the first mutation. A linked root
+    // would make readdir/entry moves operate on a tree outside the plugin.
+    await assertSocketDirectory(fromRoot);
+    await assertSocketDirectory(toRoot);
+    for (const name of PLUGIN_SOCKET_DIR_NAMES) {
+      const source = resolve(fromRoot, name);
+      const target = resolve(toRoot, name);
+      const sourceExists = await assertSocketDirectory(source);
+      const targetExists = await assertSocketDirectory(target);
+      // Only host-owned run entries may be directories. A child can create a
+      // directory inside sockets, where rename could replace a late empty one;
+      // refuse that shape before mutation instead of claiming host exclusion.
+      if (name === PLUGIN_OWN_SOCKET_DIR_NAME) {
+        for (const dir of [sourceExists ? source : undefined, targetExists ? target : undefined]) {
+          if (dir) for (const entry of await readdir(dir)) {
+            if ((await lstat(resolve(dir, entry))).isDirectory()) {
+              throw new Error(`Plugin socket entry is a directory: ${resolve(dir, entry)}`);
+            }
           }
-          if (conflicts.length > 0 && policy.onConflict === "reject") {
-            throw socketConflict(name, conflicts[0]!, source, target);
-          }
-          for (const entry of entries) {
-            if (conflicts.includes(entry)) await rm(resolve(source, entry), { recursive: true, force: true });
-            // The OS refuses an entry created after preflight, including an empty
-            // worker directory. An ordinary rename would silently replace it.
-            await move(resolve(target, entry), resolve(source, entry));
-          }
-          await rmdir(target);
         }
-        await move(source, target);
-        break;
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (attempt >= 3 || (code !== "ENOTEMPTY" && code !== "EEXIST")) throw error;
+      }
+      if (sourceExists && targetExists && policy.onConflict === "reject") {
+        for (const entry of await readdir(target)) {
+          if (await pathExists(resolve(source, entry)) && !await socketEntriesMatch(resolve(source, entry), resolve(target, entry))) {
+            throw socketConflict(name, entry, source, target);
+          }
+        }
       }
     }
+    for (const name of PLUGIN_SOCKET_DIR_NAMES) {
+      const source = resolve(fromRoot, name);
+      const target = resolve(toRoot, name);
+      if (!await pathExists(source)) continue;
+      // Bounded: a worker that recreates the destination between the merge and
+      // the final rename makes that rename fail, and the merge runs again.
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          if (await assertSocketDirectory(target)) {
+            const entries = await readdir(target);
+            const conflicts: string[] = [];
+            for (const entry of entries) {
+              if (await pathExists(resolve(source, entry)) && !await socketEntriesMatch(resolve(source, entry), resolve(target, entry))) conflicts.push(entry);
+            }
+            if (conflicts.length > 0 && policy.onConflict === "reject") {
+              throw socketConflict(name, conflicts[0]!, source, target);
+            }
+            for (const entry of entries) {
+              if (conflicts.includes(entry)) await rm(resolve(source, entry), { recursive: true, force: true });
+              const from = resolve(target, entry);
+              const to = resolve(source, entry);
+              if (name === PLUGIN_WORKER_RUN_DIR_NAME) {
+                // Children can write inside their worker leaf, but cannot create
+                // a sibling in the host-owned run root. The shared queue excludes
+                // host mkdir, including an empty leaf, while this rename runs.
+                await move(from, to);
+              } else {
+                // A live child can bind this name after preflight. link refuses
+                // EEXIST without replacing it and does not traverse a link entry.
+                // After an interrupted unlink, both names may already share the
+                // inode: finish that move instead of treating it as a conflict.
+                if (!await socketEntriesMatch(from, to)) await link(from, to);
+                await unlink(from);
+              }
+            }
+            await rmdir(target);
+          }
+          await move(source, target);
+          break;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (attempt >= 3 || (code !== "ENOTEMPTY" && code !== "EEXIST")) throw error;
+        }
+      }
+    }
+  }));
+}
+
+async function socketEntriesMatch(from: string, to: string): Promise<boolean> {
+  try {
+    const source = await lstat(from);
+    const target = await lstat(to);
+    return source.ino !== 0 && source.ino === target.ino && source.dev === target.dev;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
   }
 }
 

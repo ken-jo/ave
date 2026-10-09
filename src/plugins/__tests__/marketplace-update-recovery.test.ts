@@ -20,14 +20,14 @@ import type { PluginPaths } from "../plugin-paths.js";
 import { PLUGIN_DATA_FIXTURE, readPluginDataFixture, seedPluginDataFixture } from "./test-helpers.js";
 
 const carryFault = vi.hoisted(() => ({ destination: undefined as string | undefined }));
-vi.mock("../../lib/rename-entry-exclusive.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../lib/rename-entry-exclusive.js")>();
-  return { ...actual, renameEntryExclusive: async (...args: Parameters<typeof actual.renameEntryExclusive>) => {
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, rename: async (...args: Parameters<typeof actual.rename>) => {
     if (args[1] === carryFault.destination) {
       carryFault.destination = undefined;
       throw Object.assign(new Error("entry move refused"), { code: "EIO" });
     }
-    await actual.renameEntryExclusive(...args);
+    await actual.rename(...args);
   } };
 });
 
