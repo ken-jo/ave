@@ -1383,8 +1383,9 @@ CDP checks (port 9222 against a built app; the `test/e2e/ui` harness):
 - OS notification path: with the window unfocused the notification fires;
   focused, the toast appears instead, unless the kind bypasses.
 - `test/screenshots/matrix.ts` re-keys the `vega-helper-*` cards to
-  `alert-*` with `source: { kind: "alert", … }`; `test/e2e/ui/fixtures.ts`
-  `E2E_PLUGIN_REPOS` and `plugin-load.spec.ts` drop `vega-helper`.
+  `alert-*` with `source: { kind: "alert", … }`. The Playwright suite seeds no
+  repository plugin: `plugin-load.spec.ts` checks the in-repository view
+  fixture (`test/fixtures/e2e-plugins/view-fixture.ts`).
 
 ## Pull request plan
 

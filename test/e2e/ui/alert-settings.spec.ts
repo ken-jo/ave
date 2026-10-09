@@ -4,7 +4,7 @@ import { test, expect } from "./fixtures.js";
 import { openInlineSettings, closeInlineSettings } from "./inline-settings.js";
 import type { AveApi } from "../../../src/ui/renderer/types.js";
 
-test.use({ seedRepositoryPlugins: false, seedAlertPlugin: true, seedPermissionMode: "default" });
+test.use({ seedViewFixturePlugin: false, seedAlertPlugin: true, seedPermissionMode: "default" });
 
 async function raiseFixtureAlert(page: Page, t: TestT, key: string) {
   let settled = false;
