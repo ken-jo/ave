@@ -1637,8 +1637,20 @@ export class ApprovalGate {
     }
     const lane = this.parentAdjudication;
     if (!lane) return;
+    // Each adjudicator is released on its own: one that throws must not keep
+    // the next from releasing what it charged. The failure still surfaces —
+    // after every source has had its turn — so the caller can report it.
+    const failures: unknown[] = [];
     for (const source of PARENT_ADJUDICATION_MODEL_SOURCES) {
-      lane.adjudicator(source).forgetChildRun(childSessionId);
+      try {
+        lane.adjudicator(source).forgetChildRun(childSessionId);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, `forgetChildRun failed on ${failures.length} adjudicators`);
     }
   }
 
