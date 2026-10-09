@@ -1182,11 +1182,17 @@ stdio server — refuses the plugin roots (`<AVE_HOME>/plugins`,
 re-allows only its own directories (`PerCommandFilesystem.denyPluginsRoot`).
 On Windows every confined process, every plugin included, runs as the one
 `srt-sandbox` account: the sandbox confines plugins against the host as
-configured, not against each other, and a worker's ACL grant is visible to every
-confined process while it is held. By owner decision (2026-10-10) third-party
-plugins run on Windows on those terms, an accepted risk pending an ASRT
-per-plugin identity (`docs/design/plugin-hostapi-protocol.md` §9.8 A2,
-decision 63).
+configured, not against each other. A plugin child and a delegated worker each
+reach their own directories through a holder-PID ACL grant held for that
+process's lifetime, and while it is held every confined process reaches them
+too. By owner decision (2026-10-10) third-party plugins run on Windows on those
+terms, an accepted risk pending an ASRT per-plugin identity
+(`docs/design/plugin-hostapi-protocol.md` §9.8 A2, decision 63). An `entry`
+plugin child does not yet start under srt-win at all — its environment is not
+delivered, the PowerShell inner shell does not wait for `electron.exe`, stdin
+is not relayed, and the module import `lstat`s profile ancestors it cannot
+reach — so with the sandbox on a Windows `entry` plugin does not load today
+(measured 2026-10-10, same section).
 
 Plugin read-relaxation is narrower than the host-shell capability. The
 foreground plugin effect-boundary may replace a pre-exec ask only when

@@ -159,7 +159,7 @@ Both forms go through `spawnConfinedChild` and nowhere else
 |---|---|---|---|
 | macOS | ASRT `sandbox-exec` profile, allow-list grant mode | filesystem, process, network | `architecture.md:1014-1017`, `confined-child.ts:42-44` |
 | Linux | ASRT bwrap `--bind` / `--unshare-net`, allow-list grant mode | filesystem, process, network | same; UDS reachability `worker-spawn.ts:17-22` |
-| Windows | srt-win, one shared `srt-sandbox` account; deny-only grant mode; ACL grants only for a delegated worker, held by its holder process | filesystem, network, against the host. **No process confinement; no isolation between plugins** (decision 63) | `architecture.md:1018-1020`, `confined-child.ts:43-46`, `out-of-process-plugin.ts:970` |
+| Windows | srt-win, one shared `srt-sandbox` account; deny-only grant mode; holder-PID ACL grants on a plugin child's own directories and on a delegated worker's, each for that process's lifetime. An `entry` child does not yet start under srt-win (§9.8 A2) | filesystem, network, against the host. **No process confinement; no isolation between plugins** (decision 63) | `architecture.md:1018-1020`, `confined-child.ts:43-46`, `out-of-process-plugin.ts:970` |
 
 The child is confined exactly as much as the host is: `features.osToolSandbox` decides for
 the host's own tools, its workers and its plugin children alike; when it is off the child
@@ -1672,7 +1672,7 @@ the cutoff is not softened by an id exception, a method heuristic or a retained 
 | Arbitrary executable via `process` entry | a pinned release or archive artifact only (§2.1); a wrap whose published `confines` includes `process` (never srt-win); refused when the sandbox is off; the command must be inside the plugin root (Agent Plugins rule); no `PATH` search for a marketplace plugin. |
 | Envelope widening via the manifest `sandbox` block | closed `hostDirectory` allow-list; `userChosenDirectory` requires a user-set absolute path; deny-floor piercing requires install-time approval (§2.2). |
 | Windows: no process confinement | unchanged from `architecture.md:1018-1020`; admission does not depend on it (decision 3); a `process` entry is refused on Windows because srt-win is a wrap that does not confine processes (§2.2); the Doctor names the confinement each plugin runs under. |
-| Windows: one sandbox identity for every plugin | none by design (decision 63): every confined process — each plugin's child, workers, and the host's own tools — runs as the one `srt-sandbox` account, so a worker's grant is visible to every confined process while held and no deny can separate plugins; `denyPluginsRoot` is refused there. Inter-plugin isolation is a macOS and Linux property only (§9.8 A2). |
+| Windows: one sandbox identity for every plugin | none by design (decision 63): every confined process — each plugin's child, workers, and the host's own tools — runs as the one `srt-sandbox` account, so a plugin child's or worker's grant is visible to every confined process while held (measured: two grants held at once, each plugin read and wrote the other's data) and no deny can separate plugins; `denyPluginsRoot` is refused there. Inter-plugin isolation is a macOS and Linux property only (§9.8 A2). |
 | Confused deputy through the host's own credentials | `hostFetch` attaches a lease only to a URL that is inside the lease's host-derived **audience** (§4.1.3) *and* passes the plugin's own allow-list; the allow-list alone is not enough, because it says where the plugin may send its traffic, not where the host's key may go. The lease id is per plugin incarnation and is `lease-unavailable` on any other connection; every host-injected credential header is cleared on an origin change and re-authorised per hop, including Azure `api-key` (§4.1.3); a caller cannot supply a credential header on a leased request (§4.1.4). Matches the MCP security guidance on token passthrough ([MCP security best practices](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices)). |
 | A lease outlives the decision that granted it | the host registry ends it on permission revocation, secret rotation, vendor or endpoint change, plugin update/disable/uninstall and incarnation end, with epoch fencing after every await and abort of active uses (§4.1.2). Request cancellation is a separate mechanism and never stands in for it. |
 | A raw grant is inferred from an old manifest string | raw issuance requires the reviewed authority and the reviewing app version ≥ X in the receipt, plus the unchanged provenance evaluator (§4.1.6). |
@@ -5064,25 +5064,60 @@ fixture or by the independent verification of it rather than decided around it:
   2026-10-10) still offer no per-execution identity, and per-execution `allowRead` /
   `allowWrite` remain unsupported on Windows.
 
-  What the code grants a Windows plugin child, read from the code rather than assumed:
-  nothing. The child's wrap is deny-only (`grantMode: "deny-only"`,
-  `out-of-process-plugin.ts`), carrying the sensitive deny floor and no allow; the
-  session config passes no `allowRead` or `allowWrite` (`buildSandboxConfig` from
-  `sandbox-init.ts`), so ASRT's session grant is empty; the app's one Windows grant,
-  `grantWindowsWorkerFilesystemAccess`, is called only for a delegated worker
-  (`worker-spawn.ts`), against that worker's holder process and for its lifetime. A child
-  therefore reaches its own root and data only where the directories' existing ACLs
-  already admit the `srt-sandbox` account — or while one of its plugin's workers holds a
-  grant on them, which every other confined process then shares. The default
-  `<AVE_HOME>` lies in the user profile, whose ACL (read on a Windows 11 host,
-  2026-10-10: `SYSTEM`, `Administrators` and the owner, inherited into `.ave`) admits no
-  such account; an `<AVE_HOME>` on a volume whose inherited ACL grants `Users` or
-  `Authenticated Users` is readable by every confined process, every plugin's included.
-  **Not measured:** a plugin child actually spawned under srt-win. The verification host
-  has no `srt-sandbox` account provisioned (that needs the elevated, machine-wide
-  `windows-install`), and no CI run has measured it (the repository's last workflow run
-  is from 2026-09-22, before A2), so whether an `entry` child under the default `<AVE_HOME>` can load its own entry at
-  all with the sandbox on, and what row 1a measures on Windows, are unverified.
+  What the code grants a Windows plugin child: its own envelope (root, data, socket and
+  worker-run directories) and its throwaway HOME, read and execute, with write where the
+  envelope writes, as the same holder-PID ACL grant a delegated worker holds
+  (`holdWindowsFilesystemGrant`, `windows-acl-grant-holder.ts`; `spawnConfinedPluginChild`,
+  `out-of-process-plugin.ts`). The wrap stays deny-only and the session config still grants
+  nothing. The grant is taken before the spawn, against a System32 holder process the host
+  owns, and released on every way the child ends (exit, close, a spawn with no process, a
+  failure before or during the spawn); a holder that dies stops the child. Because Windows
+  has no `denyPluginsRoot`, the grant itself is held to the plugin's own roots
+  (`pluginGrantPathsBeyondOwnRoots`, `asrt-sandbox.ts`): inside the plugins root only under
+  `<plugins>/<id>` or `<plugins>/.cache/<id>`, nothing inside the agent-plugin roots, and
+  nothing at or above any of them; anything else refuses the load. It isolates nothing
+  between plugins (decision 63): while the grant is held every confined process reaches
+  those directories.
+
+  **Measured on a provisioned Windows 11 host (2026-10-10, ASRT 0.0.76 `srt-win install`;
+  `<AVE_HOME>` under a directory inheriting the default profile ACL).** The ACL variable
+  was measured in isolation: an Electron-as-Node probe run through `srt-win exec` with the
+  production deny floor, reading and writing as `srt-sandbox`.
+  - No grant (the code before this change): its own data read and write, a neighbour's
+    data, and the secrets sentinel all `EPERM`.
+  - Its own grant held: own data read and written; neighbour data read and write `EPERM`;
+    secrets `EPERM`. The grant's `(OI)(CI)` ACEs sit on its own directories only — none
+    on the plugins root or the neighbour — and are gone after release, after which every
+    read is `EPERM` again.
+  - Two grants held at once (the concurrent case, not fixed by owner decision): the
+    first plugin's probe read the second plugin's data and wrote into it; after the second
+    grant was released the same probe got `EPERM` again.
+
+  **What does not run on Windows yet, whatever the grant.** The `entry` child itself does
+  not start under srt-win today, so escapes 1a/1b, 2 and 4 fail on Windows with "child
+  exited code=0" both before and after this change; that failure is not the ACL. Measured
+  on the same host:
+  1. *The child's environment is not delivered.* srt-win's runner starts the target with
+     the `srt-sandbox` profile environment plus only its `--env` overlay (PATH, PATHEXT,
+     proxy); the `env` the host spawns `srt-win` with stays with the broker. So
+     `ELECTRON_RUN_AS_NODE` and the sandbox HOME never reach the child. Inferred, not
+     measured, for a Windows worker: it is delivered the same way.
+  2. *The PowerShell inner shell does not wait for `electron.exe`.* `confined-child.ts`
+     runs the target through `powershell -Command "& '<exe>' …"`; `electron.exe` is a GUI
+     subsystem binary, and the shell returns at once with no output, with or without
+     `ELECTRON_RUN_AS_NODE` set inside it. Through `cmd /d /s /c "set
+     ELECTRON_RUN_AS_NODE=1&& <exe> <script>"` the same probe runs and its stdout arrives.
+  3. *stdin is not relayed.* `srt-win exec` gives the target no stdin data (`echo hi |
+     srt-win exec -- cmd /c more` prints nothing; the same pipe without srt-win prints
+     `hi`), and the plugin protocol is framed over the child's stdin.
+  4. *The entry module cannot be imported from under the profile.* With its own grant
+     held, the probe read its own data but `import()` of its own `entry.mjs` failed with
+     `EPERM: lstat` on the first ancestor directory under the user profile: Node resolves
+     a module path with `realpath`, which `lstat`s every ancestor, and the profile admits
+     no `srt-sandbox` access to its subdirectories. An inheriting grant on an ancestor
+     would cover every plugin under it, so the grant does not reach for one.
+  With the sandbox on, a Windows `entry` plugin therefore does not load today, with or
+  without this grant; the grant is the ACL half of what loading needs, measured above.
 - **The fixture declares `capabilities: ["external-auth-consumer"]`.** Without it
   `hostFetch` is refused by the capability check before the allow-list is reached, and
   row 2 would prove the wrong layer. Row 2 asserts the allow-list's own audit detail:
@@ -5747,7 +5782,9 @@ MCP request metadata), and the single merge order of decision 27.
   `vendor.mjs verify --app`. C1 therefore commits the checker bundle and runs only
   `check` in CI; if the runner can clone, `verify` joins the pipeline.
 - (§9.8) The exact filesystem error each substrate returns for an unbound read
-  (`EPERM`/`EACCES` on macOS and Windows, `ENOENT` under bubblewrap is the expectation);
+  (`EPERM`/`EACCES` on macOS and Windows, `ENOENT` under bubblewrap is the expectation;
+  Windows measured `EPERM` under srt-win on 2026-10-10, through a probe rather than the
+  `entry` child, which does not start there yet — §9.8 A2);
   A2's assertions are per platform and the first run fixes the values.
 - (§9.8) The Electron positive control on Linux CI under `xvfb-run` and on the Windows
   runner. macOS is measured (2026-10-08: Electron 44.3.0, `BrowserWindow` `"function"`,

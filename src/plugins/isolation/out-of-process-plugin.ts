@@ -839,7 +839,12 @@ export interface ObservedPluginChild {
  * uses for a worker). The grant is refused if any path reaches past the
  * plugin's own install or generation cache into a plugin-owned root
  * (`pluginGrantPathsBeyondOwnRoots`), is released on every way the child ends,
- * and a holder that dies stops the child.
+ * and a holder that dies stops the child. That grant is the ACL half of a
+ * Windows `entry` child loading, measured in isolation (§9.8 A2): it is not
+ * the whole of it. Under srt-win the child does not start today — the runner
+ * gives it the sandbox profile's environment rather than `baseEnv`/`extraEnv`,
+ * the PowerShell inner shell does not wait for `electron.exe`, stdin is not
+ * relayed, and the module import `lstat`s profile ancestors no grant covers.
  *
  * §4's Windows residual stands unchanged and is not softened here: srt-win
  * confines filesystem and network but NOT process creation, so a confined
