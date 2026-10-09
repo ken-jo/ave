@@ -40,6 +40,7 @@ import { ConfirmationRequiredError, MarketplaceError, isMarketplaceError, type E
 import { folderPolicyBlock, policyBlock, type MarketplacePolicy, type PolicySource } from "../sources/policy.js";
 import type { SourceWarning } from "../sources/warnings.js";
 import { createMarketplaceLogger } from "../log.js";
+import { errorMessage } from "../../shared/error-message.js";
 import type { FolderNetwork } from "./source-input.js";
 import { normalizeDownloadPath, normalizeSourceHost, type NormalizedSourceUrl, type PatternTarget } from "./source-url.js";
 
@@ -446,7 +447,7 @@ function observeHop(onHop: (hop: string) => void, hop: string): void {
   try {
     onHop(hop);
   } catch (error) {
-    log.warn(`download hop observer failed for ${hop}: ${error instanceof Error ? error.message : String(error)}`);
+    log.warn(`download hop observer failed for ${hop}: ${errorMessage(error)}`);
   }
 }
 
