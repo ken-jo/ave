@@ -159,11 +159,13 @@ describe("<ThemeProvider>", () => {
         <Probe onValue={(v) => seen.push(v.bundleId)} />
       </ThemeProvider>,
     );
+    // The selected id and the DOM write land in separate commits: the bundle
+    // is applied after the commit that set the id, so wait for both.
     await waitFor(() => {
       expect(seen).toContain("midnight");
+      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("midnight");
     });
     expect(api.getSettings).toHaveBeenCalled();
-    expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("midnight");
   });
 
   it("hydrates and follows the settings broadcast under StrictMode, whose remount runs every effect twice", async () => {
@@ -323,8 +325,8 @@ describe("<ThemeProvider>", () => {
     );
     await waitFor(() => {
       expect(observed).toBe("midnight");
+      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("midnight");
     });
-    expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("midnight");
   });
 
   it("uses initialBundleId when no api is provided", () => {

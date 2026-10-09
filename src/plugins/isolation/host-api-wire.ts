@@ -1799,6 +1799,13 @@ function statusAllowsBody(status: number): boolean {
  * Exceeding the ceiling THROWS. A truncated body is a successful call that
  * returned a different document, and nothing downstream can tell.
  *
+ * A refused body is CANCELLED, not just left unread. Releasing the reader's
+ * lock ends this function's claim on the stream but not the stream: the
+ * upstream connection stays open, still delivering, until the `Response` is
+ * collected — and the oversized 200 a server that ignores `Range` answers with
+ * is exactly that case. Not awaited: the refusal is already decided, and a
+ * transport whose cancel hangs must not hang the reply with it.
+ *
  * Not `readResponseTextLimited` (`engine/llm/model-list.ts`): that one is
  * private, decodes to TEXT — which is exactly the corruption this member has to
  * avoid — and throws a `ModelListError` the boundary has no code for.
@@ -1809,7 +1816,9 @@ async function readResponseBytesBounded(
 ): Promise<Uint8Array> {
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > WIRE_BYTES_MAX) {
-    throw tooLarge(declared, label);
+    const refusal = tooLarge(declared, label);
+    response.body?.cancel(refusal).catch(() => undefined);
+    throw refusal;
   }
   if (!response.body) return new Uint8Array(0);
   const reader = response.body.getReader();
@@ -1824,10 +1833,12 @@ async function readResponseBytesBounded(
       if (total > WIRE_BYTES_MAX) throw tooLarge(total, label);
       chunks.push(value);
     }
+  } catch (error) {
+    reader.cancel(error).catch(() => undefined);
+    throw error;
   } finally {
-    // Releasing the lock unconditionally covers the throw above: the ceiling
-    // refusal leaves a half-read stream, and a stream left locked keeps the
-    // socket alive for a call that already failed.
+    // Releasing the lock unconditionally: a stream left locked cannot be
+    // cancelled or collected by anyone else.
     reader.releaseLock();
   }
   return new Uint8Array(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))));
