@@ -793,6 +793,32 @@ describe("runHostFetchHops — method, body, and credentials across a followed h
     expect(sameOrigin.calls[1]!.headers.authorization).toBe("Bearer t");
   });
 
+  // The route a download above WIRE_BYTES_MAX takes (protocol design §8): HTTP
+  // Range slices, each within the ceiling. A release asset answers its first
+  // hop with a 302 to a different origin (its CDN), so the slice is only a
+  // slice if `range` survives that hop and the 206 comes back as it was sent.
+  it("keeps range on a cross-origin hop and returns the 206 with its content-range", async () => {
+    publicDns();
+    const { transport, calls } = scriptedTransport([
+      redirect(302, "https://sso.example.com/asset"),
+      new Response(new Uint8Array(4), {
+        status: 206,
+        headers: { "content-range": "bytes 8388608-8388611/41943163" },
+      }),
+    ]);
+    const { options } = hopOptions(
+      await firstAllow("https://api.example.com/releases/download/latest/a.zip"),
+      { redirect: "follow", headers: { range: "bytes=8388608-16777215" } },
+      transport,
+    );
+    const response = await runHostFetchHops(options);
+    expect(calls[0]!.headers.range).toBe("bytes=8388608-16777215");
+    expect(calls[1]).toMatchObject({ url: "https://sso.example.com/asset" });
+    expect(calls[1]!.headers.range).toBe("bytes=8388608-16777215");
+    expect(response.status).toBe(206);
+    expect(response.headers.get("content-range")).toBe("bytes 8388608-8388611/41943163");
+  });
+
   it("refuses to replay a stream body across a 307 instead of sending it empty", async () => {
     publicDns();
     const { transport } = scriptedTransport([redirect(307, "https://api.example.com/moved")]);
