@@ -7,7 +7,7 @@
  * imports into the Electron main process.
  */
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
@@ -18,6 +18,7 @@ import {
   PLUGIN_WORKER_RUN_DIR_NAME,
   assertUnixSocketPathFits,
   carryPluginDataDir,
+  carryPluginSocketDirs,
   isPluginRuntimeDirName,
   isSamePluginPath,
   pluginPayloadCopyFilter,
@@ -226,6 +227,63 @@ describe("carryPluginDataDir", () => {
 
     expect(await readPluginDataFixture(from)).toEqual(PLUGIN_DATA_FIXTURE);
     expect(await readPluginDataFixture(to)).toEqual(PLUGIN_DATA_FIXTURE);
+  });
+});
+
+describe("carryPluginSocketDirs", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "plugin-socket-carry-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("moves run/ and sockets/ as the same directories and leaves data/ alone", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    for (const name of [PLUGIN_WORKER_RUN_DIR_NAME, PLUGIN_OWN_SOCKET_DIR_NAME]) {
+      await mkdir(join(from, name), { recursive: true });
+    }
+    await writeFile(join(from, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "live");
+    await seedPluginDataFixture(from);
+    await mkdir(to);
+    const inodes = [PLUGIN_WORKER_RUN_DIR_NAME, PLUGIN_OWN_SOCKET_DIR_NAME]
+      .map((name) => statSync(join(from, name)).ino);
+
+    await carryPluginSocketDirs(from, to);
+
+    expect([PLUGIN_WORKER_RUN_DIR_NAME, PLUGIN_OWN_SOCKET_DIR_NAME].map((name) => statSync(join(to, name)).ino))
+      .toEqual(inodes);
+    expect(existsSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME))).toBe(false);
+    expect(existsSync(join(from, PLUGIN_WORKER_RUN_DIR_NAME))).toBe(false);
+    expect(await readPluginDataFixture(from)).toEqual(PLUGIN_DATA_FIXTURE);
+    expect(existsSync(join(to, PLUGIN_DATA_DIR_NAME))).toBe(false);
+  });
+
+  it("carries what exists and creates nothing for what does not", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
+    await mkdir(to);
+
+    await carryPluginSocketDirs(from, to);
+
+    expect(existsSync(join(to, PLUGIN_OWN_SOCKET_DIR_NAME))).toBe(true);
+    expect(existsSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME))).toBe(false);
+  });
+
+  it("refuses to replace a socket directory the target root already holds", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
+    await mkdir(join(to, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
+
+    await expect(carryPluginSocketDirs(from, to)).rejects.toThrow(/both roots hold a plugin socket directory/);
+
+    expect(existsSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME))).toBe(true);
   });
 });
 

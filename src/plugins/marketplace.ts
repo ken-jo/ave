@@ -27,7 +27,12 @@ import {
   recoverPendingPluginUpdate,
   restoreSupersededPendingPluginUpdate,
 } from "./marketplace-update-recovery.js";
-import { PLUGIN_RUNTIME_DIR_NAMES, carryPluginDataDir, pluginPayloadCopyFilter } from "./plugin-storage-layout.js";
+import {
+  PLUGIN_RUNTIME_DIR_NAMES,
+  carryPluginDataDir,
+  carryPluginSocketDirs,
+  pluginPayloadCopyFilter,
+} from "./plugin-storage-layout.js";
 import {
   buildFolderInstallReceipt,
   buildGitInstallReceipt,
@@ -1279,6 +1284,10 @@ export class PluginMarketplaceService {
             await retryOnTransientFsLock(
               () => carryPluginDataDir(installDir, dataCarrier ?? stagingDir, { onConflict: "reject" }),
             );
+            // Straight into the staged root, not through the recovery backup:
+            // they hold sockets, not state, and the candidate activated above is
+            // already running against them (carryPluginSocketDirs).
+            await retryOnTransientFsLock(() => carryPluginSocketDirs(installDir, stagingDir));
             await rm(installDir, { recursive: true, force: true });
             await rename(stagingDir, installDir);
             if (dataCarrier) {
@@ -1467,6 +1476,9 @@ export class PluginMarketplaceService {
       await retryOnTransientFsLock(
         () => carryPluginDataDir(snapshot.installDir, backupDir, { onConflict: "reject" }),
       );
+      // The predecessor is still the live generation here, and its sockets
+      // are in the root about to be removed.
+      await retryOnTransientFsLock(() => carryPluginSocketDirs(snapshot.installDir, backupDir));
     }
     await rm(snapshot.installDir, { recursive: true, force: true });
     if (backupDir) {
@@ -1489,6 +1501,7 @@ export class PluginMarketplaceService {
       await retryOnTransientFsLock(
         () => carryPluginDataDir(backupDir, snapshot.installDir, { onConflict: "reject" }),
       );
+      await retryOnTransientFsLock(() => carryPluginSocketDirs(backupDir, snapshot.installDir));
     }
     const receiptPath = installReceiptPath(this.cacheRoot, pluginId);
     if (snapshot.receiptRaw !== undefined) {

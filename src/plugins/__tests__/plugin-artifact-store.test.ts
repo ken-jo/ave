@@ -17,7 +17,7 @@
  */
 import AdmZip from "adm-zip";
 import { describe, expect, it, vi } from "vitest";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { chmod, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
@@ -31,6 +31,7 @@ import { cleanupTmpDir, makeStore, makeTmpDir } from "./artifact-store-test-help
 import {
   PLUGIN_DATA_FIXTURE,
   agentPluginsDocument,
+  materialiseCandidateRuntimeDirsForTest,
   readPluginDataFixture,
   seedPluginDataFixture,
 } from "./test-helpers.js";
@@ -308,6 +309,102 @@ describe("PluginArtifactStore — extractZip", () => {
     } finally {
       await cleanupTmpDir(tmp);
     }
+  });
+
+  // A staged install activates its candidate before the durable commit, and the
+  // activation materialises `sockets/` and `run/` at the FINAL root. The swap
+  // that follows must leave the candidate those same directories — not drop
+  // them with the root it renamed aside (local-indexer: `listen EACCES
+  // …/sockets/egress.sock`, startup degraded until restart).
+  describe("socket directories of the already-activated candidate", () => {
+    const ino = (path: string) => statSync(path).ino;
+
+    it("survive a first install's promotion as the same directories", async () => {
+      const tmp = makeTmpDir();
+      try {
+        const store = makeStore(tmp);
+        const installRoot = resolve(tmp, "installed");
+        const installDir = store.installDirFor("acme");
+        const zip = new AdmZip();
+        zip.addFile("plugin.json", Buffer.from(JSON.stringify(agentPluginsDocument({ id: "acme", version: "1" }))));
+        let granted!: ReturnType<typeof materialiseCandidateRuntimeDirsForTest>;
+        let grantedInodes!: number[];
+
+        await store.extractZipWithCommit("acme", zip.toBuffer(), async () => undefined, {
+          coordinateCommit: async ({ pluginRoot, durableCommit }) => {
+            granted = materialiseCandidateRuntimeDirsForTest("acme", pluginRoot, installRoot);
+            grantedInodes = [ino(granted.socketDir), ino(granted.workerRunRoot)];
+            return { result: await durableCommit() };
+          },
+        });
+
+        expect(granted.socketDir).toBe(resolve(installDir, "sockets"));
+        expect([ino(granted.socketDir), ino(granted.workerRunRoot)]).toEqual(grantedInodes);
+        expect(JSON.parse(await readFile(resolve(installDir, "plugin.json"), "utf-8")).version).toBe("1");
+        expect((await readdir(installRoot)).filter((name) => name.startsWith(".acme."))).toEqual([]);
+      } finally {
+        await cleanupTmpDir(tmp);
+      }
+    });
+
+    it("survive an update's promotion with the live socket inside them", async () => {
+      const tmp = makeTmpDir();
+      try {
+        const store = makeStore(tmp);
+        const installRoot = resolve(tmp, "installed");
+        const installDir = store.installDirFor("acme");
+        await mkdir(installDir, { recursive: true });
+        await writeFile(resolve(installDir, "plugin.json"), JSON.stringify(agentPluginsDocument({ id: "acme", version: "old" })));
+        await seedPluginDataFixture(installDir);
+        await mkdir(resolve(installDir, "sockets"), { recursive: true });
+        await writeFile(resolve(installDir, "sockets", "egress.sock"), "predecessor");
+        const zip = new AdmZip();
+        zip.addFile("plugin.json", Buffer.from(JSON.stringify(agentPluginsDocument({ id: "acme", version: "new" }))));
+        let grantedInodes!: number[];
+
+        await store.extractZipWithCommit("acme", zip.toBuffer(), async () => undefined, {
+          coordinateCommit: async ({ pluginRoot, durableCommit }) => {
+            const granted = materialiseCandidateRuntimeDirsForTest("acme", pluginRoot, installRoot);
+            grantedInodes = [ino(granted.socketDir), ino(granted.workerRunRoot)];
+            return { result: await durableCommit() };
+          },
+        });
+
+        expect(JSON.parse(await readFile(resolve(installDir, "plugin.json"), "utf-8")).version).toBe("new");
+        expect([ino(resolve(installDir, "sockets")), ino(resolve(installDir, "run"))]).toEqual(grantedInodes);
+        expect(await readFile(resolve(installDir, "sockets", "egress.sock"), "utf-8")).toBe("predecessor");
+        expect(await readPluginDataFixture(installDir)).toEqual(PLUGIN_DATA_FIXTURE);
+      } finally {
+        await cleanupTmpDir(tmp);
+      }
+    });
+
+    it("go back to the restored root when the commit fails after promotion", async () => {
+      const tmp = makeTmpDir();
+      try {
+        const store = makeStore(tmp);
+        const installRoot = resolve(tmp, "installed");
+        const installDir = store.installDirFor("acme");
+        await mkdir(installDir, { recursive: true });
+        await writeFile(resolve(installDir, "plugin.json"), JSON.stringify(agentPluginsDocument({ id: "acme", version: "old" })));
+        await mkdir(resolve(installDir, "sockets"), { recursive: true });
+        await writeFile(resolve(installDir, "sockets", "egress.sock"), "predecessor");
+        const socketInode = ino(resolve(installDir, "sockets"));
+        const zip = new AdmZip();
+        zip.addFile("plugin.json", Buffer.from(JSON.stringify(agentPluginsDocument({ id: "acme", version: "new" }))));
+
+        await expect(store.extractZipWithCommit("acme", zip.toBuffer(), async () => {
+          throw new Error("config registration failed");
+        })).rejects.toThrow(/config registration failed/);
+
+        expect(JSON.parse(await readFile(resolve(installDir, "plugin.json"), "utf-8")).version).toBe("old");
+        expect(ino(resolve(installDir, "sockets"))).toBe(socketInode);
+        expect(await readFile(resolve(installDir, "sockets", "egress.sock"), "utf-8")).toBe("predecessor");
+        expect((await readdir(installRoot)).filter((name) => name.startsWith(".acme."))).toEqual([]);
+      } finally {
+        await cleanupTmpDir(tmp);
+      }
+    });
   });
 
   it("leaves the installed version and its data untouched when payload extraction fails", async () => {

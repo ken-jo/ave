@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, statSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PluginMarketplaceService } from "../marketplace.js";
+import { PluginMarketplaceService, type PreparedMarketplacePluginActivation } from "../marketplace.js";
 import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
 import {
   makeTestPluginPaths,
@@ -16,6 +16,7 @@ import { CommittedPluginGenerationPublicationError } from "../committed-generati
 import {
   PLUGIN_DATA_FIXTURE,
   agentPluginsDocument,
+  materialiseCandidateRuntimeDirsForTest,
   readPluginDataFixture,
   seedPluginDataFixture,
 } from "./test-helpers.js";
@@ -415,6 +416,89 @@ describe("PluginMarketplaceService.installLocal", () => {
       throw error;
     });
     expect(rollbackBackups).toEqual([]);
+  });
+
+  // The local-dev twin of the artifact-store promotion tests: the candidate is
+  // activated (its `sockets/` and `run/` materialised at the final root) before
+  // the durable commit replaces that root.
+  describe("socket directories of the already-activated candidate", () => {
+    const activateLikeTheRuntime: PreparedMarketplacePluginActivation = async (prepared) => {
+      const granted = materialiseCandidateRuntimeDirsForTest(prepared.installId, prepared.pluginRoot, pluginsDir);
+      grantedInodes = [statSync(granted.socketDir).ino, statSync(granted.workerRunRoot).ino];
+      const completion = Promise.resolve();
+      return { result: await prepared.durableCommit(), retirement: completion, completion, retirementDeferred: false };
+    };
+    let grantedInodes: number[] = [];
+    const liveInodes = (installDir: string) => [
+      statSync(join(installDir, "sockets")).ino,
+      statSync(join(installDir, "run")).ino,
+    ];
+
+    it("survive a first local install as the same directories", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
+
+      const installDir = join(pluginsDir, "test-plugin");
+      expect(liveInodes(installDir)).toEqual(grantedInodes);
+    });
+
+    it("survive a local reinstall with the live socket inside them", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
+      const installDir = join(pluginsDir, "test-plugin");
+      await writeFile(join(installDir, "sockets", "egress.sock"), "predecessor");
+      await seedPluginDataFixture(installDir);
+      await writeFile(
+        join(sourceDir, "plugin.json"),
+        JSON.stringify(agentPluginsDocument({
+          id: "test-plugin",
+          name: "Test Plugin",
+          version: "2.0.0",
+          description: "fixture v2",
+          entry: "dist/hostPlugin.js",
+        })),
+        "utf-8");
+
+      await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
+
+      expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8")))
+        .toMatchObject({ version: "2.0.0" });
+      expect(liveInodes(installDir)).toEqual(grantedInodes);
+      expect(await readFile(join(installDir, "sockets", "egress.sock"), "utf-8")).toBe("predecessor");
+      expect(await readPluginDataFixture(installDir)).toEqual(PLUGIN_DATA_FIXTURE);
+    });
+
+    it("go back to the restored install when the replacement receipt fails", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
+      const installDir = join(pluginsDir, "test-plugin");
+      await writeFile(join(installDir, "sockets", "egress.sock"), "predecessor");
+      const predecessorInodes = liveInodes(installDir);
+      await writeFile(
+        join(sourceDir, "plugin.json"),
+        JSON.stringify(agentPluginsDocument({
+          id: "test-plugin",
+          name: "Test Plugin",
+          version: "2.0.0",
+          description: "fixture v2",
+          entry: "dist/hostPlugin.js",
+        })),
+        "utf-8");
+      const store = (service as unknown as {
+        artifactStore: { persistPreparedInstallReceipt: (...args: unknown[]) => Promise<unknown> };
+      }).artifactStore;
+      vi.spyOn(store, "persistPreparedInstallReceipt").mockRejectedValueOnce(
+        new Error("replacement receipt write failed"),
+      );
+
+      await expect(service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime }))
+        .rejects.toThrow("replacement receipt write failed");
+
+      expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8")))
+        .toMatchObject({ version: "1.2.3" });
+      expect(liveInodes(installDir)).toEqual(predecessorInodes);
+      expect(await readFile(join(installDir, "sockets", "egress.sock"), "utf-8")).toBe("predecessor");
+    });
   });
 
   it("returns the plugin's data directory to the restored install when the replacement receipt fails", async () => {

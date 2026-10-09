@@ -18,6 +18,7 @@
  */
 import { lstat, readdir, rename, rmdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
 import { aveHome } from "../shared/ave-home.js";
 import { PluginDataRootError, resolvePluginDataRoot } from "./plugin-storage-containment.js";
 
@@ -324,6 +325,62 @@ async function isEmptyDirectory(path: string): Promise<boolean> {
     // everything else that needs looking at rather than deleting.
     if ((error as NodeJS.ErrnoException).code === "ENOTDIR") return false;
     throw error;
+  }
+}
+
+/**
+ * The runtime directories that hold Unix-domain sockets rather than state:
+ * `run/` (host-allocated worker control sockets) and `sockets/` (sockets the
+ * plugin binds itself). {@link PLUGIN_RUNTIME_DIR_NAMES} minus `data/`.
+ */
+const PLUGIN_SOCKET_DIR_NAMES: readonly string[] = [
+  PLUGIN_WORKER_RUN_DIR_NAME,
+  PLUGIN_OWN_SOCKET_DIR_NAME,
+];
+
+/**
+ * Move a plugin root's socket directories (`run/`, `sockets/`) from one root
+ * to another, next to the {@link carryPluginDataDir} the same swap performs.
+ *
+ * WHY A ROOT SWAP MUST TAKE THEM ALONG. A staged install activates its
+ * candidate BEFORE the durable commit: the child is spawned, and the spawn
+ * materialises every directory of its envelope at the FINAL plugin root
+ * (`spawnConfinedPluginChild` creates `sockets/` and `run/` beside `data/`;
+ * an in-process load gets `sockets/` from `ensurePluginDataDir`). The durable
+ * commit then renames that root aside and promotes the staged payload in its
+ * place. A swap that carries `data/` only leaves the promoted root without
+ * `sockets/`, so the candidate — now running, its sandbox profile granting
+ * exactly that path — binds into a directory that no longer exists:
+ * `listen EACCES …/sockets/egress.sock` on macOS, and its startup is recorded
+ * as degraded until a restart re-creates the directory. It is the same loss on
+ * update, where the renamed-aside root also held the predecessor's live socket
+ * directory.
+ *
+ * WHY A RENAME AND NOT A FRESH `mkdir`. The directory the spawn created is the
+ * one the child's sandbox was built against. Seatbelt names it by path, so a
+ * new directory at that path would satisfy macOS, but a Linux bubblewrap child
+ * holds a bind mount of the directory itself, and only the same directory —
+ * moved, never re-created — is the one that child can reach. This is the move
+ * `data/` already gets for the same reason.
+ *
+ * These directories are not state and nothing reads their contents back, so
+ * the destination already holding one is a bookkeeping error rather than a
+ * merge to decide: a staged payload never ships a runtime directory
+ * (`isPluginRuntimeDirName` refuses it), and the restore paths rebuild the
+ * root they carry into with {@link pluginPayloadCopyFilter}. It throws.
+ */
+export async function carryPluginSocketDirs(fromRoot: string, toRoot: string): Promise<void> {
+  for (const name of PLUGIN_SOCKET_DIR_NAMES) {
+    const source = resolve(fromRoot, name);
+    const target = resolve(toRoot, name);
+    if (!await pathExists(source)) continue;
+    if (await pathExists(target)) {
+      throw new Error(
+        `[plugin-storage-layout] both roots hold a plugin socket directory; refusing to `
+          + `replace ${target} with ${source}`,
+      );
+    }
+    await renameDirectory(source, target);
   }
 }
 
