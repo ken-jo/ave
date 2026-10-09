@@ -73,7 +73,10 @@ async function setup() {
     pluginConfig = { ...config };
     return pluginConfig;
   });
-  const restartPlugin = vi.fn(async () => "started" as const);
+  const restartPlugin = vi.fn(async (): Promise<"started" | "failed"> => "started");
+  // The cards channel's producer; a refused restart records its refusal there.
+  let pluginCards: Array<{ id: string; lastAttemptRefusal?: unknown }> = [];
+  const listPluginCards = vi.fn(() => pluginCards);
   const setSecret = vi.fn(async () => {});
   // `apiKey` is declared `format: "secret"` so the config:secret:set handler
   // accepts it. `kept`/`removed` stay non-secret, so stripSecretFields is a
@@ -97,6 +100,7 @@ async function setup() {
       getPluginManifest: vi.fn(() => pluginManifest),
       setConfigOverride: vi.fn(),
       restartPlugin,
+      listPluginCards,
     },
     settingsService: {
       get: vi.fn(() => ({})),
@@ -124,7 +128,29 @@ async function setup() {
     /** Seed the cleartext `pluginConfigs` record the handlers read. */
     seedPluginConfig: (next: Record<string, unknown>) => { pluginConfig = { ...next }; },
     readPluginConfig: () => ({ ...pluginConfig }),
+    setPluginCards: (next: typeof pluginCards) => { pluginCards = next; },
   };
+}
+
+const REFUSAL_MESSAGE = "plugin 'plugin-config' does not declare a host protocol; this app serves 2";
+
+/** A restart the child factory refused: the result is "failed" and the card carries the refusal. */
+function refuseRestart(
+  harness: Awaited<ReturnType<typeof setup>>,
+  refusal: { attempt: "update" | "restart"; at?: string } = { attempt: "restart" },
+): void {
+  harness.restartPlugin.mockImplementationOnce(async () => {
+    harness.setPluginCards([{
+      id: "plugin-config",
+      lastAttemptRefusal: {
+        attempt: refusal.attempt,
+        kind: "incompatible-host-protocol",
+        message: REFUSAL_MESSAGE,
+        at: refusal.at ?? new Date().toISOString(),
+      },
+    }]);
+    return "failed";
+  });
 }
 
 beforeEach(() => {
@@ -419,6 +445,58 @@ describe("ave:plugins:config:set", () => {
   });
 });
 
+describe("config and secret saves whose restart the child factory refused", () => {
+  it("replies to a config save with the recorded refusal", async () => {
+    const harness = await setup();
+    refuseRestart(harness);
+
+    const result = await invoke("ave:plugins:config:set", "plugin-config", { kept: "new" });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: "plugin-config-save-failed",
+      message: `Plugin config saved but runtime reload refused: ${REFUSAL_MESSAGE}`,
+    });
+    expect(harness.setPluginConfig).toHaveBeenCalledOnce();
+  });
+
+  it("replies to a secret save with the recorded refusal", async () => {
+    const harness = await setup();
+    harness.seedPluginConfig({ apiKey: "sk-OLD-plaintext" });
+    refuseRestart(harness);
+
+    const result = await invoke("ave:plugins:config:secret:set", "plugin-config", "apiKey", "sk-live-000");
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: "plugin-config-secret-save-failed",
+      message: `Plugin secret saved but runtime reload refused: ${REFUSAL_MESSAGE}`,
+    });
+  });
+
+  it("does not explain a failure with a refusal recorded before this restart", async () => {
+    const harness = await setup();
+    refuseRestart(harness, { attempt: "restart", at: new Date(0).toISOString() });
+
+    const result = await invoke("ave:plugins:config:set", "plugin-config", { kept: "new" });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: "plugin-config-save-failed",
+      message: expect.stringContaining("runtime reload returned failed"),
+    });
+  });
+
+  it("does not explain a restart failure with an update's refusal", async () => {
+    const harness = await setup();
+    refuseRestart(harness, { attempt: "update" });
+
+    const result = await invoke("ave:plugins:config:set", "plugin-config", { kept: "new" });
+
+    expect(result).toMatchObject({ message: expect.stringContaining("runtime reload returned failed") });
+  });
+});
+
 /**
  * Restart policy for secret writes — see `plugins/config-restart-policy.ts`.
  *
@@ -492,7 +570,7 @@ describe("ave:plugins:config:secret:set — restart policy", () => {
   it("reports a saved secret whose targeted runtime reload failed", async () => {
     const { restartPlugin, setSecret, seedPluginConfig } = await setup();
     seedPluginConfig({ apiKey: "sk-OLD-plaintext" });
-    restartPlugin.mockResolvedValueOnce("failed" as never);
+    restartPlugin.mockResolvedValueOnce("failed");
 
     const result = await invoke("ave:plugins:config:secret:set", "plugin-config", "apiKey", "sk-live-000");
 

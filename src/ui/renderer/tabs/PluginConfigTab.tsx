@@ -50,6 +50,79 @@ const PREPARATION_PHASE_I18N_KEY: Record<string, string> = {
   error: "pluginConfigTab.prepPhaseError",
 };
 
+/** Doctor text for the arm a plugin's factory came from (§9.8 A1, decision 51). */
+const ARM_I18N_KEY: Record<NonNullable<PluginCardSummary["arm"]>, string> = {
+  child: "pluginConfigTab.armChild",
+  "in-process": "pluginConfigTab.armInProcess",
+};
+
+/** Doctor text for each confinement a plugin can report — one per value. */
+const CONFINEMENT_I18N_KEY: Record<NonNullable<PluginCardSummary["confinement"]>, string> = {
+  "macos-sandbox": "pluginConfigTab.confinementMacosSandbox",
+  "linux-bubblewrap": "pluginConfigTab.confinementLinuxBubblewrap",
+  "windows-srt": "pluginConfigTab.confinementWindowsSrt",
+  unconfined: "pluginConfigTab.confinementUnconfined",
+  "not-spawned": "pluginConfigTab.confinementNotSpawned",
+};
+
+/**
+ * Where a plugin runs and under which wrap: shown by the Doctor panel for a
+ * failed plugin and by the loaded-plugin row for a running one. Renders
+ * nothing when the card carries no arm — a failure before routing.
+ */
+function PluginRuntimeArm({ plugin, surface }: { plugin: PluginCardSummary; surface: "row" | "doctor" }) {
+  const { t } = useTranslation();
+  if (!plugin.arm || !plugin.confinement) return null;
+  const line = t("pluginConfigTab.runtimeArmLine", {
+    arm: t(ARM_I18N_KEY[plugin.arm]),
+    confinement: t(CONFINEMENT_I18N_KEY[plugin.confinement]),
+  });
+  if (surface === "row") {
+    return (
+      <div
+        data-testid={`plugin-config:row-arm:${plugin.id}`}
+        data-arm={plugin.arm}
+        data-confinement={plugin.confinement}
+        className="mt-0.5 line-clamp-1 text-[10px] text-muted-foreground"
+      >
+        {line}
+      </div>
+    );
+  }
+  return (
+    <p
+      data-testid={`plugin-config:doctor-arm:${plugin.id}`}
+      data-arm={plugin.arm}
+      data-confinement={plugin.confinement}
+      className="mt-1 break-words text-[11px] text-destructive/(--opacity-intense)"
+    >
+      <span className="font-medium">{t("pluginConfigTab.runtimeArmLabel")}</span>: {line}
+    </p>
+  );
+}
+
+/**
+ * The last refused update or restart of a RUNNING plugin (decision 52): one
+ * muted line on the loaded row. The plugin stays loaded at its running
+ * version, so this is not a failure state and the Doctor panel does not open.
+ */
+function PluginLastAttemptRefusal({ plugin }: { plugin: PluginCardSummary }) {
+  const { t } = useTranslation();
+  const refusal = plugin.lastAttemptRefusal;
+  if (plugin.loadStatus !== "loaded" || !refusal) return null;
+  return (
+    <div
+      data-testid={`plugin-config:row-refusal:${plugin.id}`}
+      data-attempt={refusal.attempt}
+      className="mt-0.5 line-clamp-2 break-words text-[10px] text-muted-foreground"
+    >
+      {refusal.attempt === "update"
+        ? t("pluginConfigTab.lastUpdateRefused", { message: refusal.message })
+        : t("pluginConfigTab.lastRestartRefused", { message: refusal.message })}
+    </div>
+  );
+}
+
 function isRuntimeCallablePlugin(plugin: PluginCardSummary): boolean {
   return plugin.runtimeLoaded ?? (plugin.loadStatus === "loaded");
 }
@@ -258,11 +331,18 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   // would still display the pre-install plugin set after a `ave://install`
   // deep-link landed (other plugin surfaces refresh via the same event but
   // the settings tab's local `plugins` state was a one-shot mount-time snapshot).
+  // Latest read wins: saves and install results each re-read the cards, and
+  // an older read answering after a newer one must not put its snapshot back
+  // (a cleared refusal reappearing). The caller still gets the cards it asked
+  // for; only the tab's list ignores a superseded answer.
+  const cardsReadTokenRef = useRef(0);
   const refreshPlugins = useCallback(async (
     options?: { preferInstallKey?: string },
   ): Promise<PluginCardSummary[] | null> => {
+    const token = ++cardsReadTokenRef.current;
     try {
       const cards = await window.ave.plugins.cards();
+      if (token !== cardsReadTokenRef.current) return cards;
       setPlugins(cards);
       setSelectedId((current) => {
         const preferredInstallKey = options?.preferInstallKey;
@@ -279,7 +359,9 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       });
       return cards;
     } catch (e) {
-      showBanner("error", errorMessage(e) || t("pluginConfigTab.errorLoadPlugins"));
+      if (token === cardsReadTokenRef.current) {
+        showBanner("error", errorMessage(e) || t("pluginConfigTab.errorLoadPlugins"));
+      }
       return null;
     } finally {
       setLoading(false);
@@ -331,10 +413,11 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     const unsubs: Array<() => void> = [];
     if (typeof api.onPluginInstallResult === "function") {
       unsubs.push(
-        api.onPluginInstallResult(({ success }) => {
-          if (success) {
-            void refreshPlugins();
-          }
+        // A failed install can still change a card: a refused update of a
+        // running plugin is recorded on its loaded row (`lastAttemptRefusal`,
+        // §9.8 A1), so both outcomes re-read the cards.
+        api.onPluginInstallResult(() => {
+          void refreshPlugins();
         }),
       );
     }
@@ -439,8 +522,11 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       showBanner("error", errorMessage(e) || t("pluginConfigTab.errorSave"));
     } finally {
       setSaving(false);
+      // A save restarts the plugin, and the restart's outcome is on its card:
+      // a refusal recorded, or a recorded one cleared by the commit.
+      void refreshPlugins();
     }
-  }, [selectedId, entries, showBanner, notifySaved, t]);
+  }, [selectedId, entries, showBanner, notifySaved, refreshPlugins, t]);
 
   const selectedPlugin = plugins.find((p) => p.id === selectedId);
   useEffect(() => {
@@ -747,6 +833,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         {p.preparationStatus.message}
                       </div>
                     )}
+                    {p.loadStatus === "loaded" && <PluginRuntimeArm plugin={p} surface="row" />}
+                    <PluginLastAttemptRefusal plugin={p} />
                   </button>
                 ))}
               </div>
@@ -901,6 +989,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                                       ? t("pluginConfigTab.doctorLoadCrashDescription")
                                       : t("pluginConfigTab.doctorDescription")}
                         </p>
+                        <PluginRuntimeArm plugin={selectedPlugin} surface="doctor" />
                         {selectedPlugin.installFailureMessage ? (
                           <div className="mt-2 rounded border border-destructive/(--opacity-muted) bg-background/(--opacity-muted) px-2 py-1.5">
                             <p className="text-[10px] font-medium uppercase tracking-wide text-destructive">
@@ -1147,6 +1236,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                             showBanner("error", errorMessage(e) || t("pluginConfigTab.errorSave"));
                           } finally {
                             setSaving(false);
+                            void refreshPlugins();
                           }
                         }}
                         onSetSecret={async (key, value) => {
@@ -1155,6 +1245,9 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                             key,
                             value,
                           );
+                          // A secret save may restart the plugin; its card
+                          // carries the outcome either way.
+                          void refreshPlugins();
                           if (!result.ok) {
                             showBanner("error", result.message ?? t("pluginConfigTab.errorSaveSecret"));
                             return;

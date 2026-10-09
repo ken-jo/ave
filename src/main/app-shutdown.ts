@@ -40,9 +40,24 @@ import { errorMessage } from "../shared/error-message.js";
 
 const log = createLogger("ave");
 let shutdownHost: BootHost | undefined;
-let bootPluginShutdown: (() => Promise<void>) | undefined;
-export function registerBootPluginShutdown(run: () => Promise<void>): void {
-  bootPluginShutdown = run;
+/**
+ * The plugin side of stopping an interrupted bootstrap, in the order the
+ * normal shutdown uses: plugin shutdown handlers first, the runtime last.
+ */
+export interface BootPluginShutdown {
+  runShutdownHandlers(): Promise<void>;
+  /** Close plugin admission without stopping anything (before MCP disconnects). */
+  closeAdmission(): void;
+  stopRuntime(signal: AbortSignal): Promise<unknown>;
+}
+let bootPluginShutdown: BootPluginShutdown | undefined;
+let bootMcpDisconnect: (() => Promise<void>) | undefined;
+export function registerBootPluginShutdown(shutdown: BootPluginShutdown): void {
+  bootPluginShutdown = shutdown;
+}
+/** Registered once the bootstrap has an MCP manager to disconnect. */
+export function registerBootMcpDisconnect(disconnect: () => Promise<void>): void {
+  bootMcpDisconnect = disconnect;
 }
 export function configureAppShutdownHost(host: BootHost): void {
   shutdownHost = host;
@@ -161,7 +176,15 @@ export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShu
   const result = await runCleanupWithHardTimeout(async (signal) => {
     const failures: unknown[] = [];
     const stages = [
-      () => bootPluginShutdown?.(),
+      () => bootPluginShutdown?.runShutdownHandlers(),
+      // As on the normal path: plugin admission closes, so no post-commit MCP
+      // publication opens a connection once MCP is gone; then MCP disconnects
+      // before the plugin runtime stops, so no bundled MCP call is still in
+      // flight into a generation the runtime is retiring (shutdown does not
+      // cancel those calls).
+      () => bootPluginShutdown?.closeAdmission(),
+      () => bootMcpDisconnect?.(),
+      () => bootPluginShutdown?.stopRuntime(signal),
       () => stopSubscriptionRuntimes(),
       () => forceKillAllTerminalsForShutdown(),
       () => forceKillAndDrainManagedChildProcesses(reason),
@@ -255,6 +278,11 @@ export async function runAppShutdownCleanup(options: {
       await stopSubscriptionRuntimes();
       subscriptionRuntimesStopped = true;
       if (signal.aborted) return;
+      // Plugin admission closes before services shut down — MCP disconnects
+      // there — so no post-commit MCP publication or new plugin dispatch can
+      // open after it. Calls already admitted keep running; the runtime
+      // itself stops further below.
+      svc.pluginRuntime.beginShutdown();
       await svc.shutdown?.();
       if (signal.aborted) return;
       // Service shutdown aborts active turns, after which no new background
@@ -281,7 +309,9 @@ export async function runAppShutdownCleanup(options: {
       // NOT in the managed-child tracker (node-pty's IPty is not a
       // ChildProcess), so force them down here on the graceful path.
       await forceKillAllTerminalsForShutdown();
-      await svc.pluginRuntime.stopAll();
+      // Bounded by the same deadline as every other stage: plugin generations
+      // still retiring when it passes are named, and the backstop below ends them.
+      await svc.pluginRuntime.stopAll({ signal });
       if (signal.aborted) return;
       // Runtime stop hooks can return after scheduling TERM→KILL. Keep the app
       // alive for a bounded definitive-exit drain so ASRT/HOME finalizers run

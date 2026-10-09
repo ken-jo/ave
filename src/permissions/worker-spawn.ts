@@ -449,7 +449,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
 
       // Windows grants reachability through ACLs against the holder process,
       // so the wrap carries the deny floor only.
-      child = await spawnConfinedChild({
+      ({ child } = await spawnConfinedChild({
         command: spec.command,
         args,
         label: `worker:${safePlugin}:${safeWorker}:asrt-win`,
@@ -463,7 +463,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
           markPluginWorkerWrapped(safePlugin, safeWorker);
           marked = true;
         },
-      });
+      }));
       child.once("exit", finalizeResources);
       child.once("error", () => {
         // `error` can mean signal/message delivery failed while the child is
@@ -566,7 +566,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     // path with spaces/metacharacters cannot mis-split. ASRT runs this branch
     // under a POSIX shell (mac/linux). The per-command wrap carries ONLY the
     // filesystem jail (the `--bind`).
-    const child = await spawnConfinedChild({
+    const { child } = await spawnConfinedChild({
       command: spec.command,
       args,
       label: `worker:${safePlugin}:${safeWorker}:asrt`,

@@ -277,7 +277,7 @@ describe("a confined child cannot reach user data through a grant", () => {
     const home = createSandboxProcessHome();
     try {
       const own = `${probe()}; echo ${OWN_TEMP} > "$TMPDIR/own" && cat "$TMPDIR/own"; echo ${OWN_HOME} > "$HOME/own" && cat "$HOME/own"`;
-      const child = await spawnConfinedChild({
+      const { child, confinement } = await spawnConfinedChild({
         command: "/bin/sh",
         args: ["-c", own],
         label: "protected-write-roots",
@@ -293,6 +293,8 @@ describe("a confined child cannot reach user data through a grant", () => {
       child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf-8"); });
       await new Promise<void>((resolve) => child.once("close", () => resolve()));
       await cleanupAsrtSandboxAfterCommand();
+      // The spawn reports the wrap it applied, which a live sandbox makes real.
+      expect(confinement).not.toBe("unconfined");
       expectConfined(stdout);
       expect(stdout).toContain(OWN_TEMP);
       expect(stdout).toContain(OWN_HOME);

@@ -16,10 +16,11 @@
  * a reviewed row in a host-owned table rather than a dialog.
  *
  * WHY THE PLUGIN CANNOT OWN THE DIALOG. `dialog` is an Electron main-process
- * API, and reaching it is ambient axis 2 in the routing SOT
- * (`plugins/isolation/out-of-process-plugins.ts`): a plugin that resolves
+ * API, and reaching it is ambient axis 2 of the process-isolation admission
+ * record (the history of `plugins/isolation/out-of-process-plugins.ts` before
+ * §9.8 A1 retired it): a plugin that resolves
  * `electron` has main's whole surface, not the one method it wanted. Mediating
- * the method is what lets the plugin be routed out-of-process at all.
+ * the method is what lets the plugin run out-of-process at all.
  *
  * ATTRIBUTION IS THE POINT OF THE TITLE. A native folder chooser appearing
  * unbidden says nothing about who asked for it. The title names the requesting

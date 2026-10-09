@@ -76,6 +76,29 @@ desktop workflows analyze the declarations without requiring `web/node_modules`.
 The OS binaries in `ignoreBinaries` are host tools intentionally invoked by
 platform-specific scripts/tests.
 
+## Retained Without A Production Caller
+
+These symbols have no production importer on purpose. Knip counts their tests
+as usage, so they do not appear in the snapshot, and the snapshot is not where
+their reason lives: each is owned here and in its own doc comment.
+
+- `importInProcessPluginFactory` (`src/plugins/runtime/plugin-loader.ts`), with
+  `runPluginImportWithTimeout` and `PluginImportTimeoutError`: the in-process
+  plugin arm, retained and deprecated since Admission
+  (`docs/design/plugin-hostapi-protocol.md` §9.8 A1, decision 50), when every
+  `entry` manifest started routing to a plugin child.
+  `src/plugins/isolation/__tests__/host-api-boundary-contract.test.ts` fails if
+  a production module imports it. Deprecation owner: the organization owner
+  role of `former_org` (decision 5). Removal condition (§9.8, "Loader
+  removal, restated after Admission"): `allPluginsAreOutOfProcess`, fed by the
+  runtime's registry of loaded arms, true on every Doctor report since
+  Admission; the routing matrix, the official-index routing test and the §10.1
+  conformance suite green on the release tags of two consecutive app releases
+  (0.14.0, 0.15.0); and no change to the function or its tests in those
+  releases. Boundary: app 0.16.0 at the latest. Removal deletes the three
+  symbols, their tests and the `"in-process"` member of `PluginLoadArm`;
+  `importPluginFactory` stays, as the plugin child's.
+
 ## Current Removal Candidates
 
 Split these into separate PRs with focused regression checks before deleting:

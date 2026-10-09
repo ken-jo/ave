@@ -13,6 +13,7 @@ import { PluginRuntime } from "../index.js";
 import { createNoopHostApiForTests } from "../sandbox.js";
 import { HostApiGenerationScope } from "../../plugin-host-effect-scope.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
+import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 
 const TARGET_ID = "dispatch-readiness-target";
 const CALLER_ID = "dispatch-readiness-caller";
@@ -50,6 +51,8 @@ function projection(input: {
     instance: input.instance,
     methods: input.methods,
     hostEffects: input.hostEffects,
+    arm: "child",
+    confinement: "unconfined",
   };
 }
 
@@ -103,6 +106,7 @@ function runtimeFixture(
   auditEntries?: Array<{ level: string; message: string; data?: unknown }>,
 ) {
   const runtime = new PluginRuntime({
+    childEntryPath: pluginChildEntryPath(),
     encryption: unavailableSecretEncryption,
     hostRoot: "/tmp",
     createHostApi: createNoopHostApiForTests,
@@ -155,6 +159,13 @@ function runtimeFixture(
     },
     recoverRetirements: async () => undefined,
     waitForRetirements: async () => undefined,
+    closeAdmission: (reason) => coordinator.closeAdmission(reason),
+    listRetiringGenerations: () => coordinator.listRetiring().map(({ generation, retired }) => ({
+      pluginId: generation.pluginId,
+      generationId: generation.generationId,
+      runtime: generation.state.runtime,
+      retired,
+    })),
   };
   runtime.setGenerationAccess(lifecycle);
   return { coordinator, runtime, lifecycle };

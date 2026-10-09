@@ -9,6 +9,7 @@ import { resolvePluginSocketDir, resolvePluginWorkerRunRoot } from "../../plugin
 import { derivePluginChildEnvelope, spawnConfinedPluginChild, type ConfinedPluginChild } from "../../isolation/out-of-process-plugin.js";
 import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
+import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 
 const PLUGIN_ID = "sandbox-candidate";
 let root: string | undefined;
@@ -90,6 +91,7 @@ describe("real sandbox ceiling withdrawal", () => {
         writeFileSync(workerEntryPath, `const fs = require("node:fs"); const fd = fs.openSync(${JSON.stringify(workerFile)}, "a"); fs.writeSync(fd, "ready\\n"); setInterval(() => fs.writeSync(fd, "tick\\n"), 20);`);
         await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
         const subject = new RunningSandboxRuntime({
+          childEntryPath: pluginChildEntryPath(),
           hostRoot: root,
           manifestPaths: [],
           encryption: unavailableSecretEncryption,

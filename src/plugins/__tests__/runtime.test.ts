@@ -1,9 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { PluginRuntime } from "../runtime.js";
+import { createNoopHostApiForTests, PluginRuntime } from "../runtime.js";
+import { hashReceiptFiles, installReceiptPath, writeInstallReceipt } from "../plugin-install-receipt.js";
 import { PluginPhase } from "../lifecycle-log.js";
+import { PluginBundleLifecycle } from "../plugin-bundle-lifecycle.js";
+import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
+import { SkillStore } from "../../main/skill-store.js";
+import { PersonaPromptStore } from "../../main/persona-prompt-store.js";
+import { runCleanupWithHardTimeout } from "../../main/shutdown-timeout.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { HostApiGenerationScope } from "../plugin-host-effect-scope.js";
+import { CommittedPluginGenerationPublicationError } from "../committed-generation-publication-error.js";
+import { McpManager } from "../../mcp/mcp-manager.js";
+import { McpGovernance } from "../../mcp/mcp-governance.js";
+import { ToolRegistry } from "../../tools/registry.js";
+import { ToolExecutor } from "../../tools/executor.js";
+import { createDynamicTool } from "../../tools/base.js";
+import { PermissionManager } from "../../permissions/permission-manager.js";
+import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
+import { classifyApplyError } from "../../marketplace/updates/apply.js";
+import { isCommittedPluginGenerationPublicationError } from "../committed-generation-publication-error.js";
 import { PluginDeploymentGuard } from "../deployment-guard.js";
 import type { PackageKey } from "../../marketplace/sources/policy.js";
 import { uninstallPluginWithLifecycle } from "../uninstall-lifecycle.js";
@@ -11,17 +29,20 @@ import { mkdtempSync } from "node:fs";
 import {
   makeTestPluginEntrySource,
   makeTestPluginRuntime,
+  makeTestPluginRuntimeFixture,
+  makeTestTreeWritable,
   bindTestPluginRuntimeGeneration,
   createTestHostApiFactory,
   writeTestPlugin,
   writeTestPluginRegistry,
 } from "./test-helpers.js";
-import { agentPluginsDocument, patchAveFields } from "./test-helpers.js";
+import { agentPluginsDocument, childProcessGate, patchAveFields } from "./test-helpers.js";
 import { manifestDocumentSha256 } from "../runtime/manifest-validation.js";
 import type { PluginManifest } from "../types.js";
 import { canonicalJSON } from "../secret-access/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
+import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry.js";
 
 function servedPluginDocument(manifest: Record<string, unknown>): Record<string, unknown> {
   const requires = manifest.requires as Record<string, unknown> | undefined;
@@ -29,10 +50,11 @@ function servedPluginDocument(manifest: Record<string, unknown>): Record<string,
 }
 
 function makeGenerationBoundRuntime(
-  options: Omit<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption">
-    & Partial<Pick<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption">>,
+  options: Omit<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption" | "childEntryPath">
+    & Partial<Pick<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption" | "childEntryPath">>,
 ): PluginRuntime {
   return bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+    childEntryPath: pluginChildEntryPath(),
     ...options,
     createHostApi: createTestHostApiFactory(options.createHostApi),
   }));
@@ -1351,7 +1373,14 @@ describe("PluginRuntime.disable", () => {
     ).not.toThrow();
   });
 
-  it("blocks load-time event subscriptions to later-loaded plugins without pluginAccess", async () => {
+  // Before Admission the plugin ran in this heap and its synchronous
+  // `hostApi.onEvent` threw out of `createPlugin`, failing the load. Every
+  // `entry` plugin is now a child (§9.8 A1), where a subscription is a request
+  // the host answers after the fact (`host-api-child.ts` `subscribe`): the host
+  // refuses it and no subscription exists, and the plugin keeps loading. The
+  // property — no event of another plugin without pluginAccess — is asserted
+  // at the host, where the refusal now happens.
+  it("refuses load-time event subscriptions to later-loaded plugins without pluginAccess", async () => {
     const calendarManifestPath = await writePluginWithEntry(
       "calendar",
       "calendar_today",
@@ -1383,6 +1412,8 @@ describe("PluginRuntime.disable", () => {
       { id: "email", manifestPath: emailManifestPath, enabled: true },
     ]);
 
+    const refused: Array<{ pluginId: string; type: string; message: string }> = [];
+    const subscribed: Array<{ pluginId: string; type: string }> = [];
     let runtime!: PluginRuntime;
     runtime = makeGenerationBoundRuntime({
       hostRoot: testDir,
@@ -1396,14 +1427,26 @@ describe("PluginRuntime.disable", () => {
       createHostApi: (pluginId) =>
         ({
           emitEvent: () => {},
-          onEvent: (type) => runtime.assertPluginEventAccess(pluginId, type),
+          onEvent: (type) => {
+            try {
+              runtime.assertPluginEventAccess(pluginId, type);
+            } catch (error) {
+              refused.push({ pluginId, type, message: (error as Error).message });
+              throw error;
+            }
+            subscribed.push({ pluginId, type });
+            return () => {};
+          },
           getSecret: () => null,
         }) as unknown as import("../types.js").PluginHostApi,
     });
     await expect(runtime.load()).resolves.toBeUndefined();
-    expect(runtime.listPluginIds()).not.toContain("calendar");
+    await vi.waitFor(() => expect(refused).toHaveLength(1));
+    expect(refused[0]).toMatchObject({ pluginId: "calendar", type: "email.analyzed" });
+    expect(() => runtime.assertPluginEventAccess("calendar", "email.analyzed")).toThrow(refused[0]!.message);
+    expect(subscribed).toEqual([]);
     expect(runtime.listPluginCards()).toContainEqual(
-      expect.objectContaining({ id: "calendar", loadStatus: "failed" }),
+      expect.objectContaining({ id: "calendar", loadStatus: "loaded", arm: "child" }),
     );
   });
 
@@ -1850,8 +1893,17 @@ export default async function createPlugin({ hostApi }) {
       onDisable: (pluginId) => disabled.push(pluginId),
       createHostApi: (pluginId, _manifest, _pluginDataDir, incarnation) => ({
         emitEvent: () => {},
+        // Once-only, as production's `registerOwnedDisposer` is: the
+        // incarnation runs it at teardown, and since every `entry` plugin is a
+        // child (§9.8 A1) the session's subscription ledger also returns it
+        // when the child ends — two owners of one registration, one effect.
         onEvent: () => {
-          const dispose = () => disposed.push(pluginId);
+          let done = false;
+          const dispose = () => {
+            if (done) return;
+            done = true;
+            disposed.push(pluginId);
+          };
           incarnation.registerDisposer(dispose);
           return dispose;
         },
@@ -1924,6 +1976,13 @@ export default async function createPlugin({ hostApi }) {
 
     expect(runtime.listPluginIds()).not.toContain("p-start-fails");
     await expect(readFile(stoppedPath, "utf-8")).resolves.toBe("stopped");
+    // The failed generation's child had spawned (unwrapped: the sandbox is
+    // off here); the Doctor keeps where it ran after it is failed closed.
+    expect(runtime.listPluginCards().find((card) => card.id === "p-start-fails")).toMatchObject({
+      loadStatus: "failed",
+      arm: "child",
+      confinement: "unconfined",
+    });
   });
 
   it("startAll start failure cleans runtime-managed disposers before unload", async () => {
@@ -1968,7 +2027,7 @@ export default async function createPlugin({ hostApi }) {
     await writeFile(
       join(slowDir, "entry.mjs"),
       `export default async function createPlugin() {
-  return { handlers: { p_start_slow_peer_ping: async () => "ok" }, start: async () => new Promise((resolve) => setTimeout(resolve, 250)) };
+  return { handlers: { p_start_slow_peer_ping: async () => "ok" }, start: async () => new Promise((resolve) => setTimeout(resolve, 1_000)) };
 }\n`,
       "utf-8",
     );
@@ -2000,7 +2059,7 @@ export default async function createPlugin({ hostApi }) {
       "utf-8");
     await writeFile(
       slowManifestPath,
-      JSON.stringify(servedPluginDocument(manifestFor(slowId, "p_start_slow_peer_ping", 1_000))),
+      JSON.stringify(servedPluginDocument(manifestFor(slowId, "p_start_slow_peer_ping", 5_000))),
       "utf-8");
     await writeFile(
       registryPath,
@@ -2015,7 +2074,7 @@ export default async function createPlugin({ hostApi }) {
     );
 
     let timedHostApi: { getSecret(key: string): null } | undefined;
-    let timedIncarnation: { isLifecycleHookActive(): boolean } | undefined;
+    let timedIncarnation: { isActive(): boolean; isLifecycleHookActive(): boolean } | undefined;
     const runtime = makeGenerationBoundRuntime({
       hostRoot: testDir,
       registryPath,
@@ -2057,9 +2116,16 @@ export default async function createPlugin({ hostApi }) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect(timedIncarnation?.isLifecycleHookActive()).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    expect(settled).toBe(false);
     expect(timedHostApi).toBeDefined();
+    // The plugin is a child (§9.8 A1), so the hook scope opens at construct,
+    // a spawn before `start()` and its 30 ms timer: wait for the revocation
+    // itself, then hold the ordering — it lands while the peer is still
+    // starting, not when startAll settles.
+    const revokeDeadline = Date.now() + 5_000;
+    while (timedIncarnation!.isActive() && Date.now() < revokeDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(settled).toBe(false);
     expect(() => timedHostApi!.getSecret("late-write")).toThrow(
       /no longer active/,
     );
@@ -2169,6 +2235,11 @@ export default async function createPlugin({ hostApi }) {
       /addPlugin failed/,
     );
     await expect(readFile(stoppedPath, "utf-8")).resolves.toBe("stopped");
+    expect(runtime.listPluginCards().find((card) => card.id === "p-new-broken")).toMatchObject({
+      loadStatus: "failed",
+      arm: "child",
+      confinement: "unconfined",
+    });
     expect(runtime.listPluginIds()).toEqual(["p-existing"]);
   });
 
@@ -2789,97 +2860,79 @@ export default async function createPlugin({ hostApi }) {
     await mkdir(staleDir, { recursive: true });
     const staleManifestPath = join(staleDir, "plugin.json");
 
-    let startEntered!: () => void;
-    const startEnteredPromise = new Promise<void>((resolve) => {
-      startEntered = resolve;
-    });
-    let rejectStart!: () => void;
-    const startGate = new Promise<void>((_, reject) => {
-      rejectStart = () => reject(new Error("stale start failed"));
-    });
-    let staleStopped!: () => void;
-    const staleStoppedPromise = new Promise<void>((resolve) => {
-      staleStopped = resolve;
-    });
-    const controls = new Map([
-      [pluginId, { startEntered, startGate, staleStopped }],
-    ]);
-    const globalWithControls = globalThis as typeof globalThis & {
-      __aveRuntimeTestControls?: typeof controls;
-    };
-    globalWithControls.__aveRuntimeTestControls = controls;
-
-    try {
-      await writeFile(
-        join(staleDir, "entry.mjs"),
-        `const controls = globalThis.__aveRuntimeTestControls.get(${JSON.stringify(pluginId)});
+    // The stale start runs in its plugin child (§9.8 A1); the test steers it
+    // through files under its own temp root rather than a shared global.
+    const gate = await childProcessGate(join(testDir, "stale-start-gate"));
+    await writeFile(
+      join(staleDir, "entry.mjs"),
+      `${gate.moduleSource}
 export default async function createPlugin() {
   return {
     handlers: { ${JSON.stringify(methodName)}: async () => "stale" },
     start: async () => {
-      controls.startEntered();
-      await controls.startGate;
+      gate.signal("start-entered");
+      if (await gate.waitFor("start-outcome") === "reject") throw new Error("stale start failed");
     },
-    stop: async () => { controls.staleStopped(); },
+    stop: async () => { gate.signal("stale-stopped"); },
   };
 }
 `,
-        "utf-8",
-      );
-      await writeFile(
-        staleManifestPath,
-        JSON.stringify(servedPluginDocument({
-          id: pluginId,
-          name: pluginId,
-          version: "1.0.0",
-          entry: "entry.mjs",
-          tools: [
-            {
-              name: methodName,
-              description: `${methodName} tool`,
-              inputSchema: { type: "object", properties: {} },
-              _meta: { ui: { visibility: ["model", "app"] } },
-            },
-          ],
-          description: "stale start fixture",
-        })),
-        "utf-8");
-      await writeFile(
-        registryPath,
-        JSON.stringify({
-          version: 1,
-          plugins: [
-            { id: pluginId, manifestPath: staleManifestPath, enabled: true },
-          ],
-        }),
-        "utf-8",
-      );
+      "utf-8",
+    );
+    await writeFile(
+      staleManifestPath,
+      JSON.stringify(servedPluginDocument({
+        id: pluginId,
+        name: pluginId,
+        version: "1.0.0",
+        entry: "entry.mjs",
+        tools: [
+          {
+            name: methodName,
+            description: `${methodName} tool`,
+            inputSchema: { type: "object", properties: {} },
+            _meta: { ui: { visibility: ["model", "app"] } },
+          },
+        ],
+        description: "stale start fixture",
+      })),
+      "utf-8");
+    await writeFile(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        plugins: [
+          { id: pluginId, manifestPath: staleManifestPath, enabled: true },
+        ],
+      }),
+      "utf-8",
+    );
 
-      let resolvePrepare!: () => void;
-      const preparePromise = new Promise<void>((resolve) => {
-        resolvePrepare = resolve;
-      });
-      let firstPrepare = true;
-      const runtime = makeRuntimeWithPreparation(
-        ({ pluginId: requestedId }) => {
-          if (requestedId !== pluginId || !firstPrepare) return undefined;
-          firstPrepare = false;
-          return preparePromise;
-        },
-      );
+    let resolvePrepare!: () => void;
+    const preparePromise = new Promise<void>((resolve) => {
+      resolvePrepare = resolve;
+    });
+    let firstPrepare = true;
+    const runtime = makeRuntimeWithPreparation(
+      ({ pluginId: requestedId }) => {
+        if (requestedId !== pluginId || !firstPrepare) return undefined;
+        firstPrepare = false;
+        return preparePromise;
+      },
+    );
 
-      await expect(runtime.addPlugin(pluginId)).resolves.toBe("preparing");
-      resolvePrepare();
-      await startEnteredPromise;
+    await expect(runtime.addPlugin(pluginId)).resolves.toBe("preparing");
+    resolvePrepare();
+    await gate.waitFor("start-entered");
 
-      await runtime.removePlugin(pluginId);
+    await runtime.removePlugin(pluginId);
 
-      const freshDir = join(installedDir, `${pluginId}-fresh`);
-      await mkdir(freshDir, { recursive: true });
-      const freshManifestPath = join(freshDir, "plugin.json");
-      await writeFile(
-        join(freshDir, "entry.mjs"),
-        `export default async function createPlugin() {
+    const freshDir = join(installedDir, `${pluginId}-fresh`);
+    await mkdir(freshDir, { recursive: true });
+    const freshManifestPath = join(freshDir, "plugin.json");
+    await writeFile(
+      join(freshDir, "entry.mjs"),
+      `export default async function createPlugin() {
   return {
     handlers: { ${JSON.stringify(methodName)}: async () => "fresh" },
     start: async () => {},
@@ -2887,51 +2940,48 @@ export default async function createPlugin() {
   };
 }
 `,
-        "utf-8",
-      );
-      await writeFile(
-        freshManifestPath,
-        JSON.stringify(servedPluginDocument({
-          id: pluginId,
-          name: pluginId,
-          version: "1.0.1",
-          entry: "entry.mjs",
-          tools: [
-            {
-              name: methodName,
-              description: `${methodName} tool`,
-              inputSchema: { type: "object", properties: {} },
-              _meta: { ui: { visibility: ["model", "app"] } },
-            },
-          ],
-          description: "fresh start fixture",
-        })),
-        "utf-8");
-      await writeFile(
-        registryPath,
-        JSON.stringify({
-          version: 1,
-          plugins: [
-            { id: pluginId, manifestPath: freshManifestPath, enabled: true },
-          ],
-        }),
-        "utf-8",
-      );
+      "utf-8",
+    );
+    await writeFile(
+      freshManifestPath,
+      JSON.stringify(servedPluginDocument({
+        id: pluginId,
+        name: pluginId,
+        version: "1.0.1",
+        entry: "entry.mjs",
+        tools: [
+          {
+            name: methodName,
+            description: `${methodName} tool`,
+            inputSchema: { type: "object", properties: {} },
+            _meta: { ui: { visibility: ["model", "app"] } },
+          },
+        ],
+        description: "fresh start fixture",
+      })),
+      "utf-8");
+    await writeFile(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        plugins: [
+          { id: pluginId, manifestPath: freshManifestPath, enabled: true },
+        ],
+      }),
+      "utf-8",
+    );
 
-      await expect(runtime.addPlugin(pluginId)).resolves.toBe("started");
-      await expect(runtime.call(methodName)).resolves.toBe("fresh");
+    await expect(runtime.addPlugin(pluginId)).resolves.toBe("started");
+    await expect(runtime.call(methodName)).resolves.toBe("fresh");
 
-      rejectStart();
-      await staleStoppedPromise;
+    await gate.signal("start-outcome", "reject");
+    await gate.waitFor("stale-stopped");
 
-      const failedPluginIds = (
-        runtime as unknown as { failedPluginIds: Set<string> }
-      ).failedPluginIds;
-      expect(failedPluginIds.has(pluginId)).toBe(false);
-      await expect(runtime.call(methodName)).resolves.toBe("fresh");
-    } finally {
-      delete globalWithControls.__aveRuntimeTestControls;
-    }
+    const failedPluginIds = (
+      runtime as unknown as { failedPluginIds: Set<string> }
+    ).failedPluginIds;
+    expect(failedPluginIds.has(pluginId)).toBe(false);
+    await expect(runtime.call(methodName)).resolves.toBe("fresh");
   });
 
   it("restartPlugin keeps the existing plugin loaded when dependency preparation fails", async () => {
@@ -3714,5 +3764,1344 @@ describe("PluginRuntime lifecycle log emission", () => {
     });
     expect(hasRestartRequest).toBe(true);
     spyLog.mockRestore();
+  });
+});
+
+/**
+ * Where a failed boot or add attempt ran belongs to THAT attempt (§9.8 A1,
+ * "Doctor, wired end to end"). Each attempt carries its own routing and
+ * reports it explicitly, so overlapping attempts for one plugin cannot lend
+ * or erase each other's arm and confinement, a failure before routing never
+ * shows an arm, and a throw between routing and the factory still leaves a
+ * failed card. Plugins run as real children; a host-side lifecycle seam
+ * parks an attempt after its factory constructed the plugin.
+ */
+describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
+  const WORKING = 'export default async () => ({ handlers: {}, start: async () => {}, stop: async () => {} });\n';
+  const BROKEN_START = 'export default async () => ({ handlers: {}, start: async () => { throw new Error("child startup refused"); }, stop: async () => {} });\n';
+  const ID = "attemptowned";
+  const fixtures: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    for (const dispose of fixtures.splice(0)) await dispose();
+  });
+
+  async function setup(entrySource = WORKING) {
+    const fixture = await makeTestPluginRuntimeFixture({ prefix: "ave-attempt-owned-" });
+    const written = await writeTestPlugin(fixture, { id: ID, entrySource });
+    await writeTestPluginRegistry(fixture, [{ id: ID, manifestPath: written.manifestPath }]);
+    const runtime = makeTestPluginRuntime(fixture);
+    const internals = runtime as unknown as {
+      ensureDataDir(...args: unknown[]): string;
+      buildHostApiIncarnation(...args: unknown[]): unknown;
+      runPluginLifecycleHook(scope: unknown, hook: () => unknown): Promise<unknown>;
+    };
+    fixtures.push(async () => {
+      await runtime.stopAll();
+      await makeTestTreeWritable(fixture.rootDir);
+      await rm(fixture.rootDir, { recursive: true, force: true });
+    });
+    const requires = async (next: Record<string, unknown>) => {
+      const document = JSON.parse(await readFile(written.manifestPath, "utf8")) as Record<string, unknown>;
+      await writeFile(written.manifestPath, JSON.stringify(patchAveFields(document, { requires: next })), "utf8");
+    };
+    const card = () => runtime.listPluginCards().find((entry) => entry.id === ID);
+    return { runtime, internals, requires, card };
+  }
+
+  /** Hold the first `count` constructed plugins until released, in order. */
+  function parkAfterConstruct(internals: Awaited<ReturnType<typeof setup>>["internals"], count: number) {
+    const releases: Array<() => void> = [];
+    let entered = 0;
+    const original = internals.runPluginLifecycleHook.bind(internals);
+    internals.runPluginLifecycleHook = async (scope, hook) => {
+      const result = await original(scope, hook);
+      if (result && typeof result === "object" && "handlers" in result && entered < count) {
+        entered += 1;
+        await new Promise<void>((resolve) => { releases.push(resolve); });
+      }
+      return result;
+    };
+    return {
+      entered: (n: number) => vi.waitFor(() => expect(entered).toBe(n), { timeout: 10_000 }),
+      release: (index: number) => releases[index]?.(),
+      releaseAll: () => { for (const release of releases) release(); },
+    };
+  }
+
+  const settle = <T,>(promise: Promise<T>) => promise.then((value) => ({ value }), (error: unknown) => ({ error }));
+
+  it.each([
+    ["the plugin data directory", "ensureDataDir", "EACCES: permission denied creating plugin data"],
+    ["the HostApi incarnation", "buildHostApiIncarnation", "HostApi construction failed before invocation"],
+  ] as const)("leaves a failed child/not-spawned card when add throws building %s", async (_what, seam, message) => {
+    const { runtime, internals, card } = await setup();
+    internals[seam] = () => { throw new Error(message); };
+    await expect(runtime.addPlugin(ID)).rejects.toThrow(message);
+    expect(card()).toMatchObject({
+      loadStatus: "failed",
+      installFailureKind: "load-crash",
+      arm: "child",
+      confinement: "not-spawned",
+    });
+    expect(card()?.installFailureMessage).toContain(message);
+    expect(runtime.listPluginIds()).not.toContain(ID);
+  });
+
+  it("drops an earlier child failure's arm when a later add is refused before routing", async () => {
+    const { runtime, requires, card } = await setup(BROKEN_START);
+    await expect(runtime.addPlugin(ID)).rejects.toThrow();
+    expect(card()).toMatchObject({ loadStatus: "failed", arm: "child", confinement: "unconfined" });
+    await requires({ hostProtocol: "2", capabilities: ["attempt-owned-missing-capability"] });
+    await expect(runtime.addPlugin(ID)).rejects.toThrow(/Missing capabilities|missing required capabilities/);
+    expect(card()?.loadStatus).toBe("failed");
+    expect(card()?.arm).toBeUndefined();
+    expect(card()?.confinement).toBeUndefined();
+  });
+
+  it("does not lend a parked child attempt's diagnostics to an overlapping add refused before routing", async () => {
+    const { runtime, internals, requires, card } = await setup();
+    const parked = parkAfterConstruct(internals, 1);
+    const first = settle(runtime.addPlugin(ID));
+    try {
+      await parked.entered(1);
+      await requires({ hostProtocol: "3" });
+      await expect(runtime.addPlugin(ID)).rejects.toThrow();
+      expect(card()?.installFailureKind).toBe("incompatible-host-protocol");
+      expect(card()?.arm).toBeUndefined();
+      expect(card()?.confinement).toBeUndefined();
+    } finally {
+      parked.releaseAll();
+      await first;
+    }
+  });
+
+  it("keeps a newer add's diagnostics when an older overlapping add ends first", async () => {
+    const { runtime, internals, card } = await setup(BROKEN_START);
+    const parked = parkAfterConstruct(internals, 2);
+    const first = settle(runtime.addPlugin(ID));
+    let second: Promise<unknown> | undefined;
+    try {
+      await parked.entered(1);
+      second = settle(runtime.addPlugin(ID));
+      await parked.entered(2);
+      parked.release(0);
+      await first;
+      parked.release(1);
+      await second;
+      expect(card()).toMatchObject({ loadStatus: "failed", arm: "child", confinement: "unconfined" });
+    } finally {
+      parked.releaseAll();
+      await Promise.allSettled([first, ...(second ? [second] : [])]);
+    }
+  });
+
+  it("reports a boot attempt's own diagnostics, not those of an add in flight beside it", async () => {
+    const { runtime, internals, card } = await setup(BROKEN_START);
+    // Hook 1 is the boot attempt's factory invocation: held, then failed
+    // without invoking the factory, so the boot attempt never had a child.
+    // Hook 2 is the overlapping add's factory, which spawns its child and is
+    // then held; hook 3 is that add's start, which the plugin fails.
+    let releaseBoot!: () => void;
+    const bootHeld = new Promise<void>((resolve) => { releaseBoot = resolve; });
+    let releaseAdd!: () => void;
+    const addHeld = new Promise<void>((resolve) => { releaseAdd = resolve; });
+    let hooks = 0;
+    let addConstructed = false;
+    const original = internals.runPluginLifecycleHook.bind(internals);
+    internals.runPluginLifecycleHook = async (scope, hook) => {
+      hooks += 1;
+      const call = hooks;
+      if (call === 1) {
+        await bootHeld;
+        throw new Error("boot construct failed before invoking the factory");
+      }
+      const result = await original(scope, hook);
+      if (call === 2) {
+        addConstructed = true;
+        await addHeld;
+      }
+      return result;
+    };
+    const boot = settle(runtime.load());
+    let add: Promise<unknown> | undefined;
+    try {
+      await vi.waitFor(() => expect(hooks).toBe(1), { timeout: 10_000 });
+      add = settle(runtime.addPlugin(ID));
+      // The add's factory has spawned its child before the boot attempt fails.
+      await vi.waitFor(() => expect(addConstructed).toBe(true), { timeout: 10_000 });
+      releaseBoot();
+      await boot;
+      expect(card()).toMatchObject({ loadStatus: "failed", arm: "child", confinement: "not-spawned" });
+      releaseAdd();
+      expect(await add).toHaveProperty("error");
+      expect(card()).toMatchObject({ loadStatus: "failed", arm: "child", confinement: "unconfined" });
+    } finally {
+      releaseBoot();
+      releaseAdd();
+      await Promise.allSettled([boot, ...(add ? [add] : [])]);
+    }
+  });
+
+  it("does not show a removed attempt's diagnostics on a reinstall refused before routing", async () => {
+    const { runtime, internals, requires, card } = await setup();
+    const parked = parkAfterConstruct(internals, 1);
+    const add = settle(runtime.addPlugin(ID));
+    try {
+      await parked.entered(1);
+      await runtime.removePlugin(ID);
+      expect(card()).toBeUndefined();
+      await requires({ hostProtocol: "3" });
+      await expect(runtime.addPlugin(ID)).rejects.toThrow();
+      expect(card()?.installFailureKind).toBe("incompatible-host-protocol");
+      expect(card()?.arm).toBeUndefined();
+      expect(card()?.confinement).toBeUndefined();
+    } finally {
+      parked.releaseAll();
+      await add;
+    }
+  });
+});
+
+/**
+ * An attempt owns what it took until the plugin is registered (§9.8 A1):
+ * the unpublished root, the HostApi incarnation and, once the factory
+ * returned, the instance whose child is running. Every failure or
+ * cancellation on that span releases each exactly once — the child stopped,
+ * the incarnation retired and drained, the root removed — and a failed
+ * cleanup never replaces the error it compensated for. Real children and
+ * receipt-backed immutable roots; host-side seams count each release and
+ * inject the faults.
+ */
+describe("PluginRuntime load attempts release what they own exactly once", () => {
+  const ID = "attemptresources";
+  const PING = "attemptresources_ping";
+  const WORKING = `export default async () => ({ handlers: { ${PING}: async () => "pong" }, start: async () => {}, stop: async () => {} });\n`;
+  type Mode =
+    | "success" | "factory-crash" | "start-crash" | "directory-crash" | "hostapi-crash" | "duplicate"
+    | "mapping-crash" | "cancel" | "cancel-mapping-crash" | "publication-crash" | "cleanup-error" | "incumbent-crash"
+    | "post-registration-crash" | "cleanup-audit-crash" | "crash-audit-crash" | "hanging-tool";
+  type Constructed = { instance: { handlers: Record<string, (...args: unknown[]) => Promise<unknown>>; stop?: () => Promise<void> }; stops: number; ping: (...args: unknown[]) => Promise<unknown> };
+  type Internals = {
+    materializeImmutableRuntimeRoot(...args: unknown[]): Promise<string>;
+    removeUnpublishedRuntimeRoot(pluginId: string, root: string): Promise<void>;
+    buildHostApiIncarnation(...args: unknown[]): { deactivate: () => void; drainOperations: () => Promise<void> };
+    ensureDataDir(...args: unknown[]): string;
+    methodMap: Map<string, { pluginId: string; handler: () => Promise<unknown> }>;
+    requireCapabilityCommitLifecycle(...args: unknown[]): object;
+    runPluginLifecycleHook(scope: unknown, hook: () => unknown): Promise<unknown>;
+  };
+  const disposers: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    for (const dispose of disposers.splice(0)) await dispose();
+  });
+
+  async function setup(mode: Mode) {
+    const fixture = await makeTestPluginRuntimeFixture({ prefix: "ave-attempt-resources-" });
+    const originalError = new Error(`original ${mode} error`);
+    const cleanupError = new Error("root cleanup failed");
+    const counts = { disposed: 0, drained: 0 };
+    // Release steps in the order they happened.
+    const timeline: string[] = [];
+    const audits: string[] = [];
+    const roots: string[] = [];
+    const removals: string[] = [];
+    const incarnations: Array<{ isActive(): boolean }> = [];
+    const constructed: Constructed[] = [];
+    const entrySource = mode === "factory-crash"
+      ? 'throw new Error("entry construction failed");\n'
+      : mode === "start-crash"
+        ? WORKING.replace("start: async () => {}", 'start: async () => { throw new Error("child start failed"); }')
+        : mode === "hanging-tool"
+          ? WORKING.replace(`${PING}: async () => "pong"`, `${PING}: () => new Promise(() => {})`)
+          : WORKING;
+    const written = await writeTestPlugin(fixture, { id: ID, tools: [PING], entrySource });
+    const cacheRoot = join(fixture.rootDir, "receipts");
+    await writeInstallReceipt(cacheRoot, {
+      schemaVersion: 3,
+      pluginId: ID,
+      version: written.manifest.version,
+      installSource: "marketplace",
+      artifactSha256: "a".repeat(64),
+      signerKeyId: "fixture-v1",
+      admission: null,
+      installedAt: new Date(0).toISOString(),
+      files: await hashReceiptFiles(written.pluginDir, ["entry.mjs", "plugin.json"]),
+    });
+    await writeTestPluginRegistry(fixture, [{ id: ID, manifestPath: written.manifestPath }]);
+    const runtime = makeTestPluginRuntime(fixture, {
+      installReceiptCacheRoot: cacheRoot,
+      auditLog: (_level, type) => {
+        audits.push(type);
+        if (mode === "cleanup-audit-crash" && type === "plugin_attempt_cleanup_failed") throw new Error("cleanup audit sink failed");
+        if (mode === "crash-audit-crash" && type === "plugin_load_crashed") throw new Error("crash audit sink failed");
+      },
+      createHostApi: (...args) => {
+        const incarnation = args[3];
+        incarnations.push(incarnation);
+        incarnation.registerDisposer(() => { counts.disposed += 1; timeline.push("disposer"); });
+        if (mode === "hostapi-crash") throw originalError;
+        return createNoopHostApiForTests(args[0], args[1], args[2]);
+      },
+    });
+    const internals = runtime as unknown as Internals;
+    // The shared fixture substitutes the root materializer; these cases need
+    // the real receipt-backed generation root, so the class methods return.
+    delete (internals as Partial<Internals>).materializeImmutableRuntimeRoot;
+    delete (internals as Partial<Internals>).removeUnpublishedRuntimeRoot;
+    const materialize = internals.materializeImmutableRuntimeRoot.bind(runtime);
+    internals.materializeImmutableRuntimeRoot = async (...args) => {
+      const root = await materialize(...args);
+      roots.push(root);
+      return root;
+    };
+    const removeRoot = internals.removeUnpublishedRuntimeRoot.bind(runtime);
+    internals.removeUnpublishedRuntimeRoot = async (pluginId, root) => {
+      removals.push(root);
+      timeline.push("root");
+      if (mode === "cleanup-error" || mode === "cleanup-audit-crash") throw cleanupError;
+      await removeRoot(pluginId, root);
+    };
+    const build = internals.buildHostApiIncarnation.bind(runtime);
+    internals.buildHostApiIncarnation = (...args) => {
+      const result = build(...args);
+      const deactivate = result.deactivate;
+      result.deactivate = () => { timeline.push("deactivate"); deactivate(); };
+      const effects = args[3] as { discard(): void };
+      const discard = effects.discard.bind(effects);
+      effects.discard = () => { timeline.push("discard"); discard(); };
+      const drain = result.drainOperations;
+      result.drainOperations = async () => { counts.drained += 1; timeline.push("drain"); await drain(); };
+      return result;
+    };
+    if (["directory-crash", "cleanup-error", "cleanup-audit-crash", "crash-audit-crash"].includes(mode)) {
+      internals.ensureDataDir = () => { throw originalError; };
+    }
+    if (mode === "duplicate") {
+      internals.methodMap.set(PING, { pluginId: "attemptresources-foreign", handler: async () => "foreign" });
+    }
+    if (mode === "publication-crash") {
+      const requireLifecycle = internals.requireCapabilityCommitLifecycle.bind(runtime);
+      internals.requireCapabilityCommitLifecycle = (...args) => new Proxy(requireLifecycle(...args), {
+        get: (target, key) => key === "replaceRuntime"
+          ? async () => { throw originalError; }
+          : Reflect.get(target, key),
+      });
+    }
+    if (mode === "post-registration-crash") {
+      // The lifecycle registers the plugin, then rejects: a post-commit fault.
+      const requireLifecycle = internals.requireCapabilityCommitLifecycle.bind(runtime);
+      internals.requireCapabilityCommitLifecycle = (...args) => new Proxy(requireLifecycle(...args), {
+        get: (target, key) => key === "replaceRuntime"
+          ? async (...replaceArgs: unknown[]) => {
+            await (Reflect.get(target, key) as (...a: unknown[]) => Promise<void>).apply(target, replaceArgs);
+            throw originalError;
+          }
+          : Reflect.get(target, key),
+      });
+    }
+    const hook = internals.runPluginLifecycleHook.bind(runtime);
+    internals.runPluginLifecycleHook = async (scope, invoke) => {
+      const result = await hook(scope, invoke);
+      if (result && typeof result === "object" && "handlers" in result) {
+        const instance = result as Constructed["instance"];
+        const record: Constructed = { instance, stops: 0, ping: instance.handlers[PING]! };
+        const stop = instance.stop?.bind(instance);
+        instance.stop = async () => { record.stops += 1; timeline.push("stop"); await stop?.(); };
+        constructed.push(record);
+        // A host-side fault after the factory returned: reading the instance's
+        // handlers throws while the runtime maps its tools.
+        if (mode === "mapping-crash" || mode === "cancel-mapping-crash" || (mode === "incumbent-crash" && constructed.length === 1)) {
+          Object.defineProperty(instance, "handlers", { configurable: true, get: () => { throw originalError; } });
+        }
+        if (mode === "cancel" || mode === "cancel-mapping-crash") await runtime.removePlugin(ID);
+        if (mode === "incumbent-crash" && constructed.length === 1) await runtime.addPlugin(ID);
+      }
+      return result;
+    };
+    const exists = (root: string) => access(root).then(() => true, () => false);
+    disposers.push(async () => {
+      internals.removeUnpublishedRuntimeRoot = removeRoot;
+      await runtime.stopAll();
+      for (const record of constructed) if (record.stops === 0) await record.instance.stop?.();
+      await makeTestTreeWritable(fixture.rootDir);
+      await rm(fixture.rootDir, { recursive: true, force: true });
+    });
+    const stops = () => constructed.reduce((total, record) => total + record.stops, 0);
+    const card = () => runtime.listPluginCards().find((entry) => entry.id === ID);
+    // What a prepared activation (update, re-enable) of the same artifact needs.
+    const preparedInput = async () => ({
+      installId: ID,
+      manifest: runtime.getPluginManifest(ID)!,
+      pluginRoot: written.pluginDir,
+      receiptRaw: await readFile(installReceiptPath(cacheRoot, ID), "utf8"),
+      registryEntry: { installSource: "user" as const },
+      durableCommit: async () => "committed",
+    });
+    return { fixture, runtime, internals, originalError, cleanupError, counts, timeline, audits, roots, removals, incarnations, constructed, exists, stops, card, preparedInput };
+  }
+
+  /**
+   * The production bundle lifecycle (coordinator, commit closure, post-commit
+   * handling) over the fixture's runtime, with inert loopback and MCP
+   * projections. `faults` injects a one-shot failure at a named point; it is
+   * read when the point is reached, so a test can arm it after warming up.
+   */
+  function bindNativeBundleLifecycle(
+    f: Awaited<ReturnType<typeof setup>>,
+    faults: { loopbackPrepare?: Error; loopbackPublish?: Error; contributionsUpdated?: Error } = {},
+  ): PluginBundleLifecycle {
+    const prepared = (pluginId: string, generationId: string) => ({
+      pluginId,
+      generationId,
+      tools: [],
+      registryReplacement: { publish: () => undefined, cancel: () => undefined, replacementTools: [] },
+      published: false,
+      disconnectPredecessor: false,
+    });
+    const lifecycle = new PluginBundleLifecycle({
+      pluginRuntime: f.runtime,
+      receiptCacheRoot: join(f.fixture.rootDir, "receipts"),
+      skillStore: new SkillStore({ userDir: join(f.fixture.rootDir, "native-skills") }),
+      personaPromptStore: new PersonaPromptStore({ userDir: join(f.fixture.rootDir, "native-prompts") }),
+      hookManager: new ScriptHookManager(),
+      onContributionsUpdated: () => {
+        const fault = faults.contributionsUpdated;
+        faults.contributionsUpdated = undefined;
+        if (fault) throw fault;
+      },
+      revokeOperationGeneration: () => undefined,
+      loopbackManager: {
+        prepareGeneration: async (manifest: PluginManifest, generationId: string) => {
+          const fault = faults.loopbackPrepare;
+          faults.loopbackPrepare = undefined;
+          if (fault) throw fault;
+          return prepared(manifest.id, generationId);
+        },
+        prepareRemoval: prepared,
+        publishGeneration: (value: { published: boolean }) => {
+          const fault = faults.loopbackPublish;
+          faults.loopbackPublish = undefined;
+          if (fault) throw fault;
+          value.published = true;
+        },
+        postPublishGeneration: () => undefined,
+        discardGeneration: async () => undefined,
+        retireGeneration: async () => undefined,
+      } as never,
+      mcpManager: {
+        bundledServerIdsForPlugin: () => [],
+        prepareBundledGeneration: async () => ({
+          records: [],
+          predecessorServerIds: [],
+          predecessorToolNames: [],
+          registryReplacement: { publish: () => undefined, cancel: () => undefined, replacementTools: [] },
+          published: false,
+        }),
+        publishBundledGeneration: () => undefined,
+        discardBundledGeneration: async () => undefined,
+        retirePublishedMcpReplacement: async () => undefined,
+        disconnectBundledGeneration: async () => undefined,
+      } as never,
+    });
+    f.runtime.setGenerationAccess(lifecycle);
+    // Retire whatever the lifecycle still holds before the fixture is torn down.
+    disposers.unshift(async () => {
+      faults.loopbackPrepare = undefined;
+      faults.loopbackPublish = undefined;
+      faults.contributionsUpdated = undefined;
+      await lifecycle.deactivate(ID);
+      await lifecycle.waitForRetirements();
+    });
+    return lifecycle;
+  }
+
+  const failures: Record<"boot" | "add", Mode[]> = {
+    boot: ["factory-crash", "start-crash", "directory-crash", "hostapi-crash", "duplicate", "mapping-crash"],
+    add: ["factory-crash", "start-crash", "directory-crash", "hostapi-crash", "duplicate", "mapping-crash", "cancel", "publication-crash"],
+  };
+  const cases = (["boot", "add"] as const).flatMap((path) => failures[path].map((mode) => [path, mode] as const));
+
+  it.each(["boot", "add"] as const)("%s success hands everything to the registered plugin", async (path) => {
+    const f = await setup("success");
+    if (path === "boot") await f.runtime.startAll();
+    else await f.runtime.addPlugin(ID);
+    expect(f.runtime.listPluginIds()).toContain(ID);
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 0, drained: 0, stops: 0 });
+    expect(f.removals).toEqual([]);
+    expect(await f.exists(f.roots[0]!)).toBe(true);
+    await expect(f.runtime.call(PING, {})).resolves.toBe("pong");
+    await f.runtime.removePlugin(ID);
+    expect(f.counts.disposed).toBe(1);
+    expect(f.stops()).toBe(1);
+  });
+
+  it.each(cases)("%s %s releases the attempt's root, incarnation and child exactly once", async (path, mode) => {
+    const f = await setup(mode);
+    let failure: unknown;
+    if (path === "boot") await f.runtime.startAll();
+    else await f.runtime.addPlugin(ID).catch((error: unknown) => { failure = error; });
+    expect(f.roots).toHaveLength(1);
+    if (path === "add") expect(failure).toBeDefined();
+    if (path === "add" && ["directory-crash", "hostapi-crash", "mapping-crash", "publication-crash"].includes(mode)) {
+      expect(failure).toBe(f.originalError);
+    }
+    expect(f.runtime.listPluginIds()).not.toContain(ID);
+    expect(f.stops()).toBe(f.constructed.length);
+    for (const record of f.constructed) await expect(record.ping({})).rejects.toThrow();
+    if (f.incarnations.length > 0) {
+      expect(f.counts.disposed).toBe(1);
+      expect(f.incarnations.every((incarnation) => !incarnation.isActive())).toBe(true);
+    }
+    if (f.incarnations.length > 0 && mode !== "hostapi-crash") expect(f.counts.drained).toBe(1);
+    expect(f.removals).toEqual([f.roots[0]]);
+    expect(await f.exists(f.roots[0]!)).toBe(false);
+  });
+
+  it("releases a cancelled add's child after a host fault, and reports nothing for it", async () => {
+    const f = await setup("cancel-mapping-crash");
+    const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBe(f.originalError);
+    expect(f.card()).toBeUndefined();
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+    expect(f.removals).toEqual(f.roots);
+    expect(await f.exists(f.roots[0]!)).toBe(false);
+    await expect(f.constructed[0]!.ping({})).rejects.toThrow();
+  });
+
+  it("releases a crashed boot attempt's own child while a same-id add is published, and keeps the add", async () => {
+    const f = await setup("incumbent-crash");
+    await f.runtime.startAll();
+    expect(f.constructed).toHaveLength(2);
+    expect(f.incarnations).toHaveLength(2);
+    expect(f.runtime.listPluginIds()).toContain(ID);
+    await expect(f.runtime.call(PING, {})).resolves.toBe("pong");
+    expect(f.incarnations[0]!.isActive()).toBe(false);
+    expect(f.incarnations[1]!.isActive()).toBe(true);
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+    expect(f.removals).toEqual([f.roots[0]]);
+    expect(await f.exists(f.roots[0]!)).toBe(false);
+    expect(await f.exists(f.roots[1]!)).toBe(true);
+    await expect(f.constructed[0]!.ping({})).rejects.toThrow();
+  });
+
+  it("rejects with the original add error and records the crash when compensating cleanup fails", async () => {
+    const f = await setup("cleanup-error");
+    const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBe(f.originalError);
+    expect(f.card()).toMatchObject({
+      loadStatus: "failed",
+      installFailureKind: "load-crash",
+      installFailureMessage: f.originalError.message,
+      arm: "child",
+      confinement: "not-spawned",
+    });
+    // The error is not modified: the cleanup failure is audited where it
+    // happened, never attached to the error.
+    expect((failure as Error).cause).toBeUndefined();
+    expect(f.audits).toContain("plugin_attempt_cleanup_failed");
+  });
+
+  it.each([
+    ["frozen", (error: Error) => { Object.freeze(error); }],
+    ["sealed", (error: Error) => { Object.seal(error); }],
+    ["non-extensible", (error: Error) => { Object.preventExtensions(error); }],
+    ["locked-cause", (error: Error) => { Object.defineProperty(error, "cause", { value: undefined, configurable: false, writable: false }); }],
+  ] as const)("rejects with the unchanged %s original error when compensating cleanup fails", async (_shape, lock) => {
+    const f = await setup("cleanup-error");
+    lock(f.originalError);
+    const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBe(f.originalError);
+    expect(f.card()).toMatchObject({ installFailureKind: "load-crash", installFailureMessage: f.originalError.message });
+    expect(f.audits).toContain("plugin_attempt_cleanup_failed");
+  });
+
+  it.each(["cleanup-audit-crash", "crash-audit-crash"] as const)(
+    "add with a throwing audit sink (%s) still rejects with the original error and records the crash",
+    async (mode) => {
+      const f = await setup(mode);
+      const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
+      expect(failure).toBe(f.originalError);
+      expect(f.card()).toMatchObject({ installFailureKind: "load-crash", installFailureMessage: f.originalError.message });
+      expect(f.removals).toEqual([f.roots[0]]);
+    },
+  );
+
+  it.each(["cleanup-audit-crash", "crash-audit-crash"] as const)(
+    "boot with a throwing audit sink (%s) still records the crash and finishes",
+    async (mode) => {
+      const f = await setup(mode);
+      await expect(f.runtime.startAll()).resolves.toBeUndefined();
+      expect(f.card()).toMatchObject({ installFailureKind: "load-crash", installFailureMessage: f.originalError.message });
+      expect(f.removals).toEqual([f.roots[0]]);
+    },
+  );
+
+  it.each(["boot", "add"] as const)("%s release stops the child before disposing what it left, then drains and removes the root", async (path) => {
+    const f = await setup("mapping-crash");
+    if (path === "boot") await f.runtime.startAll();
+    else await f.runtime.addPlugin(ID).catch(() => undefined);
+    // Authority ends first; the disposers run only after the child stopped.
+    expect(f.timeline).toEqual(["deactivate", "stop", "discard", "disposer", "drain", "root"]);
+  });
+
+  it("a publication failure after the coordinator commit, before the runtime publishes, leaves the committed generation owning everything", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f, { loopbackPublish: f.originalError });
+    const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
+    expect((failure as Error).cause).toBe(f.originalError);
+    expect(lifecycle.getActive(ID)).toBeDefined();
+    // The runtime never published it, yet the attempt released nothing.
+    expect(f.runtime.listPluginIds()).not.toContain(ID);
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 0, drained: 0, stops: 0 });
+    expect(f.incarnations[0]!.isActive()).toBe(true);
+    expect(f.removals).toEqual([]);
+    expect(await f.exists(f.roots[0]!)).toBe(true);
+    expect(f.audits).not.toContain("plugin_load_crashed");
+    expect(f.card()?.installFailureKind).toBeUndefined();
+  });
+
+  it("a normal removal retires a committed generation the runtime never published, exactly once", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f, { loopbackPublish: f.originalError });
+    await f.runtime.addPlugin(ID).catch(() => undefined);
+    await f.runtime.removePlugin(ID);
+    await lifecycle.waitForRetirements();
+    expect(lifecycle.getActive(ID)).toBeUndefined();
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+    expect(f.incarnations[0]!.isActive()).toBe(false);
+    expect(await f.exists(f.roots[0]!)).toBe(false);
+    await expect(f.constructed[0]!.ping({})).rejects.toThrow();
+  });
+
+  it("a post-commit notification failure settles dispatch: a normal call fails visibly instead of hanging", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f, { contributionsUpdated: f.originalError });
+    await expect(f.runtime.addPlugin(ID)).rejects.toBe(f.originalError);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const call = f.runtime.call(PING, {}).then(() => "served", () => "rejected");
+    const pending = new Promise<"pending">((resolve) => { timer = setTimeout(() => resolve("pending"), 2_000); });
+    const outcome = await Promise.race([call, pending]);
+    clearTimeout(timer);
+    expect(outcome).toBe("rejected");
+  });
+
+  it("the lifecycle's post-commit error stays the add's outcome when onEnable then throws too", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f, { contributionsUpdated: f.originalError });
+    const secondary = new Error("onEnable failed");
+    (f.runtime as unknown as { onEnable: () => void }).onEnable = () => { throw secondary; };
+    const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBe(f.originalError);
+    // The second failure is reported on its own.
+    expect(f.audits).toContain("plugin_add_follow_up_failed");
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 0, drained: 0, stops: 0 });
+  });
+
+  it("boot: a publication failure after the coordinator commit leaves the committed generation owning everything until removal", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f, { loopbackPublish: f.originalError });
+    await f.runtime.startAll();
+    expect(lifecycle.getActive(ID)).toBeDefined();
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 0, drained: 0, stops: 0 });
+    expect(f.removals).toEqual([]);
+    expect(await f.exists(f.roots[0]!)).toBe(true);
+    await expect(f.constructed[0]!.ping({})).resolves.toBe("pong");
+    await f.runtime.removePlugin(ID);
+    await lifecycle.waitForRetirements();
+    expect(lifecycle.getActive(ID)).toBeUndefined();
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+    expect(await f.exists(f.roots[0]!)).toBe(false);
+  });
+
+  it.each([
+    ["before", "loopbackPublish"],
+    ["after", "contributionsUpdated"],
+  ] as const)("reload: a failure after the coordinator commit, %s the runtime publishes, leaves the committed replacement owning everything until removal", async (_when, point) => {
+    const f = await setup("success");
+    const faults: { loopbackPrepare?: Error; loopbackPublish?: Error; contributionsUpdated?: Error } = {};
+    const lifecycle = bindNativeBundleLifecycle(f, faults);
+    await f.runtime.addPlugin(ID);
+    faults[point] = f.originalError;
+    const failure = await f.runtime.reloadPlugin(ID).then(() => undefined, (error: unknown) => error);
+    await lifecycle.waitForRetirements();
+    expect(f.constructed).toHaveLength(2);
+    // The incumbent retired once; the committed replacement was not touched.
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+    expect(f.constructed[1]!.stops).toBe(0);
+    expect(f.incarnations[1]!.isActive()).toBe(true);
+    const replacementRoot = f.roots.at(-1)!;
+    expect(await f.exists(replacementRoot)).toBe(true);
+    await expect(f.constructed[1]!.ping({})).resolves.toBe("pong");
+    // The reload still fails with the lifecycle's fault: wrapped as a
+    // committed-publication error before the runtime publishes, itself after.
+    expect(failure === f.originalError || (failure as Error).cause === f.originalError).toBe(true);
+    await f.runtime.removePlugin(ID);
+    await lifecycle.waitForRetirements();
+    expect(lifecycle.getActive(ID)).toBeUndefined();
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 2, drained: 2, stops: 2 });
+    expect(await f.exists(replacementRoot)).toBe(false);
+  });
+
+  it.each(["preparation", "durable commit"] as const)("prepared activation releases its unpublished child when the %s rejects, and leaves the incumbent", async (point) => {
+    const f = await setup("success");
+    const faults: { loopbackPrepare?: Error } = {};
+    const lifecycle = bindNativeBundleLifecycle(f, faults);
+    await f.runtime.addPlugin(ID);
+    const incumbent = lifecycle.getActive(ID)!;
+    const input = await f.preparedInput();
+    if (point === "preparation") faults.loopbackPrepare = f.originalError;
+    else input.durableCommit = async () => { throw f.originalError; };
+    await expect(f.runtime.activatePreparedArtifact(input)).rejects.toBe(f.originalError);
+    expect(f.constructed).toHaveLength(2);
+    expect(lifecycle.getActive(ID)?.generationId).toBe(incumbent.generationId);
+    // The candidate is released once; the incumbent keeps serving.
+    expect(f.constructed[1]!.stops).toBe(1);
+    expect(f.incarnations[1]!.isActive()).toBe(false);
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+    await expect(f.constructed[1]!.ping({})).rejects.toThrow();
+    await expect(f.runtime.call(PING, {})).resolves.toBe("pong");
+    await f.runtime.removePlugin(ID);
+    await lifecycle.waitForRetirements();
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 2, drained: 2, stops: 2 });
+  });
+
+  // `add` and `reload` leave the committed generation outside the runtime map.
+  // `boot` keeps the same generation in the map too: it guards against the
+  // shutdown stopping it once from each place.
+  it.each(["add", "reload", "boot"] as const)("shutdown stops a %s generation the coordinator committed but the runtime map never received, exactly once", async (path) => {
+    const f = await setup("success");
+    const faults: { loopbackPublish?: Error } = {};
+    const lifecycle = bindNativeBundleLifecycle(f, faults);
+    if (path === "reload") await f.runtime.addPlugin(ID);
+    faults.loopbackPublish = f.originalError;
+    if (path === "boot") await f.runtime.startAll();
+    else if (path === "reload") await f.runtime.reloadPlugin(ID).catch(() => undefined);
+    else await f.runtime.addPlugin(ID).catch(() => undefined);
+    await lifecycle.waitForRetirements();
+    expect(lifecycle.getActive(ID)).toBeDefined();
+    const candidate = f.constructed.at(-1)!;
+    const prior = path === "reload" ? 1 : 0;
+    expect(candidate.stops).toBe(0);
+    await f.runtime.stopAll();
+    expect(candidate.stops).toBe(1);
+    expect(f.incarnations.at(-1)!.isActive()).toBe(false);
+    await expect(candidate.ping({})).rejects.toThrow();
+    // A reload's retired incumbent is not stopped or disposed again.
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: prior + 1, drained: prior + 1, stops: prior + 1 });
+  });
+
+  it.each(["removal", "atomic uninstall"] as const)("a %s already retiring a committed generation when shutdown starts shares its retirement: disposer and drain run once", async (path) => {
+    const f = await setup("success");
+    const faults: { loopbackPublish?: Error } = { loopbackPublish: f.originalError };
+    const lifecycle = bindNativeBundleLifecycle(f, faults);
+    await f.runtime.addPlugin(ID).catch(() => undefined);
+    const loopback = (lifecycle as unknown as { deps: { loopbackManager: { retireGeneration: (...args: unknown[]) => Promise<void> } } }).deps.loopbackManager;
+    const retireLoopback = loopback.retireGeneration;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const atLoopback = new Promise<void>((resolve) => { entered = resolve; });
+    loopback.retireGeneration = async (...args) => { entered(); await held; return retireLoopback(...args); };
+    // The removal commits and its retirement waits in the loopback phase,
+    // before the runtime phases, when shutdown begins.
+    const removal = path === "removal"
+      ? f.runtime.removePlugin(ID)
+      : f.runtime.removePluginWithCommit(ID, async () => "uninstalled");
+    await atLoopback;
+    const shutdown = f.runtime.stopAll();
+    release();
+    await shutdown;
+    await removal;
+    await lifecycle.waitForRetirements();
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+  });
+
+  it("shutdown waits for a distinct incumbent's retirement while its lease is held, and retires it once", async () => {
+    const f = await setup("success");
+    const faults: { loopbackPublish?: Error } = {};
+    const lifecycle = bindNativeBundleLifecycle(f, faults);
+    await f.runtime.addPlugin(ID);
+    let lease: Awaited<ReturnType<typeof lifecycle.acquire>> | undefined = await lifecycle.acquire(ID);
+    faults.loopbackPublish = f.originalError;
+    // The replacement commits; the incumbent stays in the runtime map and its
+    // retirement waits for the held lease.
+    await lifecycle.runWithLease(lease, () => f.runtime.reloadPlugin(ID)).catch(() => undefined);
+    expect(f.constructed).toHaveLength(2);
+    let settled = false;
+    const shutdown = f.runtime.stopAll().finally(() => { settled = true; });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(settled).toBe(false);
+      expect(f.constructed[0]!.stops).toBe(0);
+    } finally {
+      lease?.release();
+      lease = undefined;
+    }
+    await shutdown;
+    await lifecycle.waitForRetirements();
+    expect(f.constructed[0]!.stops).toBe(1);
+    expect(f.constructed[1]!.stops).toBe(1);
+    expect(f.incarnations.every((incarnation) => !incarnation.isActive())).toBe(true);
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 2, drained: 2, stops: 2 });
+  });
+
+  it("shutdown rejects a call still pending with a typed shutdown error instead of leaving it waiting", async () => {
+    const f = await setup("hanging-tool");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const call = f.runtime.call(PING, {}).then(() => "resolved", (error: unknown) => error);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await f.runtime.stopAll();
+    expect(await call).toMatchObject({ code: "plugin-runtime-shutdown" });
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
+    await expect(f.runtime.call(PING, {})).rejects.toMatchObject({ code: "plugin-runtime-shutdown" });
+  });
+
+  it("shutdown rejects a call still waiting for admission behind a durable transition", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const atCommit = new Promise<void>((resolve) => { entered = resolve; });
+    const update = f.runtime.activatePreparedArtifact({
+      ...(await f.preparedInput()),
+      durableCommit: async () => { entered(); await held; return "committed"; },
+    }).then(() => undefined, () => undefined);
+    try {
+      await atCommit;
+      // Waits on the coordinator's transition barrier, before any lease.
+      const call = f.runtime.call(PING, {}).then(() => "resolved", (error: unknown) => error);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await f.runtime.stopAll();
+      const outcome = await Promise.race([call, new Promise((resolve) => setTimeout(() => resolve("pending"), 500))]);
+      expect(outcome).toMatchObject({ code: "plugin-runtime-shutdown" });
+    } finally {
+      release();
+      await update;
+    }
+  });
+
+  it("every dispatch route rejects with the typed shutdown error once shutdown has begun", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    await f.runtime.stopAll();
+    const shutdown = { code: "plugin-runtime-shutdown" };
+    await expect(f.runtime.call(PING, {})).rejects.toMatchObject(shutdown);
+    await expect(f.runtime.callFromUi(PING, {}, { userAction: true })).rejects.toMatchObject(shutdown);
+    await expect(f.runtime.callFromApp(PING, {})).rejects.toMatchObject(shutdown);
+    await expect(f.runtime.callDeclaredAppOnlyTool(PING, {})).rejects.toMatchObject(shutdown);
+    await expect(f.runtime.readUiResource(ID, "ui://attemptresources/card")).rejects.toMatchObject(shutdown);
+    await expect(f.runtime.withPluginInstanceLease(ID, async () => "reached")).rejects.toMatchObject(shutdown);
+    await expect(f.runtime.addPlugin(ID)).rejects.toMatchObject(shutdown);
+    expect(f.runtime.isShuttingDown()).toBe(true);
+  });
+
+  it("shutdown retires many stalled generations concurrently, inside the application's cleanup budget", async () => {
+    const f = await setup("success");
+    const internals = f.internals as unknown as {
+      buildHostApiIncarnation(...args: unknown[]): { commit(): void; deactivate(): void; drainOperations(): Promise<void>; disposers: Array<() => void>; lifecycleHookScope: unknown };
+      plugins: Map<string, unknown>;
+      disposers: Map<string, Array<() => void>>;
+    };
+    const finishOperations: Array<() => void> = [];
+    let stopStarts = 0;
+    const generations = 6;
+    for (let i = 0; i < generations; i += 1) {
+      const pluginId = `budget${i}`;
+      const manifest = { id: pluginId, name: pluginId, version: "1.0.0", description: "shutdown budget fixture", entry: "entry.mjs", tools: [] };
+      const incarnation = internals.buildHostApiIncarnation(pluginId, manifest, f.fixture.rootDir, new HostApiGenerationScope(pluginId), null);
+      // Each generation's stop hook never returns and its HostApi drain stalls.
+      (f.incarnations.at(-1) as unknown as { trackOperation(p: Promise<void>): void }).trackOperation(new Promise<void>((resolve) => { finishOperations.push(resolve); }));
+      incarnation.commit();
+      const instance = { handlers: {}, stop: () => { stopStarts += 1; return new Promise<void>(() => undefined); } };
+      internals.plugins.set(pluginId, {
+        manifest, instance, methods: new Map(), started: true,
+        lifecycleHookScope: incarnation.lifecycleHookScope,
+        deactivateHostApi: incarnation.deactivate,
+        drainHostApiOperations: incarnation.drainOperations,
+        arm: "child", confinement: "not-spawned",
+      });
+      internals.disposers.set(pluginId, incarnation.disposers);
+    }
+    vi.useFakeTimers();
+    try {
+      let report: { unfinished: readonly string[] } | undefined;
+      const result = runCleanupWithHardTimeout(async (signal) => {
+        report = await f.runtime.stopAll({ signal });
+      }, TOOL_TIMEOUT_POLICY.shutdownCleanupMs);
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.shutdownCleanupMs);
+      expect(await result).toEqual({ status: "completed" });
+      expect(stopStarts).toBe(generations);
+      // Every stop hook timed out, so every generation is named for the
+      // backstop — reported inside the budget, not after it.
+      expect(report).toEqual({ unfinished: Array.from({ length: generations }, (_, i) => `budget${i}`) });
+    } finally {
+      for (const finish of finishOperations) finish();
+      vi.useRealTimers();
+    }
+  });
+
+  it("names the generations still retiring when the application's shutdown deadline passes", async () => {
+    const f = await setup("hanging-tool");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    // The stop hook outlives the deadline.
+    const instance = f.constructed[0]!.instance as { stop?: () => Promise<void> };
+    const stop = instance.stop!;
+    let releaseStop!: () => void;
+    const stopHeld = new Promise<void>((resolve) => { releaseStop = resolve; });
+    instance.stop = async () => { await stopHeld; await stop(); };
+    const deadline = new AbortController();
+    const audits = f.audits;
+    const stopping = f.runtime.stopAll({ signal: deadline.signal });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    deadline.abort();
+    try {
+      expect(await stopping).toEqual({ unfinished: [ID] });
+      expect(audits).toContain("plugin_shutdown_retirement_incomplete");
+    } finally {
+      releaseStop();
+    }
+  });
+
+  /** Settle within `ms`, or report the promise as still pending. */
+  async function settledWithin<T>(promise: Promise<T>, ms: number): Promise<{ state: "resolved"; value: T } | { state: "rejected"; error: unknown } | { state: "pending" }> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise.then((value) => ({ state: "resolved" as const, value }), (error: unknown) => ({ state: "rejected" as const, error })),
+        new Promise<{ state: "pending" }>((resolve) => { timer = setTimeout(() => resolve({ state: "pending" }), ms); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** A bundled MCP server the plugin's active generation owns, on the real manager. */
+  function bundledMcpManager(f: Awaited<ReturnType<typeof setup>>, lifecycle: PluginBundleLifecycle, client: Record<string, unknown>) {
+    const manager = new McpManager(new McpGovernance(join(f.fixture.rootDir, "mcp-policy.json")), new ToolRegistry(), unusedNetworkFetch, join(f.fixture.rootDir, "mcp-config.json"));
+    manager.setPluginGenerationAccess(lifecycle);
+    const generationId = lifecycle.getActive(ID)!.generationId;
+    const serverId = "attemptresources-bundled";
+    const internals = manager as unknown as { clients: Map<string, unknown>; bundledOwners: Map<string, unknown>; activeBundledServerIds: Set<string> };
+    internals.clients.set(serverId, client);
+    internals.bundledOwners.set(serverId, { pluginId: ID, activationId: generationId, generationId, pluginVersion: "1.0.0", localId: "fixture", fingerprint: "a".repeat(64) });
+    internals.activeBundledServerIds.add(serverId);
+    return { manager, serverId };
+  }
+
+  it("shutdown rejects generation consumers outside the runtime dispatcher, queued ones included", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const generationId = lifecycle.getActive(ID)!.generationId;
+    let served = 0;
+    const { manager, serverId } = bundledMcpManager(f, lifecycle, {
+      getPrompt: async () => { served += 1; return { blocks: [], droppedBlocks: 0 }; },
+      callTool: async () => { served += 1; return { text: "served", blocks: [], droppedBlocks: 0 }; },
+    });
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({
+      name: PING, description: "fixture tool", source: "plugin", category: "read", pluginId: ID,
+      pluginGeneration: { pluginId: ID, generationId }, modelVisible: true, jsonSchema: { type: "object" },
+      execute: async () => { served += 1; return { output: "served", isError: false }; },
+    }));
+    const permissions = new PermissionManager(join(f.fixture.rootDir, "permissions.json"));
+    permissions.checkDetailed = () => ({ decision: "allow", reason: "fixture", layer: 3 });
+    const executor = new ToolExecutor(registry, undefined, permissions, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, () => lifecycle);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const atCommit = new Promise<void>((resolve) => { entered = resolve; });
+    const update = f.runtime.activatePreparedArtifact({
+      ...(await f.preparedInput()),
+      durableCommit: async () => { entered(); await held; return "committed"; },
+    }).then(() => undefined, () => undefined);
+    try {
+      await atCommit;
+      // Queued behind the held transition: the tool executor's and the bundled
+      // MCP manager's own acquisitions, and the lifecycle's directly.
+      const turn = new AbortController();
+      const queued: Array<Promise<unknown>> = [
+        executor.executeAll([{ id: "queued", name: PING, input: {} }], { sessionId: "shutdown-turn", abortSignal: turn.signal, permissionContext: { trustOrigin: "user-keyboard", allowedPluginIds: new Set([ID]) } } as never),
+        manager.getPrompt(serverId, "fixture", {}),
+        lifecycle.acquireExact(ID, generationId),
+        lifecycle.acquire(ID),
+      ];
+      for (const waiting of queued) expect((await settledWithin(waiting, 20)).state).toBe("pending");
+      turn.abort();
+      await f.runtime.stopAll();
+      const [executed, prompt, exact, any] = await Promise.all(queued.map((waiting) => settledWithin(waiting, 500)));
+      expect(executed).toMatchObject({ state: "resolved", value: [{ is_error: true, content: expect.stringContaining("shutting down") }] });
+      for (const outcome of [prompt, exact, any]) {
+        expect(outcome).toMatchObject({ state: "rejected", error: { code: "plugin-runtime-shutdown" } });
+      }
+      // Arriving after shutdown began: refused before reaching the server.
+      await expect(manager.callTool(serverId, "fixture", {})).rejects.toMatchObject({ code: "plugin-runtime-shutdown" });
+      await expect(lifecycle.acquireExact(ID, generationId)).rejects.toMatchObject({ code: "plugin-runtime-shutdown" });
+      expect(served).toBe(0);
+    } finally {
+      release();
+      await update;
+    }
+  });
+
+  it("shutdown releases a prepared candidate held in its durable commit, and the commit never publishes it", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const incumbent = lifecycle.getActive(ID)!.generationId;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const atCommit = new Promise<void>((resolve) => { entered = resolve; });
+    const update = f.runtime.activatePreparedArtifact({
+      ...(await f.preparedInput()),
+      durableCommit: async () => { entered(); await held; return "committed"; },
+    }).then(() => undefined, (error: unknown) => error);
+    await atCommit;
+    const deadline = new AbortController();
+    const report = await f.runtime.stopAll({ signal: deadline.signal });
+    // Released by shutdown itself, while its durable commit is still held.
+    expect(report).toEqual({ unfinished: [] });
+    expect(f.constructed.map((record) => record.stops)).toEqual([1, 1]);
+    expect(f.incarnations.map((incarnation) => incarnation.isActive())).toEqual([false, false]);
+    release();
+    const refused = await update;
+    expect(refused).toBeInstanceOf(CommittedPluginGenerationPublicationError);
+    expect((refused as CommittedPluginGenerationPublicationError).publicationCause).toMatchObject({ code: "plugin-runtime-shutdown" });
+    expect(lifecycle.getActive(ID)?.generationId).toBe(incumbent);
+    // Released once: the activation's own cleanup found it already released.
+    expect(f.constructed.map((record) => record.stops)).toEqual([1, 1]);
+    expect(f.incarnations[1]!.isActive()).toBe(false);
+  });
+
+  it.each(["host integration", "panel delegate"] as const)("a %s keeps its generation until its callback settles, though shutdown rejected its caller", async (route) => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const payload = f.roots[0]!;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inCallback = new Promise<void>((resolve) => { entered = resolve; });
+    // What the callback finds once it resumes: whether its payload is still there.
+    const callback = async () => { entered(); await held; return f.exists(payload); };
+    let payloadAtResume: Promise<boolean> | undefined;
+    const tracked = async () => { payloadAtResume = callback(); return payloadAtResume; };
+    if (route === "panel delegate") f.runtime.setToolInvocationDelegate(tracked);
+    const caller = route === "panel delegate"
+      ? f.runtime.callFromUi(PING, {})
+      : f.runtime.withPluginInstanceLease(ID, tracked);
+    const callerOutcome = settledWithin(caller, 60_000);
+    await inCallback;
+    const removal = f.runtime.removePlugin(ID).then(() => undefined, () => undefined);
+    await vi.waitFor(() => expect(lifecycle.getActive(ID)).toBeUndefined());
+    const deadline = new AbortController();
+    const stopping = f.runtime.stopAll({ signal: deadline.signal });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    deadline.abort();
+    try {
+      const report = await stopping;
+      expect(await callerOutcome).toMatchObject({ state: "rejected", error: { code: "plugin-runtime-shutdown" } });
+      // Time enough for a retirement released early to remove the payload.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(await f.exists(payload)).toBe(true);
+      // The retirement waits on the callback's lease: named, not reported done.
+      expect(report).toEqual({ unfinished: [ID] });
+    } finally {
+      release();
+    }
+    expect(await payloadAtResume).toBe(true);
+    await removal;
+    await lifecycle.waitForRetirements();
+    expect(await f.exists(payload)).toBe(false);
+  });
+
+  it("names a generation already retiring outside the runtime map when the deadline passes", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const instance = f.constructed[0]!.instance as { stop?: () => Promise<void> };
+    const stop = instance.stop!;
+    let releaseStop!: () => void;
+    const stopHeld = new Promise<void>((resolve) => { releaseStop = resolve; });
+    let stopEntered!: () => void;
+    const inStop = new Promise<void>((resolve) => { stopEntered = resolve; });
+    instance.stop = async () => { stopEntered(); await stopHeld; await stop(); };
+    const removal = f.runtime.removePlugin(ID).then(() => undefined, () => undefined);
+    await inStop;
+    expect(lifecycle.getActive(ID)).toBeUndefined();
+    expect(f.runtime.listPluginIds()).not.toContain(ID);
+    const deadline = new AbortController();
+    const stopping = f.runtime.stopAll({ signal: deadline.signal });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    deadline.abort();
+    try {
+      expect(await stopping).toEqual({ unfinished: [ID] });
+      expect(f.audits).toContain("plugin_shutdown_retirement_incomplete");
+    } finally {
+      releaseStop();
+      await removal;
+    }
+  });
+
+  it("a boot load constructing a child when shutdown begins releases it instead of registering it", async () => {
+    const f = await setup("success");
+    const hook = f.internals.runPluginLifecycleHook;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inFactory = new Promise<void>((resolve) => { entered = resolve; });
+    // The factory has returned and its child runs; registration is next.
+    f.internals.runPluginLifecycleHook = async (scope, invoke) => {
+      const result = await hook(scope, invoke);
+      if (result && typeof result === "object" && "handlers" in result) {
+        entered();
+        await held;
+      }
+      return result;
+    };
+    const loading = f.runtime.load();
+    await inFactory;
+    const deadline = new AbortController();
+    const stopping = f.runtime.stopAll({ signal: deadline.signal });
+    setTimeout(release, 50);
+    const report = await stopping;
+    await loading;
+    expect(f.runtime.listPluginIds()).not.toContain(ID);
+    expect(f.constructed.map((record) => record.stops)).toEqual([1]);
+    expect(f.incarnations[0]!.isActive()).toBe(false);
+    expect(report).toEqual({ unfinished: [] });
+  });
+
+  it("starts no deferred post-commit work in a generation whose predecessor retires after shutdown began", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inIntegration = new Promise<void>((resolve) => { entered = resolve; });
+    // Holds the incumbent, so the replacement's deferred startup waits for it.
+    const integration = f.runtime.withPluginInstanceLease(ID, async () => { entered(); await held; })
+      .then(() => undefined, () => undefined);
+    await inIntegration;
+    const postPublish = vi.spyOn(f.runtime, "postPublishRuntimeGeneration");
+    const mcpManager = (lifecycle as unknown as { deps: { mcpManager: { prepareBundledGeneration: (...args: unknown[]) => Promise<unknown> } } }).deps.mcpManager;
+    const mcpPrepare = vi.spyOn(mcpManager, "prepareBundledGeneration");
+    const incumbent = lifecycle.getActive(ID)!.generationId;
+    // The activation returns once its deferred work is done; it is committed
+    // as soon as the pointer moves.
+    const update = f.runtime.activatePreparedArtifact(await f.preparedInput());
+    await vi.waitFor(() => expect(lifecycle.getActive(ID)?.generationId).not.toBe(incumbent));
+    const deadline = new AbortController();
+    const stopping = f.runtime.stopAll({ signal: deadline.signal });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    deadline.abort();
+    await stopping;
+    release();
+    await integration;
+    await update;
+    expect(postPublish).not.toHaveBeenCalled();
+    expect(mcpPrepare).not.toHaveBeenCalled();
+  });
+
+  it("runs each generation disposer once and retries only the ones that failed", async () => {
+    const f = await setup("success");
+    let flakyCalls = 0;
+    const steady = vi.fn();
+    const view = {
+      manifest: { id: "disposerretry", name: "disposerretry", version: "1.0.0", description: "fixture", entry: "entry.mjs", tools: [] },
+      instance: { handlers: {} },
+      disposers: [steady, () => {
+        flakyCalls += 1;
+        if (flakyCalls === 1) throw new Error("transient cleanup failure");
+      }],
+    };
+    const effects = () => f.runtime.prepareRuntimeRetirement(view as never)
+      .find((step) => step.phase === "runtime.effects")!.run();
+    await expect(effects()).rejects.toThrow(/effects retirement failed/);
+    await effects();
+    expect(steady).toHaveBeenCalledTimes(1);
+    expect(flakyCalls).toBe(2);
+  });
+
+  /** A prepared update held in its durable commit whose candidate cleanup fails. */
+  async function heldUpdateWithFailingCleanup(f: Awaited<ReturnType<typeof setup>>) {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const atCommit = new Promise<void>((resolve) => { entered = resolve; });
+    const update = f.runtime.activatePreparedArtifact({
+      ...(await f.preparedInput()),
+      durableCommit: async () => { entered(); await held; return "committed"; },
+    }).then(() => undefined, (error: unknown) => error);
+    await atCommit;
+    (f.runtime as unknown as { drainPluginHostApiOperations: () => Promise<void> }).drainPluginHostApiOperations =
+      async () => { throw f.cleanupError; };
+    return { update, release };
+  }
+
+  it("reports a prepared candidate whose cleanup failed at shutdown as unfinished", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const { update, release } = await heldUpdateWithFailingCleanup(f);
+    const deadline = new AbortController();
+    try {
+      expect(await f.runtime.stopAll({ signal: deadline.signal })).toEqual({ unfinished: [ID] });
+      expect(f.audits).toContain("plugin_shutdown_retirement_incomplete");
+    } finally {
+      release();
+      await update;
+    }
+  });
+
+  it("keeps the durable-commit marker when a withheld candidate's runtime cleanup fails", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const { update, release } = await heldUpdateWithFailingCleanup(f);
+    await f.runtime.stopAll({ signal: new AbortController().signal });
+    release();
+    const refused = await update;
+    expect(isCommittedPluginGenerationPublicationError(refused)).toBe(true);
+    expect(classifyApplyError(refused)).toEqual({ state: "applied-not-running" });
+  });
+
+  it("keeps the durable-commit marker when a withheld candidate's lifecycle cleanup fails", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const loopback = (lifecycle as unknown as { deps: { loopbackManager: { discardGeneration: () => Promise<void> } } }).deps.loopbackManager;
+    loopback.discardGeneration = async () => { throw f.cleanupError; };
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const atCommit = new Promise<void>((resolve) => { entered = resolve; });
+    const update = f.runtime.activatePreparedArtifact({
+      ...(await f.preparedInput()),
+      durableCommit: async () => { entered(); await held; return "committed"; },
+    }).then(() => undefined, (error: unknown) => error);
+    await atCommit;
+    await f.runtime.stopAll({ signal: new AbortController().signal });
+    release();
+    const refused = await update;
+    expect(isCommittedPluginGenerationPublicationError(refused)).toBe(true);
+    expect(classifyApplyError(refused)).toEqual({ state: "applied-not-running" });
+  });
+
+  it("names a generation whose retirement phase failed at shutdown as unfinished", async () => {
+    const f = await setup("success");
+    await f.runtime.addPlugin(ID);
+    const instance = f.constructed[0]!.instance as { stop?: () => Promise<void> };
+    const stop = instance.stop;
+    instance.stop = async () => { throw new Error("child stop failed"); };
+    let report: { unfinished: readonly string[] };
+    try {
+      report = await f.runtime.stopAll({ signal: new AbortController().signal });
+    } finally {
+      // The fixture's own teardown stops the child.
+      instance.stop = stop;
+    }
+    expect(report).toEqual({ unfinished: [ID] });
+    expect(f.audits).toContain("plugin_shutdown_retirement_incomplete");
+  });
+
+  it.each(["add", "boot"] as const)("names an %s candidate whose cleanup failed at shutdown as unfinished", async (route) => {
+    const f = await setup("success");
+    if (route === "add") bindNativeBundleLifecycle(f);
+    const hook = f.internals.runPluginLifecycleHook;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inFactory = new Promise<void>((resolve) => { entered = resolve; });
+    f.internals.runPluginLifecycleHook = async (scope, invoke) => {
+      const result = await hook(scope, invoke);
+      if (result && typeof result === "object" && "handlers" in result) {
+        entered();
+        await held;
+      }
+      return result;
+    };
+    const building = (route === "add" ? f.runtime.addPlugin(ID) : f.runtime.load()).then(() => undefined, () => undefined);
+    await inFactory;
+    // Releasing the candidate's unpublished root fails.
+    f.internals.removeUnpublishedRuntimeRoot = async () => { throw f.cleanupError; };
+    const stopping = f.runtime.stopAll({ signal: new AbortController().signal });
+    setTimeout(release, 50);
+    const report = await stopping;
+    await building;
+    expect(f.constructed.map((record) => record.stops)).toEqual([1]);
+    expect(report).toEqual({ unfinished: [ID] });
+    expect(f.audits).toContain("plugin_shutdown_retirement_incomplete");
+  });
+
+  it("records no post-commit fault for an MCP publication refused because shutdown began while it waited", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const internals = lifecycle as unknown as {
+      deps: { mcpManager: { prepareBundledGeneration: (...args: unknown[]) => Promise<unknown> } };
+      coordinator: { runPostCommitWithGeneration: (pluginId: string, generationId: string, operation: () => Promise<unknown>) => Promise<unknown> };
+      recordPostCommitFault: (...args: unknown[]) => void;
+    };
+    const faults = vi.spyOn(internals, "recordPostCommitFault");
+    const prepareMcp = internals.deps.mcpManager.prepareBundledGeneration.bind(internals.deps.mcpManager);
+    let releasePrepare!: () => void;
+    const prepareHeld = new Promise<void>((resolve) => { releasePrepare = resolve; });
+    let prepareEntered!: () => void;
+    const inPrepare = new Promise<void>((resolve) => { prepareEntered = resolve; });
+    internals.deps.mcpManager.prepareBundledGeneration = async (...args) => {
+      prepareEntered();
+      await prepareHeld;
+      return prepareMcp(...args);
+    };
+    const incumbent = lifecycle.getActive(ID)!.generationId;
+    const update = f.runtime.activatePreparedArtifact(await f.preparedInput()).then(() => undefined, () => undefined);
+    await inPrepare;
+    const candidate = lifecycle.getActive(ID)!.generationId;
+    expect(candidate).not.toBe(incumbent);
+    // A lease on the candidate, so its MCP publication (quiesce) waits to drain.
+    let releaseLease!: () => void;
+    const leaseHeld = new Promise<void>((resolve) => { releaseLease = resolve; });
+    let leased!: () => void;
+    const inLease = new Promise<void>((resolve) => { leased = resolve; });
+    const lease = internals.coordinator.runPostCommitWithGeneration(ID, candidate, async () => { leased(); await leaseHeld; });
+    await inLease;
+    releasePrepare();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const deadline = new AbortController();
+    const stopping = f.runtime.stopAll({ signal: deadline.signal });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    deadline.abort();
+    await stopping;
+    releaseLease();
+    await lease;
+    await update;
+    await lifecycle.waitForRetirements().catch(() => undefined);
+    expect(faults.mock.calls.filter((call) => call[2] === "mcp-publication")).toEqual([]);
+  });
+
+  it("a rejection after the plugin was registered leaves the registered generation running and disposes it once", async () => {
+    const f = await setup("post-registration-crash");
+    const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBe(f.originalError);
+    expect(f.runtime.listPluginIds()).toContain(ID);
+    expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 0, drained: 0, stops: 0 });
+    expect(f.incarnations[0]!.isActive()).toBe(true);
+    expect(f.removals).toEqual([]);
+    expect(await f.exists(f.roots[0]!)).toBe(true);
+    await expect(f.runtime.call(PING, {})).resolves.toBe("pong");
+    // Not the attempt's failure: no crash card for a running plugin.
+    expect(f.card()?.installFailureKind).toBeUndefined();
+    await f.runtime.removePlugin(ID);
+    expect({ disposed: f.counts.disposed, stops: f.stops() }).toEqual({ disposed: 1, stops: 1 });
   });
 });

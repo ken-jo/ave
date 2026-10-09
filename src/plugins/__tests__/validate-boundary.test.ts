@@ -19,25 +19,15 @@
  */
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
 import { buildRuntimeImportGraph } from "../../../scripts/check-import-cycles.mjs";
+import { isProductionSourceModule, SOURCE_ROOT, sourceDisplayPath } from "./test-helpers.js";
 
-const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const SRC = SOURCE_ROOT;
 const graph = buildRuntimeImportGraph(SRC);
 
-/** `src`-relative and `/`-separated, so a failure names a file readably on every platform. */
-function display(file: string): string {
-  return relative(SRC, file).split(sep).join("/");
-}
-
-/** A module the app ships: not a test, a test helper or a probe. */
-function isProduction(file: string): boolean {
-  const name = display(file);
-  return !/(^|\/)__tests__\//u.test(name)
-    && !/(^|\/)__probes__\//u.test(name)
-    && !/\.test\.tsx?$/u.test(name);
-}
+const display = sourceDisplayPath;
+const isProduction = isProductionSourceModule;
 
 const DYNAMIC_IMPORT = /\bimport\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)/gu;
 

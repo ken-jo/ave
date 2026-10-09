@@ -5,6 +5,7 @@ import { createNoopHostApi } from "../sandbox.js";
 import type { PluginManifest } from "../../types.js";
 import { useTempDirs } from "../../../__tests__/test-helpers.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
+import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 
 type IncarnationCleanup = {
   disposers: Array<() => void>;
@@ -27,8 +28,8 @@ afterEach(async () => {
 });
 
 class IncarnationTestRuntime extends PluginRuntime {
-  constructor(options: Omit<PluginRuntimeOptions, "encryption">) {
-    super({ ...options, encryption: unavailableSecretEncryption });
+  constructor(options: Omit<PluginRuntimeOptions, "encryption" | "childEntryPath">) {
+    super({ ...options, encryption: unavailableSecretEncryption, childEntryPath: pluginChildEntryPath() });
   }
   buildPending(pluginId: string, manifest: PluginManifest, dataDir: string) {
     const incarnation = this.buildHostApiIncarnation(pluginId, manifest, dataDir, undefined, null);

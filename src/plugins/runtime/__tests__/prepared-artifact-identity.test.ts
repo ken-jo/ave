@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -17,6 +17,10 @@ import {
 import type { EntryPluginManifest, PluginManifest } from "../../types.js";
 import { canonicalJSON } from "../../secret-access/canonical-json.js";
 import { agentPluginsDocument } from "../../__tests__/test-helpers.js";
+import {
+  HOST_PROTOCOL_VERSIONS_SERVED,
+  IncompatibleHostProtocolError,
+} from "../../isolation/host-api-wire.js";
 
 const roots: string[] = [];
 
@@ -51,6 +55,7 @@ async function writePreparedPlugin(
     version: "1.0.0",
     entry: "entry.mjs",
     description: "Prepared identity fixture.",
+    requires: { hostProtocol: HOST_PROTOCOL_VERSIONS_SERVED[0] },
     tools: [{
       name: toolName,
       description: "ping",
@@ -59,6 +64,9 @@ async function writePreparedPlugin(
     }],
     ...manifestOverrides,
   };
+  // `requires: undefined` in the overrides is a manifest that declares no host
+  // protocol at all — the shape decision 52 says reaches this path unrefused.
+  if (manifest.requires === undefined) delete manifest.requires;
   await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
   await writeFile(
     join(pluginRoot, "entry.mjs"),
@@ -404,7 +412,7 @@ describe("prepared artifact install identity", () => {
       runtime.setConfigOverride(pluginId, incumbentConfig);
       const publicationSpy = phase.failsPublication
         ? vi.spyOn(runtime, "prepareRuntimeGeneration").mockImplementation(
-          () => ({ publish: () => { throw failure; } }) as never,
+          () => ({ handOver: () => undefined, publish: () => { throw failure; } }) as never,
         )
         : undefined;
       const failedPrepared = await writePreparedPlugin(
@@ -459,4 +467,191 @@ describe("prepared artifact install identity", () => {
       await expect(runtime.call(`${pluginId.replaceAll("-", "_")}_ping`)).resolves.toBe("pong");
     });
   }
+});
+
+type AuditEntry = { level: string; message: string; data?: unknown };
+
+/**
+ * What boot reports for a manifest that declares no host protocol: the audit
+ * event and the failed card. The refused update below must report the same
+ * event with the same fields and the same message (§9.8 A1, decision 52).
+ */
+async function bootRefusalOf(pluginId: string): Promise<{ audit: AuditEntry[]; message: string | undefined }> {
+  const root = await mkdtemp(join(tmpdir(), "ave-boot-refusal-"));
+  roots.push(root);
+  const pluginRoot = join(root, "plugins", pluginId);
+  await mkdir(pluginRoot, { recursive: true });
+  const manifest: PluginManifest = {
+    id: pluginId,
+    name: pluginId,
+    version: "1.1.0",
+    entry: "entry.mjs",
+    description: "Prepared identity fixture.",
+    tools: [],
+  };
+  await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
+  await writeFile(join(pluginRoot, "entry.mjs"), "export default async function createPlugin() { return { handlers: {} }; }\n", "utf8");
+  const registryPath = join(root, "plugins", "registry.json");
+  await writeFile(registryPath, JSON.stringify({
+    version: 1,
+    plugins: [{ id: pluginId, manifestPath: join(pluginRoot, "plugin.json"), enabled: true }],
+  }), "utf8");
+  const audit: AuditEntry[] = [];
+  const runtime = makeTestPluginRuntime(
+    { rootDir: root, registryPath, pluginsRoot: join(root, "plugins") },
+    { auditLog: (level, message, data) => { audit.push({ level, message, data }); } },
+  );
+  await runtime.startAll();
+  const card = runtime.listPluginCards().find((candidate) => candidate.id === pluginId);
+  expect(card?.loadStatus).toBe("failed");
+  // Boot refuses an undeclared protocol before routing, so no arm was chosen.
+  expect(card?.arm).toBeUndefined();
+  expect(card?.confinement).toBeUndefined();
+  return {
+    audit: audit.filter((entry) => entry.message === "plugin_incompatible_host_protocol"),
+    message: card?.installFailureMessage,
+  };
+}
+
+describe("a prepared update the child factory refuses leaves the running generation serving", () => {
+  it("rejects with the boot refusal, records it for the card and keeps the incumbent generation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ave-prepared-refused-"));
+    roots.push(root);
+    const pluginId = "refused-update";
+    const installId = "catalog-refused-update";
+    const cacheRoot = join(root, "cache");
+    const audit: AuditEntry[] = [];
+    const runtime = makeTestPluginRuntime(
+      {
+        rootDir: root,
+        registryPath: join(root, "plugins", "registry.json"),
+        pluginsRoot: join(root, "plugins"),
+      },
+      {
+        installReceiptCacheRoot: cacheRoot,
+        auditLog: (level, message, data) => { audit.push({ level, message, data }); },
+      },
+    );
+    const lifecycle = (runtime as unknown as {
+      generationLifecycle: { getActive(id: string): { generationId: string } | undefined };
+    }).generationLifecycle;
+    const incumbent = await writePreparedPlugin(
+      root,
+      pluginId,
+      installId,
+      (toolName) => `export default async function createPlugin() {
+  return { handlers: { ${toolName}: async () => "incumbent" } };
+}
+`,
+    );
+    const activated = await runtime.activatePreparedArtifact({
+      installId,
+      ...incumbent,
+      durableCommit: async () => "incumbent-committed",
+    });
+    await activated.retirement;
+    const incumbentGenerationId = lifecycle.getActive(pluginId)?.generationId;
+    expect(incumbentGenerationId).toBeDefined();
+    const generationsRoot = join(cacheRoot, pluginId, "generations");
+    const generationsBefore = await readdir(generationsRoot);
+    expect(generationsBefore).toHaveLength(1);
+
+    const candidateRoot = join(root, "candidate");
+    await mkdir(candidateRoot);
+    const candidate = await writePreparedPlugin(
+      candidateRoot,
+      pluginId,
+      installId,
+      (toolName) => `export default async function createPlugin() {
+  return { handlers: { ${toolName}: async () => "candidate" } };
+}
+`,
+      { version: "1.1.0", requires: undefined },
+    );
+    expect(candidate.manifest.requires).toBeUndefined();
+    const durableCommit = vi.fn(async () => "must-not-commit");
+
+    const rejection = await runtime.activatePreparedArtifact({
+      installId,
+      ...candidate,
+      durableCommit,
+    }).then(() => undefined, (error: unknown) => error);
+
+    expect(rejection).toBeInstanceOf(IncompatibleHostProtocolError);
+    const expectedMessage = new IncompatibleHostProtocolError(pluginId, { declared: null }).message;
+    expect((rejection as Error).message).toBe(expectedMessage);
+    expect(durableCommit).not.toHaveBeenCalled();
+
+    const boot = await bootRefusalOf(pluginId);
+    expect(boot.audit).toHaveLength(1);
+    expect(boot.message).toBe(expectedMessage);
+    expect(audit.filter((entry) => entry.message === "plugin_incompatible_host_protocol")).toEqual(boot.audit);
+    expect(boot.audit[0]).toEqual({
+      level: "error",
+      message: "plugin_incompatible_host_protocol",
+      data: { pluginId, declared: null, served: [...HOST_PROTOCOL_VERSIONS_SERVED] },
+    });
+
+    const card = runtime.listPluginCards().find((entry) => entry.id === pluginId);
+    expect(card?.loadStatus).toBe("loaded");
+    expect(card?.version).toBe("1.0.0");
+    expect(card?.installFailureKind).toBeUndefined();
+    expect(card?.lastAttemptRefusal).toEqual({
+      attempt: "update",
+      kind: "incompatible-host-protocol",
+      message: boot.message,
+      at: expect.any(String),
+    });
+
+    expect(lifecycle.getActive(pluginId)?.generationId).toBe(incumbentGenerationId);
+    await expect(runtime.call(`${pluginId.replaceAll("-", "_")}_ping`)).resolves.toBe("incumbent");
+    expect(await readdir(generationsRoot)).toEqual(generationsBefore);
+  });
+
+  it("clears the recorded refusal when a later update commits", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ave-prepared-refused-clear-"));
+    roots.push(root);
+    const pluginId = "refused-then-fixed";
+    const installId = "catalog-refused-then-fixed";
+    const runtime = makeTestPluginRuntime(
+      {
+        rootDir: root,
+        registryPath: join(root, "plugins", "registry.json"),
+        pluginsRoot: join(root, "plugins"),
+      },
+      { installReceiptCacheRoot: join(root, "cache") },
+    );
+    const incumbent = await writePreparedPlugin(root, pluginId, installId);
+    await (await runtime.activatePreparedArtifact({
+      installId,
+      ...incumbent,
+      durableCommit: async () => "incumbent-committed",
+    })).retirement;
+    const refusedRoot = join(root, "refused");
+    await mkdir(refusedRoot);
+    const refused = await writePreparedPlugin(refusedRoot, pluginId, installId, undefined, {
+      version: "1.1.0",
+      requires: undefined,
+    });
+    await expect(runtime.activatePreparedArtifact({
+      installId,
+      ...refused,
+      durableCommit: async () => "must-not-commit",
+    })).rejects.toBeInstanceOf(IncompatibleHostProtocolError);
+    expect(runtime.listPluginCards().find((entry) => entry.id === pluginId)?.lastAttemptRefusal?.attempt)
+      .toBe("update");
+
+    const fixedRoot = join(root, "fixed");
+    await mkdir(fixedRoot);
+    const fixed = await writePreparedPlugin(fixedRoot, pluginId, installId, undefined, { version: "1.2.0" });
+    await (await runtime.activatePreparedArtifact({
+      installId,
+      ...fixed,
+      durableCommit: async () => "fixed-committed",
+    })).retirement;
+
+    const card = runtime.listPluginCards().find((entry) => entry.id === pluginId);
+    expect(card?.version).toBe("1.2.0");
+    expect(card?.lastAttemptRefusal).toBeUndefined();
+  });
 });

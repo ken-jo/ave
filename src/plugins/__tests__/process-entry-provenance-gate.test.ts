@@ -400,7 +400,10 @@ describe("precedence: no receipt is a receipt refusal, never the gate's", () => 
     await runtime.startAll();
     await becomeProcessPlugin(pluginDir);
     await rm(installReceiptPath(cacheRoot, PLUGIN_ID));
+    // The entry plugin booted as a child (§9.8 A1), so boot itself reached the
+    // factory; what is under test is that the restart does not.
     reached.gate = 0;
+    reached.factory = 0;
     await expect(runtime.restartPlugin(PLUGIN_ID, { throwOnFailure: true })).resolves.toBe("failed");
     expect(reached.gate).toBe(0);
     expect(reached.factory).toBe(0);
@@ -431,7 +434,10 @@ describe("precedence: no receipt is a receipt refusal, never the gate's", () => 
     expect(runtime.listPluginIds()).toContain(PLUGIN_ID);
     await becomeProcessPlugin(pluginDir);
     await rm(installReceiptPath(cacheRoot, PLUGIN_ID));
+    // The entry plugin booted as a child (§9.8 A1), so boot itself reached the
+    // factory; what is under test is that the restart does not.
     reached.gate = 0;
+    reached.factory = 0;
     await expect(runtime.restartPlugin(PLUGIN_ID, { throwOnFailure: true })).rejects.toThrow(/ENOENT/);
     expect(reached.gate).toBe(0);
     expect(reached.factory).toBe(0);

@@ -49,6 +49,13 @@ interface GenerationState<TState> {
   transitionTail: Promise<void>;
 }
 
+/** A generation whose retirement has begun and not yet finished. */
+export interface RetiringPluginGeneration<TState = unknown> {
+  readonly generation: ActivePluginGeneration<TState>;
+  /** Settles when the generation's leases have drained and its retirement ran. */
+  readonly retired: Promise<void>;
+}
+
 interface GenerationAdmission<TState> {
   readonly generation: ActivePluginGeneration<TState>;
   readonly isActive: () => boolean;
@@ -81,7 +88,16 @@ function freezeGeneration<TState>(candidate: ActivePluginGeneration<TState>): Ac
  */
 export class PluginGenerationCoordinator<TState = unknown> {
   private readonly plugins = new Map<string, GenerationState<TState>>();
-  private readonly retirements = new Set<Promise<void>>();
+  private readonly retirements = new Map<Promise<void>, ActivePluginGeneration<TState>>();
+  /**
+   * Set once, when admission closes for good (host shutdown). From then on no
+   * lease is granted — a caller arriving later and one still queued behind a
+   * transition or a readiness barrier both receive `reason(pluginId)` — and
+   * no candidate is published. Leases granted earlier stay valid until their
+   * holders release them.
+   */
+  private admissionClosure: { readonly reason: (pluginId: string) => Error } | undefined;
+  private readonly admissionClosureWaiters = new Set<() => void>();
   private readonly admittedGenerations = new AsyncLocalStorage<
     ReadonlyMap<string, GenerationAdmission<TState>>
   >();
@@ -109,6 +125,56 @@ export class PluginGenerationCoordinator<TState = unknown> {
     return this.stateFor(pluginId).active;
   }
 
+  /**
+   * Close admission for good. Every queued acquisition is woken and rejected,
+   * every later one is rejected, and a candidate commit not yet published is
+   * refused. Idempotent: the first reason stands.
+   */
+  closeAdmission(reason: (pluginId: string) => Error): void {
+    if (this.admissionClosure) return;
+    this.admissionClosure = Object.freeze({ reason });
+    for (const wake of this.admissionClosureWaiters) wake();
+    this.admissionClosureWaiters.clear();
+  }
+
+  isAdmissionClosed(): boolean {
+    return this.admissionClosure !== undefined;
+  }
+
+  /** The error admission refuses `pluginId` with once closed; undefined while open. */
+  admissionClosedError(pluginId: string): Error | undefined {
+    return this.admissionClosure?.reason(pluginId);
+  }
+
+  /** Generations whose retirement has begun and not yet finished. */
+  listRetiring(): readonly RetiringPluginGeneration<TState>[] {
+    return Object.freeze(
+      [...this.retirements].map(([retired, generation]) => Object.freeze({ generation, retired })),
+    );
+  }
+
+  private assertAdmissionOpen(pluginId: string): void {
+    if (this.admissionClosure) throw this.admissionClosure.reason(pluginId);
+  }
+
+  /**
+   * Wait for `waited`, or until admission closes, whichever is first; then
+   * reject if admission has closed. A queued caller therefore never outlives
+   * the closure.
+   */
+  private async waitWhileAdmissionOpen(pluginId: string, waited: Promise<unknown>): Promise<void> {
+    this.assertAdmissionOpen(pluginId);
+    let wake!: () => void;
+    const closed = new Promise<void>((resolve) => { wake = resolve; });
+    this.admissionClosureWaiters.add(wake);
+    try {
+      await Promise.race([waited, closed]);
+    } finally {
+      this.admissionClosureWaiters.delete(wake);
+    }
+    this.assertAdmissionOpen(pluginId);
+  }
+
   listActive(): readonly ActivePluginGeneration<TState>[] {
     return Object.freeze(
       [...this.plugins.values()]
@@ -118,6 +184,7 @@ export class PluginGenerationCoordinator<TState = unknown> {
   }
 
   async acquire(pluginId: string): Promise<PluginGenerationLease<TState>> {
+    this.assertAdmissionOpen(pluginId);
     const admitted = this.admittedGenerations.getStore()?.get(pluginId);
     if (admitted) {
       if (!admitted.isActive()) {
@@ -129,19 +196,25 @@ export class PluginGenerationCoordinator<TState = unknown> {
     let generation: ActivePluginGeneration<TState> | undefined;
     while (!generation) {
       while (state.pendingTransitions > 0) {
-        await new Promise<void>((resolve) => state.transitionWaiters.push(resolve));
+        await this.waitWhileAdmissionOpen(
+          pluginId,
+          new Promise<void>((resolve) => state.transitionWaiters.push(resolve)),
+        );
       }
       const candidate = state.active;
       if (!candidate) throw new Error(`plugin '${pluginId}' has no active generation`);
       const readiness = state.dispatchReadiness;
       if (readiness?.generationId === candidate.generationId) {
-        await readiness.promise;
+        await this.waitWhileAdmissionOpen(pluginId, readiness.promise);
       }
       if (state.pendingTransitions > 0 || state.active?.generationId !== candidate.generationId) {
         continue;
       }
       generation = candidate;
     }
+    // Checked where the lease is granted: admission may have closed in the
+    // turns between the last wait and this one.
+    this.assertAdmissionOpen(pluginId);
     return this.createLease(state, generation);
   }
 
@@ -183,6 +256,8 @@ export class PluginGenerationCoordinator<TState = unknown> {
     generationId: string,
     operation: () => Promise<T>,
   ): Promise<T> {
+    // Post-commit startup is new work in the generation: none once closed.
+    this.assertAdmissionOpen(pluginId);
     const state = this.stateFor(pluginId);
     const generation = state.active;
     if (!generation || generation.generationId !== generationId) {
@@ -199,6 +274,7 @@ export class PluginGenerationCoordinator<TState = unknown> {
   }
 
   async acquireExact(pluginId: string, generationId: string): Promise<PluginGenerationLease<TState>> {
+    this.assertAdmissionOpen(pluginId);
     const admitted = this.admittedGenerations.getStore()?.get(pluginId);
     if (admitted) {
       if (!admitted.isActive()) {
@@ -211,7 +287,10 @@ export class PluginGenerationCoordinator<TState = unknown> {
     }
     const state = this.stateFor(pluginId);
     while (state.pendingTransitions > 0) {
-      await new Promise<void>((resolve) => state.transitionWaiters.push(resolve));
+      await this.waitWhileAdmissionOpen(
+        pluginId,
+        new Promise<void>((resolve) => state.transitionWaiters.push(resolve)),
+      );
     }
     if (state.active?.generationId !== generationId) {
       throw new Error(`plugin '${pluginId}' generation '${generationId}' is not active`);
@@ -299,6 +378,10 @@ export class PluginGenerationCoordinator<TState = unknown> {
     let publishError: unknown;
     try {
       try {
+        // A candidate is never published once admission has closed: refused
+        // here before anything durable happens, and again below if admission
+        // closed while the durable commit ran.
+        if (prepared) this.assertAdmissionOpen(pluginId);
         predecessor = state.active;
         if (prepared) {
           const promise = new Promise<void>((resolve, reject) => {
@@ -312,6 +395,28 @@ export class PluginGenerationCoordinator<TState = unknown> {
           });
         }
         await durableCommit();
+        if (prepared && this.admissionClosure) {
+          // Durable state names the candidate, but the host is shutting down:
+          // the pointer stays where it is and nothing publishes. The caller
+          // still owns the candidate and releases it; the next start loads
+          // what was durably committed. Reported as a publication failure
+          // after the durable commit, so no caller rolls that commit back.
+          const refusal = this.admissionClosure.reason(pluginId);
+          dispatchSettled = true;
+          rejectDispatch?.(refusal);
+          throw new CommittedPluginGenerationPublicationError(
+            pluginId,
+            prepared.generationId,
+            refusal,
+            Object.freeze({
+              retired: Promise.resolve(),
+              markDispatchReady: async () => { throw refusal; },
+              markDispatchUnavailable: () => undefined,
+            }),
+            undefined,
+            "withheld",
+          );
+        }
         // Linearization point: durable state and the immutable generation
         // pointer are now inseparable. No projection work may be inserted here.
         state.active = prepared;
@@ -347,8 +452,10 @@ export class PluginGenerationCoordinator<TState = unknown> {
           await retire?.(predecessor);
         })()
       : Promise.resolve();
-    this.retirements.add(retired);
-    void retired.finally(() => this.retirements.delete(retired)).catch(() => undefined);
+    if (predecessor && predecessor.generationId !== prepared?.generationId) {
+      this.retirements.set(retired, predecessor);
+      void retired.finally(() => this.retirements.delete(retired)).catch(() => undefined);
+    }
     const transition = Object.freeze({
       retired,
       markDispatchReady: async () => {
@@ -419,12 +526,16 @@ export class PluginGenerationCoordinator<TState = unknown> {
 
     try {
       try {
+        // A projection publication (an MCP or Hook projection, a trust change)
+        // is a publication: none once admission has closed.
+        this.assertAdmissionOpen(pluginId);
         const active = state.active;
         if (!active || active.generationId !== expectedGenerationId) {
           throw new Error(`plugin '${pluginId}' generation changed before projection transition`);
         }
         await this.waitForDrain(state, expectedGenerationId);
         await prepare();
+        this.assertAdmissionOpen(pluginId);
         publish();
       } finally {
         state.pendingTransitions -= 1;
@@ -438,7 +549,7 @@ export class PluginGenerationCoordinator<TState = unknown> {
   }
 
   async waitForRetirements(): Promise<void> {
-    await Promise.all([...this.retirements]);
+    await Promise.all([...this.retirements.keys()]);
   }
 
   private async waitForDrain(state: GenerationState<TState>, generationId: string): Promise<void> {

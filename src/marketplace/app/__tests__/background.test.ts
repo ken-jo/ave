@@ -13,6 +13,7 @@ import type { AppliedDefaults } from "../../boot-installs/applied.js";
 import type { BootInstallReport } from "../../boot-installs/run.js";
 import { UPDATE_PACKAGE_STATES, type PackageUpdateOffer, type PackageUpdateView, type UpdateStatusView } from "../../../shared/git-marketplace.js";
 import { MarketplaceError } from "../../errors.js";
+import { IncompatibleHostProtocolError } from "../../../plugins/isolation/host-api-wire.js";
 import type { ApplyOutcome } from "../../updates/apply.js";
 import { emptyUpdateHistory, updateHistoryStore, type SyncDiscovery, type UpdateHistory, type UpdateHistoryStore } from "../../updates/history.js";
 import type { UpdateCandidate } from "../service.js";
@@ -1159,6 +1160,36 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     await settle();
     expect(h.service.applyUpdate).toHaveBeenCalledTimes(3);
     expect(h.lastStatus().packages).toEqual([expect.objectContaining({ state: "failed", reasons: ["failed-three-times"] })]);
+    background.stop();
+  });
+
+  it("stores a host-protocol refusal at activation as PACKAGE_INCOMPATIBLE, not as unavailable", async () => {
+    // The error the install flow throws when the runtime's child factory
+    // refuses the prepared manifest (`src/plugins/marketplace.ts`, §9.8 A1).
+    const refusal = new IncompatibleHostProtocolError("meeting", { declared: null });
+    const error = new MarketplaceError("PACKAGE_INCOMPATIBLE", refusal.message, {
+      cause: refusal,
+      detail: { reason: "host_protocol", name: "meeting" },
+    });
+    const h = applying([{ state: "failed", error }]);
+    const background = startMarketplaceBackground(h.input);
+    await idle(background);
+    const lastError = h.store.saved?.packages["ave:plugin:meeting"]?.lastError;
+    expect(lastError).toEqual({
+      code: "PACKAGE_INCOMPATIBLE",
+      detail: { reason: "host_protocol", name: "meeting" },
+      message: refusal.message,
+      at: expect.any(String),
+    });
+    expect(h.lastStatus().packages).toEqual([expect.objectContaining({
+      state: "failed",
+      failure: {
+        code: "PACKAGE_INCOMPATIBLE",
+        detail: { reason: "host_protocol", name: "meeting" },
+        message: refusal.message,
+        attempts: 1,
+      },
+    })]);
     background.stop();
   });
 

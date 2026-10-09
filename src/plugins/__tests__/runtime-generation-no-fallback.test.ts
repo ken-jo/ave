@@ -3,10 +3,11 @@ import { createNoopHostApiForTests, PluginRuntime } from "../runtime.js";
 import type { PluginManifest, RuntimePlugin } from "../runtime/types.js";
 import type { PluginRuntimeGenerationProjection } from "../plugin-host-generation.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
+import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry.js";
 
 describe("PluginRuntime generation isolation", () => {
   it("does not fall back to a live handler missing from the leased generation", async () => {
-    const runtime = new PluginRuntime({ encryption: unavailableSecretEncryption,
+    const runtime = new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot: "/tmp/ave-runtime-generation-test",
       createHostApi: createNoopHostApiForTests,
     });
@@ -29,6 +30,8 @@ describe("PluginRuntime generation isolation", () => {
       pluginRoot: "/tmp/ave-runtime-generation-test/plugin",
       instance,
       methods: new Map(),
+      arm: "child",
+      confinement: "unconfined",
     };
 
     const internals = runtime as unknown as {
@@ -72,7 +75,7 @@ describe("PluginRuntime generation isolation", () => {
   });
 
   it("fails closed when an operation is attempted before lifecycle binding", async () => {
-    const runtime = new PluginRuntime({ encryption: unavailableSecretEncryption,
+    const runtime = new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot: "/tmp/ave-runtime-unbound-test",
       createHostApi: createNoopHostApiForTests,
     });
@@ -84,7 +87,7 @@ describe("PluginRuntime generation isolation", () => {
   });
 
   it("lets an admitted exact-generation call finish after the live pointer retires", async () => {
-    const runtime = new PluginRuntime({ encryption: unavailableSecretEncryption,
+    const runtime = new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot: "/tmp/ave-runtime-drain-test",
       createHostApi: createNoopHostApiForTests,
     });
@@ -107,6 +110,8 @@ describe("PluginRuntime generation isolation", () => {
       pluginRoot: "/tmp/ave-runtime-drain-test/plugin",
       instance,
       methods: new Map([[method, handler]]),
+      arm: "child",
+      confinement: "unconfined",
     };
     const internals = runtime as unknown as {
       methodMap: Map<string, { pluginId: string; handler: typeof handler }>;

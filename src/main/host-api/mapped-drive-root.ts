@@ -6,8 +6,9 @@
  * every file against a list of allowed ROOTS and `Z:\report.docx` and
  * `\\server\share\report.docx` are the same file under two names. The plugin
  * used to answer the question itself, by running `powershell.exe`. Running an
- * interpreter is ambient axis 3 in the routing SOT
- * (`plugins/isolation/out-of-process-plugins.ts`) — the axis the confinement
+ * interpreter is ambient axis 3 of the process-isolation admission record (the
+ * history of `plugins/isolation/out-of-process-plugins.ts` before §9.8 A1
+ * retired it) — the axis the confinement
  * exists to take away — and what the plugin actually wanted back was ONE
  * STRING. So the plugin supplies the drive letter and the host owns the
  * command.

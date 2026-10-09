@@ -1,9 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   runPluginFactoryWithTimeout,
-  runPluginImportWithTimeout,
   runStartWithTimeout,
 } from "../index.js";
+// The in-process import's bound moved with the retained in-process factory
+// (§9.8 A1): no production path in main imports plugin code any more.
+import {
+  importInProcessPluginFactory,
+  PluginImportTimeoutError,
+  runPluginImportWithTimeout,
+} from "../plugin-loader.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 
 describe("runStartWithTimeout — plugin instance.start() host-enforced timeout", () => {
@@ -127,11 +137,54 @@ describe("runPluginImportWithTimeout", () => {
       () => new Promise<never>(() => undefined),
       1_000,
     );
-    const rejection = promise.catch((error) => error);
+    const rejection = promise.catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(1_001);
-    await expect(rejection).resolves.toMatchObject({
+    const error = await rejection;
+    expect(error).toBeInstanceOf(PluginImportTimeoutError);
+    expect(error).toMatchObject({
       code: "plugin-import-timeout",
       message: "plugin import timeout (>1000ms)",
     });
+  });
+});
+
+/**
+ * The retained, deprecated in-process arm (§9.8 A1, decision 50). It has no
+ * production caller — `host-api-boundary-contract.test.ts` holds that — and
+ * keeps these cases until Loader removal deletes it with them, so the code a
+ * routing reversal would bring back is tested code.
+ */
+describe("importInProcessPluginFactory", () => {
+  it("imports the entry module into this process and returns its own default export", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "in-process-plugin-"));
+    const entryPath = join(dir, "plugin.mjs");
+    // `import.meta.url` rather than an interpolated marker: the module names
+    // ITSELF, so the assertion proves the instance came from this exact file.
+    writeFileSync(entryPath, "export default () => ({ handlers: {}, marker: import.meta.url });\n", "utf-8");
+    try {
+      const factory = await importInProcessPluginFactory(entryPath);
+      expect(typeof factory).toBe("function");
+      const instance = (await factory!({} as never)) as { marker?: string };
+      expect(instance.marker).toBe(pathToFileURL(entryPath).href);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns undefined when the module exports no factory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "in-process-plugin-"));
+    const entryPath = join(dir, "plugin.mjs");
+    writeFileSync(entryPath, "export const notAFactory = 1;\n", "utf-8");
+    try {
+      await expect(importInProcessPluginFactory(entryPath)).resolves.toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an entry that cannot be imported", async () => {
+    await expect(
+      importInProcessPluginFactory(join(tmpdir(), "no-such-plugin-entry.mjs")),
+    ).rejects.toThrow();
   });
 });

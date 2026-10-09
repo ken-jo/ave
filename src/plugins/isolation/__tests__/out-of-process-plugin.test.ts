@@ -59,7 +59,7 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
   };
 });
 import { PassThrough } from "node:stream";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -69,7 +69,7 @@ import type {
   RuntimePlugin,
 } from "../../types.js";
 import { servePluginChild } from "../plugin-child-main.js";
-import { createOutOfProcessPluginFactory } from "../out-of-process-plugin.js";
+import { createOutOfProcessPluginFactory, PluginSandboxGrantError } from "../out-of-process-plugin.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import { openPluginProtocolSession } from "../plugin-protocol-session.js";
 import type { ChildLink } from "../plugin-child-transport.js";
@@ -85,6 +85,7 @@ import { buildSafeChildEnv } from "../../../tools/safe-env.js";
 import { createSandboxProcessHome } from "../../../permissions/sandbox-process-home.js";
 import { ProcessEntryUnconfinedError } from "../../process-entry.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
+import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 
 const PLUGIN_ID = "vega-helper";
 const EMPTY_SCHEMA = { type: "object", properties: {} } as const;
@@ -1185,6 +1186,113 @@ describe("the factory's launch reaches the spawn as decided", () => {
       expect(spec.baseEnv.ELECTRON_RUN_AS_NODE).toBe("1");
     } finally {
       roots.remove();
+    }
+  });
+});
+
+/**
+ * The way out for a `userChosenDirectory` value stored as `~/…` (§9.8 A1, "The
+ * resolver's guidance"; decision 54). The host expands `~` nowhere, so the
+ * grant is refused at spawn and the plugin does not load; the refusal names
+ * the one action that helps, and both ways out load. A restart invokes the
+ * factory again with the incarnation's config, which is what the second and
+ * third invocations below are. The spawn is the real one, unwrapped as the
+ * sandbox reads off here, so "loads" means a child answered a tool call.
+ */
+describe("a stored '~/…' directory value: refused with guidance, and both ways out load", () => {
+  it("fails construction with no child, then loads from an approved absolute path, then with the value cleared", async () => {
+    const actual = await vi.importActual<typeof import("../../../permissions/confined-child.js")>(
+      "../../../permissions/confined-child.js",
+    );
+    const root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : tmpdir(), "oop-tilde-"));
+    const previousHome = process.env.AVE_HOME;
+    const home = join(root, "home");
+    const approved = join(root, "approved");
+    const pluginRoot = join(home, "plugins", "tilde-cache");
+    const pluginDataDir = join(pluginRoot, "data");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(approved, { recursive: true });
+    mkdirSync(pluginDataDir, { recursive: true });
+    writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [approved] } }));
+    const entryPath = join(pluginRoot, "plugin.mjs");
+    writeFileSync(
+      entryPath,
+      `export default async function createPlugin(context) {
+  return { handlers: { cache_where: async () => context.hostApi.config.get("dataDirectory") ?? null } };
+}
+`,
+      "utf-8",
+    );
+    const manifest: PluginManifest = {
+      id: "tilde-cache",
+      name: "Tilde Cache",
+      version: "1.0.0",
+      entry: "plugin.mjs",
+      requires: { hostProtocol: "2" },
+      description: "keeps a cache in a directory the user chooses",
+      sandbox: { write: [{ kind: "userChosenDirectory", configKey: "dataDirectory", why: "where the cache is written" }] },
+      tools: [{ name: "cache_where", description: "name the cache directory", inputSchema: EMPTY_SCHEMA }],
+    };
+    const confinements: string[] = [];
+    const factory = createOutOfProcessPluginFactory({
+      manifest,
+      childEntryPath: pluginChildEntryPath(),
+      launch: { kind: "entry", entryPath },
+      onChildSpawned: (confinement) => confinements.push(confinement),
+    });
+    const hostApi = fakeHostApi();
+    // The stored value as both halves of an incarnation hold it: the host's
+    // `config.get`, which the envelope derivation reads, and the construction
+    // snapshot the child is given.
+    const storeAndContext = (dataDirectory: string): PluginRuntimeContext => {
+      hostApi.setHostConfig("dataDirectory", dataDirectory);
+      return hostContext(hostApi, {
+        pluginId: manifest.id,
+        pluginRoot,
+        pluginDataDir,
+        pluginSocketDir: join(pluginDataDir, "sockets"),
+        config: { dataDirectory },
+      });
+    };
+    process.env.AVE_HOME = home;
+    spawnConfinedChild.mockReset();
+    spawnConfinedChild.mockImplementation(actual.spawnConfinedChild);
+    const loaded: RuntimePlugin[] = [];
+    try {
+      const refused = await Promise.resolve(factory(storeAndContext("~/ave-git-cache"))).then(() => undefined, (error: unknown) => error);
+      expect(refused).toBeInstanceOf(PluginSandboxGrantError);
+      expect((refused as Error).message).toBe(
+        "[out-of-process-plugin] tilde-cache: cannot widen the child's envelope for config key 'dataDirectory': "
+          + "'~/ave-git-cache' is not an absolute path — the host cannot resolve a relative value, because "
+          + "the directory it would be relative to is the plugin's to choose; "
+          + "enter an approved absolute directory for 'dataDirectory', or clear the setting",
+      );
+      expect(spawnConfinedChild).not.toHaveBeenCalled();
+      expect(confinements).toEqual([]);
+
+      const fromApproved = await factory(storeAndContext(approved));
+      loaded.push(fromApproved);
+      await expect(fromApproved.handlers.cache_where!()).resolves.toBe(approved);
+      expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
+      await fromApproved.stop?.();
+      loaded.length = 0;
+
+      const cleared = await factory(storeAndContext(""));
+      loaded.push(cleared);
+      await expect(cleared.handlers.cache_where!()).resolves.toBe("");
+      expect(spawnConfinedChild).toHaveBeenCalledTimes(2);
+      // The approved value was granted to its child; with the value cleared no
+      // grant was asked for, so the approved directory is not writable.
+      const writes = spawnConfinedChild.mock.calls.map(([spec]) => (spec as { allowWrite?: readonly string[] }).allowWrite ?? []);
+      expect(writes[0]).toContain(approved);
+      expect(writes[1]).not.toContain(approved);
+      expect(confinements).toEqual(["unconfined", "unconfined"]);
+    } finally {
+      for (const instance of loaded) await instance.stop?.();
+      spawnConfinedChild.mockReset();
+      if (previousHome === undefined) delete process.env.AVE_HOME;
+      else process.env.AVE_HOME = previousHome;
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

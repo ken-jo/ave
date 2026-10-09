@@ -130,6 +130,9 @@ function runtimeProjection(manifest: PluginManifest, pluginRoot: string) {
     pluginRoot,
     instance: { handlers: {} },
     methods: new Map(),
+    // A generation the routing function produced, spawned with the sandbox off.
+    arm: "child" as const,
+    confinement: "unconfined" as const,
   };
 }
 
@@ -150,7 +153,7 @@ describe("PluginBundleLifecycle", () => {
         getPluginManifest: () => manifest,
         getPluginRoot: () => pluginRoot,
         getRuntimeGenerationProjection: () => runtimeProjection(manifest, pluginRoot),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
         postPublishRuntimeGeneration: vi.fn(),
         publishRuntimeGeneration: vi.fn(),
@@ -200,7 +203,7 @@ describe("PluginBundleLifecycle", () => {
         getPluginManifest: () => manifest,
         getPluginRoot: () => pluginRoot,
         getRuntimeGenerationProjection,
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval,
         postPublishRuntimeGeneration: vi.fn(),
         publishRuntimeGeneration: vi.fn(),
@@ -245,6 +248,7 @@ describe("PluginBundleLifecycle", () => {
     const disconnectBundledGeneration = vi.fn(async () => undefined);
     const prepareRuntimeGeneration = vi.fn(() => ({
       pluginId: manifest.id,
+      handOver: vi.fn(),
       publish: vi.fn(),
     }));
     const prepareRuntimeRemoval = vi.fn(() => ({
@@ -357,7 +361,7 @@ describe("PluginBundleLifecycle", () => {
           ...runtimeProjection(manifest, pluginRoot),
           activationId,
         }),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
         postPublishRuntimeGeneration,
         publishRuntimeGeneration: vi.fn(),
@@ -439,7 +443,7 @@ describe("PluginBundleLifecycle", () => {
           ...runtimeProjection(manifest, pluginRoot),
           activationId,
         }),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
         postPublishRuntimeGeneration,
         publishRuntimeGeneration: vi.fn(),
@@ -539,6 +543,7 @@ describe("PluginBundleLifecycle", () => {
         }),
         prepareRuntimeGeneration: vi.fn((runtime: PluginRuntimeGenerationProjection) => ({
           pluginId: manifest.id,
+          handOver: vi.fn(),
           publish: () => {
             if (runtime.activationId === "test-activation-2") throw publicationCause;
           },
@@ -685,7 +690,7 @@ describe("PluginBundleLifecycle", () => {
         getPluginManifest: () => manifest,
         getPluginRoot: () => pluginRoot,
         getRuntimeGenerationProjection: () => runtimeProjection(manifest, pluginRoot),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({
           pluginId: manifest.id,
           publish: () => { throw publicationCause; },
@@ -762,7 +767,7 @@ describe("PluginBundleLifecycle", () => {
           ...runtimeProjection(manifest, pluginRoot),
           activationId,
         }),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
         postPublishRuntimeGeneration,
         publishRuntimeGeneration: vi.fn(),
@@ -818,7 +823,7 @@ describe("PluginBundleLifecycle", () => {
           ...runtimeProjection(manifest, pluginRoot),
           activationId,
         }),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
         postPublishRuntimeGeneration,
         publishRuntimeGeneration: vi.fn(),
@@ -861,7 +866,7 @@ describe("PluginBundleLifecycle", () => {
         getPluginManifest: () => manifest,
         getPluginRoot: () => pluginRoot,
         getRuntimeGenerationProjection: () => runtimeProjection(manifest, pluginRoot),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
         postPublishRuntimeGeneration: vi.fn(async () => {
           throw new Error("initial runtime readiness failed");
@@ -915,7 +920,7 @@ describe("PluginBundleLifecycle", () => {
           activationId,
           installId: "orion-api",
         }),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
         postPublishRuntimeGeneration: vi.fn(),
         publishRuntimeGeneration: vi.fn(),
@@ -966,7 +971,7 @@ describe("PluginBundleLifecycle", () => {
         getPluginManifest: () => manifest,
         getPluginRoot: () => pluginRoot,
         getRuntimeGenerationProjection: () => runtimeProjection(manifest, pluginRoot),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
         postPublishRuntimeGeneration: vi.fn(),
         publishRuntimeGeneration: vi.fn(),
@@ -1027,7 +1032,7 @@ describe("PluginBundleLifecycle", () => {
         getPluginManifest: () => manifest,
         getPluginRoot: () => pluginRoot,
         getRuntimeGenerationProjection: () => runtimeProjection(manifest, pluginRoot),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
         postPublishRuntimeGeneration: vi.fn(),
         publishRuntimeGeneration: vi.fn(),
@@ -1068,7 +1073,7 @@ describe("PluginBundleLifecycle", () => {
         getPluginManifest: () => valid.manifest,
         getPluginRoot: () => valid.pluginRoot,
         getRuntimeGenerationProjection: () => runtimeProjection(valid.manifest, valid.pluginRoot),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: valid.manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: valid.manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({ pluginId: valid.manifest.id, publish: vi.fn() })),
         postPublishRuntimeGeneration: vi.fn(),
         publishRuntimeGeneration: vi.fn(),
@@ -1122,6 +1127,7 @@ describe("PluginBundleLifecycle", () => {
         getRuntimeGenerationProjection: () => runtimeProjection(manifest, pluginRoot),
         prepareRuntimeGeneration: vi.fn(() => ({
           pluginId: manifest.id,
+          handOver: vi.fn(),
           publish: vi.fn(),
         })),
         prepareRuntimeRemoval: vi.fn(() => ({
@@ -1198,7 +1204,7 @@ describe("PluginBundleLifecycle", () => {
         getPluginManifest: () => manifest,
         getPluginRoot: () => pluginRoot,
         getRuntimeGenerationProjection: () => runtimeProjection(manifest, pluginRoot),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
         postPublishRuntimeGeneration: vi.fn(),
         publishRuntimeGeneration: vi.fn(),
@@ -1247,7 +1253,7 @@ describe("PluginBundleLifecycle", () => {
         getPluginManifest: () => manifest,
         getPluginRoot: () => pluginRoot,
         getRuntimeGenerationProjection: () => runtimeProjection(manifest, pluginRoot),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
         postPublishRuntimeGeneration: vi.fn(async () => { throw new Error("runtime restore failed"); }),
         publishRuntimeGeneration: vi.fn(),
@@ -1319,7 +1325,7 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
         getPluginManifest: () => manifest,
         getPluginRoot: () => base.pluginRoot,
         getRuntimeGenerationProjection: () => ({ ...runtimeProjection(manifest, base.pluginRoot), activationId: `activation-${++activationId}` }),
-        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
         postPublishRuntimeGeneration: vi.fn(),
         publishRuntimeGeneration: vi.fn(),

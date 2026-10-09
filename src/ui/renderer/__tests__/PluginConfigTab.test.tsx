@@ -1445,3 +1445,261 @@ it("opens a requested plugin under the existing anchor and updates its unseen ba
   act(changed);
   await waitFor(() => expect(screen.queryByTestId("alert-unseen:meeting")).toBeNull());
 });
+
+/**
+ * The Doctor's arm and confinement, and a running plugin's refused attempt
+ * (`docs/design/plugin-hostapi-protocol.md` §9.8 A1, decisions 51 and 52).
+ */
+describe("PluginConfigTab — where a plugin runs, and a refused attempt", () => {
+  function showCards(cards: unknown[]): void {
+    Object.defineProperty(window, "ave", {
+      value: { plugins: { cards: vi.fn().mockResolvedValue(cards) }, pluginConfig: { get: mockGet, set: mockSet } },
+      writable: true,
+      configurable: true,
+    });
+  }
+  const base = { name: "Meeting", description: "Meeting plugin", sampleTools: [], capabilities: [], tools: [] };
+
+  it("shows a loaded plugin's arm and confinement on its row, and its refused restart as one muted line", async () => {
+    showCards([{
+      ...base,
+      id: "meeting",
+      loadStatus: "loaded" as const,
+      arm: "child" as const,
+      confinement: "macos-sandbox" as const,
+      lastAttemptRefusal: {
+        attempt: "restart" as const,
+        kind: "incompatible-host-protocol" as const,
+        message: "plugin 'meeting' declares no host protocol this app serves",
+        at: "2026-10-08T00:00:00.000Z",
+      },
+    }]);
+    render(<PluginConfigTab />);
+    const arm = await screen.findByTestId("plugin-config:row-arm:meeting");
+    expect(arm).toHaveTextContent("별도 프로세스 · macOS 샌드박스");
+    expect(arm).toHaveAttribute("data-confinement", "macos-sandbox");
+    const refusal = screen.getByTestId("plugin-config:row-refusal:meeting");
+    expect(refusal).toHaveTextContent("마지막 재시작 거부됨: plugin 'meeting' declares no host protocol this app serves");
+    expect(refusal).toHaveAttribute("data-attempt", "restart");
+    // Nothing failed: the plugin keeps its loaded state and the Doctor stays closed.
+    expect(screen.getByTestId("plugin-config:row-status:meeting")).toHaveTextContent("로드됨");
+    expect(screen.queryByTestId("plugin-config:doctor-panel:meeting")).toBeNull();
+  });
+
+  it("words a refused update differently from a refused restart", async () => {
+    showCards([{
+      ...base,
+      id: "meeting",
+      loadStatus: "loaded" as const,
+      arm: "child" as const,
+      confinement: "unconfined" as const,
+      lastAttemptRefusal: { attempt: "update" as const, kind: "incompatible-host-protocol" as const, message: "refused", at: "2026-10-08T00:00:00.000Z" },
+    }]);
+    render(<PluginConfigTab />);
+    expect(await screen.findByTestId("plugin-config:row-refusal:meeting")).toHaveTextContent("마지막 업데이트 거부됨: refused");
+    expect(screen.getByTestId("plugin-config:row-arm:meeting")).toHaveTextContent("별도 프로세스 · OS 샌드박스 없음");
+  });
+
+  it("names the arm and that no child existed in the Doctor panel of a plugin that failed after routing", async () => {
+    showCards([{
+      ...base,
+      id: "meeting",
+      loadStatus: "failed" as const,
+      installFailureKind: "sandbox-grant-outside-ceiling" as const,
+      installFailureMessage: "cannot widen the child's envelope for config key 'dataDirectory'",
+      arm: "child" as const,
+      confinement: "not-spawned" as const,
+    }]);
+    render(<PluginConfigTab />);
+    const arm = await screen.findByTestId("plugin-config:doctor-arm:meeting");
+    expect(within(screen.getByTestId("plugin-config:doctor-panel:meeting")).getByTestId("plugin-config:doctor-arm:meeting")).toBe(arm);
+    expect(arm).toHaveTextContent("실행 방식: 별도 프로세스 · 프로세스 시작 전");
+    // A failed plugin's row carries the status, not a running arm.
+    expect(screen.queryByTestId("plugin-config:row-arm:meeting")).toBeNull();
+  });
+
+  it.each([
+    ["macos-sandbox", "macOS 샌드박스"],
+    ["linux-bubblewrap", "Linux 샌드박스(bubblewrap)"],
+    ["windows-srt", "Windows 샌드박스"],
+    ["unconfined", "OS 샌드박스 없음"],
+  ] as const)("names a child spawned under %s in the Doctor panel", async (confinement, text) => {
+    showCards([{
+      ...base,
+      id: "meeting",
+      loadStatus: "failed" as const,
+      installFailureKind: "load-crash" as const,
+      installFailureMessage: "child exited code=1",
+      arm: "child" as const,
+      confinement,
+    }]);
+    render(<PluginConfigTab />);
+    expect(await screen.findByTestId("plugin-config:doctor-arm:meeting")).toHaveTextContent(`별도 프로세스 · ${text}`);
+  });
+
+  it("shows no arm for a failure before routing", async () => {
+    showCards([{
+      ...base,
+      id: "meeting",
+      loadStatus: "failed" as const,
+      installFailureKind: "incompatible-app-version" as const,
+      installFailureMessage: "plugin requires Ave >= 99.0.0",
+    }]);
+    render(<PluginConfigTab />);
+    await screen.findByTestId("plugin-config:doctor-panel:meeting");
+    expect(screen.queryByTestId("plugin-config:doctor-arm:meeting")).toBeNull();
+  });
+
+  /**
+   * The row is a snapshot of the cards the tab last read. A refused restart
+   * or update is recorded on the card AFTER the row rendered, so each case
+   * below starts from a row without one, makes the attempt, and expects the
+   * tab to re-read the cards (§9.8 A1, decision 52).
+   */
+  describe("a refusal recorded while the row is open", () => {
+    const refusalOf = (attempt: "restart" | "update", message: string) => ({
+      attempt, kind: "incompatible-host-protocol" as const, message, at: "2026-10-08T00:00:00.000Z",
+    });
+    function liveCards(initial: Record<string, unknown>): { cards: ReturnType<typeof vi.fn>; record(next: Record<string, unknown>): void } {
+      let current = [initial];
+      return {
+        cards: vi.fn(async () => current),
+        record: (next) => { current = [next]; },
+      };
+    }
+    const loaded = { ...base, id: "meeting", loadStatus: "loaded" as const, arm: "child" as const, confinement: "unconfined" as const };
+
+    it("shows a config save's refused restart on the open row", async () => {
+      const live = liveCards(loaded);
+      const set = vi.fn(async () => {
+        live.record({ ...loaded, lastAttemptRefusal: refusalOf("restart", "declares no served protocol") });
+        return { ok: false as const, error: "plugin-config-save-failed", message: "Plugin config saved but runtime reload refused: declares no served protocol" };
+      });
+      Object.defineProperty(window, "ave", { value: { plugins: { cards: live.cards }, pluginConfig: { get: mockGet, set } }, writable: true, configurable: true });
+      render(<PluginConfigTab />);
+      await screen.findByTestId("plugin-config:row-arm:meeting");
+      expect(screen.queryByTestId("plugin-config:row-refusal:meeting")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "저장" }));
+      expect(await screen.findByTestId("plugin-config:row-refusal:meeting")).toHaveTextContent("마지막 재시작 거부됨: declares no served protocol");
+      expect(screen.getByTestId("plugin-config:row-status:meeting")).toHaveTextContent("로드됨");
+    });
+
+    it("drops the line when a later save's restart commits", async () => {
+      const live = liveCards({ ...loaded, lastAttemptRefusal: refusalOf("restart", "declares no served protocol") });
+      const set = vi.fn(async () => {
+        live.record(loaded);
+        return { ok: true as const, config: { apiKey: "abc" } };
+      });
+      Object.defineProperty(window, "ave", { value: { plugins: { cards: live.cards }, pluginConfig: { get: mockGet, set } }, writable: true, configurable: true });
+      render(<PluginConfigTab />);
+      await screen.findByTestId("plugin-config:row-refusal:meeting");
+      fireEvent.click(screen.getByRole("button", { name: "저장" }));
+      await waitFor(() => expect(screen.queryByTestId("plugin-config:row-refusal:meeting")).toBeNull());
+    });
+
+    it("shows a schema form save's refused restart on the open row", async () => {
+      const withSchema = { ...loaded, configSchema: { properties: { mode: { type: "string", enum: ["fast", "slow"], title: "Mode" } } } };
+      const live = liveCards(withSchema);
+      const set = vi.fn(async () => {
+        live.record({ ...withSchema, lastAttemptRefusal: refusalOf("restart", "schema save refused") });
+        return { ok: false as const, error: "plugin-config-save-failed", message: "Plugin config saved but runtime reload refused: schema save refused" };
+      });
+      Object.defineProperty(window, "ave", {
+        value: { plugins: { cards: live.cards }, pluginConfig: { get: vi.fn(async () => ({ ok: true as const, config: {} })), set, setSecret: vi.fn(), listSecretKeys: vi.fn(async () => ({ ok: true, keys: [] })) } },
+        writable: true,
+        configurable: true,
+      });
+      render(<PluginConfigTab />);
+      await screen.findByTestId("plugin-config-form:meeting");
+      fireEvent.change(document.getElementById("pcfg:meeting:mode")!, { target: { value: "slow" } });
+      await waitFor(() => expect(set).toHaveBeenCalledWith("meeting", { mode: "slow" }));
+      expect(await screen.findByTestId("plugin-config:row-refusal:meeting")).toHaveTextContent("마지막 재시작 거부됨: schema save refused");
+    });
+
+    it("shows a secret save's refused restart on the open row", async () => {
+      const withSecret = { ...loaded, configSchema: { properties: { apiKey: { type: "string", format: "secret", title: "API Key" } } } };
+      const live = liveCards(withSecret);
+      const setSecret = vi.fn(async () => {
+        live.record({ ...withSecret, lastAttemptRefusal: refusalOf("restart", "secret save refused") });
+        return { ok: false as const, error: "plugin-config-secret-save-failed", message: "Plugin secret saved but runtime reload refused: secret save refused" };
+      });
+      Object.defineProperty(window, "ave", {
+        value: { plugins: { cards: live.cards }, pluginConfig: { get: vi.fn(async () => ({ ok: true as const, config: {} })), set: vi.fn(), setSecret, listSecretKeys: vi.fn(async () => ({ ok: true, keys: [] })) } },
+        writable: true,
+        configurable: true,
+      });
+      render(<PluginConfigTab />);
+      fireEvent.change(await screen.findByTestId("pcfg:meeting:apiKey:input"), { target: { value: "sk-live" } });
+      fireEvent.click(screen.getByTestId("pcfg:meeting:apiKey:save"));
+      await waitFor(() => expect(setSecret).toHaveBeenCalledWith("meeting", "apiKey", "sk-live"));
+      expect(await screen.findByTestId("plugin-config:row-refusal:meeting")).toHaveTextContent("마지막 재시작 거부됨: secret save refused");
+    });
+
+    it("keeps a newer card list when an older read answers after it", async () => {
+      // The first save's re-read is held; the second save commits and its
+      // re-read answers first with the refusal cleared. The held read then
+      // answers with the older, refused snapshot, which must not win.
+      let answerOlderRead!: (cards: unknown[]) => void;
+      const cards = vi.fn()
+        .mockResolvedValueOnce([loaded])
+        .mockImplementationOnce(() => new Promise((resolve) => { answerOlderRead = resolve; }))
+        .mockResolvedValue([loaded]);
+      const set = vi.fn()
+        .mockResolvedValueOnce({ ok: false, error: "plugin-config-save-failed", message: "Plugin config saved but runtime reload refused: older" })
+        .mockResolvedValue({ ok: true, config: { apiKey: "abc" } });
+      Object.defineProperty(window, "ave", { value: { plugins: { cards }, pluginConfig: { get: mockGet, set } }, writable: true, configurable: true });
+      render(<PluginConfigTab />);
+      await screen.findByTestId("plugin-config:row-arm:meeting");
+      fireEvent.click(screen.getByRole("button", { name: "저장" }));
+      await waitFor(() => expect(cards).toHaveBeenCalledTimes(2));
+      fireEvent.click(screen.getByRole("button", { name: "저장" }));
+      await waitFor(() => expect(cards).toHaveBeenCalledTimes(3));
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.queryByTestId("plugin-config:row-refusal:meeting")).toBeNull();
+      await act(async () => answerOlderRead([{ ...loaded, lastAttemptRefusal: refusalOf("restart", "older") }]));
+      expect(screen.queryByTestId("plugin-config:row-refusal:meeting")).toBeNull();
+      expect(screen.getByTestId("plugin-config:row-arm:meeting")).toBeInTheDocument();
+    });
+
+    it("shows an update refused at activation when its failed install result arrives", async () => {
+      const live = liveCards(loaded);
+      let installResult: ((payload: { slug: string; success: boolean; error?: string }) => void) | undefined;
+      setRendererApi({
+        gitMarketplace: market,
+        onPluginInstallResult: (handler: typeof installResult) => { installResult = handler; return () => {}; },
+      });
+      Object.defineProperty(window, "ave", { value: { plugins: { cards: live.cards }, pluginConfig: { get: mockGet, set: mockSet } }, writable: true, configurable: true });
+      render(<PluginConfigTab />);
+      await screen.findByTestId("plugin-config:row-arm:meeting");
+      expect(installResult).toBeDefined();
+      live.record({ ...loaded, lastAttemptRefusal: refusalOf("update", "update refused by host protocol") });
+      act(() => installResult!({ slug: "meeting", success: false, error: "update refused by host protocol" }));
+      expect(await screen.findByTestId("plugin-config:row-refusal:meeting")).toHaveTextContent("마지막 업데이트 거부됨: update refused by host protocol");
+    });
+  });
+
+  it("has every Doctor key in both catalogs", async () => {
+    // A parity check cannot catch a key missing from both; this names them.
+    const { en } = await import("../../../i18n/messages/en.js");
+    const { ko } = await import("../../../i18n/messages/ko.js");
+    const keys = [
+      "pluginConfigTab.runtimeArmLabel",
+      "pluginConfigTab.runtimeArmLine",
+      "pluginConfigTab.armChild",
+      "pluginConfigTab.armInProcess",
+      "pluginConfigTab.confinementMacosSandbox",
+      "pluginConfigTab.confinementLinuxBubblewrap",
+      "pluginConfigTab.confinementWindowsSrt",
+      "pluginConfigTab.confinementUnconfined",
+      "pluginConfigTab.confinementNotSpawned",
+      "pluginConfigTab.lastUpdateRefused",
+      "pluginConfigTab.lastRestartRefused",
+    ];
+    for (const key of keys) {
+      expect((en as Record<string, string>)[key], `en ${key}`).toEqual(expect.any(String));
+      expect((ko as Record<string, string>)[key], `ko ${key}`).toEqual(expect.any(String));
+      expect((en as Record<string, string>)[key]!.length, `en ${key}`).toBeGreaterThan(0);
+      expect((ko as Record<string, string>)[key]!.length, `ko ${key}`).toBeGreaterThan(0);
+    }
+  });
+});

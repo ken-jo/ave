@@ -92,6 +92,7 @@ function hostApiUnderTest(pluginDataDir: string): {
       getApprovedPluginAccess: () => undefined,
       listPluginIds: () => [PLUGIN_ID],
       getWildcardConfigOverride: () => ({}),
+      isShuttingDown: () => false,
     }),
     lateBinding: {},
     getRegistryEntry: () => undefined,

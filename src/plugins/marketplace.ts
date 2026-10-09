@@ -40,6 +40,7 @@ import {
 import { assertGitInstallManifest, expectedPluginOf, manifestAuthority } from "../marketplace/resolve/manifest-rules.js";
 import { classifyInstall, type InstallAction } from "../marketplace/resolve/identity.js";
 import { MarketplaceError } from "../marketplace/errors.js";
+import { IncompatibleHostProtocolError } from "./isolation/host-api-wire.js";
 import { pluginConsent, unknownConsent, type ConsentFingerprint } from "../marketplace/updates/consent.js";
 import { readPayloadFiles, type PayloadFile } from "./contribution-approval-digest.js";
 import type { PluginAuthority } from "../marketplace/catalog/types.js";
@@ -953,23 +954,39 @@ export class PluginMarketplaceService {
               }
               assertProcessEntryAdmitted(preparedManifest, processEntryProvenance(committing.receipt));
             }
-            return opts.activatePreparedArtifact({
-              installId: pluginId,
-              pluginRoot,
-              manifest: preparedManifest,
-              receiptRaw: preparedReceiptRaw,
-              registryEntry: {
-                installSource: opts.registryInstallSource,
-                ...(opts.registryOrigin ? { origin: opts.registryOrigin } : {}),
-                // The pin covers the FILE, so it hashes the document —
-                // `readManifestSha256` re-derives it that way on every later
-                // read, and a pin taken over the projection would never
-                // match one taken over the file.
-                manifestSha256: shaOfManifest(preparedDocument),
-              },
-              ...(opts.approvedPluginAccess ? { approvedPluginAccess: opts.approvedPluginAccess } : {}),
-              durableCommit,
-            });
+            try {
+              return await opts.activatePreparedArtifact({
+                installId: pluginId,
+                pluginRoot,
+                manifest: preparedManifest,
+                receiptRaw: preparedReceiptRaw,
+                registryEntry: {
+                  installSource: opts.registryInstallSource,
+                  ...(opts.registryOrigin ? { origin: opts.registryOrigin } : {}),
+                  // The pin covers the FILE, so it hashes the document —
+                  // `readManifestSha256` re-derives it that way on every later
+                  // read, and a pin taken over the projection would never
+                  // match one taken over the file.
+                  manifestSha256: shaOfManifest(preparedDocument),
+                },
+                ...(opts.approvedPluginAccess ? { approvedPluginAccess: opts.approvedPluginAccess } : {}),
+                durableCommit,
+              });
+            } catch (error) {
+              // The child factory refuses a manifest with no served
+              // `hostProtocol` when the runtime invokes it (§9.8 A1, decision
+              // 52). Reported as the update's own incompatibility — the
+              // existing code and detail the catalog uses for an unserved
+              // version — so the Updates card does not read it as an
+              // unreachable source. The running generation is untouched.
+              if (error instanceof IncompatibleHostProtocolError) {
+                throw new MarketplaceError("PACKAGE_INCOMPATIBLE", error.message, {
+                  cause: error,
+                  detail: { reason: "host_protocol", name: pluginId },
+                });
+              }
+              throw error;
+            }
           },
           onCommittedBackupResolved: (obsoleteDir) =>
             clearObsoletePluginBackupOwnership(this.paths, pluginId, obsoleteDir),

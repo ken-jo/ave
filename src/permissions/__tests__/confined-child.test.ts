@@ -14,7 +14,8 @@
  * Six call sites restate that floor by hand today. Callers here cannot omit it,
  * and these tests are what keeps that true.
  */
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
@@ -362,5 +363,61 @@ describe("spawnConfinedChild", () => {
     });
     expect(admissionMock).toHaveBeenCalledWith("worker:meeting:main:asrt");
     expect(trackMock).toHaveBeenCalledWith(expect.anything(), { label: "worker:meeting:main:asrt" });
+  });
+});
+
+describe("spawnConfinedChild reports the wrap it applied", () => {
+  const hostPlatform = process.platform;
+  afterEach(() => setProcessPlatform(hostPlatform));
+
+  it.each([
+    ["darwin", "allow-list", "macos-sandbox"],
+    ["linux", "allow-list", "linux-bubblewrap"],
+    ["win32", "deny-only", "windows-srt"],
+  ] as const)("on %s with the sandbox live it reports %s's wrap as %s", async (platform, grantMode, expected) => {
+    setProcessPlatform(platform);
+    const spawned = await spawnConfinedChild({
+      command: "/usr/bin/python3",
+      args: [],
+      label: "worker:x:main",
+      grantMode,
+      tempPrincipal: PRINCIPAL,
+      baseEnv: {},
+    });
+    expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);
+    expect(spawned.confinement).toBe(expected);
+    expect(spawned.child).toBe(spawnMock.mock.results[0]!.value);
+  });
+
+  it("reports an unwrapped child as unconfined on every platform, whatever the setting would say", async () => {
+    // The answer follows the wrap, not `features.osToolSandbox`: the host can
+    // have the setting on and still not run a sandbox, and then nothing wraps.
+    sandboxActiveMock.mockReturnValue(false);
+    for (const platform of ["darwin", "linux", "win32"] as const) {
+      setProcessPlatform(platform);
+      const spawned = await spawnConfinedChild({
+        command: "/usr/bin/python3",
+        args: [],
+        label: "worker:x:main",
+        grantMode: platform === "win32" ? "deny-only" : "allow-list",
+        tempPrincipal: PRINCIPAL,
+        baseEnv: {},
+      });
+      expect(spawned.confinement, platform).toBe("unconfined");
+    }
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses to name a wrap for a platform no substrate serves, before anything is spawned", async () => {
+    setProcessPlatform("freebsd");
+    await expect(spawnConfinedChild({
+      command: "/usr/bin/python3",
+      args: [],
+      label: "worker:x:main",
+      grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL,
+      baseEnv: {},
+    })).rejects.toThrow(/sandbox is active on 'freebsd', which no wrap substrate serves/);
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 });

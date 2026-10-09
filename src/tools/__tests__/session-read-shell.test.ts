@@ -162,7 +162,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     const ordinary = join(cwd, "ordinary.txt"); writeFileSync(ordinary, "ordinary-child-fixture");
     let wrapped = false;
     try {
-      const child = await spawnConfinedChild({
+      const { child, confinement } = await spawnConfinedChild({
         command: "/bin/cat", args: [ordinary, transcript], label: "session-read-confined-fixture",
         grantMode: "allow-list", tempPrincipal: { kind: "plugin", id: "session-read-fixture" },
         allowRead: [cwd, profile], allowWrite: [cwd], baseEnv: buildSafeChildEnv(),
@@ -181,6 +181,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
         });
         const stdout = Buffer.concat(output).toString("utf8");
         expect(wrapped).toBe(true);
+        expect(confinement).not.toBe("unconfined");
         expect(code, Buffer.concat(errors).toString("utf8")).toBe(1);
         expect(stdout).toContain("ordinary-child-fixture");
         expect(stdout).not.toContain(CONTENT.trim());

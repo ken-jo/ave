@@ -442,6 +442,12 @@ export function createHostApiFactory(
       },
     };
     const hostIncarnation = incarnation;
+    // Host-originated notifications (events, config changes, plugin-set
+    // changes) reach the plugin only while its incarnation is live and the
+    // runtime has not begun shutting down: shutdown admits nothing new into a
+    // generation it is retiring.
+    const acceptsHostNotification = (): boolean =>
+      hostIncarnation.isActive() && !pluginRuntime.isShuttingDown();
     hostIncarnation.registerDisposer(() => credentialRegistry.endIncarnation(hostIncarnation));
     const hostEffects = hostIncarnation.generationScope;
     const registerOwnedDisposer = (dispose: () => void): (() => void) => {
@@ -720,7 +726,7 @@ export function createHostApiFactory(
           callback: (value: T | undefined) => void,
         ): (() => void) => {
           const invoke = (nextValue: T | undefined) => {
-            if (!hostIncarnation.isActive()) return;
+            if (!acceptsHostNotification()) return;
             callback(nextValue);
           };
           // `wrapListener`, not a `void`-discarded `wrapCallback`. The bus
@@ -768,7 +774,7 @@ export function createHostApiFactory(
         // subscriber hears its own alerts and, with a grant, the named plugin's.
         const alertEvent = isAlertEvent(type);
         const dispatch = (data: unknown) => {
-          if (!hostIncarnation.isActive()) return;
+          if (!acceptsHostNotification()) return;
           if (alertEvent && !alertEventReaches(pluginId, type, data, getApprovedPluginAccess())) return;
           handler(data);
         };
@@ -786,7 +792,7 @@ export function createHostApiFactory(
       },
       onPluginsChanged: (handler) => {
         const dispatchInstalled = (data: unknown) => {
-          if (!hostIncarnation.isActive()) return;
+          if (!acceptsHostNotification()) return;
           const payload = data as { pluginId?: string; source?: "marketplace" | "local-dev" } | null | undefined;
           const subjectId = payload?.pluginId;
           if (typeof subjectId !== "string" || subjectId === pluginId) return;
@@ -794,7 +800,7 @@ export function createHostApiFactory(
           handler({ type: "installed", pluginId: subjectId, source });
         };
         const dispatchUninstalled = (data: unknown) => {
-          if (!hostIncarnation.isActive()) return;
+          if (!acceptsHostNotification()) return;
           const subjectId = (data as { pluginId?: string } | null | undefined)?.pluginId;
           if (typeof subjectId !== "string" || subjectId === pluginId) return;
           handler({ type: "uninstalled", pluginId: subjectId });

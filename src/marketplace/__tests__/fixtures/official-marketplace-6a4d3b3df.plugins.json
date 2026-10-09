@@ -1,0 +1,912 @@
+{
+  "schemaVersion": 1,
+  "name": "ave",
+  "displayName": "Ave Official",
+  "description": "Official Ave marketplace index.",
+  "owner": {
+    "name": "Ave"
+  },
+  "packages": [
+    {
+      "kind": "plugin",
+      "name": "hello-world",
+      "path": "plugins/hello-world",
+      "displayName": "Hello World",
+      "description": "Hello World demo plugin for checking marketplace install and dynamic UI load.",
+      "latest": "0.2.0",
+      "versions": [
+        {
+          "version": "0.2.0",
+          "commit": "161f6f88abe9961aa9760d1a71463c74319acf1e",
+          "minAppVersion": "0.10.0",
+          "authority": {
+            "capabilities": [],
+            "requires": {
+              "minAppVersion": "0.10.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "hello-world-v0.2.0",
+              "asset": "hello-world-0.2.0.zip",
+              "sha256": "d8e7473168882f68497f2be4bf98e7661a1b047d14784c7614662560a51f6bf5"
+            }
+          },
+          "publishedAt": "2026-09-24T07:28:47Z"
+        }
+      ]
+    },
+    {
+      "kind": "plugin",
+      "name": "local-indexer",
+      "path": "plugins/local-indexer",
+      "displayName": "Ave Local Indexer",
+      "description": "Local Indexer 문서 파일 자동 인덱싱 및 문서 검색 플러그인. 폴더 감시(chokidar), PDF/Markdown 파싱, 한국어 형태소 분석(kiwi), FTS5 기반 검색. 인덱스 위치: 플러그인 데이터 디렉터리의 index/",
+      "latest": "0.6.7",
+      "versions": [
+        {
+          "version": "0.6.7",
+          "commit": "ac4242cf8cbeaec4fc849dda73c599ad922d0f06",
+          "minAppVersion": "0.10.0",
+          "authority": {
+            "capabilities": [
+              "knowledge-index",
+              "document-indexer",
+              "external-auth-consumer",
+              "host:overlay",
+              "lifecycle-observer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "api.openai.com",
+                "openai.azure.com",
+                "cognitiveservices.azure.com",
+                "localhost",
+                "127.0.0.1",
+                "::1"
+              ],
+              "reasoning": "워커의 임베딩/비전 캡셔닝 egress. 이 정적 allow-list는 디폴트 OpenAI/Azure 호스트(api.openai.com, *.openai.azure.com, *.cognitiveservices.azure.com — dot-boundary suffix-match)만 커버한다. host-mediated egress broker(P3 ⑬, src/egressBroker.ts) 도입 후, 워커는 provider 키를 보유하지 않고 broker(<base>/egress/embedding, <base>/egress/caption)로만 egress하며, 실제 provider 호출은 호스트-측 broker가 hostApi.hostFetch chokepoint를 통해 수행한다. 따라서 provider egress는 이 manifest networkAccess.allowedDomains, HTTPS-only, SSRF guard, effect-boundary audit를 모두 통과한다. 워커는 임의 host를 지정할 수 없고, suffix에 맞지 않는 사용자-설정 커스텀 OpenAI-호환 endpoint는 hostFetch 단계에서 hard-deny된다. 루프백 리터럴(localhost / 127.0.0.1 / ::1)은 embeddingProvider=\"openai\" 일 때 사용자가 embeddingEndpoint 설정에 직접 적어 넣는 로컬 추론 서버(LM Studio, LiteLLM, 사내 프록시)를 위한 선언이다. 이 선언이 없으면 해당 설정은 hostFetch에서 항상 거부되어 조작할 수 없는 설정이 된다. 호스트는 이 리터럴에 한해 http cleartext를 허용하되(바이트가 기기 밖으로 나가지 않으므로 https 규칙이 보호할 대상이 없다) 이름이 실제로 루프백으로만 resolve되는지 증명한 뒤에만 허용하며, 이 선언은 LAN(RFC1918)이나 다른 어떤 host도 열지 않는다."
+            },
+            "hostSecrets": {
+              "read": [
+                "llm.apiKey.openai",
+                "llm.apiKey.azure-foundry"
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.10.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "local-indexer-v0.6.7",
+              "asset": "local-indexer-0.6.7.zip",
+              "sha256": "a0bdf23d992d29c58cf65103a3a639394cc2df07aa63d1e4d46505fd06e96e36"
+            }
+          },
+          "publishedAt": "2026-09-24T07:28:47Z"
+        },
+        {
+          "version": "0.6.6",
+          "commit": "84c8f87e6240810488dd86cd2e4322c27815edd9",
+          "minAppVersion": "0.7.0",
+          "authority": {
+            "capabilities": [
+              "knowledge-index",
+              "document-indexer",
+              "external-auth-consumer",
+              "host:overlay",
+              "lifecycle-observer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "api.openai.com",
+                "openai.azure.com",
+                "cognitiveservices.azure.com",
+                "localhost",
+                "127.0.0.1",
+                "::1"
+              ],
+              "reasoning": "워커의 임베딩/비전 캡셔닝 egress. 이 정적 allow-list는 디폴트 OpenAI/Azure 호스트(api.openai.com, *.openai.azure.com, *.cognitiveservices.azure.com — dot-boundary suffix-match)만 커버한다. host-mediated egress broker(P3 ⑬, src/egressBroker.ts) 도입 후, 워커는 provider 키를 보유하지 않고 broker(<base>/egress/embedding, <base>/egress/caption)로만 egress하며, 실제 provider 호출은 호스트-측 broker가 hostApi.hostFetch chokepoint를 통해 수행한다. 따라서 provider egress는 이 manifest networkAccess.allowedDomains, HTTPS-only, SSRF guard, effect-boundary audit를 모두 통과한다. 워커는 임의 host를 지정할 수 없고, suffix에 맞지 않는 사용자-설정 커스텀 OpenAI-호환 endpoint는 hostFetch 단계에서 hard-deny된다. 루프백 리터럴(localhost / 127.0.0.1 / ::1)은 embeddingProvider=\"openai\" 일 때 사용자가 embeddingEndpoint 설정에 직접 적어 넣는 로컬 추론 서버(LM Studio, LiteLLM, 사내 프록시)를 위한 선언이다. 이 선언이 없으면 해당 설정은 hostFetch에서 항상 거부되어 조작할 수 없는 설정이 된다. 호스트는 이 리터럴에 한해 http cleartext를 허용하되(바이트가 기기 밖으로 나가지 않으므로 https 규칙이 보호할 대상이 없다) 이름이 실제로 루프백으로만 resolve되는지 증명한 뒤에만 허용하며, 이 선언은 LAN(RFC1918)이나 다른 어떤 host도 열지 않는다."
+            },
+            "hostSecrets": {
+              "read": [
+                "llm.apiKey.openai",
+                "llm.apiKey.azure-foundry"
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.7.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "local-indexer-v0.6.6",
+              "asset": "local-indexer-0.6.6.zip",
+              "sha256": "b856cabae0354ff8699f02c19a7709f31120e95d803a46d74af0e82ffe64e7fe"
+            }
+          },
+          "publishedAt": "2026-09-24T03:26:21Z",
+          "yanked": {
+            "reason": "Field pin: the zip the server marketplace served, listed so installs of it keep their grant. Not installable.",
+            "at": "2026-09-24T03:26:21Z"
+          }
+        },
+        {
+          "version": "0.6.5",
+          "commit": "06130a9b86f3e1cfb187628e56a23ac20dc02543",
+          "minAppVersion": "0.7.0",
+          "authority": {
+            "capabilities": [
+              "knowledge-index",
+              "document-indexer",
+              "external-auth-consumer",
+              "host:overlay",
+              "lifecycle-observer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "api.openai.com",
+                "openai.azure.com",
+                "cognitiveservices.azure.com",
+                "localhost",
+                "127.0.0.1",
+                "::1"
+              ],
+              "reasoning": "워커의 임베딩/비전 캡셔닝 egress. 이 정적 allow-list는 디폴트 OpenAI/Azure 호스트(api.openai.com, *.openai.azure.com, *.cognitiveservices.azure.com — dot-boundary suffix-match)만 커버한다. host-mediated egress broker(P3 ⑬, src/egressBroker.ts) 도입 후, 워커는 provider 키를 보유하지 않고 broker(<base>/egress/embedding, <base>/egress/caption)로만 egress하며, 실제 provider 호출은 호스트-측 broker가 hostApi.hostFetch chokepoint를 통해 수행한다. 따라서 provider egress는 이 manifest networkAccess.allowedDomains, HTTPS-only, SSRF guard, effect-boundary audit를 모두 통과한다. 워커는 임의 host를 지정할 수 없고, suffix에 맞지 않는 사용자-설정 커스텀 OpenAI-호환 endpoint는 hostFetch 단계에서 hard-deny된다. 루프백 리터럴(localhost / 127.0.0.1 / ::1)은 embeddingProvider=\"openai\" 일 때 사용자가 embeddingEndpoint 설정에 직접 적어 넣는 로컬 추론 서버(LM Studio, LiteLLM, 사내 프록시)를 위한 선언이다. 이 선언이 없으면 해당 설정은 hostFetch에서 항상 거부되어 조작할 수 없는 설정이 된다. 호스트는 이 리터럴에 한해 http cleartext를 허용하되(바이트가 기기 밖으로 나가지 않으므로 https 규칙이 보호할 대상이 없다) 이름이 실제로 루프백으로만 resolve되는지 증명한 뒤에만 허용하며, 이 선언은 LAN(RFC1918)이나 다른 어떤 host도 열지 않는다."
+            },
+            "hostSecrets": {
+              "read": [
+                "llm.apiKey.openai",
+                "llm.apiKey.azure-foundry"
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.7.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "local-indexer-v0.6.5",
+              "asset": "local-indexer-0.6.5.zip",
+              "sha256": "c21967a3e8baaf7c72f0c82887323b145df148580cdb1dd73f389edc56235022"
+            }
+          },
+          "publishedAt": "2026-09-24T03:26:21Z",
+          "yanked": {
+            "reason": "Field pin: the zip the server marketplace served, listed so installs of it keep their grant. Not installable.",
+            "at": "2026-09-24T03:26:21Z"
+          }
+        },
+        {
+          "version": "0.6.4",
+          "commit": "65498dacfe7e925d8f54353722175e0805be53f8",
+          "minAppVersion": "0.7.0",
+          "authority": {
+            "capabilities": [
+              "worker-client",
+              "knowledge-index",
+              "document-indexer",
+              "external-auth-consumer",
+              "host:overlay",
+              "lifecycle-observer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "api.openai.com",
+                "openai.azure.com",
+                "cognitiveservices.azure.com",
+                "localhost",
+                "127.0.0.1",
+                "::1"
+              ],
+              "reasoning": "워커의 임베딩/비전 캡셔닝 egress. 이 정적 allow-list는 디폴트 OpenAI/Azure 호스트(api.openai.com, *.openai.azure.com, *.cognitiveservices.azure.com — dot-boundary suffix-match)만 커버한다. host-mediated egress broker(P3 ⑬, src/egressBroker.ts) 도입 후, 워커는 provider 키를 보유하지 않고 broker(<base>/egress/embedding, <base>/egress/caption)로만 egress하며, 실제 provider 호출은 호스트-측 broker가 hostApi.hostFetch chokepoint를 통해 수행한다. 따라서 provider egress는 이 manifest networkAccess.allowedDomains, HTTPS-only, SSRF guard, effect-boundary audit를 모두 통과한다. 워커는 임의 host를 지정할 수 없고, suffix에 맞지 않는 사용자-설정 커스텀 OpenAI-호환 endpoint는 hostFetch 단계에서 hard-deny된다. 루프백 리터럴(localhost / 127.0.0.1 / ::1)은 embeddingProvider=\"openai\" 일 때 사용자가 embeddingEndpoint 설정에 직접 적어 넣는 로컬 추론 서버(LM Studio, LiteLLM, 사내 프록시)를 위한 선언이다. 이 선언이 없으면 해당 설정은 hostFetch에서 항상 거부되어 조작할 수 없는 설정이 된다. 호스트는 이 리터럴에 한해 http cleartext를 허용하되(바이트가 기기 밖으로 나가지 않으므로 https 규칙이 보호할 대상이 없다) 이름이 실제로 루프백으로만 resolve되는지 증명한 뒤에만 허용하며, 이 선언은 LAN(RFC1918)이나 다른 어떤 host도 열지 않는다."
+            },
+            "hostSecrets": {
+              "read": [
+                "llm.apiKey.openai",
+                "llm.apiKey.azure-foundry"
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.7.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "local-indexer-v0.6.4",
+              "asset": "local-indexer-0.6.4.zip",
+              "sha256": "46a1ae8a8c799fc07d8e17da85bb572918e2b9fde658f44ed57055f89361fc26"
+            }
+          },
+          "publishedAt": "2026-09-24T03:26:21Z",
+          "yanked": {
+            "reason": "Field pin: the zip the server marketplace served, listed so installs of it keep their grant. Not installable.",
+            "at": "2026-09-24T03:26:21Z"
+          }
+        },
+        {
+          "version": "0.6.3",
+          "commit": "4646c2faf1dcf07138366d8b7e7bd29d1cf38c04",
+          "minAppVersion": "0.7.0",
+          "authority": {
+            "capabilities": [
+              "worker-client",
+              "knowledge-index",
+              "document-indexer",
+              "external-auth-consumer",
+              "host:overlay",
+              "lifecycle-observer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "api.openai.com",
+                "openai.azure.com",
+                "cognitiveservices.azure.com",
+                "localhost",
+                "127.0.0.1",
+                "::1"
+              ],
+              "reasoning": "워커의 임베딩/비전 캡셔닝 egress. 이 정적 allow-list는 디폴트 OpenAI/Azure 호스트(api.openai.com, *.openai.azure.com, *.cognitiveservices.azure.com — dot-boundary suffix-match)만 커버한다. host-mediated egress broker(P3 ⑬, src/egressBroker.ts) 도입 후, 워커는 provider 키를 보유하지 않고 broker(<base>/egress/embedding, <base>/egress/caption)로만 egress하며, 실제 provider 호출은 호스트-측 broker가 hostApi.hostFetch chokepoint를 통해 수행한다. 따라서 provider egress는 이 manifest networkAccess.allowedDomains, HTTPS-only, SSRF guard, effect-boundary audit를 모두 통과한다. 워커는 임의 host를 지정할 수 없고, suffix에 맞지 않는 사용자-설정 커스텀 OpenAI-호환 endpoint는 hostFetch 단계에서 hard-deny된다. 루프백 리터럴(localhost / 127.0.0.1 / ::1)은 embeddingProvider=\"openai\" 일 때 사용자가 embeddingEndpoint 설정에 직접 적어 넣는 로컬 추론 서버(LM Studio, LiteLLM, 사내 프록시)를 위한 선언이다. 이 선언이 없으면 해당 설정은 hostFetch에서 항상 거부되어 조작할 수 없는 설정이 된다. 호스트는 이 리터럴에 한해 http cleartext를 허용하되(바이트가 기기 밖으로 나가지 않으므로 https 규칙이 보호할 대상이 없다) 이름이 실제로 루프백으로만 resolve되는지 증명한 뒤에만 허용하며, 이 선언은 LAN(RFC1918)이나 다른 어떤 host도 열지 않는다."
+            },
+            "hostSecrets": {
+              "read": [
+                "llm.apiKey.openai",
+                "llm.apiKey.azure-foundry"
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.7.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "local-indexer-v0.6.3",
+              "asset": "local-indexer-0.6.3.zip",
+              "sha256": "0655f2e290beccefd5e7247cd522d2fd17f2bd634b42f6cca14db3d0ebb73d18"
+            }
+          },
+          "publishedAt": "2026-09-24T03:26:20Z",
+          "yanked": {
+            "reason": "Field pin: the zip the server marketplace served, listed so installs of it keep their grant. Not installable.",
+            "at": "2026-09-24T03:26:20Z"
+          }
+        },
+        {
+          "version": "0.6.2",
+          "commit": "66fd4437387d9a9a175c1b24d2848508e0e5eb4e",
+          "minAppVersion": "0.7.0",
+          "authority": {
+            "capabilities": [
+              "worker-client",
+              "knowledge-index",
+              "document-indexer",
+              "external-auth-consumer",
+              "host:overlay",
+              "lifecycle-observer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "api.openai.com",
+                "openai.azure.com",
+                "cognitiveservices.azure.com",
+                "localhost",
+                "127.0.0.1",
+                "::1"
+              ],
+              "reasoning": "워커의 임베딩/비전 캡셔닝 egress. 이 정적 allow-list는 디폴트 OpenAI/Azure 호스트(api.openai.com, *.openai.azure.com, *.cognitiveservices.azure.com — dot-boundary suffix-match)만 커버한다. host-mediated egress broker(P3 ⑬, src/egressBroker.ts) 도입 후, 워커는 provider 키를 보유하지 않고 broker(<base>/egress/embedding, <base>/egress/caption)로만 egress하며, 실제 provider 호출은 호스트-측 broker가 hostApi.hostFetch chokepoint를 통해 수행한다. 따라서 provider egress는 이 manifest networkAccess.allowedDomains, HTTPS-only, SSRF guard, effect-boundary audit를 모두 통과한다. 워커는 임의 host를 지정할 수 없고, suffix에 맞지 않는 사용자-설정 커스텀 OpenAI-호환 endpoint는 hostFetch 단계에서 hard-deny된다. 루프백 리터럴(localhost / 127.0.0.1 / ::1)은 embeddingProvider=\"openai\" 일 때 사용자가 embeddingEndpoint 설정에 직접 적어 넣는 로컬 추론 서버(LM Studio, LiteLLM, 사내 프록시)를 위한 선언이다. 이 선언이 없으면 해당 설정은 hostFetch에서 항상 거부되어 조작할 수 없는 설정이 된다. 호스트는 이 리터럴에 한해 http cleartext를 허용하되(바이트가 기기 밖으로 나가지 않으므로 https 규칙이 보호할 대상이 없다) 이름이 실제로 루프백으로만 resolve되는지 증명한 뒤에만 허용하며, 이 선언은 LAN(RFC1918)이나 다른 어떤 host도 열지 않는다."
+            },
+            "hostSecrets": {
+              "read": [
+                "llm.apiKey.openai",
+                "llm.apiKey.azure-foundry"
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.7.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "local-indexer-v0.6.2",
+              "asset": "local-indexer-0.6.2.zip",
+              "sha256": "ff55b5a9fe9e41dd0dd22f2308602669b9f43da00dbc7807bb4a6f3dcc3049e8"
+            }
+          },
+          "publishedAt": "2026-09-24T03:26:20Z",
+          "yanked": {
+            "reason": "Field pin: the zip the server marketplace served, listed so installs of it keep their grant. Not installable.",
+            "at": "2026-09-24T03:26:20Z"
+          }
+        },
+        {
+          "version": "0.6.1",
+          "commit": "53053a8a3456817588a532938db8322d88e10d3b",
+          "minAppVersion": "0.7.0",
+          "authority": {
+            "capabilities": [
+              "worker-client",
+              "knowledge-index",
+              "document-indexer",
+              "external-auth-consumer",
+              "host:overlay",
+              "lifecycle-observer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "api.openai.com",
+                "openai.azure.com",
+                "cognitiveservices.azure.com",
+                "localhost",
+                "127.0.0.1",
+                "::1"
+              ],
+              "reasoning": "워커의 임베딩/비전 캡셔닝 egress. 이 정적 allow-list는 디폴트 OpenAI/Azure 호스트(api.openai.com, *.openai.azure.com, *.cognitiveservices.azure.com — dot-boundary suffix-match)만 커버한다. host-mediated egress broker(P3 ⑬, src/egressBroker.ts) 도입 후, 워커는 provider 키를 보유하지 않고 broker(<base>/egress/embedding, <base>/egress/caption)로만 egress하며, 실제 provider 호출은 호스트-측 broker가 hostApi.hostFetch chokepoint를 통해 수행한다. 따라서 provider egress는 이 manifest networkAccess.allowedDomains, HTTPS-only, SSRF guard, effect-boundary audit를 모두 통과한다. 워커는 임의 host를 지정할 수 없고, suffix에 맞지 않는 사용자-설정 커스텀 OpenAI-호환 endpoint는 hostFetch 단계에서 hard-deny된다. 루프백 리터럴(localhost / 127.0.0.1 / ::1)은 embeddingProvider=\"openai\" 일 때 사용자가 embeddingEndpoint 설정에 직접 적어 넣는 로컬 추론 서버(LM Studio, LiteLLM, 사내 프록시)를 위한 선언이다. 이 선언이 없으면 해당 설정은 hostFetch에서 항상 거부되어 조작할 수 없는 설정이 된다. 호스트는 이 리터럴에 한해 http cleartext를 허용하되(바이트가 기기 밖으로 나가지 않으므로 https 규칙이 보호할 대상이 없다) 이름이 실제로 루프백으로만 resolve되는지 증명한 뒤에만 허용하며, 이 선언은 LAN(RFC1918)이나 다른 어떤 host도 열지 않는다."
+            },
+            "hostSecrets": {
+              "read": [
+                "llm.apiKey.openai",
+                "llm.apiKey.azure-foundry"
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.7.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "local-indexer-v0.6.1",
+              "asset": "local-indexer-0.6.1.zip",
+              "sha256": "818b40cbfc62dc7b179434719328602db5daca314a143c66b2ef58772368842c"
+            }
+          },
+          "publishedAt": "2026-09-24T03:26:20Z",
+          "yanked": {
+            "reason": "Field pin: the zip the server marketplace served, listed so installs of it keep their grant. Not installable.",
+            "at": "2026-09-24T03:26:20Z"
+          }
+        },
+        {
+          "version": "0.6.0",
+          "commit": "df66e97f867207515d1193aa3cef07d7a1ea56e9",
+          "minAppVersion": "0.7.0",
+          "authority": {
+            "capabilities": [
+              "worker-client",
+              "knowledge-index",
+              "document-indexer",
+              "external-auth-consumer",
+              "host:overlay",
+              "lifecycle-observer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "api.openai.com",
+                "openai.azure.com",
+                "cognitiveservices.azure.com",
+                "localhost",
+                "127.0.0.1",
+                "::1"
+              ],
+              "reasoning": "워커의 임베딩/비전 캡셔닝 egress. 이 정적 allow-list는 디폴트 OpenAI/Azure 호스트(api.openai.com, *.openai.azure.com, *.cognitiveservices.azure.com — dot-boundary suffix-match)만 커버한다. host-mediated egress broker(P3 ⑬, src/egressBroker.ts) 도입 후, 워커는 provider 키를 보유하지 않고 broker(<base>/egress/embedding, <base>/egress/caption)로만 egress하며, 실제 provider 호출은 호스트-측 broker가 hostApi.hostFetch chokepoint를 통해 수행한다. 따라서 provider egress는 이 manifest networkAccess.allowedDomains, HTTPS-only, SSRF guard, effect-boundary audit를 모두 통과한다. 워커는 임의 host를 지정할 수 없고, suffix에 맞지 않는 사용자-설정 커스텀 OpenAI-호환 endpoint는 hostFetch 단계에서 hard-deny된다. 루프백 리터럴(localhost / 127.0.0.1 / ::1)은 embeddingProvider=\"openai\" 일 때 사용자가 embeddingEndpoint 설정에 직접 적어 넣는 로컬 추론 서버(LM Studio, LiteLLM, 사내 프록시)를 위한 선언이다. 이 선언이 없으면 해당 설정은 hostFetch에서 항상 거부되어 조작할 수 없는 설정이 된다. 호스트는 이 리터럴에 한해 http cleartext를 허용하되(바이트가 기기 밖으로 나가지 않으므로 https 규칙이 보호할 대상이 없다) 이름이 실제로 루프백으로만 resolve되는지 증명한 뒤에만 허용하며, 이 선언은 LAN(RFC1918)이나 다른 어떤 host도 열지 않는다."
+            },
+            "hostSecrets": {
+              "read": [
+                "llm.apiKey.openai",
+                "llm.apiKey.azure-foundry"
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.7.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "local-indexer-v0.6.0",
+              "asset": "local-indexer-0.6.0.zip",
+              "sha256": "bbdaf66b07ef67bd2c0d2e09c90a079862ba2d713ed261e30b777d29c9d9a6ed"
+            }
+          },
+          "publishedAt": "2026-09-24T03:26:20Z",
+          "yanked": {
+            "reason": "Field pin: the zip the server marketplace served, listed so installs of it keep their grant. Not installable.",
+            "at": "2026-09-24T03:26:20Z"
+          }
+        }
+      ]
+    },
+    {
+      "kind": "plugin",
+      "name": "meeting",
+      "path": "plugins/meeting",
+      "displayName": "Ave Meeting",
+      "description": "회의 녹음·음성 전사(STT)·요약 생성 플러그인. 녹음 시작/중지, 실시간 오디오 청크 전사(OpenAI Whisper), AI 요약·하이라이트·액션 아이템 자동 추출. 액션 아이템은 meeting.summary.created 이벤트의 actionItems 페이로드로 broadcast 되며, 요약은 로컬 SessionStore(JSON)에 영속화. MS Teams·Zoom 등 회의 후처리 지원.",
+      "latest": "0.8.5",
+      "versions": [
+        {
+          "version": "0.8.5",
+          "commit": "c54ab10ab37952dfa529a0c80527de6919bbbdb7",
+          "minAppVersion": "0.10.0",
+          "authority": {
+            "capabilities": [
+              "meeting-recorder",
+              "external-auth-consumer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "openai.azure.com",
+                "cognitiveservices.azure.com",
+                "services.ai.azure.com",
+                "api.openai.com",
+                "github.com",
+                "release-assets.githubusercontent.com"
+              ],
+              "reasoning": "STT transcription egress to Azure OpenAI / OpenAI Whisper endpoints via host-mediated fetch. github.com and release-assets.githubusercontent.com carry the FFmpeg runtime archive that a marketplace install downloads on first use: the release URL is on github.com and answers 302 to release-assets.githubusercontent.com, and because the host re-runs the full gate on every hop, BOTH hosts have to be declared for the download to complete."
+            },
+            "hostSecrets": {
+              "read": [
+                "llm.apiKey.openai",
+                "llm.apiKey.azure-foundry"
+              ]
+            },
+            "pluginAccess": {
+              "plugins": [
+                {
+                  "pluginId": "vega-helper",
+                  "events": [
+                    "vega_helper.calendar.sync.requested",
+                    "vega_helper.meeting.prep.requested",
+                    "vega_helper.meeting.recording.requested"
+                  ]
+                }
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.10.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "meeting-v0.8.5",
+              "asset": "meeting-0.8.5.zip",
+              "sha256": "2d9489864f981e4695cf4cb1577f4f842f0beb0e1cffa4adbab79eb1bb3e180a"
+            }
+          },
+          "publishedAt": "2026-09-24T07:28:47Z"
+        },
+        {
+          "version": "0.8.4",
+          "commit": "4e7e1c052289377b89aad2592a62b6b739561b7b",
+          "minAppVersion": "0.7.0",
+          "authority": {
+            "capabilities": [
+              "meeting-recorder",
+              "external-auth-consumer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "openai.azure.com",
+                "cognitiveservices.azure.com",
+                "services.ai.azure.com",
+                "api.openai.com",
+                "github.com",
+                "release-assets.githubusercontent.com"
+              ],
+              "reasoning": "STT transcription egress to Azure OpenAI / OpenAI Whisper endpoints via host-mediated fetch. github.com and release-assets.githubusercontent.com carry the FFmpeg runtime archive that a marketplace install downloads on first use: the release URL is on github.com and answers 302 to release-assets.githubusercontent.com, and because the host re-runs the full gate on every hop, BOTH hosts have to be declared for the download to complete."
+            },
+            "hostSecrets": {
+              "read": [
+                "llm.apiKey.openai",
+                "llm.apiKey.azure-foundry"
+              ]
+            },
+            "pluginAccess": {
+              "plugins": [
+                {
+                  "pluginId": "vega-helper",
+                  "events": [
+                    "vega_helper.calendar.sync.requested",
+                    "vega_helper.meeting.prep.requested",
+                    "vega_helper.meeting.recording.requested"
+                  ]
+                }
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.7.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "meeting-v0.8.4",
+              "asset": "meeting-0.8.4.zip",
+              "sha256": "961ca4a2edaa58a3be41cd8bc8b2fd21f5345eb62ddacf878dbbc26fe621bd49"
+            }
+          },
+          "publishedAt": "2026-09-24T03:26:19Z",
+          "yanked": {
+            "reason": "Field pin: the zip the server marketplace served, listed so installs of it keep their grant. Not installable.",
+            "at": "2026-09-24T03:26:19Z"
+          }
+        },
+        {
+          "version": "0.8.3",
+          "commit": "d61eb08806517d731f027e58e5bed17c590aeaa6",
+          "minAppVersion": "0.7.0",
+          "authority": {
+            "capabilities": [
+              "meeting-recorder",
+              "external-auth-consumer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "openai.azure.com",
+                "cognitiveservices.azure.com",
+                "services.ai.azure.com",
+                "api.openai.com",
+                "github.com",
+                "release-assets.githubusercontent.com"
+              ],
+              "reasoning": "STT transcription egress to Azure OpenAI / OpenAI Whisper endpoints via host-mediated fetch. github.com and release-assets.githubusercontent.com carry the FFmpeg runtime archive that a marketplace install downloads on first use: the release URL is on github.com and answers 302 to release-assets.githubusercontent.com, and because the host re-runs the full gate on every hop, BOTH hosts have to be declared for the download to complete."
+            },
+            "hostSecrets": {
+              "read": [
+                "llm.apiKey.openai",
+                "llm.apiKey.azure-foundry"
+              ]
+            },
+            "pluginAccess": {
+              "plugins": [
+                {
+                  "pluginId": "vega-helper",
+                  "events": [
+                    "vega_helper.calendar.sync.requested",
+                    "vega_helper.meeting.prep.requested",
+                    "vega_helper.meeting.recording.requested"
+                  ]
+                }
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.7.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "meeting-v0.8.3",
+              "asset": "meeting-0.8.3.zip",
+              "sha256": "79e650f05b58e9da393860a7d46f852c585a14de34e37e42f3d2b3e5d2cd2ef4"
+            }
+          },
+          "publishedAt": "2026-09-24T03:26:19Z",
+          "yanked": {
+            "reason": "Field pin: the zip the server marketplace served, listed so installs of it keep their grant. Not installable.",
+            "at": "2026-09-24T03:26:19Z"
+          }
+        },
+        {
+          "version": "0.8.2",
+          "commit": "8ea69f87d2f25848d68dfe3ef763fb3a73d80a50",
+          "minAppVersion": "0.7.0",
+          "authority": {
+            "capabilities": [
+              "meeting-recorder",
+              "external-auth-consumer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "openai.azure.com",
+                "cognitiveservices.azure.com",
+                "services.ai.azure.com",
+                "api.openai.com",
+                "github.com",
+                "release-assets.githubusercontent.com"
+              ],
+              "reasoning": "STT transcription egress to Azure OpenAI / OpenAI Whisper endpoints via host-mediated fetch. github.com and release-assets.githubusercontent.com carry the FFmpeg runtime archive that a marketplace install downloads on first use: the release URL is on github.com and answers 302 to release-assets.githubusercontent.com, and because the host re-runs the full gate on every hop, BOTH hosts have to be declared for the download to complete."
+            },
+            "hostSecrets": {
+              "read": [
+                "llm.apiKey.openai",
+                "llm.apiKey.azure-foundry"
+              ]
+            },
+            "pluginAccess": {
+              "plugins": [
+                {
+                  "pluginId": "vega-helper",
+                  "events": [
+                    "vega_helper.calendar.sync.requested",
+                    "vega_helper.meeting.prep.requested",
+                    "vega_helper.meeting.recording.requested"
+                  ]
+                }
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.7.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "meeting-v0.8.2",
+              "asset": "meeting-0.8.2.zip",
+              "sha256": "add9ad64ee3793531a36816ca6727ead0390f92dcfea73e38b23847ce84759d1"
+            }
+          },
+          "publishedAt": "2026-09-24T03:26:19Z",
+          "yanked": {
+            "reason": "Field pin: the zip the server marketplace served, listed so installs of it keep their grant. Not installable.",
+            "at": "2026-09-24T03:26:19Z"
+          }
+        },
+        {
+          "version": "0.8.1",
+          "commit": "7af88da0d75a5c50f0a2326e079397983034b700",
+          "minAppVersion": "0.7.0",
+          "authority": {
+            "capabilities": [
+              "meeting-recorder",
+              "external-auth-consumer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "openai.azure.com",
+                "cognitiveservices.azure.com",
+                "services.ai.azure.com",
+                "api.openai.com",
+                "github.com",
+                "release-assets.githubusercontent.com"
+              ],
+              "reasoning": "STT transcription egress to Azure OpenAI / OpenAI Whisper endpoints via host-mediated fetch. github.com and release-assets.githubusercontent.com carry the FFmpeg runtime archive that a marketplace install downloads on first use: the release URL is on github.com and answers 302 to release-assets.githubusercontent.com, and because the host re-runs the full gate on every hop, BOTH hosts have to be declared for the download to complete."
+            },
+            "hostSecrets": {
+              "read": [
+                "llm.apiKey.openai",
+                "llm.apiKey.azure-foundry"
+              ]
+            },
+            "pluginAccess": {
+              "plugins": [
+                {
+                  "pluginId": "vega-helper",
+                  "events": [
+                    "vega_helper.calendar.sync.requested",
+                    "vega_helper.meeting.prep.requested",
+                    "vega_helper.meeting.recording.requested"
+                  ]
+                }
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.7.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "meeting-v0.8.1",
+              "asset": "meeting-0.8.1.zip",
+              "sha256": "2691bdea5ea21cb8d54aafca4021251e550572ae68554aff0460a0f555465a04"
+            }
+          },
+          "publishedAt": "2026-09-24T03:26:19Z",
+          "yanked": {
+            "reason": "Field pin: the zip the server marketplace served, listed so installs of it keep their grant. Not installable.",
+            "at": "2026-09-24T03:26:19Z"
+          }
+        },
+        {
+          "version": "0.8.0",
+          "commit": "289da46bb9debf8b1aa411673e893464e3ef3f09",
+          "minAppVersion": "0.7.0",
+          "authority": {
+            "capabilities": [
+              "meeting-recorder",
+              "external-auth-consumer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "openai.azure.com",
+                "cognitiveservices.azure.com",
+                "services.ai.azure.com",
+                "api.openai.com",
+                "github.com",
+                "release-assets.githubusercontent.com"
+              ],
+              "reasoning": "STT transcription egress to Azure OpenAI / OpenAI Whisper endpoints via host-mediated fetch. github.com and release-assets.githubusercontent.com carry the FFmpeg runtime archive that a marketplace install downloads on first use: the release URL is on github.com and answers 302 to release-assets.githubusercontent.com, and because the host re-runs the full gate on every hop, BOTH hosts have to be declared for the download to complete."
+            },
+            "hostSecrets": {
+              "read": [
+                "llm.apiKey.openai",
+                "llm.apiKey.azure-foundry"
+              ]
+            },
+            "pluginAccess": {
+              "plugins": [
+                {
+                  "pluginId": "vega-helper",
+                  "events": [
+                    "vega_helper.calendar.sync.requested",
+                    "vega_helper.meeting.prep.requested",
+                    "vega_helper.meeting.recording.requested"
+                  ]
+                }
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.7.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "meeting-v0.8.0",
+              "asset": "meeting-0.8.0.zip",
+              "sha256": "909ef9d510b6c279d9f2dcb1658d52b43e721afdf710f2de2fbd71f3dabe438e"
+            }
+          },
+          "publishedAt": "2026-09-24T03:26:19Z",
+          "yanked": {
+            "reason": "Field pin: the zip the server marketplace served, listed so installs of it keep their grant. Not installable.",
+            "at": "2026-09-24T03:26:19Z"
+          }
+        }
+      ]
+    },
+    {
+      "kind": "plugin",
+      "name": "lyra-mail",
+      "path": "plugins/lyra-mail",
+      "displayName": "Ave Lyra Mail",
+      "description": "Microsoft Graph 통합 플러그인 — Outlook 이메일 + Outlook 캘린더 (calendar/email 두 플러그인을 통합). LYRA Mail API 기반 폴링 watcher, 답장 작성, 일정 충돌 감지, 반복 패턴 분석.",
+      "latest": "0.5.3",
+      "versions": [
+        {
+          "version": "0.5.3",
+          "commit": "1ea8c85ecbf42d2bdd940f6e97976f61ea1fba60",
+          "minAppVersion": "0.10.0",
+          "authority": {
+            "capabilities": [
+              "calendar-source",
+              "mail-source",
+              "background-watcher",
+              "lyra-mail-consumer",
+              "external-auth-consumer"
+            ],
+            "networkAccess": {
+              "allowedDomains": [
+                "login.microsoftonline.com",
+                "graph.microsoft.com"
+              ],
+              "reasoning": "MSAL token acquisition (login.microsoftonline.com) and Microsoft Graph API (graph.microsoft.com) egress via host-mediated fetch."
+            },
+            "pluginAccess": {
+              "plugins": [
+                {
+                  "pluginId": "vega-helper",
+                  "events": [
+                    "vega_helper.snapshot.requested"
+                  ]
+                }
+              ]
+            },
+            "auth": {
+              "label": "Microsoft 365",
+              "statusTool": "lyramail_status",
+              "loginTool": "lyramail_auth",
+              "logoutTool": "lyramail_signout",
+              "partitionDomains": [
+                "outlook.office.com",
+                "outlook.office365.com",
+                "outlook.live.com",
+                "login.live.com",
+                "login.microsoftonline.com"
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.10.0"
+            }
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "lyra-mail-v0.5.3",
+              "asset": "lyra-mail-0.5.3.zip",
+              "sha256": "225a48b4d53b5716f98cd73c8959342bcfad1c780785210a8199600c7fa79e50"
+            }
+          },
+          "publishedAt": "2026-09-24T07:28:47Z"
+        }
+      ]
+    },
+    {
+      "kind": "plugin",
+      "name": "vega-helper",
+      "path": "plugins/vega-helper",
+      "displayName": "Ave Vega Helper",
+      "description": "사용자가 요청하기 전에 먼저 제안하는 Ave 의 능동 업무 도우미. 다른 플러그인들과 신호를 주고받아 업무 흐름에 필요한 보조를 적시에 제공합니다.",
+      "latest": "0.11.3",
+      "versions": [
+        {
+          "version": "0.11.3",
+          "commit": "4d7b0fa575d1c966fde76c9a27addfe73c2a8fee",
+          "minAppVersion": "0.10.0",
+          "authority": {
+            "capabilities": [
+              "host:overlay",
+              "lifecycle-observer"
+            ],
+            "pluginAccess": {
+              "plugins": [
+                {
+                  "pluginId": "lyra-mail",
+                  "events": [
+                    "email.new",
+                    "calendar.event.upcoming",
+                    "calendar.event.starting",
+                    "calendar.event.conflict.detected",
+                    "calendar.event.added",
+                    "lyra-mail.auth.changed",
+                    "lyra-mail.snapshot.ready"
+                  ]
+                },
+                {
+                  "pluginId": "meeting",
+                  "events": [
+                    "meeting.summary.created",
+                    "meeting.ended"
+                  ]
+                },
+                {
+                  "pluginId": "orion-api",
+                  "events": [
+                    "orion-api.video-conference.reserved"
+                  ]
+                }
+              ]
+            },
+            "requires": {
+              "minAppVersion": "0.10.0"
+            },
+            "dependencies": [
+              {
+                "pluginId": "lyra-mail",
+                "required": false
+              },
+              {
+                "pluginId": "meeting",
+                "required": false
+              },
+              {
+                "pluginId": "orion-api",
+                "required": false
+              }
+            ]
+          },
+          "artifact": {
+            "release": {
+              "repo": "ken-jo/agent-marketplace",
+              "tag": "vega-helper-v0.11.3",
+              "asset": "vega-helper-0.11.3.zip",
+              "sha256": "f31ac94e499ee7885e475c43e28c434639dd26a84bb3c6409232699ee9d5c579"
+            }
+          },
+          "publishedAt": "2026-09-24T07:28:47Z"
+        }
+      ]
+    }
+  ]
+}

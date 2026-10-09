@@ -36,6 +36,7 @@ import type {
   PluginRuntimeGenerationLifecycle,
   PluginRuntimeGenerationProjection,
   PluginRuntimeRetirementPhase,
+  RetiringPluginRuntimeGeneration,
 } from "./plugin-host-generation.js";
 import type { PluginGenerationLease } from "./plugin-generation-coordinator.js";
 import { createLogger } from "../lib/logger.js";
@@ -307,6 +308,19 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
 
   waitForRetirements(): Promise<void> {
     return this.waitForTrackedRetirements();
+  }
+
+  closeAdmission(reason: (pluginId: string) => Error): void {
+    this.coordinator.closeAdmission(reason);
+  }
+
+  listRetiringGenerations(): readonly RetiringPluginRuntimeGeneration[] {
+    return Object.freeze(this.coordinator.listRetiring().map(({ generation, retired }) => Object.freeze({
+      pluginId: generation.pluginId,
+      generationId: generation.generationId,
+      runtime: generation.state.runtime,
+      retired,
+    })));
   }
 
   async recoverRetirements(): Promise<void> {
@@ -820,6 +834,9 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
         (predecessor) => this.retireWithRetries(predecessor),
         pluginId,
         () => {
+          // The coordinator pointer names the candidate now: ownership of the
+          // runtime projection moves before any publication step can fail.
+          preparedRuntime.handOver();
           this.deps.loopbackManager.publishGeneration(preparedLoopback);
           preparedRuntime.publish();
           preparedSkills.publish();
@@ -853,6 +870,16 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           );
           throw committedError;
         }
+        // Committed and published, but a post-commit step (the contributions
+        // notification) failed before readiness was scheduled. Nothing else
+        // will ever open or reject the candidate's dispatch barrier, so settle
+        // it here: calls fail visibly with this fault instead of waiting. The
+        // predecessor's retirement is still under way; track it like the
+        // committed-publication branch above, so retirement waiters see it.
+        if (published) {
+          published.markDispatchUnavailable(error);
+          this.trackRetirement(published.retired);
+        }
         this.recordPostCommitFault(
           pluginId,
           candidate.generationId,
@@ -884,6 +911,16 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
         }
       }
       if (cleanupErrors.length > 0) {
+        if (isCommittedPluginGenerationPublicationError(error)) {
+          // Durably committed: the marker is what keeps every caller from
+          // rolling that commit back, so a cleanup failure must not hide it.
+          for (const cleanupError of cleanupErrors) {
+            log.error(
+              `plugin '${pluginId}' candidate '${candidate.generationId}' cleanup failed after a durable commit: ${errorMessage(cleanupError)}`,
+            );
+          }
+          throw error;
+        }
         throw new AggregateError(
           [error, ...cleanupErrors],
           `plugin generation commit and candidate cleanup failed: ${pluginId}:${candidate.generationId}`,
@@ -897,6 +934,14 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     const retirement = hasPredecessor ? published.retired : Promise.resolve();
     const finalizePostCommit = async (): Promise<void> => {
       let dispatchReady = true;
+      // Admission closed (host shutdown): dispatch never opens, nothing more
+      // starts, and a step refused for that reason is not a fault.
+      const stoppedByShutdown = (): boolean => {
+        const closed = this.coordinator.admissionClosedError(pluginId);
+        if (!closed) return false;
+        published.markDispatchUnavailable(closed);
+        return true;
+      };
       if (hasPredecessor) {
         try {
           // A replacement's onPublished hook may start write-capable workers.
@@ -918,6 +963,10 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           );
         }
       }
+      // Admission closed while the predecessor retired: none of the deferred
+      // work below — startup, loopback post-publication, MCP connection and
+      // publication — may begin.
+      if (stoppedByShutdown()) return;
       if (dispatchReady) {
         try {
           // Only host-owned generation-fence faults reach this catch. A plugin
@@ -930,11 +979,13 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
             () => this.deps.pluginRuntime.postPublishRuntimeGeneration(candidate.state.runtime),
           );
         } catch (error) {
+          if (stoppedByShutdown()) return;
           dispatchReady = false;
           published.markDispatchUnavailable(error);
           this.recordPostCommitFault(pluginId, candidate.generationId, "runtime-post-publish", error);
         }
       }
+      if (stoppedByShutdown()) return;
       try {
         this.deps.loopbackManager.postPublishGeneration(preparedLoopback);
       } catch (error) {
@@ -946,6 +997,9 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
         // internal publication/contract fault and receives durable health state.
         await this.projectApprovedMcp(candidate);
       } catch (error) {
+        // A publication refused because admission closed while it waited
+        // (quiesce) is shutdown, not an internal publication fault.
+        if (stoppedByShutdown()) return;
         this.recordPostCommitFault(pluginId, candidate.generationId, "mcp-publication", error);
       }
       if (dispatchReady) {
@@ -1067,6 +1121,8 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
   private async projectApprovedMcp(
     generation: ActivePluginGeneration<HostPluginGenerationState>,
   ): Promise<void> {
+    // No MCP connection or publication once admission has closed (shutdown).
+    if (this.coordinator.isAdmissionClosed()) return;
     let prepared: Awaited<ReturnType<McpManager["prepareBundledGeneration"]>> | undefined;
     try {
       prepared = await this.deps.mcpManager.prepareBundledGeneration(
@@ -1074,6 +1130,12 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
         generation.state.mcpServers,
         this.mcpTrust,
       );
+      if (this.coordinator.isAdmissionClosed()) {
+        const unpublished = prepared;
+        prepared = undefined;
+        await this.deps.mcpManager.discardBundledGeneration(unpublished);
+        return;
+      }
       const publication = prepared;
       await this.coordinator.quiesce(
         generation.pluginId,

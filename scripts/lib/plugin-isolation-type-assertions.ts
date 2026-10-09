@@ -47,6 +47,7 @@ export type OutOfProcessPluginSpecKeysAreExact = Expect<
     | "registerSandboxEnvelope"
     | "onMalformedCredentialSelector"
     | "observeChild"
+    | "onChildSpawned"
   >
 >;
 

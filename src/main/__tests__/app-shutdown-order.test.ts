@@ -139,7 +139,10 @@ function makeServices() {
   return {
     runPluginShutdownHandlers: vi.fn(async () => { calls.push("pluginShutdownHandlers"); }),
     shutdown: vi.fn(async () => { calls.push("servicesShutdown"); }),
-    pluginRuntime: { stopAll: vi.fn(async () => { calls.push("stopPluginRuntime"); }) },
+    pluginRuntime: {
+      beginShutdown: vi.fn(() => { calls.push("closePluginAdmission"); }),
+      stopAll: vi.fn(async () => { calls.push("stopPluginRuntime"); }),
+    },
     // The cleanup window is a Settings control now, so the shutdown path reads
     // the persisted value before it arms the deadline.
     settingsService: { get: vi.fn(() => ({})) },
@@ -159,17 +162,43 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     getServices.mockReturnValue(undefined);
     vi.resetModules();
     const shutdown = await configuredShutdown();
-    shutdown.registerBootPluginShutdown(async () => { calls.push("partialPluginShutdown"); });
+    shutdown.registerBootPluginShutdown({
+      runShutdownHandlers: async () => { calls.push("partialPluginShutdownHandlers"); },
+      closeAdmission: () => { calls.push("partialPluginAdmissionClosed"); },
+      stopRuntime: async () => { calls.push("partialPluginRuntimeStop"); },
+    });
     shutdown.registerShutdownHook("partial-watcher", () => { calls.push("partialWatcher"); });
     const host = createBootHostFixture({ close: async () => { calls.push("closeHost"); } });
     expect(await shutdown.runIncompleteBootShutdown(host)).toBe("completed");
     expect(calls).toEqual([
-      "partialWatcher", "partialPluginShutdown", "stopSubscriptionRuntimes",
+      "partialWatcher", "partialPluginShutdownHandlers", "partialPluginAdmissionClosed", "partialPluginRuntimeStop", "stopSubscriptionRuntimes",
       "forceKillTerminals", "drainManagedChildren", "closeHost", "closeFileLogSink",
     ]);
     expect(sealManagedChildProcessAdmission).toHaveBeenCalledWith("host bootstrap interrupted or failed");
     shutdown.registerShutdownHook("late-watcher", () => { calls.push("lateWatcher"); });
     expect(calls.at(-1)).toBe("lateWatcher");
+  });
+
+  it("disconnects MCP before it stops the plugin runtime of an interrupted bootstrap, as the normal shutdown does", async () => {
+    getServices.mockReturnValue(undefined);
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    const signals: AbortSignal[] = [];
+    shutdown.registerBootPluginShutdown({
+      runShutdownHandlers: async () => { calls.push("partialPluginShutdownHandlers"); },
+      closeAdmission: () => { calls.push("partialPluginAdmissionClosed"); },
+      stopRuntime: async (signal: AbortSignal) => { signals.push(signal); calls.push("partialPluginRuntimeStop"); },
+    });
+    shutdown.registerBootMcpDisconnect(async () => { calls.push("partialMcpDisconnect"); });
+    expect(await shutdown.runIncompleteBootShutdown()).toBe("completed");
+    // Admission closes first, so no post-commit MCP publication opens once
+    // MCP is gone.
+    expect(calls.slice(0, 4)).toEqual([
+      "partialPluginShutdownHandlers", "partialPluginAdmissionClosed", "partialMcpDisconnect", "partialPluginRuntimeStop",
+    ]);
+    // The runtime still stops within the cleanup deadline.
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
   });
 
   it("force-kills managed children when partial bootstrap cleanup exceeds its deadline", async () => {
@@ -191,7 +220,11 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     getServices.mockReturnValue(undefined);
     vi.resetModules();
     const shutdown = await configuredShutdown();
-    shutdown.registerBootPluginShutdown(async () => { throw new Error("plugin stop failed"); });
+    shutdown.registerBootPluginShutdown({
+      runShutdownHandlers: async () => undefined,
+      closeAdmission: () => undefined,
+      stopRuntime: async () => { throw new Error("plugin stop failed"); },
+    });
     const close = vi.fn(async () => {});
     expect(await shutdown.runIncompleteBootShutdown(createBootHostFixture({ close }))).toBe("failed");
     expect(stopSubscriptionRuntimes).toHaveBeenCalledOnce();
@@ -258,6 +291,19 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     expect(forceKillAndDrainManagedChildProcesses)
       .toHaveBeenCalledWith("before-quit graceful shutdown");
     expect(calls.indexOf("stopRemoteReceiver")).toBeLessThan(calls.indexOf("stopSubscriptionRuntimes"));
+  });
+
+  it("closes plugin admission before services shut down and disconnect MCP, and stops the runtime later", async () => {
+    getServices.mockReturnValue(makeServices());
+    vi.resetModules();
+    const { runAppShutdownCleanup } = await configuredShutdown();
+    await runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false });
+    // Plugin shutdown handlers and shutdown routines may still call plugins.
+    expect(calls.indexOf("shutdownRoutines")).toBeLessThan(calls.indexOf("closePluginAdmission"));
+    expect(calls.indexOf("pluginShutdownHandlers")).toBeLessThan(calls.indexOf("closePluginAdmission"));
+    expect(calls.indexOf("closePluginAdmission")).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("closePluginAdmission")).toBeLessThan(calls.indexOf("servicesShutdown"));
+    expect(calls.indexOf("servicesShutdown")).toBeLessThan(calls.indexOf("stopPluginRuntime"));
   });
 
   it("waits for proven broker cleanup after service shutdown", async () => {

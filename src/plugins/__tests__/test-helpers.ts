@@ -5,12 +5,14 @@
  * deploymentGuard?) shape. registry.json lives at the root of pluginsRoot,
  * so tests pick a single tmp root and the helper derives the rest.
  */
+import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
 import { mkdtempSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { ValidateFunction } from "ajv";
 import { resolveAddFormats, resolveAjv } from "../config-schema.js";
@@ -515,11 +517,89 @@ export async function writeTestPluginRegistry(
   );
 }
 
+/** `src/`, the root the import-boundary tests read the runtime import graph from. */
+export const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
+/** `src`-relative and `/`-separated, so a boundary failure names a file readably on every platform. */
+export function sourceDisplayPath(file: string): string {
+  return relative(SOURCE_ROOT, file).split(sep).join("/");
+}
+
+/** A module the app ships: not a test, a test helper or a probe. */
+export function isProductionSourceModule(file: string): boolean {
+  const name = sourceDisplayPath(file);
+  return !/(^|\/)__tests__\//u.test(name)
+    && !/(^|\/)__probes__\//u.test(name)
+    && !/\.test\.tsx?$/u.test(name);
+}
+
+/**
+ * A gate between a test and the plugin code it loads.
+ *
+ * Every `entry` plugin runs in a plugin child (§9.8 A1), so the test and the
+ * plugin no longer share a heap and a deferred promise parked on `globalThis`
+ * cannot reach the plugin. A signal here is a file in a directory the test
+ * owns (its own temp root, never a global or the user's home): one side
+ * writes it whole, by rename, and the other polls for it. `moduleSource` is
+ * the plugin side — paste it at the top of a fixture module and call
+ * `gate.signal(name)` / `await gate.waitFor(name)` there.
+ */
+export interface ChildProcessGate {
+  readonly moduleSource: string;
+  signal(name: string, value?: string): Promise<void>;
+  waitFor(name: string, timeoutMs?: number): Promise<string>;
+}
+
+export async function childProcessGate(dir: string): Promise<ChildProcessGate> {
+  await mkdir(dir, { recursive: true });
+  const at = (name: string): string => {
+    if (!/^[a-z0-9-]+$/.test(name)) throw new Error(`gate signal '${name}' is not a plain name`);
+    return join(dir, name);
+  };
+  return {
+    moduleSource: `import { existsSync as __gateExists, readFileSync as __gateRead, renameSync as __gateRename, writeFileSync as __gateWrite } from "node:fs";
+import { join as __gateJoin } from "node:path";
+const __gateDir = ${JSON.stringify(dir)};
+const gate = {
+  signal(name, value = "") {
+    const path = __gateJoin(__gateDir, name);
+    __gateWrite(path + ".tmp", value);
+    __gateRename(path + ".tmp", path);
+  },
+  async waitFor(name) {
+    const path = __gateJoin(__gateDir, name);
+    while (!__gateExists(path)) await new Promise((resolve) => setTimeout(resolve, 5));
+    return __gateRead(path, "utf8");
+  },
+};
+`,
+    signal: async (name, value = "") => {
+      const path = at(name);
+      await writeFile(`${path}.tmp`, value, "utf8");
+      await rename(`${path}.tmp`, path);
+    },
+    waitFor: async (name, timeoutMs = 10_000) => {
+      const path = at(name);
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        try {
+          return await readFile(path, "utf8");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        if (Date.now() >= deadline) throw new Error(`plugin never signalled '${name}' within ${timeoutMs} ms`);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    },
+  };
+}
+
 export function makeTestPluginRuntime(
   fixture: TestPluginRuntimeFixture,
   options: Partial<PluginRuntimeOptions> = {},
 ): PluginRuntime {
   return bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+    childEntryPath: pluginChildEntryPath(),
     hostRoot: fixture.rootDir,
     registryPath: fixture.registryPath,
     pluginsRoot: fixture.pluginsRoot,
@@ -553,11 +633,20 @@ export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginR
   const lifecycleTails = new Map<string, Promise<void>>();
   const lifecycleQueueContext = new AsyncLocalStorage<ReadonlyMap<string, object>>();
   const activeLifecycleQueueTokens = new WeakSet<object>();
-  const retirementTasks = new Set<Promise<void>>();
+  const retirementTasks = new Map<Promise<void>, ActivePluginGeneration<HostPluginGenerationState>>();
   let sequence = 0;
+  // The production lifecycle's admission contract: once closed (shutdown) no
+  // lease is granted and no candidate publishes.
+  let admissionClosure: ((pluginId: string) => Error) | undefined;
+  const assertAdmissionOpen = (pluginId: string): void => {
+    if (admissionClosure) throw admissionClosure(pluginId);
+  };
 
-  const trackRetirement = (retirement: Promise<void>): Promise<void> => {
-    retirementTasks.add(retirement);
+  const trackRetirement = (
+    retirement: Promise<void>,
+    generation: ActivePluginGeneration<HostPluginGenerationState>,
+  ): Promise<void> => {
+    retirementTasks.set(retirement, generation);
     void retirement
       .finally(() => retirementTasks.delete(retirement))
       .catch(() => undefined);
@@ -661,6 +750,7 @@ export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginR
     projection: PluginRuntimeGenerationProjection,
   ): Promise<{ retirement: Promise<void> }> => {
     const pluginId = projection.manifest.id;
+    assertAdmissionOpen(pluginId);
     const predecessor = active.get(pluginId);
     const generationId = `test-generation-${++sequence}`;
     projection.hostEffects?.bindGeneration(lifecycle as never, generationId);
@@ -681,7 +771,7 @@ export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginR
       },
     });
     const retirement = predecessor && predecessor.state.runtime !== projection
-      ? trackRetirement(runRuntimeRetirement(predecessor.state.runtime))
+      ? trackRetirement(runRuntimeRetirement(predecessor.state.runtime), predecessor)
       : Promise.resolve();
     return { retirement };
   };
@@ -693,7 +783,7 @@ export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginR
     runtime.prepareRuntimeRemoval(pluginId, predecessor?.generationId).publish();
     active.delete(pluginId);
     const retirement = predecessor
-      ? trackRetirement(runRuntimeRetirement(predecessor.state.runtime))
+      ? trackRetirement(runRuntimeRetirement(predecessor.state.runtime), predecessor)
       : Promise.resolve();
     return { retirement };
   };
@@ -713,11 +803,13 @@ export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginR
     isExactAdmitted: (pluginId: string, generationId: string) =>
       active.get(pluginId)?.generationId === generationId,
     acquire: async (pluginId: string) => {
+      assertAdmissionOpen(pluginId);
       const generation = active.get(pluginId) ?? adoptLegacyProjection(pluginId);
       if (!generation) throw new Error(`test generation is not active for '${pluginId}'`);
       return { generation, release: () => undefined };
     },
     acquireExact: async (pluginId: string, generationId: string) => {
+      assertAdmissionOpen(pluginId);
       const generation = active.get(pluginId) ?? adoptLegacyProjection(pluginId);
       if (!generation || generation.generationId !== generationId) {
         throw new Error(`test generation '${pluginId}:${generationId}' is not active`);
@@ -773,8 +865,17 @@ export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginR
       }),
     recoverRetirements: async () => undefined,
     waitForRetirements: async () => {
-      await Promise.all([...retirementTasks]);
+      await Promise.all([...retirementTasks.keys()]);
     },
+    closeAdmission: (reason: (pluginId: string) => Error) => {
+      admissionClosure ??= reason;
+    },
+    listRetiringGenerations: () => [...retirementTasks].map(([retired, generation]) => ({
+      pluginId: generation.pluginId,
+      generationId: generation.generationId,
+      runtime: generation.state.runtime,
+      retired,
+    })),
   };
 
   const testInternals = runtime as unknown as {
@@ -809,11 +910,13 @@ export function createTestHostApiFactory(
 /** PluginRuntime constructor for tests that need the complete generation fixture. */
 export class TestPluginRuntime extends PluginRuntime {
   constructor(
-    options: Omit<PluginRuntimeOptions, "createHostApi" | "encryption">
-      & Partial<Pick<PluginRuntimeOptions, "createHostApi" | "encryption">>,
+    options: Omit<PluginRuntimeOptions, "createHostApi" | "encryption" | "childEntryPath">
+      & Partial<Pick<PluginRuntimeOptions, "createHostApi" | "encryption" | "childEntryPath">>,
   ) {
     super({
       encryption: unavailableSecretEncryption,
+      // This run's bundle of the child entry every `entry` plugin spawns.
+      childEntryPath: pluginChildEntryPath(),
       ...options,
       createHostApi: createTestHostApiFactory(options.createHostApi),
     });

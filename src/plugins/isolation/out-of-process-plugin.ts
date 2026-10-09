@@ -34,7 +34,7 @@ import { ProcessEntryUnconfinedError, type ProcessLaunch } from "../process-entr
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { mainDir } from "../../main/main-paths.js";
-import { spawnConfinedChild } from "../../permissions/confined-child.js";
+import { spawnConfinedChild, type SpawnConfinement } from "../../permissions/confined-child.js";
 import {
   markPluginChildConfined,
   unmarkPluginChildConfined,
@@ -97,7 +97,7 @@ const log = createLogger("out-of-process-plugin");
  * are the runtime assets", and `plugin-child-main` is registered as its own
  * esbuild entry point so an actual file exists there to run.
  */
-function resolvePluginChildEntryPath(): string {
+export function resolvePluginChildEntryPath(): string {
   return join(mainDir, "plugin-child-main.js");
 }
 
@@ -418,14 +418,17 @@ function resolveUserChosenDirectory(
     // path. That is the fail-closed direction — the alternative is a child
     // loaded with an envelope quietly smaller than the reviewed one — but it
     // means such a setting has to be made absolute BEFORE the plugin holding it
-    // is routed out of process. Stated here rather than discovered there: today
-    // no plugin routed out of process holds either key, so the cost is latent
-    // and this comment is the notice.
+    // is loaded. Every `entry` plugin is routed out of process since
+    // Admission, so the refusal ends in one sentence a user can act on — the
+    // same sentence for every plugin and every key, because the corrective
+    // action is the user's and is the same everywhere: replace the value with
+    // a directory the host approved, or clear it so the grant is not asked.
     rejectEnvelopeGrant(
       inputs.pluginId,
       grant.configKey,
       `'${raw}' is not an absolute path — the host cannot resolve a relative value, because `
-        + `the directory it would be relative to is the plugin's to choose`,
+        + `the directory it would be relative to is the plugin's to choose; `
+        + `enter an approved absolute directory for '${grant.configKey}', or clear the setting`,
     );
   }
   const target = resolvePath(raw);
@@ -615,7 +618,7 @@ export interface ConfinedPluginChildSpec {
    *
    * `envelope.write` is what this spawn GRANTS for writing, not the whole set
    * the child can write: see the spawn's own filesystem note below, and axis 6
-   * in `out-of-process-plugins.ts`.
+   * of the admission record in the history of `out-of-process-plugins.ts`.
    */
   readonly envelope: DelegatedWorkerConfinement;
   readonly assertStillValid?: () => void;
@@ -739,6 +742,8 @@ export interface ConfinedPluginChild {
   readonly link: ChildLink;
   /** The spawned wrapper's pid, or `undefined` when the spawn produced none. */
   readonly pid: number | undefined;
+  /** The wrap the spawn actually applied, passed through from {@link spawnConfinedChild}. */
+  readonly confinement: SpawnConfinement;
   readonly waitForExit?: () => Promise<void>;
 }
 
@@ -776,8 +781,10 @@ export interface ObservedPluginChild {
  *    with the sandbox active: a child spawned by this function wrote into all
  *    four of the non-`/dev` paths and the host read the bytes back. Those
  *    paths are per-machine rather than per-plugin, so two confined children
- *    share them. `out-of-process-plugins.ts` axis 6 carries the full record,
- *    including what closing it would take and why that is not done here.
+ *    share them. Axis 6 of the admission record (the history of
+ *    `out-of-process-plugins.ts` before §9.8 A1 retired its census) carries
+ *    the full record, including what closing it would take and why that is
+ *    not done here.
  *    Everything below is about the host's decision — which paths THIS SPAWN
  *    grants — rather than about the kernel's final set.
  *    What the host does NOT put in it is `pluginRoot`. A value under this
@@ -924,7 +931,7 @@ export async function spawnConfinedPluginChild(
       workerRunRootRegistered = true;
     }
     const { command, args, baseEnv } = spawnLine;
-    const child = await spawnConfinedChild({
+    const { child, confinement } = await spawnConfinedChild({
       command,
       args,
       label: `plugin-child:${spec.pluginId}`,
@@ -977,6 +984,7 @@ export async function spawnConfinedPluginChild(
     const hasProcess = (): boolean => typeof child.pid === "number" && child.pid > 0;
     return {
       pid: hasProcess() ? child.pid : undefined,
+      confinement,
       waitForExit: () => exited,
       link: {
         input: child.stdout,
@@ -1027,9 +1035,11 @@ export interface OutOfProcessPluginSpec {
     | ({ readonly kind: "process" } & ProcessLaunch);
   /**
    * Defaults to the emitted `plugin-child-main.js` under the runtime asset dir.
-   * It is the path the CONFINED spawn runs for an `entry` launch, so a test
-   * that serves a stand-in still runs it under the real wrap and bypasses
-   * nothing.
+   * The plugin runtime always passes the path its composition root resolved
+   * (`PluginRuntimeOptions.childEntryPath`: {@link resolvePluginChildEntryPath}
+   * in the app, a bundle of the same entry in the tests). It is the path the
+   * CONFINED spawn runs for an `entry` launch, so a test that serves a
+   * stand-in still runs it under the real wrap and bypasses nothing.
    */
   readonly childEntryPath?: string;
   readonly registerSandboxEnvelope?: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) => {
@@ -1045,6 +1055,14 @@ export interface OutOfProcessPluginSpec {
    * cannot replace, re-spawn or terminate it.
    */
   readonly observeChild?: (child: ObservedPluginChild) => void;
+  /**
+   * Told the wrap a child was spawned under, once, the moment the spawn
+   * returns — before the grant re-check, so a construction that fails after
+   * a child existed still reports that child's confinement. Not called when
+   * no child was spawned. The runtime records it for the Doctor
+   * (`PluginConfinementReport`); it can read a value and nothing more.
+   */
+  readonly onChildSpawned?: (confinement: SpawnConfinement) => void;
 }
 
 /**
@@ -1121,6 +1139,7 @@ export function createOutOfProcessPluginFactory(
           ? { kind: "entry", childEntryPath }
           : spec.launch,
       });
+      spec.onChildSpawned?.(child.confinement);
       registration?.assertCurrent();
     } catch (error) {
       child?.link.terminate("sandbox grant changed during spawn");

@@ -8,6 +8,7 @@ import type { PreparedPluginHookProjection } from "../hooks/plugin-hook-projecti
 import type { PreparedPluginMcpProjection } from "../mcp/plugin-mcp-projection.js";
 import type { PluginGenerationLease } from "./plugin-generation-coordinator.js";
 import type { HostApiGenerationScope } from "./plugin-host-effect-scope.js";
+import type { PluginConfinementReport, PluginLoadArm } from "./runtime/types.js";
 
 type DeepReadonly<T> =
   T extends (...args: never[]) => unknown ? T
@@ -38,10 +39,28 @@ export interface PluginRuntimeGenerationProjection {
     active: boolean;
     depth: number;
   };
+  /** The arm the routing function returned; carried into the published `LoadedPlugin`. */
+  readonly arm: PluginLoadArm;
+  /** The wrap the generation's child was spawned under. */
+  readonly confinement: PluginConfinementReport;
+}
+
+export interface PreparedPluginRuntimeRemovalPublication {
+  readonly pluginId: string;
+  publish(): void;
 }
 
 export interface PreparedPluginRuntimeGenerationPublication {
   readonly pluginId: string;
+  /**
+   * The generation coordinator has committed this candidate: its pointer now
+   * names it. The lifecycle calls this first in the coordinator's publication
+   * turn, before any projection publishes, because from that moment the
+   * committed generation — not the load attempt that built the projection —
+   * owns its instance, HostApi incarnation and root, even if a later
+   * publication step fails. Idempotent; `publish()` implies it.
+   */
+  handOver(): void;
   publish(): void;
 }
 
@@ -106,4 +125,19 @@ export interface PluginRuntimeGenerationLifecycle extends PluginRuntimeGeneratio
   ): Promise<CommittedPluginGeneration<T>>;
   recoverRetirements(): Promise<void>;
   waitForRetirements(): Promise<void>;
+  /**
+   * Close generation admission for good (host shutdown): queued and later
+   * acquisitions reject with `reason(pluginId)`, and no candidate publishes.
+   */
+  closeAdmission(reason: (pluginId: string) => Error): void;
+  /** Generations whose retirement has begun and not yet finished. */
+  listRetiringGenerations(): readonly RetiringPluginRuntimeGeneration[];
+}
+
+export interface RetiringPluginRuntimeGeneration {
+  readonly pluginId: string;
+  readonly generationId: string;
+  readonly runtime: PluginRuntimeGenerationProjection;
+  /** Settles when the generation's leases drained and its retirement finished. */
+  readonly retired: Promise<void>;
 }

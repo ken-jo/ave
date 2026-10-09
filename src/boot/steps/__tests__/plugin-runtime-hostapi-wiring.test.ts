@@ -62,6 +62,7 @@ const runtimeTestState = vi.hoisted(() => ({
     isPluginEnabled: vi.fn(() => true),
     getApprovedPluginAccess: vi.fn(() => undefined),
     registerDisposer: vi.fn(),
+    isShuttingDown: vi.fn(() => false),
     assertPluginEventAccess: vi.fn(),
     assertPluginEventEmitAccess: vi.fn(),
     resolveToolOwner: vi.fn((toolName: string) => `${toolName}-owner`),
@@ -143,6 +144,7 @@ const OFFICIAL_ORIGIN = {
 };
 
 import { initPluginRuntime } from "../plugin-runtime.js";
+import { emitEvent as emitHostEvent } from "../../types.js";
 import { withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
 import type { PluginAccessSpec, PluginRegistryTrust } from "../../../plugins/types.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
@@ -169,6 +171,9 @@ type ConfigHostApi = {
   };
   emitEvent: (type: string, data?: unknown) => void;
   onEvent: (type: string, handler: (data: unknown) => void) => () => void;
+  onPluginsChanged: (
+    handler: (event: { type: "installed" | "uninstalled"; pluginId: string; source?: string }) => void,
+  ) => () => void;
   getSecret: (key: string) => string | undefined | null;
   storage: {
     readText: (rel: string) => Promise<string>;
@@ -1134,6 +1139,41 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     unsubscribe();
     api.emitEvent("plugin-a.updated", { value: 8 });
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops delivering host notifications into a live incarnation once the runtime begins shutting down", async () => {
+    const createHostApi = await initAndGetFactory(
+      makeSettingsService(new Map()),
+    );
+    const api = createHostApi(
+      "plugin-a",
+      { id: "plugin-a", config: {}, capabilities: [] },
+      tmpDirs.track(mkdtempSync("/tmp/ave-evt-shutdown-")),
+      activeIncarnation(),
+      "plugin-a",
+    );
+    const eventHandler = vi.fn();
+    const pluginsChanged = vi.fn();
+    api.onEvent("plugin-a.updated", eventHandler);
+    api.onPluginsChanged(pluginsChanged);
+
+    api.emitEvent("plugin-a.updated", { value: 1 });
+    expect(eventHandler).toHaveBeenCalledTimes(1);
+
+    // The incarnation is still active; only the runtime's shutdown has begun.
+    runtimeTestState.runtime.isShuttingDown.mockReturnValue(true);
+    try {
+      api.emitEvent("plugin-a.updated", { value: 2 });
+      emitHostEvent("plugin.installed", { pluginId: "plugin-b", source: "marketplace" });
+      emitHostEvent("plugin.uninstalled", { pluginId: "plugin-b" });
+    } finally {
+      runtimeTestState.runtime.isShuttingDown.mockReturnValue(false);
+    }
+    expect(eventHandler).toHaveBeenCalledTimes(1);
+    expect(pluginsChanged).not.toHaveBeenCalled();
+    // Control: the same subscription delivers while shutdown has not begun.
+    emitHostEvent("plugin.installed", { pluginId: "plugin-b", source: "marketplace" });
+    expect(pluginsChanged).toHaveBeenCalledWith({ type: "installed", pluginId: "plugin-b", source: "marketplace" });
   });
 
   it("gives a worker only the floor pierces its plugin's reviewed declaration asked for", async () => {
