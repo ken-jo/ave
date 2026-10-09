@@ -43,6 +43,56 @@ vi.mock("../../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   cleanupAsrtSandboxAfterCommand: async () => undefined,
 }));
 
+/**
+ * The Windows holder grant, recorded rather than made: what was asked for, in
+ * what order against the spawn, and a way to report the holder lost. Nothing
+ * here touches an ACL; `windows-acl-grant-holder.test.ts` and the my-window
+ * measurement own that.
+ */
+const windowsGrant = vi.hoisted(() => ({
+  calls: [] as Array<{ label: string; allowRead: readonly string[]; allowWrite: readonly string[] }>,
+  events: [] as string[],
+  lost: [] as Array<(reason: Error) => void>,
+  alive: true,
+}));
+vi.mock("../../../permissions/windows-acl-grant-holder.js", () => ({
+  holdWindowsFilesystemGrant: async (opts: { label: string; allowRead: readonly string[]; allowWrite: readonly string[] }) => {
+    windowsGrant.calls.push(opts);
+    windowsGrant.events.push("grant");
+    return {
+      assertAlive: () => {
+        if (!windowsGrant.alive) throw new Error("holder gone");
+      },
+      onLost: (listener: (reason: Error) => void) => void windowsGrant.lost.push(listener),
+      // Idempotent, as the real one is: every way the child ends calls it.
+      release: () => {
+        if (windowsGrant.events.at(-1) !== "release") windowsGrant.events.push("release");
+      },
+    };
+  },
+}));
+
+/**
+ * A POSIX-shaped throwaway HOME for the cases that pretend to be Windows: the
+ * real one would build a `win32` path off a POSIX temp dir and create it
+ * relative to the cwd.
+ */
+const fakeSandboxHome = vi.hoisted(() => ({ on: false }));
+vi.mock("../../../permissions/sandbox-process-home.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../permissions/sandbox-process-home.js")>();
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  return {
+    ...actual,
+    createSandboxProcessHome: (...args: Parameters<typeof actual.createSandboxProcessHome>) => {
+      if (!fakeSandboxHome.on) return actual.createSandboxProcessHome(...args);
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "oop-fake-sandbox-home-"));
+      return { path: home, env: { HOME: home }, cleanup: () => fs.rmSync(home, { recursive: true, force: true }) };
+    },
+  };
+});
+
 /** What the host transport warned, for the cases that assert a notification was dropped. */
 const transportWarnings = vi.hoisted(() => [] as unknown[][]);
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
@@ -58,6 +108,7 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
     },
   };
 });
+import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1196,6 +1247,243 @@ describe("the factory's launch reaches the spawn as decided", () => {
       expect(spec.baseEnv.ELECTRON_RUN_AS_NODE).toBe("1");
     } finally {
       roots.remove();
+    }
+  });
+});
+
+/**
+ * Windows: `srt-win exec` takes denies only, so the child's own directories
+ * are an ACL grant to the shared `srt-sandbox` account, held against a holder
+ * process for exactly the child's lifetime (§9.8 A2, decision 63). These cases
+ * pin the wiring — what is granted, that it precedes the spawn, that every way
+ * the child ends releases it, that a lost holder stops the child, and that a
+ * grant reaching a neighbour is refused. Whether the ACL then admits the child
+ * is the my-window measurement's question, not this file's.
+ */
+describe("on Windows a confined child holds a grant on its own directories for exactly its lifetime", () => {
+  type FakeChild = EventEmitter & {
+    pid: number | undefined;
+    stdin: PassThrough;
+    stdout: PassThrough;
+    stderr: PassThrough;
+    exitCode: number | null;
+    signalCode: NodeJS.Signals | null;
+    kill: ReturnType<typeof vi.fn>;
+  };
+
+  function fakeChild(opts: { readonly pid?: number } = { pid: 4242 }): FakeChild {
+    const { pid } = opts;
+    const child = Object.assign(new EventEmitter(), {
+      pid,
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      kill: vi.fn(),
+    });
+    child.kill.mockImplementation((signal: NodeJS.Signals) => {
+      setImmediate(() => end(child, null, signal));
+      return true;
+    });
+    return child;
+  }
+
+  function end(child: FakeChild, code: number | null, signal: NodeJS.Signals | null): void {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    child.exitCode = code;
+    child.signalCode = signal;
+    child.emit("exit", code, signal);
+    child.emit("close", code, signal);
+  }
+
+  /**
+   * An `<AVE_HOME>` laid out as production lays it out: the child runs from
+   * its generation under `plugins/.cache/<id>/` and keeps its data, sockets and
+   * worker run dir under `plugins/<id>/`.
+   */
+  function aveLayout(pluginRootFor: (pluginsRoot: string) => string = (p) => join(p, ".cache", PLUGIN_ID, "g1")) {
+    const home = mkdtempSync(join(tmpdir(), "oop-win-grant-"));
+    const pluginsRoot = join(home, "plugins");
+    const own = join(pluginsRoot, PLUGIN_ID);
+    const context: Partial<PluginRuntimeContext> = {
+      pluginRoot: pluginRootFor(pluginsRoot),
+      pluginDataDir: join(own, "data"),
+      pluginSocketDir: join(own, "sockets"),
+    };
+    return { home, pluginsRoot, own, context };
+  }
+
+  async function asWindows(
+    layout: ReturnType<typeof aveLayout>,
+    run: () => Promise<void>,
+    opts: { readonly sandboxActive?: boolean } = {},
+  ): Promise<void> {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const previousHome = process.env.AVE_HOME;
+    windowsGrant.calls.length = 0;
+    windowsGrant.events.length = 0;
+    windowsGrant.lost.length = 0;
+    windowsGrant.alive = true;
+    spawnConfinedChild.mockReset();
+    sandbox.active = opts.sandboxActive ?? true;
+    fakeSandboxHome.on = true;
+    process.env.AVE_HOME = layout.home;
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    try {
+      await run();
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      if (previousHome === undefined) delete process.env.AVE_HOME;
+      else process.env.AVE_HOME = previousHome;
+      fakeSandboxHome.on = false;
+      sandbox.active = false;
+      spawnConfinedChild.mockReset();
+      rmSync(layout.home, { recursive: true, force: true });
+    }
+  }
+
+  function construct(layout: ReturnType<typeof aveLayout>): Promise<unknown> {
+    const factory = createOutOfProcessPluginFactory({
+      manifest: MANIFEST,
+      launch: { kind: "entry", entryPath: join(tmpdir(), "never-imported.mjs") },
+    });
+    return Promise.resolve(factory(hostContext(fakeHostApi(), layout.context))).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+  }
+
+  it("grants the envelope and the throwaway HOME before the spawn, and releases it when the child exits", async () => {
+    const layout = aveLayout();
+    await asWindows(layout, async () => {
+      spawnConfinedChild.mockImplementation(async () => {
+        windowsGrant.events.push("spawn");
+        const child = fakeChild();
+        setImmediate(() => end(child, 1, null));
+        return { child, confinement: "wrapped" };
+      });
+      const outcome = await construct(layout);
+      expect(outcome).toBeInstanceOf(Error);
+      expect(windowsGrant.calls).toHaveLength(1);
+      const grant = windowsGrant.calls[0]!;
+      expect(grant.label).toBe(`plugin-child:${PLUGIN_ID}:asrt-win-acl`);
+      const { pluginRoot, pluginDataDir } = layout.context;
+      const sockets = join(layout.own, "sockets");
+      const run = join(layout.own, "run");
+      const home = grant.allowRead.at(-1)!;
+      expect(home).toContain("oop-fake-sandbox-home-");
+      expect([...grant.allowRead].sort()).toEqual([pluginRoot, pluginDataDir, sockets, run, home].sort());
+      // Write is the envelope's write and the HOME: never the generation, and
+      // never the worker run dir the host binds into.
+      expect([...grant.allowWrite].sort()).toEqual([pluginDataDir, sockets, home].sort());
+      expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
+    });
+  });
+
+  it("releases the grant when the spawn fails after it was taken, and the spawn is gated on the holder", async () => {
+    const layout = aveLayout();
+    await asWindows(layout, async () => {
+      spawnConfinedChild.mockImplementation(async (spec: { assertStillValid?: () => void }) => {
+        windowsGrant.events.push("spawn");
+        spec.assertStillValid?.();
+        windowsGrant.alive = false;
+        spec.assertStillValid?.();
+        throw new Error("unreachable: the holder check above throws");
+      });
+      const outcome = await construct(layout);
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toBe("holder gone");
+      expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
+    });
+  });
+
+  it("releases the grant when the spawn produced no process", async () => {
+    const layout = aveLayout();
+    await asWindows(layout, async () => {
+      spawnConfinedChild.mockImplementation(async () => {
+        windowsGrant.events.push("spawn");
+        const child = fakeChild({});
+        setImmediate(() => child.emit("error", new Error("spawn ENOENT")));
+        return { child, confinement: "wrapped" };
+      });
+      const outcome = await construct(layout);
+      expect(outcome).toBeInstanceOf(Error);
+      expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
+    });
+  });
+
+  it("stops the child when its holder is lost, and the exit then releases the grant", async () => {
+    const layout = aveLayout();
+    let spawned: FakeChild | undefined;
+    await asWindows(layout, async () => {
+      spawnConfinedChild.mockImplementation(async () => {
+        windowsGrant.events.push("spawn");
+        spawned = fakeChild();
+        setImmediate(() => {
+          for (const listener of windowsGrant.lost) listener(new Error("holder exited"));
+        });
+        return { child: spawned, confinement: "wrapped" };
+      });
+      const outcome = await construct(layout);
+      expect(outcome).toBeInstanceOf(Error);
+      expect(spawned!.kill).toHaveBeenCalledWith("SIGTERM");
+      expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
+    });
+  });
+
+  it("refuses a grant that reaches a neighbour's directory, before anything is granted or spawned", async () => {
+    const layout = aveLayout((pluginsRoot) => join(pluginsRoot, "neighbour"));
+    await asWindows(layout, async () => {
+      const outcome = await construct(layout);
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toContain("refusing a Windows grant beyond the plugin's own roots");
+      expect((outcome as Error).message).toContain(join(layout.pluginsRoot, "neighbour"));
+      expect(windowsGrant.calls).toHaveLength(0);
+      expect(spawnConfinedChild).not.toHaveBeenCalled();
+    });
+  });
+
+  it("makes no grant with the sandbox off: the child is not confined, so there is no account to grant", async () => {
+    const layout = aveLayout();
+    await asWindows(
+      layout,
+      async () => {
+        spawnConfinedChild.mockImplementation(async () => {
+          const child = fakeChild();
+          setImmediate(() => end(child, 1, null));
+          return { child, confinement: "unconfined" };
+        });
+        await construct(layout);
+        expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
+        expect(windowsGrant.calls).toHaveLength(0);
+      },
+      { sandboxActive: false },
+    );
+  });
+
+  it.skipIf(process.platform === "win32")("makes no ACL grant off Windows, where the wrap carries the allow-list", async () => {
+    const layout = aveLayout();
+    const previousHome = process.env.AVE_HOME;
+    windowsGrant.calls.length = 0;
+    spawnConfinedChild.mockReset();
+    spawnConfinedChild.mockImplementation(async () => {
+      const child = fakeChild();
+      setImmediate(() => end(child, 1, null));
+      return { child, confinement: "wrapped" };
+    });
+    sandbox.active = true;
+    process.env.AVE_HOME = layout.home;
+    try {
+      await construct(layout);
+      expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
+      expect(windowsGrant.calls).toHaveLength(0);
+    } finally {
+      sandbox.active = false;
+      if (previousHome === undefined) delete process.env.AVE_HOME;
+      else process.env.AVE_HOME = previousHome;
+      spawnConfinedChild.mockReset();
+      rmSync(layout.home, { recursive: true, force: true });
     }
   });
 });

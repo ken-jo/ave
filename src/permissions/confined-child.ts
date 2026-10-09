@@ -43,9 +43,10 @@ import { shellQuote } from "../lib/shell-resolver.js";
  *
  * `allow-list` puts the paths in the ASRT command itself (macOS seatbelt,
  * Linux bwrap `--bind`). `deny-only` is Windows, where reachability is an ACL
- * question decided outside the wrap — for a worker, a grant against its holder
- * process (`worker-spawn.ts`); for a plugin child, no grant at all, only the
- * directories' existing ACLs (`spawnConfinedPluginChild`) — so the wrap carries
+ * question decided outside the wrap — a grant against a holder process the
+ * caller owns for the process's lifetime (`windows-acl-grant-holder.ts`; a
+ * worker in `worker-spawn.ts`, a plugin child in `spawnConfinedPluginChild`) —
+ * so the wrap carries
  * the deny floor and nothing else: passing allow paths there would imply a
  * confinement the wrap does not perform.
  */

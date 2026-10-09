@@ -67,12 +67,16 @@ import {
 } from "../plugins/plugin-storage-layout.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { spawnConfinedChild } from "./confined-child.js";
-import { terminateChildProcess } from "../tools/terminate-child-process.js";
 import {
   assertManagedChildProcessAdmissionOpen,
   trackManagedChildProcess,
 } from "../main/managed-child-processes.js";
 import { createSandboxProcessHome } from "./sandbox-process-home.js";
+import {
+  startWindowsAclGrantHolder,
+  stopWindowsAclGrantHolder,
+  terminateChildBestEffort,
+} from "./windows-acl-grant-holder.js";
 import {
   isAsrtSandboxActive,
   cleanupAsrtSandboxAfterCommand,
@@ -234,62 +238,6 @@ function removeSocketArtifacts(socketPath: string, socketDir: string): void {
   }
 }
 
-function windowsSystemRoot(): string {
-  const root = process.env.SystemRoot ?? process.env.WINDIR;
-  if (root === undefined || root.trim().length === 0) {
-    throw new Error("[worker-spawn] cannot start Windows ACL grant holder: SystemRoot is unset");
-  }
-  return root.replace(/[\\/]+$/, "");
-}
-
-function windowsSystem32Path(fileName?: string): string {
-  const system32 = `${windowsSystemRoot()}\\System32`;
-  return fileName === undefined ? system32 : `${system32}\\${fileName}`;
-}
-
-function windowsHolderEnv(): NodeJS.ProcessEnv {
-  const root = windowsSystemRoot();
-  return {
-    SystemRoot: root,
-    WINDIR: root,
-  };
-}
-
-function startWindowsAclGrantHolder(label: string): ChildProcess {
-  const system32 = windowsSystem32Path();
-  assertManagedChildProcessAdmissionOpen(label);
-  const child = spawn(windowsSystem32Path("more.com"), [], {
-    cwd: system32,
-    stdio: ["pipe", "ignore", "ignore"],
-    shell: false,
-    windowsHide: true,
-    env: windowsHolderEnv(),
-  });
-  if (child.pid === undefined) {
-    child.once("error", () => {
-      // The synchronous throw below is the fail-closed signal for this path.
-      // Keep the later async spawn error from becoming an unhandled event.
-    });
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      // Spawn failed before pid publication.
-    }
-    throw new Error("[worker-spawn] Windows ACL grant holder started without a pid");
-  }
-  trackManagedChildProcess(child, { label });
-  return child;
-}
-
-function stopWindowsAclGrantHolder(child: ChildProcess): void {
-  try {
-    child.stdin?.end();
-  } catch {
-    // Already closed.
-  }
-  terminateChildBestEffort(child);
-}
-
 /**
  * The worker's standard streams. stdin is the host's LIVENESS PIPE: the host
  * never writes to it and never ends it, so the only EOF a worker can ever read
@@ -299,18 +247,6 @@ function stopWindowsAclGrantHolder(child: ChildProcess): void {
  * other signal that its owner left; with stdin `"ignore"` it lived on forever.
  */
 const WORKER_STDIO: StdioOptions = ["pipe", "pipe", "pipe"];
-
-function terminateChildBestEffort(child: ChildProcess): void {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  try {
-    const forceTimer = terminateChildProcess(child, 3_000);
-    const clearForceTimer = (): void => clearTimeout(forceTimer);
-    child.once("exit", clearForceTimer);
-    child.once("close", clearForceTimer);
-  } catch {
-    // Already gone.
-  }
-}
 
 function definedEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string> {
   const extra: Record<string, string> = {};

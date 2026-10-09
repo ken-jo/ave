@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
@@ -579,10 +579,39 @@ function exactSeatbeltDenyGlob(root: string): string {
  * hook or bundled server — is re-allowed by the caller, as for the plugins root.
  */
 function ensurePluginOwnedReadRoots(): string[] {
-  const home = aveHome();
-  const roots = [resolvePluginPaths().pluginsRoot, join(home, "agent-plugin-data"), join(home, "packages", "agent-plugin")];
+  const roots = pluginOwnedReadRoots();
   for (const root of roots) mkdirSync(root, { recursive: true, mode: 0o700 });
   return roots;
+}
+
+function pluginOwnedReadRoots(): string[] {
+  const home = aveHome();
+  return [resolvePluginPaths().pluginsRoot, join(home, "agent-plugin-data"), join(home, "packages", "agent-plugin")];
+}
+
+/**
+ * The paths of a Windows plugin grant that would reach past the plugin's own
+ * directories into the roots macOS and Linux refuse every plugin-owned wrap
+ * ({@link PerCommandFilesystem.denyPluginsRoot}). Windows has no such deny, so
+ * the grant itself is held to it: a path may lie inside the plugins root only
+ * under the plugin's own install (`<plugins>/<id>`) or generation cache
+ * (`<plugins>/.cache/<id>`); never inside an agent plugin's roots, which no
+ * `entry` plugin owns; and never at or above any of the roots, since an
+ * inheriting grant there would cover every plugin under it. Empty when the
+ * grant is the plugin's own.
+ */
+export function pluginGrantPathsBeyondOwnRoots(pluginId: string, paths: readonly string[]): string[] {
+  const fold = (path: string): string => (process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path));
+  const within = (path: string, root: string): boolean => {
+    const rel = relative(fold(root), fold(path));
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  };
+  const roots = pluginOwnedReadRoots();
+  const { pluginsRoot, cacheRoot } = resolvePluginPaths();
+  const own = [join(pluginsRoot, pluginId), join(cacheRoot, pluginId)];
+  return paths.filter((path) =>
+    roots.some((root) => within(root, path))
+    || (roots.some((root) => within(path, root)) && !own.some((ownRoot) => within(path, ownRoot))));
 }
 
 export function buildPerCommandSandboxCustomConfig(
