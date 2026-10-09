@@ -1397,8 +1397,12 @@ export function ToolApprovalContent({
                 {tHook("toolApprovalDialog.openPermissionSettings")}
               </Button>
             </div>
+            {/* `anywhere`, not `break-word`: a button is an inline-flex box whose
+                text item keeps a whole word as its min-content under
+                `break-word`, so one long translated word spills past the
+                button edge. `anywhere` lets that word wrap inside the cell. */}
             <div
-              className={`grid min-w-0 grid-cols-3 gap-2 [&>button]:min-w-0 [&>button]:h-auto [&>button]:whitespace-normal [&>button]:break-words [&>button]:px-1 [&>button]:py-2 [&>button]:text-[11px] [&>button]:leading-tight ${narrowLaneScroll ? "@max-[14rem]:grid-cols-1" : ""}`}
+              className={`grid min-w-0 grid-cols-3 gap-2 [&>button]:min-w-0 [&>button]:h-auto [&>button]:whitespace-normal [&>button]:[overflow-wrap:anywhere] [&>button]:px-1 [&>button]:py-2 [&>button]:text-[11px] [&>button]:leading-tight ${narrowLaneScroll ? "@max-[14rem]:grid-cols-1" : ""}`}
               data-testid="approval-decision-actions"
             >
               <Button
@@ -1541,6 +1545,10 @@ function approvalSandboxSummary(request: ApprovalRequest): ReviewBasisRow | null
     value = t("toolApprovalDialog.sandboxFsOnly");
   } else if (cap.kind === "none" || cap.confidence === "assumed") {
     value = t("toolApprovalDialog.sandboxNone");
+  } else if (cap.kind === "disposable-container") {
+    // The broker guest: filesystem and process tree are the guest's own and
+    // are discarded with it; egress is the guest's policy, not "partial".
+    value = t("toolApprovalDialog.sandboxDisposableGuest");
   } else if (
     cap.confines &&
     !(cap.confines.filesystem && cap.confines.process && cap.confines.network)

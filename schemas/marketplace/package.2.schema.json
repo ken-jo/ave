@@ -328,6 +328,13 @@
       "format": "uri",
       "pattern": "^https://[^\\s]+$"
     },
+    "downloadUrl": {
+      "description": "A catalog-supplied release or archive download. Plain http is accepted: the sha256 pin, read over the source's own transport, fixes the bytes (design §18.2.3).",
+      "type": "string",
+      "maxLength": 2048,
+      "format": "uri",
+      "pattern": "^https?://[^\\s]+$"
+    },
     "repoPath": {
       "type": "string",
       "maxLength": 200,
@@ -444,7 +451,7 @@
               "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
             },
             "url": {
-              "$ref": "#/definitions/httpsUrl"
+              "$ref": "#/definitions/downloadUrl"
             },
             "sha256": {
               "$ref": "#/definitions/sha256"
@@ -459,7 +466,7 @@
           ],
           "properties": {
             "url": {
-              "$ref": "#/definitions/httpsUrl"
+              "$ref": "#/definitions/downloadUrl"
             },
             "sha256": {
               "$ref": "#/definitions/sha256"

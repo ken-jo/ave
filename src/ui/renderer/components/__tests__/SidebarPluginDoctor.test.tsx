@@ -23,7 +23,6 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
     hasApiKey: true,
     onOpenSettings: vi.fn(),
     onNewChat: vi.fn(),
-    streaming: false,
     collapsed: false,
     onToggleCollapse: vi.fn(),
     onOpenUnifiedSearch: vi.fn(),

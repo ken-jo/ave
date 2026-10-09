@@ -157,9 +157,23 @@ describe("validateDescriptorText", () => {
       expect(checkDescriptor(withPayload({ authority: authority(), artifact: { archive: { url: "https://dl.example.com/a.zip" } } })).ok).toBe(true);
     });
 
+    // Catalog-supplied http downloads are accepted (design §18.2.3, decision 5 of §18):
+    // the pin, read over the source's own transport, fixes the bytes, and the
+    // Delivery row says "unencrypted download — verified by the pinned sha256".
+    it.each([
+      ["a release", { release: { url: "http://git.corp.example/root/api/v4/projects/7/packages/generic/alpha/1.2.0/alpha-1.2.0.zip", sha256: SHA } }],
+      ["an archive", { archive: { url: "http://dl.example.com/a.zip", sha256: SHA } }],
+      ["a release on a port", { release: { url: "http://git.corp.example:8080/alpha-1.2.0.zip", sha256: SHA } }],
+    ])("accepts %s pinned over plain http", (_label, artifact) => {
+      expect(checkDescriptor(withPayload({ authority: authority(), artifact }))).toMatchObject({ ok: true });
+    });
+
     it.each([
       ["no artifact rung", {}],
-      ["archive over http", { archive: { url: "http://dl.example.com/a.zip", sha256: SHA } }],
+      ["a release over ftp", { release: { url: "ftp://dl.example.com/a.zip", sha256: SHA } }],
+      ["an archive from a file URL", { archive: { url: "file:///tmp/a.zip", sha256: SHA } }],
+      ["a release URL with whitespace", { release: { url: "http://dl.example.com/a b.zip", sha256: SHA } }],
+      ["a scheme-relative archive", { archive: { url: "//dl.example.com/a.zip", sha256: SHA } }],
       ["uppercase sha256", { release: { repo: "acme/alpha", sha256: SHA.toUpperCase() } }],
       ["url combined with repo", { release: { repo: "acme/alpha", url: "https://dl.example.com/a.zip", sha256: SHA } }],
       ["tree escaping the repo", { tree: "../elsewhere" }],
@@ -260,6 +274,16 @@ describe("validateIndexText", () => {
     );
     expect(result).toMatchObject({ ok: true, value: { diagnostics: [] } });
     expect(result.ok && result.value.index.packages).toHaveLength(2);
+  });
+
+  it("keeps a plugin version whose release is pinned over plain http", () => {
+    const http = { release: { url: "http://git.corp.example/root/api/v4/projects/7/packages/generic/alpha/1.1.0/alpha-1.1.0.zip", sha256: SHA } };
+    const result = validateIndexText(
+      index([{ kind: "plugin", name: "alpha", path: "plugins/alpha", latest: "1.1.0", versions: [pluginVersion("1.1.0", { artifact: http })] }]),
+      context,
+    );
+    expect(result).toMatchObject({ ok: true, value: { diagnostics: [] } });
+    expect(result.ok && result.value.index.packages[0]?.versions?.[0]?.artifact).toEqual(http);
   });
 
   it.each([

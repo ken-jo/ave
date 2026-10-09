@@ -646,6 +646,9 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
                   {stage.result.rungs.map((rung) => (
                     <li key={rung.rung}>
                       {rung.rung} · {rung.outcome === "used" ? t("gitMarketplace.rung.used") : rung.outcome === "skipped" ? t("gitMarketplace.rung.skipped", { reason: rung.reason }) : t("gitMarketplace.rung.failed", { code: rung.code, message: scrubDiagnosticSecrets(rung.message) })}
+                      {rung.outcome === "used" && rung.unencrypted && (
+                        <span className="text-warning" data-testid={`git-marketplace:done:rung:${rung.rung}:unencrypted`}>{` · ${t("gitMarketplace.rung.unencrypted")}`}</span>
+                      )}
                     </li>
                   ))}
                 </ol>

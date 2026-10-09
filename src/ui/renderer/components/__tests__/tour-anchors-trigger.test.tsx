@@ -146,7 +146,6 @@ describe("Tutorial-C PR #983 follow-up: tour anchors", () => {
       hasApiKey: true,
       onOpenSettings: vi.fn(),
       onNewChat: vi.fn(),
-      streaming: false,
       collapsed: false,
       onToggleCollapse: vi.fn(),
       onOpenUnifiedSearch: vi.fn(),

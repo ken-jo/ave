@@ -72,8 +72,9 @@ export interface SideChatOpenRequest {
 const NO_SEARCH_MATCHES: number[] = [];
 
 /**
- * The side loop's stream carries no sub-agent frames, so this panel learns of
- * no child session: the set is empty by construction. It still claims through
+ * The side chat claims approvals and questions for its own session only; a
+ * sub-agent it starts runs a child session whose cards keep the window's
+ * routing. The set is therefore empty by construction. It still claims through
  * the tile's own rule (`sessionOwnedBy`) so the two readers cannot drift.
  */
 const NO_CHILD_SESSIONS: ReadonlySet<string> = new Set();
@@ -99,9 +100,17 @@ interface SideChatViewProps {
    * says whether the user can see them.
    */
   shown?: boolean;
+  /**
+   * The session this side chat holds, reported to the panel that hosts it
+   * whenever it changes. The panel keeps the sub-agents that session's turns
+   * start (#2345) and draws them in its sub-agent tab. The panel, not this
+   * view, owns them: closing the side-chat tab unmounts the view while its
+   * loop — and the agents it started — keeps running in main.
+   */
+  onSessionIdChange?: ((sessionId: string) => void) | undefined;
 }
 
-export function SideChatView({ api, openRequest, onSessionsChanged, shown = true }: SideChatViewProps) {
+export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, onSessionIdChange }: SideChatViewProps) {
   const { t } = useTranslation();
   // If side chat is unavailable (preload without the surface), surface a stable
   // disabled state rather than a broken composer.
@@ -123,6 +132,7 @@ export function SideChatView({ api, openRequest, onSessionsChanged, shown = true
       openRequest={openRequest}
       onSessionsChanged={onSessionsChanged}
       shown={shown}
+      onSessionIdChange={onSessionIdChange}
     />
   );
 }
@@ -133,6 +143,7 @@ function SideChatSession({
   openRequest,
   onSessionsChanged,
   shown,
+  onSessionIdChange,
 }: SideChatViewProps & { sideChat: NonNullable<AveApi["sideChat"]>; shown: boolean }) {
   const { t } = useTranslation();
   // Called BEFORE `useMessageQueue` below, so the transcript's stream listener
@@ -179,9 +190,6 @@ function SideChatSession({
   // same reason the approvals are. The predicate reads the session through a
   // ref so the channel subscription survives a new or loaded session.
   const sessionIdRef = useRef(sessionId);
-  useLayoutEffect(() => {
-    sessionIdRef.current = sessionId;
-  }, [sessionId]);
   const ownsSession = useCallback(
     (id: string) => sessionIdRef.current !== null && sessionOwnedBy(sessionIdRef.current, NO_CHILD_SESSIONS, id),
     [],
@@ -190,6 +198,12 @@ function SideChatSession({
     ownsSession,
     drawsSession: ownsSession,
   });
+  useLayoutEffect(() => {
+    sessionIdRef.current = sessionId;
+    // Told in the same commit the predicate moves, so the panel's agent list
+    // follows the session without a frame landing in between.
+    if (sessionId !== null) onSessionIdChange?.(sessionId);
+  }, [sessionId, onSessionIdChange]);
   // What the tile beside this panel publishes to the window on the side
   // chat's behalf: the window leaves this session's questions to this panel
   // and marks the way here while a card waits off screen.
@@ -489,6 +503,9 @@ function SideChatSession({
           </div>
         </ComposerFrame>
       </div>
+      {/* Same z-index for both cards, so DOM order stacks them: the approval
+          comes last and stays the topmost decision, as it does in ChatView. */}
+      <QuestionOverlay api={api} requests={askQuestions} onResolved={dismissAskQuestion} />
       <ApprovalDock
         queue={pendingApprovals}
         conversationLabel={t("chatPreviewRail.sideChat.title")}
@@ -500,7 +517,6 @@ function SideChatSession({
         interactionLocked={approvalHead !== null && approvals.lockedRequestId === approvalHead.id}
         reviewerSuggestion={approvals.reviewerSuggestion}
       />
-      <QuestionOverlay api={api} requests={askQuestions} onResolved={dismissAskQuestion} />
     </div>
   );
 }

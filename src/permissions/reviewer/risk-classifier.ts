@@ -37,11 +37,20 @@ import { isGloballyRoutableAddress } from "../../core/network-guard.js";
 import { PERMISSION_REVIEWER_SYSTEM_PROMPT } from "../../shared/permission-reviewer-framework.js";
 import { getDottedFieldValue } from "../../shared/dotted-field-value.js";
 import { extractShellCommands } from "../../shared/shell-command-fields.js";
+import { stripCommandPath, tokenizeShell, type ShellLeaf } from "../../shared/shell-tokenizer.js";
+import {
+  isReadOnlyShellLeaf,
+  longOptionAbbreviates,
+  namesProgramToRun,
+  shortClusterHas,
+} from "./host-risk-inspector.js";
 import {
   formatSandboxCapabilityForPrompt,
+  isDisposableSubstrateCapability,
   sandboxRelaxesCategory,
   type SandboxCapability,
 } from "../sandbox-capability.js";
+import { verifyAveScratchDir } from "../../shared/ave-scratch.js";
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
@@ -331,6 +340,7 @@ const DESTRUCTIVE_SHELL_RE = new RegExp([
 const REVERSIBLE_SHELL_RE =
   /^\s*(echo|touch|ls|cat|pwd|whoami|date|env|true|false)\b/i;
 
+
 /**
  * Hosts the host considers trusted by virtue of being Ave-owned or
  * canonical model providers. `network → trusted-host` collapses to LOW.
@@ -580,6 +590,1024 @@ export function screenEgressRequest(input: Record<string, unknown>): EgressScree
   return { outcome: "public-benign" };
 }
 
+// ─── Disposable-guest shell allowlist ───────────────────────────────
+//
+// A disposable guest confines filesystem and process effects, not network
+// (`disposableContainerCapability` claims `network: false`). A guest shell is
+// therefore LOW only when it is POSITIVELY known to be local work or a plain
+// download into the guest; everything else stays MEDIUM. The check is
+// structural, over the leaves of the shared shell tokenizer after the same
+// wrapper unwrapping (`env`, `timeout`, `command`, …) every other consumer
+// sees:
+//
+//   - ELIGIBILITY. A leaf with any expansion (`$VAR`, `${…}`, `$(…)`,
+//     backticks, arithmetic) anywhere in its words, assignments, redirects or
+//     here-doc body, any `NAME=value` environment assignment, an `xargs`
+//     wrapper (its argv comes from stdin), or a `/dev/tcp`/`/dev/udp` path is
+//     never LOW. What the command sends must be visible on the line.
+//   - ARGV SPECS. Every option must be an EXACT allowlisted spelling for that
+//     tool and subcommand — so an abbreviated long option (`--upload-p`), a
+//     stuck short form (`-ccore.x=y`) or an unknown letter in a cluster fails —
+//     and every positional must pass that tool's predicate (a bare package
+//     spec, a local path, a literal clone URL, a plain public download URL).
+//     No option value may carry a URL or a remote `host:path` (a `:` before
+//     any `/`): tar, rsync and cp-like tools open a connection for that form
+//     (`tar -cf host:/a.tar`). A local path positional never contains a `:`.
+//     git's scp-form clone and fetch sources are positionals with their own
+//     predicate and are kept. Toolchain flags handed to another tool (go
+//     `-ldflags`/`-gcflags`/`-asmflags`) are parsed into their own words and
+//     must be non-program flags; a cargo `--target` must be a triple.
+//   - WRAPPERS that run another program (`uv run`, `bundle exec`, `bun run`,
+//     `bun x`, `npx`, `pnpm exec`, `yarn dlx`, …) grade the wrapped argv as a
+//     command of its own.
+//   - DESTRUCTIVE forms are matched on tokens (and on raw text): a dangerous
+//     long option matches when its spelling is a prefix of the dangerous name,
+//     the way GNU and git resolve abbreviations; a short cluster matches when
+//     it contains a dangerous letter. Inline interpreter code (`python -c`,
+//     `node -e`, `perl -e`, `ruby -e`, `php -r`) counts as destructive: its
+//     effects cannot be graded from the line. git ref deletion and forced ref
+//     overwrite (`branch -d/-D/-f/-M/-C`, `tag -d/-f`, `checkout -B`,
+//     `switch -C`, `fetch --prune/--force`, `remote remove/prune`, `mv -f`),
+//     abandoning a merge/rebase/pick (`--abort`, `--skip`, `--quit`) and the
+//     unlisted deleting forms (`gc`, `prune`, `reflog expire/delete`,
+//     `worktree remove/prune`, `notes remove/prune`, `update-ref -d`,
+//     `symbolic-ref -d`, `push --delete/--force/:ref/+ref`) are destructive,
+//     as are a forced `+src:dst` refspec on fetch/pull and `checkout
+//     <tree-ish> <path>…` (two or more operands). Reflog-recoverable rewrites
+//     (`reset` without `--hard`, `commit --amend`, `rebase`) and removing
+//     regenerable state (`cargo clean`, `npm prune`, `apt-get purge`, `rmdir`)
+//     are not.
+//
+// Stated limits (also in permission-policy-design.md): a program the line
+// allows still runs code of its own — a script file given to an interpreter,
+// a build or test runner and its project files (`make --eval`, `make SHELL=`,
+// `pytest -p`, `npm run <script>`), awk's `/inet/tcp`, a git hook, or a config
+// file such as `.curlrc`, `.wgetrc`, `pip.conf` or `.git/config` planted by
+// an earlier guest write — and the literal URL path, hostname and DNS lookup
+// of an allowed download or clone are themselves a channel. None of that is
+// detected here; it relies on the guest's own egress policy. Host grading
+// does not consult any of this.
+
+type GuestShellGrade = "local" | "destructive" | "unlisted";
+
+/** curl options of a plain GET download, exact spellings only (curl accepts abbreviations; this does not). */
+const CURL_GET_FLAG_OPTIONS: ReadonlySet<string> = new Set([
+  "--remote-name", "--remote-name-all", "--location", "--silent", "--show-error", "--fail",
+  "--fail-with-body", "--insecure", "--compressed", "--progress-bar", "--verbose",
+  "--create-dirs", "--remote-header-name", "--head", "--include", "--http1.1", "--http2",
+  "--ipv4", "--ipv6", "--no-progress-meter", "--retry-connrefused", "--retry-all-errors",
+]);
+const CURL_GET_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "--output", "--output-dir", "--retry", "--retry-delay", "--retry-max-time",
+  "--connect-timeout", "--max-time", "--continue-at", "--max-filesize", "--max-redirs",
+]);
+const CURL_GET_SHORT_FLAGS: ReadonlySet<string> = new Set(["O", "L", "s", "S", "f", "k", "v", "J", "I", "i", "#", "4", "6"]);
+const CURL_GET_SHORT_VALUES: ReadonlySet<string> = new Set(["o", "m", "C"]);
+
+/** wget options of a plain GET download, exact spellings only. */
+const WGET_GET_FLAG_OPTIONS: ReadonlySet<string> = new Set([
+  "--quiet", "--no-verbose", "--verbose", "--continue", "--timestamping", "--no-check-certificate",
+  "--retry-connrefused", "--show-progress", "--no-clobber", "--no-parent", "--no-directories",
+  "--no-host-directories", "--server-response", "--https-only", "--inet4-only", "--inet6-only",
+  "-nv", "-nc", "-np", "-nd", "-nH",
+]);
+const WGET_GET_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  "--output-document", "--directory-prefix", "--tries", "--timeout", "--waitretry", "--progress",
+  "--cut-dirs", "--max-redirect",
+]);
+const WGET_GET_SHORT_FLAGS: ReadonlySet<string> = new Set(["q", "c", "N", "S", "v", "4", "6"]);
+const WGET_GET_SHORT_VALUES: ReadonlySet<string> = new Set(["O", "P", "t", "T"]);
+
+/**
+ * True when every option is an exact allowlisted GET form and every operand is
+ * a plain public http(s) URL the host's own fetch screen grades benign and that
+ * has no query, fragment or userinfo. That narrows the obvious carriers; it
+ * does not make the URL path, hostname or DNS lookup safe (a stated limit).
+ * A value-taking option consumes
+ * the rest of its short cluster, its `=value`, or the next word.
+ */
+function isPlainGetDownload(
+  args: readonly string[],
+  flags: ReadonlySet<string>,
+  values: ReadonlySet<string>,
+  shortFlags: ReadonlySet<string>,
+  shortValues: ReadonlySet<string>,
+): boolean {
+  let urls = 0;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg.startsWith("--") || flags.has(arg)) {
+      const eq = arg.indexOf("=");
+      const name = eq > 0 ? arg.slice(0, eq) : arg;
+      if (flags.has(name) && eq < 0) continue;
+      if (!values.has(name)) return false;
+      if (eq < 0) i++;
+      continue;
+    }
+    if (arg.startsWith("-") && arg.length > 1) {
+      for (let j = 1; j < arg.length; j++) {
+        const letter = arg[j]!;
+        if (shortFlags.has(letter)) continue;
+        if (!shortValues.has(letter)) return false;
+        if (j + 1 >= arg.length) i++;
+        break;
+      }
+      continue;
+    }
+    if (!isPlainDownloadUrl(arg)) return false;
+    urls++;
+  }
+  return urls > 0;
+}
+
+function isPlainDownloadUrl(value: string): boolean {
+  if (!/^https?:\/\//i.test(value)) return false;
+  const target = extractNetworkTarget({ url: value });
+  if (target === null || target.kind !== "url" || target.hasUserInfo) return false;
+  if (target.query !== "" || target.fragment !== "") return false;
+  return screenEgressRequest({ url: value }).outcome === "public-benign";
+}
+
+
+/** Nesting limit for wrappers that run another program. */
+const GUEST_WRAPPER_MAX_DEPTH = 3;
+
+/**
+ * The options and positionals one tool (or one subcommand) accepts for LOW.
+ * Options match by exact spelling only. A value-taking option consumes its
+ * `=value`, the rest of its short cluster, or the next word.
+ */
+interface GuestArgvSpec {
+  readonly flags?: readonly string[];
+  readonly values?: readonly string[];
+  /** Short letters allowed in a cluster without a value. */
+  readonly short?: string;
+  /** Short letters that take a value. */
+  readonly shortValues?: string;
+  /**
+   * The words the FIRST positional may be (a subcommand such as
+   * `git submodule update`). Named explicitly so a positional predicate can
+   * never admit a subcommand that runs a command (`submodule foreach`).
+   */
+  readonly subcommands?: readonly string[];
+  /** Every other positional must pass; absent = no positional allowed. */
+  readonly positional?: (arg: string) => boolean;
+  /**
+   * Options (long, or `-x` for a short letter) whose value is text — a
+   * message, format, pattern, selector or time — never a file or a host. Such
+   * a value is still refused when it carries a URL, but not for the
+   * `host:path` form, which a commit message (`-m "fix: x"`), a date or a
+   * format (`%(refname:short)`) legitimately has.
+   */
+  readonly textValues?: readonly string[];
+  /** Extra checks for particular option values, keyed by option (`--editable`, `-e`). */
+  readonly valueChecks?: Readonly<Record<string, (value: string) => boolean>>;
+  /** Words after this many positionals are a program's own arguments. */
+  readonly restAfterPositionals?: number;
+  /** Words after a bare `--` are a program's own arguments. */
+  readonly restAfterDoubleDash?: boolean;
+}
+
+/**
+ * The remote-file form `host:path` / `user@host:path`: a `:` before any `/`.
+ * tar (`-f host:/a.tar`), rsync and cp-like tools open a connection for it, so
+ * no option value of that shape is local. git's scp-form sources are checked
+ * separately by `isGuestGitSource`, never through option values.
+ */
+const GUEST_REMOTE_OPERAND_RE = /^[^/]*:/;
+
+/** Values never carry a URL or a remote `host:path`; either one is a source or sink. */
+function isGuestOptionValue(value: string | undefined, text = false): boolean {
+  return value !== undefined && !/:\/\//.test(value) && !value.startsWith("@") && (text || !GUEST_REMOTE_OPERAND_RE.test(value));
+}
+
+function matchesGuestArgvSpec(args: readonly string[], spec: GuestArgvSpec): boolean {
+  const flags = new Set(spec.flags ?? []);
+  const values = new Set(spec.values ?? []);
+  const short = spec.short ?? "";
+  const shortValues = spec.shortValues ?? "";
+  const textValues = new Set(spec.textValues ?? []);
+  let positionals = 0;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--") {
+      // A subcommand is never taken from after `--`.
+      if (spec.subcommands !== undefined && positionals === 0) return false;
+      return spec.restAfterDoubleDash === true || args.slice(i + 1).every((rest) => spec.positional?.(rest) === true);
+    }
+    if (arg.startsWith("-") && arg.length > 1) {
+      if (flags.has(arg)) continue;
+      const eq = arg.indexOf("=");
+      const name = eq > 0 ? arg.slice(0, eq) : arg;
+      if (values.has(name)) {
+        const value = eq > 0 ? arg.slice(eq + 1) : args[++i];
+        if (!isGuestOptionValue(value, textValues.has(name)) || spec.valueChecks?.[name]?.(value!) === false) return false;
+        continue;
+      }
+      if (arg.startsWith("--")) return false;
+      let consumed = false;
+      for (let j = 1; j < arg.length && !consumed; j++) {
+        const letter = arg[j]!;
+        if (short.includes(letter)) continue;
+        if (!shortValues.includes(letter)) return false;
+        const value = j + 1 < arg.length ? arg.slice(j + 1) : args[++i];
+        if (!isGuestOptionValue(value, textValues.has(`-${letter}`)) || spec.valueChecks?.[`-${letter}`]?.(value!) === false) return false;
+        consumed = true;
+      }
+      continue;
+    }
+    if (spec.restAfterPositionals !== undefined && positionals >= spec.restAfterPositionals) return true;
+    const admitted = spec.subcommands !== undefined && positionals === 0
+      ? spec.subcommands.includes(arg)
+      : spec.positional?.(arg) === true;
+    if (!admitted) return false;
+    positionals++;
+  }
+  return true;
+}
+
+/**
+ * A literal local path word: path characters only, so never a command string
+ * (no spaces or shell syntax), never a URL or `host:` remote form, never an
+ * option. A path predicate admits FILES; a spec whose first positional is a
+ * subcommand names those words in `subcommands` instead.
+ */
+function isGuestLocalPath(arg: string): boolean {
+  return /^[A-Za-z0-9._\/~+%,=@-]+$/.test(arg) && !arg.startsWith("-");
+}
+
+/** An editable install target: a local path, optionally with extras (`.[dev]`). */
+function isGuestEditableTarget(arg: string): boolean {
+  const extras = /^(.*?)(\[[A-Za-z0-9._,-]+\])?$/.exec(arg);
+  return extras !== null && isGuestLocalPath(extras[1]!);
+}
+
+/**
+ * A data word the tool matches or names but never executes (a grep pattern, a
+ * test-name filter): no URL. Never used where a word could be a command.
+ */
+function isGuestLiteralWord(arg: string): boolean {
+  return !/:\/\//.test(arg) && !arg.startsWith("@");
+}
+
+const PY_SPEC_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,-]+\])?((===|==|!=|~=|>=|<=|>|<)[A-Za-z0-9.*+!_-]+(,(===|==|!=|~=|>=|<=|>|<)[A-Za-z0-9.*+!_-]+)*)?$/;
+const NPM_SPEC_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(@[A-Za-z0-9.^~<>=*+_-]+)?$/i;
+const CARGO_SPEC_RE = /^[A-Za-z0-9_-]+(@[A-Za-z0-9.^~<>=*+-]+)?$/;
+const GEM_SPEC_RE = /^[A-Za-z0-9_.-]+$/;
+const OS_PACKAGE_RE = /^[a-z0-9][a-z0-9.+_-]*(:[a-z0-9-]+)?(=[A-Za-z0-9.+:~_-]+)?(\/[a-z0-9.-]+)?$/;
+const CONDA_SPEC_RE = /^[A-Za-z0-9_.-]+((==|=|>=|<=|>|<|!=)[A-Za-z0-9.*_+-]+)*$/;
+const GO_MODULE_RE = /^[a-z0-9.-]+\.[a-z]{2,}(\/[A-Za-z0-9._~-]+)+(\/\.\.\.)?(@[A-Za-z0-9._+-]+)?$/;
+const GO_PACKAGE_RE = /^(\.{1,2}|\.{1,2}\/[A-Za-z0-9._~\/-]*|[A-Za-z0-9._~-]+(\/[A-Za-z0-9._~-]+)*)(\/\.\.\.)?$|^[A-Za-z0-9._\/-]+\.go$/;
+
+const PIP_INSTALL_SPEC: GuestArgvSpec = {
+  flags: ["--upgrade", "--user", "--quiet", "--verbose", "--no-cache-dir", "--no-deps", "--pre",
+    "--break-system-packages", "--no-build-isolation", "--prefer-binary", "--force-reinstall",
+    "--ignore-installed", "--disable-pip-version-check", "--no-input", "--no-warn-script-location",
+    "--no-compile", "--require-hashes", "--dry-run", "--system"],
+  values: ["--requirement", "--constraint", "--upgrade-strategy", "--root-user-action", "--only-binary",
+    "--no-binary", "--target", "--progress-bar", "--timeout", "--retries", "--dest", "--python", "--editable"],
+  short: "UqvI",
+  shortValues: "rctdpe",
+  positional: (arg) => PY_SPEC_RE.test(arg),
+  // Requirement and constraint files and editable targets are local paths;
+  // `-e git+…`, `-e host:repo` or a URL are sources and stay MEDIUM.
+  valueChecks: {
+    "--requirement": isGuestLocalPath, "-r": isGuestLocalPath,
+    "--constraint": isGuestLocalPath, "-c": isGuestLocalPath,
+    "--editable": isGuestEditableTarget, "-e": isGuestEditableTarget,
+  },
+};
+const PIP_QUERY_SPEC: GuestArgvSpec = {
+  flags: ["--verbose", "--files", "--outdated", "--uptodate", "--not-required", "--user", "--local", "--yes", "--quiet"],
+  values: ["--format", "--requirement"],
+  short: "vfoulyq",
+  shortValues: "r",
+  positional: (arg) => PY_SPEC_RE.test(arg),
+  valueChecks: { "--requirement": isGuestLocalPath, "-r": isGuestLocalPath },
+};
+const PIP_SUBCOMMANDS: ReadonlyMap<string, GuestArgvSpec> = new Map<string, GuestArgvSpec>([
+  ["install", PIP_INSTALL_SPEC], ["download", PIP_INSTALL_SPEC],
+  ["uninstall", PIP_QUERY_SPEC], ["list", PIP_QUERY_SPEC], ["show", PIP_QUERY_SPEC],
+  ["freeze", PIP_QUERY_SPEC], ["check", PIP_QUERY_SPEC], ["sync", { ...PIP_INSTALL_SPEC, positional: isGuestLocalPath }],
+]);
+
+const NPM_INSTALL_SPEC: GuestArgvSpec = {
+  flags: ["--no-audit", "--no-fund", "--save-dev", "--save", "--save-exact", "--production",
+    "--legacy-peer-deps", "--no-save", "--silent", "--global", "--ignore-scripts", "--prefer-offline",
+    "--no-package-lock", "--workspaces", "--all", "--json", "--no-optional", "--frozen-lockfile",
+    "--no-frozen-lockfile", "--prod", "--recursive", "--offline", "--workspace-root", "--immutable",
+    "--dev", "--exact", "--check-files"],
+  values: ["--omit", "--include", "--loglevel", "--workspace", "--depth", "--filter"],
+  short: "DSEsgaPrdE",
+  shortValues: "wF",
+  positional: (arg) => NPM_SPEC_RE.test(arg),
+};
+/** Script runners: the script itself is the documented script limitation. */
+const NPM_SCRIPT_SPEC: GuestArgvSpec = {
+  flags: ["--silent", "--if-present", "--workspaces"],
+  values: ["--workspace"],
+  short: "s",
+  shortValues: "w",
+  positional: (arg) => /^[A-Za-z0-9:_.-]+$/.test(arg),
+  restAfterDoubleDash: true,
+};
+const PNPM_SCRIPT_SPEC: GuestArgvSpec = { ...NPM_SCRIPT_SPEC, restAfterPositionals: 1 };
+
+const CARGO_BUILD_SPEC: GuestArgvSpec = {
+  flags: ["--release", "--locked", "--frozen", "--offline", "--quiet", "--verbose", "--all-features",
+    "--no-default-features", "--workspace", "--all-targets", "--lib", "--bins", "--tests", "--benches",
+    "--examples", "--no-run", "--no-fail-fast", "--all", "--doc", "--check", "-vv"],
+  values: ["--features", "--package", "--bin", "--example", "--test", "--bench", "--target",
+    "--target-dir", "--manifest-path", "--jobs", "--profile", "--color", "--message-format", "--exclude", "--depth"],
+  short: "rqv",
+  shortValues: "Fpj",
+  // A target is a triple-shaped name, never a `.json` target spec path: a spec
+  // file can name the linker to run. A name that is not built in resolves
+  // through rustc's target search, so a planted target file is the stated
+  // planted-file limit.
+  valueChecks: { "--target": (value) => /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(value) && !value.endsWith(".json") },
+  positional: isGuestLiteralWord,
+  restAfterDoubleDash: true,
+};
+
+/**
+ * Splits a go tool-flags value the way the go command does: an optional
+ * `pattern=` prefix when the value does not start with `-`, then
+ * space-separated words with single or double quotes. Null when malformed.
+ */
+function splitGoToolFlags(value: string): string[] | null {
+  let rest = value;
+  if (rest !== "" && !rest.startsWith("-")) {
+    const eq = rest.indexOf("=");
+    if (eq < 0) return null;
+    rest = rest.slice(eq + 1);
+  }
+  const words: string[] = [];
+  const re = /\s*(?:'([^']*)'|"([^"]*)"|([^\s'"]+))/gy;
+  let match: RegExpExecArray | null;
+  while (re.lastIndex < rest.length && (match = re.exec(rest)) !== null) {
+    if (match[0].trim() === "") break;
+    words.push(match[1] ?? match[2] ?? match[3]!);
+  }
+  return rest.slice(re.lastIndex).trim() === "" ? words : null;
+}
+
+interface GoToolFlags {
+  /** Words allowed as they are (`-s`, `-N`). */
+  readonly flags: ReadonlySet<string>;
+  /** Flags taking the next word as a non-program value (`-X name=value`). */
+  readonly values: ReadonlySet<string>;
+  /** Allowed `-name=value` spellings, matched on the whole word. */
+  readonly assigned: RegExp;
+}
+// go tool link: strip, version stamping and internal linking only — never
+// `-extld`, `-extldflags`, `-linkmode=external`, `-installsuffix` or an
+// unknown flag, any of which can hand the build to another program.
+const GO_LDFLAGS_ALLOWED: GoToolFlags = {
+  flags: new Set(["-s", "-w", "-v", "-race", "-msan", "-asan"]),
+  values: new Set(["-X"]),
+  assigned: /^-(X=[A-Za-z0-9_.\/-]+=.*|buildid=[A-Za-z0-9_.\/=+-]*|linkmode=internal|compressdwarf=(true|false)|strictdups=[0-2])$/,
+};
+// go tool compile: optimisation, inlining and diagnostic switches.
+const GO_GCFLAGS_ALLOWED: GoToolFlags = {
+  flags: new Set(["-N", "-l", "-m", "-S", "-B", "-C", "-e", "-w", "-live", "-wb", "-race", "-K", "-h"]),
+  values: new Set([]),
+  assigned: /^-(m=[0-9]|d=[A-Za-z0-9_.,\/=]+|l=[0-9]|c=[0-9]+|spectre=[a-z,]*|trimpath=[A-Za-z0-9._\/~;=-]*)$/,
+};
+// go tool asm: defines and include directories only.
+const GO_ASMFLAGS_ALLOWED: GoToolFlags = {
+  flags: new Set(["-S", "-e", "-shared", "-dynlink"]),
+  values: new Set(["-D", "-I"]),
+  assigned: /^-(D=[A-Za-z0-9_]+(=[A-Za-z0-9_.-]*)?|I=[A-Za-z0-9._\/~-]+|spectre=[a-z,]*|trimpath=[A-Za-z0-9._\/~;=-]*)$/,
+};
+
+function isGoToolFlagsValue(value: string, allowed: GoToolFlags): boolean {
+  const words = splitGoToolFlags(value);
+  if (words === null) return false;
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]!;
+    if (allowed.flags.has(word) || allowed.assigned.test(word)) continue;
+    if (allowed.values.has(word)) {
+      const next = words[++i];
+      if (next === undefined || next.startsWith("-") || /:\/\//.test(next)) return false;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/** go flags are single-dash words (`-race`, `-o file`, `-tags=x`); no abbreviation. */
+const GO_BUILD_SPEC: GuestArgvSpec = {
+  flags: ["-v", "-x", "-n", "-a", "-race", "-msan", "-trimpath", "-short", "-cover", "-json",
+    "-failfast", "-benchmem", "-i", "-e", "-m", "-u", "-d", "-t"],
+  values: ["-o", "-tags", "-run", "-count", "-timeout", "-mod", "-ldflags", "-gcflags", "-asmflags",
+    "-p", "-bench", "-benchtime", "-coverprofile", "-coverpkg", "-covermode", "-C", "-cpu",
+    "-parallel", "-buildvcs", "-skip", "-shuffle", "-f", "-go"],
+  textValues: ["-tags", "-run", "-timeout", "-ldflags", "-gcflags", "-asmflags", "-bench", "-benchtime", "-skip"],
+  // The tool flags are parsed into their own words: a linker, compiler or
+  // assembler flag that names a program, plugin or option file is not LOW.
+  valueChecks: {
+    "-ldflags": (value) => isGoToolFlagsValue(value, GO_LDFLAGS_ALLOWED),
+    "-gcflags": (value) => isGoToolFlagsValue(value, GO_GCFLAGS_ALLOWED),
+    "-asmflags": (value) => isGoToolFlagsValue(value, GO_ASMFLAGS_ALLOWED),
+  },
+  positional: (arg) => GO_PACKAGE_RE.test(arg) || GO_MODULE_RE.test(arg),
+};
+
+const OS_PACKAGE_SPEC: GuestArgvSpec = {
+  flags: ["--yes", "--assume-yes", "--quiet", "--no-install-recommends", "--no-install-suggests",
+    "--fix-broken", "--fix-missing", "--allow-downgrades", "--reinstall", "--only-upgrade", "--purge",
+    "--no-cache", "--update", "--assumeyes", "--nodocs", "-qq"],
+  values: ["--virtual"],
+  short: "yqfU",
+  shortValues: "t",
+  positional: (arg) => OS_PACKAGE_RE.test(arg),
+};
+
+const BUILD_GOAL_RE = /^(clean|compile|test|package|verify|install|validate|build|assemble|check|run|dependencies|test-compile|dependency:resolve|dependency:go-offline)$/;
+const MVN_SPEC: GuestArgvSpec = {
+  flags: ["--quiet", "--batch-mode", "--offline", "--errors", "--debug", "--update-snapshots",
+    "--no-transfer-progress", "-ntp", "--no-daemon", "--info", "--stacktrace", "--build-cache",
+    "--parallel", "--continue"],
+  values: ["--file", "-pl", "--projects", "--threads", "--console", "--exclude-task", "--project-dir"],
+  textValues: ["-pl", "--projects", "--exclude-task", "-x"],
+  short: "qBoeXUis",
+  shortValues: "fTxp",
+  positional: (arg) => BUILD_GOAL_RE.test(arg),
+};
+
+/** Per-tool subcommand specs; the first positional is the subcommand. */
+const GUEST_SUBCOMMAND_TOOLS: ReadonlyMap<string, ReadonlyMap<string, GuestArgvSpec>> = new Map<string, ReadonlyMap<string, GuestArgvSpec>>([
+  ["pip", PIP_SUBCOMMANDS],
+  ["pip3", PIP_SUBCOMMANDS],
+  ["npm", new Map<string, GuestArgvSpec>([
+    ...["install", "i", "ci", "uninstall", "un", "remove", "rm", "update", "up", "dedupe", "prune",
+      "rebuild", "ls", "list", "pack"].map((sub) => [sub, NPM_INSTALL_SPEC] as [string, GuestArgvSpec]),
+    ...["test", "t", "start", "run", "run-script"].map((sub) => [sub, NPM_SCRIPT_SPEC] as [string, GuestArgvSpec]),
+    ["init", { flags: ["--yes"], short: "y" }],
+  ])],
+  ["pnpm", new Map<string, GuestArgvSpec>([
+    ...["install", "i", "add", "remove", "rm", "update", "up"].map((sub) => [sub, NPM_INSTALL_SPEC] as [string, GuestArgvSpec]),
+    ...["run", "test", "start"].map((sub) => [sub, PNPM_SCRIPT_SPEC] as [string, GuestArgvSpec]),
+  ])],
+  ["yarn", new Map<string, GuestArgvSpec>([
+    ...["install", "add", "remove"].map((sub) => [sub, NPM_INSTALL_SPEC] as [string, GuestArgvSpec]),
+    ...["run", "test"].map((sub) => [sub, PNPM_SCRIPT_SPEC] as [string, GuestArgvSpec]),
+  ])],
+  ["bun", new Map<string, GuestArgvSpec>([
+    ...["install", "i", "add", "remove", "rm", "update"].map((sub) => [sub, NPM_INSTALL_SPEC] as [string, GuestArgvSpec]),
+    ...["test", "build"].map((sub) => [sub, {
+      flags: ["--watch", "--minify", "--sourcemap", "--bail", "--coverage", "--production"],
+      values: ["--outdir", "--outfile", "--target", "--timeout", "--test-name-pattern"],
+      textValues: ["--test-name-pattern", "-t"],
+      shortValues: "t",
+      positional: isGuestLocalPath,
+    }] as [string, GuestArgvSpec]),
+  ])],
+  ["cargo", new Map<string, GuestArgvSpec>([
+    ...["build", "b", "check", "c", "test", "t", "bench", "clippy", "doc", "run", "r", "clean", "fetch",
+      "tree", "metadata", "fmt"].map((sub) => [sub, CARGO_BUILD_SPEC] as [string, GuestArgvSpec]),
+    ["install", { flags: ["--locked", "--force", "--offline", "--quiet"], values: ["--version", "--vers", "--root", "--features", "--bin"],
+      short: "fq", shortValues: "F", positional: (arg) => CARGO_SPEC_RE.test(arg) }],
+    ...["add", "remove"].map((sub) => [sub, { flags: ["--dev", "--build", "--optional"], values: ["--features", "--package"],
+      shortValues: "Fp", positional: (arg: string) => CARGO_SPEC_RE.test(arg) }] as [string, GuestArgvSpec]),
+    ...["new", "init"].map((sub) => [sub, { flags: ["--lib", "--bin"], values: ["--name", "--edition", "--vcs"],
+      positional: isGuestLocalPath }] as [string, GuestArgvSpec]),
+  ])],
+  ["go", new Map<string, GuestArgvSpec>([
+    ...["build", "vet", "list", "clean", "generate", "install", "get"].map((sub) => [sub, GO_BUILD_SPEC] as [string, GuestArgvSpec]),
+    ["test", { ...GO_BUILD_SPEC, flags: [...GO_BUILD_SPEC.flags!, "-args"] }],
+    ["run", { ...GO_BUILD_SPEC, restAfterPositionals: 1 }],
+    ["version", { flags: ["-m", "-v"], positional: isGuestLocalPath }],
+    ["env", { flags: ["-json"], positional: (arg) => /^[A-Z0-9_]+$/.test(arg) }],
+  ])],
+  ["apt", new Map<string, GuestArgvSpec>(["install", "update", "upgrade", "remove", "purge", "autoremove", "clean", "dist-upgrade"]
+    .map((sub) => [sub, OS_PACKAGE_SPEC] as [string, GuestArgvSpec]))],
+  ["apt-get", new Map<string, GuestArgvSpec>(["install", "update", "upgrade", "remove", "purge", "autoremove", "clean", "dist-upgrade"]
+    .map((sub) => [sub, OS_PACKAGE_SPEC] as [string, GuestArgvSpec]))],
+  ["apk", new Map<string, GuestArgvSpec>(["add", "del", "update", "upgrade"].map((sub) => [sub, OS_PACKAGE_SPEC] as [string, GuestArgvSpec]))],
+  ["dnf", new Map<string, GuestArgvSpec>(["install", "update", "upgrade", "remove"].map((sub) => [sub, OS_PACKAGE_SPEC] as [string, GuestArgvSpec]))],
+  ["yum", new Map<string, GuestArgvSpec>(["install", "update", "upgrade", "remove"].map((sub) => [sub, OS_PACKAGE_SPEC] as [string, GuestArgvSpec]))],
+  ["gem", new Map<string, GuestArgvSpec>(["install", "uninstall", "list"].map((sub) => [sub, {
+    flags: ["--no-document", "--user-install", "--conservative", "--quiet"], values: ["--version"],
+    short: "Nq", shortValues: "v", positional: (arg: string) => GEM_SPEC_RE.test(arg),
+  }] as [string, GuestArgvSpec]))],
+  ["bundle", new Map<string, GuestArgvSpec>(["install", "update", "check", "list"].map((sub) => [sub, {
+    flags: ["--quiet", "--frozen", "--deployment", "--local", "--prefer-local"], values: ["--jobs", "--retry", "--gemfile"],
+    shortValues: "j", positional: (arg: string) => GEM_SPEC_RE.test(arg),
+  }] as [string, GuestArgvSpec]))],
+  ["conda", new Map<string, GuestArgvSpec>(["install", "create", "remove", "list"].map((sub) => [sub, {
+    flags: ["--yes", "--quiet"], values: ["--name", "--prefix", "--file"],
+    short: "yq", shortValues: "npf", positional: (arg: string) => CONDA_SPEC_RE.test(arg),
+  }] as [string, GuestArgvSpec]))],
+]);
+
+/** uv: `uv pip <pip subcommand>`, project commands, and `uv run` (a wrapper). */
+const UV_SUBCOMMANDS: ReadonlyMap<string, GuestArgvSpec> = new Map<string, GuestArgvSpec>([
+  ["sync", { flags: ["--frozen", "--locked", "--no-dev", "--all-extras", "--dev", "--quiet", "--all-packages",
+    "--no-install-project", "--inexact", "--no-editable"], values: ["--extra", "--group", "--python", "--package"],
+    short: "q", shortValues: "p" }],
+  ["lock", { flags: ["--locked", "--frozen", "--upgrade", "--check"], values: ["--upgrade-package", "--python"],
+    short: "U", shortValues: "Pp" }],
+  ...["add", "remove"].map((sub) => [sub, { flags: ["--dev", "--no-sync", "--frozen", "--locked"],
+    values: ["--group", "--optional", "--python", "--extra"], shortValues: "p",
+    positional: (arg: string) => PY_SPEC_RE.test(arg) }] as [string, GuestArgvSpec]),
+  ["venv", { flags: ["--seed", "--quiet", "--clear", "--system-site-packages"], values: ["--python", "--prompt"],
+    short: "q", shortValues: "p", positional: isGuestLocalPath }],
+  ["init", { flags: ["--lib", "--app", "--package", "--no-readme", "--bare"], values: ["--name", "--python"],
+    shortValues: "p", positional: isGuestLocalPath }],
+  ["build", { flags: ["--wheel", "--sdist", "--quiet"], values: ["--out-dir"], short: "q", shortValues: "o",
+    positional: isGuestLocalPath }],
+  ["tree", { flags: ["--frozen", "--locked"], values: ["--depth"], shortValues: "d" }],
+]);
+
+// git: repository-locating globals only, then a per-subcommand spec.
+const GIT_PATH_SPEC: GuestArgvSpec = { positional: isGuestLocalPath, restAfterDoubleDash: false };
+/** A literal clone/fetch source: http(s)/ssh/git URL, scp form or local path; never a transport helper (`ext::`). */
+function isGuestGitSource(arg: string): boolean {
+  if (/::/.test(arg) || /^ext:/i.test(arg) || arg.startsWith("-")) return false;
+  return /^(https?|ssh|git):\/\//i.test(arg) || /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._\/~-]+$/.test(arg) || isGuestLocalPath(arg);
+}
+const GIT_REF_RE = /^\+?[A-Za-z0-9._\/~^@{}-]+(:[A-Za-z0-9._\/~^@{}-]*)?$/;
+const GIT_SUBCOMMANDS: ReadonlyMap<string, GuestArgvSpec> = new Map<string, GuestArgvSpec>([
+  ["clone", { flags: ["--single-branch", "--no-single-branch", "--recurse-submodules", "--recursive",
+    "--shallow-submodules", "--quiet", "--no-checkout", "--sparse", "--no-tags", "--bare", "--progress"],
+    values: ["--depth", "--branch", "--filter", "--origin", "--shallow-since"], short: "qn", shortValues: "bo",
+    positional: isGuestGitSource }],
+  ["fetch", { flags: ["--all", "--prune", "--tags", "--unshallow", "--quiet", "--no-tags", "--force", "--progress",
+    "--prune-tags"], values: ["--depth", "--shallow-since"], short: "ptqf",
+    positional: (arg) => isGuestGitSource(arg) || GIT_REF_RE.test(arg) }],
+  ["pull", { flags: ["--ff-only", "--rebase", "--no-rebase", "--quiet", "--all", "--tags", "--no-edit", "--ff",
+    "--no-ff", "--autostash", "--progress"], values: ["--depth"], short: "rq",
+    positional: (arg) => isGuestGitSource(arg) || GIT_REF_RE.test(arg) }],
+  ["status", { flags: ["--short", "--branch", "--porcelain", "--ignored", "--long", "-uno", "-uall", "--untracked-files=no",
+    "--untracked-files=all", "--untracked-files=normal"], short: "sbz", positional: isGuestLocalPath }],
+  ["checkout", { flags: ["--quiet", "--detach", "--track", "--no-track"], values: ["-b", "-B"], short: "qt",
+    positional: (arg) => GIT_REF_RE.test(arg) }],
+  ["switch", { flags: ["--quiet", "--detach", "--track", "--no-track"], values: ["--create", "-c", "-C"], short: "qt",
+    positional: (arg) => GIT_REF_RE.test(arg) }],
+  ["branch", { flags: ["--all", "--remotes", "--list", "--verbose", "-vv", "--show-current", "--merged",
+    "--no-merged"], values: ["--set-upstream-to", "--sort", "--format"], short: "arlvdm", shortValues: "u",
+    textValues: ["--sort", "--format"],
+    positional: (arg) => GIT_REF_RE.test(arg) }],
+  ["add", { flags: ["--all", "--update", "--intent-to-add", "--force", "--verbose", "--dry-run"], short: "AuNfvn",
+    positional: isGuestLocalPath, restAfterDoubleDash: true }],
+  ["commit", { flags: ["--all", "--quiet", "--allow-empty", "--amend", "--no-edit", "--no-verify", "--signoff"],
+    values: ["--message", "--file", "--author", "--date"], short: "aqsn", shortValues: "mF",
+    textValues: ["--message", "-m", "--author", "--date"] }],
+  ["restore", { flags: ["--staged", "--quiet"], values: ["--source"], short: "Sq", shortValues: "s",
+    positional: isGuestLocalPath, restAfterDoubleDash: true }],
+  ["reset", { flags: ["--soft", "--mixed", "--quiet", "--keep", "--merge"], short: "q",
+    positional: (arg) => GIT_REF_RE.test(arg) || isGuestLocalPath(arg), restAfterDoubleDash: true }],
+  ["stash", { flags: ["--include-untracked", "--keep-index", "--quiet", "--index"], values: ["--message"],
+    short: "ukq", shortValues: "m", textValues: ["--message", "-m"], subcommands: ["push", "list", "show", "pop", "apply"],
+    positional: (arg) => /^(stash@\{\d+\}|\d+)$/.test(arg) }],
+  ["merge", { flags: ["--no-ff", "--ff-only", "--ff", "--no-edit", "--abort", "--continue", "--squash", "--quiet",
+    "--no-commit"], values: ["--message"], short: "q", shortValues: "m", textValues: ["--message", "-m"],
+    positional: (arg) => GIT_REF_RE.test(arg) }],
+  ["rebase", { flags: ["--continue", "--abort", "--skip", "--autostash", "--quiet", "--no-autostash"],
+    values: ["--onto"], short: "q", positional: (arg) => GIT_REF_RE.test(arg) }],
+  ...["cherry-pick", "revert"].map((sub) => [sub, { flags: ["--no-edit", "--no-commit", "--continue", "--abort",
+    "--skip"], short: "nx", positional: (arg: string) => GIT_REF_RE.test(arg) }] as [string, GuestArgvSpec]),
+  ["tag", { flags: ["--list", "--annotate", "--force", "--delete"], values: ["--message"], short: "lafd", shortValues: "m",
+    textValues: ["--message", "-m"],
+    positional: (arg) => GIT_REF_RE.test(arg) }],
+  ["init", { flags: ["--quiet", "--bare"], values: ["--initial-branch"], short: "q", shortValues: "b",
+    positional: isGuestLocalPath }],
+  ["mv", { flags: ["--force", "--dry-run", "--verbose"], short: "fnvk", positional: isGuestLocalPath }],
+  ["rm", { flags: ["--cached", "--quiet", "--dry-run"], short: "rqn", positional: isGuestLocalPath, restAfterDoubleDash: true }],
+  ["apply", { flags: ["--check", "--stat", "--3way", "--index", "--cached", "--reverse", "--verbose"], values: ["-p"],
+    short: "R3v", positional: isGuestLocalPath }],
+  ["grep", { flags: ["--line-number", "--ignore-case", "--files-with-matches", "--count", "--cached", "--untracked",
+    "--no-index", "--word-regexp", "--extended-regexp", "--fixed-strings", "--invert-match", "--recurse-submodules"],
+    values: ["-e", "--max-depth"], short: "nilwEFcvhHIrPz", shortValues: "eABC", textValues: ["-e"], positional: isGuestLiteralWord,
+    restAfterDoubleDash: true }],
+  ["submodule", { flags: ["--init", "--recursive", "--quiet", "--remote"], short: "q",
+    subcommands: ["update", "init", "status", "sync"], positional: isGuestLocalPath }],
+  ["remote", { flags: ["--verbose"], short: "v", subcommands: ["add", "show", "get-url", "set-url", "rename", "remove", "prune"],
+    positional: (arg) => isGuestGitSource(arg) || GIT_REF_RE.test(arg) }],
+  ["clean", GIT_PATH_SPEC],
+  ["version", {}],
+]);
+
+/** Splits `git [globals] <sub> <args>`; null when a global could change what git runs (`-c`, `--exec-path`, …). */
+function splitGitInvocation(args: readonly string[]): { sub: string; rest: readonly string[]; index: number } | null {
+  let i = 0;
+  while (i < args.length && args[i]!.startsWith("-")) {
+    const arg = args[i]!;
+    if (arg === "-C" || arg === "--git-dir" || arg === "--work-tree") { i += 2; continue; }
+    if (/^--(git-dir|work-tree)=/.test(arg) || ["--no-pager", "-P", "--bare", "--no-replace-objects"].includes(arg)) { i++; continue; }
+    return null;
+  }
+  const sub = args[i];
+  return sub === undefined ? null : { sub, rest: args.slice(i + 1), index: i };
+}
+
+/** Wrappers that run another program: returns the wrapped argv, or null. */
+function unwrapGuestRunner(argv: readonly string[]): readonly string[] | null {
+  const verb = stripCommandPath(argv[0] ?? "");
+  const args = argv.slice(1);
+  const after = (sub: readonly string[], flags: readonly string[]): readonly string[] | null => {
+    let i = sub.length;
+    if (!sub.every((word, k) => args[k] === word)) return null;
+    while (i < args.length && args[i]!.startsWith("-")) {
+      if (args[i] === "--") { i++; break; }
+      if (!flags.includes(args[i]!)) return [];
+      i++;
+    }
+    return args.slice(i);
+  };
+  if (verb === "npx" || verb === "bunx") return after([], ["--yes", "-y", "--no-install"]);
+  if (verb === "uv" && args[0] === "run") return after(["run"], ["--frozen", "--locked", "--no-sync", "--isolated", "-q", "--quiet"]);
+  if (verb === "uvx") return after([], ["-q", "--quiet"]);
+  if (verb === "bundle" && args[0] === "exec") return after(["exec"], []);
+  if (verb === "bun" && (args[0] === "run" || args[0] === "x")) return after([args[0]], ["--bun", "--silent"]);
+  if ((verb === "pnpm" && (args[0] === "exec" || args[0] === "dlx")) ||
+      (verb === "yarn" && (args[0] === "dlx" || args[0] === "exec")) ||
+      (verb === "npm" && args[0] === "exec") ||
+      (verb === "poetry" && args[0] === "run") ||
+      (verb === "pipx" && args[0] === "run")) {
+    return after([args[0]], ["--yes", "-y", "--silent"]);
+  }
+  return null;
+}
+
+/**
+ * Python's own options: the module named by `-m` (stuck or clustered, as in
+ * `-mtwine` or `-um pip`), whether `-c` gives inline code, and the first
+ * positional (the script, or `-` for stdin).
+ */
+function parsePythonInvocation(args: readonly string[]): { module?: string; moduleArgs: readonly string[]; inline: boolean; script?: string } {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "-" || !arg.startsWith("-")) return { moduleArgs: [], inline: false, script: arg };
+    if (arg === "--") return { moduleArgs: [], inline: false, ...(args[i + 1] === undefined ? {} : { script: args[i + 1] }) };
+    if (arg.startsWith("--")) continue;
+    for (let j = 1; j < arg.length; j++) {
+      const letter = arg[j]!;
+      if (letter === "c") return { moduleArgs: [], inline: true };
+      if (letter === "m") {
+        const stuck = arg.slice(j + 1);
+        const module = stuck.length > 0 ? stuck : args[i + 1];
+        const rest = args.slice(stuck.length > 0 ? i + 1 : i + 2);
+        return { ...(module === undefined ? {} : { module }), moduleArgs: rest, inline: false };
+      }
+      if ("WX".includes(letter)) {
+        if (j + 1 >= arg.length) i++;
+        break;
+      }
+    }
+  }
+  return { moduleArgs: [], inline: false };
+}
+
+const INTERPRETER_VERSION_ARGS: ReadonlySet<string> = new Set(["-V", "--version", "-v", "-h", "--help"]);
+
+/**
+ * Interpreter code that is on the line rather than in a file: an inline-code
+ * flag, a `data:`/URL module, or a program read from stdin (`-`, a here-doc,
+ * a pipe). Its effects cannot be graded from the line.
+ */
+function hasInlineInterpreterCode(verb: string, args: readonly string[]): boolean {
+  const versionOnly = args.length > 0 && args.every((arg) => INTERPRETER_VERSION_ARGS.has(arg));
+  if (/^python[0-9.]*$/.test(verb)) {
+    const python = parsePythonInvocation(args);
+    if (python.inline) return true;
+    if (python.module !== undefined) return false;
+    return !versionOnly && (python.script === undefined || python.script === "-");
+  }
+  if (verb === "node" || verb === "nodejs") {
+    if (args.some((arg) => shortClusterHas(arg, "ep") || longOptionAbbreviates(arg, ["--eval", "--print"]))) return true;
+    if (args.some((arg) => /data:|:\/\//.test(arg))) return true;
+    const script = args.find((arg) => !arg.startsWith("-"));
+    return !versionOnly && (script === undefined || args.includes("-"));
+  }
+  if (verb === "perl" || verb === "ruby" || verb === "php") {
+    const letters = verb === "perl" ? "eE" : verb === "ruby" ? "e" : "rBRFE";
+    if (args.some((arg) => shortClusterHas(arg, letters))) return true;
+    const script = args.find((arg) => !arg.startsWith("-"));
+    return !versionOnly && (script === undefined || args.includes("-"));
+  }
+  return false;
+}
+
+/** System program directories; a path-qualified verb elsewhere is a file the guest may have written. */
+const SYSTEM_BIN_RE = /^\/(usr\/(local\/)?)?s?bin\/[^/]+$/;
+
+/**
+ * The verb an argv[0] names for the allowlist, or null. A URL or `host:` form
+ * is never a verb. A path outside the system bin directories is a file the
+ * guest may have written, so only interpreters and project wrapper scripts —
+ * which run files anyway (the script limitation) — keep their name.
+ */
+function guestVerbOf(word: string): string | null {
+  if (word === ":") return word;
+  if (word.includes(":")) return null;
+  if (!word.includes("/")) return word;
+  const base = stripCommandPath(word);
+  if (SYSTEM_BIN_RE.test(word)) return base;
+  return /^(python[0-9.]*|pip3?|node|pytest|gradlew|mvnw)$/.test(base) ? base : null;
+}
+
+/**
+ * True when a git short cluster sets one of `letters` before a letter that
+ * takes a glued value (`-vd` → d; `-uorigin/dev` → u's value, not d).
+ */
+function gitClusterHas(arg: string, letters: string, valueLetters = ""): boolean {
+  if (!/^-[^-]/.test(arg)) return false;
+  for (const letter of arg.slice(1)) {
+    if (letters.includes(letter)) return true;
+    if (valueLetters.includes(letter)) return false;
+  }
+  return false;
+}
+
+/** Operands of `git checkout`, not counting the branch name a `-b`/`-B` takes. */
+function gitCheckoutOperands(rest: readonly string[]): number {
+  let operands = 0;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg === "--") return operands + rest.length - i - 1;
+    if (arg.startsWith("-") && arg.length > 1) {
+      // `-b name`, `-B name`, `-qb name`: the branch name is the option's value.
+      if (/^-[A-Za-z]*[bB]$/.test(arg)) i++;
+      continue;
+    }
+    operands++;
+  }
+  return operands;
+}
+
+/** The first argument that is not an option (`git reflog --verbose expire` → `expire`). */
+function firstOperand(args: readonly string[]): string | undefined {
+  return args.find((arg) => !arg.startsWith("-"));
+}
+
+function isGuestDestructiveArgv(argv: readonly string[], depth: number): boolean {
+  const verb = stripCommandPath(argv[0] ?? "");
+  const args = argv.slice(1);
+  if (["rm", "unlink", "shred", "dd", "sudo", "doas", "su", "truncate"].includes(verb) || verb.startsWith("mkfs")) return true;
+  if (verb === "find") return args.some((arg) => arg === "-delete");
+  if (verb === "rsync") {
+    return args.some((arg) => longOptionAbbreviates(arg, ["--del", "--delete", "--delete-before", "--delete-during",
+      "--delete-delay", "--delete-after", "--delete-excluded", "--delete-missing-args", "--remove-source-files"]));
+  }
+  if (verb === "tar") return args.some((arg) => longOptionAbbreviates(arg, ["--remove-files"]));
+  if (hasInlineInterpreterCode(verb, args)) return true;
+  if (verb === "git") {
+    const git = splitGitInvocation(args);
+    if (git === null) return false;
+    const { sub, rest } = git;
+    if (sub === "clean") return true;
+    if (sub === "reset") return rest.some((arg) => longOptionAbbreviates(arg, ["--hard"]));
+    // `checkout -B` / `switch -C` reset an existing branch to a new start point.
+    // `git checkout <tree-ish> <path>…` overwrites the paths from the
+    // tree-ish, so two or more operands are destructive. A single operand
+    // (`git checkout f.txt`) cannot be told from a branch switch on the line
+    // and stays LOW: a stated limit.
+    if (sub === "checkout") {
+      return rest.some((arg) => arg === "--" || arg === "." || gitClusterHas(arg, "fB", "b") || longOptionAbbreviates(arg, ["--force"])) ||
+        gitCheckoutOperands(rest) >= 2;
+    }
+    if (sub === "switch") {
+      return rest.some((arg) => gitClusterHas(arg, "fC", "c") ||
+        longOptionAbbreviates(arg, ["--force", "--discard-changes", "--force-create"]));
+    }
+    if (sub === "restore") {
+      const staged = rest.some((arg) => shortClusterHas(arg, "S") || longOptionAbbreviates(arg, ["--staged"]));
+      const worktree = rest.some((arg) => shortClusterHas(arg, "W") || longOptionAbbreviates(arg, ["--worktree"]));
+      return !staged || worktree;
+    }
+    if (sub === "stash") return rest.some((arg) => arg === "drop" || arg === "clear");
+    // Ref deletion, or a forced overwrite of an existing ref, discards what the
+    // ref pointed at. Short letters match anywhere in a cluster (`-vd`) and long
+    // options by prefix (`--del`), the way git's parse-options resolves them.
+    if (sub === "branch") {
+      return rest.some((arg) => gitClusterHas(arg, "dDfMC", "u") || longOptionAbbreviates(arg, ["--delete", "--force"]));
+    }
+    if (sub === "tag") return rest.some((arg) => gitClusterHas(arg, "df", "mFun") || longOptionAbbreviates(arg, ["--delete", "--force"]));
+    if (sub === "fetch" || sub === "pull") {
+      // `+src:dst` force-updates a local ref; a bare `+src` only updates
+      // remote-tracking refs, which the default refspec already forces.
+      return rest.some((arg) => gitClusterHas(arg, "pPf", "jo") || longOptionAbbreviates(arg, ["--prune", "--prune-tags", "--force"]) ||
+        (arg.startsWith("+") && arg.includes(":")));
+    }
+    if (sub === "remote") return ["remove", "rm", "prune"].includes(firstOperand(rest) ?? "");
+    if (sub === "mv") return rest.some((arg) => gitClusterHas(arg, "f") || longOptionAbbreviates(arg, ["--force"]));
+    // Abandoning an in-progress merge, rebase or pick discards its resolution work.
+    if (["merge", "rebase", "cherry-pick", "revert", "am"].includes(sub)) {
+      return rest.some((arg) => longOptionAbbreviates(arg, ["--abort", "--skip", "--quit"]));
+    }
+    if (sub === "rm") return !rest.some((arg) => arg === "--cached");
+    // Subcommands whose deleting forms are not on the guest allowlist, named
+    // here so they grade as destructive rather than merely unlisted.
+    if (sub === "gc" || sub === "prune" || sub === "filter-branch" || sub === "replace") return true;
+    if (sub === "reflog") return ["expire", "delete"].includes(firstOperand(rest) ?? "");
+    if (sub === "worktree" || sub === "notes") return ["remove", "prune"].includes(firstOperand(rest) ?? "");
+    if (sub === "update-ref" || sub === "symbolic-ref") {
+      return rest.some((arg) => gitClusterHas(arg, "d", "m") || longOptionAbbreviates(arg, ["--delete"]));
+    }
+    if (sub === "push") {
+      return rest.some((arg) => gitClusterHas(arg, "df", "o") || arg.startsWith(":") || arg.startsWith("+") ||
+        longOptionAbbreviates(arg, ["--delete", "--force", "--force-with-lease", "--force-if-includes", "--prune", "--mirror"]));
+    }
+    return false;
+  }
+  const wrapped = depth < GUEST_WRAPPER_MAX_DEPTH ? unwrapGuestRunner(argv) : null;
+  return wrapped !== null && wrapped.length > 0 && isGuestDestructiveArgv(wrapped, depth + 1);
+}
+
+function isNetworkDevicePath(value: string): boolean {
+  return /^\/dev\/(tcp|udp)\//.test(value);
+}
+
+/** Options of a compiler that name a program, plugin or option file to run. */
+const COMPILER_ARG_RE = /^-(O[0-3sgz]?|g[0-3]?|c|S|E|o|I.*|L.*|l.*|D.*|U.*|W[a-z][^,]*|std=.*|f(?!plugin)(?!use-ld=.*\/)[a-z][a-z0-9+-]*(=[^,]*)?|m[a-z0-9-]+(=[^,]*)?|pthread|shared|static|pie|no-pie|v|x|include|isystem.*|M[MDFTPG]?|pedantic.*|w|rdynamic|march=.*)$/;
+
+const GUEST_LITERAL_VERBS: ReadonlySet<string> = new Set([
+  "mkdir", "rmdir", "touch", "cp", "mv", "ln", "chmod", "chown", "chgrp", "install", "tee", "split",
+  "patch", "mktemp", "md5sum", "sha1sum", "sha256sum", "sha512sum", "xxd", "od", "hexdump", "strings",
+  "unzip", "gzip", "gunzip", "zcat", "bzip2", "bunzip2", "xz", "unxz", "zstd", "unzstd", "base64", "jq",
+  "nproc", "free", "lscpu", ":", "set", "unset", "exit", "wait", "shift", "umask", "pushd", "popd", "read", "[",
+  "make", "ninja", "pytest", "py.test", "tsc", "awk", "gawk",
+]);
+
+function isGuestLocalArgv(leaf: ShellLeaf, argv: readonly string[], depth: number): boolean {
+  if (argv.length === 0) return leaf.strippedWrappers.length === 0;
+  if (argv.some(isNetworkDevicePath)) return false;
+  const verb = guestVerbOf(argv[0]!);
+  if (verb === null) return false;
+  const args = argv.slice(1);
+  const wrapped = unwrapGuestRunner(argv);
+  if (wrapped !== null) {
+    return depth < GUEST_WRAPPER_MAX_DEPTH && wrapped.length > 0 && isGuestLocalArgv(leaf, wrapped, depth + 1);
+  }
+  if (namesProgramToRun(verb, args)) return false;
+  // The host's read-only classification (verb table, mutating flags, sed
+  // program scan, git inspection flags) — a read-only leaf is local.
+  if (isReadOnlyShellLeaf({ ...leaf, argv: [...argv], argvHasExpandableDollar: argv.map(() => false) }, { ignoreRedirects: true })) {
+    return true;
+  }
+  if (GUEST_LITERAL_VERBS.has(verb)) return true;
+  if (verb === "sed") {
+    // `-i` edits a guest file; the program itself must still pass the host
+    // scan that rejects its write/execute commands.
+    const kept = argv.filter((arg) => !/^(-i\S*|--in-place(=.*)?)$/.test(arg));
+    return isReadOnlyShellLeaf({ ...leaf, argv: kept, argvHasExpandableDollar: kept.map(() => false) }, { ignoreRedirects: true });
+  }
+  if (/^python[0-9.]*$/.test(verb)) {
+    const python = parsePythonInvocation(args);
+    if (python.module === "pip") return isGuestSubcommandArgv(PIP_SUBCOMMANDS, python.moduleArgs);
+    // Publishing modules send local content by design.
+    return python.module !== "twine";
+  }
+  if (verb === "node" || verb === "ruby" || verb === "perl" || verb === "php") return true;
+  if (verb === "java" || verb === "javac") {
+    return !args.some((arg) => arg.startsWith("@") || arg.startsWith("-XX:On") || arg.startsWith("-J"));
+  }
+  if (["gcc", "g++", "cc", "c++", "clang", "clang++"].includes(verb)) {
+    return args.every((arg) => arg.startsWith("-") ? COMPILER_ARG_RE.test(arg) : isGuestLocalPath(arg) && !arg.startsWith("@"));
+  }
+  if (verb === "rustc") {
+    return matchesGuestArgvSpec(args, { flags: ["--test", "-O", "-g"], values: ["--edition", "-o", "--crate-type", "--crate-name",
+      "--out-dir", "-L"], positional: isGuestLocalPath });
+  }
+  if (verb === "cmake") {
+    return args.every((arg, k) => {
+      if (arg.startsWith("-D")) {
+        const name = arg.slice(2).split(/[=:]/, 1)[0]!;
+        return !name.startsWith("CMAKE_") || /^CMAKE_(BUILD_TYPE|INSTALL_PREFIX|EXPORT_COMPILE_COMMANDS)$/.test(name);
+      }
+      const previous = args[k - 1];
+      if (previous !== undefined && ["-S", "-B", "-G", "--build", "-j", "--parallel", "--config", "--target", "-t", "--install", "--prefix"].includes(previous)) {
+        return isGuestOptionValue(arg);
+      }
+      if (arg.startsWith("-")) {
+        return ["-S", "-B", "-G", "--build", "-j", "--parallel", "--config", "--target", "-t", "--install", "--prefix",
+          "--fresh", "-Wno-dev", "--verbose"].includes(arg) || /^-[SBG]\S/.test(arg);
+      }
+      return isGuestLocalPath(arg);
+    });
+  }
+  if (verb === "mvn" || verb === "mvnw" || verb === "gradle" || verb === "gradlew") return matchesGuestArgvSpec(args, MVN_SPEC);
+  if (verb === "curl") return isPlainGetDownload(args, CURL_GET_FLAG_OPTIONS, CURL_GET_VALUE_OPTIONS, CURL_GET_SHORT_FLAGS, CURL_GET_SHORT_VALUES);
+  if (verb === "wget") return isPlainGetDownload(args, WGET_GET_FLAG_OPTIONS, WGET_GET_VALUE_OPTIONS, WGET_GET_SHORT_FLAGS, WGET_GET_SHORT_VALUES);
+  if (verb === "tar") {
+    // A dashless first argument is an old-style cluster (`xzf`, `xIf`).
+    // `--force-local` is admitted, but a `host:path` value stays unlisted even
+    // with it: the value check never depends on another option's presence.
+    const words = args.length > 0 && !args[0]!.startsWith("-") ? [`-${args[0]}`, ...args.slice(1)] : args;
+    return matchesGuestArgvSpec(words, {
+      flags: ["--extract", "--create", "--list", "--gzip", "--gunzip", "--bzip2", "--xz", "--zstd", "--verbose",
+        "--exclude-vcs", "--no-same-owner", "--no-same-permissions", "--preserve-permissions", "--overwrite",
+        "--keep-old-files", "--skip-old-files", "--wildcards", "--numeric-owner", "--totals", "--auto-compress",
+        "--to-stdout", "--one-top-level", "--null", "--force-local"],
+      values: ["--file", "--directory", "--strip-components", "--exclude", "--owner", "--group", "--mode", "--mtime",
+        "--sort", "--files-from", "--exclude-from"],
+      // Patterns, owners, modes and times are text; `-f`, `-C`, `-T`, `-X`
+      // and their long forms name files and keep the `host:path` check.
+      textValues: ["--exclude", "--owner", "--group", "--mode", "--mtime", "--sort"],
+      short: "cxtuarzjJavpkhSmOWP",
+      shortValues: "fCTX",
+      positional: isGuestLocalPath,
+    });
+  }
+  if (verb === "zip") {
+    return matchesGuestArgvSpec(args, { flags: ["--recurse-paths", "--quiet", "--junk-paths"], short: "rqjyXD0123456789x",
+      positional: isGuestLocalPath });
+  }
+  if (verb === "rsync") {
+    return matchesGuestArgvSpec(args, {
+      flags: ["--archive", "--verbose", "--compress", "--recursive", "--progress", "--partial", "--human-readable",
+        "--dry-run", "--checksum", "--update", "--quiet", "--stats", "--times", "--perms", "--links", "--hard-links",
+        "--relative", "--itemize-changes", "--whole-file", "--sparse", "--one-file-system", "--prune-empty-dirs",
+        "--no-perms", "--no-owner", "--no-group", "--mkpath", "--inplace", "--append", "--ignore-existing",
+        "--existing", "--size-only", "--copy-links"],
+      values: ["--exclude", "--include", "--exclude-from", "--info", "--chmod"],
+      textValues: ["--exclude", "--include", "--info", "--chmod"],
+      short: "avzrPhnpogtlDHAXucqiWSxRmL",
+      positional: isGuestLocalPath,
+    });
+  }
+  if (verb === "git") {
+    const git = splitGitInvocation(args);
+    if (git === null) return false;
+    const spec = GIT_SUBCOMMANDS.get(git.sub);
+    if (spec === undefined) {
+      // Inspection subcommands keep the host's read-only flag allowlist.
+      return isReadOnlyShellLeaf({ ...leaf, argv: ["git", git.sub, ...git.rest], argvHasExpandableDollar: [] }, { ignoreRedirects: true });
+    }
+    return matchesGuestArgvSpec(git.rest, spec);
+  }
+  if (verb === "uv") {
+    if (args[0] === "pip") return isGuestSubcommandArgv(PIP_SUBCOMMANDS, args.slice(1));
+    if (args[0] === "python") {
+      return matchesGuestArgvSpec(args.slice(1), { subcommands: ["install", "list", "find", "pin"],
+        positional: (arg) => /^([A-Za-z]+-?)?[0-9][0-9.]*$/.test(arg) });
+    }
+    return isGuestSubcommandArgv(UV_SUBCOMMANDS, args);
+  }
+  if (verb === "yarn") {
+    // `yarn <script>`: a bare word that is not a yarn command runs a package
+    // script (the documented script limitation); every other yarn command is
+    // unlisted unless its spec says otherwise.
+    const sub = args.find((arg) => !arg.startsWith("-"));
+    if (sub !== undefined && !YARN_COMMANDS.has(sub) && /^[A-Za-z0-9:_.-]+$/.test(sub)) {
+      return args.indexOf(sub) === 0;
+    }
+  }
+  if (verb === "go" && args[0] === "mod") {
+    return matchesGuestArgvSpec(args.slice(1), { flags: ["-x", "-v", "-json", "-e"],
+      subcommands: ["download", "tidy", "verify", "graph", "why", "vendor", "init"],
+      positional: (arg) => GO_MODULE_RE.test(arg) || GO_PACKAGE_RE.test(arg) });
+  }
+  const subcommands = GUEST_SUBCOMMAND_TOOLS.get(verb);
+  return subcommands !== undefined && isGuestSubcommandArgv(subcommands, args);
+}
+
+/** Built-in yarn commands (v1 and berry); a bare word outside this set is a package script. */
+const YARN_COMMANDS: ReadonlySet<string> = new Set([
+  "add", "audit", "autoclean", "bin", "cache", "check", "config", "create", "dedupe", "dlx", "exec", "explain",
+  "generate-lock-entry", "global", "help", "import", "info", "init", "install", "licenses", "link", "list",
+  "login", "logout", "node", "npm", "outdated", "owner", "pack", "patch", "plugin", "policies", "publish",
+  "rebuild", "remove", "run", "search", "set", "stage", "tag", "team", "test", "unlink", "unplug", "up",
+  "upgrade", "upgrade-interactive", "version", "versions", "why", "workspace", "workspaces",
+]);
+
+/** The first word must be a listed subcommand; every word after it must fit that subcommand's spec. */
+function isGuestSubcommandArgv(subcommands: ReadonlyMap<string, GuestArgvSpec>, args: readonly string[]): boolean {
+  const sub = args[0];
+  if (sub === undefined) return false;
+  const spec = subcommands.get(sub);
+  return spec !== undefined && matchesGuestArgvSpec(args.slice(1), spec);
+}
+
+/**
+ * Whether a leaf is eligible for guest LOW at all: everything it does must be
+ * visible on the line. Expansions, environment assignments, `xargs` and
+ * network device paths are not.
+ */
+function isGuestEligibleLeaf(leaf: ShellLeaf): boolean {
+  if (leaf.hasExpansion || leaf.hasCommandSubstitution || leaf.hasProcessSubstitution) return false;
+  if (leaf.assignments.length > 0) return false;
+  if (leaf.strippedWrappers.includes("xargs")) return false;
+  return !leaf.redirectTargets.some(isNetworkDevicePath) && !leaf.inputRedirectTargets.some(isNetworkDevicePath);
+}
+
+/**
+ * Grade one guest shell command line. `destructive` takes precedence; a line
+ * is `local` only when it tokenizes cleanly and every leaf is eligible and
+ * allowlisted.
+ */
+function gradeDisposableGuestShellCommand(command: string): GuestShellGrade {
+  if (DESTRUCTIVE_SHELL_RE.test(command)) return "destructive";
+  const { leaves, parseError } = tokenizeShell(command);
+  if (!parseError && leaves.some((leaf) => isGuestDestructiveArgv(leaf.argv, 0))) return "destructive";
+  if (parseError || leaves.length === 0) return "unlisted";
+  return leaves.every((leaf) => isGuestEligibleLeaf(leaf) && isGuestLocalArgv(leaf, leaf.argv, 0)) ? "local" : "unlisted";
+}
+
 function extractNetworkMethod(input: Record<string, unknown>): string | null {
   for (const key of ["method", "httpMethod", "verb"]) {
     const value = input[key];
@@ -721,6 +1749,12 @@ function isInsideAllowed(path: string, allowed: readonly string[]): boolean {
   return isPathAllowed(path, { directories: allowed });
 }
 
+/** The scratch root in the classifier's own path form, or nothing while it does not verify. */
+function verifiedScratchRoot(): string | undefined {
+  const scratch = verifyAveScratchDir();
+  return scratch.ok ? caseFoldForMatch(canonicalizePathForMatch(scratch.path)) : undefined;
+}
+
 /**
  * "Deep" = path is inside an allowed dir but ≥3 levels below the
  * matched root (heuristic for "more dangerous than a leaf write").
@@ -739,6 +1773,58 @@ function isDeepInsideAllowed(path: string, allowed: readonly string[]): boolean 
 }
 
 const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
+  // ── disposable-guest rules (first-match, in this order) ──
+  //
+  // The executor routed this call to the workload broker's disposable Linux
+  // guest (the operator-attested container is same-process and never
+  // qualifies — see `DisposableSubstrate`): its filesystem and process tree
+  // are the guest's own and are discarded with it, and the broker refuses
+  // host paths before anything runs. Grading such a call with the host's
+  // allowed-dir geometry or the host's "no OS sandbox" floor describes a
+  // substrate the effects never touch, which is how an unattended routine
+  // ended up holding `uname -m` and a write to the guest's /tmp.
+  //
+  // The guest confines filesystem and process, NOT network, so a guest shell
+  // is graded in three ordered steps and the first match wins:
+  //   1. destructive (raw text or token) → MEDIUM (disposable is not the same
+  //                                       as intended; the headless lane turns
+  //                                       MEDIUM into a structured denial)
+  //   2. not on the guest allowlist       → MEDIUM (may send data out; see
+  //                                       `gradeDisposableGuestShellCommand`)
+  //   3. allowlisted local work/download  → LOW
+  // These rules run before the host shell rules, which never see a guest
+  // shell. Network-category tools are not graded here; they fall through to
+  // the network rules below exactly as on the host.
+  (ctx) => {
+    if (!isDisposableSubstrateCapability(ctx.sandboxCapability)) return null;
+    if (ctx.category !== "shell") return null;
+    const grades = extractShellCommands(ctx.finalInput).map(gradeDisposableGuestShellCommand);
+    if (!grades.includes("destructive")) return null;
+    return { level: "medium", reason: "shell destructive verb inside disposable guest" };
+  },
+  (ctx) => {
+    if (!isDisposableSubstrateCapability(ctx.sandboxCapability)) return null;
+    if (ctx.category !== "shell") return null;
+    const grades = extractShellCommands(ctx.finalInput).map(gradeDisposableGuestShellCommand);
+    if (grades.length > 0 && grades.every((grade) => grade === "local")) return null;
+    return {
+      level: "medium",
+      reason: "shell outside the disposable-guest allowlist (may send data out; egress is not confined)",
+    };
+  },
+  (ctx) => {
+    if (!isDisposableSubstrateCapability(ctx.sandboxCapability)) return null;
+    if (ctx.category === "shell") {
+      return { level: "low", reason: "shell confined to disposable guest" };
+    }
+    if (ctx.category === "write") {
+      return { level: "low", reason: "write confined to disposable guest" };
+    }
+    if (ctx.category === "read") {
+      return { level: "low", reason: "read confined to disposable guest" };
+    }
+    return null;
+  },
   // ── shell rules (3) ─────────────────────────────────────
   (ctx) => {
     if (ctx.category !== "shell") return null;
@@ -959,7 +2045,18 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
   (ctx) => {
     if (ctx.category !== "write") return null;
     const paths = extractDeclaredPaths(ctx);
-    if (paths.some((p) => isDeepInsideAllowed(p, ctx.allowedDirectories))) {
+    // The application scratch directory is disposable to its full depth —
+    // that is the whole point of advertising it as somewhere to stage a
+    // build tree — so depth below it is not a signal. Anything else deep
+    // inside an allowed root keeps the heuristic.
+    const scratchRoot = verifiedScratchRoot();
+    if (
+      paths.some(
+        (p) =>
+          !(scratchRoot !== undefined && isInsideAllowed(p, [scratchRoot])) &&
+          isDeepInsideAllowed(p, ctx.allowedDirectories),
+      )
+    ) {
       return { level: "medium", reason: "write deep inside allowed" };
     }
     return null;

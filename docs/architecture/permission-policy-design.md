@@ -235,6 +235,144 @@ normalized with POSIX semantics against the capability-bound guest cwd or HOME.
 Normal tool authorization, reviewer policy, audit, request bounds and deadlines
 remain mandatory. PowerShell has no broker backend and fails closed.
 
+The reviewer grades a routed invocation against the substrate its effects land
+on. When the executor selects `disposable-container` for a shell **through the
+workload broker**, or the brokered canonical route for a file tool, it records
+that host-derived `DisposableSubstrate` on the invocation's permission context
+(assigned on every invocation, so a value inherited on a caller's context never
+survives onto a host-routed call), and
+[sandbox-capability.ts](../../src/permissions/sandbox-capability.ts) resolves
+the reviewer capability to `disposable-container` (verified; filesystem and
+process confined, network not claimed) ahead of the host-shell plan, whose
+`none` describes a plain child that call never spawns. The rule classifier
+then grades guest-scoped effects as such. A read or write of any guest path
+is LOW. A guest shell is graded first match wins:
+
+1. **Destructive → MEDIUM** (a structured denial on the headless lane, an ask
+   in the foreground). Matched on raw text and on tokens, so quoted command
+   names, long options and `--` count; a dangerous long option matches when
+   its spelling is a prefix of the dangerous name, the way GNU and git resolve
+   abbreviations. This covers `rm`/`unlink`/`shred`/`truncate`/`dd`,
+   `find -delete`, `git clean`, `git reset --hard`, `git checkout -- <path>`
+   and `git checkout .`, `git restore` without `--staged`, `git stash
+   drop`/`clear`, rsync `--del*`/`--remove-source-files`, tar
+   `--remove-files`, git ref deletion and forced ref overwrite (`git branch
+   -d`/`-D`/`--delete`/`-f`/`-M`/`-C`, `git tag -d`/`--delete`/`-f`, `git
+   checkout -B`, `git switch -C`, `git fetch --prune`/`--prune-tags`/`--force`,
+   a forced refspec with a destination on `git fetch`/`git pull`
+   (`+main:main`; a bare `+main` only updates remote-tracking refs, which the
+   default refspec already forces), `git remote remove`/`prune`, `git mv -f`),
+   `git checkout <tree-ish> <path>…` (two or more operands; a single operand,
+   `git checkout f.txt`, cannot be told from a branch switch on the line and
+   stays LOW — a stated limit), abandoning an in-progress merge,
+   rebase or pick (`--abort`, `--skip`, `--quit`), the deleting git forms
+   that are not on the allowlist at all (`git gc`, `git prune`, `git reflog
+   expire`/`delete`, `git worktree remove`/`prune`, `git notes
+   remove`/`prune`, `git update-ref -d`, `git symbolic-ref -d`, `git push
+   --delete`/`--force`/`:ref`/`+ref`), and inline interpreter code (`python -c`, `node -e`,
+   `perl -e`, `ruby -e`, `php -r`, a program read from stdin or a `data:`
+   URL), whose effects cannot be graded from the line. Only deletion and
+   discard verbs are destructive: a content edit, including emptying a file
+   through a redirect (`> f`), `cp /dev/null f` or an editor (`sed -i d f`),
+   is a plain edit and is not graded as destructive in the guest. History
+   rewrites the reflog can recover (`git reset` without `--hard`, `git commit
+   --amend`, `git rebase`) stay LOW; `git branch -f`/`-D` are destructive
+   because they can drop an unmerged ref the reflog of `HEAD` never held.
+   Removing regenerable state stays LOW too: build outputs and packages
+   (`cargo clean`, `mvn clean`, `npm prune`, `apt-get purge`/`autoremove`)
+   and `rmdir`, which only removes an empty directory, are not user work.
+2. **Not on the guest allowlist → MEDIUM**, because the guest does not
+   confine network. A leaf is eligible at all only when everything it does is
+   visible on the line: any `$` expansion or backtick, any `NAME=value`
+   environment assignment (including through `env`), `xargs`, or a
+   `/dev/tcp`/`/dev/udp` path makes it ineligible. An eligible leaf must then
+   match its tool's argv spec exactly: every option an exact allowlisted
+   spelling for that tool and subcommand (so an abbreviation or an unknown
+   letter in a short cluster fails, and no option value may carry a URL or a
+   remote `host:path` — a `:` before any `/` — since tar, rsync and cp-like
+   tools open a connection for that form: `tar -cf host:/a.tar` stays MEDIUM,
+   and so does the same value after `--force-local`, which is admitted only
+   for local archives. Options whose value is text rather than a file — a
+   commit message, a format, a pattern, a date — are declared per tool and keep
+   only the URL check, so `git commit -m "fix: x"` stays LOW. Toolchain
+   flags passed through to another tool are parsed into their own words: go
+   `-ldflags` admits only `-s`, `-w`, `-X name=value`, `-buildid=`,
+   `-linkmode=internal` and similar, and `-gcflags`/`-asmflags` only
+   optimisation, diagnostic, define and include flags, so `-extld`,
+   `-extldflags`, `-linkmode=external`, `-importcfg` or any unknown tool
+   flag is not LOW; a cargo `--target` must be a triple-shaped name, never a
+   `.json` target spec path that can name the linker (a name that is not
+   built in resolves through rustc's target search, so a planted target file
+   is the planted-file limit); `rustc -C`, `cargo rustc` and
+   `RUSTFLAGS` are not allowlisted), and
+   every positional the tool's predicate — a bare package spec for installs
+   (no URL, VCS or `@`-URL form, no source, registry, index or config
+   option; a local path only as an editable target, `-e .`, or a requirement
+   or constraint file, `-r requirements.txt`), a local path word (path
+   characters only, so never a command string or a `host:path`), a literal
+   git clone/fetch source (including the scp form `git@host:repo.git`), or for
+   `curl`/`wget` a plain public URL with exact GET-only options. Wrappers that
+   run another program (`uv run`, `bundle exec`, `bun run`, `bun x`, `npx`,
+   `pnpm exec`, `yarn dlx`, …) grade the wrapped argv as a command of its own.
+   `bun run <name>` is graded this way by design: bun resolves the same word
+   to a package script, a file or a binary, and the line cannot tell which, so
+   a script name that is not itself an allowlisted command (`bun run build`)
+   stays MEDIUM, unlike `npm run <script>`. A name that coincides with an
+   allowlisted command (`bun run test`, `bun run tsc`) grades as that command
+   and is LOW; the script it may run instead is the same stated limit as
+   `npm run <script>` below.
+   A tool whose first positional is a subcommand names the allowed words
+   explicitly (`git submodule update|init|status|sync`, never `foreach`), and
+   options that name a program to run (`sort --compress-program`, `split
+   --filter`, `install --strip-program`, `rg --pre`, `fd --exec`, `ag
+   --pager`) are refused even on verbs that are otherwise local. That
+   program-option guard is the host's own: the host read-only classification
+   (`host-risk-inspector.ts`) uses the same check, so on the host too a
+   read-only verb handed a program (`sort --compress-program` and its
+   abbreviations, `ag --pager`, `rg --pre`/`--hostname-bin`, `fd --exec`/`-x`)
+   is an execution, not a read. The host also resolves GNU getopt
+   abbreviations of write flags (`sed --in-pl`, `sort --out`), treats
+   `GIT_CONFIG_PARAMETERS` as an execution-selecting environment variable, and
+   does not read `git reflog expire`/`delete` as an inspection: they rewrite
+   the reflog.
+   Everything else — any shell binary, `exec`, `eval`, `builtin`,
+   `source`/`.`, BusyBox, aliases, a pipe or here-doc into a shell, unknown
+   verbs, a path-qualified program outside the system bin directories, input
+   the tokenizer cannot parse — stays MEDIUM.
+3. **Otherwise LOW.**
+
+**This does not detect every way data can leave the guest.** These channels
+are not inspected and rely on the guest's own egress policy:
+
+- The literal URL path, hostname and DNS lookup of an allowed download or
+  clone are themselves a channel; a plain public URL is not proof that
+  nothing is carried.
+- Script files run by an allowlisted interpreter (`python3 x.py`,
+  `node x.js`), and build, test and package tools that run project or package
+  code (`make` including `make --eval` and `make SHELL=`, `npm run <script>`,
+  `pytest -p`, install and build scripts, git hooks), and programs run from
+  a module reference (`go run <module>@latest`).
+- awk's `/inet/tcp` special files.
+- Files an earlier guest write planted: config files (`.curlrc`, `.wgetrc`,
+  `pip.conf`, `.npmrc`, `.git/config`) and requirement or constraint files
+  (`pip install -r requirements.txt` reads `--index-url` and URL lines from
+  the file).
+- `git ext::` transports in a clone source are refused here and are also
+  blocked by git's default `protocol.ext.allow`.
+
+A listening server such as `python -m http.server` is inbound only and is not
+egress.
+
+Network-category tools are graded by the network rules exactly as on the
+host. The
+operator-attested container never becomes a substrate: it is same-process, the
+shell is a plain child of the controller sharing its `~/.ave`, pid namespace
+and environment, so that route keeps the host-shell plan grading. Approval
+requests for a broker-routed shell carry the guest capability rather than the
+host plan of a child that never spawns. The verdict
+cache keys by the guest identity, so a host verdict never serves a guest call
+and vice versa. An unverified or partially confined guest earns no relaxation.
+
 The [Linux workload resource controller](linux-workload-resource-controller.md)
 is a separate unwired foundation. Its cgroup-v2 leaf limits and OOM evidence do
 not issue either disposable authority. The Docker broker independently binds
@@ -292,6 +430,31 @@ credential files. The actual environment remains owned by
 [shell-execution-environment.ts](../../src/shared/shell-execution-environment.ts)
 provides shared descriptions for the system prompt and approval UI; the prompt
 describes the default route, while the approval describes the final call's plan.
+
+## Default Allowed Roots
+
+Layer 1 seeds its allow-list from the project root, the application data root
+(`aveHome()`) and the application scratch directory, as
+[allowed-directories.ts](../../src/permissions/allowed-directories.ts)
+computes them. The scratch directory
+([ave-scratch.ts](../../src/shared/ave-scratch.ts)) is `ave-scratch-<uid>`
+under the platform temp root: boot creates it with `0o700`, and it is offered —
+to the model in the environment block of the system prompt as
+`scratchDirectory`, and to the allow-list — only while it still verifies as a
+real directory (not a symlink) that this account owns and no other account can
+read. The check is a per-call `lstat` at each offer, not a guarantee across the
+gap to the write itself. The name is keyed by uid and a digest of the
+application home, so an isolated `AVE_HOME` gets its own scratch directory. A
+directory another local account planted first under a shared `/tmp` fails the
+check and is reported at boot; the prompt then says no scratch directory is
+available, and nothing substitutes the temp root for it. The rule classifier
+does not treat depth below the verified scratch root as a signal, so a staged
+build tree there is graded like any other scratch write. The platform temp roots themselves are not a Layer 1 default; the
+conversation loop adds them to its per-turn base set
+([base-allowed-directories.ts](../../src/permissions/base-allowed-directories.ts)),
+where the world-writable `/tmp` tradeoff is stated. Layer 0 still hard-blocks
+sensitive leaves beneath any default root, and `permissions.additionalDirectories`
+extends the list rather than replacing it.
 
 ## Saved-Session Reads
 

@@ -14,9 +14,10 @@ import type {
   ParentAdjudicator,
 } from "./parent-adjudicator.js";
 import type { ParentContextTurn } from "./parent-context-evidence.js";
-import type {
-  ParentAdjudicationModelSource,
-  ReviewerParentAdjudicationBlock,
+import {
+  PARENT_ADJUDICATION_MODEL_SOURCES,
+  type ParentAdjudicationModelSource,
+  type ReviewerParentAdjudicationBlock,
 } from "./permission-settings-store.js";
 import type { DeferredQueue } from "./reviewer/deferred-queue.js";
 import {
@@ -1614,6 +1615,43 @@ export class ApprovalGate {
     this.parentDenialStreaks.delete(
       canonicalStringify([childSessionId, toolName]),
     );
+  }
+
+  /**
+   * Release what tier 2 holds for one child run, now that the run has ended.
+   *
+   * Both counters are per run: the adjudication budget (`maxPerChildRun`) and
+   * the consecutive-denial streaks. They are keyed by the child session id,
+   * which a resumed run reuses, so without this a resume would start already
+   * charged with the previous run's budget and streaks — and the maps would
+   * only ever shrink through eviction. Every adjudicator the policy can name
+   * is told, because the policy may have moved the run between them mid-run.
+   *
+   * The deferred-escalation coalescing map is deliberately left alone: its
+   * entries describe queue rows that outlive the run until the user acts.
+   */
+  forgetChildRun(childSessionId: string): void {
+    for (const key of [...this.parentDenialStreaks.keys()]) {
+      const [keyChild] = JSON.parse(key) as [string, string];
+      if (keyChild === childSessionId) this.parentDenialStreaks.delete(key);
+    }
+    const lane = this.parentAdjudication;
+    if (!lane) return;
+    // Each adjudicator is released on its own: one that throws must not keep
+    // the next from releasing what it charged. The failure still surfaces —
+    // after every source has had its turn — so the caller can report it.
+    const failures: unknown[] = [];
+    for (const source of PARENT_ADJUDICATION_MODEL_SOURCES) {
+      try {
+        lane.adjudicator(source).forgetChildRun(childSessionId);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, `forgetChildRun failed on ${failures.length} adjudicators`);
+    }
   }
 
   /**

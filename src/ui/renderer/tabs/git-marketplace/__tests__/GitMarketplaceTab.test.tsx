@@ -319,7 +319,7 @@ describe("GitMarketplaceTab package sheet", () => {
     fake.emitInstallProgress({ planId: "plan-1", phase: "downloading", rung: "release", bytes: 10, total: 100 });
     await waitFor(() => expect(within(sheet).getByTestId("git-marketplace:installing")).toHaveTextContent("아티팩트 내려받고 검증하는 중"));
 
-    finish({ ok: true, value: { key: calendar.key, version: "1.0.0", action: { action: "install" }, rungs: [{ rung: "release", outcome: "used" }], connectionWarning: null } });
+    finish({ ok: true, value: { key: calendar.key, version: "1.0.0", action: { action: "install" }, rungs: [{ rung: "release", outcome: "used", unencrypted: false }], connectionWarning: null } });
     expect(await within(sheet).findByTestId("git-marketplace:done")).toHaveTextContent("calendar 1.0.0을(를) 설치했습니다.");
     await waitFor(() => expect(fake.market.listCatalog.mock.calls.length).toBeGreaterThan(1));
     const alertNotice = await within(sheet).findByTestId("installed-plugin-alerts");
@@ -697,6 +697,26 @@ describe("GitMarketplaceTab target classes (§18.3, §18.5)", () => {
     renderTab(fake);
     fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
     expect(await screen.findByTestId("git-marketplace:rung:archive:unencrypted")).toHaveTextContent("암호화되지 않은 다운로드 — 고정된 sha256으로 검증");
+  });
+
+  it("labels the rung that delivered when its bytes arrived over plain http, though the declared URL was https", async () => {
+    const calendar = entry("team", "plugin", "calendar");
+    const fake = fakeMarketplace({ sources: [team], entries: [calendar] });
+    fake.market.planInstall.mockResolvedValue({ ok: true, value: installPlan(calendar, { rungs: [{ rung: "archive", declared: true, pinned: true, detail: "downloads.example.com", unencrypted: false }] }) });
+    fake.market.executeInstall.mockResolvedValue({ ok: true, value: { key: calendar.key, version: "1.0.0", action: { action: "install" }, rungs: [
+      { rung: "release", outcome: "skipped", reason: "NOT_DECLARED" },
+      { rung: "archive", outcome: "used", unencrypted: true },
+    ], connectionWarning: null } });
+    renderTab(fake);
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    fireEvent.click(within(sheet).getByTestId("git-marketplace:plan"));
+    await within(sheet).findByTestId("git-marketplace:review");
+    expect(within(sheet).queryByTestId("git-marketplace:rung:archive:unencrypted")).toBeNull();
+    fireEvent.click(within(sheet).getByTestId("git-marketplace:confirm"));
+    const done = await within(sheet).findByTestId("git-marketplace:done");
+    expect(within(done).getByTestId("git-marketplace:done:rung:archive:unencrypted")).toHaveTextContent("암호화되지 않은 다운로드 — 고정된 sha256으로 검증");
+    expect(within(done).queryByTestId("git-marketplace:done:rung:release:unencrypted")).toBeNull();
   });
 
   it("offers Allow internal downloads when an install needs it, then reviews again", async () => {

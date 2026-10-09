@@ -16,7 +16,7 @@ export interface PendingRootWarning {
  * the context for a code the shared IPC table does not know.
  */
 export type ProjectErrorReporter = (
-  operation: "add" | "remove" | "list",
+  operation: "add" | "remove" | "list" | "new-chat",
   error?: string,
   message?: string,
 ) => void;

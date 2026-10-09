@@ -3,9 +3,9 @@
  *
  * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 1.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import {
   join,
@@ -33,6 +33,14 @@ import {
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { foldPathForMatch as fold } from "./test-helpers.js";
+import { verifyAveScratchDir } from "../../shared/ave-scratch.js";
+
+// The scratch directory is a boot-time artifact of the real app. Tests decide
+// per case whether it verifies; the default is "absent" so the other default
+// entries can be asserted without a machine-dependent third one.
+vi.mock("../../shared/ave-scratch.js", () => ({
+  verifyAveScratchDir: vi.fn(() => ({ ok: false, path: "", reason: "absent in test" })),
+}));
 
 function mountedVolumeNamespacePathFor(existingPath: string): string | null {
   if (process.platform !== "win32") return null;
@@ -495,6 +503,29 @@ describe("computeDefaultAllowedDirectories", () => {
     // runner it is this file's own home, not ~/.ave.
     const aveDir = fold(aveHome());
     expect(result).toContain(aveDir);
+  });
+
+  it("includes the application scratch directory only while it verifies as app-owned", () => {
+    const scratchRoot = mkdtempSync(join(tmpdir(), "ave-scratch-test-"));
+    const scratch = join(scratchRoot, "scratch");
+    try {
+      vi.mocked(verifyAveScratchDir).mockReturnValue({ ok: true, path: scratch });
+      mkdirSync(scratch, { mode: 0o700 });
+      const result = computeDefaultAllowedDirectories();
+      expect(result).toContain(fold(scratch));
+      expect(isPathAllowed(fold(join(scratch, "build.log")), { directories: result })).toBe(true);
+      expect(computeDefaultRuntimeAllowedDirectories()).toContain(canonicalizePathForMatch(scratch));
+      // A sibling under the same temp root is NOT a default: the temp root
+      // itself is never a Layer 1 default, only the verified scratch directory.
+      expect(isPathAllowed(fold(join(scratchRoot, "other.log")), { directories: result })).toBe(false);
+
+      vi.mocked(verifyAveScratchDir).mockReturnValue({ ok: false, path: scratch, reason: "is a symbolic link" });
+      const withoutScratch = computeDefaultAllowedDirectories();
+      expect(withoutScratch).not.toContain(fold(scratch));
+      expect(isPathAllowed(fold(join(scratch, "build.log")), { directories: withoutScratch })).toBe(false);
+    } finally {
+      rmSync(scratchRoot, { recursive: true, force: true });
+    }
   });
 
   it("returns canonical + case-folded entries", () => {

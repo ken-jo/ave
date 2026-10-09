@@ -142,6 +142,12 @@ export interface ChatGroupEnvironment {
 
   // project binding
   activeProject: React.ComponentProps<typeof ChatView>["activeProject"];
+  /**
+   * The project a group adopted for New Chat was asked to start under, by
+   * group id. A tile listed here hydrates its fresh conversation under that
+   * project instead of the window's.
+   */
+  freshProjectByGroup: ReadonlyMap<string, NonNullable<React.ComponentProps<typeof ChatView>["activeProject"]>>;
   workspaceProjects: React.ComponentProps<typeof ChatView>["workspaceProjects"];
   onNewChatForProject: React.ComponentProps<typeof ChatView>["onNewChatForProject"];
   onRefreshProjects: React.ComponentProps<typeof ChatView>["onRefreshProjects"];
@@ -216,12 +222,20 @@ export function ChatGroupSession({
 
   const api = useMemo(() => chatGroupApi(windowApi, chatGroupId), [windowApi, chatGroupId]);
   // Stable identity: the hook re-hydrates when this changes, and the default
-  // (unscoped) project is no project at all.
+  // (unscoped) project is no project at all. A project handed to this group
+  // for New Chat wins over the window's — including the default one.
+  const requestedProject = env.freshProjectByGroup.get(chatGroupId);
+  const freshSource = requestedProject ?? env.activeProject;
   const freshTileProject = useMemo(
-    () => (env.activeProject && !env.activeProject.isDefault
-      ? { projectRoot: env.activeProject.projectRoot, projectName: env.activeProject.projectName }
+    () => (freshSource && !freshSource.isDefault
+      ? { projectRoot: freshSource.projectRoot, projectName: freshSource.projectName }
       : undefined),
-    [env.activeProject],
+    [freshSource],
+  );
+  const onProjectError = env.onProjectError;
+  const reportChatNewRefused = useCallback(
+    (error: string) => onProjectError?.("new-chat", error),
+    [onProjectError],
   );
 
   // The tile's conversation, readable by the sub-agent frame filter before
@@ -343,6 +357,7 @@ export function ChatGroupSession({
     onSessionsChanged: env.refreshSessions,
     resumeWindowActiveSession: chatGroupId === MAIN_CHAT_GROUP_ID,
     freshProject: freshTileProject,
+    onChatNewRefused: reportChatNewRefused,
     focusSessionHolder: env.focusChatGroup,
   });
   // Written at commit, not in render: a render may be thrown away, and the
@@ -555,14 +570,22 @@ export function ChatGroupSession({
 
   const startNewChat = useCallback(
     async (project?: { projectRoot?: string; projectName?: string }) => {
-      if (streaming) { console.warn("new chat blocked during streaming"); return; }
-      await api.chatNew(project);
+      if (streaming) { console.warn("new chat blocked during streaming"); return false; }
+      const created = await api.chatNew(project);
+      if (!created.ok) {
+        // Main kept the loop on what it held, so the tile keeps showing that:
+        // a blank transcript would claim a fresh conversation that does not
+        // exist. The refusal is said out loud, never read as success.
+        reportChatNewRefused(created.error);
+        return false;
+      }
       clearForNewChat();
       resetForNewSession();
       await refreshSessionId();
       await env.refreshSessions();
+      return true;
     },
-    [api, streaming, clearForNewChat, resetForNewSession, refreshSessionId, env],
+    [api, streaming, clearForNewChat, resetForNewSession, refreshSessionId, env, reportChatNewRefused],
   );
 
   const handleAttachmentWarning = useCallback((message: string) => {
@@ -720,8 +743,12 @@ export function ChatGroupSession({
   const pendingApprovals = routed ? [] : drawnApprovals;
   const composerAskQuestions = routed ? [] : drawnAskQuestions;
   const settleApprovalHead = routed ? drawnApprovals[0] ?? null : null;
+  // Both cards sit at the same z-index, so DOM order is the stacking order:
+  // the question first, the approval after it — the approval stays the
+  // topmost decision, as it is over the composer in ChatView.
   const settle: ReactNode = routed ? (
     <>
+      <QuestionOverlay api={api} requests={drawnAskQuestions} onResolved={dismissAskQuestion} />
       <ApprovalDock
         queue={drawnApprovals}
         conversationLabel={t("approvalAttribution.paneConversation", {
@@ -742,7 +769,6 @@ export function ChatGroupSession({
         }
         reviewerSuggestion={approvals.reviewerSuggestion}
       />
-      <QuestionOverlay api={api} requests={drawnAskQuestions} onResolved={dismissAskQuestion} />
     </>
   ) : null;
 

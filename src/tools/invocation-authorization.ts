@@ -17,7 +17,10 @@ import type {
   HostShellExecutionPlanAuditProjection,
 } from "../permissions/host-shell-execution-plan.js";
 import type { HostShellExecutionPermitBinding } from "../permissions/host-shell-execution-permit.js";
-import { resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
+import {
+  disposableContainerCapability,
+  resolveReviewerSandboxCapability,
+} from "../permissions/sandbox-capability.js";
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
 import {
   isRemoteControllerAuthorityCurrent,
@@ -275,7 +278,8 @@ export async function authorizeToolInvocation(
           ? "host-execution-authorization-required"
           : "approval-surface-unavailable",
         ...(deferredRequestId ? { deferredRequestId } : {}),
-        ...(hostShellExecutionPlanAudit
+        ...(hostShellExecutionPlanAudit &&
+            invocationPermissionContext.disposableSubstrate === undefined
           ? { executionPlan: hostShellExecutionPlanAudit }
           : {}),
       }),
@@ -923,14 +927,15 @@ export async function authorizeToolInvocation(
       rationaleBatchContext !== undefined ||
       rationaleResumeContext !== undefined;
     const sandboxCapability = needsRationaleSecurityContext
-      ? (hostShellExecutionPlan?.capability ??
-        resolveReviewerSandboxCapability(
+      ? resolveReviewerSandboxCapability(
           source,
           toolUse.name,
           tool.mcpServerId,
           tool.workerId,
           tool.pluginId,
-        ))
+          hostShellExecutionPlan,
+          invocationPermissionContext.disposableSubstrate,
+        )
       : undefined;
     const sandboxExecutionPlan: Record<string, unknown> | undefined =
       sandboxCapability === undefined
@@ -1427,9 +1432,17 @@ export async function authorizeToolInvocation(
                   : { hostShellExecutionPermitBinding }),
               }
             : {}),
+          // A guest-routed shell shows the substrate the reviewer graded, not
+          // the host plan of a child that never spawns.
           ...(hostShellExecutionPlanAudit === undefined
             ? {}
-            : { executionPlan: hostShellExecutionPlanAudit }),
+            : invocationPermissionContext.disposableSubstrate === undefined
+              ? { executionPlan: hostShellExecutionPlanAudit }
+              : {
+                  sandboxCapability: disposableContainerCapability(
+                    invocationPermissionContext.disposableSubstrate,
+                  ),
+                }),
           category: "tool" as const,
           toolName: toolUse.name,
           toolCategory: invocationCategory,
@@ -1520,6 +1533,8 @@ export async function authorizeToolInvocation(
                   tool.mcpServerId,
                   tool.workerId,
                   tool.pluginId,
+                  undefined,
+                  invocationPermissionContext.disposableSubstrate,
                 ),
               }
             : {}),

@@ -75,12 +75,22 @@ function pendingQuestionIn(scope: HTMLElement | null): HTMLElement | null {
 function focusPendingQuestion(scope: HTMLElement | null): boolean {
   const overlay = pendingQuestionIn(scope);
   if (!overlay) return false;
-  const target = overlay.querySelector<HTMLElement>(
-    '[role="option"][tabindex="0"]:not(:disabled), [role="option"]:not(:disabled), button:not(:disabled), [tabindex="0"]',
-  );
-  if (!target) return false;
-  target.focus();
-  return document.activeElement === target;
+  // In priority order, one selector at a time: a selector list matches in
+  // document order, and the question card is itself a tab stop that precedes
+  // its answers — a list would focus the card instead of the first answer.
+  const selectors = [
+    '[role="option"][tabindex="0"]:not(:disabled)',
+    '[role="option"]:not(:disabled)',
+    'button:not(:disabled)',
+    '[tabindex="0"]',
+  ];
+  for (const selector of selectors) {
+    const target = overlay.querySelector<HTMLElement>(selector);
+    if (!target) continue;
+    target.focus();
+    return document.activeElement === target;
+  }
+  return false;
 }
 
 /**

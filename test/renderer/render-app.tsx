@@ -28,6 +28,10 @@ type RenderAppOpts = Parameters<typeof makeMockAveApi>[0] & {
   }>;
   /** Approval requests the host is already parked on when the window mounts. */
   pendingApprovals?: unknown[];
+  /** Project folders the workspace reports — see `makeMockAveNamespace`. */
+  workspaceRoots?: Array<{ path: string; isDefault: boolean }>;
+  /** Install the native context-menu bridge — see `makeMockAveNamespace`. */
+  nativeContextMenu?: boolean;
 };
 
 export type RenderAppReturn = {
@@ -52,6 +56,8 @@ export type RenderAppReturn = {
   emitApproval: (r: unknown) => void;
   /** The host retired a parked request — see `ave:approval:settled`. */
   emitApprovalSettled: (requestId: string) => void;
+  /** Answer the last native context menu with `command` (needs `nativeContextMenu`). */
+  chooseNativeMenuCommand: (command: string) => void;
   emitPluginRuntimeUpdated: (payload: { pluginId: string }) => void;
   emitNotificationToast: (payload: unknown) => void;
   emitNotificationClicked: (payload: unknown) => void;
@@ -71,7 +77,7 @@ export function startInChatMode(): () => void {
 }
 
 export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppReturn> {
-  const { aveEnv, pendingApprovals, ...apiOpts } = opts;
+  const { aveEnv, pendingApprovals, workspaceRoots, nativeContextMenu, ...apiOpts } = opts;
   const {
     api,
     releasedGroupIds,
@@ -91,7 +97,9 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
     emitNotificationToast,
     emitNotificationClicked,
   } = makeMockAveApi(apiOpts);
-  const { ns, emitApproval, emitApprovalSettled } = makeMockAveNamespace({ env: aveEnv, pendingApprovals });
+  const { ns, emitApproval, emitApprovalSettled, chooseNativeMenuCommand } = makeMockAveNamespace({
+    env: aveEnv, pendingApprovals, workspaceRoots, nativeContextMenu,
+  });
 
   vi.stubGlobal("aveApi", api);
   vi.stubGlobal("ave", ns);
@@ -121,6 +129,7 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
     emitAskUserQuestion,
     emitApproval,
     emitApprovalSettled,
+    chooseNativeMenuCommand,
     emitPluginRuntimeUpdated,
     emitNotificationToast,
     emitNotificationClicked,

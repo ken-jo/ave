@@ -118,14 +118,15 @@ export async function tryUserApprovalMemorySkip(
   // rule reflect that this call's effects are NOT ASRT-isolated — except a
   // genuinely ASRT-wrapped external MCP worker (keyed on id)
   // or host-spawned plugin worker (keyed on pluginId + workerId).
-  const sandboxCapability = hostShellExecutionPlan?.capability ??
-    resolveReviewerSandboxCapability(
-      source,
-      toolName,
-      mcpServerId,
-      workerId,
-      pluginId,
-    );
+  const sandboxCapability = resolveReviewerSandboxCapability(
+    source,
+    toolName,
+    mcpServerId,
+    workerId,
+    pluginId,
+    hostShellExecutionPlan,
+    context.disposableSubstrate,
+  );
   const ctx: ToolInvocationContext = {
     toolName,
     source,

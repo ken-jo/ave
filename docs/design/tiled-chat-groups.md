@@ -581,6 +581,30 @@ conversation and clears the persisted window-active session, so the next launch
 would open blank instead of where the user left off. A group whose tile has not
 published counts as busy — an unanswerable question is not an idle one.
 
+New Chat — the rail button, a folder row, the folder menu's "new chat" — takes
+the same ladder. An idle focused group starts the conversation in place; a
+mid-turn one gets a fresh group beside it, and the requested project is handed
+to that group (in the same commit that mounts its tile), which hydrates its
+empty conversation under it. The window's own project is not set on the way:
+it follows the focused tile's project, and only once that tile holds a
+conversation. A tile that has not published or hydrated has no project to
+report — reading its silence as "the default project" would reset the window —
+and a refused adoption or a `chatNew` main refuses therefore leaves the window
+on the project it was on. At the ceiling with nothing idle to set aside, the
+refusal is the same toast the sidebar rows give. None of these controls is
+disabled while a turn runs: the turn belongs to one tile, never to the window.
+
+Deleting a conversation a tile holds resets THAT tile to a fresh conversation
+under the project it was in — not the focused tile, which may show another
+conversation entirely. Main refuses to delete a conversation mid-turn, so the
+holder is always idle. If main refuses the fresh conversation under that
+project (its folder has left the workspace), the refusal is shown and the tile
+restarts unscoped, once. If main refuses that too (the default root is not
+authorized, or a turn started meanwhile), the second refusal is shown as well
+and the tile stays on the deleted session id; there is no further retry. Any refused
+`chatNew` is shown the same way and leaves the tile on what its loop still
+holds, never on a blank transcript that claims a conversation.
+
 **Mounted is not drawn.** A tile mounts for every leaf of the live tree; the
 view decides only which of them gets a box. A leaf with no box is hidden with
 `display:none` rather than unmounted, because unmounting takes down the stream

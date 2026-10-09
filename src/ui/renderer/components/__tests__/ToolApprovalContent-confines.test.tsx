@@ -50,6 +50,20 @@ function renderSandboxSummary(req: ApprovalRequest) {
 }
 
 describe("ToolApprovalContent sandbox confines label", () => {
+  it("names the broker guest instead of calling it partial isolation", () => {
+    const { summary } = renderSandboxSummary(
+      makeRequest({
+        kind: "disposable-container",
+        confidence: "verified",
+        platform: "linux",
+        reason: "disposable guest via workload broker",
+        confines: { filesystem: true, process: true, network: false },
+      }),
+    );
+    expect(summary?.textContent).toContain("일회용 게스트");
+    expect(summary?.textContent).not.toContain("부분적");
+  });
+
   it("shows the partial breakdown for a win32 partial ASRT (process not confined)", () => {
     const { summary } = renderSandboxSummary(
       makeRequest({

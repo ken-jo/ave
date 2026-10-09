@@ -166,8 +166,22 @@ export function folderRungView(packagePath: string): RungView {
   return { rung: "folder", declared: true, pinned: false, detail: packagePath === "" ? null : packagePath, unencrypted: false };
 }
 
-export function rungOutcomeViews(outcomes: readonly RungOutcome[]): RungOutcomeView[] {
-  return outcomes.map((item) => ({ ...item }));
+/**
+ * The ladder's outcome after a download. The used rung says whether its
+ * bytes travelled over plain http on any hop, which a redirect can make true
+ * for an https URL (§15.2, §18.2.3).
+ */
+export function rungOutcomeViews(outcomes: readonly RungOutcome[], unencrypted: boolean): RungOutcomeView[] {
+  return outcomes.map((item) => (item.outcome === "used" ? { ...item, unencrypted } : { ...item }));
+}
+
+/**
+ * The Delivery rows once bytes are staged: the rung that delivered them is
+ * labelled when they travelled over plain http, even though its declared URL
+ * is https (a redirect the network gate admitted, §18.2.3).
+ */
+export function stagedRungViews(rungs: readonly RungView[], staged: { rung: string; unencrypted: boolean }): RungView[] {
+  return rungs.map((item) => (item.rung === staged.rung && staged.unencrypted ? { ...item, unencrypted: true } : item));
 }
 
 export function installActionView(action: InstallAction): InstallActionView {

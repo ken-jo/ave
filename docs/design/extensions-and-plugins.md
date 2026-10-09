@@ -1285,7 +1285,7 @@ Vocabulary only, in the surfaces that speak to users and readers:
 - **Documentation**: `docs/architecture/architecture.md` (the "Plugin Runtime" section
   and the parity invariant describe extensions), the plugin guides under `docs/guides/`
   (`plugin-development.md`, `local-plugin-development.md`, `plugin-version-quickref.md`,
-  `plugin-decoupling-migration.md`, `marketplace-publishing.md`), the web documentation
+  `marketplace-publishing.md`), the web documentation
   under `web/app/docs/plugins/` and `web/app/docs/marketplace/authors/`, the packaged
   runtime guidance `resources/AGENTS.md` (its "Plugins use a manifest, runtime handler,
   and HostApi contract" sentence describes extensions), and `CHANGELOG.md` from the

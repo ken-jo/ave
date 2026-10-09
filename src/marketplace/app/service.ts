@@ -119,6 +119,7 @@ import {
   installActionView,
   rowState,
   rungOutcomeViews,
+  stagedRungViews,
   folderRungView,
   rungViews,
   runsCode,
@@ -1784,7 +1785,10 @@ export class MarketplaceService implements RetirementEntryLookup {
     if (!version) throw new Error(`${key.sourceId} no longer lists ${key.kind} ${key.name} ${plan.version}`);
     // Checkpoint one, then the staged bytes: the review never offers approval with a field still pending (§18.7.3).
     const catalog = catalogDelta(baseline.consent, version);
-    const staged = await this.stageForReview(this.plans.peek(plan.planId), plan.planId);
+    const held = this.plans.peek(plan.planId);
+    const staged = await this.stageForReview(held, plan.planId);
+    // The staged bytes say how they travelled: a redirect to http labels an https rung (§15.2).
+    const rungs = held.kind === "plugin" && held.staged ? stagedRungViews(plan.rungs, held.staged) : plan.rungs;
     let consentDelta = staged ? stagedDelta(baseline.consent, staged.consent, catalog) : catalog;
     if (staged?.files && baseline.files) consentDelta = withChangedFiles(consentDelta, baseline.files, staged.files, staged.declaring);
     let delta: UpdatePlanView["authorityDelta"] = null;
@@ -1811,6 +1815,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       consentDelta,
       codeFreeChange: isCodeFreeChange(consentDelta),
       reviewComponents: reviewComponentsOf(key.kind, consentDelta, staged?.consent ?? null, components),
+      rungs,
     };
   }
 
@@ -1976,7 +1981,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         key: { sourceId: plan.sourceId, kind: "plugin", name: plan.name },
         version: plan.version,
         action: installActionView(outcome.action),
-        rungs: rungOutcomeViews(outcome.staged.rungs),
+        rungs: rungOutcomeViews(outcome.staged.rungs, outcome.staged.unencrypted),
         connectionWarning: null,
       };
     } else if (held.kind === "content") {

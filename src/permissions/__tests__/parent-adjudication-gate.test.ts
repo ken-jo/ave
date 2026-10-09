@@ -648,6 +648,100 @@ describe("parent adjudication — a repeated denial reaches the user", () => {
   });
 });
 
+describe("parent adjudication — a finished run releases its state", () => {
+  const OTHER_CHILD = "child-session-2";
+
+  function otherChildRequest(id: string): ApprovalRequestInput {
+    const base = makeChildRequest({ id });
+    return {
+      ...base,
+      sessionId: OTHER_CHILD,
+      childProvenance: { ...base.childProvenance!, childSessionId: OTHER_CHILD },
+    };
+  }
+
+  it("ends the finished run's denial streaks and keeps every other run's", async () => {
+    const adjudicator = new ScriptedParentAdjudicator({
+      outcome: "deny",
+      reason: "not part of the task",
+    });
+    const { gate, wc } = makeGate(adjudicator);
+
+    await gate.requestAndWait(makeChildRequest({ id: "a" }));
+    await gate.requestAndWait(makeChildRequest({ id: "b" }));
+    await gate.requestAndWait(otherChildRequest("x"));
+    await gate.requestAndWait(otherChildRequest("y"));
+
+    gate.forgetChildRun(CHILD_SESSION);
+
+    // The ended run's two denials are gone: a resumed run's first denial is
+    // its first, not a third that reaches the user.
+    const resumed = await gate.requestAndWait(makeChildRequest({ id: "c" }));
+    expect(resumed.choice).toBe("deny-once");
+    expect(wc.send).not.toHaveBeenCalled();
+
+    // The other run is still live and its streak still counts.
+    void gate.requestAndWait(otherChildRequest("z"));
+    await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
+    expect(sentRequest(wc).parentEscalation?.cause).toBe("repeated-denial");
+  });
+
+  it("releases the budget on every adjudicator the policy can name", () => {
+    const reviewer = new ScriptedParentAdjudicator({ outcome: "deny", reason: "no" });
+    const parentSession = new ScriptedParentAdjudicator({ outcome: "deny", reason: "no" });
+    const gate = new ApprovalGate(
+      makeMockWebContents() as never,
+      undefined,
+      1_000,
+      { log: vi.fn() } as never,
+      undefined,
+      {
+        adjudicator: (source) =>
+          source === "parent-session" ? parentSession : reviewer,
+        isEnabled: () => true,
+        policy: () => DEFAULT_POLICY,
+      },
+    );
+
+    gate.forgetChildRun(CHILD_SESSION);
+
+    // The policy may have moved the run between models mid-run, so both are
+    // told — each releases only what it charged.
+    expect(reviewer.forgotten).toEqual([CHILD_SESSION]);
+    expect(parentSession.forgotten).toEqual([CHILD_SESSION]);
+  });
+
+  it("is a no-op on a gate with no tier 2", () => {
+    const { gate } = makeGate(undefined);
+    expect(() => gate.forgetChildRun(CHILD_SESSION)).not.toThrow();
+  });
+
+  it("releases every adjudicator even when one of them throws, then reports the failure", () => {
+    const reviewer = new ScriptedParentAdjudicator({ outcome: "deny", reason: "no" });
+    const broken = new Error("reviewer release failed");
+    reviewer.forgetChildRun = () => { throw broken; };
+    const parentSession = new ScriptedParentAdjudicator({ outcome: "deny", reason: "no" });
+    const gate = new ApprovalGate(
+      makeMockWebContents() as never,
+      undefined,
+      1_000,
+      { log: vi.fn() } as never,
+      undefined,
+      {
+        adjudicator: (source) =>
+          source === "parent-session" ? parentSession : reviewer,
+        isEnabled: () => true,
+        policy: () => DEFAULT_POLICY,
+      },
+    );
+
+    // The reviewer is asked first; its failure must not cost the parent
+    // session its release, and must not be swallowed either.
+    expect(() => gate.forgetChildRun(CHILD_SESSION)).toThrow(broken);
+    expect(parentSession.forgotten).toEqual([CHILD_SESSION]);
+  });
+});
+
 describe("parent adjudication — the audit row", () => {
   it("cannot be forged by the parent's own wording", async () => {
     const adjudicator = new ScriptedParentAdjudicator({

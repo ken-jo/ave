@@ -15,7 +15,7 @@ import { DevComponentLabels } from "./components/DevComponentLabels.js";
 import { UnifiedSearchPanel } from "./components/UnifiedSearchPanel.js";
 import { PluginUiHostView } from "../../plugin-ui-host.js";
 import { ChatGroupSession, type ChatGroupEnvironment } from "./components/ChatGroupSession.js";
-import { ChatGroupSessionRegistry, useChatGroupSession, useTileSessions, tileHoldingSession, overlayCardTile, pendingAnswers as selectPendingAnswers, type OverlayCardPlacement } from "./components/chat-group-session-registry.js";
+import { ChatGroupSessionRegistry, useChatGroupSession, useTileSessions, tileHoldingSession, pruneGroupRequests, overlayCardTile, pendingAnswers as selectPendingAnswers, type OverlayCardPlacement } from "./components/chat-group-session-registry.js";
 import { leafIds } from "./components/pane-tree.js";
 import type { ChatEntry } from "../../lib/chat-stream-state.js";
 // The away surfaces for an MCP-app card that left its home mount — one singleton
@@ -326,6 +326,22 @@ export function App() {
   const [pendingSessionDrop, setPendingSessionDrop] =
     useState<{ chatGroupId: string; sessionId: string } | null>(null);
 
+  // The project a group adopted for New Chat must start its conversation
+  // under. Handed to that one tile, not set on the window: the window's
+  // project follows the tile once the tile holds the conversation, so a
+  // refused adoption or a refused `chatNew` leaves the window where it was.
+  // Read by the tile at hydration; dropped once it holds a conversation or
+  // its group is gone — see `pruneGroupRequests`.
+  const [freshProjectByGroup, setFreshProjectByGroup] =
+    useState<ReadonlyMap<string, ProjectIdentity>>(() => new Map());
+  const liveGroupIds = useMemo(
+    () => new Set(chatGroups.groups.map((group) => group.id)),
+    [chatGroups.groups],
+  );
+  useEffect(() => {
+    setFreshProjectByGroup((current) => pruneGroupRequests(current, liveGroupIds, tileSessions));
+  }, [liveGroupIds, tileSessions]);
+
   const focusTileHolding = useCallback((sessionId: string): boolean => {
     const holder = tileHoldingSession(tileSessions, sessionId);
     if (holder === undefined) return false;
@@ -340,28 +356,17 @@ export function App() {
   }, [tileSessions, focusChatGroup]);
 
   /**
-   * Put a conversation in front of the user, in `targetGroupId` if that group
-   * can take it.
+   * Give an incoming conversation a group of its own beside a busy
+   * `targetGroupId`, and return that group's id — or `null`, said out loud,
+   * when the canvas is at its ceiling with every group mid-turn.
    *
-   * Three answers, in order: a tile already holding it is focused; an idle
-   * target loads it; and a target that is mid-turn does not have its
-   * conversation taken out from under it — the incoming one is given a group of
-   * its own beside it instead. Swapping the session on a running loop is what
-   * main refuses, and rightly: `saveSession` rewrites the session file from the
-   * loop's in-memory history, so a swap mid-turn writes one conversation's
-   * messages into the other's file.
-   *
-   * In chat mode the adopted group is the only one DRAWN, so the canvas does
-   * not split. The displaced tile stays mounted and its turn runs on.
+   * The new group's tile mounts on the next commit and hydrates a fresh
+   * conversation of its own; a caller that wants a particular one delivers it
+   * once the tile publishes its handle. In chat mode the adopted group is the
+   * only one DRAWN, so the canvas does not split. The displaced tile stays
+   * mounted and its turn runs on.
    */
-  const reachSession = useCallback(async (
-    sessionId: string,
-    targetGroupId: string,
-  ): Promise<boolean> => {
-    if (focusTileHolding(sessionId)) return true;
-    const target = tileSessions.find((tile) => tile.chatGroupId === targetGroupId);
-    const tile = chatGroupSessions.read(targetGroupId);
-    if (target !== undefined && !target.streaming && tile) return tile.loadSession(sessionId);
+  const adoptGroupBeside = useCallback((targetGroupId: string): string | null => {
     const adopted = chatGroupsRef.current.adopt(targetGroupId, (chatGroupId) => {
       const each = tileSessions.find((candidate) => candidate.chatGroupId === chatGroupId);
       // A group with no tile is a group whose state nothing can see. That is
@@ -376,7 +381,7 @@ export function App() {
         message: t("app.conversationCeilingReached", { count: MAX_CHAT_GROUPS }),
         ttlMs: 8_000,
       });
-      return false;
+      return null;
     }
     // The tree already dropped it; main still has to let the loop go.
     if (adopted.released !== null) {
@@ -390,14 +395,36 @@ export function App() {
         ttlMs: 8_000,
       });
     }
+    return adopted.chatGroupId;
+  }, [releaseChatGroupLoop, statusPushToast, t, tileSessions]);
+
+  /**
+   * Put a conversation in front of the user, in `targetGroupId` if that group
+   * can take it.
+   *
+   * Three answers, in order: a tile already holding it is focused; an idle
+   * target loads it; and a target that is mid-turn does not have its
+   * conversation taken out from under it — the incoming one is given a group of
+   * its own beside it instead. Swapping the session on a running loop is what
+   * main refuses, and rightly: `saveSession` rewrites the session file from the
+   * loop's in-memory history, so a swap mid-turn writes one conversation's
+   * messages into the other's file.
+   */
+  const reachSession = useCallback(async (
+    sessionId: string,
+    targetGroupId: string,
+  ): Promise<boolean> => {
+    if (focusTileHolding(sessionId)) return true;
+    const target = tileSessions.find((tile) => tile.chatGroupId === targetGroupId);
+    const tile = chatGroupSessions.read(targetGroupId);
+    if (target !== undefined && !target.streaming && tile) return tile.loadSession(sessionId);
+    const adoptedGroupId = adoptGroupBeside(targetGroupId);
+    if (adoptedGroupId === null) return false;
     // The adopted group is not mounted yet, so the load rides the same delivery
     // the edge-drop uses — it runs when that tile publishes its handle.
-    setPendingSessionDrop({ chatGroupId: adopted.chatGroupId, sessionId });
+    setPendingSessionDrop({ chatGroupId: adoptedGroupId, sessionId });
     return true;
-  }, [
-    chatGroupSessions, focusTileHolding, releaseChatGroupLoop,
-    statusPushToast, t, tileSessions,
-  ]);
+  }, [adoptGroupBeside, chatGroupSessions, focusTileHolding, tileSessions]);
 
   /** The same ladder for a request from outside the canvas: the focused tile is the target. */
   const handleLoadSessionAndRefresh = useCallback(
@@ -706,7 +733,9 @@ export function App() {
           ? t("chatPreviewRail.addProjectRoot")
           : operation === "remove"
             ? t("sidebar.projectMenuRemove")
-            : t("sidebar.projectsLabel"),
+            : operation === "new-chat"
+              ? t("mainToolbar.newChat")
+              : t("sidebar.projectsLabel"),
       }),
       ttlMs: 10_000,
     });
@@ -769,9 +798,17 @@ export function App() {
   }, [workspaceProjects]);
 
   useEffect(() => {
+    // Follow the focused tile's conversation, and only once it holds one. A
+    // tile that has not published (the registry's empty stand-in) or has not
+    // hydrated yet reports no project because it has no conversation — not
+    // because its conversation is unscoped. Reading that as "the default
+    // project" reset the window's project in the commit that focused a tile
+    // adopted for New Chat during a turn, before that tile read the project
+    // it was asked to start under.
+    if (!currentSessionId) return;
     const sessionProject = projectIdentityFromPayload(currentSessionProject);
     setActiveProject(reconcileActiveProject(sessionProject, workspaceProjects));
-  }, [currentSessionProject, workspaceProjects]);
+  }, [currentSessionId, currentSessionProject, workspaceProjects]);
 
   const defaultWorkspaceProject = useMemo(
     () => defaultProjectFromProjects(workspaceProjects),
@@ -1179,16 +1216,38 @@ export function App() {
   // use-routine-overlay's handlePluginPrimaryAction stays live. See
   // use-send-message.ts.
   const handleNewChat = useCallback(async (project?: { projectRoot?: string; projectName?: string }) => {
-    if (streaming) { console.warn("new chat blocked during streaming"); return; }
     const nextProject = resolveKnownProject(projectIdentityFromPayload(project)) ?? activeProject ?? defaultWorkspaceProject;
+    if (streaming) {
+      // The focused tile is mid-turn, and a new chat on its loop is the same
+      // mid-turn swap `reachSession` refuses. The same ladder applies: the new
+      // conversation gets a group of its own beside the busy one. At the
+      // ceiling the refusal is said out loud and nothing else changes.
+      const adopted = adoptGroupBeside(chatGroupsRef.current.focusedId);
+      if (adopted === null) return;
+      // The tile hydrates its fresh conversation under the project handed to
+      // it — in the same commit that mounts it. The window's project is not
+      // touched here: it follows that tile once the tile holds a conversation,
+      // so a `chatNew` main refuses leaves it where it was.
+      if (nextProject) {
+        setFreshProjectByGroup((current) => new Map(current).set(adopted, nextProject));
+      }
+      setActiveView("home");
+      return;
+    }
     // The tile starts it: chatNew has to reach the FOCUSED tile's loop, and
     // the reset has to land on that tile's transcript.
-    await focusedSession.startNewChat(nextProject
+    const started = await focusedSession.startNewChat(nextProject
       ? { projectRoot: nextProject.projectRoot, projectName: nextProject.projectName }
       : undefined);
+    // Refused: the tile said why and still holds what it held, so the window
+    // stays on that conversation's project and view.
+    if (!started) return;
     if (nextProject) setActiveProject(nextProject);
     setActiveView("home");
-  }, [activeProject, defaultWorkspaceProject, focusedSession, resolveKnownProject, setActiveView]);
+  }, [
+    activeProject, adoptGroupBeside, defaultWorkspaceProject, focusedSession,
+    resolveKnownProject, setActiveView, streaming,
+  ]);
 
   // ── What a conversation ROW can do to itself ───────────────────────────────
   // Assembled here because these are the only place that has both the IPC
@@ -1241,13 +1300,31 @@ export function App() {
           }
           return;
         }
-        // Deleting the LOADED conversation leaves the loop pointed at a file
-        // that is gone, so start a fresh one rather than leaving it dangling.
-        if (result.wasLoaded) await handleNewChat();
+        // Deleting a LOADED conversation leaves the loop that held it pointed
+        // at a file that is gone, so THAT tile starts a fresh one, under the
+        // project it was in. Not the focused tile: the conversation it shows
+        // may be another one entirely, and replacing it — or, mid-turn,
+        // opening a tile beside it — answers a question nobody asked. Main
+        // refuses to delete a conversation mid-turn, so the holder is idle.
+        if (result.wasLoaded) {
+          const holder = tileHoldingSession(tileSessions, sessionId);
+          const tile = holder ? chatGroupSessions.read(holder.chatGroupId) : undefined;
+          if (holder && tile) {
+            const { projectRoot, projectName } = tile.currentSessionProject;
+            const scoped = projectRoot ? { projectRoot, projectName } : undefined;
+            const started = await tile.startNewChat(scoped);
+            // Main refuses a conversation in a folder that has left the
+            // workspace (the tile has said so). The tile must not stay on the
+            // deleted session, so it restarts unscoped — the default project
+            // main always accepts.
+            if (!started && scoped) await tile.startNewChat(undefined);
+            if (holder.chatGroupId === chatGroupsRef.current.focusedId) setActiveView("home");
+          }
+        }
         await refreshSessions();
       },
     };
-  }, [api, sessions, tileSessions, refreshSessions, handleExport, handleImportAndLoad, handleNewChat]);
+  }, [api, sessions, tileSessions, chatGroupSessions, refreshSessions, handleExport, handleImportAndLoad, setActiveView]);
   // A turn that ends where the user is not looking marks its row; looking
   // at a conversation reads it. The sidebar's bold rows come from here.
   useTurnAttention({
@@ -1397,6 +1474,7 @@ export function App() {
     commandActions, slashPickerOpen, onSlashPickerOpenChange: setSlashPickerOpen,
     approvalSentenceInterceptSubmit: interceptApprovalSentence,
     activeProject: activeProject ?? defaultWorkspaceProject,
+    freshProjectByGroup,
     workspaceProjects,
     onNewChatForProject,
     onRefreshProjects: refreshWorkspaceProjects,
@@ -1418,7 +1496,7 @@ export function App() {
     handleExport, handleImport, pluginEntries, handleViewSelectWithDoctor, appMode,
     commandActions, slashPickerOpen,
     interceptApprovalSentence,
-    activeProject, defaultWorkspaceProject, workspaceProjects,
+    activeProject, defaultWorkspaceProject, freshProjectByGroup, workspaceProjects,
     onNewChatForProject, refreshWorkspaceProjects, handleProjectError,
     pendingAnswers,
   ]);
@@ -1851,7 +1929,6 @@ export function App() {
                 onRefreshProjects={refreshWorkspaceProjects}
                 onProjectError={handleProjectError}
                 projects={workspaceProjects}
-                streaming={streaming}
                 collapsed={sidebarCollapsed}
                 overlay={sidebarOverlay}
                 onToggleCollapse={() => setSidebarCollapsed((v) => !v)}

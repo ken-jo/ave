@@ -98,6 +98,35 @@ describe("gates reach the user when the route leaves the chat surface", () => {
     await act(async () => { pendingSend.resolve({ ok: true }); await pendingSend.promise; });
   });
 
+  it("with both cards parked in the routed pane, the approval stacks over the question as it does over the composer", async () => {
+    const pendingSend = deferred<{ ok: true }>();
+    const { container, api, emitApproval, emitAskUserQuestion, emitViewActivate } = await renderApp({ hasApiKey: true });
+    api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
+    await submitChatMessage(container, "turn in flight");
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
+
+    await act(async () => { emitAskUserQuestion(question("ask-under", MOCK_DEFAULT_SESSION_ID)); });
+    await act(async () => { emitApproval(approvalRequest({ sessionId: MOCK_DEFAULT_SESSION_ID })); });
+    await act(async () => { emitViewActivate("settings"); });
+    const pane = () => routedPane(container, "settings");
+    await waitFor(() => expect(count(pane(), "approval-dock")).toBe(1));
+    expect(count(pane(), "question-overlay")).toBe(1);
+
+    // Both cards share one z-index, so the one later in the document paints
+    // on top. Over the composer that is the approval; it must be here too.
+    const dock = pane().querySelector('[data-testid="approval-dock"]')!;
+    const overlay = pane().querySelector('[data-testid="question-overlay"]')!;
+    expect(overlay.compareDocumentPosition(dock) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    await act(async () => { emitViewActivate("home"); });
+    await waitFor(() => expect(count(conversation(container), "approval-dock")).toBe(1));
+    const homeDock = conversation(container).querySelector('[data-testid="approval-dock"]')!;
+    const homeOverlay = conversation(container).querySelector('[data-testid="question-overlay"]')!;
+    expect(homeOverlay.compareDocumentPosition(homeDock) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    await act(async () => { pendingSend.resolve({ ok: true }); await pendingSend.promise; });
+  });
+
   it("a question that ARRIVES while Settings is open reaches the routed pane, then the composer when home returns", async () => {
     const pendingSend = deferred<{ ok: true }>();
     const { container, api, emitAskUserQuestion, emitViewActivate } = await renderApp({ hasApiKey: true });

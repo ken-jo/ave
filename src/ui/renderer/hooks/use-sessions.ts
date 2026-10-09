@@ -101,6 +101,12 @@ export interface CurrentSessionDeps {
    */
   freshProject?: { projectRoot?: string; projectName?: string };
   /**
+   * Main refused the `chatNew` hydration asked for (e.g. the project left the
+   * workspace). The loop stays where it was and so does the tile; this says
+   * why, so the refusal is not a silently blank tile.
+   */
+  onChatNewRefused?: (error: string) => void;
+  /**
    * A session this tile asked for is held by another chat group — one that
    * may be folded away by chat mode, so the renderer's mounted tiles cannot
    * find it. Returns whether that group was brought forward.
@@ -129,6 +135,8 @@ export function useCurrentSession(api: AveApi, deps: CurrentSessionDeps = {}) {
   // project changing must not re-hydrate a tile that is holding a conversation.
   const freshProjectRef = useRef(deps.freshProject);
   freshProjectRef.current = deps.freshProject;
+  const onChatNewRefusedRef = useRef(deps.onChatNewRefused);
+  onChatNewRefusedRef.current = deps.onChatNewRefused;
   const [currentSessionId, setCurrentSessionId] = useState<string>("");
   const [currentSessionKind, setCurrentSessionKind] = useState<"main" | "routine">("main");
   const [currentSessionTitle, setCurrentSessionTitle] = useState<string | undefined>(undefined);
@@ -172,7 +180,10 @@ export function useCurrentSession(api: AveApi, deps: CurrentSessionDeps = {}) {
       if (token !== sessionReadTokenRef.current) return;
       // A refused chatNew left the loop on its old session; emptying the
       // transcript here would show a conversation the loop does not hold.
-      if (!created.ok) return;
+      if (!created.ok) {
+        onChatNewRefusedRef.current?.(created.error);
+        return;
+      }
       const fresh = await api.chatGetHistory();
       if (token !== sessionReadTokenRef.current) return;
       setCurrentSessionId(fresh.sessionId);

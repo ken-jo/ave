@@ -61,6 +61,16 @@ export type SandboxKind =
    * single `asrt` kind; the per-substrate `confines` field distinguishes full
    * vs partial, which is what {@link sandboxRelaxesCategory} reads. */
   | "asrt"
+  /**
+   * The invocation executes inside a host-issued disposable Linux guest (the
+   * workload broker only — the operator-attested container is same-process
+   * and never earns this kind; see {@link DisposableSubstrate}), not in this
+   * process.
+   * The guest owns its filesystem and process tree; the controller host, its
+   * profile and its environment are unreachable from it. Network is the
+   * guest's own policy and is NOT claimed as confined.
+   */
+  | "disposable-container"
   /** OS-level isolation present but evidence quality is PARTIAL. */
   | "partial"
   /** Filesystem-only isolation (landlock-only — future-proofing for Linux landlock runner). */
@@ -99,6 +109,55 @@ export interface SandboxCapability {
    * "not declared" — callers MUST NOT read absence as "all confined".
    */
   confines?: SandboxConfinement;
+}
+
+/**
+ * The disposable substrate an invocation was routed to, as the executor
+ * selected it (`ExecutionPlan.route === "disposable-container"` for shells,
+ * the brokered canonical file route for file tools). Host-derived per
+ * invocation; never read from tool input or wire metadata.
+ *
+ * Only the workload broker qualifies. The operator-attested container is the
+ * other `disposable-container` authority, but it is same-process: Ave itself
+ * runs inside that container and the shell is a plain child of the
+ * controller, sharing its `~/.ave`, pid namespace and environment. "Confined
+ * from the Docker host" is not confinement from the controller, so that route
+ * keeps the host-shell plan grading and never becomes a `DisposableSubstrate`.
+ */
+export interface DisposableSubstrate {
+  readonly authority: "workload-broker";
+  /** Workload identity the brokered route bound to. */
+  readonly id: string;
+}
+
+/**
+ * Honest capability of a disposable guest. Filesystem and process effects
+ * stay inside the guest, so the reviewer may grade them as guest-scoped;
+ * network is the guest's own egress and stays unconfined here.
+ */
+export function disposableContainerCapability(
+  substrate: DisposableSubstrate,
+): SandboxCapability {
+  return {
+    kind: "disposable-container",
+    confidence: "verified",
+    platform: "linux",
+    reason: `disposable guest via workload broker (${substrate.id.slice(0, 12)}) — host filesystem, processes and controller environment are unreachable`,
+    confines: { filesystem: true, process: true, network: false },
+  };
+}
+
+/** Verified guest whose filesystem and process tree are both disposable. */
+export function isDisposableSubstrateCapability(
+  cap: SandboxCapability | undefined,
+): boolean {
+  return (
+    cap !== undefined &&
+    cap.kind === "disposable-container" &&
+    cap.confidence === "verified" &&
+    cap.confines?.filesystem === true &&
+    cap.confines.process === true
+  );
 }
 
 /**
@@ -547,6 +606,11 @@ export function __resetWrappedPluginWorkersForTest(): void {
  *                     report `asrt` for a `plugin` call; omitted ⇒ the call
  *                     resolves to `none` (the historical default for plugin
  *                     tools), so every pre-existing call site is unchanged.
+ * @param disposableSubstrate  The disposable guest the executor routed THIS
+ *                     invocation to. It is the substrate the effects land on,
+ *                     so it takes precedence over the host-shell plan (whose
+ *                     `none` describes a plain child this call will not spawn)
+ *                     and over the in-process default for canonical file tools.
  */
 export function resolveReviewerSandboxCapability(
   source: ToolSource,
@@ -555,7 +619,11 @@ export function resolveReviewerSandboxCapability(
   workerId?: string,
   pluginId?: string,
   hostShellExecutionPlan?: HostShellExecutionPlan,
+  disposableSubstrate?: DisposableSubstrate,
 ): SandboxCapability {
+  if (disposableSubstrate !== undefined) {
+    return disposableContainerCapability(disposableSubstrate);
+  }
   if (source === "builtin" && ASRT_WRAPPED_SHELL_TOOLS.has(toolName)) {
     // The executor seals this plan before any reviewer/cache path. Never
     // recompute a host-shell substrate after it has been selected for an
@@ -641,13 +709,20 @@ export function resolveReviewerSandboxCapability(
 
 export interface ReviewerSandboxCacheState {
   readonly source: ToolSource;
-  readonly substrate: "host-shell" | "plugin-worker" | "mcp-worker" | "in-process";
+  readonly substrate:
+    | "host-shell"
+    | "plugin-worker"
+    | "mcp-worker"
+    | "in-process"
+    | "disposable-container";
   readonly wrapped: boolean;
   readonly mcpServerId?: string;
   readonly pluginId?: string;
   readonly workerId?: string;
   /** Present only for a canonical builtin shell with a host-sealed plan. */
   readonly hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection;
+  /** Present only when the executor routed the call to a disposable guest. */
+  readonly disposableSubstrate?: DisposableSubstrate;
   readonly capability: {
     readonly kind: SandboxKind;
     readonly confidence: SandboxConfidence;
@@ -673,6 +748,7 @@ export function resolveReviewerSandboxCacheState(
   workerId?: string,
   pluginId?: string,
   hostShellExecutionPlan?: HostShellExecutionPlan,
+  disposableSubstrate?: DisposableSubstrate,
 ): ReviewerSandboxCacheState {
   const capability = resolveReviewerSandboxCapability(
     source,
@@ -681,6 +757,7 @@ export function resolveReviewerSandboxCacheState(
     workerId,
     pluginId,
     hostShellExecutionPlan,
+    disposableSubstrate,
   );
   const hostShellExecutionPlanAudit =
     source === "builtin" &&
@@ -689,6 +766,7 @@ export function resolveReviewerSandboxCacheState(
       ? getHostShellExecutionPlanAuditProjection(hostShellExecutionPlan)
       : undefined;
   const substrate = (() => {
+    if (disposableSubstrate !== undefined) return "disposable-container" as const;
     if (source === "builtin" && ASRT_WRAPPED_SHELL_TOOLS.has(toolName)) {
       return "host-shell" as const;
     }
@@ -717,6 +795,7 @@ export function resolveReviewerSandboxCacheState(
     ...(hostShellExecutionPlanAudit === undefined
       ? {}
       : { hostShellExecutionPlan: hostShellExecutionPlanAudit }),
+    ...(disposableSubstrate === undefined ? {} : { disposableSubstrate }),
     capability: {
       kind: capability.kind,
       confidence: capability.confidence,
@@ -755,6 +834,7 @@ export function formatSandboxCapabilityForPrompt(capability: SandboxCapability):
     switch (capability.kind) {
       case "none":         return "none";
       case "asrt":         return "asrt";
+      case "disposable-container": return "disposable-container";
       case "partial":      return t("be_sandboxCapability.partialLabel");
       case "fs-only":      return t("be_sandboxCapability.fsOnlyLabel");
       default: {
@@ -816,7 +896,7 @@ export function isWeakSandbox(cap: SandboxCapability): boolean {
  * Behaviour invariant: a full-confine ASRT relaxes ALL categories, matching the
  * historical `isWeakSandbox(cap) === false` behavior. A partial-confine ASRT
  * relaxes only the categories covered by its declared dimensions. This actively
- * applies on Windows ASRT 0.0.75 (`filesystem + network`, no process): network
+ * applies on Windows ASRT 0.0.76 (`filesystem + network`, no process): network
  * and filesystem-bearing read/write/meta calls may relax, but shell calls may
  * not relax because process isolation is absent.
  */

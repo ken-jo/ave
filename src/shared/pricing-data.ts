@@ -27,7 +27,8 @@
  * imports. All env-override logic lives in `engine/llm/pricing.ts`.
  *
  * Pricing source: list prices announced by each vendor. Free / unknown → 0.
- * Context window source: vendor model docs. Last verified 2026-05.
+ * Context window source: vendor model docs. Last verified 2026-10-08 (Claude
+ * rows); other vendors' rows were last verified 2026-05.
  */
 
 /**
@@ -106,9 +107,24 @@ export interface ModelPricing {
 /** Default pricing + context catalog. */
 export const DEFAULT_PRICING: Record<PricingVendor, Record<string, ModelPricing>> = {
   // ── Anthropic Claude ──────────────────────────────────────────────────────
-  // Pricing: https://platform.claude.com/docs/en/about-claude/pricing — verified 2026-05-22.
-  // Context: 4.6 family supports 1M via `context-1m-2025-08-07` beta.
+  // Pricing: https://platform.claude.com/docs/en/about-claude/pricing — verified 2026-10-08.
+  // Context: 4.6 family supports 1M via `context-1m-2025-08-07` beta; Opus 4.7+,
+  // Sonnet 5+ and Fable 5+ serve 1M by default at standard pricing (no header).
+  // Cache hits are 0.1× input except Opus 5.5 / Sonnet 5.5 (0.05×) and
+  // Fable 5.1 (0.025×) — those carry an explicit `cacheReadPer1M` because
+  // `anthropicCacheRates` would otherwise derive 0.1×. Cache writes stay at the
+  // derived 1.25× (5m TTL) for every row below.
+  // Not listed: Haiku 5.5 — its price depends on prompt length (≤100K vs above),
+  // and the `claude` branch of `computeCost` has no tier support yet.
   claude: {
+    "claude-fable-5-1":            { inputPer1M: 10,   outputPer1M: 50, contextWindow: 1_000_000, cacheReadPer1M: 0.25 },
+    "claude-fable-5":              { inputPer1M: 10,   outputPer1M: 50, contextWindow: 1_000_000 },
+    "claude-opus-5-5":             { inputPer1M: 4,    outputPer1M: 20, contextWindow: 1_000_000, cacheReadPer1M: 0.2 },
+    "claude-opus-5":               { inputPer1M: 5,    outputPer1M: 25, contextWindow: 1_000_000 },
+    "claude-opus-4-8":             { inputPer1M: 5,    outputPer1M: 25, contextWindow: 1_000_000 },
+    "claude-opus-4-7":             { inputPer1M: 5,    outputPer1M: 25, contextWindow: 1_000_000 },
+    "claude-sonnet-5-5":           { inputPer1M: 2,    outputPer1M: 10, contextWindow: 1_000_000, cacheReadPer1M: 0.1 },
+    "claude-sonnet-5":             { inputPer1M: 2,    outputPer1M: 10, contextWindow: 1_000_000 },
     "claude-sonnet-4-6":           { inputPer1M: 3,    outputPer1M: 15, contextWindow: 200_000, contextWindow1MBeta: 1_000_000 },
     "claude-sonnet-4-5":           { inputPer1M: 3,    outputPer1M: 15, contextWindow: 200_000 },
     "claude-sonnet-4-20250514":    { inputPer1M: 3,    outputPer1M: 15, contextWindow: 200_000 },

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AveApi } from "../../types.js";
@@ -22,6 +22,8 @@ import type {
 } from "../../../../shared/native-context-menu.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../../shared/test-ids.js";
 import { ChatContextProvider, type ChatContextValue } from "../../context/ChatContext.js";
+import type { SideChatOpenRequest } from "../SideChatView.js";
+import type { AgentSpawnEvent } from "../../../../shared/subagent-events.js";
 
 let nativeContextActionHandler: ((action: NativeContextMenuAction) => void) | null = null;
 let previousWindowAve: unknown;
@@ -110,6 +112,7 @@ function HarnessPanel({
   activity = emptyToolActivity(),
   onOpenActivityItem,
   sideChatPendingAnswer,
+  sideChatOpenRequest,
 }: {
   api: AveApi;
   sessionId?: string;
@@ -122,6 +125,7 @@ function HarnessPanel({
   activity?: ToolActivityState;
   onOpenActivityItem?: (target: string, web: boolean) => void;
   sideChatPendingAnswer?: boolean;
+  sideChatOpenRequest?: SideChatOpenRequest;
 }) {
   const [selectedId, setSelectedId] = useState(initialSelectedId);
   const workspaceTabs = useWorkspaceTabs();
@@ -142,6 +146,7 @@ function HarnessPanel({
       onClose={onClose}
       activity={activity}
       sideChatPendingAnswer={sideChatPendingAnswer}
+      sideChatOpenRequest={sideChatOpenRequest}
       onOpenActivityItem={onOpenActivityItem}
     />
   );
@@ -1586,6 +1591,140 @@ describe("ChatSidePanel", () => {
     // The detail stays pinned to Agent B — no silent jump to the new top row.
     expect(screen.getByTestId("chat-side-panel-subagent-detail").textContent).toContain("Agent B transcript");
     expect(screen.getByTestId("chat-side-panel-subagent-detail").textContent).not.toContain("Agent C transcript");
+  });
+
+  it("subagent tab: draws a sub-agent the side chat's own turn started, hydrated under the side chat (#2345)", async () => {
+    // The tile drops a side-chat frame as another conversation's (its list,
+    // `subAgentSpawns`, stays empty here). The side chat is the only surface
+    // that keeps it, and the panel's sub-agent tab is where it must be drawn.
+    const spawnHandlers = new Set<(event: AgentSpawnEvent) => void>();
+    const base = api();
+    (base.sideChat!.load as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      sessionId: "side-7",
+      messages: [],
+    });
+    const apiMock = {
+      ...base,
+      onAskUserQuestion: () => () => undefined,
+      onAgentSpawnEvent: (handler: (event: AgentSpawnEvent) => void) => {
+        spawnHandlers.add(handler);
+        return () => { spawnHandlers.delete(handler); };
+      },
+    } as unknown as AveApi;
+    const emit = (event: Partial<AgentSpawnEvent>) =>
+      act(() => {
+        for (const handler of spawnHandlers) handler(event as AgentSpawnEvent);
+      });
+
+    renderPanel(
+      <HarnessPanel
+        api={apiMock}
+        sessionId="tile-session"
+        targets={[]}
+        files={[]}
+        initialSelectedId={null}
+        sideChatOpenRequest={{ chatGroupId: "main", sessionId: "side-7", nonce: 1 }}
+      />,
+    );
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("side-chat")));
+    await waitFor(() => expect(base.sideChat!.load).toHaveBeenCalledWith("side-7"));
+    await waitFor(() => expect(spawnHandlers.size).toBeGreaterThan(0));
+
+    await emit({
+      type: "start",
+      spawnId: "side-spawn-1",
+      parentSessionId: "side-7",
+      title: "Side researcher",
+      childSessionId: "side-child-1",
+    });
+    // Another conversation's agent is not this panel's to draw.
+    await emit({
+      type: "start",
+      spawnId: "foreign-spawn",
+      parentSessionId: "some-other-conversation",
+      title: "Foreign agent",
+      childSessionId: "foreign-child",
+    });
+
+    addTabViaMenu("subagent");
+    const rows = screen.getAllByTestId("chat-side-panel-subagent-row");
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining("Side researcher"),
+    ]);
+    // Hydrated under the side chat that started it, not the tile's session —
+    // the host refuses a transcript read under the wrong origin.
+    await waitFor(() => expect(apiMock.chatGetSubAgentTranscript).toHaveBeenCalledWith({
+      originSessionId: "side-7",
+      childSessionId: "side-child-1",
+    }));
+  });
+
+  it("subagent tab: keeps the side chat's agents, and their later frames, after the side-chat tab closes (#2345)", async () => {
+    // Closing the tab unmounts the side-chat view, but its loop runs on in
+    // main and so do the agents it started. The panel keeps their rows and
+    // keeps receiving their frames.
+    const spawnHandlers = new Set<(event: AgentSpawnEvent) => void>();
+    const base = api();
+    (base.sideChat!.load as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      sessionId: "side-7",
+      messages: [],
+    });
+    const apiMock = {
+      ...base,
+      onAskUserQuestion: () => () => undefined,
+      onAgentSpawnEvent: (handler: (event: AgentSpawnEvent) => void) => {
+        spawnHandlers.add(handler);
+        return () => { spawnHandlers.delete(handler); };
+      },
+    } as unknown as AveApi;
+    const emit = (event: Partial<AgentSpawnEvent>) =>
+      act(() => {
+        for (const handler of spawnHandlers) handler(event as AgentSpawnEvent);
+      });
+
+    renderPanel(
+      <HarnessPanel
+        api={apiMock}
+        sessionId="tile-session"
+        targets={[]}
+        files={[]}
+        initialSelectedId={null}
+        sideChatOpenRequest={{ chatGroupId: "main", sessionId: "side-7", nonce: 1 }}
+      />,
+    );
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("side-chat")));
+    await waitFor(() => expect(base.sideChat!.load).toHaveBeenCalledWith("side-7"));
+    await emit({
+      type: "start",
+      spawnId: "side-spawn-1",
+      parentSessionId: "side-7",
+      title: "Side researcher",
+      childSessionId: "side-child-1",
+    });
+
+    const sideChatTab = screen.getByTestId("chat-side-panel-tab-side-chat");
+    const closeButton = Array.from(sideChatTab.parentElement!.querySelectorAll("button")).at(-1)!;
+    fireEvent.click(closeButton);
+    await waitFor(() => expect(screen.queryByTestId("chat-side-panel-side-chat-host")).toBeNull());
+
+    // A frame that lands after the view is gone still has somewhere to go.
+    await emit({
+      type: "start",
+      spawnId: "side-spawn-2",
+      parentSessionId: "side-7",
+      title: "Side reviewer",
+      childSessionId: "side-child-2",
+    });
+
+    addTabViaMenu("subagent");
+    const rows = screen.getAllByTestId("chat-side-panel-subagent-row");
+    expect(rows.map((row) => row.textContent)).toEqual(expect.arrayContaining([
+      expect.stringContaining("Side researcher"),
+      expect.stringContaining("Side reviewer"),
+    ]));
+    expect(rows).toHaveLength(2);
   });
 
   it("subagent tab: unifies a spawn + its resume (shared childSessionId) into one row with a concatenated transcript", () => {

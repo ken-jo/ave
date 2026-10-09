@@ -124,8 +124,12 @@ export interface ChatGroupSessionHandle {
    * reset has to land on this tile's transcript — doing it from the window
    * would start the conversation in the primary group no matter which tile the
    * user was looking at.
+   *
+   * Resolves false when no new conversation started — mid-turn, or main
+   * refused `chatNew` (the tile has said why). The tile then still shows
+   * what its loop still holds.
    */
-  startNewChat: (project?: { projectRoot?: string; projectName?: string }) => Promise<void>;
+  startNewChat: (project?: { projectRoot?: string; projectName?: string }) => Promise<boolean>;
 }
 
 type Listener = () => void;
@@ -158,7 +162,7 @@ const EMPTY_CHAT_GROUP_SESSION: ChatGroupSessionHandle = Object.freeze({
   loadSession: async () => false,
   prefillComposer: () => {},
   appendSystemEntry: () => {},
-  startNewChat: async () => {},
+  startNewChat: async () => false,
 });
 
 /**
@@ -196,6 +200,31 @@ export function tileHoldingSession(
   sessionId: string,
 ): TileSession | undefined {
   return tiles.find((tile) => tile.sessionId === sessionId);
+}
+
+/**
+ * Drop the per-group requests a tile no longer needs: the group's tile holds
+ * a conversation (it hydrated and read its request), or the group is gone
+ * (closed before it hydrated, or after main refused its `chatNew`). A group
+ * that is live but has not published yet keeps its entry — it has not read
+ * it. Liveness is the pane tree's answer (`liveGroupIds`), not the tile
+ * registry's: a tile publishes after the commit that creates its group, so
+ * reading "unpublished" as "gone" would drop the request before its read.
+ *
+ * Returns `current` itself when nothing changes, so a state setter can bail.
+ */
+export function pruneGroupRequests<T>(
+  current: ReadonlyMap<string, T>,
+  liveGroupIds: ReadonlySet<string>,
+  tiles: readonly TileSession[],
+): ReadonlyMap<string, T> {
+  const settled = [...current.keys()].filter((chatGroupId) =>
+    !liveGroupIds.has(chatGroupId)
+    || tiles.some((tile) => tile.chatGroupId === chatGroupId && tile.sessionId !== ""));
+  if (settled.length === 0) return current;
+  const next = new Map(current);
+  for (const chatGroupId of settled) next.delete(chatGroupId);
+  return next;
 }
 
 /**
@@ -616,9 +645,8 @@ export class ChatGroupSessionRegistry {
       loadSession: async (sessionId: string) => await live()?.loadSession(sessionId) ?? false,
       prefillComposer: (text: string) => live()?.prefillComposer(text),
       appendSystemEntry: (message: string) => live()?.appendSystemEntry(message),
-      startNewChat: async (project?: { projectRoot?: string; projectName?: string }) => {
-        await live()?.startNewChat(project);
-      },
+      startNewChat: async (project?: { projectRoot?: string; projectName?: string }) =>
+        await live()?.startNewChat(project) ?? false,
     });
   }
 

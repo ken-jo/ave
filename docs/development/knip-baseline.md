@@ -13,7 +13,7 @@ bun run check:knip
 ```
 
 The command verifies and runs the exact installed `knip@6.23.0` devDependency,
-then compares normalized issues with `knip-baseline.json`. The snapshot records
+then compares normalized issues with `config/knip-baseline.json`. The snapshot records
 issue type, file, and symbol name; source line movement does not create false
 drift.
 
@@ -49,7 +49,7 @@ not a module. Resolved entries
 do not fail the gate; the command asks maintainers to shrink the snapshot.
 
 `vitest.config.ts` remains the runtime assertion boundary. Knip reads the pure
-`vitest.analysis.config.ts` instead, so static analysis cannot bypass or trigger
+`config/vitest.analysis.config.ts` instead, so static analysis cannot bypass or trigger
 the Electron-only Vitest contract. The nested `web` package is modeled as a
 separate workspace. Its `next` binary is installed from `web/bun.lock`, so root
 desktop workflows analyze the declarations without requiring `web/node_modules`.

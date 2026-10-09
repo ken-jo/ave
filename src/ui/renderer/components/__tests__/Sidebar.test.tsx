@@ -105,7 +105,6 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
     hasApiKey: true,
     onOpenSettings: vi.fn(),
     onNewChat: vi.fn(),
-    streaming: false,
     collapsed: false,
     onToggleCollapse: vi.fn(),
     onOpenUnifiedSearch: vi.fn(),
@@ -436,7 +435,6 @@ describe("Sidebar conversation pinning", () => {
             hasApiKey
             onOpenSettings={vi.fn()}
             onNewChat={vi.fn()}
-            streaming={false}
             collapsed={false}
             onToggleCollapse={vi.fn()}
             onOpenUnifiedSearch={vi.fn()}
@@ -842,10 +840,9 @@ describe("Sidebar conversation context menu", () => {
     }
   });
 
-  it("keeps another conversation reachable while this one is streaming", async () => {
+  it("keeps another conversation reachable however many turns are running — the sidebar holds no turn state", async () => {
     const onToggleSessionStar = vi.fn();
     const { getByTestId, showNativeContextMenu, restore } = renderSidebar({
-      streaming: true,
       onToggleSessionStar,
       isSessionStarred: () => null,
     });

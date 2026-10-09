@@ -1,5 +1,28 @@
+import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
+
+// Approval geometry does not exercise plugins. Seeding the sibling plugin
+// repositories only made this spec depend on their current manifest shape
+// (`invalid plugin manifest` before the app opened), so it is off here.
+test.use({ seedRepositoryPlugins: false });
+
+/** The seeded conversation the focused tile holds — what a real ask names. */
+async function currentSessionId(mainWindow: Page): Promise<string> {
+  return mainWindow.evaluate(async () => {
+    const api = (window as unknown as {
+      aveApi?: { chatSessions?: (opts?: { kind?: string }) => Promise<{ current?: string }> };
+    }).aveApi;
+    if (typeof api?.chatSessions !== 'function') {
+      throw new Error('window.aveApi.chatSessions unavailable');
+    }
+    const listed = await api.chatSessions({ kind: 'main' });
+    if (typeof listed.current !== 'string' || listed.current.length === 0) {
+      throw new Error('current chat session id unavailable');
+    }
+    return listed.current;
+  });
+}
 
 /**
  * Compatibility filename: this used to exercise the foreground dialog; the
@@ -12,6 +35,10 @@ test('approval dock floats over the route without changing its layout', async ({
   app,
   mainWindow,
 }) => {
+  // A conversation-owned ask names its session: that is what makes the dock
+  // the conversation's (blocking its composer, taking focus). An ask that
+  // names none is a lane card instead — covered by the test below.
+  const sessionId = await currentSessionId(mainWindow);
   await app.evaluate(({ BrowserWindow }) => {
     const win = BrowserWindow.getAllWindows().find(
       (window) => !window.isDestroyed() && window.isVisible(),
@@ -29,8 +56,15 @@ test('approval dock floats over the route without changing its layout', async ({
   }
   await expect(sidebarToggle).toHaveAttribute('aria-pressed', 'true');
 
-  const workBoard = mainWindow.getByTestId('toolbar-work-board');
-  await workBoard.click();
+  // The work board lives in the sidebar's Features group, not on the rail itself.
+  const featuresGroup = mainWindow.getByTestId('sidebar-group-features');
+  const openWorkBoard = async () => {
+    if ((await featuresGroup.getAttribute('aria-expanded')) !== 'true') {
+      await featuresGroup.click();
+    }
+    await mainWindow.getByTestId('toolbar-work-board').click();
+  };
+  await openWorkBoard();
   const workBoardPanel = mainWindow.getByTestId('work-board-panel');
   await expect(workBoardPanel).toBeVisible();
   const routeBefore = await workBoardPanel.evaluate((element) => {
@@ -38,12 +72,21 @@ test('approval dock floats over the route without changing its layout', async ({
     return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
   });
 
-  await app.evaluate(({ BrowserWindow }) => {
+  // Since #2117 a card takes focus only when nothing else holds it or the
+  // holder is inside its own surface. Navigating left focus in the sidebar,
+  // which keeps its caret by design, so release it as an idle user would.
+  await mainWindow.evaluate(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+  });
+
+  await app.evaluate(({ BrowserWindow }, sid) => {
     const win = BrowserWindow.getAllWindows().find(
       (window) => !window.isDestroyed() && window.isVisible(),
     );
     win?.webContents.send('ave:approval:request', {
       id: 'approval-dock-e2e',
+      sessionId: sid,
       category: 'tool',
       kind: 'tool',
       toolName: `read_file_${'long_identity_'.repeat(16)}`,
@@ -55,7 +98,7 @@ test('approval dock floats over the route without changing its layout', async ({
       createdAt: Date.now(),
       requireExplicit: false,
     });
-  });
+  }, sessionId);
 
   const dock = mainWindow.getByTestId(TEST_IDS.approvalDock).first();
   await expect(dock).toBeVisible();
@@ -174,7 +217,8 @@ test('approval dock floats over the route without changing its layout', async ({
 
   // A real route transition remains interactive while the floating card stays
   // mounted above the route canvas.
-  await mainWindow.getByTestId('sidebar-home').click();
+  // The Home row is gone (001bcb741); history Back is the route transition.
+  await mainWindow.getByTestId(TEST_IDS.viewPathBack).click();
   await expect(workBoardPanel).toBeHidden();
   const composerDock = mainWindow.locator('[data-composer-placement]').first();
   const composerInput = mainWindow.getByTestId(TEST_IDS.composerInputBar).first();
@@ -201,19 +245,20 @@ test('approval dock floats over the route without changing its layout', async ({
   // Approval is the foreground decision surface. Like the question card, it
   // floats over the composer instead of pushing the chat layout upward; if
   // both are pending, the approval card remains the topmost surface.
-  await app.evaluate(({ BrowserWindow }) => {
+  await app.evaluate(({ BrowserWindow }, sid) => {
     const win = BrowserWindow.getAllWindows().find(
       (window) => !window.isDestroyed() && window.isVisible(),
     );
     win?.webContents.send('ave:ask-user-question:request', {
       id: 'approval-dock-question-overlap-e2e',
+      sessionId: sid,
       createdAt: Date.now(),
       questions: [{
         question: 'Which report range should be used?',
         choices: ['Today', 'This week', 'This month'],
       }],
     });
-  });
+  }, sessionId);
   const questionOverlay = mainWindow.getByTestId(TEST_IDS.questionOverlay);
   await expect(questionOverlay).toBeVisible();
   await expect(composerDock).toHaveAttribute('inert', '');
@@ -246,12 +291,13 @@ test('approval dock floats over the route without changing its layout', async ({
 
   // Re-open a deterministic approval so the remaining compact-height and
   // keyboard assertions continue against the same simultaneous-question state.
-  await app.evaluate(({ BrowserWindow }) => {
+  await app.evaluate(({ BrowserWindow }, sid) => {
     const win = BrowserWindow.getAllWindows().find(
       (window) => !window.isDestroyed() && window.isVisible(),
     );
     win?.webContents.send('ave:approval:request', {
       id: 'approval-dock-layout-continuation-e2e',
+      sessionId: sid,
       category: 'tool',
       kind: 'tool',
       toolName: `read_file_${'long_identity_'.repeat(16)}`,
@@ -263,7 +309,7 @@ test('approval dock floats over the route without changing its layout', async ({
       createdAt: Date.now(),
       requireExplicit: false,
     });
-  });
+  }, sessionId);
   await expect(dock).toBeVisible();
   await expect(deny).toBeFocused();
   await expect(composerDock).toHaveAttribute('inert', '');
@@ -271,7 +317,7 @@ test('approval dock floats over the route without changing its layout', async ({
 
   // At the minimum supported height, only the card body scrolls; the header
   // and decision footer remain visible and the route still keeps its height.
-  await workBoard.click();
+  await openWorkBoard();
   await expect(workBoardPanel).toBeVisible();
   // Window-mode resize tweens can legitimately update native bounds while the
   // route changes. Use an explicit CDP renderer viewport override for the
@@ -329,8 +375,10 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(approve).toBeVisible();
   await expect(deny).toBeVisible();
 
-  await workBoard.focus();
-  await workBoard.press('d');
+  // A stray key outside the dock must not decide it. The flyout row closed
+  // with its flyout, so use the group trigger that stays on the rail.
+  await featuresGroup.focus();
+  await featuresGroup.press('d');
   await expect(dock).toBeVisible();
 
   await approve.focus();
@@ -347,12 +395,13 @@ test('approval dock floats over the route without changing its layout', async ({
 
   // Space retains native button activation as well; the dock must not swallow
   // it while providing its own Left/Right roving behavior.
-  await app.evaluate(({ BrowserWindow }) => {
+  await app.evaluate(({ BrowserWindow }, sid) => {
     const win = BrowserWindow.getAllWindows().find(
       (window) => !window.isDestroyed() && window.isVisible(),
     );
     win?.webContents.send('ave:approval:request', {
       id: 'approval-dock-space-e2e',
+      sessionId: sid,
       category: 'tool',
       kind: 'tool',
       toolName: 'read_file_space_activation',
@@ -364,7 +413,7 @@ test('approval dock floats over the route without changing its layout', async ({
       createdAt: Date.now(),
       requireExplicit: false,
     });
-  });
+  }, sessionId);
   await expect(dock).toBeVisible();
   const secondApprove = dock.getByTestId(TEST_IDS.approveButton);
   const secondDeny = dock.getByTestId(TEST_IDS.denyButton);
@@ -376,4 +425,84 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(secondApprove).toBeFocused();
   await secondApprove.press('Space');
   await expect(dock).toHaveCount(0);
+});
+
+test('an ask that names no conversation is a lane card that covers no composer', async ({
+  app,
+  mainWindow,
+}) => {
+  // Current contract (App.tsx `paneLane`): a request without `sessionId`
+  // belongs to no conversation, so it is drawn as an `ApprovalLaneCard` in the
+  // focused pane's floating lane — never as the conversation's dock, and never
+  // disabling a composer it does not own.
+  await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find(
+      (window) => !window.isDestroyed() && window.isVisible(),
+    );
+    win?.setContentSize(460, 841);
+  });
+  await expect.poll(() => mainWindow.evaluate(() => (
+    Math.abs(window.innerWidth - 460) <= 1
+    && Math.abs(window.innerHeight - 841) <= 1
+  ))).toBe(true);
+
+  const composerDock = mainWindow.locator('[data-composer-placement]').first();
+  await expect(composerDock).toBeVisible();
+
+  await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find(
+      (window) => !window.isDestroyed() && window.isVisible(),
+    );
+    win?.webContents.send('ave:approval:request', {
+      id: 'approval-lane-unattributed-e2e',
+      category: 'tool',
+      kind: 'tool',
+      toolName: `read_file_${'long_identity_'.repeat(16)}`,
+      toolCategory: 'read',
+      source: 'builtin',
+      trustOrigin: 'user-keyboard',
+      args: { path: 'C:\\workspace\\approval-lane-unattributed-e2e.txt' },
+      reason: 'unattributed approval lane fixture',
+      createdAt: Date.now(),
+      requireExplicit: false,
+    });
+  });
+
+  const lane = mainWindow.getByTestId('approval-lane-card');
+  await expect(lane).toBeVisible();
+  await expect(lane).toHaveAttribute('role', 'region');
+  await expect(mainWindow.getByTestId(TEST_IDS.approvalDock)).toHaveCount(0);
+  // The composer stays the user's: not inert, not hidden from assistive tech.
+  await expect(composerDock).not.toHaveAttribute('inert', '');
+  await expect(composerDock).not.toHaveAttribute('aria-hidden', 'true');
+
+  const geometry = await lane.evaluate((element) => {
+    const root = element as HTMLElement;
+    const canvas = root.closest<HTMLElement>('[data-testid="route-canvas"]');
+    const rect = root.getBoundingClientRect();
+    const canvasRect = canvas?.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      bottom: rect.bottom,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      canvasLeft: canvasRect?.left ?? null,
+      canvasRight: canvasRect?.right ?? null,
+      clientWidth: root.clientWidth,
+      scrollWidth: root.scrollWidth,
+    };
+  });
+  expect(geometry.left).toBeGreaterThanOrEqual(0);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth + 1);
+  expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight + 1);
+  if (geometry.canvasLeft !== null && geometry.canvasRight !== null) {
+    expect(geometry.left).toBeGreaterThanOrEqual(geometry.canvasLeft);
+    expect(geometry.right).toBeLessThanOrEqual(geometry.canvasRight + 1);
+  }
+  expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth);
+
+  // Deciding it from the lane retires it like any other ask.
+  await lane.getByTestId(TEST_IDS.denyButton).click();
+  await expect(lane).toHaveCount(0);
 });

@@ -891,6 +891,58 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     expect(historyLenAtResumeEntry).toBe(spawnHistoryLen);
   });
 
+  it("releases the run's parent-adjudication state when each run ends", async () => {
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(noopTool("noop"));
+    const forgetChildRun = vi.fn();
+    const runner = new SubAgentRunner({
+      parentDeps: {
+        ...buildLoopDeps(toolRegistry),
+        approvalGate: { requestAndWait: vi.fn(), forgetChildRun } as never,
+      },
+      toolRegistry,
+      subAgentMemoryManager: makeSubStore(),
+    });
+
+    // A spawn left waiting on a tool call, so the run is resumable afterwards.
+    let restore = patchProvider(
+      new ScriptedProvider([
+        [
+          { type: "tool_call", id: "tu-release", name: "noop", input: {} },
+          { type: "message_complete", stopReason: "tool_use" },
+        ],
+        [
+          { type: "tool_call", id: "tu-release-wait", name: "noop", input: {} },
+          { type: "message_complete", stopReason: "tool_use" },
+        ],
+      ]),
+    );
+    const spawn = await runner.spawn({
+      title: "release",
+      instructions: "do work",
+      toolScope: exactToolScope(["noop"]),
+      maxRounds: 5,
+    });
+    restore();
+    expect(spawn.ok).toBe(true);
+    // The spawn run is over: its budget and denial streaks go with it.
+    expect(forgetChildRun.mock.calls).toEqual([[spawn.childSessionId]]);
+
+    restore = patchProvider(new ScriptedProvider(endTurnScript("resumed")));
+    try {
+      const resumed = await runner.resume(spawn.childSessionId, "continue", "release");
+      expect(resumed.ok).toBe(true);
+    } finally {
+      restore();
+    }
+    // A resume is a run of its own and releases on its own end too, so the
+    // next resume starts from a clean budget rather than the previous run's.
+    expect(forgetChildRun.mock.calls).toEqual([
+      [spawn.childSessionId],
+      [spawn.childSessionId],
+    ]);
+  });
+
   // ── 2) scoped tools identical ───────────────────────
   it("scopes the resumed child to exactly meta.sourceTools (write tool absent)", async () => {
     const toolRegistry = new ToolRegistry();
@@ -1804,7 +1856,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     }));
     const parentDeps = {
       ...buildLoopDeps(toolRegistry),
-      approvalGate: { requestAndWait } as never,
+      approvalGate: { requestAndWait, forgetChildRun: vi.fn() } as never,
     };
     const subStore = makeSubStore();
     const runner = new SubAgentRunner({
