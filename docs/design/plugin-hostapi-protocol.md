@@ -1750,10 +1750,14 @@ its evidence.
   storage in chunks. No chunked body streaming in protocol `1` or `2`. A **download**
   above the cap is fetched as HTTP `Range` slices, each within it, and appended to a
   file under the plugin's data directory. `range` is an ordinary request header the
-  host carries onto every gated hop, a cross-origin redirect included (only the
-  credential headers are dropped there), and a `206` comes back with its
+  host carries onto every gated hop, a cross-origin redirect included: that hop drops
+  `CREDENTIAL_HEADERS` (`authorization`, `proxy-authorization`, `cookie`, `api-key`,
+  `x-api-key`, `ocp-apim-subscription-key`) and `anthropic-version`, and a 303 (or a
+  301/302 after a POST) also drops `content-type` and `content-length` with the body
+  (`src/main/host-fetch-guard.ts`, `runHostFetchHops`). A `206` comes back with its
   `content-range`. A server that ignores `Range` answers `200` whole, which the cap
-  refuses with `payload-too-large` before allocating it. Pinned by
+  refuses with `payload-too-large` before allocating it, and the refused body is
+  cancelled rather than left open. Pinned by
   `host-api-service-members.test.ts` (a body over the cap refused whole, then carried
   intact in slices across the real child encoder and host decoder) and
   `host-fetch-guard.test.ts` (`range` kept across a cross-origin hop). `meeting`'s

@@ -582,6 +582,54 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
     ).rejects.toMatchObject({ code: "payload-too-large" });
   });
 
+  // A refusal at the ceiling has to END the body, not merely stop reading it:
+  // an unread, uncancelled stream keeps the upstream socket open until GC, and
+  // a server that ignores Range sends exactly that oversized 200.
+  describe("cancels the upstream body it refuses", () => {
+    function endlessBody(): { body: ReadableStream<Uint8Array>; cancelled: Promise<unknown>; pulledBytes: () => number } {
+      let pulled = 0;
+      let onCancel!: (reason: unknown) => void;
+      const cancelled = new Promise<unknown>((resolveCancel) => { onCancel = resolveCancel; });
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulled += 1024 * 1024;
+          controller.enqueue(new Uint8Array(1024 * 1024));
+        },
+        cancel(reason) {
+          onCancel(reason);
+        },
+      });
+      return { body, cancelled, pulledBytes: () => pulled };
+    }
+    const within = <T,>(promise: Promise<T>) =>
+      Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("body was never cancelled")), 2_000))]);
+
+    it("when the running total crosses the ceiling", async () => {
+      const upstream = endlessBody();
+      const harness = await createServiceHarness({ hostFetch: async () => new Response(upstream.body) });
+
+      await expect(harness.child.hostApi.hostFetch!("https://example.test/endless"))
+        .rejects.toMatchObject({ code: "payload-too-large" });
+
+      await expect(within(upstream.cancelled)).resolves.toMatchObject({ code: "payload-too-large" });
+      expect(upstream.pulledBytes()).toBeLessThanOrEqual(WIRE_BYTES_MAX + 2 * 1024 * 1024);
+    });
+
+    it("when content-length alone refuses it, before a byte is read", async () => {
+      const upstream = endlessBody();
+      const harness = await createServiceHarness({
+        hostFetch: async () => new Response(upstream.body, {
+          headers: { "content-length": String(WIRE_BYTES_MAX + 1) },
+        }),
+      });
+
+      await expect(harness.child.hostApi.hostFetch!("https://example.test/declared"))
+        .rejects.toMatchObject({ code: "payload-too-large" });
+
+      await expect(within(upstream.cancelled)).resolves.toMatchObject({ code: "payload-too-large" });
+    });
+  });
+
   // §8: "A plugin that needs more streams ... in chunks. No chunked body
   // streaming in protocol 1 or 2." For a download that means HTTP Range: the
   // body above the ceiling is refused whole, and the same bytes arrive intact
