@@ -46,3 +46,21 @@ export function repositoryIdentity(packageJson) {
 export function readRepositoryIdentity(root = ROOT) {
   return repositoryIdentity(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")));
 }
+
+/**
+ * Release gate (scripts/check-release-repository.mjs): the repository a tag
+ * build publishes from must be the one `build.publish` names, exactly. An
+ * unset `GITHUB_REPOSITORY` and a difference in letter case both fail.
+ */
+export function assertReleaseRepository({ identity, repository }) {
+  if (typeof repository !== "string" || repository.length === 0) {
+    throw new Error("[release-repository] GITHUB_REPOSITORY is not set");
+  }
+  if (repository !== identity.slug) {
+    throw new Error(
+      `[release-repository] package.json build.publish names ${identity.slug}, but this build runs in ${repository}; ` +
+        "its installers would update from the wrong repository",
+    );
+  }
+  return identity.slug;
+}

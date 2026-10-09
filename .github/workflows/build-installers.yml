@@ -43,6 +43,15 @@ jobs:
             echo "Checkout HEAD does not equal immutable event source SHA" >&2
             exit 1
           fi
+      # Fails a tag build in a repository package.json build.publish does not
+      # name before the installer matrix spends time on it. publish-release
+      # repeats the check before it attaches anything.
+      - name: Verify package.json publish repository is this repository
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/check-release-repository.mjs
       - name: Require an immutable protected public tag
         if: github.event_name == 'push'
         shell: bash

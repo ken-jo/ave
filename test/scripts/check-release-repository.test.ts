@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
-import { assertReleaseRepository } from "../../scripts/check-release-repository.mjs";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
+  assertReleaseRepository,
   readRepositoryIdentity,
   repositoryIdentity,
 } from "../../scripts/lib/repository-identity.mjs";
@@ -11,12 +13,17 @@ const SCRIPT = resolve(process.cwd(), "scripts/check-release-repository.mjs");
 const identity = repositoryIdentity({
   build: { publish: [{ provider: "github", owner: "old-owner", repo: "ave" }] },
 });
+const temporary: string[] = [];
 
-function runGate(repository: string | undefined) {
+afterEach(() => {
+  for (const path of temporary.splice(0)) rmSync(path, { recursive: true, force: true });
+});
+
+function runGate(repository: string | undefined, script = SCRIPT, cwd = process.cwd()) {
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.GITHUB_REPOSITORY;
   if (repository !== undefined) env.GITHUB_REPOSITORY = repository;
-  return spawnSync(process.execPath, [SCRIPT], { encoding: "utf8", env });
+  return spawnSync(process.execPath, [script], { cwd, encoding: "utf8", env });
 }
 
 describe("release repository gate", () => {
@@ -48,6 +55,21 @@ describe("release repository gate", () => {
     const unset = runGate(undefined);
     expect(unset.status).toBe(1);
     expect(unset.stderr).toContain("GITHUB_REPOSITORY is not set");
+  });
+
+  it("still runs, and still fails, when invoked through a symlink or a relative path", () => {
+    const directory = mkdtempSync(join(tmpdir(), "release-repository-"));
+    temporary.push(directory);
+    const link = join(directory, "check-release-repository.mjs");
+    symlinkSync(SCRIPT, link);
+
+    const throughLink = runGate("new-owner/ave", link);
+    expect(throughLink.status).toBe(1);
+    expect(throughLink.stderr).toContain("[release-repository]");
+
+    const throughRelative = runGate("new-owner/ave", "./check-release-repository.mjs", dirname(SCRIPT));
+    expect(throughRelative.status).toBe(1);
+    expect(throughRelative.stderr).toContain("[release-repository]");
   });
 
   it("exits zero from the workflow entry point in the published repository", () => {

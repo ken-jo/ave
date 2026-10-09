@@ -8,3 +8,8 @@ export interface RepositoryIdentity {
 export declare function repositoryIdentity(packageJson: unknown): RepositoryIdentity;
 
 export declare function readRepositoryIdentity(root?: string): RepositoryIdentity;
+
+export declare function assertReleaseRepository(input: {
+  identity: RepositoryIdentity;
+  repository: string | undefined;
+}): string;
