@@ -543,6 +543,13 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     ? (selectedPlugin.active ?? selectedPlugin.loadStatus !== "disabled")
     : false;
   const selectedPluginRuntimeLoaded = selectedPlugin ? isRuntimeCallablePlugin(selectedPlugin) : false;
+  // The active-state switch is shown for a callable runtime AND for a disabled
+  // plugin. Disable retires the plugin's generation, so a disabled plugin has
+  // no runtime (`runtimeLoaded: false`), and this switch is the only way to
+  // enable it again. A failed or preparing plugin has neither, and no switch.
+  const selectedPluginToggleable = selectedPlugin
+    ? selectedPluginRuntimeLoaded || selectedPlugin.loadStatus === "disabled"
+    : false;
   // §9.2 — merge schema-declared defaults with the saved config
   // so the typed form always shows the value the plugin will actually
   // receive (defaults first, saved overrides win).
@@ -895,7 +902,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    {selectedPluginRuntimeLoaded ? (
+                    {selectedPluginToggleable ? (
                       <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
                         <span>{selectedPluginActive ? t("pluginConfigTab.activeLabel") : t("pluginConfigTab.inactiveLabel")}</span>
                         <Switch
