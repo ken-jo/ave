@@ -4984,11 +4984,49 @@ across `package.json` (the `build` block at `:228`; `afterPack` at `:235` is
 (`bun.lock:240`, `:1072`, `:2676`, `:2808`: `app-builder-lib`'s own dependency), no
 configuration and no invocation — and the live driver already attaches to an installed
 build.
-Measured so far: the development helper on macOS (2026-10-08); every packaged value and
-the Linux and Windows helpers are UNVERIFIED until the first run, and a control that
-cannot be launched fails the gate rather than passing it.
+Measured so far: the development helper on macOS (2026-10-08); the packaged values on
+macOS arm64 (2026-10-09, `scripts/packaged-escape-gate.mjs` against an unpacked
+`--dir --fast` build, ad-hoc signed and launched with Chromium's `--use-mock-keychain`,
+which the gate passes on macOS because a first `safeStorage` call under an identity the
+login keychain has not seen holds the main process on an access prompt): control
+`function`/`object`/`object`, probes `44.3.0`, `MODULE_NOT_FOUND`, an inert namespace,
+a path string, no usable form. The Linux and Windows helpers and packaged values are
+UNVERIFIED until the first run, and a control that cannot be launched fails the gate
+rather than passing it. The gate runs after the packaged smoke in `build-installers.yml`,
+under the same condition, so an unsigned macOS candidate skips both.
 
-*Lock suites.* All unchanged.
+*As implemented (2026-10-09).* Four things the text above did not say, each found by
+the fixture rather than decided around it:
+
+- **Another plugin's data directory was readable.** Plugins are installed under
+  `<AVE_HOME>/plugins` (`plugin-paths.ts`), which the shared read floor does not cover,
+  and ASRT's reads are deny-only — so on macOS a confined child listed and read a
+  neighbour's `data/` (escape 1a, first run). The spawn now adds its own read deny
+  (`pluginNeighbourReadDenies`, `out-of-process-plugin.ts`, carried by a new
+  `ConfinedChildSpec.denyRead`): the whole plugins root on macOS and Linux, inside which
+  the child's own root and data directory are re-allowed by `envelope.read`; on Windows,
+  where `deny-only` re-allows nothing, every other plugin's directory by name, a
+  snapshot taken at spawn. The claim now holds for the plugin child; a plugin's
+  delegated workers and bundled hooks keep the floor alone, as before.
+- **The fixture declares `capabilities: ["external-auth-consumer"]`.** Without it
+  `hostFetch` is refused by the capability check before the allow-list is reached, and
+  row 2 would prove the wrong layer.
+- **The planted package carries `vendored-electron/package.json`** (`"type":
+  "commonjs"`, `"main": "index.js"`), because the checkout's own `package.json` is
+  `"type": "module"` and would make `index.js` an ES module under the CLI harness.
+- **What the child sees of a refusal is the boundary's, not the host's.** A refused
+  `hostFetch` reaches the child as `Host request failed.`, so the reason is asserted on
+  the host's audit row (`host_fetch_denied`), and the transport records no call. A
+  `getSecret` member read twice is two wrappers, so row 4's identity check is the host's
+  `fetch` and `HOSTAPI_DISPATCH_TABLE`, entry by entry.
+
+The shared gate helper is `src/plugins/isolation/__tests__/sandbox-cases.ts`. The Python
+smoke serves `escape_secrets` and `escape_network` beside `echo`, and its golden was
+re-recorded for the larger tool list.
+
+*Lock suites.* `packaging-discipline-source.test.ts` reads executable discovery from
+`scripts/lib/packaged-executable-selection.mjs`, which the packaged smoke and the gate
+now share, and pins the gate's workflow step; the rest are unchanged.
 
 ##### G0 and G1. `git` prerequisites (decision 22; specified, not started)
 

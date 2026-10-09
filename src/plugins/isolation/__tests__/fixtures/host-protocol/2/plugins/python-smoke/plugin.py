@@ -10,8 +10,11 @@ this program logs goes to stderr; stdout carries frames only.
 """
 
 import base64
+import errno
 import json
+import os
 import resource
+import socket
 import sys
 
 PROTOCOL_VERSION_META = "io.modelcontextprotocol/protocolVersion"
@@ -57,25 +60,92 @@ class HostRequestError(Exception):
     pass
 
 
+TOOLS = [
+    types.Tool(
+        name="echo",
+        description="Answer with the arguments it was called with.",
+        input_schema={"type": "object", "properties": {}},
+    ),
+    # Admission's escapes 1 and 2 (plugin-hostapi-protocol.md §9.8 A2), from a
+    # child that is not JavaScript: the filesystem and the raw network claims
+    # are the substrate's, so they are re-proven here under the same wrap. They
+    # report every answer; the confined suite asserts them.
+    types.Tool(
+        name="escape_secrets",
+        description="Read the host's secrets directory and another plugin's data directory.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "secretsDir": {"type": "string"},
+                "otherDataDir": {"type": "string"},
+                "sentinelName": {"type": "string"},
+            },
+            "required": ["secretsDir", "otherDataDir", "sentinelName"],
+        },
+    ),
+    types.Tool(
+        name="escape_network",
+        description="Open a raw socket to a loopback listener.",
+        input_schema={
+            "type": "object",
+            "properties": {"port": {"type": "number"}},
+            "required": ["port"],
+        },
+    ),
+]
+TOOL_NAMES = [tool.name for tool in TOOLS]
+ESCAPE_TIMEOUT_S = 5
+
+
+def attempt(probe):
+    """A probe's answer: its value, or the errno name the platform refused it with."""
+    try:
+        return {"ok": True, "value": probe()}
+    except OSError as error:
+        code = errno.errorcode.get(error.errno) if error.errno else None
+        return {"ok": False, "code": code or type(error).__name__}
+
+
+def read_text(path):
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def connect(port):
+    with socket.create_connection(("127.0.0.1", port), timeout=ESCAPE_TIMEOUT_S):
+        return "connected"
+
+
+def run_tool(name, arguments):
+    if name == "echo":
+        return {"echoed": arguments}
+    if name == "escape_secrets":
+        secrets_dir = arguments["secretsDir"]
+        other_dir = arguments["otherDataDir"]
+        sentinel = arguments["sentinelName"]
+        return {
+            "attempt": "escape_secrets",
+            "filesystem": {
+                "listSecrets": attempt(lambda: sorted(os.listdir(secrets_dir))),
+                "readSecret": attempt(lambda: read_text(os.path.join(secrets_dir, sentinel))),
+                "listOtherData": attempt(lambda: sorted(os.listdir(other_dir))),
+                "readOtherData": attempt(lambda: read_text(os.path.join(other_dir, sentinel))),
+            },
+        }
+    if name == "escape_network":
+        return {"attempt": "escape_network", "raw": {"connect": attempt(lambda: connect(int(arguments["port"])))}}
+    raise ValueError(f"no tool named {name!r}")
+
+
 async def list_tools(_ctx, _params):
-    return types.ListToolsResult(
-        tools=[
-            types.Tool(
-                name="echo",
-                description="Answer with the arguments it was called with.",
-                input_schema={"type": "object", "properties": {}},
-            )
-        ]
-    )
+    return types.ListToolsResult(tools=TOOLS)
 
 
 async def call_tool(_ctx, params):
-    if params.name != "echo":
-        raise ValueError(f"no tool named {params.name!r}")
-    echoed = {"echoed": params.arguments or {}}
+    result = run_tool(params.name, params.arguments or {})
     return types.CallToolResult(
-        content=[types.TextContent(type="text", text=json.dumps(echoed, sort_keys=True))],
-        _meta={RAW_RESULT_META: echoed},
+        content=[types.TextContent(type="text", text=json.dumps(result, sort_keys=True))],
+        _meta={RAW_RESULT_META: result},
     )
 
 
@@ -120,7 +190,7 @@ class Plugin:
             raise ProtocolMismatch(version)
         self.capabilities = list(params["hostProtocol"].get("capabilities") or [])
         return {
-            "implementedToolNames": ["echo"],
+            "implementedToolNames": TOOL_NAMES,
             "servesUiResources": False,
             "lifecycleHooks": ["start", "stop"],
             "pluginProtocol": {"requires": REQUIRED_HOST_METHODS},

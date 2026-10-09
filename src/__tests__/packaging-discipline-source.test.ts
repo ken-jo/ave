@@ -295,12 +295,17 @@ describe("installer smoke and packaging discipline", () => {
 
     expect(smokeScript).toContain("ERR_MODULE_NOT_FOUND");
     expect(smokeScript).toContain("Cannot find package");
-    expect(smokeScript).toContain("linux-unpacked");
-    expect(smokeScript).toContain("/^linux-.+-unpacked$/u");
-    expect(smokeScript).toContain("linuxExecutablePreferenceSuffixes(process.arch, sep)");
-    expect(smokeScript).toContain("pickBestByExactSuffix");
-    expect(smokeScript).toContain("win-unpacked");
-    expect(smokeScript).toContain(".app");
+    // Executable discovery is shared with the packaged escape gate, so both
+    // launch the same binary.
+    const selection = readRepoFile("scripts/lib/packaged-executable-selection.mjs");
+    expect(smokeScript).toContain('import { findPackagedExecutable } from "./lib/packaged-executable-selection.mjs"');
+    expect(selection).toContain("export function findPackagedExecutable(target, releaseDir)");
+    expect(selection).toContain("linux-unpacked");
+    expect(selection).toContain("/^linux-.+-unpacked$/u");
+    expect(selection).toContain("linuxExecutablePreferenceSuffixes(process.arch, sep)");
+    expect(selection).toContain("pickBestByExactSuffix");
+    expect(selection).toContain("win-unpacked");
+    expect(selection).toContain(".app");
     expect(smokeScript).toContain("AVE_HOME");
     expect(smokeScript).toContain('process.platform === "win32" ? tmpdir() : "/tmp"');
     expect(smokeScript).toContain("--password-store=gnome-libsecret");
@@ -316,6 +321,29 @@ describe("installer smoke and packaging discipline", () => {
     expect(smokeScript).toContain('["agents", "skills", "prompts"]');
     expect(smokeScript).toContain("skills");
     expect(smokeScript).toContain("prompts");
+  });
+
+  it("runs the packaged escape gate on the built app before uploading installer artifacts", () => {
+    const workflow = readRepoFile(".github/workflows/build-installers.yml");
+    const gate = readRepoFile("scripts/packaged-escape-gate.mjs");
+
+    expect(workflow).toContain("Packaged escape gate");
+    expect(workflow).toContain("xvfb-run -a node scripts/packaged-escape-gate.mjs --target linux");
+    expect(workflow).toContain('node scripts/packaged-escape-gate.mjs --target "${{ matrix.target }}"');
+    expect(workflow.indexOf("Smoke launch packaged app")).toBeLessThan(workflow.indexOf("Packaged escape gate"));
+    expect(workflow.indexOf("Packaged escape gate")).toBeLessThan(workflow.indexOf("Upload installers"));
+
+    // The probes run as the plugin child does; the control is the packaged
+    // application's own main process, never the development helper.
+    expect(gate).toContain('ELECTRON_RUN_AS_NODE: "1"');
+    expect(gate).toContain("electron.launch({ executablePath: executable");
+    expect(gate).toContain("app.evaluate(");
+    expect(gate).toContain("prepareElectronLaunchEnv(");
+    expect(gate).toContain("--user-data-dir=");
+    expect(gate).toContain("AVE_HOME");
+    expect(gate).toContain('import { findPackagedExecutable } from "./lib/packaged-executable-selection.mjs"');
+    // Named in its comment to say why; never a path it runs.
+    expect(gate).not.toContain('"control-electron-main.cjs"');
   });
 
   it("keeps privileged workflows on trusted default-branch events", () => {

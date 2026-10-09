@@ -70,7 +70,7 @@
  *    run this file: on darwin/arm64 all 48 cases that run there pass, with no
  *    skip mark and no warning, where the 22 that need the backend take
  *    hundreds of milliseconds each when it is there.
- *    `sandboxCasesRun()` below is what stops that from being invisible: an
+ *    `sandboxCasesRun()` (`sandbox-cases.ts`) is what stops that from being invisible: an
  *    environment that is SUPPOSED to run them sets
  *    `AVE_REQUIRE_SANDBOX_CASES=1` and gets a failure instead of a silent
  *    pass. Two jobs in `ci.yml` set it: the macOS job, because the macOS
@@ -122,6 +122,7 @@ import {
   createOutOfProcessPluginFactory,
   derivePluginChildEnvelope,
   PluginSandboxGrantError,
+  pluginNeighbourReadDenies,
   type ObservedPluginChild,
 } from "../out-of-process-plugin.js";
 import {
@@ -134,7 +135,7 @@ import {
   sandboxTempPrincipalDirName,
   type SandboxTempPrincipal,
 } from "../../../permissions/asrt-sandbox.js";
-import { asrtCanInitialize } from "../../../permissions/__tests__/test-helpers.js";
+import { sandboxCasesRun } from "./sandbox-cases.js";
 import { isPluginChildConfined } from "../../../permissions/sandbox-capability.js";
 import { connect } from "node:net";
 import { createServer } from "node:http";
@@ -212,38 +213,6 @@ const OWN_TEMP_BYTES = "bytes one confined child left in its own temp directory"
  * empty.
  */
 const ASRT_DEFAULT_TEMP_ROOT = "/tmp/claude";
-
-/**
- * Whether the cases that need a live sandbox may run here — and whether being
- * unable to run them is allowed to be silent.
- *
- * Returning false lets the file be developed on a machine without the backend.
- * It is ALSO how these cases pass without measuring anything, which is not a
- * theoretical concern: the Linux runner that runs the whole suite on every pull
- * request has no bubblewrap, so `asrtCanInitialize()` is false there and the
- * cases that call this return immediately — no skip mark, no warning,
- * green. Every case that calls it is an `it.runIf` spawning a real child; the
- * file's other 26 cases do not call it and keep measuring there. The Linux
- * confinement job in `ci.yml` is where these cases measure on Linux.
- *
- * `AVE_REQUIRE_SANDBOX_CASES` is how an environment that is supposed to run
- * them says so. With it set, a machine that cannot initialize the sandbox fails
- * HERE, loudly, instead of reporting a measurement it never took. It only ever
- * turns a silent pass into a failure; nothing about the cases themselves reads
- * it.
- */
-async function sandboxCasesRun(): Promise<boolean> {
-  if (await asrtCanInitialize()) return true;
-  if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") {
-    throw new Error(
-      "AVE_REQUIRE_SANDBOX_CASES=1 but the ASRT sandbox cannot initialize on this "
-        + "machine, so the confinement cases would pass without measuring anything. "
-        + "Install the platform backend (macOS needs none; Linux needs bubblewrap) or "
-        + "unset the variable and accept that these cases do not run here.",
-    );
-  }
-  return false;
-}
 
 interface Fixture {
   readonly root: string;
@@ -1239,6 +1208,47 @@ describe("the host decides how far a plugin child reaches", () => {
       configValue: (key) => (key === "indexStorageRoot" ? "" : undefined),
     });
     expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
+  });
+});
+
+/**
+ * Every other plugin's directory, refused beyond the floor.
+ *
+ * The shared floor names `<AVE_HOME>/secrets` and its siblings, not
+ * `<AVE_HOME>/plugins`, so without this a confined child listed and read a
+ * neighbour's data (`adversarial-escapes.test.ts`, escape 1a, measured on
+ * darwin/arm64 before the deny existed). The kernel half is measured there;
+ * these cases pin what the spawn asks for on each platform, including the
+ * Windows branch no runner here can execute.
+ */
+describe("the other plugins' directories, refused beyond the floor", () => {
+  it("denies the whole plugins root on macOS and Linux, where the child's own directories are re-allowed inside it", () => {
+    const fx = fixture!;
+    const envelope = baseEnvelope(fx);
+    for (const platform of ["darwin", "linux"] as const) {
+      expect(pluginNeighbourReadDenies(envelope, platform)).toEqual([join(fx.aveHome, "plugins")]);
+    }
+    // The re-allow is the envelope's own read half, both directories inside
+    // the denied root.
+    expect(envelope.read).toEqual(expect.arrayContaining([fx.pluginRoot, fx.pluginDataDir]));
+  });
+
+  it("names every other plugin's directory on Windows, where nothing re-allows, and never the child's own", () => {
+    const fx = fixture!;
+    const second = installPlugin(fx, "a-second-plugin");
+    // A file in the root is not a plugin and is left to the floor.
+    writeFileSync(join(fx.aveHome, "plugins", "registry.json"), "{}", "utf-8");
+    const denied = pluginNeighbourReadDenies(baseEnvelope(fx), "win32");
+    expect(denied.sort()).toEqual(
+      [second.pluginRoot, dirname(fx.neighbourBundleDir)].sort(),
+    );
+    expect(denied).not.toContain(fx.pluginRoot);
+  });
+
+  it("names nothing on Windows before any plugin root exists", () => {
+    const fx = fixture!;
+    rmSync(join(fx.aveHome, "plugins"), { recursive: true, force: true });
+    expect(pluginNeighbourReadDenies({ read: [], write: [] }, "win32")).toEqual([]);
   });
 });
 

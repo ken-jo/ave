@@ -82,6 +82,15 @@ export interface ConfinedChildSpec {
    * to the wrap as `PerCommandFilesystem.floorPierces`; absent, none.
    */
   readonly floorPierces?: readonly string[];
+  /**
+   * Reads this child is refused beyond the protected floor, appended to it in
+   * BOTH modes. Under `allow-list` an `allowRead` entry inside one of these is
+   * still re-allowed — ASRT's reads are deny-only, and the re-allow inside a
+   * covering deny is the rule — so a caller can deny a shared root and keep
+   * the child's own directory within it. Under `deny-only` nothing re-allows,
+   * so a caller there must name only paths the child may not read at all.
+   */
+  readonly denyRead?: readonly string[];
   /** Secret-stripped base environment the child starts from. */
   readonly baseEnv: NodeJS.ProcessEnv;
   /** Overlaid last — the sandbox process HOME, which must win. */
@@ -230,7 +239,7 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
   floorPierces?: readonly string[];
 } {
   const floor = {
-    denyRead: getDefaultSensitiveReadDenyPaths(),
+    denyRead: [...getDefaultSensitiveReadDenyPaths(), ...(spec.denyRead ?? [])],
     denyWrite: getDefaultSensitiveWriteDenyPaths(),
   };
   if (spec.grantMode === "deny-only") return floor;

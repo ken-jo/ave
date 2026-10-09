@@ -193,6 +193,30 @@ describe("spawnConfinedChild", () => {
     expect(cmdline).not.toContain("TMPDIR=");
   });
 
+  it.each(["allow-list", "deny-only"] as const)(
+    "appends the caller's own read denies to the floor under %s, never in place of it",
+    async (grantMode) => {
+      await spawnConfinedChild({
+        command: "/usr/bin/node",
+        args: [],
+        label: "plugin-child:x",
+        grantMode,
+        tempPrincipal: PRINCIPAL,
+        allowRead: ["/home/u/.ave/plugins/x"],
+        denyRead: ["/home/u/.ave/plugins"],
+        baseEnv: {},
+      });
+      // The same floor in both modes, with the caller's deny after it.
+      expect(lastFilesystem().denyRead).toEqual([
+        "/home/u/.ave/secrets",
+        "/home/u/.ssh",
+        TEMP_ROOT,
+        HOME_ROOT,
+        "/home/u/.ave/plugins",
+      ]);
+    },
+  );
+
   it("quotes every token so a path with spaces cannot mis-split", async () => {
     // ASRT runs this through a shell, so an unquoted path becomes two arguments
     // and the child either fails or opens something else.

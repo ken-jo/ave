@@ -342,6 +342,16 @@ jobs:
           src/plugins/__tests__/marketplace-dispatcher.test.ts
           src/plugins/__tests__/install-local.test.ts
           src/plugins/__tests__/trust-boundary.test.ts
+      # Admission's escapes 1, 2 and 4 under srt-win, and escape 3 with its
+      # Electron control (plugin-hostapi-protocol.md §9.8 A2). With the flag
+      # set, a sandbox that cannot initialize fails the file instead of letting
+      # it return green without measuring.
+      - name: Run Windows confinement regressions
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          AVE_REQUIRE_SANDBOX_CASES: "1"
+        run: bun run test -- src/plugins/isolation/__tests__/adversarial-escapes.test.ts
 
   macos-permission-tests:
     name: macOS permission path tests
@@ -407,6 +417,7 @@ jobs:
         run: >
           bun run test --
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
+          src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
           src/permissions/__tests__/permission-manager-meta-override.test.ts
           src/tools/__tests__/registry-meta-governance.test.ts
@@ -441,10 +452,13 @@ jobs:
             echo 'docs_only=false' >> "$GITHUB_OUTPUT"
           fi
       # ASRT's Linux backend checks for `bwrap` and `socat` and scans deny paths
-      # with `rg`; its README lists all three.
+      # with `rg`; its README lists all three. `xvfb` is for the adversarial
+      # suite's Electron control: a full Electron main process needs a display
+      # driver, and `xvfb-run -a` is Electron's documented answer on a headless
+      # CI host ("Testing on Headless CI Systems").
       - name: Install the Linux sandbox backend
         if: steps.docs-impact.outputs.docs_only != 'true'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep xvfb
       # Ubuntu 24.04 restricts unprivileged user namespaces by default, which
       # strips what bubblewrap needs (ASRT README, "Platform-Specific
       # Dependencies"). A runner setting, not a product change: the app never
@@ -496,4 +510,7 @@ jobs:
         env:
           AVE_REQUIRE_SANDBOX_CASES: "1"
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
-        run: bun run test -- src/plugins/isolation/__tests__/confined-plugin-child.test.ts
+        run: >
+          bun run test --
+          src/plugins/isolation/__tests__/confined-plugin-child.test.ts
+          src/plugins/isolation/__tests__/adversarial-escapes.test.ts

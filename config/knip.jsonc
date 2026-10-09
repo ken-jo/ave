@@ -64,6 +64,13 @@
         // launcher execs — nothing names them in an import.
         "src/plugins/validate/__tests__/fixtures/raw/*.mjs",
         "src/plugins/validate/__tests__/fixtures/process/*.mjs",
+        // Admission's adversarial fixture (plugin-hostapi-protocol.md §9.8 A2):
+        // its entry is handed to the child runtime BY PATH; the planted
+        // `electron` entry is loaded by that entry through an explicit path;
+        // the Electron control is a main-process script spawned BY PATH.
+        "src/plugins/isolation/__tests__/fixtures/adversarial/entry.mjs",
+        "src/plugins/isolation/__tests__/fixtures/adversarial/vendored-electron/index.js",
+        "src/plugins/isolation/__tests__/fixtures/adversarial/control-electron-main.cjs",
         // The validate CLI: bundled by the plugin repositories as
         // `tools/vendor/ave-plugin-validate.js` and run as `plugin:validate`;
         // nothing imports it.

@@ -9,16 +9,13 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   prepareElectronLaunchArgs,
   prepareElectronLaunchEnv,
 } from "./lib/electron-launch-options.mjs";
-import {
-  linuxExecutablePreferenceSuffixes,
-  pickBestByExactSuffix,
-} from "./lib/packaged-executable-selection.mjs";
+import { findPackagedExecutable } from "./lib/packaged-executable-selection.mjs";
 import {
   launchSucceeded,
   readProductionLogsSince,
@@ -157,79 +154,6 @@ function parseArgs(argv) {
   }
 
   return { target, releaseDir, timeoutMs };
-}
-
-function walkFiles(dir, depth = 0, maxDepth = 7) {
-  if (depth > maxDepth) return [];
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-
-  const out = [];
-  for (const entry of entries) {
-    const fullPath = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      out.push(...walkFiles(fullPath, depth + 1, maxDepth));
-    } else if (entry.isFile()) {
-      out.push(fullPath);
-    }
-  }
-  return out;
-}
-
-function canExecute(file) {
-  if (process.platform === "win32") return true;
-  try {
-    return (statSync(file).mode & 0o111) !== 0;
-  } catch {
-    return false;
-  }
-}
-
-function pickBest(paths, preferredNeedles) {
-  return [...paths].sort((a, b) => {
-    const aScore = preferredNeedles.reduce((score, needle, idx) => score + (a.includes(needle) ? 100 - idx : 0), 0);
-    const bScore = preferredNeedles.reduce((score, needle, idx) => score + (b.includes(needle) ? 100 - idx : 0), 0);
-    return bScore - aScore || a.length - b.length || a.localeCompare(b);
-  })[0] ?? null;
-}
-
-function findPackagedExecutable(target, releaseDir) {
-  if (!existsSync(releaseDir)) {
-    throw new Error(`release directory not found: ${releaseDir}`);
-  }
-
-  const files = walkFiles(releaseDir);
-  if (target === "mac") {
-    const matches = files.filter((file) =>
-      file.endsWith(`${sep}Contents${sep}MacOS${sep}Ave`) &&
-      file.includes(`.app${sep}`) &&
-      canExecute(file)
-    );
-    return pickBest(matches, [`mac-arm64${sep}`, `${sep}Ave.app${sep}`]);
-  }
-
-  if (target === "linux") {
-    const executableNames = new Set(["Ave", "ave", "ave"]);
-    const matches = files.filter((file) =>
-      file.split(sep).some((part) => part === "linux-unpacked" || /^linux-.+-unpacked$/u.test(part)) &&
-      executableNames.has(basename(file)) &&
-      canExecute(file)
-    );
-    return pickBestByExactSuffix(
-      matches,
-      linuxExecutablePreferenceSuffixes(process.arch, sep),
-    );
-  }
-
-  const matches = files.filter((file) =>
-    file.includes(`win-unpacked${sep}`) &&
-    basename(file).toLowerCase() === "ave.exe"
-  );
-  return pickBest(matches, [`win-unpacked${sep}Ave.exe`]);
 }
 
 function resourcesDirForExecutable(target, executable) {

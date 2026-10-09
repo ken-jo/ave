@@ -34,6 +34,7 @@ import {
 } from "../validate-plugin.js";
 import { VALIDATION_KILL_GRACE_MS } from "../validation-child-link.js";
 import { reportExitCode, type ReportRow } from "../report.js";
+import { row } from "./report-row.js";
 import { openValidationSession } from "../validation-session.js";
 import { installPythonSmoke } from "../../isolation/__tests__/python-smoke-harness.js";
 
@@ -117,12 +118,6 @@ function rawOptions(fixture: string, fast = true): ProtocolCheckOptions {
     fast,
     toolArgs: {},
   };
-}
-
-function row(rows: readonly ReportRow[], check: string): ReportRow {
-  const found = rows.find((candidate) => candidate.check === check);
-  if (!found) throw new Error(`no row '${check}' in ${JSON.stringify(rows.map((r) => r.check))}`);
-  return found;
 }
 
 /** Every row after `check`, but the always-reported teardown. */
