@@ -599,7 +599,9 @@ under the project it was in — not the focused tile, which may show another
 conversation entirely. Main refuses to delete a conversation mid-turn, so the
 holder is always idle. If main refuses the fresh conversation under that
 project (its folder has left the workspace), the refusal is shown and the tile
-restarts unscoped — it never stays on the deleted session. Any refused
+restarts unscoped, once. If main refuses that too (the default root is not
+authorized, or a turn started meanwhile), the second refusal is shown as well
+and the tile stays on the deleted session id; there is no further retry. Any refused
 `chatNew` is shown the same way and leaves the tile on what its loop still
 holds, never on a blank transcript that claims a conversation.
 
