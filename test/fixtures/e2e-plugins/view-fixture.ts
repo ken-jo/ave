@@ -7,7 +7,12 @@
  * this repository. One protocol-2 plugin carries the two surfaces the specs
  * need — a sidebar UI view (reached from the command menu) and a model- and
  * app-visible tool whose result proves the host dispatched into the plugin.
+ *
+ * The view calls that tool through its bridge when it mounts and shows the
+ * answer, so opening the panel is also a plugin's first tool call: the
+ * screenshot harness captures the host's permission dock from it.
  */
+import type { FixturePlugin } from "./seed.js";
 
 export const VIEW_FIXTURE_ID = "viewfixture";
 export const VIEW_FIXTURE_VIEW_KEY = `plugin:${VIEW_FIXTURE_ID}:viewfixture_control`;
@@ -15,7 +20,7 @@ export const VIEW_FIXTURE_TOOL = "viewfixture_ping";
 /** Only the plugin's handler can put this in a transcript; a prompt that names the tool cannot. */
 export const VIEW_FIXTURE_DISPATCH_MARKER = `e2e-stub:${VIEW_FIXTURE_ID}:${VIEW_FIXTURE_TOOL}`;
 
-export const VIEW_FIXTURE_MANIFEST = {
+const VIEW_FIXTURE_MANIFEST = {
   id: VIEW_FIXTURE_ID,
   name: "View Fixture",
   version: "1.0.0",
@@ -41,7 +46,7 @@ export const VIEW_FIXTURE_MANIFEST = {
 };
 
 /** Every file the plugin ships, relative to its directory, besides plugin.json. */
-export const VIEW_FIXTURE_FILES: Readonly<Record<string, string>> = {
+const VIEW_FIXTURE_FILES: Readonly<Record<string, string>> = {
   "dist/hostPlugin.js": `export default function createPlugin() {
   return {
     handlers: {
@@ -52,7 +57,25 @@ export const VIEW_FIXTURE_FILES: Readonly<Record<string, string>> = {
   };
 }
 `,
-  "dist/ui/view.js": `export function mount({ root }) { root.textContent = "E2E Plugin UI"; }
+  "dist/ui/view.js": `export async function mount({ root, bridge }) {
+  root.textContent = "";
+  const heading = document.createElement("h2");
+  heading.textContent = "View Fixture";
+  const status = document.createElement("p");
+  status.textContent = "Calling ${VIEW_FIXTURE_TOOL}…";
+  root.append(heading, status);
+  try {
+    const answer = await bridge.callTool(${JSON.stringify(VIEW_FIXTURE_TOOL)}, {});
+    status.textContent = "Host dispatched: " + JSON.stringify(answer);
+  } catch (error) {
+    status.textContent = "Tool call refused: " + (error && error.message ? error.message : String(error));
+  }
+}
 export default { mount };
 `,
+};
+
+export const VIEW_FIXTURE: FixturePlugin = {
+  manifest: VIEW_FIXTURE_MANIFEST,
+  files: VIEW_FIXTURE_FILES,
 };

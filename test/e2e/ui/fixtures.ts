@@ -5,31 +5,24 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
-  hashReceiptFiles,
-  writeInstallReceipt,
-} from "../../../src/plugins/plugin-install-receipt.js";
-import {
   buildE2eBaseSettings,
   buildE2eSecrets,
   buildIsolatedElectronEnv,
 } from "./seeded-electron";
 import { makeTestT, type TestT } from "./i18n.js";
-import { agentPluginsDocument } from "../../../src/plugins/__tests__/test-helpers.js";
 
 import { ALERT_FIXTURE_MANIFEST, ALERT_FIXTURE_SOURCE } from "./alert-fixture.js";
-import { VIEW_FIXTURE_FILES, VIEW_FIXTURE_MANIFEST } from "../../fixtures/e2e-plugins/view-fixture.js";
+import { VIEW_FIXTURE } from "../../fixtures/e2e-plugins/view-fixture.js";
+import {
+  writeFixturePlugin,
+  writeFixtureRegistry,
+  type FixtureManifest,
+  type FixtureRegistryEntry,
+} from "../../fixtures/e2e-plugins/seed.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 type LaunchEnv = Record<string, string | undefined>;
-
-type E2eManifest = {
-  id: string;
-  version: string;
-  entry: string;
-  tools: unknown[];
-  pluginAccess?: unknown;
-};
 
 async function seedE2ePlugins(
   aveHomeForTest: string,
@@ -37,62 +30,16 @@ async function seedE2ePlugins(
   seedViewFixturePlugin: boolean,
   seedAlertPlugin: boolean,
 ): Promise<void> {
-  const pluginsRoot = path.join(aveHomeForTest, "plugins");
-  const cacheRoot = path.join(pluginsRoot, ".cache");
-  fs.mkdirSync(pluginsRoot, { recursive: true, mode: 0o700 });
-  const entries: Array<{
-    id: string;
-    manifestPath: string;
-    enabled: boolean;
-    installSource: "local-dev";
-    approvedPluginAccess?: unknown;
-  }> = [];
-
-  /** Write an in-repository fixture plugin, its receipt and its registry row. */
-  async function writeSeededPlugin(
-    manifest: E2eManifest,
-    files: Readonly<Record<string, string>>,
-  ): Promise<void> {
-    if (!(manifest.entry in files)) {
-      throw new Error(`[e2e] fixture ${manifest.id} does not ship its entry ${manifest.entry}`);
-    }
-    const manifestText = `${JSON.stringify(agentPluginsDocument(manifest), null, 2)}\n`;
-    const pluginDir = path.join(pluginsRoot, manifest.id);
-    fs.rmSync(pluginDir, { recursive: true, force: true });
-    fs.mkdirSync(pluginDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(pluginDir, "plugin.json"), manifestText, "utf-8");
-    for (const [relative, source] of Object.entries(files)) {
-      const target = path.join(pluginDir, relative);
-      fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
-      fs.writeFileSync(target, source, "utf-8");
-    }
-    await writeInstallReceipt(cacheRoot, {
-      schemaVersion: 3,
-      pluginId: manifest.id,
-      version: manifest.version,
-      installSource: "local-dev",
-      artifactSha256: null,
-      signerKeyId: null,
-      admission: null,
-      installedAt: new Date().toISOString(),
-      files: await hashReceiptFiles(pluginDir, ["plugin.json", ...Object.keys(files)]),
-    });
-    entries.push({
-      id: manifest.id,
-      manifestPath: `${manifest.id}/plugin.json`,
-      enabled: true,
-      installSource: "local-dev",
-      approvedPluginAccess: manifest.pluginAccess,
-    });
-  }
-
+  const entries: FixtureRegistryEntry[] = [];
   if (seedAlertPlugin) {
-    await writeSeededPlugin(ALERT_FIXTURE_MANIFEST, { [ALERT_FIXTURE_MANIFEST.entry]: ALERT_FIXTURE_SOURCE });
+    entries.push(await writeFixturePlugin(aveHomeForTest, {
+      manifest: ALERT_FIXTURE_MANIFEST,
+      files: { [ALERT_FIXTURE_MANIFEST.entry]: ALERT_FIXTURE_SOURCE },
+    }));
   }
-
   if (seedTogglePlugin) {
-    await writeSeededPlugin(
-      {
+    entries.push(await writeFixturePlugin(aveHomeForTest, {
+      manifest: {
         id: "e2e-toggle-plugin",
         name: "E2E Toggle Plugin",
         version: "0.0.0",
@@ -114,8 +61,8 @@ async function seedE2ePlugins(
             },
           },
         ],
-      } as E2eManifest,
-      {
+      } as FixtureManifest,
+      files: {
         "dist/hostPlugin.js": `export default function createPlugin() {
   return {
     handlers: { e2e_toggle_ping: async () => "pong" },
@@ -124,19 +71,12 @@ async function seedE2ePlugins(
   };
 }\n`,
       },
-    );
+    }));
   }
-
   if (seedViewFixturePlugin) {
-    await writeSeededPlugin(VIEW_FIXTURE_MANIFEST, VIEW_FIXTURE_FILES);
+    entries.push(await writeFixturePlugin(aveHomeForTest, VIEW_FIXTURE));
   }
-
-  fs.writeFileSync(
-    path.join(pluginsRoot, "registry.json"),
-    `${JSON.stringify({ version: 1, plugins: entries }, null, 2)}\n`,
-    "utf-8",
-  );
-
+  writeFixtureRegistry(aveHomeForTest, entries);
 }
 
 /**

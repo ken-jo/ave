@@ -76,36 +76,34 @@ Animations/transitions are globally killed via `page.addStyleTag` in the
 `mainWindow` fixture (`transition-duration:0ms`, `animation-duration:0ms`,
 `caret-color:transparent`) for deterministic frames.
 
-## Real plugin UIs (side-loaded)
+## Plugins (in-repository fixtures only)
 
-`plugin-seed.ts` side-loads the **real** built UI bundles of the sibling plugin
-repos (`../ave-plugin-<id>/dist/`) into the isolated `~/.ave/plugins/` so a
-scenario captures the plugin's *actual* panel — not the inert `"E2E Plugin UI"`
-stub the shared E2E seeder (`test/e2e/ui/fixtures.ts`) writes for lifecycle
-tests. A scenario declares its needs with `plugins: ['<manifest-id>']` in
-`matrix.ts`; the fixture copies that plugin's `dist/` tree, writes the registry
-+ install receipt + a signed marketplace-whitelist snapshot (for any declared
-`hostSecrets.read`), and the host loads it as a **local-dev** install (unlocked
-by `AVE_DEV=1` + the unpackaged build).
+`plugin-seed.ts` installs only the fixture plugins under
+`test/fixtures/e2e-plugins` (the same ones the Playwright suite seeds, written by
+the shared `seed.ts`), so a capture reads nothing outside this repository: no
+sibling plugin checkout, no built bundle from elsewhere, no interpreter from the
+operator's own `~/.ave`. A scenario declares its needs with
+`plugins: ['<fixture id>']` in `matrix.ts`; an id with no fixture fails the run.
+The host loads the plugin as a **local-dev** install (unlocked by `AVE_DEV=1` +
+the unpackaged build).
 
-Two harness-only details make the panels actually render:
+The view fixture (`viewfixture`) has one sidebar view. When the view mounts it
+calls the fixture's tool through its bridge and shows the answer, so opening the
+panel is also a plugin's first tool call.
 
-- **`python` field stripped** from the seeded manifest (same as the E2E seeder's
-  `delete base.python`) so a plugin that declares host-managed Python does not
-  block lifecycle start on a missing lockfile.
 - **Reviewer disabled** (`permissions.reviewer.mode: "disabled"` in the
   `AVE_HOME/settings.json`, with the `disabledMigratedAt` marker so it is not
-  migrated back to `strict`). A plugin panel calls its read-category tools on
-  mount; with the placeholder LLM key the default `mode:"llm"` reviewer errors
-  and defers those to the "Approve Tool Execution" modal, which would cover the
-  panel. `plugin-permission-grant` opts *back in* (`keepReviewer: true`) because
-  that modal IS its capture target.
+  migrated back to `strict`) whenever a scenario installs plugins, so the
+  reviewer's own model call cannot stall a capture. The fixture's tool is a
+  write, so its call still raises the "Approve Tool Execution" card under the
+  default execution mode: `chat-plugin-panel` sets `executionMode: 'allow'`,
+  and `plugin-permission-grant` keeps the reviewer (`keepReviewer: true`)
+  because that card IS its capture target.
 
-Navigation to a panel goes through the current app path (Ctrl/Cmd+K command
-popover → `plugin` category → the plugin's row), since #1311 removed the
-standalone plugin-grid button. In **work mode** (the harness default) the panel
-opens inline, so it is screenshottable; the plugin's own bundle renders inside
-an Electron `<webview>`.
+Navigation to a panel goes through the sidebar rail (`openPluginPanel` in
+`matrix.ts`): each rail row carries `data-viewkey="plugin:<id>:<view>"`. In
+**work mode** (the harness default) the panel opens inline, so it is
+screenshottable; the plugin's view renders inside an Electron `<webview>`.
 
 ## Skip list
 
@@ -114,28 +112,29 @@ an Electron `<webview>`.
 | Key(s) | Reason |
 |---|---|
 | `chat-todo-queue`, `chat-tool-thinking`, `chat-permission-llm-review`, `chat-permission-directory`, `chat-permission-risk`, `chat-question-card` | Require an **in-flight LLM turn** (tool calls, reviewer deferrals, thinking-token streaming, ask-user cards). No deterministic mock-provider turn exists in this repo today — would need a scripted fake-provider fixture. |
-| `local-indexer-*` (7 keys) | The real bundle side-loads and *loads*, but its compiled `hostPlugin` `start()` hard-throws without a provisioned Python interpreter (`pythonExecutable` unset — `PythonRuntimeBootstrapper` is not run here, and the bundle needs the kiwi/FTS5 Python worker even to expose its UI provider). The runtime tears the plugin down after the start failure, so no UI provider registers. Provisioning a real Python runtime + native deps is out of scope for a screenshot harness. |
-| `meeting-minutes` (3 keys), `meeting-record`, `meeting-record-stt`, `meeting-outlook-mail*` (2 keys) | The real meeting panel loads (see `meeting-upcoming`), but the minutes tab / recorder widget live inside the plugin `<webview>` (Playwright cannot click through it) **and** need a completed STT recording / live audio / Outlook OAuth to populate — infeasible to seed. |
-| `outlook-login-trigger`, `outlook-login-window`, `outlook-login-after`, `outlook-logout` | The real lyra-mail bundle side-loads, but its manifest declares `auth.loginTool`, so selecting the Outlook panel goes straight to the live Microsoft OAuth window; every reachable state past that needs real credentials. |
-| `vega-helper-*` (6 keys) | These are **host-rendered notification cards** (OS toast + host overlay) emitted when a detector fires, **not** plugin-panel screens. Firing a detector needs a real external signal (lyra-mail / meeting events); the plugin has no dev/test trigger tool to synthesize one. The plugin's own detector-toggle *panel* is captured under `chat-plugin-panel`. |
-| `agent-hub-my-work`, `agent-hub-team-board` | **No agent-hub plugin bundle exists** in this workspace — there is no `ave-plugin-hydra` repo and no plugin.json declares such a ui extension. Nothing to side-load. |
+| `meeting-record`, `meeting-record-stt`, `meeting-outlook-mail*` (2 keys) | Need live audio, a completed STT recording or Outlook OAuth. |
+| `outlook-login-trigger`, `outlook-login-window`, `outlook-login-after`, `outlook-logout` | Every reachable state is past the live Microsoft OAuth window. |
+| `vega-helper-*` (6 keys) | **Host-rendered notification cards** emitted when a detector fires on a real external signal; nothing in the harness can fire one. |
+| `agent-hub-my-work`, `agent-hub-team-board` | **No agent-hub plugin bundle exists**; nothing to install. |
 
 ### Capturable today
 
 | Key | Notes |
 |---|---|
 | `chat-app-update` | Seeded via the real `ave:update:state` IPC channel (`app.evaluate` → `webContents.send`), matching the shape in `src/shared/update-state.ts`. Captures the `[data-testid="app-update-badge-available"]` element. |
-| `chat-plugin-panel` | The **real** `ave-plugin-vega-helper` detector-toggle panel (its own bundled UI in a webview), loaded via `plugins: ['vega-helper']`. |
-| `plugin-permission-grant` | The real "Approve Tool Execution" host dock fired by the meeting panel's mount-time `meeting_list_preps` read call (reviewer kept ON via `keepReviewer`). Cropped to `[data-testid="approval-dock"]`. |
-| `meeting-upcoming` | The **real** `ave-plugin-meeting` panel, default "예정 회의" (upcoming) tab, empty state (no seeded calendar events). |
+| `chat-plugin-panel` | The view fixture's sidebar panel open inline, showing its mount-time tool result (`executionMode: 'allow'`, so no approval card covers it). |
+| `plugin-permission-grant` | The "Approve Tool Execution" host card raised by the view fixture's mount-time tool call (reviewer kept ON via `keepReviewer`). Cropped to `[data-testid="tool-approval-panel"]`. |
 | `_smoke-settings-llm` (not a docs key — smoke-only) | Opens the inline settings panel on the model tab and captures the main app window. |
 
-**Current count: 4 real docs-site keys + 1 smoke-only settings capture pass
-end-to-end** (up from 1 + 1). The remaining plugin-UI keys are skipped for
-*substantive* reasons — a missing Python runtime, live STT/OAuth/external
-signals, or a plugin bundle that does not exist — not because the harness cannot
-load real plugins (it now does). Honesty over coverage inflation: a skipped key
-with a precise blocker beats a misleading placeholder capture.
+### Out of scope: other plugin repositories' own UI
+
+`meeting-upcoming`, `meeting-minutes` (3 keys) and `local-indexer-*` (7 keys)
+depict the meeting and local-indexer plugins' own panels, built from their own
+repositories. A fixture cannot honestly stand in for another product's screens,
+and this harness reads nothing outside this repository, so the keys are absent
+from `scenarios` (listed in `PLUGIN_REPOSITORY_KEYS_OUT_OF_SCOPE`). Their
+committed images stay as published; reshooting them belongs to the plugin's own
+repository.
 
 ### Out of scope: web/server keys
 
