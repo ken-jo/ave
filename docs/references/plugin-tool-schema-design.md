@@ -15,8 +15,16 @@ action, or governance map.
 - `schemas/plugin-manifest.schema.json` owns the accepted manifest shape.
 - `src/plugins/runtime/manifest-validation.ts` owns Host cross-field checks and
   materialization.
-- Plugin repositories vendor the public module and schema at an app release
-  tag into `contract/`; `contract/sources.json` records their source and hashes.
+- Plugin repositories vendor the public module, the manifest schema and the
+  host protocol schema (`schemas/plugin-host-protocol/2/protocol.schema.json`) at an app
+  release tag into `contract/`; `contract/sources.json` records their source
+  and hashes.
+  The official marketplace monorepo `ken-jo/agent-marketplace` shares one root
+  `contract/` as `@ave/plugin-contract`.
+- `src/shared/plugin-ui-tokens.ts` (`AVE_TOKEN_NAMES`) owns the `--ave-*` UI
+  token names that theme payload validation and broadcast accept.
+- The retired `@ave/plugin-sdk` package, including its UI token, hook and
+  component subpaths, is not a contract source.
 
 ## Tool Shape
 

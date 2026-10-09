@@ -2,84 +2,9 @@ import { existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { readRepoFile } from "./test-helpers.js";
+import { jobRunCommands, workflowJobs } from "./support/workflow-source.js";
 
 const root = process.cwd();
-
-/** The `jobs:` block of a workflow, split into `job id -> raw job body`. Inside
- *  `jobs:` the job ids are the only keys at two-space indentation; everything
- *  belonging to a job is indented further. Throws when a file has no `jobs:`
- *  block, so a renamed key fails loudly instead of yielding an empty map that
- *  every assertion below would then pass vacuously.
- *
- *  A run of comment and blank lines immediately above a job id belongs to that
- *  job, not to the one that ends above it. Reading them the other way puts the
- *  prose that explains a job — including the sentences that name what the job
- *  must not contain — inside its neighbour's body. */
-function workflowJobs(source: string): Map<string, string> {
-  const marker = "\njobs:\n";
-  const start = source.indexOf(marker);
-  if (start < 0) {
-    throw new Error("workflow has no top-level `jobs:` block");
-  }
-  const jobs = new Map<string, string>();
-  let id: string | null = null;
-  let body: string[] = [];
-  for (const line of source.slice(start + marker.length).split("\n")) {
-    const header = /^ {2}([A-Za-z0-9][A-Za-z0-9_-]*):\s*$/u.exec(line);
-    if (header) {
-      const preamble: string[] = [];
-      while (
-        body.length > 0 &&
-        /^\s*(#.*)?$/u.test(body[body.length - 1] as string)
-      ) {
-        preamble.unshift(body.pop() as string);
-      }
-      if (id !== null) jobs.set(id, body.join("\n"));
-      id = header[1];
-      body = preamble;
-      continue;
-    }
-    body.push(line);
-  }
-  if (id !== null) jobs.set(id, body.join("\n"));
-  return jobs;
-}
-
-/** Every shell command a job runs, in order, with block scalars (`run: |`)
- *  folded into one string.
- *
- *  Comments are excluded deliberately. The ordering invariant below forbids
- *  certain scripts from sharing a job with the compile and test steps, and both
- *  workflows explain that rule in comments that name those very scripts — a
- *  substring scan over the raw job body would read those sentences as steps and
- *  fail on the explanation. This is not a general YAML parser; it covers the
- *  shapes `.github/workflows/` actually uses. */
-function jobRunCommands(jobBody: string): string[] {
-  const commands: string[] = [];
-  const lines = jobBody.split("\n");
-  for (let index = 0; index < lines.length; index += 1) {
-    const match = /^( *)(- )?run:(.*)$/u.exec(lines[index]);
-    if (!match) continue;
-    const [, spaces, dash, rest] = match;
-    const indent = spaces.length + (dash ? dash.length : 0);
-    const inline = rest.trim();
-    if (inline !== "" && !/^[|>][-+]?\d*$/u.test(inline)) {
-      commands.push(inline);
-      continue;
-    }
-    const block: string[] = [];
-    for (let next = index + 1; next < lines.length; next += 1) {
-      const line = lines[next];
-      if (line.trim() !== "" && line.length - line.trimStart().length <= indent) {
-        break;
-      }
-      block.push(line.trim());
-      index = next;
-    }
-    commands.push(block.join("\n"));
-  }
-  return commands;
-}
 
 /** True when `marker` appears in `command` as a whole name rather than as the
  *  prefix or suffix of a longer one. `bun run test` runs the suite;
@@ -326,6 +251,40 @@ describe("installer smoke and packaging discipline", () => {
     expect(smokeScript).toContain('["agents", "skills", "prompts"]');
     expect(smokeScript).toContain("skills");
     expect(smokeScript).toContain("prompts");
+  });
+
+  it("refuses to build or attach release assets from a repository package.json does not publish to", () => {
+    const jobs = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
+    const gate = "node scripts/check-release-repository.mjs";
+
+    /** The one step in `body` that runs the gate, held to an exact shape: the
+     *  run block is the gate and nothing else, so `|| true`, `|| :`,
+     *  `set +e` or any other way to swallow its exit status fails here. */
+    function gateStep(id: string): string {
+      const body = jobs.get(id);
+      if (body === undefined) throw new Error(`build-installers.yml has no ${id} job`);
+      expect(jobRunCommands(body).filter((command) => command.includes(gate)), id).toEqual([
+        `set -euo pipefail\n${gate}`,
+      ]);
+      const at = body.indexOf(gate);
+      const step = body.slice(body.lastIndexOf("\n      - ", at), body.indexOf("\n      - ", at));
+      expect(step, id).toContain("\n        shell: bash\n");
+      expect(step, id).not.toContain("continue-on-error");
+      expect(body.indexOf("uses: actions/checkout@"), id).toBeLessThan(at);
+      return step;
+    }
+
+    // Before the installer matrix: tag builds only, like the tag checks beside it.
+    const profile = gateStep("release-profile");
+    expect(profile.match(/^\s+if:.*$/gmu)).toEqual(["        if: github.event_name == 'push'"]);
+    expect(jobs.get("installers")).toMatch(/^ {4}needs: release-profile$/mu);
+
+    // Before anything is downloaded or attached: unconditional.
+    const publishStep = gateStep("publish-release");
+    expect(publishStep).not.toMatch(/^\s+if:/mu);
+    const publish = jobs.get("publish-release") as string;
+    expect(publish.indexOf(gate)).toBeLessThan(publish.indexOf("uses: actions/download-artifact@"));
+    expect(publish.indexOf(gate)).toBeLessThan(publish.indexOf("uses: softprops/action-gh-release@"));
   });
 
   it("keeps privileged workflows on trusted default-branch events", () => {
