@@ -20,7 +20,15 @@ Every extension package needs a `plugin.json` manifest. The Host owns the canoni
 shape in `schemas/plugin-manifest.schema.json` and the complete TypeScript/JSDoc
 authoring contract in `src/plugins/public-contract.ts`. Vendor both files
 unchanged into `contract/` at an app release tag, and record their hashes in
-`contract/sources.json`.
+`contract/sources.json`. The retired `@ave/plugin-sdk` package is not a
+contract source.
+
+Official extensions live in the official marketplace monorepo
+`ken-jo/agent-marketplace` under `plugins/<name>/source/` (meeting, lyra-mail,
+local-indexer, vega-helper); their `src/hostPlugin.ts` files are the current
+HostApi usage references. A new extension starts from `templates/plugin/` in
+that repository. The former per-plugin `ave-plugin-*` repositories for these
+extensions and `ave-plugin-template` are archived.
 
 The manifest should include:
 

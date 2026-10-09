@@ -787,7 +787,7 @@ interface PluginUiExtension {
 
 ## 빌드 설정
 
-Ave 플러그인은 TypeScript + `tsup` + `vitest` 조합을 권장합니다. 예시 `package.json` / `tsup.config.ts` / `tsconfig.json` 은 별도 플러그인 저장소(`ave-plugin-meeting` 등)의 템플릿을 참고하세요. 핵심 제약:
+Ave 플러그인은 TypeScript + `tsup` + `vitest` 조합을 권장합니다. 예시 `package.json` / `tsup.config.ts` / `tsconfig.json` 은 공식 마켓플레이스 모노레포 `ken-jo/agent-marketplace` 의 `templates/plugin/` 을 참고하세요. 핵심 제약:
 
 - `tsup` `splitting: false` (매니페스트 `entry` 경로가 결정론적이어야 함)
 - CommonJS + ESM 이중 출력 가능 (호스트는 ESM import)
@@ -860,13 +860,14 @@ ave/plugins/installed/{plugin-id}/
 
 ## 완전한 예제
 
-Meeting / Microsoft 365 (Outlook 메일+캘린더) / Local Indexer 의 실제 플러그인 소스는 모두 `former_org/` 아래 형제 저장소에 있습니다:
+Meeting / Microsoft 365 (Outlook 메일+캘린더) / Local Indexer / Vega Helper 의 실제 플러그인 소스는 공식 마켓플레이스 모노레포 [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace) 의 `plugins/<name>/source/` 에 있습니다:
 
-- `ave-plugin-meeting`
-- `ave-plugin-lyra-mail` (구 `ave-plugin-lyra-post` + `ave-plugin-lyra-cal` 통합)
-- `ave-plugin-local-indexer`
+- `plugins/meeting/source/`
+- `plugins/lyra-mail/source/` (구 `ave-plugin-lyra-post` + `ave-plugin-lyra-cal` 통합)
+- `plugins/local-indexer/source/`
+- `plugins/vega-helper/source/`
 
-각 저장소의 `src/hostPlugin.ts` 를 현행 HostApi 사용 패턴 레퍼런스로 삼으세요.
+이 네 플러그인의 예전 개별 저장소(`ave-plugin-meeting` 등)와 `ave-plugin-template` 은 보관(archive)되었습니다. 새 플러그인은 같은 저장소의 `templates/plugin/` 에서 시작하고, 각 플러그인의 `src/hostPlugin.ts` 를 현행 HostApi 사용 패턴 레퍼런스로 삼으세요. 플러그인은 앱 릴리스 태그의 공개 계약을 `contract/` 로 벤더링해 씁니다 (`contract/sources.json` 에 태그와 해시 기록).
 
 ---
 
@@ -914,4 +915,4 @@ Meeting / Microsoft 365 (Outlook 메일+캘린더) / Local Indexer 의 실제 �
 - `src/plugins/types.ts`, `src/plugins/runtime.ts`, `src/plugins/marketplace.ts`, `src/plugins/plugin-install-receipt.ts`, `src/marketplace/resolve/plugin-ladder.ts`, `src/plugins/secret-access/grants.ts`
 - `src/boot.ts`, `src/boot/conversation.ts` (callLlm 레이트리밋), `src/boot/plugins.ts` (notification / eventSubscriptions)
 - `schemas/plugin.schema.json`
-- Meeting / Microsoft 365 (lyra-mail) / Local Indexer 플러그인 저장소 (현행 사용 예제)
+- [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace) 의 `plugins/<name>/source/` (현행 사용 예제)

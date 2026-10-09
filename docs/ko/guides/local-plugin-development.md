@@ -52,16 +52,20 @@ bun run dev
 
 ## 2. 플러그인 스캐폴드
 
-[`ave-plugin-template`](https://github.com/former_org/ave-plugin-template) 사용:
+공식 마켓플레이스 모노레포 [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace)의 `templates/plugin/`에서 시작합니다. 예전 `ave-plugin-template` 저장소는 보관(archive)되었습니다.
 
 ```bash
-# GitHub 에서 "Use this template" → 새 레포 생성 후
-git clone <your-repo-url> ave-plugin-<yourname>
-cd ave-plugin-<yourname>
+# agent-marketplace 체크아웃에서
+cp -R templates/plugin plugins/<yourname>/source
+# package.json 의 file: 경로 두 개 (`../../` → `../../../`) 를 새 깊이에 맞춤
+(cd tools/plugin-build && bun install)   # 빌드 헬퍼, 처음 한 번
+cd plugins/<yourname>/source
 bun install
 bun run build         # tsup → dist/
 bun run test
 ```
+
+`plugins/<yourname>/ave-package.json` 설명자와 게시 절차는 그 저장소의 README 를 따릅니다.
 
 플러그인 저장소의 `contract/`에는 앱 릴리스 태그에서 가져온 공개 계약과 매니페스트
 스키마가 들어 있습니다. `contract/sources.json`으로 태그와 파일 해시를 확인하세요.
@@ -107,8 +111,8 @@ bun run test
 ### 3-3. 절차 — 호스트 설치 경로 사용
 
 ```bash
-# 1) 플러그인 빌드
-cd ave-plugin-<yourname>
+# 1) 플러그인 빌드 (agent-marketplace 체크아웃 기준)
+cd plugins/<yourname>/source
 bun install
 bun run build
 
@@ -188,7 +192,7 @@ AVE_DEV_RELOAD=1 bun run dev
 플러그인 디렉토리 watch 터미널과 별개로:
 
 ```bash
-cd ave-plugin-<yourname>
+cd plugins/<yourname>/source   # agent-marketplace 체크아웃 기준
 bun run build:watch     # 또는 tsup --watch
 ```
 
@@ -247,14 +251,10 @@ git pull origin main
 bun install                                # bun.lock 동기화
 git stash pop  # 필요 시
 
-# 모든 sibling 플러그인 최신화
+# 공식 플러그인 소스 최신화 — 개별 ave-plugin-* 저장소가 아니라
+# 공식 마켓플레이스 모노레포 ken-jo/agent-marketplace 의 plugins/<name>/source/
 cd ..
-for r in ave-plugin-meeting ave-plugin-local-indexer ave-plugin-vega-helper \
-         ave-plugin-vega-helper ave-plugin-lyra-mail \
-         ave-plugin-hydra ave-plugin-template \
-         ave-agent-hub; do
-  (cd "$r" && git checkout main && git pull origin main)
-done
+(cd agent-marketplace && git checkout main && git pull origin main)
 ```
 
 **(2) 옛 dev 디렉토리 + 환경변수 정리**

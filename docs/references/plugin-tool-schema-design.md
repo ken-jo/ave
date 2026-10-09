@@ -17,6 +17,12 @@ action, or governance map.
   materialization.
 - Plugin repositories vendor the public module and schema at an app release
   tag into `contract/`; `contract/sources.json` records their source and hashes.
+  The official marketplace monorepo `ken-jo/agent-marketplace` shares one root
+  `contract/` as `@ave/plugin-contract`.
+- `src/shared/plugin-ui-tokens.ts` (`AVE_TOKEN_NAMES`) owns the `--ave-*` UI
+  token names that theme payload validation and broadcast accept.
+- The retired `@ave/plugin-sdk` package, including its UI token, hook and
+  component subpaths, is not a contract source.
 
 ## Tool Shape
 

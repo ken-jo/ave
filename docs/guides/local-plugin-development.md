@@ -14,6 +14,12 @@ This page owns the local extension authoring loop, manifest shape, HostApi use, 
 - The document must name the behavior that still matters today, the code or test locations that enforce it, and the conditions that make the note stale.
 - Source files and tests are authoritative when this prose and implementation disagree.
 - Korean-only material stays in the mirrored archive unless it is translated or summarized here.
+- A new extension starts from `templates/plugin/` in the official marketplace
+  monorepo `ken-jo/agent-marketplace` and lives at `plugins/<name>/source/`
+  there. The archived `ave-plugin-template` repository is not a starting point.
+- In an unpackaged dev build (`bun run dev`), install the build directory from
+  Settings → Plugin Config → Developer Tools → "Install from local folder"; the
+  host copies it under `~/.ave/plugins/<id>/`.
 
 ## Implementation Anchors
 

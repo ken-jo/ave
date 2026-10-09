@@ -17,8 +17,21 @@ This page owns extension compatibility rules, manifest version expectations, app
 - Extension repositories vendor `src/plugins/public-contract.ts` and
   `schemas/plugin-manifest.schema.json` unchanged into `contract/` at an app
   release tag. `contract/sources.json` records the tag and both file hashes.
+  The official marketplace monorepo `ken-jo/agent-marketplace` shares one root
+  `contract/` as `@ave/plugin-contract`; refresh it with
+  `bun run contract:sync -- contract --ref <app tag> --app <ave checkout>`
+  and verify it with `bun run contract:check`.
 - An extension that uses a new contract member declares a supporting app release in
   `requires.minAppVersion`; the host enforces that minimum at install and load.
+  The marketplace descriptor's `minAppVersion` must equal it.
+- Official extensions are developed in `ken-jo/agent-marketplace` under
+  `plugins/<name>/source/`. Raise `version` in `plugin.json` and `package.json`
+  together and merge; the release workflow builds `<name>-<version>.zip`, tags
+  `<name>-v<version>`, and opens a pull request that pins the zip's sha256 in
+  the descriptor. Merging that pull request publishes the version. Versions
+  strictly increase and a published version never moves to another commit.
+  Per-plugin tag pushes and the central `former_org/.github` workflows are
+  not part of this flow.
 
 ## Implementation Anchors
 

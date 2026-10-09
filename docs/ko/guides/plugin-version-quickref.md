@@ -2,19 +2,20 @@
 
 ## 한 줄 요약
 
-`plugin.json` 의 `version` 을 직접 올리고 같은 값으로 **git tag 푸시** 하면 마켓플레이스에 release 됩니다. 그 외 (그냥 main 머지 등) 는 release 안 됩니다.
+공식 플러그인은 공식 마켓플레이스 모노레포 [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace) 의 `plugins/<name>/source/` 에서 개발합니다. `plugin.json` 과 `package.json` 의 `version` 을 함께 올려 `main` 에 머지하면 release workflow 가 zip 을 만들고, 그 sha256 을 고정하는 PR 을 엽니다. **그 고정 PR 을 머지하는 것이 게시**입니다.
 
-## release 하는 법 (3 줄)
+예전 플러그인별 저장소의 tag push 게시와 `former_org/.github` 의 중앙 workflow 는 쓰지 않습니다. 공식 마켓플레이스 밖의 저장소는 그 마켓플레이스 저장소의 규칙을 따릅니다.
 
-```bash
-# 1. plugin.json 의 version 을 새 값으로 PR + 머지
-# 2. 그 다음:
-git checkout main && git pull
-git tag v0.2.0 -m "release 0.2.0"
-git push origin v0.2.0
-```
+## release 하는 법
 
-`v` 다음 숫자가 `plugin.json.version` 과 정확히 같아야 합니다. 다르면 publish 가 fail.
+1. `plugins/<name>/source/` 를 바꾸고 `plugin.json` 과 `package.json` 의 `version` 을 같은 값으로 올리는 PR 을 머지합니다.
+2. 머지 후 release workflow 가:
+   - 머지 커밋에서 `<name>-<version>.zip` 을 빌드하고,
+   - `<name>-v<version>` 태그를 만들어 그 release 에 zip 을 올리고,
+   - 설명자 (`plugins/<name>/ave-package.json`) 에 zip 의 sha256 을 고정하는 PR 을 엽니다.
+3. 그 고정 PR 을 머지하면 해당 버전이 게시됩니다. 저장소는 merge commit 만 허용합니다. 인덱스가 각 버전을 고정한 커밋을 기록하고, `index:check` 는 `main` 히스토리에 없는 커밋을 가리키는 항목을 거부합니다.
+
+태그는 직접 push 하지 않습니다. workflow 가 만듭니다.
 
 ## 어떤 숫자로 올리지?
 
@@ -26,35 +27,32 @@ git push origin v0.2.0
 | 새 기능 추가 (호환됨) | **MINOR** (`0.2.0` → `0.3.0`) |
 | 깨지는 변경 (tool 시그니처 변경 등) | **MAJOR** (`0.2.0` → `1.0.0`) |
 
-마켓플레이스의 catalog 보다 **반드시 더 큰 숫자**여야 합니다 (같거나 작으면 거절).
+버전은 **반드시 증가**해야 하고, 게시된 버전은 다른 커밋으로 옮겨지지 않습니다.
 
-## 안 되는 것들
+## 앱 버전 호환
 
-- `v1.2` / `v1.2.3-rc1` / `v01.2.3` — 형식 안 맞음
-- branch push 만 하고 tag 안 보냄 — release 안 일어남
-- main 이 아닌 commit 에 tag — 거절
-- 같은 tag 를 다른 commit 으로 다시 push — 거절 (silent rewrite 차단)
+- 플러그인은 앱의 `src/plugins/public-contract.ts` 와 `schemas/plugin-manifest.schema.json` 을 **앱 릴리스 태그**에서 수정 없이 `contract/` 로 벤더링합니다. `contract/sources.json` 이 출처 저장소·태그·두 파일의 해시를 기록합니다. 모노레포는 루트 `contract/` 하나를 `@ave/plugin-contract` 로 공유하며, `bun run contract:sync -- contract --ref <앱 태그> --app <ave 체크아웃>` 으로 갱신하고 `bun run contract:check` 로 검증합니다.
+- 새 계약 멤버를 쓰는 플러그인은 그 멤버를 처음 실은 앱 릴리스를 `plugin.json` 의 `requires.minAppVersion` 에 선언하고, 설명자의 `minAppVersion` 도 같은 값으로 둡니다. 호스트는 설치·로드 시 이 최솟값을 강제합니다.
 
-## 드리프트 자동 감지 (PR 시점)
+## 머지 전 검사
 
-`validate-plugin-manifest.yml` (centralized in `former_org/.github`) 가 PR 단계에서 source `plugin.json.version` 을 marketplace catalog 의 `latest_stable_version` 과 비교해서, source 가 catalog **이하**일 때 `::warning::` 으로 surface 합니다. 다음 release 때 어디서 bump 시작해야하는지 PR 단에서 보임 — catalog 수동 조회 불필요.
-
-워크플로 자체는 fail 시키지 않습니다 (실제 release-blocker 는 `publish.yml` 의 tag-vs-source check). 정보 제공 목적.
-
-## 첫 release 할 때
-
-`plugin.json` 의 version 이 catalog `latest_stable_version` 과 같거나 뒤쳐진 상태면 source bump PR 부터. 위 드리프트 warning 이 PR CI 에 그대로 떠 있어서 어디로 bump 해야하는지 보임 — `catalog latest + 1` 이 안전한 기본값. 정확한 값은 각 plugin repo 의 `RELEASING.md` 참고.
+```bash
+bun run validate          # 스키마, 이름, 한도, 버전, 권한, 비밀
+bun run release:verify    # 고정된 release 를 내려받아 설명자·태그 소스와 대조
+bun run index:check       # 커밋된 인덱스 = 재생성한 인덱스
+bun run contract:check    # 벤더링한 계약·스키마가 기록된 해시와 일치
+```
 
 ## 더 알고 싶을 때
 
-- 각 plugin repo 의 `RELEASING.md` — 그 repo 만의 first-release 값 + 트러블슈팅
-- [`marketplace-publishing.md` 채널 3](./marketplace-publishing.md) — 마켓플레이스 publish 흐름 전체
-- [`plugin-tool-schema-design.md` §2 SoT 박스](../references/plugin-tool-schema-design.md) — 매니페스트 contract
+- `ken-jo/agent-marketplace` 의 `README.md` — 게시 절차, release 실패 시 수동 고정, 검사 목록
+- [`marketplace-publishing.md`](./marketplace-publishing.md) — 마켓플레이스 게시 흐름 전체
+- [English Extension Version Quickref](../../guides/plugin-version-quickref.md) — 현재 영문 기준 문서
 
 ## FAQ 두 개
 
-**Q. 매번 dev 마다 publish 되면 부담스러운데?**
-A. 안 됩니다. dev 중에는 마켓플레이스 그대로. release 의도 시점에만 tag 를 push 하세요. 사이드로드 (Settings → 로컬 폴더에서 설치) 로 dev 빌드를 직접 테스트할 수 있습니다.
+**Q. 머지할 때마다 게시되면 부담스러운데?**
+A. 게시는 `version` 을 올린 머지 뒤 열리는 고정 PR 을 머지할 때만 일어납니다. 개발 중에는 Settings → Plugin Config → 개발자 도구 → "로컬 폴더에서 설치" 로 dev 빌드를 직접 테스트할 수 있습니다 ([`local-plugin-development.md`](./local-plugin-development.md)).
 
-**Q. tag 잘못 보냈어요.**
-A. `git push origin :v0.2.0` 으로 원격에서 삭제 후 다시. 단 catalog 에 이미 publish 됐다면 그 version 은 immutable — yank 만 가능 (admin), bump 후 새 tag 가 정공법.
+**Q. release workflow 가 중간에 실패했어요.**
+A. release 는 만들어졌지만 고정 브랜치가 push 되기 전에 실패했다면 태그가 이미 있어 같은 버전을 다시 빌드하지 않습니다. 저장소 README 의 절차대로 release asset 을 내려받아 `node tools/release.mjs pin <name> <zip>` 으로 직접 고정합니다. 이미 게시된 버전은 바꿀 수 없으니, 고칠 것이 있으면 버전을 올려 새로 게시합니다.
