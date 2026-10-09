@@ -13,6 +13,7 @@ import {
   tileHoldingSession,
   overlayCardTile,
   pendingAnswers,
+  pruneGroupRequests,
 } from "../chat-group-session-registry.js";
 import type { ApprovalRequest } from "../../types.js";
 
@@ -66,7 +67,7 @@ const handleFor = (streaming: boolean, entries: readonly ChatEntry[] = NO_ENTRIE
   loadSession: async () => false,
   prefillComposer: () => {},
   appendSystemEntry: () => {},
-  startNewChat: async () => {},
+  startNewChat: async () => false,
 });
 
 describe("ChatGroupSessionRegistry", () => {
@@ -473,5 +474,23 @@ describe("pendingAnswers", () => {
     const result = pendingAnswers({ ...empty, tiles });
     expect([...result.sessionIds]).toEqual(["s-routine"]);
     expect([...result.hiddenPaneIds]).toEqual(["g2"]);
+  });
+});
+
+describe("pruneGroupRequests — a request outlives neither its read nor its group", () => {
+  const requests = new Map([["group-2", "/proj-b"], ["group-3", "/proj-c"]]);
+
+  it("keeps a live group's request until its tile holds a conversation", () => {
+    const live = new Set(["main", "group-2", "group-3"]);
+    // group-2 has not published; group-3 published but has not hydrated.
+    expect(pruneGroupRequests(requests, live, [tile("group-3", "")])).toBe(requests);
+    expect([...pruneGroupRequests(requests, live, [tile("group-3", "s-3")]).keys()]).toEqual(["group-2"]);
+  });
+
+  it("drops the request of a group that closed before it hydrated", () => {
+    // group-2 closed without its tile ever holding a conversation — before it
+    // published, or after main refused its chatNew. Nothing will read it.
+    const live = new Set(["main", "group-3"]);
+    expect([...pruneGroupRequests(requests, live, [tile("group-3", "")]).keys()]).toEqual(["group-3"]);
   });
 });

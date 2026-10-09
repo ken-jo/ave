@@ -908,11 +908,33 @@ type AveNamespaceOverrides = {
   }>;
   /** Requests the host is already parked on when the renderer mounts. */
   pendingApprovals?: unknown[];
+  /** Project folders `workspace.listRoots` reports; the default is `/ws` alone. */
+  workspaceRoots?: Array<{ path: string; isDefault: boolean }>;
+  /**
+   * Install the native context-menu bridge (`ave.ui`). Opt-in: without it the
+   * renderer's menus fall through to their ancestors, which most suites rely on.
+   */
+  nativeContextMenu?: boolean;
 };
 
 export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
   const approvalHandlers = new Set<(r: unknown) => void>();
   const approvalSettledHandlers = new Set<(payload: unknown) => void>();
+  const roots = overrides.workspaceRoots ?? [{ path: "/ws", isDefault: true }];
+  const defaultRoot = roots.find((root) => root.isDefault)?.path ?? roots[0]?.path ?? "/ws";
+  const nativeMenuHandlers = new Set<(action: { requestId: string; command: string }) => void>();
+  const showNativeContextMenu = vi.fn(async (_payload: { requestId: string; commands: string[] }) => ({ ok: true as const }));
+  const ui = overrides.nativeContextMenu
+    ? {
+      ui: {
+        showNativeContextMenu,
+        onNativeContextMenuAction: (handler: (action: { requestId: string; command: string }) => void) => {
+          nativeMenuHandlers.add(handler);
+          return () => { nativeMenuHandlers.delete(handler); };
+        },
+      },
+    }
+    : {};
   return {
     ns: {
       permission: {
@@ -962,7 +984,7 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
         readFile: vi.fn(async (path: string) => ({ ok: true, content: "", path, truncated: false })),
       },
       workspace: {
-        listRoots: vi.fn(async () => ({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] })),
+        listRoots: vi.fn(async () => ({ ok: true, defaultRoot, roots })),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
         listDir: vi.fn(async (path: string) => ({ ok: true, path, entries: [], truncated: false })),
       },
@@ -973,11 +995,18 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
         debugStream: false,
         ...overrides.env,
       },
+      ...ui,
     },
     emitApproval: (r: unknown) => approvalHandlers.forEach((h) => h(r)),
     /** The host retired a parked request — see `ave:approval:settled`. */
     emitApprovalSettled: (requestId: string) =>
       approvalSettledHandlers.forEach((h) => h({ requestId })),
+    /** Answer the last native menu the renderer asked for with `command`. */
+    chooseNativeMenuCommand: (command: string) => {
+      const payload = showNativeContextMenu.mock.calls.at(-1)?.[0];
+      if (!payload) throw new Error("no native context menu was requested");
+      for (const handler of nativeMenuHandlers) handler({ requestId: payload.requestId, command });
+    },
   };
 }
 
