@@ -557,9 +557,10 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   // `allowAllUnixSockets` weakening (the `--bind` of the writable dir scopes
   // WHERE). MUST happen BEFORE the wrap so the spawned profile carries it.
   let registered = false;
+  const socketHolder = {};
   let wrapped = false;
   try {
-    await registerWorkerUnixSocketDir(socketDir);
+    await registerWorkerUnixSocketDir(socketDir, socketHolder);
     registered = true;
 
     // Assemble the command DEFENSIVELY: shell-quote the binary + every arg so a
@@ -606,7 +607,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       if (cleanupRan) return;
       cleanupRan = true;
       unmarkPluginWorkerWrapped(safePlugin, safeWorker);
-      void unregisterWorkerUnixSocketDir(socketDir);
+      void unregisterWorkerUnixSocketDir(socketDir, socketHolder);
       void cleanupAsrtSandboxAfterCommand();
       removeSocketArtifacts(socketPath, socketDir);
     };
@@ -633,7 +634,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       unmarkPluginWorkerWrapped(safePlugin, safeWorker);
       void cleanupAsrtSandboxAfterCommand();
     }
-    if (registered) void unregisterWorkerUnixSocketDir(socketDir);
+    if (registered) void unregisterWorkerUnixSocketDir(socketDir, socketHolder);
     sandboxHome.cleanup();
     removeSocketArtifacts(socketPath, socketDir);
     releaseWorkerReservation();

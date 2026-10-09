@@ -1067,12 +1067,45 @@ describe("asrt-sandbox — worker-UDS shared-config emission (worker-confinement
 });
 
 describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not per-command)", () => {
+  const predecessor = {};
+  const candidate = {};
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "a failed first push cannot leak through another directory's concurrent push",
+    async (context) => {
+      if (!(await asrtCanInitialize())) return context.skip();
+      const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const originalUpdate = SandboxManager.updateConfig.bind(SandboxManager);
+      const update = vi.spyOn(SandboxManager, "updateConfig");
+      let pushes = 0;
+      update.mockImplementation((config) => {
+        pushes += 1;
+        if (pushes === 2) throw new Error("push refused");
+        originalUpdate(config);
+      });
+      try {
+        const outcomes = await Promise.allSettled([
+          registerWorkerUnixSocketDir("/run/plugin-q/sockets", predecessor),
+          registerWorkerUnixSocketDir("/run/plugin-r/sockets", candidate),
+        ]);
+        expect(pushes).toBe(2);
+        expect(outcomes.map((outcome) => outcome.status)).toEqual(["fulfilled", "rejected"]);
+        expect(SandboxManager.getConfig()?.network.allowUnixSockets).toContain("/run/plugin-q/sockets");
+        expect(SandboxManager.getConfig()?.network.allowUnixSockets).not.toContain("/run/plugin-r/sockets");
+      } finally {
+        update.mockRestore();
+        await resetAsrtSandbox();
+      }
+    }, 60_000,
+  );
+
   it("registerWorkerUnixSocketDir throws when the sandbox is not active (self-enforcing gate)", async () => {
-    await expect(registerWorkerUnixSocketDir("/run/x")).rejects.toThrow(/not active/);
+    await expect(registerWorkerUnixSocketDir("/run/x", predecessor)).rejects.toThrow(/not active/);
   });
 
   it("unregisterWorkerUnixSocketDir is a no-op (does not throw) when the sandbox is not active", async () => {
-    await expect(unregisterWorkerUnixSocketDir("/run/x")).resolves.toBeUndefined();
+    await expect(unregisterWorkerUnixSocketDir("/run/x", predecessor)).resolves.toBeUndefined();
   });
 
   it("register/unregister round-trip on a LIVE sandbox keeps the config consistent (idempotent)", async () => {
@@ -1081,16 +1114,16 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
 
     await initializeAsrtSandbox({ allowedDomains: ["example.com"], strictAllowlist: true });
     // First register pushes the dir; a second holder of it only adds a holder.
-    await registerWorkerUnixSocketDir("/run/worker-a");
-    await registerWorkerUnixSocketDir("/run/worker-a");
+    await registerWorkerUnixSocketDir("/run/worker-a", predecessor);
+    await registerWorkerUnixSocketDir("/run/worker-a", candidate);
     // Unregister of an unknown dir is a no-op; each holder releases once.
-    await unregisterWorkerUnixSocketDir("/run/unknown");
-    await unregisterWorkerUnixSocketDir("/run/worker-a");
-    await unregisterWorkerUnixSocketDir("/run/worker-a");
+    await unregisterWorkerUnixSocketDir("/run/unknown", predecessor);
+    await unregisterWorkerUnixSocketDir("/run/worker-a", predecessor);
+    await unregisterWorkerUnixSocketDir("/run/worker-a", candidate);
     // Reset clears the live worker set so the next init starts clean.
     await resetAsrtSandbox();
     // After teardown a register must throw again (no stale base settings).
-    await expect(registerWorkerUnixSocketDir("/run/worker-a")).rejects.toThrow(/not active/);
+    await expect(registerWorkerUnixSocketDir("/run/worker-a", predecessor)).rejects.toThrow(/not active/);
   }, 60_000);
 
   // A plugin's `sockets/` and `run/` are per plugin, so during an update or a
@@ -1108,14 +1141,14 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
 
     await initializeAsrtSandbox({ allowedDomains: ["example.com"], strictAllowlist: true });
     try {
-      await registerWorkerUnixSocketDir("/run/plugin-x/sockets"); // predecessor
-      await registerWorkerUnixSocketDir("/run/plugin-x/sockets"); // candidate
+      await registerWorkerUnixSocketDir("/run/plugin-x/sockets", predecessor); // predecessor
+      await registerWorkerUnixSocketDir("/run/plugin-x/sockets", candidate); // candidate
       expect(allowed()).toContain("/run/plugin-x/sockets");
 
-      await unregisterWorkerUnixSocketDir("/run/plugin-x/sockets"); // predecessor retires
+      await unregisterWorkerUnixSocketDir("/run/plugin-x/sockets", predecessor); // predecessor retires
       expect(allowed()).toContain("/run/plugin-x/sockets");
 
-      await unregisterWorkerUnixSocketDir("/run/plugin-x/sockets"); // candidate exits
+      await unregisterWorkerUnixSocketDir("/run/plugin-x/sockets", candidate); // candidate exits
       expect(allowed()).not.toContain("/run/plugin-x/sockets");
     } finally {
       await resetAsrtSandbox();
@@ -1133,9 +1166,9 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
 
       await initializeAsrtSandbox({ allowedDomains: ["example.com"], strictAllowlist: true });
       try {
-        const first = registerWorkerUnixSocketDir("/run/plugin-y/sockets");
+        const first = registerWorkerUnixSocketDir("/run/plugin-y/sockets", predecessor);
         let allowedWhenSecondResolved: readonly string[] | undefined;
-        const second = registerWorkerUnixSocketDir("/run/plugin-y/sockets")
+        const second = registerWorkerUnixSocketDir("/run/plugin-y/sockets", candidate)
           .then(() => { allowedWhenSecondResolved = allowed(); });
         await Promise.all([first, second]);
         expect(allowedWhenSecondResolved).toContain("/run/plugin-y/sockets");
@@ -1161,15 +1194,15 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
       try {
         update.mockImplementationOnce(() => { throw new Error("push refused"); });
         const outcomes = await Promise.allSettled([
-          registerWorkerUnixSocketDir("/run/plugin-z/sockets"),
-          registerWorkerUnixSocketDir("/run/plugin-z/sockets"),
+          registerWorkerUnixSocketDir("/run/plugin-z/sockets", predecessor),
+          registerWorkerUnixSocketDir("/run/plugin-z/sockets", candidate),
         ]);
         expect(outcomes.map((outcome) => outcome.status)).toEqual(["rejected", "rejected"]);
         expect(allowed()).not.toContain("/run/plugin-z/sockets");
 
-        await registerWorkerUnixSocketDir("/run/plugin-z/sockets");
+        await registerWorkerUnixSocketDir("/run/plugin-z/sockets", predecessor);
         expect(allowed()).toContain("/run/plugin-z/sockets");
-        await unregisterWorkerUnixSocketDir("/run/plugin-z/sockets");
+        await unregisterWorkerUnixSocketDir("/run/plugin-z/sockets", predecessor);
         expect(allowed()).not.toContain("/run/plugin-z/sockets");
       } finally {
         update.mockRestore();

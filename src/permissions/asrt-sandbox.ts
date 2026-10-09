@@ -397,7 +397,8 @@ let _baseTrustedSettings: TrustedSandboxSettings | undefined;
  * wraps a child without the allow.
  */
 interface WorkerUnixSocketDirEntry {
-  holders: number;
+  readonly holders: Set<object>;
+  registered: boolean;
   /** Settles when the push that first added this dir to the shared config lands or fails. */
   readonly pushed: Promise<void>;
 }
@@ -412,9 +413,12 @@ const _workerUnixSocketDirs = new Map<string, WorkerUnixSocketDirEntry>();
  */
 function withWorkerUnixSockets(
   base: TrustedSandboxSettings,
+  pendingDir?: string,
 ): TrustedSandboxSettings {
-  if (_workerUnixSocketDirs.size === 0) return base;
-  const dirs = [..._workerUnixSocketDirs.keys()];
+  const dirs = [..._workerUnixSocketDirs]
+    .filter(([dir, entry]) => entry.registered || dir === pendingDir)
+    .map(([dir]) => dir);
+  if (dirs.length === 0) return base;
   return {
     ...base,
     allowUnixSocketDirs: [
@@ -2066,7 +2070,7 @@ export async function updateAsrtSandboxConfig(
  * TRUSTED-ONLY: `socketDir` must be a host-allocated path (a plugin sandbox-root
  * subtree), never a plugin/manifest/MCP-supplied value.
  */
-export async function registerWorkerUnixSocketDir(socketDir: string): Promise<void> {
+export async function registerWorkerUnixSocketDir(socketDir: string, holder: object): Promise<void> {
   if (!active || _baseTrustedSettings === undefined) {
     throw new Error(
       "registerWorkerUnixSocketDir: ASRT sandbox is not active (initialize at boot first)",
@@ -2079,8 +2083,11 @@ export async function registerWorkerUnixSocketDir(socketDir: string): Promise<vo
     // carry no allow. If that push fails, the whole entry is rolled back and
     // every waiter fails with it, so no caller believes it holds a dir that
     // was never pushed.
-    existing.holders += 1;
+    existing.holders.add(holder);
     await existing.pushed;
+    if (!existing.holders.has(holder) || _workerUnixSocketDirs.get(socketDir) !== existing) {
+      throw new Error("Socket directory registration was released before acquisition completed");
+    }
     return;
   }
   let resolvePushed!: () => void;
@@ -2091,11 +2098,17 @@ export async function registerWorkerUnixSocketDir(socketDir: string): Promise<vo
   });
   // Observed here so a failed push with no waiter is not an unhandled rejection.
   pushed.catch(() => undefined);
-  const entry: WorkerUnixSocketDirEntry = { holders: 1, pushed };
+  const entry: WorkerUnixSocketDirEntry = { holders: new Set([holder]), registered: false, pushed };
   _workerUnixSocketDirs.set(socketDir, entry);
   try {
     const SandboxManager = await loadSandboxManager();
-    SandboxManager.updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings)));
+    if (_workerUnixSocketDirs.get(socketDir) !== entry || !active || _baseTrustedSettings === undefined) {
+      throw new Error("Socket directory registration was released before acquisition completed");
+    }
+    // Other pending dirs belong to their own push. Including them here could
+    // retain an allowance after that dir's push fails and its holders reject.
+    SandboxManager.updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings, socketDir)));
+    entry.registered = true;
   } catch (error) {
     // Every holder of this entry — this caller and any waiter — sees the
     // throw, treats the dir as not registered, and will not release it.
@@ -2104,6 +2117,9 @@ export async function registerWorkerUnixSocketDir(socketDir: string): Promise<vo
     throw error;
   }
   resolvePushed();
+  if (!entry.holders.has(holder)) {
+    throw new Error("Socket directory registration was released before acquisition completed");
+  }
 }
 
 /**
@@ -2112,18 +2128,16 @@ export async function registerWorkerUnixSocketDir(socketDir: string): Promise<vo
  * {@link spawnWorker} on worker exit/stop and by a plugin child's teardown, so
  * a dead holder's allowance does not linger and a live one's is not dropped.
  */
-export async function unregisterWorkerUnixSocketDir(socketDir: string): Promise<void> {
+export async function unregisterWorkerUnixSocketDir(socketDir: string, holder: object): Promise<void> {
   const entry = _workerUnixSocketDirs.get(socketDir);
-  if (entry === undefined) return;
-  if (entry.holders > 1) {
-    entry.holders -= 1;
-    return;
-  }
+  if (entry === undefined || !entry.holders.delete(holder)) return;
+  if (entry.holders.size > 0) return;
   _workerUnixSocketDirs.delete(socketDir);
   // If the sandbox was already torn down, there is nothing to update — the
   // reset cleared the live config and the worker set; this is a no-op.
   if (!active || _baseTrustedSettings === undefined) return;
   const SandboxManager = await loadSandboxManager();
+  if (!active || _baseTrustedSettings === undefined) return;
   SandboxManager.updateConfig(
     buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings)),
   );
