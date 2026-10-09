@@ -24,70 +24,6 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../..');
 
 /**
- * Where the fabricated document corpus lives.
- *
- * Deliberately NOT under `os.tmpdir()`, and deliberately covering ONLY the
- * corpus. A capture can render an absolute path into the published image — the
- * local-indexer panel lists its registered scan folders by full path — and on
- * Windows `os.tmpdir()` sits under `C:\Users\<account>\AppData\Local\Temp`, so the
- * operator's account name would ship in the docs. `C:\Users\Public` is the OS's
- * own shared, everyone-writable location and names nobody. POSIX `/tmp` already
- * names nobody, so it only gains the `Ave` segment for tidiness — that is the
- * whole of the per-OS difference here.
- *
- * The per-run profile stays in `os.tmpdir()`; the `userDataDir` fixture below
- * says why moving it here too was not a neutral change.
- */
-const DEMO_DOCS_ROOT = process.platform === 'win32'
-  ? path.join(process.env.PUBLIC ?? 'C:\\Users\\Public', 'Ave')
-  : path.join(os.tmpdir(), 'Ave');
-
-/**
- * The fabricated document corpus a scan-folder scenario indexes, at a stable
- * readable path rather than inside the per-run profile: this corpus IS the
- * subject of the local-indexer captures, and `…/ave-screenshot-Ab12cd/
- * ave-state/…` reads as harness debris in a published screenshot where
- * `…/Ave/문서` reads as a folder someone might really have. Its files are
- * rewritten from `seededCorpus` on every run, so nothing an earlier run left
- * behind can reach a frame.
- */
-const DEMO_DOCS_DIR = path.join(DEMO_DOCS_ROOT, '문서');
-
-/**
- * Resolve the `{{AVE_HOME}}` / `{{DEMO_DOCS}}` tokens a scenario may write in a
- * `seededCorpus` key or value.
- *
- * The Ave home exists only once a run has picked its profile directory, so a
- * scenario in `matrix.ts` cannot write that absolute path itself, and the demo
- * corpus is per-OS — while one of them has to appear verbatim inside seeded
- * content, because the indexer's `folders.json` registers scan folders by
- * absolute path. One token vocabulary covers both positions rather than a
- * second seeding hook for the file whose body needs a path.
- */
-function resolveCaptureTokens(
-  value: string,
-  aveHome: string,
-  style: 'posix' | 'native' = 'posix',
-): string {
-  // POSIX is the default because the substitution has to be safe in every
-  // position a token can appear: seeded JSON (the indexer's
-  // `folders.json` is a JSON array of scan folders, and a native
-  // `C:\Users\…` path is not a valid JSON string body) as well as a path
-  // key. Node's fs takes either separator, and the app resolves what it reads
-  // before displaying it — so a capture still shows the native form.
-  //
-  // `native` exists for the one position where the separator is the subject
-  // rather than plumbing: prose a scripted reply puts on screen. A frame that
-  // answers “where is this file” with a forward-slashed Windows path is
-  // showing a path no other part of the same app writes that way.
-  const sep = (dir: string): string =>
-    style === 'native' ? dir : dir.split(path.sep).join('/');
-  return value
-    .split('{{AVE_HOME}}').join(sep(aveHome))
-    .split('{{DEMO_DOCS}}').join(sep(DEMO_DOCS_DIR));
-}
-
-/**
  * Fixed capture viewport. Chosen independently of any single existing
  * screenshot (the current former-site.invalid/public/screenshots/*.png assets have
  * inconsistent aspect ratios because each was cropped to its own target
@@ -220,12 +156,6 @@ function resolveSeededPaths(
   return turns.map((turn) => ({
     ...turn,
     parts: turn.parts.map((part) => {
-      // A reply that names where a file is has to name the real path, and only
-      // the run knows it — the same problem the tool inputs below have, so the
-      // same token vocabulary answers it rather than a second mechanism.
-      if (part.kind === 'text' || part.kind === 'reasoning') {
-        return { ...part, text: resolveCaptureTokens(part.text, aveHome, 'native') };
-      }
       if (part.kind !== 'tool' || !part.seededPathFields) return part;
       const input = { ...part.input };
       for (const field of part.seededPathFields) {
@@ -235,9 +165,7 @@ function resolveSeededPaths(
             `scripted turn ${part.id}: "${field}" must name a seededCorpus entry (got ${JSON.stringify(key)})`,
           );
         }
-        input[field] = path.isAbsolute(resolveCaptureTokens(key, aveHome))
-          ? resolveCaptureTokens(key, aveHome)
-          : path.join(aveHome, key);
+        input[field] = path.join(aveHome, key);
       }
       return { ...part, input };
     }),
@@ -516,11 +444,6 @@ export type ScreenshotOptions = {
    * allowed roots (`computeDefaultAllowedDirectories`), so a scripted
    * `read_file` over one of these runs without an approval prompt and the
    * frame shows invented content only.
-   *
-   * A key or a value may contain `{{AVE_HOME}}` or `{{DEMO_DOCS}}`, resolved
-   * at seeding time (see `resolveCaptureTokens`) — a key so a file can be
-   * written to the demo corpus the local-indexer captures index, a value so
-   * seeded content can name one of those directories by absolute path.
    */
   seededCorpus: Readonly<Record<string, string>>;
   /**
@@ -529,15 +452,6 @@ export type ScreenshotOptions = {
    * plugin-panel keys keep the harness's original English.
    */
   uiLocale: 'ko' | 'en';
-  /**
-   * Per-test timeout, or null for the config's 60s.
-   *
-   * Raised only by a scenario that legitimately takes longer — a worker-backed
-   * plugin's cold start, or an indexing run the capture has to wait out. Kept
-   * per-scenario rather than raised globally so the twenty-odd fast captures
-   * still fail within a minute when something is actually wrong.
-   */
-  timeoutMs: number | null;
   /**
    * Window size for this capture, or null for {@link CAPTURE_VIEWPORT}.
    *
@@ -570,7 +484,6 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
   scriptedScript: [null, { option: true }],
   uiLocale: ['en', { option: true }],
   captureViewport: [null, { option: true }],
-  timeoutMs: [null, { option: true }],
   reviewerMode: [null, { option: true }],
   executionMode: [null, { option: true }],
   seededCorpus: [{}, { option: true }],
@@ -596,7 +509,7 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
   // out-of-allowed-dir gate fired first and short-circuited the reviewer, and
   // `chat-permission-llm-review`, which captures a review still in flight,
   // timed out on a card that run would never render. No profile path reaches a
-  // frame, so only the corpus needs a neutral home (DEMO_DOCS_ROOT above).
+  // frame.
   userDataDir: async ({}, use) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ave-screenshot-'));
     await use(dir);
@@ -659,15 +572,9 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
     // from under it. Ordinary corpus paths (`notes/...`) do not care either way,
     // so one ordering serves both.
     for (const [relative, contents] of Object.entries(seededCorpus)) {
-      // A key is relative to the Ave home unless it resolves to an absolute
-      // path — which today means it named {{DEMO_DOCS}}, the one corpus that
-      // has to live outside the profile because the capture shows its path.
-      const resolvedKey = resolveCaptureTokens(relative, aveHomeForTest);
-      const target = path.isAbsolute(resolvedKey)
-        ? resolvedKey
-        : path.join(aveHomeForTest, resolvedKey);
+      const target = path.join(aveHomeForTest, relative);
       fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
-      fs.writeFileSync(target, resolveCaptureTokens(contents, aveHomeForTest), {
+      fs.writeFileSync(target, contents, {
         encoding: 'utf-8',
         mode: 0o600,
       });

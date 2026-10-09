@@ -48,8 +48,8 @@ keyed by the exact same string keys as `shots` in
 `former-site.invalid/lib/screenshots.ts`. `test/screenshots/capture.spec.ts` generates
 one Playwright test per entry (`capture: <key>`), so:
 
-- `bunx playwright test --config test/screenshots/playwright.config.ts --grep local-indexer-home`
-  re-runs (or, today, skip-reports) exactly one key.
+- `bunx playwright test --config test/screenshots/playwright.config.ts --grep chat-plugin-panel`
+  re-runs exactly one key (a key with `skip` reports its skip instead).
 - Adding a new docs-site key means adding one matrix entry — no spec-file
   editing required.
 

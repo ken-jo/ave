@@ -44,12 +44,8 @@ export interface ScenarioEntry {
   /** Navigate/seed steps run before capture. Required unless `skip` is set. */
   steps?: (ctx: ScenarioContext) => Promise<void>;
   /**
-   * Honest skip reason; `skip` wins over `steps` when both are present. Both is
-   * the shape a scenario takes when its blocker is a machine precondition
-   * rather than missing work: the steps are written and correct, and the reason
-   * resolves to `undefined` on a machine that meets the precondition (see
-   * `local-indexer-home`). An entry with neither is an incomplete entry and the
-   * spec fails it.
+   * Honest skip reason; `skip` wins over `steps` when both are present. An
+   * entry with neither is an incomplete entry and the spec fails it.
    */
   skip?: string;
   /**
@@ -82,14 +78,6 @@ export interface ScenarioEntry {
    * transcript, which the default frames inside a lot of empty background.
    */
   captureViewport?: CaptureViewport;
-  /**
-   * Per-test timeout for this capture, in ms. Omit for Playwright's own
-   * default; set it for a key whose preconditions are slow by nature rather
-   * than slow by accident — the local-indexer chat keys provision a Python
-   * runtime, scan a corpus and then run a multi-turn conversation, and the
-   * default cuts that off mid-scan.
-   */
-  timeoutMs?: number;
 }
 
 async function openWorkMode(page: Page): Promise<void> {
@@ -124,14 +112,10 @@ async function openWorkMode(page: Page): Promise<void> {
  * wait for the <webview> element to attach + finish loading and give the guest
  * a settle beat, then screenshot the host panel region (which contains it).
  *
- * @param pluginId the plugin's manifest id, e.g. `meeting` or `local-indexer`.
+ * @param pluginId the plugin's manifest id, e.g. `VIEW_FIXTURE_ID` (`viewfixture`).
  */
-async function openPluginPanel(
-  page: Page,
-  pluginId: string,
-  options: { timeoutMs?: number } = {},
-): Promise<void> {
-  const deadline = Date.now() + (options.timeoutMs ?? 30_000);
+async function openPluginPanel(page: Page, pluginId: string): Promise<void> {
+  const deadline = Date.now() + 30_000;
   for (;;) {
     try {
       await selectPluginPanel(page, pluginId);
@@ -141,14 +125,9 @@ async function openPluginPanel(
       break;
     } catch (err) {
       // Re-selecting, rather than waiting longer, is what actually converges.
-      // A worker-backed plugin registers its UI provider only after `start()`
-      // resolves — local-indexer's boots a Python worker, twenty-odd seconds on
-      // a cold profile — so the row can be clicked before the view exists.
-      // Selecting it then used to do nothing at all: `handleViewSelect` refused
-      // any key with no registered view, which dropped the click and left the
-      // app where it was. That is fixed in the host (a preparing plugin's panel
-      // opens and waits), and this loop stays because it also covers the plainer
-      // case of a row that has not appeared in the rail yet.
+      // A plugin whose `start()` has not resolved yet already opens a panel
+      // that waits, so the loop only has to cover a row that has not appeared
+      // in the rail yet on a cold profile.
       if (Date.now() >= deadline) throw err;
     }
   }
@@ -740,7 +719,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
       'The live-recording mini-widget is a separate detached BrowserWindow the meeting plugin ' +
       'opens only after meeting_start begins a session (needs an active audio device / injected ' +
       'PCM chunks); its waveform/transcript render is meaningless without a real audio source. ' +
-      'The real meeting panel itself is captured by meeting-upcoming.',
+      'The meeting panel keys are out of scope too (PLUGIN_REPOSITORY_KEYS_OUT_OF_SCOPE).',
   },
   'meeting-record-stt': {
     topic: 'meeting',
