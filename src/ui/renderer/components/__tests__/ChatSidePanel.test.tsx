@@ -1660,6 +1660,73 @@ describe("ChatSidePanel", () => {
     }));
   });
 
+  it("subagent tab: keeps the side chat's agents, and their later frames, after the side-chat tab closes (#2345)", async () => {
+    // Closing the tab unmounts the side-chat view, but its loop runs on in
+    // main and so do the agents it started. The panel keeps their rows and
+    // keeps receiving their frames.
+    const spawnHandlers = new Set<(event: AgentSpawnEvent) => void>();
+    const base = api();
+    (base.sideChat!.load as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      sessionId: "side-7",
+      messages: [],
+    });
+    const apiMock = {
+      ...base,
+      onAskUserQuestion: () => () => undefined,
+      onAgentSpawnEvent: (handler: (event: AgentSpawnEvent) => void) => {
+        spawnHandlers.add(handler);
+        return () => { spawnHandlers.delete(handler); };
+      },
+    } as unknown as AveApi;
+    const emit = (event: Partial<AgentSpawnEvent>) =>
+      act(() => {
+        for (const handler of spawnHandlers) handler(event as AgentSpawnEvent);
+      });
+
+    renderPanel(
+      <HarnessPanel
+        api={apiMock}
+        sessionId="tile-session"
+        targets={[]}
+        files={[]}
+        initialSelectedId={null}
+        sideChatOpenRequest={{ chatGroupId: "main", sessionId: "side-7", nonce: 1 }}
+      />,
+    );
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("side-chat")));
+    await waitFor(() => expect(base.sideChat!.load).toHaveBeenCalledWith("side-7"));
+    await emit({
+      type: "start",
+      spawnId: "side-spawn-1",
+      parentSessionId: "side-7",
+      title: "Side researcher",
+      childSessionId: "side-child-1",
+    });
+
+    const sideChatTab = screen.getByTestId("chat-side-panel-tab-side-chat");
+    const closeButton = Array.from(sideChatTab.parentElement!.querySelectorAll("button")).at(-1)!;
+    fireEvent.click(closeButton);
+    await waitFor(() => expect(screen.queryByTestId("chat-side-panel-side-chat-host")).toBeNull());
+
+    // A frame that lands after the view is gone still has somewhere to go.
+    await emit({
+      type: "start",
+      spawnId: "side-spawn-2",
+      parentSessionId: "side-7",
+      title: "Side reviewer",
+      childSessionId: "side-child-2",
+    });
+
+    addTabViaMenu("subagent");
+    const rows = screen.getAllByTestId("chat-side-panel-subagent-row");
+    expect(rows.map((row) => row.textContent)).toEqual(expect.arrayContaining([
+      expect.stringContaining("Side researcher"),
+      expect.stringContaining("Side reviewer"),
+    ]));
+    expect(rows).toHaveLength(2);
+  });
+
   it("subagent tab: unifies a spawn + its resume (shared childSessionId) into one row with a concatenated transcript", () => {
     // An original spawn and its resume are two distinct agent_spawn calls (two
     // spawnIds) but share one childSessionId — the viewer must group them into a

@@ -11,7 +11,6 @@ import { ApprovalSurfaceProvider } from "../../hooks/use-approval.js";
 import { approvalRequest, approvalSurfaceStub } from "../../../../../test/renderer/helpers.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import type { ApprovalRequest, AskUserQuestionRequest } from "../../types.js";
-import type { AgentSpawnEvent } from "../../../../shared/subagent-events.js";
 
 function makeApi() {
   // Two subscribers share the side stream — the transcript reducer and the
@@ -441,50 +440,25 @@ describe("SideChatView — the cards its own turn parks", () => {
   });
 });
 
-describe("SideChatView — the sub-agents its own turns start (#2345)", () => {
-  function makeSpawnApi() {
-    const base = makeApi();
-    const spawnHandlers = new Set<(event: AgentSpawnEvent) => void>();
-    const load = base.api.sideChat!.load as ReturnType<typeof vi.fn>;
-    load.mockResolvedValue({ ok: true, sessionId: "side-9", messages: [] });
-    const api = {
-      ...base.api,
-      onAskUserQuestion: () => () => {},
-      onAgentSpawnEvent: (h: (event: AgentSpawnEvent) => void) => {
-        spawnHandlers.add(h);
-        return () => { spawnHandlers.delete(h); };
-      },
-    } as unknown as AveApi;
-    return {
-      ...base,
-      api,
-      spawn: (event: Partial<AgentSpawnEvent>) =>
-        act(() => { for (const h of spawnHandlers) h(event as AgentSpawnEvent); }),
-    };
-  }
-
-  it("reports its own agents to the panel, drops a new session's inheritance, and withdraws on unmount", async () => {
-    const { api, spawn, spies } = makeSpawnApi();
-    const onSubAgentSpawnsChange = vi.fn();
+describe("SideChatView — the session its agents belong to (#2345)", () => {
+  it("names its session to the panel on load and on a new chat, and leaves the agents to the panel", async () => {
+    const { api, spies } = makeApi();
+    (api.sideChat!.load as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, sessionId: "side-9", messages: [] });
+    const onSessionIdChange = vi.fn();
     const view = renderView(api, { hasApiKey: true }, {
       openRequest: { chatGroupId: "main", sessionId: "side-9", nonce: 1 },
-      onSubAgentSpawnsChange,
+      onSessionIdChange,
     });
-    await waitFor(() => expect(api.sideChat!.load).toHaveBeenCalledWith("side-9"));
-    const lastReport = () =>
-      (onSubAgentSpawnsChange.mock.calls.at(-1)?.[0] ?? []) as { spawnId: string; parentSessionId?: string }[];
+    await waitFor(() => expect(onSessionIdChange).toHaveBeenLastCalledWith("side-9"));
 
-    await spawn({ type: "start", spawnId: "own", parentSessionId: "side-9", title: "mine", childSessionId: "child-own" });
-    await spawn({ type: "start", spawnId: "theirs", parentSessionId: "tile-conversation", title: "not mine" });
-    await waitFor(() => expect(lastReport().map((s) => s.spawnId)).toEqual(["own"]));
-    expect(lastReport()[0]?.parentSessionId).toBe("side-9");
-
-    // A new side chat starts with no agents of the previous one.
     fireEvent.click(screen.getByTestId("side-chat-new"));
     await waitFor(() => expect(spies.new).toHaveBeenCalled());
-    await waitFor(() => expect(lastReport()).toEqual([]));
+    await waitFor(() => expect(onSessionIdChange).toHaveBeenLastCalledWith("side-2"));
 
+    // Unmounting (the side-chat tab closed) says nothing: the loop and the
+    // agents it started live on in main, and the panel keeps listening for them.
+    const calls = onSessionIdChange.mock.calls.length;
     view.unmount();
-    expect(onSubAgentSpawnsChange).toHaveBeenLastCalledWith([]);
+    expect(onSessionIdChange).toHaveBeenCalledTimes(calls);
   });
 });

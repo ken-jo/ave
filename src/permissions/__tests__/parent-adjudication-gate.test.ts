@@ -715,6 +715,31 @@ describe("parent adjudication — a finished run releases its state", () => {
     const { gate } = makeGate(undefined);
     expect(() => gate.forgetChildRun(CHILD_SESSION)).not.toThrow();
   });
+
+  it("releases every adjudicator even when one of them throws, then reports the failure", () => {
+    const reviewer = new ScriptedParentAdjudicator({ outcome: "deny", reason: "no" });
+    const broken = new Error("reviewer release failed");
+    reviewer.forgetChildRun = () => { throw broken; };
+    const parentSession = new ScriptedParentAdjudicator({ outcome: "deny", reason: "no" });
+    const gate = new ApprovalGate(
+      makeMockWebContents() as never,
+      undefined,
+      1_000,
+      { log: vi.fn() } as never,
+      undefined,
+      {
+        adjudicator: (source) =>
+          source === "parent-session" ? parentSession : reviewer,
+        isEnabled: () => true,
+        policy: () => DEFAULT_POLICY,
+      },
+    );
+
+    // The reviewer is asked first; its failure must not cost the parent
+    // session its release, and must not be swallowed either.
+    expect(() => gate.forgetChildRun(CHILD_SESSION)).toThrow(broken);
+    expect(parentSession.forgotten).toEqual([CHILD_SESSION]);
+  });
 });
 
 describe("parent adjudication — the audit row", () => {
