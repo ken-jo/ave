@@ -1205,6 +1205,18 @@ class PluginFactoryTimeoutError extends Error {
 /** Which plugins had not finished retiring when the shutdown deadline ended `stopAll()`. */
 type PluginRuntimeShutdownReport = Readonly<{ unfinished: readonly string[] }>;
 
+/**
+ * A lifecycle operation building a candidate generation. `settled` follows
+ * the operation; `releaseForShutdown`, set once the candidate is built and
+ * started, releases it at once — the coordinator will not publish it after
+ * shutdown began — instead of waiting for a durable commit still in progress.
+ */
+type PluginCandidateConstruction = {
+  readonly pluginId: string;
+  settled: Promise<void>;
+  releaseForShutdown?: () => Promise<void>;
+};
+
 /** `work`'s value, or `undefined` as soon as `signal` aborts (the work keeps running). */
 function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T | undefined> {
   if (!signal) return work;
@@ -1226,10 +1238,11 @@ type PluginRuntimeRetirementView = Pick<
 >;
 
 /**
- * A plugin call that was still running when the runtime shut down. Shutdown
- * gives in-flight calls a grace period to finish; whatever is still pending
- * after it is rejected with this error instead of being left waiting, so the
- * generation lease it held is released and its generation can retire.
+ * Refusal of plugin work because the runtime is shutting down: a call or
+ * acquisition arriving after shutdown began, one still queued for its lease
+ * when it began, or a call still running when shutdown stopped waiting for
+ * in-flight work. The last is rejected so that its caller is not left
+ * waiting; the work's lease stays held until the work itself settles.
  */
 class PluginRuntimeShutdownError extends Error {
   readonly code = "plugin-runtime-shutdown";
@@ -1965,12 +1978,31 @@ abstract class PluginRuntimeState {
   protected readonly runtimeShutdown = new AbortController();
 
   /**
-   * True once shutdown has begun. Host-to-plugin deliveries (events, config
-   * changes, worker output, plugin-set changes) check it beside their
-   * incarnation guard, so nothing new reaches a plugin while it retires.
+   * True once shutdown has begun. Host-to-plugin notifications (events,
+   * config changes, plugin-set changes) check it beside their incarnation
+   * guard, so nothing new reaches a plugin while it retires.
    */
   isShuttingDown(): boolean {
     return this.runtimeShutdownAdmission.signal.aborted;
+  }
+  /**
+   * Lifecycle operations building a candidate generation the coordinator has
+   * not committed: a prepared update or an add. Once shutdown begins their
+   * publication is refused and each releases what it built; shutdown waits
+   * for that release within its deadline.
+   */
+  protected readonly candidateConstructions = new Set<PluginCandidateConstruction>();
+
+  protected trackCandidateConstruction<T>(
+    pluginId: string,
+    start: (construction: PluginCandidateConstruction) => Promise<T>,
+  ): Promise<T> {
+    const construction: PluginCandidateConstruction = { pluginId, settled: Promise.resolve() };
+    const work = start(construction);
+    construction.settled = work.then(() => undefined, () => undefined);
+    this.candidateConstructions.add(construction);
+    void construction.settled.then(() => this.candidateConstructions.delete(construction));
+    return work;
   }
   protected readonly pinnedGenerations =
     new AsyncLocalStorage<ReadonlyMap<string, string>>();
@@ -3558,8 +3590,8 @@ abstract class PluginRuntimeState {
   /**
    * Settle with `work`, or reject with {@link PluginRuntimeShutdownError} once
    * shutdown stops waiting for in-flight calls. The work itself is not
-   * cancelled — its child is stopped by the retirement that follows — but the
-   * caller, and the generation lease it holds, are released.
+   * cancelled: the caller is released, and whoever holds resources for the
+   * work keeps them until it settles (see `withPinnedGeneration`).
    */
   protected untilRuntimeShutdown<T>(
     pluginId: string,
@@ -3585,13 +3617,18 @@ abstract class PluginRuntimeState {
   }
 
   /**
-   * The one admission boundary into a plugin generation: every dispatch route
-   * (tool calls, panel and app calls, UI resources, host integrations) enters
-   * a generation here. Shutdown closes it — a caller arriving after shutdown
-   * began, or still waiting for its lease when it begins, is rejected with
-   * {@link PluginRuntimeShutdownError}; a lease granted to a caller that has
-   * already been rejected is released at once — and an operation still
-   * running when shutdown stops waiting is rejected the same way.
+   * The runtime's admission boundary into a plugin generation: every dispatch
+   * route (tool calls, panel and app calls, UI resources, host integrations)
+   * enters a generation here, through the generation access's one guarded
+   * acquisition. Shutdown closes that acquisition (see `stopAll`): a caller
+   * arriving after shutdown began, or still queued for its lease when it
+   * begins, is rejected with {@link PluginRuntimeShutdownError}.
+   *
+   * An operation still running when shutdown stops waiting rejects its caller
+   * the same way, but its lease is held until the operation itself settles —
+   * a host callback or delegate keeps the generation (and the payload its
+   * retirement removes) until it is done; a call into the child settles when
+   * the generation's stop phase ends the child.
    */
   protected async withPinnedGeneration<T>(
     pluginId: string,
@@ -3602,49 +3639,48 @@ abstract class PluginRuntimeState {
     expectedGenerationId?: string,
     operationName = "plugin operation",
   ): Promise<T> {
-    const admission = this.runtimeShutdownAdmission.signal;
-    if (admission.aborted) throw new PluginRuntimeShutdownError(pluginId, operationName);
+    if (this.isShuttingDown()) throw new PluginRuntimeShutdownError(pluginId, operationName);
     const access = this.requireGenerationAccess("plugin operation");
     const pinned = expectedGenerationId ?? this.pinnedGenerations.getStore()?.get(pluginId);
-    const acquisition = pinned
-      ? access.acquireExact(pluginId, pinned)
-      : access.acquire(pluginId);
-    let lease: Awaited<typeof acquisition>;
-    try {
-      lease = await this.untilRuntimeShutdown(pluginId, operationName, acquisition, admission);
-    } catch (error) {
-      if (error instanceof PluginRuntimeShutdownError) {
-        // Abandoned while waiting: a lease granted later is not held by anyone.
-        acquisition.then((late) => late.release(), () => undefined);
-      }
-      throw error;
-    }
-    if (admission.aborted) {
-      lease.release();
-      throw new PluginRuntimeShutdownError(pluginId, operationName);
-    }
+    const lease = pinned
+      ? await access.acquireExact(pluginId, pinned)
+      : await access.acquire(pluginId);
     const next = new Map(this.pinnedGenerations.getStore() ?? []);
     next.set(pluginId, lease.generation.generationId);
-    let releaseDeferred = false;
+    let work: Promise<T>;
     try {
-      return await this.untilRuntimeShutdown(pluginId, operationName, access.runWithLease(
+      work = access.runWithLease(
         lease,
         () => this.pinnedGenerations.run(
           Object.freeze(next) as ReadonlyMap<string, string>,
           () => operation(lease.generation.state.runtime, lease.generation.generationId),
         ),
-      ));
+      );
     } catch (error) {
-      if (isPluginRuntimeDetachedOperationError(error)) {
-        releaseDeferred = true;
-        void error.settlement.then(
-          () => lease.release(),
-          () => lease.release(),
-        );
-      }
+      lease.release();
       throw error;
+    }
+    // Registered before the shutdown race below, so it has run by the time
+    // that race settles with the work's own outcome.
+    let workSettled = false;
+    let detachedSettlement: Promise<unknown> | undefined;
+    const settled = work.then(
+      () => { workSettled = true; },
+      (error: unknown) => {
+        workSettled = true;
+        // A detached operation's own work outlives the rejection it raised.
+        if (isPluginRuntimeDetachedOperationError(error)) {
+          detachedSettlement = error.settlement;
+          return error.settlement.then(() => undefined, () => undefined);
+        }
+        return undefined;
+      },
+    );
+    try {
+      return await this.untilRuntimeShutdown(pluginId, operationName, work);
     } finally {
-      if (!releaseDeferred) lease.release();
+      if (workSettled && !detachedSettlement) lease.release();
+      else void settled.then(() => lease.release());
     }
   }
 
@@ -4290,13 +4326,33 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
   ): Promise<SinglePluginStartResult> {
     const attempt: PluginLoadAttemptResources = { pluginId: manifest.id };
     this.clearFailureDiagnostics(manifest.id);
+    return this.trackCandidateConstruction(manifest.id, () => this.runSinglePluginAddAttempt(
+      plan,
+      manifest,
+      approvedPluginAccess,
+      opts,
+      attempt,
+    ));
+  }
+
+  private async runSinglePluginAddAttempt(
+    plan: ManifestLoadPlan,
+    manifest: PluginManifest,
+    approvedPluginAccess: PluginAccessSpec | undefined,
+    opts: { skipPreparation?: boolean; shouldCommit?: () => boolean },
+    attempt: PluginLoadAttemptResources,
+  ): Promise<SinglePluginStartResult> {
     try {
       return await this.addSinglePluginAttempt(plan, manifest, approvedPluginAccess, opts, attempt);
     } catch (err) {
       if (attempt.handedOver) {
         log.error(`${manifest.id} add rejected after its generation was committed; the committed generation owns it: ${errorMessage(err)}`);
       } else if (attempt.routed) {
-        if (opts.shouldCommit?.() ?? true) {
+        if (this.isShuttingDown()) {
+          // Refused because the host is shutting down, not crashed: released,
+          // not reported as a load failure.
+          await this.releaseAttempt(attempt, "plugin runtime shutdown");
+        } else if (opts.shouldCommit?.() ?? true) {
           await this.abandonCrashedPluginLoad(attempt, err);
         } else {
           await this.releaseAttempt(attempt, "cancelled plugin add");
@@ -5397,7 +5453,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       manifest,
       "prepared artifact activation",
     );
-    return this.withPreparedInstallIdentity(manifest.id, input.installId, async (installId) => {
+    return this.trackCandidateConstruction(manifest.id, (construction) => this.withPreparedInstallIdentity(manifest.id, input.installId, async (installId) => {
     const candidateRegistryEntry = this.validatePreparedRegistryEntry(
       manifest,
       input.registryEntry,
@@ -5499,6 +5555,29 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       lifecycleHookScope,
     } = hostApiIncarnation;
     let instance: RuntimePlugin | undefined;
+    let candidateRelease: Promise<void> | undefined;
+    // Release what this activation built and has not handed to the
+    // coordinator — once, whether the activation's own failure or shutdown
+    // asks first.
+    const releaseUncommittedCandidate = (): Promise<void> => {
+      candidateRelease ??= (async () => {
+        deactivate();
+        if (hostEffects.isPreparing()) hostEffects.discard();
+        if (instance) {
+          await this.stopAfterStartFailure(manifest.id, instance, lifecycleHookScope);
+        }
+        this.runDisposerList(disposers, "failed prepared artifact activation");
+        await this.drainPluginHostApiOperations(manifest.id, {
+          drainHostApiOperations: drainOperations,
+        });
+        await removeRetainedPluginGeneration(
+          this.installReceiptCacheRoot!,
+          manifest.id,
+          generationId,
+        );
+      })();
+      return candidateRelease;
+    };
     try {
       instance = await runPluginFactoryWithTimeout(
         () => this.runPluginLifecycleHook(
@@ -5550,6 +5629,16 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         arm: routed.arm,
         confinement: this.confinementReport(createPlugin),
       });
+      // Built and started. From here shutdown may release the candidate itself
+      // — the coordinator refuses to publish it once admission has closed — so
+      // a durable commit still held then does not keep its child alive.
+      if (this.isShuttingDown()) {
+        throw new PluginRuntimeShutdownError(manifest.id, "prepared artifact activation");
+      }
+      construction.releaseForShutdown = () =>
+        generationLifecycle.getActive(manifest.id)?.generationId === generationId
+          ? Promise.resolve()
+          : releaseUncommittedCandidate();
       // Awaited here, inside the try: a rejection from the locked publication
       // (preparation, the durable commit) must reach the catch below, which
       // releases the candidate unless the coordinator committed it.
@@ -5636,22 +5725,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         this.quarantinePluginLifecycle(manifest.id, error.message);
       }
       const committed = generationLifecycle.getActive(manifest.id)?.generationId === generationId;
-      if (!committed) {
-        deactivate();
-        if (hostEffects.isPreparing()) hostEffects.discard();
-        if (instance) {
-          await this.stopAfterStartFailure(manifest.id, instance, lifecycleHookScope);
-        }
-        this.runDisposerList(disposers, "failed prepared artifact activation");
-        await this.drainPluginHostApiOperations(manifest.id, {
-          drainHostApiOperations: drainOperations,
-        });
-        await removeRetainedPluginGeneration(
-          this.installReceiptCacheRoot!,
-          manifest.id,
-          generationId,
-        );
-      }
+      if (!committed) await releaseUncommittedCandidate();
       // A refusal the child factory raised at invocation (an unserved
       // `hostProtocol` that reached this path without the boot/add gate, or a
       // sibling refusal) is this attempt's, never the running generation's:
@@ -5661,7 +5735,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       if (!committed) this.recordAttemptRefusal(manifest, error, "update");
       throw error;
     }
-    });
+    }));
   }
 
   async removePluginWithCommit<T>(
@@ -6510,58 +6584,89 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
 
   /**
    * Retire every generation the runtime owns, each exactly once, within the
-   * caller's shutdown deadline:
+   * shutdown deadline — the caller's `signal` (the application's cleanup
+   * budget), or that same budget when the caller passes none:
    *
-   * 1. Admission closes: no new dispatch enters a generation, and callers
-   *    still waiting for admission are rejected (see `withPinnedGeneration`).
+   * 1. Admission closes, in the runtime and in the generation coordinator
+   *    that every consumer acquires through: no new dispatch enters a
+   *    generation, callers still queued for a lease are rejected with
+   *    {@link PluginRuntimeShutdownError}, and no candidate publishes.
    * 2. Generations the coordinator committed but the runtime map never
    *    received start retiring at once; their dispatch never opened.
-   * 3. Retirements already under way — a removal, an uninstall, the
-   *    predecessor of a replacement — are awaited; they wait for in-flight
-   *    calls to release their leases, so those calls get
-   *    `pluginShutdownHandlerMs` to finish.
-   * 4. Calls still pending are rejected with {@link PluginRuntimeShutdownError},
-   *    releasing their leases, and the retirements get one more such period.
-   * 5. Every generation in the runtime map retires, a distinct incumbent
-   *    included.
+   * 3. Candidates still being built (a prepared update, an add) are refused
+   *    at their commit and release what they built themselves; shutdown
+   *    waits for that release.
+   * 4. Retirements already under way — a removal, an uninstall, the
+   *    predecessor of a replacement — wait for in-flight calls to release
+   *    their leases; those calls get `pluginShutdownHandlerMs` to finish.
+   * 5. Calls still running are rejected with {@link PluginRuntimeShutdownError}.
+   *    Their leases stay held until the work itself settles, so nothing it
+   *    still uses is removed under it. Every retiring generation's runtime
+   *    phases then run at once — the stop phase ends the child, which settles
+   *    calls into it — and every generation in the runtime map retires, a
+   *    distinct incumbent included.
    *
    * Generations retire concurrently, each keeping its own phase order
    * (authority → stop → effects → drain), so the time taken is that of the
-   * slowest generation rather than the sum. Every wait also ends when
-   * `signal` aborts — the application's own shutdown deadline. Generations
-   * whose retirement has not finished then are named in the returned report
-   * (and logged and audited); the application's managed-child backstop kills
-   * what they left running.
+   * slowest generation rather than the sum. Every wait ends when the deadline
+   * passes. Every plugin whose retirement — runtime phases, lease drain and
+   * the lifecycle's own retirement — or candidate release has not finished
+   * then is named in the returned report (and logged and audited); the
+   * application's managed-child backstop kills what they left running.
    *
    * All of it goes through {@link prepareRuntimeRetirement}, whose phases run
    * once per generation, so a generation reached from more than one place
    * never has its disposers or drain run twice.
    */
   async stopAll(options: { signal?: AbortSignal } = {}): Promise<PluginRuntimeShutdownReport> {
-    const { signal } = options;
+    const deadline = options.signal ? undefined : new AbortController();
+    const deadlineTimer = deadline
+      ? setTimeout(() => deadline.abort(), TOOL_TIMEOUT_POLICY.shutdownCleanupMs)
+      : undefined;
+    deadlineTimer?.unref?.();
+    const signal = options.signal ?? deadline!.signal;
+    try {
+      return await this.stopAllWithin(signal);
+    } finally {
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+    }
+  }
+
+  private async stopAllWithin(signal: AbortSignal): Promise<PluginRuntimeShutdownReport> {
     this.runtimeShutdownAdmission.abort();
-    const retirements: Array<{ pluginId: string; done: Promise<void>; settled: boolean }> = [];
-    const retire = (runtime: PluginRuntimeRetirementView, after?: () => void): void => {
-      const record = { pluginId: runtime.manifest.id, done: Promise.resolve(), settled: false };
-      record.done = this.runShutdownRetirement(runtime).finally(() => {
+    this.generationLifecycle?.closeAdmission(
+      (pluginId) => new PluginRuntimeShutdownError(pluginId, "generation admission"),
+    );
+    const pending: Array<{ pluginId: string; done: Promise<void>; settled: boolean }> = [];
+    const track = (pluginId: string, work: Promise<unknown>, after?: () => void): void => {
+      const record = { pluginId, done: Promise.resolve(), settled: false };
+      record.done = work.then(() => undefined, () => undefined).finally(() => {
         record.settled = true;
         after?.();
       });
-      retirements.push(record);
+      pending.push(record);
     };
+    const retire = (runtime: PluginRuntimeRetirementView, after?: () => void): void =>
+      track(runtime.manifest.id, this.runShutdownRetirement(runtime), after);
+
     const committedUnmapped = [...this.committedUnmappedGenerations.values()];
     this.committedUnmappedGenerations.clear();
     for (const runtime of committedUnmapped) retire(runtime);
+    for (const candidate of this.candidateConstructions) {
+      track(candidate.pluginId, candidate.releaseForShutdown?.() ?? candidate.settled);
+    }
 
     const graceMs = TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs;
-    if (!await this.waitForGenerationRetirements(graceMs, signal) && !signal?.aborted) {
-      log.warn(`plugin retirements still waiting after ${graceMs}ms of shutdown; aborting in-flight plugin calls`);
-      this.runtimeShutdown.abort();
-      if (!await this.waitForGenerationRetirements(graceMs, signal) && !signal?.aborted) {
-        log.error(`plugin retirements still waiting after aborting in-flight calls; retiring runtime generations directly`);
-      }
+    if (!await this.waitForGenerationRetirements(graceMs, signal) && !signal.aborted) {
+      log.warn(`plugin retirements still waiting after ${graceMs}ms of shutdown; aborting in-flight plugin calls and stopping their generations`);
     }
     this.runtimeShutdown.abort();
+    for (const retiring of this.generationLifecycle?.listRetiringGenerations() ?? []) {
+      track(retiring.pluginId, Promise.all([
+        this.runShutdownRetirement(retiring.runtime),
+        retiring.retired,
+      ]));
+    }
     for (const [pluginId, plugin] of [...this.plugins]) {
       retire({
         manifest: plugin.manifest,
@@ -6573,9 +6678,9 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         drainHostApiOperations: plugin.drainHostApiOperations,
       }, () => this.disposers.delete(pluginId));
     }
-    await untilAborted(Promise.all(retirements.map((record) => record.done)), signal);
+    await untilAborted(Promise.all(pending.map((record) => record.done)), signal);
     const unfinished = [...new Set(
-      retirements.filter((record) => !record.settled).map((record) => record.pluginId),
+      pending.filter((record) => !record.settled).map((record) => record.pluginId),
     )];
     if (unfinished.length > 0) {
       log.error(`plugin shutdown deadline reached before these plugins finished retiring; the process backstop ends them: ${unfinished.join(", ")}`);

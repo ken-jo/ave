@@ -125,4 +125,19 @@ export interface PluginRuntimeGenerationLifecycle extends PluginRuntimeGeneratio
   ): Promise<CommittedPluginGeneration<T>>;
   recoverRetirements(): Promise<void>;
   waitForRetirements(): Promise<void>;
+  /**
+   * Close generation admission for good (host shutdown): queued and later
+   * acquisitions reject with `reason(pluginId)`, and no candidate publishes.
+   */
+  closeAdmission(reason: (pluginId: string) => Error): void;
+  /** Generations whose retirement has begun and not yet finished. */
+  listRetiringGenerations(): readonly RetiringPluginRuntimeGeneration[];
+}
+
+export interface RetiringPluginRuntimeGeneration {
+  readonly pluginId: string;
+  readonly generationId: string;
+  readonly runtime: PluginRuntimeGenerationProjection;
+  /** Settles when the generation's leases drained and its retirement finished. */
+  readonly retired: Promise<void>;
 }

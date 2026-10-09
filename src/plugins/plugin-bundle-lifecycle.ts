@@ -36,6 +36,7 @@ import type {
   PluginRuntimeGenerationLifecycle,
   PluginRuntimeGenerationProjection,
   PluginRuntimeRetirementPhase,
+  RetiringPluginRuntimeGeneration,
 } from "./plugin-host-generation.js";
 import type { PluginGenerationLease } from "./plugin-generation-coordinator.js";
 import { createLogger } from "../lib/logger.js";
@@ -307,6 +308,19 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
 
   waitForRetirements(): Promise<void> {
     return this.waitForTrackedRetirements();
+  }
+
+  closeAdmission(reason: (pluginId: string) => Error): void {
+    this.coordinator.closeAdmission(reason);
+  }
+
+  listRetiringGenerations(): readonly RetiringPluginRuntimeGeneration[] {
+    return Object.freeze(this.coordinator.listRetiring().map(({ generation, retired }) => Object.freeze({
+      pluginId: generation.pluginId,
+      generationId: generation.generationId,
+      runtime: generation.state.runtime,
+      retired,
+    })));
   }
 
   async recoverRetirements(): Promise<void> {

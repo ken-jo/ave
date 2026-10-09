@@ -12,6 +12,14 @@ import { PersonaPromptStore } from "../../main/persona-prompt-store.js";
 import { runCleanupWithHardTimeout } from "../../main/shutdown-timeout.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { HostApiGenerationScope } from "../plugin-host-effect-scope.js";
+import { CommittedPluginGenerationPublicationError } from "../committed-generation-publication-error.js";
+import { McpManager } from "../../mcp/mcp-manager.js";
+import { McpGovernance } from "../../mcp/mcp-governance.js";
+import { ToolRegistry } from "../../tools/registry.js";
+import { ToolExecutor } from "../../tools/executor.js";
+import { createDynamicTool } from "../../tools/base.js";
+import { PermissionManager } from "../../permissions/permission-manager.js";
+import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { PluginDeploymentGuard } from "../deployment-guard.js";
 import type { PackageKey } from "../../marketplace/sources/policy.js";
 import { uninstallPluginWithLifecycle } from "../uninstall-lifecycle.js";
@@ -4654,6 +4662,188 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       expect(audits).toContain("plugin_shutdown_retirement_incomplete");
     } finally {
       releaseStop();
+    }
+  });
+
+  /** Settle within `ms`, or report the promise as still pending. */
+  async function settledWithin<T>(promise: Promise<T>, ms: number): Promise<{ state: "resolved"; value: T } | { state: "rejected"; error: unknown } | { state: "pending" }> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise.then((value) => ({ state: "resolved" as const, value }), (error: unknown) => ({ state: "rejected" as const, error })),
+        new Promise<{ state: "pending" }>((resolve) => { timer = setTimeout(() => resolve({ state: "pending" }), ms); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** A bundled MCP server the plugin's active generation owns, on the real manager. */
+  function bundledMcpManager(f: Awaited<ReturnType<typeof setup>>, lifecycle: PluginBundleLifecycle, client: Record<string, unknown>) {
+    const manager = new McpManager(new McpGovernance(join(f.fixture.rootDir, "mcp-policy.json")), new ToolRegistry(), unusedNetworkFetch, join(f.fixture.rootDir, "mcp-config.json"));
+    manager.setPluginGenerationAccess(lifecycle);
+    const generationId = lifecycle.getActive(ID)!.generationId;
+    const serverId = "attemptresources-bundled";
+    const internals = manager as unknown as { clients: Map<string, unknown>; bundledOwners: Map<string, unknown>; activeBundledServerIds: Set<string> };
+    internals.clients.set(serverId, client);
+    internals.bundledOwners.set(serverId, { pluginId: ID, activationId: generationId, generationId, pluginVersion: "1.0.0", localId: "fixture", fingerprint: "a".repeat(64) });
+    internals.activeBundledServerIds.add(serverId);
+    return { manager, serverId };
+  }
+
+  it("shutdown rejects generation consumers outside the runtime dispatcher, queued ones included", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const generationId = lifecycle.getActive(ID)!.generationId;
+    let served = 0;
+    const { manager, serverId } = bundledMcpManager(f, lifecycle, {
+      getPrompt: async () => { served += 1; return { blocks: [], droppedBlocks: 0 }; },
+      callTool: async () => { served += 1; return { text: "served", blocks: [], droppedBlocks: 0 }; },
+    });
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({
+      name: PING, description: "fixture tool", source: "plugin", category: "read", pluginId: ID,
+      pluginGeneration: { pluginId: ID, generationId }, modelVisible: true, jsonSchema: { type: "object" },
+      execute: async () => { served += 1; return { output: "served", isError: false }; },
+    }));
+    const permissions = new PermissionManager(join(f.fixture.rootDir, "permissions.json"));
+    permissions.checkDetailed = () => ({ decision: "allow", reason: "fixture", layer: 3 });
+    const executor = new ToolExecutor(registry, undefined, permissions, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, () => lifecycle);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const atCommit = new Promise<void>((resolve) => { entered = resolve; });
+    const update = f.runtime.activatePreparedArtifact({
+      ...(await f.preparedInput()),
+      durableCommit: async () => { entered(); await held; return "committed"; },
+    }).then(() => undefined, () => undefined);
+    try {
+      await atCommit;
+      // Queued behind the held transition: the tool executor's and the bundled
+      // MCP manager's own acquisitions, and the lifecycle's directly.
+      const turn = new AbortController();
+      const queued: Array<Promise<unknown>> = [
+        executor.executeAll([{ id: "queued", name: PING, input: {} }], { sessionId: "shutdown-turn", abortSignal: turn.signal, permissionContext: { trustOrigin: "user-keyboard", allowedPluginIds: new Set([ID]) } } as never),
+        manager.getPrompt(serverId, "fixture", {}),
+        lifecycle.acquireExact(ID, generationId),
+        lifecycle.acquire(ID),
+      ];
+      for (const waiting of queued) expect((await settledWithin(waiting, 20)).state).toBe("pending");
+      turn.abort();
+      await f.runtime.stopAll();
+      const [executed, prompt, exact, any] = await Promise.all(queued.map((waiting) => settledWithin(waiting, 500)));
+      expect(executed).toMatchObject({ state: "resolved", value: [{ is_error: true, content: expect.stringContaining("shutting down") }] });
+      for (const outcome of [prompt, exact, any]) {
+        expect(outcome).toMatchObject({ state: "rejected", error: { code: "plugin-runtime-shutdown" } });
+      }
+      // Arriving after shutdown began: refused before reaching the server.
+      await expect(manager.callTool(serverId, "fixture", {})).rejects.toMatchObject({ code: "plugin-runtime-shutdown" });
+      await expect(lifecycle.acquireExact(ID, generationId)).rejects.toMatchObject({ code: "plugin-runtime-shutdown" });
+      expect(served).toBe(0);
+    } finally {
+      release();
+      await update;
+    }
+  });
+
+  it("shutdown releases a prepared candidate held in its durable commit, and the commit never publishes it", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const incumbent = lifecycle.getActive(ID)!.generationId;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const atCommit = new Promise<void>((resolve) => { entered = resolve; });
+    const update = f.runtime.activatePreparedArtifact({
+      ...(await f.preparedInput()),
+      durableCommit: async () => { entered(); await held; return "committed"; },
+    }).then(() => undefined, (error: unknown) => error);
+    await atCommit;
+    const deadline = new AbortController();
+    const report = await f.runtime.stopAll({ signal: deadline.signal });
+    // Released by shutdown itself, while its durable commit is still held.
+    expect(report).toEqual({ unfinished: [] });
+    expect(f.constructed.map((record) => record.stops)).toEqual([1, 1]);
+    expect(f.incarnations.map((incarnation) => incarnation.isActive())).toEqual([false, false]);
+    release();
+    const refused = await update;
+    expect(refused).toBeInstanceOf(CommittedPluginGenerationPublicationError);
+    expect((refused as CommittedPluginGenerationPublicationError).publicationCause).toMatchObject({ code: "plugin-runtime-shutdown" });
+    expect(lifecycle.getActive(ID)?.generationId).toBe(incumbent);
+    // Released once: the activation's own cleanup found it already released.
+    expect(f.constructed.map((record) => record.stops)).toEqual([1, 1]);
+    expect(f.incarnations[1]!.isActive()).toBe(false);
+  });
+
+  it.each(["host integration", "panel delegate"] as const)("a %s keeps its generation until its callback settles, though shutdown rejected its caller", async (route) => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const payload = f.roots[0]!;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inCallback = new Promise<void>((resolve) => { entered = resolve; });
+    // What the callback finds once it resumes: whether its payload is still there.
+    const callback = async () => { entered(); await held; return f.exists(payload); };
+    let payloadAtResume: Promise<boolean> | undefined;
+    const tracked = async () => { payloadAtResume = callback(); return payloadAtResume; };
+    if (route === "panel delegate") f.runtime.setToolInvocationDelegate(tracked);
+    const caller = route === "panel delegate"
+      ? f.runtime.callFromUi(PING, {})
+      : f.runtime.withPluginInstanceLease(ID, tracked);
+    const callerOutcome = settledWithin(caller, 60_000);
+    await inCallback;
+    const removal = f.runtime.removePlugin(ID).then(() => undefined, () => undefined);
+    await vi.waitFor(() => expect(lifecycle.getActive(ID)).toBeUndefined());
+    const deadline = new AbortController();
+    const stopping = f.runtime.stopAll({ signal: deadline.signal });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    deadline.abort();
+    try {
+      const report = await stopping;
+      expect(await callerOutcome).toMatchObject({ state: "rejected", error: { code: "plugin-runtime-shutdown" } });
+      // Time enough for a retirement released early to remove the payload.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(await f.exists(payload)).toBe(true);
+      // The retirement waits on the callback's lease: named, not reported done.
+      expect(report).toEqual({ unfinished: [ID] });
+    } finally {
+      release();
+    }
+    expect(await payloadAtResume).toBe(true);
+    await removal;
+    await lifecycle.waitForRetirements();
+    expect(await f.exists(payload)).toBe(false);
+  });
+
+  it("names a generation already retiring outside the runtime map when the deadline passes", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.addPlugin(ID);
+    const instance = f.constructed[0]!.instance as { stop?: () => Promise<void> };
+    const stop = instance.stop!;
+    let releaseStop!: () => void;
+    const stopHeld = new Promise<void>((resolve) => { releaseStop = resolve; });
+    let stopEntered!: () => void;
+    const inStop = new Promise<void>((resolve) => { stopEntered = resolve; });
+    instance.stop = async () => { stopEntered(); await stopHeld; await stop(); };
+    const removal = f.runtime.removePlugin(ID).then(() => undefined, () => undefined);
+    await inStop;
+    expect(lifecycle.getActive(ID)).toBeUndefined();
+    expect(f.runtime.listPluginIds()).not.toContain(ID);
+    const deadline = new AbortController();
+    const stopping = f.runtime.stopAll({ signal: deadline.signal });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    deadline.abort();
+    try {
+      expect(await stopping).toEqual({ unfinished: [ID] });
+      expect(f.audits).toContain("plugin_shutdown_retirement_incomplete");
+    } finally {
+      releaseStop();
+      await removal;
     }
   });
 

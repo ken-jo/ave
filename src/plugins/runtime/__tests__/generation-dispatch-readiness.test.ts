@@ -159,6 +159,13 @@ function runtimeFixture(
     },
     recoverRetirements: async () => undefined,
     waitForRetirements: async () => undefined,
+    closeAdmission: (reason) => coordinator.closeAdmission(reason),
+    listRetiringGenerations: () => coordinator.listRetiring().map(({ generation, retired }) => ({
+      pluginId: generation.pluginId,
+      generationId: generation.generationId,
+      runtime: generation.state.runtime,
+      retired,
+    })),
   };
   runtime.setGenerationAccess(lifecycle);
   return { coordinator, runtime, lifecycle };

@@ -119,6 +119,56 @@ describe("PluginGenerationCoordinator", () => {
     await expect(coordinator.acquire("bundle-host-test")).rejects.toThrow(/no active generation/);
   });
 
+  it("closing admission rejects queued and later acquisitions and refuses an unpublished candidate", async () => {
+    const coordinator = new PluginGenerationCoordinator<{ label: string }>();
+    await publishReady(coordinator, generation("g1"));
+    const shutdown = (pluginId: string) => Object.assign(new Error(`${pluginId} is shutting down`), { code: "host-shutdown" });
+    let finishCommit!: () => void;
+    const durable = new Promise<void>((resolve) => { finishCommit = resolve; });
+    let durableEntered!: () => void;
+    const atDurable = new Promise<void>((resolve) => { durableEntered = resolve; });
+    // A candidate whose durable commit is still running when admission closes.
+    const held = coordinator.commit(generation("g2"), async () => { durableEntered(); await durable; });
+    await atDurable;
+    const queued = coordinator.acquire("bundle-host-test");
+    const queuedExact = coordinator.acquireExact("bundle-host-test", "g1");
+    const queuedOutcomes = Promise.allSettled([queued, queuedExact]);
+    await Promise.resolve();
+    coordinator.closeAdmission(shutdown);
+    const [first, second] = await queuedOutcomes;
+    expect(first).toMatchObject({ status: "rejected", reason: { code: "host-shutdown" } });
+    expect(second).toMatchObject({ status: "rejected", reason: { code: "host-shutdown" } });
+    await expect(coordinator.acquire("bundle-host-test")).rejects.toMatchObject({ code: "host-shutdown" });
+    await expect(coordinator.acquireExact("bundle-host-test", "g1")).rejects.toMatchObject({ code: "host-shutdown" });
+
+    // Durable state now names g2, but nothing publishes: reported as a
+    // publication failure after the durable commit, the pointer unchanged.
+    finishCommit();
+    const refused = await held.then(() => undefined, (error: unknown) => error);
+    expect(refused).toBeInstanceOf(CommittedPluginGenerationPublicationError);
+    expect((refused as CommittedPluginGenerationPublicationError).publicationCause).toMatchObject({ code: "host-shutdown" });
+    expect(coordinator.getActive("bundle-host-test")?.generationId).toBe("g1");
+
+    // A candidate reaching its commit after the closure never runs its durable commit.
+    const durableCommit = vi.fn(async () => undefined);
+    await expect(coordinator.commit(generation("g3"), durableCommit)).rejects.toMatchObject({ code: "host-shutdown" });
+    expect(durableCommit).not.toHaveBeenCalled();
+    expect(coordinator.getActive("bundle-host-test")?.generationId).toBe("g1");
+  });
+
+  it("lists a predecessor as retiring until its leases drain and its retirement finishes", async () => {
+    const coordinator = new PluginGenerationCoordinator<{ label: string }>();
+    await publishReady(coordinator, generation("g1"));
+    const lease = await coordinator.acquire("bundle-host-test");
+    const published = await coordinator.commit(undefined, async () => undefined, async () => undefined, "bundle-host-test");
+    expect(coordinator.listRetiring().map((entry) => entry.generation.generationId)).toEqual(["g1"]);
+    expect(coordinator.listRetiring()[0]!.retired).toBe(published.retired);
+    lease.release();
+    await published.retired;
+    await Promise.resolve();
+    expect(coordinator.listRetiring()).toEqual([]);
+  });
+
   it("makes lease release idempotent", async () => {
     const coordinator = new PluginGenerationCoordinator();
     await publishReady(coordinator, generation("g1"));

@@ -633,11 +633,20 @@ export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginR
   const lifecycleTails = new Map<string, Promise<void>>();
   const lifecycleQueueContext = new AsyncLocalStorage<ReadonlyMap<string, object>>();
   const activeLifecycleQueueTokens = new WeakSet<object>();
-  const retirementTasks = new Set<Promise<void>>();
+  const retirementTasks = new Map<Promise<void>, ActivePluginGeneration<HostPluginGenerationState>>();
   let sequence = 0;
+  // The production lifecycle's admission contract: once closed (shutdown) no
+  // lease is granted and no candidate publishes.
+  let admissionClosure: ((pluginId: string) => Error) | undefined;
+  const assertAdmissionOpen = (pluginId: string): void => {
+    if (admissionClosure) throw admissionClosure(pluginId);
+  };
 
-  const trackRetirement = (retirement: Promise<void>): Promise<void> => {
-    retirementTasks.add(retirement);
+  const trackRetirement = (
+    retirement: Promise<void>,
+    generation: ActivePluginGeneration<HostPluginGenerationState>,
+  ): Promise<void> => {
+    retirementTasks.set(retirement, generation);
     void retirement
       .finally(() => retirementTasks.delete(retirement))
       .catch(() => undefined);
@@ -741,6 +750,7 @@ export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginR
     projection: PluginRuntimeGenerationProjection,
   ): Promise<{ retirement: Promise<void> }> => {
     const pluginId = projection.manifest.id;
+    assertAdmissionOpen(pluginId);
     const predecessor = active.get(pluginId);
     const generationId = `test-generation-${++sequence}`;
     projection.hostEffects?.bindGeneration(lifecycle as never, generationId);
@@ -761,7 +771,7 @@ export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginR
       },
     });
     const retirement = predecessor && predecessor.state.runtime !== projection
-      ? trackRetirement(runRuntimeRetirement(predecessor.state.runtime))
+      ? trackRetirement(runRuntimeRetirement(predecessor.state.runtime), predecessor)
       : Promise.resolve();
     return { retirement };
   };
@@ -773,7 +783,7 @@ export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginR
     runtime.prepareRuntimeRemoval(pluginId, predecessor?.generationId).publish();
     active.delete(pluginId);
     const retirement = predecessor
-      ? trackRetirement(runRuntimeRetirement(predecessor.state.runtime))
+      ? trackRetirement(runRuntimeRetirement(predecessor.state.runtime), predecessor)
       : Promise.resolve();
     return { retirement };
   };
@@ -793,11 +803,13 @@ export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginR
     isExactAdmitted: (pluginId: string, generationId: string) =>
       active.get(pluginId)?.generationId === generationId,
     acquire: async (pluginId: string) => {
+      assertAdmissionOpen(pluginId);
       const generation = active.get(pluginId) ?? adoptLegacyProjection(pluginId);
       if (!generation) throw new Error(`test generation is not active for '${pluginId}'`);
       return { generation, release: () => undefined };
     },
     acquireExact: async (pluginId: string, generationId: string) => {
+      assertAdmissionOpen(pluginId);
       const generation = active.get(pluginId) ?? adoptLegacyProjection(pluginId);
       if (!generation || generation.generationId !== generationId) {
         throw new Error(`test generation '${pluginId}:${generationId}' is not active`);
@@ -853,8 +865,17 @@ export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginR
       }),
     recoverRetirements: async () => undefined,
     waitForRetirements: async () => {
-      await Promise.all([...retirementTasks]);
+      await Promise.all([...retirementTasks.keys()]);
     },
+    closeAdmission: (reason: (pluginId: string) => Error) => {
+      admissionClosure ??= reason;
+    },
+    listRetiringGenerations: () => [...retirementTasks].map(([retired, generation]) => ({
+      pluginId: generation.pluginId,
+      generationId: generation.generationId,
+      runtime: generation.state.runtime,
+      retired,
+    })),
   };
 
   const testInternals = runtime as unknown as {
