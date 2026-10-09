@@ -149,10 +149,15 @@ interface Probe {
   requestAndWait: ReturnType<typeof vi.fn>;
 }
 
-async function openProbe(): Promise<Probe> {
+async function openProbe(options: { watcherFailure?: boolean } = {}): Promise<Probe> {
   const raised: Probe["raised"] = [];
   const requestAndWait = vi.fn(async () => ({ choice: "allow-once" as const }));
-  const watch = () => () => undefined;
+  let watcherFailure = options.watcherFailure === true;
+  const watch = () => () => {
+    if (!watcherFailure) return;
+    watcherFailure = false;
+    throw new Error("watcher cleanup failed");
+  };
   const plain = {
     getInstalledPluginIds: () => [PLUGIN_ID],
     onPluginsChanged: watch,
@@ -285,6 +290,27 @@ describe("a request that names no invocation runs in none", () => {
       expect(probe.requestAndWait).not.toHaveBeenCalled();
       expect(probe.raised).toEqual([{ key: "start", toolName: undefined }]);
     } finally {
+      await probe.session.teardown("case over");
+    }
+  });
+});
+
+describe("session cleanup always reaches the transport", () => {
+  it.each(["teardown", "stop"] as const)("closes the channel when a host watcher throws during %s", async (ending) => {
+    const probe = await openProbe({ watcherFailure: true });
+    try {
+      await runWithEffectGateContext(
+        { headless: false, approvalSurface: "interactive", toolName: "raise" },
+        async () => await probe.session.instance.handlers.raise!(),
+      );
+      const closing = ending === "stop"
+        ? probe.session.instance.stop!()
+        : probe.session.teardown("watcher failure");
+      await expect(closing).rejects.toThrow("watcher cleanup failed");
+      await expect(probe.session.channel.requestMcp("tools/list", {}))
+        .rejects.toThrow(/watcher failure|stopped/);
+    } finally {
+      probe.session.channel.closeInput();
       await probe.session.teardown("case over");
     }
   });

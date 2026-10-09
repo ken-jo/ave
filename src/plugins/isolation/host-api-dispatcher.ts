@@ -52,7 +52,9 @@ import {
   GATED_EFFECT_PATHS,
 } from "../../permissions/effect-enforcement.js";
 import { ManifestIntegrityError } from "../../permissions/manifest-integrity.js";
+import { methodEffect } from "../../permissions/effect-kind.js";
 import { PluginRuntimeDetachedOperationError } from "../runtime/detached-operation.js";
+import { currentInvocationOrigin } from "../runtime/origin-chain.js";
 import {
   PluginStorageEncryptionUnavailableError,
   PluginStorageError,
@@ -138,7 +140,8 @@ export type InvocationContextRunner = <R>(fn: () => R) => R;
  * locks. Anything that is not an invocation's runs here.
  */
 const OUTSIDE_INVOCATION: InvocationContextRunner = (() => {
-  if (currentEffectGateContext() !== undefined) {
+  // App-only tools have an origin frame but do not enter the executor's gate.
+  if (currentEffectGateContext() !== undefined || currentInvocationOrigin() !== undefined) {
     throw new Error(
       "[host-api-dispatcher] evaluated inside a tool invocation; the outside-invocation context cannot be captured here",
     );
@@ -2114,6 +2117,8 @@ export class HostApiDispatcher {
   private pendingSubscriptionCount = 0;
   private readonly reportedUnknownFields = new Set<string>();
   private unknownFieldsSuppressed = false;
+  /** At most one omission warning per gated path for this connection. */
+  private readonly warnedTokenlessPaths = new Set<HostApiPath>();
 
   constructor(private readonly options: HostApiDispatcherOptions) {
     this.table = options.table ?? HOSTAPI_DISPATCH_TABLE;
@@ -2171,7 +2176,7 @@ export class HostApiDispatcher {
       );
       const token = invocationTokenOf(request.params);
       const value = await (token === undefined
-        ? this.runTokenless(handler.path, invoke)
+        ? this.runTokenless(handler.path, args, invoke)
         : this.runInInvocation(handler.path, token, invoke));
       // `null` for a `void` member, and for an absent value: JSON-RPC requires
       // `result`, and JSON has no `undefined` to put in it.
@@ -2196,10 +2201,16 @@ export class HostApiDispatcher {
    * work, so it does not refuse it. It records the case that looks like the
    * first: a gated write with no token while a `tools/call` is in flight.
    */
-  private runTokenless<R>(path: HostApiPath, invoke: () => R): R {
-    if (GATED_EFFECT_PATHS.has(path)) {
+  private runTokenless<R>(path: HostApiPath, args: readonly unknown[], invoke: () => R): R {
+    // Fetch is gated inline, so it is absent from the generic wrapper's set.
+    // These args have crossed the JSON check; only the method selects a diagnostic.
+    const rawMethod = path === "hostFetch" ? (args[1] as { method?: unknown } | undefined)?.method : undefined;
+    const isFetchWrite = path === "hostFetch"
+      && methodEffect(typeof rawMethod === "string" && rawMethod.length > 0 ? rawMethod : "GET") === "write";
+    if (GATED_EFFECT_PATHS.has(path) || isFetchWrite) {
       const toolCallsInFlight = this.options.invocations?.toolCallsInFlight() ?? 0;
-      if (toolCallsInFlight > 0) {
+      if (toolCallsInFlight > 0 && !this.warnedTokenlessPaths.has(path)) {
+        this.warnedTokenlessPaths.add(path);
         log.warn(
           { pluginId: this.options.pluginId, path, toolCallsInFlight },
           "a gated hostApi write arrived without an invocation token while a tool call was in flight; it runs outside any invocation",
@@ -2277,6 +2288,7 @@ export class HostApiDispatcher {
       controller.abort(new DOMException("[host-api-dispatcher] the child is gone", "AbortError"));
     }
     this.inFlight.clear();
+    this.warnedTokenlessPaths.clear();
     this.budgets.end();
     const closed = this.subscriptions.end("peer-gone");
     this.pendingSubscriptions.clear();

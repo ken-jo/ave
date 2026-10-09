@@ -402,7 +402,7 @@ export async function openPluginProtocolSession(
   };
   const teardown = async (reason: string): Promise<void> => {
     live = false;
-    stopHostWatchers();
+    // End invocation retention even if a host watcher fails while being released.
     transport.close(reason);
     await release(reason);
   };
@@ -639,8 +639,8 @@ export async function openPluginProtocolSession(
        * optional and the teardown is not.
        */
       stop: async () => {
-        stopHostWatchers();
         try {
+          stopHostWatchers();
           await channel.runStopHook();
         } finally {
           // Torn down AFTER the hook, not before. The in-process lifecycle

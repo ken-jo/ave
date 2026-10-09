@@ -70,6 +70,9 @@ const log = createLogger("plugin-child-transport");
  */
 export const SETTLED_INVOCATIONS_MAX = 1024;
 
+/** Admission bound for unresolved calls; admitted live contexts are never evicted. */
+const LIVE_INVOCATIONS_MAX = 64;
+
 /** A JSON-RPC error as it arrives from the child. */
 interface JsonRpcErrorBody {
   readonly code: number;
@@ -350,6 +353,10 @@ export class PluginChildTransport {
     if (method !== "tools/call") {
       return await this.send(method, { ...params, _meta: pluginChildRequestMeta() }, timeoutMs);
     }
+    if (this.closedReason !== undefined) throw new Error(this.closedReason);
+    if (this.liveInvocations.size >= LIVE_INVOCATIONS_MAX) {
+      throw new Error("[plugin-child-transport] too many tool calls in flight");
+    }
     // Taken HERE, in the caller's async chain: the tool handler that called
     // this runs inside the host's per-invocation context.
     const token = randomUUID();
@@ -454,11 +461,15 @@ export class PluginChildTransport {
     if (this.closedReason !== undefined) return;
     this.closedReason = reason;
     this.terminating = true;
-    this.logPartialFrame();
-    this.link.terminate(reason);
-    this.pending.rejectAll(reason);
-    this.dispatcher.childGone();
+    // Release contexts before any fallible signal or subscription cleanup.
     this.releaseInvocations();
+    this.logPartialFrame();
+    try {
+      this.link.terminate(reason);
+    } finally {
+      this.pending.rejectAll(reason);
+      this.dispatcher.childGone();
+    }
   }
 
   /**
@@ -475,10 +486,10 @@ export class PluginChildTransport {
     }
     if (this.closedReason !== undefined) return;
     this.closedReason = reason;
+    this.releaseInvocations();
     this.logPartialFrame();
     this.pending.rejectAll(reason);
     this.dispatcher.childGone();
-    this.releaseInvocations();
   }
 
   /**
