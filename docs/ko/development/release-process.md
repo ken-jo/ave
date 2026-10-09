@@ -9,7 +9,7 @@
 
 2. **머지 commit에 annotated tag를 만든다.** PR을 `--merge`로 머지한 뒤 main의 merge SHA에 `git tag -a vX.Y.Z -m "Ave vX.Y.Z"`를 만들고 push한다. PR merge 전에 tag를 push하지 않는다.
 3. **tag workflow는 event SHA에 고정된다.** Build Installers는 `github.sha`를 checkout하고 `HEAD == github.sha`를 검증한다. public tag는 `--skip-code-sign`으로 macOS/Linux/Windows를 빌드한다.
-4. **draft Release와 13개 asset을 검증한다.** versioned asset과 update metadata 13개(`Ave-latest-*` alias는 더 이상 게시하지 않는다), 세 OS build log와 macOS unsigned smoke skip 사유를 확인한다.
+4. **draft Release와 13개 asset을 검증한다.** versioned installer·blockmap 10개와 update metadata 3개(`latest.yml`, `latest-mac.yml`, `latest-linux.yml`)가 모두 있는지 확인한다. 목록은 영어 문서의 [Release asset set](../../development/release-process.md#release-asset-set)을 따른다. `Ave-latest-*` 같은 고정 이름 alias는 게시하지 않는다. 세 OS build log와 macOS unsigned smoke skip 사유도 확인한다.
 5. **Release body의 disclosure를 유지한다.** draft의 unsigned/SmartScreen/Gatekeeper/Linux checksum 경고를 보존하고, CHANGELOG는 그 아래에 합성해 추가한다. CHANGELOG만 `--notes-file`로 덮어써 disclosure를 삭제하면 안 된다.
 6. **그 후에만 publish한다.** 완성된 body와 asset을 재확인한 후 `gh release edit vX.Y.Z --draft=false`를 실행한다.
 
@@ -17,7 +17,7 @@
 
 - `release-profile`: tag/version/profile과 immutable source SHA를 fail-closed 검증한다.
 - `installers`: 세 native OS matrix가 unsigned installer를 artifact로만 업로드한다. 이 job은 `contents: read`를 가진다.
-- `publish-release`: 모든 artifact와 stable alias를 한 번에 draft GitHub Release에 붙인다. 이 job만 `contents: write`를 가진다.
+- `publish-release`: 세 OS의 artifact를 내려받아 13개 versioned asset을 한 번에 draft GitHub Release에 붙인다. 고정 이름 alias는 만들지 않는다. 이 job만 `contents: write`를 가진다.
 
 ## 향후 signed release
 

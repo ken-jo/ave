@@ -44,6 +44,27 @@ is `unsigned`.
   manual step: the operator checks the draft's assets and body, then takes it
   out of draft.
 
+### Release asset set
+
+The `publish-release` job attaches exactly the files the `installers` matrix
+uploads (`.github/workflows/build-installers.yml`, `Upload installers`), named by
+the `artifactName` patterns in `package.json#build`. A complete draft has 13
+assets: ten versioned installers and blockmaps, plus the three
+electron-updater metadata files:
+
+| Platform | Assets |
+| --- | --- |
+| macOS (`dmg`, `zip`) | `Ave-X.Y.Z-mac-arm64.dmg`, `.dmg.blockmap`, `Ave-X.Y.Z-mac-arm64.zip`, `.zip.blockmap`, `latest-mac.yml` |
+| Windows (`nsis`, `zip`) | `Ave-X.Y.Z-windows-x64-setup.exe`, `.exe.blockmap`, `Ave-X.Y.Z-win-x64.zip`, `latest.yml` |
+| Linux (`AppImage`, `deb`, `rpm`) | `Ave-X.Y.Z-linux-x86_64.AppImage`, `Ave-X.Y.Z-linux-amd64.deb`, `Ave-X.Y.Z-linux-x86_64.rpm`, `latest-linux.yml` |
+
+GitHub records a `sha256` digest for every asset, and the `latest*.yml` files
+carry the `sha512` that electron-updater verifies. There are no
+`Ave-latest-*` aliases or other fixed-name copies: a stable asset name would
+have to be overwritten on every release. The website's download buttons open
+`releases/latest` instead (`web/lib/downloads.ts`), which GitHub resolves to the
+newest release.
+
 A future signed/notarized release requires a separate reviewed workflow and
 positive platform signature/notarization evidence. It must not be enabled by
 adding secrets to this unsigned workflow.

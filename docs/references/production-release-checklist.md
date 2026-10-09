@@ -84,10 +84,12 @@ changing artifact compression or size.
 For all three platforms, use the **Build Installers** GitHub Actions workflow.
 It runs the same `scripts/build-installers.mjs` entrypoint on macOS, Linux,
 and Windows runners so native dependencies and installer tooling are resolved
-on the target OS instead of relying on cross-platform packaging. Assets are
-published under their version (`Ave-X.Y.Z-*`) only; there are no
-`Ave-latest-*` alias assets, and the website links to the release page rather
-than to any asset file, so no stable asset filename has to exist.
+on the target OS instead of relying on cross-platform packaging. A tag release
+carries 13 assets: ten installers and blockmaps published under their version
+(`Ave-X.Y.Z-*`) and the three electron-updater `latest*.yml` metadata files
+(see [Release asset set](../development/release-process.md#release-asset-set)).
+There are no `Ave-latest-*` alias assets, and the website links to the release
+page rather than to any asset file, so no stable asset filename has to exist.
 
 ## Explicit Unsigned Public Release Exception
 
