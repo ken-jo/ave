@@ -16,7 +16,7 @@
  * Shared by receipt verification, permissions and runtime-directory mutations
  * so their paths and host-side serialization agree.
  */
-import { link, lstat, readdir, rename, rm, rmdir, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, readdir, rename, rm, rmdir, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
@@ -45,6 +45,16 @@ export const PLUGIN_WORKER_RUN_DIR_NAME = "run";
  * stale one needs answered, and a single directory could not answer it.
  */
 export const PLUGIN_OWN_SOCKET_DIR_NAME = "sockets";
+
+/**
+ * HOST-ONLY staging directory under a plugin root, used while
+ * {@link carryPluginSocketDirs} moves `sockets/` entries between roots. No
+ * child's envelope names it, so an entry renamed in here can no longer be
+ * swapped by the plugin before the host inspects and links it. It is empty and
+ * removed when a carry completes; one left by an interrupted carry is drained
+ * into the same root's `sockets/` by the next carry that touches the root.
+ */
+export const PLUGIN_SOCKET_CARRY_DIR_NAME = ".sockets-carry";
 
 /**
  * Every top-level directory under a plugin root that is RUNTIME STATE rather
@@ -77,6 +87,10 @@ export const PLUGIN_OWN_SOCKET_DIR_NAME = "sockets";
  *    local-indexer's egress broker binds `sockets/egress.sock`; a quit that
  *    left it behind made the NEXT boot refuse the plugin with "installed
  *    payload contains unsupported entry: sockets/egress.sock".
+ *  - `.sockets-carry/` — the host's staging directory for a socket carry
+ *    ({@link PLUGIN_SOCKET_CARRY_DIR_NAME}). It exists only during a carry, or
+ *    after a crash in one until the next carry drains it, and it holds the
+ *    same socket entries as `sockets/`.
  *
  * The exclusion is TOP LEVEL only, everywhere it is applied — a nested
  * `dist/data/` is shipped payload and stays validated, copied, and refused in
@@ -91,6 +105,7 @@ export const PLUGIN_RUNTIME_DIR_NAMES: ReadonlySet<string> = new Set([
   PLUGIN_DATA_DIR_NAME,
   PLUGIN_WORKER_RUN_DIR_NAME,
   PLUGIN_OWN_SOCKET_DIR_NAME,
+  PLUGIN_SOCKET_CARRY_DIR_NAME,
 ]);
 
 /**
@@ -332,7 +347,8 @@ async function isEmptyDirectory(path: string): Promise<boolean> {
 /**
  * The runtime directories that hold Unix-domain sockets rather than state:
  * `run/` (host-allocated worker control sockets) and `sockets/` (sockets the
- * plugin binds itself). {@link PLUGIN_RUNTIME_DIR_NAMES} minus `data/`.
+ * plugin binds itself). {@link PLUGIN_RUNTIME_DIR_NAMES} minus `data/` and
+ * the carry's own staging directory.
  */
 const PLUGIN_SOCKET_DIR_NAMES: readonly string[] = [
   PLUGIN_WORKER_RUN_DIR_NAME,
@@ -406,6 +422,18 @@ function pluginRuntimeDirKey(pluginRoot: string): string {
  * bind a socket file; link-then-unlink refuses an existing name atomically.
  * Earlier completed moves remain in the owned roots for retry or recovery.
  *
+ * WHY `sockets/` ENTRIES GO THROUGH A HOST-ONLY STAGING DIRECTORY. `sockets/`
+ * is in the child's write envelope, so the child can replace any entry in it
+ * at any moment, including with a symlink to a file it cannot write. On macOS
+ * `link(2)` FOLLOWS a symlink and hard-links its target, so linking straight
+ * out of `sockets/` would hand the child a writable name for that file.
+ * Checking the entry first does not close it: the child can swap the entry
+ * between the check and the link. So each entry is first renamed (which never
+ * follows) into {@link PLUGIN_SOCKET_CARRY_DIR_NAME} of the receiving root,
+ * where no child can touch it; only there is it inspected, refused unless it
+ * is a socket or a regular file, linked, and verified. A symlink or other
+ * shape found at preflight is refused before anything moves.
+ *
  * Directories use {@link renameDirectory}, which retries the transient
  * Windows lock codes (reporting each retry through `policy.onRetry`); callers
  * do not wrap it again.
@@ -419,8 +447,7 @@ export async function carryPluginSocketDirs(
   },
 ): Promise<void> {
   if (isSamePluginPath(fromRoot, toRoot)) return;
-  const roots = [fromRoot, toRoot].map(pluginRuntimeDirKey).sort();
-  await withPluginRuntimeDirQueue(roots[0]!, () => withPluginRuntimeDirQueue(roots[1]!, async () => {
+  await withPluginRuntimeDirQueues([fromRoot, toRoot], async () => {
     // Recovery may discard a root while no live root survives (a cleanup after
     // an uninstall): nothing is bound there to hand the sockets to.
     if (policy.onConflict === "keep-destination" && !await pathExists(toRoot)) return;
@@ -429,21 +456,21 @@ export async function carryPluginSocketDirs(
     // would make readdir/entry moves operate on a tree outside the plugin.
     await assertSocketDirectory(fromRoot);
     await assertSocketDirectory(toRoot);
+    // An interrupted carry may have left host-staged entries in either root.
+    // They were already out of the child's reach; finish placing them first.
+    for (const root of [fromRoot, toRoot]) await finishStagedSocketEntries(root, policy.onConflict);
     for (const name of PLUGIN_SOCKET_DIR_NAMES) {
       const source = resolve(fromRoot, name);
       const target = resolve(toRoot, name);
       const sourceExists = await assertSocketDirectory(source);
       const targetExists = await assertSocketDirectory(target);
       // Only host-owned run entries may be directories. A child can create a
-      // directory inside sockets, where rename could replace a late empty one;
-      // refuse that shape before mutation instead of claiming host exclusion.
+      // directory inside sockets, where rename could replace a late empty one,
+      // and a symlink there must never reach link(). Refuse both shapes before
+      // mutation instead of claiming host exclusion.
       if (name === PLUGIN_OWN_SOCKET_DIR_NAME) {
         for (const dir of [sourceExists ? source : undefined, targetExists ? target : undefined]) {
-          if (dir) for (const entry of await readdir(dir)) {
-            if ((await lstat(resolve(dir, entry))).isDirectory()) {
-              throw new Error(`Plugin socket entry is a directory: ${resolve(dir, entry)}`);
-            }
-          }
+          if (dir) for (const entry of await readdir(dir)) await assertSocketEntryShape(resolve(dir, entry));
         }
       }
       if (sourceExists && targetExists && policy.onConflict === "reject") {
@@ -462,6 +489,9 @@ export async function carryPluginSocketDirs(
       // the final rename makes that rename fail, and the merge runs again.
       for (let attempt = 1; ; attempt += 1) {
         try {
+          // A link refused with EEXIST on the previous attempt left its entry
+          // staged; it is placed (or refused) before anything new moves.
+          if (name === PLUGIN_OWN_SOCKET_DIR_NAME) await finishStagedSocketEntries(fromRoot, policy.onConflict);
           if (await assertSocketDirectory(target)) {
             const entries = await readdir(target);
             const conflicts: string[] = [];
@@ -471,6 +501,7 @@ export async function carryPluginSocketDirs(
             if (conflicts.length > 0 && policy.onConflict === "reject") {
               throw socketConflict(name, conflicts[0]!, source, target);
             }
+            const staging = resolve(fromRoot, PLUGIN_SOCKET_CARRY_DIR_NAME);
             for (const entry of entries) {
               if (conflicts.includes(entry)) await rm(resolve(source, entry), { recursive: true, force: true });
               const from = resolve(target, entry);
@@ -481,14 +512,15 @@ export async function carryPluginSocketDirs(
                 // host mkdir, including an empty leaf, while this rename runs.
                 await move(from, to);
               } else {
-                // A live child can bind this name after preflight. link refuses
-                // EEXIST without replacing it and does not traverse a link entry.
-                // After an interrupted unlink, both names may already share the
-                // inode: finish that move instead of treating it as a conflict.
-                if (!await socketEntriesMatch(from, to)) await link(from, to);
-                await unlink(from);
+                // Out of the child's reach first (rename never follows), then
+                // inspected and linked there; see the function comment.
+                await mkdir(staging, { recursive: true });
+                const staged = resolve(staging, entry);
+                await move(from, staged);
+                await placeStagedSocketEntry(staged, to, policy.onConflict);
               }
             }
+            if (await pathExists(staging)) await rmdir(staging);
             await rmdir(target);
           }
           await move(source, target);
@@ -499,14 +531,95 @@ export async function carryPluginSocketDirs(
         }
       }
     }
-  }));
+  });
+}
+
+/**
+ * Hold the runtime-directory queue of every distinct root, in one global
+ * order. Equal keys are collapsed first: nesting the same in-process queue
+ * twice would wait on itself forever.
+ */
+function withPluginRuntimeDirQueues(roots: readonly string[], operation: () => Promise<void>): Promise<void> {
+  const keys = [...new Set(roots.map(pluginRuntimeDirKey))].sort();
+  return keys.reduceRight<() => Promise<void>>(
+    (inner, key) => () => withInProcessFileQueue(key, inner),
+    operation,
+  )();
+}
+
+/**
+ * Refuse a `sockets/` entry the carry may not move: a directory (see the
+ * preflight) or anything that is not a socket or a regular file, a symlink
+ * above all, because macOS `link(2)` would follow it.
+ */
+async function assertSocketEntryShape(path: string): Promise<void> {
+  const entry = await lstat(path);
+  if (entry.isDirectory()) throw new Error(`Plugin socket entry is a directory: ${path}`);
+  if (!entry.isSocket() && !entry.isFile()) {
+    throw new Error(`Plugin socket entry is not a socket or regular file: ${path}`);
+  }
+}
+
+/**
+ * Give a host-staged `sockets/` entry its final name, then drop the staged
+ * one. The staged entry is out of every child's reach, so the shape checked
+ * here is the shape linked. A refused entry is removed from staging: rm does
+ * not follow a symlink, and leaving it would refuse every later carry too.
+ * After an interrupted unlink the two names already share the inode, which
+ * finishes the move rather than counting as a conflict.
+ */
+async function placeStagedSocketEntry(
+  staged: string,
+  to: string,
+  onConflict: "reject" | "keep-destination",
+): Promise<void> {
+  if (!await socketEntriesMatch(staged, to)) {
+    try {
+      await assertSocketEntryShape(staged);
+    } catch (error) {
+      await rm(staged, { recursive: true, force: true });
+      throw error;
+    }
+    if (await pathExists(to)) {
+      if (onConflict === "reject") {
+        throw new Error(`[plugin-storage-layout] a socket was bound at ${to} during the carry; the carried entry stays staged at ${staged}`);
+      }
+      await rm(to, { recursive: true, force: true });
+    }
+    // A live child can still bind this name now: link refuses EEXIST without
+    // replacing it, and the caller's next attempt places the entry again.
+    await link(staged, to);
+    if (!await socketEntriesMatch(staged, to)) {
+      throw new Error(`[plugin-storage-layout] linked socket entry does not match its staged source: ${to}`);
+    }
+  }
+  await unlink(staged);
+}
+
+/**
+ * Place every entry a previous, interrupted carry left in this root's staging
+ * directory into the same root's `sockets/` (the directory it was moving
+ * toward), then remove the staging directory.
+ */
+async function finishStagedSocketEntries(root: string, onConflict: "reject" | "keep-destination"): Promise<void> {
+  const staging = resolve(root, PLUGIN_SOCKET_CARRY_DIR_NAME);
+  if (!await assertSocketDirectory(staging)) return;
+  const sockets = resolve(root, PLUGIN_OWN_SOCKET_DIR_NAME);
+  if (!await assertSocketDirectory(sockets)) {
+    throw new Error(`[plugin-storage-layout] staged socket entries have no socket directory to return to: ${staging}`);
+  }
+  for (const entry of await readdir(staging)) {
+    await placeStagedSocketEntry(resolve(staging, entry), resolve(sockets, entry), onConflict);
+  }
+  await rmdir(staging);
 }
 
 async function socketEntriesMatch(from: string, to: string): Promise<boolean> {
   try {
-    const source = await lstat(from);
-    const target = await lstat(to);
-    return source.ino !== 0 && source.ino === target.ino && source.dev === target.dev;
+    // bigint: a Windows 64-bit file id does not survive a double.
+    const source = await lstat(from, { bigint: true });
+    const target = await lstat(to, { bigint: true });
+    return source.ino !== 0n && source.ino === target.ino && source.dev === target.dev;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
