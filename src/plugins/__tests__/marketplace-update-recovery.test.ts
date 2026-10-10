@@ -474,6 +474,39 @@ describe("marketplace pending-update recovery", () => {
       expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [], unresolved: [] });
     });
 
+    // The promoted root's child left a link in its own sockets/. Recovery
+    // removes it rather than throwing, or the plugin would stay unresolved on
+    // every boot; the link's target is never touched.
+    it("resolve past a link a child left in its sockets/", async () => {
+      const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
+      const backupDir = join(paths.pluginsRoot, ".cache", "local-install-rollback", `${pluginId}-1-1`);
+      await mkdir(join(backupDir, "dist"), { recursive: true });
+      await writeFile(join(backupDir, "plugin.json"), oldManifest);
+      await writeFile(join(backupDir, "dist", "index.js"), oldDist);
+      await mkdir(join(backupDir, "sockets"), { recursive: true });
+      await writeFile(join(backupDir, "sockets", "egress.sock"), "live");
+      const inode = statSync(join(backupDir, "sockets")).ino;
+      await preparePendingPluginUpdate(paths, entry, {
+        kind: "local-dev",
+        recoveryBackupDir: backupDir,
+        recoveryBackupMode: "copy",
+      });
+      const live = join(paths.pluginsRoot, pluginId);
+      await writeFile(join(live, "plugin.json"), JSON.stringify({ id: pluginId, version: "2.0.0" }));
+      await writeFile(installReceiptPath(paths.cacheRoot, pluginId), JSON.stringify({ pluginId, version: "2.0.0" }));
+      const victim = join(dirname(paths.pluginsRoot), "victim");
+      await writeFile(victim, "original");
+      await mkdir(join(live, "sockets"), { recursive: true });
+      await symlink(victim, join(live, "sockets", "evil.sock"));
+
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
+      expect(await readFile(join(live, "plugin.json"), "utf-8")).toBe(oldManifest);
+      expect(statSync(join(live, "sockets")).ino).toBe(inode);
+      expect(await readdir(join(live, "sockets"))).toEqual(["egress.sock"]);
+      expect(await readFile(victim, "utf-8")).toBe("original");
+      expect(statSync(victim).nlink).toBe(1);
+    });
+
     it("come back from a copy-mode backup into the restored root", async () => {
       const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
       const backupDir = join(paths.pluginsRoot, ".cache", "local-install-rollback", `${pluginId}-1-1`);

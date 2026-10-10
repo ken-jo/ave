@@ -21,6 +21,7 @@ import { basename, dirname, resolve } from "node:path";
 import { isResolvedPathWithin } from "./plugin-storage-containment.js";
 import {
   type PluginDataCarryPolicy,
+  type PluginSocketCarryPolicy,
   carryPluginDataDir,
   carryPluginSocketDirs,
   pluginPayloadCopyFilter,
@@ -111,7 +112,11 @@ function recoveryDataCarry(paths: PluginPaths, pluginId: string): PluginDataCarr
  * Recovery keeps destination entries on a same-name conflict while retaining
  * the original directory's identity.
  */
-const RECOVERY_SOCKET_CARRY = { onConflict: "keep-destination" } as const;
+const RECOVERY_SOCKET_CARRY: PluginSocketCarryPolicy = {
+  onConflict: "keep-destination",
+  onDiscardEntry: (path, reason) =>
+    log.warn({ path, reason }, "removed a plugin socket entry recovery cannot carry"),
+};
 
 /**
  * Remove a plugin ROOT recovery has finished with, after moving whatever state

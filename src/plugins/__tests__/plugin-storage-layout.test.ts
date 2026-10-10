@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createConnection } from "node:net";
 import { join, resolve, sep } from "node:path";
@@ -80,6 +80,14 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 const PLUGIN_ID = "ave-plugin-layout-fixture";
+
+/** The recovery policy, recording what it discarded. */
+function keepDestination(discarded: string[] = []) {
+  return {
+    onConflict: "keep-destination" as const,
+    onDiscardEntry: (path: string) => { discarded.push(path); },
+  };
+}
 
 describe("resolvePluginWritableRoot", () => {
   it("resolves to the plugin's data dir, not the plugin root", () => {
@@ -440,6 +448,60 @@ describe("carryPluginSocketDirs", () => {
     expect(readFileSync(victim, "utf8")).toBe("original");
   });
 
+  // A carry interrupted while the roots had the other roles leaves its
+  // staging in what is now the RECEIVING root; it belongs to that root's
+  // sockets/ and must not be stranded beside the directory that replaces it.
+  it("places an entry an interrupted carry left staged in the receiving root", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, "sockets"), { recursive: true });
+    await mkdir(join(to, "sockets"), { recursive: true });
+    await mkdir(join(to, PLUGIN_SOCKET_CARRY_DIR_NAME));
+    const staged = join(to, PLUGIN_SOCKET_CARRY_DIR_NAME, "live.sock");
+    await writeFile(staged, "live");
+    const inode = statSync(staged).ino;
+    const sockets = statSync(join(from, "sockets")).ino;
+
+    await carryPluginSocketDirs(from, to, { onConflict: "reject" });
+
+    expect(statSync(join(to, "sockets")).ino).toBe(sockets);
+    expect(statSync(join(to, "sockets", "live.sock")).ino).toBe(inode);
+    expect(existsSync(join(to, PLUGIN_SOCKET_CARRY_DIR_NAME))).toBe(false);
+  });
+
+  // A child can leave any shape in its own sockets/. Install refuses it (the
+  // tests above); recovery must still finish, or the plugin stays unresolved
+  // on every boot. It removes the entry without following it, and says so.
+  it.skipIf(process.platform === "win32")("removes refused shapes under keep-destination instead of failing the recovery", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, "sockets"), { recursive: true });
+    await mkdir(join(to, "sockets", "nested"), { recursive: true });
+    const victim = join(root, "victim");
+    await writeFile(victim, "original");
+    await symlink(victim, join(to, "sockets", "evil.sock"));
+    await symlink(victim, join(from, "sockets", "planted.sock"));
+    execFileSync("mkfifo", [join(to, "sockets", "pipe")]);
+    await writeFile(join(to, "sockets", "egress.sock"), "live");
+    const live = statSync(join(to, "sockets", "egress.sock")).ino;
+    const sockets = statSync(join(from, "sockets")).ino;
+    const discarded: string[] = [];
+
+    await carryPluginSocketDirs(from, to, keepDestination(discarded));
+
+    expect(discarded.sort()).toEqual([
+      join(from, "sockets", "planted.sock"),
+      join(to, "sockets", "evil.sock"),
+      join(to, "sockets", "nested"),
+      join(to, "sockets", "pipe"),
+    ].sort());
+    expect(statSync(join(to, "sockets")).ino).toBe(sockets);
+    expect(await readdir(join(to, "sockets"))).toEqual(["egress.sock"]);
+    expect(statSync(join(to, "sockets", "egress.sock")).ino).toBe(live);
+    expect(statSync(victim).nlink).toBe(1);
+    expect(readFileSync(victim, "utf8")).toBe("original");
+  });
+
   it("places an entry an interrupted carry left staged before it was linked", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
@@ -571,7 +633,7 @@ describe("carryPluginSocketDirs", () => {
       const w1 = statSync(join(from, PLUGIN_WORKER_RUN_DIR_NAME, "w1")).ino;
       const w2 = statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w2")).ino;
 
-      await carryPluginSocketDirs(from, to, { onConflict });
+      await carryPluginSocketDirs(from, to, onConflict === "reject" ? { onConflict } : keepDestination());
 
       expect(statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME)).ino).toBe(run);
       expect(statSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME, "w1")).ino).toBe(w1);
@@ -604,7 +666,7 @@ describe("carryPluginSocketDirs", () => {
     await writeFile(join(from, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "source");
     await writeFile(join(to, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "destination");
 
-    await carryPluginSocketDirs(from, to, { onConflict: "keep-destination" });
+    await carryPluginSocketDirs(from, to, keepDestination());
 
     expect(readFileSync(join(to, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "utf8")).toBe("destination");
   });
@@ -638,7 +700,7 @@ describe("carryPluginSocketDirs", () => {
     const from = join(root, "old");
     await mkdir(join(from, PLUGIN_OWN_SOCKET_DIR_NAME), { recursive: true });
 
-    await carryPluginSocketDirs(from, join(root, "gone"), { onConflict: "keep-destination" });
+    await carryPluginSocketDirs(from, join(root, "gone"), keepDestination());
 
     expect(existsSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME))).toBe(true);
     expect(existsSync(join(root, "gone"))).toBe(false);
