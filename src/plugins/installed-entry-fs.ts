@@ -23,6 +23,7 @@
 import { mkdir, rename, rm } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import { confinedProcessesMayBeRunning } from "../lib/confined-process-phase.js";
 
 /**
  * Subdirectory under `pluginsRoot` where uninstall tombstones live.
@@ -66,10 +67,18 @@ const RECURSIVE_REMOVE_OPTIONS = {
   retryDelay: 50,
 } as const;
 
+/**
+ * Remove a tombstone now when no confined process can be running yet;
+ * otherwise leave it for the next boot's sweep. A tombstone can hold a
+ * directory a still-running child is bound to (Linux `--bind` follows the
+ * directory through the rename), and a recursive delete would race that child
+ * (see lib/confined-process-phase.ts).
+ */
 export function deferTombstoneRemoval(
   tombstonePath: string,
   onError?: (tombstonePath: string, err: Error) => void,
 ): void {
+  if (confinedProcessesMayBeRunning()) return;
   rm(tombstonePath, RECURSIVE_REMOVE_OPTIONS).catch((rmErr) => {
     onError?.(tombstonePath, rmErr as Error);
   });
@@ -84,9 +93,10 @@ export function deferTombstoneRemoval(
  *    sharing; otherwise the rename throws and the caller surfaces the
  *    uninstall failure. The `<rand>` suffix prevents collisions when
  *    multiple uninstalls fire within the same millisecond.
- * 2. Fire-and-forget rm of the tombstone. On Windows the rm may fail with
- *    EBUSY if handles are still open — that's fine, the orphan sweeper at
- *    next boot picks up the leftover.
+ * 2. Fire-and-forget rm of the tombstone, only while no confined process can
+ *    be running ({@link deferTombstoneRemoval}); otherwise, and on a Windows
+ *    EBUSY from handles still open, the orphan sweeper at next boot removes
+ *    it.
  *
  * `pluginsRoot` is required so the tombstone subdirectory ends up in the
  * canonical namespace (resolved via `aveHome()` upstream — never hardcoded).
@@ -118,6 +128,34 @@ export async function tombstoneAndDeferredRemove(
     deferTombstoneRemoval(tombstone, options.onDeferredRmError);
   }
   return tombstone;
+}
+
+/**
+ * Delete a plugin tree a confined process may write — a root holding the
+ * plugin's `data/`, `sockets/` or a worker's `run/` leaf — without racing it.
+ *
+ * Before any confined process has started (boot recovery and reconcile), the
+ * tree is removed now with `removeNow`. After that, a child of the plugin may
+ * still be bound to a directory inside it: on Linux bubblewrap's `--bind`
+ * keeps a renamed directory writable to that child, so a recursive delete
+ * would race it (see lib/confined-process-phase.ts). The tree is then renamed
+ * into the host-only tombstone namespace instead, and the next boot's sweep
+ * deletes it before plugins start.
+ *
+ * Returns what happened: removed now, deferred to the next boot, or the tree
+ * was already gone.
+ */
+export async function removePluginTreeNowOrAtBoot(
+  path: string,
+  pluginsRoot: string,
+  removeNow: (path: string) => Promise<void>,
+): Promise<"removed" | "deferred" | "absent"> {
+  if (!confinedProcessesMayBeRunning()) {
+    await removeNow(path);
+    return "removed";
+  }
+  const tombstone = await renameAsideUnder(path, pluginsRoot, TOMBSTONE_SUBDIR, {});
+  return tombstone === null ? "absent" : "deferred";
 }
 
 /**

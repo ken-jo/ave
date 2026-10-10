@@ -20,6 +20,7 @@ vi.mock("node:fs/promises", async (original) => {
 import type { PluginPaths } from "../plugin-paths.js";
 import {
   createRemovalTransaction,
+  finishRemovalTransaction,
   markRemovalTransactionRegistryCommitted,
   reconcileRemovalTransaction,
   reconcileRemovalTransactions,
@@ -27,6 +28,8 @@ import {
   stageRemovalTransaction,
 } from "../plugin-removal-transaction.js";
 import { updatePluginRegistry } from "../registry.js";
+import { TOMBSTONE_SUBDIR } from "../installed-entry-fs.js";
+import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 import { readPluginDataFixture, seedPluginDataFixture } from "./test-helpers.js";
 
 describe("durable plugin removal transactions", () => {
@@ -44,6 +47,7 @@ describe("durable plugin removal transactions", () => {
   });
 
   afterEach(async () => {
+    _resetConfinedProcessPhaseForTests();
     await rm(root, { recursive: true, force: true });
   });
 
@@ -112,6 +116,37 @@ describe("durable plugin removal transactions", () => {
     await expect(reconcileRemovalTransaction(paths, journal.transactionId)).resolves.toBe("cleaned");
     expect(existsSync(join(paths.pluginsRoot, "alpha"))).toBe(false);
     expect((await readPluginDataFixture(join(paths.pluginsRoot, "alpha"))).size).toBe(0);
+  });
+
+  // An uninstall commits while the plugin's generation is still retiring: its
+  // child may be bound (Linux --bind) to data/ inside the staged root, so a
+  // runtime finish must not delete it recursively. It goes to the tombstones,
+  // and the transaction is finished; the next boot's sweep deletes it.
+  it("tombstones the staged root instead of deleting it once confined processes may run", async () => {
+    const before = await seed(["alpha"]);
+    await seedPluginDataFixture(join(paths.pluginsRoot, "alpha"));
+    const dataIno = statSync(join(paths.pluginsRoot, "alpha", "data")).ino;
+    const journal = await createRemovalTransaction(paths, {
+      kind: "uninstall",
+      pluginIds: ["alpha"],
+      registryBefore: before,
+      registryAfter: [],
+      originals: [{ pluginId: "alpha", path: join(paths.pluginsRoot, "alpha") }],
+    });
+    await stageRemovalTransaction(paths, journal);
+    await updatePluginRegistry(paths.registryPath, (registry) => {
+      registry.plugins = [];
+    });
+    await markRemovalTransactionRegistryCommitted(paths, journal);
+    noteConfinedProcessesMayRun();
+
+    await finishRemovalTransaction(paths, journal);
+
+    expect(existsSync(join(paths.pluginsRoot, "alpha"))).toBe(false);
+    expect(existsSync(dirname(dirname(journal.mappings[0]!.stagedPath)))).toBe(false);
+    const tombstones = await readdir(join(paths.pluginsRoot, TOMBSTONE_SUBDIR));
+    expect(tombstones).toHaveLength(1);
+    expect(statSync(join(paths.pluginsRoot, TOMBSTONE_SUBDIR, tombstones[0]!, "data")).ino).toBe(dataIno);
   });
 
   it("finishes staged cleanup after the committed phase is durable", async () => {

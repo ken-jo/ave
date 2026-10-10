@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PluginMarketplaceService } from "../marketplace.js";
 import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
+import { TOMBSTONE_SUBDIR } from "../installed-entry-fs.js";
+import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 import {
   makeTestPluginPaths,
   preparedActivationOptionsForTest,
@@ -445,6 +447,76 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8")))
       .toMatchObject({ version: "1.2.3" });
     expect(await readPluginDataFixture(installDir)).toEqual(PLUGIN_DATA_FIXTURE);
+  });
+
+  // Once confined processes may run, every root a predecessor or candidate
+  // may still have in its confinement is tombstoned for the next boot rather
+  // than deleted while that child could race the delete.
+  describe("once confined processes may run", () => {
+    const tombstones = async () => {
+      const dir = join(pluginsDir, TOMBSTONE_SUBDIR);
+      return existsSync(dir) ? (await readdir(dir)).sort() : [];
+    };
+    const tombstonedVersions = async () => Promise.all((await tombstones()).map(async (name) =>
+      JSON.parse(await readFile(join(pluginsDir, TOMBSTONE_SUBDIR, name, "plugin.json"), "utf-8")).version as string));
+    const bumpSource = () => writeFile(
+      join(sourceDir, "plugin.json"),
+      JSON.stringify(agentPluginsDocument({
+        id: "test-plugin",
+        name: "Test Plugin",
+        version: "2.0.0",
+        description: "fixture v2",
+        entry: "dist/hostPlugin.js",
+      })),
+      "utf-8");
+    afterEach(() => _resetConfinedProcessPhaseForTests());
+
+    it("tombstones the replaced live root and the rollback backup of a reinstall", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, preparedActivationOptionsForTest);
+      const installDir = join(pluginsDir, "test-plugin");
+      await seedPluginDataFixture(installDir);
+      await bumpSource();
+      noteConfinedProcessesMayRun();
+
+      await service.installLocal(sourceDir, preparedActivationOptionsForTest);
+
+      expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8"))).toMatchObject({ version: "2.0.0" });
+      expect(await readPluginDataFixture(installDir)).toEqual(PLUGIN_DATA_FIXTURE);
+      expect(await tombstonedVersions()).toEqual(["1.2.3", "1.2.3"]);
+    });
+
+    it("tombstones the failed candidate's root when the restore runs", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, preparedActivationOptionsForTest);
+      const installDir = join(pluginsDir, "test-plugin");
+      await bumpSource();
+      const store = (service as unknown as {
+        artifactStore: { persistPreparedInstallReceipt: (...args: unknown[]) => Promise<unknown> };
+      }).artifactStore;
+      vi.spyOn(store, "persistPreparedInstallReceipt").mockRejectedValueOnce(new Error("replacement receipt write failed"));
+      noteConfinedProcessesMayRun();
+
+      await expect(service.installLocal(sourceDir, preparedActivationOptionsForTest))
+        .rejects.toThrow("replacement receipt write failed");
+
+      expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8"))).toMatchObject({ version: "1.2.3" });
+      expect(await tombstonedVersions()).toContain("2.0.0");
+    });
+
+    it("tombstones a failed fresh install's root", async () => {
+      const service = makeService();
+      const store = (service as unknown as {
+        artifactStore: { persistPreparedInstallReceipt: (...args: unknown[]) => Promise<unknown> };
+      }).artifactStore;
+      vi.spyOn(store, "persistPreparedInstallReceipt").mockRejectedValueOnce(new Error("receipt write failed"));
+      noteConfinedProcessesMayRun();
+
+      await expect(service.installLocal(sourceDir)).rejects.toThrow("receipt write failed");
+
+      expect(existsSync(join(pluginsDir, "test-plugin"))).toBe(false);
+      expect(await tombstonedVersions()).toEqual(["1.2.3"]);
+    });
   });
 
   it("does not restore a predecessor after committed local publication failure", async () => {

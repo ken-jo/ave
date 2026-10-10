@@ -1,5 +1,6 @@
 import type { BootHost } from "../host-runtime.js";
 import type { HostFetchTransport } from "../../main/host-fetch-guard.js";
+import { noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 /**
  * Boot §4.2 Step 3-5 — Plugin runtime + HostApi factory.
  *
@@ -567,6 +568,9 @@ export async function initPluginRuntime(
 
   const preStartPhase = new PluginRuntimePreStartPhase();
   const startPluginsOnce = async (): Promise<void> => {
+    // From here plugin processes may run; recursive deletes of plugin trees
+    // become boot-only (see lib/confined-process-phase.ts).
+    noteConfinedProcessesMayRun();
     // Managed pre-start sync may have committed registry rows after the cache
     // was first constructed. Refresh from the final durable snapshot before
     // startAll creates HostApi instances and trust decisions for those rows.

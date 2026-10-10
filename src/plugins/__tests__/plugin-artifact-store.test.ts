@@ -28,6 +28,7 @@ import { CommittedPluginGenerationPublicationError } from "../committed-generati
 import { TOMBSTONE_SUBDIR } from "../installed-entry-fs.js";
 import * as installedEntryFs from "../installed-entry-fs.js";
 import { cleanupTmpDir, makeStore, makeTmpDir } from "./artifact-store-test-helpers.js";
+import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 import {
   PLUGIN_DATA_FIXTURE,
   agentPluginsDocument,
@@ -280,6 +281,63 @@ describe("PluginArtifactStore — extractZip", () => {
       expect(await readPluginDataFixture(installDir)).toEqual(PLUGIN_DATA_FIXTURE);
       expect((await readdir(installRoot)).filter((name) => name.startsWith(".acme."))).toEqual([]);
     } finally {
+      await cleanupTmpDir(tmp);
+    }
+  });
+
+  // The candidate was activated before the commit, so it may still run with
+  // the promoted root's paths in its confinement. Once confined processes may
+  // run, the rollback tombstones that root instead of deleting it.
+  it("tombstones the promoted root on rollback once confined processes may run", async () => {
+    const tmp = makeTmpDir();
+    try {
+      const store = makeStore(tmp);
+      const installRoot = resolve(tmp, "installed");
+      const installDir = store.installDirFor("acme");
+      await mkdir(installDir, { recursive: true });
+      await writeFile(resolve(installDir, "plugin.json"), JSON.stringify(agentPluginsDocument({ id: "acme", version: "old" })));
+      const zip = new AdmZip();
+      zip.addFile("plugin.json", Buffer.from(JSON.stringify(agentPluginsDocument({ id: "acme", version: "new" }))));
+      noteConfinedProcessesMayRun();
+
+      await expect(store.extractZipWithCommit("acme", zip.toBuffer(), async () => {
+        throw new Error("config registration failed");
+      })).rejects.toThrow(/config registration failed/);
+
+      expect(JSON.parse(await readFile(resolve(installDir, "plugin.json"), "utf-8")).version).toBe("old");
+      const tombstones = await readdir(resolve(installRoot, TOMBSTONE_SUBDIR));
+      expect(tombstones).toHaveLength(1);
+      expect(JSON.parse(await readFile(resolve(installRoot, TOMBSTONE_SUBDIR, tombstones[0]!, "plugin.json"), "utf-8")).version).toBe("new");
+    } finally {
+      _resetConfinedProcessPhaseForTests();
+      await cleanupTmpDir(tmp);
+    }
+  });
+
+  // After a successful update the predecessor's root is payload only, so it
+  // is deleted at once. A runtime directory left in it refuses that delete,
+  // and the root goes to the tombstones instead.
+  it("tombstones a committed backup that still holds a runtime directory", async () => {
+    const tmp = makeTmpDir();
+    try {
+      const store = makeStore(tmp);
+      const installRoot = resolve(tmp, "installed");
+      const installDir = store.installDirFor("acme");
+      await mkdir(installDir, { recursive: true });
+      await writeFile(resolve(installDir, "plugin.json"), JSON.stringify(agentPluginsDocument({ id: "acme", version: "old" })));
+      await mkdir(resolve(installDir, "run", "w1"), { recursive: true });
+      const zip = new AdmZip();
+      zip.addFile("plugin.json", Buffer.from(JSON.stringify(agentPluginsDocument({ id: "acme", version: "new" }))));
+      noteConfinedProcessesMayRun();
+
+      await store.extractZipWithCommit("acme", zip.toBuffer(), async () => undefined);
+
+      expect(JSON.parse(await readFile(resolve(installDir, "plugin.json"), "utf-8")).version).toBe("new");
+      const tombstones = await readdir(resolve(installRoot, TOMBSTONE_SUBDIR));
+      expect(tombstones).toHaveLength(1);
+      expect(existsSync(resolve(installRoot, TOMBSTONE_SUBDIR, tombstones[0]!, "run", "w1"))).toBe(true);
+    } finally {
+      _resetConfinedProcessPhaseForTests();
       await cleanupTmpDir(tmp);
     }
   });

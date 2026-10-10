@@ -20,6 +20,7 @@ import {
   carryPluginDataDir,
   isPluginRuntimeDirName,
   isSamePluginPath,
+  assertPayloadOnlyPluginTree,
   pluginPayloadCopyFilter,
   resolvePluginSocketDir,
   resolvePluginWritableRoot,
@@ -353,6 +354,27 @@ describe("carryPluginDataDir — resolving conflict policy", () => {
     })).rejects.toThrow(/was not moved aside/);
 
     expect(await readPluginDataFixture(from)).toEqual(PLUGIN_DATA_FIXTURE);
+  });
+});
+
+// Staging, restore and backup copies are deleted right away because no
+// confined process is granted a path in them; a runtime directory there
+// breaks that premise and must refuse the delete.
+describe("assertPayloadOnlyPluginTree", () => {
+  let root: string;
+  beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "payload-only-")); });
+  afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+
+  it("accepts payload and a missing tree", async () => {
+    await writeFile(join(root, "plugin.json"), "{}");
+    await mkdir(join(root, "dist"));
+    await expect(assertPayloadOnlyPluginTree(root)).resolves.toBeUndefined();
+    await expect(assertPayloadOnlyPluginTree(join(root, "absent"))).resolves.toBeUndefined();
+  });
+
+  it.each([...PLUGIN_RUNTIME_DIR_NAMES])("refuses a tree holding %s/", async (name) => {
+    await mkdir(join(root, name));
+    await expect(assertPayloadOnlyPluginTree(root)).rejects.toThrow(new RegExp(`holds runtime directory ${name}/`));
   });
 });
 

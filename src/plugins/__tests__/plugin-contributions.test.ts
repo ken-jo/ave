@@ -255,3 +255,22 @@ describe("materializePluginContributions", () => {
     await expect(stat(payloadRoot)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
+
+// A retained generation is a runtime root a child reads, never writes, so it
+// is deleted at once; a runtime directory inside it breaks that premise.
+describe("removeRetainedPluginGeneration", () => {
+  it("refuses a generation that holds a runtime directory and leaves it", async () => {
+    const cacheRoot = await mkdtemp(join(tmpdir(), "retained-generation-"));
+    try {
+      const generationId = "a".repeat(64);
+      const generation = join(cacheRoot, "acme", "generations", generationId);
+      await mkdir(join(generation, "data"), { recursive: true });
+      const { removeRetainedPluginGeneration } = await import("../plugin-contributions.js");
+      await expect(removeRetainedPluginGeneration(cacheRoot, "acme", generationId))
+        .rejects.toThrow(/holds runtime directory data\//);
+      expect((await stat(join(generation, "data"))).isDirectory()).toBe(true);
+    } finally {
+      await rm(cacheRoot, { recursive: true, force: true });
+    }
+  });
+});

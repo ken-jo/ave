@@ -4,6 +4,7 @@
 
 
 import { spawn } from "node:child_process";
+import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -1511,6 +1512,8 @@ export async function wrapToolCommand(
   if (!isAsrtSandboxActive()) {
     throw new Error("wrapToolCommand: ASRT sandbox is not active (initialize at boot first)");
   }
+  // A wrapped command is a confined process that may write a plugin tree.
+  noteConfinedProcessesMayRun();
   // Publish the temp root HERE rather than trusting a boot step to have run.
   // The deny floor refuses ASRT's shared default paths unconditionally, so a
   // wrap that happened without this would hand the child a `TMPDIR` it is not
@@ -1796,6 +1799,7 @@ export async function wrapWorkerCommand(
   if (!isAsrtSandboxActive()) {
     throw new Error("wrapWorkerCommand: ASRT sandbox is not active (initialize at boot first)");
   }
+  noteConfinedProcessesMayRun();
   // Publish the temp root HERE rather than trusting a boot step to have run.
   // The deny floor refuses ASRT's shared default paths unconditionally, so a
   // wrap that happened without this would hand the child a `TMPDIR` it is not

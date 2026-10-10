@@ -4,6 +4,7 @@ import { dirname, isAbsolute, posix, relative, resolve, sep } from "node:path";
 import type { PluginContributionDeclaration, PluginManifest } from "./types.js";
 import { verifyInstallReceiptRaw } from "./plugin-install-receipt.js";
 import { canonicalZipEntryPathIdentity } from "./zip-entry-path.js";
+import { assertPayloadOnlyPluginTree } from "./plugin-storage-layout.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { parseAgentPluginRoutineTemplates, parsePackagePrompt } from "../marketplace/content/agent-plugin-components.js";
 
@@ -409,6 +410,11 @@ export async function removeRetainedPluginGeneration(
   const generationsRoot = resolve(cacheRoot, pluginId, "generations");
   const target = resolve(generationsRoot, generationId);
   if (dirname(target) !== generationsRoot) throw new Error("retained plugin generation path escaped cache root");
+  // A retained generation is a runtime ROOT, which a confined child is granted
+  // read-only (out-of-process-plugin.ts: write = data dir and socket dir, both
+  // under the plugin's install root, never here). So no live child can race
+  // this delete; a runtime directory inside it would break that, and refuses.
+  await assertPayloadOnlyPluginTree(target);
   await makeRetainedGenerationRemovable(target);
   await rm(target, { recursive: true, force: true });
 }

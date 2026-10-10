@@ -41,6 +41,7 @@ import { readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { TOMBSTONE_SUBDIR } from "./installed-entry-fs.js";
 import { createLogger } from "../lib/logger.js";
+import { assertNoConfinedProcessMayRun } from "../lib/confined-process-phase.js";
 
 const log = createLogger("plugins/orphan-uninstall-sweeper");
 
@@ -83,6 +84,10 @@ export async function sweepOrphanUninstallDirs(
       // (host bug, manual fs poking). Only directories should be there.
       const st = await stat(path);
       if (!st.isDirectory()) return null;
+      // A tombstone made at runtime may hold a directory a still-running
+      // child is bound to; only the boot sweep, before any confined process,
+      // deletes recursively (see lib/confined-process-phase.ts).
+      assertNoConfinedProcessMayRun(path);
       await rm(path, { recursive: true, force: true });
       return name;
     }),

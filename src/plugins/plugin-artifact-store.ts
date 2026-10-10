@@ -33,7 +33,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { isResolvedPathWithin } from "./plugin-storage-containment.js";
-import { carryPluginDataDir } from "./plugin-storage-layout.js";
+import { assertPayloadOnlyPluginTree, carryPluginDataDir } from "./plugin-storage-layout.js";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -42,7 +42,7 @@ import {
 } from "./zip-entry-path.js";
 import { type PluginAccessSpec, type PluginRegistryEntryInstallSource } from "./types.js";
 import { stripLegacyPluginToolGrants } from "./registry.js";
-import { tombstoneAndDeferredRemove } from "./installed-entry-fs.js";
+import { removePluginTreeNowOrAtBoot, tombstoneAndDeferredRemove } from "./installed-entry-fs.js";
 import {
   buildInstallReceipt,
   restoreInstallReceiptRaw,
@@ -318,6 +318,7 @@ export class PluginArtifactStore {
     if (!isResolvedPathWithin(this.installRoot, stageDir)) {
       throw new Error(`artifact slug "${slug}" escapes install root`);
     }
+    // A fresh random name: nothing is there, and nothing confined is granted it.
     await rm(stageDir, { recursive: true, force: true });
     await mkdir(stageDir, { recursive: true });
     const extractedFiles: string[] = [];
@@ -411,7 +412,13 @@ export class PluginArtifactStore {
             }
           }
           try {
-            await retryOnTransientFsLock(() => rm(installDir, { recursive: true, force: true }));
+            // The candidate was activated before this commit and may still run
+            // with this path in its confinement; see removePluginTreeNowOrAtBoot.
+            await removePluginTreeNowOrAtBoot(
+              installDir,
+              this.installRoot,
+              (path) => retryOnTransientFsLock(() => rm(path, { recursive: true, force: true })),
+            );
           } catch (cleanupErr) {
             throw new ArtifactRollbackError(
               `${failedStep} and promoted-directory cleanup both failed: ${safeSlug}`,
@@ -822,11 +829,20 @@ export class PluginArtifactStore {
     return resolve(this.cacheRoot, assertSafeArtifactSlug(slug), "history.json");
   }
 
+  /**
+   * The predecessor's root after its generation retired and its data moved
+   * into the promoted root: payload only, which no confined process is
+   * granted. A runtime directory still there refuses the delete, and the
+   * caller tombstones the root for the next boot instead.
+   */
   private async removeCommittedBackup(path: string): Promise<void> {
+    await assertPayloadOnlyPluginTree(path);
     await rm(path, { recursive: true, force: true });
   }
 
+  /** An extraction stage: payload only, granted to no confined process. */
   private async removeAbandonedStage(path: string): Promise<void> {
+    await assertPayloadOnlyPluginTree(path);
     await rm(path, { recursive: true, force: true });
   }
 }

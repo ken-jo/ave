@@ -344,6 +344,22 @@ export function pluginPayloadCopyFilter(root: string): (source: string) => boole
   return (source) => !runtimeDirs.some((dir) => isSamePluginPath(source, dir));
 }
 
+/**
+ * Refuse to treat `root` as a payload-only tree when it holds a runtime
+ * directory. Callers that delete a staging, restore or backup copy right away
+ * rely on it holding payload only: no confined process is granted a path in
+ * it, so nothing can race the recursive delete. A runtime directory there
+ * (state, a live socket, a worker leaf) breaks that premise, and the delete
+ * must go through the deferred tree removal instead.
+ */
+export async function assertPayloadOnlyPluginTree(root: string): Promise<void> {
+  for (const name of PLUGIN_RUNTIME_DIR_NAMES) {
+    if (await pathExists(resolve(root, name))) {
+      throw new Error(`[plugin-storage-layout] ${root} holds runtime directory ${name}/; it is not a payload-only tree to delete now`);
+    }
+  }
+}
+
 async function pathExists(path: string): Promise<boolean> {
   try {
     await lstat(path);

@@ -15,6 +15,7 @@ import { canonicalJSON } from "./secret-access/canonical-json.js";
 import { pendingOwnedBackupPaths } from "./marketplace-update-recovery.js";
 import { isRecord, hasOnlyKeys } from "../shared/is-record.js";
 import { errorMessage } from "../shared/error-message.js";
+import { removePluginTreeNowOrAtBoot } from "./installed-entry-fs.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 
 const TRANSACTION_ROOT = "+transactions+";
@@ -351,10 +352,12 @@ async function removeTransactionStaged(paths: PluginPaths, journal: RemovalTrans
   await assertOwnedTransactionDirectory(paths, journal.transactionId);
   for (const mapping of journal.mappings) {
     await assertOwnedTransactionDirectory(paths, journal.transactionId);
-    await removeOwnedPluginTree(mapping.stagedPath);
+    await removePluginTreeNowOrAtBoot(mapping.stagedPath, paths.pluginsRoot, removeOwnedPluginTree);
   }
+  // What remains is the host's own journal and the emptied staged/ directory.
   await rm(transactionDir(paths, journal.transactionId), { recursive: true, force: true });
 }
+
 
 const execFileAsync = promisify(execFile);
 

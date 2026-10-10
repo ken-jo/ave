@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdir, mkdtemp, open, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { tombstoneAndDeferredRemove, TOMBSTONE_SUBDIR } from "../installed-entry-fs.js";
+import { removePluginTreeNowOrAtBoot, tombstoneAndDeferredRemove, TOMBSTONE_SUBDIR } from "../installed-entry-fs.js";
+import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 
 describe("tombstoneAndDeferredRemove", () => {
   let pluginsRoot: string;
@@ -131,5 +132,50 @@ describe("tombstoneAndDeferredRemove", () => {
     expect(t1).not.toBe(t2);
     expect(t1).toMatch(/-100-aaaa$/);
     expect(t2).toMatch(/-100-bbbb$/);
+  });
+});
+
+// A tree a confined child may be bound to (Linux --bind keeps a renamed
+// directory writable to it) is deleted for real only before any confined
+// process can run; after that it waits in the tombstones for the next boot.
+describe("confined-process phase and plugin tree removal", () => {
+  let pluginsRoot: string;
+  let tree: string;
+
+  beforeEach(async () => {
+    _resetConfinedProcessPhaseForTests();
+    pluginsRoot = await mkdtemp(join(tmpdir(), "tree-removal-"));
+    tree = join(pluginsRoot, "local-indexer");
+    await mkdir(join(tree, "data"), { recursive: true });
+    await writeFile(join(tree, "data", "state"), "live");
+  });
+
+  afterEach(async () => {
+    _resetConfinedProcessPhaseForTests();
+    await rm(pluginsRoot, { recursive: true, force: true });
+  });
+
+  it("removes the tree now before any confined process can run", async () => {
+    const removeNow = vi.fn(async (path: string) => { await rm(path, { recursive: true, force: true }); });
+    expect(await removePluginTreeNowOrAtBoot(tree, pluginsRoot, removeNow)).toBe("removed");
+    expect(removeNow).toHaveBeenCalledWith(tree);
+    await expect(stat(tree)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("tombstones the tree, deleting nothing, once confined processes may run", async () => {
+    noteConfinedProcessesMayRun();
+    const dataIno = (await stat(join(tree, "data"))).ino;
+    const removeNow = vi.fn(async () => undefined);
+    expect(await removePluginTreeNowOrAtBoot(tree, pluginsRoot, removeNow)).toBe("deferred");
+    expect(removeNow).not.toHaveBeenCalled();
+    const [tombstone] = await readdir(join(pluginsRoot, TOMBSTONE_SUBDIR));
+    expect((await stat(join(pluginsRoot, TOMBSTONE_SUBDIR, tombstone!, "data"))).ino).toBe(dataIno);
+  });
+
+  it("leaves a tombstone for the boot sweep once confined processes may run", async () => {
+    noteConfinedProcessesMayRun();
+    const tombstone = await tombstoneAndDeferredRemove(tree, pluginsRoot);
+    await new Promise((settle) => setTimeout(settle, 50));
+    expect((await stat(join(tombstone!, "data", "state"))).isFile()).toBe(true);
   });
 });

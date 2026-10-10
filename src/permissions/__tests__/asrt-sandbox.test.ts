@@ -65,6 +65,7 @@ import {
   unregisterWorkerUnixSocketDir,
 } from "../asrt-sandbox.js";
 import { asrtCanInitialize } from "./test-helpers.js";
+import { _resetConfinedProcessPhaseForTests, confinedProcessesMayBeRunning } from "../../lib/confined-process-phase.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { spawnWithSandbox } from "../../tools/shell-tools.js";
 import { prepareSandboxFixture } from "../../tools/__tests__/support/prepared-shell.js";
@@ -337,6 +338,24 @@ describe("asrt-sandbox — idempotency guard (PR #1356 NIT)", () => {
     expect(isAsrtSandboxActive()).toBe(true);
     await expect(initializeAsrtSandbox({ allowedDomains: [] })).rejects.toThrow(/already active/i);
   });
+});
+
+// Plugin trees a confined process may write are deleted recursively only
+// before any such process can run (lib/confined-process-phase.ts); a wrap is
+// where one begins, so it has to start that phase itself.
+describe("asrt-sandbox — a wrap begins the confined-process phase", () => {
+  afterEach(() => _resetConfinedProcessPhaseForTests());
+  for (const kind of ["tool", "worker"] as const) {
+    it(`${kind} wrap marks that confined processes may run`, async ({ skip }) => {
+      if (!(await asrtCanInitialize())) skip("ASRT cannot initialize on this host");
+      await initializeAsrtSandbox({ allowedDomains: [] });
+      _resetConfinedProcessPhaseForTests();
+      expect(confinedProcessesMayBeRunning()).toBe(false);
+      const wrap = kind === "tool" ? wrapToolCommand : wrapWorkerCommand;
+      await wrap("true", { filesystem: { allowWrite: [], allowRead: [] } });
+      expect(confinedProcessesMayBeRunning()).toBe(true);
+    });
+  }
 });
 
 describe("asrt-sandbox — worker wrap carries only the filesystem jail", () => {

@@ -18,6 +18,7 @@ import { sweepOrphanUninstallDirs } from "../orphan-uninstall-sweeper.js";
 import { PARKED_PLUGIN_STATE_SUBDIR, TOMBSTONE_SUBDIR } from "../installed-entry-fs.js";
 import type { PluginPaths } from "../plugin-paths.js";
 import { PLUGIN_DATA_FIXTURE, readPluginDataFixture, seedPluginDataFixture } from "./test-helpers.js";
+import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 
 describe("marketplace pending-update recovery", () => {
   let root: string;
@@ -395,6 +396,39 @@ describe("marketplace pending-update recovery", () => {
     expect(await readFile(installReceiptPath(paths.cacheRoot, pluginId), "utf-8")).toBe(oldReceipt);
     expect(await readPluginDataFixture(join(paths.pluginsRoot, pluginId))).toEqual(PLUGIN_DATA_FIXTURE);
     expect(existsSync(backupDir)).toBe(false);
+  });
+
+  // A failed local install restores its predecessor through this recovery at
+  // runtime, while the failed candidate may still run with the promoted root
+  // in its confinement. Both discarded roots wait in the tombstones then.
+  it("tombstones the discarded roots when it runs after confined processes may run", async () => {
+    const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
+    const backupDir = join(paths.pluginsRoot, ".cache", "local-install-rollback", `${pluginId}-1-1`);
+    await mkdir(join(backupDir, "dist"), { recursive: true });
+    await writeFile(join(backupDir, "plugin.json"), oldManifest);
+    await writeFile(join(backupDir, "dist", "index.js"), oldDist);
+    await seedPluginDataFixture(backupDir);
+    await preparePendingPluginUpdate(paths, entry, {
+      kind: "local-dev",
+      recoveryBackupDir: backupDir,
+      recoveryBackupMode: "copy",
+    });
+    await writeFile(join(paths.pluginsRoot, pluginId, "plugin.json"), JSON.stringify({ id: pluginId, version: "2.0.0" }));
+    await writeFile(installReceiptPath(paths.cacheRoot, pluginId), JSON.stringify({ pluginId, version: "2.0.0" }));
+    noteConfinedProcessesMayRun();
+    try {
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
+    } finally {
+      _resetConfinedProcessPhaseForTests();
+    }
+
+    expect(await readFile(join(paths.pluginsRoot, pluginId, "plugin.json"), "utf-8")).toBe(oldManifest);
+    expect(await readPluginDataFixture(join(paths.pluginsRoot, pluginId))).toEqual(PLUGIN_DATA_FIXTURE);
+    expect(existsSync(backupDir)).toBe(false);
+    const tombstoned = await readdir(join(paths.pluginsRoot, TOMBSTONE_SUBDIR));
+    const manifests = await Promise.all(tombstoned.map((name) =>
+      readFile(join(paths.pluginsRoot, TOMBSTONE_SUBDIR, name, "plugin.json"), "utf-8")));
+    expect(manifests.sort()).toEqual([JSON.stringify({ id: pluginId, version: "2.0.0" }), oldManifest].sort());
   });
 
   it("only removes a retained backup through the explicit cleanup path and keeps the row hidden", async () => {
