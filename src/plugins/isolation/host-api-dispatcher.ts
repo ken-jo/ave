@@ -66,7 +66,7 @@ import {
   type AttachFloatingPanelRequest,
   type AudioCaptureRequest,
 } from "../public-contract.js";
-import { isResolvedPathWithin, outermostContainingRoots } from "../plugin-storage-containment.js";
+import { isGrantPathWithin, outermostContainingRoots } from "../../permissions/asrt-sandbox.js";
 import {
   HOSTAPI_PATH_CONTRACTS,
   HOST_PROTOCOL_NOTIFICATIONS,
@@ -1126,7 +1126,7 @@ function assertGrantsWithinEnvelope(
     if (!isAbsolute(path)) {
       rejectArgument(call.path, `spec.${field} entry '${path}' must be an absolute path`);
     }
-    if (envelope.some((root) => isResolvedPathWithin(root, path))) continue;
+    if (envelope.some((root) => isGrantPathWithin(root, path))) continue;
     throw new HostApiBoundaryError(
       "effect-boundary-denied",
       `[host-api-dispatcher] '${call.path}': spec.${field} entry '${path}' `

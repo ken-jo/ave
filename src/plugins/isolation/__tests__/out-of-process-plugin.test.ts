@@ -1390,6 +1390,30 @@ describe("on Windows a confined child holds a grant on its own directories for e
     });
   });
 
+  it("grants only the outermost envelope roots: a root nested in another is never named to the ACL", async () => {
+    // A runtime root that holds `data/`, `sockets/` and `run/` makes those three
+    // nested read roots. Each is a path below a root the grant already covers by
+    // inheritance, and naming one would stamp the ACE on whatever that path
+    // resolves to at grant time — which, for anything below a root a previous
+    // child could write, need not be the directory the host made.
+    const layout = aveLayout((pluginsRoot) => join(pluginsRoot, PLUGIN_ID));
+    await asWindows(layout, async () => {
+      spawnConfinedChild.mockImplementation(async () => {
+        const child = fakeChild();
+        setImmediate(() => end(child, 1, null));
+        return { child, confinement: "windows-srt" };
+      });
+      const outcome = await construct(layout);
+      expect(outcome).toBeInstanceOf(Error);
+      expect(windowsGrant.calls).toHaveLength(1);
+      const grant = windowsGrant.calls[0]!;
+      const home = grant.allowRead.at(-1)!;
+      expect(home).toContain("oop-fake-sandbox-home-");
+      expect(grant.allowRead).toEqual([layout.own, home]);
+      expect(grant.allowWrite).toEqual([layout.context.pluginDataDir, join(layout.own, "sockets"), home]);
+    });
+  });
+
   it("releases the grant when the spawn fails after it was taken, and the spawn is gated on the holder", async () => {
     const layout = aveLayout();
     await asWindows(layout, async () => {

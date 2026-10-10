@@ -132,6 +132,8 @@ import {
   cleanupAsrtSandboxAfterCommand,
   initializeAsrtSandbox,
   isAsrtSandboxActive,
+  isGrantPathWithin,
+  outermostContainingRoots,
   resetAsrtSandbox,
   sandboxTempPrincipalDirName,
   type SandboxTempPrincipal,
@@ -160,7 +162,7 @@ import {
 } from "../../plugin-install-receipt.js";
 import { verifyPluginIntegrity } from "../../runtime/index.js";
 import { installPythonSmoke, reportSmoke } from "./python-smoke-harness.js";
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -959,15 +961,75 @@ describe("the host decides how far a plugin child reaches", () => {
     // would refuse the plugin's own default location.
     const fx = fixture!;
     const inside = join(fx.pluginDataDir, "index");
+    const chosen: string[] = [];
     const envelope = derivePluginChildEnvelope({
       pluginId: WIDENED_PLUGIN_ID,
       sandbox: WIDENED_SANDBOX,
       pluginRoot: fx.pluginRoot,
       pluginDataDir: fx.pluginDataDir,
       configValue: (key) => (key === "indexStorageRoot" ? inside : undefined),
+      onUserChosenDirectory: (path) => chosen.push(path),
     });
-    expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx), inside]);
+    // Folded into the data directory the envelope already grants: no reach is
+    // added, and no root is left below `data/` for the plugin to re-point.
+    expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
+    expect(envelope.read).not.toContain(inside);
+    expect(chosen).toEqual([]);
   });
+
+  it("folds a case-variant spelling of a directory inside data/ into data/, not into a root of its own", () => {
+    // The spelling the config holds was decided "inside" on the case-folded
+    // canonical form and used to reach the envelope verbatim, where a
+    // case-sensitive containment check took it for an independent root.
+    const fx = fixture!;
+    mkdirSync(join(fx.pluginDataDir, "work"), { recursive: true });
+    const variant = join(dirname(fx.pluginDataDir), "DATA", "work");
+    const envelope = derivePluginChildEnvelope({
+      pluginId: WIDENED_PLUGIN_ID,
+      sandbox: WIDENED_SANDBOX,
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: (key) => (key === "indexStorageRoot" ? variant : undefined),
+    });
+    expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
+    expect(envelope.read).not.toContain(variant);
+  });
+
+  it.runIf(process.platform === "win32")(
+    "folds an 8.3 short spelling of a directory inside data/ into data/",
+    () => {
+      // 8.3 names are created on C: here; the fixture's temp directory may be
+      // on a volume without them, so this case builds its own tree on C:.
+      const base = mkdtempSync(join(homedir(), "AppData", "Local", "Temp", "ave-eight-dot-three-"));
+      try {
+        const pluginRoot = join(base, "plugins", "acme-plugin-with-a-long-name");
+        const pluginDataDir = join(pluginRoot, "data");
+        const longWork = join(pluginDataDir, "workspace-directory-long-name");
+        mkdirSync(longWork, { recursive: true });
+        // Verbatim: Node's argument quoting would hand cmd `\"` and the loop
+        // would echo its input untouched.
+        const short = spawnSync("cmd.exe", [`/d /s /c "for %I in ("${longWork}") do @echo %~sI"`], {
+          encoding: "utf8",
+          windowsVerbatimArguments: true,
+        }).stdout.trim();
+        expect(short, "8.3 short names must be enabled on C: for this case to measure anything").not.toBe(longWork);
+        const envelope = derivePluginChildEnvelope({
+          pluginId: WIDENED_PLUGIN_ID,
+          sandbox: WIDENED_SANDBOX,
+          pluginRoot,
+          pluginDataDir,
+          configValue: (key) => (key === "indexStorageRoot" ? short : undefined),
+        });
+        expect(envelope.write).toEqual([pluginDataDir, resolvePluginSocketDir(pluginDataDir)]);
+        // The grant half asks the same question: the short spelling of a root
+        // below `data\` is `data\`, so a grant on it names `data\`.
+        expect(isGrantPathWithin(pluginDataDir, short)).toBe(true);
+        expect(outermostContainingRoots([join(short, "segments"), short], [pluginDataDir, short])).toEqual([pluginDataDir]);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("never grants writing on the host-only storage directory, on any platform", () => {
     // The Windows ACL holder is granted exactly `envelope.write` (plus the
@@ -1152,7 +1214,7 @@ describe("the host decides how far a plugin child reaches", () => {
       pluginDataDir: fx.pluginDataDir,
       configValue: (key) => (key === "indexStorageRoot" ? inside : undefined),
     });
-    expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx), inside]);
+    expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
   });
 
   it("still admits the plugin's own data dir when an approved root covers the runtime root", () => {
@@ -1169,7 +1231,7 @@ describe("the host decides how far a plugin child reaches", () => {
       pluginDataDir: fx.pluginDataDir,
       configValue: (key) => (key === "indexStorageRoot" ? inside : undefined),
     });
-    expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx), inside]);
+    expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
   });
 
   it("refuses a chosen directory that reaches out of the data dir through a symlink", () => {
@@ -1194,9 +1256,9 @@ describe("the host decides how far a plugin child reaches", () => {
 
   it("still admits a symlink that stays inside the plugin's own data dir", () => {
     // The canonical comparison must not refuse the legitimate case, or the
-    // fix would be a narrowing dressed as a containment result. The GRANTED
-    // path stays the caller's spelling — the delegated-worker check compares
-    // against these entries and the plugin asks with the value it holds.
+    // fix would be a narrowing dressed as a containment result. Admitted means
+    // folded into `data/`: the envelope already grants it, and a root of its
+    // own below `data/` would be one the plugin can re-point after admission.
     const fx = fixture!;
     const real = join(fx.pluginDataDir, "index-store");
     const link = join(fx.pluginDataDir, "index-link");
@@ -1209,7 +1271,7 @@ describe("the host decides how far a plugin child reaches", () => {
       pluginDataDir: fx.pluginDataDir,
       configValue: (key) => (key === "indexStorageRoot" ? link : undefined),
     });
-    expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx), link]);
+    expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
   });
 
   it("refuses a relative value rather than resolving it against the host's cwd", () => {

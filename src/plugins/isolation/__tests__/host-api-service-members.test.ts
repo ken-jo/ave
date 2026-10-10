@@ -1324,6 +1324,30 @@ describe("a delegated worker cannot reach further than the plugin process itself
     });
   });
 
+  it("on Windows, admits and maps a case-variant spelling of an envelope root as that root", async () => {
+    // The containment question is the one admission asks: NTFS takes
+    // `DATA\work` for `data\work`, so the check does too, and the grant
+    // names the root rather than the spelling the plugin chose.
+    const spawnWorker = vi.fn(async () => makeFakeWorker());
+    const harness = await createServiceHarness({ spawnWorker });
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      await harness.child.hostApi.spawnWorker!({
+        workerId: "ffmpeg",
+        command: "/usr/bin/ffmpeg",
+        allowWritePaths: [`${PLUGIN_ROOT}/DATA/work`],
+      });
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+    expect(spawnWorker).toHaveBeenCalledWith({
+      workerId: "ffmpeg",
+      command: "/usr/bin/ffmpeg",
+      allowWritePaths: [PLUGIN_DATA_DIR],
+    });
+  });
+
   it("refuses a write grant outside the jail, and never reaches the supervisor", async () => {
     // The escape this check exists for: the child cannot write outside its data
     // directory, so it asks the host to spawn something that can. A refusal

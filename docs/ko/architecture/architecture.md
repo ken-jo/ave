@@ -2017,7 +2017,10 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   ACL grant 로 얻고, grant 가 유지되는 동안에는 다른 모든 confined process 도 그
   디렉터리에 닿는다. srt-win 은 경로가 junction 을 거쳐 가리키는 곳에 ACE 를 찍으므로,
   grant 는 플러그인이 바꿔칠 수 있는 하위 경로가 아니라 가장 바깥 envelope root 만
-  가리킨다 (decision 66). srt-win 은 stdin 을 전달하지 않고 spawn 의 환경 변수도 넘기지
+  가리키고, 포함 여부는 admission 과 같은 정규화·대소문자 접기 형태로 판정하며,
+  `data/` 안의 chosen directory 는 `data/` 자체로 접힌다 (decision 66). sandbox 계정이
+  이미 속성을 쓸 수 있는 파일의 하드 링크는 `data/` grant 를 상속받지만, 읽기만 가능한
+  파일로의 하드 링크는 만들 수 없다 (측정, decision 66). srt-win 은 stdin 을 전달하지 않고 spawn 의 환경 변수도 넘기지
   않으므로, `entry` 플러그인 child 는 `cmd.exe` 아래에서 `ELECTRON_RUN_AS_NODE` 를
   명령줄에, 나머지 환경을 인자 하나에 담고 Node 의 symlink 보존 플래그로 실행되며,
   loopback 연결 하나로 호스트와 통신한다. 이 연결은 양쪽이 모두 인증한다: child 가

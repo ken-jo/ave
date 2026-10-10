@@ -1187,7 +1187,11 @@ reach their own directories through a holder-PID ACL grant held for that
 process's lifetime, and while it is held every confined process reaches them
 too. Because `srt-win` stamps that ACE on whatever a path resolves to, junctions
 followed, a grant names an outermost envelope root and never a path below one
-that the plugin could re-point (decision 66). By owner decision (2026-10-10) third-party plugins run on Windows on those
+that the plugin could re-point, containment is asked on the canonical,
+case-folded form admission uses, and a chosen directory inside `data/` is
+folded into `data/` (decision 66). A hard link the sandbox account could
+already write attributes of inherits a grant on `data/`; one to a file it can
+only read cannot be created (measured, decision 66). By owner decision (2026-10-10) third-party plugins run on Windows on those
 terms, an accepted risk pending an ASRT per-plugin identity
 (`docs/design/plugin-hostapi-protocol.md` §9.8 A2, decision 64). Because
 srt-win relays no stdin and delivers none of the spawn's environment, an `entry`

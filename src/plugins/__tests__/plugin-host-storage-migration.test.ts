@@ -130,7 +130,8 @@ describe("migratePluginHostStorage — what is copied", () => {
       "ui-storage/prefs.json": '{"theme":"dark"}',
     };
     expect(filesUnder(storageOf("lyra-mail"))).toEqual(expected);
-    expect(statSync(join(storageOf("lyra-mail"), "empty")).isDirectory()).toBe(true);
+    // A directory holds no key, so one with nothing copied into it is not made.
+    expect(existsSync(join(storageOf("lyra-mail"), "empty"))).toBe(false);
     expect(filesUnder(data)).toEqual(expected);
     expect(existsSync(join(pluginsRoot, "lyra-mail", PLUGIN_HOST_STORAGE_MIGRATION_DIR_NAME))).toBe(false);
     if (posix) {
@@ -163,7 +164,9 @@ describe("migratePluginHostStorage — what is copied", () => {
     const storage = storageOf("meeting");
     expect(statSync(join(storage, "auth", "token-default.json")).size).toBe(8 * 1024 * 1024);
     expect(readFileSync(join(storage, "calendar-automation-claims.json"), "utf-8")).toBe("{}");
-    expect(readdirSync(join(storage, "sessions"))).toEqual([]);
+    // Nothing was copied into `sessions/`, so it is not made: an empty
+    // directory would be a key namespace the plugin never held a value in.
+    expect(existsSync(join(storage, "sessions"))).toBe(false);
     expect(existsSync(join(storage, "recording.wav"))).toBe(false);
   });
 

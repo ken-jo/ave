@@ -36,7 +36,8 @@ import {
 } from "../plugin-storage-layout.js";
 import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 import { aveHome } from "../../shared/ave-home.js";
-import { isPathWithin, isResolvedPathWithin, outermostContainingRoots } from "../plugin-storage-containment.js";
+import { isPathWithin, isResolvedPathWithin } from "../plugin-storage-containment.js";
+import { isGrantPathWithin, outermostContainingRoots } from "../../permissions/asrt-sandbox.js";
 import { PLUGIN_DATA_FIXTURE, makeTestTreeWritable, readPluginDataFixture, seedChildLockedTree, seedPluginDataFixture } from "./test-helpers.js";
 
 /**
@@ -1233,10 +1234,18 @@ describe("outermostContainingRoots", () => {
     await mkdir(sockets);
     const chosenInData = join(data, "index");
 
-    const granted = outermostContainingRoots(
-      [join(data, "link", "segments"), chosenInData, join(sockets, "a.sock"), join(data, "link")],
-      [data, sockets, chosenInData],
-    );
+    const throughLink = [join(data, "link", "segments"), join(data, "link")];
+    const roots = [data, sockets, chosenInData];
+    // On Windows containment is asked on the canonical form admission uses,
+    // which follows the link: a path re-pointed outside every root is refused
+    // rather than granted at any root. Elsewhere the question is lexical and
+    // the root is what the grant names either way.
+    const granted = process.platform === "win32"
+      ? outermostContainingRoots([chosenInData, join(sockets, "a.sock")], roots)
+      : outermostContainingRoots([throughLink[0]!, chosenInData, join(sockets, "a.sock"), throughLink[1]!], roots);
+    if (process.platform === "win32") {
+      expect(() => outermostContainingRoots(throughLink, roots)).toThrow(/lies under none/);
+    }
 
     expect(granted).toEqual([data, sockets]);
     for (const path of granted) expect((await lstat(path)).isSymbolicLink()).toBe(false);
@@ -1244,6 +1253,27 @@ describe("outermostContainingRoots", () => {
 
   it("refuses a path no root contains", () => {
     expect(() => outermostContainingRoots([resolve(sep, "elsewhere")], [resolve(sep, "ave", "data")])).toThrow(/lies under none/);
+  });
+
+  describe("on Windows, where a root's spelling is not its identity", () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    beforeEach(() => { Object.defineProperty(process, "platform", { value: "win32" }); });
+    afterEach(() => { Object.defineProperty(process, "platform", platform); });
+
+    it("takes a case-variant spelling of a nested root for the root it is inside", async () => {
+      // `...\acme\DATA\work` is `data\work` to NTFS. Taken for a root of its
+      // own, a grant would name it — and the plugin re-points it at will.
+      const data = join(root, "data");
+      await mkdir(join(data, "work"), { recursive: true });
+      const variant = join(root, "DATA", "work");
+
+      expect(outermostContainingRoots([join(variant, "segments"), variant], [data, variant])).toEqual([data]);
+      expect(isGrantPathWithin(data, join(variant, "segments"))).toBe(true);
+    });
+
+    it("still refuses a look-alike sibling of a root", () => {
+      expect(isGrantPathWithin(join(root, "data"), join(root, "DATA-other"))).toBe(false);
+    });
   });
 });
 

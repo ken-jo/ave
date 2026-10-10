@@ -1103,7 +1103,7 @@ export async function migratePluginHostStorage(pluginsRoot: string): Promise<Plu
         if (await lstatOrUndefined(staging) !== undefined) await removeOwnedPluginTree(staging);
         await mkdir(staging, { mode: 0o700 });
         if (dataEntry.isDirectory()) {
-          await copyStorageTree(data, staging, skipped, 1);
+          await copyStorageTree(data, staging, skipped, 1, async () => true);
         } else {
           skipped.push({ path: data, reason: "not a directory; nothing copied" });
         }
@@ -1134,6 +1134,11 @@ async function copyStorageTree(
   to: string,
   skipped: Array<{ path: string; reason: string }>,
   depth: number,
+  // Makes `to` (and every directory above it in staging) on first use. Made
+  // only when a file is copied into it: a directory whose every entry was
+  // skipped would otherwise land in `storage/` as an empty key namespace the
+  // plugin never had a value in.
+  ready: () => Promise<boolean>,
 ): Promise<void> {
   let names: string[];
   try {
@@ -1160,9 +1165,10 @@ async function copyStorageTree(
         skipped.push({ path: source, reason: `deeper than a storage key (depth ${MIGRATED_STORAGE_KEY_DEPTH_MAX})` });
         continue;
       }
-      if (await intoStaging(target, source, skipped, () => mkdir(target, { mode: 0o700 }).then(() => undefined))) {
-        await copyStorageTree(source, target, skipped, depth + 1);
-      }
+      let made: Promise<boolean> | undefined;
+      const targetReady = (): Promise<boolean> => (made ??= ready().then((parentMade) => parentMade
+        && intoStaging(target, source, skipped, () => mkdir(target, { mode: 0o700 }).then(() => undefined))));
+      await copyStorageTree(source, target, skipped, depth + 1, targetReady);
       continue;
     }
     const refusal = migratedFileRefusal(entry);
@@ -1198,6 +1204,8 @@ async function copyStorageTree(
         skipped.push({ path: source, reason: unreadableReason(error) });
         continue;
       }
+      // A directory that could not be made was recorded once, by its own path.
+      if (!(await ready())) continue;
       await intoStaging(target, source, skipped, () => writeFile(target, bytes, { mode: 0o600, flag: "wx" }));
     } finally {
       await handle.close();

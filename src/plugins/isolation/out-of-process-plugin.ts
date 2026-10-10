@@ -50,6 +50,7 @@ import { createSandboxProcessHome } from "../../permissions/sandbox-process-home
 import {
   cleanupAsrtSandboxAfterCommand,
   isAsrtSandboxActive,
+  outermostContainingRoots,
   pluginGrantPathsBeyondOwnRoots,
   protectedReadDenyCovering,
   registerWorkerUnixSocketDir,
@@ -61,7 +62,6 @@ import {
   resolvePluginWorkerRunRoot,
   writeGrantsReachingHostStorage,
 } from "../plugin-storage-layout.js";
-import { outermostContainingRoots } from "../plugin-storage-containment.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { terminateChildProcess } from "../../tools/terminate-child-process.js";
 import {
@@ -384,7 +384,9 @@ function ceilingSubtractions(
  * entries and the plugin asks with the value it holds, so returning a
  * re-spelled path would refuse the very grants this widening exists to admit.
  * Containment was decided on the canonical form, so both spellings name a
- * directory inside the ceiling.
+ * directory inside the ceiling. The one exception is a directory inside the
+ * plugin's own data directory, answered with `pluginDataDir` itself: it adds no
+ * reach, and its own spelling is a path the plugin can re-point.
  *
  * The host DEFAULTS that scope normally carries — `computeDefaultAllowedDirectories`
  * returns the process cwd and `~/.ave` — are deliberately not unioned in here.
@@ -463,7 +465,16 @@ function resolveUserChosenDirectory(
     );
   }
   const ownWritableRoot = caseFoldForMatch(canonicalizePathForMatch(inputs.pluginDataDir));
-  if (isPathAllowed(folded, { directories: [ownWritableRoot] })) return target;
+  // Inside the plugin's own data directory: the grant adds nothing, so it is
+  // answered with the data directory itself rather than with the spelling the
+  // config holds. That spelling — `…\DATA\work`, an 8.3 `IKCHA~1` form — was
+  // decided "inside" by this folded comparison and then carried into the
+  // envelope verbatim, where a case-sensitive containment check took it for an
+  // independent root; on Windows a grant on a root below `data\` is a grant on
+  // whatever the plugin later swaps in there (decision 66). It also keeps the
+  // spawn from creating a directory under `data\` along a path the plugin
+  // controls.
+  if (isPathAllowed(folded, { directories: [ownWritableRoot] })) return inputs.pluginDataDir;
   for (const excluded of ceilingSubtractions(inputs)) {
     const root = caseFoldForMatch(canonicalizePathForMatch(excluded.root));
     if (!isPathAllowed(folded, { directories: [root] })) continue;
@@ -593,6 +604,8 @@ export function derivePluginChildEnvelope(
     }
     const chosen = resolveUserChosenDirectory(inputs, grant);
     if (chosen === undefined) continue;
+    // Folded into the base envelope: nothing to add, nothing to register.
+    if (chosen === inputs.pluginDataDir) continue;
     inputs.onUserChosenDirectory?.(chosen);
     // Read as well as write: the plugin has to list and re-open what it wrote.
     // This is also the only thing that keeps `read` a superset of `write` —
@@ -1019,9 +1032,12 @@ export async function spawnConfinedPluginChild(
     // `denyPluginsRoot` to stop an inheriting grant from covering a neighbour.
     if (process.platform === "win32" && isAsrtSandboxActive()) {
       // Each grant names the outermost envelope root only: `srt-win` stamps the
-      // ACE on what a path resolves to, and a root nested in another (a chosen
-      // directory inside `data/`) is one a previous child could have replaced
-      // with a junction (`outermostContainingRoots`).
+      // ACE on what a path resolves to, and a root nested in another — `data/`
+      // under a runtime root that holds it, one chosen directory inside another
+      // — is a path the inheriting grant on the outer root already covers, and
+      // naming it again would hand `srt-win` a spelling to resolve
+      // (`outermostContainingRoots`, decision 66). A chosen directory inside
+      // `data/` never gets here: derivation folds it into `data/`.
       const allowRead = [...outermostContainingRoots(spec.envelope.read, spec.envelope.read), sandboxHome.path];
       const allowWrite = [...outermostContainingRoots(spec.envelope.write, spec.envelope.write), sandboxHome.path];
       const beyond = [
