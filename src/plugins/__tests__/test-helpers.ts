@@ -8,7 +8,7 @@
 import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -18,7 +18,12 @@ import type { ValidateFunction } from "ajv";
 import { resolveAddFormats, resolveAjv } from "../config-schema.js";
 import type { PluginPaths } from "../plugin-paths.js";
 import { resolvePluginPaths } from "../plugin-paths.js";
-import { PLUGIN_DATA_DIR_NAME } from "../plugin-storage-layout.js";
+import {
+  PLUGIN_DATA_DIR_NAME,
+  resolvePluginSocketDir,
+  resolvePluginWorkerRunRoot,
+} from "../plugin-storage-layout.js";
+import { ensurePluginDataDir } from "../runtime/sandbox.js";
 import {
   PluginMarketplaceService,
   type PreparedMarketplacePluginActivation,
@@ -91,6 +96,24 @@ export const activateAndCommitPreparedPluginForTest: PreparedMarketplacePluginAc
 export const preparedActivationOptionsForTest = Object.freeze({
   activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
 });
+
+/**
+ * Bring a staged candidate's runtime directories into existence the way the
+ * real activation does, BEFORE the durable commit: `ensurePluginDataDir`
+ * (the host's own materialiser — `data/` and `sockets/`, at the FINAL plugin
+ * root, not the staged one) plus the `run/` root `spawnConfinedPluginChild`
+ * creates for a confined child. Returns the directories it made.
+ */
+export function materialiseCandidateRuntimeDirsForTest(
+  pluginId: string,
+  stagedPluginRoot: string,
+  pluginsRoot: string,
+): { dataDir: string; socketDir: string; workerRunRoot: string } {
+  const dataDir = ensurePluginDataDir(pluginId, stagedPluginRoot, pluginsRoot);
+  const workerRunRoot = resolvePluginWorkerRunRoot(dataDir);
+  mkdirSync(workerRunRoot, { recursive: true, mode: 0o700 });
+  return { dataDir, socketDir: resolvePluginSocketDir(dataDir), workerRunRoot };
+}
 
 /**
  * Storage/unit-test service with an explicit test lifecycle default. Keeping
