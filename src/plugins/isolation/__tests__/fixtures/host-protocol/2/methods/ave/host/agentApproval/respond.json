@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/agentApproval/respond",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "choice": "allow-once",
       "hmac": "hmac-1",
       "nonce": "nonce-1",

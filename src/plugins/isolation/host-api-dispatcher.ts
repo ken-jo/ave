@@ -41,11 +41,20 @@
  * Electron through the approval gate, which is exactly why the child imports
  * `host-api-wire.ts` instead of this file.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { isAbsolute } from "node:path";
+import { createLogger } from "../../lib/logger.js";
 import { describeNonJson } from "../../shared/json-representable.js";
-import { EffectBoundaryDeniedError } from "../../permissions/effect-enforcement.js";
+import { INVOCATION_META } from "../../mcp/protocol-constants.js";
+import {
+  currentEffectGateContext,
+  EffectBoundaryDeniedError,
+  GATED_EFFECT_PATHS,
+} from "../../permissions/effect-enforcement.js";
 import { ManifestIntegrityError } from "../../permissions/manifest-integrity.js";
+import { methodEffect } from "../../permissions/effect-kind.js";
 import { PluginRuntimeDetachedOperationError } from "../runtime/detached-operation.js";
+import { currentInvocationOrigin } from "../runtime/origin-chain.js";
 import {
   PluginStorageEncryptionUnavailableError,
   PluginStorageError,
@@ -108,6 +117,42 @@ import {
   HostApiBudgets,
   type HostApiBudgetAudit,
 } from "./host-api-budgets.js";
+
+const log = createLogger("host-api-dispatcher");
+
+/** Runs a function inside one captured async context (`AsyncLocalStorage.snapshot()`). */
+export type InvocationContextRunner = <R>(fn: () => R) => R;
+
+/**
+ * The async context in which no store is entered. It is captured when this
+ * module is evaluated, during boot: `main.ts` loads `desktop-boot.js`, and
+ * with it this module, before any tool invocation exists. The guard below
+ * makes evaluating it inside an invocation fail loudly instead of capturing
+ * that invocation as "outside".
+ *
+ * A request from a child arrives on the pipe's data callback. That callback
+ * runs in the context that was current when the child was SPAWNED, not in a
+ * neutral one. A child restarted from inside a tool call (`config.set` →
+ * `restartPlugin`) would otherwise run every tokenless request of its whole
+ * generation in that finished invocation: a headless invocation's deny, a
+ * foreground invocation's allow-once grants and session attribution, its
+ * effect ledger. It would also inherit lifecycle stores such as the install
+ * locks. Anything that is not an invocation's runs here.
+ */
+const OUTSIDE_INVOCATION: InvocationContextRunner = (() => {
+  // App-only tools have an origin frame but do not enter the executor's gate.
+  if (currentEffectGateContext() !== undefined || currentInvocationOrigin() !== undefined) {
+    throw new Error(
+      "[host-api-dispatcher] evaluated inside a tool invocation; the outside-invocation context cannot be captured here",
+    );
+  }
+  return AsyncLocalStorage.snapshot();
+})();
+
+/** Run `fn` with no invocation and no other async-context store entered. */
+export function runOutsideInvocation<R>(fn: () => R): R {
+  return OUTSIDE_INVOCATION(fn);
+}
 
 /** One inbound invocation, after its method and params have been checked. */
 export interface HostApiCall {
@@ -2005,6 +2050,46 @@ export interface HostApiDispatcherOptions {
   readonly reportBudgetAudit?: (entry: HostApiBudgetAudit) => void;
   /** Injectable so a handler can be exercised without the whole table. */
   readonly table?: Record<HostApiPath, HostApiPathHandler>;
+  /**
+   * The host tool invocations this connection's `tools/call` requests opened
+   * (decision 63). Absent, the connection holds none: a request that names a
+   * token is refused, and nothing is ever in flight.
+   */
+  readonly invocations?: HostInvocationTable;
+}
+
+/** What {@link HostApiDispatcherOptions.invocations} answers. */
+interface HostInvocationTable {
+  /**
+   * The async context of the invocation a token names, for a `tools/call`
+   * still in flight AND for one that has settled.
+   *
+   * A request that names a token runs in that context, so the effect gate,
+   * effect ledger and origin bound for the call apply to it as they do to an
+   * in-process handler's hostApi call. This includes work the handler
+   * scheduled and left running after it returned. In-process, a timer keeps
+   * the invocation's frame, so a headless invocation's late write is denied
+   * and a foreground one's still asks the user. A settled token must therefore
+   * resolve too. If it did not, the late write would run in no invocation,
+   * unasked and unrefused: a fail-open that in-process code does not have.
+   *
+   * `undefined` means the connection never issued the token, or no longer
+   * holds it (released at close, or evicted past the retention bound). The
+   * request is then refused. It never runs with less gating than its
+   * invocation had.
+   */
+  resolve(token: string): InvocationContextRunner | undefined;
+  /** How many `tools/call` requests are in flight on this connection now. */
+  toolCallsInFlight(): number;
+}
+
+/** The invocation token a request carries in `params._meta`, if it is a string. */
+function invocationTokenOf(params: unknown): string | undefined {
+  if (!params || typeof params !== "object" || Array.isArray(params)) return undefined;
+  const meta = (params as { _meta?: unknown })._meta;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return undefined;
+  const token = (meta as Record<string, unknown>)[INVOCATION_META];
+  return typeof token === "string" ? token : undefined;
 }
 
 class HostApiRateLimitError extends HostApiBoundaryError {
@@ -2032,6 +2117,8 @@ export class HostApiDispatcher {
   private pendingSubscriptionCount = 0;
   private readonly reportedUnknownFields = new Set<string>();
   private unknownFieldsSuppressed = false;
+  /** At most one omission warning per gated path for this connection. */
+  private readonly warnedTokenlessPaths = new Set<HostApiPath>();
 
   constructor(private readonly options: HostApiDispatcherOptions) {
     this.table = options.table ?? HOSTAPI_DISPATCH_TABLE;
@@ -2083,10 +2170,14 @@ export class HostApiDispatcher {
       if (handler.contract.lifetime !== "none") {
         reservation = this.reserveSubscription(handler.path);
       }
-      const value = await handler.invoke(
+      const invoke = () => handler.invoke(
         { path: handler.path, args, signal: controller.signal },
         this.scopeFor(handler.path, reservation),
       );
+      const token = invocationTokenOf(request.params);
+      const value = await (token === undefined
+        ? this.runTokenless(handler.path, args, invoke)
+        : this.runInInvocation(handler.path, token, invoke));
       // `null` for a `void` member, and for an absent value: JSON-RPC requires
       // `result`, and JSON has no `undefined` to put in it.
       return { jsonrpc: "2.0", id, result: this.checkResult(handler, value) ?? null };
@@ -2096,6 +2187,49 @@ export class HostApiDispatcher {
       reservation?.release();
       this.inFlight.delete(key);
     }
+  }
+
+  /**
+   * A request that names no invocation runs outside every invocation. That is
+   * where an in-process plugin's own work runs too: lifecycle hooks, and timers
+   * it scheduled at start. The context is set explicitly and never inherited
+   * from whatever delivered the frame (see {@link runOutsideInvocation}).
+   *
+   * Leaving the token out is the child's choice, so a child can always run a
+   * gated write ungated this way: the residual decision 63 records. The host
+   * cannot tell a mid-call write that dropped its token from honest background
+   * work, so it does not refuse it. It records the case that looks like the
+   * first: a gated write with no token while a `tools/call` is in flight.
+   */
+  private runTokenless<R>(path: HostApiPath, args: readonly unknown[], invoke: () => R): R {
+    // Fetch is gated inline, so it is absent from the generic wrapper's set.
+    // These args have crossed the JSON check; only the method selects a diagnostic.
+    const rawMethod = path === "hostFetch" ? (args[1] as { method?: unknown } | undefined)?.method : undefined;
+    const isFetchWrite = path === "hostFetch"
+      && methodEffect(typeof rawMethod === "string" && rawMethod.length > 0 ? rawMethod : "GET") === "write";
+    if (GATED_EFFECT_PATHS.has(path) || isFetchWrite) {
+      const toolCallsInFlight = this.options.invocations?.toolCallsInFlight() ?? 0;
+      if (toolCallsInFlight > 0 && !this.warnedTokenlessPaths.has(path)) {
+        this.warnedTokenlessPaths.add(path);
+        log.warn(
+          { pluginId: this.options.pluginId, path, toolCallsInFlight },
+          "a gated hostApi write arrived without an invocation token while a tool call was in flight; it runs outside any invocation",
+        );
+      }
+    }
+    return runOutsideInvocation(invoke);
+  }
+
+  /** A request that names an invocation runs in it, or is refused. */
+  private runInInvocation<R>(path: HostApiPath, token: string, invoke: () => R): R {
+    const inInvocation = this.options.invocations?.resolve(token);
+    if (inInvocation === undefined) {
+      throw new HostApiBoundaryError(
+        "argument-marshalling-rejected",
+        `[host-api-dispatcher] '${path}' names an invocation this connection does not hold`,
+      );
+    }
+    return inInvocation(invoke);
   }
 
   /**
@@ -2154,6 +2288,7 @@ export class HostApiDispatcher {
       controller.abort(new DOMException("[host-api-dispatcher] the child is gone", "AbortError"));
     }
     this.inFlight.clear();
+    this.warnedTokenlessPaths.clear();
     this.budgets.end();
     const closed = this.subscriptions.end("peer-gone");
     this.pendingSubscriptions.clear();

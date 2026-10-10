@@ -25,6 +25,7 @@
  * pinning that here would make every hostApi handler untestable without
  * spawning a subprocess.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Readable, Writable } from "node:stream";
 import { StdioServerLoop } from "../../mcp/experimental/stdio-server-loop.js";
 import {
@@ -34,7 +35,7 @@ import {
 import { createPluginUiResourceProvider } from "../../mcp/plugin-ui-resource-provider.js";
 import { describeNonJson } from "../../shared/json-representable.js";
 import { errorMessage } from "../../shared/error-message.js";
-import { RAW_RESULT_META } from "../../mcp/protocol-constants.js";
+import { INVOCATION_META, RAW_RESULT_META } from "../../mcp/protocol-constants.js";
 import { resolvePluginSocketDir } from "../plugin-storage-layout.js";
 import type {
   PluginHostApi,
@@ -228,6 +229,16 @@ export interface PluginChildRuntime {
  * plugin sees the host's answer to the cancellation rather than a local guess
  * at it.
  */
+/**
+ * The host invocation token of the `tools/call` this child is serving, for the
+ * async chain of that call's handler, including timers the handler leaves
+ * running after it returns. Every hostApi request made in that chain carries it
+ * back (`_meta[INVOCATION_META]`), so the host runs the request in the
+ * invocation it belongs to — its effect gate, effect ledger and origin.
+ * One plugin per child, so one store per process.
+ */
+const invocationScope = new AsyncLocalStorage<string>();
+
 export type HostApiCaller = (
   path: HostApiPath,
   args: readonly unknown[],
@@ -263,9 +274,12 @@ export function createHostApiCaller(
     };
     signal?.addEventListener("abort", onAbort, { once: true });
     try {
+      const params = hostApiParamsOf(path, args);
+      const invocation = invocationScope.getStore();
+      if (invocation !== undefined) params._meta = { [INVOCATION_META]: invocation };
       const reply = await channel.call(
         hostApiMethodOf(path),
-        hostApiParamsOf(path, args),
+        params,
         (id) => {
           requestId = id;
         },
@@ -577,7 +591,7 @@ export async function startPluginChildRuntime(
   }
   const instance = await factory(runtimeContext);
 
-  const delegate: PluginToolDelegate = async (name, args) => {
+  const delegate: PluginToolDelegate = async (name, args, invocationContext) => {
     const handler = instance.handlers[name];
     if (!handler) {
       throw new Error(`[plugin-child:${pluginId}] tool '${name}' has no handler`);
@@ -588,7 +602,10 @@ export async function startPluginChildRuntime(
     // carry "absent" — `tools/call` params are an object — so the two arms have
     // to agree on where the conversion happens, and this is that place on the
     // isolated arm.
-    const value = await handler(Object.keys(args).length > 0 ? args : undefined);
+    const payload = Object.keys(args).length > 0 ? args : undefined;
+    const value = invocationContext
+      ? await invocationScope.run(invocationContext.invocation, () => handler(payload))
+      : await handler(payload);
     const nonJson = describeNonJson(value, `${name}(result)`);
     if (nonJson) {
       throw new Error(

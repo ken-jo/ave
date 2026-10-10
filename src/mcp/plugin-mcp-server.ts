@@ -27,6 +27,7 @@ import {
 import type { McpUiResourceMeta } from "./types.js";
 
 import {
+  INVOCATION_META,
   MCP_PROTOCOL_VERSION,
   META_PROTOCOL_VERSION,
   META_SERVER_INFO,
@@ -58,6 +59,11 @@ export interface PluginToolOutcome {
 export type PluginToolDelegate = (
   name: string,
   args: Record<string, unknown>,
+  /**
+   * Present only when the request named the host invocation it serves
+   * (`_meta[INVOCATION_META]`); see {@link INVOCATION_META}.
+   */
+  context?: { readonly invocation: string },
 ) => Promise<PluginToolOutcome>;
 
 export class PluginMcpServer {
@@ -197,8 +203,15 @@ export class PluginMcpServer {
           params.arguments && typeof params.arguments === "object" && !Array.isArray(params.arguments)
             ? (params.arguments as Record<string, unknown>)
             : {};
+        const meta = params._meta;
+        const invocation =
+          meta && typeof meta === "object" && !Array.isArray(meta)
+            ? (meta as Record<string, unknown>)[INVOCATION_META]
+            : undefined;
         try {
-          const outcome = await this.callTool(name, args);
+          const outcome = typeof invocation === "string"
+            ? await this.callTool(name, args, { invocation })
+            : await this.callTool(name, args);
           const result: Record<string, unknown> = {
             resultType: "complete",
             content: outcome.content,
