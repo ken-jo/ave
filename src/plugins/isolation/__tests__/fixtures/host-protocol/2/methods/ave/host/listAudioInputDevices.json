@@ -3,7 +3,11 @@
     "id": 37,
     "jsonrpc": "2.0",
     "method": "ave/host/listAudioInputDevices",
-    "params": {}
+    "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      }
+    }
   },
   "response": {
     "id": 37,

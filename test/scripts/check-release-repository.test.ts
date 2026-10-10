@@ -75,8 +75,8 @@ describe("release repository gate", () => {
   it("exits zero from the workflow entry point in the published repository", () => {
     const { slug } = readRepositoryIdentity();
     const result = runGate(slug);
-    expect(result.stderr).toBe("");
+    expect(result.stderr).not.toContain("[release-repository]");
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain(slug);
+    expect(result.stdout).toBe(`[release-repository] package.json build.publish matches ${slug}\n`);
   });
 });

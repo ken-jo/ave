@@ -3181,8 +3181,8 @@ Where the sections above and the shipped code differ, the code wins:
   fixture. The file protocol stays refused, so a local directory is served
   over loopback rather than registered as a direct source.
 - **End-to-end test (§17).** `test/e2e/ui/git-marketplace-lifecycle.spec.ts`
-  replaces `marketplace-e2e.yml` and runs with every other Playwright spec in
-  the nightly `e2e.yml`. MCP governance still decides whether a marketplace
+  replaces `marketplace-e2e.yml` and runs with every other Playwright spec
+  under `bun run test:ui-e2e`. MCP governance still decides whether a marketplace
   MCP server may be configured (§13, `PACKAGE_POLICY_BLOCKED`), so the spec
   writes a governance policy approving its server into the run's
   `AVE_HOME`, as an organization would.

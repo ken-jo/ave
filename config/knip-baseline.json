@@ -54,66 +54,6 @@
     },
     {
       "type": "exports",
-      "file": "scripts/a2a-p4-5-live/evidence-lib.mjs",
-      "name": "HEAD_SHA_RE"
-    },
-    {
-      "type": "exports",
-      "file": "scripts/a2a-p4-5-live/evidence-lib.mjs",
-      "name": "PLACEHOLDER_RE"
-    },
-    {
-      "type": "exports",
-      "file": "scripts/a2a-p4-5-live/evidence-lib.mjs",
-      "name": "resolveEvidencePath"
-    },
-    {
-      "type": "exports",
-      "file": "scripts/a2a-p4-5-live/evidence-lib.mjs",
-      "name": "SHA256_RE"
-    },
-    {
-      "type": "exports",
-      "file": "scripts/a2a-p4-5-live/installer-provenance-lib.mjs",
-      "name": "collectFixedToolVersions"
-    },
-    {
-      "type": "exports",
-      "file": "scripts/a2a-p4-5-live/installer-provenance-lib.mjs",
-      "name": "readAndValidateProvenance"
-    },
-    {
-      "type": "exports",
-      "file": "scripts/a2a-p4-5-live/installer-provenance-lib.mjs",
-      "name": "SUPPORTED_INSTALLER_OSES"
-    },
-    {
-      "type": "exports",
-      "file": "scripts/a2a-p4-5-live/packaged-live-contract.mjs",
-      "name": "NO_SOCKET_CASE_IDS"
-    },
-    {
-      "type": "exports",
-      "file": "scripts/a2a-p4-5-live/packaged-live-contract.mjs",
-      "name": "TASK_METHODS"
-    },
-    {
-      "type": "exports",
-      "file": "scripts/a2a-p4-5-live/packaged-live-contract.mjs",
-      "name": "validateInstallReceipt"
-    },
-    {
-      "type": "exports",
-      "file": "scripts/a2a-p4-5-live/strict-json.mjs",
-      "name": "readStrictJsonFile"
-    },
-    {
-      "type": "exports",
-      "file": "scripts/a2a-p4-5-live/ui-driver-environment.mjs",
-      "name": "PACKAGED_UI_ENV_KEYS"
-    },
-    {
-      "type": "exports",
       "file": "scripts/lib/build-assets.mjs",
       "name": "BUILD_ASSETS"
     },
@@ -1004,11 +944,6 @@
     },
     {
       "type": "files",
-      "file": "scripts/a2a-p4-5-live/ui-driver.mjs",
-      "name": "scripts/a2a-p4-5-live/ui-driver.mjs"
-    },
-    {
-      "type": "files",
       "file": "scripts/asrt-runtime-smoke.mjs",
       "name": "scripts/asrt-runtime-smoke.mjs"
     },
@@ -1036,16 +971,6 @@
       "type": "files",
       "file": "scripts/recover-electron-native-reaper.mjs",
       "name": "scripts/recover-electron-native-reaper.mjs"
-    },
-    {
-      "type": "files",
-      "file": "scripts/run-a2a-p4-5-tck.ts",
-      "name": "scripts/run-a2a-p4-5-tck.ts"
-    },
-    {
-      "type": "files",
-      "file": "scripts/write-installer-provenance.mjs",
-      "name": "scripts/write-installer-provenance.mjs"
     },
     {
       "type": "files",

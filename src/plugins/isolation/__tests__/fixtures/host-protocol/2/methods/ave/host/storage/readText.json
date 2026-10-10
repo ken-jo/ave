@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/storage/readText",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "encoding": "utf-8",
       "relPath": "notes/today.txt"
     }

@@ -1187,7 +1187,7 @@ reach their own directories through a holder-PID ACL grant held for that
 process's lifetime, and while it is held every confined process reaches them
 too. By owner decision (2026-10-10) third-party plugins run on Windows on those
 terms, an accepted risk pending an ASRT per-plugin identity
-(`docs/design/plugin-hostapi-protocol.md` §9.8 A2, decision 63). An `entry`
+(`docs/design/plugin-hostapi-protocol.md` §9.8 A2, decision 64). An `entry`
 plugin child does not yet start under srt-win at all — its environment is not
 delivered, the PowerShell inner shell does not wait for `electron.exe`, stdin
 is not relayed, and the module import `lstat`s profile ancestors it cannot

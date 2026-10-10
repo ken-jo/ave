@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
+import { VIEW_FIXTURE_DISPATCH_MARKER, VIEW_FIXTURE_TOOL } from "../../fixtures/e2e-plugins/view-fixture.js";
 
 /**
  * Live checks the offline suites cannot make:
@@ -8,8 +9,8 @@ import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
  *   2. a real call to a path outside the allowed directories reaching the
  *      out-of-scope review instead of silently succeeding.
  *
- * Both need a real provider (`AVE_SMOKE_OPENROUTER_KEY`) and seeded repository
- * plugins. The permission mode decides which of the two can run:
+ * Both need a real provider (`AVE_SMOKE_OPENROUTER_KEY`); (1) uses the seeded
+ * in-repository fixture plugin (test/fixtures/e2e-plugins). The permission mode decides which of the two can run:
  *   AVE_E2E_PERMISSION_MODE=allow    → (1), tools run without a card
  *   AVE_E2E_PERMISSION_MODE=default  → (2), the card is the thing under test
  */
@@ -36,28 +37,17 @@ test.describe('live plugin + scope', () => {
     // Name the tools explicitly. The point is to prove the PLUGIN tool surface
     // is exposed to the model and dispatchable, not to test tool selection.
     await composer.fill(
-      'Call the tool index_folders to list indexed folders, then call ' +
-      'meeting_sessions to list meeting sessions. Use the tools, do not guess.',
+      `Call the tool ${VIEW_FIXTURE_TOOL} once and report what it returned. Use the tool, do not guess.`,
     );
     await mainWindow.locator('[data-testid="composer-send-button"]').first().click();
 
-    // The prompt itself contains those tool names, so matching them in the
+    // The prompt itself contains the tool name, so matching it in the
     // transcript proves nothing — the user bubble alone would satisfy it. The
-    // stub's marker can ONLY appear if the host actually dispatched the call
+    // fixture's marker can ONLY appear if the host actually dispatched the call
     // into the plugin, so that is what is asserted.
-    await expect(mainWindow.locator('body')).toContainText(/e2e-stub:(local-indexer|meeting):/, {
+    await expect(mainWindow.locator('body')).toContainText(VIEW_FIXTURE_DISPATCH_MARKER, {
       timeout: 180_000,
     });
-
-    const seen = await mainWindow.evaluate(() => {
-      const text = document.body.innerText;
-      return {
-        indexer: /e2e-stub:local-indexer:/.test(text),
-        meeting: /e2e-stub:meeting:/.test(text),
-      };
-    });
-    console.log(`[live-plugin] dispatched indexer=${seen.indexer} meeting=${seen.meeting}`);
-    expect(seen.indexer || seen.meeting).toBe(true);
   });
 
   test('a path outside the allowed directories reaches the scope review', async ({ mainWindow, t }) => {

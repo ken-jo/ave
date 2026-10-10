@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/agentApproval/request",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "input": {
         "args": {},
         "reason": "needs approval",

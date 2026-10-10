@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/proposeWork",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "input": {
         "key": "mail-1",
         "kind": "follow-up",

@@ -144,7 +144,7 @@ export type A2AUrlFilePart = A2APartBase & {
   text?: never; raw?: never; url: string; data?: never;
 };
 export type A2AFilePart = A2ARawFilePart | A2AUrlFilePart;
-export type A2ADataPart = A2APartBase & {
+type A2ADataPart = A2APartBase & {
   text?: never; raw?: never; url?: never; data: A2AJsonValue;
 };
 export type A2APart = A2ATextPart | A2AFilePart | A2ADataPart;

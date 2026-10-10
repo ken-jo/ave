@@ -28,7 +28,6 @@ resources/uv-archives/
 test-results/
 playwright-report/
 coverage/
-artifacts/a2a-p4-5/
 
 # Storybook build output
 storybook-static/

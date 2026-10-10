@@ -1006,9 +1006,12 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
     for (const { from, frame } of recorded) {
       if (from !== "host" || !["server/discover", "tools/list", "tools/call"].includes(String(frame.method))) continue;
       // Every MCP request carries the S1 metadata, and the plugin answered it.
+      // A tools/call also names the host invocation it serves; a child that
+      // makes no hostApi call (this one) has nothing to carry it back on.
       expect((frame.params as { _meta?: unknown })._meta).toEqual({
         "io.modelcontextprotocol/clientCapabilities": {},
         "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        ...(frame.method === "tools/call" ? { "ave/invocation": expect.stringMatching(/^<uuid-\d+>$/u) } : {}),
       });
       const reply = recorded.find((candidate) => candidate.from === "child" && candidate.frame.id === frame.id);
       expect(reply?.frame, String(frame.method)).toHaveProperty("result");

@@ -14,7 +14,7 @@ type CapturedDecision = {
 };
 
 test.skip(!existsSync(MAIN_ENTRY), "dist/src/main/main.js not built; run bun run build first");
-test.use({ seedRepositoryPlugins: false });
+test.use({ seedViewFixturePlugin: false });
 
 test("MCP elicitation approval form returns structured content", async ({ app, mainWindow }) => {
   await app.evaluate(({ ipcMain }) => {

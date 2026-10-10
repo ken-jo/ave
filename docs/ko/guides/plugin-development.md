@@ -848,7 +848,7 @@ ave/plugins/installed/{plugin-id}/
 ### 플러그인 제거
 
 1. `registry.json` 에서 `enabled: false` 로 두거나 항목 삭제.
-2. 런타임 disable 시 `PluginRuntime.disable(pluginId)` 호출:
+2. 런타임 disable 시 `PluginRuntime.setPluginEnabled(pluginId, false)` 호출 (설정 탭 토글이 쓰는 경로와 같음):
    - `stop()` 호출
    - method handler 제거
    - 플러그인이 등록한 disposer 들을 flush

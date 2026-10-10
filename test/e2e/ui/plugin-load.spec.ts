@@ -1,9 +1,12 @@
 import { test, expect } from './fixtures.js';
 import { TEST_IDS, testIdSelector } from '../../../src/shared/test-ids.js';
 import { captureCommandMenus, capturedCommandMenus } from './command-menu.js';
+import { VIEW_FIXTURE_VIEW_KEY } from '../../fixtures/e2e-plugins/view-fixture.js';
 
 /**
- * Regression guard: the seeded plugins' UI views stay reachable. The composer's
+ * Regression guard: a seeded plugin's UI view stays reachable. The seeded
+ * plugin is the in-repository fixture (test/fixtures/e2e-plugins), so the
+ * spec needs nothing outside this repository. The composer's
  * plugin grid is gone; a plugin's sidebar view is reached from the command
  * button's Plugins submenu, whose rows are keyed by the view key
  * (`plugin:<manifest id>:<view id>`).
@@ -12,10 +15,7 @@ import { captureCommandMenus, capturedCommandMenus } from './command-menu.js';
  * — built from the real app's loaded plugins — rather than a rendered popover
  * (see command-menu.ts).
  */
-const PLUGIN_VIEW_KEYS = [
-  'plugin:local-indexer:local-indexer-control',
-  'plugin:meeting:meeting-control',
-] as const;
+const PLUGIN_VIEW_KEYS = [VIEW_FIXTURE_VIEW_KEY] as const;
 
 test('plugins with UI views appear in the command menu', async ({ app, mainWindow }) => {
   test.setTimeout(120_000);

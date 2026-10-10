@@ -300,7 +300,7 @@ describe("documentation consumer guard", () => {
     expect(source("scripts/run-web-build.mjs")).toContain("NODE_OPTIONS:");
     const scripts = (JSON.parse(source("package.json")) as { scripts: Record<string, string> }).scripts;
     expect(Object.values(scripts).some((command) => command.includes("node --test "))).toBe(false);
-    for (const name of ["check:source-text-safe", "check:import-cycles", "check:asrt-claims", "test:ci-tooling"]) {
+    for (const name of ["check:source-text-safe", "check:import-cycles", "check:asrt-claims", "test:knip-gate"]) {
       expect(scripts[name]).toContain("node --import ./scripts/lib/document-consumer-guard.mjs --test ");
     }
   });

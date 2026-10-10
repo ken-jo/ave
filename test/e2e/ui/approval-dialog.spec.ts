@@ -2,10 +2,9 @@ import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 
-// Approval geometry does not exercise plugins. Seeding the sibling plugin
-// repositories only made this spec depend on their current manifest shape
-// (`invalid plugin manifest` before the app opened), so it is off here.
-test.use({ seedRepositoryPlugins: false });
+// Approval geometry does not exercise plugins, so the default view-fixture
+// plugin is not seeded here.
+test.use({ seedViewFixturePlugin: false });
 
 /** The seeded conversation the focused tile holds — what a real ask names. */
 async function currentSessionId(mainWindow: Page): Promise<string> {

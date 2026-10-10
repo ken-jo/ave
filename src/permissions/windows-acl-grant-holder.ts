@@ -14,7 +14,7 @@
  * WHAT THIS DOES NOT GIVE: isolation between plugins. Every confined process
  * runs as that one account, so while plugin A's grant is held, plugin B's
  * processes can reach A's directories too (owner decision 2026-10-10,
- * `plugin-hostapi-protocol.md` §9.8 A2, decision 63). It gives each plugin its
+ * `plugin-hostapi-protocol.md` §9.8 A2, decision 64). It gives each plugin its
  * own directories, and nothing beyond what its caller names.
  */
 import { spawn, type ChildProcess } from "node:child_process";

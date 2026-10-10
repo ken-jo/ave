@@ -2009,7 +2009,7 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   Windows 샌드박스는 플러그인을 호스트로부터만 격리하고 플러그인끼리는 격리하지
   않는다. 서드파티 플러그인도 이 조건으로 Windows 에서 실행된다 — owner 결정
   (2026-10-10) 에 따른 수용된 위험이며, ASRT per-plugin identity 를 기다린다
-  (`docs/design/plugin-hostapi-protocol.md` §9.8 A2, decision 63). 플러그인 간
+  (`docs/design/plugin-hostapi-protocol.md` §9.8 A2, decision 64). 플러그인 간
   파일시스템 격리 (`denyPluginsRoot`) 는 macOS·Linux 에만 있다. 플러그인 child 와
   delegated worker 는 각자 자기 디렉터리를 그 프로세스 수명 동안 유지되는 holder-PID
   ACL grant 로 얻고, grant 가 유지되는 동안에는 다른 모든 confined process 도 그
