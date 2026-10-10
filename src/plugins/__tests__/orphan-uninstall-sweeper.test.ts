@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sweepOrphanUninstallDirs } from "../orphan-uninstall-sweeper.js";
@@ -49,6 +49,21 @@ describe("sweepOrphanUninstallDirs", () => {
 
     expect(result).toEqual({ swept: ["linked-1-a"], failed: [] });
     expect(await readdir(outside)).toEqual(["keep"]);
+  });
+
+  // Judged by the entry itself, not by what it points at: a link to an
+  // outside file is unlinked, and the file is never touched.
+  it("removes a tombstone entry that links to an outside file, leaving the file", async () => {
+    const outside = join(pluginsRoot, "outside.txt");
+    await writeFile(outside, "keep");
+    await mkdir(tombstoneDir, { recursive: true });
+    await symlink(outside, join(tombstoneDir, "linked-file-1-a"));
+
+    const result = await sweepOrphanUninstallDirs(pluginsRoot);
+
+    expect(result).toEqual({ swept: ["linked-file-1-a"], failed: [] });
+    expect(await readdir(tombstoneDir)).toEqual([]);
+    expect(await readFile(outside, "utf8")).toBe("keep");
   });
 
   it("returns empty when the tombstone subdir does not exist (pre-first-uninstall)", async () => {
