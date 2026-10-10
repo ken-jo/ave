@@ -1,5 +1,6 @@
 import type { PluginConfigRetention, PluginRetirementPort } from "./retired-config.js";
 import { rm } from "node:fs/promises";
+import { assertPayloadOnlyPluginTree } from "./plugin-storage-layout.js";
 import path from "node:path";
 import type { SettingsService } from "../data/settings-store.js";
 import { listSecretKeys } from "./config-schema.js";
@@ -87,6 +88,10 @@ async function cleanupPluginCache(pluginId: string, cacheRoot: string): Promise<
   const root = path.resolve(cacheRoot);
   const target = path.resolve(root, safeSegment);
   if (target === root || !target.startsWith(root + path.sep)) return;
+  // The cache holds receipts, version caches and retained generations: no
+  // confined process is granted a write path here, and this runs only after
+  // the plugin's runtime retirement completed (finishCommittedPluginCleanup).
+  await assertPayloadOnlyPluginTree(target);
   await rm(target, { recursive: true, force: true });
 }
 

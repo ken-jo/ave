@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { PluginMarketplaceService, type PreparedMarketplacePluginActivation } from "../marketplace.js";
 import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
+import { TOMBSTONE_SUBDIR } from "../installed-entry-fs.js";
+import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 
 /**
  * One armed, one-shot fault on the local install's root swap
@@ -683,6 +685,154 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8")))
       .toMatchObject({ version: "1.2.3" });
     expect(await readPluginDataFixture(installDir)).toEqual(PLUGIN_DATA_FIXTURE);
+  });
+
+  // Once confined processes may run, every root a predecessor or candidate
+  // may still have in its confinement is tombstoned for the next boot rather
+  // than deleted while that child could race the delete.
+  describe("once confined processes may run", () => {
+    const tombstones = async () => {
+      const dir = join(pluginsDir, TOMBSTONE_SUBDIR);
+      return existsSync(dir) ? (await readdir(dir)).sort() : [];
+    };
+    const tombstonedVersions = async () => Promise.all((await tombstones()).map(async (name) =>
+      JSON.parse(await readFile(join(pluginsDir, TOMBSTONE_SUBDIR, name, "plugin.json"), "utf-8")).version as string));
+    const bumpSource = () => writeFile(
+      join(sourceDir, "plugin.json"),
+      JSON.stringify(agentPluginsDocument({
+        id: "test-plugin",
+        name: "Test Plugin",
+        version: "2.0.0",
+        description: "fixture v2",
+        entry: "dist/hostPlugin.js",
+      })),
+      "utf-8");
+    afterEach(() => {
+      _resetConfinedProcessPhaseForTests();
+      vi.restoreAllMocks();
+    });
+
+    it("tombstones the replaced live root and the rollback backup of a reinstall", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, preparedActivationOptionsForTest);
+      const installDir = join(pluginsDir, "test-plugin");
+      await seedPluginDataFixture(installDir);
+      await bumpSource();
+      noteConfinedProcessesMayRun();
+
+      await service.installLocal(sourceDir, preparedActivationOptionsForTest);
+
+      expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8"))).toMatchObject({ version: "2.0.0" });
+      expect(await readPluginDataFixture(installDir)).toEqual(PLUGIN_DATA_FIXTURE);
+      expect(await tombstonedVersions()).toEqual(["1.2.3", "1.2.3"]);
+    });
+
+    it("tombstones the failed candidate's root when the restore runs", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, preparedActivationOptionsForTest);
+      const installDir = join(pluginsDir, "test-plugin");
+      await bumpSource();
+      const store = (service as unknown as {
+        artifactStore: { persistPreparedInstallReceipt: (...args: unknown[]) => Promise<unknown> };
+      }).artifactStore;
+      vi.spyOn(store, "persistPreparedInstallReceipt").mockRejectedValueOnce(new Error("replacement receipt write failed"));
+      noteConfinedProcessesMayRun();
+
+      await expect(service.installLocal(sourceDir, preparedActivationOptionsForTest))
+        .rejects.toThrow("replacement receipt write failed");
+
+      expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8"))).toMatchObject({ version: "1.2.3" });
+      expect(await tombstonedVersions()).toContain("2.0.0");
+    });
+
+    it("tombstones a failed fresh install's root", async () => {
+      const service = makeService();
+      const store = (service as unknown as {
+        artifactStore: { persistPreparedInstallReceipt: (...args: unknown[]) => Promise<unknown> };
+      }).artifactStore;
+      vi.spyOn(store, "persistPreparedInstallReceipt").mockRejectedValueOnce(new Error("receipt write failed"));
+      noteConfinedProcessesMayRun();
+
+      await expect(service.installLocal(sourceDir, preparedActivationOptionsForTest)).rejects.toThrow("receipt write failed");
+
+      expect(existsSync(join(pluginsDir, "test-plugin"))).toBe(false);
+      expect(await tombstonedVersions()).toEqual(["1.2.3"]);
+    });
+
+    // The pre-copy delete of the staging root assumes payload only: nothing
+    // confined is granted a path there. A leftover one holding a runtime
+    // directory is refused, and it goes to the tombstones.
+    it("refuses a leftover staging root that holds a runtime directory", async () => {
+      const now = 1_700_000_000_000;
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      const stale = join(pluginsDir, `test-plugin.tmp-${process.pid}-${now}`);
+      await mkdir(join(stale, "data"), { recursive: true });
+      const service = makeService();
+      noteConfinedProcessesMayRun();
+
+      await expect(service.installLocal(sourceDir, preparedActivationOptionsForTest))
+        .rejects.toThrow(/holds runtime directory data\//);
+
+      expect(existsSync(stale)).toBe(false);
+      expect(existsSync(join(pluginsDir, "test-plugin"))).toBe(false);
+      const tombstoned = await tombstones();
+      expect(tombstoned).toHaveLength(1);
+      expect(existsSync(join(pluginsDir, TOMBSTONE_SUBDIR, tombstoned[0]!, "data"))).toBe(true);
+    });
+
+    // The restore stage of a rollback is also deleted at once as payload only.
+    it("refuses a leftover restore stage that holds a runtime directory", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, preparedActivationOptionsForTest);
+      const installDir = join(pluginsDir, "test-plugin");
+      await bumpSource();
+      const now = 1_700_000_000_000;
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      const stale = `${installDir}.restore-${process.pid}-${now}`;
+      await mkdir(join(stale, "data"), { recursive: true });
+      const store = (service as unknown as {
+        artifactStore: { persistPreparedInstallReceipt: (...args: unknown[]) => Promise<unknown> };
+      }).artifactStore;
+      vi.spyOn(store, "persistPreparedInstallReceipt").mockRejectedValueOnce(new Error("replacement receipt write failed"));
+      noteConfinedProcessesMayRun();
+
+      const failure = await service.installLocal(sourceDir, preparedActivationOptionsForTest)
+        .then(() => { throw new Error("install resolved"); }, (error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect((failure as AggregateError).errors.map((error: Error) => error.message))
+        .toContainEqual(expect.stringMatching(/holds runtime directory data\//));
+      expect(existsSync(join(stale, "data"))).toBe(true);
+    });
+
+    // A fresh install has no recovery backup, so the activated candidate's
+    // runtime directories are parked in the staged root for the swap. When the
+    // swap fails, that root holds directories the candidate is still bound to:
+    // it goes to the tombstones, not into a recursive delete or a leak.
+    it("tombstones a staged root that holds the candidate's runtime directories when the swap fails", async () => {
+      const service = makeService();
+      const installDir = join(pluginsDir, "test-plugin");
+      swapFault.failRenameInto = installDir;
+      noteConfinedProcessesMayRun();
+
+      try {
+        await expect(service.installLocal(sourceDir, {
+          activatePreparedArtifact: async (prepared) => {
+            materialiseCandidateRuntimeDirsForTest(prepared.installId, prepared.pluginRoot, pluginsDir);
+            const completion = Promise.resolve();
+            return { result: await prepared.durableCommit(), retirement: completion, completion, retirementDeferred: false };
+          },
+        })).rejects.toMatchObject({ code: "EBUSY" });
+      } finally {
+        swapFault.failRenameInto = undefined;
+      }
+
+      expect((await readdir(pluginsDir)).filter((name) => name.includes(".tmp-"))).toEqual([]);
+      const staged = (await tombstones()).filter((name) =>
+        existsSync(join(pluginsDir, TOMBSTONE_SUBDIR, name, "sockets")));
+      expect(staged).toHaveLength(1);
+      expect(existsSync(join(pluginsDir, TOMBSTONE_SUBDIR, staged[0]!, "run"))).toBe(true);
+    });
   });
 
   it("does not restore a predecessor after committed local publication failure", async () => {

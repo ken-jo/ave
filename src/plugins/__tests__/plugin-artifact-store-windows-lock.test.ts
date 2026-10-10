@@ -27,7 +27,7 @@ import AdmZip from "adm-zip";
 import { describe, expect, it } from "vitest";
 import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { isTransientFsLockError, retryOnTransientFsLock } from "../plugin-artifact-store.js";
+import { isTransientFsLockError, retryOnTransientFsLock } from "../../lib/transient-fs-lock-retry.js";
 import { cleanupTmpDir, makeStore, makeTmpDir } from "./artifact-store-test-helpers.js";
 import { agentPluginsDocument } from "./test-helpers.js";
 

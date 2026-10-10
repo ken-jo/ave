@@ -39,7 +39,7 @@ import { once } from "node:events";
 import { rmdirSync, unlinkSync } from "node:fs";
 import { rm } from "node:fs/promises";
 
-import { retryOnTransientFsLock } from "../../plugins/plugin-artifact-store.js";
+import { retryOnTransientFsLock } from "../../lib/transient-fs-lock-retry.js";
 
 /** Remove a test's scratch directory, retrying the transient lock codes. */
 export async function cleanupTmpDir(dir: string): Promise<void> {

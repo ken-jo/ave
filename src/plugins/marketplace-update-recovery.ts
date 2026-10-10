@@ -21,14 +21,15 @@ import { basename, dirname, resolve } from "node:path";
 import { isResolvedPathWithin } from "./plugin-storage-containment.js";
 import {
   type PluginDataCarryPolicy,
+  assertPayloadOnlyPluginTree,
   type PluginSocketCarryPolicy,
   carryPluginDataDir,
   carryPluginSocketDirs,
   pluginPayloadCopyFilter,
 } from "./plugin-storage-layout.js";
-import { parkUnattributedPluginState } from "./installed-entry-fs.js";
+import { parkUnattributedPluginState, removePluginTreeNowOrAtBoot } from "./installed-entry-fs.js";
 
-import { retryOnTransientFsLock } from "./plugin-artifact-store.js";
+import { retryOnTransientFsLock } from "../lib/transient-fs-lock-retry.js";
 import {
   installReceiptPath,
   restoreInstallReceiptRaw,
@@ -142,7 +143,13 @@ async function discardOwnedPluginRoot(
   // far the transaction got" reason: a local install parks the live
   // generation's `sockets/` and `run/` in its recovery backup while it swaps.
   await carryPluginSocketDirs(rootDir, ownedInstallDir(paths, pluginId), RECOVERY_SOCKET_CARRY);
-  await retryOnTransientFsLock(() => rm(rootDir, { recursive: true, force: true }));
+  // Boot recovery deletes now; a runtime restore (a failed local install) may
+  // still have a child confined to this path, so the root waits for the next boot.
+  await removePluginTreeNowOrAtBoot(rootDir, paths.pluginsRoot, removeRecoveredTreeNow);
+}
+
+async function removeRecoveredTreeNow(path: string): Promise<void> {
+  await retryOnTransientFsLock(() => rm(path, { recursive: true, force: true }));
 }
 
 function assertOwnedBackupPath(
@@ -336,11 +343,13 @@ export async function recoverPendingPluginUpdate(
   // Called at runtime too (a failed local install restores its predecessor
   // through here), where the predecessor is live and bound to these.
   await carryPluginSocketDirs(installDir, backupDir, RECOVERY_SOCKET_CARRY);
-  await retryOnTransientFsLock(() => rm(installDir, { recursive: true, force: true }));
+  await removePluginTreeNowOrAtBoot(installDir, paths.pluginsRoot, removeRecoveredTreeNow);
   if (pending.recoveryBackupMode === "rename") {
     await retryOnTransientFsLock(() => rename(backupDir, installDir));
   } else {
     const restoreStage = `${installDir}.recovery-${process.pid}-${Date.now()}`;
+    // A payload copy no confined process is granted; see assertPayloadOnlyPluginTree.
+    await assertPayloadOnlyPluginTree(restoreStage);
     await rm(restoreStage, { recursive: true, force: true });
     await mkdir(dirname(restoreStage), { recursive: true });
     try {
@@ -351,7 +360,9 @@ export async function recoverPendingPluginUpdate(
       });
       await retryOnTransientFsLock(() => rename(restoreStage, installDir));
     } catch (error) {
-      await rm(restoreStage, { recursive: true, force: true }).catch(() => undefined);
+      await assertPayloadOnlyPluginTree(restoreStage)
+        .then(() => rm(restoreStage, { recursive: true, force: true }))
+        .catch(() => undefined);
       throw error;
     }
     await retryOnTransientFsLock(() => carryPluginDataDir(backupDir, installDir, recoveryDataCarry(paths, pluginId)));

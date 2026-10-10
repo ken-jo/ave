@@ -143,6 +143,7 @@ import { pluginPartitionName } from "../../../shared/plugin-partition.js";
 import { emitEvent } from "../../types.js";
 import { setAppShutdownStarted } from "../../../main/app-state.js";
 import { createHash } from "node:crypto";
+import { _resetConfinedProcessPhaseForTests, confinedProcessesMayBeRunning } from "../../../lib/confined-process-phase.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
 import { agentPluginsDocument } from "../../../plugins/__tests__/test-helpers.js";
@@ -1986,9 +1987,13 @@ describe("initPluginRuntime sandbox union ordering", () => {
       refreshSandboxUnionDomains,
     });
 
+    _resetConfinedProcessPhaseForTests();
     await output.startPlugins();
 
     expect(order).toEqual(["load", "refresh", "startAll"]);
     expect(refreshSandboxUnionDomains).toHaveBeenCalledTimes(1);
+    // Plugin start begins the phase in which plugin trees are only tombstoned.
+    expect(confinedProcessesMayBeRunning()).toBe(true);
+    _resetConfinedProcessPhaseForTests();
   });
 });

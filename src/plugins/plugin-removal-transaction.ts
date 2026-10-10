@@ -1,12 +1,10 @@
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants, existsSync } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, realpath, rename, rm, type FileHandle } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
-import { retryOnTransientFsLock } from "./plugin-artifact-store.js";
+import { retryOnTransientFsLock } from "../lib/transient-fs-lock-retry.js";
 import { assertSafeArtifactSlug } from "./plugin-id.js";
 import type { PluginPaths } from "./plugin-paths.js";
 import { readPluginRegistry, validatePluginRegistryEntries } from "./registry.js";
@@ -15,6 +13,7 @@ import { canonicalJSON } from "./secret-access/canonical-json.js";
 import { pendingOwnedBackupPaths } from "./marketplace-update-recovery.js";
 import { isRecord, hasOnlyKeys } from "../shared/is-record.js";
 import { errorMessage } from "../shared/error-message.js";
+import { removeOwnedPluginTree, removePluginTreeNowOrAtBoot } from "./installed-entry-fs.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 
 const TRANSACTION_ROOT = "+transactions+";
@@ -351,133 +350,12 @@ async function removeTransactionStaged(paths: PluginPaths, journal: RemovalTrans
   await assertOwnedTransactionDirectory(paths, journal.transactionId);
   for (const mapping of journal.mappings) {
     await assertOwnedTransactionDirectory(paths, journal.transactionId);
-    await removeOwnedPluginTree(mapping.stagedPath);
+    await removePluginTreeNowOrAtBoot(mapping.stagedPath, paths.pluginsRoot, removeOwnedPluginTree);
   }
+  // What remains is the host's own journal and the emptied staged/ directory.
   await rm(transactionDir(paths, journal.transactionId), { recursive: true, force: true });
 }
 
-const execFileAsync = promisify(execFile);
-
-/**
- * Remove a staged plugin tree, or a principal's sandbox temp directory at boot
- * (`sweepSandboxTempRoot`), first taking back what confined code may have taken
- * from its owner.
- *
- * A confined plugin writes inside its data root, so it can `chmod 000` a
- * directory there or, on macOS, set the user-immutable flag (`chflags uchg`)
- * on one. Both stop a recursive `rm`, and the uninstall then leaves the tree
- * behind. The fast path is the plain removal; only when it fails is the tree
- * walked to restore the owner's `rwx` on every directory and, on darwin, to
- * clear `uchg`, before one more removal. No link is followed: the walk uses
- * `lstat` and `chflags -P`. If that removal fails too, its error propagates.
- */
-export async function removeOwnedPluginTree(path: string): Promise<void> {
-  try {
-    await retryOnTransientFsLock(() => rm(path, { recursive: true, force: true }));
-    return;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "EACCES" && code !== "EPERM" && code !== "ENOTEMPTY") throw error;
-  }
-  await restoreOwnerAccess(path);
-  if (process.platform === "darwin") {
-    await execFileAsync("/usr/bin/chflags", ["-R", "-P", "nouchg", path]);
-  }
-  await retryOnTransientFsLock(() => rm(path, { recursive: true, force: true }));
-}
-
-/**
- * Give the owner `rwx` on every directory under `path`, depth first from the
- * top so each one can be listed. A directory whose mode cannot be changed is,
- * on darwin, user-immutable: its flag is cleared and the mode set again.
- *
- * NO LINK IS FOLLOWED, even one swapped in after the `lstat`. Each directory
- * is opened `O_RDONLY | O_DIRECTORY | O_NOFOLLOW`, which refuses a link with
- * ELOOP or ENOTDIR, its inode is checked against the `lstat`, and the mode is
- * set through that descriptor. A directory the owner cannot read cannot be
- * opened that way, so it first gets owner `rwx` through a call that cannot
- * follow a link either (`grantOwnerAccessNoFollow`). What remains is the
- * listing, which goes by path after the inode check; the tree is staged under
- * the transaction directory, outside every write root a confined child had.
- */
-export async function restoreOwnerAccess(path: string): Promise<void> {
-  const entry = await lstat(path);
-  if (!entry.isDirectory()) return;
-  const mode = (entry.mode & 0o7777) | 0o700;
-  if (process.platform === "win32") {
-    // No descriptor can be opened on a Windows directory, and no confined
-    // child there writes inside a pinned root; the mode only toggles read-only.
-    await chmod(path, mode);
-  } else {
-    const handle = await openDirectoryNoFollow(path).catch(async (error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code !== "EACCES") throw error;
-      await grantOwnerAccessNoFollow(path, mode);
-      return openDirectoryNoFollow(path);
-    });
-    try {
-      if ((await handle.stat()).ino !== entry.ino) {
-        throw new Error(`plugin removal: ${path} changed while its access was being restored`);
-      }
-      try {
-        await handle.chmod(mode);
-      } catch (error) {
-        if (process.platform !== "darwin" || (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
-        await execFileAsync("/usr/bin/chflags", ["-h", "nouchg", path]);
-        await handle.chmod(mode);
-      }
-    } finally {
-      await handle.close();
-    }
-  }
-  for (const name of await readdir(path)) await restoreOwnerAccess(join(path, name));
-}
-
-function openDirectoryNoFollow(path: string): Promise<FileHandle> {
-  return open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-}
-
-/**
- * Linux's `O_PATH`, which Node does not export. 0o10000000 is the generic
- * value every architecture Node supports on Linux uses (x64, arm, arm64,
- * ppc64, s390x, riscv64, loong64).
- */
-const LINUX_O_PATH = 0o10000000;
-
-/**
- * Owner `rwx` on a directory the owner cannot read, without following a link
- * that may have replaced it. On darwin that is `chmod -h`, the `lchmod`
- * syscall, which changes a link itself and never its target. On Linux it is a
- * `chmod` of the `O_PATH | O_NOFOLLOW | O_DIRECTORY` descriptor's
- * `/proc/self/fd` entry, which names the opened inode and refuses a link. On
- * darwin a user-immutable directory refuses the change until its flag is
- * cleared, as in {@link restoreOwnerAccess}.
- */
-async function grantOwnerAccessNoFollow(path: string, mode: number): Promise<void> {
-  if (process.platform === "darwin") {
-    // BSD `chmod -h` is the `lchmod` syscall. Node's own `lchmod` cannot stand
-    // in: it opens the path for writing, which a directory refuses (EISDIR).
-    const lchmod = () => execFileAsync("/bin/chmod", ["-h", mode.toString(8), path]);
-    try {
-      await lchmod();
-    } catch {
-      // A user-immutable directory refuses the change; `chmod` reports that
-      // only on stderr, so the flag is cleared and the change tried once more,
-      // whose failure propagates.
-      await execFileAsync("/usr/bin/chflags", ["-h", "nouchg", path]);
-      await lchmod();
-    }
-    return;
-  }
-  if (process.platform !== "linux") {
-    throw new Error(`plugin removal: no way to restore access to ${path} without following a link on ${process.platform}`);
-  }
-  const handle = await open(path, LINUX_O_PATH | constants.O_NOFOLLOW | constants.O_DIRECTORY);
-  try {
-    await chmod(`/proc/self/fd/${handle.fd}`, mode);
-  } finally {
-    await handle.close();
-  }
-}
 
 async function restoreTransactionStaged(
   paths: PluginPaths,

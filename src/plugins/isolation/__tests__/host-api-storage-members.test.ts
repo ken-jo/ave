@@ -15,7 +15,7 @@
  * reason that has nothing to do with the file, and `resolve` never leaves the
  * child. Everything else is plain JSON both ways.
  */
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -102,15 +102,20 @@ interface Harness {
   readonly raw: (path: string, args: readonly unknown[]) => Promise<unknown>;
 }
 
+let scratch: string;
 let dataDir: string;
 
 beforeEach(() => {
   mockedElectron.enc.available = true;
-  dataDir = mkdtempSync(join(tmpdir(), "ave-storage-boundary-"));
+  scratch = mkdtempSync(join(tmpdir(), "ave-storage-boundary-"));
+  // The production layout, `<plugins root>/<id>/data`: a recursive rm
+  // discards beside the data directory, in the plugin root.
+  dataDir = join(scratch, PLUGIN_ID, "data");
+  mkdirSync(dataDir, { recursive: true });
 });
 
 afterEach(async () => {
-  await cleanupTmpDir(dataDir);
+  await cleanupTmpDir(scratch);
 });
 
 /**

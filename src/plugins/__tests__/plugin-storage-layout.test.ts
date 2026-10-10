@@ -26,13 +26,16 @@ import {
   carryPluginSocketDirs,
   isPluginRuntimeDirName,
   isSamePluginPath,
+  assertPayloadOnlyPluginTree,
   pluginPayloadCopyFilter,
   resolvePluginSocketDir,
   resolvePluginWritableRoot,
+  sweepPluginSocketDiscardDirs,
 } from "../plugin-storage-layout.js";
+import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { isPathWithin, isResolvedPathWithin } from "../plugin-storage-containment.js";
-import { PLUGIN_DATA_FIXTURE, readPluginDataFixture, seedPluginDataFixture } from "./test-helpers.js";
+import { PLUGIN_DATA_FIXTURE, makeTestTreeWritable, readPluginDataFixture, seedChildLockedTree, seedPluginDataFixture } from "./test-helpers.js";
 
 /**
  * One armed, one-shot transient lock on the next `rename` into a path ending
@@ -682,6 +685,92 @@ describe("carryPluginSocketDirs", () => {
     expect(existsSync(join(to, PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
   });
 
+  // At runtime a discarded worker leaf may still be bound into a live
+  // worker (bubblewrap --bind holds the directory, not its path), so the
+  // recursive delete waits for the boot sweep, before any child runs.
+  describe("discards and the confined-process phase", () => {
+    afterEach(() => { _resetConfinedProcessPhaseForTests(); });
+
+    it("leaves discarded entries for the boot sweep, which empties them", async () => {
+      const from = join(root, "old");
+      const to = join(root, "new");
+      await mkdir(join(from, "run", "w1"), { recursive: true });
+      await writeFile(join(from, "run", "w1", "stale"), "stale");
+      await mkdir(join(to, "run", "w1"), { recursive: true });
+      await writeFile(join(to, "run", "w1", "control.sock"), "bound");
+      await mkdir(join(to, PLUGIN_SOCKET_DISCARD_DIR_NAME, "x-left"), { recursive: true });
+      noteConfinedProcessesMayRun();
+      renameLock.recursiveRms = [];
+
+      await carryPluginSocketDirs(from, to, keepDestination());
+
+      expect(renameLock.recursiveRms).toEqual([]);
+      expect(await readdir(join(to, "run", "w1"))).toEqual(["control.sock"]);
+      const discarded = await readdir(join(from, PLUGIN_SOCKET_DISCARD_DIR_NAME));
+      expect(discarded).toHaveLength(1);
+      expect(discarded[0]).toMatch(/-w1$/);
+      expect(await readdir(join(from, PLUGIN_SOCKET_DISCARD_DIR_NAME, discarded[0]!))).toEqual(["stale"]);
+      expect(await readdir(join(to, PLUGIN_SOCKET_DISCARD_DIR_NAME))).toEqual(["x-left"]);
+      await expect(sweepPluginSocketDiscardDirs(root)).rejects.toThrow(/confined processes may already be running/);
+
+      _resetConfinedProcessPhaseForTests();
+      expect((await sweepPluginSocketDiscardDirs(root)).sort()).toEqual([to, from].sort());
+      expect(existsSync(join(from, PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
+      expect(existsSync(join(to, PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
+      expect(await readdir(join(to, "run", "w1"))).toEqual(["control.sock"]);
+    });
+
+    it.runIf(process.platform !== "win32")(
+      "empties a discard holding a directory a child made unreadable or, on macOS, immutable",
+      async () => {
+        const plugin = join(root, "acme");
+        const leaf = join(plugin, PLUGIN_SOCKET_DISCARD_DIR_NAME, "x-w1");
+        await mkdir(leaf, { recursive: true });
+        await seedChildLockedTree(leaf);
+        try {
+          expect(await sweepPluginSocketDiscardDirs(root)).toEqual([plugin]);
+          expect(existsSync(join(plugin, PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
+        } finally {
+          await makeTestTreeWritable(root);
+        }
+      },
+    );
+
+    it("empties every other root's discard when one root's discard name is a link", async () => {
+      const linked = join(root, "linked");
+      const plain = join(root, "plain");
+      const outside = join(root, "outside");
+      await mkdir(outside);
+      await writeFile(join(outside, "foreign"), "untouched");
+      await mkdir(linked);
+      await symlink(outside, join(linked, PLUGIN_SOCKET_DISCARD_DIR_NAME), "dir");
+      await mkdir(join(plain, PLUGIN_SOCKET_DISCARD_DIR_NAME, "x-left"), { recursive: true });
+
+      await expect(sweepPluginSocketDiscardDirs(root)).rejects.toThrow(/1 socket discard/);
+
+      expect(existsSync(join(plain, PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
+      expect(await readdir(outside)).toEqual(["foreign"]);
+    });
+
+    it("leaves a discarded sockets/ directory a child made for the boot sweep", async () => {
+      const from = join(root, "old");
+      const to = join(root, "new");
+      await mkdir(join(from, "sockets"), { recursive: true });
+      await mkdir(join(to, "sockets", "nested"), { recursive: true });
+      const discarded: string[] = [];
+      noteConfinedProcessesMayRun();
+      renameLock.recursiveRms = [];
+
+      await carryPluginSocketDirs(from, to, keepDestination(discarded));
+
+      expect(discarded).toEqual([join(to, "sockets", "nested")]);
+      expect(renameLock.recursiveRms).toEqual([]);
+      const left = await readdir(join(to, PLUGIN_SOCKET_DISCARD_DIR_NAME));
+      expect(left).toHaveLength(1);
+      expect(left[0]).toMatch(/-nested$/);
+    });
+  });
+
   it("places an entry an interrupted carry left staged before it was linked", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
@@ -1011,6 +1100,27 @@ describe("carryPluginDataDir — resolving conflict policy", () => {
     })).rejects.toThrow(/was not moved aside/);
 
     expect(await readPluginDataFixture(from)).toEqual(PLUGIN_DATA_FIXTURE);
+  });
+});
+
+// Staging, restore and backup copies are deleted right away because no
+// confined process is granted a path in them; a runtime directory there
+// breaks that premise and must refuse the delete.
+describe("assertPayloadOnlyPluginTree", () => {
+  let root: string;
+  beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "payload-only-")); });
+  afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+
+  it("accepts payload and a missing tree", async () => {
+    await writeFile(join(root, "plugin.json"), "{}");
+    await mkdir(join(root, "dist"));
+    await expect(assertPayloadOnlyPluginTree(root)).resolves.toBeUndefined();
+    await expect(assertPayloadOnlyPluginTree(join(root, "absent"))).resolves.toBeUndefined();
+  });
+
+  it.each([...PLUGIN_RUNTIME_DIR_NAMES])("refuses a tree holding %s/", async (name) => {
+    await mkdir(join(root, name));
+    await expect(assertPayloadOnlyPluginTree(root)).rejects.toThrow(new RegExp(`holds runtime directory ${name}/`));
   });
 });
 

@@ -41,6 +41,7 @@ import type { IpcDeps } from "../types.js";
 import { broadcastSettingsSnapshot, mutateMarketplaceProviderPresets } from "./settings.js";
 import { broadcastPromptsUpdated } from "../prompt-broadcast.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
+import { removePluginTreeNowOrAtBoot } from "../../plugins/installed-entry-fs.js";
 import { bundledCredentialKey } from "../../mcp/bundled-credential.js";
 
 const log = createLogger("marketplace-content");
@@ -275,7 +276,12 @@ export async function removeAgentPluginData(settings: Pick<IpcDeps["settingsServ
   if (!/^[a-z][a-z0-9-]*$/u.test(name)) throw new Error("invalid agent plugin package name");
   const operations = serverNames.map((server) => settings.deleteSecret(
     bundledCredentialKey({ kind: "agent-plugin", name }, server)));
-  operations.push(rm(join(openFeatureNamespace("agent-plugin-data").dir, name), { recursive: true, force: true }));
+  // The package's bundled MCP servers and hooks wrote this directory and may
+  // not have exited yet, so it is renamed into the namespace's tombstones and
+  // deleted at the next boot, before anything confined starts
+  // (lib/confined-process-phase.ts).
+  const dataRoot = openFeatureNamespace("agent-plugin-data").dir;
+  operations.push(removePluginTreeNowOrAtBoot(join(dataRoot, name), dataRoot, (path) => rm(path, { recursive: true, force: true })).then(() => undefined));
   const results = await Promise.allSettled(operations);
   const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
   if (failures.length > 0) throw new AggregateError(failures.map((result) => result.reason), "agent plugin data removal failed");

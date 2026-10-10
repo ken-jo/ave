@@ -13,11 +13,8 @@ import { isDevModeUnlocked } from "../boot/dev-flags.js";
 import type { DependencySpec, PluginAccessSpec, PluginManifest, PluginRegistryEntryInstallSource, PluginRegistryEntryOrigin, PluginRegistryTrust } from "./types.js";
 import { MissingDependenciesError, MissingPluginDependenciesError } from "./types.js";
 import { resolveDependencies } from "./dependency-resolver.js";
-import {
-  ArtifactRollbackError,
-  PluginArtifactStore,
-  retryOnTransientFsLock,
-} from "./plugin-artifact-store.js";
+import { ArtifactRollbackError, PluginArtifactStore } from "./plugin-artifact-store.js";
+import { retryOnTransientFsLock } from "../lib/transient-fs-lock-retry.js";
 import { assertSafeArtifactSlug } from "./plugin-id.js";
 import {
   cleanupObsoletePluginBackupPath,
@@ -29,10 +26,12 @@ import {
 } from "./marketplace-update-recovery.js";
 import {
   PLUGIN_RUNTIME_DIR_NAMES,
+  assertPayloadOnlyPluginTree,
   carryPluginDataDir,
   carryPluginSocketDirs,
   pluginPayloadCopyFilter,
 } from "./plugin-storage-layout.js";
+import { removePluginTreeNowOrAtBoot } from "./installed-entry-fs.js";
 import {
   buildFolderInstallReceipt,
   buildGitInstallReceipt,
@@ -142,6 +141,20 @@ type LocalInstallRollbackSnapshot = {
  * for it. A first install has no such backup and no predecessor state to
  * protect; the candidate itself receives whatever the vacated root held.
  */
+/** The immediate delete {@link removePluginTreeNowOrAtBoot} uses before any confined process runs. */
+async function removeTreeNow(path: string): Promise<void> {
+  await rm(path, { recursive: true, force: true });
+}
+
+/**
+ * Delete a staging, restore or backup copy the host made and no confined
+ * process is granted: payload only, so nothing can race the delete.
+ */
+async function removePayloadOnlyTree(path: string): Promise<void> {
+  await assertPayloadOnlyPluginTree(path);
+  await rm(path, { recursive: true, force: true });
+}
+
 function localInstallDataCarrier(snapshot: LocalInstallRollbackSnapshot | null): string | undefined {
   if (!snapshot) return undefined;
   return snapshot.kind === "filesystem-snapshot"
@@ -1244,7 +1257,7 @@ export class PluginMarketplaceService {
       try {
         // Copy and validate the complete candidate before touching live bytes,
         // receipt, registry, runtime, or any generation pointer.
-        await rm(stagingDir, { recursive: true, force: true });
+        await removePayloadOnlyTree(stagingDir);
         await cp(sourcePath, stagingDir, {
           recursive: true,
           verbatimSymlinks: true,
@@ -1291,7 +1304,10 @@ export class PluginMarketplaceService {
             // restores from the recovery backup — so a socket directory parked
             // in the staged root would be deleted with it (carryPluginSocketDirs).
             await carryPluginSocketDirs(installDir, dataCarrier ?? stagingDir, { onConflict: "reject" });
-            await rm(installDir, { recursive: true, force: true });
+            // Both the predecessor and the activated candidate may run with
+            // this path in their confinement (a path-based grant can recreate
+            // a writable directory here); see removePluginTreeNowOrAtBoot.
+            await removePluginTreeNowOrAtBoot(installDir, this.pluginsRoot, removeTreeNow);
             await rename(stagingDir, installDir);
             if (dataCarrier) {
               await retryOnTransientFsLock(
@@ -1349,7 +1365,10 @@ export class PluginMarketplaceService {
         await settleCommittedLocalUpdate(activated);
         return { pluginId, installed: true as const };
       } catch (err) {
-        await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+        // Not payload-only once the durable commit started: without a recovery
+        // backup (a fresh install), the activated candidate's runtime
+        // directories are parked here for the swap, and it is still bound to them.
+        await removePluginTreeNowOrAtBoot(stagingDir, this.pluginsRoot, removeTreeNow).catch(() => undefined);
         // A generation callback must never trigger compensating rollback after
         // the durable pointer commit. Post-commit health is journaled by the
         // lifecycle; this branch is only candidate/durable-commit failure.
@@ -1429,7 +1448,7 @@ export class PluginMarketplaceService {
     const backupRoot = resolve(this.pluginsRoot, ".cache", "local-install-rollback");
     await mkdir(backupRoot, { recursive: true });
     const backupDir = resolve(backupRoot, `${pluginId}-${process.pid}-${Date.now()}`);
-    await rm(backupDir, { recursive: true, force: true });
+    await removePayloadOnlyTree(backupDir);
     await cp(installDir, backupDir, {
       recursive: true,
       verbatimSymlinks: true,
@@ -1485,10 +1504,11 @@ export class PluginMarketplaceService {
       if (existsSync(snapshot.installDir)) await carryPluginSocketDirs(backupDir, snapshot.installDir, { onConflict: "reject" });
       await carryPluginSocketDirs(snapshot.installDir, backupDir, { onConflict: "reject" });
     }
-    await rm(snapshot.installDir, { recursive: true, force: true });
+    // The candidate that failed may still run with this path in its confinement.
+    await removePluginTreeNowOrAtBoot(snapshot.installDir, this.pluginsRoot, removeTreeNow);
     if (backupDir) {
       const restoreStageDir = `${snapshot.installDir}.restore-${process.pid}-${Date.now()}`;
-      await rm(restoreStageDir, { recursive: true, force: true });
+      await removePayloadOnlyTree(restoreStageDir);
       try {
         await cp(backupDir, restoreStageDir, {
           recursive: true,
@@ -1500,7 +1520,7 @@ export class PluginMarketplaceService {
             log.warn({ pluginId, attempt, code }, "retrying local rollback directory restore under fs lock"),
         });
       } catch (err) {
-        await rm(restoreStageDir, { recursive: true, force: true }).catch(() => undefined);
+        await removePayloadOnlyTree(restoreStageDir).catch(() => undefined);
         throw err;
       }
       await retryOnTransientFsLock(
@@ -1540,7 +1560,8 @@ export class PluginMarketplaceService {
     await updatePluginRegistry(this.registryPath, (registry) => {
       registry.plugins = registry.plugins.filter((entry) => entry.id !== pluginId);
     });
-    await rm(installDir, { recursive: true, force: true });
+    // The fresh install's candidate may still run with this path in its confinement.
+    await removePluginTreeNowOrAtBoot(installDir, this.pluginsRoot, removeTreeNow);
     await rm(installReceiptPath(this.cacheRoot, pluginId), { force: true });
     this.clearInstallReceiptValidationForPlugin(pluginId);
   }
@@ -1556,7 +1577,8 @@ export class PluginMarketplaceService {
       return;
     }
     if (snapshot?.backupDir) {
-      await rm(snapshot.backupDir, { recursive: true, force: true });
+      // The plugin's data travelled through this backup during the swap.
+      await removePluginTreeNowOrAtBoot(snapshot.backupDir, this.pluginsRoot, removeTreeNow);
       await clearObsoletePluginBackupOwnership(
         this.paths,
         snapshot.registryEntry.id,

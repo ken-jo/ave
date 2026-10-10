@@ -21,10 +21,10 @@
  *   allowed chars `^[a-zA-Z0-9._-]+$`), so a malicious plugin slug can
  *   never be confused with a tombstone or trigger sweeping of an
  *   installed plugin's dir.
- * - **Symlink safety**: Node ≥16.7 `rm({recursive,force})` calls `lstat`
- *   first and severs symlinks rather than traversing into them, so a
- *   tombstone-named symlink to `~/.ssh` would only have the symlink
- *   removed, never the target.
+ * - **Symlink safety**: entries are `lstat`ed and removed with
+ *   `removeOwnedPluginTree`, whose `rm` severs a link rather than traversing
+ *   it and whose access-restoring walk never follows one, so a
+ *   tombstone-named symlink to `~/.ssh` only has the symlink removed.
  * - **Concurrent dev sessions**: idempotent. Two sessions sharing
  *   `pluginsRoot` may both attempt the same rm; the second sees ENOENT
  *   (silenced by `force: true`) and reports a noisy `failed[]` entry at
@@ -37,10 +37,11 @@
  * trail beyond the info-level log line.
  */
 
-import { readdir, rm, stat } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { TOMBSTONE_SUBDIR } from "./installed-entry-fs.js";
+import { TOMBSTONE_SUBDIR, removeOwnedPluginTree } from "./installed-entry-fs.js";
 import { createLogger } from "../lib/logger.js";
+import { assertNoConfinedProcessMayRun } from "../lib/confined-process-phase.js";
 
 const log = createLogger("plugins/orphan-uninstall-sweeper");
 
@@ -80,10 +81,17 @@ export async function sweepOrphanUninstallDirs(
     entries.map(async (name) => {
       const path = join(tombstoneDir, name);
       // Guard against a non-directory entry sneaking into the subdir
-      // (host bug, manual fs poking). Only directories should be there.
-      const st = await stat(path);
-      if (!st.isDirectory()) return null;
-      await rm(path, { recursive: true, force: true });
+      // (host bug, manual fs poking). Only directories should be there; a
+      // link is removed as a link, never followed.
+      const st = await lstat(path);
+      if (!st.isDirectory() && !st.isSymbolicLink()) return null;
+      // A tombstone made at runtime may hold a directory a still-running
+      // child is bound to; only the boot sweep, before any confined process,
+      // deletes recursively (see lib/confined-process-phase.ts).
+      assertNoConfinedProcessMayRun(path);
+      // The child that wrote it may have locked a directory (chmod 000) or,
+      // on macOS, made a file user-immutable; a plain rm stops at either.
+      await removeOwnedPluginTree(path);
       return name;
     }),
   );

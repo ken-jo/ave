@@ -77,6 +77,25 @@ export function admittedGenerationAccess(generationId: string): PluginRuntimeGen
 const execFileAsync = promisify(execFile);
 
 /**
+ * Leave under `dir` what a confined child can do to stop a plain recursive
+ * `rm`: a directory it made unreadable (`chmod 000`, holding a file) and, on
+ * darwin, a user-immutable directory holding a user-immutable file.
+ */
+export async function seedChildLockedTree(dir: string): Promise<void> {
+  const locked = join(dir, "locked");
+  await mkdir(join(locked, "deep"), { recursive: true });
+  await writeFile(join(locked, "deep", "state.bin"), "state");
+  await chmod(locked, 0o000);
+  if (process.platform === "darwin") {
+    const immutable = join(dir, "immutable");
+    await mkdir(immutable, { recursive: true });
+    await writeFile(join(immutable, "pinned.txt"), "pinned");
+    await execFileAsync("/usr/bin/chflags", ["uchg", join(immutable, "pinned.txt")]);
+    await execFileAsync("/usr/bin/chflags", ["uchg", immutable]);
+  }
+}
+
+/**
  * Restore owner write access before deleting immutable generation fixtures.
  *
  * On darwin a fixture may also carry the user-immutable flag (`uchg`), which

@@ -149,6 +149,32 @@ describe("uninstallPluginWithLifecycle", () => {
     }
   });
 
+  // The plugin's cache holds receipts, version caches and retained
+  // generations, none granted to a confined process. A runtime directory in
+  // it would be, so the cleanup refuses rather than racing a writer.
+  it("refuses to delete a plugin cache that holds a runtime directory", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-uninstall-cache-runtime-"));
+    try {
+      const cacheRoot = join(root, ".cache");
+      await mkdir(join(cacheRoot, "agent-hub", "data"), { recursive: true });
+
+      // makeDeps' generic commit mock widens to unknown; the shape is what matters here.
+      const deps = makeDeps("agent-hub", cacheRoot) as unknown as Parameters<typeof uninstallPluginWithLifecycle>[1];
+      const failure = await uninstallPluginWithLifecycle("agent-hub", deps).then(
+        () => { throw new Error("uninstall resolved"); },
+        (error: unknown) => error,
+      );
+      const messages = (error: unknown): string[] => error instanceof Error
+        ? [error.message, ...(error instanceof AggregateError ? error.errors.flatMap(messages) : []), ...messages(error.cause)]
+        : [];
+      expect(messages(failure)).toContainEqual(expect.stringMatching(/holds runtime directory data\//));
+
+      expect(existsSync(join(cacheRoot, "agent-hub", "data"))).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("skips cache deletion on idempotent missing-plugin cleanup", async () => {
     const root = mkdtempSync(join(tmpdir(), "ave-uninstall-cache-missing-"));
     try {

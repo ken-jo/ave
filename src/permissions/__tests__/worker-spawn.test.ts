@@ -70,7 +70,8 @@ vi.mock("../sandbox-process-home.js", () => ({
 const spawnMock = vi.fn<
   (cmd: string, args?: readonly string[], opts?: unknown) => unknown
 >();
-vi.mock("node:child_process", () => ({
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:child_process")>(),
   spawn: (cmd: string, args?: readonly string[], opts?: unknown) =>
     spawnMock(cmd, args, opts),
 }));

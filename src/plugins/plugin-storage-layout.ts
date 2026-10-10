@@ -16,12 +16,14 @@
  * Shared by receipt verification, permissions and runtime-directory mutations
  * so their paths and host-side serialization agree.
  */
-import { link, lstat, mkdir, readdir, rename, rm, rmdir, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, readdir, rename, rmdir, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, resolve } from "node:path";
 import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { aveHome } from "../shared/ave-home.js";
+import { assertNoConfinedProcessMayRun, confinedProcessesMayBeRunning } from "../lib/confined-process-phase.js";
+import { removeOwnedPluginTree } from "./installed-entry-fs.js";
 import { PluginDataRootError, resolvePluginDataRoot } from "./plugin-storage-containment.js";
 
 /**
@@ -58,12 +60,23 @@ export const PLUGIN_OWN_SOCKET_DIR_NAME = "sockets";
 export const PLUGIN_SOCKET_CARRY_DIR_NAME = ".sockets-carry";
 
 /**
- * HOST-ONLY directory under a plugin root where {@link carryPluginSocketDirs}
- * deletes an entry. A recursive delete inside `sockets/` or a worker leaf —
- * both writable by a child — races the child, which can swap a subdirectory
- * for a link to an outside directory between rm's lstat and its descent. So
- * an entry is renamed in here (rename never follows) and deleted only here.
- * Emptied at the end of every delete and at the start of every carry.
+ * HOST-ONLY directory under a plugin root where the host deletes an entry of a
+ * child-writable directory: a `sockets/` entry or worker leaf the socket carry
+ * ({@link carryPluginSocketDirs}) discards, and a directory the plugin asks
+ * `storage.rm` to remove recursively ({@link discardPluginDataTree}). The name
+ * comes from its first user and stays: it is on disk. A recursive delete
+ * inside a child-writable directory races the child, which can swap a
+ * subdirectory for a link to an outside directory between rm's lstat and its
+ * descent. So an entry is renamed in here (rename never follows) and deleted
+ * only here.
+ *
+ * Deleted only before confined processes may run (lib/confined-process-phase.ts):
+ * a discarded worker leaf, or a directory a child made in `sockets/`, can still
+ * be written by the child after the rename, through a bubblewrap `--bind` of
+ * the leaf or a directory descriptor it holds. Before that phase, it is emptied
+ * at the end of every delete and at the start of every carry (boot recovery);
+ * after it, entries wait here and {@link sweepPluginSocketDiscardDirs} empties
+ * them on the next boot.
  */
 export const PLUGIN_SOCKET_DISCARD_DIR_NAME = ".sockets-discard";
 
@@ -644,7 +657,71 @@ async function discardRuntimeEntry(root: string, path: string): Promise<void> {
 async function emptyDiscardDirectory(root: string): Promise<void> {
   const discard = resolve(root, PLUGIN_SOCKET_DISCARD_DIR_NAME);
   if (!await assertSocketDirectory(discard)) return;
-  await rm(discard, { recursive: true, force: true });
+  // A live child may still write inside a discarded entry; the next boot
+  // deletes it (see PLUGIN_SOCKET_DISCARD_DIR_NAME).
+  if (confinedProcessesMayBeRunning()) return;
+  // A child may have locked a directory or made a file immutable before its
+  // entry was discarded.
+  await removeOwnedPluginTree(discard);
+}
+
+/**
+ * Remove `path`, inside the plugin data directory `dataDir`, recursively on
+ * the plugin's behalf, without racing the plugin: it is renamed (never
+ * followed) into the plugin root's host-only discard directory, and deleted
+ * there now or, once confined processes may run, by the next boot
+ * ({@link PLUGIN_SOCKET_DISCARD_DIR_NAME}). The plugin root is the data
+ * directory's parent, as `resolvePluginDataDir` lays it out; a data directory
+ * named anything else is a caller bug and refused. An absent `path` is
+ * nothing to remove.
+ */
+export async function discardPluginDataTree(dataDir: string, path: string): Promise<void> {
+  if (basename(dataDir) !== PLUGIN_DATA_DIR_NAME) {
+    throw new Error(`[plugin-storage-layout] ${dataDir} is not a plugin data directory; refusing to discard ${path} beside it`);
+  }
+  const root = dirname(dataDir);
+  await withPluginRuntimeDirQueue(root, () => discardRuntimeEntry(root, path));
+}
+
+/**
+ * Boot: empty the socket discard directory of every plugin root directly
+ * under `pluginsRoot`, which is where a live root lives while a runtime carry
+ * discards into it. Any other root holding one (a stage, a backup) is
+ * deleted whole, by boot recovery or through the tombstones. Must run before
+ * confined processes may run, and refuses otherwise.
+ *
+ * @returns the roots whose discard directory was emptied.
+ */
+export async function sweepPluginSocketDiscardDirs(pluginsRoot: string): Promise<string[]> {
+  assertNoConfinedProcessMayRun(`the socket discard directories under ${pluginsRoot}`);
+  let names: string[];
+  try {
+    names = await readdir(pluginsRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const emptied: string[] = [];
+  const failures: unknown[] = [];
+  for (const name of names) {
+    const root = resolve(pluginsRoot, name);
+    try {
+      if (!(await lstat(root)).isDirectory()) continue;
+      await withPluginRuntimeDirQueue(root, async () => {
+        if (!await pathExists(resolve(root, PLUGIN_SOCKET_DISCARD_DIR_NAME))) return;
+        await emptyDiscardDirectory(root);
+        emptied.push(root);
+      });
+    } catch (error) {
+      // One root's failure (a linked discard name, a lock) does not keep the
+      // other roots' discards for another boot.
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `[plugin-storage-layout] ${failures.length} socket discard director(ies) under ${pluginsRoot} were not emptied`);
+  }
+  return emptied;
 }
 
 /**
@@ -766,6 +843,22 @@ async function assertSocketDirectory(path: string): Promise<boolean> {
 export function pluginPayloadCopyFilter(root: string): (source: string) => boolean {
   const runtimeDirs = [...PLUGIN_RUNTIME_DIR_NAMES].map((name) => resolve(root, name));
   return (source) => !runtimeDirs.some((dir) => isSamePluginPath(source, dir));
+}
+
+/**
+ * Refuse to treat `root` as a payload-only tree when it holds a runtime
+ * directory. Callers that delete a staging, restore or backup copy right away
+ * rely on it holding payload only: no confined process is granted a path in
+ * it, so nothing can race the recursive delete. A runtime directory there
+ * (state, a live socket, a worker leaf) breaks that premise, and the delete
+ * must go through the deferred tree removal instead.
+ */
+export async function assertPayloadOnlyPluginTree(root: string): Promise<void> {
+  for (const name of PLUGIN_RUNTIME_DIR_NAMES) {
+    if (await pathExists(resolve(root, name))) {
+      throw new Error(`[plugin-storage-layout] ${root} holds runtime directory ${name}/; it is not a payload-only tree to delete now`);
+    }
+  }
 }
 
 async function pathExists(path: string): Promise<boolean> {

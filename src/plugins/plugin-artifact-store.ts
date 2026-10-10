@@ -33,7 +33,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { isResolvedPathWithin } from "./plugin-storage-containment.js";
-import { carryPluginDataDir, carryPluginSocketDirs } from "./plugin-storage-layout.js";
+import { assertPayloadOnlyPluginTree, carryPluginDataDir, carryPluginSocketDirs } from "./plugin-storage-layout.js";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -42,18 +42,14 @@ import {
 } from "./zip-entry-path.js";
 import { type PluginAccessSpec, type PluginRegistryEntryInstallSource } from "./types.js";
 import { stripLegacyPluginToolGrants } from "./registry.js";
-import { tombstoneAndDeferredRemove } from "./installed-entry-fs.js";
+import { removePluginTreeNowOrAtBoot, tombstoneAndDeferredRemove } from "./installed-entry-fs.js";
 import {
   buildInstallReceipt,
   restoreInstallReceiptRaw,
   type PluginInstallReceipt,
 } from "./plugin-install-receipt.js";
 import { createLogger } from "../lib/logger.js";
-import {
-  BACKGROUND_ATTEMPTS,
-  DIRECTORY_OP_LOCK_CODES,
-  transientFsLockDelayMs,
-} from "../lib/transient-fs-lock-retry.js";
+import { retryOnTransientFsLock } from "../lib/transient-fs-lock-retry.js";
 import { assertSafeArtifactSlug } from "./plugin-id.js";
 import {
   assertCompressedArtifactSize,
@@ -66,58 +62,10 @@ import {
   isCommittedPluginGenerationPublicationError,
   type CommittedPluginGenerationPublicationError,
 } from "./committed-generation-publication-error.js";
-import { sleep } from "../shared/abortable-deadline.js";
 import { writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 export { assertSafeArtifactSlug } from "./plugin-id.js";
 
 const log = createLogger("plugin-artifact-store");
-
-/**
- * Windows transient-lock codes for the directory-swap / `rm()` paths. The set
- * itself lives in `lib/transient-fs-lock-retry.ts` alongside the narrower set
- * the file-rename ladder uses and the shared delay curve, so the two ladders
- * cannot drift apart again. macOS/Linux do not surface these for this path.
- */
-const TRANSIENT_FS_LOCK_CODES = DIRECTORY_OP_LOCK_CODES;
-
-export function isTransientFsLockError(err: unknown): boolean {
-  const code = (err as NodeJS.ErrnoException | null)?.code;
-  return typeof code === "string" && TRANSIENT_FS_LOCK_CODES.has(code);
-}
-
-/**
- * Run a filesystem op with bounded retry for transient Windows lock
- * contention. Only {@link TRANSIENT_FS_LOCK_CODES} are retried; `ENOENT` and
- * every other error propagate immediately so the caller can distinguish
- * "source absent" (first install) from "source locked" (worth retrying) from a
- * genuine failure. With the defaults the total wait is bounded to ~1.75s
- * (9 sleeps: 50+100+150+200 then 250×5) so an install can never hang the user.
- *
- * `sleep`/`delayMs` are injectable so tests exercise the retry ladder without
- * real timers.
- */
-export async function retryOnTransientFsLock<T>(
-  op: () => Promise<T>,
-  opts: {
-    attempts?: number;
-    delayMs?: (attempt: number) => number;
-    sleep?: (ms: number) => Promise<void>;
-    onRetry?: (attempt: number, code: string | undefined) => void;
-  } = {},
-): Promise<T> {
-  const attempts = opts.attempts ?? BACKGROUND_ATTEMPTS;
-  const delayMs = opts.delayMs ?? transientFsLockDelayMs;
-  const wait = opts.sleep ?? sleep;
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await op();
-    } catch (err) {
-      if (attempt >= attempts || !isTransientFsLockError(err)) throw err;
-      opts.onRetry?.(attempt, (err as NodeJS.ErrnoException).code);
-      await wait(delayMs(attempt));
-    }
-  }
-}
 
 export interface ArtifactStoreHistoryEntry {
   version: string;
@@ -318,6 +266,7 @@ export class PluginArtifactStore {
     if (!isResolvedPathWithin(this.installRoot, stageDir)) {
       throw new Error(`artifact slug "${slug}" escapes install root`);
     }
+    // A fresh random name: nothing is there, and nothing confined is granted it.
     await rm(stageDir, { recursive: true, force: true });
     await mkdir(stageDir, { recursive: true });
     const extractedFiles: string[] = [];
@@ -419,7 +368,13 @@ export class PluginArtifactStore {
             }
           }
           try {
-            await retryOnTransientFsLock(() => rm(installDir, { recursive: true, force: true }));
+            // The candidate was activated before this commit and may still run
+            // with this path in its confinement; see removePluginTreeNowOrAtBoot.
+            await removePluginTreeNowOrAtBoot(
+              installDir,
+              this.installRoot,
+              (path) => retryOnTransientFsLock(() => rm(path, { recursive: true, force: true })),
+            );
           } catch (cleanupErr) {
             throw new ArtifactRollbackError(
               `${failedStep} and promoted-directory cleanup both failed: ${safeSlug}`,
@@ -837,11 +792,20 @@ export class PluginArtifactStore {
     return resolve(this.cacheRoot, assertSafeArtifactSlug(slug), "history.json");
   }
 
+  /**
+   * The predecessor's root after its generation retired and its data moved
+   * into the promoted root: payload only, which no confined process is
+   * granted. A runtime directory still there refuses the delete, and the
+   * caller tombstones the root for the next boot instead.
+   */
   private async removeCommittedBackup(path: string): Promise<void> {
+    await assertPayloadOnlyPluginTree(path);
     await rm(path, { recursive: true, force: true });
   }
 
+  /** An extraction stage: payload only, granted to no confined process. */
   private async removeAbandonedStage(path: string): Promise<void> {
+    await assertPayloadOnlyPluginTree(path);
     await rm(path, { recursive: true, force: true });
   }
 }

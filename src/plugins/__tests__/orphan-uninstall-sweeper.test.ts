@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sweepOrphanUninstallDirs } from "../orphan-uninstall-sweeper.js";
 import { TOMBSTONE_SUBDIR } from "../installed-entry-fs.js";
+import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
+import { makeTestTreeWritable, seedChildLockedTree } from "./test-helpers.js";
 
 describe("sweepOrphanUninstallDirs", () => {
   let pluginsRoot: string;
@@ -15,7 +18,52 @@ describe("sweepOrphanUninstallDirs", () => {
   });
 
   afterEach(async () => {
+    await makeTestTreeWritable(pluginsRoot);
     await rm(pluginsRoot, { recursive: true, force: true });
+  });
+
+  // The child that wrote a tombstoned root may have locked part of it; a
+  // plain rm would fail there on every boot and keep the tombstone forever.
+  it.runIf(process.platform !== "win32")(
+    "removes a tombstone holding a directory a child made unreadable or, on macOS, immutable",
+    async () => {
+      const tombstone = "acme-1700000000000-cafe";
+      await mkdir(join(tombstoneDir, tombstone, "data"), { recursive: true });
+      await seedChildLockedTree(join(tombstoneDir, tombstone, "data"));
+
+      const result = await sweepOrphanUninstallDirs(pluginsRoot);
+
+      expect(result).toEqual({ swept: [tombstone], failed: [] });
+      expect(existsSync(join(tombstoneDir, tombstone))).toBe(false);
+    },
+  );
+
+  it("removes a linked tombstone entry as a link, leaving its target", async () => {
+    const outside = join(pluginsRoot, "outside");
+    await mkdir(outside);
+    await writeFile(join(outside, "keep"), "keep");
+    await mkdir(tombstoneDir, { recursive: true });
+    await symlink(outside, join(tombstoneDir, "linked-1-a"), "dir");
+
+    const result = await sweepOrphanUninstallDirs(pluginsRoot);
+
+    expect(result).toEqual({ swept: ["linked-1-a"], failed: [] });
+    expect(await readdir(outside)).toEqual(["keep"]);
+  });
+
+  // Judged by the entry itself, not by what it points at: a link to an
+  // outside file is unlinked, and the file is never touched.
+  it("removes a tombstone entry that links to an outside file, leaving the file", async () => {
+    const outside = join(pluginsRoot, "outside.txt");
+    await writeFile(outside, "keep");
+    await mkdir(tombstoneDir, { recursive: true });
+    await symlink(outside, join(tombstoneDir, "linked-file-1-a"));
+
+    const result = await sweepOrphanUninstallDirs(pluginsRoot);
+
+    expect(result).toEqual({ swept: ["linked-file-1-a"], failed: [] });
+    expect(await readdir(tombstoneDir)).toEqual([]);
+    expect(await readFile(outside, "utf8")).toBe("keep");
   });
 
   it("returns empty when the tombstone subdir does not exist (pre-first-uninstall)", async () => {
@@ -108,5 +156,32 @@ describe("sweepOrphanUninstallDirs", () => {
     expect(result.swept).toEqual(["ok-1-x"]);
     // Hook only fires on failures, not on success
     expect(auditFailures).not.toHaveBeenCalled();
+  });
+});
+
+// A runtime tombstone may hold a directory a still-running child is bound
+// to; only the boot sweep, before any confined process, deletes it.
+describe("sweepOrphanUninstallDirs after confined processes may run", () => {
+  let pluginsRoot: string;
+
+  beforeEach(async () => {
+    pluginsRoot = await mkdtemp(join(tmpdir(), "orphan-sweeper-phase-"));
+  });
+
+  afterEach(async () => {
+    _resetConfinedProcessPhaseForTests();
+    await rm(pluginsRoot, { recursive: true, force: true });
+  });
+
+  it("refuses to delete and keeps the tombstone", async () => {
+    const tombstone = join(pluginsRoot, TOMBSTONE_SUBDIR, "acme-1-a");
+    await mkdir(join(tombstone, "data"), { recursive: true });
+    noteConfinedProcessesMayRun();
+
+    const result = await sweepOrphanUninstallDirs(pluginsRoot);
+
+    expect(result.swept).toEqual([]);
+    expect(result.failed).toEqual([{ name: "acme-1-a", error: expect.stringMatching(/confined processes may already be running/) }]);
+    expect(existsSync(join(tombstone, "data"))).toBe(true);
   });
 });

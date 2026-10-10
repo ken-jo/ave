@@ -731,6 +731,10 @@ export async function validatePluginDirectory(dir: string, options: ValidateOpti
   // Created before the manifest step: a `process` entry's `${PLUGIN_DATA}`
   // paths resolve against it there, and the protocol step runs against it.
   const pluginDataDir = mkdtempSync(join(tmpdir(), "ave-plugin-validate-"));
+  // The child writes this directory. Until its exit is observed it may still
+  // be running, and a recursive delete would race it (a link swapped in
+  // mid-walk turns the delete onto outside files); the directory is then left.
+  let childMayStillRun = false;
   try {
     const checked = await checkManifest(pluginRoot, pluginDataDir);
     const rows = [...checked.rows];
@@ -747,6 +751,7 @@ export async function validatePluginDirectory(dir: string, options: ValidateOpti
     } else if (launch.kind === "process" && process.platform === "win32") {
       rows.push(notExercised("protocol", "process entries do not run on win32"));
     } else {
+      childMayStillRun = true;
       const run = await runProtocolChecks(validationLaunch(options, launch), manifest, {
         pluginRoot,
         pluginDataDir,
@@ -756,10 +761,14 @@ export async function validatePluginDirectory(dir: string, options: ValidateOpti
         ...(options.onChildStderr ? { onChildStderr: options.onChildStderr } : {}),
       });
       rows.push(...run.rows);
+      childMayStillRun = run.record.exitObserved() === undefined;
+      if (childMayStillRun) {
+        rows.push(failed("protocol.data-dir", `left ${pluginDataDir} in place: the child did not exit, so deleting it could race the child`));
+      }
     }
     rows.push(...scanSourceDrift(pluginRoot, manifest));
     return rows;
   } finally {
-    rmSync(pluginDataDir, { recursive: true, force: true });
+    if (!childMayStillRun) rmSync(pluginDataDir, { recursive: true, force: true });
   }
 }
