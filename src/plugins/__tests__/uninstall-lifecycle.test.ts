@@ -158,8 +158,16 @@ describe("uninstallPluginWithLifecycle", () => {
       const cacheRoot = join(root, ".cache");
       await mkdir(join(cacheRoot, "agent-hub", "data"), { recursive: true });
 
-      await expect(uninstallPluginWithLifecycle("agent-hub", makeDeps("agent-hub", cacheRoot)))
-        .rejects.toThrow();
+      // makeDeps' generic commit mock widens to unknown; the shape is what matters here.
+      const deps = makeDeps("agent-hub", cacheRoot) as unknown as Parameters<typeof uninstallPluginWithLifecycle>[1];
+      const failure = await uninstallPluginWithLifecycle("agent-hub", deps).then(
+        () => { throw new Error("uninstall resolved"); },
+        (error: unknown) => error,
+      );
+      const messages = (error: unknown): string[] => error instanceof Error
+        ? [error.message, ...(error instanceof AggregateError ? error.errors.flatMap(messages) : []), ...messages(error.cause)]
+        : [];
+      expect(messages(failure)).toContainEqual(expect.stringMatching(/holds runtime directory data\//));
 
       expect(existsSync(join(cacheRoot, "agent-hub", "data"))).toBe(true);
     } finally {

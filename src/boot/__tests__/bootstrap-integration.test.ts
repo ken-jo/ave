@@ -527,7 +527,17 @@ vi.mock("../../plugins/plugin-artifact-store.js", () => ({
   PluginArtifactStore: class {},
 }));
 vi.mock("../../plugins/orphan-uninstall-sweeper.js", () => ({
-  sweepOrphanUninstallDirs: vi.fn(async () => ({ swept: [], failed: [] })),
+  sweepOrphanUninstallDirs: vi.fn(async () => {
+    h.rec("tombstonesSwept");
+    return { swept: [], failed: [] };
+  }),
+}));
+vi.mock("../../plugins/plugin-storage-layout.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../plugins/plugin-storage-layout.js")>(),
+  sweepPluginSocketDiscardDirs: vi.fn(async () => {
+    h.rec("socketDiscardSwept");
+    return [] as string[];
+  }),
 }));
 vi.mock("../../plugins/plugin-paths.js", () => ({
   resolvePluginPaths: vi.fn(() => ({
@@ -849,6 +859,10 @@ describe("bootstrap() integration lock", () => {
     assertBefore("conversationLoop", "subAgentRunner");
     assertBefore("lifecycleBound", "retirementsRecovered");
     assertBefore("retirementsRecovered", "startPlugins");
+    // Runtime deletes of trees a confined child may still write wait for these
+    // boot sweeps, which must finish before any plugin starts.
+    assertBefore("tombstonesSwept", "startPlugins");
+    assertBefore("socketDiscardSwept", "startPlugins");
     // Plugins register their alert kinds as they start, and a boot-time
     // uninstall replay must find the alerts pipeline listening.
     assertBefore("alertsSetup", "uninstallCleanupReplay");

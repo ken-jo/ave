@@ -45,6 +45,7 @@ import { CHANNELS } from "./contract/app-contract.js";
 import { resolve } from "node:path";
 import { sweepOrphanUninstallDirs } from "./plugins/orphan-uninstall-sweeper.js";
 import { openFeatureNamespace } from "./main/storage/feature-namespace.js";
+import { sweepPluginSocketDiscardDirs } from "./plugins/plugin-storage-layout.js";
 import { preparePluginRegistryForBoot } from "./plugins/plugin-boot-recovery.js";
 import { purgeStaleSessionDiffDirs, clearSessionDiffCache,
 } from "./tools/write-diff-cache.js";
@@ -518,6 +519,15 @@ export async function bootstrap(
         "boot: orphan-uninstall-sweeper crashed (non-fatal): %s",
         (err as Error).message,
       );
+    });
+  // Entries a runtime socket carry discarded wait in each live root's
+  // host-only discard directory for this sweep, for the same reason.
+  await sweepPluginSocketDiscardDirs(sweeperPluginPaths.pluginsRoot)
+    .then((emptied) => {
+      if (emptied.length > 0) log.info("boot: plugin socket discard sweep emptied=%d", emptied.length);
+    })
+    .catch((err) => {
+      log.warn("boot: plugin socket discard sweep failed (non-fatal): %s", (err as Error).message);
     });
 
   // Issue #749 — boot-time purge of stale write-file diff sidecar dirs.

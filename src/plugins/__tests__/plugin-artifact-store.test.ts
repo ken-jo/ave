@@ -55,6 +55,7 @@ import {
 } from "../plugin-artifact-store.js";
 import { CommittedPluginGenerationPublicationError } from "../committed-generation-publication-error.js";
 import { TOMBSTONE_SUBDIR } from "../installed-entry-fs.js";
+import { PLUGIN_SOCKET_DISCARD_DIR_NAME } from "../plugin-storage-layout.js";
 import * as installedEntryFs from "../installed-entry-fs.js";
 import { cleanupTmpDir, makeStore, makeTmpDir } from "./artifact-store-test-helpers.js";
 import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
@@ -355,7 +356,9 @@ describe("PluginArtifactStore — extractZip", () => {
       const installDir = store.installDirFor("acme");
       await mkdir(installDir, { recursive: true });
       await writeFile(resolve(installDir, "plugin.json"), JSON.stringify(agentPluginsDocument({ id: "acme", version: "old" })));
-      await mkdir(resolve(installDir, "run", "w1"), { recursive: true });
+      // The carry moves run/ and sockets/ into the promoted root; what a runtime
+      // carry discarded stays in the old root until the next boot.
+      await mkdir(resolve(installDir, PLUGIN_SOCKET_DISCARD_DIR_NAME, "x-left"), { recursive: true });
       const zip = new AdmZip();
       zip.addFile("plugin.json", Buffer.from(JSON.stringify(agentPluginsDocument({ id: "acme", version: "new" }))));
       noteConfinedProcessesMayRun();
@@ -365,7 +368,7 @@ describe("PluginArtifactStore — extractZip", () => {
       expect(JSON.parse(await readFile(resolve(installDir, "plugin.json"), "utf-8")).version).toBe("new");
       const tombstones = await readdir(resolve(installRoot, TOMBSTONE_SUBDIR));
       expect(tombstones).toHaveLength(1);
-      expect(existsSync(resolve(installRoot, TOMBSTONE_SUBDIR, tombstones[0]!, "run", "w1"))).toBe(true);
+      expect(existsSync(resolve(installRoot, TOMBSTONE_SUBDIR, tombstones[0]!, PLUGIN_SOCKET_DISCARD_DIR_NAME, "x-left"))).toBe(true);
     } finally {
       _resetConfinedProcessPhaseForTests();
       await cleanupTmpDir(tmp);

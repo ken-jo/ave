@@ -750,7 +750,7 @@ describe("PluginMarketplaceService.installLocal", () => {
       vi.spyOn(store, "persistPreparedInstallReceipt").mockRejectedValueOnce(new Error("receipt write failed"));
       noteConfinedProcessesMayRun();
 
-      await expect(service.installLocal(sourceDir)).rejects.toThrow("receipt write failed");
+      await expect(service.installLocal(sourceDir, preparedActivationOptionsForTest)).rejects.toThrow("receipt write failed");
 
       expect(existsSync(join(pluginsDir, "test-plugin"))).toBe(false);
       expect(await tombstonedVersions()).toEqual(["1.2.3"]);

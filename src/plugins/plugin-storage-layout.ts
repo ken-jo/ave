@@ -22,6 +22,7 @@ import { basename, dirname, resolve } from "node:path";
 import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { aveHome } from "../shared/ave-home.js";
+import { assertNoConfinedProcessMayRun, confinedProcessesMayBeRunning } from "../lib/confined-process-phase.js";
 import { PluginDataRootError, resolvePluginDataRoot } from "./plugin-storage-containment.js";
 
 /**
@@ -63,7 +64,14 @@ export const PLUGIN_SOCKET_CARRY_DIR_NAME = ".sockets-carry";
  * both writable by a child — races the child, which can swap a subdirectory
  * for a link to an outside directory between rm's lstat and its descent. So
  * an entry is renamed in here (rename never follows) and deleted only here.
- * Emptied at the end of every delete and at the start of every carry.
+ *
+ * Deleted only before confined processes may run (lib/confined-process-phase.ts):
+ * a discarded worker leaf, or a directory a child made in `sockets/`, can still
+ * be written by the child after the rename, through a bubblewrap `--bind` of
+ * the leaf or a directory descriptor it holds. Before that phase, it is emptied
+ * at the end of every delete and at the start of every carry (boot recovery);
+ * after it, entries wait here and {@link sweepPluginSocketDiscardDirs} empties
+ * them on the next boot.
  */
 export const PLUGIN_SOCKET_DISCARD_DIR_NAME = ".sockets-discard";
 
@@ -644,7 +652,42 @@ async function discardRuntimeEntry(root: string, path: string): Promise<void> {
 async function emptyDiscardDirectory(root: string): Promise<void> {
   const discard = resolve(root, PLUGIN_SOCKET_DISCARD_DIR_NAME);
   if (!await assertSocketDirectory(discard)) return;
+  // A live child may still write inside a discarded entry; the next boot
+  // deletes it (see PLUGIN_SOCKET_DISCARD_DIR_NAME).
+  if (confinedProcessesMayBeRunning()) return;
   await rm(discard, { recursive: true, force: true });
+}
+
+/**
+ * Boot: empty the socket discard directory of every plugin root directly
+ * under `pluginsRoot`, which is where a live root lives while a runtime carry
+ * discards into it. Any other root holding one (a stage, a backup) is
+ * deleted whole, by boot recovery or through the tombstones. Must run before
+ * confined processes may run, and refuses otherwise.
+ *
+ * @returns the roots whose discard directory was emptied.
+ */
+export async function sweepPluginSocketDiscardDirs(pluginsRoot: string): Promise<string[]> {
+  assertNoConfinedProcessMayRun(`the socket discard directories under ${pluginsRoot}`);
+  let names: string[];
+  try {
+    names = await readdir(pluginsRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const emptied: string[] = [];
+  for (const name of names) {
+    const root = resolve(pluginsRoot, name);
+    const entry = await lstat(root);
+    if (!entry.isDirectory()) continue;
+    await withPluginRuntimeDirQueue(root, async () => {
+      if (!await pathExists(resolve(root, PLUGIN_SOCKET_DISCARD_DIR_NAME))) return;
+      await emptyDiscardDirectory(root);
+      emptied.push(root);
+    });
+  }
+  return emptied;
 }
 
 /**
