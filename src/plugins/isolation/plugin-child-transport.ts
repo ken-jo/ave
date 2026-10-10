@@ -70,8 +70,8 @@ const log = createLogger("plugin-child-transport");
  */
 export const SETTLED_INVOCATIONS_MAX = 1024;
 
-/** Admission bound for unresolved calls; admitted live contexts are never evicted. */
-const LIVE_INVOCATIONS_MAX = 64;
+/** Admission bound for unresolved child calls; detaching the host caller does not settle them. */
+export const LIVE_INVOCATIONS_MAX = 64;
 
 /** A JSON-RPC error as it arrives from the child. */
 interface JsonRpcErrorBody {
@@ -355,7 +355,10 @@ export class PluginChildTransport {
     }
     if (this.closedReason !== undefined) throw new Error(this.closedReason);
     if (this.liveInvocations.size >= LIVE_INVOCATIONS_MAX) {
-      throw new Error("[plugin-child-transport] too many tool calls in flight");
+      throw new Error(
+        `[plugin-child-transport] plugin '${this.pluginId}' has too many tool calls in flight; `
+          + "restart the plugin to clear unresolved calls",
+      );
     }
     // Taken HERE, in the caller's async chain: the tool handler that called
     // this runs inside the host's per-invocation context.

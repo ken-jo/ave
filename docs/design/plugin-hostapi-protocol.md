@@ -550,9 +550,14 @@ Rules:
     termination or subscription teardown; retirement for restart uses that same close.
     Session teardown closes the transport before releasing host watchers, and `stop`
     reaches teardown even if a watcher disposer throws.
+    Teardown releases host watchers and calls the owner's close handler in `finally`
+    even when transport subscription cleanup throws.
     A transport deadline closes the connection. The executor ceiling only detaches
     the caller when the handler cannot cancel; that call remains live until its child
     reply or connection close, under the same 64-call admission bound.
+    A child that never replies keeps its slots after caller detachment. The admission
+    error names the plugin and instructs the caller to restart it to clear unresolved
+    calls; detachment alone neither cancels that child work nor releases its context.
   - A request naming a token the connection never issued, or no longer holds, is
     refused with `argument-marshalling-rejected`. It never runs with less gating than
     its invocation had.

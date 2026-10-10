@@ -29,6 +29,7 @@ import { encodeHostFetchInit, FRAME_BYTES_MAX, HOST_PROTOCOL_NOTIFICATIONS, host
 import {
   PluginChildTransport,
   pluginChildRequestMeta,
+  LIVE_INVOCATIONS_MAX,
   SETTLED_INVOCATIONS_MAX,
   type ChildLink,
 } from "../plugin-child-transport.js";
@@ -533,8 +534,9 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
   });
 
   it("refuses excess live calls without evicting an admitted invocation", async () => {
-    const rig = invocationRig();
-    const held = await callTools(rig, 64);
+    const pluginId = "blockedprobe";
+    const rig = invocationRig({ pluginId });
+    const held = await callTools(rig, LIVE_INVOCATIONS_MAX);
     const pending = Promise.allSettled(held.replies);
     let failure: unknown;
     const overflow = rig.transport.requestMcp("tools/call", { name: "speak", arguments: {} })
@@ -543,8 +545,10 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
       await settle();
       expect(failure).toBeInstanceOf(Error);
       expect(String(failure)).toMatch(/too many tool calls in flight/);
-      expect(rig.sent.filter((frame) => frame.method === "tools/call")).toHaveLength(64);
-      expect(invocationCounts(rig.transport)).toEqual({ live: 64, settled: 0 });
+      expect(String(failure)).toContain(pluginId);
+      expect(String(failure)).toMatch(/restart the plugin/);
+      expect(rig.sent.filter((frame) => frame.method === "tools/call")).toHaveLength(LIVE_INVOCATIONS_MAX);
+      expect(invocationCounts(rig.transport)).toEqual({ live: LIVE_INVOCATIONS_MAX, settled: 0 });
       const first = await raiseAlertFromChild(rig, "first-live", tokenOf(held.frames[0]!));
       expect(first).toMatchObject({ result: { status: "raised" } });
       expect(rig.seen).toEqual(["call-0"]);
@@ -553,7 +557,7 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
       const next = rig.transport.requestMcp("tools/call", { name: "speak", arguments: {} });
       const nextRejected = expect(next).rejects.toThrow("case over");
       await settle();
-      expect(invocationCounts(rig.transport)).toEqual({ live: 64, settled: 1 });
+      expect(invocationCounts(rig.transport)).toEqual({ live: LIVE_INVOCATIONS_MAX, settled: 1 });
       rig.transport.close("case over");
       await nextRejected;
     } finally {

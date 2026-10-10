@@ -54,6 +54,7 @@ const MANIFEST: PluginManifest = {
   tools: [
     { name: "raise", description: "raise", inputSchema: { type: "object", properties: {} } },
     { name: "raise_after_return", description: "raise later", inputSchema: { type: "object", properties: {} } },
+    { name: "subscribe", description: "subscribe", inputSchema: { type: "object", properties: {} } },
   ],
 };
 
@@ -84,6 +85,10 @@ beforeAll(() => {
     `export const createPlugin = async (context) => ({
   handlers: {
     raise: async () => context.hostApi.raiseAlert({ kind: "reply", key: "now" }),
+    subscribe: async () => {
+      context.hostApi.onEvent("probe.event", () => undefined);
+      return "subscribed";
+    },
     raise_after_return: async () => {
       setTimeout(() => {
         context.hostApi.raiseAlert({ kind: "reply", key: "late" }).then(
@@ -147,21 +152,30 @@ interface Probe {
   /** What the real implementation saw, per call: the gate context it ran in. */
   raised: Array<{ key: unknown; toolName: string | undefined }>;
   requestAndWait: ReturnType<typeof vi.fn>;
+  stopWatcher: ReturnType<typeof vi.fn>;
+  stopSubscription: ReturnType<typeof vi.fn>;
+  onClosed: ReturnType<typeof vi.fn>;
 }
 
-async function openProbe(options: { watcherFailure?: boolean } = {}): Promise<Probe> {
+async function openProbe(options: { watcherFailure?: boolean; subscriptionFailure?: boolean } = {}): Promise<Probe> {
   const raised: Probe["raised"] = [];
   const requestAndWait = vi.fn(async () => ({ choice: "allow-once" as const }));
   let watcherFailure = options.watcherFailure === true;
-  const watch = () => () => {
+  const stopWatcher = vi.fn(() => {
     if (!watcherFailure) return;
     watcherFailure = false;
     throw new Error("watcher cleanup failed");
-  };
+  });
+  const watch = () => stopWatcher;
+  const stopSubscription = vi.fn(() => {
+    if (options.subscriptionFailure) throw new Error("subscription cleanup failed");
+  });
+  const onClosed = vi.fn(async () => undefined);
   const plain = {
     getInstalledPluginIds: () => [PLUGIN_ID],
     onPluginsChanged: watch,
     config: { get: () => undefined, set: async () => undefined, onChange: watch },
+    onEvent: () => stopSubscription,
     raiseAlert: async (input: { key?: unknown }) => {
       raised.push({ key: input.key, toolName: currentEffectGateContext()?.toolName });
       return { status: "raised", alertId: `alert-${String(input.key)}` };
@@ -195,9 +209,9 @@ async function openProbe(options: { watcherFailure?: boolean } = {}): Promise<Pr
     context,
     entryPath,
     table: createBoundHostApiDispatchTable(hostApi, ENVELOPE),
-    onClosed: async () => undefined,
+    onClosed,
   });
-  return { session, raised, requestAndWait };
+  return { session, raised, requestAndWait, stopWatcher, stopSubscription, onClosed };
 }
 
 describe("an out-of-process tool's hostApi call runs in its host invocation", () => {
@@ -296,6 +310,24 @@ describe("a request that names no invocation runs in none", () => {
 });
 
 describe("session cleanup always reaches the transport", () => {
+  it("releases host watchers and the owner when a child subscription disposer throws", async () => {
+    const probe = await openProbe({ subscriptionFailure: true });
+    try {
+      await expect(probe.session.instance.handlers.subscribe!()).resolves.toBe("subscribed");
+      await expect(probe.session.teardown("subscription failure")).rejects.toThrow("subscription cleanup failed");
+      expect(probe.stopSubscription).toHaveBeenCalledTimes(1);
+      expect(probe.stopWatcher).toHaveBeenCalledTimes(2);
+      expect(probe.onClosed).toHaveBeenCalledExactlyOnceWith("subscription failure");
+      await expect(probe.session.channel.requestMcp("tools/list", {})).rejects.toThrow("subscription failure");
+      await probe.session.teardown("repeat");
+      expect(probe.stopWatcher).toHaveBeenCalledTimes(2);
+      expect(probe.onClosed).toHaveBeenCalledTimes(1);
+    } finally {
+      probe.session.channel.closeInput();
+      await probe.session.teardown("case over");
+    }
+  });
+
   it.each(["teardown", "stop"] as const)("closes the channel when a host watcher throws during %s", async (ending) => {
     const probe = await openProbe({ watcherFailure: true });
     try {
