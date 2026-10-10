@@ -1,4 +1,5 @@
 import { rename as fsRename } from "node:fs/promises";
+import { sleep } from "../shared/abortable-deadline.js";
 
 /**
  * Single authority for the Windows transient-file-lock retry policy.
@@ -10,7 +11,7 @@ import { rename as fsRename } from "node:fs/promises";
  *
  * Three ladders defend against this class and they CANNOT be merged into one:
  * `replaceStagedFile` (lib/atomic-file.ts) is synchronous and waits with
- * `Atomics.wait`; `retryOnTransientFsLock` (plugins/plugin-artifact-store.ts)
+ * `Atomics.wait`; `retryOnTransientFsLock` (below)
  * is asynchronous and waits with `setTimeout`; `renameWithTransientRetry`
  * (tools/file-tools.ts) is asynchronous inside a tool turn. This module owns
  * what they can share — the delay curve, the attempt budgets, and the
@@ -97,7 +98,7 @@ export const RENAME_FILE_LOCK_CODES: ReadonlySet<string> = new Set([
  * (`retryOnTransientFsLock`). Superset of {@link RENAME_FILE_LOCK_CODES}: a
  * non-empty or already-existing directory target is reachable on these paths.
  */
-export const DIRECTORY_OP_LOCK_CODES: ReadonlySet<string> = new Set([
+const DIRECTORY_OP_LOCK_CODES: ReadonlySet<string> = new Set([
   ...RENAME_FILE_LOCK_CODES,
   "ENOTEMPTY",
   "EEXIST",
@@ -125,6 +126,53 @@ export async function renameDirectory(
       if (!retryable) throw error;
       onRetry?.(attempt, code);
       await new Promise((resolve) => setTimeout(resolve, transientFsLockDelayMs(attempt)));
+    }
+  }
+}
+
+/**
+ * Windows transient-lock codes for the directory-swap / `rm()` paths: the
+ * directory set above, beside the narrower set the file-rename ladder uses and
+ * the shared delay curve, so the ladders cannot drift apart again. macOS/Linux
+ * do not surface these for this path.
+ */
+const TRANSIENT_FS_LOCK_CODES = DIRECTORY_OP_LOCK_CODES;
+
+export function isTransientFsLockError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return typeof code === "string" && TRANSIENT_FS_LOCK_CODES.has(code);
+}
+
+/**
+ * Run a filesystem op with bounded retry for transient Windows lock
+ * contention. Only {@link TRANSIENT_FS_LOCK_CODES} are retried; `ENOENT` and
+ * every other error propagate immediately so the caller can distinguish
+ * "source absent" (first install) from "source locked" (worth retrying) from a
+ * genuine failure. With the defaults the total wait is bounded to ~1.75s
+ * (9 sleeps: 50+100+150+200 then 250×5) so an install can never hang the user.
+ *
+ * `sleep`/`delayMs` are injectable so tests exercise the retry ladder without
+ * real timers.
+ */
+export async function retryOnTransientFsLock<T>(
+  op: () => Promise<T>,
+  opts: {
+    attempts?: number;
+    delayMs?: (attempt: number) => number;
+    sleep?: (ms: number) => Promise<void>;
+    onRetry?: (attempt: number, code: string | undefined) => void;
+  } = {},
+): Promise<T> {
+  const attempts = opts.attempts ?? BACKGROUND_ATTEMPTS;
+  const delayMs = opts.delayMs ?? transientFsLockDelayMs;
+  const wait = opts.sleep ?? sleep;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await op();
+    } catch (err) {
+      if (attempt >= attempts || !isTransientFsLockError(err)) throw err;
+      opts.onRetry?.(attempt, (err as NodeJS.ErrnoException).code);
+      await wait(delayMs(attempt));
     }
   }
 }

@@ -124,7 +124,7 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
       );
     }
     // App modules load only now, after AVE_HOME names this run's home.
-    const { removeOwnedPluginTree } = await import("../src/plugins/plugin-removal-transaction.js");
+    const { removeOwnedPluginTree } = await import("../src/plugins/installed-entry-fs.js");
     // What a killed run could not remove; a live run's are kept.
     const swept = await sweepStaleRunDirs(testTmp, removeOwnedPluginTree);
     for (const aside of swept.stranded) {
@@ -154,7 +154,7 @@ async function releaseRunDirs(holder: RunDirsHolder): Promise<void> {
   dirs.users -= 1;
   if (dirs.users > 0) return;
   delete holder[RUN_DIRS];
-  const { removeOwnedPluginTree } = await import("../src/plugins/plugin-removal-transaction.js");
+  const { removeOwnedPluginTree } = await import("../src/plugins/installed-entry-fs.js");
   await removeOwnedPluginTree(dirs.sandboxBase);
   await removeOwnedPluginTree(dirs.aveHomeBase);
   await rm(dirname(dirs.pluginChildEntryPath), { recursive: true, force: true });

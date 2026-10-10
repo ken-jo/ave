@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sweepOrphanUninstallDirs } from "../orphan-uninstall-sweeper.js";
 import { TOMBSTONE_SUBDIR } from "../installed-entry-fs.js";
 import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
+import { makeTestTreeWritable, seedChildLockedTree } from "./test-helpers.js";
 
 describe("sweepOrphanUninstallDirs", () => {
   let pluginsRoot: string;
@@ -17,7 +18,37 @@ describe("sweepOrphanUninstallDirs", () => {
   });
 
   afterEach(async () => {
+    await makeTestTreeWritable(pluginsRoot);
     await rm(pluginsRoot, { recursive: true, force: true });
+  });
+
+  // The child that wrote a tombstoned root may have locked part of it; a
+  // plain rm would fail there on every boot and keep the tombstone forever.
+  it.runIf(process.platform !== "win32")(
+    "removes a tombstone holding a directory a child made unreadable or, on macOS, immutable",
+    async () => {
+      const tombstone = "acme-1700000000000-cafe";
+      await mkdir(join(tombstoneDir, tombstone, "data"), { recursive: true });
+      await seedChildLockedTree(join(tombstoneDir, tombstone, "data"));
+
+      const result = await sweepOrphanUninstallDirs(pluginsRoot);
+
+      expect(result).toEqual({ swept: [tombstone], failed: [] });
+      expect(existsSync(join(tombstoneDir, tombstone))).toBe(false);
+    },
+  );
+
+  it("removes a linked tombstone entry as a link, leaving its target", async () => {
+    const outside = join(pluginsRoot, "outside");
+    await mkdir(outside);
+    await writeFile(join(outside, "keep"), "keep");
+    await mkdir(tombstoneDir, { recursive: true });
+    await symlink(outside, join(tombstoneDir, "linked-1-a"), "dir");
+
+    const result = await sweepOrphanUninstallDirs(pluginsRoot);
+
+    expect(result).toEqual({ swept: ["linked-1-a"], failed: [] });
+    expect(await readdir(outside)).toEqual(["keep"]);
   });
 
   it("returns empty when the tombstone subdir does not exist (pre-first-uninstall)", async () => {

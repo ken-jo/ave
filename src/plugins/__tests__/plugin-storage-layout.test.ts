@@ -35,7 +35,7 @@ import {
 import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { isPathWithin, isResolvedPathWithin } from "../plugin-storage-containment.js";
-import { PLUGIN_DATA_FIXTURE, readPluginDataFixture, seedPluginDataFixture } from "./test-helpers.js";
+import { PLUGIN_DATA_FIXTURE, makeTestTreeWritable, readPluginDataFixture, seedChildLockedTree, seedPluginDataFixture } from "./test-helpers.js";
 
 /**
  * One armed, one-shot transient lock on the next `rename` into a path ending
@@ -719,6 +719,22 @@ describe("carryPluginSocketDirs", () => {
       expect(existsSync(join(to, PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
       expect(await readdir(join(to, "run", "w1"))).toEqual(["control.sock"]);
     });
+
+    it.runIf(process.platform !== "win32")(
+      "empties a discard holding a directory a child made unreadable or, on macOS, immutable",
+      async () => {
+        const plugin = join(root, "acme");
+        const leaf = join(plugin, PLUGIN_SOCKET_DISCARD_DIR_NAME, "x-w1");
+        await mkdir(leaf, { recursive: true });
+        await seedChildLockedTree(leaf);
+        try {
+          expect(await sweepPluginSocketDiscardDirs(root)).toEqual([plugin]);
+          expect(existsSync(join(plugin, PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
+        } finally {
+          await makeTestTreeWritable(root);
+        }
+      },
+    );
 
     it("empties every other root's discard when one root's discard name is a link", async () => {
       const linked = join(root, "linked");

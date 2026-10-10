@@ -10,7 +10,7 @@ import type { BootContext } from "../context.js";
 import type { SandboxGateAction, SandboxGateReason } from "./sandbox-gate.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
-import { removeOwnedPluginTree } from "../../plugins/plugin-removal-transaction.js";
+import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
 
 const log = createLogger("ave");
 

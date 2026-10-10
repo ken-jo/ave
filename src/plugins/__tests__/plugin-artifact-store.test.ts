@@ -348,6 +348,35 @@ describe("PluginArtifactStore — extractZip", () => {
   // After a successful update the predecessor's root is payload only, so it
   // is deleted at once. A runtime directory left in it refuses that delete,
   // and the root goes to the tombstones instead.
+  // An abandoned stage is deleted at once only because no confined process
+  // is granted a path in it. One that holds a runtime directory breaks that
+  // premise: the delete refuses and the stage goes to the tombstones.
+  it("tombstones an abandoned stage that holds a runtime directory", async () => {
+    const tmp = makeTmpDir();
+    try {
+      const store = makeStore(tmp);
+      const installRoot = resolve(tmp, "installed");
+      const zip = new AdmZip();
+      zip.addFile("plugin.json", Buffer.from(JSON.stringify(agentPluginsDocument({ id: "acme", version: "1" }))));
+      noteConfinedProcessesMayRun();
+
+      await expect(store.extractZipWithCommit("acme", zip.toBuffer(), async () => undefined, {
+        coordinateCommit: async ({ pluginRoot }) => {
+          await mkdir(resolve(pluginRoot, "data"), { recursive: true });
+          throw new Error("activation failed");
+        },
+      })).rejects.toThrow("activation failed");
+
+      expect((await readdir(installRoot)).filter((name) => name.startsWith(".acme."))).toEqual([]);
+      const tombstones = await readdir(resolve(installRoot, TOMBSTONE_SUBDIR));
+      expect(tombstones).toHaveLength(1);
+      expect(existsSync(resolve(installRoot, TOMBSTONE_SUBDIR, tombstones[0]!, "data"))).toBe(true);
+    } finally {
+      _resetConfinedProcessPhaseForTests();
+      await cleanupTmpDir(tmp);
+    }
+  });
+
   it("tombstones a committed backup that still holds a runtime directory", async () => {
     const tmp = makeTmpDir();
     try {

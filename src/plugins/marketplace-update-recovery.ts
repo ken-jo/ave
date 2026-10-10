@@ -29,7 +29,7 @@ import {
 } from "./plugin-storage-layout.js";
 import { parkUnattributedPluginState, removePluginTreeNowOrAtBoot } from "./installed-entry-fs.js";
 
-import { retryOnTransientFsLock } from "./plugin-artifact-store.js";
+import { retryOnTransientFsLock } from "../lib/transient-fs-lock-retry.js";
 import {
   installReceiptPath,
   restoreInstallReceiptRaw,

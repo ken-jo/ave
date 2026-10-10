@@ -30,6 +30,7 @@ import {
   type PluginStorage,
 } from "./types.js";
 import { instrumentEffectsByPath } from "../permissions/hostapi-effect-recorder.js";
+import { discardPluginDataTree } from "./plugin-storage-layout.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
 
 // Storage-namespace permission bits (CLAUDE.md §Storage Namespace per Feature):
@@ -354,7 +355,15 @@ export function createPluginStorage(
 
     async rm(rel, options) {
       const target = await guard(rel);
-      await rm(target, { recursive: options?.recursive ?? false, force: true });
+      if (options?.recursive) {
+        // Never descend where the plugin can write: it could swap a
+        // subdirectory for a link between the walk's lstat and its descent and
+        // turn the host's delete onto outside files. The tree is renamed out
+        // of its reach first and deleted there (plugin-storage-layout.ts).
+        await discardPluginDataTree(canonicalRoot, target);
+        return;
+      }
+      await rm(target, { force: true });
     },
 
     async list(rel = ".") {

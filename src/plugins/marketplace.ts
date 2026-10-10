@@ -13,11 +13,8 @@ import { isDevModeUnlocked } from "../boot/dev-flags.js";
 import type { DependencySpec, PluginAccessSpec, PluginManifest, PluginRegistryEntryInstallSource, PluginRegistryEntryOrigin, PluginRegistryTrust } from "./types.js";
 import { MissingDependenciesError, MissingPluginDependenciesError } from "./types.js";
 import { resolveDependencies } from "./dependency-resolver.js";
-import {
-  ArtifactRollbackError,
-  PluginArtifactStore,
-  retryOnTransientFsLock,
-} from "./plugin-artifact-store.js";
+import { ArtifactRollbackError, PluginArtifactStore } from "./plugin-artifact-store.js";
+import { retryOnTransientFsLock } from "../lib/transient-fs-lock-retry.js";
 import { assertSafeArtifactSlug } from "./plugin-id.js";
 import {
   cleanupObsoletePluginBackupPath,

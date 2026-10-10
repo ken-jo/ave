@@ -707,7 +707,10 @@ describe("PluginMarketplaceService.installLocal", () => {
         entry: "dist/hostPlugin.js",
       })),
       "utf-8");
-    afterEach(() => _resetConfinedProcessPhaseForTests());
+    afterEach(() => {
+      _resetConfinedProcessPhaseForTests();
+      vi.restoreAllMocks();
+    });
 
     it("tombstones the replaced live root and the rollback backup of a reinstall", async () => {
       const service = makeService();
@@ -754,6 +757,52 @@ describe("PluginMarketplaceService.installLocal", () => {
 
       expect(existsSync(join(pluginsDir, "test-plugin"))).toBe(false);
       expect(await tombstonedVersions()).toEqual(["1.2.3"]);
+    });
+
+    // The pre-copy delete of the staging root assumes payload only: nothing
+    // confined is granted a path there. A leftover one holding a runtime
+    // directory is refused, and it goes to the tombstones.
+    it("refuses a leftover staging root that holds a runtime directory", async () => {
+      const now = 1_700_000_000_000;
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      const stale = join(pluginsDir, `test-plugin.tmp-${process.pid}-${now}`);
+      await mkdir(join(stale, "data"), { recursive: true });
+      const service = makeService();
+      noteConfinedProcessesMayRun();
+
+      await expect(service.installLocal(sourceDir, preparedActivationOptionsForTest))
+        .rejects.toThrow(/holds runtime directory data\//);
+
+      expect(existsSync(stale)).toBe(false);
+      expect(existsSync(join(pluginsDir, "test-plugin"))).toBe(false);
+      const tombstoned = await tombstones();
+      expect(tombstoned).toHaveLength(1);
+      expect(existsSync(join(pluginsDir, TOMBSTONE_SUBDIR, tombstoned[0]!, "data"))).toBe(true);
+    });
+
+    // The restore stage of a rollback is also deleted at once as payload only.
+    it("refuses a leftover restore stage that holds a runtime directory", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, preparedActivationOptionsForTest);
+      const installDir = join(pluginsDir, "test-plugin");
+      await bumpSource();
+      const now = 1_700_000_000_000;
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      const stale = `${installDir}.restore-${process.pid}-${now}`;
+      await mkdir(join(stale, "data"), { recursive: true });
+      const store = (service as unknown as {
+        artifactStore: { persistPreparedInstallReceipt: (...args: unknown[]) => Promise<unknown> };
+      }).artifactStore;
+      vi.spyOn(store, "persistPreparedInstallReceipt").mockRejectedValueOnce(new Error("replacement receipt write failed"));
+      noteConfinedProcessesMayRun();
+
+      const failure = await service.installLocal(sourceDir, preparedActivationOptionsForTest)
+        .then(() => { throw new Error("install resolved"); }, (error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect((failure as AggregateError).errors.map((error: Error) => error.message))
+        .toContainEqual(expect.stringMatching(/holds runtime directory data\//));
+      expect(existsSync(join(stale, "data"))).toBe(true);
     });
 
     // A fresh install has no recovery backup, so the activated candidate's

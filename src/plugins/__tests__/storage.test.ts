@@ -30,7 +30,10 @@ const mockedElectron = vi.hoisted(() => {
 });
 vi.mock("electron", () => ({ safeStorage: mockedElectron.safeStorage }));
 
+import fs from "node:fs";
 import { createPluginStorage } from "../storage.js";
+import { PLUGIN_SOCKET_DISCARD_DIR_NAME } from "../plugin-storage-layout.js";
+import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 import { ensurePluginDataDir } from "../runtime/sandbox.js";
 import { PluginStorageEncryptionUnavailableError } from "../types.js";
 import { cleanupTmpDir, removeLinkOnly } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -285,11 +288,26 @@ describe("createPluginStorage I/O", () => {
   });
 
   it("rm removes files; recursive removes trees; missing is no-op", async () => {
-    const s = createPluginStorage("p", dataDir, mockedElectron.safeStorage);
+    // A recursive rm discards beside the data directory, in the plugin root.
+    const pluginData = join(dataDir, "p", "data");
+    mkdirSync(pluginData, { recursive: true });
+    const s = createPluginStorage("p", pluginData, mockedElectron.safeStorage);
     await s.write("a/b/c.txt", "x");
+    await s.write("f.txt", "x");
     await s.rm("a", { recursive: true });
+    await s.rm("f.txt");
     expect(await s.exists("a")).toBe(false);
+    expect(await s.exists("f.txt")).toBe(false);
+    expect(existsSync(join(dataDir, "p", PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
     await expect(s.rm("missing")).resolves.toBeUndefined();
+    await expect(s.rm("missing", { recursive: true })).resolves.toBeUndefined();
+  });
+
+  it("refuses a recursive rm when the data directory has no plugin root beside it", async () => {
+    const s = createPluginStorage("p", dataDir, mockedElectron.safeStorage);
+    await s.write("a/c.txt", "x");
+    await expect(s.rm("a", { recursive: true })).rejects.toThrow(/is not a plugin data directory/);
+    expect(await s.exists("a/c.txt")).toBe(true);
   });
 
   it("list returns empty array for missing dir", async () => {
@@ -412,5 +430,50 @@ describe("createPluginStorage encrypted-at-rest variants", () => {
       /symlink escapes plugin storage root/,
     );
     expect(readFileSync(join(outsideDir, "loot.txt"), "utf-8")).toBe("untouched");
+  });
+});
+
+// The plugin can write anywhere in its data directory, including while the
+// host deletes inside it on its behalf. A recursive delete that descends
+// there can be redirected: the plugin swaps a subdirectory for a link to an
+// outside directory between the walk's lstat and its readdir.
+describe("storage.rm recursive while the plugin races it", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    _resetConfinedProcessPhaseForTests();
+  });
+
+  it.runIf(process.platform !== "win32")("never descends where the plugin can swap a link in", async () => {
+    const root = realpathSync(dataDir);
+    const pluginData = join(root, "acme", "data");
+    mkdirSync(pluginData, { recursive: true });
+    const outside = join(realpathSync(outsideDir), "victim");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "keep"), "keep");
+    const s = createPluginStorage("acme", pluginData, mockedElectron.safeStorage);
+    await s.write("a/b/c.txt", "x");
+    const swapAt = join(pluginData, "a", "b");
+    let swapped = false;
+    const readdir = fs.readdir;
+    vi.spyOn(fs, "readdir").mockImplementation(((path: fs.PathLike, ...rest: unknown[]) => {
+      if (!swapped && String(path) === swapAt) {
+        swapped = true;
+        renameSync(swapAt, `${swapAt}-moved`);
+        symlinkSync(outside, swapAt, "dir");
+      }
+      return (readdir as (...args: unknown[]) => void)(path, ...rest);
+    }) as typeof fs.readdir);
+    noteConfinedProcessesMayRun();
+
+    const outcome = await s.rm("a", { recursive: true }).then(() => "removed", (error: unknown) => error);
+
+    // Checked first: a delete that followed the link has already removed this
+    // by the time it fails on the link itself.
+    expect(readdirSync(outside)).toEqual(["keep"]);
+    expect(outcome).toBe("removed");
+    expect(existsSync(join(pluginData, "a"))).toBe(false);
+    const discarded = readdirSync(join(root, "acme", PLUGIN_SOCKET_DISCARD_DIR_NAME));
+    expect(discarded).toHaveLength(1);
+    expect(discarded[0]).toMatch(/-a$/);
   });
 });

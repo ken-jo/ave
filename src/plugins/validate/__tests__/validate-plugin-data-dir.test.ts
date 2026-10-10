@@ -49,6 +49,8 @@ afterEach(() => {
 });
 
 describe("validatePluginDirectory data directory", () => {
+  // Not on win32: validatePluginDirectory does not run a `process` entry
+  // there (it reports the protocol as not exercised), so no child exists.
   it.skipIf(process.platform === "win32")("leaves the data directory when the child did not exit", async () => {
     scratch = mkdtempSync(join(tmpdir(), "validate-data-dir-"));
     const plugin = join(scratch, "plugin");

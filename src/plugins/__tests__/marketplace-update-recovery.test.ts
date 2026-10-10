@@ -414,6 +414,36 @@ describe("marketplace pending-update recovery", () => {
   // A failed local install restores its predecessor through this recovery at
   // runtime, while the failed candidate may still run with the promoted root
   // in its confinement. Both discarded roots wait in the tombstones then.
+  // The copy-mode restore stage is deleted at once as payload only. A leftover
+  // one holding a runtime directory is refused, and the plugin stays pending.
+  it("refuses a leftover restore stage that holds a runtime directory", async () => {
+    const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
+    const backupDir = join(paths.pluginsRoot, ".cache", "local-install-rollback", `${pluginId}-1-1`);
+    await mkdir(join(backupDir, "dist"), { recursive: true });
+    await writeFile(join(backupDir, "plugin.json"), oldManifest);
+    await writeFile(join(backupDir, "dist", "index.js"), oldDist);
+    await preparePendingPluginUpdate(paths, entry, {
+      kind: "local-dev",
+      recoveryBackupDir: backupDir,
+      recoveryBackupMode: "copy",
+    });
+    const live = join(paths.pluginsRoot, pluginId);
+    await writeFile(join(live, "plugin.json"), JSON.stringify({ id: pluginId, version: "2.0.0" }));
+    await writeFile(installReceiptPath(paths.cacheRoot, pluginId), JSON.stringify({ pluginId, version: "2.0.0" }));
+    const now = 1_700_000_000_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const stale = `${live}.recovery-${process.pid}-${now}`;
+    await mkdir(join(stale, "data"), { recursive: true });
+    try {
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [], unresolved: [pluginId] });
+    } finally {
+      clock.mockRestore();
+    }
+
+    expect(existsSync(join(stale, "data"))).toBe(true);
+    expect((await readPluginRegistry(paths.registryPath)).plugins[0]?.pendingUpdate).toBeDefined();
+  });
+
   it("tombstones the discarded roots when it runs after confined processes may run", async () => {
     const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
     const backupDir = join(paths.pluginsRoot, ".cache", "local-install-rollback", `${pluginId}-1-1`);
