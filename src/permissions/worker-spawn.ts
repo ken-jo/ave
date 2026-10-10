@@ -65,6 +65,7 @@ import { aveHome } from "../shared/ave-home.js";
 import {
   assertUnixSocketPathFits,
   PLUGIN_WORKER_RUN_DIR_NAME,
+  withPluginRuntimeDirQueue,
 } from "../plugins/plugin-storage-layout.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { spawnConfinedChild } from "./confined-child.js";
@@ -430,10 +431,9 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   // ── Gate ON, mac/linux → ASRT-wrapped with a bind-mounted UDS ──
   // socketDir under the plugin's OWN sandbox root (storage-namespace rule),
   // host-controlled. mkdir 0o700; the worker binds the socket 0o600.
+  const pluginRoot = pathResolve(aveHome(), "plugins", safePlugin);
   const socketDir = pathResolve(
-    aveHome(),
-    "plugins",
-    safePlugin,
+    pluginRoot,
     PLUGIN_WORKER_RUN_DIR_NAME,
     safeWorker,
   );
@@ -445,18 +445,20 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   // Crash-safe: unlink any stale socket from a previous worker that died
   // without cleanup BEFORE recreating the dir.
   try {
-    removeSocketArtifacts(socketPath, socketDir);
-    await mkdir(socketDir, { recursive: true, mode: 0o700 });
-    // `mkdir({recursive,mode})` only applies `mode` to dirs it CREATES — a
-    // pre-existing leaf (e.g. left by an older build under a looser umask) keeps
-    // its old mode. Reject a symlinked socketDir (a same-user attacker
-    // pre-seeding the path can't redirect the bind/binds) FIRST, then force
-    // 0o700: `chmod` follows a link, so the other order would change the mode
-    // of whatever the link points at before refusing it.
-    if (lstatSync(socketDir).isSymbolicLink()) {
-      throw new Error(`[worker-spawn] refusing symlinked control dir: ${socketDir}`);
-    }
-    chmodSync(socketDir, 0o700);
+    await withPluginRuntimeDirQueue(pluginRoot, async () => {
+      removeSocketArtifacts(socketPath, socketDir);
+      await mkdir(socketDir, { recursive: true, mode: 0o700 });
+      // `mkdir({recursive,mode})` only applies `mode` to dirs it CREATES — a
+      // pre-existing leaf (e.g. left by an older build under a looser umask) keeps
+      // its old mode. Reject a symlinked socketDir (a same-user attacker
+      // pre-seeding the path can't redirect the bind/binds) FIRST, then force
+      // 0o700: `chmod` follows a link, so the other order would change the mode
+      // of whatever the link points at before refusing it.
+      if (lstatSync(socketDir).isSymbolicLink()) {
+        throw new Error(`[worker-spawn] refusing symlinked control dir: ${socketDir}`);
+      }
+      chmodSync(socketDir, 0o700);
+    });
   } catch (err) {
     releaseWorkerReservation();
     throw err instanceof Error ? err : new Error(String(err));
@@ -499,9 +501,10 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   // `allowAllUnixSockets` weakening (the `--bind` of the writable dir scopes
   // WHERE). MUST happen BEFORE the wrap so the spawned profile carries it.
   let registered = false;
+  const socketHolder = {};
   let wrapped = false;
   try {
-    await registerWorkerUnixSocketDir(socketDir);
+    await registerWorkerUnixSocketDir(socketDir, socketHolder);
     registered = true;
 
     // Assemble the command DEFENSIVELY: shell-quote the binary + every arg so a
@@ -553,7 +556,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       if (cleanupRan) return;
       cleanupRan = true;
       unmarkPluginWorkerWrapped(safePlugin, safeWorker);
-      void unregisterWorkerUnixSocketDir(socketDir);
+      void unregisterWorkerUnixSocketDir(socketDir, socketHolder);
       void cleanupAsrtSandboxAfterCommand();
       removeSocketArtifacts(socketPath, socketDir);
     };
@@ -580,7 +583,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       unmarkPluginWorkerWrapped(safePlugin, safeWorker);
       void cleanupAsrtSandboxAfterCommand();
     }
-    if (registered) void unregisterWorkerUnixSocketDir(socketDir);
+    if (registered) void unregisterWorkerUnixSocketDir(socketDir, socketHolder);
     sandboxHome.cleanup();
     removeSocketArtifacts(socketPath, socketDir);
     releaseWorkerReservation();

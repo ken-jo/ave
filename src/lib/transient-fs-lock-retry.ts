@@ -107,8 +107,14 @@ export const DIRECTORY_OP_LOCK_CODES: ReadonlySet<string> = new Set([
  * Rename a directory into place, retrying transient Windows locks on the
  * background budget. On other platforms, and for any other code, the first
  * error propagates (an absent source stays distinguishable from a locked one).
+ * `onRetry` hears each retried lock, so a caller can log the contention it
+ * would otherwise never see.
  */
-export async function renameDirectory(from: string, to: string): Promise<void> {
+export async function renameDirectory(
+  from: string,
+  to: string,
+  onRetry?: (attempt: number, code: string) => void,
+): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
     try {
       await fsRename(from, to);
@@ -117,6 +123,7 @@ export async function renameDirectory(from: string, to: string): Promise<void> {
       const code = (error as NodeJS.ErrnoException).code;
       const retryable = process.platform === "win32" && code !== undefined && DIRECTORY_OP_LOCK_CODES.has(code) && attempt < BACKGROUND_ATTEMPTS;
       if (!retryable) throw error;
+      onRetry?.(attempt, code);
       await new Promise((resolve) => setTimeout(resolve, transientFsLockDelayMs(attempt)));
     }
   }

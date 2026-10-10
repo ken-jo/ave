@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -18,6 +18,18 @@ import { sweepOrphanUninstallDirs } from "../orphan-uninstall-sweeper.js";
 import { PARKED_PLUGIN_STATE_SUBDIR, TOMBSTONE_SUBDIR } from "../installed-entry-fs.js";
 import type { PluginPaths } from "../plugin-paths.js";
 import { PLUGIN_DATA_FIXTURE, readPluginDataFixture, seedPluginDataFixture } from "./test-helpers.js";
+
+const carryFault = vi.hoisted(() => ({ destination: undefined as string | undefined }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, rename: async (...args: Parameters<typeof actual.rename>) => {
+    if (args[1] === carryFault.destination) {
+      carryFault.destination = undefined;
+      throw Object.assign(new Error("entry move refused"), { code: "EIO" });
+    }
+    await actual.rename(...args);
+  } };
+});
 
 describe("marketplace pending-update recovery", () => {
   let root: string;
@@ -75,6 +87,7 @@ describe("marketplace pending-update recovery", () => {
   });
 
   afterEach(async () => {
+    carryFault.destination = undefined;
     await rm(root, { recursive: true, force: true });
     warnSpy.mockRestore();
   });
@@ -395,6 +408,195 @@ describe("marketplace pending-update recovery", () => {
     expect(await readFile(installReceiptPath(paths.cacheRoot, pluginId), "utf-8")).toBe(oldReceipt);
     expect(await readPluginDataFixture(join(paths.pluginsRoot, pluginId))).toEqual(PLUGIN_DATA_FIXTURE);
     expect(existsSync(backupDir)).toBe(false);
+  });
+
+  // A local install parks the live generation's socket directories in its
+  // recovery backup while it swaps roots (marketplace.ts `installLocal`), and
+  // restores a `pending-predecessor` through this function at runtime, with
+  // that generation still bound to them. Whichever root holds them, the
+  // restored root must end up with the same directories.
+  describe("socket directories", () => {
+    it("retains both roots after a midway failure and converges on the next boot", async () => {
+      const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
+      const live = join(paths.pluginsRoot, pluginId);
+      const backupDir = join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`);
+      await mkdir(join(backupDir, "dist"), { recursive: true });
+      await writeFile(join(backupDir, "plugin.json"), oldManifest);
+      await writeFile(join(backupDir, "dist", "index.js"), oldDist);
+      await mkdir(join(backupDir, "run", "original"), { recursive: true });
+      await mkdir(join(live, "run", "a"), { recursive: true });
+      await mkdir(join(live, "run", "b"));
+      const original = statSync(join(backupDir, "run")).ino;
+      const firstLeaf = statSync(join(live, "run", "a")).ino;
+      const secondLeaf = statSync(join(live, "run", "b")).ino;
+      await preparePendingPluginUpdate(paths, entry, {
+        kind: "marketplace", recoveryBackupDir: backupDir, recoveryBackupMode: "rename",
+      });
+      await writeFile(join(live, "plugin.json"), JSON.stringify({ id: pluginId, version: "2.0.0" }));
+      carryFault.destination = join(backupDir, "run", "b");
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [], unresolved: [pluginId] });
+      expect(statSync(join(backupDir, "run")).ino).toBe(original);
+      expect(statSync(join(backupDir, "run", "a")).ino).toBe(firstLeaf);
+      expect(statSync(join(live, "run", "b")).ino).toBe(secondLeaf);
+      expect((await readPluginRegistry(paths.registryPath)).plugins[0]?.pendingUpdate).toBeDefined();
+
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
+      expect(statSync(join(live, "run")).ino).toBe(original);
+      expect(statSync(join(live, "run", "a")).ino).toBe(firstLeaf);
+      expect(statSync(join(live, "run", "b")).ino).toBe(secondLeaf);
+      expect(existsSync(backupDir)).toBe(false);
+      expect((await readPluginRegistry(paths.registryPath)).plugins[0]?.pendingUpdate).toBeUndefined();
+    });
+
+    it.each(["rename", "copy"] as const)("preserves the original run inode after an interrupted merge during %s restore", async (mode) => {
+      const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
+      const backupDir = mode === "rename"
+        ? join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`)
+        : join(paths.pluginsRoot, ".cache", "local-install-rollback", `${pluginId}-1-2`);
+      await mkdir(join(backupDir, "dist"), { recursive: true });
+      await writeFile(join(backupDir, "plugin.json"), oldManifest);
+      await writeFile(join(backupDir, "dist", "index.js"), oldDist);
+      await preparePendingPluginUpdate(paths, entry, {
+        kind: mode === "rename" ? "marketplace" : "local-dev",
+        recoveryBackupDir: backupDir,
+        recoveryBackupMode: mode,
+      });
+      const live = join(paths.pluginsRoot, pluginId);
+      await writeFile(join(live, "plugin.json"), JSON.stringify({ id: pluginId, version: "2.0.0" }));
+      // One destination leaf already moved into the original directory; the
+      // next move failed before the original directory reached the live path.
+      await mkdir(join(backupDir, "run", "already-moved"), { recursive: true });
+      await mkdir(join(live, "run", "not-yet-moved"), { recursive: true });
+      const inode = statSync(join(backupDir, "run")).ino;
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
+      expect(statSync(join(live, "run")).ino).toBe(inode);
+      expect(await readdir(join(live, "run"))).toEqual(["already-moved", "not-yet-moved"]);
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [], unresolved: [] });
+    });
+
+    // The promoted root's child left a link in its own sockets/. Recovery
+    // removes it rather than throwing, or the plugin would stay unresolved on
+    // every boot; the link's target is never touched.
+    it("resolve past a link a child left in its sockets/", async () => {
+      const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
+      const backupDir = join(paths.pluginsRoot, ".cache", "local-install-rollback", `${pluginId}-1-1`);
+      await mkdir(join(backupDir, "dist"), { recursive: true });
+      await writeFile(join(backupDir, "plugin.json"), oldManifest);
+      await writeFile(join(backupDir, "dist", "index.js"), oldDist);
+      await mkdir(join(backupDir, "sockets"), { recursive: true });
+      await writeFile(join(backupDir, "sockets", "egress.sock"), "live");
+      const inode = statSync(join(backupDir, "sockets")).ino;
+      await preparePendingPluginUpdate(paths, entry, {
+        kind: "local-dev",
+        recoveryBackupDir: backupDir,
+        recoveryBackupMode: "copy",
+      });
+      const live = join(paths.pluginsRoot, pluginId);
+      await writeFile(join(live, "plugin.json"), JSON.stringify({ id: pluginId, version: "2.0.0" }));
+      await writeFile(installReceiptPath(paths.cacheRoot, pluginId), JSON.stringify({ pluginId, version: "2.0.0" }));
+      const victim = join(dirname(paths.pluginsRoot), "victim");
+      await writeFile(victim, "original");
+      await mkdir(join(live, "sockets"), { recursive: true });
+      await symlink(victim, join(live, "sockets", "evil.sock"));
+
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
+      expect(await readFile(join(live, "plugin.json"), "utf-8")).toBe(oldManifest);
+      expect(statSync(join(live, "sockets")).ino).toBe(inode);
+      expect(await readdir(join(live, "sockets"))).toEqual(["egress.sock"]);
+      expect(await readFile(victim, "utf-8")).toBe("original");
+      expect(statSync(victim).nlink).toBe(1);
+    });
+
+    it("come back from a copy-mode backup into the restored root", async () => {
+      const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
+      const backupDir = join(paths.pluginsRoot, ".cache", "local-install-rollback", `${pluginId}-1-1`);
+      await mkdir(join(backupDir, "dist"), { recursive: true });
+      await writeFile(join(backupDir, "plugin.json"), oldManifest);
+      await writeFile(join(backupDir, "dist", "index.js"), oldDist);
+      await mkdir(join(backupDir, "sockets"), { recursive: true });
+      await mkdir(join(backupDir, "run"), { recursive: true });
+      await writeFile(join(backupDir, "sockets", "egress.sock"), "live");
+      const inodes = [statSync(join(backupDir, "sockets")).ino, statSync(join(backupDir, "run")).ino];
+      await preparePendingPluginUpdate(paths, entry, {
+        kind: "local-dev",
+        recoveryBackupDir: backupDir,
+        recoveryBackupMode: "copy",
+      });
+      await writeFile(join(paths.pluginsRoot, pluginId, "plugin.json"), JSON.stringify({ id: pluginId, version: "2.0.0" }));
+      await writeFile(installReceiptPath(paths.cacheRoot, pluginId), JSON.stringify({ pluginId, version: "2.0.0" }));
+
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
+      const live = join(paths.pluginsRoot, pluginId);
+      expect(await readFile(join(live, "plugin.json"), "utf-8")).toBe(oldManifest);
+      expect([statSync(join(live, "sockets")).ino, statSync(join(live, "run")).ino]).toEqual(inodes);
+      expect(await readFile(join(live, "sockets", "egress.sock"), "utf-8")).toBe("live");
+      expect(existsSync(backupDir)).toBe(false);
+    });
+
+    it("leave the abandoned promoted root for the restored one", async () => {
+      const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
+      const backupDir = join(paths.pluginsRoot, ".cache", "local-install-rollback", `${pluginId}-1-2`);
+      await mkdir(join(backupDir, "dist"), { recursive: true });
+      await writeFile(join(backupDir, "plugin.json"), oldManifest);
+      await writeFile(join(backupDir, "dist", "index.js"), oldDist);
+      await preparePendingPluginUpdate(paths, entry, {
+        kind: "local-dev",
+        recoveryBackupDir: backupDir,
+        recoveryBackupMode: "copy",
+      });
+      const live = join(paths.pluginsRoot, pluginId);
+      await writeFile(join(live, "plugin.json"), JSON.stringify({ id: pluginId, version: "2.0.0" }));
+      await mkdir(join(live, "sockets"), { recursive: true });
+      await writeFile(join(live, "sockets", "egress.sock"), "live");
+      const inode = statSync(join(live, "sockets")).ino;
+
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
+      expect(await readFile(join(live, "plugin.json"), "utf-8")).toBe(oldManifest);
+      expect(statSync(join(live, "sockets")).ino).toBe(inode);
+      expect(await readFile(join(live, "sockets", "egress.sock"), "utf-8")).toBe("live");
+    });
+
+    // Recovery at runtime: the live predecessor's worker has already made
+    // its leaf at the live root while another live leaf still sits in the
+    // backup. Neither may be dropped for being in the "wrong" root.
+    it("merge a backup's live worker leaf into a live root that already has one", async () => {
+      const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
+      const backupDir = join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`);
+      await preparePendingPluginUpdate(paths, entry, {
+        kind: "marketplace",
+        recoveryBackupDir: backupDir,
+        recoveryBackupMode: "rename",
+      });
+      const live = join(paths.pluginsRoot, pluginId);
+      await mkdir(join(backupDir, "run", "w1"), { recursive: true });
+      await writeFile(join(backupDir, "run", "w1", "control.sock"), "w1");
+      await mkdir(join(live, "run", "w2"), { recursive: true });
+      const run = statSync(join(backupDir, "run")).ino;
+      const w1 = statSync(join(backupDir, "run", "w1")).ino;
+
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
+      expect(statSync(join(live, "run")).ino).toBe(run);
+      expect(statSync(join(live, "run", "w1")).ino).toBe(w1);
+      expect(await readFile(join(live, "run", "w1", "control.sock"), "utf-8")).toBe("w1");
+      expect(existsSync(join(live, "run", "w2"))).toBe(true);
+      expect(existsSync(backupDir)).toBe(false);
+    });
+
+    it("are handed to a live root that still matches its receipt", async () => {
+      const entry = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
+      const backupDir = join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`);
+      await preparePendingPluginUpdate(paths, entry, {
+        kind: "marketplace",
+        recoveryBackupDir: backupDir,
+        recoveryBackupMode: "rename",
+      });
+      await mkdir(join(backupDir, "sockets"), { recursive: true });
+      const inode = statSync(join(backupDir, "sockets")).ino;
+
+      expect(await recoverPendingPluginUpdates(paths)).toEqual({ recovered: [pluginId], unresolved: [] });
+      expect(statSync(join(paths.pluginsRoot, pluginId, "sockets")).ino).toBe(inode);
+      expect(existsSync(backupDir)).toBe(false);
+    });
   });
 
   it("only removes a retained backup through the explicit cleanup path and keeps the row hidden", async () => {

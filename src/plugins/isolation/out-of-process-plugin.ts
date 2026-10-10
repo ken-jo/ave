@@ -902,6 +902,7 @@ export async function spawnConfinedPluginChild(
   const socketDir = spec.socketDir;
   const workerRunRoot = spec.workerRunRoot;
   let socketDirRegistered = false;
+  const socketHolder = {};
   let workerRunRootRegistered = false;
   let wrapped = false;
   let windowsGrant: HeldWindowsGrant | undefined;
@@ -919,11 +920,11 @@ export async function spawnConfinedPluginChild(
       // The ALLOW is a SHARED-config entry, so it outlives the child that
       // needed it and would accumulate one `(subpath <dir>)` per plugin ever
       // loaded. Removed on the same unconditional path the confined marker is.
-      void unregisterWorkerUnixSocketDir(socketDir);
+      void unregisterWorkerUnixSocketDir(socketDir, socketHolder);
     }
     if (workerRunRootRegistered) {
       workerRunRootRegistered = false;
-      void unregisterWorkerUnixSocketDir(workerRunRoot);
+      void unregisterWorkerUnixSocketDir(workerRunRoot, socketHolder);
     }
     if (wrapped) {
       wrapped = false;
@@ -972,7 +973,7 @@ export async function spawnConfinedPluginChild(
     // would make "the plugin binds and it fails" depend on a list someone has
     // to remember to update.
     if (isAsrtSandboxActive()) {
-      await registerWorkerUnixSocketDir(socketDir);
+      await registerWorkerUnixSocketDir(socketDir, socketHolder);
       socketDirRegistered = true;
     }
     // The OTHER direction across the same boundary. `worker-spawn.ts` registers
@@ -993,7 +994,7 @@ export async function spawnConfinedPluginChild(
     // while the sandbox does — with it off there is nothing to add to, and the
     // child is not wrapped, so nothing would read the entry.
     if (isAsrtSandboxActive()) {
-      await registerWorkerUnixSocketDir(workerRunRoot);
+      await registerWorkerUnixSocketDir(workerRunRoot, socketHolder);
       workerRunRootRegistered = true;
     }
     // Windows: the wrap takes denies only, so the child's own directories are
