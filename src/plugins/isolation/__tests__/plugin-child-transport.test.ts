@@ -14,18 +14,40 @@
  *    second `terminate`.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import { PassThrough } from "node:stream";
-import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
-import { RPC_METHOD_NOT_FOUND } from "../../../mcp/protocol-constants.js";
+import { frameMessage, StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
+import { INVOCATION_META, RPC_METHOD_NOT_FOUND } from "../../../mcp/protocol-constants.js";
 import { servePluginChild } from "../plugin-child-main.js";
-import { HostApiDispatcher } from "../host-api-dispatcher.js";
-import { FRAME_BYTES_MAX } from "../host-api-wire.js";
+import {
+  defineHostApiPath,
+  createServiceHostApiPaths,
+  HOSTAPI_DISPATCH_TABLE,
+  HostApiDispatcher,
+} from "../host-api-dispatcher.js";
+import { encodeHostFetchInit, FRAME_BYTES_MAX, HOST_PROTOCOL_NOTIFICATIONS, hostApiMethodOf } from "../host-api-wire.js";
 import {
   PluginChildTransport,
   pluginChildRequestMeta,
+  LIVE_INVOCATIONS_MAX,
+  SETTLED_INVOCATIONS_MAX,
   type ChildLink,
 } from "../plugin-child-transport.js";
 import { observe, settle } from "./stream-turns.js";
+
+/** The dispatcher's own warnings, so a case can see the decision 63 record. */
+const dispatcherWarn = vi.hoisted(() => vi.fn());
+vi.mock("../../../lib/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
+  return {
+    ...actual,
+    createLogger: (module: string) => {
+      const logger = actual.createLogger(module);
+      if (module !== "host-api-dispatcher") return logger;
+      return Object.assign(Object.create(logger) as typeof logger, { warn: dispatcherWarn });
+    },
+  };
+});
 
 type Frame = Record<string, unknown>;
 
@@ -102,12 +124,15 @@ describe("the transport is the one producer of MCP request metadata", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ method: "tools/call" });
     const params = sent[0]!.params as Record<string, unknown>;
-    expect(params._meta).toEqual({
+    // A tools/call also names the host invocation it serves, by a fresh
+    // opaque token (see INVOCATION_META); every other key is the S1 metadata.
+    const { "ave/invocation": invocation, ...s1 } = params._meta as Record<string, unknown>;
+    expect(invocation).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(s1).toEqual({
       "io.modelcontextprotocol/protocolVersion": "2026-07-28",
       "io.modelcontextprotocol/clientCapabilities": {},
     });
-    expect(Object.keys(params._meta as object)).toHaveLength(2);
-    expect(params._meta).toEqual(pluginChildRequestMeta());
+    expect(s1).toEqual(pluginChildRequestMeta());
     // The caller's params cross beside it, untouched.
     expect(params).toMatchObject({ name: "speak", arguments: { text: "hi" } });
     transport.close("case over");
@@ -303,5 +328,392 @@ describe("a refused signal does not recurse", () => {
     expect(counts).toEqual({ terminate: 1, maxDepth: 1, timersArmed: 1, sigkill: 1 });
     expect(transport.terminationFaults).toEqual(["kill SIGTERM EPERM", "kill SIGKILL EPERM"]);
     expect(exited()).toBe(false);
+  });
+});
+
+/** A store the host side enters around a call, standing in for the invocation's. */
+const marker = new AsyncLocalStorage<string>();
+
+interface InvocationRig {
+  transport: PluginChildTransport;
+  sent: Frame[];
+  /** What `raiseAlert`'s implementation saw: the marker it ran under. */
+  seen: Array<string | undefined>;
+  /** The marker each `context.log` from the child was forwarded under. */
+  logged: Array<string | undefined>;
+  /** Write a frame from the "child", delivered in the context the link was made in. */
+  deliver: (frame: Frame) => void;
+  fireGone: (reason: string) => void;
+  fireFault: (reason: string) => void;
+}
+
+/**
+ * A transport made inside a marker, as a child spawned from inside a tool
+ * call is, whose frames arrive in that context, as a real pipe's do.
+ */
+function invocationRig(options: { pluginId?: string; teardown?: () => void; terminate?: () => void } = {}): InvocationRig {
+  const { link, childToHost, sent, fireGone, fireFault } = recordedLink();
+  const seen: InvocationRig["seen"] = [];
+  const logged: InvocationRig["logged"] = [];
+  return marker.run("spawned-in", () => {
+    const transport = new PluginChildTransport({
+      pluginId: options.pluginId ?? "transportprobe",
+      isActive: () => true,
+      log: () => void logged.push(marker.getStore()),
+      reportUnknownField: () => undefined,
+      link: options.terminate === undefined ? link : { ...link, terminate: options.terminate },
+      table: {
+        ...HOSTAPI_DISPATCH_TABLE,
+        raiseAlert: defineHostApiPath("raiseAlert", async () => {
+          seen.push(marker.getStore());
+          return { status: "raised", alertId: "alert" } as never;
+        }),
+        onEvent: defineHostApiPath("onEvent", async (_call, scope) => {
+          scope.adopt("events", () => options.teardown?.());
+          return { handleId: "events" };
+        }),
+        hostFetch: createServiceHostApiPaths(
+          { hostFetch: async () => new Response("ok") } as unknown as Parameters<typeof createServiceHostApiPaths>[0],
+          { read: [], write: [] },
+        ).hostFetch,
+      },
+    });
+    transport.start();
+    const deliver = AsyncResource.bind((frame: Frame) => void childToHost.write(frameMessage(frame)));
+    return { transport, sent, seen, logged, deliver, fireGone, fireFault };
+  });
+}
+
+/** Send `count` tools/calls, each under its own marker, and return their frames in order. */
+async function callTools(rig: InvocationRig, count: number, offset = 0): Promise<{ frames: Frame[]; replies: Promise<unknown>[] }> {
+  const before = rig.sent.length;
+  const replies = Array.from({ length: count }, (_, index) =>
+    marker.run(`call-${String(index + offset)}`, () =>
+      rig.transport.requestMcp("tools/call", { name: "speak", arguments: {} })));
+  await settle();
+  const frames = rig.sent.slice(before).filter((frame) => frame.method === "tools/call");
+  expect(frames).toHaveLength(count);
+  return { frames, replies };
+}
+
+/** Check retained references directly, including after a channel can no longer answer. */
+function invocationCounts(transport: PluginChildTransport): { live: number; settled: number } {
+  const tables = transport as unknown as {
+    liveInvocations: Map<string, unknown>;
+    settledInvocations: Map<string, unknown>;
+  };
+  return { live: tables.liveInvocations.size, settled: tables.settledInvocations.size };
+}
+
+function tokenOf(frame: Frame): string {
+  return ((frame.params as Record<string, unknown>)._meta as Record<string, string>)[INVOCATION_META]!;
+}
+
+/** The child calls `raiseAlert`, naming `token` or none, and the host's reply. */
+async function raiseAlertFromChild(rig: InvocationRig, id: string, token?: string): Promise<Frame> {
+  rig.deliver({
+    jsonrpc: "2.0",
+    id,
+    method: hostApiMethodOf("raiseAlert"),
+    params: {
+      input: { kind: "reply", key: id },
+      ...(token === undefined ? {} : { _meta: { [INVOCATION_META]: token } }),
+    },
+  });
+  await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === id)).toBe(true));
+  return rig.sent.find((frame) => frame.id === id)!;
+}
+
+describe("a tools/call's invocation, as the child's hostApi requests reach it", () => {
+  it("still runs a request in its call's context after the call has settled", async () => {
+    const rig = invocationRig();
+    const { frames, replies } = await callTools(rig, 1);
+    rig.deliver({ jsonrpc: "2.0", id: frames[0]!.id as string, result: { content: [] } });
+    await replies[0];
+    const reply = await raiseAlertFromChild(rig, "late", tokenOf(frames[0]!));
+    expect(reply).toMatchObject({ result: { status: "raised" } });
+    expect(rig.seen).toEqual(["call-0"]);
+    rig.transport.close("case over");
+  });
+
+  it("runs a request that names no invocation in none, not in the context the child was spawned in", async () => {
+    const rig = invocationRig();
+    const reply = await raiseAlertFromChild(rig, "background");
+    expect(reply).toMatchObject({ result: { status: "raised" } });
+    expect(rig.seen).toEqual([undefined]);
+    rig.transport.close("case over");
+  });
+
+  it("forwards what the child sends unasked outside the context the child was spawned in", async () => {
+    const rig = invocationRig();
+    rig.deliver({
+      jsonrpc: "2.0",
+      method: HOST_PROTOCOL_NOTIFICATIONS.log,
+      params: { message: "hello" },
+    });
+    await vi.waitFor(() => expect(rig.logged).toHaveLength(1));
+    expect(rig.logged).toEqual([undefined]);
+    rig.transport.close("case over");
+  });
+
+  it("runs a tokenless request outside its own caller's context too, whoever hands it to the dispatcher", async () => {
+    const seen: Array<string | undefined> = [];
+    const dispatcher = new HostApiDispatcher({
+      pluginId: "transportprobe",
+      isActive: () => true,
+      notifications: { deliver: () => undefined },
+      shutdownChild: async () => undefined,
+      log: () => undefined,
+      reportUnknownField: () => undefined,
+      table: {
+        ...HOSTAPI_DISPATCH_TABLE,
+        raiseAlert: defineHostApiPath("raiseAlert", async () => {
+          seen.push(marker.getStore());
+          return { status: "raised", alertId: "alert" } as never;
+        }),
+      },
+    });
+    const reply = await marker.run("caller", () => dispatcher.handle({
+      jsonrpc: "2.0",
+      id: "direct",
+      method: hostApiMethodOf("raiseAlert"),
+      params: { input: { kind: "reply", key: "direct" } },
+    } as never));
+    expect(reply).toMatchObject({ result: { status: "raised" } });
+    expect(seen).toEqual([undefined]);
+    dispatcher.childGone();
+  });
+
+  it("refuses a request naming a token the connection never issued", async () => {
+    const rig = invocationRig();
+    const reply = await raiseAlertFromChild(rig, "forged", "never-issued");
+    expect(reply.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
+    expect(rig.seen).toEqual([]);
+    rig.transport.close("case over");
+  });
+
+  it("drops the oldest settled invocation past the bound, refusing it rather than running it ungated", async () => {
+    const rig = invocationRig();
+    const frames: Frame[] = [];
+    for (let index = 0; index <= SETTLED_INVOCATIONS_MAX; index += 1) {
+      const call = await callTools(rig, 1, index);
+      frames.push(call.frames[0]!);
+      rig.deliver({ jsonrpc: "2.0", id: call.frames[0]!.id as string, result: { content: [] } });
+      await call.replies[0];
+    }
+    const evicted = await raiseAlertFromChild(rig, "evicted", tokenOf(frames[0]!));
+    expect(evicted.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
+    const kept = await raiseAlertFromChild(rig, "kept", tokenOf(frames[1]!));
+    expect(kept).toMatchObject({ result: { status: "raised" } });
+    expect(rig.seen).toEqual(["call-1"]);
+    rig.transport.close("case over");
+  });
+
+  it("keeps a live call resolvable while later settled calls overflow retention", async () => {
+    const rig = invocationRig();
+    const live = await callTools(rig, 1);
+    const rejected = expect(live.replies[0]).rejects.toThrow("case over");
+    try {
+      let oldest: Frame | undefined;
+      for (let index = 0; index <= SETTLED_INVOCATIONS_MAX; index += 1) {
+        const call = await callTools(rig, 1, index + 1);
+        oldest ??= call.frames[0];
+        rig.deliver({ jsonrpc: "2.0", id: call.frames[0]!.id as string, result: { content: [] } });
+        await call.replies[0];
+      }
+      expect(invocationCounts(rig.transport)).toEqual({ live: 1, settled: SETTLED_INVOCATIONS_MAX });
+      const late = await raiseAlertFromChild(rig, "live-write", tokenOf(live.frames[0]!));
+      expect(late).toMatchObject({ result: { status: "raised" } });
+      const evicted = await raiseAlertFromChild(rig, "settled-write", tokenOf(oldest!));
+      expect(evicted.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
+      expect(rig.seen).toEqual(["call-0"]);
+    } finally {
+      rig.transport.close("case over");
+      await rejected;
+    }
+  });
+
+  it("refuses excess live calls without evicting an admitted invocation", async () => {
+    const pluginId = "blockedprobe";
+    const rig = invocationRig({ pluginId });
+    const held = await callTools(rig, LIVE_INVOCATIONS_MAX);
+    const pending = Promise.allSettled(held.replies);
+    let failure: unknown;
+    const overflow = rig.transport.requestMcp("tools/call", { name: "speak", arguments: {} })
+      .catch((error: unknown) => { failure = error; });
+    try {
+      await settle();
+      expect(failure).toBeInstanceOf(Error);
+      expect(String(failure)).toMatch(/too many tool calls in flight/);
+      expect(String(failure)).toContain(pluginId);
+      expect(String(failure)).toMatch(/restart the plugin/);
+      expect(rig.sent.filter((frame) => frame.method === "tools/call")).toHaveLength(LIVE_INVOCATIONS_MAX);
+      expect(invocationCounts(rig.transport)).toEqual({ live: LIVE_INVOCATIONS_MAX, settled: 0 });
+      const first = await raiseAlertFromChild(rig, "first-live", tokenOf(held.frames[0]!));
+      expect(first).toMatchObject({ result: { status: "raised" } });
+      expect(rig.seen).toEqual(["call-0"]);
+      rig.deliver({ jsonrpc: "2.0", id: held.frames[0]!.id as string, result: { content: [] } });
+      await held.replies[0];
+      const next = rig.transport.requestMcp("tools/call", { name: "speak", arguments: {} });
+      const nextRejected = expect(next).rejects.toThrow("case over");
+      await settle();
+      expect(invocationCounts(rig.transport)).toEqual({ live: LIVE_INVOCATIONS_MAX, settled: 1 });
+      rig.transport.close("case over");
+      await nextRejected;
+    } finally {
+      rig.transport.close("case over");
+      await pending;
+      await overflow;
+    }
+  });
+
+  it.each(["close", "peer-gone", "fault", "timeout"] as const)("releases settled and live snapshots on %s", async (ending) => {
+    const rig = invocationRig();
+    const calls = await callTools(rig, 2);
+    const rejected = expect(calls.replies[1]).rejects.toThrow();
+    rig.deliver({ jsonrpc: "2.0", id: calls.frames[0]!.id as string, result: { content: [] } });
+    await calls.replies[0];
+    expect(invocationCounts(rig.transport)).toEqual({ live: 1, settled: 1 });
+    if (ending === "peer-gone") rig.fireGone("child crashed");
+    else if (ending === "fault") rig.fireFault("pipe failed");
+    else if (ending === "timeout") {
+      await expect(rig.transport.request("ave/instance/start", {}, 20)).rejects.toThrow(/exceeded 20ms/);
+    } else rig.transport.close("retired for restart");
+    expect(invocationCounts(rig.transport)).toEqual({ live: 0, settled: 0 });
+    await rejected;
+    expect(invocationCounts(rig.transport)).toEqual({ live: 0, settled: 0 });
+  });
+
+  it.each(["close", "peer-gone"] as const)("releases snapshots before a subscription teardown throws on %s", async (ending) => {
+    const rig = invocationRig({ teardown: () => { throw new Error("subscription cleanup failed"); } });
+    const calls = await callTools(rig, 2);
+    const rejected = expect(calls.replies[1]).rejects.toThrow();
+    rig.deliver({ jsonrpc: "2.0", id: calls.frames[0]!.id as string, result: { content: [] } });
+    await calls.replies[0];
+    rig.deliver({ jsonrpc: "2.0", id: "subscribe", method: hostApiMethodOf("onEvent"), params: { eventType: "probe.event", handler: "events" } });
+    await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === "subscribe")).toBe(true));
+    expect(rig.sent.find((frame) => frame.id === "subscribe")).toMatchObject({ result: { handleId: "events" } });
+    try {
+      expect(() => ending === "close" ? rig.transport.close("retired") : rig.fireGone("crashed"))
+        .toThrow("subscription cleanup failed");
+      expect(invocationCounts(rig.transport)).toEqual({ live: 0, settled: 0 });
+    } finally {
+      await rejected;
+    }
+  });
+
+  it("releases snapshots and rejects pending calls even when termination throws", async () => {
+    const rig = invocationRig({ terminate: () => { throw new Error("termination failed"); } });
+    const calls = await callTools(rig, 2);
+    const pending = observe(calls.replies[1]!);
+    rig.deliver({ jsonrpc: "2.0", id: calls.frames[0]!.id as string, result: { content: [] } });
+    await calls.replies[0];
+    expect(() => rig.transport.close("retired")).toThrow("termination failed");
+    await settle();
+    expect(pending()).toBe(true);
+    expect(invocationCounts(rig.transport)).toEqual({ live: 0, settled: 0 });
+    await expect(calls.replies[1]).rejects.toThrow("retired");
+  });
+
+  it.each(["foreign-plugin", "previous-generation"] as const)("refuses a token from a %s connection", async (source) => {
+    const issuer = invocationRig({ pluginId: "issuer" });
+    const recipient = invocationRig({ pluginId: source === "previous-generation" ? "issuer" : "recipient" });
+    const call = await callTools(issuer, 1);
+    const pending = expect(call.replies[0]).rejects.toThrow();
+    try {
+      const token = tokenOf(call.frames[0]!);
+      const reply = await raiseAlertFromChild(recipient, "replay", token);
+      expect(reply.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
+      if (source === "previous-generation") {
+        issuer.transport.close("restarted");
+        const afterClose = await raiseAlertFromChild(recipient, "replay-after-close", token);
+        expect(afterClose.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
+      }
+      expect(recipient.seen).toEqual([]);
+    } finally {
+      issuer.transport.close("case over");
+      recipient.transport.close("case over");
+      await pending;
+    }
+  });
+
+  it("accepts older child metadata that does not use the host invocation key", async () => {
+    const rig = invocationRig();
+    const call = await callTools(rig, 1);
+    const pending = expect(call.replies[0]).rejects.toThrow();
+    try {
+      rig.deliver({
+        jsonrpc: "2.0", id: "legacy", method: hostApiMethodOf("raiseAlert"),
+        params: { input: { kind: "reply", key: "legacy" }, _meta: { progressToken: "older-progress", "sdk.example/invocation": "older-correlation" } },
+      });
+      await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === "legacy")).toBe(true));
+      expect(rig.sent.find((frame) => frame.id === "legacy")).toMatchObject({ result: { status: "raised" } });
+      expect(rig.seen).toEqual([undefined]);
+    } finally {
+      rig.transport.close("case over");
+      await pending;
+    }
+  });
+
+  it("bounds tokenless-write diagnostics per path and excludes argument values", async () => {
+    dispatcherWarn.mockClear();
+    const rig = invocationRig();
+    const call = await callTools(rig, 1);
+    const pending = expect(call.replies[0]).rejects.toThrow();
+    try {
+      for (let index = 0; index < 100; index += 1) {
+        const reply = await raiseAlertFromChild(rig, `secret-argument-${String(index)}`);
+        expect(reply).toMatchObject({ result: { status: "raised" } });
+      }
+      expect(dispatcherWarn).toHaveBeenCalledTimes(1);
+      expect(dispatcherWarn.mock.calls[0]![0]).toEqual({ pluginId: "transportprobe", path: "raiseAlert", toolCallsInFlight: 1 });
+      expect(JSON.stringify(dispatcherWarn.mock.calls)).not.toContain("secret-argument");
+    } finally {
+      rig.transport.close("case over");
+      await pending;
+    }
+  });
+
+  it("records inline-gated fetch writes without logging their URL, headers or body", async () => {
+    dispatcherWarn.mockClear();
+    const rig = invocationRig();
+    const call = await callTools(rig, 1);
+    const pending = expect(call.replies[0]).rejects.toThrow();
+    try {
+      for (const method of ["GET", "HEAD", "OPTIONS", "post", "PATCH"]) {
+        rig.deliver({
+          jsonrpc: "2.0", id: method, method: hostApiMethodOf("hostFetch"),
+          params: { input: "https://example.test/?token=url-secret", init: await encodeHostFetchInit({ method, headers: { Authorization: "header-secret" }, body: "body-secret" }, "fetch diagnostic") },
+        });
+        await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === method)).toBe(true));
+        expect(rig.sent.find((frame) => frame.id === method)).toMatchObject({ result: { status: 200 } });
+        expect(dispatcherWarn).toHaveBeenCalledTimes(method === "post" || method === "PATCH" ? 1 : 0);
+      }
+      expect(dispatcherWarn.mock.calls[0]![0]).toEqual({ pluginId: "transportprobe", path: "hostFetch", toolCallsInFlight: 1 });
+      expect(JSON.stringify(dispatcherWarn.mock.calls)).not.toMatch(/url-secret|header-secret|body-secret/);
+    } finally {
+      rig.transport.close("case over");
+      await pending;
+    }
+  });
+
+  it("records a gated write that names no invocation while a tool call is in flight", async () => {
+    dispatcherWarn.mockClear();
+    const rig = invocationRig();
+    await raiseAlertFromChild(rig, "idle");
+    expect(dispatcherWarn).not.toHaveBeenCalled();
+    const { frames, replies } = await callTools(rig, 1);
+    await raiseAlertFromChild(rig, "during");
+    expect(dispatcherWarn).toHaveBeenCalledTimes(1);
+    expect(dispatcherWarn.mock.calls[0]![0]).toEqual({
+      pluginId: "transportprobe",
+      path: "raiseAlert",
+      toolCallsInFlight: 1,
+    });
+    rig.deliver({ jsonrpc: "2.0", id: frames[0]!.id as string, result: { content: [] } });
+    await replies[0];
+    await raiseAlertFromChild(rig, "after");
+    expect(dispatcherWarn).toHaveBeenCalledTimes(1);
+    rig.transport.close("case over");
   });
 });

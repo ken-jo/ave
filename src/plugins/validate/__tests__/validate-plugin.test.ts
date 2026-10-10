@@ -370,9 +370,11 @@ describe("the session-level rows", () => {
     );
     expect(mcp.map((frame) => frame.method)).toEqual(["server/discover", "tools/list", "tools/call"]);
     for (const frame of mcp) {
+      // A tools/call also names the host invocation it serves (protocol §3.3).
       expect((frame.params as { _meta: unknown })._meta).toEqual({
         "io.modelcontextprotocol/protocolVersion": "2026-07-28",
         "io.modelcontextprotocol/clientCapabilities": {},
+        ...(frame.method === "tools/call" ? { "ave/invocation": expect.any(String) } : {}),
       });
     }
     expect(row(run.rows, "protocol.request-meta").ok).toBe(true);

@@ -564,7 +564,7 @@ the owner made it on 2026-10-10 (§7 item 4): third-party plugins run on Windows
 are plugins isolated from each other there: every confined process runs as the one
 `srt-sandbox` account, so the inter-plugin filesystem isolation Stage 9 proves is a
 macOS and Linux property, and on Windows the sandbox confines plugins against the
-host only (`plugin-hostapi-protocol.md` §9.8 A2, decision 63).
+host only (`plugin-hostapi-protocol.md` §9.8 A2, decision 64).
 
 ---
 
@@ -705,13 +705,19 @@ Named rather than hidden, because each one can move a stage estimate.
    restriction. On Windows all plugins, third-party ones included, run in the shared
    `srt-sandbox` identity — sandboxed from the host as configured, not isolated from
    each other — an accepted risk pending an ASRT per-plugin identity
-   (`plugin-hostapi-protocol.md` §9.8 A2, decision 63).
+   (`plugin-hostapi-protocol.md` §9.8 A2, decision 64).
 5. **Does the effect-enforcement gate's approval modal (`gateMutatingEffect`)
    interact badly with an async boundary?** The gate awaits a user response inside
    a hostApi call. That already works because the gated paths are already async — but
    a child now waits on a round-trip that may block on a human. *Resolve:* Stage 5 —
    an explicit test that a gated write from the child survives a slow approval and
-   that a child timeout does not leave the host gate pending.
+   that a child timeout does not leave the host gate pending. *Found 2026-10-09:* the
+   gate never fired for a child at all, because the child's request reached the host
+   outside the invocation's async context. Fixed by the invocation token
+   (`plugin-hostapi-protocol.md` §3.3, decision 63). `invocation-context.test.ts` pins
+   the foreground ask and the headless deny, including for work a handler leaves
+   running after it returns. It also pins that a child spawned inside a tool call does
+   not run its own lifecycle work in that call.
 6. **`mcp-alignment-design.md` §3.3 still describes `_meta["ave/category"]` as
    the policy SOT and `plugin-tool-from-mcp.ts` as failing closed on a missing
    category, while per-tool `category` was removed from the manifest and the host now

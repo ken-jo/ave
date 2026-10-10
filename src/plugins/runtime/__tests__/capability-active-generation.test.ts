@@ -828,7 +828,7 @@ export default async function createPlugin() {
     await runtime.startAll();
     const consumerReady = runtime.waitForPluginReady(consumer.id);
 
-    await runtime.disable(consumer.id);
+    await runtime.setPluginEnabled(consumer.id, false);
     await expect(consumerReady).rejects.toThrow(/cancelled by disable/);
     providerPreparation.resolve();
     await expect(runtime.waitForPluginReady(provider.id)).resolves.toBeUndefined();
@@ -876,7 +876,7 @@ export default async function createPlugin() {
     const fixture = await makeRealLifecycleBlockedRuntime();
     const ready = fixture.runtime.waitForPluginReady(fixture.consumer.id);
 
-    await expect(fixture.runtime.disable(fixture.consumer.id)).resolves.toBeUndefined();
+    await expect(fixture.runtime.setPluginEnabled(fixture.consumer.id, false)).resolves.toBeUndefined();
     await expect(ready).rejects.toThrow(/cancelled by disable/);
     const registry = JSON.parse(await readFile(registryPath, "utf8")) as {
       plugins: Array<{ id: string; enabled?: boolean }>;
@@ -1076,7 +1076,7 @@ export default async function createPlugin() {
 
     const runtime = makeRuntime();
     await runtime.startAll();
-    await expect(runtime.disable(firstProvider.id)).resolves.toBeUndefined();
+    await expect(runtime.setPluginEnabled(firstProvider.id, false)).resolves.toBeUndefined();
 
     expect(runtime.listPluginIds().sort()).toEqual([
       consumer.id,
@@ -1215,9 +1215,6 @@ export default async function createPlugin() {
     await runtime.startAll();
 
     await expect(runtime.setPluginEnabled(provider.id, false)).rejects.toThrow(
-      "plugin disable blocked — active dependents require capabilities",
-    );
-    await expect(runtime.disable(provider.id)).rejects.toThrow(
       "plugin disable blocked — active dependents require capabilities",
     );
     await expect(runtime.removePlugin(provider.id)).rejects.toThrow(

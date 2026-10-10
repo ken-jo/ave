@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/spawnWorker",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "spec": {
         "args": [
           "--version"
@@ -17,7 +20,7 @@
     "id": 27,
     "jsonrpc": "2.0",
     "result": {
-      "handleId": "<uuid-1>",
+      "handleId": "<uuid-2>",
       "pid": 4242,
       "socketPath": "/run/golden.sock"
     }

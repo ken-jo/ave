@@ -3,7 +3,11 @@
     "id": 35,
     "jsonrpc": "2.0",
     "method": "ave/host/pickFolders",
-    "params": {}
+    "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      }
+    }
   },
   "response": {
     "id": 35,

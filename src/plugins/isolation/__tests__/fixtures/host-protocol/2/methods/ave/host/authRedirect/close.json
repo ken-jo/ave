@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/authRedirect/close",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "options": {
         "handle": "redirect-1"
       }

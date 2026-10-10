@@ -20,7 +20,7 @@ const liveKey = process.env.AVE_SMOKE_OPENROUTER_KEY?.trim();
 
 test.describe('live model turn', () => {
   test.skip(!liveKey, 'set AVE_SMOKE_OPENROUTER_KEY to run a real turn');
-  test.use({ seedRepositoryPlugins: false });
+  test.use({ seedViewFixturePlugin: false });
 
   test('answers a prompt end to end', async ({ mainWindow }) => {
     const composer = mainWindow.locator(testIdSelector(TEST_IDS.composerTextarea)).first();

@@ -1263,7 +1263,7 @@ describe("the factory's launch reaches the spawn as decided", () => {
 /**
  * Windows: `srt-win exec` takes denies only, so the child's own directories
  * are an ACL grant to the shared `srt-sandbox` account, held against a holder
- * process for exactly the child's lifetime (§9.8 A2, decision 63). These cases
+ * process for exactly the child's lifetime (§9.8 A2, decision 64). These cases
  * pin the wiring — what is granted, that it precedes the spawn, that every way
  * the child ends releases it, that a lost holder stops the child, and that a
  * grant reaching a neighbour is refused. Whether the ACL then admits the child

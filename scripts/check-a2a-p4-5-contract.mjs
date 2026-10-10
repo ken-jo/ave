@@ -472,11 +472,11 @@ for (const [needle, label] of [
   ["`TaskNotFoundError`", "TaskNotFound behavior"],
   ["`TaskNotCancelableError`", "TaskNotCancelable behavior"],
   ["`historyLength` follows A2A v1.0 exactly", "GetTask historyLength"],
-  ["Deterministic local", "deterministic local gate"],
-  ["SQLite + PostgreSQL", "database parity gate"],
-  ["Cross-repo pinned-head wire vectors", "wire gate"],
-  ["Packaged live", "packaged live gate"],
-  ["official `a2aproject/a2a-tck` release/tag and full commit", "TCK pin"],
+  // Verification is app-complete (owner decision 2026-10-09): the section
+  // must name its in-app proofs, not an external evidence gate.
+  ["In-app verification (owner decision 2026-10-09)", "in-app verification section"],
+  ["src/main/__tests__/a2a-remote-in-app-roundtrip.test.ts", "two-host in-app round trip"],
+  ["They are neither required nor optional legacy fields", "strict snapshot evidence removal"],
   ["explicit two-stage transaction", "two-stage journal"],
   ["absent, not null placeholders", "prepared stage snapshot exclusion"],
   ["at the earlier of client-observed", "encrypted payload deletion boundary"],
@@ -558,9 +558,14 @@ for (const [needle, label] of [
   ["`predecessorRevisionId`", "legacy predecessor revision field"],
   ["`intendedSuccessorRevisionId`", "legacy intended successor field"],
   ["optional `intendedCredentialRevisionId`", "optional intended credential revision"],
+  // The retired external evidence commands must not come back as gates.
+  ["test:a2a-p4-5:deterministic", "retired deterministic evidence command"],
+  ["test:a2a-p4-5:wire", "retired cross-repo wire evidence command"],
+  ["test:a2a-p4-5:packaged-live", "retired packaged-live evidence command"],
 ]) {
   rejectText(normalizedP45, needle, label);
 }
+readRequired(resolve(root, "src/main/__tests__/a2a-remote-in-app-roundtrip.test.ts"));
 
 requireOrdered(
   normalizedP45,
@@ -660,6 +665,9 @@ for (const [needle, label] of [
   ["worker result arriving after that CAS", "late commit suppression"],
   ["Authentication and ordinary A2A authorization MUST complete", "auth ordering"],
   ["Required conformance vectors", "wire vectors"],
+  ["Verification is app-complete", "in-app conformance policy"],
+  ["Route snapshots MUST NOT carry external verification provenance", "runtime evidence exclusion"],
+  ["route eligibility MUST NOT depend on it", "external evidence gate exclusion"],
   [officialSpec, "official specification pin"],
 ]) {
   requireText(normalizedSpec, needle, label);

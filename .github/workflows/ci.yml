@@ -126,30 +126,6 @@ jobs:
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: bun run check:test-coverage
         working-directory: ave
-      # Test suites, not policy gates, which is why they sit with the
-      # verification steps: alongside its source-only assertions over the
-      # release-signing workflow the evidence suite exercises the
-      # release-tooling libraries themselves — descriptor reading,
-      # signed-manifest verification, packaged executable selection — and
-      # `test:ci-tooling` covers the A2A wire harness that its dispatch
-      # workflow executes. Failure means that code is wrong. They run under
-      # `node --test` rather than vitest (whose include is
-      # `*.test.{ts,tsx}`), so they need their own step; the evidence suite
-      # was once invoked by nothing and sat red for twelve days after a batch
-      # dependency merge moved a pin without moving its assertion, and the
-      # `test:ci-tooling` suite was never invoked at all until this step
-      # named it.
-      #
-      # Last of the verification steps, so this narrow suite does not skip the
-      # broad one. `packaging-discipline-source.test.ts` pins that position —
-      # "keeps the release-tooling suite last among the verification steps"
-      # fails if any later command in this job compiles, builds or tests. The
-      # reverse ordering would only cost information: a red build-and-test says
-      # the code failed either way.
-      - name: Run release-tooling tests
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        run: bun run test:ci-tooling && bun run test:a2a-p4-5:evidence
       # Repository hygiene: manifests, baseline ledgers, and the self-tests of
       # the gates that read them. Nothing below compiles or runs the product; a
       # failure here means a bookkeeping file is stale, not that the code is

@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/storage/rm",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "options": {
         "recursive": true
       },

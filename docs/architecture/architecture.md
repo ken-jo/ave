@@ -1187,7 +1187,7 @@ reach their own directories through a holder-PID ACL grant held for that
 process's lifetime, and while it is held every confined process reaches them
 too. By owner decision (2026-10-10) third-party plugins run on Windows on those
 terms, an accepted risk pending an ASRT per-plugin identity
-(`docs/design/plugin-hostapi-protocol.md` §9.8 A2, decision 63). Because
+(`docs/design/plugin-hostapi-protocol.md` §9.8 A2, decision 64). Because
 srt-win relays no stdin and delivers none of the spawn's environment, an `entry`
 plugin child there runs under `cmd.exe` with `ELECTRON_RUN_AS_NODE` on the
 command line, its environment in one argument and Node's symlink-preserving
