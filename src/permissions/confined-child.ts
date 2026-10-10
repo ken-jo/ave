@@ -42,9 +42,12 @@ import { shellQuote } from "../lib/shell-resolver.js";
  * How the child's filesystem access is granted.
  *
  * `allow-list` puts the paths in the ASRT command itself (macOS seatbelt,
- * Linux bwrap `--bind`). `deny-only` is Windows, where reachability is granted
- * out of band by ACLs against a holder process, so the wrap carries the deny
- * floor and nothing else — passing allow paths there would imply a
+ * Linux bwrap `--bind`). `deny-only` is Windows, where reachability is an ACL
+ * question decided outside the wrap — a grant against a holder process the
+ * caller owns for the process's lifetime (`windows-acl-grant-holder.ts`; a
+ * worker in `worker-spawn.ts`, a plugin child in `spawnConfinedPluginChild`) —
+ * so the wrap carries
+ * the deny floor and nothing else: passing allow paths there would imply a
  * confinement the wrap does not perform.
  */
 type ConfinementGrantMode = "allow-list" | "deny-only";
@@ -82,6 +85,13 @@ export interface ConfinedChildSpec {
    * to the wrap as `PerCommandFilesystem.floorPierces`; absent, none.
    */
   readonly floorPierces?: readonly string[];
+  /**
+   * Refuse the child the plugins root beyond the protected floor, its own
+   * directories re-allowed through `allowRead`. Carried to the wrap as
+   * `PerCommandFilesystem.denyPluginsRoot` (`asrt-sandbox.ts`), which says why
+   * and why Windows refuses it: set only under `allow-list`.
+   */
+  readonly denyPluginsRoot?: boolean;
   /** Secret-stripped base environment the child starts from. */
   readonly baseEnv: NodeJS.ProcessEnv;
   /** Overlaid last — the sandbox process HOME, which must win. */
@@ -228,12 +238,18 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
   denyWrite: string[];
   pinWriteRoots?: boolean;
   floorPierces?: readonly string[];
+  denyPluginsRoot?: boolean;
 } {
   const floor = {
     denyRead: getDefaultSensitiveReadDenyPaths(),
     denyWrite: getDefaultSensitiveWriteDenyPaths(),
   };
-  if (spec.grantMode === "deny-only") return floor;
+  if (spec.grantMode === "deny-only") {
+    if (spec.denyPluginsRoot === true) {
+      throw new Error(`[confined-child] ${spec.label}: denyPluginsRoot needs an allow-list confinement to re-allow the child's own directories`);
+    }
+    return floor;
+  }
   if (temp === undefined) throw new Error(`[confined-child] ${spec.label}: an allow-list confinement was built without its temp directory`);
   // The temp directory is granted here for the same reason the deny floor is
   // restated here: no caller should have to remember it, and one that forgot
@@ -250,6 +266,7 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
     denyWrite: floor.denyWrite,
     ...(spec.pinWriteRoots === true ? { pinWriteRoots: true } : {}),
     ...(spec.floorPierces !== undefined ? { floorPierces: spec.floorPierces } : {}),
+    ...(spec.denyPluginsRoot === true ? { denyPluginsRoot: true } : {}),
   };
 }
 

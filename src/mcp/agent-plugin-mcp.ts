@@ -95,7 +95,10 @@ export function resolveRuntimeMcp(
       cwd: resolveValue(server.cwd, activation, `${label}.cwd`, true),
       env: { ...env, PLUGIN_ROOT: realpathSync(activation.generationRoot), PLUGIN_DATA: realpathSync(activation.dataDir) },
     };
-    projections.push(prepareBundledMcpProjection({ ...owner, fingerprint: resolved.fingerprint }, config, approvalDigest, realpathSync(activation.dataDir)));
+    projections.push(prepareBundledMcpProjection({ ...owner, fingerprint: resolved.fingerprint }, config, approvalDigest, {
+      pluginDataDir: realpathSync(activation.dataDir),
+      bundledPayloadRoot: realpathSync(activation.generationRoot),
+    }));
   }
   return Object.freeze(projections);
 }

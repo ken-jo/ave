@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
@@ -17,6 +17,7 @@ import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPol
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { createLogger } from "../lib/logger.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
+import { resolvePluginPaths } from "../plugins/plugin-paths.js";
 
 import type {
   SandboxRuntimeConfig,
@@ -297,6 +298,36 @@ export interface PerCommandFilesystem {
    * is refused (see {@link readGrantsOutsideReadDenies}).
    */
   readonly floorPierces?: readonly string[];
+  /**
+   * Refuse this wrap every root that holds a plugin's code or data
+   * ({@link ensurePluginOwnedReadRoots}): the plugins root, `<AVE_HOME>/plugins`
+   * — every plugin's code, data, generation payloads and receipts, and the
+   * registry — and the two roots of agent plugins, `<AVE_HOME>/agent-plugin-data`
+   * (each one's data) and `<AVE_HOME>/packages/agent-plugin` (each one's
+   * installed versions). Set by every wrap of plugin-owned or third-party code
+   * — the plugin child, its workers, bundled hooks and MCP stdio servers —
+   * never by a wrap of the user's own shell or tools. The floor covers none of
+   * these roots, and ASRT's reads are deny-only, so without it any such process
+   * reads every other plugin's data.
+   *
+   * The wrap's own directories stay reachable because an `allowRead` entry
+   * inside a covering deny is re-allowed: seatbelt's later allow, bubblewrap's
+   * bind over the tmpfs. A process that belongs to a plugin names that
+   * plugin's directories in `allowRead`; one that belongs to no plugin names
+   * none. On Linux a read re-allow of a directory that holds a write root
+   * would shadow that root's writable bind, and {@link hardenLinuxSandboxWrap}
+   * puts the write back. A plugin installed after the wrap is covered as well:
+   * the deny is the root, not a list of what was in it — which is why each
+   * root is created before the wrap: Linux's bwrap skips a read deny on a path
+   * that is not there, so a root made later would be visible to every process
+   * wrapped before it.
+   *
+   * macOS and Linux only, and refused on Windows: ASRT applies a Windows deny
+   * as an ACE for the ONE `srt-sandbox` account every confined process runs
+   * as, so a deny on a neighbour's directory would take it from that
+   * neighbour's own child too, and nothing re-allows there.
+   */
+  readonly denyPluginsRoot?: boolean;
 }
 
 export interface WindowsWorkerFilesystemGrant {
@@ -538,9 +569,9 @@ function pinnedWriteRootDenies(writeRoots: readonly string[]): string[] {
  * keeps the literal: a deny there is a tmpfs mask with the allows inside it
  * bound back, whatever their order, while a glob is expanded once per wrap.
  */
-function asrtReadDenyPaths(denyRead: readonly string[]): string[] {
+function asrtReadDenyPaths(denyRead: readonly string[], exactRoots: readonly string[]): string[] {
   if (process.platform !== "darwin") return [...denyRead];
-  const roots = new Set(appOwnedSandboxPrivateRoots());
+  const roots = new Set(exactRoots);
   return denyRead.map((path) => (roots.has(path) ? exactSeatbeltDenyGlob(path) : path));
 }
 
@@ -558,6 +589,53 @@ function exactSeatbeltDenyGlob(root: string): string {
   return `${real.slice(0, -1)}[${real.slice(-1)}]`;
 }
 
+/**
+ * The roots {@link PerCommandFilesystem.denyPluginsRoot} refuses, each created
+ * (`0o700`) if absent so the deny exists on Linux before anything is installed
+ * under it. Their layouts are owned elsewhere: the plugins root by
+ * `plugin-paths.ts`; an agent plugin's data by the `agent-plugin-data` feature
+ * namespace (`agent-plugin-hook-runtime.ts`, `agent-plugin-mcp-runtime.ts`);
+ * its installed versions by the content store's `<packages>/<kind>/<name>/<version>`
+ * (`content/store.ts`) under `<AVE_HOME>/packages` (`marketplace-content.ts`).
+ * What a wrap owns under them — an agent plugin's generation and data for its
+ * hook or bundled server — is re-allowed by the caller, as for the plugins root.
+ */
+function ensurePluginOwnedReadRoots(): string[] {
+  const roots = pluginOwnedReadRoots();
+  for (const root of roots) mkdirSync(root, { recursive: true, mode: 0o700 });
+  return roots;
+}
+
+function pluginOwnedReadRoots(): string[] {
+  const home = aveHome();
+  return [resolvePluginPaths().pluginsRoot, join(home, "agent-plugin-data"), join(home, "packages", "agent-plugin")];
+}
+
+/**
+ * The paths of a Windows plugin grant that would reach past the plugin's own
+ * directories into the roots macOS and Linux refuse every plugin-owned wrap
+ * ({@link PerCommandFilesystem.denyPluginsRoot}). Windows has no such deny, so
+ * the grant itself is held to it: a path may lie inside the plugins root only
+ * under the plugin's own install (`<plugins>/<id>`) or generation cache
+ * (`<plugins>/.cache/<id>`); never inside an agent plugin's roots, which no
+ * `entry` plugin owns; and never at or above any of the roots, since an
+ * inheriting grant there would cover every plugin under it. Empty when the
+ * grant is the plugin's own.
+ */
+export function pluginGrantPathsBeyondOwnRoots(pluginId: string, paths: readonly string[]): string[] {
+  const fold = (path: string): string => (process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path));
+  const within = (path: string, root: string): boolean => {
+    const rel = relative(fold(root), fold(path));
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  };
+  const roots = pluginOwnedReadRoots();
+  const { pluginsRoot, cacheRoot } = resolvePluginPaths();
+  const own = [join(pluginsRoot, pluginId), join(cacheRoot, pluginId)];
+  return paths.filter((path) =>
+    roots.some((root) => within(root, path))
+    || (roots.some((root) => within(path, root)) && !own.some((ownRoot) => within(path, ownRoot))));
+}
+
 export function buildPerCommandSandboxCustomConfig(
   filesystem: PerCommandFilesystem | undefined,
 ): Partial<SandboxRuntimeConfig> | undefined {
@@ -568,12 +646,34 @@ export function buildPerCommandSandboxCustomConfig(
         + "replaces the shared deny floor",
     );
   }
+  if (filesystem.denyPluginsRoot === true) {
+    if (process.platform === "win32") {
+      throw new Error(
+        "buildPerCommandSandboxCustomConfig: denyPluginsRoot is refused on Windows; a deny there is an ACE for the "
+          + "one sandbox account every confined process shares, so it would refuse each plugin its own directories",
+      );
+    }
+    if (filesystem.denyRead === undefined) {
+      throw new Error(
+        "buildPerCommandSandboxCustomConfig: denyPluginsRoot needs denyRead restated; a per-command denyRead "
+          + "replaces the shared deny floor",
+      );
+    }
+  }
   const fs: Partial<FilesystemConfig> = {};
   const floor = getProtectedReadDenyPaths();
   // A per-command deny REPLACES the shared one, so the trusted custom denies
   // are restated here once for every wrap rather than by each composer.
   if (filesystem.denyRead !== undefined) {
-    fs.denyRead = asrtReadDenyPaths([...new Set([...filesystem.denyRead, ...(_baseTrustedSettings?.denyRead ?? [])])]);
+    const pluginRoots = filesystem.denyPluginsRoot === true ? ensurePluginOwnedReadRoots() : [];
+    fs.denyRead = asrtReadDenyPaths(
+      [...new Set([...filesystem.denyRead, ...pluginRoots, ...(_baseTrustedSettings?.denyRead ?? [])])],
+      // The plugin roots are spelled exactly for the reason the private roots
+      // are: a wrap whose reads include an ancestor of one (a worker's or a
+      // bundled process's host temp directory, above a test `AVE_HOME`) would
+      // otherwise lose its own plugin directories to the re-emitted deny.
+      [...appOwnedSandboxPrivateRoots(), ...pluginRoots],
+    );
   }
   if (filesystem.allowWrite !== undefined) fs.allowWrite = writeRootsOutsideReadDenies(filesystem.allowWrite, floor);
   if (filesystem.denyWrite !== undefined) {
@@ -597,11 +697,18 @@ export interface SandboxWrapResult {
 
 function applyLinuxReadMaskWriteFloor(
   wrapped: SandboxWrapResult,
+  filesystem: PerCommandFilesystem | undefined,
   cleanupAfterCommand: () => void,
 ): SandboxWrapResult {
   if (process.platform !== "linux") return wrapped;
   try {
-    return hardenLinuxSandboxWrap(wrapped);
+    // The same slice the wrap was built from — the re-allows and write denies
+    // ASRT was given, after the floor withheld what it withholds.
+    const applied = buildPerCommandSandboxCustomConfig(filesystem)?.filesystem;
+    return hardenLinuxSandboxWrap(wrapped, {
+      ...(applied?.allowRead !== undefined ? { allowRead: applied.allowRead } : {}),
+      ...(applied?.denyWrite !== undefined ? { denyWrite: applied.denyWrite } : {}),
+    });
   } catch (error) {
     cleanupAfterCommand();
     throw error;
@@ -1171,7 +1278,7 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
   }
   const sharedFloor = getProtectedReadDenyPaths(trustedSettings.userDataDir, trustedSettings.denyRead);
   const filesystem: FilesystemConfig = {
-    denyRead: asrtReadDenyPaths(denyReadUnion),
+    denyRead: asrtReadDenyPaths(denyReadUnion, appOwnedSandboxPrivateRoots()),
     allowWrite: writeRootsOutsideReadDenies(trustedSettings.allowWrite ?? [], sharedFloor),
     denyWrite: denyWriteUnion,
     ...(trustedSettings.allowRead !== undefined
@@ -1546,7 +1653,7 @@ export async function wrapToolCommand(
     buildPerCommandSandboxCustomConfig(options.filesystem),
     options.abortSignal,
   );
-  return applyLinuxReadMaskWriteFloor(wrapped, () => SandboxManager.cleanupAfterCommand());
+  return applyLinuxReadMaskWriteFloor(wrapped, options.filesystem, () => SandboxManager.cleanupAfterCommand());
 }
 
 
@@ -1831,7 +1938,7 @@ export async function wrapWorkerCommand(
     buildPerCommandSandboxCustomConfig(options.filesystem),
     options.abortSignal,
   );
-  return applyLinuxReadMaskWriteFloor(wrapped, () => SandboxManager.cleanupAfterCommand());
+  return applyLinuxReadMaskWriteFloor(wrapped, options.filesystem, () => SandboxManager.cleanupAfterCommand());
 }
 
 /**

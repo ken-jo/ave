@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHostApiFactory } from "../host-api-factory.js";
 import { HostApiGenerationScope } from "../../../../plugins/plugin-host-effect-scope.js";
-import type { PluginRuntimeGenerationAccess } from "../../../../plugins/plugin-host-generation.js";
+import { admittedGenerationAccess } from "../../../../plugins/__tests__/test-helpers.js";
 import type { PluginHostApiIncarnation } from "../../../../plugins/runtime/index.js";
 import type { PluginManifest } from "../../../../plugins/types.js";
 import {
@@ -44,27 +44,6 @@ const MANIFEST = {
   description: "subscribes to one config key",
   tools: [],
 } as unknown as PluginManifest;
-
-/**
- * The generation admission the scope leases against.
- *
- * Copied in shape from `plugin-host-effect-scope.test.ts`'s fake for the same
- * reason it exists there: the lease machinery is not what this case is about,
- * and standing up the real coordinator would put its scheduling between the
- * throw and the assertion.
- */
-function generationAccess(): PluginRuntimeGenerationAccess {
-  return {
-    getActive: vi.fn(() => undefined),
-    isExactAdmitted: vi.fn((_pluginId, generationId) => generationId === GENERATION_ID),
-    acquire: vi.fn(async () => { throw new Error("not used"); }),
-    acquireExact: vi.fn(async (_pluginId, generationId) => {
-      if (generationId !== GENERATION_ID) throw new Error("not active");
-      return { generation: { generationId } as never, release: vi.fn() };
-    }),
-    runWithLease: vi.fn(async (_lease, operation) => operation()),
-  } as unknown as PluginRuntimeGenerationAccess;
-}
 
 /**
  * Only the deps `config.onChange` and the factory's own construction reach.
@@ -116,7 +95,7 @@ function hostApiUnderTest(pluginDataDir: string): {
     getAlertsService: () => undefined,
   } as never);
   const api = factory(PLUGIN_ID, MANIFEST, pluginDataDir, incarnation, null, undefined, null);
-  scope.bindGeneration(generationAccess(), GENERATION_ID);
+  scope.bindGeneration(admittedGenerationAccess(GENERATION_ID), GENERATION_ID);
   scope.publish();
   return { api, scope };
 }

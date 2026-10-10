@@ -1,8 +1,12 @@
 import { existsSync, readdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { readRepoFile } from "./test-helpers.js";
 import { jobRunCommands, workflowJobs } from "./support/workflow-source.js";
+
+/** A repository script module, loaded as the gate loads it. */
+const requireFromRepo = (path: string): unknown => createRequire(import.meta.url)(`../../${path}`);
 
 const root = process.cwd();
 
@@ -230,12 +234,17 @@ describe("installer smoke and packaging discipline", () => {
 
     expect(smokeScript).toContain("ERR_MODULE_NOT_FOUND");
     expect(smokeScript).toContain("Cannot find package");
-    expect(smokeScript).toContain("linux-unpacked");
-    expect(smokeScript).toContain("/^linux-.+-unpacked$/u");
-    expect(smokeScript).toContain("linuxExecutablePreferenceSuffixes(process.arch, sep)");
-    expect(smokeScript).toContain("pickBestByExactSuffix");
-    expect(smokeScript).toContain("win-unpacked");
-    expect(smokeScript).toContain(".app");
+    // Executable discovery is shared with the packaged escape gate, so both
+    // launch the same binary.
+    const selection = readRepoFile("scripts/lib/packaged-executable-selection.mjs");
+    expect(smokeScript).toContain('import { findPackagedExecutable } from "./lib/packaged-executable-selection.mjs"');
+    expect(selection).toContain("export function findPackagedExecutable(target, releaseDir)");
+    expect(selection).toContain("linux-unpacked");
+    expect(selection).toContain("/^linux-.+-unpacked$/u");
+    expect(selection).toContain("linuxExecutablePreferenceSuffixes(process.arch, sep)");
+    expect(selection).toContain("pickBestByExactSuffix");
+    expect(selection).toContain("win-unpacked");
+    expect(selection).toContain(".app");
     expect(smokeScript).toContain("AVE_HOME");
     expect(smokeScript).toContain('process.platform === "win32" ? tmpdir() : "/tmp"');
     expect(smokeScript).toContain("--password-store=gnome-libsecret");
@@ -251,6 +260,63 @@ describe("installer smoke and packaging discipline", () => {
     expect(smokeScript).toContain('["agents", "skills", "prompts"]');
     expect(smokeScript).toContain("skills");
     expect(smokeScript).toContain("prompts");
+  });
+
+  it("runs the packaged escape gate on the built app before uploading installer artifacts", () => {
+    const workflow = readRepoFile(".github/workflows/build-installers.yml");
+    const gate = readRepoFile("scripts/packaged-escape-gate.mjs");
+
+    expect(workflow).toContain("Packaged escape gate");
+    expect(workflow).toContain("xvfb-run -a node scripts/packaged-escape-gate.mjs --target linux");
+    expect(workflow).toContain('node scripts/packaged-escape-gate.mjs --target "${{ matrix.target }}"');
+    expect(workflow.indexOf("Smoke launch packaged app")).toBeLessThan(workflow.indexOf("Packaged escape gate"));
+    expect(workflow.indexOf("Packaged escape gate")).toBeLessThan(workflow.indexOf("Upload installers"));
+
+    // The probes run as the plugin child does; the control is the packaged
+    // application's own main process, never the development helper.
+    expect(gate).toContain('ELECTRON_RUN_AS_NODE: "1"');
+    expect(gate).toContain("electron.launch({ executablePath: executable");
+    expect(gate).toContain("app.evaluate(");
+    expect(gate).toContain("prepareElectronLaunchEnv(");
+    expect(gate).toContain("--user-data-dir=");
+    expect(gate).toContain("AVE_HOME");
+    expect(gate).toContain('import { findPackagedExecutable } from "./lib/packaged-executable-selection.mjs"');
+    // Named in its comment to say why; never a path it runs.
+    expect(gate).not.toContain('"control-electron-main.cjs"');
+    // Its environment is its own allow-list, not another harness's launcher.
+    expect(gate).toContain('import { packagedEscapeGateEnvironment } from "./lib/packaged-escape-gate-environment.mjs"');
+    expect(gate).not.toMatch(/a2a-p4-5|buildPackagedUiEnvironment|AVE_A2A_/);
+  });
+
+  it("hands the packaged executable only the gate's own environment allow-list", () => {
+    const { packagedEscapeGateEnvironment } = requireFromRepo("scripts/lib/packaged-escape-gate-environment.mjs") as {
+      packagedEscapeGateEnvironment: (source: NodeJS.ProcessEnv) => Record<string, string>;
+    };
+    // A source that answers every name: what comes back is the allow-list
+    // itself, so a key added to it or dropped from it fails here.
+    const everything = new Proxy({}, { get: (_, key) => (typeof key === "string" ? `value-of-${key}` : undefined) });
+    expect(Object.keys(packagedEscapeGateEnvironment(everything as NodeJS.ProcessEnv))).toEqual([
+      "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL",
+      "TMPDIR", "TEMP", "TMP", "USERPROFILE", "SystemRoot", "WINDIR",
+      "ComSpec", "PATHEXT", "APPDATA", "LOCALAPPDATA",
+      "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR",
+      "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+      "DBUS_SESSION_BUS_ADDRESS",
+    ]);
+    // Each half of the gate sets ELECTRON_RUN_AS_NODE itself; nothing of a
+    // runner's credentials, evidence keys or Node options rides along, and a
+    // variable the source does not carry is not invented.
+    expect(
+      packagedEscapeGateEnvironment({
+        PATH: "/usr/bin",
+        DISPLAY: ":99",
+        ELECTRON_RUN_AS_NODE: "1",
+        NODE_OPTIONS: "--require /tmp/x.js",
+        GITHUB_TOKEN: "t",
+        AVE_A2A_EVIDENCE_PUBLIC_KEY_FILE: "/k",
+        AVE_A2A_EVIDENCE_SIGNER_SHA256: "s",
+      }),
+    ).toEqual({ PATH: "/usr/bin", DISPLAY: ":99" });
   });
 
   it("refuses to build or attach release assets from a repository package.json does not publish to", () => {

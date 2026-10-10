@@ -326,6 +326,9 @@ describe("sandboxCapability win32 reconcile", () => {
     expect(result.available).toBe(true);
     expect(result.kind).toBe("partial");
     expect(result.potentialReason).toContain("srt-win");
+    // Against the host only: one shared sandbox account, no isolation between
+    // plugins (owner decision 2026-10-10).
+    expect(result.potentialReason).toContain("plugins are not isolated from each other");
     expect(result.runtime.available).toBe(false);
     expect(result.runtime.kind).toBe("none");
     expect(result.runtime.reason).toContain("no OS sandbox configured");

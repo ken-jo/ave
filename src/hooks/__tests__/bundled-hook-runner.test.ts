@@ -86,6 +86,12 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     expect(options.filesystem.denyRead).toEqual(expect.arrayContaining(appOwnedSandboxPrivateRoots()));
     expect(options.filesystem.denyRead).toContain(join(homedir(), ".ssh"));
     expect(options.filesystem.denyWrite.length).toBeGreaterThan(0);
+    // Another plugin's directories are refused: the plugins root is denied,
+    // and the hook's own generation is the read re-allow inside it.
+    const reach = raw as { filesystem: { allowRead: string[]; denyPluginsRoot?: boolean } };
+    expect(reach.filesystem.denyPluginsRoot).toBe(true);
+    expect(reach.filesystem.allowRead).toContain(generationRoot);
+    expect(reach.filesystem.allowRead).toContain(dataDir);
   });
 
   it("refuses the bundled path on Windows with the sandbox on", async () => {

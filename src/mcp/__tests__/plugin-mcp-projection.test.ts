@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -327,6 +327,9 @@ describe("plugin-owned MCP projections", () => {
       command: "node",
       args: [expect.stringMatching(/[\\/]mcp[\\/]server\.mjs$/)],
     });
+    // The payload the command was anchored in is the one directory under the
+    // refused plugins root this server reads.
+    expect(projection.config).toMatchObject({ bundledPayloadRoot: realpathSync(testDir) });
     expect(projection.owner.fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(projection.owner.fingerprint).not.toBe(contribution.fingerprint);
   });

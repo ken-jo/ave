@@ -43,10 +43,12 @@ import { createSandboxProcessHome } from "../../permissions/sandbox-process-home
 import {
   cleanupAsrtSandboxAfterCommand,
   isAsrtSandboxActive,
+  pluginGrantPathsBeyondOwnRoots,
   protectedReadDenyCovering,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
 } from "../../permissions/asrt-sandbox.js";
+import { holdWindowsFilesystemGrant, type HeldWindowsGrant } from "../../permissions/windows-acl-grant-holder.js";
 import {
   resolvePluginSocketDir,
   resolvePluginWorkerRunRoot,
@@ -814,22 +816,46 @@ export interface ObservedPluginChild {
  *    is what creates an install directory, so a bundle root that is a link is a
  *    layout nothing in the app produces on its own.
  *  - READ in ASRT is deny-only — `allowRead` re-allows a region INSIDE a
- *    covering deny and is inert without one (see `asrt-sandbox.ts`). The deny
- *    floor covers the Electron userData directory, which is where plugins are
- *    installed, so the child would not be able to read its OWN code or data
- *    without these re-allows. For the plugin's own two directories this is not
- *    a widening of the floor; it is the floor's own carve-out for the one plugin
- *    this child serves — and it is what makes "cannot read another plugin's data
- *    directory" true rather than aspirational. A `hostDirectory` grant in
- *    A declared `hostDirectory` grant widens the floor for that plugin.
+ *    covering deny and is inert without one (see `asrt-sandbox.ts`). Plugins
+ *    are installed under `<AVE_HOME>/plugins` (`plugin-paths.ts`), which the
+ *    shared floor does NOT cover: it names `<AVE_HOME>/secrets` and its
+ *    siblings, not the plugins root. So this spawn refuses the whole root on
+ *    macOS and Linux (`denyPluginsRoot`, `asrt-sandbox.ts`), and the child's
+ *    own root, data and socket directories — already in `envelope.read` — are
+ *    re-allowed inside it. That deny is what makes "cannot read another
+ *    plugin's data directory" true rather than aspirational; Admission's
+ *    adversarial fixture measured a child listing and reading a neighbour's
+ *    data before it existed (`adversarial-escapes.test.ts`, escape 1a). A
+ *    declared `hostDirectory` grant widens the floor for that plugin.
  *
  * On Windows ASRT 0.0.76 supports no per-exec allow grants at all — passing any
  * makes `wrapWorkerCommand` throw — so the wrap carries the deny floor alone
- * (`grantMode: "deny-only"`) and reachability is an ACL question. §4's Windows
- * residual stands unchanged and is not softened here: srt-win confines
- * filesystem and network but NOT process creation, so a confined plugin child
- * on Windows can still spawn. Admitting third-party plugins on Windows is the
- * separate owner decision §7.4 names, not something this spawn resolves.
+ * (`grantMode: "deny-only"`) and reachability is an ACL question. The session
+ * config grants nothing (`sandbox-init.ts` passes no `allowRead`/`allowWrite`),
+ * and the default `<AVE_HOME>` in the user's profile admits no other account,
+ * so this spawn grants the child its envelope and its sandbox HOME — read, and
+ * write where the envelope writes — against a holder process it owns for the
+ * child's lifetime (`holdWindowsFilesystemGrant`, the model `worker-spawn.ts`
+ * uses for a worker). The grant is refused if any path reaches past the
+ * plugin's own install or generation cache into a plugin-owned root
+ * (`pluginGrantPathsBeyondOwnRoots`), is released on every way the child ends,
+ * and a holder that dies stops the child. That grant is the ACL half of a
+ * Windows `entry` child loading, measured in isolation (§9.8 A2): it is not
+ * the whole of it. Under srt-win the child does not start today — the runner
+ * gives it the sandbox profile's environment rather than `baseEnv`/`extraEnv`,
+ * the PowerShell inner shell does not wait for `electron.exe`, stdin is not
+ * relayed, and the module import `lstat`s profile ancestors no grant covers.
+ *
+ * §4's Windows residual stands unchanged and is not softened here: srt-win
+ * confines filesystem and network but NOT process creation, so a confined
+ * plugin child on Windows can still spawn. Nor are plugins isolated from each
+ * other there, and by owner decision (2026-10-10) none is attempted: every
+ * confined process runs as the one `srt-sandbox` account, so a grant to one
+ * plugin's child or worker is visible to every confined process while it is held, and a
+ * deny on a neighbour's directory would take it from that neighbour's own
+ * processes too. Third-party plugins run on Windows under that shared identity
+ * — sandboxed from the host as configured, not from each other — an accepted
+ * risk pending ASRT per-plugin identity (plugin-hostapi-protocol.md §9.8 A2).
  */
 export async function spawnConfinedPluginChild(
   spec: ConfinedPluginChildSpec,
@@ -844,11 +870,16 @@ export async function spawnConfinedPluginChild(
   const socketHolder = {};
   let workerRunRootRegistered = false;
   let wrapped = false;
+  let windowsGrant: HeldWindowsGrant | undefined;
   const releaseSandboxState = (): void => {
     // Reviewer no-leak: the confined marker must not outlive the child. Runs
     // unconditionally (idempotent) so a spawn that failed AFTER onWrapped and
     // a normal exit both clear it.
     unmarkPluginChildConfined(spec.pluginId);
+    // The Windows grant is the child's own reach; it must not outlive the
+    // child on any path — exit, close, a spawn that produced no process, or a
+    // failure before the spawn. `release` is idempotent.
+    windowsGrant?.release();
     if (socketDirRegistered) {
       socketDirRegistered = false;
       // The ALLOW is a SHARED-config entry, so it outlives the child that
@@ -931,6 +962,31 @@ export async function spawnConfinedPluginChild(
       await registerWorkerUnixSocketDir(workerRunRoot, socketHolder);
       workerRunRootRegistered = true;
     }
+    // Windows: the wrap takes denies only, so the child's own directories are
+    // granted to the shared `srt-sandbox` account for exactly the child's
+    // lifetime, against a holder the host owns — the model a delegated worker
+    // already uses (`worker-spawn.ts`). Without it the child reaches only what
+    // the directories' existing ACLs admit, which under the default
+    // `<AVE_HOME>` in the user profile is nothing: not its entry, not its data.
+    // The grant is held to the plugin's own roots, because Windows has no
+    // `denyPluginsRoot` to stop an inheriting grant from covering a neighbour.
+    if (process.platform === "win32" && isAsrtSandboxActive()) {
+      const allowRead = [...spec.envelope.read, sandboxHome.path];
+      const allowWrite = [...spec.envelope.write, sandboxHome.path];
+      const beyond = pluginGrantPathsBeyondOwnRoots(spec.pluginId, [...allowRead, ...allowWrite]);
+      if (beyond.length > 0) {
+        throw new Error(
+          `[out-of-process-plugin] ${spec.pluginId}: refusing a Windows grant beyond the plugin's own roots: `
+            + `${[...new Set(beyond)].join(", ")}`,
+        );
+      }
+      windowsGrant = await holdWindowsFilesystemGrant({
+        label: `plugin-child:${spec.pluginId}:asrt-win-acl`,
+        allowRead,
+        allowWrite,
+      });
+    }
+    const grant = windowsGrant;
     const { command, args, baseEnv } = spawnLine;
     const { child, confinement } = await spawnConfinedChild({
       command,
@@ -942,6 +998,9 @@ export async function spawnConfinedPluginChild(
       tempPrincipal: { kind: "plugin", id: spec.pluginId },
       allowRead: [...spec.envelope.read, sandboxHome.path],
       allowWrite: [...spec.envelope.write, sandboxHome.path],
+      // Every other plugin's code and data: the floor does not cover the
+      // plugins root, so this spawn does wherever a deny can re-allow.
+      ...(process.platform === "win32" ? {} : { denyPluginsRoot: true }),
       // The envelope names a floor-piercing host directory only when the
       // plugin's reviewed declaration asked for it.
       floorPierces: spec.envelope.read.filter((path) => hostDirectoryFloorPierces().includes(path)),
@@ -961,7 +1020,10 @@ export async function spawnConfinedPluginChild(
         // them. Set ONLY on the wrapped path — an unwrapped spawn never marks.
         markPluginChildConfined(spec.pluginId);
       },
-      assertStillValid: spec.assertStillValid,
+      assertStillValid: () => {
+        spec.assertStillValid?.();
+        grant?.assertAlive();
+      },
     });
     if (!child.stdin || !child.stdout) {
       child.kill("SIGKILL");
@@ -978,11 +1040,21 @@ export async function spawnConfinedPluginChild(
       child.once("close", () => resolve());
     });
     child.once("exit", releaseSandboxState);
+    child.once("close", releaseSandboxState);
     // Gone means the process no longer exists: it exited, or the spawn
     // produced no process to run. An `error` from a process that has a pid is
     // a fault on a live child — Node emits one when a signal could not be
     // delivered — and must not release it as if it were gone.
     const hasProcess = (): boolean => typeof child.pid === "number" && child.pid > 0;
+    child.on("error", () => {
+      if (!hasProcess()) releaseSandboxState();
+    });
+    // A holder that dies takes the grant's guarantee with it; the child it
+    // served stops rather than run on a grant nobody holds.
+    grant?.onLost(() => {
+      const forceTimer = terminateChildProcess(child, 3_000);
+      child.once("exit", () => clearTimeout(forceTimer));
+    });
     return {
       pid: hasProcess() ? child.pid : undefined,
       confinement,
