@@ -43,6 +43,7 @@ import { shellQuote } from "../lib/shell-resolver.js";
 import { createLogger } from "../lib/logger.js";
 import { mainDir } from "../main/main-paths.js";
 import {
+  assertRelayRequest,
   CHILD_RELAY_TRANSPORT_ARG,
   relayStdioOverLoopback,
   type RelayRequest,
@@ -339,6 +340,15 @@ function windowsRelayLaunch(spec: ConfinedChildSpec): {
   const inheritedOptions = nodeOptions === undefined ? "" : env[nodeOptions]!;
   if (nodeOptions !== undefined) delete env[nodeOptions];
   env.NODE_OPTIONS = [...NODE_PRESERVE_SYMLINK_FLAGS, inheritedOptions].filter((part) => part.length > 0).join(" ");
+  const request: RelayRequest = {
+    command: spec.command,
+    args: [...spec.args],
+    env,
+    ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
+  };
+  // Refused here, before anything is wrapped or spawned, rather than after the
+  // relay is already running with no request it could be sent.
+  assertRelayRequest(request);
   return {
     launch: {
       label: spec.label,
@@ -347,12 +357,7 @@ function windowsRelayLaunch(spec: ConfinedChildSpec): {
       windowsShell: "cmd",
       windowsCommandLineEnv: { ELECTRON_RUN_AS_NODE: "1" },
     },
-    request: {
-      command: spec.command,
-      args: [...spec.args],
-      env,
-      ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
-    },
+    request,
   };
 }
 

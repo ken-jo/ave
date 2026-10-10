@@ -679,6 +679,21 @@ describe("spawnConfinedChild's Windows stdio relay", () => {
     expect(() => spawned.stdin!.write("nowhere")).not.toThrow();
   });
 
+  it("refuses a request no environment can hold before anything is wrapped or spawned, and carries any name one can", async () => {
+    await expect(spawnRelayed({ baseEnv: { "A=B": "x" } })).rejects.toThrow(/'A=B' is not an environment variable name/);
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+    const child = relayChild();
+    spawnMock.mockImplementationOnce(() => child);
+    await spawnRelayed({ baseEnv: { "ProgramFiles(x86)": "C:\\Program Files (x86)" } });
+    const peer = await startFakeRelayPeer(child.stdout);
+    try {
+      expect(((await peer.request).env as Record<string, string>)["ProgramFiles(x86)"]).toBe("C:\\Program Files (x86)");
+    } finally {
+      peer.close();
+    }
+  });
+
   it("refuses a relay with its own Windows shell, or without piped stdin and stdout, before anything is wrapped", async () => {
     await expect(spawnRelayed({ windowsShell: "cmd" })).rejects.toThrow(/sets its own Windows shell/);
     await expect(spawnRelayed({ stdio: ["ignore", "pipe", "pipe"] })).rejects.toThrow(/needs piped stdin and stdout/);

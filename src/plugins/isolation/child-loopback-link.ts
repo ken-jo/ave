@@ -64,7 +64,6 @@ const CHILD_LISTEN_ANNOUNCE = "AVE-CHILD-LISTEN";
 
 const NONCE_BYTES = 32;
 const NONCE_HEX_LENGTH = NONCE_BYTES * 2;
-const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Longest stdout the host reads looking for the announce before refusing. */
 const ANNOUNCE_SCAN_LIMIT = 4096;
 const ANNOUNCE_RE = new RegExp(`^${CHILD_LISTEN_ANNOUNCE} ([0-9]{1,5}) ([0-9a-f]{${NONCE_HEX_LENGTH}})$`);
@@ -75,8 +74,14 @@ export function encodeChildEnv(env: Readonly<Record<string, string>>): string {
   return CHILD_ENV_ARG_PREFIX + Buffer.from(JSON.stringify(env), "utf-8").toString("base64url");
 }
 
+/**
+ * What an environment can hold: a non-empty name without `=` or NUL, and a
+ * string value without NUL. Nothing stricter — the variables travel as JSON,
+ * never through a shell, and Windows admits names (`ProgramFiles(x86)`) that a
+ * POSIX-shaped rule would refuse.
+ */
 function assertEnvPair(name: string, value: unknown): asserts value is string {
-  if (!ENV_NAME_RE.test(name)) {
+  if (name.length === 0 || name.includes("=") || name.includes("\0")) {
     throw new Error(`[child-loopback-link] '${name}' is not an environment variable name`);
   }
   if (typeof value !== "string" || value.includes("\0")) {
@@ -329,7 +334,7 @@ const RELAY_REQUEST_LIMIT = 1024 * 1024;
 /** The relay's exit code when the program could not be started at all. */
 const RELAY_START_FAILED_EXIT = 127;
 
-function assertRelayRequest(value: unknown): asserts value is RelayRequest {
+export function assertRelayRequest(value: unknown): asserts value is RelayRequest {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("[child-loopback-link] the relay request is not an object");
   }

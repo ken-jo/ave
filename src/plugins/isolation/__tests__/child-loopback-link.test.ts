@@ -98,9 +98,12 @@ describe("the child's launch arguments", () => {
     expect(() => parseChildLaunchArgs(args)).toThrow(message);
   });
 
-  it("refuses to encode what an environment cannot hold", () => {
-    expect(() => encodeChildEnv({ "1A": "x" })).toThrow("is not an environment variable name");
+  it("refuses to encode what an environment cannot hold, and nothing else", () => {
+    expect(() => encodeChildEnv({ "A=B": "x" })).toThrow("is not an environment variable name");
+    expect(() => encodeChildEnv({ "": "x" })).toThrow("is not an environment variable name");
     expect(() => encodeChildEnv({ A: "a\0b" })).toThrow("is not a string");
+    expect(parseChildLaunchArgs([CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv({ "ProgramFiles(x86)": "C:\\P", "1A": "x" })]))
+      .toEqual({ transport: "loopback", env: { "ProgramFiles(x86)": "C:\\P", "1A": "x" } });
   });
 });
 
