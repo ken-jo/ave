@@ -17,6 +17,9 @@
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 
 const wrapWorkerCommandMock = vi.fn<
@@ -698,6 +701,43 @@ describe("spawnConfinedChild's Windows stdio relay", () => {
     await expect(spawnRelayed({ windowsShell: "cmd" })).rejects.toThrow(/sets its own Windows shell/);
     await expect(spawnRelayed({ stdio: ["ignore", "pipe", "pipe"] })).rejects.toThrow(/needs piped stdin and stdout/);
     expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "C:\\Program Files\\nodejs\\npx.cmd",
+    "C:\\tools\\setup.BAT",
+    "C:\\tools\\setup.cmd. ",
+  ])("refuses the batch file %j with the reason, before anything is wrapped or spawned", async (command) => {
+    await expect(spawnRelayed({ command })).rejects.toThrow(/is a batch file \(\.cmd\/\.bat\); a sandboxed Windows program cannot be one/);
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a bare name that only a batch file on PATH answers, and lets one through that an executable anywhere on PATH answers", async () => {
+    const scripts = mkdtempSync(join(tmpdir(), "relay-path-scripts-"));
+    const binaries = mkdtempSync(join(tmpdir(), "relay-path-bin-"));
+    try {
+      writeFileSync(join(scripts, "npx.cmd"), "@echo off\r\n");
+      writeFileSync(join(scripts, "tool.cmd"), "@echo off\r\n");
+      writeFileSync(join(binaries, "tool.exe"), "");
+      const baseEnv = { Path: `${scripts};${binaries}` };
+      await expect(spawnRelayed({ command: "npx", baseEnv })).rejects.toThrow(
+        `'${join(scripts, "npx.cmd")}' is a batch file`,
+      );
+      expect(spawnMock).not.toHaveBeenCalled();
+      // The relay, without a shell, would find tool.exe further along PATH.
+      const child = relayChild();
+      spawnMock.mockImplementationOnce(() => child);
+      await spawnRelayed({ command: "tool", baseEnv });
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      // A name nothing on PATH answers is left to the relay, which reports it.
+      spawnMock.mockImplementationOnce(() => relayChild());
+      await spawnRelayed({ command: "absent", baseEnv });
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+    } finally {
+      rmSync(scripts, { recursive: true, force: true });
+      rmSync(binaries, { recursive: true, force: true });
+    }
   });
 
   it("is ignored where it is not needed: unwrapped, the command runs as given in its directory with its own pipes", async () => {

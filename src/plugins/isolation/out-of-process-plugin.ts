@@ -1082,12 +1082,17 @@ export async function spawnConfinedPluginChild(
     child.stderr?.on("data", (chunk: Buffer) => {
       log.debug(`[${spec.pluginId}] ${chunk.toString("utf-8").trimEnd()}`);
     });
+    // A launch that hands back a child already gone (its `exit` emitted before
+    // these listeners) is released and reported at once, not waited on.
+    const alreadyExited = child.exitCode !== null || child.signalCode !== null;
     const exited = new Promise<void>((resolve) => {
+      if (alreadyExited) resolve();
       child.once("exit", () => resolve());
       child.once("close", () => resolve());
     });
     child.once("exit", releaseSandboxState);
     child.once("close", releaseSandboxState);
+    if (alreadyExited) releaseSandboxState();
     // Gone means the process no longer exists: it exited, or the spawn
     // produced no process to run. An `error` from a process that has a pid is
     // a fault on a live child — Node emits one when a signal could not be
@@ -1095,6 +1100,23 @@ export async function spawnConfinedPluginChild(
     const hasProcess = (): boolean => typeof child.pid === "number" && child.pid > 0;
     child.on("error", () => {
       if (!hasProcess()) releaseSandboxState();
+    });
+    // Why the child is gone, settled from here on: a child that dies before
+    // anyone asks — while the channel is still being set up, or before the
+    // caller attaches `onGone` — is still reported, and one that had already
+    // exited by the time the launch handed it back (`exitCode`/`signalCode`
+    // set, its `exit` possibly already emitted) is reported at once.
+    const exitedReason = (code: number | null, signal: NodeJS.Signals | null): string =>
+      `[out-of-process-plugin] ${spec.pluginId}: child exited code=${String(code)} signal=${String(signal)}`;
+    const gone = new Promise<string>((resolve) => {
+      if (alreadyExited) {
+        resolve(exitedReason(child.exitCode, child.signalCode));
+        return;
+      }
+      child.once("exit", (code, signal) => resolve(exitedReason(code, signal)));
+      child.on("error", (error: Error) => {
+        if (!hasProcess()) resolve(`[out-of-process-plugin] ${spec.pluginId}: child error: ${error.message}`);
+      });
     });
     let terminated = false;
     const terminateChild = (): void => {
@@ -1116,21 +1138,24 @@ export async function spawnConfinedPluginChild(
           `[out-of-process-plugin] ${spec.pluginId}: a sandboxed Windows launch came back '${confinement}', not 'windows-srt'`,
         );
       }
-      const goneBeforeConnect = new Promise<string>((resolve) => {
-        child.once("exit", (code, signal) => resolve(`code=${String(code)} signal=${String(signal)}`));
-        child.on("error", (error: Error) => {
-          if (!hasProcess()) resolve(error.message);
-        });
-      });
       try {
         channel = await connectToAnnouncedChild({
           stdout: child.stdout,
-          exited: goneBeforeConnect,
+          exited: gone,
           timeoutMs: WINDOWS_CHANNEL_CONNECT_TIMEOUT_MS,
         });
       } catch (error) {
         terminateChild();
         throw error;
+      }
+      // The child may have died in the moment the handshake finished, its
+      // `exit` not yet delivered: a channel to a dead child is no channel.
+      if (child.exitCode !== null || child.signalCode !== null) {
+        channel.destroy();
+        terminateChild();
+        throw new Error(
+          `${exitedReason(child.exitCode, child.signalCode)} as its channel was connected`,
+        );
       }
       // stdout now carries nothing the protocol reads; keep it drained and
       // logged, as stderr is.
@@ -1162,16 +1187,7 @@ export async function spawnConfinedPluginChild(
           terminateChild();
         },
         onGone: (handler) => {
-          child.once("exit", (code, signal) =>
-            handler(
-              `[out-of-process-plugin] ${spec.pluginId}: child exited ` +
-                `code=${String(code)} signal=${String(signal)}`,
-            ),
-          );
-          child.on("error", (error: Error) => {
-            if (hasProcess()) return;
-            handler(`[out-of-process-plugin] ${spec.pluginId}: child error: ${error.message}`);
-          });
+          void gone.then(handler);
         },
         onFault: (handler) => {
           child.on("error", (error: Error) => {

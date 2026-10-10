@@ -7,7 +7,8 @@
 import { describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { connect, type Socket } from "node:net";
+import { createHmac } from "node:crypto";
+import { connect, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -56,6 +57,39 @@ function refused(port: number): Promise<string> {
     });
     socket.once("error", (error: NodeJS.ErrnoException) => resolve(error.code ?? "error"));
   });
+}
+
+/**
+ * The handshake's proofs, derived here from the protocol's definition (the
+ * module header of `child-loopback-link.ts`) rather than imported, so a change
+ * to either side's formula fails these tests.
+ */
+function proof(nonce: string, side: "host" | "child", ownPort: number, peerPort: number): string {
+  return createHmac("sha256", Buffer.from(nonce, "hex")).update(`ave-loopback ${side} ${ownPort} ${peerPort}`).digest("hex");
+}
+
+/** Dial the child and present the host's proof for this very connection. */
+async function dialAsHost(port: number, nonce: string, after = ""): Promise<Socket> {
+  const socket = await dial(port);
+  socket.on("error", () => undefined);
+  socket.write(`${proof(nonce, "host", socket.localPort!, port)}\n${after}`);
+  return socket;
+}
+
+/** A listener that does not hold the nonce: records what it is sent, answers `reply`. */
+async function rogueListener(reply: (received: string, socket: Socket) => void): Promise<{ server: Server; port: number; received: () => string }> {
+  let received = "";
+  const server = createServer((socket) => {
+    socket.on("error", () => undefined);
+    socket.on("data", (chunk: Buffer) => {
+      received += chunk.toString("utf-8");
+      reply(received, socket);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("rogue listener has no TCP address");
+  return { server, port: address.port, received: () => received };
 }
 
 function readAll(socket: Socket, bytes: number): Promise<string> {
@@ -108,37 +142,32 @@ describe("the child's launch arguments", () => {
 });
 
 describe("the child accepts exactly one authenticated host", () => {
-  it("serves the peer that presents the nonce, keeps bytes sent with it, and stops listening", async () => {
+  it("serves the peer whose proof is bound to its own connection, answers with its own, keeps bytes sent after it, and stops listening", async () => {
     const { lines, announce } = announced();
     const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000 });
     const { port, nonce } = await nextLine(lines);
     expect(lines[0]).toMatch(/^AVE-CHILD-LISTEN \d+ [0-9a-f]{64}\n$/);
     const host = await dial(port);
-    host.write(`${nonce}\nfirst-frame`);
+    const answer = readAll(host, 65);
+    host.write(`${proof(nonce, "host", host.localPort!, port)}\nfirst-frame`);
     const child = await accepted;
+    expect(await answer).toBe(`${proof(nonce, "child", port, host.localPort!)}\n`);
     const received = readAll(child, "first-frame".length);
     child.resume();
     expect(await received).toBe("first-frame");
-    const echoed = readAll(host, 4);
-    child.write("pong");
-    expect(await echoed).toBe("pong");
     expect(await refused(port)).toBe("ECONNREFUSED");
     host.destroy();
     child.destroy();
   });
 
-  it("destroys a second peer that connected before the first finished its handshake", async () => {
+  it("destroys a second peer still in its handshake once the host is in", async () => {
     const { lines, announce } = announced();
     const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000 });
     const { port, nonce } = await nextLine(lines);
-    // Both dialled in the same tick, so both can be pending when the first is accepted.
-    const hostReady = dial(port);
-    const second = connect({ host: "127.0.0.1", port });
+    const second = await dial(port);
     second.on("error", () => undefined);
-    const host = await hostReady;
     const secondClosed = new Promise((resolve) => second.once("close", resolve));
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    host.write(`${nonce}\n`);
+    const host = await dialAsHost(port, nonce);
     const child = await accepted;
     await secondClosed;
     expect(second.destroyed).toBe(true);
@@ -146,45 +175,91 @@ describe("the child accepts exactly one authenticated host", () => {
     child.destroy();
   });
 
-  it("ends on a wrong nonce, closes the connection, and stops listening", async () => {
+  it.each([
+    ["the bare nonce", (nonce: string) => nonce],
+    ["a proof bound to another connection's port", (nonce: string, port: number, hostPort: number) => proof(nonce, "host", hostPort + 1, port)],
+    ["the child's proof instead of the host's", (nonce: string, port: number, hostPort: number) => proof(nonce, "child", hostPort, port)],
+    ["a proof under another nonce", (nonce: string, port: number, hostPort: number) => proof(nonce.replace(/^./, nonce[0] === "a" ? "b" : "a"), "host", hostPort, port)],
+  ])("drops a peer presenting %s, answers it nothing, and keeps listening for the host", async (_what, present) => {
     const { lines, announce } = announced();
     const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000 });
     const { port, nonce } = await nextLine(lines);
     const intruder = await dial(port);
+    intruder.on("error", () => undefined);
+    let answered = "";
+    intruder.on("data", (chunk: Buffer) => (answered += chunk.toString("utf-8")));
     const closed = new Promise((resolve) => intruder.once("close", resolve));
-    intruder.write(`${nonce.replace(/^./, nonce[0] === "a" ? "b" : "a")}\n`);
-    await expect(accepted).rejects.toThrow("did not present the nonce");
+    intruder.write(`${present(nonce, port, intruder.localPort!)}\n`);
     await closed;
-    expect(await refused(port)).toBe("ECONNREFUSED");
+    expect(answered).toBe("");
+    const host = await dialAsHost(port, nonce);
+    const child = await accepted;
+    host.destroy();
+    child.destroy();
   });
 
-  it("ends when the first peer sends more than a nonce's length without a newline", async () => {
+  it("drops a peer that sends more than a proof's length without a newline, and one that stays silent, and keeps listening", async () => {
+    const { lines, announce } = announced();
+    const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 400 });
+    const { port, nonce } = await nextLine(lines);
+    const flooder = await dial(port);
+    flooder.on("error", () => undefined);
+    const flooderClosed = new Promise((resolve) => flooder.once("close", resolve));
+    flooder.write("x".repeat(65));
+    const silent = await dial(port);
+    silent.on("error", () => undefined);
+    const silentClosed = new Promise((resolve) => silent.once("close", resolve));
+    await flooderClosed;
+    await silentClosed;
+    const host = await dialAsHost(port, nonce);
+    const child = await accepted;
+    host.destroy();
+    child.destroy();
+  });
+
+  it("gives up, and stops listening, after a bounded number of failed peers", async () => {
     const { lines, announce } = announced();
     const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000 });
     const { port } = await nextLine(lines);
-    const intruder = await dial(port);
-    intruder.on("error", () => undefined);
-    intruder.write("x".repeat(65));
-    await expect(accepted).rejects.toThrow("did not present the nonce");
-    intruder.destroy();
-  });
-
-  it("does not wait for a second try: the first peer's silence ends it", async () => {
-    const { lines, announce } = announced();
-    const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 50 });
-    const { port } = await nextLine(lines);
-    const silent = await dial(port);
-    silent.on("error", () => undefined);
-    await expect(accepted).rejects.toThrow("did not authenticate in time");
+    let outcome: string | undefined;
+    accepted.then(() => (outcome = "accepted"), (error: Error) => (outcome = error.message));
+    let peers = 0;
+    while (outcome === undefined && peers < 50) {
+      const peer = await dial(port).catch(() => undefined);
+      if (peer === undefined) break;
+      peers += 1;
+      peer.on("error", () => undefined);
+      const closed = new Promise((resolve) => peer.once("close", resolve));
+      peer.write(`${"0".repeat(64)}\n`);
+      await closed;
+    }
+    await expect(accepted).rejects.toThrow(/peers failed to authenticate; giving up/);
+    expect(peers).toBe(8);
     expect(await refused(port)).toBe("ECONNREFUSED");
-    silent.destroy();
   });
 
-  it("ends, and stops listening, when no host connects in time", async () => {
+  it("counts peers beyond the handshakes it runs at once as failed, and survives them reset mid-flight", async () => {
+    const { lines, announce } = announced();
+    const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000 });
+    // It may give up while the peers below are still being dialled.
+    const failure = accepted.then(() => undefined, (error: Error) => error);
+    const { port } = await nextLine(lines);
+    // Twelve at once, all silent: four take the handshake slots, the rest are
+    // dropped as they arrive, and the eighth failure ends the wait.
+    const peers = await Promise.all(Array.from({ length: 12 }, () => dial(port).catch(() => undefined)));
+    for (const peer of peers) {
+      peer?.on("error", () => undefined);
+      peer?.resetAndDestroy();
+    }
+    expect((await failure)?.message).toMatch(/peers failed to authenticate; giving up/);
+    expect(await refused(port)).toBe("ECONNREFUSED");
+  });
+
+  it("ends, and stops listening, when no host authenticates in time", async () => {
     const { lines, announce } = announced();
     const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 50, handshakeTimeoutMs: 5_000 });
     const { port } = await nextLine(lines);
-    await expect(accepted).rejects.toThrow("did not connect in time");
+    await expect(accepted).rejects.toThrow("did not connect and authenticate in time");
     expect(await refused(port)).toBe("ECONNREFUSED");
   });
 });
@@ -208,6 +283,10 @@ describe("the host connects to the child it spawned", () => {
     child.resume();
     host.write("hello");
     expect(await received).toBe("hello");
+    // What the child sends after its proof reaches the host's first reader.
+    child.write("from the child");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await readAll(host, "from the child".length)).toBe("from the child");
     host.destroy();
     child.destroy();
   });
@@ -245,7 +324,7 @@ describe("the host connects to the child it spawned", () => {
       timeoutMs: 5_000,
     })).rejects.toThrow("ended before its channel was connected: code=1 signal=null");
     await expect(connectToAnnouncedChild({ stdout: new PassThrough(), exited: NEVER, timeoutMs: 20 }))
-      .rejects.toThrow("did not announce its listener in time");
+      .rejects.toThrow("did not announce and authenticate its listener in time");
   });
 
   it("refuses when nothing listens on the announced port", async () => {
@@ -257,6 +336,87 @@ describe("the host connects to the child it spawned", () => {
     const connecting = connectToAnnouncedChild({ stdout, exited: NEVER, timeoutMs: 5_000 });
     stdout.write(`AVE-CHILD-LISTEN ${port} ${nonce}\n`);
     await expect(connecting).rejects.toThrow(/ECONNREFUSED/);
+  });
+
+  it.each([
+    ["answers nothing", () => undefined],
+    ["echoes the host's proof", (received: string, socket: Socket) => {
+      if (received.endsWith("\n")) socket.write(received);
+    }],
+    ["answers a well-formed guess", (received: string, socket: Socket) => {
+      if (received.endsWith("\n")) socket.write(`${"a".repeat(64)}\n`);
+    }],
+  ])("does not take a listener that does not hold the nonce for the child: one that %s gets no channel and learns no nonce", async (_what, reply) => {
+    const rogue = await rogueListener(reply as (received: string, socket: Socket) => void);
+    const nonce = "c3".repeat(32);
+    const stdout = new PassThrough();
+    try {
+      const connecting = connectToAnnouncedChild({ stdout, exited: NEVER, timeoutMs: 300 });
+      stdout.write(`AVE-CHILD-LISTEN ${rogue.port} ${nonce}\n`);
+      await expect(connecting).rejects.toThrow(/did not answer with the child's proof|did not announce and authenticate/);
+      expect(rogue.received()).toMatch(/^[0-9a-f]{64}\n$/);
+      expect(rogue.received()).not.toContain(nonce);
+    } finally {
+      rogue.server.close();
+    }
+  });
+
+  it("gives a relay a listener took the place of nothing: the request, environment and input never reach it", async () => {
+    const rogue = await rogueListener(() => undefined);
+    const stdout = new PassThrough();
+    const failures: Error[] = [];
+    try {
+      const io = relayStdioOverLoopback({
+        stdout, exited: NEVER, timeoutMs: 300,
+        request: { command: "server", args: [], env: { API_KEY: "sk-the-plugin-secret" } },
+        onFailure: (error) => failures.push(error),
+      });
+      io.stdout.resume();
+      const ended = new Promise((resolve) => io.stdout.once("end", resolve));
+      io.stdin.write("program input");
+      stdout.write(`AVE-CHILD-LISTEN ${rogue.port} ${"d4".repeat(32)}\n`);
+      await ended;
+      expect(failures).toHaveLength(1);
+      expect(rogue.received()).toMatch(/^[0-9a-f]{64}\n$/);
+      expect(rogue.received()).not.toContain("sk-the-plugin-secret");
+      expect(rogue.received()).not.toContain("program input");
+    } finally {
+      rogue.server.close();
+    }
+  });
+
+  it("binds each proof to its connection: a listener that relays the host's proof to the real child is refused by the child, and the host after it still gets in", async () => {
+    // Scenario: the child announced port P with nonce N, but the host's
+    // connection reached a rogue that forwards everything to the child.
+    const { lines, announce } = announced();
+    const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000 });
+    const { port: childPort, nonce } = await nextLine(lines);
+    let forwardedClosed!: Promise<unknown>;
+    let childAnswered = "";
+    const rogue = await rogueListener((received, socket) => {
+      if (!received.endsWith("\n") || forwardedClosed !== undefined) return;
+      const upstream = connect({ host: "127.0.0.1", port: childPort }, () => upstream.write(received));
+      upstream.on("error", () => undefined);
+      upstream.on("data", (chunk: Buffer) => {
+        childAnswered += chunk.toString("utf-8");
+        socket.write(chunk);
+      });
+      forwardedClosed = new Promise((resolve) => upstream.once("close", resolve));
+    });
+    const stdout = new PassThrough();
+    try {
+      const connecting = connectToAnnouncedChild({ stdout, exited: NEVER, timeoutMs: 500 });
+      stdout.write(`AVE-CHILD-LISTEN ${rogue.port} ${nonce}\n`);
+      await expect(connecting).rejects.toThrow();
+      await forwardedClosed;
+      expect(childAnswered).toBe("");
+      const host = await dialAsHost(childPort, nonce);
+      const child = await accepted;
+      host.destroy();
+      child.destroy();
+    } finally {
+      rogue.server.close();
+    }
   });
 });
 
@@ -275,14 +435,11 @@ function nodeProgram(source: string, args: readonly string[] = []): { command: s
 
 /**
  * Play the host by hand against an in-process relay: read the announce, connect,
- * present the nonce, send `requestLine`, and hand back the socket.
+ * present the host's proof, send `requestLine`, and hand back the socket.
  */
 async function hostBy(lines: string[], requestLine: string): Promise<Socket> {
   const { port, nonce } = await nextLine(lines);
-  const socket = await dial(port);
-  socket.on("error", () => undefined);
-  socket.write(`${nonce}\n${requestLine}`);
-  return socket;
+  return dialAsHost(port, nonce, requestLine);
 }
 
 describe("the stdio relay", () => {
@@ -402,6 +559,7 @@ describe("the stdio relay", () => {
     ["no program", `${JSON.stringify({ command: "", args: [], env: {} })}\n`, /names no program/],
     ["a non-string argument", `${JSON.stringify({ command: "x", args: [1], env: {} })}\n`, /arguments are not strings/],
     ["a bad variable name", `${JSON.stringify({ command: "x", args: [], env: { "A=B": "c" } })}\n`, /not an environment variable name/],
+    ["a batch file", `${JSON.stringify({ command: "C:\\nodejs\\npx.CMD", args: [], env: {} })}\n`, /is a batch file/],
   ])("refuses a request with %s and starts nothing", async (_what, line, message) => {
     const { lines, announce } = announced();
     const served = serveStdioRelay({

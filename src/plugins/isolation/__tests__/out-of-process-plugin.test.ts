@@ -1583,6 +1583,66 @@ describe("on Windows a confined child holds a grant on its own directories for e
     });
   });
 
+  /**
+   * A child that runs the real child half and serves the plugin, but whose
+   * process is dead — `when` says how far its death got: `"before-return"`
+   * exits and emits `exit` before the launch hands it back; `"at-accept"` has
+   * its exit code set the moment it accepts the host, its `exit` not yet
+   * delivered. Either way its listener and channel stay up, as a process tree
+   * that outlives the one the host watches would leave them.
+   */
+  function deadLoopbackChild(when: "before-return" | "at-accept", served: { count: number }) {
+    return async (spec: { args: string[] }) => {
+      windowsGrant.events.push("spawn");
+      const child = fakeChild();
+      const entryAt = spec.args.indexOf(spec.args.find((arg) => !arg.startsWith("--"))!);
+      const mode = parseChildLaunchArgs(spec.args.slice(entryAt + 1));
+      if (mode.transport !== "loopback") throw new Error("expected the loopback launch");
+      void acceptHostOverLoopback({
+        announce: (line) => child.stdout.write(line),
+        acceptTimeoutMs: 5_000,
+        handshakeTimeoutMs: 5_000,
+      }).then((socket) => {
+        if (when === "at-accept") {
+          child.exitCode = 3;
+          setTimeout(() => {
+            child.exitCode = null;
+            end(child, 3, null);
+          }, 150);
+        }
+        served.count += 1;
+        servePluginChild(socket, socket);
+        socket.resume();
+      }, () => undefined);
+      if (when === "before-return") end(child, 3, null);
+      return { child, confinement: "windows-srt" };
+    };
+  }
+
+  it.each(["before-return", "at-accept"] as const)(
+    "does not serve a plugin from a child that is already dead (%s): the load fails with its exit and the grant is released",
+    async (when) => {
+      const layout = aveLayout();
+      const { dir, entryPath } = writePluginModule();
+      const served = { count: 0 };
+      try {
+        await asWindows(layout, async () => {
+          spawnConfinedChild.mockImplementation(deadLoopbackChild(when, served));
+          const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
+          const outcome = await Promise.resolve(factory(hostContext(fakeHostApi(), layout.context))).then(
+            () => "constructed",
+            (error: unknown) => error,
+          );
+          expect(outcome).toBeInstanceOf(Error);
+          expect((outcome as Error).message).toContain(`${PLUGIN_ID}: child exited code=3`);
+          await vi.waitFor(() => expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]));
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("refuses a sandboxed Windows launch that came back unwrapped", async () => {
     const layout = aveLayout();
     await asWindows(layout, async () => {

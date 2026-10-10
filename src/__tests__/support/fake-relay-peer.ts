@@ -1,13 +1,14 @@
 /**
  * The relay's side of the Windows stdio relay (`child-loopback-link.ts`),
  * played by the test: announce a loopback listener on the stub child's stdout
- * the way the relay does, accept the host, and hand back the request line the
- * host sent and the program input that followed it. Lets a unit test drive
- * `spawnConfinedChild`'s relay path to the socket without a sandbox or a
- * second process.
+ * and accept the host the way the relay does — the real child half of the
+ * handshake — then hand back the request line the host sent and the program
+ * input that followed it. Lets a unit test drive `spawnConfinedChild`'s relay
+ * path to the socket without a sandbox or a second process.
  */
-import { createServer, type Server, type Socket } from "node:net";
+import type { Socket } from "node:net";
 import type { Writable } from "node:stream";
+import { acceptHostOverLoopback } from "../../plugins/isolation/child-loopback-link.js";
 
 export interface FakeRelayPeer {
   /** Resolves with the request, parsed, once the host has sent it. */
@@ -23,14 +24,9 @@ export interface FakeRelayPeer {
   close(): void;
 }
 
-const NONCE = "ab".repeat(32);
-
 export async function startFakeRelayPeer(announceTo: Writable): Promise<FakeRelayPeer> {
-  const server: Server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("fake relay peer has no TCP address");
   let accepted: Socket | undefined;
+  let closed = false;
   let buffered = "";
   let afterRequest = "";
   let resolveRequest!: (request: Record<string, unknown>) => void;
@@ -39,6 +35,7 @@ export async function startFakeRelayPeer(announceTo: Writable): Promise<FakeRela
     resolveRequest = resolve;
     rejectRequest = reject;
   });
+  void request.catch(() => undefined);
   let resolveEnded!: () => void;
   const inputEnded = new Promise<void>((resolve) => {
     resolveEnded = resolve;
@@ -50,29 +47,43 @@ export async function startFakeRelayPeer(announceTo: Writable): Promise<FakeRela
     afterRequest += text;
     for (const listener of listeners) listener(text);
   };
-  server.on("connection", (socket) => {
-    accepted = socket;
-    server.close();
-    socket.on("error", () => undefined);
-    socket.on("data", (chunk: Buffer) => {
-      if (requestSeen) {
-        deliver(chunk.toString("utf-8"));
-        return;
-      }
-      buffered += chunk.toString("utf-8");
-      const lines = buffered.split("\n");
-      if (lines.length < 3) return;
-      requestSeen = true;
-      if (lines[0] !== NONCE) {
-        rejectRequest(new Error(`host presented '${lines[0]}' instead of the nonce`));
-        return;
-      }
-      resolveRequest(JSON.parse(lines[1]!) as Record<string, unknown>);
-      deliver(lines.slice(2).join("\n"));
-    });
-    socket.on("end", () => resolveEnded());
+  let announced!: () => void;
+  const announcedOnce = new Promise<void>((resolve) => {
+    announced = resolve;
   });
-  announceTo.write(`AVE-CHILD-LISTEN ${address.port} ${NONCE}\n`);
+  acceptHostOverLoopback({
+    announce: (line) => {
+      announceTo.write(line);
+      announced();
+    },
+    acceptTimeoutMs: 30_000,
+    handshakeTimeoutMs: 10_000,
+  }).then(
+    (socket) => {
+      accepted = socket;
+      if (closed) {
+        socket.destroy();
+        return;
+      }
+      socket.on("error", () => undefined);
+      socket.on("data", (chunk: Buffer) => {
+        if (requestSeen) {
+          deliver(chunk.toString("utf-8"));
+          return;
+        }
+        buffered += chunk.toString("utf-8");
+        const newline = buffered.indexOf("\n");
+        if (newline === -1) return;
+        requestSeen = true;
+        resolveRequest(JSON.parse(buffered.slice(0, newline)) as Record<string, unknown>);
+        deliver(buffered.slice(newline + 1));
+      });
+      socket.on("end", () => resolveEnded());
+      socket.resume();
+    },
+    (error: unknown) => rejectRequest(error instanceof Error ? error : new Error(String(error))),
+  );
+  await announcedOnce;
   return {
     request,
     input: () => afterRequest,
@@ -83,7 +94,7 @@ export async function startFakeRelayPeer(announceTo: Writable): Promise<FakeRela
     inputEnded,
     socket: () => accepted,
     close: () => {
-      server.close();
+      closed = true;
       accepted?.destroy();
     },
   };

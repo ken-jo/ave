@@ -21,7 +21,8 @@
  * paths only; the floor is not theirs to forget.
  */
 import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { extname, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 
 import {
@@ -44,6 +45,7 @@ import { createLogger } from "../lib/logger.js";
 import { mainDir } from "../main/main-paths.js";
 import {
   assertRelayRequest,
+  batchFileRefusal,
   CHILD_RELAY_TRANSPORT_ARG,
   relayStdioOverLoopback,
   type RelayRequest,
@@ -331,6 +333,30 @@ function assertRelayableSpec(spec: ConfinedChildSpec, stdio: StdioOptions): void
  * tokens on the line; the program, its arguments, its environment and its
  * directory go in the request, over the authenticated channel.
  */
+/**
+ * The batch file a bare program name (`npx`) would mean to a Windows shell,
+ * when the relay's own lookup — which, without a shell, tries the name with
+ * `.com` and `.exe` only, directory by directory — would find no program by
+ * it on `PATH`. Asked so that such a name is refused with the reason
+ * ({@link batchFileRefusal}) rather than reported by the relay as not found.
+ * `PATH` is the launch's own, which srt-win's overlay carries into the sandbox.
+ */
+function batchFileBehindBareName(command: string, env: NodeJS.ProcessEnv): string | undefined {
+  if (/[\\/:]/.test(command) || extname(command) !== "") return undefined;
+  const pathName = Object.keys(env).find((name) => name.toLowerCase() === "path");
+  const dirs = (pathName === undefined ? "" : env[pathName] ?? "").split(";").filter((dir) => dir.trim() !== "");
+  const found = (exts: readonly string[]): string | undefined => {
+    for (const dir of dirs) {
+      for (const ext of exts) {
+        const candidate = join(dir, `${command}${ext}`);
+        if (existsSync(candidate)) return candidate;
+      }
+    }
+    return undefined;
+  };
+  return found([".com", ".exe"]) === undefined ? found([".cmd", ".bat"]) : undefined;
+}
+
 function windowsRelayLaunch(spec: ConfinedChildSpec): {
   readonly launch: Pick<ConfinedChildSpec, "label" | "windowsShell" | "windowsCommandLineEnv"> & { command: string; args: string[] };
   readonly request: RelayRequest;
@@ -349,6 +375,8 @@ function windowsRelayLaunch(spec: ConfinedChildSpec): {
   // Refused here, before anything is wrapped or spawned, rather than after the
   // relay is already running with no request it could be sent.
   assertRelayRequest(request);
+  const batchFile = batchFileBehindBareName(spec.command, spec.baseEnv);
+  if (batchFile !== undefined) throw batchFileRefusal(batchFile);
   return {
     launch: {
       label: spec.label,

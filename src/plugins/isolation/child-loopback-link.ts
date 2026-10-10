@@ -10,18 +10,33 @@
  * go. macOS and Linux keep stdio; nothing here runs there.
  *
  * WHY THIS SHAPE. srt-win's WFP filters refuse an outbound connect from the
- * `srt-sandbox` account except to the proxy port range, so the child cannot
- * dial the host; an inbound connect from the host to a loopback listener the
- * child opened is admitted (measured, same host — the model a Windows worker's
- * TCP control channel already relies on). So the child listens on
- * `127.0.0.1:0`, announces the port and a fresh nonce on its stdout — the one
- * channel srt-win does relay, and one only the host reads — and accepts exactly
- * one connection: the first peer to send the nonce. It closes the listener on
- * that first connection whatever the peer sends, so no listener outlives the
- * handshake, and a wrong nonce ends the child rather than letting it wait for
- * another try. The nonce authenticates the HOST to the child: a local process
- * that found the port first can only make this load fail, never speak for the
- * host. It is never logged on either side.
+ * `srt-sandbox` account except to the proxy port range — loopback included, so
+ * one sandboxed process cannot dial another's listener either (measured:
+ * `EACCES`) — while an inbound connect from the host to a loopback listener
+ * the child opened is admitted (measured, same host). So the child listens on
+ * `127.0.0.1:0` and announces the port and a fresh 32-byte nonce on its stdout:
+ * the one channel srt-win does relay, and one only the host reads. The nonce
+ * itself never crosses the socket and is never logged.
+ *
+ * MUTUAL, CHANNEL-BOUND AUTHENTICATION. Both ends prove they hold the nonce,
+ * and each proof is bound to the one TCP connection it is sent on:
+ *   host  → child  HMAC-SHA256(nonce, "ave-loopback host <hostPort> <childPort>")
+ *   child → host   HMAC-SHA256(nonce, "ave-loopback child <childPort> <hostPort>")
+ * where the ports are the connection's own, each side reading them from its
+ * socket. The host sends its proof first and treats the channel as the child's
+ * only after the child's proof checks; the child accepts the host only after
+ * the host's proof checks against the remote port it actually sees. So a peer
+ * that does not hold the nonce learns nothing from either proof and can be
+ * neither end: a listener that took the host's connection cannot answer it, and
+ * cannot replay the host's proof into its own connection to the child, whose
+ * ports differ (two live connections never share a 4-tuple). A peer that
+ * fails is dropped and the child keeps listening, for a bounded number of
+ * peers within the accept time, so a local process that connects first delays
+ * the host rather than ending the load; whoever holds the nonce besides the
+ * two ends could only have read it out of the child's own memory, which the
+ * same account can do anyway (decision 64). A second bind of the child's port
+ * is refused even to the same account (measured: `WSAEACCES` with
+ * `SO_REUSEADDR`), so the host's connection reaches the child's listener.
  *
  * WHY THE ENVIRONMENT TRAVELS HERE. The same runner gives the target the
  * sandbox account's profile environment plus srt-win's own `--env` overlay
@@ -50,7 +65,7 @@
  */
 import { spawn } from "node:child_process";
 import { createServer, connect, type Socket } from "node:net";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { PassThrough, type Readable, type Writable } from "node:stream";
 
 /** Selects the loopback channel in `plugin-child-main.ts`. Absent: stdio. */
@@ -64,6 +79,27 @@ const CHILD_LISTEN_ANNOUNCE = "AVE-CHILD-LISTEN";
 
 const NONCE_BYTES = 32;
 const NONCE_HEX_LENGTH = NONCE_BYTES * 2;
+/** An HMAC-SHA256 proof, hex. */
+const PROOF_HEX_LENGTH = 64;
+/** Peers the child drops before it gives up waiting for the host. */
+const MAX_REFUSED_PEERS = 8;
+/** Handshakes the child runs at once; a peer beyond them is dropped. */
+const MAX_PENDING_HANDSHAKES = 4;
+
+/**
+ * One side's proof that it holds `nonce`, bound to this connection: the
+ * sender's own port first, then its peer's.
+ */
+function loopbackProof(nonce: string, side: "host" | "child", ownPort: number, peerPort: number): Buffer {
+  return createHmac("sha256", Buffer.from(nonce, "hex"))
+    .update(`ave-loopback ${side} ${ownPort} ${peerPort}`)
+    .digest();
+}
+
+function proofMatches(presented: Buffer, expected: Buffer): boolean {
+  if (presented.length !== PROOF_HEX_LENGTH || !/^[0-9a-f]+$/.test(presented.toString("latin1"))) return false;
+  return timingSafeEqual(Buffer.from(presented.toString("latin1"), "hex"), expected);
+}
 /** Longest stdout the host reads looking for the announce before refusing. */
 const ANNOUNCE_SCAN_LIMIT = 4096;
 const ANNOUNCE_RE = new RegExp(`^${CHILD_LISTEN_ANNOUNCE} ([0-9]{1,5}) ([0-9a-f]{${NONCE_HEX_LENGTH}})$`);
@@ -153,8 +189,12 @@ function decodeChildEnv(encoded: string): Record<string, string> {
 
 /**
  * CHILD SIDE. Listen on loopback, announce, and resolve with the one socket
- * that presented the nonce. The listener is closed on the first connection and
- * on every failure; a peer that sends anything but the nonce rejects.
+ * whose peer proved it holds the nonce for that connection, after answering
+ * with the child's own proof (see the module header). A peer that fails —
+ * a wrong or late proof, too many bytes, an error — is dropped and the child
+ * keeps listening; it gives up after {@link MAX_REFUSED_PEERS} of them or when
+ * the accept time runs out. The listener is closed once the host is in, and
+ * on every failure.
  */
 export function acceptHostOverLoopback(opts: {
   readonly announce: (line: string) => void;
@@ -164,73 +204,91 @@ export function acceptHostOverLoopback(opts: {
   const nonce = randomBytes(NONCE_BYTES).toString("hex");
   return new Promise<Socket>((resolve, reject) => {
     let settled = false;
-    // Set on the first connection, not on a verified one: a second peer that
-    // arrived before the listener closed is destroyed at once, never handed a
-    // handshake of its own (which could otherwise outlive the outcome).
-    let accepted = false;
+    let refused = 0;
+    const pending = new Set<Socket>();
     const server = createServer();
-    server.maxConnections = 1;
     const finish = (error: Error | undefined, socket?: Socket): void => {
       if (settled) return;
       settled = true;
       clearTimeout(acceptTimer);
       server.close();
-      if (error !== undefined) {
-        socket?.destroy();
-        reject(error);
-      } else {
-        resolve(socket!);
+      for (const other of pending) {
+        if (other !== socket) other.destroy();
       }
+      pending.clear();
+      if (error !== undefined) reject(error);
+      else resolve(socket!);
     };
     const acceptTimer = setTimeout(
-      () => finish(new Error("[child-loopback-link] the host did not connect in time")),
+      () => finish(new Error("[child-loopback-link] the host did not connect and authenticate in time")),
       opts.acceptTimeoutMs,
     );
+    const refuse = (socket: Socket): void => {
+      socket.destroy();
+      pending.delete(socket);
+      refused += 1;
+      if (refused >= MAX_REFUSED_PEERS) {
+        finish(new Error(`[child-loopback-link] ${refused} peers failed to authenticate; giving up on the host`));
+      }
+    };
     server.on("error", (error) => finish(error));
     server.on("connection", (socket) => {
-      if (settled || accepted) {
+      // A peer's reset must never surface as an unhandled error in the child.
+      socket.on("error", () => undefined);
+      if (settled || pending.size >= MAX_PENDING_HANDSHAKES) {
         socket.destroy();
+        if (!settled) refuse(socket);
         return;
       }
-      accepted = true;
-      // The first connection ends the listening, whatever it turns out to be.
-      server.close();
-      clearTimeout(acceptTimer);
+      pending.add(socket);
       let received = Buffer.alloc(0);
-      const handshakeTimer = setTimeout(
-        () => finish(new Error("[child-loopback-link] the host did not authenticate in time"), socket),
-        opts.handshakeTimeoutMs,
-      );
+      const handshakeTimer = setTimeout(() => refuse(socket), opts.handshakeTimeoutMs);
+      const done = (): void => {
+        clearTimeout(handshakeTimer);
+        socket.off("data", onData);
+        socket.off("error", onError);
+        socket.off("close", onClose);
+      };
       const onData = (chunk: Buffer): void => {
         received = Buffer.concat([received, chunk]);
         const newline = received.indexOf(0x0a);
         if (newline === -1) {
-          if (received.length > NONCE_HEX_LENGTH) {
-            clearTimeout(handshakeTimer);
-            finish(new Error("[child-loopback-link] the peer did not present the nonce"), socket);
+          if (received.length > PROOF_HEX_LENGTH) {
+            done();
+            refuse(socket);
           }
           return;
         }
-        socket.off("data", onData);
-        socket.off("error", onError);
-        clearTimeout(handshakeTimer);
-        const presented = received.subarray(0, newline);
-        const expected = Buffer.from(nonce, "utf-8");
-        if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
-          finish(new Error("[child-loopback-link] the peer did not present the nonce"), socket);
+        done();
+        const childPort = socket.localPort;
+        const hostPort = socket.remotePort;
+        if (
+          settled
+          || childPort === undefined
+          || hostPort === undefined
+          || !proofMatches(received.subarray(0, newline), loopbackProof(nonce, "host", hostPort, childPort))
+        ) {
+          refuse(socket);
           return;
         }
         socket.pause();
         const rest = received.subarray(newline + 1);
         if (rest.length > 0) socket.unshift(rest);
+        socket.write(`${loopbackProof(nonce, "child", childPort, hostPort).toString("hex")}\n`);
+        pending.delete(socket);
         finish(undefined, socket);
       };
-      const onError = (error: Error): void => {
-        clearTimeout(handshakeTimer);
-        finish(error, socket);
+      const onError = (): void => {
+        done();
+        refuse(socket);
+      };
+      const onClose = (): void => {
+        done();
+        if (pending.has(socket)) refuse(socket);
       };
       socket.on("data", onData);
       socket.on("error", onError);
+      socket.on("close", onClose);
     });
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
@@ -248,11 +306,12 @@ export function acceptHostOverLoopback(opts: {
 }
 
 /**
- * HOST SIDE. Read the child's stdout for its announce, connect, present the
- * nonce, and resolve with the connected socket. Rejects — and leaves no socket
- * open — if the child exits first, says anything else first, says too much, or
- * the time runs out. Blank lines before the announce are skipped; srt-win's
- * shells may emit one.
+ * HOST SIDE. Read the child's stdout for its announce, connect, send the
+ * host's proof for this connection, and resolve with the socket only after the
+ * peer answered with the child's proof for it (see the module header). Rejects
+ * — and leaves no socket open — if the child exits first, says anything else
+ * first, says too much, answers wrongly, or the time runs out. Blank lines
+ * before the announce are skipped; srt-win's shells may emit one.
  */
 export function connectToAnnouncedChild(opts: {
   readonly stdout: Readable;
@@ -272,15 +331,60 @@ export function connectToAnnouncedChild(opts: {
         socket?.destroy();
         reject(error);
       } else {
+        socket!.off("error", onSocketError);
         resolve(socket!);
       }
     };
+    const onSocketError = (error: Error): void => finish(error);
     const timer = setTimeout(
-      () => finish(new Error("[child-loopback-link] the child did not announce its listener in time")),
+      () => finish(new Error("[child-loopback-link] the child did not announce and authenticate its listener in time")),
       opts.timeoutMs,
     );
     void opts.exited.then((reason) =>
       finish(new Error(`[child-loopback-link] the child ended before its channel was connected: ${reason}`)));
+    const authenticate = (connected: Socket, nonce: string): void => {
+      const hostPort = connected.localPort;
+      const childPort = connected.remotePort;
+      if (hostPort === undefined || childPort === undefined) {
+        finish(new Error("[child-loopback-link] the connected socket has no ports"));
+        return;
+      }
+      const expected = loopbackProof(nonce, "child", childPort, hostPort);
+      // Read the answer in paused mode, so that once this listener is gone the
+      // socket is back where a fresh one starts: the caller's first `data`
+      // listener starts the flow, and nothing after the answer is lost.
+      let received = Buffer.alloc(0);
+      const onReadable = (): void => {
+        for (;;) {
+          const chunk = connected.read() as Buffer | null;
+          if (chunk === null) return;
+          received = Buffer.concat([received, chunk]);
+          const newline = received.indexOf(0x0a);
+          if (newline === -1) {
+            if (received.length > PROOF_HEX_LENGTH) {
+              finish(new Error("[child-loopback-link] the peer did not answer with the child's proof"));
+              return;
+            }
+            continue;
+          }
+          connected.off("readable", onReadable);
+          connected.off("end", onEnd);
+          if (!proofMatches(received.subarray(0, newline), expected)) {
+            finish(new Error("[child-loopback-link] the peer did not answer with the child's proof"));
+            return;
+          }
+          const rest = received.subarray(newline + 1);
+          if (rest.length > 0) connected.unshift(rest);
+          finish(undefined);
+          return;
+        }
+      };
+      const onEnd = (): void =>
+        finish(new Error("[child-loopback-link] the peer closed before answering with the child's proof"));
+      connected.on("readable", onReadable);
+      connected.on("end", onEnd);
+      connected.write(`${loopbackProof(nonce, "host", hostPort, childPort).toString("hex")}\n`);
+    };
     const onData = (chunk: Buffer): void => {
       if (socket !== undefined) return;
       scanned += chunk.toString("utf-8");
@@ -301,13 +405,9 @@ export function connectToAnnouncedChild(opts: {
           return;
         }
         const nonce = match[2]!;
-        socket = connect({ host: "127.0.0.1", port }, () => {
-          socket!.off("error", onConnectError);
-          socket!.write(`${nonce}\n`);
-          finish(undefined);
-        });
-        const onConnectError = (error: Error): void => finish(error);
-        socket.on("error", onConnectError);
+        const connected = connect({ host: "127.0.0.1", port }, () => authenticate(connected, nonce));
+        socket = connected;
+        connected.on("error", onSocketError);
         return;
       }
       if (scanned.length > ANNOUNCE_SCAN_LIMIT) {
@@ -320,7 +420,7 @@ export function connectToAnnouncedChild(opts: {
 
 /**
  * The program a relay starts (see the module header), sent as one JSON line
- * after the nonce. Validated on both sides; a malformed request ends the relay.
+ * once the channel is authenticated. Validated on both sides; a malformed request ends the relay.
  */
 export interface RelayRequest {
   readonly command: string;
@@ -334,6 +434,28 @@ const RELAY_REQUEST_LIMIT = 1024 * 1024;
 /** The relay's exit code when the program could not be started at all. */
 const RELAY_START_FAILED_EXIT = 127;
 
+/**
+ * A batch file, as Windows names one: `.cmd`/`.bat` in any case, trailing
+ * dots and spaces ignored as the file system ignores them.
+ */
+const BATCH_FILE_RE = /\.(?:cmd|bat)[. ]*$/i;
+
+/**
+ * Why the relay starts no batch file. Node refuses to spawn one without a
+ * shell (`EINVAL`, since the CVE-2024-27980 fix), and the only shell for it is
+ * `cmd.exe`, which would put the program's arguments — a plugin's or an MCP
+ * server's, not the host's — on a command line it parses. The relay exists so
+ * that nothing the program is given meets `cmd.exe`; a batch file would undo
+ * that, so it is refused before anything starts.
+ */
+export function batchFileRefusal(command: string): Error {
+  return new Error(
+    `[child-loopback-link] '${command}' is a batch file (.cmd/.bat); a sandboxed Windows program `
+      + "cannot be one, since only cmd.exe runs it and that would parse the program's arguments. "
+      + "Name the executable it starts instead (for npx: node.exe with npm's npx-cli.js).",
+  );
+}
+
 export function assertRelayRequest(value: unknown): asserts value is RelayRequest {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("[child-loopback-link] the relay request is not an object");
@@ -345,6 +467,7 @@ export function assertRelayRequest(value: unknown): asserts value is RelayReques
   if (typeof command !== "string" || command.length === 0 || command.includes("\0")) {
     throw new Error("[child-loopback-link] the relay request names no program");
   }
+  if (BATCH_FILE_RE.test(command)) throw batchFileRefusal(command);
   if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string" || arg.includes("\0"))) {
     throw new Error("[child-loopback-link] the relay request's arguments are not strings");
   }
@@ -357,7 +480,7 @@ export function assertRelayRequest(value: unknown): asserts value is RelayReques
   }
 }
 
-/** The request as the line the host writes after the nonce. */
+/** The request as the line the host writes once the channel is authenticated. */
 function encodeRelayRequest(request: RelayRequest): string {
   assertRelayRequest(request);
   const line = `${JSON.stringify({
@@ -508,6 +631,13 @@ export async function serveStdioRelay(opts: {
     env[name] = value;
   }
   return new Promise<number>((resolve) => {
+    const couldNotStart = (error: Error): void => {
+      opts.diagnostics.write(`[plugin-child] relay could not start '${request.command}': ${error.message}\n`);
+      socket.destroy();
+      resolve(RELAY_START_FAILED_EXIT);
+    };
+    // A batch file never gets here (assertRelayRequest); any other launch
+    // Node refuses synchronously rejects the relay, reported on its stderr.
     const program = spawn(request.command, [...request.args], {
       env,
       ...(request.cwd !== undefined ? { cwd: request.cwd } : {}),
@@ -516,11 +646,7 @@ export async function serveStdioRelay(opts: {
       shell: false,
     });
     program.stdin!.on("error", () => undefined);
-    program.once("error", (error) => {
-      opts.diagnostics.write(`[plugin-child] relay could not start '${request.command}': ${error.message}\n`);
-      socket.destroy();
-      resolve(RELAY_START_FAILED_EXIT);
-    });
+    program.once("error", couldNotStart);
     program.once("exit", (code) => {
       socket.destroy();
       resolve(code ?? 1);

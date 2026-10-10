@@ -1191,14 +1191,16 @@ terms, an accepted risk pending an ASRT per-plugin identity
 srt-win relays no stdin and delivers none of the spawn's environment, an `entry`
 plugin child there runs under `cmd.exe` with `ELECTRON_RUN_AS_NODE` on the
 command line, its environment in one argument and Node's symlink-preserving
-flags, and speaks to the host over one loopback connection authenticated by a
-nonce it announced on stdout (same document, §2.3). A plugin worker, a bundled
+flags, and speaks to the host over one loopback connection that both ends
+authenticate, each proving it holds a nonce the child announced on stdout with a
+proof bound to that connection (same document, §2.3, §2.4). A plugin worker, a bundled
 hook and an MCP stdio server run through that same launch as a stdio relay: the
 host sends the program, its arguments, its environment and its directory over
 the authenticated connection, and the relay starts it with a real stdin fed from
 the connection, its stdout and stderr carried by srt-win, and exits with its
 code; each holds its own holder-PID grant for its lifetime. Nothing third-party
-reaches the `cmd.exe` line, and a Windows sandboxed spawn that names neither the
+reaches the `cmd.exe` line, a batch file (`.cmd`/`.bat`, or a bare name such as
+`npx` that only one answers) is refused with the reason, and a Windows sandboxed spawn that names neither the
 relay nor `cmd.exe` is refused, because srt-win's PowerShell launch loses stdin,
 environment and exit code alike.
 
