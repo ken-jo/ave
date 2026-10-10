@@ -27,7 +27,13 @@ import {
   recoverPendingPluginUpdate,
   restoreSupersededPendingPluginUpdate,
 } from "./marketplace-update-recovery.js";
-import { PLUGIN_RUNTIME_DIR_NAMES, assertPayloadOnlyPluginTree, carryPluginDataDir, pluginPayloadCopyFilter } from "./plugin-storage-layout.js";
+import {
+  PLUGIN_RUNTIME_DIR_NAMES,
+  assertPayloadOnlyPluginTree,
+  carryPluginDataDir,
+  carryPluginSocketDirs,
+  pluginPayloadCopyFilter,
+} from "./plugin-storage-layout.js";
 import { removePluginTreeNowOrAtBoot } from "./installed-entry-fs.js";
 import {
   buildFolderInstallReceipt,
@@ -1294,14 +1300,23 @@ export class PluginMarketplaceService {
             await retryOnTransientFsLock(
               () => carryPluginDataDir(installDir, dataCarrier ?? stagingDir, { onConflict: "reject" }),
             );
+            // The socket directories the activated candidate (and, on an
+            // update, the still-live predecessor) are bound to take the same
+            // route as the state, NOT into the staged root: if the swap below
+            // fails, the catch removes the staged root, and the rollback
+            // restores from the recovery backup — so a socket directory parked
+            // in the staged root would be deleted with it (carryPluginSocketDirs).
+            await carryPluginSocketDirs(installDir, dataCarrier ?? stagingDir, { onConflict: "reject" });
             // Both the predecessor and the activated candidate may run with
-            // this path in their confinement; see removePluginTreeNowOrAtBoot.
+            // this path in their confinement (a path-based grant can recreate
+            // a writable directory here); see removePluginTreeNowOrAtBoot.
             await removePluginTreeNowOrAtBoot(installDir, this.pluginsRoot, removeTreeNow);
             await rename(stagingDir, installDir);
             if (dataCarrier) {
               await retryOnTransientFsLock(
                 () => carryPluginDataDir(dataCarrier, installDir, { onConflict: "reject" }),
               );
+              await carryPluginSocketDirs(dataCarrier, installDir, { onConflict: "reject" });
             }
             await this.artifactStore.persistPreparedInstallReceipt(pluginId, localReceiptRaw);
             await updatePluginRegistry(this.registryPath, (registry) => {
@@ -1484,6 +1499,10 @@ export class PluginMarketplaceService {
       await retryOnTransientFsLock(
         () => carryPluginDataDir(snapshot.installDir, backupDir, { onConflict: "reject" }),
       );
+      // The predecessor is still the live generation here, and its sockets
+      // are in the root about to be removed.
+      if (existsSync(snapshot.installDir)) await carryPluginSocketDirs(backupDir, snapshot.installDir, { onConflict: "reject" });
+      await carryPluginSocketDirs(snapshot.installDir, backupDir, { onConflict: "reject" });
     }
     // The candidate that failed may still run with this path in its confinement.
     await removePluginTreeNowOrAtBoot(snapshot.installDir, this.pluginsRoot, removeTreeNow);
@@ -1507,6 +1526,7 @@ export class PluginMarketplaceService {
       await retryOnTransientFsLock(
         () => carryPluginDataDir(backupDir, snapshot.installDir, { onConflict: "reject" }),
       );
+      await carryPluginSocketDirs(backupDir, snapshot.installDir, { onConflict: "reject" });
     }
     const receiptPath = installReceiptPath(this.cacheRoot, pluginId);
     if (snapshot.receiptRaw !== undefined) {

@@ -22,7 +22,9 @@ import { isResolvedPathWithin } from "./plugin-storage-containment.js";
 import {
   type PluginDataCarryPolicy,
   assertPayloadOnlyPluginTree,
+  type PluginSocketCarryPolicy,
   carryPluginDataDir,
+  carryPluginSocketDirs,
   pluginPayloadCopyFilter,
 } from "./plugin-storage-layout.js";
 import { parkUnattributedPluginState, removePluginTreeNowOrAtBoot } from "./installed-entry-fs.js";
@@ -108,6 +110,16 @@ function recoveryDataCarry(paths: PluginPaths, pluginId: string): PluginDataCarr
 }
 
 /**
+ * Recovery keeps destination entries on a same-name conflict while retaining
+ * the original directory's identity.
+ */
+const RECOVERY_SOCKET_CARRY: PluginSocketCarryPolicy = {
+  onConflict: "keep-destination",
+  onDiscardEntry: (path, reason) =>
+    log.warn({ path, reason }, "removed a plugin socket entry recovery cannot carry"),
+};
+
+/**
  * Remove a plugin ROOT recovery has finished with, after moving whatever state
  * it still holds into the root that survives.
  *
@@ -127,8 +139,12 @@ async function discardOwnedPluginRoot(
   await retryOnTransientFsLock(
     () => carryPluginDataDir(rootDir, ownedInstallDir(paths, pluginId), recoveryDataCarry(paths, pluginId)),
   );
+  // Socket directories too, for the same "which root holds them depends on how
+  // far the transaction got" reason: a local install parks the live
+  // generation's `sockets/` and `run/` in its recovery backup while it swaps.
+  await carryPluginSocketDirs(rootDir, ownedInstallDir(paths, pluginId), RECOVERY_SOCKET_CARRY);
   // Boot recovery deletes now; a runtime restore (a failed local install) may
-  // still have a child bound inside, so the root waits for the next boot.
+  // still have a child confined to this path, so the root waits for the next boot.
   await removePluginTreeNowOrAtBoot(rootDir, paths.pluginsRoot, removeRecoveredTreeNow);
 }
 
@@ -320,6 +336,13 @@ export async function recoverPendingPluginUpdate(
   // plugin's data directory into it leaves the state there; it goes back into
   // the backup that becomes the live root before anything is removed.
   await retryOnTransientFsLock(() => carryPluginDataDir(installDir, backupDir, recoveryDataCarry(paths, pluginId)));
+  // An interrupted merge may leave the original directory in the backup.
+  // Finish that direction first, so reversing the carry cannot replace its
+  // inode with the temporary directory created at the promoted root.
+  await carryPluginSocketDirs(backupDir, installDir, RECOVERY_SOCKET_CARRY);
+  // Called at runtime too (a failed local install restores its predecessor
+  // through here), where the predecessor is live and bound to these.
+  await carryPluginSocketDirs(installDir, backupDir, RECOVERY_SOCKET_CARRY);
   await removePluginTreeNowOrAtBoot(installDir, paths.pluginsRoot, removeRecoveredTreeNow);
   if (pending.recoveryBackupMode === "rename") {
     await retryOnTransientFsLock(() => rename(backupDir, installDir));
@@ -343,6 +366,7 @@ export async function recoverPendingPluginUpdate(
       throw error;
     }
     await retryOnTransientFsLock(() => carryPluginDataDir(backupDir, installDir, recoveryDataCarry(paths, pluginId)));
+    await carryPluginSocketDirs(backupDir, installDir, RECOVERY_SOCKET_CARRY);
   }
   if (pending.previousReceiptRaw === null) return "unresolved";
   await restoreInstallReceiptRaw(paths.cacheRoot, pluginId, pending.previousReceiptRaw);
