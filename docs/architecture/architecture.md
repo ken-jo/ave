@@ -1192,8 +1192,15 @@ srt-win relays no stdin and delivers none of the spawn's environment, an `entry`
 plugin child there runs under `cmd.exe` with `ELECTRON_RUN_AS_NODE` on the
 command line, its environment in one argument and Node's symlink-preserving
 flags, and speaks to the host over one loopback connection authenticated by a
-nonce it announced on stdout (same document, §2.3). Bundled hooks and MCP stdio
-servers under srt-win still depend on stdin.
+nonce it announced on stdout (same document, §2.3). A plugin worker, a bundled
+hook and an MCP stdio server run through that same launch as a stdio relay: the
+host sends the program, its arguments, its environment and its directory over
+the authenticated connection, and the relay starts it with a real stdin fed from
+the connection, its stdout and stderr carried by srt-win, and exits with its
+code; each holds its own holder-PID grant for its lifetime. Nothing third-party
+reaches the `cmd.exe` line, and a Windows sandboxed spawn that names neither the
+relay nor `cmd.exe` is refused, because srt-win's PowerShell launch loses stdin,
+environment and exit code alike.
 
 Plugin read-relaxation is narrower than the host-shell capability. The
 foreground plugin effect-boundary may replace a pre-exec ask only when

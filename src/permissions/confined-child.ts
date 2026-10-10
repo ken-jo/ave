@@ -513,8 +513,13 @@ const CMD_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * too), and CR, LF or NUL (a second command, or a truncated one). A trailing
  * run of backslashes is doubled so the target's MSVCRT argument parser does
  * not read the closing quote as escaped. Refusing fails the load with the
- * offending token named; a plugin path with `%` in it is the case that will
- * meet it, and the message says so.
+ * offending token named.
+ *
+ * Only host-owned tokens reach this line — `process.execPath`, the child
+ * entry's path, Node's flags, a transport argument and base64url — because a
+ * plugin's environment and a relayed program's everything travel elsewhere.
+ * `"` cannot occur in a Windows path; `%` only through the install directory,
+ * which the one-click per-machine installer puts under Program Files.
  */
 function buildCmdCommandLine(
   label: string,

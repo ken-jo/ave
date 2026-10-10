@@ -5,7 +5,9 @@
  * This module IS the child's `main`. It is spawned by
  * `out-of-process-plugin.ts` through the ASRT wrapper, speaks the multiplexed
  * framed protocol on stdin/stdout, and hands everything above the transport to
- * `startPluginChildRuntime`.
+ * `startPluginChildRuntime`. Under the Windows sandbox it speaks over a loopback
+ * channel instead, and the same entry also serves as the stdio relay a worker,
+ * hook or MCP stdio server runs through there (`child-loopback-link.ts`).
  *
  * ELECTRON-FREE, and enforced by the import graph rather than promised: every
  * module reachable from here is free of `electron`, which is why

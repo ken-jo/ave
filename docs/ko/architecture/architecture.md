@@ -2017,7 +2017,13 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   않으므로, `entry` 플러그인 child 는 `cmd.exe` 아래에서 `ELECTRON_RUN_AS_NODE` 를
   명령줄에, 나머지 환경을 인자 하나에 담고 Node 의 symlink 보존 플래그로 실행되며,
   stdout 으로 알린 nonce 로 인증된 loopback 연결 하나로 호스트와 통신한다 (같은 문서
-  §2.3). srt-win 아래의 bundled hook 과 MCP stdio server 는 여전히 stdin 에 의존한다.
+  §2.3). plugin worker, bundled hook, MCP stdio server 는 같은 실행 방식을 stdio relay
+  로 쓴다: 호스트가 인증된 연결로 프로그램·인자·환경·작업 디렉터리를 보내면, relay 가
+  연결에서 받은 내용을 실제 stdin 파이프로 넣어 프로그램을 시작하고 (stdout·stderr 는
+  srt-win 이 전달), 프로그램의 종료 코드로 끝난다. 각각 자기 수명 동안 holder-PID
+  grant 를 가진다. 서드파티 값은 `cmd.exe` 명령줄에 오르지 않으며, relay 도 `cmd.exe`
+  도 지정하지 않은 Windows 샌드박스 spawn 은 거부된다 — srt-win 의 PowerShell 실행은
+  stdin·환경·종료 코드를 모두 잃는다.
   srt-win.exe 는 **번들** (asarUnpack vendor/**) 이라 **다운로드가 없다** —
   활성화는 _오직_ 명시적 consent 버튼이 호출하는 1회 self-elevating UAC 설치만
   트리거한다. Windows 계정 로그아웃은 요구하지 않는다.
