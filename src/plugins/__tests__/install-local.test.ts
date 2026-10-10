@@ -755,6 +755,35 @@ describe("PluginMarketplaceService.installLocal", () => {
       expect(existsSync(join(pluginsDir, "test-plugin"))).toBe(false);
       expect(await tombstonedVersions()).toEqual(["1.2.3"]);
     });
+
+    // A fresh install has no recovery backup, so the activated candidate's
+    // runtime directories are parked in the staged root for the swap. When the
+    // swap fails, that root holds directories the candidate is still bound to:
+    // it goes to the tombstones, not into a recursive delete or a leak.
+    it("tombstones a staged root that holds the candidate's runtime directories when the swap fails", async () => {
+      const service = makeService();
+      const installDir = join(pluginsDir, "test-plugin");
+      swapFault.failRenameInto = installDir;
+      noteConfinedProcessesMayRun();
+
+      try {
+        await expect(service.installLocal(sourceDir, {
+          activatePreparedArtifact: async (prepared) => {
+            materialiseCandidateRuntimeDirsForTest(prepared.installId, prepared.pluginRoot, pluginsDir);
+            const completion = Promise.resolve();
+            return { result: await prepared.durableCommit(), retirement: completion, completion, retirementDeferred: false };
+          },
+        })).rejects.toMatchObject({ code: "EBUSY" });
+      } finally {
+        swapFault.failRenameInto = undefined;
+      }
+
+      expect((await readdir(pluginsDir)).filter((name) => name.includes(".tmp-"))).toEqual([]);
+      const staged = (await tombstones()).filter((name) =>
+        existsSync(join(pluginsDir, TOMBSTONE_SUBDIR, name, "sockets")));
+      expect(staged).toHaveLength(1);
+      expect(existsSync(join(pluginsDir, TOMBSTONE_SUBDIR, staged[0]!, "run"))).toBe(true);
+    });
   });
 
   it("does not restore a predecessor after committed local publication failure", async () => {

@@ -677,15 +677,24 @@ export async function sweepPluginSocketDiscardDirs(pluginsRoot: string): Promise
     throw error;
   }
   const emptied: string[] = [];
+  const failures: unknown[] = [];
   for (const name of names) {
     const root = resolve(pluginsRoot, name);
-    const entry = await lstat(root);
-    if (!entry.isDirectory()) continue;
-    await withPluginRuntimeDirQueue(root, async () => {
-      if (!await pathExists(resolve(root, PLUGIN_SOCKET_DISCARD_DIR_NAME))) return;
-      await emptyDiscardDirectory(root);
-      emptied.push(root);
-    });
+    try {
+      if (!(await lstat(root)).isDirectory()) continue;
+      await withPluginRuntimeDirQueue(root, async () => {
+        if (!await pathExists(resolve(root, PLUGIN_SOCKET_DISCARD_DIR_NAME))) return;
+        await emptyDiscardDirectory(root);
+        emptied.push(root);
+      });
+    } catch (error) {
+      // One root's failure (a linked discard name, a lock) does not keep the
+      // other roots' discards for another boot.
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `[plugin-storage-layout] ${failures.length} socket discard director(ies) under ${pluginsRoot} were not emptied`);
   }
   return emptied;
 }

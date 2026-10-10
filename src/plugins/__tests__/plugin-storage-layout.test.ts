@@ -688,7 +688,7 @@ describe("carryPluginSocketDirs", () => {
   // At runtime a discarded worker leaf may still be bound into a live
   // worker (bubblewrap --bind holds the directory, not its path), so the
   // recursive delete waits for the boot sweep, before any child runs.
-  describe("once confined processes may run", () => {
+  describe("discards and the confined-process phase", () => {
     afterEach(() => { _resetConfinedProcessPhaseForTests(); });
 
     it("leaves discarded entries for the boot sweep, which empties them", async () => {
@@ -718,6 +718,22 @@ describe("carryPluginSocketDirs", () => {
       expect(existsSync(join(from, PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
       expect(existsSync(join(to, PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
       expect(await readdir(join(to, "run", "w1"))).toEqual(["control.sock"]);
+    });
+
+    it("empties every other root's discard when one root's discard name is a link", async () => {
+      const linked = join(root, "linked");
+      const plain = join(root, "plain");
+      const outside = join(root, "outside");
+      await mkdir(outside);
+      await writeFile(join(outside, "foreign"), "untouched");
+      await mkdir(linked);
+      await symlink(outside, join(linked, PLUGIN_SOCKET_DISCARD_DIR_NAME), "dir");
+      await mkdir(join(plain, PLUGIN_SOCKET_DISCARD_DIR_NAME, "x-left"), { recursive: true });
+
+      await expect(sweepPluginSocketDiscardDirs(root)).rejects.toThrow(/1 socket discard/);
+
+      expect(existsSync(join(plain, PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
+      expect(await readdir(outside)).toEqual(["foreign"]);
     });
 
     it("leaves a discarded sockets/ directory a child made for the boot sweep", async () => {
