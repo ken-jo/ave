@@ -19,6 +19,7 @@ import {
   PLUGIN_OWN_SOCKET_DIR_NAME,
   PLUGIN_RUNTIME_DIR_NAMES,
   PLUGIN_SOCKET_CARRY_DIR_NAME,
+  PLUGIN_SOCKET_DISCARD_DIR_NAME,
   PLUGIN_WORKER_RUN_DIR_NAME,
   assertUnixSocketPathFits,
   carryPluginDataDir,
@@ -43,6 +44,8 @@ const renameLock = vi.hoisted(() => ({
   /** Runs once, right before the first rename or link into `to` or out of `from`. */
   beforeMove: undefined as { to?: string; from?: string; run: () => Promise<void> } | undefined,
   unlinkFailure: undefined as string | undefined,
+  /** Every recursive rm the module under test issued, by path. */
+  recursiveRms: [] as string[],
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -68,6 +71,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         await before.run();
       }
       return actual.link(from, to);
+    },
+    rm: async (path: Parameters<typeof actual.rm>[0], options?: Parameters<typeof actual.rm>[1]) => {
+      if (options?.recursive) renameLock.recursiveRms.push(String(path));
+      return actual.rm(path, options);
     },
     unlink: async (path: string) => {
       if (path === renameLock.unlinkFailure) {
@@ -298,6 +305,7 @@ describe("carryPluginSocketDirs", () => {
   afterEach(async () => {
     renameLock.beforeMove = undefined;
     renameLock.unlinkFailure = undefined;
+    renameLock.recursiveRms = [];
     await rm(root, { recursive: true, force: true });
   });
 
@@ -500,6 +508,40 @@ describe("carryPluginSocketDirs", () => {
     expect(statSync(join(to, "sockets", "egress.sock")).ino).toBe(live);
     expect(statSync(victim).nlink).toBe(1);
     expect(readFileSync(victim, "utf8")).toBe("original");
+  });
+
+  // A recursive delete inside a directory the child can write races the
+  // child: it can swap a subdirectory for a link to an outside directory
+  // between rm's lstat and its descent. Every entry the carry deletes is
+  // first renamed (which never follows) into a host-only directory, and only
+  // deleted there.
+  it.skipIf(process.platform === "win32")("deletes recursively only inside the host-only discard directory", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, "run", "w1"), { recursive: true });
+    await mkdir(join(to, "run", "w1"), { recursive: true });
+    await mkdir(join(from, "sockets"), { recursive: true });
+    await mkdir(join(to, "sockets", "nested", "sub"), { recursive: true });
+    await writeFile(join(from, "sockets", "egress.sock"), "source");
+    await writeFile(join(to, "sockets", "egress.sock"), "destination");
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    await writeFile(join(outside, "foreign"), "untouched");
+    await symlink(outside, join(to, "sockets", "nested", "sub", "escape"), "dir");
+    renameLock.recursiveRms = [];
+
+    await carryPluginSocketDirs(from, to, keepDestination());
+
+    expect(await readdir(outside)).toEqual(["foreign"]);
+    expect(readFileSync(join(to, "sockets", "egress.sock"), "utf8")).toBe("destination");
+    expect(await readdir(join(to, "run"))).toEqual(["w1"]);
+    const discard = (parent: string) => join(parent, PLUGIN_SOCKET_DISCARD_DIR_NAME);
+    expect(renameLock.recursiveRms.length).toBeGreaterThan(0);
+    for (const path of renameLock.recursiveRms) {
+      expect([from, to].some((parent) => path === discard(parent) || path.startsWith(`${discard(parent)}${sep}`)), path).toBe(true);
+    }
+    expect(existsSync(discard(from))).toBe(false);
+    expect(existsSync(discard(to))).toBe(false);
   });
 
   it("places an entry an interrupted carry left staged before it was linked", async () => {

@@ -17,7 +17,8 @@
  * so their paths and host-side serialization agree.
  */
 import { link, lstat, mkdir, readdir, rename, rm, rmdir, unlink } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { basename, dirname, resolve } from "node:path";
 import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { aveHome } from "../shared/ave-home.js";
@@ -57,6 +58,16 @@ export const PLUGIN_OWN_SOCKET_DIR_NAME = "sockets";
 export const PLUGIN_SOCKET_CARRY_DIR_NAME = ".sockets-carry";
 
 /**
+ * HOST-ONLY directory under a plugin root where {@link carryPluginSocketDirs}
+ * deletes an entry. A recursive delete inside `sockets/` or a worker leaf —
+ * both writable by a child — races the child, which can swap a subdirectory
+ * for a link to an outside directory between rm's lstat and its descent. So
+ * an entry is renamed in here (rename never follows) and deleted only here.
+ * Emptied at the end of every delete and at the start of every carry.
+ */
+export const PLUGIN_SOCKET_DISCARD_DIR_NAME = ".sockets-discard";
+
+/**
  * Every top-level directory under a plugin root that is RUNTIME STATE rather
  * than installed payload.
  *
@@ -91,6 +102,8 @@ export const PLUGIN_SOCKET_CARRY_DIR_NAME = ".sockets-carry";
  *    ({@link PLUGIN_SOCKET_CARRY_DIR_NAME}). It exists only during a carry, or
  *    after a crash in one until the next carry drains it, and it holds the
  *    same socket entries as `sockets/`.
+ *  - `.sockets-discard/` — where that carry deletes entries
+ *    ({@link PLUGIN_SOCKET_DISCARD_DIR_NAME}); transient in the same way.
  *
  * The exclusion is TOP LEVEL only, everywhere it is applied — a nested
  * `dist/data/` is shipped payload and stays validated, copied, and refused in
@@ -106,6 +119,7 @@ export const PLUGIN_RUNTIME_DIR_NAMES: ReadonlySet<string> = new Set([
   PLUGIN_WORKER_RUN_DIR_NAME,
   PLUGIN_OWN_SOCKET_DIR_NAME,
   PLUGIN_SOCKET_CARRY_DIR_NAME,
+  PLUGIN_SOCKET_DISCARD_DIR_NAME,
 ]);
 
 /**
@@ -348,7 +362,7 @@ async function isEmptyDirectory(path: string): Promise<boolean> {
  * The runtime directories that hold Unix-domain sockets rather than state:
  * `run/` (host-allocated worker control sockets) and `sockets/` (sockets the
  * plugin binds itself). {@link PLUGIN_RUNTIME_DIR_NAMES} minus `data/` and
- * the carry's own staging directory.
+ * the carry's own staging and discard directories.
  */
 const PLUGIN_SOCKET_DIR_NAMES: readonly string[] = [
   PLUGIN_WORKER_RUN_DIR_NAME,
@@ -437,7 +451,8 @@ function pluginRuntimeDirKey(pluginRoot: string): string {
  * where no child can touch it; only there is it inspected, refused unless it
  * is a socket or a regular file, linked, and verified. A symlink or other
  * shape found at preflight is refused before anything moves (`reject`) or
- * removed (`keep-destination`).
+ * removed (`keep-destination`). Nothing is ever deleted recursively where a
+ * child can write: see {@link PLUGIN_SOCKET_DISCARD_DIR_NAME}.
  *
  * Directories use {@link renameDirectory}, which retries the transient
  * Windows lock codes (reporting each retry through `policy.onRetry`); callers
@@ -470,6 +485,8 @@ export async function carryPluginSocketDirs(
     // would make readdir/entry moves operate on a tree outside the plugin.
     await assertSocketDirectory(fromRoot);
     await assertSocketDirectory(toRoot);
+    // A crash mid-delete leaves only entries already out of every child's reach.
+    for (const root of [fromRoot, toRoot]) await emptyDiscardDirectory(root);
     // An interrupted carry may have left host-staged entries in either root.
     // They were already out of the child's reach; finish placing them first.
     for (const root of [fromRoot, toRoot]) await finishStagedSocketEntries(root, policy);
@@ -484,7 +501,7 @@ export async function carryPluginSocketDirs(
       // mutation instead of claiming host exclusion.
       if (name === PLUGIN_OWN_SOCKET_DIR_NAME) {
         for (const dir of [sourceExists ? source : undefined, targetExists ? target : undefined]) {
-          if (dir) for (const entry of await readdir(dir)) await refuseSocketEntryShape(resolve(dir, entry), policy);
+          if (dir) for (const entry of await readdir(dir)) await refuseSocketEntryShape(resolve(dir, entry), policy, dirname(dirname(resolve(dir, entry))));
         }
       }
       if (sourceExists && targetExists && policy.onConflict === "reject") {
@@ -517,7 +534,7 @@ export async function carryPluginSocketDirs(
             }
             const staging = resolve(fromRoot, PLUGIN_SOCKET_CARRY_DIR_NAME);
             for (const entry of entries) {
-              if (conflicts.includes(entry)) await rm(resolve(source, entry), { recursive: true, force: true });
+              if (conflicts.includes(entry)) await discardRuntimeEntry(fromRoot, resolve(source, entry));
               const from = resolve(target, entry);
               const to = resolve(source, entry);
               if (name === PLUGIN_WORKER_RUN_DIR_NAME) {
@@ -531,7 +548,7 @@ export async function carryPluginSocketDirs(
                 await mkdir(staging, { recursive: true });
                 const staged = resolve(staging, entry);
                 await move(from, staged);
-                await placeStagedSocketEntry(staged, to, policy);
+                await placeStagedSocketEntry(staged, to, policy, fromRoot);
               }
             }
             if (await pathExists(staging)) await rmdir(staging);
@@ -577,23 +594,42 @@ async function socketEntryShapeRefusal(path: string): Promise<string | undefined
 /**
  * Act on a refused entry shape: `reject` throws, leaving the entry where it
  * is unless `removeOnReject` (a host-staged entry, which would otherwise
- * refuse every later carry); `keep-destination` removes it without following
- * a link and reports it. Returns whether the entry is gone.
+ * refuse every later carry); `keep-destination` discards it and reports it.
+ * Returns whether the entry is gone. `root` is the plugin root holding it.
  */
 async function refuseSocketEntryShape(
   path: string,
   policy: PluginSocketCarryPolicy,
+  root: string,
   removeOnReject = false,
 ): Promise<boolean> {
   const refusal = await socketEntryShapeRefusal(path);
   if (refusal === undefined) return false;
   if (policy.onConflict === "reject") {
-    if (removeOnReject) await rm(path, { recursive: true, force: true });
+    if (removeOnReject) await discardRuntimeEntry(root, path);
     throw new Error(refusal);
   }
-  await rm(path, { recursive: true, force: true });
+  await discardRuntimeEntry(root, path);
   policy.onDiscardEntry(path, refusal);
   return true;
+}
+
+/**
+ * Delete one entry of `root`'s runtime directories without ever recursing
+ * where a child can write: rename it (never follows) into the root's
+ * host-only discard directory under a unique name, then delete it there.
+ */
+async function discardRuntimeEntry(root: string, path: string): Promise<void> {
+  const discard = resolve(root, PLUGIN_SOCKET_DISCARD_DIR_NAME);
+  await mkdir(discard, { recursive: true });
+  await renameDirectory(path, resolve(discard, `${randomUUID()}-${basename(path)}`));
+  await emptyDiscardDirectory(root);
+}
+
+async function emptyDiscardDirectory(root: string): Promise<void> {
+  const discard = resolve(root, PLUGIN_SOCKET_DISCARD_DIR_NAME);
+  if (!await assertSocketDirectory(discard)) return;
+  await rm(discard, { recursive: true, force: true });
 }
 
 /**
@@ -609,14 +645,15 @@ async function placeStagedSocketEntry(
   staged: string,
   to: string,
   policy: PluginSocketCarryPolicy,
+  root: string,
 ): Promise<void> {
   if (!await socketEntriesMatch(staged, to)) {
-    if (await refuseSocketEntryShape(staged, policy, true)) return;
+    if (await refuseSocketEntryShape(staged, policy, root, true)) return;
     if (await pathExists(to)) {
       if (policy.onConflict === "reject") {
         throw new Error(`[plugin-storage-layout] a socket was bound at ${to} during the carry; the carried entry stays staged at ${staged}`);
       }
-      await rm(to, { recursive: true, force: true });
+      await discardRuntimeEntry(root, to);
     }
     // A live child can still bind this name now: link refuses EEXIST without
     // replacing it, and the caller's next attempt places the entry again.
@@ -643,7 +680,7 @@ async function finishStagedSocketEntries(root: string, policy: PluginSocketCarry
     throw new Error(`[plugin-storage-layout] staged socket entries have no socket directory to return to: ${staging}`);
   }
   for (const entry of await readdir(staging)) {
-    await placeStagedSocketEntry(resolve(staging, entry), resolve(sockets, entry), policy);
+    await placeStagedSocketEntry(resolve(staging, entry), resolve(sockets, entry), policy, root);
   }
   await rmdir(staging);
 }
