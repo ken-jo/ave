@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/resolveMappedDriveRoot",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "drive": "Z:"
     }
   },

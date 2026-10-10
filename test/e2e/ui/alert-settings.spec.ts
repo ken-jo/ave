@@ -4,16 +4,24 @@ import { test, expect } from "./fixtures.js";
 import { openInlineSettings, closeInlineSettings } from "./inline-settings.js";
 import type { AveApi } from "../../../src/ui/renderer/types.js";
 
-test.use({ seedRepositoryPlugins: false, seedAlertPlugin: true, seedPermissionMode: "default" });
+test.use({ seedViewFixturePlugin: false, seedAlertPlugin: true, seedPermissionMode: "default" });
 
 async function raiseFixtureAlert(page: Page, t: TestT, key: string) {
   let settled = false;
   const pending = page.evaluate((key) => (window as unknown as { aveApi: AveApi }).aveApi.callPluginMethod("alert_fixture_raise", { key }), key)
     .then((value) => { settled = true; return { value }; }, (error: unknown) => { settled = true; return { error }; });
   const panel = page.getByTestId("tool-approval-panel");
+  // Read without waiting. `getAttribute` auto-waits for the element, so a panel
+  // that unmounts between an `isVisible()` and the read (the answered request
+  // closing) parks the poll callback until the poll's own timeout.
+  const shownRequestId = () => panel.evaluateAll((elements) => elements[0]?.getAttribute("data-approval-request-id") ?? null);
+  const newRequestShown = async (previous: string | null) => {
+    const id = await shownRequestId();
+    return id !== null && id !== previous;
+  };
   let previousId: string | null = null;
   for (const scope of [null, "raiseAlert"]) {
-    await expect.poll(async () => settled || (await panel.isVisible() && await panel.getAttribute("data-approval-request-id") !== previousId)).toBe(true);
+    await expect.poll(async () => settled || await newRequestShown(previousId)).toBe(true);
     expect(settled, "Invocation completed before its expected approval").toBe(false);
     await expect(panel).toHaveAttribute("data-approval-tool-name", "alert_fixture_raise");
     const scopeLabel = panel.getByText(t("toolApprovalDialog.approvalScopePrefix") + ":", { exact: false });
@@ -23,7 +31,7 @@ async function raiseFixtureAlert(page: Page, t: TestT, key: string) {
     console.log("[alert-approval]", JSON.stringify({ key, scope: scope ?? "tool-call", requestId: previousId }));
     await panel.getByRole("button", { name: t("toolApprovalDialog.allowOnce"), exact: true }).click();
   }
-  await expect.poll(async () => settled || (await panel.isVisible() && await panel.getAttribute("data-approval-request-id") !== previousId)).toBe(true);
+  await expect.poll(async () => settled || await newRequestShown(previousId)).toBe(true);
   expect(settled, "Unexpected additional approval after the two named requests").toBe(true);
   const result = await pending;
   if ("error" in result) throw result.error;

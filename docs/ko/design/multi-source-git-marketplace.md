@@ -2820,8 +2820,8 @@ Retry가 있는 `failed` 상태.
   프로토콜은 계속 거부하므로, 로컬 디렉터리는 직접 소스로 등록하지 않고 루프백으로
   서비스합니다.
 - **E2E 테스트(§17).** `test/e2e/ui/git-marketplace-lifecycle.spec.ts`가
-  `marketplace-e2e.yml`을 대신하며, 야간 `e2e.yml`에서 다른 Playwright 스펙과 함께
-  돕니다. 마켓플레이스 MCP 서버를 구성할 수 있는지는 여전히 MCP 거버넌스가
+  `marketplace-e2e.yml`을 대신하며, `bun run test:ui-e2e`에서 다른 Playwright 스펙과
+  함께 돕니다. 마켓플레이스 MCP 서버를 구성할 수 있는지는 여전히 MCP 거버넌스가
   정하므로(§13, `PACKAGE_POLICY_BLOCKED`), 스펙은 조직이 하듯 실행의 `AVE_HOME`에
   그 서버를 승인하는 거버넌스 정책을 씁니다.
 - **서버 스택과 함께 지운 것(§16.2 외):** Doctor의 서버 설치 정리 동작, 합성 설치

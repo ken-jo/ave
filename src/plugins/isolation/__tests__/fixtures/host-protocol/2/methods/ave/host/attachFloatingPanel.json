@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/attachFloatingPanel",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "request": {
         "extensionId": "golden-card",
         "height": 240
@@ -14,7 +17,7 @@
     "id": 40,
     "jsonrpc": "2.0",
     "result": {
-      "handleId": "<uuid-1>",
+      "handleId": "<uuid-2>",
       "height": 240,
       "panelId": "panel-1"
     }

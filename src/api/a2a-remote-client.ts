@@ -39,9 +39,6 @@ import { isRecord } from "../shared/is-record.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 
 const EXTENSION_ERROR_CODES = new Set([-32090, -32091, -32092, -32093, -32094]);
-const FULL_COMMIT_SHA = /^[a-f0-9]{40}$/;
-const SHA256_DIGEST = /^[a-f0-9]{64}$/;
-const TCK_TAG = /^v?[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/;
 const EXTENSION_ERRORS: Readonly<Record<number, Readonly<{ message: string; reason: string }>>> = {
   [-32090]: { message: "Exact send replay conflict", reason: "EXACT_SEND_REPLAY_CONFLICT" },
   [-32091]: { message: "Exact send replay retention expired", reason: "EXACT_SEND_REPLAY_RETENTION_EXPIRED" },
@@ -218,18 +215,6 @@ function validateSnapshot(snapshot: A2ARouteSnapshot, input: A2ARemoteExecuteInp
     || snapshot.a2aSpecificationUri !== A2A_SPECIFICATION_URI
     || !Number.isSafeInteger(snapshot.servedSpecObservationId)
     || snapshot.servedSpecObservationId <= 0
-    || !Number.isSafeInteger(snapshot.wireConformanceEvidenceId)
-    || snapshot.wireConformanceEvidenceId <= 0
-    || !FULL_COMMIT_SHA.test(snapshot.controlPlaneHeadSha)
-    || !FULL_COMMIT_SHA.test(snapshot.aveAppHeadSha)
-    || !FULL_COMMIT_SHA.test(snapshot.remoteServerHeadSha)
-    || !FULL_COMMIT_SHA.test(snapshot.a2aTckCommitSha)
-    || snapshot.a2aTckTag.length > 64
-    || !TCK_TAG.test(snapshot.a2aTckTag)
-    || !SHA256_DIGEST.test(snapshot.controlPlaneLockDigestSha256)
-    || !SHA256_DIGEST.test(snapshot.aveAppLockDigestSha256)
-    || !SHA256_DIGEST.test(snapshot.remoteServerLockDigestSha256)
-    || !SHA256_DIGEST.test(snapshot.a2aTckLockDigestSha256)
     || Date.parse(snapshot.issuedAt) > now
     || Date.parse(snapshot.expiresAt) <= now
     || Date.parse(snapshot.healthExpiresAt) <= now

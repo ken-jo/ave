@@ -550,13 +550,13 @@ export default async function createPlugin() {
     await runtime.startAll();
     expect(runtime.listPluginIds()).toContain("lc-disable");
 
-    await runtime.disable("lc-disable");
+    await runtime.setPluginEnabled("lc-disable", false);
 
     expect(runtime.listPluginIds()).not.toContain("lc-disable");
     await expect(runtime.call("lc_disable_ping")).rejects.toThrow("Plugin method not found");
   });
 
-  it("disable throws when plugin is not loaded", async () => {
+  it("disabling throws when the plugin is not known", async () => {
     await writeFile(
       registryPath,
       JSON.stringify({ version: 1, plugins: [] }),
@@ -564,7 +564,7 @@ export default async function createPlugin() {
     );
     const runtime = makeRuntime();
     await runtime.startAll();
-    await expect(runtime.disable("does-not-exist")).rejects.toThrow("Plugin not loaded");
+    await expect(runtime.setPluginEnabled("does-not-exist", false)).rejects.toThrow("Plugin not found");
   });
 
   // Lifecycle callback contract: every successful post-boot replacement fires

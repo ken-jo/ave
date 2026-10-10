@@ -3,7 +3,11 @@
     "id": 32,
     "jsonrpc": "2.0",
     "method": "ave/host/authRedirect/open",
-    "params": {}
+    "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      }
+    }
   },
   "response": {
     "id": 32,

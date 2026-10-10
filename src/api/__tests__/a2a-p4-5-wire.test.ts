@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { A2AExactReplayHandler } from "../a2a-exact-replay-handler.js";
@@ -26,9 +26,8 @@ const SPEC_DIGEST = createHash("sha256")
   .update(readFileSync(resolve(process.cwd(), "docs/protocols/ave-a2a-exact-send-replay.md")))
   .digest("hex");
 
-const vectorIds: string[] = [];
+/** One named wire vector: the receiver's observable contract over real HTTP. */
 function vector(id: string, run: () => Promise<void> | void): void {
-  vectorIds.push(id);
   it(id, run);
 }
 
@@ -110,7 +109,6 @@ const baseHandler: A2ARequestHandler = {
 
 let server: LocalApiHttpServer;
 let localUrl: string;
-let agentCardDigestSha256 = "";
 
 function headers(extensions?: string): Record<string, string> {
   return {
@@ -157,24 +155,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await server.close();
-  const output = process.env.A2A_P4_5_VECTOR_REPORT;
-  if (output) {
-    writeFileSync(output, JSON.stringify({
-      schema_version: "ave-a2a-p4-5-wire-vectors/v1",
-      vector_ids: vectorIds,
-      vector_count: vectorIds.length,
-      agent_card_digest_sha256: agentCardDigestSha256,
-      extension_spec_digest_sha256: SPEC_DIGEST,
-      verification_state: "passed",
-    }));
-  }
 });
 
 describe("P4-5 production wire vectors", () => {
   vector("agent-card-exact-interface-and-optional-extension", async () => {
     const response = await fetch(`${localUrl}/.well-known/agent-card.json`);
     const bytes = Buffer.from(await response.arrayBuffer());
-    agentCardDigestSha256 = createHash("sha256").update(bytes).digest("hex");
     const card = JSON.parse(bytes.toString("utf8"));
     expect(response.status).toBe(200);
     expect(card.supportedInterfaces).toEqual([{
