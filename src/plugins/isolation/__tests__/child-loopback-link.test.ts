@@ -62,19 +62,21 @@ function readAll(socket: Socket, bytes: number): Promise<string> {
 
 describe("the child's launch arguments", () => {
   it("round-trips the environment through one command-line-inert argument", () => {
-    const env = { HOME: "C:\\Users\\a b\\home", TEMP: "C:\\t%x%&^!\"", LANG: "ko_KR.UTF-8" };
+    const env = { HOME: "C:\\Users\\example\\a b", TEMP: "C:\\t%x%&^!\"", LANG: "ko_KR.UTF-8" };
     const encoded = encodeChildEnv(env);
     expect(encoded.startsWith(CHILD_ENV_ARG_PREFIX)).toBe(true);
     expect(encoded.slice(CHILD_ENV_ARG_PREFIX.length)).toMatch(/^[A-Za-z0-9_-]*$/);
     expect(parseChildLaunchArgs([CHILD_LOOPBACK_TRANSPORT_ARG, encoded])).toEqual({ transport: "loopback", env });
   });
 
-  it("reads no arguments as the stdio child", () => {
+  it("reads a launch without either of its arguments as the stdio child, whatever else it carries", () => {
     expect(parseChildLaunchArgs([])).toEqual({ transport: "stdio" });
+    // The plugin validator launches the stdio child with the entry path after it.
+    expect(parseChildLaunchArgs(["C:\\plugins\\p\\plugin.mjs"])).toEqual({ transport: "stdio" });
   });
 
   it.each([
-    [["--unknown"], "unexpected child argument"],
+    [[CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv({}), "--unknown"], "unexpected child argument"],
     [[CHILD_LOOPBACK_TRANSPORT_ARG], "come together"],
     [[encodeChildEnv({})], "come together"],
     [[CHILD_LOOPBACK_TRANSPORT_ARG, CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv({})], "unexpected child argument"],

@@ -340,7 +340,7 @@ const CMD_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * offending token named; a plugin path with `%` in it is the case that will
  * meet it, and the message says so.
  */
-export function buildCmdCommandLine(
+function buildCmdCommandLine(
   label: string,
   command: string,
   args: readonly string[],

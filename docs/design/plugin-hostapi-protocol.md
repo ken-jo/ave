@@ -159,7 +159,7 @@ Both forms go through `spawnConfinedChild` and nowhere else
 |---|---|---|---|
 | macOS | ASRT `sandbox-exec` profile, allow-list grant mode | filesystem, process, network | `architecture.md:1014-1017`, `confined-child.ts:42-44` |
 | Linux | ASRT bwrap `--bind` / `--unshare-net`, allow-list grant mode | filesystem, process, network | same; UDS reachability `worker-spawn.ts:17-22` |
-| Windows | srt-win, one shared `srt-sandbox` account; deny-only grant mode; holder-PID ACL grants on a plugin child's own directories and on a delegated worker's, each for that process's lifetime. An `entry` child does not yet start under srt-win (§9.8 A2) | filesystem, network, against the host. **No process confinement; no isolation between plugins** (decision 63) | `architecture.md:1018-1020`, `confined-child.ts:43-46`, `out-of-process-plugin.ts:970` |
+| Windows | srt-win, one shared `srt-sandbox` account; deny-only grant mode; holder-PID ACL grants on a plugin child's own directories and on a delegated worker's, each for that process's lifetime; the `entry` child runs under `cmd.exe` and speaks over an authenticated loopback connection (§2.3) | filesystem, network, against the host. **No process confinement; no isolation between plugins** (decision 63) | `architecture.md:1018-1020`, `confined-child.ts:43-46`, `out-of-process-plugin.ts:970` |
 
 The child is confined exactly as much as the host is: `features.osToolSandbox` decides for
 the host's own tools, its workers and its plugin children alike; when it is off the child
@@ -315,11 +315,34 @@ Stdout is the protocol; the reference runtime rebinds `console.*` and `process.s
 to stderr before plugin code runs (`plugin-child-main.ts:18-25`). A `process`-entry plugin
 owns that discipline itself; the conformance suite checks it (§10).
 
+**Windows with the OS sandbox on: one loopback connection instead of the pipes.** ASRT
+0.0.76's `srt-win exec` relays the target's stdout but no stdin (measured 2026-10-10:
+`echo hi | srt-win exec -- cmd /c more` prints nothing), so on that one path the reference
+runtime does not use its pipes for the protocol (`child-loopback-link.ts`). The child
+listens on `127.0.0.1:0`, writes one line to stdout — `AVE-CHILD-LISTEN <port> <nonce>`,
+the nonce 32 fresh random bytes — and accepts exactly one connection: the first peer, which
+must send the nonce and a newline before anything else. The listener closes on that first
+connection whatever it sends; a wrong nonce, silence, or no connection within the time
+limit ends the child non-zero. The host reads that line from the stdout it owns, connects,
+sends the nonce, and frames the protocol over the socket exactly as over the pipes. The
+channel's end is the child's end: the child exits when the connection closes, and the host
+ends the process when it does. srt-win's network filter refuses the sandbox account's
+outbound connects outside the proxy ports, so the child cannot dial the host; the host's
+inbound connect to the child's listener is admitted (measured), the shape a Windows
+worker's TCP control channel already has. A `process` entry never runs on Windows (§2.2),
+so this path serves the reference runtime only; macOS, Linux and Windows with the sandbox
+off keep stdio.
+
 ### 2.4 Identity binding
 
 The host spawns the process and owns both ends of its pipes. Identity is therefore the
 connection: the host attributes every inbound message to the `pluginId` it spawned that
 connection for, and the plugin never names itself.
+
+On the Windows loopback channel (§2.3) the connection is still the spawned process's: it
+is the one connection that presented a nonce the spawned child wrote to the stdout only
+the host reads, and the child accepts no other. A local process that found the port first
+can make the load fail, not speak for the plugin.
 
 Today the envelope carries `pluginId` and `generationId` and the dispatcher refuses a
 mismatch (`host-api-wire.ts:49-59`, `host-api-dispatcher.ts:2015-2018`). In the protocol
@@ -5109,31 +5132,52 @@ fixture or by the independent verification of it rather than decided around it:
     first plugin's probe read the second plugin's data and wrote into it; after the second
     grant was released the same probe got `EPERM` again.
 
-  **What does not run on Windows yet, whatever the grant.** The `entry` child itself does
-  not start under srt-win today, so escapes 1a/1b, 2 and 4 fail on Windows with "child
-  exited code=0" both before and after this change; that failure is not the ACL. Measured
-  on the same host:
-  1. *The child's environment is not delivered.* srt-win's runner starts the target with
+  **The `entry` child under srt-win.** Before the loopback channel (§2.3) the child itself
+  did not start under srt-win, grant or no grant, and escapes 1a/1b, 2 and 4 failed on
+  Windows with "child exited code=0"; that failure was not the ACL. Four causes, each
+  measured on the same host, and what the spawn does about each
+  (`out-of-process-plugin.ts` `windowsLoopbackLaunchLine`, `confined-child.ts`
+  `windowsShell: "cmd"`):
+  1. *The child's environment was not delivered.* srt-win's runner starts the target with
      the `srt-sandbox` profile environment plus only its `--env` overlay (PATH, PATHEXT,
-     proxy); the `env` the host spawns `srt-win` with stays with the broker. So
-     `ELECTRON_RUN_AS_NODE` and the sandbox HOME never reach the child. Inferred, not
-     measured, for a Windows worker: it is delivered the same way.
-  2. *The PowerShell inner shell does not wait for `electron.exe`.* `confined-child.ts`
-     runs the target through `powershell -Command "& '<exe>' …"`; `electron.exe` is a GUI
-     subsystem binary, and the shell returns at once with no output, with or without
-     `ELECTRON_RUN_AS_NODE` set inside it. Through `cmd /d /s /c "set
-     ELECTRON_RUN_AS_NODE=1&& <exe> <script>"` the same probe runs and its stdout arrives.
-  3. *stdin is not relayed.* `srt-win exec` gives the target no stdin data (`echo hi |
-     srt-win exec -- cmd /c more` prints nothing; the same pipe without srt-win prints
-     `hi`), and the plugin protocol is framed over the child's stdin.
-  4. *The entry module cannot be imported from under the profile.* With its own grant
-     held, the probe read its own data but `import()` of its own `entry.mjs` failed with
-     `EPERM: lstat` on the first ancestor directory under the user profile: Node resolves
-     a module path with `realpath`, which `lstat`s every ancestor, and the profile admits
-     no `srt-sandbox` access to its subdirectories. An inheriting grant on an ancestor
-     would cover every plugin under it, so the grant does not reach for one.
-  With the sandbox on, a Windows `entry` plugin therefore does not load today, with or
-  without this grant; the grant is the ACL half of what loading needs, measured above.
+     proxy). `ELECTRON_RUN_AS_NODE` is now set on the command line; the rest of the
+     intended environment (the throwaway HOME, its TEMP) travels as one base64url argument
+     the runtime applies before the plugin is imported. PATH, PATHEXT and TMPDIR stay
+     srt-win's. Inferred, not measured, for a Windows worker: its environment is delivered
+     the same way, and is not changed here.
+  2. *PowerShell did not wait for `electron.exe`.* A GUI-subsystem binary returns at once
+     under `powershell -Command "& …"`, with no output. The child now runs under System32
+     `cmd.exe /d /v:off /s /c`; every token is double-quoted, and a token or value with a
+     `"`, a `%`, CR, LF or NUL, or a line over 8000 characters, is refused rather than
+     escaped — `cmd.exe` expands `%NAME%` inside quotes, and nothing ends a quote safely.
+  3. *stdin is not relayed.* The protocol moved to the loopback channel (§2.3).
+  4. *The entry module could not be imported from under the profile.* Node `realpath`s a
+     module path in JavaScript, which `lstat`s every ancestor directory, and the profile
+     admits no `srt-sandbox` access to its subdirectories (measured `EPERM: lstat`). The
+     child now runs with `--preserve-symlinks` and `--preserve-symlinks-main`, measured to
+     import both an ES module and a CommonJS module from the plugin's own granted
+     directory, with and without a `package.json` beside it. What the flags give up is
+     resolving symlinks inside the plugin: the entry path is already the host's real path
+     (decision 33) and the host's integrity and path checks run on the host's side, so
+     those are unchanged; a symlinked file loads under its link's path, and dependencies
+     reached through links (pnpm's layout) resolve from the link's location. That trade is
+     made on this launch only.
+
+  Measured after the change (same host, 2026-10-10): `adversarial-escapes.test.ts` under
+  the real wrap passes every row that runs on Windows (9 passed; the delegation row and
+  the Python row are macOS and Linux only). Row 4's fixture now forges on the channel it
+  finds among its own handles — fd 1 for a stdio child, the loopback socket here — and
+  the host still answers the forged frame under the spawn-bound id. An entry plugin
+  loaded through the production factory in about 0.3 s, answered a tool call, wrote and
+  read its own data, wrote to its own TEMP under the throwaway HOME, and got `EPERM` on a
+  neighbour's data (read and write) and on the secrets sentinel; it was stopped and
+  loaded again, and after each stop no `srt-sandbox` process, no holder and no socket
+  remained. While it ran its only socket was the established connection: the listener
+  was already closed.
+
+  Still open on Windows with the sandbox on: bundled hooks and bundled MCP stdio servers
+  are wrapped by srt-win the same way and are spoken to over stdin, which srt-win does not
+  relay; they are not changed here.
 - **The fixture declares `capabilities: ["external-auth-consumer"]`.** Without it
   `hostFetch` is refused by the capability check before the allow-list is reached, and
   row 2 would prove the wrong layer. Row 2 asserts the allow-list's own audit detail:
@@ -5799,8 +5843,7 @@ MCP request metadata), and the single merge order of decision 27.
   `check` in CI; if the runner can clone, `verify` joins the pipeline.
 - (§9.8) The exact filesystem error each substrate returns for an unbound read
   (`EPERM`/`EACCES` on macOS and Windows, `ENOENT` under bubblewrap is the expectation;
-  Windows measured `EPERM` under srt-win on 2026-10-10, through a probe rather than the
-  `entry` child, which does not start there yet — §9.8 A2);
+  Windows measured `EPERM` under srt-win on 2026-10-10, row 1a included — §9.8 A2);
   A2's assertions are per platform and the first run fixes the values.
 - (§9.8) The Electron positive control on Linux CI under `xvfb-run` and on the Windows
   runner. macOS is measured (2026-10-08: Electron 44.3.0, `BrowserWindow` `"function"`,

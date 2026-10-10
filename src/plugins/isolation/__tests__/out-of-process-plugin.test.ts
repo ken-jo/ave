@@ -1601,19 +1601,22 @@ describe("on Windows a confined child holds a grant on its own directories for e
     writeFileSync(
       entryPath,
       `export const createPlugin = async () => ({
-  handlers: { probe_env: async () => process.env.AVE_LOOPBACK_PROBE ?? null },
+  handlers: { probe_env: async () => process.env.CHILD_ENV_PROBE ?? null },
 });
 `,
     );
     const child = spawnProcess(
       process.execPath,
-      [pluginChildEntryPath(), CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv({ AVE_LOOPBACK_PROBE: "from the argument" })],
+      [pluginChildEntryPath(), CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv({ CHILD_ENV_PROBE: "from the argument" })],
       { env: { ...buildSafeChildEnv(), ELECTRON_RUN_AS_NODE: "1" }, stdio: ["pipe", "pipe", "pipe"] },
     );
     child.stdin!.end();
     const exited = new Promise<string>((resolve) => child.once("exit", (code) => resolve(`code=${String(code)}`)));
     try {
       const socket = await connectToAnnouncedChild({ stdout: child.stdout!, exited, timeoutMs: 20_000 });
+      // Windows resets a loopback connection whose peer exits; the production
+      // link logs that, and so must this one rather than throw it.
+      socket.on("error", () => undefined);
       const link: ChildLink = {
         input: socket,
         output: socket,

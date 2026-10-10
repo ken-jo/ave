@@ -42,7 +42,7 @@ export const CHILD_LOOPBACK_TRANSPORT_ARG = "--ave-child-transport=loopback";
 /** Carries the child's intended environment, base64url JSON. */
 export const CHILD_ENV_ARG_PREFIX = "--ave-child-env=";
 /** The one stdout line the child writes before the connection exists. */
-export const CHILD_LISTEN_ANNOUNCE = "AVE-CHILD-LISTEN";
+const CHILD_LISTEN_ANNOUNCE = "AVE-CHILD-LISTEN";
 
 const NONCE_BYTES = 32;
 const NONCE_HEX_LENGTH = NONCE_BYTES * 2;
@@ -72,12 +72,16 @@ export type ChildLaunchMode =
   | { readonly transport: "loopback"; readonly env: Readonly<Record<string, string>> };
 
 /**
- * Parse the child's arguments. No transport argument is the stdio child every
- * other platform runs; the loopback argument requires exactly one environment
- * argument, and anything unrecognised is refused rather than ignored.
+ * Parse the child's arguments. With neither of this module's arguments it is
+ * the stdio child every other launch runs, and whatever else is there is left
+ * to its caller as before (the plugin validator passes the entry path). With
+ * either, the launch must be exactly the loopback argument and one environment
+ * argument, and anything else is refused rather than ignored.
  */
 export function parseChildLaunchArgs(args: readonly string[]): ChildLaunchMode {
-  if (args.length === 0) return { transport: "stdio" };
+  if (!args.some((arg) => arg === CHILD_LOOPBACK_TRANSPORT_ARG || arg.startsWith(CHILD_ENV_ARG_PREFIX))) {
+    return { transport: "stdio" };
+  }
   let loopback = false;
   let encoded: string | undefined;
   for (const arg of args) {

@@ -2013,11 +2013,11 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   파일시스템 격리 (`denyPluginsRoot`) 는 macOS·Linux 에만 있다. 플러그인 child 와
   delegated worker 는 각자 자기 디렉터리를 그 프로세스 수명 동안 유지되는 holder-PID
   ACL grant 로 얻고, grant 가 유지되는 동안에는 다른 모든 confined process 도 그
-  디렉터리에 닿는다. `entry` 플러그인 child 는 아직 srt-win 아래에서 시작되지 않는다
-  — 환경 변수가 전달되지 않고, PowerShell inner shell 이 `electron.exe` 를 기다리지
-  않으며, stdin 이 전달되지 않고, 모듈 import 가 접근할 수 없는 프로필 상위 디렉터리를
-  `lstat` 한다. 따라서 샌드박스가 켜진 Windows 에서 `entry` 플러그인은 현재 로드되지
-  않는다 (2026-10-10 측정, 같은 절).
+  디렉터리에 닿는다. srt-win 은 stdin 을 전달하지 않고 spawn 의 환경 변수도 넘기지
+  않으므로, `entry` 플러그인 child 는 `cmd.exe` 아래에서 `ELECTRON_RUN_AS_NODE` 를
+  명령줄에, 나머지 환경을 인자 하나에 담고 Node 의 symlink 보존 플래그로 실행되며,
+  stdout 으로 알린 nonce 로 인증된 loopback 연결 하나로 호스트와 통신한다 (같은 문서
+  §2.3). srt-win 아래의 bundled hook 과 MCP stdio server 는 여전히 stdin 에 의존한다.
   srt-win.exe 는 **번들** (asarUnpack vendor/**) 이라 **다운로드가 없다** —
   활성화는 _오직_ 명시적 consent 버튼이 호출하는 1회 self-elevating UAC 설치만
   트리거한다. Windows 계정 로그아웃은 요구하지 않는다.
