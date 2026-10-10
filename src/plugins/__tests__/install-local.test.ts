@@ -1,11 +1,47 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, statSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { PluginMarketplaceService } from "../marketplace.js";
+import { join, sep } from "node:path";
+import { PluginMarketplaceService, type PreparedMarketplacePluginActivation } from "../marketplace.js";
 import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
+
+/**
+ * One armed, one-shot fault on the local install's root swap
+ * (`rename(<id>.tmp-…, <installDir>)`). Every other `rename` passes through,
+ * so the rest of this suite runs against the real filesystem.
+ */
+const swapFault = vi.hoisted(() => ({
+  failRenameInto: undefined as string | undefined,
+  /** Runs once, right after the swap rename into this root succeeds. */
+  afterRenameInto: undefined as { root: string; run: () => Promise<void> } | undefined,
+  /** One-shot failure of the first rename of any kind whose destination matches. */
+  failRename: undefined as ((to: string) => boolean) | undefined,
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    rename: async (from: Parameters<typeof actual.rename>[0], to: Parameters<typeof actual.rename>[1]) => {
+      const isSwap = String(from).includes(".tmp-");
+      if (swapFault.failRename?.(String(to))) {
+        swapFault.failRename = undefined;
+        throw Object.assign(new Error(`EIO: injected move failure into '${String(to)}'`), { code: "EIO" });
+      }
+      if (swapFault.failRenameInto !== undefined && String(to) === swapFault.failRenameInto && isSwap) {
+        swapFault.failRenameInto = undefined;
+        throw Object.assign(new Error(`EBUSY: resource busy or locked, rename '${String(from)}' -> '${String(to)}'`), { code: "EBUSY" });
+      }
+      await actual.rename(from, to);
+      const after = swapFault.afterRenameInto;
+      if (after !== undefined && String(to) === after.root && isSwap) {
+        swapFault.afterRenameInto = undefined;
+        await after.run();
+      }
+    },
+  };
+});
 import {
   makeTestPluginPaths,
   preparedActivationOptionsForTest,
@@ -16,6 +52,7 @@ import { CommittedPluginGenerationPublicationError } from "../committed-generati
 import {
   PLUGIN_DATA_FIXTURE,
   agentPluginsDocument,
+  materialiseCandidateRuntimeDirsForTest,
   readPluginDataFixture,
   seedPluginDataFixture,
 } from "./test-helpers.js";
@@ -415,6 +452,207 @@ describe("PluginMarketplaceService.installLocal", () => {
       throw error;
     });
     expect(rollbackBackups).toEqual([]);
+  });
+
+  // The local-dev twin of the artifact-store promotion tests: the candidate is
+  // activated (its `sockets/` and `run/` materialised at the final root) before
+  // the durable commit replaces that root.
+  describe("socket directories of the already-activated candidate", () => {
+    afterEach(() => {
+      swapFault.failRenameInto = undefined;
+      swapFault.afterRenameInto = undefined;
+      swapFault.failRename = undefined;
+    });
+
+    const activateLikeTheRuntime: PreparedMarketplacePluginActivation = async (prepared) => {
+      const granted = materialiseCandidateRuntimeDirsForTest(prepared.installId, prepared.pluginRoot, pluginsDir);
+      grantedInodes = [statSync(granted.socketDir).ino, statSync(granted.workerRunRoot).ino];
+      const completion = Promise.resolve();
+      return { result: await prepared.durableCommit(), retirement: completion, completion, retirementDeferred: false };
+    };
+    let grantedInodes: number[] = [];
+    const liveInodes = (installDir: string) => [
+      statSync(join(installDir, "sockets")).ino,
+      statSync(join(installDir, "run")).ino,
+    ];
+
+    it("survive a first local install as the same directories", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
+
+      const installDir = join(pluginsDir, "test-plugin");
+      expect(liveInodes(installDir)).toEqual(grantedInodes);
+    });
+
+    it("survive a local reinstall with the live socket inside them", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
+      const installDir = join(pluginsDir, "test-plugin");
+      await writeFile(join(installDir, "sockets", "egress.sock"), "predecessor");
+      await seedPluginDataFixture(installDir);
+      await writeFile(
+        join(sourceDir, "plugin.json"),
+        JSON.stringify(agentPluginsDocument({
+          id: "test-plugin",
+          name: "Test Plugin",
+          version: "2.0.0",
+          description: "fixture v2",
+          entry: "dist/hostPlugin.js",
+        })),
+        "utf-8");
+
+      await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
+
+      expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8")))
+        .toMatchObject({ version: "2.0.0" });
+      expect(liveInodes(installDir)).toEqual(grantedInodes);
+      expect(await readFile(join(installDir, "sockets", "egress.sock"), "utf-8")).toBe("predecessor");
+      expect(await readPluginDataFixture(installDir)).toEqual(PLUGIN_DATA_FIXTURE);
+    });
+
+    it("go back to the restored install when the replacement receipt fails", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
+      const installDir = join(pluginsDir, "test-plugin");
+      await writeFile(join(installDir, "sockets", "egress.sock"), "predecessor");
+      const predecessorInodes = liveInodes(installDir);
+      await writeFile(
+        join(sourceDir, "plugin.json"),
+        JSON.stringify(agentPluginsDocument({
+          id: "test-plugin",
+          name: "Test Plugin",
+          version: "2.0.0",
+          description: "fixture v2",
+          entry: "dist/hostPlugin.js",
+        })),
+        "utf-8");
+      const store = (service as unknown as {
+        artifactStore: { persistPreparedInstallReceipt: (...args: unknown[]) => Promise<unknown> };
+      }).artifactStore;
+      vi.spyOn(store, "persistPreparedInstallReceipt").mockRejectedValueOnce(
+        new Error("replacement receipt write failed"),
+      );
+
+      await expect(service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime }))
+        .rejects.toThrow("replacement receipt write failed");
+
+      expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8")))
+        .toMatchObject({ version: "1.2.3" });
+      expect(liveInodes(installDir)).toEqual(predecessorInodes);
+      expect(await readFile(join(installDir, "sockets", "egress.sock"), "utf-8")).toBe("predecessor");
+    });
+
+    // A live worker creating its control-socket leaf at the promoted root in
+    // the window between the swap rename and the carry back: two non-empty
+    // `run/` directories, merged entry by entry rather than refused.
+    it("merge with a worker leaf created at the promoted root during the swap", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
+      const installDir = join(pluginsDir, "test-plugin");
+      await mkdir(join(installDir, "run", "w1"), { recursive: true });
+      await writeFile(join(installDir, "run", "w1", "control.sock"), "w1");
+      const run = statSync(join(installDir, "run")).ino;
+      const w1 = statSync(join(installDir, "run", "w1")).ino;
+      await writeFile(
+        join(sourceDir, "plugin.json"),
+        JSON.stringify(agentPluginsDocument({
+          id: "test-plugin",
+          name: "Test Plugin",
+          version: "2.0.0",
+          description: "fixture v2",
+          entry: "dist/hostPlugin.js",
+        })),
+        "utf-8");
+      swapFault.afterRenameInto = {
+        root: installDir,
+        run: async () => { await mkdir(join(installDir, "run", "w2"), { recursive: true }); },
+      };
+
+      await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
+
+      expect(swapFault.afterRenameInto).toBeUndefined();
+      expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8")))
+        .toMatchObject({ version: "2.0.0" });
+      // The run/ root the live children were wrapped against, not the one the
+      // worker made in the window.
+      expect(statSync(join(installDir, "run")).ino).toBe(run);
+      expect(statSync(join(installDir, "run", "w1")).ino).toBe(w1);
+      expect(await readFile(join(installDir, "run", "w1", "control.sock"), "utf-8")).toBe("w1");
+      expect(existsSync(join(installDir, "run", "w2"))).toBe(true);
+    });
+
+    // The carry back into the promoted root stops after the worker's new leaf
+    // was created there but before it joined the original run/, which is still
+    // in the recovery backup. The restore has to finish that merge first:
+    // reversing it as found would move the original's leaves into the leaf's
+    // fresh run/ and bring that directory back in place of the original.
+    it("finish an interrupted merge before restoring, keeping the original run/", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
+      const installDir = join(pluginsDir, "test-plugin");
+      await mkdir(join(installDir, "run", "w1"), { recursive: true });
+      const run = statSync(join(installDir, "run")).ino;
+      const w1 = statSync(join(installDir, "run", "w1")).ino;
+      await writeFile(
+        join(sourceDir, "plugin.json"),
+        JSON.stringify(agentPluginsDocument({
+          id: "test-plugin",
+          name: "Test Plugin",
+          version: "2.0.0",
+          description: "fixture v2",
+          entry: "dist/hostPlugin.js",
+        })),
+        "utf-8");
+      swapFault.afterRenameInto = {
+        root: installDir,
+        run: async () => { await mkdir(join(installDir, "run", "w2"), { recursive: true }); },
+      };
+      swapFault.failRename = (to) => to.endsWith(`${sep}run${sep}w2`) && !to.startsWith(`${installDir}${sep}`);
+
+      await expect(service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime }))
+        .rejects.toThrow(/injected move failure/);
+
+      expect(swapFault.failRename).toBeUndefined();
+      expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8")))
+        .toMatchObject({ version: "1.2.3" });
+      expect(statSync(join(installDir, "run")).ino).toBe(run);
+      expect(statSync(join(installDir, "run", "w1")).ino).toBe(w1);
+      expect((await readdir(join(installDir, "run"))).sort()).toEqual(["w1", "w2"]);
+    });
+
+    // The swap itself failing: the live root is already gone and the catch
+    // removes the staged root. The predecessor is still the live generation, so
+    // its socket directories must come back with the restored install rather
+    // than go with the staged root.
+    it("go back to the restored install when the root swap itself fails", async () => {
+      const service = makeService();
+      await service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime });
+      const installDir = join(pluginsDir, "test-plugin");
+      await writeFile(join(installDir, "sockets", "egress.sock"), "predecessor");
+      await seedPluginDataFixture(installDir);
+      const predecessorInodes = liveInodes(installDir);
+      await writeFile(
+        join(sourceDir, "plugin.json"),
+        JSON.stringify(agentPluginsDocument({
+          id: "test-plugin",
+          name: "Test Plugin",
+          version: "2.0.0",
+          description: "fixture v2",
+          entry: "dist/hostPlugin.js",
+        })),
+        "utf-8");
+      swapFault.failRenameInto = installDir;
+
+      await expect(service.installLocal(sourceDir, { activatePreparedArtifact: activateLikeTheRuntime }))
+        .rejects.toMatchObject({ code: "EBUSY" });
+
+      expect(swapFault.failRenameInto).toBeUndefined();
+      expect(JSON.parse(await readFile(join(installDir, "plugin.json"), "utf-8")))
+        .toMatchObject({ version: "1.2.3" });
+      expect(liveInodes(installDir)).toEqual(predecessorInodes);
+      expect(await readFile(join(installDir, "sockets", "egress.sock"), "utf-8")).toBe("predecessor");
+      expect(await readPluginDataFixture(installDir)).toEqual(PLUGIN_DATA_FIXTURE);
+    });
   });
 
   it("returns the plugin's data directory to the restored install when the replacement receipt fails", async () => {
