@@ -16,10 +16,39 @@
  * class with no direct coverage.
  */
 import AdmZip from "adm-zip";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, statSync } from "node:fs";
 import { chmod, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
+
+/**
+ * One-shot hooks on `rename`; every other rename passes through, so the rest
+ * of this suite runs against the real filesystem.
+ */
+const renameFault = vi.hoisted(() => ({
+  /** Runs once, right after a rename into exactly this path succeeds. */
+  afterRenameInto: undefined as { to: string; run: () => Promise<void> } | undefined,
+  /** Fails the first rename whose destination matches. */
+  failRename: undefined as ((to: string) => boolean) | undefined,
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    rename: async (from: Parameters<typeof actual.rename>[0], to: Parameters<typeof actual.rename>[1]) => {
+      if (renameFault.failRename?.(String(to))) {
+        renameFault.failRename = undefined;
+        throw Object.assign(new Error(`EIO: injected move failure into '${String(to)}'`), { code: "EIO" });
+      }
+      await actual.rename(from, to);
+      const after = renameFault.afterRenameInto;
+      if (after && String(to) === after.to) {
+        renameFault.afterRenameInto = undefined;
+        await after.run();
+      }
+    },
+  };
+});
 import {
   ArtifactRollbackError,
   assertSafeArtifactSlug,
@@ -318,6 +347,10 @@ describe("PluginArtifactStore — extractZip", () => {
   // …/sockets/egress.sock`, startup degraded until restart).
   describe("socket directories of the already-activated candidate", () => {
     const ino = (path: string) => statSync(path).ino;
+    afterEach(() => {
+      renameFault.afterRenameInto = undefined;
+      renameFault.failRename = undefined;
+    });
 
     it("survive a first install's promotion as the same directories", async () => {
       const tmp = makeTmpDir();
@@ -374,6 +407,43 @@ describe("PluginArtifactStore — extractZip", () => {
         expect([ino(resolve(installDir, "sockets")), ino(resolve(installDir, "run"))]).toEqual(grantedInodes);
         expect(await readFile(resolve(installDir, "sockets", "egress.sock"), "utf-8")).toBe("predecessor");
         expect(await readPluginDataFixture(installDir)).toEqual(PLUGIN_DATA_FIXTURE);
+      } finally {
+        await cleanupTmpDir(tmp);
+      }
+    });
+
+    // The carry into the promoted root stops after a live worker created its
+    // leaf there but before that leaf joined the original run/, which is still
+    // in the root that went aside. The rollback must finish that merge first:
+    // reversing it as found would move the original's leaves into the leaf's
+    // fresh run/ and restore that directory in place of the original.
+    it("finish an interrupted merge before going back, keeping the original run/", async () => {
+      const tmp = makeTmpDir();
+      try {
+        const store = makeStore(tmp);
+        const installRoot = resolve(tmp, "installed");
+        const installDir = store.installDirFor("acme");
+        await mkdir(resolve(installDir, "run", "a"), { recursive: true });
+        await writeFile(resolve(installDir, "plugin.json"), JSON.stringify(agentPluginsDocument({ id: "acme", version: "old" })));
+        const run = ino(resolve(installDir, "run"));
+        const leaf = ino(resolve(installDir, "run", "a"));
+        const zip = new AdmZip();
+        zip.addFile("plugin.json", Buffer.from(JSON.stringify(agentPluginsDocument({ id: "acme", version: "new" }))));
+        renameFault.afterRenameInto = {
+          to: installDir,
+          run: async () => { await mkdir(resolve(installDir, "run", "b"), { recursive: true }); },
+        };
+        renameFault.failRename = (to) => to.endsWith(`${sep}run${sep}b`) && to.includes(`${sep}.acme.old-`);
+
+        await expect(store.extractZipWithCommit("acme", zip.toBuffer(), async () => undefined))
+          .rejects.toThrow(/injected move failure/);
+
+        expect(renameFault.failRename).toBeUndefined();
+        expect(JSON.parse(await readFile(resolve(installDir, "plugin.json"), "utf-8")).version).toBe("old");
+        expect(ino(resolve(installDir, "run"))).toBe(run);
+        expect(ino(resolve(installDir, "run", "a"))).toBe(leaf);
+        expect((await readdir(resolve(installDir, "run"))).sort()).toEqual(["a", "b"]);
+        expect((await readdir(installRoot)).filter((name) => name.startsWith(".acme."))).toEqual([]);
       } finally {
         await cleanupTmpDir(tmp);
       }
