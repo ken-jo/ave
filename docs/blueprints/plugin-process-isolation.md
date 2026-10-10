@@ -704,7 +704,13 @@ Named rather than hidden, because each one can move a stage estimate.
    a hostApi call. That already works because the gated paths are already async — but
    a child now waits on a round-trip that may block on a human. *Resolve:* Stage 5 —
    an explicit test that a gated write from the child survives a slow approval and
-   that a child timeout does not leave the host gate pending.
+   that a child timeout does not leave the host gate pending. *Found 2026-10-09:* the
+   gate never fired for a child at all, because the child's request reached the host
+   outside the invocation's async context. Fixed by the invocation token
+   (`plugin-hostapi-protocol.md` §3.3, decision 63). `invocation-context.test.ts` pins
+   the foreground ask and the headless deny, including for work a handler leaves
+   running after it returns. It also pins that a child spawned inside a tool call does
+   not run its own lifecycle work in that call.
 6. **`mcp-alignment-design.md` §3.3 still describes `_meta["ave/category"]` as
    the policy SOT and `plugin-tool-from-mcp.ts` as failing closed on a missing
    category, while per-tool `category` was removed from the manifest and the host now

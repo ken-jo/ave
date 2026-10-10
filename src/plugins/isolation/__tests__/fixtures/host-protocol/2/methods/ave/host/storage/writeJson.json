@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/storage/writeJson",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "indent": 2,
       "relPath": "state.json",
       "value": {

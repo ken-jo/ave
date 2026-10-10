@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/getAuthPartitionCookies",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "opts": {
         "partitionSub": "golden-auth",
         "urls": [

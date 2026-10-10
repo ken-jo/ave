@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/startAudioCapture",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "request": {
         "frameMs": 200,
         "microphone": true,
@@ -17,7 +20,7 @@
     "jsonrpc": "2.0",
     "result": {
       "captureId": "capture-1",
-      "handleId": "<uuid-1>",
+      "handleId": "<uuid-2>",
       "opened": {
         "microphone": true,
         "systemAudio": false

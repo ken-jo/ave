@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/triggerConversation",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "spec": {
         "prompt": "hello",
         "source": "golden:trigger"

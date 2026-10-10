@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/storage/writeEncrypted",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "plaintext": "the token cache",
       "relPath": "tokens/cache.bin"
     }
