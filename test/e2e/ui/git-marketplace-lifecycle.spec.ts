@@ -319,7 +319,7 @@ async function commandMenuIds(app: ElectronApplication, page: Page): Promise<str
 
 test.describe('git marketplace lifecycle', () => {
   test.skip(process.platform === 'win32', 'the fixture MCP server is a shell script');
-  test.use({ seedRepositoryPlugins: false });
+  test.use({ seedViewFixturePlugin: false });
   test.setTimeout(240_000);
 
   let served: string;
@@ -491,7 +491,7 @@ test.describe('git marketplace lifecycle', () => {
 
 test.describe('git marketplace target confirmations (design §18.5)', () => {
   // A user's build: no dev flag, so an http marketplace on this computer is asked about.
-  test.use({ seedRepositoryPlugins: false, devFlag: false });
+  test.use({ seedViewFixturePlugin: false, devFlag: false });
   test.setTimeout(120_000);
 
   let served: string;
@@ -552,7 +552,7 @@ test.describe('git marketplace target confirmations (design §18.5)', () => {
 
 test.describe('git marketplace folder source (design §18.4)', () => {
   // A user's build: a folder needs no dev flag, and no git at all.
-  test.use({ seedRepositoryPlugins: false, devFlag: false });
+  test.use({ seedViewFixturePlugin: false, devFlag: false });
   test.setTimeout(120_000);
 
   const FOLDER_ID = 'team-folder';

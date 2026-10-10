@@ -4,7 +4,6 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import http from 'node:http';
-import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import {
@@ -14,9 +13,8 @@ import {
   buildLlmSettings,
 } from '../e2e/ui/seeded-electron.js';
 import {
-  REAL_PYTHON_CAPTURES,
   seedExecutionMode,
-  seedRealPlugins,
+  seedFixturePlugins,
   seedReviewerMode,
 } from './plugin-seed.js';
 import { PROVIDER_PING_SYSTEM_PROMPT } from '../../src/engine/turn/provider.js';
@@ -24,141 +22,6 @@ import { PERMISSION_REVIEWER_SYSTEM_PROMPT } from '../../src/shared/permission-r
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../..');
-
-/**
- * Where the fabricated document corpus lives.
- *
- * Deliberately NOT under `os.tmpdir()`, and deliberately covering ONLY the
- * corpus. A capture can render an absolute path into the published image — the
- * local-indexer panel lists its registered scan folders by full path — and on
- * Windows `os.tmpdir()` sits under `C:\Users\<account>\AppData\Local\Temp`, so the
- * operator's account name would ship in the docs. `C:\Users\Public` is the OS's
- * own shared, everyone-writable location and names nobody. POSIX `/tmp` already
- * names nobody, so it only gains the `Ave` segment for tidiness — that is the
- * whole of the per-OS difference here.
- *
- * The per-run profile stays in `os.tmpdir()`; the `userDataDir` fixture below
- * says why moving it here too was not a neutral change.
- */
-const DEMO_DOCS_ROOT = process.platform === 'win32'
-  ? path.join(process.env.PUBLIC ?? 'C:\\Users\\Public', 'Ave')
-  : path.join(os.tmpdir(), 'Ave');
-
-/**
- * The fabricated document corpus a scan-folder scenario indexes, at a stable
- * readable path rather than inside the per-run profile: this corpus IS the
- * subject of the local-indexer captures, and `…/ave-screenshot-Ab12cd/
- * ave-state/…` reads as harness debris in a published screenshot where
- * `…/Ave/문서` reads as a folder someone might really have. Its files are
- * rewritten from `seededCorpus` on every run, so nothing an earlier run left
- * behind can reach a frame.
- */
-const DEMO_DOCS_DIR = path.join(DEMO_DOCS_ROOT, '문서');
-
-/**
- * Resolve the `{{AVE_HOME}}` / `{{DEMO_DOCS}}` tokens a scenario may write in a
- * `seededCorpus` key or value.
- *
- * The Ave home exists only once a run has picked its profile directory, so a
- * scenario in `matrix.ts` cannot write that absolute path itself, and the demo
- * corpus is per-OS — while one of them has to appear verbatim inside seeded
- * content, because the indexer's `folders.json` registers scan folders by
- * absolute path. One token vocabulary covers both positions rather than a
- * second seeding hook for the file whose body needs a path.
- */
-function resolveCaptureTokens(
-  value: string,
-  aveHome: string,
-  style: 'posix' | 'native' = 'posix',
-): string {
-  // POSIX is the default because the substitution has to be safe in every
-  // position a token can appear: seeded JSON (the indexer's
-  // `folders.json` is a JSON array of scan folders, and a native
-  // `C:\Users\…` path is not a valid JSON string body) as well as a path
-  // key. Node's fs takes either separator, and the app resolves what it reads
-  // before displaying it — so a capture still shows the native form.
-  //
-  // `native` exists for the one position where the separator is the subject
-  // rather than plumbing: prose a scripted reply puts on screen. A frame that
-  // answers “where is this file” with a forward-slashed Windows path is
-  // showing a path no other part of the same app writes that way.
-  const sep = (dir: string): string =>
-    style === 'native' ? dir : dir.split(path.sep).join('/');
-  return value
-    .split('{{AVE_HOME}}').join(sep(aveHome))
-    .split('{{DEMO_DOCS}}').join(sep(DEMO_DOCS_DIR));
-}
-
-/**
- * Recursively hardlink a directory tree.
- *
- * Hardlinks — not a copy (633 MB per venv) and not a junction: near-instant,
- * no extra disk, and safe when the destination's parent (the isolated profile)
- * is recursively removed at teardown. `fs.rmSync` deletes the hardlink entries
- * but the SOURCE keeps its own directory entries, so the inodes survive and the
- * real provisioned venv is never wiped — unlike a junction, which `fs.rmSync`
- * can traverse into and delete the target contents of. Falls back to a copy per
- * file across volumes (EXDEV) or if the link cannot be created.
- */
-function hardlinkTree(src: string, dest: string): void {
-  fs.mkdirSync(dest, { recursive: true });
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const s = path.join(src, entry.name);
-    const d = path.join(dest, entry.name);
-    if (entry.isDirectory()) {
-      hardlinkTree(s, d);
-    } else if (entry.isFile()) {
-      try {
-        fs.linkSync(s, d);
-      } catch {
-        fs.copyFileSync(s, d);
-      }
-    }
-  }
-}
-
-/**
- * Opt-in real-Python reuse (`AVE_SCREENSHOT_REAL_PYTHON=1`).
- *
- * A worker-backed plugin (local-indexer) only registers its live sidebar view
- * after its Python worker starts healthily, and the isolated profile has an
- * empty runtime cache — so without this it degrades to a Doctor entry. For each
- * seeded plugin that shipped a `python-requirements.lock` (plugin-seed copies it
- * only under this opt-in), find the venv the host ALREADY provisioned for that
- * exact lock under the REAL `~/.ave/runtime` and hardlink it into the isolated
- * runtime at the path the host derives from the lock hash. The host's
- * PythonRuntimeBootstrapper then hits the `.ready` sentinel (no network, no
- * build) and the worker starts for real. No-op with a warning when no matching
- * venv exists — the capture then shows the Doctor entry, same as without the
- * opt-in. Machine-local by nature (relies on a prior real provisioning).
- */
-function reuseRealPythonRuntime(aveHomeForTest: string, seededIds: readonly string[]): void {
-  const realEnvsRoot = path.join(os.homedir(), '.ave', 'runtime', 'python-envs');
-  if (!fs.existsSync(realEnvsRoot)) {
-    console.warn(`[screenshots] real-python: no provisioned runtime at ${realEnvsRoot}`);
-    return;
-  }
-  const realDirs = fs.readdirSync(realEnvsRoot);
-  for (const id of seededIds) {
-    const lockPath = path.join(aveHomeForTest, 'plugins', id, 'python-requirements.lock');
-    if (!fs.existsSync(lockPath)) continue;
-    const lockHash = createHash('sha256').update(fs.readFileSync(lockPath)).digest('hex').slice(0, 24);
-    const match = realDirs.find(
-      (d) => d.endsWith(`-py312-${lockHash}`) && fs.existsSync(path.join(realEnvsRoot, d, 'venv', '.ready')),
-    );
-    if (!match) {
-      console.warn(
-        `[screenshots] real-python: no ready venv for ${id} (lock ${lockHash}) — plugin will show a Doctor entry`,
-      );
-      continue;
-    }
-    const srcVenv = path.join(realEnvsRoot, match, 'venv');
-    const destVenv = path.join(aveHomeForTest, 'runtime', 'python-envs', match, 'venv');
-    hardlinkTree(srcVenv, destVenv);
-    // eslint-disable-next-line no-console
-    console.log(`[screenshots] real-python: linked venv for ${id} -> ${destVenv}`);
-  }
-}
 
 /**
  * Fixed capture viewport. Chosen independently of any single existing
@@ -293,12 +156,6 @@ function resolveSeededPaths(
   return turns.map((turn) => ({
     ...turn,
     parts: turn.parts.map((part) => {
-      // A reply that names where a file is has to name the real path, and only
-      // the run knows it — the same problem the tool inputs below have, so the
-      // same token vocabulary answers it rather than a second mechanism.
-      if (part.kind === 'text' || part.kind === 'reasoning') {
-        return { ...part, text: resolveCaptureTokens(part.text, aveHome, 'native') };
-      }
       if (part.kind !== 'tool' || !part.seededPathFields) return part;
       const input = { ...part.input };
       for (const field of part.seededPathFields) {
@@ -308,9 +165,7 @@ function resolveSeededPaths(
             `scripted turn ${part.id}: "${field}" must name a seededCorpus entry (got ${JSON.stringify(key)})`,
           );
         }
-        input[field] = path.isAbsolute(resolveCaptureTokens(key, aveHome))
-          ? resolveCaptureTokens(key, aveHome)
-          : path.join(aveHome, key);
+        input[field] = path.join(aveHome, key);
       }
       return { ...part, input };
     }),
@@ -502,62 +357,6 @@ async function startScriptedProvider(
 }
 
 /**
- * Plugin config seeded into the isolated profile's settings, keyed by plugin id.
- *
- * Only `local-indexer` needs one, and it needs it for a reason worth stating.
- * Its worker binds a TCP port on 127.0.0.1, and left unset that port is 43129
- * for every instance — so a capture run on a machine where Ave is already open
- * would either fail to start the worker or, worse, address the ALREADY RUNNING
- * one and render the operator's real index into a published screenshot. Naming
- * a port the OS just told us is free removes both. The setting this uses is the
- * plugin's own `workerPort`, added for exactly this class of problem.
- */
-async function capturePluginConfigs(
-  installPlugins: readonly string[],
-): Promise<Record<string, Record<string, unknown>>> {
-  if (!installPlugins.includes('local-indexer')) return {};
-  return {
-    'local-indexer': {
-      workerPort: await reserveFreePort(),
-      // Keep the indexer off the network. Its embedding side defaults to
-      // OpenAI and, with `apiKeySource: "host"`, picks up the harness's seeded
-      // test LLM key — then spends the whole capture timing out against
-      // api.openai.com: three documents indexed in two minutes, out of
-      // eighteen, and the scan killed by the host's 120s tool ceiling.
-      //
-      // `apiKeySource: "plugin"` with an empty key slot is the plugin's own
-      // switch for this: no key reaches the worker, the worker skips vector
-      // embedding entirely rather than calling anything, and what remains is
-      // the BM25 index — which is what these captures show, and it builds in
-      // seconds.
-      //
-      // Serving the embeddings from the harness instead does not work, and the
-      // reason is worth recording: the worker never calls the endpoint itself.
-      // Its egress goes through the plugin's host-mediated broker, whose
-      // upstream leg is `hostApi.hostFetch` — and that chokepoint is https-only
-      // with no opt-out, so a loopback `http://127.0.0.1:<port>` stub is denied
-      // before it is ever reached and every document ends in a 504 instead.
-      apiKeySource: 'plugin',
-      embeddingApiKey: '',
-    },
-  };
-}
-
-/**
- * A TCP port nothing is listening on, obtained by letting the OS pick one and
- * releasing it. Inherently a hint rather than a reservation — something else
- * can take it in the gap — but on a capture machine that gap is empty, and the
- * alternative (a second hardcoded port) is the problem this exists to avoid.
- */
-async function reserveFreePort(): Promise<number> {
-  const probe = http.createServer();
-  await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
-  const { port } = probe.address() as AddressInfo;
-  await new Promise<void>((resolve) => probe.close(() => resolve()));
-  return port;
-}
-
-/**
  * Seeded settings pointing the active vendor at the scripted endpoint.
  *
  * Built on top of `buildLlmSettings` so the vendor-block shape stays in
@@ -602,11 +401,10 @@ export type ScreenshotFixtures = {
 
 export type ScreenshotOptions = {
   /**
-   * Manifest ids of REAL plugins to side-load into the isolated profile before
-   * launch (e.g. `['local-indexer']`). Their built `dist/` is copied from the
-   * sibling `../ave-plugin-<id>/` repo so their actual UI bundle renders — see
-   * `plugin-seed.ts`. Empty (default) keeps the old behavior: no plugins, an
-   * empty registry. Set per-scenario via `test.use({ installPlugins: [...] })`.
+   * Ids of in-repository fixture plugins to install into the isolated profile
+   * before launch (e.g. `['viewfixture']`) — see `plugin-seed.ts`. Empty
+   * (default): no plugins, an empty registry. Set per-scenario via
+   * `test.use({ installPlugins: [...] })`.
    */
   installPlugins: readonly string[];
   /**
@@ -626,7 +424,7 @@ export type ScreenshotOptions = {
   /**
    * `permissions.reviewer.mode` for the isolated profile, or null to leave the
    * host default (`llm`, following the active vendor). Plugin scenarios do not
-   * set this — `seedRealPlugins` already picks the mode their panel needs.
+   * set this — `seedFixturePlugins` already picks the mode their panel needs.
    */
   reviewerMode: 'disabled' | 'rule' | 'llm' | 'strict' | null;
   /**
@@ -646,11 +444,6 @@ export type ScreenshotOptions = {
    * allowed roots (`computeDefaultAllowedDirectories`), so a scripted
    * `read_file` over one of these runs without an approval prompt and the
    * frame shows invented content only.
-   *
-   * A key or a value may contain `{{AVE_HOME}}` or `{{DEMO_DOCS}}`, resolved
-   * at seeding time (see `resolveCaptureTokens`) — a key so a file can be
-   * written to the demo corpus the local-indexer captures index, a value so
-   * seeded content can name one of those directories by absolute path.
    */
   seededCorpus: Readonly<Record<string, string>>;
   /**
@@ -659,15 +452,6 @@ export type ScreenshotOptions = {
    * plugin-panel keys keep the harness's original English.
    */
   uiLocale: 'ko' | 'en';
-  /**
-   * Per-test timeout, or null for the config's 60s.
-   *
-   * Raised only by a scenario that legitimately takes longer — a worker-backed
-   * plugin's cold start, or an indexing run the capture has to wait out. Kept
-   * per-scenario rather than raised globally so the twenty-odd fast captures
-   * still fail within a minute when something is actually wrong.
-   */
-  timeoutMs: number | null;
   /**
    * Window size for this capture, or null for {@link CAPTURE_VIEWPORT}.
    *
@@ -684,9 +468,8 @@ export type ScreenshotOptions = {
 /**
  * Electron launch fixture for the screenshot harness.
  *
- * Unlike `test/e2e/ui/fixtures.ts`'s `ElectronFixtures` (which seeds inert
- * `"E2E Plugin UI"` stubs to test host-side lifecycle wiring), this seeds the
- * plugin repos' REAL built UI bundles when a scenario opts in via
+ * Plugins come from the same in-repository fixtures the Playwright suite
+ * seeds, installed when a scenario opts in via
  * `test.use({ installPlugins: [...] })` — see `plugin-seed.ts`. Scenarios with
  * no `installPlugins` get an empty plugin registry (host-only screens).
  *
@@ -701,7 +484,6 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
   scriptedScript: [null, { option: true }],
   uiLocale: ['en', { option: true }],
   captureViewport: [null, { option: true }],
-  timeoutMs: [null, { option: true }],
   reviewerMode: [null, { option: true }],
   executionMode: [null, { option: true }],
   seededCorpus: [{}, { option: true }],
@@ -727,7 +509,7 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
   // out-of-allowed-dir gate fired first and short-circuited the reviewer, and
   // `chat-permission-llm-review`, which captures a review still in flight,
   // timed out on a card that run would never render. No profile path reaches a
-  // frame, so only the corpus needs a neutral home (DEMO_DOCS_ROOT above).
+  // frame.
   userDataDir: async ({}, use) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ave-screenshot-'));
     await use(dir);
@@ -758,7 +540,6 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
     // src/shared/initial-app-mode.ts) already matches the work-mode capture
     // requirement, and readPersistedAppModeSync falls back to it when the
     // settings file has no `system` block at all.
-    const pluginConfigs = await capturePluginConfigs(installPlugins);
     fs.writeFileSync(
       path.join(userDataDir, 'ave-settings.json'),
       `${JSON.stringify(
@@ -766,7 +547,6 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
           ...(scriptedProvider
             ? scriptedProviderSettings(scriptedProvider.baseUrl, uiLocale)
             : buildE2eBaseSettings(true, uiLocale)),
-          ...(Object.keys(pluginConfigs).length > 0 ? { pluginConfigs } : {}),
         },
         null,
         2,
@@ -779,54 +559,22 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
       JSON.stringify(buildE2eSecrets(), null, 2) + '\n',
       { encoding: 'utf-8', mode: 0o600 },
     );
-    // Plugin registry. When `installPlugins` is empty (default) this writes an
-    // empty registry — the original no-plugin behavior. When a scenario names
-    // plugins, their REAL built `dist/` bundle is copied from the sibling repo
-    // so the actual UI renders (see plugin-seed.ts).
+    // Plugin registry: empty by default, or the scenario's fixture plugins.
     if (reviewerMode) seedReviewerMode(aveHomeForTest, reviewerMode);
     if (executionMode) seedExecutionMode(aveHomeForTest, executionMode);
-    if (installPlugins.length === 0) {
-      const pluginsRoot = path.join(aveHomeForTest, 'plugins');
-      fs.mkdirSync(pluginsRoot, { recursive: true, mode: 0o700 });
-      fs.writeFileSync(
-        path.join(pluginsRoot, 'registry.json'),
-        `${JSON.stringify({ version: 1, plugins: [] }, null, 2)}\n`,
-        'utf-8',
-      );
-    } else {
-      const result = await seedRealPlugins(REPO_ROOT, aveHomeForTest, installPlugins, {
-        disableReviewer: !keepReviewer,
-      });
-      if (result.missing.length > 0) {
-        // Surface missing bundles loudly — a scenario asked for a plugin whose
-        // built dist is absent, so its capture will not be meaningful.
-        console.warn(
-          `[screenshots] requested plugins not seeded (bundle missing): ${result.missing.join(', ')}`,
-        );
-      }
-      // Opt-in: make a worker-backed plugin's live panel capturable by reusing
-      // the machine's pre-provisioned Python venv (see reuseRealPythonRuntime).
-      if (REAL_PYTHON_CAPTURES) {
-        reuseRealPythonRuntime(aveHomeForTest, result.seeded);
-      }
-    }
+    await seedFixturePlugins(aveHomeForTest, installPlugins, {
+      disableReviewer: !keepReviewer,
+    });
 
     // Seeded corpus is written AFTER the plugin install, not before: installing
-    // a plugin `rmSync`s its whole `plugins/<id>/` directory first (plugin-seed.ts),
-    // so a scenario seeding a plugin's own data file — `plugins/meeting/data/preps.json`,
-    // the store the upcoming-meeting panel lists — would have it deleted out from
-    // under it. Ordinary corpus paths (`notes/...`) do not care either way, so one
-    // ordering serves both rather than a second seeding hook for plugin data.
+    // a plugin `rmSync`s its whole `plugins/<id>/` directory first (seed.ts), so
+    // a corpus file under a plugin's own data directory would be deleted out
+    // from under it. Ordinary corpus paths (`notes/...`) do not care either way,
+    // so one ordering serves both.
     for (const [relative, contents] of Object.entries(seededCorpus)) {
-      // A key is relative to the Ave home unless it resolves to an absolute
-      // path — which today means it named {{DEMO_DOCS}}, the one corpus that
-      // has to live outside the profile because the capture shows its path.
-      const resolvedKey = resolveCaptureTokens(relative, aveHomeForTest);
-      const target = path.isAbsolute(resolvedKey)
-        ? resolvedKey
-        : path.join(aveHomeForTest, resolvedKey);
+      const target = path.join(aveHomeForTest, relative);
       fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
-      fs.writeFileSync(target, resolveCaptureTokens(contents, aveHomeForTest), {
+      fs.writeFileSync(target, contents, {
         encoding: 'utf-8',
         mode: 0o600,
       });

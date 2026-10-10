@@ -4,183 +4,49 @@ import { test as base, expect } from "@playwright/test";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { hostGit } from "../../../src/marketplace/__tests__/fixtures/git-http-server.js";
-import {
-  hashReceiptFiles,
-  listFilesRecursive,
-  writeInstallReceipt,
-} from "../../../src/plugins/plugin-install-receipt.js";
 import {
   buildE2eBaseSettings,
   buildE2eSecrets,
   buildIsolatedElectronEnv,
 } from "./seeded-electron";
 import { makeTestT, type TestT } from "./i18n.js";
-import { agentPluginsDocument } from "../../../src/plugins/__tests__/test-helpers.js";
-import { flattenAgentPluginsManifest } from "../../../src/plugins/public-contract.js";
 
 import { ALERT_FIXTURE_MANIFEST, ALERT_FIXTURE_SOURCE } from "./alert-fixture.js";
+import { VIEW_FIXTURE } from "../../fixtures/e2e-plugins/view-fixture.js";
+import {
+  writeFixturePlugin,
+  writeFixtureRegistry,
+  type FixtureManifest,
+  type FixtureRegistryEntry,
+} from "../../fixtures/e2e-plugins/seed.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
-const E2E_PLUGIN_REPOS = [
-  "ave-plugin-local-indexer",
-  "ave-plugin-meeting",
-] as const;
-
-const E2E_PLUGIN_UI_STUB_SOURCE =
-  'export function mount({ root }) { root.textContent = "E2E Plugin UI"; }\nexport default { mount };\n';
-
 type LaunchEnv = Record<string, string | undefined>;
 
-type E2eManifest = {
-  id?: unknown;
-  version?: unknown;
-  pluginAccess?: unknown;
-  tools?: unknown;
-  ui?: unknown;
-  python?: unknown;
-};
-
-/** The seeded copy runs without its Python runtime; everything else is the plugin's own manifest. */
-function prepareE2eManifest(manifest: E2eManifest): E2eManifest {
-  const base = { ...manifest };
-  delete base.python;
-  return base;
-}
-
-function buildHostPluginStub(
-  manifestId: string,
-  toolNames: readonly string[] = [],
-): string {
-  /**
-   * A handler per manifest tool.
-   *
-   * Without these the stub shipped `handlers: {}`, so every tool the manifest
-   * declared was dropped at registration ("tool disabled — missing handler")
-   * and the plugin tool surface simply did not exist for the model. Any spec
-   * claiming to prove a plugin tool call was proving nothing. The bodies echo
-   * a marker so a test can tell "the model asked for this tool AND the host
-   * dispatched it" from "the tool name merely appears in the prompt".
-   */
-  const echoHandlers = toolNames
-    .map((name) => `      ${JSON.stringify(name)}: async (args) => (`
-      + `{ ok: true, stub: ${JSON.stringify(`e2e-stub:${manifestId}:`)} + ${JSON.stringify(name)}, args }),`)
-    .join("\n");
-
-  return `export default function createPlugin() {
-  return {
-    handlers: {
-${echoHandlers}
-    },
-    start() {},
-    stop() {}
-  };
-}
-`;
-}
-
-function resolveE2ePluginSourceRoot(repoRoot: string): string {
-  if (process.env.AVE_E2E_PLUGIN_SOURCE_ROOT) {
-    return path.resolve(process.env.AVE_E2E_PLUGIN_SOURCE_ROOT);
-  }
-
-  const candidates = [path.resolve(repoRoot, "..")];
-  try {
-    const output = hostGit(["worktree", "list", "--porcelain"], repoRoot);
-    for (const line of output.split("\n")) {
-      if (!line.startsWith("worktree ")) continue;
-      candidates.push(path.dirname(line.slice("worktree ".length).trim()));
-    }
-  } catch {
-    /* Non-git CI checkouts fall back to repoRoot/.. below. */
-  }
-
-  const uniqueCandidates = [...new Set(candidates)];
-  return (
-    uniqueCandidates.find((candidate) =>
-      E2E_PLUGIN_REPOS.some((repoSlug) =>
-        fs.existsSync(path.join(candidate, repoSlug, "plugin.json")),
-      ),
-    ) ?? uniqueCandidates[0]
-  );
-}
-
 async function seedE2ePlugins(
-  repoRoot: string,
   aveHomeForTest: string,
   seedTogglePlugin: boolean,
-  seedRepositoryPlugins: boolean,
+  seedViewFixturePlugin: boolean,
   seedAlertPlugin: boolean,
 ): Promise<void> {
-  const pluginsRoot = path.join(aveHomeForTest, "plugins");
-  const cacheRoot = path.join(pluginsRoot, ".cache");
-  fs.mkdirSync(pluginsRoot, { recursive: true, mode: 0o700 });
-  const entries: Array<{
-    id: string;
-    manifestPath: string;
-    enabled: boolean;
-    installSource: "local-dev";
-    approvedPluginAccess?: unknown;
-  }> = [];
-
-  async function writeSeededPlugin(
-    manifest: E2eManifest & {
-      id: string;
-      version: string;
-      entry: string;
-      tools: unknown[];
-    },
-    hostPluginSource: string,
-  ): Promise<void> {
-    const manifestText = `${JSON.stringify(agentPluginsDocument(manifest), null, 2)}\n`;
-    const pluginDir = path.join(pluginsRoot, manifest.id);
-    fs.rmSync(pluginDir, { recursive: true, force: true });
-    fs.mkdirSync(path.join(pluginDir, "dist"), {
-      recursive: true,
-      mode: 0o700,
-    });
-    fs.writeFileSync(
-      path.join(pluginDir, "plugin.json"),
-      manifestText,
-      "utf-8",
-    );
-    fs.writeFileSync(
-      path.join(pluginDir, manifest.entry),
-      hostPluginSource,
-      "utf-8",
-    );
-    await writeInstallReceipt(cacheRoot, {
-      schemaVersion: 3,
-      pluginId: manifest.id,
-      version: manifest.version,
-      installSource: "local-dev",
-      artifactSha256: null,
-      signerKeyId: null,
-      admission: null,
-      installedAt: new Date().toISOString(),
-      files: await hashReceiptFiles(pluginDir, ["plugin.json", manifest.entry]),
-    });
-    entries.push({
-      id: manifest.id,
-      manifestPath: `${manifest.id}/plugin.json`,
-      enabled: true,
-      installSource: "local-dev",
-      approvedPluginAccess: manifest.pluginAccess,
-    });
+  const entries: FixtureRegistryEntry[] = [];
+  if (seedAlertPlugin) {
+    entries.push(await writeFixturePlugin(aveHomeForTest, {
+      manifest: ALERT_FIXTURE_MANIFEST,
+      files: { [ALERT_FIXTURE_MANIFEST.entry]: ALERT_FIXTURE_SOURCE },
+    }));
   }
-
-  if (seedAlertPlugin) await writeSeededPlugin(ALERT_FIXTURE_MANIFEST, ALERT_FIXTURE_SOURCE);
-
   if (seedTogglePlugin) {
-    await writeSeededPlugin(
-      {
+    entries.push(await writeFixturePlugin(aveHomeForTest, {
+      manifest: {
         id: "e2e-toggle-plugin",
         name: "E2E Toggle Plugin",
         version: "0.0.0",
         description:
           "Minimal plugin used by plugin active/inactive E2E coverage.",
         entry: "dist/hostPlugin.js",
+        requires: { minAppVersion: "0.12.0", hostProtocol: "2" },
         tools: [
           {
             name: "e2e_toggle_ping",
@@ -195,109 +61,22 @@ async function seedE2ePlugins(
             },
           },
         ],
-      },
-      `export default function createPlugin() {
+      } as FixtureManifest,
+      files: {
+        "dist/hostPlugin.js": `export default function createPlugin() {
   return {
     handlers: { e2e_toggle_ping: async () => "pong" },
     start() {},
     stop() {}
   };
 }\n`,
-    );
+      },
+    }));
   }
-
-  if (seedRepositoryPlugins) {
-    const sourceRoot = resolveE2ePluginSourceRoot(repoRoot);
-    for (const repoSlug of E2E_PLUGIN_REPOS) {
-      const sourceDir = path.join(sourceRoot, repoSlug);
-      const sourceManifest = path.join(sourceDir, "plugin.json");
-      if (!fs.existsSync(sourceManifest)) {
-        console.warn(
-          `[e2e] plugin source missing, not seeded: ${sourceManifest}`,
-        );
-        continue;
-      }
-
-      const sourceManifestText = fs.readFileSync(sourceManifest, "utf-8");
-      // Plugin repositories ship the Agent Plugins document; the seeding below
-      // edits the flat host view and writes the document back.
-      const manifest = prepareE2eManifest(
-        flattenAgentPluginsManifest(JSON.parse(sourceManifestText)) as unknown as E2eManifest,
-      );
-      if (
-        typeof manifest.id !== "string" ||
-        typeof manifest.version !== "string"
-      ) {
-        throw new Error(`[e2e] invalid plugin manifest: ${sourceManifest}`);
-      }
-      const manifestText = `${JSON.stringify(agentPluginsDocument(manifest), null, 2)}\n`;
-      const pluginDir = path.join(pluginsRoot, manifest.id);
-      fs.rmSync(pluginDir, { recursive: true, force: true });
-      fs.mkdirSync(pluginDir, { recursive: true, mode: 0o700 });
-      const pluginJsonPath = path.join(pluginDir, "plugin.json");
-      fs.writeFileSync(pluginJsonPath, manifestText, "utf-8");
-
-      const targetDist = path.join(pluginDir, "dist");
-      const uiEntries = Array.isArray((manifest as { ui?: unknown }).ui)
-        ? (
-            manifest as {
-              ui: Array<{ entry?: unknown; displayName?: unknown }>;
-            }
-          ).ui
-        : [];
-      fs.mkdirSync(targetDist, { recursive: true, mode: 0o700 });
-      fs.writeFileSync(
-        path.join(targetDist, "hostPlugin.js"),
-        buildHostPluginStub(
-          manifest.id,
-          (Array.isArray(manifest.tools) ? manifest.tools : [])
-            .map((tool) => (tool as { name?: unknown }).name)
-            .filter((name): name is string => typeof name === "string"),
-        ),
-        "utf-8",
-      );
-      for (const ui of uiEntries) {
-        if (typeof ui.entry !== "string" || !ui.entry.startsWith("dist/"))
-          continue;
-        const uiPath = path.join(pluginDir, ui.entry);
-        fs.mkdirSync(path.dirname(uiPath), { recursive: true, mode: 0o700 });
-        fs.writeFileSync(uiPath, E2E_PLUGIN_UI_STUB_SOURCE, "utf-8");
-      }
-
-      const receiptFiles = ["plugin.json"];
-      if (fs.existsSync(targetDist)) {
-        for (const file of await listFilesRecursive(targetDist)) {
-          receiptFiles.push(`dist/${file}`);
-        }
-      }
-      await writeInstallReceipt(cacheRoot, {
-        schemaVersion: 3,
-        pluginId: manifest.id,
-        version: manifest.version,
-        installSource: "local-dev",
-        artifactSha256: null,
-        signerKeyId: null,
-        admission: null,
-        installedAt: new Date().toISOString(),
-        files: await hashReceiptFiles(pluginDir, receiptFiles),
-      });
-
-      entries.push({
-        id: manifest.id,
-        manifestPath: `${manifest.id}/plugin.json`,
-        enabled: true,
-        installSource: "local-dev",
-        approvedPluginAccess: manifest.pluginAccess,
-      });
-    }
+  if (seedViewFixturePlugin) {
+    entries.push(await writeFixturePlugin(aveHomeForTest, VIEW_FIXTURE));
   }
-
-  fs.writeFileSync(
-    path.join(pluginsRoot, "registry.json"),
-    `${JSON.stringify({ version: 1, plugins: entries }, null, 2)}\n`,
-    "utf-8",
-  );
-
+  writeFixtureRegistry(aveHomeForTest, entries);
 }
 
 /**
@@ -317,14 +96,14 @@ export type ElectronOptions = {
   seedTogglePlugin: boolean;
   seedAlertPlugin: boolean;
   seedPermissionMode: "default" | "allow" | undefined;
-  seedRepositoryPlugins: boolean;
+  seedViewFixturePlugin: boolean;
   seedApiKey: boolean;
   seedLocale: "ko" | "en";
   /**
    * Launch with `AVE_DEV=1` (the default). A spec that checks what a user's
    * build asks for (an http or loopback marketplace's confirmations, design
-   * §18.2.2) turns it off; without it, plugins seeded from the repository do
-   * not load, so such a spec also sets `seedRepositoryPlugins: false`.
+   * §18.2.2) turns it off; without it, the seeded `local-dev` fixture plugins
+   * do not load, so such a spec also sets `seedViewFixturePlugin: false`.
    */
   devFlag: boolean;
 };
@@ -335,7 +114,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
   seedTogglePlugin: [false, { option: true }],
   seedAlertPlugin: [false, { option: true }],
   seedPermissionMode: [undefined, { option: true }],
-  seedRepositoryPlugins: [true, { option: true }],
+  seedViewFixturePlugin: [true, { option: true }],
   // Seed a usable LLM key so the composer is enabled (see buildE2eSecrets).
   // Specs that assert the no-key / key-toggle state override with
   // `test.use({ seedApiKey: false })`.
@@ -364,7 +143,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       launchEnv,
       onboardingCompleted,
       seedTogglePlugin,
-      seedRepositoryPlugins,
+      seedViewFixturePlugin,
       seedAlertPlugin,
       seedPermissionMode,
       seedApiKey,
@@ -462,10 +241,9 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       );
     }
     await seedE2ePlugins(
-      repoRoot,
       aveHomeForTest,
       seedTogglePlugin,
-      seedRepositoryPlugins,
+      seedViewFixturePlugin,
       seedAlertPlugin,
     );
     const app = await electron.launch({
