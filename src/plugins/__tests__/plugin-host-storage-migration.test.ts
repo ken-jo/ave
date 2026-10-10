@@ -33,7 +33,7 @@ import {
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 /** One-shot: run `run` right before the module under test lstats `path`. */
 const hooks = vi.hoisted(() => ({
@@ -60,7 +60,6 @@ import {
   PLUGIN_HOST_STORAGE_MIGRATION_DIR_NAME,
   migratePluginHostStorage,
 } from "../plugin-storage-layout.js";
-import { FRAME_BYTES_MAX } from "../isolation/host-api-wire.js";
 import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 import { ensurePluginDataDir } from "../runtime/sandbox.js";
 import { cleanupTmpDir, removeLinkOnly } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -141,6 +140,33 @@ describe("migratePluginHostStorage — what is copied", () => {
     }
   });
 
+  it("copies keys to depth 2 and up to 8 MiB, and skips the plugin's own deeper or larger trees", async () => {
+    const data = dataOf("meeting");
+    mkdirSync(join(data, "auth"));
+    // Exactly the size cap, at depth 2: copied.
+    writeFileSync(join(data, "auth", "token-default.json"), "");
+    truncateSync(join(data, "auth", "token-default.json"), 8 * 1024 * 1024);
+    writeFileSync(join(data, "calendar-automation-claims.json"), "{}");
+    // A session tree: its transcript is depth 3, its recording one byte over.
+    mkdirSync(join(data, "sessions", "s-1"), { recursive: true });
+    writeFileSync(join(data, "sessions", "s-1", "transcript.json"), "{}");
+    writeFileSync(join(data, "recording.wav"), "");
+    truncateSync(join(data, "recording.wav"), 8 * 1024 * 1024 + 1);
+
+    const result = await migratePluginHostStorage(pluginsRoot);
+
+    expect(result.failed).toEqual([]);
+    expect(Object.fromEntries(result.skipped.map(({ path, reason }) => [path.slice(data.length + 1).split(sep).join("/"), reason]))).toEqual({
+      "sessions/s-1": "deeper than a storage key (depth 2)",
+      "recording.wav": "larger than 8 MiB",
+    });
+    const storage = storageOf("meeting");
+    expect(statSync(join(storage, "auth", "token-default.json")).size).toBe(8 * 1024 * 1024);
+    expect(readFileSync(join(storage, "calendar-automation-claims.json"), "utf-8")).toBe("{}");
+    expect(readdirSync(join(storage, "sessions"))).toEqual([]);
+    expect(existsSync(join(storage, "recording.wav"))).toBe(false);
+  });
+
   it("skips what storage could never have written, and reports each", async () => {
     const data = dataOf("p");
     writeFileSync(join(data, "kept.json"), "{}");
@@ -150,9 +176,9 @@ describe("migratePluginHostStorage — what is copied", () => {
     // A second name for an inode the plugin may not own.
     writeFileSync(join(scratch, "elsewhere.txt"), "not the plugin's");
     linkSync(join(scratch, "elsewhere.txt"), join(data, "hard-link"));
-    // Larger than any storage value: it reached the host in one frame or not at all.
+    // Larger than the 8 MiB a migrated storage value may be.
     writeFileSync(join(data, "index.bin"), "");
-    truncateSync(join(data, "index.bin"), FRAME_BYTES_MAX + 1);
+    truncateSync(join(data, "index.bin"), 8 * 1024 * 1024 + 1);
     if (posix) execFileSync("mkfifo", [join(data, "fifo")]);
 
     try {
@@ -160,11 +186,11 @@ describe("migratePluginHostStorage — what is copied", () => {
 
       expect(result.failed).toEqual([]);
       expect(result.migrated).toEqual([join(pluginsRoot, "p")]);
-      expect(Object.fromEntries(result.skipped.map(({ path, reason }) => [path.slice(data.length + 1), reason]))).toEqual({
+      expect(Object.fromEntries(result.skipped.map(({ path, reason }) => [path.slice(data.length + 1).split(sep).join("/"), reason]))).toEqual({
         "file-link": "a link",
         "dir-link": "a link",
         "hard-link": "hard-linked",
-        "index.bin": "larger than any storage value",
+        "index.bin": "larger than 8 MiB",
         ...(posix ? { fifo: "not a regular file" } : {}),
       });
       expect(readdirSync(storageOf("p"))).toEqual(["kept.json"]);
@@ -187,7 +213,7 @@ describe("migratePluginHostStorage — what is copied", () => {
         const result = await migratePluginHostStorage(pluginsRoot);
 
         expect(result.failed).toEqual([]);
-        expect(result.skipped.map(({ path, reason }) => [path.slice(data.length + 1), reason]).sort()).toEqual([
+        expect(result.skipped.map(({ path, reason }) => [path.slice(data.length + 1).split(sep).join("/"), reason]).sort()).toEqual([
           ["locked-dir", "unreadable: EACCES"],
           ["locked.json", "unreadable: EACCES"],
         ]);
@@ -204,28 +230,29 @@ describe("migratePluginHostStorage — what is copied", () => {
     "skips an entry whose path fits under data/ but not under the longer staging name",
     async () => {
       const pathMax = process.platform === "darwin" ? 1024 : 4096;
-      const data = dataOf("p");
-      writeFileSync(join(data, "kept.json"), "{}");
-      // Directories whose staging copies still fit, and one file that does not:
-      // its path is under PATH_MAX in data/ and over it in the staging tree.
+      // A plugins root deep enough that a depth-2 key reaches PATH_MAX: its
+      // path is under the limit in data/ and over it in the staging tree.
       const stagingGrowth = PLUGIN_HOST_STORAGE_MIGRATION_DIR_NAME.length - PLUGIN_DATA_DIR_NAME.length;
       const target = pathMax - 3;
-      let dir = data;
-      while (target - dir.length - 1 > 250) {
-        dir = join(dir, "d".repeat(200));
-        mkdirSync(dir);
-      }
+      let deepRoot = join(scratch, "deep");
+      while (target - join(deepRoot, "p", PLUGIN_DATA_DIR_NAME).length - 1 > 480) deepRoot = join(deepRoot, "r".repeat(200));
+      const data = join(deepRoot, "p", PLUGIN_DATA_DIR_NAME);
+      mkdirSync(data, { recursive: true });
+      writeFileSync(join(data, "kept.json"), "{}");
+      const remaining = target - data.length - 1;
+      const dir = join(data, "d".repeat(Math.min(250, remaining - 60)));
+      mkdirSync(dir);
       const deep = join(dir, "f".repeat(target - dir.length - 1));
       expect(deep.length).toBeLessThan(pathMax);
       expect(deep.length + stagingGrowth).toBeGreaterThanOrEqual(pathMax);
       writeFileSync(deep, "deep");
 
-      const result = await migratePluginHostStorage(pluginsRoot);
+      const result = await migratePluginHostStorage(deepRoot);
 
       expect(result.failed).toEqual([]);
-      expect(result.migrated).toEqual([join(pluginsRoot, "p")]);
+      expect(result.migrated).toEqual([join(deepRoot, "p")]);
       expect(result.skipped).toEqual([{ path: deep, reason: expect.stringMatching(/^too long under storage\//) }]);
-      expect(readFileSync(join(storageOf("p"), "kept.json"), "utf-8")).toBe("{}");
+      expect(readFileSync(join(deepRoot, "p", PLUGIN_HOST_STORAGE_DIR_NAME, "kept.json"), "utf-8")).toBe("{}");
     },
   );
 
@@ -339,6 +366,24 @@ describe("migratePluginHostStorage — idempotent and crash-safe", () => {
     ]);
     expect(result.migrated).toEqual([join(pluginsRoot, "fine")]);
   });
+
+  it.runIf(posix && process.getuid?.() !== 0)(
+    "names the migration's own failure and the path when a load is refused for it",
+    async () => {
+      writeFileSync(join(dataOf("stuck"), "session-snapshot.json"), "{}");
+      // The plugin root refuses the staging directory: a persistent failure.
+      chmodSync(join(pluginsRoot, "stuck"), 0o500);
+      try {
+        const result = await migratePluginHostStorage(pluginsRoot);
+        expect(result.failed).toEqual([{ root: join(pluginsRoot, "stuck"), error: expect.stringMatching(/EACCES/) }]);
+        expect(() => ensurePluginDataDir("stuck", join(pluginsRoot, "stuck", "current"), pluginsRoot)).toThrow(
+          new RegExp(`the boot migration that creates it failed for ${join(pluginsRoot, "stuck")}: .*EACCES.* fix that and restart`),
+        );
+      } finally {
+        chmodSync(join(pluginsRoot, "stuck"), 0o700);
+      }
+    },
+  );
 
   it("is what a legacy root's load waits for: refused before, loaded after", async () => {
     writeFileSync(join(dataOf("legacy"), "session-snapshot.json"), "{}");

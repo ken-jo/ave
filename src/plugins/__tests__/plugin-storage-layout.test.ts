@@ -36,7 +36,7 @@ import {
 } from "../plugin-storage-layout.js";
 import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 import { aveHome } from "../../shared/ave-home.js";
-import { isPathWithin, isResolvedPathWithin } from "../plugin-storage-containment.js";
+import { isPathWithin, isResolvedPathWithin, outermostContainingRoots } from "../plugin-storage-containment.js";
 import { PLUGIN_DATA_FIXTURE, makeTestTreeWritable, readPluginDataFixture, seedChildLockedTree, seedPluginDataFixture } from "./test-helpers.js";
 
 /**
@@ -1209,6 +1209,41 @@ describe("isSamePluginPath", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("outermostContainingRoots", () => {
+  let root: string;
+  beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "outermost-roots-")); });
+  afterEach(async () => {
+    await rm(join(root, "data", "link"), { force: true }).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("hands a grant the envelope root, never a component the plugin can turn into a link", async () => {
+    // The plugin's own process re-points `data/link` at a directory outside;
+    // the path a worker asked for runs through it. What a Windows ACL grant is
+    // given must not: srt-win stamps the ACE on whatever the path resolves to.
+    const data = join(root, "data");
+    const outside = join(root, "outside");
+    await mkdir(data);
+    await mkdir(outside);
+    await symlink(outside, join(data, "link"), process.platform === "win32" ? "junction" : "dir");
+    const sockets = join(root, "sockets");
+    await mkdir(sockets);
+    const chosenInData = join(data, "index");
+
+    const granted = outermostContainingRoots(
+      [join(data, "link", "segments"), chosenInData, join(sockets, "a.sock"), join(data, "link")],
+      [data, sockets, chosenInData],
+    );
+
+    expect(granted).toEqual([data, sockets]);
+    for (const path of granted) expect((await lstat(path)).isSymbolicLink()).toBe(false);
+  });
+
+  it("refuses a path no root contains", () => {
+    expect(() => outermostContainingRoots([resolve(sep, "elsewhere")], [resolve(sep, "ave", "data")])).toThrow(/lies under none/);
   });
 });
 

@@ -12,7 +12,12 @@ import type { SecretEncryption } from "../../data/secret-document-store.js";
 import { applyConfigDefaults } from "../config-schema.js";
 import { createLogger } from "../../lib/logger.js";
 import { aveHome } from "../../shared/ave-home.js";
-import { PLUGIN_DATA_DIR_NAME, resolvePluginHostStorageDir, resolvePluginSocketDir } from "../plugin-storage-layout.js";
+import {
+  PLUGIN_DATA_DIR_NAME,
+  hostStorageMigrationFailureFor,
+  resolvePluginHostStorageDir,
+  resolvePluginSocketDir,
+} from "../plugin-storage-layout.js";
 import { resolvePluginDataRoot } from "../plugin-storage-containment.js";
 const log = createLogger("sandbox");
 
@@ -126,9 +131,13 @@ function ensurePluginHostStorageDir(pluginId: string, dataDir: string, dataCreat
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   if (!dataCreated && readdirSync(dataDir).length > 0) {
+    const failure = hostStorageMigrationFailureFor(dataDir);
     throw new Error(
       `[plugin '${pluginId}'] ${storageDir} is missing while ${dataDir} holds state; `
-        + "the boot migration creates it from that state — restart the app to migrate",
+        + (failure !== undefined
+          ? `the boot migration that creates it failed for ${dirname(dataDir)}: ${failure} — `
+            + "fix that and restart the app to retry"
+          : "the boot migration creates it from that state — restart the app to migrate"),
     );
   }
   mkdirSync(storageDir, { mode: 0o700 });

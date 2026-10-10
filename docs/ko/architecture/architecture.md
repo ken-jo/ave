@@ -2015,7 +2015,9 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   파일시스템 격리 (`denyPluginsRoot`) 는 macOS·Linux 에만 있다. 플러그인 child 와
   delegated worker 는 각자 자기 디렉터리를 그 프로세스 수명 동안 유지되는 holder-PID
   ACL grant 로 얻고, grant 가 유지되는 동안에는 다른 모든 confined process 도 그
-  디렉터리에 닿는다. srt-win 은 stdin 을 전달하지 않고 spawn 의 환경 변수도 넘기지
+  디렉터리에 닿는다. srt-win 은 경로가 junction 을 거쳐 가리키는 곳에 ACE 를 찍으므로,
+  grant 는 플러그인이 바꿔칠 수 있는 하위 경로가 아니라 가장 바깥 envelope root 만
+  가리킨다 (decision 66). srt-win 은 stdin 을 전달하지 않고 spawn 의 환경 변수도 넘기지
   않으므로, `entry` 플러그인 child 는 `cmd.exe` 아래에서 `ELECTRON_RUN_AS_NODE` 를
   명령줄에, 나머지 환경을 인자 하나에 담고 Node 의 symlink 보존 플래그로 실행되며,
   loopback 연결 하나로 호스트와 통신한다. 이 연결은 양쪽이 모두 인증한다: child 가
@@ -3757,7 +3759,8 @@ child 가 쓴다. 그 옆 `storage/` 는 호스트 전용이다: HostApi `storag
 syscall 을 하므로, child 가 쓸 수 없는 디렉터리여야만 그 syscall 이 확인한 위치에
 떨어진다. 경로의 소유자는 `plugin-storage-layout.ts` 이고, 승격·복구는 `storage/` 를
 `data/` 와 함께 옮긴다. 이 디렉터리 이전에 쓰인 storage 는 부팅 때 confined 프로세스가
-뜨기 전에 한 번 `data/` 에서 복사된다(링크는 따라가지 않음, `migratePluginHostStorage`;
+뜨기 전에 한 번 `data/` 에서 복사된다(링크는 따라가지 않고, 깊이 2 이하·8 MiB 이하 키만,
+`migratePluginHostStorage`;
 `docs/design/plugin-hostapi-protocol.md` decision 65).
 
 IPC channels: `ave:plugin:config:get/set`, `ave:plugin:storage:get/set`.

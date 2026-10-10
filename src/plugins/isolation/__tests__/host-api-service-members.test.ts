@@ -1279,7 +1279,7 @@ function closures(harness: ServiceHarness): { subscriptionId: string; reason: st
 }
 
 describe("a delegated worker cannot reach further than the plugin process itself", () => {
-  it("passes grants that lie inside the child's own envelope straight through", async () => {
+  it.runIf(process.platform !== "win32")("passes grants that lie inside the child's own envelope straight through", async () => {
     const spawnWorker = vi.fn(async () => makeFakeWorker());
     const harness = await createServiceHarness({ spawnWorker });
     await harness.child.hostApi.spawnWorker!({
@@ -1293,6 +1293,34 @@ describe("a delegated worker cannot reach further than the plugin process itself
       command: "/usr/bin/python3",
       allowReadPaths: [`${PLUGIN_ROOT}/runtime`, PLUGIN_DATA_DIR],
       allowWritePaths: [`${PLUGIN_DATA_DIR}/index`],
+    });
+  });
+
+  it("on Windows, grants the envelope root that holds each path, never a path the plugin can re-point", async () => {
+    // `srt-win acl grant` stamps its ACE on what a path RESOLVES to: a junction
+    // the plugin plants at `data\link` would carry the worker's write grant to
+    // its target. Every component below an envelope root is the plugin's, so
+    // the grant names the root — and on Windows the worker shares the plugin's
+    // one sandbox account, so the root reaches nothing the plugin does not.
+    const spawnWorker = vi.fn(async () => makeFakeWorker());
+    const harness = await createServiceHarness({ spawnWorker });
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      await harness.child.hostApi.spawnWorker!({
+        workerId: "ffmpeg",
+        command: "/usr/bin/ffmpeg",
+        allowReadPaths: [`${PLUGIN_ROOT}/runtime`, `${PLUGIN_DATA_DIR}/link/in.m4a`, WIDENED_READ_ROOT],
+        allowWritePaths: [`${PLUGIN_DATA_DIR}/link/segments`, `${PLUGIN_DATA_DIR}/index`],
+      });
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+    expect(spawnWorker).toHaveBeenCalledWith({
+      workerId: "ffmpeg",
+      command: "/usr/bin/ffmpeg",
+      allowReadPaths: [PLUGIN_ROOT, WIDENED_READ_ROOT],
+      allowWritePaths: [PLUGIN_DATA_DIR],
     });
   });
 
@@ -1340,7 +1368,8 @@ describe("a delegated worker cannot reach further than the plugin process itself
     expect(spawnWorker).toHaveBeenCalledWith({
       workerId: "indexer",
       command: `${WIDENED_READ_ROOT}/venv/bin/python`,
-      allowReadPaths: [`${WIDENED_READ_ROOT}/venv/bin/python`],
+      // On Windows the ACL grant names the root that holds the path (decision 66).
+      allowReadPaths: [process.platform === "win32" ? WIDENED_READ_ROOT : `${WIDENED_READ_ROOT}/venv/bin/python`],
     });
   });
 

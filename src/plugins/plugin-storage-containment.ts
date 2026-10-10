@@ -87,6 +87,37 @@ export function isResolvedPathWithin(root: string, target: string): boolean {
 }
 
 /**
+ * Each of `paths` replaced by the OUTERMOST of `roots` that contains it, in
+ * order and without duplicates; a path no root contains is an error (callers
+ * check containment first).
+ *
+ * What a Windows filesystem grant is given instead of the path a plugin named.
+ * `srt-win acl grant` canonicalises the path it is handed — it follows a
+ * junction or symlink in any component and stamps its `(OI)(CI)` ACE on the
+ * TARGET (measured on ASRT 0.0.76: a grant on `data\link` landed on the
+ * directory the junction named). A path below an envelope root passes through
+ * directories the plugin's own process can replace with a junction between any
+ * check and the grant, so no lstat walk closes it. The outermost root does not:
+ * it is a directory the host created whose parent no confined process can
+ * write, so it cannot be re-pointed. On Windows that widens nothing — every
+ * confined process runs as the one sandbox account (decision 64), so a worker
+ * granted the root reaches only what the plugin's own process already does.
+ */
+export function outermostContainingRoots(paths: readonly string[], roots: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const path of paths) {
+    const containing = roots.filter((root) => isResolvedPathWithin(root, path));
+    const outermost = containing.find((root) => !containing.some((other) =>
+      other !== root && isResolvedPathWithin(other, root) && !isResolvedPathWithin(root, other)));
+    if (outermost === undefined) {
+      throw new Error(`[plugin-storage-containment] ${path} lies under none of ${roots.join(", ")}`);
+    }
+    if (!out.includes(outermost)) out.push(outermost);
+  }
+  return out;
+}
+
+/**
  * The data root is not the directory the host created: a symlink sits in its
  * place, or something that is not a directory does.
  */

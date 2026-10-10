@@ -61,6 +61,7 @@ import {
   resolvePluginWorkerRunRoot,
   writeGrantsReachingHostStorage,
 } from "../plugin-storage-layout.js";
+import { outermostContainingRoots } from "../plugin-storage-containment.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { terminateChildProcess } from "../../tools/terminate-child-process.js";
 import {
@@ -1017,8 +1018,12 @@ export async function spawnConfinedPluginChild(
     // The grant is held to the plugin's own roots, because Windows has no
     // `denyPluginsRoot` to stop an inheriting grant from covering a neighbour.
     if (process.platform === "win32" && isAsrtSandboxActive()) {
-      const allowRead = [...spec.envelope.read, sandboxHome.path];
-      const allowWrite = [...spec.envelope.write, sandboxHome.path];
+      // Each grant names the outermost envelope root only: `srt-win` stamps the
+      // ACE on what a path resolves to, and a root nested in another (a chosen
+      // directory inside `data/`) is one a previous child could have replaced
+      // with a junction (`outermostContainingRoots`).
+      const allowRead = [...outermostContainingRoots(spec.envelope.read, spec.envelope.read), sandboxHome.path];
+      const allowWrite = [...outermostContainingRoots(spec.envelope.write, spec.envelope.write), sandboxHome.path];
       const beyond = [
         ...pluginGrantPathsBeyondOwnRoots(spec.pluginId, [...allowRead, ...allowWrite]),
         // An ACL grant inherits: a write grant on the plugin root would cover

@@ -66,7 +66,7 @@ import {
   type AttachFloatingPanelRequest,
   type AudioCaptureRequest,
 } from "../public-contract.js";
-import { isResolvedPathWithin } from "../plugin-storage-containment.js";
+import { isResolvedPathWithin, outermostContainingRoots } from "../plugin-storage-containment.js";
 import {
   HOSTAPI_PATH_CONTRACTS,
   HOST_PROTOCOL_NOTIFICATIONS,
@@ -1110,9 +1110,11 @@ function optionalStringList(
  * deliberately NOT done here is a
  * `realpath` walk: the grant may name a directory the worker is about to
  * create, so the path need not exist. A symlink planted inside the data dir
- * therefore still points wherever it points — the residual is the worker
- * supervisor's own to close, and stating it is better than a check that reads
- * as if it covered it.
+ * therefore still points wherever it points. On Windows that is closed after
+ * this check by granting the containing envelope root instead of the path
+ * (`decodeWorkerSpec`, `outermostContainingRoots`), because `srt-win acl grant`
+ * stamps its ACE on the link's target; on macOS and Linux the path goes to
+ * ASRT's own normalisation, which this does not change.
  */
 function assertGrantsWithinEnvelope(
   call: HostApiCall,
@@ -1199,13 +1201,26 @@ function decodeWorkerSpec(
   // edit rather than leaving a second list behind.
   assertGrantsWithinEnvelope(call, "allowReadPaths", allowReadPaths, confinement.read);
   assertGrantsWithinEnvelope(call, "allowWritePaths", allowWritePaths, confinement.write);
+  // Windows: the worker's grant is an ACL that `srt-win` stamps on whatever the
+  // path resolves to, junctions in any component followed — and every
+  // component below an envelope root is the plugin's to re-point. So the grant
+  // names the envelope root that contains each path, which the plugin cannot
+  // (`outermostContainingRoots` says why that widens nothing there). The
+  // lexical check above stays: it is what refuses a path outside the envelope.
+  const windows = process.platform === "win32";
+  const readGrants = allowReadPaths !== undefined && windows
+    ? outermostContainingRoots(allowReadPaths, confinement.read)
+    : allowReadPaths;
+  const writeGrants = allowWritePaths !== undefined && windows
+    ? outermostContainingRoots(allowWritePaths, confinement.write)
+    : allowWritePaths;
   return {
     workerId,
     command,
     ...(args !== undefined ? { args } : {}),
     ...(env !== undefined ? { env: env as Record<string, string | undefined> } : {}),
-    ...(allowReadPaths !== undefined ? { allowReadPaths } : {}),
-    ...(allowWritePaths !== undefined ? { allowWritePaths } : {}),
+    ...(readGrants !== undefined ? { allowReadPaths: readGrants } : {}),
+    ...(writeGrants !== undefined ? { allowWritePaths: writeGrants } : {}),
     ...(udsArgName !== undefined
       ? { udsArgName: udsArgName as PluginWorkerSpec["udsArgName"] }
       : {}),

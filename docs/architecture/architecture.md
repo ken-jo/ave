@@ -1185,7 +1185,9 @@ On Windows every confined process, every plugin included, runs as the one
 configured, not against each other. A plugin child and a delegated worker each
 reach their own directories through a holder-PID ACL grant held for that
 process's lifetime, and while it is held every confined process reaches them
-too. By owner decision (2026-10-10) third-party plugins run on Windows on those
+too. Because `srt-win` stamps that ACE on whatever a path resolves to, junctions
+followed, a grant names an outermost envelope root and never a path below one
+that the plugin could re-point (decision 66). By owner decision (2026-10-10) third-party plugins run on Windows on those
 terms, an accepted risk pending an ASRT per-plugin identity
 (`docs/design/plugin-hostapi-protocol.md` §9.8 A2, decision 64). Because
 srt-win relays no stdin and delivers none of the spawn's environment, an `entry`
@@ -1216,7 +1218,8 @@ every component of every such call, so only a directory the child cannot write
 keeps that syscall where the check looked. `plugin-storage-layout.ts` owns the
 path; promotion and recovery carry `storage/` with `data/`. Storage written
 before the directory existed is copied out of `data/` once at boot, before any
-confined process runs, never through a link (`migratePluginHostStorage`;
+confined process runs, never through a link, and only keys at depth 2 or less
+of 8 MiB or less (`migratePluginHostStorage`;
 `docs/design/plugin-hostapi-protocol.md` decision 65).
 
 Plugin read-relaxation is narrower than the host-shell capability. The

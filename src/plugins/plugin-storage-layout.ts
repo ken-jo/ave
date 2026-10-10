@@ -16,7 +16,7 @@
  * Shared by receipt verification, permissions and runtime-directory mutations
  * so their paths and host-side serialization agree.
  */
-import { constants, type Stats } from "node:fs";
+import { constants, realpathSync, type Stats } from "node:fs";
 import { link, lstat, mkdir, open, readdir, readlink, realpath, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, resolve } from "node:path";
@@ -26,7 +26,6 @@ import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { aveHome } from "../shared/ave-home.js";
 import { assertNoConfinedProcessMayRun, confinedProcessesMayBeRunning } from "../lib/confined-process-phase.js";
 import { removeOwnedPluginTree } from "./installed-entry-fs.js";
-import { FRAME_BYTES_MAX } from "./isolation/host-api-wire.js";
 import { PluginDataRootError, isPathWithin, resolvePluginDataRoot } from "./plugin-storage-containment.js";
 
 /**
@@ -971,13 +970,24 @@ export function writeGrantsReachingHostStorage(pluginDataDir: string, writePaths
 }
 
 /**
- * The largest file {@link migratePluginHostStorage} copies. A storage value
- * reaches the host inside one HostApi frame — every plugin runs out of
- * process, and `storage.write*` carries its value in the call — so a larger
- * file was not written through `storage` and could not be read back through
- * it either.
+ * The largest file {@link migratePluginHostStorage} copies (owner decision,
+ * 2026-10-10). The keys plugins store through `storage` are small JSON
+ * documents and tokens; a file this large in `data/` is far more likely a
+ * recording, a staged upload or a transcript the plugin wrote itself, which a
+ * copy would duplicate and keep alive in `storage/` after the plugin deletes
+ * its own. The hard ceiling a storage value could ever reach is one HostApi
+ * frame; this sits well under it.
  */
-const MIGRATED_STORAGE_FILE_BYTES_MAX = FRAME_BYTES_MAX;
+const MIGRATED_STORAGE_FILE_BYTES_MAX = 8 * 1024 * 1024;
+
+/**
+ * The deepest key {@link migratePluginHostStorage} copies: `name` is depth 1,
+ * `dir/name` depth 2 — which covers the keys plugins store (`auth/token-….json`,
+ * the bridge's `ui-storage/<key>.json`, top-level JSON). Anything deeper is a
+ * tree the plugin keeps for itself (sessions, segments, workspaces) and is
+ * skipped, for the reason the size cap is.
+ */
+const MIGRATED_STORAGE_KEY_DEPTH_MAX = 2;
 
 /** What a boot's host-storage migration did. */
 export interface PluginHostStorageMigration {
@@ -999,12 +1009,17 @@ export interface PluginHostStorageMigration {
  * both by the same relative names. So the storage view is rebuilt as it was:
  * `data/` is COPIED, as regular files and directories, into the new
  * `storage/`, and `data/` is left exactly as it is — the plugin's own reads
- * and writes there keep working, and nothing it holds is lost. Not copied, each
- * reported in `skipped`: links (never followed), sockets and other special
- * files, hard-linked files (a second name for an inode the plugin may not own),
- * and files larger than any storage value can be
- * ({@link MIGRATED_STORAGE_FILE_BYTES_MAX}). That last rule is what keeps a
- * multi-gigabyte index or recording out of the copy without naming any plugin.
+ * and writes there keep working, and nothing it holds is lost. Only what can be
+ * a storage key is copied: regular files at key depth
+ * {@link MIGRATED_STORAGE_KEY_DEPTH_MAX} or less, of
+ * {@link MIGRATED_STORAGE_FILE_BYTES_MAX} or less. Not copied, each reported in
+ * `skipped`: deeper entries (a directory is reported once, not walked), larger
+ * files, links (never followed), sockets and other special files, and
+ * hard-linked files (a second name for an inode the plugin may not own). Those
+ * two caps keep recordings, transcripts and workspaces the plugin keeps for
+ * itself out of the copy without naming any plugin; the residual is a storage
+ * value written by an older version that was deeper or larger, which is not
+ * migrated.
  * Copied, not hard-linked: a link would leave the `storage/` name on a file the
  * child still writes through its `data/` name, and on Windows the child could
  * make that file a symlink reparse point and re-point the host's path.
@@ -1029,6 +1044,24 @@ export interface PluginHostStorageMigration {
  * Only roots that hold a `data/` directory are touched: a root without state
  * has nothing to migrate, and its first load creates both directories.
  */
+/** Why this process's boot migration failed for a plugin root, by canonical root. */
+const hostStorageMigrationFailures = new Map<string, string>();
+
+/**
+ * Why the boot migration of this process failed for the plugin root that holds
+ * `pluginDataDir`, or `undefined` when it did not fail (or never ran). A load
+ * that refuses for a missing `storage/` names this cause and the path, so a
+ * persistent failure — `storage` occupied by a file, a full disk — reads as
+ * what it is rather than as "restart".
+ */
+export function hostStorageMigrationFailureFor(pluginDataDir: string): string | undefined {
+  try {
+    return hostStorageMigrationFailures.get(realpathSync(dirname(pluginDataDir)));
+  } catch {
+    return undefined;
+  }
+}
+
 export async function migratePluginHostStorage(pluginsRoot: string): Promise<PluginHostStorageMigration> {
   if (confinedProcessesMayBeRunning()) {
     throw new Error(
@@ -1070,15 +1103,17 @@ export async function migratePluginHostStorage(pluginsRoot: string): Promise<Plu
         if (await lstatOrUndefined(staging) !== undefined) await removeOwnedPluginTree(staging);
         await mkdir(staging, { mode: 0o700 });
         if (dataEntry.isDirectory()) {
-          await copyStorageTree(data, staging, skipped);
+          await copyStorageTree(data, staging, skipped, 1);
         } else {
           skipped.push({ path: data, reason: "not a directory; nothing copied" });
         }
         await renameDirectory(staging, storage);
       });
       migrated.push(root);
+      hostStorageMigrationFailures.delete(root);
     } catch (error) {
       failed.push({ root, error: errorMessage(error) });
+      hostStorageMigrationFailures.set(root, errorMessage(error));
     }
   }
   return { migrated, skipped, failed };
@@ -1098,6 +1133,7 @@ async function copyStorageTree(
   from: string,
   to: string,
   skipped: Array<{ path: string; reason: string }>,
+  depth: number,
 ): Promise<void> {
   let names: string[];
   try {
@@ -1119,8 +1155,13 @@ async function copyStorageTree(
       continue;
     }
     if (entry.isDirectory()) {
+      // A directory at the deepest key depth could hold only deeper keys.
+      if (depth >= MIGRATED_STORAGE_KEY_DEPTH_MAX) {
+        skipped.push({ path: source, reason: `deeper than a storage key (depth ${MIGRATED_STORAGE_KEY_DEPTH_MAX})` });
+        continue;
+      }
       if (await intoStaging(target, source, skipped, () => mkdir(target, { mode: 0o700 }).then(() => undefined))) {
-        await copyStorageTree(source, target, skipped);
+        await copyStorageTree(source, target, skipped, depth + 1);
       }
       continue;
     }
@@ -1219,7 +1260,7 @@ function unreadableReason(error: unknown): string {
 function migratedFileRefusal(entry: Stats): string | undefined {
   if (!entry.isFile()) return entry.isSymbolicLink() ? "a link" : "not a regular file";
   if (entry.nlink !== 1) return "hard-linked";
-  if (entry.size > MIGRATED_STORAGE_FILE_BYTES_MAX) return "larger than any storage value";
+  if (entry.size > MIGRATED_STORAGE_FILE_BYTES_MAX) return "larger than 8 MiB";
   return undefined;
 }
 
