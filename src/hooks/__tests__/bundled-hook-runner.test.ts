@@ -25,6 +25,35 @@ vi.mock("../../permissions/asrt-sandbox.js", async (original) => {
       dir: join(SANDBOX_TEMP_ROOT, real.sandboxTempPrincipalDirName(principal)), root: SANDBOX_TEMP_ROOT }) };
 });
 
+// The Windows relayed spawn, played by a real Node child whose own pipes are
+// hidden: the runner must use the streams the spawn hands back, as it must
+// with the relay, or the hook sees no payload and the host no verdict.
+interface WindowsSpawnCall {
+  label: string; command: string; args: readonly string[]; baseEnv: NodeJS.ProcessEnv;
+  cwd?: string; allowRead: readonly string[]; allowWrite: readonly string[];
+}
+const windowsSpawns: WindowsSpawnCall[] = [];
+const releaseHoldMock = vi.fn();
+let failWindowsSpawn: Error | undefined;
+vi.mock("../../sandbox/wrap-bundled-command.js", async (original) => {
+  const real = await original<typeof import("../../sandbox/wrap-bundled-command.js")>();
+  const { spawn } = await import("node:child_process");
+  const { PassThrough } = await import("node:stream");
+  return { ...real, spawnWindowsBundledProcess: async (call: WindowsSpawnCall) => {
+    windowsSpawns.push(call);
+    if (failWindowsSpawn !== undefined) throw failWindowsSpawn;
+    const command = call.command === "node" ? process.execPath : call.command;
+    const child = spawn(command, [...call.args], { cwd: call.cwd, env: { ...process.env, ...call.baseEnv, ELECTRON_RUN_AS_NODE: "1" }, stdio: ["pipe", "pipe", "pipe"] });
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    stdin.pipe(child.stdin);
+    child.stdout.pipe(stdout);
+    Object.defineProperty(child, "stdin", { value: null });
+    Object.defineProperty(child, "stdout", { value: null });
+    return { child, stdin, stdout, releaseHold: releaseHoldMock };
+  } };
+});
+
 import { runOneHookScript } from "../script-hook-runner.js";
 import { appOwnedSandboxPrivateRoots } from "../../permissions/asrt-sandbox.js";
 
@@ -38,7 +67,7 @@ const payload: ScriptHookStdin = { hookType: "pre", event: "pre", toolName: "rea
 const runnable = () => ({ id: "hook", hookType: "pre" as const, source: "config" as const,
   hookPath: script, command: ["node", script], confinement: { kind: "bundled" as const, pluginId: "hook-plugin", dataDir, generationRoot } });
 
-afterEach(() => { sandboxActive = false; admissionOpen = true; wrap.mockReset(); vi.restoreAllMocks(); });
+afterEach(() => { sandboxActive = false; admissionOpen = true; wrap.mockReset(); vi.restoreAllMocks(); windowsSpawns.length = 0; releaseHoldMock.mockReset(); failWindowsSpawn = undefined; });
 afterAll(async () => { await cleanupTmpDir(root); });
 
 describe("bundled hook runner", () => {
@@ -94,12 +123,32 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     expect(reach.filesystem.allowRead).toContain(dataDir);
   });
 
-  it("refuses the bundled path on Windows with the sandbox on", async () => {
+  it("runs a Windows sandboxed hook through the relay with its own grant, and reads only the relayed streams", async () => {
+    writeFileSync(script, `let input = ''; process.stdin.on('data', (part) => input += part);
+process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow',reason:JSON.parse(input).event + ' via relay'})));`);
     sandboxActive = true;
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     const result = await runOneHookScript(runnable(), payload);
-    expect(result).toMatchObject({ decision: "deny", reason: expect.stringContaining("Windows") });
+    expect(result).toMatchObject({ decision: "allow", reason: "pre via relay", exitCode: 0 });
+    expect(windowsSpawns).toHaveLength(1);
+    const call = windowsSpawns[0]!;
+    expect(call.label).toBe("hook:hook-plugin");
+    expect(call.allowRead).toEqual([generationRoot]);
+    expect(call.allowWrite).toEqual([dataDir]);
+    expect(call.cwd).toBe(generationRoot);
+    expect(call.baseEnv.PLUGIN_ROOT).toBe(generationRoot);
+    expect(call.baseEnv.PLUGIN_DATA).toBe(dataDir);
+    // The POSIX wrap is not used, and what the spawn held is released.
     expect(wrap).not.toHaveBeenCalled();
+    expect(releaseHoldMock).toHaveBeenCalled();
+  });
+
+  it("denies a Windows sandboxed hook whose relayed spawn fails, before anything runs", async () => {
+    sandboxActive = true;
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    failWindowsSpawn = new Error("grant refused");
+    const result = await runOneHookScript(runnable(), payload);
+    expect(result).toMatchObject({ decision: "deny", reason: "sandbox unavailable: grant refused" });
   });
 
   it("keeps timeout and captured output ceilings for bundled hooks", async () => {

@@ -5,17 +5,25 @@
  * the two accounts is measured on a provisioned Windows host, not here.
  */
 import { describe, expect, it } from "vitest";
+import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { connect, type Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 
 import {
   acceptHostOverLoopback,
   CHILD_ENV_ARG_PREFIX,
   CHILD_LOOPBACK_TRANSPORT_ARG,
+  CHILD_RELAY_TRANSPORT_ARG,
   connectToAnnouncedChild,
   encodeChildEnv,
   parseChildLaunchArgs,
+  relayStdioOverLoopback,
+  serveStdioRelay,
 } from "../child-loopback-link.js";
+import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 
 const NEVER = new Promise<string>(() => undefined);
 
@@ -246,5 +254,190 @@ describe("the host connects to the child it spawned", () => {
     const connecting = connectToAnnouncedChild({ stdout, exited: NEVER, timeoutMs: 5_000 });
     stdout.write(`AVE-CHILD-LISTEN ${port} ${nonce}\n`);
     await expect(connecting).rejects.toThrow(/ECONNREFUSED/);
+  });
+});
+
+describe("the stdio relay's launch argument", () => {
+  it("stands alone", () => {
+    expect(parseChildLaunchArgs([CHILD_RELAY_TRANSPORT_ARG])).toEqual({ transport: "relay" });
+    expect(() => parseChildLaunchArgs([CHILD_RELAY_TRANSPORT_ARG, "entry.mjs"])).toThrow(/takes no other child argument/);
+    expect(() => parseChildLaunchArgs([CHILD_RELAY_TRANSPORT_ARG, CHILD_LOOPBACK_TRANSPORT_ARG])).toThrow(/takes no other/);
+  });
+});
+
+/** A program the relay starts: Node, from this binary, running `source`. */
+function nodeProgram(source: string, args: readonly string[] = []): { command: string; args: string[] } {
+  return { command: process.execPath, args: ["-e", source, ...args] };
+}
+
+/**
+ * Play the host by hand against an in-process relay: read the announce, connect,
+ * present the nonce, send `requestLine`, and hand back the socket.
+ */
+async function hostBy(lines: string[], requestLine: string): Promise<Socket> {
+  const { port, nonce } = await nextLine(lines);
+  const socket = await dial(port);
+  socket.on("error", () => undefined);
+  socket.write(`${nonce}\n${requestLine}`);
+  return socket;
+}
+
+describe("the stdio relay", () => {
+  it("runs the real child entry as a relay: the program gets the request's stdin, arguments and environment; the host gets its stdout and exit code", async () => {
+    // The production entry in relay mode, a real process from this binary — as
+    // the Windows sandboxed spawn launches it, minus srt-win. The program's
+    // arguments and environment carry what `cmd.exe` could not be given.
+    const relay = spawn(process.execPath, [pluginChildEntryPath(), CHILD_RELAY_TRANSPORT_ARG], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", RELAY_OWN: "the relay's" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    relay.stdin.end();
+    let relayStderr = "";
+    relay.stderr.on("data", (chunk: Buffer) => (relayStderr += chunk.toString("utf-8")));
+    const exited = new Promise<string>((resolve) => relay.once("exit", (code) => resolve(`code=${String(code)}`)));
+    const failures: Error[] = [];
+    const program = nodeProgram(
+      `let input = ""; process.stdin.on("data", (c) => input += c); process.stdin.on("end", () => {
+        process.stdout.write(JSON.stringify({ input, argv: process.argv.slice(1), probe: process.env.RELAY_PROBE,
+          own: process.env.RELAY_OWN, cwd: process.cwd() }) + "\\n"); process.exit(7); });`,
+      ["100%", 'say "hi"', "%PATH%"],
+    );
+    const cwd = mkdtempSync(join(tmpdir(), "relay-cwd-"));
+    try {
+      const io = relayStdioOverLoopback({
+        stdout: relay.stdout,
+        exited,
+        request: { ...program, env: { ELECTRON_RUN_AS_NODE: "1", RELAY_PROBE: '%TEMP% "quoted" & ^' }, cwd },
+        timeoutMs: 20_000,
+        onFailure: (error) => failures.push(error),
+      });
+      let out = "";
+      io.stdout.on("data", (chunk: Buffer) => (out += chunk.toString("utf-8")));
+      const outputEnded = new Promise((resolve) => io.stdout.once("end", resolve));
+      io.stdin.write("first ");
+      io.stdin.end("second");
+      await expect(exited.then((reason) => `${reason} ${relayStderr}`.trim())).resolves.toBe("code=7");
+      await outputEnded;
+      const seen = JSON.parse(out) as Record<string, unknown>;
+      expect(seen).toEqual({
+        input: "first second",
+        argv: ["100%", 'say "hi"', "%PATH%"],
+        probe: '%TEMP% "quoted" & ^',
+        own: "the relay's",
+        cwd: expect.any(String),
+      });
+      expect(failures).toEqual([]);
+    } finally {
+      relay.kill();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("ends the program's input when the channel goes away, and exits with its code", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-eof-"));
+    const marker = join(dir, "eof.txt");
+    const { lines, announce } = announced();
+    const diagnostics = new PassThrough();
+    try {
+      const served = serveStdioRelay({
+        announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000,
+        relayEnv: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, diagnostics,
+      });
+      const program = nodeProgram(
+        `process.stdin.resume(); process.stdin.on("end", () => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, "eof"); process.exit(3); });`,
+      );
+      const socket = await hostBy(lines, `${JSON.stringify({ ...program, env: { ELECTRON_RUN_AS_NODE: "1" } })}\n`);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      socket.destroy();
+      await expect(served).resolves.toBe(3);
+      expect(readFileSync(marker, "utf-8")).toBe("eof");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("drops ELECTRON_RUN_AS_NODE it was launched with unless the request sets it, and a request name replaces an inherited one of any case", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-env-"));
+    const out = join(dir, "env.json");
+    const { lines, announce } = announced();
+    try {
+      const served = serveStdioRelay({
+        announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000,
+        relayEnv: { ...process.env, ELECTRON_RUN_AS_NODE: "1", Relay_Case: "inherited" }, diagnostics: new PassThrough(),
+      });
+      // The program is this binary: without ELECTRON_RUN_AS_NODE an Electron
+      // binary would not run `-e`, so the probe writes only under Node itself.
+      const program = nodeProgram(
+        `require("node:fs").writeFileSync(${JSON.stringify(out)}, JSON.stringify(Object.entries(process.env).filter(([k]) => k.toLowerCase() === "relay_case")))`,
+      );
+      const socket = await hostBy(lines, `${JSON.stringify({ ...program, env: { ELECTRON_RUN_AS_NODE: "1", RELAY_CASE: "requested" } })}\n`);
+      socket.end();
+      await expect(served).resolves.toBe(0);
+      expect(JSON.parse(readFileSync(out, "utf-8"))).toEqual([["RELAY_CASE", "requested"]]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("reports a program that cannot start, on its diagnostics and in its exit code", async () => {
+    const { lines, announce } = announced();
+    const diagnostics = new PassThrough();
+    let said = "";
+    diagnostics.on("data", (chunk: Buffer) => (said += chunk.toString("utf-8")));
+    const served = serveStdioRelay({
+      announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000, relayEnv: {}, diagnostics,
+    });
+    const socket = await hostBy(lines, `${JSON.stringify({ command: join(tmpdir(), "no-such-program-here"), args: [], env: {} })}\n`);
+    await expect(served).resolves.toBe(127);
+    expect(said).toMatch(/relay could not start/);
+    socket.destroy();
+  });
+
+  it.each([
+    ["not JSON", "{nope\n", /not JSON/],
+    ["an unknown field", `${JSON.stringify({ command: "x", args: [], env: {}, shell: true })}\n`, /unknown field 'shell'/],
+    ["no program", `${JSON.stringify({ command: "", args: [], env: {} })}\n`, /names no program/],
+    ["a non-string argument", `${JSON.stringify({ command: "x", args: [1], env: {} })}\n`, /arguments are not strings/],
+    ["a bad variable name", `${JSON.stringify({ command: "x", args: [], env: { "A=B": "c" } })}\n`, /not an environment variable name/],
+  ])("refuses a request with %s and starts nothing", async (_what, line, message) => {
+    const { lines, announce } = announced();
+    const served = serveStdioRelay({
+      announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000, relayEnv: {}, diagnostics: new PassThrough(),
+    });
+    const socket = await hostBy(lines, line);
+    await expect(served).rejects.toThrow(message);
+    socket.destroy();
+  });
+
+  it("refuses a host that leaves before its request", async () => {
+    const { lines, announce } = announced();
+    const served = serveStdioRelay({
+      announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000, relayEnv: {}, diagnostics: new PassThrough(),
+    });
+    const socket = await hostBy(lines, "");
+    socket.end();
+    await expect(served).rejects.toThrow(/left before its relay request/);
+  });
+
+  it("on the host, refuses a request it could not send, and on a failed connect ends the output, sinks the input and says why", async () => {
+    expect(() => relayStdioOverLoopback({
+      stdout: new PassThrough(), exited: NEVER, request: { command: "x", args: ["a\0b"], env: {} }, timeoutMs: 1_000,
+      onFailure: () => undefined,
+    })).toThrow(/arguments are not strings/);
+
+    const stdout = new PassThrough();
+    const failures: Error[] = [];
+    const io = relayStdioOverLoopback({
+      stdout, exited: NEVER, request: { command: "x", args: [], env: {} }, timeoutMs: 5_000,
+      onFailure: (error) => failures.push(error),
+    });
+    const ended = new Promise((resolve) => io.stdout.once("end", resolve));
+    io.stdout.resume();
+    stdout.write("not the announce\n");
+    await ended;
+    expect(failures.map((error) => error.message)).toEqual([
+      "[child-loopback-link] the child wrote something other than its announce first",
+    ]);
+    expect(() => io.stdin.write("still accepted, going nowhere")).not.toThrow();
   });
 });

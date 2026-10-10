@@ -64,6 +64,7 @@ import { errorMessage } from "../../shared/error-message.js";
 import {
   acceptHostOverLoopback,
   parseChildLaunchArgs,
+  serveStdioRelay,
   type ChildLaunchMode,
 } from "./child-loopback-link.js";
 
@@ -437,6 +438,30 @@ function serveOverLoopback(env: Readonly<Record<string, string>>): void {
 }
 
 /**
+ * The relay (`child-loopback-link.ts`): no plugin is loaded. The program the
+ * host names over the channel runs with a real stdin fed from it, and this
+ * process ends with that program's exit code. Nothing is written to stdout but
+ * the announce, because the program inherits it.
+ */
+function serveAsRelay(): void {
+  serveStdioRelay({
+    announce: (line) => {
+      process.stdout.write(line);
+    },
+    acceptTimeoutMs: 60_000,
+    handshakeTimeoutMs: 10_000,
+    relayEnv: process.env,
+    diagnostics: process.stderr,
+  }).then(
+    (code) => process.exit(code),
+    (error: unknown) => {
+      process.stderr.write(`[plugin-child] relay: ${errorMessage(error)}; ending\n`);
+      process.exit(1);
+    },
+  );
+}
+
+/**
  * The production entry. Guarded so importing this file from a test does not
  * hijack the test runner's stdio.
  */
@@ -449,5 +474,6 @@ if (isProcessEntryModule()) {
     process.exit(1);
   }
   if (mode.transport === "loopback") serveOverLoopback(mode.env);
+  else if (mode.transport === "relay") serveAsRelay();
   else serveOverStdio();
 }

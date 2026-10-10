@@ -21,6 +21,8 @@
  * paths only; the floor is not theirs to forget.
  */
 import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
+import { join } from "node:path";
+import type { Readable, Writable } from "node:stream";
 
 import {
   ensureSandboxTempPrincipalDir,
@@ -32,12 +34,81 @@ import {
   type SandboxTempPrincipal,
   type WrapOptions,
 } from "./asrt-sandbox.js";
-import { buildSandboxedChildEnv } from "../tools/safe-env.js";
+import { buildSandboxedChildEnv, isSandboxWrapperEnvKey } from "../tools/safe-env.js";
 import {
   assertManagedChildProcessAdmissionOpen,
   trackManagedChildProcess,
 } from "../main/managed-child-processes.js";
 import { shellQuote } from "../lib/shell-resolver.js";
+import { createLogger } from "../lib/logger.js";
+import { mainDir } from "../main/main-paths.js";
+import {
+  CHILD_RELAY_TRANSPORT_ARG,
+  relayStdioOverLoopback,
+  type RelayRequest,
+} from "../plugins/isolation/child-loopback-link.js";
+
+const log = createLogger("confined-child");
+
+/**
+ * Where the confined child runtime's entry lives: the reference runtime a
+ * plugin child runs, and the stdio relay a Windows sandboxed process runs
+ * through.
+ *
+ * Resolved from `mainDir`, NOT from this module's own `import.meta.url`: the
+ * main process is an esbuild bundle with code splitting, so this file executes
+ * from `main.js` or from a hashed `chunks/*.js` and has no fixed relationship
+ * to any emitted sibling. `main-paths.ts` is the one place that answers "where
+ * are the runtime assets", and `plugin-child-main` is registered as its own
+ * esbuild entry point so an actual file exists there to run.
+ */
+export function resolvePluginChildEntryPath(): string {
+  return join(mainDir, "plugin-child-main.js");
+}
+
+/** How long a relayed Windows process has to start and announce its listener. */
+const WINDOWS_RELAY_CONNECT_TIMEOUT_MS = 30_000;
+
+/**
+ * Node's symlink-preserving flags, for the host's own runtime on the Windows
+ * sandboxed launch and for any Node program a relay starts. Node otherwise
+ * `realpath`s a module path in JavaScript, which `lstat`s every ancestor
+ * directory, and the `srt-sandbox` account may not list the user-profile
+ * directories above `<AVE_HOME>` (measured: `EPERM: lstat` on the first one,
+ * with the plugin's own grant held). What they give up is resolving symlinks
+ * inside the program's own tree: a symlinked file loads under its link's path,
+ * and dependencies reached through links (pnpm's layout) resolve from the
+ * link's location.
+ */
+export const NODE_PRESERVE_SYMLINK_FLAGS = ["--preserve-symlinks", "--preserve-symlinks-main"] as const;
+
+/**
+ * The environment a srt-win target is meant to have, as it must be handed
+ * over: the caller's base and extra environment, without what srt-win itself
+ * sets for the target and must keep — `PATH`, `PATHEXT`, its proxy and CA
+ * trust overlay ({@link isSandboxWrapperEnvKey}) and the `GIT_CONFIG_*` set it
+ * composes — without `TMPDIR` (ASRT drops it on Windows on purpose), without
+ * `ELECTRON_RUN_AS_NODE` (only a command line can carry it), and without
+ * `USERNAME`, which srt-win sets to the account the process actually runs as.
+ * srt-win delivers none of the spawn environment to the target (measured), so
+ * whatever is returned here travels by another route: the reference runtime's
+ * environment argument, or a relay request.
+ */
+export function srtWinTargetEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  extraEnv: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries({ ...baseEnv, ...extraEnv })) {
+    if (value === undefined) continue;
+    const lower = name.toLowerCase();
+    if (SRT_WIN_OWN_ENV.has(lower) || lower.startsWith("git_config_") || isSandboxWrapperEnvKey(name)) continue;
+    env[name] = value;
+  }
+  return env;
+}
+
+const SRT_WIN_OWN_ENV = new Set(["path", "pathext", "tmpdir", "electron_run_as_node", "username"]);
 
 /**
  * How the child's filesystem access is granted.
@@ -127,15 +198,20 @@ export interface ConfinedChildSpec {
    */
   readonly stdio?: StdioOptions;
   /**
-   * How the wrapped command line is rendered on Windows; ignored elsewhere and
-   * on the unwrapped path. `"powershell"` (the default, every caller but one)
-   * runs it as `powershell -Command "& '<command>' …"`. `"cmd"` runs it under
-   * `cmd.exe /d /v:off /s /c`, for a GUI-subsystem binary such as
-   * `electron.exe`, which PowerShell starts without waiting for and without
-   * its standard streams (measured: no output, exit 0 at once). The tokens are
-   * checked rather than escaped — see {@link buildCmdCommandLine}.
+   * `"cmd"`: under srt-win, run the command directly under
+   * `cmd.exe /d /v:off /s /c` — the plugin child's own launch, which speaks its
+   * protocol over a loopback channel of its own. The tokens are checked rather
+   * than escaped — see {@link buildCmdCommandLine}. Ignored elsewhere and on
+   * the unwrapped path.
+   *
+   * A Windows sandboxed spawn names this or {@link windowsStdio}; one that
+   * names neither is refused. srt-win's default inner shell, PowerShell, gives
+   * the target no stdin, none of the spawn environment and not even its exit
+   * code (measured: a target exiting 7 reported 1), and does not wait for a
+   * GUI-subsystem binary such as `electron.exe` at all — a child launched that
+   * way could not be told apart from one that worked.
    */
-  readonly windowsShell?: "powershell" | "cmd";
+  readonly windowsShell?: "cmd";
   /**
    * Environment set ON the `"cmd"` command line, ahead of the command. srt-win
    * gives the target the sandbox account's profile environment plus its own
@@ -145,6 +221,21 @@ export interface ConfinedChildSpec {
    * `windowsShell: "cmd"`.
    */
   readonly windowsCommandLineEnv?: Readonly<Record<string, string>>;
+  /**
+   * `"relay"`: under srt-win, run the command through the host's stdio relay
+   * (`child-loopback-link.ts`) rather than directly, so it gets a real stdin,
+   * its intended environment ({@link srtWinTargetEnv}, plus
+   * {@link NODE_PRESERVE_SYMLINK_FLAGS} in `NODE_OPTIONS` for a Node program)
+   * and its working directory — none of which srt-win delivers (measured:
+   * stdin at end-of-file within milliseconds, the spawn environment absent).
+   * The caller then uses the returned `stdin`/`stdout`, never the child's own.
+   * Requires piped stdin and stdout, and excludes `windowsShell` and
+   * `windowsCommandLineEnv`, which the relay's own launch sets. Ignored on
+   * macOS and Linux and on the unwrapped path, where the command runs as given.
+   */
+  readonly windowsStdio?: "relay";
+  /** The child's working directory; on the relay, the program's. */
+  readonly cwd?: string;
 }
 
 /**
@@ -159,6 +250,14 @@ export type SpawnConfinement = "macos-sandbox" | "linux-bubblewrap" | "windows-s
 export interface ConfinedChildSpawn {
   readonly child: ChildProcess;
   readonly confinement: SpawnConfinement;
+  /**
+   * Where the caller writes the program's input and reads its output: the
+   * child's own pipes, except through the Windows relay, where they are the
+   * relay's (see {@link ConfinedChildSpec.windowsStdio}). `null` where the
+   * corresponding stdio entry is not a pipe.
+   */
+  readonly stdin: Writable | null;
+  readonly stdout: Readable | null;
 }
 
 /**
@@ -178,19 +277,83 @@ export interface ConfinedChildSpawn {
  */
 export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<ConfinedChildSpawn> {
   spec.assertStillValid?.();
+  const stdio = spec.stdio ?? ["ignore", "pipe", "pipe"];
+  if (spec.windowsStdio === "relay") assertRelayableSpec(spec, stdio);
 
-  const { executable, args, wrappedEnv, confinement } = await resolveSpawnLine(spec);
+  const { executable, args, wrappedEnv, confinement, relayRequest } = await resolveSpawnLine(spec);
   spec.assertStillValid?.();
 
   assertManagedChildProcessAdmissionOpen(spec.label);
   const child = spawn(executable, args, {
-    stdio: spec.stdio ?? ["ignore", "pipe", "pipe"],
+    stdio,
     shell: false,
     windowsHide: true,
     env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
+    // On the relay the program's directory travels in its request; the relay
+    // itself needs none.
+    ...(spec.cwd !== undefined && relayRequest === undefined ? { cwd: spec.cwd } : {}),
   });
   trackManagedChildProcess(child, { label: spec.label });
-  return { child, confinement };
+  if (relayRequest === undefined) {
+    return { child, confinement, stdin: child.stdin, stdout: child.stdout };
+  }
+  const exited = new Promise<string>((resolve) => {
+    child.once("exit", (code, signal) => resolve(`code=${String(code)} signal=${String(signal)}`));
+    child.once("error", (error) => resolve(error.message));
+  });
+  const relayed = relayStdioOverLoopback({
+    stdout: child.stdout!,
+    exited,
+    request: relayRequest,
+    timeoutMs: WINDOWS_RELAY_CONNECT_TIMEOUT_MS,
+    onFailure: (error) => {
+      log.warn(`[${spec.label}] stdio relay not connected, ending the process: ${error.message}`);
+      child.kill();
+    },
+  });
+  return { child, confinement, stdin: relayed.stdin, stdout: relayed.stdout };
+}
+
+function assertRelayableSpec(spec: ConfinedChildSpec, stdio: StdioOptions): void {
+  if (spec.windowsShell !== undefined || spec.windowsCommandLineEnv !== undefined) {
+    throw new Error(`[confined-child] ${spec.label}: the stdio relay sets its own Windows shell and command-line environment`);
+  }
+  const entries = typeof stdio === "string" ? [stdio, stdio] : stdio;
+  if (entries[0] !== "pipe" || entries[1] !== "pipe") {
+    throw new Error(`[confined-child] ${spec.label}: the stdio relay needs piped stdin and stdout`);
+  }
+}
+
+/**
+ * The relay's own launch and the request naming the program. The launch is
+ * the reference runtime's, run as Node from `cmd.exe` with only host-owned
+ * tokens on the line; the program, its arguments, its environment and its
+ * directory go in the request, over the authenticated channel.
+ */
+function windowsRelayLaunch(spec: ConfinedChildSpec): {
+  readonly launch: Pick<ConfinedChildSpec, "label" | "windowsShell" | "windowsCommandLineEnv"> & { command: string; args: string[] };
+  readonly request: RelayRequest;
+} {
+  const env = srtWinTargetEnv(spec.baseEnv, spec.extraEnv ?? {});
+  const nodeOptions = Object.keys(env).find((name) => name.toLowerCase() === "node_options");
+  const inheritedOptions = nodeOptions === undefined ? "" : env[nodeOptions]!;
+  if (nodeOptions !== undefined) delete env[nodeOptions];
+  env.NODE_OPTIONS = [...NODE_PRESERVE_SYMLINK_FLAGS, inheritedOptions].filter((part) => part.length > 0).join(" ");
+  return {
+    launch: {
+      label: spec.label,
+      command: process.execPath,
+      args: [...NODE_PRESERVE_SYMLINK_FLAGS, resolvePluginChildEntryPath(), CHILD_RELAY_TRANSPORT_ARG],
+      windowsShell: "cmd",
+      windowsCommandLineEnv: { ELECTRON_RUN_AS_NODE: "1" },
+    },
+    request: {
+      command: spec.command,
+      args: [...spec.args],
+      env,
+      ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
+    },
+  };
 }
 
 /**
@@ -218,14 +381,21 @@ function wrapConfinement(label: string): Exclude<SpawnConfinement, "unconfined">
  */
 async function resolveSpawnLine(
   spec: ConfinedChildSpec,
-): Promise<{ executable: string; args: string[]; wrappedEnv: NodeJS.ProcessEnv; confinement: SpawnConfinement }> {
+): Promise<{
+  executable: string;
+  args: string[];
+  wrappedEnv: NodeJS.ProcessEnv;
+  confinement: SpawnConfinement;
+  relayRequest?: RelayRequest;
+}> {
   if (!isAsrtSandboxActive()) {
     return { executable: spec.command, args: [...spec.args], wrappedEnv: {}, confinement: "unconfined" };
   }
   const confinement = wrapConfinement(spec.label);
+  const relay = spec.windowsStdio === "relay" && confinement === "windows-srt" ? windowsRelayLaunch(spec) : undefined;
   const temp = spec.grantMode === "allow-list" ? ensureSandboxTempPrincipalDir(requireTempPrincipal(spec)) : undefined;
-  const launch = temp ? sandboxTempEnvLaunch(temp.dir, spec.command, spec.args) : spec;
-  const { cmdline, binShell } = buildConfinedCommandLine(launch.command, launch.args, spec);
+  const launch = relay?.launch ?? (temp ? sandboxTempEnvLaunch(temp.dir, spec.command, spec.args) : spec);
+  const { cmdline, binShell } = buildConfinedCommandLine(launch.command, launch.args, relay?.launch ?? spec);
   const { argv, env } = await wrapWorkerCommand(cmdline, {
     filesystem: buildFilesystemConfinement(spec, temp),
     ...(binShell !== undefined ? { binShell } : {}),
@@ -235,7 +405,13 @@ async function resolveSpawnLine(
   if (executable === undefined) {
     throw new Error(`[confined-child] ASRT returned an empty argv for ${spec.label}`);
   }
-  return { executable, args, wrappedEnv: env, confinement };
+  return {
+    executable,
+    args,
+    wrappedEnv: env,
+    confinement,
+    ...(relay !== undefined ? { relayRequest: relay.request } : {}),
+  };
 }
 
 function requireTempPrincipal(spec: ConfinedChildSpec): SandboxTempPrincipal {
@@ -305,15 +481,15 @@ function buildConfinedCommandLine(
     throw new Error(`[confined-child] ${spec.label}: windowsCommandLineEnv needs windowsShell "cmd"`);
   }
   if (process.platform === "win32") {
-    if (spec.windowsShell === "cmd") {
-      return {
-        cmdline: buildCmdCommandLine(spec.label, command, args, spec.windowsCommandLineEnv ?? {}),
-        binShell: cmdBinShell(spec.label),
-      };
+    if (spec.windowsShell !== "cmd") {
+      throw new Error(
+        `[confined-child] ${spec.label}: a Windows sandboxed spawn names windowsStdio "relay" or windowsShell "cmd"; `
+          + "srt-win's PowerShell launch delivers no stdin, no environment and no exit code",
+      );
     }
     return {
-      cmdline: ["&", powershellQuote(command), ...args.map((part) => powershellQuote(part))].join(" "),
-      binShell: "powershell",
+      cmdline: buildCmdCommandLine(spec.label, command, args, spec.windowsCommandLineEnv ?? {}),
+      binShell: cmdBinShell(spec.label),
     };
   }
   return { cmdline: [command, ...args].map((part) => shellQuote(part)).join(" ") };
@@ -385,10 +561,6 @@ function cmdBinShell(label: string): { exe: string; args: string[] } {
     throw new Error(`[confined-child] ${label}: cannot locate cmd.exe: SystemRoot is unset`);
   }
   return { exe: `${root.replace(/[\\/]+$/, "")}\\System32\\cmd.exe`, args: ["/d", "/v:off", "/s", "/c"] };
-}
-
-function powershellQuote(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
 }
 
 /**

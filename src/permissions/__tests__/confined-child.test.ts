@@ -58,7 +58,8 @@ vi.mock("../../main/managed-child-processes.js", () => ({
 }));
 vi.mock("node:child_process", () => ({ spawn: (...args: unknown[]) => spawnMock(...args) }));
 
-const { spawnConfinedChild } = await import("../confined-child.js");
+const { resolvePluginChildEntryPath, spawnConfinedChild } = await import("../confined-child.js");
+const { startFakeRelayPeer } = await import("../../__tests__/support/fake-relay-peer.js");
 
 function fakeChild() {
   const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
@@ -85,7 +86,17 @@ function lastFilesystem() {
   return (options as { filesystem: Record<string, string[]> }).filesystem;
 }
 
+/**
+ * The primitive's macOS and Linux behaviour: the allow-list grant mode and the
+ * POSIX command line. The cases name their platform rather than inheriting the
+ * runner's — on a Windows runner the line would be rendered for srt-win, and
+ * the Windows rendering has cases of its own below.
+ */
 describe("spawnConfinedChild", () => {
+  const hostPlatform = process.platform;
+  beforeEach(() => setProcessPlatform("linux"));
+  afterEach(() => setProcessPlatform(hostPlatform));
+
   it("restates the deny floor even when the caller passes no paths at all", async () => {
     await spawnConfinedChild({
       command: "/usr/bin/python3",
@@ -142,9 +153,10 @@ describe("spawnConfinedChild", () => {
     expect(fs.allowWrite).not.toContain(TEMP_ROOT);
   });
 
-  it("sets TMPDIR, TMP and TEMP to that directory inside the wrap", async () => {
+  it.each(["darwin", "linux"] as const)("on %s sets TMPDIR, TMP and TEMP to that directory inside the wrap", async (platform) => {
     // ASRT puts its own `TMPDIR=<shared root>` ahead of the sandboxed command,
     // so only an assignment made inside the wrap reaches the child.
+    setProcessPlatform(platform);
     await spawnConfinedChild({
       command: "/usr/bin/python3",
       args: ["-u"],
@@ -408,6 +420,8 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
     ["win32", "deny-only", "windows-srt"],
   ] as const)("on %s with the sandbox live it reports %s's wrap as %s", async (platform, grantMode, expected) => {
     setProcessPlatform(platform);
+    const hostSystemRoot = process.env.SystemRoot;
+    process.env.SystemRoot = "C:\\Windows";
     const spawned = await spawnConfinedChild({
       command: "/usr/bin/python3",
       args: [],
@@ -415,6 +429,10 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
       grantMode,
       tempPrincipal: PRINCIPAL,
       baseEnv: {},
+      windowsShell: "cmd",
+    }).finally(() => {
+      if (hostSystemRoot === undefined) delete process.env.SystemRoot;
+      else process.env.SystemRoot = hostSystemRoot;
     });
     expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);
     expect(spawned.confinement).toBe(expected);
@@ -538,10 +556,156 @@ describe("spawnConfinedChild's cmd.exe rendering on Windows", () => {
     })).rejects.toThrow('windowsCommandLineEnv needs windowsShell "cmd"');
   });
 
-  it("leaves every other Windows caller on PowerShell", async () => {
-    await spawnConfinedChild({ command: "C:\\py.exe", args: ["w.py"], label: "worker:x:main", grantMode: "deny-only", baseEnv: {} });
+  it("refuses a Windows sandboxed spawn that names neither the relay nor cmd: srt-win's PowerShell launch would lose its stdin, environment and exit code", async () => {
+    await expect(
+      spawnConfinedChild({ command: "C:\\py.exe", args: ["w.py"], label: "worker:x:main", grantMode: "deny-only", baseEnv: {} }),
+    ).rejects.toThrow(/names windowsStdio "relay" or windowsShell "cmd"/);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The Windows stdio relay (`windowsStdio: "relay"`): srt-win runs the host's
+ * own runtime in relay mode, and the program — its command, arguments,
+ * environment and directory — travels in the request over the authenticated
+ * channel, never on the `cmd.exe` line.
+ */
+describe("spawnConfinedChild's Windows stdio relay", () => {
+  const hostPlatform = process.platform;
+  const hostSystemRoot = process.env.SystemRoot;
+  beforeEach(() => {
+    setProcessPlatform("win32");
+    process.env.SystemRoot = "C:\\Windows";
+  });
+  afterEach(() => {
+    setProcessPlatform(hostPlatform);
+    if (hostSystemRoot === undefined) delete process.env.SystemRoot;
+    else process.env.SystemRoot = hostSystemRoot;
+  });
+
+  function relayChild() {
+    const child = fakeChild();
+    child.stdin = new PassThrough();
+    child.kill = vi.fn(() => true);
+    return child as ReturnType<typeof fakeChild> & { stdout: PassThrough; kill: ReturnType<typeof vi.fn> };
+  }
+
+  function spawnRelayed(overrides: Partial<Parameters<typeof spawnConfinedChild>[0]> = {}) {
+    return spawnConfinedChild({
+      command: "C:\\Users\\example\\100% tools\\python.exe",
+      args: ["w.py", 'say "hi"', "%PATH%"],
+      label: "worker:x:main:asrt-win",
+      grantMode: "deny-only",
+      baseEnv: {
+        PATH: "C:\\host\\bin",
+        PATHEXT: ".EXE",
+        HOME: "C:\\Users\\example",
+        USERNAME: "example",
+        HTTPS_PROXY: "http://corp:8080",
+        node_options: "--max-old-space-size=64",
+        GIT_CONFIG_COUNT: "1",
+        PLUGIN_PROBE: "kept",
+      },
+      extraEnv: { HOME: "C:\\sandbox\\home", TEMP: "C:\\sandbox\\home\\tmp" },
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsStdio: "relay",
+      cwd: "C:\\Users\\example\\work dir",
+      ...overrides,
+    });
+  }
+
+  it("runs the host's runtime in relay mode, with nothing of the program's on the cmd.exe line", async () => {
+    const child = relayChild();
+    spawnMock.mockImplementationOnce(() => child);
+    const spawned = await spawnRelayed();
     const [cmdline, options] = wrapWorkerCommandMock.mock.calls[0]! as [string, { binShell: unknown }];
-    expect(cmdline).toBe("& 'C:\\py.exe' 'w.py'");
-    expect(options.binShell).toBe("powershell");
+    expect(cmdline).toBe(
+      `set "ELECTRON_RUN_AS_NODE=1"&& "${process.execPath}" "--preserve-symlinks" "--preserve-symlinks-main" `
+        + `"${resolvePluginChildEntryPath()}" "--ave-child-transport=relay"`,
+    );
+    expect(options.binShell).toEqual({ exe: "C:\\Windows\\System32\\cmd.exe", args: ["/d", "/v:off", "/s", "/c"] });
+    // The broker gets no working directory of its own; the program's is in the request.
+    const [, , spawnOptions] = spawnMock.mock.calls[0]! as [string, string[], { cwd?: string }];
+    expect(spawnOptions.cwd).toBeUndefined();
+    expect(spawned.confinement).toBe("windows-srt");
+    expect(spawned.stdin).not.toBe(child.stdin);
+    expect(spawned.stdout).not.toBe(child.stdout);
+  });
+
+  it("sends the program, its arguments, its intended environment and its directory over the channel, and relays both ways", async () => {
+    const child = relayChild();
+    spawnMock.mockImplementationOnce(() => child);
+    const spawned = await spawnRelayed();
+    const peer = await startFakeRelayPeer(child.stdout);
+    try {
+      const request = await peer.request;
+      expect(request).toEqual({
+        command: "C:\\Users\\example\\100% tools\\python.exe",
+        args: ["w.py", 'say "hi"', "%PATH%"],
+        cwd: "C:\\Users\\example\\work dir",
+        env: {
+          // srt-win keeps PATH, PATHEXT, its proxy, its git config and the
+          // account's own USERNAME; the sandbox HOME wins over the base one;
+          // Node's symlink-preserving flags lead whatever NODE_OPTIONS was.
+          HOME: "C:\\sandbox\\home",
+          TEMP: "C:\\sandbox\\home\\tmp",
+          PLUGIN_PROBE: "kept",
+          NODE_OPTIONS: "--preserve-symlinks --preserve-symlinks-main --max-old-space-size=64",
+        },
+      });
+      spawned.stdin!.write("to the program\n");
+      await vi.waitFor(() => expect(peer.input()).toBe("to the program\n"));
+      const out: string[] = [];
+      spawned.stdout!.on("data", (chunk: Buffer) => out.push(chunk.toString("utf-8")));
+      child.stdout.write("from the program\n");
+      await vi.waitFor(() => expect(out.join("")).toBe("from the program\n"));
+      spawned.stdin!.end();
+      await peer.inputEnded;
+      expect(child.kill).not.toHaveBeenCalled();
+    } finally {
+      peer.close();
+    }
+  });
+
+  it("ends the process, the output and the input's use when the relay does not connect", async () => {
+    const child = relayChild();
+    spawnMock.mockImplementationOnce(() => child);
+    const spawned = await spawnRelayed();
+    const ended = new Promise((resolve) => spawned.stdout!.once("end", resolve));
+    spawned.stdout!.resume();
+    child.stdout.write("Windows PowerShell banner\n");
+    await ended;
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(() => spawned.stdin!.write("nowhere")).not.toThrow();
+  });
+
+  it("refuses a relay with its own Windows shell, or without piped stdin and stdout, before anything is wrapped", async () => {
+    await expect(spawnRelayed({ windowsShell: "cmd" })).rejects.toThrow(/sets its own Windows shell/);
+    await expect(spawnRelayed({ stdio: ["ignore", "pipe", "pipe"] })).rejects.toThrow(/needs piped stdin and stdout/);
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+  });
+
+  it("is ignored where it is not needed: unwrapped, the command runs as given in its directory with its own pipes", async () => {
+    sandboxActiveMock.mockReturnValue(false);
+    const child = relayChild();
+    spawnMock.mockImplementationOnce(() => child);
+    const spawned = await spawnRelayed();
+    const [command, args, options] = spawnMock.mock.calls[0]! as [string, string[], { cwd?: string }];
+    expect(command).toBe("C:\\Users\\example\\100% tools\\python.exe");
+    expect(args).toEqual(["w.py", 'say "hi"', "%PATH%"]);
+    expect(options.cwd).toBe("C:\\Users\\example\\work dir");
+    expect(spawned.stdin).toBe(child.stdin);
+    expect(spawned.stdout).toBe(child.stdout);
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+  });
+
+  it("is ignored on macOS and Linux, where stdin and the environment reach the child", async () => {
+    setProcessPlatform("linux");
+    const child = relayChild();
+    spawnMock.mockImplementationOnce(() => child);
+    const spawned = await spawnRelayed({ grantMode: "allow-list", tempPrincipal: PRINCIPAL, command: "/usr/bin/python3", args: ["w.py"] });
+    const [cmdline] = wrapWorkerCommandMock.mock.calls[0]! as [string];
+    expect(cmdline).toContain("'/usr/bin/python3' 'w.py'");
+    expect(spawned.stdin).toBe(child.stdin);
   });
 });

@@ -59,6 +59,7 @@ import { spawn, type ChildProcess, type StdioOptions } from "node:child_process"
 import { mkdir } from "node:fs/promises";
 import { unlinkSync, rmdirSync, chmodSync, lstatSync } from "node:fs";
 import { join, resolve as pathResolve } from "node:path";
+import type { Readable, Writable } from "node:stream";
 
 import { aveHome } from "../shared/ave-home.js";
 import {
@@ -384,8 +385,11 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       assertHolderAlive();
 
       // Windows grants reachability through ACLs against the holder process,
-      // so the wrap carries the deny floor only.
-      ({ child } = await spawnConfinedChild({
+      // so the wrap carries the deny floor only. The worker runs through the
+      // stdio relay: srt-win delivers neither its environment nor its stdin,
+      // and stdin is the liveness pipe — without the relay a worker reads its
+      // end at once and takes the host for gone (measured).
+      const spawned = await spawnConfinedChild({
         command: spec.command,
         args,
         label: `worker:${safePlugin}:${safeWorker}:asrt-win`,
@@ -393,13 +397,15 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
         baseEnv,
         extraEnv: { ...sandboxHome.env },
         stdio: WORKER_STDIO,
+        windowsStdio: "relay",
         assertStillValid: assertHolderAlive,
         onWrapped: () => {
           wrapped = true;
           markPluginWorkerWrapped(safePlugin, safeWorker);
           marked = true;
         },
-      }));
+      });
+      child = spawned.child;
       child.once("exit", finalizeResources);
       child.once("error", () => {
         // `error` can mean signal/message delivery failed while the child is
@@ -408,7 +414,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       child.once("close", finalizeResources);
       assertHolderAlive();
 
-      return makeHandle(child, null);
+      return makeHandle(child, null, spawned);
     } catch (err) {
       if (child !== undefined) {
         terminateChildBestEffort(child);
@@ -592,17 +598,18 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
 function makeHandle(
   child: ChildProcess,
   socketPath: string | null,
+  io: { readonly stdin: Writable | null; readonly stdout: Readable | null } = child,
 ): SpawnedWorker {
   let stopped = false;
   // A worker that exits first leaves the liveness pipe without a reader. A
   // late EPIPE on it is that pipe ending as designed, not a host fault, and
   // must not surface as an unhandled 'error' on the host.
-  child.stdin?.on("error", () => {});
+  io.stdin?.on("error", () => {});
   return {
     socketPath,
     pid: child.pid,
     onStdout(listener: WorkerOutputListener): void {
-      child.stdout?.on("data", (chunk: Buffer) => listener(chunk.toString("utf-8")));
+      io.stdout?.on("data", (chunk: Buffer) => listener(chunk.toString("utf-8")));
     },
     onStderr(listener: WorkerOutputListener): void {
       child.stderr?.on("data", (chunk: Buffer) => listener(chunk.toString("utf-8")));

@@ -35,8 +35,13 @@ import { ENV_NAME_RE } from "../../mcp/safe-names.js";
 import { ProcessEntryUnconfinedError, type ProcessLaunch } from "../process-entry.js";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
-import { mainDir } from "../../main/main-paths.js";
-import { spawnConfinedChild, type SpawnConfinement } from "../../permissions/confined-child.js";
+import {
+  NODE_PRESERVE_SYMLINK_FLAGS,
+  resolvePluginChildEntryPath,
+  spawnConfinedChild,
+  srtWinTargetEnv,
+  type SpawnConfinement,
+} from "../../permissions/confined-child.js";
 import {
   markPluginChildConfined,
   unmarkPluginChildConfined,
@@ -95,20 +100,6 @@ import {
 import { openPluginProtocolSession } from "./plugin-protocol-session.js";
 
 const log = createLogger("out-of-process-plugin");
-
-/**
- * Where the child's entry module lives.
- *
- * Resolved from `mainDir`, NOT from this module's own `import.meta.url`: the
- * main process is an esbuild bundle with code splitting, so this file executes
- * from `main.js` or from a hashed `chunks/*.js` and has no fixed relationship
- * to any emitted sibling. `main-paths.ts` is the one place that answers "where
- * are the runtime assets", and `plugin-child-main` is registered as its own
- * esbuild entry point so an actual file exists there to run.
- */
-export function resolvePluginChildEntryPath(): string {
-  return join(mainDir, "plugin-child-main.js");
-}
 
 /**
  * One directory the HOST has decided a named plugin's child may reach beyond
@@ -778,28 +769,14 @@ export interface ObservedPluginChild {
 const WINDOWS_CHANNEL_CONNECT_TIMEOUT_MS = 30_000;
 
 /**
- * Variables srt-win sets for the target itself (`PATH`, `PATHEXT`), ASRT
- * drops on Windows on purpose (`TMPDIR`), or that only the command line can
- * carry (`ELECTRON_RUN_AS_NODE`): none of them travels in the environment
- * argument, so the sandbox's own values win where it has them.
- */
-const WINDOWS_ENV_NOT_FORWARDED = new Set(["path", "pathext", "tmpdir", "electron_run_as_node"]);
-
-/**
  * The sandboxed Windows launch of the reference runtime: Node's symlink-
  * preserving flags, the child entry, the loopback transport, and the child's
  * environment as one argument.
  *
- * `--preserve-symlinks` and `--preserve-symlinks-main` because Node's
- * resolver otherwise `realpath`s a module path in JavaScript, which `lstat`s
- * every ancestor directory, and the `srt-sandbox` account may not list the
- * user-profile directories above `<AVE_HOME>` (measured: `EPERM: lstat` on
- * the first one, with the plugin's own grant held). What the flags give up is
- * resolving symlinks INSIDE the plugin: the entry path is already the host's
- * real path (decision 33), a symlinked file is then loaded under its link's
- * path rather than its target's, and a package whose dependencies are reached
- * through links (pnpm's layout) resolves them from the link's location. That
- * is the trade, and it is made for this launch only.
+ * The flags are {@link NODE_PRESERVE_SYMLINK_FLAGS}, which says why. For the
+ * child the trade is narrow: the entry path is already the host's real path
+ * (decision 33), and the host's integrity and path checks run on its side.
+ * The environment is {@link srtWinTargetEnv}'s, which says what stays srt-win's.
  */
 function windowsLoopbackLaunchLine(
   args: readonly string[],
@@ -810,18 +787,12 @@ function windowsLoopbackLaunchLine(
   readonly windowsShell: "cmd";
   readonly windowsCommandLineEnv: Readonly<Record<string, string>>;
 } {
-  const childEnv: Record<string, string> = {};
-  for (const [name, value] of Object.entries({ ...baseEnv, ...extraEnv })) {
-    if (value === undefined || WINDOWS_ENV_NOT_FORWARDED.has(name.toLowerCase())) continue;
-    childEnv[name] = value;
-  }
   return {
     args: [
-      "--preserve-symlinks",
-      "--preserve-symlinks-main",
+      ...NODE_PRESERVE_SYMLINK_FLAGS,
       ...args,
       CHILD_LOOPBACK_TRANSPORT_ARG,
-      encodeChildEnv(childEnv),
+      encodeChildEnv(srtWinTargetEnv(baseEnv, extraEnv)),
     ],
     windowsShell: "cmd",
     windowsCommandLineEnv: { ELECTRON_RUN_AS_NODE: "1" },
