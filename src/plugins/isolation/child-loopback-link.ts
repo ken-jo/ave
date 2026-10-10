@@ -133,7 +133,12 @@ export function acceptHostOverLoopback(opts: {
   const nonce = randomBytes(NONCE_BYTES).toString("hex");
   return new Promise<Socket>((resolve, reject) => {
     let settled = false;
+    // Set on the first connection, not on a verified one: a second peer that
+    // arrived before the listener closed is destroyed at once, never handed a
+    // handshake of its own (which could otherwise outlive the outcome).
+    let accepted = false;
     const server = createServer();
+    server.maxConnections = 1;
     const finish = (error: Error | undefined, socket?: Socket): void => {
       if (settled) return;
       settled = true;
@@ -152,10 +157,11 @@ export function acceptHostOverLoopback(opts: {
     );
     server.on("error", (error) => finish(error));
     server.on("connection", (socket) => {
-      if (settled) {
+      if (settled || accepted) {
         socket.destroy();
         return;
       }
+      accepted = true;
       // The first connection ends the listening, whatever it turns out to be.
       server.close();
       clearTimeout(acceptTimer);

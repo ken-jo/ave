@@ -116,6 +116,25 @@ describe("the child accepts exactly one authenticated host", () => {
     child.destroy();
   });
 
+  it("destroys a second peer that connected before the first finished its handshake", async () => {
+    const { lines, announce } = announced();
+    const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000 });
+    const { port, nonce } = await nextLine(lines);
+    // Both dialled in the same tick, so both can be pending when the first is accepted.
+    const hostReady = dial(port);
+    const second = connect({ host: "127.0.0.1", port });
+    second.on("error", () => undefined);
+    const host = await hostReady;
+    const secondClosed = new Promise((resolve) => second.once("close", resolve));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    host.write(`${nonce}\n`);
+    const child = await accepted;
+    await secondClosed;
+    expect(second.destroyed).toBe(true);
+    host.destroy();
+    child.destroy();
+  });
+
   it("ends on a wrong nonce, closes the connection, and stops listening", async () => {
     const { lines, announce } = announced();
     const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000 });
