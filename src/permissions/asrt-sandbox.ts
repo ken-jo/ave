@@ -24,6 +24,7 @@ import type {
   NetworkConfig,
   FilesystemConfig,
   WindowsConfig,
+  WindowsBinShell,
   SandboxAskCallback,
 } from "@anthropic-ai/sandbox-runtime";
 
@@ -357,13 +358,19 @@ export interface WrapOptions {
    *     Bash executable so sandboxed, foreground and background execution use
    *     the same dialect.
    *
+   *   - Windows object form `{ exe, args }`: an absolute shell with the exact
+   *     flags, which ASRT passes through unchanged — how the plugin child gets
+   *     `cmd.exe /d /v:off /s /c` (`confined-child.ts`, `windowsShell: "cmd"`),
+   *     since the bare `'cmd'` token leaves delayed expansion to the registry.
+   *
    * TRUST: on Windows the inner shell runs INSIDE the restricted-token sandbox,
    * so an unexpected value is not a sandbox escape; but a bash `path` must still
    * originate from trusted host shell-detection (never workspace content) — it
    * is an arbitrary-exec footgun otherwise. Ave only ever passes the fixed
-   * shell-name discriminants here or a trusted resolved shell path.
+   * shell-name discriminants here, a trusted resolved shell path, or the
+   * System32 `cmd.exe` object above.
    */
-  readonly binShell?: string;
+  readonly binShell?: string | WindowsBinShell;
 }
 
 /**

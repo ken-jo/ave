@@ -30,6 +30,7 @@ import {
   sandboxTempEnvLaunch,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
+  type WrapOptions,
 } from "./asrt-sandbox.js";
 import { buildSandboxedChildEnv } from "../tools/safe-env.js";
 import {
@@ -125,6 +126,25 @@ export interface ConfinedChildSpec {
    * closes only when the host process is gone.
    */
   readonly stdio?: StdioOptions;
+  /**
+   * How the wrapped command line is rendered on Windows; ignored elsewhere and
+   * on the unwrapped path. `"powershell"` (the default, every caller but one)
+   * runs it as `powershell -Command "& '<command>' …"`. `"cmd"` runs it under
+   * `cmd.exe /d /v:off /s /c`, for a GUI-subsystem binary such as
+   * `electron.exe`, which PowerShell starts without waiting for and without
+   * its standard streams (measured: no output, exit 0 at once). The tokens are
+   * checked rather than escaped — see {@link buildCmdCommandLine}.
+   */
+  readonly windowsShell?: "powershell" | "cmd";
+  /**
+   * Environment set ON the `"cmd"` command line, ahead of the command. srt-win
+   * gives the target the sandbox account's profile environment plus its own
+   * proxy overlay, never `baseEnv`/`extraEnv`, so a variable that must exist
+   * before the binary starts — `ELECTRON_RUN_AS_NODE` — can only arrive this
+   * way. Values are held to the same check as the tokens. Requires
+   * `windowsShell: "cmd"`.
+   */
+  readonly windowsCommandLineEnv?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -205,7 +225,7 @@ async function resolveSpawnLine(
   const confinement = wrapConfinement(spec.label);
   const temp = spec.grantMode === "allow-list" ? ensureSandboxTempPrincipalDir(requireTempPrincipal(spec)) : undefined;
   const launch = temp ? sandboxTempEnvLaunch(temp.dir, spec.command, spec.args) : spec;
-  const { cmdline, binShell } = buildConfinedCommandLine(launch.command, launch.args);
+  const { cmdline, binShell } = buildConfinedCommandLine(launch.command, launch.args, spec);
   const { argv, env } = await wrapWorkerCommand(cmdline, {
     filesystem: buildFilesystemConfinement(spec, temp),
     ...(binShell !== undefined ? { binShell } : {}),
@@ -279,14 +299,92 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
 function buildConfinedCommandLine(
   command: string,
   args: readonly string[],
-): { readonly cmdline: string; readonly binShell?: string } {
+  spec: Pick<ConfinedChildSpec, "label" | "windowsShell" | "windowsCommandLineEnv">,
+): { readonly cmdline: string; readonly binShell?: WrapOptions["binShell"] } {
+  if (spec.windowsCommandLineEnv !== undefined && spec.windowsShell !== "cmd") {
+    throw new Error(`[confined-child] ${spec.label}: windowsCommandLineEnv needs windowsShell "cmd"`);
+  }
   if (process.platform === "win32") {
+    if (spec.windowsShell === "cmd") {
+      return {
+        cmdline: buildCmdCommandLine(spec.label, command, args, spec.windowsCommandLineEnv ?? {}),
+        binShell: cmdBinShell(spec.label),
+      };
+    }
     return {
       cmdline: ["&", powershellQuote(command), ...args.map((part) => powershellQuote(part))].join(" "),
       binShell: "powershell",
     };
   }
   return { cmdline: [command, ...args].map((part) => shellQuote(part)).join(" ") };
+}
+
+/**
+ * `cmd.exe` limits its command line to 8191 characters; this leaves room for
+ * nothing else to be added to it.
+ */
+const CMD_LINE_LIMIT = 8_000;
+const CMD_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * The `"cmd"` rendering: `set "NAME=VALUE"&& "<command>" "<arg>" …`, run as
+ * `cmd.exe /d /v:off /s /c <line>`.
+ *
+ * Every token is double-quoted, which makes `& | < > ^ ( )` literal, and
+ * `/v:off` makes `!` literal whatever the registry says. What quoting cannot
+ * neutralise is REFUSED rather than escaped: a `"` (it would end the quoting;
+ * no Windows path contains one), a `%` (cmd expands `%NAME%` inside quotes
+ * too), and CR, LF or NUL (a second command, or a truncated one). A trailing
+ * run of backslashes is doubled so the target's MSVCRT argument parser does
+ * not read the closing quote as escaped. Refusing fails the load with the
+ * offending token named; a plugin path with `%` in it is the case that will
+ * meet it, and the message says so.
+ */
+export function buildCmdCommandLine(
+  label: string,
+  command: string,
+  args: readonly string[],
+  env: Readonly<Record<string, string>>,
+): string {
+  const parts: string[] = [];
+  for (const [name, value] of Object.entries(env)) {
+    if (!CMD_ENV_NAME_RE.test(name)) {
+      throw new Error(`[confined-child] ${label}: '${name}' is not an environment variable name`);
+    }
+    assertCmdSafe(label, `${name}=${value}`);
+    parts.push(`set "${name}=${value}"&&`);
+  }
+  for (const token of [command, ...args]) {
+    assertCmdSafe(label, token);
+    parts.push(`"${token.replace(/(\\+)$/, "$1$1")}"`);
+  }
+  const line = parts.join(" ");
+  if (line.length > CMD_LINE_LIMIT) {
+    throw new Error(
+      `[confined-child] ${label}: the cmd.exe command line is ${line.length} characters, over the ${CMD_LINE_LIMIT} it can carry`,
+    );
+  }
+  return line;
+}
+
+function assertCmdSafe(label: string, token: string): void {
+  const bad = /["%\r\n\0]/.exec(token);
+  if (bad !== null) {
+    const what = bad[0] === '"' ? "a double quote" : bad[0] === "%" ? "'%'" : "a control character";
+    throw new Error(
+      `[confined-child] ${label}: '${token.slice(0, 200)}' contains ${what}, which cmd.exe cannot be given safely; `
+        + "move the plugin, or the app, to a path without it",
+    );
+  }
+}
+
+/** `cmd.exe` from the system root, never from `PATH`, with AutoRun and delayed expansion off. */
+function cmdBinShell(label: string): { exe: string; args: string[] } {
+  const root = process.env.SystemRoot ?? process.env.WINDIR;
+  if (root === undefined || root.trim().length === 0) {
+    throw new Error(`[confined-child] ${label}: cannot locate cmd.exe: SystemRoot is unset`);
+  }
+  return { exe: `${root.replace(/[\\/]+$/, "")}\\System32\\cmd.exe`, args: ["/d", "/v:off", "/s", "/c"] };
 }
 
 function powershellQuote(value: string): string {

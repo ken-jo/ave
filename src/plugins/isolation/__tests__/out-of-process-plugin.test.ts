@@ -109,6 +109,8 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
   };
 });
 import { EventEmitter } from "node:events";
+import { connect } from "node:net";
+import { spawn as spawnProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -122,6 +124,13 @@ import type {
 import { servePluginChild } from "../plugin-child-main.js";
 import { createOutOfProcessPluginFactory, PluginSandboxGrantError } from "../out-of-process-plugin.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
+import {
+  acceptHostOverLoopback,
+  CHILD_LOOPBACK_TRANSPORT_ARG,
+  connectToAnnouncedChild,
+  encodeChildEnv,
+  parseChildLaunchArgs,
+} from "../child-loopback-link.js";
 import { openPluginProtocolSession } from "../plugin-protocol-session.js";
 import type { ChildLink } from "../plugin-child-transport.js";
 import {
@@ -1361,7 +1370,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
         windowsGrant.events.push("spawn");
         const child = fakeChild();
         setImmediate(() => end(child, 1, null));
-        return { child, confinement: "wrapped" };
+        return { child, confinement: "windows-srt" };
       });
       const outcome = await construct(layout);
       expect(outcome).toBeInstanceOf(Error);
@@ -1405,7 +1414,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
         windowsGrant.events.push("spawn");
         const child = fakeChild({});
         setImmediate(() => child.emit("error", new Error("spawn ENOENT")));
-        return { child, confinement: "wrapped" };
+        return { child, confinement: "windows-srt" };
       });
       const outcome = await construct(layout);
       expect(outcome).toBeInstanceOf(Error);
@@ -1423,7 +1432,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
         setImmediate(() => {
           for (const listener of windowsGrant.lost) listener(new Error("holder exited"));
         });
-        return { child: spawned, confinement: "wrapped" };
+        return { child: spawned, confinement: "windows-srt" };
       });
       const outcome = await construct(layout);
       expect(outcome).toBeInstanceOf(Error);
@@ -1461,6 +1470,170 @@ describe("on Windows a confined child holds a grant on its own directories for e
       { sandboxActive: false },
     );
   });
+
+  /**
+   * The sandboxed Windows channel (`child-loopback-link.ts`): the fake child
+   * runs the REAL child half — `acceptHostOverLoopback` announcing on the
+   * fake's stdout, then `servePluginChild` over the accepted socket — so the
+   * host's half is exercised against what the child actually does. Whether
+   * srt-win admits the connection is the my-window measurement's question.
+   */
+  function loopbackChild(opts: { readonly onAnnounce?: (port: number) => void } = {}) {
+    return async (spec: { args: string[] }) => {
+      windowsGrant.events.push("spawn");
+      const child = fakeChild();
+      const entryAt = spec.args.indexOf(spec.args.find((arg) => !arg.startsWith("--"))!);
+      const mode = parseChildLaunchArgs(spec.args.slice(entryAt + 1));
+      if (mode.transport !== "loopback") throw new Error("expected the loopback launch");
+      void acceptHostOverLoopback({
+        announce: (line) => {
+          opts.onAnnounce?.(Number(line.split(" ")[1]));
+          child.stdout.write(line);
+        },
+        acceptTimeoutMs: 5_000,
+        handshakeTimeoutMs: 5_000,
+      }).then((socket) => {
+        const service = servePluginChild(socket, socket);
+        socket.resume();
+        socket.on("close", () => {
+          service.hostGone();
+          end(child, 0, null);
+        });
+      }, () => end(child, 1, null));
+      return { child, confinement: "windows-srt" };
+    };
+  }
+
+  it("launches through cmd with ELECTRON_RUN_AS_NODE on the line, the symlink flags, and its environment as one argument", async () => {
+    const layout = aveLayout();
+    await asWindows(layout, async () => {
+      spawnConfinedChild.mockImplementation(async () => {
+        const child = fakeChild();
+        setImmediate(() => end(child, 1, null));
+        return { child, confinement: "windows-srt" };
+      });
+      await construct(layout);
+      const spec = spawnConfinedChild.mock.calls[0]![0] as {
+        command: string;
+        args: string[];
+        windowsShell?: string;
+        windowsCommandLineEnv?: Record<string, string>;
+        extraEnv: Record<string, string>;
+      };
+      expect(spec.command).toBe(process.execPath);
+      expect(spec.windowsShell).toBe("cmd");
+      expect(spec.windowsCommandLineEnv).toEqual({ ELECTRON_RUN_AS_NODE: "1" });
+      expect(spec.args.slice(0, 2)).toEqual(["--preserve-symlinks", "--preserve-symlinks-main"]);
+      expect(spec.args[3]).toBe(CHILD_LOOPBACK_TRANSPORT_ARG);
+      const mode = parseChildLaunchArgs(spec.args.slice(3));
+      if (mode.transport !== "loopback") throw new Error("expected the loopback launch");
+      // The throwaway HOME the wrap could not deliver travels in the argument;
+      // what srt-win sets itself, or only the command line can carry, does not.
+      expect(mode.env.HOME).toBe(spec.extraEnv.HOME);
+      for (const name of ["PATH", "PATHEXT", "TMPDIR", "ELECTRON_RUN_AS_NODE"]) {
+        expect(mode.env).not.toHaveProperty(name);
+      }
+    });
+  });
+
+  it("serves a tool call over the authenticated loopback channel, then stops, releases, and leaves no listener", async () => {
+    const layout = aveLayout();
+    const { dir, entryPath } = writePluginModule();
+    let port = 0;
+    try {
+      await asWindows(layout, async () => {
+        spawnConfinedChild.mockImplementation(loopbackChild({ onAnnounce: (announced) => (port = announced) }));
+        const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
+        const instance = await factory(hostContext(fakeHostApi(), layout.context));
+        const echoed = (await instance.handlers.pilot_echo!({ text: "over loopback" })) as { payload: unknown };
+        expect(echoed.payload).toEqual({ text: "over loopback" });
+        await instance.stop?.();
+        await vi.waitFor(() => expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]));
+        expect(port).toBeGreaterThan(0);
+        const refused = await new Promise<string>((resolve) => {
+          const probe = connect({ host: "127.0.0.1", port });
+          probe.once("connect", () => {
+            probe.destroy();
+            resolve("connected");
+          });
+          probe.once("error", (error: NodeJS.ErrnoException) => resolve(error.code ?? "error"));
+        });
+        expect(refused).toBe("ECONNREFUSED");
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a child whose stdout says anything before its announce, ends it, and releases the grant", async () => {
+    const layout = aveLayout();
+    await asWindows(layout, async () => {
+      let spawned: FakeChild | undefined;
+      spawnConfinedChild.mockImplementation(async () => {
+        windowsGrant.events.push("spawn");
+        spawned = fakeChild();
+        setImmediate(() => spawned!.stdout.write("AVE-CHILD-LISTEN 1 not-a-nonce\n"));
+        return { child: spawned, confinement: "windows-srt" };
+      });
+      const outcome = await construct(layout);
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toContain("something other than its announce");
+      expect(spawned!.kill).toHaveBeenCalledWith("SIGTERM");
+      await vi.waitFor(() => expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]));
+    });
+  });
+
+  it("refuses a sandboxed Windows launch that came back unwrapped", async () => {
+    const layout = aveLayout();
+    await asWindows(layout, async () => {
+      spawnConfinedChild.mockImplementation(async () => ({ child: fakeChild(), confinement: "unconfined" }));
+      const outcome = await construct(layout);
+      expect((outcome as Error).message).toContain("came back 'unconfined', not 'windows-srt'");
+    });
+  });
+
+  it("runs the real child entry over loopback: the argument's environment applies, stdin's end is not the host leaving, and the channel's end is", async () => {
+    // The production child, as a real process from the same binary, launched
+    // the way the sandboxed Windows spawn launches it — minus srt-win, which
+    // this host does not have. Its stdin ends at once, as srt-win's does.
+    const dir = mkdtempSync(join(tmpdir(), "oop-loopback-real-"));
+    const entryPath = join(dir, "plugin.mjs");
+    writeFileSync(
+      entryPath,
+      `export const createPlugin = async () => ({
+  handlers: { probe_env: async () => process.env.AVE_LOOPBACK_PROBE ?? null },
+});
+`,
+    );
+    const child = spawnProcess(
+      process.execPath,
+      [pluginChildEntryPath(), CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv({ AVE_LOOPBACK_PROBE: "from the argument" })],
+      { env: { ...buildSafeChildEnv(), ELECTRON_RUN_AS_NODE: "1" }, stdio: ["pipe", "pipe", "pipe"] },
+    );
+    child.stdin!.end();
+    const exited = new Promise<string>((resolve) => child.once("exit", (code) => resolve(`code=${String(code)}`)));
+    try {
+      const socket = await connectToAnnouncedChild({ stdout: child.stdout!, exited, timeoutMs: 20_000 });
+      const link: ChildLink = {
+        input: socket,
+        output: socket,
+        terminate: () => socket.destroy(),
+        onGone: (handler) => void exited.then(handler),
+        onFault: () => undefined,
+      };
+      const manifest: PluginManifest = {
+        ...MANIFEST,
+        tools: [{ name: "probe_env", description: "read the child's environment", inputSchema: EMPTY_SCHEMA }],
+      };
+      const instance = await sessionFactory({ manifest, entryPath, link })(hostContext(fakeHostApi()));
+      await expect(instance.handlers.probe_env!()).resolves.toBe("from the argument");
+      socket.end();
+      await expect(exited).resolves.toBe("code=0");
+    } finally {
+      child.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it.skipIf(process.platform === "win32")("makes no ACL grant off Windows, where the wrap carries the allow-list", async () => {
     const layout = aveLayout();

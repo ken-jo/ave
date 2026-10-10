@@ -453,3 +453,95 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * The `cmd.exe` rendering a sandboxed Windows plugin child launches through
+ * (`windowsShell: "cmd"`). srt-win hands the line to `cmd.exe /d /v:off /s
+ * /c` verbatim, so this line IS the shell input: every token is quoted, and
+ * what quoting cannot neutralise is refused before anything is wrapped.
+ */
+describe("spawnConfinedChild's cmd.exe rendering on Windows", () => {
+  const hostPlatform = process.platform;
+  const hostSystemRoot = process.env.SystemRoot;
+  beforeEach(() => {
+    setProcessPlatform("win32");
+    process.env.SystemRoot = "C:\\Windows";
+  });
+  afterEach(() => {
+    setProcessPlatform(hostPlatform);
+    if (hostSystemRoot === undefined) delete process.env.SystemRoot;
+    else process.env.SystemRoot = hostSystemRoot;
+  });
+
+  function spawnCmd(command: string, args: readonly string[], env?: Record<string, string>) {
+    return spawnConfinedChild({
+      command,
+      args,
+      label: "plugin-child:x",
+      grantMode: "deny-only",
+      baseEnv: {},
+      windowsShell: "cmd",
+      ...(env ? { windowsCommandLineEnv: env } : {}),
+    });
+  }
+
+  it("quotes every token, puts the environment first, and runs System32 cmd.exe with AutoRun and delayed expansion off", async () => {
+    await spawnCmd("C:\\Program Files\\Ave\\Ave.exe", ["--preserve-symlinks", "C:\\Program Files (x86)\\a&b^c!d\\main.js"], {
+      ELECTRON_RUN_AS_NODE: "1",
+    });
+    const [cmdline, options] = wrapWorkerCommandMock.mock.calls[0]! as [string, { binShell: unknown }];
+    expect(cmdline).toBe(
+      'set "ELECTRON_RUN_AS_NODE=1"&& "C:\\Program Files\\Ave\\Ave.exe" "--preserve-symlinks" '
+        + '"C:\\Program Files (x86)\\a&b^c!d\\main.js"',
+    );
+    expect(options.binShell).toEqual({ exe: "C:\\Windows\\System32\\cmd.exe", args: ["/d", "/v:off", "/s", "/c"] });
+  });
+
+  it("doubles a trailing backslash run so the target does not read the closing quote as escaped", async () => {
+    await spawnCmd("C:\\app.exe", ["C:\\dir\\", "C:\\two\\\\"]);
+    expect(wrapWorkerCommandMock.mock.calls[0]![0]).toBe('"C:\\app.exe" "C:\\dir\\\\" "C:\\two\\\\\\\\"');
+  });
+
+  it.each([
+    ["a double quote", 'C:\\a" & calc & "\\b.js'],
+    ["'%'", "C:\\Users\\%USERNAME%\\x.js"],
+    ["a control character", "C:\\a.js\r\ncalc"],
+    ["a control character", "C:\\a.js\n"],
+    ["a control character", "C:\\a\0.js"],
+  ])("refuses an argument containing %s before anything is wrapped", async (what, hostile) => {
+    await expect(spawnCmd("C:\\app.exe", [hostile])).rejects.toThrow(`contains ${what}, which cmd.exe cannot be given safely`);
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses the same characters in the command itself and in an environment value, and a malformed name", async () => {
+    await expect(spawnCmd("C:\\100%\\app.exe", [])).rejects.toThrow("contains '%'");
+    await expect(spawnCmd("C:\\app.exe", [], { X: 'a"&calc&"' })).rejects.toThrow("contains a double quote");
+    await expect(spawnCmd("C:\\app.exe", [], { "X=Y": "1" })).rejects.toThrow("is not an environment variable name");
+    await expect(spawnCmd("C:\\app.exe", [], { "A&calc": "1" })).rejects.toThrow("is not an environment variable name");
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a line longer than cmd.exe can carry", async () => {
+    await expect(spawnCmd("C:\\app.exe", ["x".repeat(8_100)])).rejects.toThrow(/over the 8000 it can carry/);
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses command-line environment without the cmd rendering", async () => {
+    await expect(spawnConfinedChild({
+      command: "C:\\app.exe",
+      args: [],
+      label: "plugin-child:x",
+      grantMode: "deny-only",
+      baseEnv: {},
+      windowsCommandLineEnv: { ELECTRON_RUN_AS_NODE: "1" },
+    })).rejects.toThrow('windowsCommandLineEnv needs windowsShell "cmd"');
+  });
+
+  it("leaves every other Windows caller on PowerShell", async () => {
+    await spawnConfinedChild({ command: "C:\\py.exe", args: ["w.py"], label: "worker:x:main", grantMode: "deny-only", baseEnv: {} });
+    const [cmdline, options] = wrapWorkerCommandMock.mock.calls[0]! as [string, { binShell: unknown }];
+    expect(cmdline).toBe("& 'C:\\py.exe' 'w.py'");
+    expect(options.binShell).toBe("powershell");
+  });
+});
