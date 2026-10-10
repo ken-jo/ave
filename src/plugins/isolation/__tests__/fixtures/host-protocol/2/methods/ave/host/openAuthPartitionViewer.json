@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/openAuthPartitionViewer",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "opts": {
         "url": "https://mail.example.com/",
         "windowTitle": "Mail"

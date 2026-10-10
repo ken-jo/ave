@@ -92,7 +92,7 @@ async function call<T>(page: Page, method: string, ...args: unknown[]): Promise<
 }
 
 test.describe('git marketplace automatic updates', () => {
-  test.use({ seedRepositoryPlugins: false, launchEnv: { AVE_E2E_MARKETPLACE_SCHEDULER: '1' } });
+  test.use({ seedViewFixturePlugin: false, launchEnv: { AVE_E2E_MARKETPLACE_SCHEDULER: '1' } });
   test.setTimeout(180_000);
 
   let served: string;

@@ -1,7 +1,7 @@
 import { test, expect } from './fixtures';
 import { openInlineSettings, closeInlineSettings } from './inline-settings.js';
 
-test.use({ seedTogglePlugin: true, seedRepositoryPlugins: false });
+test.use({ seedTogglePlugin: true, seedViewFixturePlugin: false });
 
 /**
  * #1176 — PluginConfigTab active/inactive Switch.

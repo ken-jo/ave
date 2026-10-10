@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/probePrivateHost",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "host": "intranet.example.com",
       "opts": {
         "timeoutMs": 1500

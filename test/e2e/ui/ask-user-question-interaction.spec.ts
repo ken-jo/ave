@@ -52,7 +52,7 @@ async function expectResponseCount(app: ElectronApplication, count: number): Pro
   }).toBe(count);
 }
 
-test.use({ seedRepositoryPlugins: false });
+test.use({ seedViewFixturePlugin: false });
 
 test.describe("ask_user_question interaction", () => {
   test("submits a declared choice and removes the resolved card", async ({ app, mainWindow }) => {

@@ -4,8 +4,11 @@
     "jsonrpc": "2.0",
     "method": "ave/host/onEvent",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "eventType": "golden.ping",
-      "handler": "<uuid-1>"
+      "handler": "<uuid-2>"
     }
   },
   "response": {
@@ -15,7 +18,7 @@
         "code": "subscription-unknown",
         "name": "HostApiBoundaryError"
       },
-      "message": "[host-api-dispatcher] no open subscription '<uuid-1>'"
+      "message": "[host-api-dispatcher] no open subscription '<uuid-2>'"
     },
     "id": 1,
     "jsonrpc": "2.0"

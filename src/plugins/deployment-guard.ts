@@ -97,10 +97,10 @@ export class PluginDeploymentGuard {
 /**
  * Deployment policy for the LIVE disable writer.
  *
- * Two methods mutate the registry `enabled` field. `disable()` consults this
- * guard; `setPluginEnabled()` is what the renderer toggle reaches through
- * `CHANNELS.plugins.setEnabled`, and it checks here too, so a required plugin
- * cannot be switched off from the settings tab.
+ * `setPluginEnabled()` is the one method that mutates the registry `enabled`
+ * field, and what the renderer toggle reaches through
+ * `CHANNELS.plugins.setEnabled`. It checks here, so a required plugin cannot be
+ * switched off from the settings tab.
  *
  * `installClaim` is the registry row id this guard looks entries up by, NOT the
  * canonical manifest id, which it would fail to find. A static manifest

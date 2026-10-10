@@ -4,6 +4,9 @@
     "jsonrpc": "2.0",
     "method": "ave/host/withdrawWorkProposal",
     "params": {
+      "_meta": {
+        "ave/invocation": "<uuid-1>"
+      },
       "key": "mail-1",
       "kind": "follow-up"
     }
