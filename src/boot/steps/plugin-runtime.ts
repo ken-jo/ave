@@ -25,7 +25,7 @@ import { registerBootPluginShutdown, registerShutdownHook } from "../../main/app
 import { onEvent as onHostEvent } from "../types.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { PluginRuntime } from "../../plugins/runtime.js";
-import { resolvePluginChildEntryPath } from "../../plugins/isolation/out-of-process-plugin.js";
+import { resolvePluginChildEntryPath } from "../../permissions/confined-child.js";
 import { LeaseDenialAudit } from "../../plugins/secret-access/lease-denial-audit.js";
 import type { PythonRuntimeBootstrapper } from "../../main/python-runtime.js";
 import { startPluginDevWatcher } from "../../plugins/dev-watcher.js";

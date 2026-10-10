@@ -1187,12 +1187,22 @@ reach their own directories through a holder-PID ACL grant held for that
 process's lifetime, and while it is held every confined process reaches them
 too. By owner decision (2026-10-10) third-party plugins run on Windows on those
 terms, an accepted risk pending an ASRT per-plugin identity
-(`docs/design/plugin-hostapi-protocol.md` §9.8 A2, decision 64). An `entry`
-plugin child does not yet start under srt-win at all — its environment is not
-delivered, the PowerShell inner shell does not wait for `electron.exe`, stdin
-is not relayed, and the module import `lstat`s profile ancestors it cannot
-reach — so with the sandbox on a Windows `entry` plugin does not load today
-(measured 2026-10-10, same section).
+(`docs/design/plugin-hostapi-protocol.md` §9.8 A2, decision 64). Because
+srt-win relays no stdin and delivers none of the spawn's environment, an `entry`
+plugin child there runs under `cmd.exe` with `ELECTRON_RUN_AS_NODE` on the
+command line, its environment in one argument and Node's symlink-preserving
+flags, and speaks to the host over one loopback connection that both ends
+authenticate, each proving it holds a nonce the child announced on stdout with a
+proof bound to that connection (same document, §2.3, §2.4). A plugin worker, a bundled
+hook and an MCP stdio server run through that same launch as a stdio relay: the
+host sends the program, its arguments, its environment and its directory over
+the authenticated connection, and the relay starts it with a real stdin fed from
+the connection, its stdout and stderr carried by srt-win, and exits with its
+code; each holds its own holder-PID grant for its lifetime. Nothing third-party
+reaches the `cmd.exe` line, a batch file (`.cmd`/`.bat`, or a bare name such as
+`npx` that only one answers) is refused with the reason, and a Windows sandboxed spawn that names neither the
+relay nor `cmd.exe` is refused, because srt-win's PowerShell launch loses stdin,
+environment and exit code alike.
 
 Plugin read-relaxation is narrower than the host-shell capability. The
 foreground plugin effect-boundary may replace a pre-exec ask only when

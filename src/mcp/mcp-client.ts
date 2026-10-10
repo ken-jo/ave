@@ -60,7 +60,8 @@ import {
   isAsrtSandboxActive,
   cleanupAsrtSandboxAfterCommand,
 } from "../permissions/asrt-sandbox.js";
-import { bundledWrappedEnv, wrapBundledCommand } from "../sandbox/wrap-bundled-command.js";
+import { bundledWrappedEnv, spawnWindowsBundledProcess, wrapBundledCommand } from "../sandbox/wrap-bundled-command.js";
+import type { Readable, Writable } from "node:stream";
 import { terminateChildProcess } from "../tools/terminate-child-process.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
 import {
@@ -2106,6 +2107,13 @@ class StdioTransport implements McpTransport {
   private asrtCleanupRan = false;
   private wrappedOwner: McpWrappedOwner | null = null;
   private sandboxHomeCleanup: (() => void) | null = null;
+  /**
+   * Where requests are written and responses read: the process's own pipes,
+   * or on Windows with the sandbox on the stdio relay's streams
+   * (`spawnWindowsBundledProcess`).
+   */
+  private processStdin: Writable | null = null;
+  private processStdout: Readable | null = null;
 
   constructor(private readonly config: McpStdioServerConfig) {}
 
@@ -2146,9 +2154,10 @@ class StdioTransport implements McpTransport {
     // and its writes are confined to the per-server filesystem jail. ASRT is
     // stdio-transparent on mac/linux: it wraps as `[shell, -c, <wrapped>]`;
     // a child spawned with inherited stdio:["pipe","pipe","pipe"] passes
-    // stdin/stdout through, so MCP's newline-delimited framing survives. Windows
-    // is fail-closed in openWrapped until ASRT can apply the per-server
-    // allowRead/allowWrite grants this path needs.
+    // stdin/stdout through, so MCP's newline-delimited framing survives. srt-win
+    // relays no stdin and grants no per-exec allow, so on Windows openWrapped
+    // hands the server to the host's stdio relay under a held ACL grant
+    // (openWrappedWindows).
     // Gate OFF ⇒ the plain spawn below is UNCHANGED.
     if (isAsrtSandboxActive()) {
       try {
@@ -2178,6 +2187,8 @@ class StdioTransport implements McpTransport {
     });
 
     trackManagedChildProcess(this.process, { label: `mcp:${this.config.id}` });
+    this.processStdin = this.process.stdin;
+    this.processStdout = this.process.stdout;
     this.setupProcessHandlers();
   }
 
@@ -2198,7 +2209,8 @@ class StdioTransport implements McpTransport {
     baseEnv: NodeJS.ProcessEnv,
   ): Promise<void> {
     if (process.platform === "win32") {
-      throw new Error("[mcp-client] ASRT-wrapped MCP stdio on Windows cannot apply allowRead/allowWrite grants per exec");
+      await this.openWrappedWindows(spawnCommand, baseEnv);
+      return;
     }
 
     const sandboxHome = createSandboxProcessHome();
@@ -2246,6 +2258,8 @@ class StdioTransport implements McpTransport {
       });
 
       trackManagedChildProcess(this.process, { label: `mcp:${this.config.id}:asrt` });
+      this.processStdin = this.process.stdin;
+      this.processStdout = this.process.stdout;
       this.setupProcessHandlers();
     } catch (err) {
       if (this.wrappedThroughAsrt) {
@@ -2257,6 +2271,40 @@ class StdioTransport implements McpTransport {
       }
       throw err;
     }
+  }
+
+  /**
+   * The Windows form of {@link openWrapped}: srt-win relays no stdin and
+   * delivers no spawn environment, and grants no per-exec allow, so the server
+   * runs through the host's stdio relay under an ACL grant held for its
+   * lifetime — WRITE on its sandbox root and its plugin's data root, READ on
+   * those and on its bundled payload — via `spawnWindowsBundledProcess`. The
+   * configured working directory is NOT granted: a server whose `cwd` the
+   * `srt-sandbox` account cannot reach fails to start, with the relay's reason
+   * on its stderr, rather than widening the grant to wherever `cwd` points.
+   */
+  private async openWrappedWindows(
+    spawnCommand: { command: string; args: string[] },
+    baseEnv: NodeJS.ProcessEnv,
+  ): Promise<void> {
+    const allowWrite = [...(this.config.sandboxRoot ? [this.config.sandboxRoot] : []),
+      ...(this.config.pluginDataDir ? [this.config.pluginDataDir] : [])];
+    const spawned = await spawnWindowsBundledProcess({
+      label: `mcp:${this.config.id}`,
+      command: spawnCommand.command,
+      args: spawnCommand.args,
+      baseEnv,
+      ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
+      allowRead: this.config.bundledPayloadRoot ? [this.config.bundledPayloadRoot] : [],
+      allowWrite,
+    });
+    this.wrappedThroughAsrt = true;
+    this.sandboxHomeCleanup = spawned.releaseHold;
+    this.wrappedOwner = markMcpServerWrapped(this.config.id);
+    this.process = spawned.child;
+    this.processStdin = spawned.stdin;
+    this.processStdout = spawned.stdout;
+    this.setupProcessHandlers();
   }
 
   /**
@@ -2287,7 +2335,7 @@ class StdioTransport implements McpTransport {
   }
 
   async send(message: JsonRpcMessage): Promise<void> {
-    if (!this.process?.stdin?.writable) {
+    if (this.process === null || !this.processStdin?.writable) {
       throw new Error(`[mcp-client] ${t("be_mcpClient.stdinNotWritable")}`);
     }
     // MCP stdio transport: one JSON-RPC message per line, no embedded
@@ -2295,7 +2343,7 @@ class StdioTransport implements McpTransport {
     // serialized message is always a single line.
     const line = `${JSON.stringify(message)}\n`;
     try {
-      this.process.stdin.write(line);
+      this.processStdin.write(line);
     } catch (err) {
       throw err instanceof Error ? err : new Error(String(err));
     }
@@ -2308,10 +2356,12 @@ class StdioTransport implements McpTransport {
     // to null the field synchronously and the 3-second timer would dereference
     // `this.process?.kill("SIGKILL")` as a no-op.
     const proc = this.process;
+    const procStdin = this.processStdin;
     this.process = null;
+    this.processStdin = null;
     if (!proc) return;
     try {
-      proc.stdin?.end();
+      procStdin?.end();
     } catch {
       // A broken stdin must not suppress process termination below.
     }
@@ -2328,7 +2378,7 @@ class StdioTransport implements McpTransport {
   private setupProcessHandlers(): void {
     if (!this.process) return;
 
-    this.process.stdout?.on("data", (chunk: Buffer) => {
+    this.processStdout?.on("data", (chunk: Buffer) => {
       try {
         this.handleStdout(chunk);
       } catch (err) {

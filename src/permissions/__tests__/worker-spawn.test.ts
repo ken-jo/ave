@@ -144,6 +144,8 @@ import {
   isPluginWorkerWrapped,
 } from "../sandbox-capability.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { startFakeRelayPeer } from "../../__tests__/support/fake-relay-peer.js";
+import { resolvePluginChildEntryPath } from "../confined-child.js";
 
 /** A minimal child-process double (NOT a shared helper — local to this file). */
 class StubWorkerChild extends EventEmitter {
@@ -706,10 +708,14 @@ describe("spawnWorker — Windows with gate ON", () => {
       string,
       { filesystem: { allowRead?: string[]; allowWrite?: string[]; denyRead?: string[]; denyWrite?: string[] }; binShell?: string },
     ];
-    expect(cmdline).toContain("& 'C:/Python/python.exe'");
-    expect(cmdline).toContain("'C:/ave/local-indexer/dist/worker/local_indexer_worker.py'");
-    expect(cmdline).not.toContain("--uds");
-    expect(options.binShell).toBe("powershell");
+    // The worker runs through the stdio relay: the line srt-win runs is the
+    // host's own runtime in relay mode, and nothing of the worker's is on it.
+    expect(cmdline).toBe(
+      `set "ELECTRON_RUN_AS_NODE=1"&& "${process.execPath}" "--preserve-symlinks" "--preserve-symlinks-main" `
+        + `"${resolvePluginChildEntryPath()}" "--ave-child-transport=relay"`,
+    );
+    expect(cmdline).not.toContain("python");
+    expect(options.binShell).toEqual({ exe: "C:\\Windows\\System32\\cmd.exe", args: ["/d", "/v:off", "/s", "/c"] });
     expect(options.filesystem.allowRead).toBeUndefined();
     expect(options.filesystem.allowWrite).toBeUndefined();
     // No plugins-root deny on Windows: there it would be an ACE for the one
@@ -751,6 +757,34 @@ describe("spawnWorker — Windows with gate ON", () => {
     expect(workerOpts.env?.AVE_INTERNAL_SECRET).toBeUndefined();
     expect(workerOpts.shell).toBe(false);
     expect(workerOpts.stdio).toEqual(["pipe", "pipe", "pipe"]);
+
+    // The worker's program, arguments and environment travel in the relay
+    // request; its stdout comes back through the relay; its stdin — the
+    // liveness pipe — is held open and never ended by the host.
+    const peer = await startFakeRelayPeer(child.stdout);
+    const request = await peer.request;
+    expect(request.command).toBe(pythonExecutable);
+    expect(request.args).toEqual([workerScript, "--host", "127.0.0.1", "--port", "17037"]);
+    const relayedEnv = request.env as Record<string, string>;
+    expect(relayedEnv.HOME).toBe(SANDBOX_HOME);
+    expect(relayedEnv.USERPROFILE).toBe(SANDBOX_HOME);
+    expect(relayedEnv.NODE_OPTIONS).toBe("--preserve-symlinks --preserve-symlinks-main");
+    expect(relayedEnv.PATH).toBeUndefined();
+    expect(relayedEnv.PATHEXT).toBeUndefined();
+    expect(relayedEnv.HTTPS_PROXY).toBeUndefined();
+    expect(relayedEnv.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(relayedEnv.AVE_INTERNAL_SECRET).toBeUndefined();
+    const out: string[] = [];
+    worker.onStdout((text) => out.push(text));
+    child.stdout.write("worker says hi\n");
+    await vi.waitFor(() => expect(out.join("")).toBe("worker says hi\n"));
+    let inputEnded = false;
+    void peer.inputEnded.then(() => {
+      inputEnded = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(inputEnded).toBe(false);
+    peer.close();
 
     expect(worker.socketPath).toBeNull();
     expect(worker.pid).toBe(5102);

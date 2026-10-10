@@ -51,6 +51,18 @@ vi.mock("../../permissions/sandbox-process-home.js", () => ({
   }),
 }));
 
+// ─── Windows ACL grant holder — recorded, never a real holder process ──
+const grantReleaseMock = vi.fn();
+const holdGrantMock = vi.fn(async (_opts: unknown) => ({
+  assertAlive: () => undefined,
+  onLost: () => undefined,
+  release: grantReleaseMock,
+}));
+vi.mock("../../permissions/windows-acl-grant-holder.js", async (original) => ({
+  ...(await original<typeof import("../../permissions/windows-acl-grant-holder.js")>()),
+  holdWindowsFilesystemGrant: (opts: unknown) => holdGrantMock(opts),
+}));
+
 // ─── ASRT mock — gate + wrap controllable per test ──────────
 let gateActive = false;
 const SANDBOX_TEMP_ROOT = "/tmp/ave-test-sandbox-tmp";
@@ -110,6 +122,7 @@ import {
   FakeChildProcess,
 } from "./test-helpers.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { startFakeRelayPeer } from "../../__tests__/support/fake-relay-peer.js";
 import type { McpStdioServerConfig } from "../types.js";
 
 // ─── Shared helpers ─────────────────────────────────────────
@@ -585,10 +598,28 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     expect(isMcpServerWrapped("overlap")).toBe(false);
   });
 
-  it("win32 fails closed before passing unsupported per-exec allow grants to ASRT", async () => {
+  it("win32 runs the server through the stdio relay under a held ACL grant", async () => {
     setProcessPlatform("win32");
+    const priorSystemRoot = process.env.SystemRoot;
+    process.env.SystemRoot = "C:\\Windows";
     gateActive = true;
     const sandboxRoot = join(aveHome(), "mcp", "fs", "sandbox");
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["srt-win.exe", "exec", "--", "cmd.exe"], env: { ...process.env } });
+    const broker = new FakeChildProcess();
+    Object.assign(broker.responses, handshakeResponses("relayed-fs"));
+    let peer: Awaited<ReturnType<typeof startFakeRelayPeer>> | undefined;
+    spawnMock.mockImplementationOnce(() => {
+      // Announce after the relay host side has attached to the broker's stdout,
+      // then play the program: requests that arrive over the channel are
+      // answered on the broker's stdout, which is where srt-win carries output.
+      setImmediate(() => {
+        void startFakeRelayPeer(broker.stdout).then((started) => {
+          peer = started;
+          started.onInput((text) => broker.stdin.write(text));
+        });
+      });
+      return broker;
+    });
 
     const gov = governanceWithPolicy(
       buildPolicy([stdioApproval("fs", "ave-mcp-fs")]),
@@ -598,7 +629,7 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
         id: "fs",
         transport: "stdio",
         command: "ave-mcp-fs",
-        args: ["--root", "/tmp"],
+        args: ["--root", "C:\\data", "100%", 'say "hi"'],
         sandboxRoot,
       },
       gov,
@@ -606,10 +637,33 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
       unusedNetworkFetch,
     );
 
-    await expect(client.connect()).rejects.toThrow(/allowRead\/allowWrite grants per exec/i);
-    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
-    expect(spawnMock).not.toHaveBeenCalled();
-    expect(isMcpServerWrapped("fs")).toBe(false);
+    try {
+      await client.connect();
+      expect(holdGrantMock).toHaveBeenCalledTimes(1);
+      const grant = holdGrantMock.mock.calls[0]![0] as { label: string; allowRead: string[]; allowWrite: string[] };
+      expect(grant.label).toBe("mcp:fs:asrt-win-acl");
+      expect(grant.allowWrite).toEqual([SANDBOX_HOME, sandboxRoot]);
+      expect(grant.allowRead).toEqual([SANDBOX_HOME, sandboxRoot]);
+      // The line srt-win runs carries the host's runtime only; the server's
+      // command and its arguments — `%` and `"` included — are in the request.
+      const [cmdline] = wrapWorkerCommandMock.mock.calls[0] as [string];
+      expect(cmdline).toContain('"--ave-child-transport=relay"');
+      expect(cmdline).not.toContain("ave-mcp-fs");
+      const request = await peer!.request;
+      expect(request.command).toBe("ave-mcp-fs");
+      expect(request.args).toEqual(["--root", "C:\\data", "100%", 'say "hi"']);
+      expect((request.env as Record<string, string>).HOME).toBe(SANDBOX_HOME);
+      expect(isMcpServerWrapped("fs")).toBe(true);
+
+      await client.disconnect();
+      await peer!.inputEnded;
+      expect(isMcpServerWrapped("fs")).toBe(false);
+      expect(grantReleaseMock).toHaveBeenCalled();
+    } finally {
+      peer?.close();
+      if (priorSystemRoot === undefined) delete process.env.SystemRoot;
+      else process.env.SystemRoot = priorSystemRoot;
+    }
   });
 });
 

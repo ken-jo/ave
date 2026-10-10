@@ -5,7 +5,9 @@
  * This module IS the child's `main`. It is spawned by
  * `out-of-process-plugin.ts` through the ASRT wrapper, speaks the multiplexed
  * framed protocol on stdin/stdout, and hands everything above the transport to
- * `startPluginChildRuntime`.
+ * `startPluginChildRuntime`. Under the Windows sandbox it speaks over a loopback
+ * channel instead, and the same entry also serves as the stdio relay a worker,
+ * hook or MCP stdio server runs through there (`child-loopback-link.ts`).
  *
  * ELECTRON-FREE, and enforced by the import graph rather than promised: every
  * module reachable from here is free of `electron`, which is why
@@ -61,6 +63,12 @@ import {
   RPC_INTERNAL_ERROR,
 } from "../../mcp/protocol-constants.js";
 import { errorMessage } from "../../shared/error-message.js";
+import {
+  acceptHostOverLoopback,
+  parseChildLaunchArgs,
+  serveStdioRelay,
+  type ChildLaunchMode,
+} from "./child-loopback-link.js";
 
 /** What {@link servePluginChild} hands back so a caller can end it. */
 export interface PluginChildService {
@@ -366,20 +374,22 @@ export function servePluginChild(
  * `import.meta.url` for the main module, so comparing it against a raw
  * `process.argv[1]` would answer "no" for a correct launch through any
  * symlinked directory — `/tmp` on macOS being the one every developer hits.
+ * Both sides go through `realpathSync.native` rather than one: under
+ * `--preserve-symlinks-main` (the Windows sandboxed launch) Node does NOT
+ * resolve the main module's URL, and the native call works through a handle
+ * where the JavaScript one would `lstat` every ancestor directory.
  */
 function isProcessEntryModule(): boolean {
   const entry = process.argv[1];
   if (!entry) return false;
-  return realpathSync.native(entry) === fileURLToPath(import.meta.url);
+  return realpathSync.native(entry) === realpathSync.native(fileURLToPath(import.meta.url));
 }
 
 /**
- * The production entry: real pipes, and exit when the host closes them.
- *
- * Guarded so importing this file from a test does not hijack the test runner's
- * stdio.
+ * The stdio child: real pipes, and exit when the host closes them. Every
+ * platform except a sandboxed Windows launch.
  */
-if (isProcessEntryModule()) {
+function serveOverStdio(): void {
   const service = servePluginChild(process.stdin, claimProtocolStdout());
   const end = (): void => {
     service.hostGone();
@@ -390,4 +400,82 @@ if (isProcessEntryModule()) {
   };
   process.stdin.on("end", end);
   process.stdin.on("close", end);
+}
+
+/**
+ * The sandboxed Windows child (`child-loopback-link.ts`): apply the
+ * environment the host intended, announce a loopback listener on stdout, and
+ * serve the one connection that presents the nonce. stdin is not read at all —
+ * srt-win relays none, and its end must not be taken for the host leaving.
+ * Any failure before the connection exists ends the process non-zero.
+ */
+function serveOverLoopback(env: Readonly<Record<string, string>>): void {
+  for (const [name, value] of Object.entries(env)) process.env[name] = value;
+  const announce = (line: string): void => {
+    process.stdout.write(line);
+  };
+  acceptHostOverLoopback({ announce, acceptTimeoutMs: 60_000, handshakeTimeoutMs: 10_000 }).then(
+    (socket) => {
+      // Stray output still has to land somewhere the host only logs: stdout is
+      // no longer the protocol, but a plugin's `console.log` is still not one.
+      claimProtocolStdout();
+      const service = servePluginChild(socket, socket);
+      const end = (): void => {
+        service.hostGone();
+        process.exit(0);
+      };
+      socket.on("end", end);
+      socket.on("close", end);
+      socket.on("error", (error) => {
+        process.stderr.write(`[plugin-child] channel error: ${error.message}\n`);
+        end();
+      });
+      socket.resume();
+    },
+    (error: unknown) => {
+      process.stderr.write(`[plugin-child] ${errorMessage(error)}; ending\n`);
+      process.exit(1);
+    },
+  );
+}
+
+/**
+ * The relay (`child-loopback-link.ts`): no plugin is loaded. The program the
+ * host names over the channel runs with a real stdin fed from it, and this
+ * process ends with that program's exit code. Nothing is written to stdout but
+ * the announce, because the program inherits it.
+ */
+function serveAsRelay(): void {
+  serveStdioRelay({
+    announce: (line) => {
+      process.stdout.write(line);
+    },
+    acceptTimeoutMs: 60_000,
+    handshakeTimeoutMs: 10_000,
+    relayEnv: process.env,
+    diagnostics: process.stderr,
+  }).then(
+    (code) => process.exit(code),
+    (error: unknown) => {
+      process.stderr.write(`[plugin-child] relay: ${errorMessage(error)}; ending\n`);
+      process.exit(1);
+    },
+  );
+}
+
+/**
+ * The production entry. Guarded so importing this file from a test does not
+ * hijack the test runner's stdio.
+ */
+if (isProcessEntryModule()) {
+  let mode: ChildLaunchMode;
+  try {
+    mode = parseChildLaunchArgs(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`[plugin-child] ${errorMessage(error)}; ending\n`);
+    process.exit(1);
+  }
+  if (mode.transport === "loopback") serveOverLoopback(mode.env);
+  else if (mode.transport === "relay") serveAsRelay();
+  else serveOverStdio();
 }

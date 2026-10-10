@@ -165,6 +165,20 @@ const ASRT_SANDBOX_ENV_KEYS: ReadonlySet<string> = new Set([
   "SANDBOX_RUNTIME",
 ]);
 
+const ASRT_SANDBOX_ENV_KEYS_LOWER: ReadonlySet<string> = new Set(
+  [...ASRT_SANDBOX_ENV_KEYS].map((key) => key.toLowerCase()),
+);
+
+/**
+ * Whether a variable is one ASRT sets for a sandboxed child itself — its
+ * proxy, CA trust and sandbox markers. Case-insensitive, as Windows compares
+ * names: a caller handing srt-win a target environment by another route
+ * (`confined-child.ts` `srtWinTargetEnv`) leaves these to the wrapper.
+ */
+export function isSandboxWrapperEnvKey(name: string): boolean {
+  return ASRT_SANDBOX_ENV_KEYS_LOWER.has(name.toLowerCase());
+}
+
 /**
  * Compose the env for an ASRT-sandboxed child.
  *
