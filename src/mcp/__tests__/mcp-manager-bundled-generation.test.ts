@@ -255,6 +255,32 @@ describe("McpManager bundled generation", () => {
     await manager.disconnectBundledGeneration("agent-plugin/meeting-kit", "run-1");
   });
 
+  it("hands an agent plugin's stdio server its version and data roots all the way to the client", async () => {
+    // Every plugin-owned wrap is refused `<AVE_HOME>/packages/agent-plugin`,
+    // so the server reads its own version only through `bundledPayloadRoot`
+    // (`wrapBundledCommand`'s `ownPluginReads`); a connect path that dropped
+    // it would leave the server unable to read its own code.
+    vi.stubEnv("AVE_HOME", join(root, "stdio-home"));
+    try {
+      const manager = new McpManager(new McpGovernance(join(root, "policy-stdio.json")), new ToolRegistry(),
+        unusedNetworkFetch, join(root, "servers-stdio.json"));
+      const roots = {
+        pluginDataDir: join(root, "stdio-home", "agent-plugin-data", "meeting-kit"),
+        bundledPayloadRoot: join(root, "stdio-home", "packages", "agent-plugin", "meeting-kit", "1.0.0"),
+      };
+      const projection = prepareBundledMcpProjection({ pluginId: "agent-plugin/meeting-kit", pluginVersion: "1.0.0",
+        generationId: "a".repeat(64), activationId: "run-1", localId: "notes", fingerprint: "b".repeat(64) },
+      { transport: "stdio", command: "/usr/bin/true" }, "d".repeat(64), roots);
+      const trust = new PluginMcpTrustStore();
+      trust.approve(projection);
+      const prepared = await manager.prepareBundledGeneration({ pluginId: "agent-plugin/meeting-kit", generationId: "run-1" }, [projection], trust);
+      expect(constructedConfigs.at(-1)).toMatchObject({ ...roots, sandboxRoot: expect.any(String) });
+      await manager.discardBundledGeneration(prepared);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("retains a discarded candidate handle until disconnect succeeds", async () => {
     const registry = new ToolRegistry();
     const manager = new McpManager(

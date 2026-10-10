@@ -14,7 +14,12 @@
  *     ASRT provisions a dedicated `srt-sandbox` user, applies filesystem rules
  *     through its Windows ACL backend, and enforces egress with WFP + the
  *     loopback proxy. Windows still has NO process isolation, so this remains a
- *     PARTIAL-confine substrate.
+ *     PARTIAL-confine substrate. Its filesystem confinement is against the
+ *     host only: every confined process — every plugin's child, worker, hook
+ *     and server included — runs as that one account, so plugins are NOT
+ *     isolated from each other there (owner decision 2026-10-10,
+ *     `plugin-hostapi-protocol.md` §9.8 A2). `filesystem: true` below never
+ *     means isolation between plugins.
  */
 
 /** What the sandbox confines, by platform. `network` is false where egress is not contained. */
@@ -182,7 +187,9 @@ export function sandboxConfinementForPlatform(
     // PUBLIC, %SystemRoot%\Temp/Tasks, System32\spool\PRINTERS, the FxsTmp /
     // com\dmp pairs, …) for the sandbox user. Those were ambient write targets
     // no per-exec `--deny-write` ever covered, so `filesystem: true` here is a
-    // stronger claim than it was — while `process: false` is unchanged.
+    // stronger claim than it was — while `process: false` is unchanged. It is
+    // a claim about the host's files, not about one plugin's files against
+    // another's: there is one sandbox account for every confined process.
     return { filesystem: true, process: false, network: true };
   }
   // Generic partial profile for any future non-Windows partial backend:

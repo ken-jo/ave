@@ -40,6 +40,7 @@ import {
 } from "../public-contract.js";
 import type {
   HostPluginGenerationState,
+  PluginRuntimeGenerationAccess,
   PluginRuntimeGenerationProjection,
 } from "../plugin-host-generation.js";
 import type { ActivePluginGeneration } from "../plugin-generation-coordinator.js";
@@ -47,6 +48,31 @@ import { unavailableSecretEncryption } from "../../__tests__/support/host-runtim
 import { HOST_PROTOCOL_VERSIONS_SERVED } from "../isolation/host-api-wire.js";
 
 type GenerationCommitScope = <T>(operation: () => Promise<T>) => Promise<T>;
+
+/**
+ * Generation admission for a `HostApiGenerationScope` that only needs one
+ * admitted generation: `generationId` is admitted and leasable, every other id
+ * is refused, and a lease runs its operation in place.
+ *
+ * For a host-API case whose subject is not the lease machinery — standing up
+ * the real coordinator would put its scheduling between the member and the
+ * assertion. The scope's own lease rules are pinned in
+ * `plugin-host-effect-scope.test.ts`.
+ */
+export function admittedGenerationAccess(generationId: string): PluginRuntimeGenerationAccess {
+  return {
+    getActive: () => undefined,
+    isExactAdmitted: (_pluginId: string, candidate: string) => candidate === generationId,
+    acquire: async () => {
+      throw new Error("admittedGenerationAccess: acquire is not used");
+    },
+    acquireExact: async (_pluginId: string, candidate: string) => {
+      if (candidate !== generationId) throw new Error(`generation ${candidate} is not admitted`);
+      return { generation: { generationId } as never, release: () => undefined };
+    },
+    runWithLease: async <T>(_lease: unknown, operation: () => Promise<T>) => operation(),
+  } as unknown as PluginRuntimeGenerationAccess;
+}
 
 const execFileAsync = promisify(execFile);
 

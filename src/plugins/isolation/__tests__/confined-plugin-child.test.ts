@@ -70,7 +70,7 @@
  *    run this file: on darwin/arm64 all 48 cases that run there pass, with no
  *    skip mark and no warning, where the 22 that need the backend take
  *    hundreds of milliseconds each when it is there.
- *    `sandboxCasesRun()` below is what stops that from being invisible: an
+ *    `sandboxCasesRun()` (`sandbox-cases.ts`) is what stops that from being invisible: an
  *    environment that is SUPPOSED to run them sets
  *    `AVE_REQUIRE_SANDBOX_CASES=1` and gets a failure instead of a silent
  *    pass. Two jobs in `ci.yml` set it: the macOS job, because the macOS
@@ -134,7 +134,7 @@ import {
   sandboxTempPrincipalDirName,
   type SandboxTempPrincipal,
 } from "../../../permissions/asrt-sandbox.js";
-import { asrtCanInitialize } from "../../../permissions/__tests__/test-helpers.js";
+import { sandboxCasesRun } from "./sandbox-cases.js";
 import { isPluginChildConfined } from "../../../permissions/sandbox-capability.js";
 import { connect } from "node:net";
 import { createServer } from "node:http";
@@ -212,38 +212,6 @@ const OWN_TEMP_BYTES = "bytes one confined child left in its own temp directory"
  * empty.
  */
 const ASRT_DEFAULT_TEMP_ROOT = "/tmp/claude";
-
-/**
- * Whether the cases that need a live sandbox may run here — and whether being
- * unable to run them is allowed to be silent.
- *
- * Returning false lets the file be developed on a machine without the backend.
- * It is ALSO how these cases pass without measuring anything, which is not a
- * theoretical concern: the Linux runner that runs the whole suite on every pull
- * request has no bubblewrap, so `asrtCanInitialize()` is false there and the
- * cases that call this return immediately — no skip mark, no warning,
- * green. Every case that calls it is an `it.runIf` spawning a real child; the
- * file's other 26 cases do not call it and keep measuring there. The Linux
- * confinement job in `ci.yml` is where these cases measure on Linux.
- *
- * `AVE_REQUIRE_SANDBOX_CASES` is how an environment that is supposed to run
- * them says so. With it set, a machine that cannot initialize the sandbox fails
- * HERE, loudly, instead of reporting a measurement it never took. It only ever
- * turns a silent pass into a failure; nothing about the cases themselves reads
- * it.
- */
-async function sandboxCasesRun(): Promise<boolean> {
-  if (await asrtCanInitialize()) return true;
-  if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") {
-    throw new Error(
-      "AVE_REQUIRE_SANDBOX_CASES=1 but the ASRT sandbox cannot initialize on this "
-        + "machine, so the confinement cases would pass without measuring anything. "
-        + "Install the platform backend (macOS needs none; Linux needs bubblewrap) or "
-        + "unset the variable and accept that these cases do not run here.",
-    );
-  }
-  return false;
-}
 
 interface Fixture {
   readonly root: string;
@@ -4199,6 +4167,7 @@ async function runBundledWrapToExit(
       args: [probe],
       sandboxHome,
       allowWrite: [],
+      ownPluginReads: [],
       tempPrincipal: principal,
     });
     try {

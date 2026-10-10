@@ -271,14 +271,18 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const available = kind !== "none";
     // Meaningful, platform-honest reason surfaced to the UI alongside the
     // capability. This describes PLATFORM POTENTIAL only. Runtime registration
-    // is boot-time + opt-in, so it is reported separately below.
+    // is boot-time + opt-in, so it is reported separately below. On Windows the
+    // filesystem confinement is against the host only: every confined process
+    // runs as the one `srt-sandbox` account, so plugins are not isolated from
+    // each other there (owner decision 2026-10-10, plugin-hostapi-protocol.md
+    // §9.8 A2).
     const potentialReason =
       platform === "darwin"
         ? "ASRT (Seatbelt) confines filesystem, process, and network egress when enabled"
         : platform === "linux"
           ? "ASRT (bwrap) confines filesystem, process, and network egress when enabled"
           : platform === "win32"
-            ? "ASRT (srt-win) confines filesystem access and network egress; process isolation is unavailable on Windows; needs a one-time admin install"
+            ? "ASRT (srt-win) confines filesystem access and network egress against the host; every confined process, plugins included, runs as one shared sandbox account, so plugins are not isolated from each other; process isolation is unavailable on Windows; needs a one-time admin install"
             : "OS sandbox is fail-closed on this platform; tools run unconfined";
     const runtime = runtimeInfoFromCapability(detectSandboxCapability());
     return {

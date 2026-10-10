@@ -559,8 +559,12 @@ protection it does not have.
 srt-win provides filesystem and network confinement but **no process confinement**.
 A confined plugin child on Windows therefore still cannot be prevented from
 spawning a process, which can in turn do anything the user can. Opening the
-marketplace to third-party plugins on Windows is a **separate owner decision**, not
-something this design can resolve. See §7.
+marketplace to third-party plugins on Windows was left to a **separate owner decision**;
+the owner made it on 2026-10-10 (§7 item 4): third-party plugins run on Windows. Nor
+are plugins isolated from each other there: every confined process runs as the one
+`srt-sandbox` account, so the inter-plugin filesystem isolation Stage 9 proves is a
+macOS and Linux property, and on Windows the sandbox confines plugins against the
+host only (`plugin-hostapi-protocol.md` §9.8 A2, decision 64).
 
 ---
 
@@ -696,9 +700,12 @@ Named rather than hidden, because each one can move a stage estimate.
    Stage 6 — measure boot-to-tools-registered and per-tool-call round-trip on the
    pilot, before committing to Stage 8.
 4. **Windows has no process confinement.** Does that block admitting third-party
-   plugins on Windows? *Resolve:* owner decision at Stage 9. The options are to gate
-   third-party install on Windows, or to accept and document the residual. This
-   design does not have standing to pick.
+   plugins on Windows? *Resolved (owner, 2026-10-10):* accept and document. Third-party
+   plugins run on Windows with no install gate, warning, serialization or source
+   restriction. On Windows all plugins, third-party ones included, run in the shared
+   `srt-sandbox` identity — sandboxed from the host as configured, not isolated from
+   each other — an accepted risk pending an ASRT per-plugin identity
+   (`plugin-hostapi-protocol.md` §9.8 A2, decision 64).
 5. **Does the effect-enforcement gate's approval modal (`gateMutatingEffect`)
    interact badly with an async boundary?** The gate awaits a user response inside
    a hostApi call. That already works because the gated paths are already async — but
@@ -1076,7 +1083,9 @@ rather than a checklist.
 ### Stage 9 — Admit third-party plugins
 
 *Scope.* Marketplace-installed plugins route out-of-process **by default**, confined,
-failing closed when confinement is unavailable. Resolve the §7.4 Windows decision.
+failing closed when confinement is unavailable. The §7.4 Windows decision is made
+(owner, 2026-10-10): third-party plugins run on Windows, confined against the host and
+not from each other.
 
 *What proves it.* An adversarial plugin fixture that attempts each of the four
 escapes §1 lists — read `~/.ave/secrets/`, direct network egress, `require("electron")`,

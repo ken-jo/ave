@@ -46,6 +46,8 @@ describe("agent plugin MCP runtime resolution", () => {
     if (projection.config.transport !== "stdio") return;
     expect(projection.config.cwd).toBe(realpathSync(item.generationRoot));
     expect(projection.config.pluginDataDir).toBe(realpathSync(item.dataDir));
+    // The one directory under the refused agent-plugin packages root the server reads.
+    expect(projection.config.bundledPayloadRoot).toBe(realpathSync(item.generationRoot));
     expect(projection.config.env).toMatchObject({ PLUGIN_ROOT: realpathSync(item.generationRoot), PLUGIN_DATA: realpathSync(item.dataDir) });
     if (command.startsWith("./")) expect(projection.config.command).toBe(join(realpathSync(item.generationRoot), "server", "run"));
     else expect(projection.config.command).toBe(command);

@@ -2219,6 +2219,9 @@ class StdioTransport implements McpTransport {
         args: spawnCommand.args,
         sandboxHome,
         allowWrite,
+        // A plugin-bundled server reads its own generation payload under the
+        // plugins root it is refused; a server of no plugin reads nothing there.
+        ownPluginReads: this.config.bundledPayloadRoot ? [this.config.bundledPayloadRoot] : [],
         tempPrincipal: { kind: "mcp", id: this.config.id },
       });
       wrapped = true;

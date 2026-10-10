@@ -25,7 +25,13 @@ import {
 // The HOMEs are created under `<AVE_HOME>/sandbox/home` on macOS and Linux,
 // so the real AVE_HOME is never the one these cases fill.
 let aveHomeDir: string;
+// Every directory a case creates belongs under the temp roots. A Windows
+// profile built on a POSIX host names `\private\var\…\AppData\Local`, which
+// `mkdirSync` there takes for ONE relative name and creates in the working
+// directory — the checkout — so the working directory is held to its listing.
+let cwdBefore: string[];
 beforeEach(() => {
+  cwdBefore = readdirSync(process.cwd()).sort();
   aveHomeDir = mkdtempSync(join(tmpdir(), "ave-process-home-"));
   vi.stubEnv("AVE_HOME", join(aveHomeDir, ".ave"));
 });
@@ -34,6 +40,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
   rmSync(aveHomeDir, { recursive: true, force: true });
+  expect(readdirSync(process.cwd()).sort(), "a case created entries in the working directory").toEqual(cwdBefore);
 });
 
 describe("createSandboxProcessHome", () => {
@@ -106,7 +113,9 @@ describe("createSandboxProcessHome", () => {
     },
   );
 
-  it("keeps the Windows HOME under the host temp directory, as before", () => {
+  // Windows only: the profile's paths are Windows paths (`win32.join`), which
+  // only a Windows host creates where they name.
+  it.runIf(process.platform === "win32")("keeps the Windows HOME under the host temp directory, as before", () => {
     const home = createSandboxProcessHome("win32");
     try {
       expect(dirname(home.path)).toBe(realpathSync.native(tmpdir()));
