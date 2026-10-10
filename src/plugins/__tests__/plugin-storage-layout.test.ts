@@ -46,6 +46,10 @@ const renameLock = vi.hoisted(() => ({
   unlinkFailure: undefined as string | undefined,
   /** Every recursive rm the module under test issued, by path. */
   recursiveRms: [] as string[],
+  /** One-shot: the entry is removed right before the first lstat of it. */
+  vanishOnLstat: undefined as string | undefined,
+  /** While set, every rmdir of this directory first gains one more entry. */
+  fillOnRmdir: undefined as { dir: string; added: number } | undefined,
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -75,6 +79,21 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     rm: async (path: Parameters<typeof actual.rm>[0], options?: Parameters<typeof actual.rm>[1]) => {
       if (options?.recursive) renameLock.recursiveRms.push(String(path));
       return actual.rm(path, options);
+    },
+    lstat: async (...args: Parameters<typeof actual.lstat>) => {
+      if (String(args[0]) === renameLock.vanishOnLstat) {
+        renameLock.vanishOnLstat = undefined;
+        await actual.rm(String(args[0]), { recursive: true, force: true });
+      }
+      return actual.lstat(...args);
+    },
+    rmdir: async (path: Parameters<typeof actual.rmdir>[0]) => {
+      const fill = renameLock.fillOnRmdir;
+      if (fill && String(path) === fill.dir) {
+        fill.added += 1;
+        await actual.writeFile(`${fill.dir}/late-${fill.added}`, "late");
+      }
+      return actual.rmdir(path);
     },
     unlink: async (path: string) => {
       if (path === renameLock.unlinkFailure) {
@@ -306,6 +325,8 @@ describe("carryPluginSocketDirs", () => {
     renameLock.beforeMove = undefined;
     renameLock.unlinkFailure = undefined;
     renameLock.recursiveRms = [];
+    renameLock.vanishOnLstat = undefined;
+    renameLock.fillOnRmdir = undefined;
     await rm(root, { recursive: true, force: true });
   });
 
@@ -542,6 +563,123 @@ describe("carryPluginSocketDirs", () => {
     }
     expect(existsSync(discard(from))).toBe(false);
     expect(existsSync(discard(to))).toBe(false);
+  });
+
+  // A live child owns its sockets/ entries and a worker its run/ leaf, so
+  // either can be gone between the carry's readdir and its next step. That
+  // is nothing left to move, never a failure or a false conflict.
+  it("treats a socket its child unlinked after readdir as nothing to move", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, "sockets"), { recursive: true });
+    await mkdir(join(to, "sockets"), { recursive: true });
+    const entry = join(to, "sockets", "gone.sock");
+    await writeFile(entry, "bound");
+    const sockets = statSync(join(from, "sockets")).ino;
+    renameLock.beforeMove = { from: entry, run: async () => { await rm(entry); } };
+
+    await carryPluginSocketDirs(from, to, { onConflict: "reject" });
+
+    expect(renameLock.beforeMove).toBeUndefined();
+    expect(statSync(join(to, "sockets")).ino).toBe(sockets);
+    expect(await readdir(join(to, "sockets"))).toEqual([]);
+    expect(existsSync(join(from, PLUGIN_SOCKET_CARRY_DIR_NAME))).toBe(false);
+  });
+
+  it("treats a worker leaf removed after readdir as nothing to move", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, "run", "w1"), { recursive: true });
+    await mkdir(join(to, "run", "w2"), { recursive: true });
+    const leaf = join(to, "run", "w2");
+    renameLock.beforeMove = { from: leaf, run: async () => { await rm(leaf, { recursive: true }); } };
+
+    await carryPluginSocketDirs(from, to, { onConflict: "reject" });
+
+    expect(renameLock.beforeMove).toBeUndefined();
+    expect(await readdir(join(to, "run"))).toEqual(["w1"]);
+  });
+
+  it("discards nothing for a replaced source entry its child already removed", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, "sockets"), { recursive: true });
+    await mkdir(join(to, "sockets"), { recursive: true });
+    const replaced = join(from, "sockets", "egress.sock");
+    await writeFile(replaced, "source");
+    await writeFile(join(to, "sockets", "egress.sock"), "destination");
+    renameLock.beforeMove = { from: replaced, run: async () => { await rm(replaced); } };
+
+    await carryPluginSocketDirs(from, to, keepDestination());
+
+    expect(renameLock.beforeMove).toBeUndefined();
+    expect(readFileSync(join(to, "sockets", "egress.sock"), "utf8")).toBe("destination");
+  });
+
+  it("does not count an entry that vanished before the conflict check as a conflict", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, "run", "w1"), { recursive: true });
+    await mkdir(join(to, "run", "w1"), { recursive: true });
+    const run = statSync(join(from, "run")).ino;
+    renameLock.vanishOnLstat = join(to, "run", "w1");
+
+    await carryPluginSocketDirs(from, to, { onConflict: "reject" });
+
+    expect(renameLock.vanishOnLstat).toBeUndefined();
+    expect(statSync(join(to, "run")).ino).toBe(run);
+    expect(await readdir(join(to, "run"))).toEqual(["w1"]);
+  });
+
+  it("refuses nothing for a socket that vanished before preflight inspected it", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, "sockets"), { recursive: true });
+    await mkdir(join(to, "sockets"), { recursive: true });
+    renameLock.vanishOnLstat = join(to, "sockets", "gone.sock");
+    await writeFile(join(to, "sockets", "gone.sock"), "bound");
+
+    await carryPluginSocketDirs(from, to, { onConflict: "reject" });
+
+    expect(renameLock.vanishOnLstat).toBeUndefined();
+    expect(await readdir(join(to, "sockets"))).toEqual([]);
+  });
+
+  // A child that keeps binding new sockets while the carry runs makes the
+  // destination's rmdir fail every time. That is a clear, retryable outcome:
+  // nothing it bound is lost, and the error says to retry.
+  it("fails clearly, losing nothing, when a live child keeps filling the destination", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, "sockets"), { recursive: true });
+    await mkdir(join(to, "sockets"), { recursive: true });
+    await writeFile(join(to, "sockets", "a.sock"), "a");
+    renameLock.fillOnRmdir = { dir: join(to, "sockets"), added: 0 };
+
+    const error = await carryPluginSocketDirs(from, to, { onConflict: "reject" }).then(() => undefined, (caught: unknown) => caught);
+    renameLock.fillOnRmdir = undefined;
+
+    expect(String(error)).toMatch(/kept gaining entries from a live process across 3 carry attempts; retry/);
+    expect((error as NodeJS.ErrnoException).code).toBe("ENOTEMPTY");
+    expect([...await readdir(join(from, "sockets")), ...await readdir(join(to, "sockets"))].sort())
+      .toEqual(["a.sock", "late-1", "late-2", "late-3"]);
+  });
+
+  // An interrupted delete leaves its entry in the host-only discard
+  // directory; the next carry over either root empties it.
+  it("empties a discard directory an interrupted carry left in either root", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, "sockets"), { recursive: true });
+    await mkdir(join(from, PLUGIN_SOCKET_DISCARD_DIR_NAME, "x-nested"), { recursive: true });
+    await writeFile(join(from, PLUGIN_SOCKET_DISCARD_DIR_NAME, "x-nested", "f"), "left");
+    await mkdir(join(to, PLUGIN_SOCKET_DISCARD_DIR_NAME), { recursive: true });
+    await writeFile(join(to, PLUGIN_SOCKET_DISCARD_DIR_NAME, "y-entry"), "left");
+
+    await carryPluginSocketDirs(from, to, { onConflict: "reject" });
+
+    expect(existsSync(join(from, PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
+    expect(existsSync(join(to, PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
   });
 
   it("places an entry an interrupted carry left staged before it was linked", async () => {

@@ -506,7 +506,7 @@ export async function carryPluginSocketDirs(
       }
       if (sourceExists && targetExists && policy.onConflict === "reject") {
         for (const entry of await readdir(target)) {
-          if (await pathExists(resolve(source, entry)) && !await socketEntriesMatch(resolve(source, entry), resolve(target, entry))) {
+          if (await socketEntriesConflict(resolve(source, entry), resolve(target, entry))) {
             throw socketConflict(name, entry, source, target);
           }
         }
@@ -527,7 +527,7 @@ export async function carryPluginSocketDirs(
             const entries = await readdir(target);
             const conflicts: string[] = [];
             for (const entry of entries) {
-              if (await pathExists(resolve(source, entry)) && !await socketEntriesMatch(resolve(source, entry), resolve(target, entry))) conflicts.push(entry);
+              if (await socketEntriesConflict(resolve(source, entry), resolve(target, entry))) conflicts.push(entry);
             }
             if (conflicts.length > 0 && policy.onConflict === "reject") {
               throw socketConflict(name, conflicts[0]!, source, target);
@@ -541,14 +541,15 @@ export async function carryPluginSocketDirs(
                 // Children can write inside their worker leaf, but cannot create
                 // a sibling in the host-owned run root. The shared queue excludes
                 // host mkdir, including an empty leaf, while this rename runs.
-                await move(from, to);
+                // A leaf removed since readdir has nothing left to move.
+                await moveUnlessVanished(from, to, move);
               } else {
                 // Out of the child's reach first (rename never follows), then
                 // inspected and linked there; see the function comment.
                 await mkdir(staging, { recursive: true });
                 const staged = resolve(staging, entry);
-                await move(from, staged);
-                await placeStagedSocketEntry(staged, to, policy, fromRoot);
+                // A child may unlink its own socket after readdir: nothing to move.
+                if (await moveUnlessVanished(from, staged, move)) await placeStagedSocketEntry(staged, to, policy, fromRoot);
               }
             }
             if (await pathExists(staging)) await rmdir(staging);
@@ -558,7 +559,16 @@ export async function carryPluginSocketDirs(
           break;
         } catch (error) {
           const code = (error as NodeJS.ErrnoException).code;
-          if (attempt >= 3 || (code !== "ENOTEMPTY" && code !== "EEXIST")) throw error;
+          if (code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
+          if (attempt >= 3) {
+            // A live child kept adding entries (or a worker kept recreating the
+            // destination). Everything moved so far is in an owned root, so the
+            // caller may simply retry once the child settles or exits.
+            throw Object.assign(
+              new Error(`[plugin-storage-layout] ${target} kept gaining entries from a live process across ${attempt} carry attempts; retry the carry`, { cause: error }),
+              { code },
+            );
+          }
         }
       }
     }
@@ -585,7 +595,12 @@ function withPluginRuntimeDirQueues(roots: readonly string[], operation: () => P
  * file, a symlink above all, because macOS `link(2)` would follow it.
  */
 async function socketEntryShapeRefusal(path: string): Promise<string | undefined> {
-  const entry = await lstat(path);
+  const entry = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+    // Unlinked by its child since readdir: there is nothing to refuse.
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (entry === undefined) return undefined;
   if (entry.isDirectory()) return `Plugin socket entry is a directory: ${path}`;
   if (!entry.isSocket() && !entry.isFile()) return `Plugin socket entry is not a socket or regular file: ${path}`;
   return undefined;
@@ -622,7 +637,7 @@ async function refuseSocketEntryShape(
 async function discardRuntimeEntry(root: string, path: string): Promise<void> {
   const discard = resolve(root, PLUGIN_SOCKET_DISCARD_DIR_NAME);
   await mkdir(discard, { recursive: true });
-  await renameDirectory(path, resolve(discard, `${randomUUID()}-${basename(path)}`));
+  await moveUnlessVanished(path, resolve(discard, `${randomUUID()}-${basename(path)}`), renameDirectory);
   await emptyDiscardDirectory(root);
 }
 
@@ -683,6 +698,30 @@ async function finishStagedSocketEntries(root: string, policy: PluginSocketCarry
     await placeStagedSocketEntry(resolve(staging, entry), resolve(sockets, entry), policy, root);
   }
   await rmdir(staging);
+}
+
+/**
+ * Move `from` to `to`, or report that `from` vanished first (a child unlinked
+ * its own entry between the caller's readdir and this rename). Any other
+ * failure, including a missing destination parent, propagates.
+ */
+async function moveUnlessVanished(
+  from: string,
+  to: string,
+  move: (from: string, to: string) => Promise<void>,
+): Promise<boolean> {
+  try {
+    await move(from, to);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && !await pathExists(from)) return false;
+    throw error;
+  }
+}
+
+/** Both names exist and are different entries: a real same-name conflict. */
+async function socketEntriesConflict(source: string, target: string): Promise<boolean> {
+  return await pathExists(source) && await pathExists(target) && !await socketEntriesMatch(source, target);
 }
 
 async function socketEntriesMatch(from: string, to: string): Promise<boolean> {
