@@ -15,8 +15,10 @@
  *  3. `escape_electron` — every module form that could hand back Electron's
  *     main-process API, then the uses that would prove it usable;
  *  4. `escape_patch` — patch `globalThis.fetch` and `process.stdout.write`,
- *     then write to fd 1 directly: a forged `ave/host/getSecret` frame naming
- *     another plugin, and, when asked, a line that is not JSON.
+ *     then write to the protocol channel directly — fd 1, or on a sandboxed
+ *     Windows child the loopback socket it finds among the process's own
+ *     handles: a forged `ave/host/getSecret` frame naming another plugin,
+ *     and, when asked, a line that is not JSON.
  *
  * A tool THROWS only when an escape succeeds where the harness claims it
  * cannot — `expectConfined: true`, which the real-wrap suite passes — and
@@ -34,7 +36,7 @@
 import { once } from "node:events";
 import { readdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { createRequire } from "node:module";
-import { connect } from "node:net";
+import { connect, Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -331,16 +333,40 @@ async function writeFd1(text) {
 }
 
 /**
+ * The channel the runtime speaks to the host over, reached around it: fd 1 and
+ * stdin for a stdio child; for a sandboxed Windows child, whose channel is a
+ * loopback connection (`child-loopback-link.ts`), the one connected TCP socket
+ * among the process's own handles — what a plugin that wanted to speak for
+ * the runtime would go looking for.
+ */
+function protocolChannel() {
+  const handles = typeof process._getActiveHandles === "function" ? process._getActiveHandles() : [];
+  const sockets = handles.filter((handle) =>
+    handle instanceof Socket && handle.remoteAddress === "127.0.0.1" && !handle.destroyed);
+  if (sockets.length === 1) {
+    const [socket] = sockets;
+    return {
+      readable: socket,
+      write: async (text) => {
+        if (!socket.write(text)) await once(socket, "drain");
+      },
+    };
+  }
+  return { readable: process.stdin, write: writeFd1 };
+}
+
+/**
  * A `ave/host/getSecret` request for another plugin's key, carrying the
- * identity fields a plugin would forge. The reply arrives on stdin like every
- * other: the runtime's own table holds no entry for this id and drops it, and
- * this listener reads it beside the runtime.
+ * identity fields a plugin would forge. The reply arrives on the channel like
+ * every other: the runtime's own table holds no entry for this id and drops
+ * it, and this listener reads it beside the runtime.
  */
 async function forgeGetSecret(otherPluginId) {
+  const channel = protocolChannel();
   const reply = new Promise((resolve) => {
     let buffered = "";
     const timer = setTimeout(() => {
-      process.stdin.off("data", onData);
+      channel.readable.off("data", onData);
       resolve({ answered: false });
     }, PROBE_TIMEOUT_MS);
     function onData(chunk) {
@@ -356,12 +382,12 @@ async function forgeGetSecret(otherPluginId) {
         }
         if (frame?.id !== FORGED_REQUEST_ID) continue;
         clearTimeout(timer);
-        process.stdin.off("data", onData);
+        channel.readable.off("data", onData);
         resolve({ answered: true, ...("result" in frame ? { result: frame.result } : { error: frame.error }) });
         return;
       }
     }
-    process.stdin.on("data", onData);
+    channel.readable.on("data", onData);
   });
   const frame = {
     jsonrpc: "2.0",
@@ -373,7 +399,7 @@ async function forgeGetSecret(otherPluginId) {
       _meta: { pluginId: otherPluginId },
     },
   };
-  await writeFd1(`${JSON.stringify(frame)}\n`);
+  await channel.write(`${JSON.stringify(frame)}\n`);
   return { key: frame.params.key, ...(await reply) };
 }
 
@@ -387,7 +413,7 @@ async function escapePatch(context, args) {
     stdoutWrite: process.stdout.write !== writeBefore,
   };
   try {
-    if (args.emitNonJson === true) await writeFd1("this line is not JSON\n");
+    if (args.emitNonJson === true) await protocolChannel().write("this line is not JSON\n");
     const forged = await forgeGetSecret(otherPluginId);
     const reached = forged.answered && forged.result !== null && forged.result !== undefined;
     if (args.expectConfined === true && reached) throw escaped("escape_patch", "a forged getSecret for another plugin");

@@ -159,7 +159,7 @@ Both forms go through `spawnConfinedChild` and nowhere else
 |---|---|---|---|
 | macOS | ASRT `sandbox-exec` profile, allow-list grant mode | filesystem, process, network | `architecture.md:1014-1017`, `confined-child.ts:42-44` |
 | Linux | ASRT bwrap `--bind` / `--unshare-net`, allow-list grant mode | filesystem, process, network | same; UDS reachability `worker-spawn.ts:17-22` |
-| Windows | srt-win, one shared `srt-sandbox` account; deny-only grant mode; holder-PID ACL grants on a plugin child's own directories and on a delegated worker's, each for that process's lifetime. An `entry` child does not yet start under srt-win (§9.8 A2) | filesystem, network, against the host. **No process confinement; no isolation between plugins** (decision 64) | `architecture.md:1018-1020`, `confined-child.ts:43-46`, `out-of-process-plugin.ts:970` |
+| Windows | srt-win, one shared `srt-sandbox` account; deny-only grant mode; holder-PID ACL grants on a plugin child's own directories, a delegated worker's, a bundled hook's and an MCP stdio server's, each for that process's lifetime; the `entry` child runs under `cmd.exe` and speaks over an authenticated loopback connection, and a worker, hook or MCP stdio server runs through the same connection as a stdio relay (§2.3) | filesystem, network, against the host. **No process confinement; no isolation between plugins** (decision 64) | `architecture.md:1018-1020`, `confined-child.ts:43-46`, `out-of-process-plugin.ts:970` |
 
 The child is confined exactly as much as the host is: `features.osToolSandbox` decides for
 the host's own tools, its workers and its plugin children alike; when it is off the child
@@ -315,11 +315,113 @@ Stdout is the protocol; the reference runtime rebinds `console.*` and `process.s
 to stderr before plugin code runs (`plugin-child-main.ts:18-25`). A `process`-entry plugin
 owns that discipline itself; the conformance suite checks it (§10).
 
+**Windows with the OS sandbox on: one loopback connection instead of the pipes.** ASRT
+0.0.76's `srt-win exec` relays the target's stdout but no stdin (measured 2026-10-10:
+`echo hi | srt-win exec -- cmd /c more` prints nothing), so on that one path the reference
+runtime does not use its pipes for the protocol (`child-loopback-link.ts`). The child
+listens on `127.0.0.1:0` and writes one line to stdout — `AVE-CHILD-LISTEN <port> <nonce>`,
+the nonce 32 fresh random bytes that never cross the socket. The host reads that line from
+the stdout it owns and connects from `127.0.0.1`; then both ends prove they hold the
+nonce, each proof bound to that one TCP connection by both ends' addresses and ports,
+which each side reads from its own socket (IPv4-mapped addresses unmapped):
+
+- host → child: `HMAC-SHA256(nonce, "ave-loopback host <hostAddr> <hostPort> <childAddr> <childPort>")`, hex, newline;
+- child → host: `HMAC-SHA256(nonce, "ave-loopback child <childAddr> <childPort> <hostAddr> <hostPort>")`, hex, newline.
+
+Every 127/8 address reaches a `127.0.0.1` listener (measured on Windows: a client bound to
+`127.0.0.2` connected), so the child drops a peer whose address is not `127.0.0.1` before
+reading a byte, and the addresses are in the proofs as well. The child checks the host's
+proof against the remote address and port it sees before answering, and
+the host treats the connection as the child's only after the child's proof checks; only
+then are frames sent, exactly as over the pipes. A peer that fails — a wrong or replayed
+proof, more than a proof's length, silence past the handshake time, an error — is dropped
+and the child keeps listening, for at most 8 failed peers (4 handshakes at once) within the
+accept time; then, or with no host in time, the child ends non-zero. A connection beyond
+the 4 is dropped at once, the host's own included, so the host connects once more, 0.5 s
+later and within its time limit, if the child closed its first connection unanswered.
+Once the host is in,
+the listener closes and any peer still in its handshake is dropped. The channel's end is
+the child's end: the child exits when the connection closes, and the host ends the process
+when it does. srt-win's network filter refuses the sandbox account's outbound connects
+outside the proxy ports — loopback included, so one sandboxed process cannot dial
+another's listener (measured: `EACCES`) and the child cannot dial the host; the host's
+inbound connect to the child's listener is admitted (measured), the shape a Windows
+worker's TCP control channel already has. A `process` entry never runs on Windows (§2.2),
+so this path serves the reference runtime only; macOS, Linux and Windows with the sandbox
+off keep stdio.
+
+**The same channel as a stdio relay, for programs the host does not write.** A bundled
+hook reads its payload on stdin, an MCP stdio server its requests, and a plugin worker its
+host's liveness (stdin ends only when the host is gone); none of them can be taught the
+channel above. Under srt-win each runs through the reference runtime in relay mode
+(`--ave-child-transport=relay`, `child-loopback-link.ts`, `confined-child.ts`
+`windowsStdio: "relay"`): the same `cmd.exe` launch, the same announce and handshake, and
+then one request line — the program, its arguments, its environment, its working directory, as
+JSON, at most 1 MiB, with unknown fields refused. The relay starts the program with a real
+stdin pipe and copies the channel into it; the program inherits the relay's stdout and
+stderr, which srt-win carries to the host; the relay exits with the program's exit code
+(127 if it could not start, with the reason on stderr). A batch file is refused before
+anything starts, by extension (`.cmd`/`.bat`, any case) and for a bare name only a batch
+file on `PATH` answers (`npx` with no `npx.exe`): Node will not spawn one without a shell
+(measured: `spawn EINVAL`), and its only shell is `cmd.exe`, which would parse the
+program's third-party arguments — the one thing the relay exists to prevent. The refusal
+names the file and says to name the executable it starts (for `npx`, `node.exe` with npm's
+`npx-cli.js`). The program's input ends when the
+host ends it or when the channel goes away, so a worker still reads its end as its host
+leaving. Relay and program run inside the one wrap — the same account, restricted token,
+job object, filesystem and network fence — so the relay adds a hop, not a privilege.
+Because the request travels over the authenticated channel, nothing third-party meets
+`cmd.exe`: the line carries only the host's own executable, its entry path, Node's flags
+and the transport argument. Two things are set for every relayed program: the environment
+leaves to srt-win what srt-win itself sets (`PATH`, `PATHEXT`, the proxy and CA overlay,
+`GIT_CONFIG_*`, `USERNAME`; `TMPDIR` and `ELECTRON_RUN_AS_NODE` are dropped), and
+`NODE_OPTIONS` leads with `--preserve-symlinks --preserve-symlinks-main`, without which no
+Node program under the user profile loads at all (measured: `EPERM: lstat` on the profile
+directory above `<AVE_HOME>`; §9.8 A2). srt-win's PowerShell inner shell, its default, is
+no longer used by any sandboxed spawn: it gives the target no stdin, no environment and
+not even its exit code (measured: a target exiting 7 reported 1), so `spawnConfinedChild`
+refuses a Windows sandboxed spawn that names neither the relay nor `cmd.exe`.
+
 ### 2.4 Identity binding
 
 The host spawns the process and owns both ends of its pipes. Identity is therefore the
 connection: the host attributes every inbound message to the `pluginId` it spawned that
 connection for, and the plugin never names itself.
+
+On the Windows loopback channel (§2.3) identity rests on the nonce the spawned child wrote
+to the stdout only the host reads, and on the handshake's proofs being bound to the one
+connection they cross. What that guarantees, against a local peer that does not hold the
+nonce:
+
+- It cannot be the host to the child: it has no proof for its own connection, and the
+  host's proof, if it took the host's connection and replayed it, names that connection's
+  addresses and ports, not its own — and a peer on another 127/8 address that took the
+  host's port number is dropped for its address before it is read. The child drops it and
+  keeps waiting for the host.
+- It cannot be the child to the host: if the host's connection reached it instead of the
+  child (it bound the announced port first, or after the child's listener closed), it
+  cannot answer with the child's proof, so the host sends nothing — no frame, no relay
+  request, no environment, no program input — and the load fails. A second bind of the
+  child's port is refused on Windows even to the same account (measured, `SO_REUSEADDR`:
+  `WSAEACCES`), so with the child alive the host's connect reaches the child's listener.
+- It can delay the load or end it: up to 8 failed peers within the accept time, and the
+  child gives up; holding the 4 handshake slots past the host's second connect also ends
+  it. That is the bound; a local process that can connect to loopback can deny
+  a plugin its start, and only that.
+
+A process that holds the nonce besides the two ends could only have read it from the
+child's memory or the host's; the child's memory is open to every process of the same
+account, which is decision 64's accepted risk, and such a process could drive the child's
+own socket anyway. For that reason the host does not also check that the connected
+socket's owner is the spawned child (`GetExtendedTcpTable`): the owner is not the process
+the host spawned but three hops below it, across the account boundary (measured: the host
+spawns `srt-win.exe` as the user, which starts `srt-win.exe` as `srt-sandbox`, then
+`cmd.exe`, then the child, which owns the socket), so the check would have to trust a
+process tree srt-win builds, and it would not exclude the one peer the proofs leave in. A child whose process is gone by the time the
+handshake finishes is not served: the host reads its exit from the spawn on, and checks
+its exit status once more after connecting. The relay's channel is bound the same way,
+and a relayed program is the host's own spawn: the request that names it is sent only after
+the child's proof checks.
 
 Today the envelope carries `pluginId` and `generationId` and the dispatcher refuses a
 mismatch (`host-api-wire.ts:49-59`, `host-api-dispatcher.ts:2015-2018`). In the protocol
@@ -5170,31 +5272,143 @@ fixture or by the independent verification of it rather than decided around it:
     first plugin's probe read the second plugin's data and wrote into it; after the second
     grant was released the same probe got `EPERM` again.
 
-  **What does not run on Windows yet, whatever the grant.** The `entry` child itself does
-  not start under srt-win today, so escapes 1a/1b, 2 and 4 fail on Windows with "child
-  exited code=0" both before and after this change; that failure is not the ACL. Measured
-  on the same host:
-  1. *The child's environment is not delivered.* srt-win's runner starts the target with
+  **The `entry` child under srt-win.** Before the loopback channel (§2.3) the child itself
+  did not start under srt-win, grant or no grant, and escapes 1a/1b, 2 and 4 failed on
+  Windows with "child exited code=0"; that failure was not the ACL. Four causes, each
+  measured on the same host, and what the spawn does about each
+  (`out-of-process-plugin.ts` `windowsLoopbackLaunchLine`, `confined-child.ts`
+  `windowsShell: "cmd"`):
+  1. *The child's environment was not delivered.* srt-win's runner starts the target with
      the `srt-sandbox` profile environment plus only its `--env` overlay (PATH, PATHEXT,
-     proxy); the `env` the host spawns `srt-win` with stays with the broker. So
-     `ELECTRON_RUN_AS_NODE` and the sandbox HOME never reach the child. Inferred, not
-     measured, for a Windows worker: it is delivered the same way.
-  2. *The PowerShell inner shell does not wait for `electron.exe`.* `confined-child.ts`
-     runs the target through `powershell -Command "& '<exe>' …"`; `electron.exe` is a GUI
-     subsystem binary, and the shell returns at once with no output, with or without
-     `ELECTRON_RUN_AS_NODE` set inside it. Through `cmd /d /s /c "set
-     ELECTRON_RUN_AS_NODE=1&& <exe> <script>"` the same probe runs and its stdout arrives.
-  3. *stdin is not relayed.* `srt-win exec` gives the target no stdin data (`echo hi |
-     srt-win exec -- cmd /c more` prints nothing; the same pipe without srt-win prints
-     `hi`), and the plugin protocol is framed over the child's stdin.
-  4. *The entry module cannot be imported from under the profile.* With its own grant
-     held, the probe read its own data but `import()` of its own `entry.mjs` failed with
-     `EPERM: lstat` on the first ancestor directory under the user profile: Node resolves
-     a module path with `realpath`, which `lstat`s every ancestor, and the profile admits
-     no `srt-sandbox` access to its subdirectories. An inheriting grant on an ancestor
-     would cover every plugin under it, so the grant does not reach for one.
-  With the sandbox on, a Windows `entry` plugin therefore does not load today, with or
-  without this grant; the grant is the ACL half of what loading needs, measured above.
+     proxy). `ELECTRON_RUN_AS_NODE` is now set on the command line; the rest of the
+     intended environment (the throwaway HOME, its TEMP) travels as one base64url argument
+     the runtime applies before the plugin is imported. What srt-win sets itself stays
+     srt-win's (`confined-child.ts` `srtWinTargetEnv`: PATH, PATHEXT, its proxy and CA
+     overlay, `GIT_CONFIG_*`, `USERNAME`; TMPDIR is dropped). A Windows worker lost its
+     environment the same way (measured, below) and now gets it through the relay.
+  2. *PowerShell did not wait for `electron.exe`.* A GUI-subsystem binary returns at once
+     under `powershell -Command "& …"`, with no output. The child now runs under System32
+     `cmd.exe /d /v:off /s /c`; every token is double-quoted, and a token or value with a
+     `"`, a `%`, CR, LF or NUL, or a line over 8000 characters, is refused rather than
+     escaped — `cmd.exe` expands `%NAME%` inside quotes, and nothing ends a quote safely.
+     What can reach that check is only the host's own: `process.execPath`, the child
+     entry's path, Node's flags, the transport argument and the base64url environment.
+     Everything a plugin, a user or a profile path contributes — AVE_HOME under a
+     profile whose name has a `%`, a hook's or a server's arguments, environment values —
+     is inside the base64url argument or a relay request, never on the line. So the
+     refusal can be met only through the install directory. `"` cannot occur in a
+     Windows path at all. `%` can, but the installer is `oneClick` and `perMachine`
+     (`package.json` `build.nsis`): it offers no directory choice and installs under the
+     Program Files folder, whose name an installed app does not choose; a `%` there
+     would take a relocated Program Files folder. A development checkout under a `%`
+     directory meets the refusal, which names the token and says to move the app.
+  3. *stdin is not relayed.* The protocol moved to the loopback channel (§2.3).
+  4. *The entry module could not be imported from under the profile.* Node `realpath`s a
+     module path in JavaScript, which `lstat`s every ancestor directory, and the profile
+     admits no `srt-sandbox` access to its subdirectories (measured `EPERM: lstat`). The
+     child now runs with `--preserve-symlinks` and `--preserve-symlinks-main`, measured to
+     import both an ES module and a CommonJS module from the plugin's own granted
+     directory, with and without a `package.json` beside it. What the flags give up is
+     resolving symlinks inside the plugin: the entry path is already the host's real path
+     (decision 33) and the host's integrity and path checks run on the host's side, so
+     those are unchanged; a symlinked file loads under its link's path, and dependencies
+     reached through links (pnpm's layout) resolve from the link's location. That trade is
+     made on this launch only.
+
+  Measured after the change (same host, 2026-10-10): `adversarial-escapes.test.ts` under
+  the real wrap passes every row that runs on Windows (9 passed; the delegation row and
+  the Python row are macOS and Linux only). Row 4's fixture now forges on the channel it
+  finds among its own handles — fd 1 for a stdio child, the loopback socket here — and
+  the host still answers the forged frame under the spawn-bound id. An entry plugin
+  loaded through the production factory in about 0.3 s, answered a tool call, wrote and
+  read its own data, wrote to its own TEMP under the throwaway HOME, and got `EPERM` on a
+  neighbour's data (read and write) and on the secrets sentinel; it was stopped and
+  loaded again, and after each stop no `srt-sandbox` process, no holder and no socket
+  remained. While it ran its only socket was the established connection: the listener
+  was already closed.
+
+  **Workers, bundled hooks and MCP stdio servers under srt-win: the stdio relay.** The
+  same host measured what srt-win gives a target it did not write (2026-10-10, a Node
+  probe as the target): stdin at end-of-file within 2–3 ms under both inner shells, a
+  variable set on the spawn environment absent, `USERPROFILE`/`TEMP` the `srt-sandbox`
+  profile's, stderr relayed, and the exit code relayed by `cmd.exe` (7) but not by
+  PowerShell (a target exiting 7 reported 1). Through `spawnWorker` the worker read its
+  liveness stdin as closed at once and ran without its environment. Bundled hooks and MCP
+  stdio servers were refused outright under the Windows sandbox. All three now run
+  through the relay (§2.3), each under a holder-PID ACL grant for its lifetime (a hook:
+  READ on its generation root, WRITE on its data root; an MCP stdio server: WRITE on its
+  sandbox root and its plugin's data root, READ on its bundled payload; both: the
+  throwaway HOME, and `<AVE_HOME>/runtime` READ only when the program lives there, as the
+  uv Ave materializes for an `uvx` server does). `denyPluginsRoot` and `pinWriteRoots`
+  have no srt-win counterpart, so hooks and servers share the one identity like every
+  other Windows sandboxed process (decision 64). A server's configured `cwd` is not
+  granted: one the account cannot reach fails to start, with the reason on stderr.
+
+  Measured after the change (same host, AVE_HOME under the user profile, programs in the
+  plugin's own directories, arguments `100%`, `say "hi"`, `%PATH%`, an environment value
+  `%TEMP% "q" & ^`):
+  - *Worker* (`spawnWorker`): arguments and the environment value arrived verbatim; HOME,
+    USERPROFILE and TEMP were the throwaway HOME's; `USERNAME` was `srt-sandbox`; stdin
+    was still open after 3 s; its own data written and read back, its TEMP written; a
+    neighbour's data and the secrets sentinel `EPERM` for read and write; an outbound
+    connect to `1.1.1.1:443` `EACCES`; exit code 7 reached `onExit`.
+  - *Bundled hook* (`runOneHookScript`, real wrap): the payload arrived on stdin,
+    `PLUGIN_ROOT`/`PLUGIN_DATA` were set, the same reach as the worker, verdict `allow`,
+    exit 0, about 0.5 s. A hook that never exits was denied as timed out at 3 s and no
+    `srt-sandbox` process remained.
+  - *MCP stdio server* (`McpClient.connect` + `callTool`, real wrap): the handshake and a
+    tool call round-tripped in about 0.4 s, the configured environment arrived, the same
+    reach as the worker.
+  - *Channel loss*: a relayed program reading stdin got its end when the host's socket was
+    destroyed mid-run, and the relay exited with the program's code (5).
+  - After every run: no `srt-sandbox` process, no holder, no `srt-sandbox` ACE on either
+    plugin's directories.
+  - Without `--preserve-symlinks` in `NODE_OPTIONS` a Node program under the profile does
+    not load (`EPERM: lstat` on the profile directory above AVE_HOME, CommonJS and ES
+    module alike); with it both load. A per-user interpreter (Python under
+    `%LOCALAPPDATA%`) does not start at all: the account cannot open it, and no grant is
+    added for a program outside the plugin's own and the host's runtime directories.
+
+  Not measured: an `uvx` server end to end, which needs registry egress on the allow-list.
+
+  **The loopback channel's authentication (§2.3, §2.4), same host, 2026-10-10.** First,
+  what a peer other than the host can do there:
+  - *A second listener on the child's port.* With a sandboxed Node listener holding
+    `127.0.0.1:P`, a second bind of `P` with `SO_REUSEADDR` failed with `WSAEACCES`
+    (10013) both from another `srt-sandbox` process and from the host's account, and
+    every host connect reached the first listener. Node exposes no
+    `SO_EXCLUSIVEADDRUSE` option; the child relies on this measured refusal.
+  - *A sandboxed process dialling another's listener.* `EACCES`: srt-win's network filter
+    refuses the sandbox account's loopback connects too, so one plugin cannot reach
+    another's channel at all.
+  - *A batch file through the relay*, before the refusal: `npx.cmd` by name or full path,
+    and a plugin's own `.cmd` or `.BAT`, ended the relay with `spawn EINVAL` (exit 1);
+    bare `npx` ended it with `spawn npx ENOENT` (127); bare `node` ran.
+
+  Measured after the change (mutual handshake, batch files refused):
+  - *A local process first*: three peers connected to a real relay's port before the host,
+    sending the bare nonce, a wrong proof, and 200 bytes without a newline; each was closed
+    and answered nothing, and the host connected after them and ran its program (exit 9).
+  - *Another loopback address* (re-review): a client bound to `127.0.0.2` connected to the
+    child's `127.0.0.1` listener, and against the ports-only handshake the proof for the
+    host's port number sent from there was accepted (the case timed out waiting for the
+    drop, on Windows and on Linux). With the addresses in the proofs and the address
+    check, that peer, and one with a proof correct for its own address, is dropped
+    unanswered and the host gets in after it.
+  - *The host's second connect*: with four silent peers holding the handshake slots, the
+    host's first connect was dropped (`ECONNRESET`, the load failed) before; it now gets
+    in on its second connect 0.5 s later, once the slots' handshake time ran out.
+  - *Batch files*: `npx.cmd`, `C:\Program Files\nodejs\npx.cmd`, bare `npx` (found as
+    `npx.cmd` on `PATH`) and the plugin's own `.cmd`/`.BAT` were refused by `spawnWorker`
+    before anything was wrapped, with the reason naming the file; bare `node` ran.
+  - *The entry plugin, the worker, the hook, the MCP server and channel loss* gave the
+    results above again (load about 0.35–0.42 s; reach, environment, stdin and exit codes
+    unchanged), and after each run no `srt-sandbox` process, no holder and no ACE remained.
+  - The Windows unit suites of the change (`confined-child`, `child-loopback-link`,
+    `worker-spawn`, `bundled-hook-runner`, `mcp-stdio-sandbox-wrap`,
+    `windows-bundled-process`, `out-of-process-plugin`, `adversarial-escapes` under the
+    real wrap, `safe-env`) passed: 229, 6 skipped (the macOS- and Linux-only rows).
+
 - **The fixture declares `capabilities: ["external-auth-consumer"]`.** Without it
   `hostFetch` is refused by the capability check before the allow-list is reached, and
   row 2 would prove the wrong layer. Row 2 asserts the allow-list's own audit detail:
@@ -5785,7 +5999,7 @@ What Ave should not adopt, and why:
 | 61 | **0.14.0 carries no protocol boundary.** Admission changes no protocol schema; the `2/v0.14.0` candidate differs from `v0.13.0`'s copy by `$id` only; §9.3's notice rule does not apply to the release, only to the server (decision 60), because no protocol version is retired. | The arm change is inside the host's promise (§2.1); the notice rule is keyed to a retired protocol version, and none is. What 0.14.0 does refuse anew — a manifest without a served `hostProtocol` on the prepared-activation and restart paths (fact 12, decision 52) — is the rule 0.12.0 announced for every path, now applied by the child factory's check, and R1's release note names it. |
 | 62 | **Migration of old-server `orion` and `git` installs (designer, 2026-10-08, on the review's recommendation).** Both packages are **required** through policy (`requiredInstalls` from the company source): a package that is not installed is installed by the boot step, and an existing install — unbound (old server) or bound to another source — is switched through the idle apply queue after boot (`src/marketplace/boot-installs/run.ts:199-200`; the `switch` candidate of `src/marketplace/app/service.ts:2242-2250`, built for a required package installed from another source or from none), never by an immediate boot install. `defaultInstalls` is not the migration path, because it skips an existing package bound to no source (`run.ts:219-225`). An unmanaged install (no policy) migrates by an explicit user-driven source switch: add the source, open the package there and install it, which replaces the unbound install (§16.4); the source's README states it. | A first draft listed `git` in `defaultInstalls` and claimed both would bind at the next boot, which `run.ts:225` contradicts; requiring both is what makes the managed migration automatic, at the cost that the policy, not the user, then owns each package's presence (§18.6), which the administrator chooses knowingly. |
 | 63 | **An out-of-process tool's hostApi call runs in its host invocation.** The transport mints `_meta["ave/invocation"]` for each `tools/call` and keeps an `AsyncLocalStorage.snapshot()` of the caller's context. It keeps the snapshot for the life of the connection: settled calls are kept too, up to `SETTLED_INVOCATIONS_MAX` (1024, oldest dropped first). Live calls are never evicted; excess calls are refused before capture at `LIVE_INVOCATIONS_MAX` (64), so the tables retain at most 1088 snapshots. Close and observed exit release both tables before fallible termination or subscription teardown (`plugin-child-transport.ts`). The child runtime binds the token for the handler's async chain, including work the handler leaves running, and stamps it on each hostApi request (`plugin-child-runtime.ts`). The dispatcher runs a request in the snapshot its token names, refuses a token the connection does not hold, and runs a tokenless request in a context captured at module load, where no store is entered (`runOutsideInvocation`, `host-api-dispatcher.ts`). The transport also routes every frame off the pipe through that context. Residual: a child can still omit the token and run a gated write ungated. The host does not refuse it, but logs the first qualifying write per gated path per connection while a `tools/call` is in flight; repeated writes emit no more warnings. The module-load guard rejects both effect-gate and invocation-origin frames, including app-only tools without a gate frame; boot must still evaluate it outside unrelated stores. Additive within protocol `2` (§3.3). Pinned by `invocation-context.test.ts`, over a link that delivers in its spawn context, and by `plugin-child-transport.test.ts`. | After Admission A1 every entry plugin runs as a child. A child's hostApi request reached the host in the context of the pipe, not the invocation, so `gateMutatingEffect` read "no invocation" and passed every gated write unasked. A plugin tool's `raiseAlert`, or any other host-classified write, skipped both the foreground approval and the headless deny (blueprint `plugin-process-isolation.md` §7 Q5 expected it to survive the boundary). The pipe's context is the one the child was SPAWNED in, not a neutral one. A child restarted from inside a tool call (`config.set` → `restartPlugin`) would run every tokenless request of its generation in that finished invocation: a headless deny, a foreground allow-once grant and session attribution, and a growing effect ledger. Rejected: dropping a call's context when it settles (a handler's timer then ran fail-open, while in-process the same code is denied headless); gating every child write that has no context (it would also gate lifecycle work an in-process plugin does freely); refusing a tokenless gated write while a call is in flight (honest background work runs beside tool calls, and the host cannot tell the two apart); exiting individual stores instead of using one root context (the pipe also carries the install-lock, registry and lifecycle stores, and a list of stores to exit goes stale). |
-| 64 | **Windows: plugins are not isolated from each other (owner, 2026-10-10).** On Windows every plugin, third-party ones included, runs in the one shared `srt-sandbox` identity: sandboxed from the host as configured, not from each other. The app adds no install gate, warning or confirmation, serialization of plugin processes, or marketplace-source restriction on Windows; the sandbox capability report says "against the host" there (`permissions.ts` `sandboxCapability`, `sandbox-capability-info.ts`), and every inter-plugin claim in this design and the blueprint is scoped to macOS and Linux. It is an accepted risk, pending an ASRT per-plugin (per-execution) identity, and is re-decided when one exists (§9.8 A2, *As implemented*). | ASRT 0.0.76 runs every sandboxed process as one account, without restricting SIDs; its allows are session-level grants and its per-execution denies holder-refcounted ACEs, both on that account's SID, so a deny between plugins takes each plugin's own directories from it as well, and a grant to one is visible to all while held. Upstream `@anthropic-ai/sandbox-runtime` releases through 0.0.79 (checked 2026-10-10) add no per-execution identity. Rejected by the owner: an install gate, warning or confirmation for third-party plugins on Windows, serializing plugin processes, and restricting Windows to some marketplace sources — third-party plugins run on Windows. Rejected on the facts: a deny-based partition, which removes each plugin's own access (above). |
+| 64 | **Windows: plugins are not isolated from each other (owner, 2026-10-10).** On Windows every plugin, third-party ones included, runs in the one shared `srt-sandbox` identity: sandboxed from the host as configured, not from each other. The app adds no install gate, warning or confirmation, serialization of plugin processes, or marketplace-source restriction on Windows; the sandbox capability report says "against the host" there (`permissions.ts` `sandboxCapability`, `sandbox-capability-info.ts`), and every inter-plugin claim in this design and the blueprint is scoped to macOS and Linux. The same holds for the host's own READ grants there: a bundled hook or MCP stdio server whose program lives in `<AVE_HOME>/runtime` holds READ on that directory for its lifetime (`wrap-bundled-command.ts` `hostRuntimeReads`), and while held every confined process reads it too — acceptable because the runtime is the host's shipped interpreter and holds nothing private. It is an accepted risk, pending an ASRT per-plugin (per-execution) identity, and is re-decided when one exists (§9.8 A2, *As implemented*). | ASRT 0.0.76 runs every sandboxed process as one account, without restricting SIDs; its allows are session-level grants and its per-execution denies holder-refcounted ACEs, both on that account's SID, so a deny between plugins takes each plugin's own directories from it as well, and a grant to one is visible to all while held. Upstream `@anthropic-ai/sandbox-runtime` releases through 0.0.79 (checked 2026-10-10) add no per-execution identity. Rejected by the owner: an install gate, warning or confirmation for third-party plugins on Windows, serializing plugin processes, and restricting Windows to some marketplace sources — third-party plugins run on Windows. Rejected on the facts: a deny-based partition, which removes each plugin's own access (above). |
 
 ### Owner decisions still open
 
@@ -5861,9 +6075,11 @@ MCP request metadata), and the single merge order of decision 27.
   `check` in CI; if the runner can clone, `verify` joins the pipeline.
 - (§9.8) The exact filesystem error each substrate returns for an unbound read
   (`EPERM`/`EACCES` on macOS and Windows, `ENOENT` under bubblewrap is the expectation;
-  Windows measured `EPERM` under srt-win on 2026-10-10, through a probe rather than the
-  `entry` child, which does not start there yet — §9.8 A2);
+  Windows measured `EPERM` under srt-win on 2026-10-10, row 1a included — §9.8 A2);
   A2's assertions are per platform and the first run fixes the values.
+- (§9.8 A2) An `uvx`-launched MCP stdio server under srt-win, end to end. The relay, the
+  `<AVE_HOME>/runtime` read grant and the relayed environment are measured with Node
+  programs; uv fetching an interpreter and packages through srt-win's proxy is not.
 - (§9.8) The Electron positive control on Linux CI under `xvfb-run` and on the Windows
   runner. macOS is measured (2026-10-08: Electron 44.3.0, `BrowserWindow` `"function"`,
   `app.whenReady()` resolves, `session.defaultSession` `"object"` — a development-executable

@@ -61,7 +61,12 @@ import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { cleanupAsrtSandboxAfterCommand, isAsrtSandboxActive } from "../permissions/asrt-sandbox.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
-import { bundledWrappedEnv, wrapBundledCommand } from "../sandbox/wrap-bundled-command.js";
+import {
+  bundledWrappedEnv,
+  spawnWindowsBundledProcess,
+  wrapBundledCommand,
+  type WindowsBundledSpawn,
+} from "../sandbox/wrap-bundled-command.js";
 
 const log = createLogger("hook-runner");
 
@@ -265,8 +270,34 @@ export async function runOneHookScript(
 
   assertManagedChildProcessAdmissionOpen("hook:script");
   let cleanupWrap: (() => void) | undefined;
-  if (confinement && isAsrtSandboxActive()) {
-    if (process.platform === "win32") return deny("sandbox unavailable: bundled hooks cannot run on Windows with the sandbox on");
+  let windowsSpawn: WindowsBundledSpawn | undefined;
+  if (confinement && isAsrtSandboxActive() && process.platform === "win32") {
+    // srt-win: the hook runs through the stdio relay with an ACL grant on its
+    // own generation root (read) and data root (write); see
+    // `spawnWindowsBundledProcess`.
+    try {
+      windowsSpawn = await spawnWindowsBundledProcess({
+        label: `hook:${confinement.pluginId}`,
+        command: spawnCmd,
+        args: spawnArgs,
+        baseEnv: spawnEnv,
+        cwd,
+        allowRead: [confinement.generationRoot],
+        allowWrite: [confinement.dataDir],
+      });
+    } catch (error) {
+      return deny(`sandbox unavailable: ${(error as Error).message}`);
+    }
+    const { releaseHold } = windowsSpawn;
+    let cleaned = false;
+    cleanupWrap = () => {
+      if (!cleaned) {
+        cleaned = true;
+        void cleanupAsrtSandboxAfterCommand();
+      }
+      releaseHold();
+    };
+  } else if (confinement && isAsrtSandboxActive()) {
     const sandboxHome = createSandboxProcessHome();
     try {
       const wrapped = await wrapBundledCommand({ command: spawnCmd, args: spawnArgs,
@@ -288,7 +319,7 @@ export async function runOneHookScript(
   }
 
   return new Promise<ScriptHookInvocationResult>((resolve) => {
-    const child = spawn(spawnCmd, spawnArgs, {
+    const child = windowsSpawn?.child ?? spawn(spawnCmd, spawnArgs, {
       cwd,
       // Allowlist env — do not leak ANTHROPIC_API_KEY, AWS_*, GITHUB_TOKEN
       // etc. to hook scripts. The hook receives only the AVE_HOOK_* vars.
@@ -299,17 +330,34 @@ export async function runOneHookScript(
       // child shell dies but its descendants keep running.
       detached: process.platform !== "win32",
     });
-    trackManagedChildProcess(child, {
-      label: "hook:script",
-      killProcessGroup: process.platform !== "win32",
-    });
+    // A Windows sandboxed hook is registered by `spawnConfinedChild`.
+    if (windowsSpawn === undefined) {
+      trackManagedChildProcess(child, {
+        label: "hook:script",
+        killProcessGroup: process.platform !== "win32",
+      });
+    }
+    // Through the relay the hook's input and output are the relay's streams,
+    // not the child's own pipes (`spawnWindowsBundledProcess`).
+    const hookStdin = windowsSpawn?.stdin ?? child.stdin;
+    const hookStdout = windowsSpawn?.stdout ?? child.stdout;
+    // The relayed output is copied from the child's own and can trail its
+    // `close` by a turn; the verdict waits for it, never longer than a second.
+    const outputDrained: Promise<void> = windowsSpawn === undefined
+      ? Promise.resolve()
+      : new Promise<void>((resolveDrained) => {
+        const done = (): void => resolveDrained();
+        windowsSpawn!.stdout.once("end", done);
+        windowsSpawn!.stdout.once("close", done);
+        setTimeout(done, 1_000).unref();
+      });
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let stdoutBytes = 0;
     let stdoutCapped = false;
 
-    child.stdout?.on("data", (c: Buffer) => {
+    hookStdout?.on("data", (c: Buffer) => {
       stdoutBytes += c.byteLength;
       if (stdoutBytes > MAX_HOOK_STDOUT_BYTES) {
         if (!stdoutCapped) {
@@ -326,7 +374,7 @@ export async function runOneHookScript(
       if (stderrChunks.reduce((s, b) => s + b.byteLength, 0) >= MAX_HOOK_STDOUT_BYTES) return;
       stderrChunks.push(c);
     });
-    child.stdin?.on("error", (err: NodeJS.ErrnoException) => {
+    hookStdin?.on("error", (err: NodeJS.ErrnoException) => {
       if (err.code === "EPIPE") return;
       log.warn("hook stdin error: %s (%s)", runnable.id, err.message);
     });
@@ -416,7 +464,9 @@ export async function runOneHookScript(
       timeoutFallback = setTimeout(() => finish(child.exitCode), 1000);
     }, timeoutMs);
 
-    child.on("close", (code: number | null) => finish(code));
+    child.on("close", (code: number | null) => {
+      void outputDrained.then(() => finish(code));
+    });
 
     child.on("error", (err: Error) => {
       if (settled) return;
@@ -436,8 +486,8 @@ export async function runOneHookScript(
 
     try {
       const json = JSON.stringify(payload);
-      child.stdin?.write(json);
-      child.stdin?.end();
+      hookStdin?.write(json);
+      hookStdin?.end();
     } catch (err) {
       clearTimeout(timer);
       try { child.kill("SIGKILL"); } catch { /* already exited */ }

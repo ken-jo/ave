@@ -29,12 +29,19 @@
  * why the five plugins that are not the pilot keep loading as they did.
  */
 import { mkdirSync, statSync } from "node:fs";
+import type { Socket } from "node:net";
+import type { Readable, Writable } from "node:stream";
 import { ENV_NAME_RE } from "../../mcp/safe-names.js";
 import { ProcessEntryUnconfinedError, type ProcessLaunch } from "../process-entry.js";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
-import { mainDir } from "../../main/main-paths.js";
-import { spawnConfinedChild, type SpawnConfinement } from "../../permissions/confined-child.js";
+import {
+  NODE_PRESERVE_SYMLINK_FLAGS,
+  resolvePluginChildEntryPath,
+  spawnConfinedChild,
+  srtWinTargetEnv,
+  type SpawnConfinement,
+} from "../../permissions/confined-child.js";
 import {
   markPluginChildConfined,
   unmarkPluginChildConfined,
@@ -82,26 +89,17 @@ import {
 } from "./host-api-wire.js";
 import type { ChildLink } from "./plugin-child-transport.js";
 import {
+  CHILD_LOOPBACK_TRANSPORT_ARG,
+  connectToAnnouncedChild,
+  encodeChildEnv,
+} from "./child-loopback-link.js";
+import {
   createBoundHostApiDispatchTable,
   type DispatchableHostApi,
 } from "./bound-host-api-table.js";
 import { openPluginProtocolSession } from "./plugin-protocol-session.js";
 
 const log = createLogger("out-of-process-plugin");
-
-/**
- * Where the child's entry module lives.
- *
- * Resolved from `mainDir`, NOT from this module's own `import.meta.url`: the
- * main process is an esbuild bundle with code splitting, so this file executes
- * from `main.js` or from a hashed `chunks/*.js` and has no fixed relationship
- * to any emitted sibling. `main-paths.ts` is the one place that answers "where
- * are the runtime assets", and `plugin-child-main` is registered as its own
- * esbuild entry point so an actual file exists there to run.
- */
-export function resolvePluginChildEntryPath(): string {
-  return join(mainDir, "plugin-child-main.js");
-}
 
 /**
  * One directory the HOST has decided a named plugin's child may reach beyond
@@ -767,6 +765,40 @@ export interface ObservedPluginChild {
   readonly exited: Promise<string>;
 }
 
+/** How long a sandboxed Windows child has to start and announce its listener. */
+const WINDOWS_CHANNEL_CONNECT_TIMEOUT_MS = 30_000;
+
+/**
+ * The sandboxed Windows launch of the reference runtime: Node's symlink-
+ * preserving flags, the child entry, the loopback transport, and the child's
+ * environment as one argument.
+ *
+ * The flags are {@link NODE_PRESERVE_SYMLINK_FLAGS}, which says why. For the
+ * child the trade is narrow: the entry path is already the host's real path
+ * (decision 33), and the host's integrity and path checks run on its side.
+ * The environment is {@link srtWinTargetEnv}'s, which says what stays srt-win's.
+ */
+function windowsLoopbackLaunchLine(
+  args: readonly string[],
+  baseEnv: NodeJS.ProcessEnv,
+  extraEnv: Readonly<Record<string, string>>,
+): {
+  readonly args: string[];
+  readonly windowsShell: "cmd";
+  readonly windowsCommandLineEnv: Readonly<Record<string, string>>;
+} {
+  return {
+    args: [
+      ...NODE_PRESERVE_SYMLINK_FLAGS,
+      ...args,
+      CHILD_LOOPBACK_TRANSPORT_ARG,
+      encodeChildEnv(srtWinTargetEnv(baseEnv, extraEnv)),
+    ],
+    windowsShell: "cmd",
+    windowsCommandLineEnv: { ELECTRON_RUN_AS_NODE: "1" },
+  };
+}
+
 /**
  * Spawn the child under ASRT.
  *
@@ -839,12 +871,15 @@ export interface ObservedPluginChild {
  * uses for a worker). The grant is refused if any path reaches past the
  * plugin's own install or generation cache into a plugin-owned root
  * (`pluginGrantPathsBeyondOwnRoots`), is released on every way the child ends,
- * and a holder that dies stops the child. That grant is the ACL half of a
- * Windows `entry` child loading, measured in isolation (§9.8 A2): it is not
- * the whole of it. Under srt-win the child does not start today — the runner
- * gives it the sandbox profile's environment rather than `baseEnv`/`extraEnv`,
- * the PowerShell inner shell does not wait for `electron.exe`, stdin is not
- * relayed, and the module import `lstat`s profile ancestors no grant covers.
+ * and a holder that dies stops the child. The grant is the ACL half of a
+ * Windows `entry` child loading; the launch is the other half. srt-win gives
+ * the target the sandbox profile's environment rather than `baseEnv`/
+ * `extraEnv`, PowerShell does not wait for `electron.exe`, stdin is not
+ * relayed, and the module import `lstat`s profile ancestors no grant covers —
+ * so this spawn launches through `cmd.exe` with the environment in an
+ * argument and Node's symlink-preserving flags, and speaks to the child over
+ * an authenticated loopback connection ({@link windowsLoopbackLaunchLine},
+ * `child-loopback-link.ts`; plugin-hostapi-protocol.md §2.3, §9.8 A2).
  *
  * §4's Windows residual stands unchanged and is not softened here: srt-win
  * confines filesystem and network but NOT process creation, so a confined
@@ -987,10 +1022,21 @@ export async function spawnConfinedPluginChild(
       });
     }
     const grant = windowsGrant;
-    const { command, args, baseEnv } = spawnLine;
+    const { command, baseEnv } = spawnLine;
+    const extraEnv = { ...sandboxHome.env };
+    // Windows, wrapped: srt-win relays no stdin, delivers none of this spawn's
+    // environment, and PowerShell does not wait for `electron.exe` — so the
+    // child is launched through `cmd.exe`, told its environment in an
+    // argument, and spoken to over an authenticated loopback connection
+    // instead of its pipes (`child-loopback-link.ts`). Everywhere else, and on
+    // Windows with the sandbox off, the stdio child is unchanged.
+    const windowsLoopback = spec.launch.kind === "entry" && process.platform === "win32" && isAsrtSandboxActive();
+    const launchLine = windowsLoopback
+      ? windowsLoopbackLaunchLine(spawnLine.args, baseEnv, extraEnv)
+      : { args: spawnLine.args };
     const { child, confinement } = await spawnConfinedChild({
       command,
-      args,
+      ...launchLine,
       label: `plugin-child:${spec.pluginId}`,
       grantMode: process.platform === "win32" ? "deny-only" : "allow-list",
       // The plugin's own temp directory, shared with its workers and bundled
@@ -1008,9 +1054,10 @@ export async function spawnConfinedPluginChild(
       // could swap it for a link would steer the next storage handle or spawn.
       pinWriteRoots: true,
       baseEnv,
-      extraEnv: { ...sandboxHome.env },
+      extraEnv,
       // The child is a JSON-RPC server whose pipes the host owns, so unlike the
-      // Python worker it needs stdin.
+      // Python worker it needs stdin (on every path but Windows' loopback one,
+      // where stdin is inert and stdout carries only the announce).
       stdio: ["pipe", "pipe", "pipe"],
       onWrapped: () => {
         wrapped = true;
@@ -1035,12 +1082,17 @@ export async function spawnConfinedPluginChild(
     child.stderr?.on("data", (chunk: Buffer) => {
       log.debug(`[${spec.pluginId}] ${chunk.toString("utf-8").trimEnd()}`);
     });
+    // A launch that hands back a child already gone (its `exit` emitted before
+    // these listeners) is released and reported at once, not waited on.
+    const alreadyExited = child.exitCode !== null || child.signalCode !== null;
     const exited = new Promise<void>((resolve) => {
+      if (alreadyExited) resolve();
       child.once("exit", () => resolve());
       child.once("close", () => resolve());
     });
     child.once("exit", releaseSandboxState);
     child.once("close", releaseSandboxState);
+    if (alreadyExited) releaseSandboxState();
     // Gone means the process no longer exists: it exited, or the spawn
     // produced no process to run. An `error` from a process that has a pid is
     // a fault on a live child — Node emits one when a signal could not be
@@ -1049,35 +1101,93 @@ export async function spawnConfinedPluginChild(
     child.on("error", () => {
       if (!hasProcess()) releaseSandboxState();
     });
-    // A holder that dies takes the grant's guarantee with it; the child it
-    // served stops rather than run on a grant nobody holds.
-    grant?.onLost(() => {
+    // Why the child is gone, settled from here on: a child that dies before
+    // anyone asks — while the channel is still being set up, or before the
+    // caller attaches `onGone` — is still reported, and one that had already
+    // exited by the time the launch handed it back (`exitCode`/`signalCode`
+    // set, its `exit` possibly already emitted) is reported at once.
+    const exitedReason = (code: number | null, signal: NodeJS.Signals | null): string =>
+      `[out-of-process-plugin] ${spec.pluginId}: child exited code=${String(code)} signal=${String(signal)}`;
+    const gone = new Promise<string>((resolve) => {
+      if (alreadyExited) {
+        resolve(exitedReason(child.exitCode, child.signalCode));
+        return;
+      }
+      child.once("exit", (code, signal) => resolve(exitedReason(code, signal)));
+      child.on("error", (error: Error) => {
+        if (!hasProcess()) resolve(`[out-of-process-plugin] ${spec.pluginId}: child error: ${error.message}`);
+      });
+    });
+    let terminated = false;
+    const terminateChild = (): void => {
+      if (terminated) return;
+      terminated = true;
       const forceTimer = terminateChildProcess(child, 3_000);
       child.once("exit", () => clearTimeout(forceTimer));
-    });
+    };
+    // A holder that dies takes the grant's guarantee with it; the child it
+    // served stops rather than run on a grant nobody holds.
+    grant?.onLost(terminateChild);
+    let input: Readable = child.stdout;
+    let output: Writable = child.stdin;
+    let channel: Socket | undefined;
+    if (windowsLoopback) {
+      if (confinement !== "windows-srt") {
+        terminateChild();
+        throw new Error(
+          `[out-of-process-plugin] ${spec.pluginId}: a sandboxed Windows launch came back '${confinement}', not 'windows-srt'`,
+        );
+      }
+      try {
+        channel = await connectToAnnouncedChild({
+          stdout: child.stdout,
+          exited: gone,
+          timeoutMs: WINDOWS_CHANNEL_CONNECT_TIMEOUT_MS,
+        });
+      } catch (error) {
+        terminateChild();
+        throw error;
+      }
+      // The child may have died in the moment the handshake finished, its
+      // `exit` not yet delivered: a channel to a dead child is no channel.
+      if (child.exitCode !== null || child.signalCode !== null) {
+        channel.destroy();
+        terminateChild();
+        throw new Error(
+          `${exitedReason(child.exitCode, child.signalCode)} as its channel was connected`,
+        );
+      }
+      // stdout now carries nothing the protocol reads; keep it drained and
+      // logged, as stderr is.
+      child.stdout.on("data", (chunk: Buffer) => {
+        log.debug(`[${spec.pluginId}] stdout: ${chunk.toString("utf-8").trimEnd()}`);
+      });
+      // The connection IS the child's lifetime from here: a channel that
+      // closes or fails leaves nothing to serve, so the process is ended and
+      // its exit reported through `onGone` as for a pipe.
+      const connected = channel;
+      connected.once("close", terminateChild);
+      connected.on("error", (error: Error) => {
+        log.debug(`[${spec.pluginId}] channel error: ${error.message}`);
+        connected.destroy();
+      });
+      input = connected;
+      output = connected;
+    }
     return {
       pid: hasProcess() ? child.pid : undefined,
       confinement,
       waitForExit: () => exited,
       link: {
-        input: child.stdout,
-        output: child.stdin,
+        input,
+        output,
         terminate: (reason) => {
           log.debug(`[${spec.pluginId}] terminating child: ${reason}`);
-          const forceTimer = terminateChildProcess(child, 3_000);
-          child.once("exit", () => clearTimeout(forceTimer));
+          channel?.destroy();
+          terminateChild();
         },
         onGone: (handler) => {
-          child.once("exit", (code, signal) =>
-            handler(
-              `[out-of-process-plugin] ${spec.pluginId}: child exited ` +
-                `code=${String(code)} signal=${String(signal)}`,
-            ),
-          );
-          child.on("error", (error: Error) => {
-            if (hasProcess()) return;
-            handler(`[out-of-process-plugin] ${spec.pluginId}: child error: ${error.message}`);
-          });
+          void gone.then(handler);
         },
         onFault: (handler) => {
           child.on("error", (error: Error) => {
