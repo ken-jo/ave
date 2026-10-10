@@ -1204,6 +1204,21 @@ reaches the `cmd.exe` line, a batch file (`.cmd`/`.bat`, or a bare name such as
 relay nor `cmd.exe` is refused, because srt-win's PowerShell launch loses stdin,
 environment and exit code alike.
 
+A plugin root holds two state directories. `data/` is the plugin's own: its
+confined child writes there. `storage/` beside it is host-only: the HostApi
+`storage` surface and the webview bridge's `ui-storage/` operate there on the
+plugin's behalf, and no confined process may write it on any platform — the
+envelope derivation refuses a write grant that names it, lies inside it or
+contains it, and the Windows holder grant is held to the same rule
+(`writeGrantsReachingHostStorage`). A storage operation checks containment and
+then issues a path-based syscall, and no platform offers a no-follow rule for
+every component of every such call, so only a directory the child cannot write
+keeps that syscall where the check looked. `plugin-storage-layout.ts` owns the
+path; promotion and recovery carry `storage/` with `data/`. Storage written
+before the directory existed is copied out of `data/` once at boot, before any
+confined process runs, never through a link (`migratePluginHostStorage`;
+`docs/design/plugin-hostapi-protocol.md` decision 65).
+
 Plugin read-relaxation is narrower than the host-shell capability. The
 foreground plugin effect-boundary may replace a pre-exec ask only when
 `hostClassifiesRisk` is enabled and

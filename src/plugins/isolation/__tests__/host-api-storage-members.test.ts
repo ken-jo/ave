@@ -80,6 +80,7 @@ import {
   createHostApiCaller,
   unimplementedChildMember,
 } from "../plugin-child-runtime.js";
+import { pluginDataDirIn } from "../../__tests__/test-helpers.js";
 
 const PLUGIN_ID = "com.example.storage";
 const silentSink: ChildNotificationSink = { deliver: () => {} };
@@ -104,14 +105,18 @@ interface Harness {
 
 let scratch: string;
 let dataDir: string;
+let storageDir: string;
 
 beforeEach(() => {
   mockedElectron.enc.available = true;
   scratch = mkdtempSync(join(tmpdir(), "ave-storage-boundary-"));
-  // The production layout, `<plugins root>/<id>/data`: a recursive rm
-  // discards beside the data directory, in the plugin root.
+  // The production layout: `<plugins root>/<id>/data` is what the runtime
+  // hands the HostApi, and the storage surface operates in the host-only
+  // `<plugins root>/<id>/storage` beside it.
   dataDir = join(scratch, PLUGIN_ID, "data");
+  storageDir = join(scratch, PLUGIN_ID, "storage");
   mkdirSync(dataDir, { recursive: true });
+  mkdirSync(storageDir, { recursive: true });
 });
 
 afterEach(async () => {
@@ -200,10 +205,10 @@ const TRAVERSAL_CALLS: ReadonlyArray<readonly [string, (s: PluginStorage) => Pro
 ];
 
 describe("storage.resolve is answered in the child", () => {
-  it("joins under the data root without a round trip", () => {
+  it("joins under the host storage root without a round trip", () => {
     const { storage, requests } = harness();
-    expect(storage.resolve("nested", "file.txt")).toBe(join(dataDir, "nested/file.txt"));
-    expect(storage.resolve()).toBe(dataDir);
+    expect(storage.resolve("nested", "file.txt")).toBe(join(storageDir, "nested/file.txt"));
+    expect(storage.resolve()).toBe(storageDir);
     expect(requests).toHaveLength(0);
   });
 
@@ -231,7 +236,7 @@ describe("bytes survive the boundary unchanged", () => {
     const read = await storage.read("blob.bin");
     expect(Array.from(read)).toEqual(Array.from(HOSTILE_BYTES));
     // The file on disk holds the raw bytes, not a base64 transcript of them.
-    expect(Array.from(readFileSync(join(dataDir, "blob.bin")))).toEqual(
+    expect(Array.from(readFileSync(join(storageDir, "blob.bin")))).toEqual(
       Array.from(HOSTILE_BYTES),
     );
     // Both directions carried the base64 tag rather than the utf8 one.
@@ -242,7 +247,7 @@ describe("bytes survive the boundary unchanged", () => {
     const { storage, requests } = harness();
     await storage.write("verbatim.txt", "aGVsbG8=");
     expect((argsOfRequest(requests[0])[1] as WireBytes).encoding).toBe("utf8");
-    expect(readFileSync(join(dataDir, "verbatim.txt"), "utf-8")).toBe("aGVsbG8=");
+    expect(readFileSync(join(storageDir, "verbatim.txt"), "utf-8")).toBe("aGVsbG8=");
   });
 
   it("still honours the separate StorageEncoding argument", async () => {
@@ -250,7 +255,7 @@ describe("bytes survive the boundary unchanged", () => {
     // The wire tag says "this crossed as text"; the encoding argument says
     // "interpret that text as base64 when writing". Two different questions.
     await storage.write("decoded.bin", "aGVsbG8=", "base64");
-    expect(readFileSync(join(dataDir, "decoded.bin"), "utf-8")).toBe("hello");
+    expect(readFileSync(join(storageDir, "decoded.bin"), "utf-8")).toBe("hello");
     expect(await storage.readText("decoded.bin", "base64")).toBe("aGVsbG8=");
   });
 
@@ -269,7 +274,7 @@ describe("bytes survive the boundary unchanged", () => {
     ).rejects.toMatchObject({ code: "payload-too-large" });
     // Refused at the child's own call site: nothing was sent, nothing landed.
     expect(requests).toHaveLength(0);
-    expect(existsSync(join(dataDir, "huge.bin"))).toBe(false);
+    expect(existsSync(join(storageDir, "huge.bin"))).toBe(false);
   });
 
   it("refuses an over-limit READ rather than handing back part of the file", async () => {
@@ -311,9 +316,9 @@ describe("the plain-json members carry their declared values", () => {
   it("passes the indent argument through", async () => {
     const { storage } = harness();
     await storage.writeJson("wide.json", { a: 1 }, 4);
-    expect(readFileSync(join(dataDir, "wide.json"), "utf-8")).toBe('{\n    "a": 1\n}');
+    expect(readFileSync(join(storageDir, "wide.json"), "utf-8")).toBe('{\n    "a": 1\n}');
     await storage.writeJson("narrow.json", { a: 1 });
-    expect(readFileSync(join(dataDir, "narrow.json"), "utf-8")).toBe('{\n  "a": 1\n}');
+    expect(readFileSync(join(storageDir, "narrow.json"), "utf-8")).toBe('{\n  "a": 1\n}');
   });
 
   it("lists the root and a subdirectory, and empty for a missing one", async () => {
@@ -353,7 +358,7 @@ describe("the encrypted pair fails for its own reasons", () => {
     await storage.writeEncrypted("auth/token.enc", "s3cret");
     // The seam's envelope, not the plaintext — what lands on disk is whatever
     // `encryptString` produced, and it came back through the boundary intact.
-    expect(readFileSync(join(dataDir, "auth/token.enc"), "utf-8")).toBe("ENC(s3cret)");
+    expect(readFileSync(join(storageDir, "auth/token.enc"), "utf-8")).toBe("ENC(s3cret)");
     expect(mockedElectron.safeStorage.encryptString).toHaveBeenCalledWith("s3cret");
     expect(await storage.readEncrypted("auth/token.enc")).toBe("s3cret");
   });
@@ -364,7 +369,7 @@ describe("the encrypted pair fails for its own reasons", () => {
     expect(await codeOf(storage.writeEncrypted("nokey.enc", "s3cret"))).toBe(
       "plugin-storage-encryption-unavailable",
     );
-    expect(existsSync(join(dataDir, "nokey.enc"))).toBe(false);
+    expect(existsSync(join(storageDir, "nokey.enc"))).toBe(false);
     expect(await codeOf(storage.readEncrypted("nokey.enc"))).toBe(
       "plugin-storage-encryption-unavailable",
     );
@@ -464,12 +469,12 @@ describe("the group binds to one incarnation and to nothing else", () => {
     const first = mkdtempSync(join(tmpdir(), "ave-storage-first-"));
     const second = mkdtempSync(join(tmpdir(), "ave-storage-second-"));
     try {
-      const toFirst = harness(createNoopHostApi(PLUGIN_ID, first, mockedElectron.safeStorage));
-      const toSecond = harness(createNoopHostApi(PLUGIN_ID, second, mockedElectron.safeStorage));
+      const toFirst = harness(createNoopHostApi(PLUGIN_ID, pluginDataDirIn(first), mockedElectron.safeStorage));
+      const toSecond = harness(createNoopHostApi(PLUGIN_ID, pluginDataDirIn(second), mockedElectron.safeStorage));
       await toFirst.storage.write("who.txt", "first");
       await toSecond.storage.write("who.txt", "second");
-      expect(readFileSync(join(first, "who.txt"), "utf-8")).toBe("first");
-      expect(readFileSync(join(second, "who.txt"), "utf-8")).toBe("second");
+      expect(readFileSync(join(first, "storage", "who.txt"), "utf-8")).toBe("first");
+      expect(readFileSync(join(second, "storage", "who.txt"), "utf-8")).toBe("second");
     } finally {
       await Promise.all([cleanupTmpDir(first), cleanupTmpDir(second)]);
     }
@@ -558,7 +563,7 @@ describe("malformed arguments are refused, never coerced", () => {
     expect(await codeOf(raw("storage.write", ["a.txt", { encoding: "rot13", data: "x" }]))).toBe(
       "argument-marshalling-rejected",
     );
-    expect(existsSync(join(dataDir, "a.txt"))).toBe(false);
+    expect(existsSync(join(storageDir, "a.txt"))).toBe(false);
   });
 
   it("refuses an absent writeJson value rather than writing `undefined`", async () => {
@@ -569,7 +574,7 @@ describe("malformed arguments are refused, never coerced", () => {
     expect(await codeOf(raw("storage.writeJson", ["j.json", { a: 1 }, 1.5]))).toBe(
       "argument-marshalling-rejected",
     );
-    expect(existsSync(join(dataDir, "j.json"))).toBe(false);
+    expect(existsSync(join(storageDir, "j.json"))).toBe(false);
   });
 
   it("refuses an rm option it does not recognise", async () => {
@@ -611,7 +616,7 @@ describe("the boundary refuses a member the plugin is no longer entitled to", ()
       },
       table: { ...HOSTAPI_DISPATCH_TABLE, ...createStorageHostApiPaths(hostApi) },
     });
-    writeFileSync(join(dataDir, "live.txt"), "live");
+    writeFileSync(join(storageDir, "live.txt"), "live");
     const reply = await host.handle(hostApiRequest("storage.read", ["live.txt"], "c1"));
     expect("error" in reply && reply.error.data.code).toBe("plugin-inactive");
   });

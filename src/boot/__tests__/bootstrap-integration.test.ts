@@ -538,6 +538,10 @@ vi.mock("../../plugins/plugin-storage-layout.js", async (importOriginal) => ({
     h.rec("socketDiscardSwept");
     return [] as string[];
   }),
+  migratePluginHostStorage: vi.fn(async () => {
+    h.rec("hostStorageMigrated");
+    return { migrated: [], skipped: [], failed: [] };
+  }),
 }));
 vi.mock("../../plugins/plugin-paths.js", () => ({
   resolvePluginPaths: vi.fn(() => ({
@@ -863,6 +867,12 @@ describe("bootstrap() integration lock", () => {
     // boot sweeps, which must finish before any plugin starts.
     assertBefore("tombstonesSwept", "startPlugins");
     assertBefore("socketDiscardSwept", "startPlugins");
+    // Storage written before the host-only directory existed is copied out of
+    // `data/` before any plugin (or other confined process) can run.
+    // Loading a plugin (inside initPluginRuntime) refuses a root whose data/
+    // holds state but has no storage/ yet, so the copy precedes the load too.
+    assertBefore("hostStorageMigrated", "initPluginRuntime");
+    assertBefore("hostStorageMigrated", "startPlugins");
     // Plugins register their alert kinds as they start, and a boot-time
     // uninstall replay must find the alerts pipeline listening.
     assertBefore("alertsSetup", "uninstallCleanupReplay");

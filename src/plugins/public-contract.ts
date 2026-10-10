@@ -1077,8 +1077,8 @@ export interface McpAuthMetadata extends McpOAuthMetadata {
 /**
  * Error thrown by every `PluginStorage` method when a path violates the
  * sandbox rules: absolute paths, lexical `..` escapes, and symlinks whose
- * realpath escapes `pluginDataDir` (including dangling symlinks whose target
- * cannot be verified). Plugin authors writing TypeScript can branch on this
+ * realpath escapes the plugin's storage root (including dangling symlinks whose
+ * target cannot be verified). Plugin authors writing TypeScript can branch on this
  * class via `instanceof`:
  *
  * ```ts
@@ -1145,8 +1145,12 @@ export type StorageEncoding =
   | "binary";
 
 /**
- * Sandboxed storage rooted at `pluginDataDir`. All paths are resolved relative
- * to that root. Path traversal via `..`, absolute paths, and symlinks
+ * Sandboxed storage rooted at the plugin's host-only storage directory,
+ * `<pluginsRoot>/<pluginId>/storage/` — beside `pluginDataDir`, NOT inside it.
+ * The host reads and writes it on the plugin's behalf and no confined plugin
+ * process can write it, so files stored here are reached through this API, not
+ * through `node:fs` under `pluginDataDir`. All paths are resolved relative to
+ * that root. Path traversal via `..`, absolute paths, and symlinks
  * escaping the root via realpath checks are rejected with `PluginStorageError`
  * (exported from this module — plugin authors can `instanceof`-check it).
  *
@@ -1159,12 +1163,14 @@ export type StorageEncoding =
  *
  * Plugins should prefer this over `node:fs` so the host can audit / sandbox /
  * restrict writes uniformly. Every operation throws if the resolved path
- * escapes `pluginDataDir`.
+ * escapes the storage root.
  */
 export interface PluginStorage {
   /**
-   * Resolve `segments` to an absolute path inside the plugin's data root.
-   * Throws if the resolved path escapes the root.
+   * Resolve `segments` to an absolute path inside the plugin's storage root.
+   * Throws if the resolved path escapes the root. The path names where the
+   * host keeps the entry; the plugin process can read it there only where its
+   * sandbox allows, and can never write it.
    */
   resolve(...segments: string[]): string;
   /** Read raw bytes; throws ENOENT if the file does not exist. */
@@ -1192,7 +1198,7 @@ export interface PluginStorage {
   /**
    * Encrypt `plaintext` with the host's configured encryption provider and
    * write the ciphertext bytes to `relPath`, inside the same sandboxed
-   * `pluginDataDir` root as every other method — identical absolute-path /
+   * storage root as every other method — identical absolute-path /
    * lexical `..` / symlink-escape rejection applies. Parent directories are
    * created as needed.
    *
@@ -1358,7 +1364,8 @@ export interface HostFetchInit extends RequestInit {
 
 export interface PluginHostApi {
   /**
-   * Sandboxed filesystem API scoped to this plugin's `pluginDataDir`. Plugins
+   * Sandboxed filesystem API scoped to this plugin's host-only storage
+   * directory (beside `pluginDataDir`; see {@link PluginStorage}). Plugins
    * SHOULD prefer this over `node:fs` so the host can audit/restrict writes
    * uniformly. Direct `node:fs` use is still possible but bypasses sandbox
    * protections and is subject to future deprecation.

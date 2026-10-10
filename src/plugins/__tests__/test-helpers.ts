@@ -20,6 +20,8 @@ import type { PluginPaths } from "../plugin-paths.js";
 import { resolvePluginPaths } from "../plugin-paths.js";
 import {
   PLUGIN_DATA_DIR_NAME,
+  PLUGIN_HOST_STORAGE_DIR_NAME,
+  resolvePluginHostStorageDir,
   resolvePluginSocketDir,
   resolvePluginWorkerRunRoot,
 } from "../plugin-storage-layout.js";
@@ -75,6 +77,19 @@ export function admittedGenerationAccess(generationId: string): PluginRuntimeGen
 }
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Lay out a plugin's state directories in `root` the way the host does —
+ * `<root>/data` and, beside it, the host-only `<root>/storage` the HostApi
+ * `storage` surface operates in — and return the data directory, which is
+ * what a HostApi factory or runtime is handed as `pluginDataDir`.
+ */
+export function pluginDataDirIn(root: string): string {
+  const dataDir = join(root, "data");
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  mkdirSync(resolvePluginHostStorageDir(dataDir), { recursive: true, mode: 0o700 });
+  return dataDir;
+}
 
 /**
  * Leave under `dir` what a confined child can do to stop a plain recursive
@@ -997,32 +1012,37 @@ export function makeTestPluginMarketplaceService(rootDir: string): PluginMarketp
 }
 
 /**
- * Plugin-written state under `<pluginRoot>/data`, shaped like what real
- * plugins leave there: a JSON sidecar at the top and a binary blob one level
- * down, so a test sees both a flat file and a nested one survive a root swap.
+ * Plugin state under `<pluginRoot>`, keyed by path relative to the plugin
+ * root: what a confined child writes under `data/` — a JSON sidecar at the top
+ * and a binary blob one level down — and what the HostApi storage surface
+ * writes under the host-only `storage/`, including a depth-2 key the way
+ * lyra-mail and the app bridge store theirs. A test sees flat and nested files
+ * in BOTH state directories survive a root swap.
  */
 export const PLUGIN_DATA_FIXTURE: ReadonlyMap<string, Buffer> = new Map([
-  ["state.json", Buffer.from(`${JSON.stringify({ sessions: 3, lastRun: "2026-08-01T00:00:00.000Z" })}\n`)],
-  ["index/segment-0001.bin", Buffer.from([0, 255, 127, 128, 1, 2, 3, 4, 250, 251, 252, 253])],
+  [`${PLUGIN_DATA_DIR_NAME}/state.json`, Buffer.from(`${JSON.stringify({ sessions: 3, lastRun: "2026-08-01T00:00:00.000Z" })}\n`)],
+  [`${PLUGIN_DATA_DIR_NAME}/index/segment-0001.bin`, Buffer.from([0, 255, 127, 128, 1, 2, 3, 4, 250, 251, 252, 253])],
+  [`${PLUGIN_HOST_STORAGE_DIR_NAME}/session-snapshot.json`, Buffer.from(`${JSON.stringify({ signedIn: true })}\n`)],
+  [`${PLUGIN_HOST_STORAGE_DIR_NAME}/auth/token-default.json`, Buffer.from("ENC(token)")],
 ]);
 
-/** Write {@link PLUGIN_DATA_FIXTURE} under `<pluginRoot>/data`. */
+/** Write {@link PLUGIN_DATA_FIXTURE} under `<pluginRoot>`. */
 export async function seedPluginDataFixture(pluginRoot: string): Promise<void> {
   for (const [relPath, bytes] of PLUGIN_DATA_FIXTURE) {
-    const target = join(pluginRoot, PLUGIN_DATA_DIR_NAME, relPath);
+    const target = join(pluginRoot, relPath);
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, bytes);
   }
 }
 
 /**
- * Every file under `<pluginRoot>/data` as `relative path → bytes`, so one
- * assertion compares file set and content at once. An absent directory reads
- * as an empty map: a swap that dropped it fails the comparison against
- * {@link PLUGIN_DATA_FIXTURE} instead of throwing before the comparison.
+ * Every file under `<pluginRoot>/data` and `<pluginRoot>/storage` as
+ * `path relative to the plugin root → bytes`, so one assertion compares file
+ * set and content at once. An absent directory reads as empty: a swap that
+ * dropped one fails the comparison against {@link PLUGIN_DATA_FIXTURE}
+ * instead of throwing before the comparison.
  */
 export async function readPluginDataFixture(pluginRoot: string): Promise<Map<string, Buffer>> {
-  const dataDir = join(pluginRoot, PLUGIN_DATA_DIR_NAME);
   const out = new Map<string, Buffer>();
   async function walk(dir: string): Promise<void> {
     let entries;
@@ -1035,9 +1055,10 @@ export async function readPluginDataFixture(pluginRoot: string): Promise<Map<str
     for (const entry of entries) {
       const abs = join(dir, entry.name);
       if (entry.isDirectory()) await walk(abs);
-      else out.set(relative(dataDir, abs).split("\\").join("/"), await readFile(abs));
+      else out.set(relative(pluginRoot, abs).split("\\").join("/"), await readFile(abs));
     }
   }
-  await walk(dataDir);
+  await walk(join(pluginRoot, PLUGIN_DATA_DIR_NAME));
+  await walk(join(pluginRoot, PLUGIN_HOST_STORAGE_DIR_NAME));
   return out;
 }

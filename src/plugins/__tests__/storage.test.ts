@@ -1,6 +1,6 @@
 /**
  * Sandboxed PluginStorage — verifies path-traversal guards, ENOENT handling,
- * and JSON helpers stay scoped to pluginDataDir.
+ * and JSON helpers stay scoped to the host-only storage root.
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,10 +30,7 @@ const mockedElectron = vi.hoisted(() => {
 });
 vi.mock("electron", () => ({ safeStorage: mockedElectron.safeStorage }));
 
-import fs from "node:fs";
 import { createPluginStorage } from "../storage.js";
-import { PLUGIN_SOCKET_DISCARD_DIR_NAME } from "../plugin-storage-layout.js";
-import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 import { ensurePluginDataDir } from "../runtime/sandbox.js";
 import { PluginStorageEncryptionUnavailableError } from "../types.js";
 import { cleanupTmpDir, removeLinkOnly } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -150,10 +147,10 @@ describe("createPluginStorage — the data root is never recreated", () => {
     renameSync(dataDir, parked);
     try {
       await expect(s.writeJson("state.json", { sessions: 1 })).rejects.toThrow(
-        /data root is absent/,
+        /storage root is absent/,
       );
-      await expect(s.write("nested/blob.bin", "bytes")).rejects.toThrow(/data root is absent/);
-      await expect(s.mkdir("nested")).rejects.toThrow(/data root is absent/);
+      await expect(s.write("nested/blob.bin", "bytes")).rejects.toThrow(/storage root is absent/);
+      await expect(s.mkdir("nested")).rejects.toThrow(/storage root is absent/);
       expect(existsSync(dataDir)).toBe(false);
     } finally {
       renameSync(parked, dataDir);
@@ -167,7 +164,7 @@ describe("createPluginStorage — the data root is never recreated", () => {
     renameSync(dataDir, parked);
     try {
       await expect(built.writeJson("state.json", { a: 1 })).rejects.toThrow(
-        /data root is absent/,
+        /storage root is absent/,
       );
       // BEFORE construction: `getPluginStorage` resolves rather than ensures,
       // so it hands an absent directory here on purpose. Same classified,
@@ -175,8 +172,8 @@ describe("createPluginStorage — the data root is never recreated", () => {
       const rejections: string[] = [];
       expect(() => createPluginStorage("p", dataDir, mockedElectron.safeStorage, (message) => {
         rejections.push(message);
-      })).toThrow(/data root is absent/);
-      expect(rejections).toEqual(["storage: rejected operation against an absent data root"]);
+      })).toThrow(/storage root is absent/);
+      expect(rejections).toEqual(["storage: rejected operation against an absent storage root"]);
     } finally {
       renameSync(parked, dataDir);
     }
@@ -199,9 +196,10 @@ describe("createPluginStorage — the data root is never recreated", () => {
 
 /**
  * The root's ancestors are trusted host paths and are resolved; the root itself
- * must be the real directory the host created. A confined plugin can write
- * inside its root, and a handle is built per request, so a root the plugin
- * replaced with a link must not become the canonical root of the next handle.
+ * must be the real directory the host created. No confined child can write the
+ * host-only storage root or the plugin root above it; a handle is built per
+ * request, so as defense in depth a root that became a link must still not
+ * become the canonical root of the next handle.
  */
 describe("createPluginStorage — the data root itself is the host's directory", () => {
   it("refuses a root a plugin replaced with a link after the host created it, and writes nothing outside", () => {
@@ -211,8 +209,8 @@ describe("createPluginStorage — the data root itself is the host's directory",
       const rejections: string[] = [];
       expect(() => createPluginStorage("p", dataDir, mockedElectron.safeStorage, (message) => {
         rejections.push(message);
-      })).toThrow(/\[plugin-storage:p\] plugin data root is a symlink, not the directory the host created/);
-      expect(rejections).toEqual(["storage: rejected a data root that is not the host's directory"]);
+      })).toThrow(/\[plugin-storage:p\] plugin storage root is a symlink, not the directory the host created/);
+      expect(rejections).toEqual(["storage: rejected a storage root that is not the host's directory"]);
       expect(readdirSync(outsideDir)).toEqual([]);
     } finally {
       // The link goes on its own, before the recursive teardown can reach it:
@@ -226,7 +224,7 @@ describe("createPluginStorage — the data root itself is the host's directory",
     symlinkSync(join(outsideDir, "absent"), dataDir, dirLinkType);
     try {
       expect(() => createPluginStorage("p", dataDir, mockedElectron.safeStorage))
-        .toThrow(/plugin data root is a symlink/);
+        .toThrow(/plugin storage root is a symlink/);
       expect(existsSync(join(outsideDir, "absent"))).toBe(false);
     } finally {
       removeLinkOnly(dataDir);
@@ -252,6 +250,7 @@ describe("createPluginStorage — the data root itself is the host's directory",
     expect(ensurePluginDataDir("fresh", join(pluginsRoot, "fresh", "current"), pluginsRoot))
       .toBe(join(pluginsRoot, "fresh", "data"));
     expect(existsSync(join(pluginsRoot, "fresh", "data"))).toBe(true);
+    expect(statSync(join(pluginsRoot, "fresh", "storage")).isDirectory()).toBe(true);
     mkdirSync(join(pluginsRoot, "taken"), { recursive: true });
     symlinkSync(outsideDir, join(pluginsRoot, "taken", "data"), dirLinkType);
     try {
@@ -260,6 +259,37 @@ describe("createPluginStorage — the data root itself is the host's directory",
       expect(readdirSync(outsideDir)).toEqual([]);
     } finally {
       removeLinkOnly(join(pluginsRoot, "taken", "data"));
+    }
+  });
+});
+
+describe("ensurePluginDataDir — the host-only storage root", () => {
+  it("creates the storage root beside an existing but empty data root", () => {
+    const pluginsRoot = join(dataDir, "plugins");
+    mkdirSync(join(pluginsRoot, "empty", "data"), { recursive: true });
+    ensurePluginDataDir("empty", join(pluginsRoot, "empty", "current"), pluginsRoot);
+    expect(statSync(join(pluginsRoot, "empty", "storage")).isDirectory()).toBe(true);
+  });
+
+  it("refuses to invent an empty storage root while data/ holds state the migration has not copied", () => {
+    const pluginsRoot = join(dataDir, "plugins");
+    mkdirSync(join(pluginsRoot, "legacy", "data"), { recursive: true });
+    writeFileSync(join(pluginsRoot, "legacy", "data", "session-snapshot.json"), "{}");
+    expect(() => ensurePluginDataDir("legacy", join(pluginsRoot, "legacy", "current"), pluginsRoot))
+      .toThrow(/storage is missing while .*data holds state; the boot migration creates it/);
+    expect(existsSync(join(pluginsRoot, "legacy", "storage"))).toBe(false);
+  });
+
+  it("refuses a storage root that is a link, and writes nothing through it", () => {
+    const pluginsRoot = join(dataDir, "plugins");
+    mkdirSync(join(pluginsRoot, "linked", "data"), { recursive: true });
+    symlinkSync(outsideDir, join(pluginsRoot, "linked", "storage"), dirLinkType);
+    try {
+      expect(() => ensurePluginDataDir("linked", join(pluginsRoot, "linked", "current"), pluginsRoot))
+        .toThrow(/is a symlink, not the directory the host created/);
+      expect(readdirSync(outsideDir)).toEqual([]);
+    } finally {
+      removeLinkOnly(join(pluginsRoot, "linked", "storage"));
     }
   });
 });
@@ -288,26 +318,28 @@ describe("createPluginStorage I/O", () => {
   });
 
   it("rm removes files; recursive removes trees; missing is no-op", async () => {
-    // A recursive rm discards beside the data directory, in the plugin root.
-    const pluginData = join(dataDir, "p", "data");
-    mkdirSync(pluginData, { recursive: true });
-    const s = createPluginStorage("p", pluginData, mockedElectron.safeStorage);
+    const s = createPluginStorage("p", dataDir, mockedElectron.safeStorage);
     await s.write("a/b/c.txt", "x");
     await s.write("f.txt", "x");
     await s.rm("a", { recursive: true });
     await s.rm("f.txt");
     expect(await s.exists("a")).toBe(false);
     expect(await s.exists("f.txt")).toBe(false);
-    expect(existsSync(join(dataDir, "p", PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
     await expect(s.rm("missing")).resolves.toBeUndefined();
     await expect(s.rm("missing", { recursive: true })).resolves.toBeUndefined();
   });
 
-  it("refuses a recursive rm when the data directory has no plugin root beside it", async () => {
+  it("a recursive rm removes a link inside the tree without following it", async () => {
+    // No confined child can write the storage root, so a link here could only
+    // come from the host itself; the recursive delete still unlinks it rather
+    // than emptying what it points at.
+    writeFileSync(join(outsideDir, "keep"), "keep");
     const s = createPluginStorage("p", dataDir, mockedElectron.safeStorage);
     await s.write("a/c.txt", "x");
-    await expect(s.rm("a", { recursive: true })).rejects.toThrow(/is not a plugin data directory/);
-    expect(await s.exists("a/c.txt")).toBe(true);
+    symlinkSync(outsideDir, join(dataDir, "a", "link"), dirLinkType);
+    await s.rm("a", { recursive: true });
+    expect(existsSync(join(dataDir, "a"))).toBe(false);
+    expect(readdirSync(outsideDir)).toEqual(["keep"]);
   });
 
   it("list returns empty array for missing dir", async () => {
@@ -430,50 +462,5 @@ describe("createPluginStorage encrypted-at-rest variants", () => {
       /symlink escapes plugin storage root/,
     );
     expect(readFileSync(join(outsideDir, "loot.txt"), "utf-8")).toBe("untouched");
-  });
-});
-
-// The plugin can write anywhere in its data directory, including while the
-// host deletes inside it on its behalf. A recursive delete that descends
-// there can be redirected: the plugin swaps a subdirectory for a link to an
-// outside directory between the walk's lstat and its readdir.
-describe("storage.rm recursive while the plugin races it", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-    _resetConfinedProcessPhaseForTests();
-  });
-
-  it.runIf(process.platform !== "win32")("never descends where the plugin can swap a link in", async () => {
-    const root = realpathSync(dataDir);
-    const pluginData = join(root, "acme", "data");
-    mkdirSync(pluginData, { recursive: true });
-    const outside = join(realpathSync(outsideDir), "victim");
-    mkdirSync(outside);
-    writeFileSync(join(outside, "keep"), "keep");
-    const s = createPluginStorage("acme", pluginData, mockedElectron.safeStorage);
-    await s.write("a/b/c.txt", "x");
-    const swapAt = join(pluginData, "a", "b");
-    let swapped = false;
-    const readdir = fs.readdir;
-    vi.spyOn(fs, "readdir").mockImplementation(((path: fs.PathLike, ...rest: unknown[]) => {
-      if (!swapped && String(path) === swapAt) {
-        swapped = true;
-        renameSync(swapAt, `${swapAt}-moved`);
-        symlinkSync(outside, swapAt, "dir");
-      }
-      return (readdir as (...args: unknown[]) => void)(path, ...rest);
-    }) as typeof fs.readdir);
-    noteConfinedProcessesMayRun();
-
-    const outcome = await s.rm("a", { recursive: true }).then(() => "removed", (error: unknown) => error);
-
-    // Checked first: a delete that followed the link has already removed this
-    // by the time it fails on the link itself.
-    expect(readdirSync(outside)).toEqual(["keep"]);
-    expect(outcome).toBe("removed");
-    expect(existsSync(join(pluginData, "a"))).toBe(false);
-    const discarded = readdirSync(join(root, "acme", PLUGIN_SOCKET_DISCARD_DIR_NAME));
-    expect(discarded).toHaveLength(1);
-    expect(discarded[0]).toMatch(/-a$/);
   });
 });

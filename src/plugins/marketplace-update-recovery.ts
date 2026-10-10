@@ -23,7 +23,7 @@ import {
   type PluginDataCarryPolicy,
   assertPayloadOnlyPluginTree,
   type PluginSocketCarryPolicy,
-  carryPluginDataDir,
+  carryPluginStateDirs,
   carryPluginSocketDirs,
   pluginPayloadCopyFilter,
 } from "./plugin-storage-layout.js";
@@ -76,13 +76,14 @@ function ownedManifestPath(paths: PluginPaths, pluginId: string): string {
  * `pendingUpdate` or reporting "unresolved" for a LATER boot to retry, and a
  * throw out of a carry is neither: the row stays pending, the plugin stays
  * unloadable, and the next boot arrives at the identical state and throws
- * again. So a conflicting data directory is resolved here rather than
- * reported — see {@link PluginDataCarryPolicy} for the rules.
+ * again. So a conflicting state directory (`data/` or `storage/`) is resolved
+ * here rather than reported — see {@link PluginDataCarryPolicy} for the rules.
  *
  * `unattributedRoot` is the live install directory because that is the only
- * path a stray write can reach: `getPluginStorage` and every `hostApi.storage`
- * handle resolve `<pluginsRoot>/<id>/data`, and no recovery backup path is ever
- * a storage target. So when a carry finds state on both sides, the backup's is
+ * path a stray write can reach: a confined child writes
+ * `<pluginsRoot>/<id>/data`, `getPluginStorage` and every `hostApi.storage`
+ * handle resolve the host-only `<pluginsRoot>/<id>/storage` beside it, and no
+ * recovery backup path is ever either. So when a carry finds state on both sides, the backup's is
  * the one a transaction deliberately put there and the live one is the stray.
  *
  * `moveAside` PARKS. It does not use `tombstoneAndDeferredRemove`, which reads
@@ -137,7 +138,7 @@ async function discardOwnedPluginRoot(
   rootDir: string,
 ): Promise<void> {
   await retryOnTransientFsLock(
-    () => carryPluginDataDir(rootDir, ownedInstallDir(paths, pluginId), recoveryDataCarry(paths, pluginId)),
+    () => carryPluginStateDirs(rootDir, ownedInstallDir(paths, pluginId), recoveryDataCarry(paths, pluginId)),
   );
   // Socket directories too, for the same "which root holds them depends on how
   // far the transaction got" reason: a local install parks the live
@@ -335,7 +336,7 @@ export async function recoverPendingPluginUpdate(
   // The promoted root is discarded. A crash after the replacement carried the
   // plugin's data directory into it leaves the state there; it goes back into
   // the backup that becomes the live root before anything is removed.
-  await retryOnTransientFsLock(() => carryPluginDataDir(installDir, backupDir, recoveryDataCarry(paths, pluginId)));
+  await retryOnTransientFsLock(() => carryPluginStateDirs(installDir, backupDir, recoveryDataCarry(paths, pluginId)));
   // An interrupted merge may leave the original directory in the backup.
   // Finish that direction first, so reversing the carry cannot replace its
   // inode with the temporary directory created at the promoted root.
@@ -365,7 +366,7 @@ export async function recoverPendingPluginUpdate(
         .catch(() => undefined);
       throw error;
     }
-    await retryOnTransientFsLock(() => carryPluginDataDir(backupDir, installDir, recoveryDataCarry(paths, pluginId)));
+    await retryOnTransientFsLock(() => carryPluginStateDirs(backupDir, installDir, recoveryDataCarry(paths, pluginId)));
     await carryPluginSocketDirs(backupDir, installDir, RECOVERY_SOCKET_CARRY);
   }
   if (pending.previousReceiptRaw === null) return "unresolved";

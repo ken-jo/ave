@@ -146,7 +146,7 @@ import { createHash } from "node:crypto";
 import { _resetConfinedProcessPhaseForTests, confinedProcessesMayBeRunning } from "../../../lib/confined-process-phase.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
-import { agentPluginsDocument } from "../../../plugins/__tests__/test-helpers.js";
+import { agentPluginsDocument, pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
 import type { PluginHostApi, PluginManifest } from "../../../plugins/types.js";
 
 /**
@@ -698,7 +698,7 @@ describe("initPluginRuntime HostApi factory", () => {
       createHostApi!,
       pluginId,
       manifest,
-      tmpDirs.track(mkdtempSync("/tmp/ave-hostfetch-data-")),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostfetch-data-"))),
     );
     return { api, networkFetch, bootAuditLogger };
   }
@@ -916,7 +916,7 @@ describe("initPluginRuntime HostApi factory", () => {
       | undefined;
     expect(createHostApi).toBeDefined();
 
-    const pluginDataDir = tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"));
+    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")));
     const api = invokeHostApiFactory(
       createHostApi!,
       "plugin-a",
@@ -1024,7 +1024,7 @@ describe("initPluginRuntime HostApi factory", () => {
       | undefined;
     expect(createHostApi).toBeDefined();
 
-    const pluginDataDir = tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"));
+    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")));
     const api = invokeHostApiFactory(
       createHostApi!,
       "plugin-a",
@@ -1113,7 +1113,7 @@ describe("initPluginRuntime HostApi factory", () => {
       | undefined;
     expect(createHostApi).toBeDefined();
 
-    const pluginDataDir = tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"));
+    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")));
     const api = invokeHostApiFactory(
       createHostApi!,
       "caller-plugin",
@@ -1184,7 +1184,7 @@ describe("initPluginRuntime HostApi factory", () => {
       createHostApi!,
       "evil-plugin",
       { id: "lyra-mail", config: {} },
-      tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"))),
     );
     expect(evilApi).not.toHaveProperty("callTool");
     expect(evilApi).toHaveProperty("emitEvent");
@@ -1281,7 +1281,7 @@ describe("initPluginRuntime HostApi factory", () => {
       | undefined;
     expect(createHostApi).toBeDefined();
 
-    const pluginDataDir = tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"));
+    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")));
     // The plugin allowlists BOTH vendors; without B6 it could read both.
     const api = invokeHostApiFactory(createHostApi!, "meeting", b6Manifest, pluginDataDir);
 
@@ -1406,7 +1406,7 @@ describe("initPluginRuntime HostApi factory", () => {
       createHostApi!,
       "plugin-marketplace-secret",
       manifest,
-      tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"))),
     );
 
     // Allowlisted and even active, but no grant names the preset family
@@ -1518,7 +1518,7 @@ describe("initPluginRuntime HostApi factory", () => {
       createHostApi!,
       "plugin-generic-compatible-secret",
       manifest,
-      tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"))),
     );
 
     expect(await api.getSecret(genericKey)).toBeNull();
@@ -1593,7 +1593,7 @@ describe("initPluginRuntime HostApi factory", () => {
       | undefined;
     expect(createHostApi).toBeDefined();
 
-    const pluginDataDir = tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"));
+    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")));
     const api = invokeHostApiFactory(
       createHostApi!,
       "plugin-b7",
@@ -1679,7 +1679,7 @@ describe("initPluginRuntime HostApi factory", () => {
       | undefined;
     expect(createHostApi).toBeDefined();
 
-    const pluginDataDir = tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"));
+    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")));
     const api = invokeHostApiFactory(
       createHostApi!,
       "plugin-q",
@@ -1795,7 +1795,7 @@ describe("initPluginRuntime HostApi factory", () => {
       createHostApi!,
       "meeting",
       manifest,
-      tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"))),
     );
     const lease = await api.resolveApiKey({ purpose: "llm", vendor: "openai" });
     expect(lease).toMatchObject({ ok: true, exposure: "lease" });
@@ -1875,7 +1875,7 @@ describe("hostApi.hasRoutineBySource — prefix-scoped idempotency probe", () =>
       createHostApi!,
       pluginId,
       { id: pluginId, config: {}, capabilities: [] },
-      tmpDirs.track(mkdtempSync("/tmp/ave-hasroutine-")),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hasroutine-"))),
     );
   }
 

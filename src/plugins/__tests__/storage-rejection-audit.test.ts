@@ -9,8 +9,11 @@
  * produced by the storage sink or it does not exist at all.
  *
  * The producer here is the real `PluginRuntime`: a real registry is loaded, the
- * real `ensureDataDir` picks the data root, and the refusal is triggered by a
- * real reparse point on disk — no trigger field is set by hand. The relative
+ * real `ensureDataDir` lays out the data root and the host-only storage root
+ * beside it, and the refusal is triggered by a real reparse point on disk — no
+ * trigger field is set by hand. A confined child cannot write the storage
+ * root, so the link is planted here the way only a host-side corruption could;
+ * the containment checks stay as defense in depth and must still be audited. The relative
  * path used is the exact string the IPC handler builds
  * (`ui-storage/<sanitized-key>.json`), which is the only shape a webview can
  * reach: `sanitizeStorageKey` restricts the key to `[A-Za-z0-9._-]+`, so the
@@ -67,42 +70,43 @@ describe("PluginRuntime.getPluginStorage — containment refusals are audited", 
     await rm(outsideDir, { recursive: true, force: true });
   });
 
-  /** The data root `ensurePluginDataDir` resolves for this plugin. */
-  function pluginDataDir(): string {
-    const dir = join(fixture.pluginsRoot, PLUGIN_ID, "data");
+  /** The host-only storage root `ensurePluginDataDir` lays out for this plugin. */
+  function pluginHostStorageDir(): string {
+    const dir = join(fixture.pluginsRoot, PLUGIN_ID, "storage");
     mkdirSync(dir, { recursive: true });
     return dir;
   }
 
   /**
    * `getPluginStorage` runs once per webview storage IPC call. It used to
-   * ENSURE the data directory, which put a `mkdir` on a per-request path — and
+   * ENSURE the data directory (now the storage root beside it), which put a `mkdir` on a per-request path — and
    * an install swap has the plugin root renamed aside for the length of two
-   * renames. A request landing in that window recreated an empty `data/` at the
-   * promoted root, and the carry that completes the swap then found two
+   * renames. A request landing in that window recreated an empty state
+   * directory at the promoted root, and the carry that completes the swap then found two
    * candidates for one state and refused: the install wedged, and in recovery
    * `pendingUpdate` never cleared. The directory is created at LOAD; this path
    * only resolves it.
    */
-  it("does not create the data directory on a per-request basis", async () => {
+  it("does not create the storage root on a per-request basis", async () => {
     const runtime = makeTestPluginRuntimeWithAudit(fixture, auditEntries);
     await runtime.load();
     expect(runtime.listPluginIds()).toContain(PLUGIN_ID);
 
     // Exactly the state the swap leaves behind: the plugin root is there, its
-    // data directory is mid-move.
-    const dataDir = join(fixture.pluginsRoot, PLUGIN_ID, "data");
-    await rm(dataDir, { recursive: true, force: true });
+    // storage root is mid-move.
+    const storageDir = join(fixture.pluginsRoot, PLUGIN_ID, "storage");
+    expect(existsSync(storageDir)).toBe(true);
+    await rm(storageDir, { recursive: true, force: true });
 
-    expect(() => runtime.getPluginStorage(PLUGIN_ID)).toThrow(/data root is absent/);
-    expect(existsSync(dataDir)).toBe(false);
+    expect(() => runtime.getPluginStorage(PLUGIN_ID)).toThrow(/storage root is absent/);
+    expect(existsSync(storageDir)).toBe(false);
   });
 
   it("emits plugin_storage_path_rejected when a webview read escapes via a planted symlink", async () => {
     // A real escape target with real content outside the sandbox root.
     writeFileSync(join(outsideDir, "tokens.json"), '{"stolen":true}', "utf-8");
     // The plugin plants `ui-storage` as a link to somewhere outside its root.
-    symlinkSync(outsideDir, join(pluginDataDir(), "ui-storage"), dirLinkType);
+    symlinkSync(outsideDir, join(pluginHostStorageDir(), "ui-storage"), dirLinkType);
 
     const runtime = makeTestPluginRuntimeWithAudit(fixture, auditEntries);
     await runtime.load();
@@ -134,7 +138,7 @@ describe("PluginRuntime.getPluginStorage — containment refusals are audited", 
   });
 
   it("emits plugin_storage_path_rejected when a webview write escapes via a planted symlink", async () => {
-    symlinkSync(outsideDir, join(pluginDataDir(), "ui-storage"), dirLinkType);
+    symlinkSync(outsideDir, join(pluginHostStorageDir(), "ui-storage"), dirLinkType);
 
     const runtime = makeTestPluginRuntimeWithAudit(fixture, auditEntries);
     await runtime.load();
@@ -158,6 +162,9 @@ describe("PluginRuntime.getPluginStorage — containment refusals are audited", 
     await expect(storage!.readJson("ui-storage/prefs.json")).resolves.toEqual({
       theme: "dark",
     });
+    // The webview bridge's storage lives in the host-only root, not in data/.
+    expect(existsSync(join(fixture.pluginsRoot, PLUGIN_ID, "storage", "ui-storage", "prefs.json"))).toBe(true);
+    expect(existsSync(join(fixture.pluginsRoot, PLUGIN_ID, "data", "ui-storage"))).toBe(false);
 
     expect(
       auditEntries.filter((e) => e.message === "plugin_storage_path_rejected"),

@@ -16,21 +16,57 @@
  * Shared by receipt verification, permissions and runtime-directory mutations
  * so their paths and host-side serialization agree.
  */
-import { link, lstat, mkdir, readdir, rename, rmdir, unlink } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { link, lstat, mkdir, open, readdir, readlink, realpath, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, resolve } from "node:path";
 import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
+import { errorMessage } from "../shared/error-message.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { aveHome } from "../shared/ave-home.js";
 import { assertNoConfinedProcessMayRun, confinedProcessesMayBeRunning } from "../lib/confined-process-phase.js";
 import { removeOwnedPluginTree } from "./installed-entry-fs.js";
-import { PluginDataRootError, resolvePluginDataRoot } from "./plugin-storage-containment.js";
+import { FRAME_BYTES_MAX } from "./isolation/host-api-wire.js";
+import { PluginDataRootError, isPathWithin, resolvePluginDataRoot } from "./plugin-storage-containment.js";
 
 /**
  * Directory under a plugin root holding the plugin's own writable runtime
  * state. Created by `ensurePluginDataDir` (plugins/runtime/sandbox.ts).
  */
 export const PLUGIN_DATA_DIR_NAME = "data";
+
+/**
+ * Directory under a plugin root holding what the plugin stores through the
+ * HostApi `storage` surface: `~/.ave/plugins/<pluginId>/storage`, beside
+ * `data/`.
+ *
+ * HOST-ONLY. No confined child's envelope names it for writing (the base
+ * envelope writes `data/` and `sockets/` only, and a user-chosen directory
+ * under the plugins root is refused), so the plugin cannot create, replace or
+ * re-point anything in it. That is the point: every `storage` operation is a
+ * host-privileged filesystem call on a path the plugin names, and when that
+ * path lay inside `data/` the plugin could swap a parent directory for a link
+ * between the host's containment check and its syscall and turn the host's
+ * read, write or delete onto any file the host can reach. Here no component of
+ * the path is the plugin's to change.
+ *
+ * It is the plugin's STATE, like `data/`: outside the install receipt, never
+ * shipped in a payload, and carried into a promoted root with `data/` by
+ * {@link carryPluginStateDirs}. Created with `data/` by `ensurePluginDataDir`
+ * for a plugin with no state yet, and by {@link migratePluginHostStorage} at
+ * boot for state written when `storage` still resolved into `data/`.
+ */
+export const PLUGIN_HOST_STORAGE_DIR_NAME = "storage";
+
+/**
+ * HOST-ONLY staging directory {@link migratePluginHostStorage} builds a
+ * plugin's first `storage/` in, renamed into place when complete. One left by
+ * an interrupted migration is removed and rebuilt by the next boot.
+ */
+export const PLUGIN_HOST_STORAGE_MIGRATION_DIR_NAME = ".storage-migrating";
+
+/** The plugin's state directories, carried together between roots. */
+const PLUGIN_STATE_DIR_NAMES: readonly string[] = [PLUGIN_DATA_DIR_NAME, PLUGIN_HOST_STORAGE_DIR_NAME];
 
 /**
  * Directory under a plugin root holding HOST-allocated worker control sockets
@@ -60,15 +96,11 @@ export const PLUGIN_OWN_SOCKET_DIR_NAME = "sockets";
 export const PLUGIN_SOCKET_CARRY_DIR_NAME = ".sockets-carry";
 
 /**
- * HOST-ONLY directory under a plugin root where the host deletes an entry of a
- * child-writable directory: a `sockets/` entry or worker leaf the socket carry
- * ({@link carryPluginSocketDirs}) discards, and a directory the plugin asks
- * `storage.rm` to remove recursively ({@link discardPluginDataTree}). The name
- * comes from its first user and stays: it is on disk. A recursive delete
- * inside a child-writable directory races the child, which can swap a
- * subdirectory for a link to an outside directory between rm's lstat and its
- * descent. So an entry is renamed in here (rename never follows) and deleted
- * only here.
+ * HOST-ONLY directory under a plugin root where {@link carryPluginSocketDirs}
+ * deletes an entry. A recursive delete inside `sockets/` or a worker leaf —
+ * both writable by a child — races the child, which can swap a subdirectory
+ * for a link to an outside directory between rm's lstat and its descent. So
+ * an entry is renamed in here (rename never follows) and deleted only here.
  *
  * Deleted only before confined processes may run (lib/confined-process-phase.ts):
  * a discarded worker leaf, or a directory a child made in `sockets/`, can still
@@ -98,6 +130,10 @@ export const PLUGIN_SOCKET_DISCARD_DIR_NAME = ".sockets-discard";
  *    holds index databases, migration markers and workspaces the plugin
  *    legitimately mutates while it runs, so scanning it would fail the receipt
  *    the moment the plugin does anything.
+ *  - `storage/` — what the plugin stores through the HostApi `storage`
+ *    surface, written by the host on its behalf
+ *    ({@link PLUGIN_HOST_STORAGE_DIR_NAME}); state for the same reason, and
+ *    `.storage-migrating/`, the boot migration's staging directory for it.
  *  - `run/` — HOST-allocated worker control sockets
  *    (`run/<workerId>/control.sock`, permissions/worker-spawn.ts). A worker
  *    that dies without cleanup leaves the socket behind; without this
@@ -129,6 +165,8 @@ export const PLUGIN_SOCKET_DISCARD_DIR_NAME = ".sockets-discard";
  */
 export const PLUGIN_RUNTIME_DIR_NAMES: ReadonlySet<string> = new Set([
   PLUGIN_DATA_DIR_NAME,
+  PLUGIN_HOST_STORAGE_DIR_NAME,
+  PLUGIN_HOST_STORAGE_MIGRATION_DIR_NAME,
   PLUGIN_WORKER_RUN_DIR_NAME,
   PLUGIN_OWN_SOCKET_DIR_NAME,
   PLUGIN_SOCKET_CARRY_DIR_NAME,
@@ -230,7 +268,8 @@ export function resolveOwnerPluginSandboxRoot(pluginId: string): string | undefi
 }
 
 /**
- * Move a plugin root's own writable state (`data/`) from one root to another.
+ * Move a plugin root's state (`data/` and the host-only `storage/`) from one
+ * root to another.
  *
  * WHY THIS EXISTS. Install and recovery replace a plugin ROOT as a unit — the
  * live directory is renamed aside, a freshly extracted payload is promoted in
@@ -248,34 +287,54 @@ export function resolveOwnerPluginSandboxRoot(pluginId: string): string | undefi
  * same volume: no bytes are copied, and at every instant the directory is
  * wholly at `fromRoot` or wholly at `toRoot`, never split between them.
  *
+ * The two state directories travel under one policy and are each moved by
+ * their own rename. Under `reject` both are checked before either moves, so a
+ * refused carry leaves both where they were.
+ *
  * Returns whether a directory moved. `fromRoot` holding none is an ordinary
  * outcome (a plugin that never wrote state, or a root whose state already
  * moved on). `toRoot` already holding one is a CONFLICT, and what to do about
  * it is the caller's to say — see {@link PluginDataCarryPolicy}.
  */
-export async function carryPluginDataDir(
+export async function carryPluginStateDirs(
   fromRoot: string,
   toRoot: string,
   policy: PluginDataCarryPolicy,
 ): Promise<boolean> {
-  const source = resolve(fromRoot, PLUGIN_DATA_DIR_NAME);
-  const target = resolve(toRoot, PLUGIN_DATA_DIR_NAME);
-  if (!await pathExists(source)) return false;
-  if (await pathExists(target)) {
-    if (policy.onConflict === "reject") {
-      throw new Error(
-        `[plugin-storage-layout] both roots hold a plugin data directory; refusing to `
-          + `replace ${target} with ${source}`,
-      );
+  if (policy.onConflict === "reject") {
+    for (const name of PLUGIN_STATE_DIR_NAMES) {
+      const source = resolve(fromRoot, name);
+      const target = resolve(toRoot, name);
+      if (await pathExists(source) && await pathExists(target)) {
+        throw new Error(
+          `[plugin-storage-layout] both roots hold a plugin ${stateDirLabel(name)} directory; refusing to `
+            + `replace ${target} with ${source}`,
+        );
+      }
     }
-    if (!await clearCarryDestination(source, target, fromRoot, toRoot, policy)) return false;
   }
-  await rename(source, target);
-  return true;
+  let moved = false;
+  for (const name of PLUGIN_STATE_DIR_NAMES) {
+    const source = resolve(fromRoot, name);
+    const target = resolve(toRoot, name);
+    if (!await pathExists(source)) continue;
+    if (await pathExists(target)) {
+      // `reject` was refused above, before anything moved.
+      if (policy.onConflict === "reject") throw new Error(`[plugin-storage-layout] ${target} appeared during the carry`);
+      if (!await clearCarryDestination(source, target, fromRoot, toRoot, policy)) continue;
+    }
+    await rename(source, target);
+    moved = true;
+  }
+  return moved;
+}
+
+function stateDirLabel(name: string): string {
+  return name === PLUGIN_DATA_DIR_NAME ? "data" : "host storage";
 }
 
 /**
- * What {@link carryPluginDataDir} does when the destination root already holds
+ * What {@link carryPluginStateDirs} does when the destination root already holds
  * a data directory. There is no default: the two callers need opposite
  * answers, and the wrong one is silent in both directions.
  *
@@ -374,7 +433,7 @@ async function isEmptyDirectory(path: string): Promise<boolean> {
 /**
  * The runtime directories that hold Unix-domain sockets rather than state:
  * `run/` (host-allocated worker control sockets) and `sockets/` (sockets the
- * plugin binds itself). {@link PLUGIN_RUNTIME_DIR_NAMES} minus `data/` and
+ * plugin binds itself). {@link PLUGIN_RUNTIME_DIR_NAMES} minus the state directories and
  * the carry's own staging and discard directories.
  */
 const PLUGIN_SOCKET_DIR_NAMES: readonly string[] = [
@@ -399,7 +458,7 @@ function pluginRuntimeDirKey(pluginRoot: string): string {
 
 /**
  * Move a plugin root's socket directories (`run/`, `sockets/`) from one root
- * to another, next to the {@link carryPluginDataDir} the same swap performs.
+ * to another, next to the {@link carryPluginStateDirs} the same swap performs.
  *
  * WHY A ROOT SWAP MUST TAKE THEM ALONG. A staged install activates its
  * candidate BEFORE the durable commit: the child is spawned, and the spawn
@@ -666,24 +725,6 @@ async function emptyDiscardDirectory(root: string): Promise<void> {
 }
 
 /**
- * Remove `path`, inside the plugin data directory `dataDir`, recursively on
- * the plugin's behalf, without racing the plugin: it is renamed (never
- * followed) into the plugin root's host-only discard directory, and deleted
- * there now or, once confined processes may run, by the next boot
- * ({@link PLUGIN_SOCKET_DISCARD_DIR_NAME}). The plugin root is the data
- * directory's parent, as `resolvePluginDataDir` lays it out; a data directory
- * named anything else is a caller bug and refused. An absent `path` is
- * nothing to remove.
- */
-export async function discardPluginDataTree(dataDir: string, path: string): Promise<void> {
-  if (basename(dataDir) !== PLUGIN_DATA_DIR_NAME) {
-    throw new Error(`[plugin-storage-layout] ${dataDir} is not a plugin data directory; refusing to discard ${path} beside it`);
-  }
-  const root = dirname(dataDir);
-  await withPluginRuntimeDirQueue(root, () => discardRuntimeEntry(root, path));
-}
-
-/**
  * Boot: empty the socket discard directory of every plugin root directly
  * under `pluginsRoot`, which is where a live root lives while a runtime carry
  * discards into it. Any other root holding one (a stage, a backup) is
@@ -832,7 +873,7 @@ async function assertSocketDirectory(path: string): Promise<boolean> {
  * `cp` filter that copies a plugin root's payload and leaves its RUNTIME
  * directories behind ({@link PLUGIN_RUNTIME_DIR_NAMES}).
  *
- * `data/` is excluded because state is carried by {@link carryPluginDataDir} —
+ * `data/` is excluded because state is carried by {@link carryPluginStateDirs} —
  * one rename, never a copy — so a root copy that included it would create the
  * second candidate the carry has to reconcile. `run/` and `sockets/` are
  * excluded because they hold live Unix-domain sockets, and `cp` over a socket
@@ -895,6 +936,300 @@ export function resolvePluginSocketDir(pluginDataDir: string): string {
   // data directory it is supposed to sit beside would be granted in one place
   // and created in another — a silent inequality, not a crash.
   return resolve(dirname(pluginDataDir), PLUGIN_OWN_SOCKET_DIR_NAME);
+}
+
+/**
+ * The directory the HostApi `storage` surface operates in for the plugin whose
+ * data directory is `pluginDataDir`: `<plugin root>/storage`, beside `data/`
+ * ({@link PLUGIN_HOST_STORAGE_DIR_NAME}). Derived from the data directory for
+ * the same reason the socket directory is.
+ */
+export function resolvePluginHostStorageDir(pluginDataDir: string): string {
+  return resolve(dirname(pluginDataDir), PLUGIN_HOST_STORAGE_DIR_NAME);
+}
+
+/**
+ * The write grants in `writePaths` that would reach the host-only storage
+ * directory of the plugin whose data directory is `pluginDataDir`: the
+ * directory itself, anything inside it, or any ancestor of it — a grant on the
+ * plugin root or above covers it, and on Windows an inheriting ACL grant does
+ * exactly that. Every confined spawn that grants writing on a plugin's behalf
+ * must find this empty: the storage surface's guarantee that the host's
+ * syscall lands where its check looked rests on no child being able to create
+ * or re-point any component of a path there.
+ *
+ * Compared case-insensitively on Windows, where `C:\Plugins` and
+ * `c:\plugins` name the same directory.
+ */
+export function writeGrantsReachingHostStorage(pluginDataDir: string, writePaths: readonly string[]): string[] {
+  const fold = (path: string): string => (process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path));
+  const storage = fold(resolvePluginHostStorageDir(pluginDataDir));
+  return writePaths.filter((path) => {
+    const grant = fold(path);
+    return isPathWithin(grant, storage) || isPathWithin(storage, grant);
+  });
+}
+
+/**
+ * The largest file {@link migratePluginHostStorage} copies. A storage value
+ * reaches the host inside one HostApi frame — every plugin runs out of
+ * process, and `storage.write*` carries its value in the call — so a larger
+ * file was not written through `storage` and could not be read back through
+ * it either.
+ */
+const MIGRATED_STORAGE_FILE_BYTES_MAX = FRAME_BYTES_MAX;
+
+/** What a boot's host-storage migration did. */
+export interface PluginHostStorageMigration {
+  /** Plugin roots that gained `storage/` this boot. */
+  readonly migrated: readonly string[];
+  /** Entries of `data/` left uncopied, and why. */
+  readonly skipped: ReadonlyArray<{ readonly path: string; readonly reason: string }>;
+  /** Plugin roots whose migration failed; each is retried next boot. */
+  readonly failed: ReadonlyArray<{ readonly root: string; readonly error: string }>;
+}
+
+/**
+ * Boot, once per plugin root: give a root whose state predates
+ * {@link PLUGIN_HOST_STORAGE_DIR_NAME} its `storage/`, holding what `storage`
+ * wrote while it still resolved into `data/`.
+ *
+ * WHAT IS COPIED. A file in `data/` written through `storage` cannot be told
+ * apart from one the plugin wrote itself, and the plugin's own code addresses
+ * both by the same relative names. So the storage view is rebuilt as it was:
+ * `data/` is COPIED, as regular files and directories, into the new
+ * `storage/`, and `data/` is left exactly as it is — the plugin's own reads
+ * and writes there keep working, and nothing it holds is lost. Not copied, each
+ * reported in `skipped`: links (never followed), sockets and other special
+ * files, hard-linked files (a second name for an inode the plugin may not own),
+ * and files larger than any storage value can be
+ * ({@link MIGRATED_STORAGE_FILE_BYTES_MAX}). That last rule is what keeps a
+ * multi-gigabyte index or recording out of the copy without naming any plugin.
+ * Copied, not hard-linked: a link would leave the `storage/` name on a file the
+ * child still writes through its `data/` name, and on Windows the child could
+ * make that file a symlink reparse point and re-point the host's path.
+ *
+ * NEVER FOLLOWS A LINK. Directories are judged by `lstat`, and each file is
+ * opened with `O_NOFOLLOW` (and on macOS `O_NOFOLLOW_ANY`, which refuses a
+ * link in ANY component of the canonical path) and checked to be the inode
+ * that `lstat` saw before a byte is read — on Linux also confirmed to be the
+ * file at that very path through `/proc/self/fd`, since `O_NOFOLLOW` there
+ * covers the last component only. It runs before any confined process of this
+ * app (asserted), so the plugin is not writing `data/` meanwhile; should a
+ * child of a crashed previous run outlive it, `O_NOFOLLOW_ANY` (macOS) and the
+ * `/proc` check (Linux) still keep a swapped parent from redirecting the copy.
+ * Windows has no such primitive and rests on the boot ordering alone, as the
+ * other boot sweeps of child-writable trees do.
+ *
+ * IDEMPOTENT AND CRASH-SAFE. A root that already has `storage/` is done. The
+ * copy is built in {@link PLUGIN_HOST_STORAGE_MIGRATION_DIR_NAME} and renamed
+ * to `storage/` in one step, so `storage/` is either absent or complete; a
+ * staging directory an interrupted boot left is removed and the copy redone.
+ *
+ * Only roots that hold a `data/` directory are touched: a root without state
+ * has nothing to migrate, and its first load creates both directories.
+ */
+export async function migratePluginHostStorage(pluginsRoot: string): Promise<PluginHostStorageMigration> {
+  if (confinedProcessesMayBeRunning()) {
+    throw new Error(
+      `[plugin-storage-layout] refusing to migrate host storage under ${pluginsRoot}: confined processes may already `
+        + "be running, and one could re-point a path under data/ while it is copied; it runs at boot, before any starts",
+    );
+  }
+  const migrated: string[] = [];
+  const skipped: Array<{ path: string; reason: string }> = [];
+  const failed: Array<{ root: string; error: string }> = [];
+  let canonicalPluginsRoot: string;
+  let names: string[];
+  try {
+    // Canonical, so O_NOFOLLOW_ANY meets no link the host itself put in the
+    // path (macOS `/var` → `/private/var`).
+    canonicalPluginsRoot = await realpath(pluginsRoot);
+    names = await readdir(canonicalPluginsRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { migrated, skipped, failed };
+    throw error;
+  }
+  for (const name of names) {
+    const root = resolve(canonicalPluginsRoot, name);
+    try {
+      if (!(await lstat(root)).isDirectory()) continue;
+      const data = resolve(root, PLUGIN_DATA_DIR_NAME);
+      const dataEntry = await lstatOrUndefined(data);
+      if (dataEntry === undefined) continue;
+      const storage = resolve(root, PLUGIN_HOST_STORAGE_DIR_NAME);
+      const storageEntry = await lstatOrUndefined(storage);
+      if (storageEntry !== undefined) {
+        if (!storageEntry.isDirectory()) {
+          throw new Error(`[plugin-storage-layout] ${storage} is not a directory`);
+        }
+        continue;
+      }
+      await withPluginRuntimeDirQueue(root, async () => {
+        const staging = resolve(root, PLUGIN_HOST_STORAGE_MIGRATION_DIR_NAME);
+        if (await lstatOrUndefined(staging) !== undefined) await removeOwnedPluginTree(staging);
+        await mkdir(staging, { mode: 0o700 });
+        if (dataEntry.isDirectory()) {
+          await copyStorageTree(data, staging, skipped);
+        } else {
+          skipped.push({ path: data, reason: "not a directory; nothing copied" });
+        }
+        await renameDirectory(staging, storage);
+      });
+      migrated.push(root);
+    } catch (error) {
+      failed.push({ root, error: errorMessage(error) });
+    }
+  }
+  return { migrated, skipped, failed };
+}
+
+/** `O_NOFOLLOW_ANY` (macOS 11+, `<sys/fcntl.h>`): no link in any component. */
+const DARWIN_O_NOFOLLOW_ANY = 0x20000000;
+
+function noFollowOpenFlags(): number {
+  if (process.platform === "win32") return 0;
+  // Not both on macOS: `O_NOFOLLOW | O_NOFOLLOW_ANY` fails every open with
+  // EINVAL, and `O_NOFOLLOW_ANY` already covers the last component.
+  return process.platform === "darwin" ? DARWIN_O_NOFOLLOW_ANY : constants.O_NOFOLLOW;
+}
+
+async function copyStorageTree(
+  from: string,
+  to: string,
+  skipped: Array<{ path: string; reason: string }>,
+): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(from);
+  } catch (error) {
+    // An unreadable directory could not have been listed through `storage`
+    // either; failing the root instead would refuse the plugin on every boot.
+    skipped.push({ path: from, reason: unreadableReason(error) });
+    return;
+  }
+  for (const name of names) {
+    const source = resolve(from, name);
+    const target = resolve(to, name);
+    let entry: Stats;
+    try {
+      entry = await lstat(source);
+    } catch (error) {
+      skipped.push({ path: source, reason: unreadableReason(error) });
+      continue;
+    }
+    if (entry.isDirectory()) {
+      if (await intoStaging(target, source, skipped, () => mkdir(target, { mode: 0o700 }).then(() => undefined))) {
+        await copyStorageTree(source, target, skipped);
+      }
+      continue;
+    }
+    const refusal = migratedFileRefusal(entry);
+    if (refusal !== undefined) {
+      skipped.push({ path: source, reason: refusal });
+      continue;
+    }
+    let handle;
+    try {
+      handle = await open(source, constants.O_RDONLY | noFollowOpenFlags());
+    } catch (error) {
+      // A file `storage` could not read is not part of its view: skipped, not
+      // a failed root, or one unreadable file would refuse the plugin forever.
+      skipped.push({
+        path: source,
+        reason: (error as NodeJS.ErrnoException).code === "ELOOP" ? "a link in its path" : unreadableReason(error),
+      });
+      continue;
+    }
+    try {
+      const opened = await handle.stat();
+      const changed = opened.ino !== entry.ino || opened.dev !== entry.dev
+        || !(await openedAtPath(handle.fd, source));
+      const openedRefusal = changed ? "replaced while it was being copied" : migratedFileRefusal(opened);
+      if (openedRefusal !== undefined) {
+        skipped.push({ path: source, reason: openedRefusal });
+        continue;
+      }
+      let bytes: Buffer;
+      try {
+        bytes = await handle.readFile();
+      } catch (error) {
+        skipped.push({ path: source, reason: unreadableReason(error) });
+        continue;
+      }
+      await intoStaging(target, source, skipped, () => writeFile(target, bytes, { mode: 0o600, flag: "wx" }));
+    } finally {
+      await handle.close();
+    }
+  }
+}
+
+/**
+ * Whether the file open as `fd` is the one at `path` — the check `O_NOFOLLOW`
+ * cannot make on Linux, where it covers the last component only and a parent
+ * swapped for a link would carry the open somewhere else. `/proc/self/fd/<fd>`
+ * names the inode actually opened, wherever later renames put the link back.
+ * macOS refuses such a path at the open (`O_NOFOLLOW_ANY`). Windows has
+ * neither; there the migration relies, like every boot-time sweep of a
+ * child-writable tree, on no confined process of this app running yet
+ * (lib/confined-process-phase.ts).
+ */
+async function openedAtPath(fd: number, path: string): Promise<boolean> {
+  if (process.platform !== "linux") return true;
+  return (await readlink(`/proc/self/fd/${fd}`)) === path;
+}
+
+/**
+ * Codes that mean the entry itself cannot be read (or is gone) — the plugin's
+ * doing, not the host's. Anything else (EINVAL, EIO, …) is rethrown: the root
+ * is then recorded as failed and retried next boot rather than silently
+ * migrated without part of its storage.
+ */
+const UNREADABLE_ENTRY_CODES: ReadonlySet<string> = new Set([
+  "EACCES", "EPERM", "ENOENT", "ENOTDIR", "ELOOP", "ENXIO", "ENAMETOOLONG",
+]);
+
+/**
+ * The staging directory's name is longer than `data`, so an entry whose path
+ * fits under `data/` can be too long under it. Such an entry is skipped like
+ * an unreadable one — failing the root would refuse the plugin on every boot.
+ */
+async function intoStaging(
+  target: string,
+  source: string,
+  skipped: Array<{ path: string; reason: string }>,
+  create: () => Promise<void>,
+): Promise<boolean> {
+  try {
+    await create();
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENAMETOOLONG") throw error;
+    skipped.push({ path: source, reason: `too long under storage/: ${target.length} characters` });
+    return false;
+  }
+}
+
+function unreadableReason(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === undefined || !UNREADABLE_ENTRY_CODES.has(code)) throw error;
+  return code === "ENOENT" ? "vanished" : `unreadable: ${code}`;
+}
+
+function migratedFileRefusal(entry: Stats): string | undefined {
+  if (!entry.isFile()) return entry.isSymbolicLink() ? "a link" : "not a regular file";
+  if (entry.nlink !== 1) return "hard-linked";
+  if (entry.size > MIGRATED_STORAGE_FILE_BYTES_MAX) return "larger than any storage value";
+  return undefined;
+}
+
+async function lstatOrUndefined(path: string): Promise<Stats | undefined> {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
 }
 
 /**

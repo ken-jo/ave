@@ -27,7 +27,7 @@ import {
 import {
   PLUGIN_RUNTIME_DIR_NAMES,
   assertPayloadOnlyPluginTree,
-  carryPluginDataDir,
+  carryPluginStateDirs,
   carryPluginSocketDirs,
   pluginPayloadCopyFilter,
 } from "./plugin-storage-layout.js";
@@ -1295,7 +1295,7 @@ export class PluginMarketplaceService {
             // boot recovery knows to reunite it with whichever root survives.
             const dataCarrier = localInstallDataCarrier(rollbackSnapshot);
             await retryOnTransientFsLock(
-              () => carryPluginDataDir(installDir, dataCarrier ?? stagingDir, { onConflict: "reject" }),
+              () => carryPluginStateDirs(installDir, dataCarrier ?? stagingDir, { onConflict: "reject" }),
             );
             // The socket directories the activated candidate (and, on an
             // update, the still-live predecessor) are bound to take the same
@@ -1311,7 +1311,7 @@ export class PluginMarketplaceService {
             await rename(stagingDir, installDir);
             if (dataCarrier) {
               await retryOnTransientFsLock(
-                () => carryPluginDataDir(dataCarrier, installDir, { onConflict: "reject" }),
+                () => carryPluginStateDirs(dataCarrier, installDir, { onConflict: "reject" }),
               );
               await carryPluginSocketDirs(dataCarrier, installDir, { onConflict: "reject" });
             }
@@ -1497,7 +1497,7 @@ export class PluginMarketplaceService {
       // exactly one of the two roots. The promoted root is about to go; the
       // state moves into the backup that is about to come back first.
       await retryOnTransientFsLock(
-        () => carryPluginDataDir(snapshot.installDir, backupDir, { onConflict: "reject" }),
+        () => carryPluginStateDirs(snapshot.installDir, backupDir, { onConflict: "reject" }),
       );
       // The predecessor is still the live generation here, and its sockets
       // are in the root about to be removed.
@@ -1524,7 +1524,7 @@ export class PluginMarketplaceService {
         throw err;
       }
       await retryOnTransientFsLock(
-        () => carryPluginDataDir(backupDir, snapshot.installDir, { onConflict: "reject" }),
+        () => carryPluginStateDirs(backupDir, snapshot.installDir, { onConflict: "reject" }),
       );
       await carryPluginSocketDirs(backupDir, snapshot.installDir, { onConflict: "reject" });
     }

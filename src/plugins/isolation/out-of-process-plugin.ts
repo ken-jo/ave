@@ -59,6 +59,7 @@ import { holdWindowsFilesystemGrant, type HeldWindowsGrant } from "../../permiss
 import {
   resolvePluginSocketDir,
   resolvePluginWorkerRunRoot,
+  writeGrantsReachingHostStorage,
 } from "../plugin-storage-layout.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { terminateChildProcess } from "../../tools/terminate-child-process.js";
@@ -603,6 +604,16 @@ export function derivePluginChildEnvelope(
         + `(config '${grant.configKey}') — ${grant.why}`,
     );
   }
+  // The host-only storage directory beside `pluginDataDir` is in no child's
+  // write envelope (plugin-storage-layout.ts). Nothing above can produce such a
+  // grant today — a chosen directory under the plugins root is refused unless
+  // it is inside the data directory — and this keeps it that way.
+  const reaching = writeGrantsReachingHostStorage(inputs.pluginDataDir, write);
+  if (reaching.length > 0) {
+    throw new Error(
+      `[${inputs.pluginId}] refusing a write grant that reaches the host-only storage directory: ${reaching.join(", ")}`,
+    );
+  }
   return { read: [...new Set(read)], write: [...new Set(write)] };
 }
 
@@ -1008,7 +1019,14 @@ export async function spawnConfinedPluginChild(
     if (process.platform === "win32" && isAsrtSandboxActive()) {
       const allowRead = [...spec.envelope.read, sandboxHome.path];
       const allowWrite = [...spec.envelope.write, sandboxHome.path];
-      const beyond = pluginGrantPathsBeyondOwnRoots(spec.pluginId, [...allowRead, ...allowWrite]);
+      const beyond = [
+        ...pluginGrantPathsBeyondOwnRoots(spec.pluginId, [...allowRead, ...allowWrite]),
+        // An ACL grant inherits: a write grant on the plugin root would cover
+        // the host-only storage directory beside the data directory. The spec
+        // carries `socketDir`, a sibling of `data/`, so the storage directory
+        // derived beside it is the same one.
+        ...writeGrantsReachingHostStorage(spec.socketDir, allowWrite),
+      ];
       if (beyond.length > 0) {
         throw new Error(
           `[out-of-process-plugin] ${spec.pluginId}: refusing a Windows grant beyond the plugin's own roots: `

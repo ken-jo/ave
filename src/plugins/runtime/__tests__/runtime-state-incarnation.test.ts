@@ -4,6 +4,7 @@ import { PluginRuntime, type PluginRuntimeOptions } from "../index.js";
 import { createNoopHostApi } from "../sandbox.js";
 import type { PluginManifest } from "../../types.js";
 import { useTempDirs } from "../../../__tests__/test-helpers.js";
+import { pluginDataDirIn } from "../../__tests__/test-helpers.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 
@@ -15,7 +16,8 @@ type IncarnationCleanup = {
 
 const incarnationCleanups: IncarnationCleanup[] = [];
 
-const makeTempDataDir = useTempDirs("ave-incarnation-data-");
+const makeTempRoot = useTempDirs("ave-incarnation-data-");
+const makeTempDataDir = (): string => pluginDataDirIn(makeTempRoot());
 
 afterEach(async () => {
   for (const incarnation of incarnationCleanups.splice(0)) {

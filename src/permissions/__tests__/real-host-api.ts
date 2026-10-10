@@ -27,6 +27,7 @@ import { WorkBoardStore } from "../../main/work-board-store.js";
 import { AlertsService } from "../../alerts/service.js";
 import type { AlertSettings } from "../../shared/alerts-types.js";
 import type { PluginHostApi } from "../../plugins/types.js";
+import { pluginDataDirIn } from "../../plugins/__tests__/test-helpers.js";
 
 /**
  * The one field this module needs from the caller's `vi.hoisted` harness: the
@@ -159,7 +160,7 @@ export async function buildRealHostApi(
       config: {},
       capabilities: [...KNOWN_CAPABILITIES],
     },
-    pluginDataDir,
+    pluginDataDirIn(pluginDataDir),
     {
       registerDisposer: vi.fn(),
       trackOperation: <T>(operation: Promise<T>) => operation,

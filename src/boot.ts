@@ -45,7 +45,7 @@ import { CHANNELS } from "./contract/app-contract.js";
 import { resolve } from "node:path";
 import { sweepOrphanUninstallDirs } from "./plugins/orphan-uninstall-sweeper.js";
 import { openFeatureNamespace } from "./main/storage/feature-namespace.js";
-import { sweepPluginSocketDiscardDirs } from "./plugins/plugin-storage-layout.js";
+import { migratePluginHostStorage, sweepPluginSocketDiscardDirs } from "./plugins/plugin-storage-layout.js";
 import { preparePluginRegistryForBoot } from "./plugins/plugin-boot-recovery.js";
 import { purgeStaleSessionDiffDirs, clearSessionDiffCache,
 } from "./tools/write-diff-cache.js";
@@ -528,6 +528,35 @@ export async function bootstrap(
     })
     .catch((err) => {
       log.warn("boot: plugin socket discard sweep failed (non-fatal): %s", (err as Error).message);
+    });
+  // Plugins' HostApi storage moved out of `data/` into the host-only
+  // `storage/` beside it. A root whose state predates that gets its storage
+  // view copied over once, here, before any confined process can run.
+  const PLUGIN_HOST_STORAGE_AUDIT_SKIPPED_MAX = 50;
+  await migratePluginHostStorage(sweeperPluginPaths.pluginsRoot)
+    .then(({ migrated, skipped, failed }) => {
+      if (migrated.length > 0 || skipped.length > 0) {
+        log.info("boot: plugin host storage migration migrated=%d skipped=%d", migrated.length, skipped.length);
+      }
+      if (failed.length > 0 || skipped.length > 0) {
+        ctx.bootAuditLogger.log({
+          timestamp: new Date().toISOString(),
+          sessionId: "boot",
+          type: failed.length > 0 ? "warn" : "info",
+          input: "plugin-host-storage-migration",
+          // Bounded: a data/ holding a node_modules or a venv skips thousands
+          // of links, and one audit record should not carry them all.
+          output: JSON.stringify({
+            migrated,
+            failed,
+            skippedCount: skipped.length,
+            skipped: skipped.slice(0, PLUGIN_HOST_STORAGE_AUDIT_SKIPPED_MAX),
+          }),
+        });
+      }
+    })
+    .catch((err) => {
+      log.warn("boot: plugin host storage migration failed (retried next boot): %s", (err as Error).message);
     });
 
   // Issue #749 — boot-time purge of stale write-file diff sidecar dirs.

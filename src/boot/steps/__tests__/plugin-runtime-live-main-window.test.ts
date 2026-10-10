@@ -19,6 +19,7 @@ import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync } from "node:fs";
+import { pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -215,7 +216,7 @@ async function overlayHostApi(input: {
   return createHostApi!(
     pluginId,
     input.manifest ?? { id: pluginId, capabilities: ["host:overlay"] },
-    tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-overlay-win-"))),
+    pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-overlay-win-")))),
     input.incarnation ?? {
       registerDisposer: vi.fn(),
       trackOperation: <T>(operation: Promise<T>) => operation,

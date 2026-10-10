@@ -107,7 +107,9 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   PLUGIN_RUNTIME_DIR_NAMES,
+  resolvePluginHostStorageDir,
   resolvePluginSocketDir,
+  writeGrantsReachingHostStorage,
   resolvePluginWorkerRunRoot,
 } from "../../plugin-storage-layout.js";
 import { aveHome } from "../../../shared/ave-home.js";
@@ -196,6 +198,8 @@ const CA_TEXT = "-----BEGIN CERTIFICATE-----\nthe-corporate-trust-anchor\n";
 const LEGACY_SESSION_BYTES = "the session that predates pluginDataDir";
 /** Stands in for the plugin's own code: readable out of `pluginRoot`, never writable back into it. */
 const PLUGIN_CODE_BYTES = "the plugin's own code, which it may read and may not rewrite";
+/** What the host stored for the plugin, which the child may not touch. */
+const HOST_STORED_TEXT = '{"stored":"by the host"}';
 /** What one child leaves in its own temp directory, so the host reading it back shows the write landed and lasted. */
 const OWN_TEMP_BYTES = "bytes one confined child left in its own temp directory";
 
@@ -294,6 +298,9 @@ function makeFixture(): Fixture {
   writeFileSync(caFile, CA_TEXT, "utf-8");
   writeFileSync(join(pluginDataDir, "own-data.txt"), "the plugin's own bytes", "utf-8");
   writeFileSync(join(pluginRoot, "own-code.js"), PLUGIN_CODE_BYTES, "utf-8");
+  // The host-only directory the HostApi `storage` surface operates in.
+  mkdirSync(resolvePluginHostStorageDir(pluginDataDir), { mode: 0o700 });
+  writeFileSync(join(resolvePluginHostStorageDir(pluginDataDir), "stored.json"), HOST_STORED_TEXT, "utf-8");
   const hostRoot = join(root, "app-root");
   mkdirSync(hostRoot, { recursive: true });
   // The user's own workspace-root approvals, read back by the envelope
@@ -401,7 +408,7 @@ function writeProbeModule(fx: Fixture): string {
   );
   writeFileSync(
     probePath,
-    `import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+    `import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -423,6 +430,19 @@ const report = {
   // them names this path.
   readOwnCode: attempt(() => readFileSync(${JSON.stringify(join(fx.pluginRoot, "own-code.js"))}, "utf-8")),
   writeOwnCode: attempt(() => { writeFileSync(${JSON.stringify(join(fx.pluginRoot, "smuggled.js"))}, "escaped"); return "written"; }),
+  // The host-only storage directory beside \`pluginDataDir\`: the host reads
+  // and writes it on the plugin's behalf, so the child must not be able to
+  // create, replace or re-point ANY component of a path there — that is what
+  // lets the host's syscall land where its containment check looked.
+  hostStorage: {
+    write: attempt(() => { writeFileSync(${JSON.stringify(join(resolvePluginHostStorageDir(fx.pluginDataDir), "planted.txt"))}, "escaped"); return "written"; }),
+    overwrite: attempt(() => { writeFileSync(${JSON.stringify(join(resolvePluginHostStorageDir(fx.pluginDataDir), "stored.json"))}, "tampered"); return "written"; }),
+    mkdir: attempt(() => { mkdirSync(${JSON.stringify(join(resolvePluginHostStorageDir(fx.pluginDataDir), "sub"))}); return "made"; }),
+    link: attempt(() => { symlinkSync(${JSON.stringify(fx.root)}, ${JSON.stringify(join(resolvePluginHostStorageDir(fx.pluginDataDir), "link"))}); return "linked"; }),
+    moveIn: attempt(() => { renameSync(${JSON.stringify(join(fx.pluginDataDir, "own-data.txt"))}, ${JSON.stringify(join(resolvePluginHostStorageDir(fx.pluginDataDir), "moved.txt"))}); return "moved"; }),
+    replace: attempt(() => { renameSync(${JSON.stringify(resolvePluginHostStorageDir(fx.pluginDataDir))}, ${JSON.stringify(`${resolvePluginHostStorageDir(fx.pluginDataDir)}-moved`)}); return "moved"; }),
+    replaceWithLink: attempt(() => { symlinkSync(${JSON.stringify(fx.root)}, ${JSON.stringify(join(fx.pluginRoot, "storage-link"))}); return "linked"; }),
+  },
   // The third answer this axis gives, and the only one that looks like
   // success. HOME is SUBSTITUTED with a throwaway the spawn grants and
   // \`createSandboxProcessHome\` removes when the child exits, so a plugin that
@@ -507,6 +527,7 @@ interface ProbeReport {
   readonly writeSecrets: ProbeAttempt;
   readonly readOwnCode: ProbeAttempt;
   readonly writeOwnCode: ProbeAttempt;
+  readonly hostStorage: Readonly<Record<"write" | "overwrite" | "mkdir" | "link" | "moveIn" | "replace" | "replaceWithLink", ProbeAttempt>>;
   readonly childHome: string;
   readonly writeChildHome: ProbeAttempt;
   readonly childTmpdir: string;
@@ -948,6 +969,28 @@ describe("the host decides how far a plugin child reaches", () => {
     expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx), inside]);
   });
 
+  it("never grants writing on the host-only storage directory, on any platform", () => {
+    // The Windows ACL holder is granted exactly `envelope.write` (plus the
+    // throwaway HOME), and an ACL grant inherits — so this is the grant scope
+    // there as much as the Seatbelt/bwrap allow-list elsewhere.
+    const fx = fixture!;
+    const storage = resolvePluginHostStorageDir(fx.pluginDataDir);
+    const derive = (chosen: string | undefined) => derivePluginChildEnvelope({
+      pluginId: WIDENED_PLUGIN_ID,
+      sandbox: WIDENED_SANDBOX,
+      pluginRoot: fx.pluginRoot,
+      pluginDataDir: fx.pluginDataDir,
+      configValue: (key) => (key === "indexStorageRoot" ? chosen : undefined),
+    });
+    for (const chosen of [undefined, join(fx.pluginDataDir, "index"), fx.userRoot]) {
+      expect(writeGrantsReachingHostStorage(fx.pluginDataDir, derive(chosen).write)).toEqual([]);
+    }
+    // Naming it, a path inside it, or the plugin root that holds it is refused.
+    for (const chosen of [storage, join(storage, "auth"), fx.pluginRoot]) {
+      expect(() => derive(chosen), chosen).toThrow();
+    }
+  });
+
   it("refuses a chosen directory under the plugin's own immutable runtime root", () => {
     // A `userChosenDirectory` grant carries WRITE. `pluginRoot` holds the
     // bundle the next load imports and the bytes the install receipt is taken
@@ -1349,6 +1392,19 @@ describe("the confined child, against the real sandbox", () => {
       expect(report.readOwnCode.value).toBe(PLUGIN_CODE_BYTES);
       expect(report.writeOwnCode.ok, JSON.stringify(report.writeOwnCode)).toBe(false);
       expect(existsSync(join(fx.pluginRoot, "smuggled.js"))).toBe(false);
+      // The host-only storage directory: no write, no new name, no link, no
+      // move in, and no replacing the directory itself (or putting a link
+      // beside it) — so no component of a storage path can be re-pointed
+      // between the host's check and its syscall.
+      for (const [op, attempt] of Object.entries(report.hostStorage)) {
+        expect(attempt.ok, `${op}: ${JSON.stringify(attempt)}`).toBe(false);
+      }
+      const hostStorageDir = resolvePluginHostStorageDir(fx.pluginDataDir);
+      expect(readdirSync(hostStorageDir)).toEqual(["stored.json"]);
+      expect(readFileSync(join(hostStorageDir, "stored.json"), "utf-8")).toBe(HOST_STORED_TEXT);
+      expect(existsSync(`${hostStorageDir}-moved`)).toBe(false);
+      expect(existsSync(join(fx.pluginRoot, "storage-link"))).toBe(false);
+      expect(readFileSync(join(fx.pluginDataDir, "own-data.txt"), "utf-8")).toBe("the plugin's own bytes");
       // The third answer, and the one a source census reads as success: HOME
       // is SUBSTITUTED, so a plugin that roots its state at `homedir()` is
       // neither denied nor durable. The write SUCCEEDS — and it lands in a

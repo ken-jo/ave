@@ -36,7 +36,7 @@ import {
   writeTestPlugin,
   writeTestPluginRegistry,
 } from "./test-helpers.js";
-import { agentPluginsDocument, childProcessGate, patchAveFields } from "./test-helpers.js";
+import { agentPluginsDocument, childProcessGate, patchAveFields, pluginDataDirIn } from "./test-helpers.js";
 import { manifestDocumentSha256 } from "../runtime/manifest-validation.js";
 import type { PluginManifest } from "../types.js";
 import { canonicalJSON } from "../secret-access/canonical-json.js";
@@ -4677,7 +4677,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     for (let i = 0; i < generations; i += 1) {
       const pluginId = `budget${i}`;
       const manifest = { id: pluginId, name: pluginId, version: "1.0.0", description: "shutdown budget fixture", entry: "entry.mjs", tools: [] };
-      const incarnation = internals.buildHostApiIncarnation(pluginId, manifest, f.fixture.rootDir, new HostApiGenerationScope(pluginId), null);
+      const incarnation = internals.buildHostApiIncarnation(pluginId, manifest, pluginDataDirIn(join(f.fixture.rootDir, "budget-roots", pluginId)), new HostApiGenerationScope(pluginId), null);
       // Each generation's stop hook never returns and its HostApi drain stalls.
       (f.incarnations.at(-1) as unknown as { trackOperation(p: Promise<void>): void }).trackOperation(new Promise<void>((resolve) => { finishOperations.push(resolve); }));
       incarnation.commit();

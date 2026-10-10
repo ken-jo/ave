@@ -45,6 +45,7 @@
 import { canEmitEvent } from "../capabilities.js";
 import { getDeclaredEmittedEvents } from "../runtime/manifest-validation.js";
 import { resolvePluginStoragePath } from "../plugin-storage-containment.js";
+import { resolvePluginHostStorageDir } from "../plugin-storage-layout.js";
 import type {
   AuthPartitionCookie,
   PluginManifest,
@@ -623,8 +624,10 @@ export function createStorageChildMembers(
     assertRelayable(path);
   }
   return {
+    // The same root the host's storage operates in: the plugin's host-only
+    // storage directory beside its data directory.
     "storage.resolve": (...segments) =>
-      resolvePluginStoragePath(pluginId, pluginDataDir, segments),
+      resolvePluginStoragePath(pluginId, resolvePluginHostStorageDir(pluginDataDir), segments),
 
     // The one reply that is not JSON. `decodeWireBinary` also refuses a
     // utf8-tagged payload, so a host that answered with text instead of bytes

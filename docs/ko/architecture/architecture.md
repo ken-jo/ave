@@ -1510,6 +1510,8 @@ artifact 와 save data 를 함께 보관한다 (호스트 root 에 끼어들지 
 │   ├── 출장-절차.md     # 개별 기억 파일
 │   └── 분기-보고서-템플릿.md
 ├── plugins/<id>/notes/  # 플러그인 자체 메모는 자기 디렉토리에 격리
+├── plugins/<id>/data/   # 플러그인 child 가 직접 쓰는 상태
+├── plugins/<id>/storage/ # HostApi storage·브리지 ui-storage (호스트 전용, child 쓰기 불가)
 ├── onboarding/          # 첫 실행 안내 도메인
 │   ├── tour-state.json  # SpotlightTour 진행/완료 상태
 │   └── proposals.json   # 플러그인 온보딩 제안에 사용자가 준 답
@@ -3742,8 +3744,21 @@ extended with `config` and `storage` namespaces:
 - `bridge.config.set<T>(key, value): Promise<void>` — write (server-side
   strips `format: "secret"` fields before persisting)
 - `bridge.storage.get<T>(key): Promise<T | undefined>` — read JSON blob
-  from `<pluginDataDir>/ui-storage/<key>.json`
+  from `<plugin root>/storage/ui-storage/<key>.json` (호스트 전용 storage
+  디렉터리, 아래 참고)
 - `bridge.storage.set<T>(key, value): Promise<void>` — write JSON blob
+
+플러그인 root 의 상태 디렉터리는 둘이다. `data/` 는 플러그인 자신의 것으로 confined
+child 가 쓴다. 그 옆 `storage/` 는 호스트 전용이다: HostApi `storage` 와 브리지의
+`ui-storage/` 가 플러그인 대신 여기서 동작하고, 어느 플랫폼에서도 confined 프로세스는
+여기에 쓸 수 없다 — envelope 유도가 이 디렉터리 자체·내부·상위를 가리키는 쓰기 grant 를
+거부하고, Windows holder grant 도 같은 규칙으로 검사한다
+(`writeGrantsReachingHostStorage`). storage 연산은 containment 를 확인한 뒤 경로 기반
+syscall 을 하므로, child 가 쓸 수 없는 디렉터리여야만 그 syscall 이 확인한 위치에
+떨어진다. 경로의 소유자는 `plugin-storage-layout.ts` 이고, 승격·복구는 `storage/` 를
+`data/` 와 함께 옮긴다. 이 디렉터리 이전에 쓰인 storage 는 부팅 때 confined 프로세스가
+뜨기 전에 한 번 `data/` 에서 복사된다(링크는 따라가지 않음, `migratePluginHostStorage`;
+`docs/design/plugin-hostapi-protocol.md` decision 65).
 
 IPC channels: `ave:plugin:config:get/set`, `ave:plugin:storage:get/set`.
 PluginId resolved server-side via `event.sender.id` — cross-plugin
