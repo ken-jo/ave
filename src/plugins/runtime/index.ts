@@ -74,6 +74,7 @@ import {
   isServedHostProtocolVersion,
 } from "../isolation/host-api-wire.js";
 import { createPluginStorage, createPluginStorageAuditSink } from "../storage.js";
+import { resolvePluginHostStorageDir } from "../plugin-storage-layout.js";
 import type { SecretEncryption } from "../../data/secret-document-store.js";
 import { runWithCeiling } from "../../tools/executor-ceiling.js";
 import { checkRuntimeAdmission } from "./runtime-admission.js";
@@ -8382,7 +8383,12 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     // the swap then found and refused. The directory is created at load, and a
     // call arriving while it is absent is refused rather than served from a
     // directory this call invented.
-    return createPluginStorage(pluginId, this.resolveDataDir(pluginId, plugin.pluginRoot), this.encryption, audit);
+    return createPluginStorage(
+      pluginId,
+      resolvePluginHostStorageDir(this.resolveDataDir(pluginId, plugin.pluginRoot)),
+      this.encryption,
+      audit,
+    );
   }
 
   /**

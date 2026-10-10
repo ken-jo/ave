@@ -1185,7 +1185,13 @@ On Windows every confined process, every plugin included, runs as the one
 configured, not against each other. A plugin child and a delegated worker each
 reach their own directories through a holder-PID ACL grant held for that
 process's lifetime, and while it is held every confined process reaches them
-too. By owner decision (2026-10-10) third-party plugins run on Windows on those
+too. Because `srt-win` stamps that ACE on whatever a path resolves to, junctions
+followed, a grant names an outermost envelope root and never a path below one
+that the plugin could re-point, containment is asked on the canonical,
+case-folded form admission uses, and a chosen directory inside `data/` is
+folded into `data/` (decision 66). A hard link the sandbox account could
+already write attributes of inherits a grant on `data/`; one to a file it can
+only read cannot be created (measured, decision 66). By owner decision (2026-10-10) third-party plugins run on Windows on those
 terms, an accepted risk pending an ASRT per-plugin identity
 (`docs/design/plugin-hostapi-protocol.md` §9.8 A2, decision 64). Because
 srt-win relays no stdin and delivers none of the spawn's environment, an `entry`
@@ -1203,6 +1209,22 @@ reaches the `cmd.exe` line, a batch file (`.cmd`/`.bat`, or a bare name such as
 `npx` that only one answers) is refused with the reason, and a Windows sandboxed spawn that names neither the
 relay nor `cmd.exe` is refused, because srt-win's PowerShell launch loses stdin,
 environment and exit code alike.
+
+A plugin root holds two state directories. `data/` is the plugin's own: its
+confined child writes there. `storage/` beside it is host-only: the HostApi
+`storage` surface and the webview bridge's `ui-storage/` operate there on the
+plugin's behalf, and no confined process may write it on any platform — the
+envelope derivation refuses a write grant that names it, lies inside it or
+contains it, and the Windows holder grant is held to the same rule
+(`writeGrantsReachingHostStorage`). A storage operation checks containment and
+then issues a path-based syscall, and no platform offers a no-follow rule for
+every component of every such call, so only a directory the child cannot write
+keeps that syscall where the check looked. `plugin-storage-layout.ts` owns the
+path; promotion and recovery carry `storage/` with `data/`. Storage written
+before the directory existed is copied out of `data/` once at boot, before any
+confined process runs, never through a link, and only keys at depth 2 or less
+of 8 MiB or less (`migratePluginHostStorage`;
+`docs/design/plugin-hostapi-protocol.md` decision 65).
 
 Plugin read-relaxation is narrower than the host-shell capability. The
 foreground plugin effect-boundary may replace a pre-exec ask only when

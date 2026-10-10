@@ -126,6 +126,7 @@ import {
 } from "../effect-ledger.js";
 import type { PluginHostApi } from "../../plugins/types.js";
 import { PermissionTestResources } from "./test-resources.js";
+import { pluginDataDirIn } from "../../plugins/__tests__/test-helpers.js";
 
 const resources = new PermissionTestResources();
 
@@ -206,7 +207,7 @@ async function buildRealHostApi(): Promise<{
     createHostApi,
     "initPluginRuntime must register a createHostApi factory",
   ).toBeDefined();
-  const pluginDataDir = resources.makeTmpDir("ave-hostfetch-verb-");
+  const pluginDataDir = pluginDataDirIn(resources.makeTmpDir("ave-hostfetch-verb-"));
   const hostApi = createHostApi!(
     "verb-snapshot-plugin",
     {

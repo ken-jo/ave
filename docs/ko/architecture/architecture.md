@@ -1510,6 +1510,8 @@ artifact 와 save data 를 함께 보관한다 (호스트 root 에 끼어들지 
 │   ├── 출장-절차.md     # 개별 기억 파일
 │   └── 분기-보고서-템플릿.md
 ├── plugins/<id>/notes/  # 플러그인 자체 메모는 자기 디렉토리에 격리
+├── plugins/<id>/data/   # 플러그인 child 가 직접 쓰는 상태
+├── plugins/<id>/storage/ # HostApi storage·브리지 ui-storage (호스트 전용, child 쓰기 불가)
 ├── onboarding/          # 첫 실행 안내 도메인
 │   ├── tour-state.json  # SpotlightTour 진행/완료 상태
 │   └── proposals.json   # 플러그인 온보딩 제안에 사용자가 준 답
@@ -2013,7 +2015,12 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   파일시스템 격리 (`denyPluginsRoot`) 는 macOS·Linux 에만 있다. 플러그인 child 와
   delegated worker 는 각자 자기 디렉터리를 그 프로세스 수명 동안 유지되는 holder-PID
   ACL grant 로 얻고, grant 가 유지되는 동안에는 다른 모든 confined process 도 그
-  디렉터리에 닿는다. srt-win 은 stdin 을 전달하지 않고 spawn 의 환경 변수도 넘기지
+  디렉터리에 닿는다. srt-win 은 경로가 junction 을 거쳐 가리키는 곳에 ACE 를 찍으므로,
+  grant 는 플러그인이 바꿔칠 수 있는 하위 경로가 아니라 가장 바깥 envelope root 만
+  가리키고, 포함 여부는 admission 과 같은 정규화·대소문자 접기 형태로 판정하며,
+  `data/` 안의 chosen directory 는 `data/` 자체로 접힌다 (decision 66). sandbox 계정이
+  이미 속성을 쓸 수 있는 파일의 하드 링크는 `data/` grant 를 상속받지만, 읽기만 가능한
+  파일로의 하드 링크는 만들 수 없다 (측정, decision 66). srt-win 은 stdin 을 전달하지 않고 spawn 의 환경 변수도 넘기지
   않으므로, `entry` 플러그인 child 는 `cmd.exe` 아래에서 `ELECTRON_RUN_AS_NODE` 를
   명령줄에, 나머지 환경을 인자 하나에 담고 Node 의 symlink 보존 플래그로 실행되며,
   loopback 연결 하나로 호스트와 통신한다. 이 연결은 양쪽이 모두 인증한다: child 가
@@ -3742,8 +3749,22 @@ extended with `config` and `storage` namespaces:
 - `bridge.config.set<T>(key, value): Promise<void>` — write (server-side
   strips `format: "secret"` fields before persisting)
 - `bridge.storage.get<T>(key): Promise<T | undefined>` — read JSON blob
-  from `<pluginDataDir>/ui-storage/<key>.json`
+  from `<plugin root>/storage/ui-storage/<key>.json` (호스트 전용 storage
+  디렉터리, 아래 참고)
 - `bridge.storage.set<T>(key, value): Promise<void>` — write JSON blob
+
+플러그인 root 의 상태 디렉터리는 둘이다. `data/` 는 플러그인 자신의 것으로 confined
+child 가 쓴다. 그 옆 `storage/` 는 호스트 전용이다: HostApi `storage` 와 브리지의
+`ui-storage/` 가 플러그인 대신 여기서 동작하고, 어느 플랫폼에서도 confined 프로세스는
+여기에 쓸 수 없다 — envelope 유도가 이 디렉터리 자체·내부·상위를 가리키는 쓰기 grant 를
+거부하고, Windows holder grant 도 같은 규칙으로 검사한다
+(`writeGrantsReachingHostStorage`). storage 연산은 containment 를 확인한 뒤 경로 기반
+syscall 을 하므로, child 가 쓸 수 없는 디렉터리여야만 그 syscall 이 확인한 위치에
+떨어진다. 경로의 소유자는 `plugin-storage-layout.ts` 이고, 승격·복구는 `storage/` 를
+`data/` 와 함께 옮긴다. 이 디렉터리 이전에 쓰인 storage 는 부팅 때 confined 프로세스가
+뜨기 전에 한 번 `data/` 에서 복사된다(링크는 따라가지 않고, 깊이 2 이하·8 MiB 이하 키만,
+`migratePluginHostStorage`;
+`docs/design/plugin-hostapi-protocol.md` decision 65).
 
 IPC channels: `ave:plugin:config:get/set`, `ave:plugin:storage:get/set`.
 PluginId resolved server-side via `event.sender.id` — cross-plugin

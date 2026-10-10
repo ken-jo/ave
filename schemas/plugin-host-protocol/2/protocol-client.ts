@@ -1301,7 +1301,7 @@ export interface HostClient {
      */
     write(params: HostStorageWriteParams): Promise<HostStorageWriteResult>;
     /**
-     * Encrypt `plaintext` with the host's configured encryption provider and write the ciphertext bytes to `relPath`, inside the same sandboxed `pluginDataDir` root as every other method — identical absolute-path / lexical `..` / symlink-escape rejection applies. Parent directories are created as needed.
+     * Encrypt `plaintext` with the host's configured encryption provider and write the ciphertext bytes to `relPath`, inside the same sandboxed storage root as every other method — identical absolute-path / lexical `..` / symlink-escape rejection applies. Parent directories are created as needed.
      */
     writeEncrypted(params: HostStorageWriteEncryptedParams): Promise<HostStorageWriteEncryptedResult>;
     /**

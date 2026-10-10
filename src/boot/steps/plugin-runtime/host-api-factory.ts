@@ -46,6 +46,7 @@ import {
   createPluginStorageAuditSink,
   type PluginStorageAuditLog,
 } from "../../../plugins/storage.js";
+import { resolvePluginHostStorageDir } from "../../../plugins/plugin-storage-layout.js";
 import {
   isPluginInstallLockHeld,
   withPluginInstallLock,
@@ -611,7 +612,7 @@ export function createHostApiFactory(
         instrumentEffectsByPath<PluginHostApi>({
       storage: createPluginStorage(
         pluginId,
-        pluginDataDir,
+        resolvePluginHostStorageDir(pluginDataDir),
         deps.host.encryption,
         createPluginStorageAuditSink(pluginId, pluginRuntimeAuditLog),
       ),

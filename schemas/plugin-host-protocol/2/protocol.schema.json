@@ -5288,7 +5288,7 @@
         }
       },
       "ave/host/storage/writeEncrypted": {
-        "description": "Encrypt `plaintext` with the host's configured encryption provider and write the ciphertext bytes to `relPath`, inside the same sandboxed `pluginDataDir` root as every other method — identical absolute-path / lexical `..` / symlink-escape rejection applies. Parent directories are created as needed.",
+        "description": "Encrypt `plaintext` with the host's configured encryption provider and write the ciphertext bytes to `relPath`, inside the same sandboxed storage root as every other method — identical absolute-path / lexical `..` / symlink-escape rejection applies. Parent directories are created as needed.",
         "errors": {
           "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage, plugin-storage-encryption-unavailable, effect-boundary-denied.",
           "properties": {

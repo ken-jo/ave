@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHostApiFactory } from "../host-api-factory.js";
 import { HostApiGenerationScope } from "../../../../plugins/plugin-host-effect-scope.js";
-import { admittedGenerationAccess } from "../../../../plugins/__tests__/test-helpers.js";
+import { admittedGenerationAccess, pluginDataDirIn } from "../../../../plugins/__tests__/test-helpers.js";
 import type { PluginHostApiIncarnation } from "../../../../plugins/runtime/index.js";
 import type { PluginManifest } from "../../../../plugins/types.js";
 import {
@@ -115,7 +115,7 @@ afterEach(() => {
 
 describe("a config.onChange listener that throws, on the real host member", () => {
   it("is reported and contained rather than left for the process", async () => {
-    const { api } = hostApiUnderTest(temporaryRoot!);
+    const { api } = hostApiUnderTest(pluginDataDirIn(temporaryRoot!));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
@@ -147,7 +147,7 @@ describe("a config.onChange listener that throws, on the real host member", () =
   });
 
   it("keeps delivering to the listeners that did not throw", async () => {
-    const { api } = hostApiUnderTest(temporaryRoot!);
+    const { api } = hostApiUnderTest(pluginDataDirIn(temporaryRoot!));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const delivered: unknown[] = [];
     try {

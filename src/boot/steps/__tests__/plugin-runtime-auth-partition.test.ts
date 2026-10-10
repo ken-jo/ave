@@ -12,6 +12,7 @@ import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
+import { pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
 
 import { createTmpDirTracker } from "../../../__tests__/support/tmp-dir-teardown.js";
 
@@ -182,7 +183,7 @@ describe("HostApi openAuthWindow capability gate", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: [] },
-      tmpDirs.track(mkdtempSync("/tmp/ave-auth-")),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-auth-"))),
       ACTIVE_INCARNATION,
       "plugin-a",
     );
@@ -198,7 +199,7 @@ describe("HostApi clearAuthPartition capability + partition gates", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: [] },
-      tmpDirs.track(mkdtempSync("/tmp/ave-auth-")),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-auth-"))),
       ACTIVE_INCARNATION,
       "plugin-a",
     );
@@ -213,7 +214,7 @@ describe("HostApi clearAuthPartition capability + partition gates", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"] },
-      tmpDirs.track(mkdtempSync("/tmp/ave-auth-")),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-auth-"))),
       ACTIVE_INCARNATION,
       "plugin-a",
     );
@@ -228,7 +229,7 @@ describe("HostApi clearAuthPartition capability + partition gates", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"] },
-      tmpDirs.track(mkdtempSync("/tmp/ave-auth-")),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-auth-"))),
       ACTIVE_INCARNATION,
       "plugin-a",
     );

@@ -66,7 +66,7 @@ import { createHostApiFactory } from "../../../boot/steps/plugin-runtime/host-ap
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox } from "../../../permissions/asrt-sandbox.js";
 import { HostApiGenerationScope } from "../../plugin-host-effect-scope.js";
 import { admittedGenerationAccess } from "../../__tests__/test-helpers.js";
-import { resolvePluginSocketDir } from "../../plugin-storage-layout.js";
+import { resolvePluginHostStorageDir, resolvePluginSocketDir } from "../../plugin-storage-layout.js";
 import { flattenAgentPluginsManifest } from "../../public-contract.js";
 import type { PluginHostApiIncarnation } from "../../runtime/index.js";
 import type { PluginHostApi, PluginManifest, PluginRuntimeContext, RuntimePlugin } from "../../types.js";
@@ -184,6 +184,7 @@ beforeAll(async () => {
   // `node_modules` to walk up into.
   cpSync(FIXTURE_SOURCE, pluginRoot, { recursive: true });
   mkdirSync(pluginDataDir, { recursive: true, mode: 0o700 });
+  mkdirSync(resolvePluginHostStorageDir(pluginDataDir), { recursive: true, mode: 0o700 });
   const manifest = flattenAgentPluginsManifest(JSON.parse(readFileSync(join(pluginRoot, "plugin.json"), "utf-8")));
   staged = {
     root,
@@ -791,6 +792,7 @@ describe("the four escapes, against the production factory under the real wrap",
       const pluginRoot = installPythonSmoke(join(staged.aveHome, "plugins", PYTHON_SMOKE_ID));
       const pluginDataDir = join(pluginRoot, "data");
       mkdirSync(pluginDataDir, { recursive: true, mode: 0o700 });
+      mkdirSync(resolvePluginHostStorageDir(pluginDataDir), { recursive: true, mode: 0o700 });
       const manifest = flattenAgentPluginsManifest(JSON.parse(readFileSync(join(pluginRoot, "plugin.json"), "utf-8")));
       const installed: Installed = {
         pluginId: PYTHON_SMOKE_ID,

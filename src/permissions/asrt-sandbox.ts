@@ -8,7 +8,7 @@ import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
@@ -617,6 +617,63 @@ function ensurePluginOwnedReadRoots(): string[] {
 function pluginOwnedReadRoots(): string[] {
   const home = aveHome();
   return [resolvePluginPaths().pluginsRoot, join(home, "agent-plugin-data"), join(home, "packages", "agent-plugin")];
+}
+
+/**
+ * Whether `path` lies within `root`, asked the way a filesystem GRANT must ask
+ * it. On Windows both sides go through the same canonicaliser admission uses
+ * (`canonicalizePathForMatch`: realpath, which expands 8.3 short names and
+ * follows links, then `caseFoldForMatch`), so `…\acme\DATA\work` or
+ * `C:\Users\IKCHA~1\…` is recognised as inside `…\acme\data` — a lexical,
+ * case-sensitive comparison left such a spelling an independent root, and a
+ * Windows grant on an independent root below `data\` is a grant on whatever
+ * the plugin later puts there. Elsewhere the comparison stays lexical on the
+ * resolved paths, unchanged.
+ */
+export function isGrantPathWithin(root: string, path: string): boolean {
+  if (process.platform !== "win32") {
+    const rel = relative(resolve(root), resolve(path));
+    return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
+  }
+  const foldedRoot = caseFoldForMatch(canonicalizePathForMatch(root));
+  const foldedPath = caseFoldForMatch(canonicalizePathForMatch(path));
+  return foldedPath === foldedRoot
+    || foldedPath.startsWith(foldedRoot.endsWith("/") ? foldedRoot : `${foldedRoot}/`);
+}
+/**
+ * Each of `paths` replaced by the OUTERMOST of `roots` that contains it, in
+ * order and without duplicates; a path no root contains is an error (callers
+ * check containment first).
+ *
+ * What a Windows filesystem grant is given instead of the path a plugin named.
+ * `srt-win acl grant` canonicalises the path it is handed — it follows a
+ * junction or symlink in any component and stamps its `(OI)(CI)` ACE on the
+ * TARGET (measured on ASRT 0.0.76: a grant on `data\link` landed on the
+ * directory the junction named). A path below an envelope root passes through
+ * directories the plugin's own process can replace with a junction between any
+ * check and the grant, so no lstat walk closes it. What the outermost root
+ * rests on depends on which root it is. `data/` and `sockets/` are directories
+ * the host created under `plugins/<id>/`, whose parent no confined process can
+ * write, so they cannot be re-pointed. A chosen directory or a `hostDirectory`
+ * root is not host-made: it rests on the user's approval and on no confined
+ * process holding write on its parent — which one plugin's child does hold
+ * when its own chosen directory contains another plugin's, since every
+ * confined process runs as the one sandbox account (decision 64). For the same
+ * reason granting the root widens nothing on Windows: a worker granted it
+ * reaches only what the plugin's own process already does.
+ */
+export function outermostContainingRoots(paths: readonly string[], roots: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const path of paths) {
+    const containing = roots.filter((root) => isGrantPathWithin(root, path));
+    const outermost = containing.find((root) => !containing.some((other) =>
+      other !== root && isGrantPathWithin(other, root) && !isGrantPathWithin(root, other)));
+    if (outermost === undefined) {
+      throw new Error(`[asrt-sandbox] ${path} lies under none of ${roots.join(", ")}`);
+    }
+    if (!out.includes(outermost)) out.push(outermost);
+  }
+  return out;
 }
 
 /**

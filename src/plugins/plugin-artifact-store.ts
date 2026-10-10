@@ -33,7 +33,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { isResolvedPathWithin } from "./plugin-storage-containment.js";
-import { assertPayloadOnlyPluginTree, carryPluginDataDir, carryPluginSocketDirs } from "./plugin-storage-layout.js";
+import { assertPayloadOnlyPluginTree, carryPluginStateDirs, carryPluginSocketDirs } from "./plugin-storage-layout.js";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -350,7 +350,7 @@ export class PluginArtifactStore {
         const discardPromotedRoot = async (cause: unknown, failedStep: string): Promise<never> => {
           if (hadOldDir) {
             try {
-              await retryOnTransientFsLock(() => carryPluginDataDir(installDir, oldDir, { onConflict: "reject" }));
+              await retryOnTransientFsLock(() => carryPluginStateDirs(installDir, oldDir, { onConflict: "reject" }));
               // Complete any interrupted forward merge before reversing it:
               // the original directory may still be in the old root.
               if (existsSync(installDir)) await carryPluginSocketDirs(oldDir, installDir, { onConflict: "reject" });
@@ -401,7 +401,7 @@ export class PluginArtifactStore {
           // a receipt for it — a receipt must never become durable for a root
           // whose state still sits in a backup slated for removal.
           try {
-            await retryOnTransientFsLock(() => carryPluginDataDir(oldDir, installDir, { onConflict: "reject" }), {
+            await retryOnTransientFsLock(() => carryPluginStateDirs(oldDir, installDir, { onConflict: "reject" }), {
               onRetry: (attempt, code) =>
                 log.warn({ safeSlug, attempt, code }, "retrying plugin data carry into promoted root under fs lock"),
             });

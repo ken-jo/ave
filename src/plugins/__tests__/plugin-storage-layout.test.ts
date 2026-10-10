@@ -16,13 +16,14 @@ import { createConnection } from "node:net";
 import { join, resolve, sep } from "node:path";
 import {
   PLUGIN_DATA_DIR_NAME,
+  PLUGIN_HOST_STORAGE_DIR_NAME,
   PLUGIN_OWN_SOCKET_DIR_NAME,
   PLUGIN_RUNTIME_DIR_NAMES,
   PLUGIN_SOCKET_CARRY_DIR_NAME,
   PLUGIN_SOCKET_DISCARD_DIR_NAME,
   PLUGIN_WORKER_RUN_DIR_NAME,
   assertUnixSocketPathFits,
-  carryPluginDataDir,
+  carryPluginStateDirs,
   carryPluginSocketDirs,
   isPluginRuntimeDirName,
   isSamePluginPath,
@@ -31,10 +32,12 @@ import {
   resolvePluginSocketDir,
   resolvePluginWritableRoot,
   sweepPluginSocketDiscardDirs,
+  writeGrantsReachingHostStorage,
 } from "../plugin-storage-layout.js";
 import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { isPathWithin, isResolvedPathWithin } from "../plugin-storage-containment.js";
+import { isGrantPathWithin, outermostContainingRoots } from "../../permissions/asrt-sandbox.js";
 import { PLUGIN_DATA_FIXTURE, makeTestTreeWritable, readPluginDataFixture, seedChildLockedTree, seedPluginDataFixture } from "./test-helpers.js";
 
 /**
@@ -267,7 +270,7 @@ describe("assertUnixSocketPathFits", () => {
 
 const REJECT = { onConflict: "reject" } as const;
 
-describe("carryPluginDataDir", () => {
+describe("carryPluginStateDirs", () => {
   let root: string;
 
   beforeEach(async () => {
@@ -285,7 +288,7 @@ describe("carryPluginDataDir", () => {
     await mkdir(to);
     await seedPluginDataFixture(from);
 
-    await expect(carryPluginDataDir(from, to, REJECT)).resolves.toBe(true);
+    await expect(carryPluginStateDirs(from, to, REJECT)).resolves.toBe(true);
 
     expect(await readPluginDataFixture(to)).toEqual(PLUGIN_DATA_FIXTURE);
     expect(existsSync(join(from, PLUGIN_DATA_DIR_NAME))).toBe(false);
@@ -297,7 +300,7 @@ describe("carryPluginDataDir", () => {
     await mkdir(from);
     await mkdir(to);
 
-    await expect(carryPluginDataDir(from, to, REJECT)).resolves.toBe(false);
+    await expect(carryPluginStateDirs(from, to, REJECT)).resolves.toBe(false);
 
     expect(existsSync(join(to, PLUGIN_DATA_DIR_NAME))).toBe(false);
   });
@@ -310,10 +313,40 @@ describe("carryPluginDataDir", () => {
     await seedPluginDataFixture(from);
     await seedPluginDataFixture(to);
 
-    await expect(carryPluginDataDir(from, to, REJECT)).rejects.toThrow(/both roots hold a plugin data directory/);
+    await expect(carryPluginStateDirs(from, to, REJECT)).rejects.toThrow(/both roots hold a plugin data directory/);
 
     expect(await readPluginDataFixture(from)).toEqual(PLUGIN_DATA_FIXTURE);
     expect(await readPluginDataFixture(to)).toEqual(PLUGIN_DATA_FIXTURE);
+  });
+
+  it("refuses before moving anything when only the host storage directories collide", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(from);
+    await mkdir(to);
+    await seedPluginDataFixture(from);
+    await mkdir(join(to, PLUGIN_HOST_STORAGE_DIR_NAME));
+
+    await expect(carryPluginStateDirs(from, to, REJECT)).rejects.toThrow(
+      /both roots hold a plugin host storage directory/,
+    );
+
+    // `data/` is checked first and moved first; the refusal still left it home.
+    expect(await readPluginDataFixture(from)).toEqual(PLUGIN_DATA_FIXTURE);
+    expect(existsSync(join(to, PLUGIN_DATA_DIR_NAME))).toBe(false);
+  });
+
+  it("carries the host storage directory of a plugin that has no data directory", async () => {
+    const from = join(root, "old");
+    const to = join(root, "new");
+    await mkdir(join(from, PLUGIN_HOST_STORAGE_DIR_NAME, "auth"), { recursive: true });
+    await writeFile(join(from, PLUGIN_HOST_STORAGE_DIR_NAME, "auth", "token-default.json"), "ENC(token)");
+    await mkdir(to);
+
+    await expect(carryPluginStateDirs(from, to, REJECT)).resolves.toBe(true);
+
+    expect(readFileSync(join(to, PLUGIN_HOST_STORAGE_DIR_NAME, "auth", "token-default.json"), "utf-8")).toBe("ENC(token)");
+    expect(existsSync(join(from, PLUGIN_HOST_STORAGE_DIR_NAME))).toBe(false);
   });
 });
 
@@ -980,7 +1013,7 @@ describe("carryPluginSocketDirs", () => {
  * The resolving policy recovery uses. Every conflict must end in a decision:
  * refusing leaves `pendingUpdate` set and the plugin unloadable forever.
  */
-describe("carryPluginDataDir — resolving conflict policy", () => {
+describe("carryPluginStateDirs — resolving conflict policy", () => {
   let root: string;
   let parked: string[];
 
@@ -1022,10 +1055,22 @@ describe("carryPluginDataDir — resolving conflict policy", () => {
     // leave at the promoted root: the directory exists and holds nothing.
     await mkdir(join(to, PLUGIN_DATA_DIR_NAME));
 
-    await expect(carryPluginDataDir(from, to, resolvePolicy(to))).resolves.toBe(true);
+    await expect(carryPluginStateDirs(from, to, resolvePolicy(to))).resolves.toBe(true);
 
     expect(await readPluginDataFixture(to)).toEqual(PLUGIN_DATA_FIXTURE);
     expect(existsSync(join(from, PLUGIN_DATA_DIR_NAME))).toBe(false);
+    expect(parked).toEqual([]);
+  });
+
+  it("resolves each state directory on its own: an empty destination storage/ goes, the real one comes in", async () => {
+    const { from, to } = await twoRoots();
+    await seedPluginDataFixture(from);
+    await mkdir(join(to, PLUGIN_HOST_STORAGE_DIR_NAME));
+
+    await expect(carryPluginStateDirs(from, to, resolvePolicy(to))).resolves.toBe(true);
+
+    expect(await readPluginDataFixture(to)).toEqual(PLUGIN_DATA_FIXTURE);
+    expect(existsSync(join(from, PLUGIN_HOST_STORAGE_DIR_NAME))).toBe(false);
     expect(parked).toEqual([]);
   });
 
@@ -1034,7 +1079,7 @@ describe("carryPluginDataDir — resolving conflict policy", () => {
     await mkdir(join(from, PLUGIN_DATA_DIR_NAME));
     await seedPluginDataFixture(to);
 
-    await expect(carryPluginDataDir(from, to, resolvePolicy(to))).resolves.toBe(false);
+    await expect(carryPluginStateDirs(from, to, resolvePolicy(to))).resolves.toBe(false);
 
     expect(await readPluginDataFixture(to)).toEqual(PLUGIN_DATA_FIXTURE);
     expect(existsSync(join(from, PLUGIN_DATA_DIR_NAME))).toBe(false);
@@ -1047,7 +1092,7 @@ describe("carryPluginDataDir — resolving conflict policy", () => {
     await mkdir(join(to, PLUGIN_DATA_DIR_NAME), { recursive: true });
     await writeFile(join(to, PLUGIN_DATA_DIR_NAME, "unattributed.bin"), "keep me");
 
-    await expect(carryPluginDataDir(from, to, resolvePolicy(to))).resolves.toBe(true);
+    await expect(carryPluginStateDirs(from, to, resolvePolicy(to))).resolves.toBe(true);
 
     expect(await readPluginDataFixture(to)).toEqual(PLUGIN_DATA_FIXTURE);
     expect(parked).toHaveLength(1);
@@ -1065,7 +1110,7 @@ describe("carryPluginDataDir — resolving conflict policy", () => {
     await writeFile(join(from, PLUGIN_DATA_DIR_NAME, "unattributed.bin"), "keep me");
     await seedPluginDataFixture(to);
 
-    await expect(carryPluginDataDir(from, to, resolvePolicy(from))).resolves.toBe(false);
+    await expect(carryPluginStateDirs(from, to, resolvePolicy(from))).resolves.toBe(false);
 
     expect(await readPluginDataFixture(to)).toEqual(PLUGIN_DATA_FIXTURE);
     expect(existsSync(join(from, PLUGIN_DATA_DIR_NAME))).toBe(false);
@@ -1080,7 +1125,7 @@ describe("carryPluginDataDir — resolving conflict policy", () => {
     await writeFile(join(to, PLUGIN_DATA_DIR_NAME, "unattributed.bin"), "keep me");
 
     await expect(
-      carryPluginDataDir(from, to, resolvePolicy(join(root, "somewhere-else"))),
+      carryPluginStateDirs(from, to, resolvePolicy(join(root, "somewhere-else"))),
     ).rejects.toThrow(/cannot attribute a data directory conflict/);
 
     expect(await readPluginDataFixture(from)).toEqual(PLUGIN_DATA_FIXTURE);
@@ -1093,7 +1138,7 @@ describe("carryPluginDataDir — resolving conflict policy", () => {
     await mkdir(join(to, PLUGIN_DATA_DIR_NAME), { recursive: true });
     await writeFile(join(to, PLUGIN_DATA_DIR_NAME, "unattributed.bin"), "keep me");
 
-    await expect(carryPluginDataDir(from, to, {
+    await expect(carryPluginStateDirs(from, to, {
       onConflict: "resolve",
       unattributedRoot: to,
       moveAside: async () => undefined,
@@ -1165,6 +1210,86 @@ describe("isSamePluginPath", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("outermostContainingRoots", () => {
+  let root: string;
+  beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "outermost-roots-")); });
+  afterEach(async () => {
+    await rm(join(root, "data", "link"), { force: true }).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("hands a grant the envelope root, never a component the plugin can turn into a link", async () => {
+    // The plugin's own process re-points `data/link` at a directory outside;
+    // the path a worker asked for runs through it. What a Windows ACL grant is
+    // given must not: srt-win stamps the ACE on whatever the path resolves to.
+    const data = join(root, "data");
+    const outside = join(root, "outside");
+    await mkdir(data);
+    await mkdir(outside);
+    await symlink(outside, join(data, "link"), process.platform === "win32" ? "junction" : "dir");
+    const sockets = join(root, "sockets");
+    await mkdir(sockets);
+    const chosenInData = join(data, "index");
+
+    const throughLink = [join(data, "link", "segments"), join(data, "link")];
+    const roots = [data, sockets, chosenInData];
+    // On Windows containment is asked on the canonical form admission uses,
+    // which follows the link: a path re-pointed outside every root is refused
+    // rather than granted at any root. Elsewhere the question is lexical and
+    // the root is what the grant names either way.
+    const granted = process.platform === "win32"
+      ? outermostContainingRoots([chosenInData, join(sockets, "a.sock")], roots)
+      : outermostContainingRoots([throughLink[0]!, chosenInData, join(sockets, "a.sock"), throughLink[1]!], roots);
+    if (process.platform === "win32") {
+      expect(() => outermostContainingRoots(throughLink, roots)).toThrow(/lies under none/);
+    }
+
+    expect(granted).toEqual([data, sockets]);
+    for (const path of granted) expect((await lstat(path)).isSymbolicLink()).toBe(false);
+  });
+
+  it("refuses a path no root contains", () => {
+    expect(() => outermostContainingRoots([resolve(sep, "elsewhere")], [resolve(sep, "ave", "data")])).toThrow(/lies under none/);
+  });
+
+  describe("on Windows, where a root's spelling is not its identity", () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    beforeEach(() => { Object.defineProperty(process, "platform", { value: "win32" }); });
+    afterEach(() => { Object.defineProperty(process, "platform", platform); });
+
+    it("takes a case-variant spelling of a nested root for the root it is inside", async () => {
+      // `...\acme\DATA\work` is `data\work` to NTFS. Taken for a root of its
+      // own, a grant would name it — and the plugin re-points it at will.
+      const data = join(root, "data");
+      await mkdir(join(data, "work"), { recursive: true });
+      const variant = join(root, "DATA", "work");
+
+      expect(outermostContainingRoots([join(variant, "segments"), variant], [data, variant])).toEqual([data]);
+      expect(isGrantPathWithin(data, join(variant, "segments"))).toBe(true);
+    });
+
+    it("still refuses a look-alike sibling of a root", () => {
+      expect(isGrantPathWithin(join(root, "data"), join(root, "DATA-other"))).toBe(false);
+    });
+  });
+});
+
+describe("writeGrantsReachingHostStorage", () => {
+  const pluginRoot = resolve(sep, "ave", "plugins", "acme");
+  const dataDir = join(pluginRoot, PLUGIN_DATA_DIR_NAME);
+  const storage = join(pluginRoot, PLUGIN_HOST_STORAGE_DIR_NAME);
+
+  it("names the storage directory, anything in it, and every ancestor of it", () => {
+    const reaching = [storage, join(storage, "auth"), pluginRoot, resolve(pluginRoot, ".."), resolve(sep)];
+    expect(writeGrantsReachingHostStorage(dataDir, reaching)).toEqual(reaching);
+  });
+
+  it("passes the child's own directories and a look-alike sibling", () => {
+    const own = [dataDir, join(dataDir, "index"), join(pluginRoot, PLUGIN_OWN_SOCKET_DIR_NAME), `${storage}-other`, resolve(sep, "elsewhere")];
+    expect(writeGrantsReachingHostStorage(dataDir, own)).toEqual([]);
   });
 });
 

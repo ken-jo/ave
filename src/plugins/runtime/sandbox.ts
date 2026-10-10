@@ -2,7 +2,7 @@
  * Sandbox — plugin entry-path resolution, data-dir provisioning, noop HostApi.
  */
 
-import { mkdirSync, realpathSync } from "node:fs";
+import { mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { PluginHostApi, PluginManifest } from "../types.js";
@@ -12,7 +12,12 @@ import type { SecretEncryption } from "../../data/secret-document-store.js";
 import { applyConfigDefaults } from "../config-schema.js";
 import { createLogger } from "../../lib/logger.js";
 import { aveHome } from "../../shared/ave-home.js";
-import { PLUGIN_DATA_DIR_NAME, resolvePluginSocketDir } from "../plugin-storage-layout.js";
+import {
+  PLUGIN_DATA_DIR_NAME,
+  hostStorageMigrationFailureFor,
+  resolvePluginHostStorageDir,
+  resolvePluginSocketDir,
+} from "../plugin-storage-layout.js";
 import { resolvePluginDataRoot } from "../plugin-storage-containment.js";
 const log = createLogger("sandbox");
 
@@ -108,7 +113,39 @@ export function resolvePluginDataDir(
 }
 
 /**
- * Compute and ensure the plugin's writable data directory.
+ * The plugin's host-only storage directory beside `dataDir`
+ * (`PLUGIN_HOST_STORAGE_DIR_NAME`), created here only for a plugin with no
+ * state yet. A plugin whose `data/` already holds state and that has no
+ * `storage/` predates it: its storage view is in `data/`, and only the boot
+ * migration (`migratePluginHostStorage`, before any confined process runs)
+ * may build it. Creating an empty one here would make every later boot treat
+ * the plugin as migrated and the stored values as gone, so this refuses
+ * instead, and the next boot migrates.
+ */
+function ensurePluginHostStorageDir(pluginId: string, dataDir: string, dataCreated: boolean): void {
+  const storageDir = resolvePluginHostStorageDir(dataDir);
+  try {
+    resolvePluginDataRoot(`plugin '${pluginId}'`, storageDir);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (!dataCreated && readdirSync(dataDir).length > 0) {
+    const failure = hostStorageMigrationFailureFor(dataDir);
+    throw new Error(
+      `[plugin '${pluginId}'] ${storageDir} is missing while ${dataDir} holds state; `
+        + (failure !== undefined
+          ? `the boot migration that creates it failed for ${dirname(dataDir)}: ${failure} — `
+            + "fix that and restart the app to retry"
+          : "the boot migration creates it from that state — restart the app to migrate"),
+    );
+  }
+  mkdirSync(storageDir, { mode: 0o700 });
+}
+
+/**
+ * Compute and ensure the plugin's writable data directory, and beside it the
+ * plugin's socket directory and its host-only storage directory.
  */
 export function ensurePluginDataDir(
   pluginId: string,
@@ -120,12 +157,15 @@ export function ensurePluginDataDir(
   // root a confined plugin replaced with a link is refused here, at load,
   // rather than handed to the next spawn as a write grant on the link's target.
   // `mkdirSync` cannot be the check — `recursive` accepts a link to a directory.
+  let dataCreated = false;
   try {
     resolvePluginDataRoot(`plugin '${pluginId}'`, dataDir);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     mkdirSync(dataDir, { recursive: true });
+    dataCreated = true;
   }
+  ensurePluginHostStorageDir(pluginId, dataDir, dataCreated);
   // The socket directory beside it, made HERE because this is the one function
   // that owns "bring this plugin's directories into existence" — and because
   // the alternative, making it where the context is built, would put a `mkdir`
@@ -155,7 +195,7 @@ export function createNoopHostApi(
   encryption: SecretEncryption,
 ): PluginHostApi {
   return {
-    storage: createPluginStorage(pluginId, pluginDataDir, encryption),
+    storage: createPluginStorage(pluginId, resolvePluginHostStorageDir(pluginDataDir), encryption),
     config: {
       get: () => undefined,
       set: async () => {
