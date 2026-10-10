@@ -339,6 +339,19 @@ describe("A2A agent message bus", () => {
       },
     }))).resolves.toMatchObject({ ok: false, reason: "cross-origin" });
 
+    // A hop that names the right recipient but another conversation's origin
+    // must not let one parent's tree speak into another's.
+    const foreignOrigin = createHarness();
+    await expect(foreignOrigin.bus.send(makeSend("message-foreign-origin", {
+      causalContext: {
+        kind: "a2a-causal-hop",
+        version: A2A_AGENT_ENVELOPE_VERSION,
+        originSessionId: "another-origin-session",
+        recipientChildSessionId: SENDER,
+        hopCount: 1,
+      },
+    }))).resolves.toMatchObject({ ok: false, reason: "cross-origin" });
+
     const raw = createHarness();
     await expect(raw.bus.send(makeSend("message-raw", {
       parts: [{ raw: "opaque" }] as never,
@@ -355,7 +368,7 @@ describe("A2A agent message bus", () => {
       },
     }))).resolves.toMatchObject({ ok: false, reason: "hop-limit" });
 
-    for (const harness of [forged, raw, overflow]) {
+    for (const harness of [forged, foreignOrigin, raw, overflow]) {
       expect(JSON.stringify(harness.namespace.getStored() ?? {}))
         .not.toContain("message-");
     }

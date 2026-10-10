@@ -38,8 +38,8 @@ debt changes should a maintainer run `bun run check:knip:update`. That command
 flushes a same-directory staging file and atomically replaces the snapshot, so
 an interrupted update cannot truncate the reviewed baseline.
 
-The current snapshot contains 630 accepted findings: 21 files, 226 exports,
-370 types, 8 duplicate-export groups, and 5 dev dependencies. Three of the files
+The current snapshot contains 527 accepted findings: 14 files, 178 exports,
+325 types, 5 duplicate-export groups, and 5 dev dependencies. Three of the files
 are renderer assets Electron loads BY PATH rather than importing — the host's
 audio capture window and its preload, and the floating dock's bootstrap — so
 static analysis cannot see the reference. The same reason `src/plugin-ui-shell.js`

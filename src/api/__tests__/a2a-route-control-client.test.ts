@@ -31,18 +31,6 @@ const input: A2ARouteResolveRequest = {
 
 const proof = {
   served_spec_observation_id: 7,
-  wire_conformance_evidence_id: 8,
-  wire_conformance_artifact_id: "artifact-1",
-  wire_conformance_artifact_digest_sha256: digest,
-  agent_hub_head_sha: "1".repeat(40),
-  ave_app_head_sha: "2".repeat(40),
-  remote_server_head_sha: "3".repeat(40),
-  a2a_tck_tag: "1.0.0.alpha2",
-  a2a_tck_commit_sha: "4".repeat(40),
-  agent_hub_lock_digest_sha256: "5".repeat(64),
-  ave_app_lock_digest_sha256: "6".repeat(64),
-  remote_server_lock_digest_sha256: "7".repeat(64),
-  a2a_tck_lock_digest_sha256: "8".repeat(64),
   a2a_specification_uri: A2A_SPECIFICATION_URI,
 } as const;
 
@@ -114,16 +102,6 @@ describe("A2A route-control client plane separation", () => {
     await expect(client.resolve(input)).resolves.toMatchObject({
       credentialRevisionId: 12,
       servedSpecObservationId: 7,
-      wireConformanceEvidenceId: 8,
-      controlPlaneHeadSha: proof.agent_hub_head_sha,
-      aveAppHeadSha: proof.ave_app_head_sha,
-      remoteServerHeadSha: proof.remote_server_head_sha,
-      a2aTckTag: "1.0.0.alpha2",
-      a2aTckCommitSha: proof.a2a_tck_commit_sha,
-      controlPlaneLockDigestSha256: proof.agent_hub_lock_digest_sha256,
-      aveAppLockDigestSha256: proof.ave_app_lock_digest_sha256,
-      remoteServerLockDigestSha256: proof.remote_server_lock_digest_sha256,
-      a2aTckLockDigestSha256: proof.a2a_tck_lock_digest_sha256,
       a2aSpecificationUri: A2A_SPECIFICATION_URI,
     });
     expect(transport.invoke).toHaveBeenCalledWith(expect.objectContaining({
@@ -139,7 +117,7 @@ describe("A2A route-control client plane separation", () => {
     expect(JSON.parse(wireBody).extension_uri).toBe(A2A_EXACT_SEND_REPLAY_URI);
   });
 
-  it.each(Object.keys(proof))("rejects a Hub snapshot missing required proof field %s", (field) => {
+  it.each(Object.keys(hubResponse()))("rejects a route snapshot missing required field %s", (field) => {
     const body: Record<string, unknown> = { ...hubResponse() };
     delete body[field];
     expect(() => parse(body)).toThrow("a2a-route-snapshot-fields-invalid");
@@ -147,19 +125,35 @@ describe("A2A route-control client plane separation", () => {
 
   it.each([
     ["served_spec_observation_id", 0, "a2a-route-snapshot-version-invalid"],
-    ["wire_conformance_evidence_id", 1.5, "a2a-route-snapshot-version-invalid"],
-    ["agent_hub_head_sha", "A".repeat(40), "a2a-route-snapshot-head-invalid"],
-    ["ave_app_head_sha", "2".repeat(39), "a2a-route-snapshot-head-invalid"],
-    ["remote_server_head_sha", "g".repeat(40), "a2a-route-snapshot-head-invalid"],
-    ["a2a_tck_commit_sha", "4".repeat(41), "a2a-route-snapshot-head-invalid"],
-    ["agent_hub_lock_digest_sha256", "A".repeat(64), "a2a-route-snapshot-digest-invalid"],
-    ["remote_server_lock_digest_sha256", "7".repeat(63), "a2a-route-snapshot-digest-invalid"],
-    ["a2a_tck_tag", "1.0.0.", "a2a-route-snapshot-tck-tag-invalid"],
-    ["a2a_tck_tag", "release/latest", "a2a-route-snapshot-tck-tag-invalid"],
-    ["a2a_tck_tag", `1.0.0.${"a".repeat(64)}`, "a2a-route-snapshot-tck-tag-invalid"],
+    ["credential_revision_version", 1.5, "a2a-route-snapshot-version-invalid"],
+    ["agent_card_digest_sha256", "A".repeat(64), "a2a-route-snapshot-digest-invalid"],
+    ["route_policy_digest_sha256", "7".repeat(63), "a2a-route-snapshot-digest-invalid"],
+    ["extension_spec_digest_sha256", "g".repeat(64), "a2a-route-snapshot-digest-invalid"],
+    ["credential_revision_id", 13, "a2a-route-snapshot-protocol-invalid"],
+    ["health_expires_at", "2026-07-16T00:00:00.000Z", "a2a-route-eligibility-invalid"],
+    ["auth_scheme", "Basic", "a2a-route-eligibility-invalid"],
     ["a2a_specification_uri", "https://a2a-protocol.org/latest/specification/", "a2a-route-snapshot-protocol-invalid"],
-  ])("rejects malformed Hub proof field %s", (field, value, error) => {
+  ])("rejects malformed route snapshot field %s", (field, value, error) => {
     expect(() => parse({ ...hubResponse(), [field]: value })).toThrow(error as string);
+  });
+
+  it.each([
+    "wire_conformance_artifact_id",
+    "wire_conformance_artifact_digest_sha256",
+    "wire_conformance_evidence_id",
+    "agent_hub_head_sha",
+    "ave_app_head_sha",
+    "remote_server_head_sha",
+    "a2a_tck_tag",
+    "a2a_tck_commit_sha",
+    "agent_hub_lock_digest_sha256",
+    "ave_app_lock_digest_sha256",
+    "remote_server_lock_digest_sha256",
+    "a2a_tck_lock_digest_sha256",
+  ])("rejects retired external evidence field %s instead of accepting a legacy snapshot", (field) => {
+    expect(() => parse({ ...hubResponse(), [field]: "" })).toThrow(
+      "a2a-route-snapshot-fields-invalid",
+    );
   });
 
   it("rejects unknown Hub snapshot fields", () => {
