@@ -321,19 +321,25 @@ owns that discipline itself; the conformance suite checks it (§10).
 runtime does not use its pipes for the protocol (`child-loopback-link.ts`). The child
 listens on `127.0.0.1:0` and writes one line to stdout — `AVE-CHILD-LISTEN <port> <nonce>`,
 the nonce 32 fresh random bytes that never cross the socket. The host reads that line from
-the stdout it owns and connects; then both ends prove they hold the nonce, each proof
-bound to that one TCP connection by its two ports, which each side reads from its own
-socket:
+the stdout it owns and connects from `127.0.0.1`; then both ends prove they hold the
+nonce, each proof bound to that one TCP connection by both ends' addresses and ports,
+which each side reads from its own socket (IPv4-mapped addresses unmapped):
 
-- host → child: `HMAC-SHA256(nonce, "ave-loopback host <hostPort> <childPort>")`, hex, newline;
-- child → host: `HMAC-SHA256(nonce, "ave-loopback child <childPort> <hostPort>")`, hex, newline.
+- host → child: `HMAC-SHA256(nonce, "ave-loopback host <hostAddr> <hostPort> <childAddr> <childPort>")`, hex, newline;
+- child → host: `HMAC-SHA256(nonce, "ave-loopback child <childAddr> <childPort> <hostAddr> <hostPort>")`, hex, newline.
 
-The child checks the host's proof against the remote port it sees before answering, and
+Every 127/8 address reaches a `127.0.0.1` listener (measured on Windows: a client bound to
+`127.0.0.2` connected), so the child drops a peer whose address is not `127.0.0.1` before
+reading a byte, and the addresses are in the proofs as well. The child checks the host's
+proof against the remote address and port it sees before answering, and
 the host treats the connection as the child's only after the child's proof checks; only
 then are frames sent, exactly as over the pipes. A peer that fails — a wrong or replayed
 proof, more than a proof's length, silence past the handshake time, an error — is dropped
 and the child keeps listening, for at most 8 failed peers (4 handshakes at once) within the
-accept time; then, or with no host in time, the child ends non-zero. Once the host is in,
+accept time; then, or with no host in time, the child ends non-zero. A connection beyond
+the 4 is dropped at once, the host's own included, so the host connects once more, 0.5 s
+later and within its time limit, if the child closed its first connection unanswered.
+Once the host is in,
 the listener closes and any peer still in its handshake is dropped. The channel's end is
 the child's end: the child exits when the connection closes, and the host ends the process
 when it does. srt-win's network filter refuses the sandbox account's outbound connects
@@ -389,7 +395,9 @@ nonce:
 
 - It cannot be the host to the child: it has no proof for its own connection, and the
   host's proof, if it took the host's connection and replayed it, names that connection's
-  ports, not its own. The child drops it and keeps waiting for the host.
+  addresses and ports, not its own — and a peer on another 127/8 address that took the
+  host's port number is dropped for its address before it is read. The child drops it and
+  keeps waiting for the host.
 - It cannot be the child to the host: if the host's connection reached it instead of the
   child (it bound the announced port first, or after the child's listener closed), it
   cannot answer with the child's proof, so the host sends nothing — no frame, no relay
@@ -397,7 +405,8 @@ nonce:
   child's port is refused on Windows even to the same account (measured, `SO_REUSEADDR`:
   `WSAEACCES`), so with the child alive the host's connect reaches the child's listener.
 - It can delay the load or end it: up to 8 failed peers within the accept time, and the
-  child gives up. That is the bound; a local process that can connect to loopback can deny
+  child gives up; holding the 4 handshake slots past the host's second connect also ends
+  it. That is the bound; a local process that can connect to loopback can deny
   a plugin its start, and only that.
 
 A process that holds the nonce besides the two ends could only have read it from the
@@ -5380,6 +5389,15 @@ fixture or by the independent verification of it rather than decided around it:
   - *A local process first*: three peers connected to a real relay's port before the host,
     sending the bare nonce, a wrong proof, and 200 bytes without a newline; each was closed
     and answered nothing, and the host connected after them and ran its program (exit 9).
+  - *Another loopback address* (re-review): a client bound to `127.0.0.2` connected to the
+    child's `127.0.0.1` listener, and against the ports-only handshake the proof for the
+    host's port number sent from there was accepted (the case timed out waiting for the
+    drop, on Windows and on Linux). With the addresses in the proofs and the address
+    check, that peer, and one with a proof correct for its own address, is dropped
+    unanswered and the host gets in after it.
+  - *The host's second connect*: with four silent peers holding the handshake slots, the
+    host's first connect was dropped (`ECONNRESET`, the load failed) before; it now gets
+    in on its second connect 0.5 s later, once the slots' handshake time ran out.
   - *Batch files*: `npx.cmd`, `C:\Program Files\nodejs\npx.cmd`, bare `npx` (found as
     `npx.cmd` on `PATH`) and the plugin's own `.cmd`/`.BAT` were refused by `spawnWorker`
     before anything was wrapped, with the reason naming the file; bare `node` ran.

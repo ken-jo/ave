@@ -20,23 +20,30 @@
  *
  * MUTUAL, CHANNEL-BOUND AUTHENTICATION. Both ends prove they hold the nonce,
  * and each proof is bound to the one TCP connection it is sent on:
- *   host  → child  HMAC-SHA256(nonce, "ave-loopback host <hostPort> <childPort>")
- *   child → host   HMAC-SHA256(nonce, "ave-loopback child <childPort> <hostPort>")
- * where the ports are the connection's own, each side reading them from its
- * socket. The host sends its proof first and treats the channel as the child's
- * only after the child's proof checks; the child accepts the host only after
- * the host's proof checks against the remote port it actually sees. So a peer
- * that does not hold the nonce learns nothing from either proof and can be
- * neither end: a listener that took the host's connection cannot answer it, and
- * cannot replay the host's proof into its own connection to the child, whose
- * ports differ (two live connections never share a 4-tuple). A peer that
- * fails is dropped and the child keeps listening, for a bounded number of
- * peers within the accept time, so a local process that connects first delays
- * the host rather than ending the load; whoever holds the nonce besides the
- * two ends could only have read it out of the child's own memory, which the
- * same account can do anyway (decision 64). A second bind of the child's port
- * is refused even to the same account (measured: `WSAEACCES` with
- * `SO_REUSEADDR`), so the host's connection reaches the child's listener.
+ *   host  → child  HMAC-SHA256(nonce, "ave-loopback host <hostAddr> <hostPort> <childAddr> <childPort>")
+ *   child → host   HMAC-SHA256(nonce, "ave-loopback child <childAddr> <childPort> <hostAddr> <hostPort>")
+ * where the addresses and ports are the connection's own, each side reading
+ * them from its socket (IPv4-mapped addresses unmapped). The host sends its
+ * proof first and treats the channel as the child's only after the child's
+ * proof checks; the child accepts the host only after the host's proof checks
+ * against the remote address and port it actually sees. Both ends are
+ * 127.0.0.1: the host dials from it, and the child drops a peer from any other
+ * address before reading a byte. Every 127/8 address reaches a 127.0.0.1
+ * listener (measured on Windows: a client bound to 127.0.0.2 connected), so
+ * without that a peer on 127.0.0.2 could take the host's port number and
+ * replay its proof. So a peer that does not hold the nonce learns nothing from
+ * either proof and can be neither end: a listener that took the host's
+ * connection cannot answer it, and cannot replay the host's proof into its own
+ * connection to the child, whose address or port differ (two live connections
+ * never share a 4-tuple). A peer that fails is dropped and the child keeps
+ * listening, for a bounded number of peers within the accept time, so a local
+ * process that connects first delays the host rather than ending the load;
+ * the host connects once more if the child dropped it for want of a handshake
+ * slot. Whoever holds the nonce besides the two ends could only have read it
+ * out of the child's own memory, which the same account can do anyway
+ * (decision 64). A second bind of the child's port is refused even to the
+ * same account (measured: `WSAEACCES` with `SO_REUSEADDR`), so the host's
+ * connection reaches the child's listener.
  *
  * WHY THE ENVIRONMENT TRAVELS HERE. The same runner gives the target the
  * sandbox account's profile environment plus srt-win's own `--env` overlay
@@ -86,13 +93,39 @@ const MAX_REFUSED_PEERS = 8;
 /** Handshakes the child runs at once; a peer beyond them is dropped. */
 const MAX_PENDING_HANDSHAKES = 4;
 
+/** The one address both ends of the channel use: the child listens on it, the host dials from it. */
+const LOOPBACK_ADDRESS = "127.0.0.1";
+/** Connect attempts the host makes: the child may drop its first for want of a handshake slot. */
+const HOST_CONNECT_ATTEMPTS = 2;
+/** How long the host waits before its second attempt, for a slot to free. */
+const HOST_RETRY_DELAY_MS = 500;
+
+/** One end of a TCP connection, as a socket reports it, IPv4-mapped addresses unmapped. */
+interface Endpoint {
+  readonly address: string;
+  readonly port: number;
+}
+
+function endpoints(socket: Socket): { readonly local: Endpoint; readonly remote: Endpoint } | undefined {
+  const { localAddress, localPort, remoteAddress, remotePort } = socket;
+  if (localAddress === undefined || localPort === undefined || remoteAddress === undefined || remotePort === undefined) {
+    return undefined;
+  }
+  const unmapped = (address: string): string => address.replace(/^::ffff:/i, "");
+  return {
+    local: { address: unmapped(localAddress), port: localPort },
+    remote: { address: unmapped(remoteAddress), port: remotePort },
+  };
+}
+
 /**
  * One side's proof that it holds `nonce`, bound to this connection: the
- * sender's own port first, then its peer's.
+ * sender's own address and port first, then its peer's, each as the sender's
+ * socket reports them.
  */
-function loopbackProof(nonce: string, side: "host" | "child", ownPort: number, peerPort: number): Buffer {
+function loopbackProof(nonce: string, side: "host" | "child", own: Endpoint, peer: Endpoint): Buffer {
   return createHmac("sha256", Buffer.from(nonce, "hex"))
-    .update(`ave-loopback ${side} ${ownPort} ${peerPort}`)
+    .update(`ave-loopback ${side} ${own.address} ${own.port} ${peer.address} ${peer.port}`)
     .digest();
 }
 
@@ -240,6 +273,13 @@ export function acceptHostOverLoopback(opts: {
         if (!settled) refuse(socket);
         return;
       }
+      // The host dials from the loopback address itself; a peer bound to any
+      // other (127.0.0.2, say) is not the host, whatever it sends.
+      const ends = endpoints(socket);
+      if (ends === undefined || ends.remote.address !== LOOPBACK_ADDRESS || ends.local.address !== LOOPBACK_ADDRESS) {
+        refuse(socket);
+        return;
+      }
       pending.add(socket);
       let received = Buffer.alloc(0);
       const handshakeTimer = setTimeout(() => refuse(socket), opts.handshakeTimeoutMs);
@@ -260,21 +300,14 @@ export function acceptHostOverLoopback(opts: {
           return;
         }
         done();
-        const childPort = socket.localPort;
-        const hostPort = socket.remotePort;
-        if (
-          settled
-          || childPort === undefined
-          || hostPort === undefined
-          || !proofMatches(received.subarray(0, newline), loopbackProof(nonce, "host", hostPort, childPort))
-        ) {
+        if (settled || !proofMatches(received.subarray(0, newline), loopbackProof(nonce, "host", ends.remote, ends.local))) {
           refuse(socket);
           return;
         }
         socket.pause();
         const rest = received.subarray(newline + 1);
         if (rest.length > 0) socket.unshift(rest);
-        socket.write(`${loopbackProof(nonce, "child", childPort, hostPort).toString("hex")}\n`);
+        socket.write(`${loopbackProof(nonce, "child", ends.local, ends.remote).toString("hex")}\n`);
         pending.delete(socket);
         finish(undefined, socket);
       };
@@ -306,12 +339,15 @@ export function acceptHostOverLoopback(opts: {
 }
 
 /**
- * HOST SIDE. Read the child's stdout for its announce, connect, send the
- * host's proof for this connection, and resolve with the socket only after the
- * peer answered with the child's proof for it (see the module header). Rejects
- * — and leaves no socket open — if the child exits first, says anything else
- * first, says too much, answers wrongly, or the time runs out. Blank lines
- * before the announce are skipped; srt-win's shells may emit one.
+ * HOST SIDE. Read the child's stdout for its announce, connect from the
+ * loopback address, send the host's proof for this connection, and resolve
+ * with the socket only after the peer answered with the child's proof for it
+ * (see the module header). If the child drops the connection before answering
+ * — it does so to a peer beyond its handshake slots — the host connects once
+ * more, after a short wait, within the same time limit. Rejects — and leaves
+ * no socket open — if the child exits first, says anything else first, says
+ * too much, answers wrongly, or the time runs out. Blank lines before the
+ * announce are skipped; srt-win's shells may emit one.
  */
 export function connectToAnnouncedChild(opts: {
   readonly stdout: Readable;
@@ -322,39 +358,55 @@ export function connectToAnnouncedChild(opts: {
     let settled = false;
     let scanned = "";
     let socket: Socket | undefined;
+    let announced = false;
+    let attempts = 0;
+    let retryTimer: NodeJS.Timeout | undefined;
     const finish = (error: Error | undefined): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(retryTimer);
       opts.stdout.off("data", onData);
       if (error !== undefined) {
         socket?.destroy();
         reject(error);
       } else {
-        socket!.off("error", onSocketError);
+        socket!.removeAllListeners("error");
         resolve(socket!);
       }
     };
-    const onSocketError = (error: Error): void => finish(error);
     const timer = setTimeout(
       () => finish(new Error("[child-loopback-link] the child did not announce and authenticate its listener in time")),
       opts.timeoutMs,
     );
     void opts.exited.then((reason) =>
       finish(new Error(`[child-loopback-link] the child ended before its channel was connected: ${reason}`)));
-    const authenticate = (connected: Socket, nonce: string): void => {
-      const hostPort = connected.localPort;
-      const childPort = connected.remotePort;
-      if (hostPort === undefined || childPort === undefined) {
-        finish(new Error("[child-loopback-link] the connected socket has no ports"));
+    /** The child dropped `connected` before answering: try once more, or give up with `error`. */
+    const dropped = (connected: Socket, error: Error, port: number, nonce: string): void => {
+      if (settled || connected !== socket) return;
+      connected.destroy();
+      if (attempts >= HOST_CONNECT_ATTEMPTS) {
+        finish(error);
         return;
       }
-      const expected = loopbackProof(nonce, "child", childPort, hostPort);
+      retryTimer = setTimeout(() => {
+        if (!settled) dial(port, nonce);
+      }, HOST_RETRY_DELAY_MS);
+    };
+    const authenticate = (connected: Socket, nonce: string, port: number): void => {
+      if (settled || connected !== socket) return;
+      const ends = endpoints(connected);
+      if (ends === undefined || ends.local.address !== LOOPBACK_ADDRESS || ends.remote.address !== LOOPBACK_ADDRESS) {
+        finish(new Error("[child-loopback-link] the connection is not between loopback addresses"));
+        return;
+      }
+      const expected = loopbackProof(nonce, "child", ends.remote, ends.local);
       // Read the answer in paused mode, so that once this listener is gone the
       // socket is back where a fresh one starts: the caller's first `data`
       // listener starts the flow, and nothing after the answer is lost.
       let received = Buffer.alloc(0);
       const onReadable = (): void => {
+        if (settled || connected !== socket) return;
         for (;;) {
           const chunk = connected.read() as Buffer | null;
           if (chunk === null) return;
@@ -379,14 +431,33 @@ export function connectToAnnouncedChild(opts: {
           return;
         }
       };
-      const onEnd = (): void =>
-        finish(new Error("[child-loopback-link] the peer closed before answering with the child's proof"));
+      const onEnd = (): void => dropped(
+        connected,
+        new Error("[child-loopback-link] the peer closed before answering with the child's proof"),
+        port,
+        nonce,
+      );
       connected.on("readable", onReadable);
       connected.on("end", onEnd);
-      connected.write(`${loopbackProof(nonce, "host", hostPort, childPort).toString("hex")}\n`);
+      connected.write(`${loopbackProof(nonce, "host", ends.local, ends.remote).toString("hex")}\n`);
+    };
+    const dial = (port: number, nonce: string): void => {
+      attempts += 1;
+      let established = false;
+      const connected = connect({ host: LOOPBACK_ADDRESS, port, localAddress: LOOPBACK_ADDRESS }, () => {
+        established = true;
+        authenticate(connected, nonce, port);
+      });
+      socket = connected;
+      connected.on("error", (error: Error) => {
+        // A connect that never reached a listener is not retried; a connection
+        // the child reset during the handshake is.
+        if (established) dropped(connected, error, port, nonce);
+        else if (connected === socket) finish(error);
+      });
     };
     const onData = (chunk: Buffer): void => {
-      if (socket !== undefined) return;
+      if (announced) return;
       scanned += chunk.toString("utf-8");
       for (;;) {
         const newline = scanned.indexOf("\n");
@@ -404,10 +475,8 @@ export function connectToAnnouncedChild(opts: {
           finish(new Error("[child-loopback-link] the child announced an impossible port"));
           return;
         }
-        const nonce = match[2]!;
-        const connected = connect({ host: "127.0.0.1", port }, () => authenticate(connected, nonce));
-        socket = connected;
-        connected.on("error", onSocketError);
+        announced = true;
+        dial(port, match[2]!);
         return;
       }
       if (scanned.length > ANNOUNCE_SCAN_LIMIT) {

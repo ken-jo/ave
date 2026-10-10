@@ -64,8 +64,36 @@ function refused(port: number): Promise<string> {
  * module header of `child-loopback-link.ts`) rather than imported, so a change
  * to either side's formula fails these tests.
  */
-function proof(nonce: string, side: "host" | "child", ownPort: number, peerPort: number): string {
-  return createHmac("sha256", Buffer.from(nonce, "hex")).update(`ave-loopback ${side} ${ownPort} ${peerPort}`).digest("hex");
+function proof(
+  nonce: string,
+  side: "host" | "child",
+  ownPort: number,
+  peerPort: number,
+  ownAddress = "127.0.0.1",
+  peerAddress = "127.0.0.1",
+): string {
+  return createHmac("sha256", Buffer.from(nonce, "hex"))
+    .update(`ave-loopback ${side} ${ownAddress} ${ownPort} ${peerAddress} ${peerPort}`)
+    .digest("hex");
+}
+
+/** Whether this host routes a second loopback address (Linux and Windows do; macOS has only 127.0.0.1). */
+async function canBind(address: string): Promise<boolean> {
+  const probe = createServer();
+  return new Promise((resolve) => {
+    probe.once("error", () => resolve(false));
+    probe.listen(0, address, () => probe.close(() => resolve(true)));
+  });
+}
+const SECOND_LOOPBACK = "127.0.0.2";
+const hasSecondLoopback = await canBind(SECOND_LOOPBACK);
+
+/** Dial `port` on 127.0.0.1 from `localAddress`. */
+function dialFrom(localAddress: string, port: number): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = connect({ host: "127.0.0.1", port, localAddress }, () => resolve(socket));
+    socket.once("error", reject);
+  });
 }
 
 /** Dial the child and present the host's proof for this very connection. */
@@ -180,6 +208,8 @@ describe("the child accepts exactly one authenticated host", () => {
     ["a proof bound to another connection's port", (nonce: string, port: number, hostPort: number) => proof(nonce, "host", hostPort + 1, port)],
     ["the child's proof instead of the host's", (nonce: string, port: number, hostPort: number) => proof(nonce, "child", hostPort, port)],
     ["a proof under another nonce", (nonce: string, port: number, hostPort: number) => proof(nonce.replace(/^./, nonce[0] === "a" ? "b" : "a"), "host", hostPort, port)],
+    ["a proof without the addresses", (nonce: string, port: number, hostPort: number) =>
+      createHmac("sha256", Buffer.from(nonce, "hex")).update(`ave-loopback host ${hostPort} ${port}`).digest("hex")],
   ])("drops a peer presenting %s, answers it nothing, and keeps listening for the host", async (_what, present) => {
     const { lines, announce } = announced();
     const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000 });
@@ -196,6 +226,60 @@ describe("the child accepts exactly one authenticated host", () => {
     const child = await accepted;
     host.destroy();
     child.destroy();
+  });
+
+  // A 127.0.0.1 listener takes connections from every 127/8 address, so a
+  // peer on 127.0.0.2 can hold the very port number the host connected from.
+  it.runIf(hasSecondLoopback)(
+    "drops a peer on another loopback address presenting a proof for the host's port number — the earlier ports-only one, or one correct for its own address — and keeps listening",
+    async () => {
+      const { lines, announce } = announced();
+      const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 5_000 });
+      const { port, nonce } = await nextLine(lines);
+      const presentations = [
+        // What the previous handshake checked: the ports alone, as a host on
+        // 127.0.0.1 with this port number would have sent it.
+        (ownPort: number) => createHmac("sha256", Buffer.from(nonce, "hex")).update(`ave-loopback host ${ownPort} ${port}`).digest("hex"),
+        // Correct for the peer's own endpoints; only the address check stops it.
+        (ownPort: number) => proof(nonce, "host", ownPort, port, SECOND_LOOPBACK, "127.0.0.1"),
+      ];
+      for (const present of presentations) {
+        const intruder = await dialFrom(SECOND_LOOPBACK, port);
+        intruder.on("error", () => undefined);
+        expect(intruder.localAddress).toBe(SECOND_LOOPBACK);
+        let answered = "";
+        intruder.on("data", (chunk: Buffer) => (answered += chunk.toString("utf-8")));
+        const closed = new Promise((resolve) => intruder.once("close", resolve));
+        intruder.write(`${present(intruder.localPort!)}\n`);
+        await closed;
+        expect(answered).toBe("");
+      }
+      const host = await dialAsHost(port, nonce);
+      const child = await accepted;
+      host.destroy();
+      child.destroy();
+    },
+  );
+
+  it("lets the host in on its second connect when its first found every handshake slot taken", async () => {
+    const { lines, announce } = announced();
+    const accepted = acceptHostOverLoopback({ announce, acceptTimeoutMs: 5_000, handshakeTimeoutMs: 300 });
+    const { port, nonce } = await nextLine(lines);
+    // Four silent peers hold the slots until their handshake time runs out.
+    const squatters = await Promise.all(Array.from({ length: 4 }, () => dial(port)));
+    for (const squatter of squatters) squatter.on("error", () => undefined);
+    const stdout = new PassThrough();
+    const connecting = connectToAnnouncedChild({ stdout, exited: NEVER, timeoutMs: 5_000 });
+    stdout.write(`AVE-CHILD-LISTEN ${port} ${nonce}\n`);
+    const host = await connecting;
+    const child = await accepted;
+    const received = readAll(child, 2);
+    child.resume();
+    host.write("ok");
+    expect(await received).toBe("ok");
+    host.destroy();
+    child.destroy();
+    for (const squatter of squatters) squatter.destroy();
   });
 
   it("drops a peer that sends more than a proof's length without a newline, and one that stays silent, and keeps listening", async () => {
