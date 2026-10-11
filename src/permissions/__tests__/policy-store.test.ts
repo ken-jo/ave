@@ -182,6 +182,84 @@ describe("policy-store", () => {
   });
 
   // ══════════════════════════════════════════════════
+  // Fail closed: a file that leaves out or mistypes a safety field
+  // ══════════════════════════════════════════════════
+
+  // A managed policy.json written for another section (the marketplace
+  // policy example carries version 1 and `marketplaces` only).
+  const MARKETPLACE_ONLY = {
+    version: 1,
+    marketplaces: { additional: [{ id: "corp", url: "https://git.corp.example/ave/marketplace.git" }] },
+  };
+
+  it("admin file without requireExplicitApproval → explicit approval stays on", async () => {
+    writeFile(ADMIN_PATH, MARKETPLACE_ONLY);
+
+    const result = await loadPolicy(USER_PATH, ADMIN_PATH);
+    expect(result.source).toBe("admin");
+    expect(result.requireExplicitApproval).toBe(true);
+    expect(result.managed).toBe(false);
+    expect(typeof result.updatedAt).toBe("string");
+    expect(isPolicyUserEditable(result)).toBe(false);
+  });
+
+  it("user file without requireExplicitApproval → explicit approval stays on", async () => {
+    writeFile(USER_PATH, { version: 1, managed: false, updatedAt: "2026-10-12T00:00:00.000Z" });
+
+    const result = await loadPolicy(USER_PATH, ADMIN_PATH);
+    expect(result.source).toBe("user");
+    expect(result.requireExplicitApproval).toBe(true);
+    // A save from that file keeps it on too.
+    const saved = await savePolicy({}, USER_PATH, ADMIN_PATH);
+    expect(saved.requireExplicitApproval).toBe(true);
+  });
+
+  it("a safety field of the wrong type reads as its safe value", async () => {
+    writeFile(ADMIN_PATH, { version: 1, requireExplicitApproval: "false", managed: "no" });
+    const admin = await loadPolicy(USER_PATH, ADMIN_PATH);
+    expect(admin.requireExplicitApproval).toBe(true);
+    expect(admin.managed).toBe(true);
+
+    delete files[ADMIN_PATH];
+    writeFile(USER_PATH, { version: 1, requireExplicitApproval: 0, managed: "false", updatedAt: "2026-10-12T00:00:00.000Z" });
+    const user = await loadPolicy(USER_PATH, ADMIN_PATH);
+    expect(user.requireExplicitApproval).toBe(true);
+    expect(user.managed).toBe(true);
+    expect(isPolicyUserEditable(user)).toBe(false);
+    await expect(savePolicy({ requireExplicitApproval: false }, USER_PATH, ADMIN_PATH)).rejects.toThrow();
+  });
+
+  it("merged: an admin file that does not state the field keeps the user's choice; a mistyped one forces it on", async () => {
+    writeFile(USER_PATH, makeTestPolicy({ requireExplicitApproval: false }));
+    writeFile(ADMIN_PATH, MARKETPLACE_ONLY);
+    const silent = await loadPolicy(USER_PATH, ADMIN_PATH);
+    expect(silent.source).toBe("merged");
+    expect(silent.requireExplicitApproval).toBe(false);
+    expect(silent.adminOverrides).toEqual([]);
+    expect(typeof silent.updatedAt).toBe("string");
+
+    writeFile(ADMIN_PATH, { ...MARKETPLACE_ONLY, requireExplicitApproval: "yes" });
+    const mistyped = await loadPolicy(USER_PATH, ADMIN_PATH);
+    expect(mistyped.requireExplicitApproval).toBe(true);
+    expect(mistyped.adminOverrides).toContain("requireExplicitApproval");
+  });
+
+  it("only the permission fields leave the file: other sections are not returned", async () => {
+    writeFile(ADMIN_PATH, { ...MARKETPLACE_ONLY, requireExplicitApproval: true, managed: true, updatedAt: "2026-10-12T00:00:00.000Z" });
+
+    const result = await loadPolicy(USER_PATH, ADMIN_PATH);
+    expect(Object.keys(result).sort()).toEqual(["adminPath", "managed", "requireExplicitApproval", "source", "updatedAt", "version"]);
+  });
+
+  it("a policy file that is not a JSON object is ignored like an unreadable one", async () => {
+    writeFile(USER_PATH, makeTestPolicy({ requireExplicitApproval: false }));
+    files[ADMIN_PATH] = "[1]\n";
+
+    const result = await loadPolicy(USER_PATH, ADMIN_PATH);
+    expect(result.source).toBe("user");
+  });
+
+  // ══════════════════════════════════════════════════
   // Read/write agreement — "is this policy user-editable?"
   //
   // The read side (Permissions tab) and the write side (savePolicy) must never

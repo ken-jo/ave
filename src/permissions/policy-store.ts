@@ -83,16 +83,58 @@ async function withPolicyLock<T>(
 
 // ─── Read (single file) ───────────────────────────────
 
-async function readPolicyFile(filePath: string): Promise<PolicyFile | null> {
+/**
+ * The fields a policy file states, each checked; a field the file does not
+ * state is absent. The file is written by hand or by device management (the
+ * admin file also carries other sections, such as `marketplaces`), so nothing
+ * here trusts its shape: a safety field of the wrong type reads as its safe
+ * value, never as "off".
+ */
+interface StatedPolicy {
+  requireExplicitApproval?: boolean;
+  managed?: boolean;
+  updatedAt?: string;
+}
+
+/** The safe value of each boolean safety field: explicit approval on, edits locked. */
+const SAFE_BOOLEANS = { requireExplicitApproval: true, managed: true } as const;
+
+function statedPolicy(filePath: string, parsed: Record<string, unknown>): StatedPolicy {
+  const stated: StatedPolicy = {};
+  for (const field of Object.keys(SAFE_BOOLEANS) as Array<keyof typeof SAFE_BOOLEANS>) {
+    const value = parsed[field];
+    if (value === undefined) continue;
+    if (typeof value === "boolean") {
+      stated[field] = value;
+    } else {
+      log.error(`${field} in ${filePath} is not a boolean — read as ${SAFE_BOOLEANS[field]}`);
+      stated[field] = SAFE_BOOLEANS[field];
+    }
+  }
+  if (typeof parsed.updatedAt === "string") stated.updatedAt = parsed.updatedAt;
+  return stated;
+}
+
+/** A whole policy: what the file states over the defaults, so an unstated requireExplicitApproval stays true. */
+function completePolicy(stated: StatedPolicy): PolicyFile {
+  return { ...defaultPolicy(), ...stated, version: 1 };
+}
+
+async function readPolicyFile(filePath: string): Promise<StatedPolicy | null> {
   try {
     const raw = await readFile(filePath, "utf-8");
-    const parsed = JSON.parse(raw) as PolicyFile;
-    if (parsed.version !== 1) {
-
-      log.error(`version mismatch in ${filePath}: expected 1, got ${parsed.version} — ignoring`);
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      log.error(`${filePath} is not a JSON object — ignoring`);
       return null;
     }
-    return parsed;
+    const record = parsed as Record<string, unknown>;
+    if (record.version !== 1) {
+
+      log.error(`version mismatch in ${filePath}: expected 1, got ${String(record.version)} — ignoring`);
+      return null;
+    }
+    return statedPolicy(filePath, record);
   } catch (err: unknown) {
     if (isMissingPathError(err)) return null;
     // JSON parse errors and similar read failures log and fall back.
@@ -131,16 +173,16 @@ export async function loadPolicy(
 
   // case 2: only the user file exists.
   if (userFile && !adminFile) {
-    return { ...userFile, source: "user" };
+    return { ...completePolicy(userFile), source: "user" };
   }
 
   // case 3: only the admin file exists.
   if (!userFile && adminFile) {
-    return { ...adminFile, source: "admin", adminPath };
+    return { ...completePolicy(adminFile), source: "admin", adminPath };
   }
 
-  // case 4: both exist, so merge with admin taking precedence.
-  const base = { ...defaultPolicy(), ...userFile! };
+  // case 4: both exist, so merge with admin taking precedence over what it states.
+  const base = completePolicy(userFile!);
   const overrides: string[] = [];
   const merged = { ...base };
 
@@ -157,7 +199,7 @@ export async function loadPolicy(
     if (!base.managed) overrides.push("managed");
   }
   // updatedAt: use admin's timestamp when merged
-  merged.updatedAt = adminFields.updatedAt;
+  merged.updatedAt = adminFields.updatedAt ?? base.updatedAt;
 
   return {
     ...merged,
@@ -196,7 +238,7 @@ export async function savePolicy(
       throw new Error(t("be_policyStore.managedPolicyUserCannotChange"));
     }
 
-    const current = existing ?? defaultPolicy();
+    const current = existing ? completePolicy(existing) : defaultPolicy();
     const updated: PolicyFile = {
       ...current,
       ...patch,
