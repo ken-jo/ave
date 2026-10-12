@@ -1725,43 +1725,57 @@ describe("ChatSidePanel", () => {
     expect(apiMock.chatGetSubAgentTranscript).not.toHaveBeenCalled();
   });
 
-  it.each(["ko", "en"] as const)(
-    "subagent tab: running side-chat transcript miss uses localized copy in %s",
-    async (locale) => {
+  it.each(((["ko", "en"] as const).flatMap((locale) =>
+    (["tile", "side-chat"] as const).flatMap((route) =>
+      (["running", "waiting", "done", "error", "interrupted"] as const).map((status) => ({ locale, route, status })),
+    ),
+  )))(
+    "subagent tab: transcript miss preserves the $status state on the $route path in $locale",
+    async ({ locale, route, status }) => {
       const previousLocale = getLocale();
       setLocale(locale);
       try {
         const pending = deferred<SubAgentTranscriptResult>();
         const apiMock = api();
-        const tileRead = apiMock.chatGetSubAgentTranscript;
-        delete apiMock.chatGetSubAgentTranscript;
-        apiMock.sideChat!.getSubAgentTranscript = vi.fn(() => pending.promise);
+        const reader = vi.fn(() => pending.promise);
+        const otherReader = route === "side-chat" ? apiMock.chatGetSubAgentTranscript : apiMock.sideChat!.getSubAgentTranscript;
+        if (route === "side-chat") {
+          delete apiMock.chatGetSubAgentTranscript;
+          apiMock.sideChat!.getSubAgentTranscript = reader;
+        } else {
+          apiMock.chatGetSubAgentTranscript = reader;
+        }
+        const parentSessionId = route === "side-chat" ? "side-7" : "tile-session";
         await renderPanelWithRecordedSideChat(apiMock, [{
           spawnId: "side-spawn-1",
-          parentSessionId: "side-7",
+          parentSessionId,
           childSessionId: "side-child-1",
           title: "Side researcher",
-          status: "running",
+          status,
           entries: [],
           toolCallCount: 0,
         }]);
         addTabViaMenu("subagent");
-        await waitFor(() => expect(apiMock.sideChat!.getSubAgentTranscript).toHaveBeenCalledExactlyOnceWith({
-          originSessionId: "side-7", childSessionId: "side-child-1",
+        await waitFor(() => expect(reader).toHaveBeenCalledExactlyOnceWith({
+          originSessionId: parentSessionId, childSessionId: "side-child-1",
         }));
-        const detail = screen.getByTestId("chat-side-panel-subagent-detail");
+        const detail = screen.getByTestId("chat-side-panel-subagent-transcript");
         expect(within(detail).getByRole("status")).toHaveTextContent(t("subAgentCard.transcriptLoading"));
         await act(async () => {
           pending.resolve({ ok: false, error: "sub-agent-transcript-not-found" });
           await pending.promise;
         });
-        expect(detail).toHaveTextContent(locale === "ko"
-          ? "서브에이전트 대화 기록을 찾을 수 없습니다."
-          : "The sub-agent transcript could not be found.");
-        expect(detail).toHaveTextContent(t("subAgentCard.statusRunning"));
+        if (status === "running" || status === "waiting") {
+          expect(detail.textContent).toBe(t(status === "running" ? "subAgentCard.statusRunning" : "subAgentCard.statusWaiting"));
+          expect(within(detail).queryByRole("alert")).toBeNull();
+        } else {
+          expect(within(detail).getByRole("alert")).toHaveTextContent(locale === "ko"
+            ? "대화 기록을 불러오지 못했습니다."
+            : "Couldn't load transcript.");
+        }
+        expect(within(detail).queryByRole("status")).toBeNull();
         expect(detail).not.toHaveTextContent("sub-agent-transcript-not-found");
-        expect(within(detail).queryByRole("alert")).toBeNull();
-        expect(tileRead).not.toHaveBeenCalled();
+        expect(otherReader).not.toHaveBeenCalled();
       } finally {
         act(() => setLocale(previousLocale));
       }

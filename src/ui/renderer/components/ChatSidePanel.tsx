@@ -22,7 +22,6 @@ import {
   DropdownMenuTrigger,
 } from "../../../components/ui/dropdown-menu.js";
 import { useTranslation } from "../../../i18n/react.js";
-import { formatIpcError } from "../format-ipc-error.js";
 import { SIDE_PANEL_DEFAULT_WIDTH, SIDE_PANEL_MIN_RESERVE } from "../../../shared/side-panel.js";
 import { ToolActivityBody, ToolActivityWorkspace, toolActivityTotal, type ToolActivityState } from "./ToolActivity.js";
 import { EdgeResizeBar } from "./EdgeResizeBar.js";
@@ -168,7 +167,7 @@ function mergeHydratedTranscriptWithLiveTail(hydratedEntries: ChatEntry[], liveE
 
 type TranscriptHydration =
   | { key: string; status: "loading" }
-  | { key: string; status: "failed"; error?: string }
+  | { key: string; status: "failed" }
   | { key: string; status: "loaded"; entries: ChatEntry[] };
 
 function SubAgentTranscriptDetail({
@@ -208,7 +207,7 @@ function SubAgentTranscriptDetail({
       if (cancelled) return;
       setHydrated(result.ok
         ? { key: hydrationKey, status: "loaded", entries: historyToEntries(result.messages) }
-        : { key: hydrationKey, status: "failed", error: result.error });
+        : { key: hydrationKey, status: "failed" });
     }).catch(() => {
       // Fail closed for persisted transcript hydration. The child JSONL keyed by
       // childSessionId is the only persisted transcript SOT; parent tool results
@@ -235,10 +234,6 @@ function SubAgentTranscriptDetail({
     && typeof getSubAgentTranscript === "function"
     && (!activeHydration || activeHydration.status === "loading"));
   const isHydrationFailed = isTerminalSpawn && activeHydration?.status === "failed";
-  const transcriptNotice = isSideChatSpawn && !isTerminalSpawn && activeHydration?.status === "failed"
-    && activeHydration.error === "sub-agent-transcript-not-found"
-    ? formatIpcError(activeHydration.error, undefined)
-    : null;
   return (
     <div className="min-h-0 min-w-0 space-y-3 py-1" data-testid="chat-side-panel-subagent-transcript">
       {isHydrating ? (
@@ -249,11 +244,6 @@ function SubAgentTranscriptDetail({
       {isHydrationFailed ? (
         <div role="alert" className="py-1 text-xs text-destructive">
           {t("subAgentCard.transcriptLoadFailed")}
-        </div>
-      ) : null}
-      {transcriptNotice ? (
-        <div className="py-1 text-xs text-muted-foreground">
-          {transcriptNotice}
         </div>
       ) : null}
       {entries.length > 0 ? (
