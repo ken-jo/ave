@@ -77,6 +77,23 @@ describe("desktop packaging", () => {
     expect(uvLicense).toContain("permission notice shall be included");
   });
 
+  it("packages the model catalog's license notice as an Electron resource", () => {
+    // The bundled catalog (src/core/model-catalog/bundled-snapshot.json) is
+    // models.dev data under MIT; the installer carries the notice the way it
+    // carries uv's, and the footprint check refuses a package without it.
+    const pkg = readPackageJson();
+    expect(pkg.build.extraResources).toEqual(
+      expect.arrayContaining([{ from: "resources/licenses/models.dev", to: "licenses/models.dev" }]),
+    );
+    const license = readFileSync(join(root, "resources", "licenses", "models.dev", "LICENSE-MIT"), "utf8");
+    expect(license).toBe(readFileSync(join(root, "scripts", "model-catalog", "models-dev-LICENSE.txt"), "utf8"));
+    expect(license).toContain("Copyright (c) 2025 models.dev");
+    expect(license).toContain("permission notice shall be included");
+    expect(readFileSync(join(root, "scripts", "check-package-footprint.mjs"), "utf8")).toContain(
+      'resolve(resourcesDir, "licenses", "models.dev", "LICENSE-MIT")',
+    );
+  });
+
   it("packages runtime guidance with its safe replacement hash inventory", () => {
     const pkg = readPackageJson();
     expect(pkg.build.extraResources).toEqual(

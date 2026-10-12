@@ -1600,6 +1600,58 @@ describe("SettingsService LLM per-vendor patching", () => {
     await cleanupTmpDir(userDataPath);
   });
 
+  it("rewrites a stored retired default endpoint on every load, and keeps any other endpoint", async () => {
+    const settingsFile = join(userDataPath, "ave-settings.json");
+    const write = () => writeFileSync(settingsFile, JSON.stringify({
+      marketplace: { installedProviderIds: ["baseten", "nebius", "together"] },
+      llm: {
+        provider: "baseten",
+        vendors: {
+          // The default baseUrl every saved block carried before: this host does not resolve.
+          baseten: { model: "deepseek-ai/DeepSeek-V3.1", baseUrl: "https://model-api.baseten.co/v1" },
+          nebius: { model: "nvidia/nemotron-3-super-120b-a12b", baseUrl: "https://api.studio.nebius.ai/v1" },
+          together: { model: "fixture-model", baseUrl: "https://proxy.example.invalid/v1" },
+        },
+      },
+    }));
+    write();
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const vendors = service.get("llm").vendors;
+    expect(vendors.baseten?.baseUrl).toBe("https://inference.baseten.co/v1");
+    expect(vendors.nebius?.baseUrl).toBe("https://api.tokenfactory.nebius.com/v1");
+    expect(vendors.together?.baseUrl).toBe("https://proxy.example.invalid/v1");
+    await service.patch({});
+    expect(JSON.parse(readFileSync(settingsFile, "utf-8")).llm.vendors.baseten.baseUrl).toBe("https://inference.baseten.co/v1");
+
+    // An older build reinstalled over this one writes the retired default
+    // back; the next load rewrites it again, with no marker to stop it.
+    const applied = JSON.parse(readFileSync(settingsFile, "utf-8")).appliedMigrations as string[];
+    writeFileSync(settingsFile, JSON.stringify({
+      appliedMigrations: applied,
+      marketplace: { installedProviderIds: ["baseten"] },
+      llm: { provider: "baseten", vendors: { baseten: { model: "deepseek-ai/DeepSeek-V3.1", baseUrl: "https://model-api.baseten.co/v1" } } },
+    }));
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("llm").vendors.baseten?.baseUrl).toBe("https://inference.baseten.co/v1");
+  });
+
+  it("keeps an endpoint on the same vendor that only resembles the retired default", () => {
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
+      marketplace: { installedProviderIds: ["baseten", "nebius"] },
+      llm: {
+        provider: "baseten",
+        vendors: {
+          // A trailing slash, and a proxy in front of the old path: the user typed these.
+          baseten: { model: "deepseek-ai/DeepSeek-V3.1", baseUrl: "https://model-api.baseten.co/v1/" },
+          nebius: { model: "nvidia/nemotron-3-super-120b-a12b", baseUrl: "https://nebius-proxy.example.invalid/v1" },
+        },
+      },
+    }));
+    const vendors = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm").vendors;
+    expect(vendors.baseten?.baseUrl).toBe("https://model-api.baseten.co/v1/");
+    expect(vendors.nebius?.baseUrl).toBe("https://nebius-proxy.example.invalid/v1");
+  });
+
   it("bounds legacy profile budgets and persists the normalized value without changing the output cap", async () => {
     writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
       llm: {

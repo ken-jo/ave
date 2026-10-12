@@ -189,6 +189,50 @@ const KNOWN_MIGRATIONS: readonly string[] = [
   MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION,
 ];
 
+/**
+ * Endpoints a vendor's default `baseUrl` used to name, and the one it names
+ * now. Saved vendor blocks carry the default they were saved with, so a
+ * stored copy of a retired default is rewritten to the current one.
+ *
+ * Applied on every load, by exact value, not behind a one-time marker: a
+ * retired default is never a choice the user made (Baseten's old host does
+ * not resolve), and an older build reinstalled after this one can write the
+ * old default back into a fresh block, which a marker would leave stranded.
+ * Any other value — a proxy, a regional host — is the user's and is kept.
+ */
+const RETIRED_VENDOR_BASE_URLS: Readonly<Partial<Record<LLMVendor, Readonly<Record<string, string>>>>> = {
+  // model-api.baseten.co does not resolve; Baseten's Model APIs are served
+  // from inference.baseten.co (docs.baseten.co, Model APIs overview).
+  baseten: { "https://model-api.baseten.co/v1": "https://inference.baseten.co/v1" },
+  // Nebius AI Studio became Token Factory; the old host still resolves to the
+  // same service, so this rewrite keeps the stored endpoint on the documented
+  // name rather than repairing a broken one (docs.tokenfactory.nebius.com/switch).
+  nebius: { "https://api.studio.nebius.ai/v1": "https://api.tokenfactory.nebius.com/v1" },
+};
+
+/** The stored `llm` object with every retired default endpoint rewritten, and whether anything changed. */
+function withCurrentVendorBaseUrls(stored: Record<string, any>): { stored: Record<string, any>; changed: boolean } {
+  const llm = stored.llm;
+  if (llm === null || typeof llm !== "object" || Array.isArray(llm)) return { stored, changed: false };
+  const vendors = llm.vendors;
+  if (vendors === null || typeof vendors !== "object" || Array.isArray(vendors)) return { stored, changed: false };
+  let changed = false;
+  const next: Record<string, unknown> = {};
+  for (const [vendorId, block] of Object.entries(vendors as Record<string, unknown>)) {
+    const retired = Object.hasOwn(RETIRED_VENDOR_BASE_URLS, vendorId) ? RETIRED_VENDOR_BASE_URLS[vendorId as LLMVendor] : undefined;
+    const baseUrl = block !== null && typeof block === "object" && !Array.isArray(block)
+      ? (block as Record<string, unknown>).baseUrl
+      : undefined;
+    if (retired && typeof baseUrl === "string" && Object.hasOwn(retired, baseUrl)) {
+      next[vendorId] = { ...(block as Record<string, unknown>), baseUrl: retired[baseUrl] };
+      changed = true;
+    } else {
+      next[vendorId] = block;
+    }
+  }
+  return changed ? { stored: { ...stored, llm: { ...llm, vendors: next } }, changed } : { stored, changed };
+}
+
 export type { LLMVendor, LLMVendorSettings };
 export { LLM_VENDORS };
 export type { ShortcutSettings, ShortcutSettingsPatch };
@@ -1993,6 +2037,12 @@ export class SettingsService {
       if (!appliedMigrations.includes(LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION)) {
         parsed = withRenamedLlmVendorIds(stored, RENAMED_LLM_VENDOR_IDS);
         appliedMigrations.push(LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION);
+        migrationWriteBack = true;
+      }
+
+      const currentBaseUrls = withCurrentVendorBaseUrls(parsed);
+      if (currentBaseUrls.changed) {
+        parsed = currentBaseUrls.stored;
         migrationWriteBack = true;
       }
 
