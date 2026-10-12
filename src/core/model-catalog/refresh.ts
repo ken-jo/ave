@@ -26,6 +26,7 @@ import { pruneModelsDevDocument, type CatalogDiagnostic } from "../../shared/mod
 import { catalogProviderIds } from "../../shared/model-catalog/provider-map.js";
 import type { ModelCatalogDocument } from "../../shared/model-catalog/types.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { runWithAbortableDeadline } from "../../shared/abortable-deadline.js";
 import { fetchPublicHttpResponse } from "../network-guard.js";
 import {
   readCurrentModelCatalog,
@@ -80,51 +81,39 @@ function isoSeconds(date: Date): string {
  * cap is refused before reading; a body that grows past it is cancelled at the
  * chunk that crosses it, so the cap bounds memory, not just the result.
  */
-async function readCappedBody(response: Response, deadline: number, timeoutMs: number, signal: AbortSignal | undefined): Promise<Buffer> {
+async function readCappedBody(response: Response, signal: AbortSignal): Promise<Buffer> {
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > MODEL_CATALOG_MAX_BYTES) {
+    void response.body?.cancel().catch(() => undefined);
     throw new RefreshFault(`response declares ${declared} bytes, over the ${MODEL_CATALOG_MAX_BYTES}-byte cap`);
   }
   const reader = response.body?.getReader();
   if (!reader) throw new RefreshFault("response has no body");
   const chunks: Uint8Array[] = [];
   let total = 0;
-  // Shutdown aborts the read too, not only the request: a quit mid-download
-  // must not wait out the deadline.
-  const aborted = signal
-    ? new Promise<"aborted">((resolve) => {
-      if (signal.aborted) resolve("aborted");
-      else signal.addEventListener("abort", () => resolve("aborted"), { once: true });
-    })
-    : new Promise<never>(() => {});
-  for (;;) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      await reader.cancel().catch(() => undefined);
-      throw new RefreshFault(`body did not arrive within ${timeoutMs} ms`);
+  // Cleanup may itself stall. Request it without making it part of the deadline.
+  const cancel = (): void => { void reader.cancel().catch(() => undefined); };
+  signal.addEventListener("abort", cancel, { once: true });
+  let completed = false;
+  try {
+    for (;;) {
+      signal.throwIfAborted();
+      const next = await reader.read();
+      signal.throwIfAborted();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > MODEL_CATALOG_MAX_BYTES) {
+        throw new RefreshFault(`response exceeds the ${MODEL_CATALOG_MAX_BYTES}-byte cap`);
+      }
+      chunks.push(next.value);
     }
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timedOut = new Promise<"timeout">((resolve) => {
-      timer = setTimeout(() => resolve("timeout"), remaining);
-    });
-    const next = await Promise.race([reader.read(), timedOut, aborted]).finally(() => clearTimeout(timer));
-    if (next === "aborted") {
-      await reader.cancel().catch(() => undefined);
-      throw new RefreshFault("aborted");
-    }
-    if (next === "timeout") {
-      await reader.cancel().catch(() => undefined);
-      throw new RefreshFault(`body did not arrive within ${timeoutMs} ms`);
-    }
-    if (next.done) break;
-    total += next.value.byteLength;
-    if (total > MODEL_CATALOG_MAX_BYTES) {
-      await reader.cancel().catch(() => undefined);
-      throw new RefreshFault(`response exceeds the ${MODEL_CATALOG_MAX_BYTES}-byte cap`);
-    }
-    chunks.push(next.value);
+    completed = true;
+    return Buffer.concat(chunks);
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    if (!completed) cancel();
+    reader.releaseLock();
   }
-  return Buffer.concat(chunks);
 }
 
 /** Every catalog provider the reference lists must still list a model. */
@@ -151,35 +140,38 @@ export async function refreshModelCatalogCache(options: ModelCatalogRefreshOptio
     }
 
     const timeoutMs = options.timeoutMs ?? MODEL_CATALOG_FETCH_TIMEOUT_MS;
-    const deadline = Date.now() + timeoutMs;
-    let response: Response;
-    try {
-      response = await fetchPublicHttpResponse(MODEL_CATALOG_REFRESH_URL, {
+    const download = await runWithAbortableDeadline(async (signal) => {
+      const response = await fetchPublicHttpResponse(MODEL_CATALOG_REFRESH_URL, {
         fetchImpl: options.fetchImpl,
         method: "GET",
         credentials: "omit",
         // This source is one exact HTTPS URL; a redirect is not another source grant.
         maxRedirects: 0,
         headers: { accept: "application/json", ...(pointer?.etag ? { "if-none-match": pointer.etag } : {}) },
-        // The body read below keeps the same deadline as the request.
         timeoutMs,
-        signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(options.signal ? [options.signal] : [])]),
+        signal,
       });
-    } catch (error) {
-      throw new RefreshFault(`request failed: ${errorMessage(error)}`);
+      signal.throwIfAborted();
+      if (response.status !== 200) {
+        void response.body?.cancel().catch(() => undefined);
+        if (response.status === 304 && pointer) return { response, raw: undefined };
+        throw new RefreshFault(`${MODEL_CATALOG_REFRESH_URL} answered ${response.status}`);
+      }
+      return { response, raw: await readCappedBody(response, signal) };
+    }, {
+      deadlineMs: timeoutMs,
+      callerAbortSignal: options.signal,
+      createDeadlineError: () => new RefreshFault(`headers and body did not arrive within ${timeoutMs} ms`),
+    });
+    if (!download.ok) {
+      throw new RefreshFault(download.reason === "caller-abort" ? "aborted" : `request failed: ${errorMessage(download.error)}`);
     }
-
-    if (response.status === 304 && pointer) {
-      await response.body?.cancel().catch(() => undefined);
+    const { response, raw } = download.value;
+    if (!raw && pointer) {
       writeModelCatalogPointer(options.dir, { ...pointer, checkedAt: isoSeconds(now()) });
       return { status: "not-modified", sha256: pointer.sha256 };
     }
-    if (response.status !== 200) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new RefreshFault(`${MODEL_CATALOG_REFRESH_URL} answered ${response.status}`);
-    }
-
-    const raw = await readCappedBody(response, deadline, timeoutMs, options.signal);
+    if (!raw) throw new RefreshFault("response has no body");
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw.toString("utf-8"));

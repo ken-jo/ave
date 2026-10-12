@@ -222,6 +222,53 @@ describe("refreshModelCatalogCache", () => {
       expect(cacheFiles()).toEqual(before);
     });
 
+    it("bounds a stalled DNS lookup by the total deadline", async () => {
+      let releaseLookup!: (answers: Array<{ address: string; family: number }>) => void;
+      lookupMock.mockImplementationOnce(() => new Promise((resolve) => { releaseLookup = resolve; }));
+      const { fetchImpl } = respondWith(() => json(rawDocument()));
+      let settled: unknown;
+      const pending = refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, timeoutMs: 30 })
+        .then((result) => { settled = result; return result; });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(settled).toMatchObject({ status: "failed", reason: expect.stringMatching(/30 ms/) });
+      } finally {
+        releaseLookup([{ address: "93.184.215.14", family: 4 }]);
+        await pending;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(cacheFiles()).toEqual({});
+    });
+
+    it("does not wait for a stalled cancellation after the deadline", async () => {
+      let releaseCancel!: () => void;
+      const cancellation = new Promise<void>((resolve) => { releaseCancel = resolve; });
+      const { fetchImpl } = respondWith(() => new Response(new ReadableStream<Uint8Array>({
+        pull: () => new Promise(() => {}), cancel: () => cancellation,
+      })));
+      let settled: unknown;
+      const pending = refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, timeoutMs: 30 })
+        .then((result) => { settled = result; return result; });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(settled).toMatchObject({ status: "failed", reason: expect.stringMatching(/30 ms/) });
+      } finally {
+        releaseCancel();
+        await pending;
+      }
+      expect(cacheFiles()).toEqual({});
+    });
+
+    it("cancels a declared oversized body without waiting for cleanup", async () => {
+      const cancel = vi.fn(() => new Promise<void>(() => {}));
+      const { fetchImpl } = respondWith(() => new Response(new ReadableStream<Uint8Array>({ cancel }), {
+        headers: { "content-length": String(MODEL_CATALOG_MAX_BYTES + 1) },
+      }));
+      const result = await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED });
+      expect(result.status).toBe("failed");
+      expect(cancel).toHaveBeenCalledOnce();
+    });
+
     it("a download still streaming when the app quits", async () => {
       await seedGoodCopy();
       const before = cacheFiles();
