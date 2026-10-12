@@ -121,7 +121,8 @@ function catalogTokenRates(cost: CatalogModelCost): TokenRates | undefined {
     outputPer1M: cost.output,
     ...(cost.cacheRead !== undefined ? { cacheReadPer1M: cost.cacheRead } : {}),
     ...(cost.cacheWrite !== undefined ? { cacheWritePer1M: cost.cacheWrite } : {}),
-    ...(cost.reasoning !== undefined ? { reasoningPer1M: cost.reasoning } : {}),
+    // A listed zero does not establish free reasoning; use the output rate.
+    ...(cost.reasoning !== undefined && cost.reasoning > 0 ? { reasoningPer1M: cost.reasoning } : {}),
     ...(tiers.length > 0 ? { tiers } : {}),
   };
 }

@@ -151,6 +151,13 @@ describe("computeCost — prompt-size tiers", () => {
 });
 
 describe("computeCost — cache and reasoning rates", () => {
+  it("uses the output rate when the catalog lists reasoning at zero", () => {
+    const pricing = rates("kilo", "kilo-auto/frontier");
+    expect(pricing.reasoningPer1M).toBeUndefined();
+    expect(computeCost({ inputTokens: 0, outputTokens: MILLION, reasoningTokens: MILLION }, pricing, "kilo"))
+      .toBe(25);
+  });
+
   it("prices Gemini cache reads at the catalog's cache rate, not the input rate", () => {
     const pro = rates("gemini", "gemini-2.5-pro");
     // 100K prompt, half of it cached: within the base tier.

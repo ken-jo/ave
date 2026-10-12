@@ -341,9 +341,9 @@ endpoint costs.
   tokens. The adapter now carries the provider's reported reasoning part of the output
   (`outputTokenDetails.reasoningTokens`) through the request usage, the turn summary and
   the audit row; that part is priced at the reasoning rate and the rest of the output
-  at the output rate. With no reasoning rate, or no reported split, all output is
-  output. The catalog states reasoning rates for Qwen (DashScope), DeepSeek and Nebius
-  models among the mapped providers.
+  at the output rate. An absent or zero catalog reasoning rate uses the output rate;
+  a listed zero does not establish free reasoning. Without a reported split, all output
+  uses the output rate. Several mapped providers have catalog reasoning rates.
 
 Every cost surface reads these: the pre-send estimate (`use-cost-estimate.ts`), the
 per-turn badge (`TokenCostBadge`, priced per request segment), the usage dashboard and
