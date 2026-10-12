@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "@testing-library/react";
 import { installRendererModelCatalog, renderModelCatalogUnavailable } from "../model-catalog-bootstrap.js";
 import { activeModelCatalog, installModelCatalog } from "../../../shared/model-catalog/active.js";
 import type { ModelCatalogDocument } from "../../../shared/model-catalog/types.js";
-import { t } from "../../../i18n/runtime.js";
+import { getLocale, setLocale, t } from "../../../i18n/runtime.js";
+import type { AveApi } from "../types.js";
 
 const installed = activeModelCatalog();
+const initialLocale = getLocale();
 afterEach(() => {
   installModelCatalog(installed);
+  setLocale(initialLocale);
   vi.restoreAllMocks();
 });
 
@@ -26,6 +30,17 @@ describe("installRendererModelCatalog", () => {
 });
 
 describe("renderModelCatalogUnavailable", () => {
+  it("hydrates the persisted locale when the application cannot mount", async () => {
+    setLocale("en");
+    const root = document.createElement("div");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const getSettings = vi.fn(async () => ({ appearance: { language: "ko" } }) as Awaited<ReturnType<AveApi["getSettings"]>>);
+    renderModelCatalogUnavailable(root, new Error("unauthorized-frame"), { getSettings });
+    await waitFor(() => expect(root.textContent).toContain("인증되지 않은 프레임"));
+    expect(getSettings).toHaveBeenCalledOnce();
+    expect(root.textContent).not.toContain("unauthorized-frame");
+  });
+
   it("replaces the blank root with a visible reason and a reload", () => {
     const root = document.createElement("div");
     root.append(document.createElement("span"));

@@ -198,7 +198,8 @@ marketplace preset reached through the same vendor. The engine logs a named entr
 catalog does not list once per route and name, so a typo does not pass silently.
 
 **A custom `baseUrl` must establish model identity.** A mapped vendor matches by name
-only at its native API host, including resource-scoped or regional API hosts. A different
+only in its native public-model namespace, including documented regional and
+certificate-authenticated API hosts. A different
 host may serve a different deployment under the same id: a gateway exposing `gpt-5.2` for
 a 64K deployment and listing only that id does not establish the public model's 400K
 window or 272K prompt cap. Name uniqueness within the catalog cannot identify what the
@@ -207,6 +208,12 @@ absent a declaration or endpoint report, the source is explicitly `fallback`, an
 engine probes the endpoint for metadata. The 128K fallback remains a guess; a deployment
 that reports no limits needs an explicit capacity setting. A product-specific path also must match where
 the same host serves multiple catalog products.
+
+`azure-foundry` addresses deployment aliases, which may reuse any public model id.
+Its resource hostname does not identify the deployed model: use an endpoint report,
+`catalogModel`, or `contextWindow`. `vertex-ai` derives its actual endpoint from the
+SDK's project and location; a stored `baseUrl` is unused by that adapter and its cached
+model list does not describe the active route.
 
 A proxy serving the catalog model can declare `catalogModel` to select that entry,
 including its prompt cap. This setting wins over automatic catalog name matching; an
