@@ -94,7 +94,7 @@ export type ContextWindowSource =
  * today: no `/models` endpoint Ave calls reports a prompt cap apart from the
  * window (GitHub Models' `limits.max_input_tokens` is read as the window).
  */
-export type InputLimitSource = "model-catalog";
+type InputLimitSource = "model-catalog";
 
 export interface ResolvedContextWindow {
   readonly contextWindow: number;
