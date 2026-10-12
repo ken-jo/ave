@@ -46,7 +46,6 @@ Current managed extension families include:
 - `@ave/plugin-local-indexer`
 - `@ave/plugin-meeting`
 - `@ave/plugin-lyra-mail`
-- `@ave/plugin-vega-helper`
 
 ### Marketplace And Local Development
 

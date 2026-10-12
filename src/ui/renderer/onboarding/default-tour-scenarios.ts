@@ -180,70 +180,6 @@ function buildDocSearchTour(): TourScenario {
   };
 }
 
-function buildVegaHelperTour(): TourScenario {
-  // Renamed from `proactive-work-tour` to align with the canonical
-
-  // (package repo) and use the manifest id (vega-helper) on their DOM
-  // attributes — the test/e2e fixture pins `manifest.id="vega-helper"`.
-  return {
-    id: "vega-helper-tour",
-    title: t("defaultTourScenarios.vegaHelperTitle"),
-    steps: [
-      {
-        anchorSelector: '[data-tour-anchor="vega-helper-connect"]',
-        title: t("defaultTourScenarios.vegaHelperStep1Title"),
-        body: t("defaultTourScenarios.vegaHelperStep1Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="vega-helper-scan"]',
-        title: t("defaultTourScenarios.vegaHelperStep2Title"),
-        body: t("defaultTourScenarios.vegaHelperStep2Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="vega-helper-overlay"]',
-        title: t("defaultTourScenarios.vegaHelperStep3Title"),
-        body: t("defaultTourScenarios.vegaHelperStep3Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="composer-input"]',
-        title: t("defaultTourScenarios.vegaHelperStep4Title"),
-        body: t("defaultTourScenarios.vegaHelperStep4Body"),
-        keyHint: ["⌘+?"],
-      },
-    ],
-  };
-}
-
-function buildMultiAgentTour(): TourScenario {
-  return {
-    id: "multi-agent-tour",
-    title: t("defaultTourScenarios.multiAgentTitle"),
-    steps: [
-      {
-        anchorSelector: '[data-tour-anchor="agent-hub-list"]',
-        title: t("defaultTourScenarios.multiAgentStep1Title"),
-        body: t("defaultTourScenarios.multiAgentStep1Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="agent-hub-dispatch"]',
-        title: t("defaultTourScenarios.multiAgentStep2Title"),
-        body: t("defaultTourScenarios.multiAgentStep2Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="agent-hub-monitor"]',
-        title: t("defaultTourScenarios.multiAgentStep3Title"),
-        body: t("defaultTourScenarios.multiAgentStep3Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="composer-input"]',
-        title: t("defaultTourScenarios.multiAgentStep4Title"),
-        body: t("defaultTourScenarios.multiAgentStep4Body"),
-        keyHint: ["⌘+?"],
-      },
-    ],
-  };
-}
-
 /**
  * Tutorial-X3 — per-plugin walkthrough scenarios. Each scenario spotlights
  * the *real* DOM anchors a plugin shell exposes (data-tour-anchor) so the
@@ -313,37 +249,6 @@ function buildIndexerWalkthrough(): TourScenario {
   };
 }
 
-function buildVegaHelperWalkthrough(): TourScenario {
-  // Renamed from `proactive-walkthrough`. Discovery card
-  // `vega-helper.spotlightScenarioId` dispatches into this scenario id.
-  return {
-    id: "vega-helper-walkthrough",
-    title: t("defaultTourScenarios.vegaHelperWalkthroughTitle"),
-    steps: [
-      {
-        anchorSelector: '[data-tour-anchor="plugin-shell:vega-helper-inbox"]',
-        title: t("defaultTourScenarios.vegaHelperWalkthroughStep1Title"),
-        body: t("defaultTourScenarios.vegaHelperWalkthroughStep1Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="plugin-shell:vega-helper-actions"]',
-        title: t("defaultTourScenarios.vegaHelperWalkthroughStep2Title"),
-        body: t("defaultTourScenarios.vegaHelperWalkthroughStep2Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="plugin-shell:vega-helper-rules"]',
-        title: t("defaultTourScenarios.vegaHelperWalkthroughStep3Title"),
-        body: t("defaultTourScenarios.vegaHelperWalkthroughStep3Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="composer-input"]',
-        title: t("defaultTourScenarios.vegaHelperWalkthroughStep4Title"),
-        body: t("defaultTourScenarios.vegaHelperWalkthroughStep4Body"),
-      },
-    ],
-  };
-}
-
 /**
  * Registry — `SpotlightTour` consumes this map to resolve `scenarioId`
  * payloads received over `ave:tour:start`. New scenarios are added here;
@@ -362,11 +267,8 @@ export const DEFAULT_TOUR_SCENARIOS: Readonly<Record<string, TourScenario>> = Ob
     "first-boot-essentials": { get: buildFirstBootEssentials, enumerable: true, configurable: false },
     "meeting-walkthrough": { get: buildMeetingWalkthrough, enumerable: true, configurable: false },
     "indexer-walkthrough": { get: buildIndexerWalkthrough, enumerable: true, configurable: false },
-    "vega-helper-walkthrough": { get: buildVegaHelperWalkthrough, enumerable: true, configurable: false },
     "meeting-summary-tour": { get: buildMeetingSummaryTour, enumerable: true, configurable: false },
     "doc-search-tour": { get: buildDocSearchTour, enumerable: true, configurable: false },
-    "vega-helper-tour": { get: buildVegaHelperTour, enumerable: true, configurable: false },
-    "multi-agent-tour": { get: buildMultiAgentTour, enumerable: true, configurable: false },
   }),
 );
 
