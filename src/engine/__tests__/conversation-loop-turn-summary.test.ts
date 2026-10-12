@@ -247,8 +247,12 @@ describe("ConversationLoop onTurnSummary", () => {
     } as never);
     let summary: TurnSummary | null = null;
 
-    await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { inputOrigin: "user-keyboard" });
-
+    try {
+      await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { inputOrigin: "user-keyboard" });
+    } finally {
+      await auditLogger.close();
+    }
+    expect(auditLogger.getWriterStats().pendingWrites).toBe(0);
     expect(sent).toEqual([{ outputTokenLimit: 8_192 }]);
     const recorded = {
       modelCatalogSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
