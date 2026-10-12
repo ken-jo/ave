@@ -5,7 +5,7 @@
  * turn's window, output limit and reasoning level can be read back as they
  * were — not re-derived from today's settings and today's catalog.
  */
-import type { ContextWindowSource, InputLimitSource, ResolvedOutputTokenLimit } from "./context-budget.js";
+import type { ContextWindowSource, ResolvedContextWindow, ResolvedOutputTokenLimit } from "./context-budget.js";
 
 export interface RunModelSettings {
   /** `sha256` of the model catalog the run resolved against. */
@@ -16,7 +16,7 @@ export interface RunModelSettings {
     /** `<provider>/<id>` when the catalog answered. */
     readonly catalogEntry?: string;
     /** The prompt cap below the window that bounded the compaction budget, when one did. */
-    readonly inputLimit?: { readonly tokens: number; readonly source: InputLimitSource };
+    readonly inputLimit?: { readonly tokens: number; readonly source: NonNullable<ResolvedContextWindow["inputLimitSource"]> };
   };
   /** The output limit each request carried, and its sources. */
   readonly output: ResolvedOutputTokenLimit;
@@ -27,10 +27,11 @@ export interface RunModelSettings {
     readonly effort?: string;
     readonly budgetTokens?: number;
     readonly source: "model-catalog" | "name-rule";
+    readonly suppressed?: "chat-completions-tool-turn";
   };
   /**
    * The output that would still have fit the context window after the turn's
-   * last request input. Diagnostics only: requests are never clamped by it.
+   * projected next input. Diagnostics only: requests are never clamped by it.
    */
   readonly remainingContextOutputTokens?: number;
 }

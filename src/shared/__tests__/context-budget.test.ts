@@ -632,12 +632,14 @@ describe("context limits behind a custom endpoint", () => {
   it("does not infer catalog or pricing limits for an aliased id at another host", () => {
     expect(resolveContextWindowForRoute(gatewayRoute())).toEqual({
       model: "gpt-5.2", contextWindow: 128_000, source: "fallback",
+      output: { requested: 32_000, requestedSource: "host-default", effective: 32_000, effectiveSource: "host-default" },
     });
   });
 
   it("uses the gateway's own report without a same-name public prompt cap", () => {
     expect(resolveContextWindowForRoute(gatewayRoute(512_000))).toEqual({
       model: "gpt-5.2", contextWindow: 512_000, source: "provider-reported",
+      output: { requested: 32_000, requestedSource: "host-default", effective: 32_000, effectiveSource: "host-default" },
     });
   });
 
@@ -658,6 +660,8 @@ describe("context limits behind a custom endpoint", () => {
     route.vendors.openai.contextWindow = 64_000;
     expect(resolveContextWindowForRoute(route)).toEqual({
       model: "gpt-5.2", contextWindow: 64_000, source: "vendor-setting",
+      output: { requested: 32_000, requestedSource: "host-default", ceiling: 128_000, ceilingSource: "model-catalog",
+        effective: 32_000, effectiveSource: "host-default" },
     });
   });
 

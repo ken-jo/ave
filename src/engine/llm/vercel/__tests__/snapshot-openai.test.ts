@@ -1280,8 +1280,8 @@ describe("VercelUnifiedProvider openai-compatible", () => {
   });
 });
 
-describe("VercelUnifiedProvider openai — custom baseUrl proxy guard", () => {
-  it("drops reasoning_effort on tool turns for gpt-5.x when custom baseUrl is set", async () => {
+describe("custom endpoint request protocol", () => {
+  it("retains effort with tools on the responses wire at a custom endpoint", async () => {
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
       stream: (async function* () {
@@ -1335,8 +1335,8 @@ describe("VercelUnifiedProvider openai — custom baseUrl proxy guard", () => {
     );
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
-    // Custom baseUrl proxy may not support Responses API — treat as Chat-only.
-    expect(callArg.providerOptions).toBeUndefined();
+    expect(callArg.model).toMatchObject({ __mock: "responses" });
+    expect(callArg.providerOptions).toMatchObject({ openai: { reasoningEffort: "high", reasoningSummary: "detailed" } });
 
     vi.doUnmock("ai");
     vi.doUnmock("@ai-sdk/openai");

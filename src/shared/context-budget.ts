@@ -250,10 +250,11 @@ export function resolveOutputCeiling(params: {
   model: string;
   reported?: number;
   catalogModel?: string;
+  baseUrl?: string;
 }): { ceiling: number; source: OutputCeilingSource } | undefined {
   const reported = positiveTokenCount(params.reported);
   if (reported !== undefined) return { ceiling: reported, source: "provider-reported" };
-  const catalog = positiveTokenCount(catalogModelFor(params.vendor, params.model, params.catalogModel)?.model.limits.output);
+  const catalog = positiveTokenCount(catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl)?.model.limits.output);
   return catalog === undefined ? undefined : { ceiling: catalog, source: "model-catalog" };
 }
 
@@ -264,6 +265,7 @@ export function resolveOutputTokenLimit(params: {
   requested: { value: number; source: LlmOutputTokenLimitSource };
   reported?: number;
   catalogModel?: string;
+  baseUrl?: string;
 }): ResolvedOutputTokenLimit {
   const { value: requested, source: requestedSource } = params.requested;
   const ceiling = resolveOutputCeiling(params);
@@ -386,6 +388,7 @@ export function resolveContextWindowForRoute(
     requested: requestedLlmOutputTokenLimit(block),
     ...(maxOutputTokens !== undefined ? { reported: maxOutputTokens } : {}),
     ...(catalogModel !== undefined ? { catalogModel } : {}),
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
   });
   const unresolved = catalogModel !== undefined && lookupCatalogModel(activeModelCatalog(), catalogModel) === undefined;
   return {

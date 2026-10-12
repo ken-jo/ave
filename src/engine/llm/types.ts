@@ -512,20 +512,27 @@ export interface StreamTurnParams {
   tools?: ToolSchema[];
   /** Host-owned total output ceiling, projected into the native request. */
   outputTokenLimit?: number;
+  /** Original request before the primary model's ceiling, retained for fallback attempts. */
+  requestedOutputTokenLimit?: number;
   /**
    * The model's output ceiling the caller already resolved for this route
    * (endpoint report, else catalog) and clamped `outputTokenLimit` to. When
    * present the transport clamps to this and nothing else, so the request
    * carries the limit the turn records; when absent (purpose-specific
-   * callers) the transport clamps to the catalog's ceiling.
+   * callers) the transport clamps to the catalog's ceiling. `null` means the
+   * route resolved an unknown ceiling and must not be resolved again by name.
    */
-  outputCeiling?: number;
+  outputCeiling?: number | null;
+  /** Explicit catalog identity used by this route's reasoning decision. */
+  catalogModel?: string;
   /** Client-side stream smoothing (word/char chunking via Vercel smoothStream). */
   streamSmoothing?: StreamSmoothing;
   /** Enable extended thinking / reasoning (Claude Sonnet 4.5+, Opus 4+). */
   enableThinking?: boolean;
   /** Token budget for Claude extended thinking (1024–32000). Defaults to 10 000 when enableThinking is true. */
   thinkingBudgetTokens?: number;
+  /** Thinking budget before the primary output ceiling, re-bounded for a fallback. */
+  requestedThinkingBudgetTokens?: number;
   /**
    * finish_reason=length CONTINUATION. When true, the FINAL message in
    * `messages` is a partial assistant turn the model must CONTINUE verbatim

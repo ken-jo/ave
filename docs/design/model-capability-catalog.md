@@ -259,12 +259,16 @@ Implemented.
 
   The conversation loop sends `output.effective` with the thinking budget bounded
   against it (`src/engine/turn/round-llm-settings.ts`). The adapter also clamps every
-  request to the catalog ceiling, which is where the purpose-specific limits — finalize
+  request to the eligible catalog ceiling under the endpoint-identity rule in §4,
+  which is where the purpose-specific limits — finalize
   1,024; background 16,384; memory 1,400 / 1,600 / 4,000; work report 800 / 1,000;
   reviewer 256, all unchanged — meet it. Those callers do not see an endpoint-reported
   ceiling, only the catalog's. A fallback model does not inherit the primary route's
-  resolved ceiling: `streamWithFallback` drops it, and the adapter clamps the fallback's
-  request to the fallback model's own catalog ceiling.
+  resolved ceiling or named identity: `streamWithFallback` drops them, restores the
+  original requested output, and the adapter applies the fallback model's own ceiling.
+  The original thinking budget is bounded against that fallback's effective output.
+  A chat route also carries an explicitly unknown ceiling, so the adapter cannot
+  replace the record's unknown answer with a different name match.
 - **The default is no longer written into settings.** A vendor block stores
   `outputTokenLimit` only when the user set it; the default block has none. Before,
   every saved block carried the materialized 32,000, so a stored 32,000 could not say
@@ -291,10 +295,12 @@ Implemented.
   except with interleaved thinking, where the provider allows the budget to span the
   turn. Behavior changes against the bundled snapshot: GPT-5 sends `minimal` (was `low`)
   and GPT-5.1 sends `none` (was `low`) for a budget at or below 500; a model the catalog
-  marks as not reasoning gets no effort. A reasoning model whose levels the catalog does
+  marks as not reasoning gets no reasoning control, including numeric or adaptive
+  thinking. A reasoning model whose levels the catalog does
   not list keeps the name rule: absent levels are unknown, not none.
   Chat Completions answers 400 to `reasoning_effort` on a GPT-5 turn that carries tools
-  (Copilot, and OpenAI behind a custom `baseUrl`). That rule lives in `planReasoning`
+  on the chat-only route. A custom `baseUrl` does not change the adapter's selected
+  protocol; the responses route still carries effort with tools. That rule lives in `planReasoning`
   too (`chatCompletionsRejectsToolTurnEffort`): the plan comes back as `kind: "none"`
   with the requested effort and `suppressed: "chat-completions-tool-turn"`. The adapter
   and the turn record both take this one answer, so the record never shows an effort
@@ -302,7 +308,11 @@ Implemented.
 - **Run records.** The turn summary and the audit `turn` row carry `modelSettings`
   (`src/shared/run-model-settings.ts`): the catalog `sha256`, the window and its source
   and entry, the prompt cap that bounded the budget when one did (§4), the output block
-  above, and the reasoning plan as sent. It is omitted for
+  above, and the reasoning plan for the last primary request started. A retry
+  that drops tools recomputes that plan at the dispatch boundary, after runtime and
+  cancellation guards pass. A named catalog identity also identifies the model
+  family for chat tool-turn suppression, even when the route uses a deployment alias.
+  It is omitted for
   subscription runtimes and for a turn a fallback served on another model.
 - **UI.** The renderer's cost estimate shows a range. The upper end is the cost with
   the output at `output.effective` (before, it assumed a fixed 4,096), and the tooltip

@@ -277,34 +277,23 @@ export async function queryLoop(
     // the turn.
     const rebuildTurnToolSchemas = (): ToolSchema[] => withoutDroppedTools(self.rebuildToolSchemas(scope), droppedToolSchemaNames);
     let toolSchemas: ToolSchema[] = rebuildTurnToolSchemas();
-    // Recorded with the turn: the catalog, window, output and reasoning this
-    // route resolved, from the same functions the request is built with —
-    // the reasoning planned for the turn's request shape (its first round's
-    // tools), as the adapter plans it.
-    const turnModelSettings: RunModelSettings | undefined = apiRound === undefined || effectiveOutput === undefined
+    // Capacity stays fixed for the turn. Reasoning is recorded at each request
+    // boundary because a retry can change the tool shape and its wire control.
+    const modelSettingsBase: RunModelSettings | undefined = apiRound === undefined || effectiveOutput === undefined
       ? undefined
-      : (() => {
-          const reasoning = planReasoning({
-            vendor: llmSettings.provider,
-            model,
-            enableThinking: apiRound.enableThinking,
-            budgetTokens: apiRound.thinkingBudgetTokens ?? 10_000,
-            request: { hasTools: toolSchemas.length > 0, customBaseUrl: Boolean(activeBlock.baseUrl) },
-          });
-          return {
-            modelCatalogSha256: activeModelCatalog().sha256,
-            contextWindow: {
-              tokens: runtimeContextBudget.contextWindow ?? 0,
-              source: runtimeContextBudget.contextWindowSource as ContextWindowSource,
-              ...(runtimeContextBudget.catalogEntry !== undefined ? { catalogEntry: runtimeContextBudget.catalogEntry } : {}),
-              ...(runtimeContextBudget.inputLimit !== undefined && runtimeContextBudget.inputLimitSource !== undefined
-                ? { inputLimit: { tokens: runtimeContextBudget.inputLimit, source: runtimeContextBudget.inputLimitSource } }
-                : {}),
-            },
-            output: effectiveOutput,
-            ...(reasoning ? { reasoning } : {}),
-          };
-        })();
+      : {
+          modelCatalogSha256: activeModelCatalog().sha256,
+          contextWindow: {
+            tokens: runtimeContextBudget.contextWindow ?? 0,
+            source: runtimeContextBudget.contextWindowSource as ContextWindowSource,
+            ...(runtimeContextBudget.catalogEntry !== undefined ? { catalogEntry: runtimeContextBudget.catalogEntry } : {}),
+            ...(runtimeContextBudget.inputLimit !== undefined && runtimeContextBudget.inputLimitSource !== undefined
+              ? { inputLimit: { tokens: runtimeContextBudget.inputLimit, source: runtimeContextBudget.inputLimitSource } }
+              : {}),
+          },
+          output: effectiveOutput,
+        };
+    let turnModelSettings: RunModelSettings | undefined;
     const withServingIdentity = (
       result: {
         text: string;
@@ -1029,6 +1018,19 @@ export async function queryLoop(
         ...toolExposure,
         request: requestDiagnostics,
       });
+      let requestModelSettings: RunModelSettings | undefined;
+      if (modelSettingsBase !== undefined && apiRound !== undefined) {
+        const reasoning = planReasoning({
+          vendor: llmSettings.provider,
+          model,
+          enableThinking: apiRound.enableThinking,
+          budgetTokens: apiRound.thinkingBudgetTokens ?? 10_000,
+          baseUrl: activeBlock.baseUrl,
+          catalogModel: apiRound.catalogModel,
+          request: { hasTools: toolSchemas.length > 0 },
+        });
+        requestModelSettings = { ...modelSettingsBase, ...(reasoning ? { reasoning } : {}) };
+      }
       const stream = await collectActiveRuntimeRoundStream(
         {
           provider: turnProvider,
@@ -1041,6 +1043,7 @@ export async function queryLoop(
           continuationPrefill: continuationPrefillText !== undefined,
           onReasoningDelta: callbacks?.onReasoningDelta,
           onTextDelta: callbacks?.onTextDelta,
+          onRequestStarted: () => { turnModelSettings = requestModelSettings; },
         },
         self.deps.settingsService.get("llm").activeChatRuntime,
         () => self.abortCurrentTurn(new Error("active chat runtime changed")),
