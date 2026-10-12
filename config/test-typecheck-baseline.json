@@ -98,7 +98,6 @@
     "src/permissions/__tests__/permission-slash.test.ts": 1,
     "src/permissions/__tests__/permissions-store.test.ts": 1,
     "src/permissions/__tests__/plugin-operation-grant.test.ts": 4,
-    "src/permissions/__tests__/policy-store.test.ts": 1,
     "src/permissions/__tests__/provider-adapters.test.ts": 15,
     "src/permissions/__tests__/rationale-scope-reviewer.test.ts": 7,
     "src/permissions/__tests__/risk-classifier-pr-a4.test.ts": 1,

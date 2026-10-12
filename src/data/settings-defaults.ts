@@ -213,8 +213,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // category. Shadow mode reconciliation completed before this flip; users
     // can still opt out in Settings.
     hostClassifiesRisk: true,
-    // OS tool sandbox — STAGED rollout. Default ON on `darwin` (the
-    // live-verified-active platform) ONLY. `win32` + `linux` stay OFF (opt-in).
+    // OS tool sandbox is opt-in on every platform. The setting determines
+    // whether the host, workers and plugin children request OS confinement.
     //
     // Windows install-time provisioning (NSIS customInstall, issue #1608) makes
     // opt-in work out of the box, BUT default-on win32 is DEFERRED: Windows
@@ -229,10 +229,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // for what it would COST, not what it would break — every bash/powershell call
     // would take an allow-once approval while gaining no shell isolation, and the
     // win32 substrate has no live QA evidence (the Windows CI job exercises the
-    // logic, not a provisioned srt-win machine). Flip win32 to `true` after live
-    // Windows QA. `linux` stays OFF until C/D-series QA is green.
+    // logic, not a provisioned srt-win machine). All platforms remain opt-in;
+    // live QA alone does not change the default activation policy below.
     //
-    // Computed from `process.platform` at default-construction; stable per-process.
+    // The default is the same on every platform.
     //
     // OFF on every platform, and one policy follows from it: the host, its
     // workers and its plugin children all run exactly as confined as this
