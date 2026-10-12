@@ -88,6 +88,12 @@ export interface UseSettingsResult {
    * rather than resolving it a second time.
    */
   llmContextWindow: number;
+  /**
+   * The active route's prompt cap, when one is stated below the window
+   * (`resolveContextWindowForRoute(...).inputLimit`). The ring's usable budget
+   * is bounded by it, as the engine's compaction threshold is.
+   */
+  llmInputLimit: number | undefined;
   /** True after an authoritative settings snapshot has been applied. */
   settingsLoaded: boolean;
   /** Cached `enableThinking` flag for the active vendor. */
@@ -116,6 +122,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
   const [llmVendor, setLlmVendor] = useState<LLMVendor>(DEFAULT_LLM_VENDOR);
   const [llmModel, setLlmModel] = useState<string>("");
   const [llmContextWindow, setLlmContextWindow] = useState<number>(0);
+  const [llmInputLimit, setLlmInputLimit] = useState<number | undefined>(undefined);
   const [enableThinkingChat, setEnableThinkingChat] = useState<boolean>(true);
   const [processingDisplayLevel, setProcessingDisplayLevel] = useState<ProcessingDisplayLevel>(
     DEFAULT_PROCESSING_DISPLAY_LEVEL,
@@ -151,12 +158,12 @@ export function useSettings(api: AveApi): UseSettingsResult {
         block,
         provider === "openai-compatible" ? settings.llm.marketplaceProviderPresetId : undefined,
       ));
-      setLlmContextWindow(
-        resolveContextWindowForRoute(
-          { ...settings.llm, provider },
-          settings.marketplace?.installedProviderPresets,
-        ).contextWindow,
+      const route = resolveContextWindowForRoute(
+        { ...settings.llm, provider },
+        settings.marketplace?.installedProviderPresets,
       );
+      setLlmContextWindow(route.contextWindow);
+      setLlmInputLimit(route.inputLimit);
       setEnableThinkingChat(block.enableThinking);
       setProcessingDisplayLevel(
         settings.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
@@ -306,6 +313,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     llmVendor,
     llmModel,
     llmContextWindow,
+    llmInputLimit,
     enableThinkingChat,
     processingDisplayLevel,
     llmReadyWithoutApiKey,

@@ -867,6 +867,7 @@ export function App() {
     llmVendor,
     llmModel,
     llmContextWindow,
+    llmInputLimit,
     enableThinkingChat,
     processingDisplayLevel,
     llmReadyWithoutApiKey,
@@ -1442,7 +1443,7 @@ export function App() {
    * make adding one a change in two places.
    */
   const chatGroupEnvironment = useMemo<ChatGroupEnvironment>(() => ({
-    llmVendor, llmModel, llmContextWindow, settingsLoaded,
+    llmVendor, llmModel, llmContextWindow, llmInputLimit, settingsLoaded,
     subscriptionRuntimeSelected, subscriptionRuntimePolicy,
     subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
     subscriptionUnavailableProvider, subscriptionPendingProvider,
@@ -1481,7 +1482,7 @@ export function App() {
     onProjectError: handleProjectError,
     pendingAnswers,
   }), [
-    llmVendor, llmModel, llmContextWindow, settingsLoaded, subscriptionRuntimeSelected, subscriptionRuntimePolicy,
+    llmVendor, llmModel, llmContextWindow, llmInputLimit, settingsLoaded, subscriptionRuntimeSelected, subscriptionRuntimePolicy,
     subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
     subscriptionUnavailableProvider, subscriptionPendingProvider,
     apiUsageProjectionAvailable, activeSubscriptionRuntime,

@@ -9,9 +9,18 @@
  * boot instead of resolving models against damaged data.
  */
 import { verifyModelCatalogDocument } from "./document.js";
+import { installModelCatalog } from "../../shared/model-catalog/active.js";
 import type { ModelCatalogDocument } from "../../shared/model-catalog/types.js";
 
-export async function loadBundledModelCatalog(): Promise<ModelCatalogDocument> {
+async function loadBundledModelCatalog(): Promise<ModelCatalogDocument> {
   const { default: snapshot } = await import("./bundled-snapshot.json", { with: { type: "json" } });
   return verifyModelCatalogDocument(snapshot);
+}
+
+/**
+ * Boot's install step: the bundled snapshot becomes this process's catalog.
+ * `bootstrapCoreServices` runs it before anything that can resolve a model.
+ */
+export async function installBundledModelCatalog(): Promise<void> {
+  installModelCatalog(await loadBundledModelCatalog());
 }

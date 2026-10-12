@@ -48,6 +48,7 @@ export const en = {
   "app.compactExhaustedValue": "Cannot recover via compaction — change model or start a new chat",
   "app.manualInstallRequiredToast": "Finish your current work, quit the app, then update manually by following the guide on the homepage.",
   "app.appErrorFallback": "An application error has occurred",
+  "app.modelCatalogUnavailable": "Ave could not load its model catalog, so the app cannot start. Reload the window; if this keeps happening, restart Ave.",
   "app.mainContentErrorFallback": "An error occurred in the main area — go to Settings → Marketplace in the top menu to update or remove the affected extension.",
   "app.guideErrorMessage": "⚠️ Failed to send guide instruction: {msg}",
 } as const;
@@ -100,6 +101,7 @@ export const ko: Record<keyof typeof en, string> = {
   "app.compactExhaustedValue": "압축으로 복구 불가 — 모델 변경 또는 새 대화를 시작하세요",
   "app.manualInstallRequiredToast": "작업을 마무리하고 종료 후 업데이트를 진행하세요. 홈페이지에 나와있는 가이드에 따라 진행해 주세요.",
   "app.appErrorFallback": "앱 오류가 발생했습니다",
+  "app.modelCatalogUnavailable": "모델 카탈로그를 불러오지 못해 앱을 시작할 수 없습니다. 창을 새로고침하고, 계속되면 Ave 를 다시 시작하세요.",
   "app.mainContentErrorFallback": "메인 영역에 오류가 발생했습니다 — 상단 메뉴에서 설정 → 마켓플레이스로 이동하여 해당 익스텐션을 업데이트하거나 제거해 주세요.",
   "app.guideErrorMessage": "⚠️ 방향 지시 전송 실패: {msg}",
 };

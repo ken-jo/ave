@@ -40,20 +40,31 @@ import type { MarketplaceProviderModelDiscoveryPolicy } from "./marketplace-pack
  *               so 1M ⇒ 960K usable, 32K ⇒ ~25.6K, ≤40K ⇒ 80% (avoids
  *               negative usable on tiny windows).
  */
-export function getUsableContext(contextWindow: number): number {
+export function getUsableContext(contextWindow: number, inputLimit?: number): number {
   if (!Number.isFinite(contextWindow) || contextWindow <= 0) return 0;
+  return Math.min(reservedUsableContext(contextWindow), promptCap(inputLimit));
+}
+
+function reservedUsableContext(contextWindow: number): number {
   if (contextWindow === 64_000) return contextWindow - 27_000;
   if (contextWindow === 128_000) return contextWindow - 30_000;
   if (contextWindow === 200_000) return contextWindow - 40_000;
   return Math.max(contextWindow - 40_000, Math.floor(contextWindow * 0.8));
 }
 
+/**
+ * A model's prompt cap bounds the usable budget on its own: a window of 264K
+ * whose prompt may hold 128K is a 128K budget, whatever the reservation for
+ * output leaves of the window. An absent or malformed cap bounds nothing.
+ */
+function promptCap(inputLimit: number | undefined): number {
+  return typeof inputLimit === "number" && Number.isSafeInteger(inputLimit) && inputLimit > 0 ? inputLimit : Number.POSITIVE_INFINITY;
+}
 
-
-
-export function getPreflightThreshold(contextWindow: number): number {
+/** The prompt size at which a turn compacts first: 80% of {@link getUsableContext}. */
+export function getPreflightThreshold(contextWindow: number, inputLimit?: number): number {
   if (!Number.isFinite(contextWindow) || contextWindow <= 0) return 0;
-  const usable = getUsableContext(contextWindow);
+  const usable = getUsableContext(contextWindow, inputLimit);
   return Math.floor(usable * 0.8);
 }
 
@@ -78,11 +89,21 @@ export type ContextWindowSource =
   | "pricing-catalog"
   | "fallback";
 
+/** Who stated a model's prompt cap: the endpoint's `/models` row, or the catalog's `limits.input`. */
+export type InputLimitSource = "provider-reported" | "model-catalog";
+
 export interface ResolvedContextWindow {
   readonly contextWindow: number;
   readonly source: ContextWindowSource;
   /** The catalog entry that answered, `<provider>/<id>`, when the source is `model-catalog`. */
   readonly catalogEntry?: string;
+  /**
+   * The model's prompt cap, when a source states one below the window. The
+   * usable budget and the compaction threshold are bounded by it
+   * ({@link getUsableContext}); the window itself is still what is reported.
+   */
+  readonly inputLimit?: number;
+  readonly inputLimitSource?: InputLimitSource;
 }
 
 /**
@@ -122,12 +143,19 @@ function positiveTokenCount(value: number | undefined): number | undefined {
  *    resolves to ({@link resolveCatalogKey}).
  * 4. The hand-kept pricing table's entry, for a model the catalog does not know.
  * 5. The conservative fallback window.
+ *
+ * The prompt cap is resolved beside the window: what the endpoint reported
+ * (`reportedInput`), else the catalog entry's `limits.input`, kept only when
+ * it is below the window. A declared window carries none — the user stated the
+ * capacity of the endpoint they run.
  */
 export function resolveModelContextWindow(params: {
   vendor: string;
   model: string;
   configured?: number;
   reported?: number;
+  /** The endpoint's own prompt cap for this model (Copilot `max_prompt_tokens`). */
+  reportedInput?: number;
   /** A catalog entry the user named for this route, `<provider>/<id>`. */
   catalogModel?: string;
 }): ResolvedContextWindow {
@@ -135,20 +163,26 @@ export function resolveModelContextWindow(params: {
   if (configured !== undefined) {
     return { contextWindow: configured, source: "vendor-setting" };
   }
-  const reported = positiveTokenCount(params.reported);
-  if (reported !== undefined) {
-    return { contextWindow: reported, source: "provider-reported" };
-  }
   const hit = catalogModelFor(params.vendor, params.model, params.catalogModel);
-  const catalogWindow = positiveTokenCount(hit?.model.limits.context);
-  if (hit && catalogWindow !== undefined) {
-    return { contextWindow: catalogWindow, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` };
-  }
-  const pricing = lookupPricingOptional(params.vendor, params.model);
-  if (pricing) {
-    return { contextWindow: effectiveContextWindow(pricing), source: "pricing-catalog" };
-  }
-  return { contextWindow: FALLBACK_PRICING.contextWindow, source: "fallback" };
+  const window = ((): ResolvedContextWindow => {
+    const reported = positiveTokenCount(params.reported);
+    if (reported !== undefined) return { contextWindow: reported, source: "provider-reported" };
+    const catalogWindow = positiveTokenCount(hit?.model.limits.context);
+    if (hit && catalogWindow !== undefined) {
+      return { contextWindow: catalogWindow, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` };
+    }
+    const pricing = lookupPricingOptional(params.vendor, params.model);
+    if (pricing) return { contextWindow: effectiveContextWindow(pricing), source: "pricing-catalog" };
+    return { contextWindow: FALLBACK_PRICING.contextWindow, source: "fallback" };
+  })();
+  const reportedInput = positiveTokenCount(params.reportedInput);
+  const catalogInput = positiveTokenCount(hit?.model.limits.input);
+  const cap: Pick<ResolvedContextWindow, "inputLimit" | "inputLimitSource"> | undefined = reportedInput !== undefined
+    ? { inputLimit: reportedInput, inputLimitSource: "provider-reported" }
+    : catalogInput !== undefined
+      ? { inputLimit: catalogInput, inputLimitSource: "model-catalog" }
+      : undefined;
+  return cap?.inputLimit !== undefined && cap.inputLimit < window.contextWindow ? { ...window, ...cap } : window;
 }
 
 /**
@@ -192,6 +226,12 @@ export interface RouteContextWindow extends ResolvedContextWindow {
    * ceiling; the budget math does not use it.
    */
   readonly maxOutputTokens?: number;
+  /**
+   * The `llm.vendors.<vendor>.catalogModel` the user named for this route when
+   * the catalog has no such entry. The window then comes from the next source;
+   * the engine reports the miss once, so a typo does not pass silently.
+   */
+  readonly unresolvedCatalogModel?: string;
 }
 
 /**
@@ -259,12 +299,15 @@ export function resolveContextWindowForRoute(
     model,
     ...(block.contextWindow !== undefined ? { configured: block.contextWindow } : {}),
     ...(entry?.contextLength !== undefined ? { reported: entry.contextLength } : {}),
+    ...(entry?.maxInputTokens !== undefined ? { reportedInput: entry.maxInputTokens } : {}),
     ...(catalogModel !== undefined ? { catalogModel } : {}),
   });
   const maxOutputTokens = positiveTokenCount(entry?.maxOutputTokens);
+  const unresolved = catalogModel !== undefined && lookupCatalogModel(activeModelCatalog(), catalogModel) === undefined;
   return {
     ...resolved,
     model,
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    ...(unresolved ? { unresolvedCatalogModel: catalogModel } : {}),
   };
 }

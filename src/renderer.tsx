@@ -3,7 +3,7 @@ import { App } from "./ui/renderer/App.js";
 import { primeHostMarketplaceApi } from "./ui/renderer/host-marketplace-api.js";
 import { I18nSettingsProvider } from "./ui/renderer/context/I18nSettingsProvider.js";
 import { getApi } from "./ui/renderer/api-client.js";
-import { installRendererModelCatalog } from "./ui/renderer/model-catalog-bootstrap.js";
+import { installRendererModelCatalog, renderModelCatalogUnavailable } from "./ui/renderer/model-catalog-bootstrap.js";
 
 export { App } from "./ui/renderer/App.js";
 
@@ -22,8 +22,8 @@ if (typeof document !== "undefined") {
         </I18nSettingsProvider>,
       );
     }, (error: unknown) => {
-      console.error("[renderer] model catalog unavailable; the app cannot resolve models", error);
-      throw error;
+      // Main logged the refusal it answered; the window says why it is empty.
+      renderModelCatalogUnavailable(root, error);
     });
   }
 }

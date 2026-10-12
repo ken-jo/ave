@@ -33,6 +33,7 @@ import {
   resolveContextWindowForRoute,
   resolveModelContextWindow,
   type ContextWindowSource,
+  type InputLimitSource,
   type LlmRouteProviderPreset,
   type LlmRouteSettings,
 } from "../../shared/context-budget.js";
@@ -64,6 +65,8 @@ interface RuntimeContextBudget {
    * came from. `fallback` says the whole budget rests on a guess.
    */
   readonly contextWindowSource: ContextWindowSource | "subscription-fallback";
+  /** Observability only — who stated the prompt cap that bounds the budget, when one does. */
+  readonly inputLimitSource?: InputLimitSource;
   /**
    * The provider's own ceiling on a completion for this model, when it
    * reported one. Carried so an output cap has a number to read; the budget
@@ -87,6 +90,23 @@ function warnFallbackContextWindowOnce(identity: string, model: string): void {
   log.warn(
     `context budget: no context window known for model '${model}' — using the ${FALLBACK_PRICING.contextWindow}-token fallback. `
     + `Declare the endpoint's real capacity as llm.vendors.<vendor>.contextWindow, or sync the provider's model list so it can report one.`,
+  );
+}
+
+const unresolvedCatalogModelWarned = new Set<string>();
+
+/**
+ * Warn once per vendor, model and named entry about a `catalogModel` the
+ * catalog does not list. The setting is hand-written in `settings.json`, and a
+ * typo in it otherwise only shows as a window from a lower source.
+ */
+function warnUnresolvedCatalogModelOnce(identity: string, catalogModel: string): void {
+  const key = `${identity}\u0000${catalogModel}`;
+  if (unresolvedCatalogModelWarned.has(key)) return;
+  unresolvedCatalogModelWarned.add(key);
+  log.warn(
+    `context budget: llm.vendors.<vendor>.catalogModel '${catalogModel}' for '${identity}' names no model catalog entry — `
+    + "the window comes from the next source. Name an entry as <provider>/<id> from the catalog.",
   );
 }
 
@@ -221,16 +241,18 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
   const route = resolveContextWindowForRoute(llmSettings, installedProviderPresets);
   const model = route.model;
   const identity = `${provider}/${model}`;
+  if (route.unresolvedCatalogModel !== undefined) warnUnresolvedCatalogModelOnce(identity, route.unresolvedCatalogModel);
   if (route.source === "fallback") {
     warnFallbackContextWindowOnce(identity, model);
     probeRouteModelListInBackground(self, llmSettings, installedProviderPresets);
   }
   return {
     model,
-    preflight: getModelPreflightThreshold(provider, model, route.contextWindow),
-    usableContext: getModelUsableContext(provider, model, route.contextWindow),
+    preflight: getModelPreflightThreshold(provider, model, route.contextWindow, route.inputLimit),
+    usableContext: getModelUsableContext(provider, model, route.contextWindow, route.inputLimit),
     identity,
-    thresholdSource: getModelPreflightThresholdSource(provider, model, route.contextWindow),
+    thresholdSource: getModelPreflightThresholdSource(provider, model, route.contextWindow, route.inputLimit),
+    ...(route.inputLimitSource !== undefined ? { inputLimitSource: route.inputLimitSource } : {}),
     contextWindowSource: route.source,
     ...(route.maxOutputTokens !== undefined ? { maxOutputTokens: route.maxOutputTokens } : {}),
   };
@@ -608,10 +630,10 @@ export async function runPreflightGuard(
       return false;
     }
 
-    const { preflight, identity, thresholdSource, contextWindowSource } = contextBudgetForCurrentRuntime(self);
+    const { preflight, identity, thresholdSource, contextWindowSource, inputLimitSource } = contextBudgetForCurrentRuntime(self);
     if (!forceRecover && !forceRateLimit && preflight <= 0) {
       tracePreflightGuard(self, "skipped", "invalid-preflight-threshold", {
-        threshold: preflight, thresholdSource, contextWindowSource, model: identity,
+        threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, model: identity,
       });
       return false;
     }
@@ -631,7 +653,7 @@ export async function runPreflightGuard(
       : estimated;
     if (!forceRecover && !forceRateLimit && estimated < preflight && contextTokensIn < preflight) {
       tracePreflightGuard(self, "not-reached", "below-threshold", {
-        threshold: preflight, thresholdSource, contextWindowSource, model: identity, estimated, contextTokensIn,
+        threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, model: identity, estimated, contextTokensIn,
       });
       return false;
     }
@@ -643,7 +665,7 @@ export async function runPreflightGuard(
           ? "estimate"
           : "context-tokens";
     tracePreflightGuard(self, "fired", triggerSource, {
-      threshold: preflight, thresholdSource, contextWindowSource, model: identity, estimated, contextTokensIn,
+      threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, model: identity, estimated, contextTokensIn,
     });
 
     self.isCompacting = true;

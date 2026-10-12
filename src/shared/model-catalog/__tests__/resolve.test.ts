@@ -66,6 +66,15 @@ describe("resolveCatalogKey", () => {
     expect(resolveCatalogKey(models, "claude", "constructor", { claude: {} })).toBeUndefined();
   });
 
+  it("drops a Vertex version tag from either side when exactly one entry matches", () => {
+    const models = catalog({ "google-vertex-anthropic": [entry("modelone@default"), entry("modeltwo@20250101"), entry("modeltwo@20250601")] });
+    expect(resolveCatalogKey(models, "vertex-ai", "modelone")).toMatchObject({ id: "modelone@default", match: "version-tag" });
+    expect(resolveCatalogKey(models, "vertex-ai", "modelone@20260101")).toMatchObject({ id: "modelone@default", match: "version-tag" });
+    expect(resolveCatalogKey(models, "vertex-ai", "modeltwo@20250601")).toMatchObject({ id: "modeltwo@20250601", match: "exact" });
+    // Two tagged entries of one model do not say which the untagged id is.
+    expect(resolveCatalogKey(models, "vertex-ai", "modeltwo")).toBeUndefined();
+  });
+
   it("finds an entry by the originating lab's id", () => {
     const models = catalog({ openrouter: [entry("lab/modelone-preview", { canonicalId: "lab/modelone" })] });
     expect(resolveCatalogKey(models, "openrouter", "lab/modelone")).toMatchObject({ id: "lab/modelone-preview", match: "canonical" });

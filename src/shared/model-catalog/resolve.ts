@@ -6,7 +6,10 @@
  * lists them, before the next step is tried:
  *
  *  1. the id exactly as given;
- *  2. an Ave-owned alias ({@link MODEL_CATALOG_ALIASES});
+ *  2. an Ave-owned alias ({@link MODEL_CATALOG_ALIASES}), and the id with a
+ *     Vertex version tag (`@default`, `@20250929`) dropped from either side:
+ *     Vertex lists Claude as `claude-opus-4-6@default`, Ave names it
+ *     `claude-opus-4-6`;
  *  3. an entry whose `canonicalId` is the id given (`<lab>/<model>`);
  *  4. the id without a release-date suffix (`-20250514`, `-2025-04-16`);
  *  5. the id with case and version separators folded (`4-6` against `4.6`);
@@ -14,7 +17,7 @@
  *     against `gpt-5.4`): gateways disagree about whether the lab is part of
  *     the id.
  *
- * Steps 3, 5 and 6 answer only when exactly one entry matches. Two candidates
+ * The version-tag match and steps 3, 5 and 6 answer only when exactly one entry matches. Two candidates
  * mean the id does not say which model it is, and a guessed entry would put
  * another model's window and price on this one. No match is an answer too:
  * the model is unknown to the catalog, and the caller's next source decides.
@@ -29,7 +32,7 @@ import { CATALOG_PROVIDERS_BY_VENDOR } from "./provider-map.js";
 import type { CatalogModel, ModelCatalogDocument } from "./types.js";
 import type { LLMVendor } from "../llm-vendor-defaults.js";
 
-type CatalogMatch = "exact" | "alias" | "canonical" | "date-suffix" | "folded" | "unprefixed" | "named";
+type CatalogMatch = "exact" | "alias" | "version-tag" | "canonical" | "date-suffix" | "folded" | "unprefixed" | "named";
 
 export interface CatalogModelHit {
   /** Catalog provider id. */
@@ -44,6 +47,8 @@ export interface CatalogModelHit {
 type Catalog = Pick<ModelCatalogDocument, "providers">;
 
 const DATE_SUFFIX = /-(?:\d{8}|\d{4}-\d{2}-\d{2})$/u;
+/** Vertex AI's model version tag: `@default` or a release date. */
+const VERSION_TAG = /@(?:default|\d{8})$/u;
 
 function fold(id: string): string {
   return id.toLowerCase().replace(/\./gu, "-");
@@ -100,6 +105,9 @@ export function resolveCatalogKey(
     const aliased = exact(catalog, providers, alias, "alias");
     if (aliased) return aliased;
   }
+  const untagged = model.replace(VERSION_TAG, "");
+  const tagged = unique(catalog, providers, "version-tag", (id) => id !== model && id.replace(VERSION_TAG, "") === untagged);
+  if (tagged) return tagged;
   const canonical = unique(catalog, providers, "canonical", (_id, entry) => entry.canonicalId === model);
   if (canonical) return canonical;
   const undated = model.replace(DATE_SUFFIX, "");

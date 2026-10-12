@@ -148,6 +148,19 @@ Precedence, per fact:
 removes it) and `fallback` (128K). Refreshed metadata joins in slice 6, above the bundled
 snapshot.
 
+**The prompt cap.** Beside the window the resolver reports the model's prompt cap when a
+source states one below it (`inputLimit`, `inputLimitSource`): what the endpoint
+reported (GitHub Copilot's `capabilities.limits.max_prompt_tokens`, read by
+`src/engine/llm/model-list.ts` with the window and output cap it nests beside it), else
+the catalog's `limits.input`. A declared window carries none. The usable budget is
+`min(window − Ave's output reservation, prompt cap)` and the compaction threshold is 80%
+of it (`getUsableContext`, `getPreflightThreshold`), in the engine and in the renderer's
+context ring alike; a threshold the cap lowered is traced as `thresholdSource:
+"input-limit"`. Before, the threshold came from the window alone: Copilot GPT-5 mini (264K
+window, 128K prompt) compacted at 179,200, past what the endpoint accepts, and 100
+snapshot entries had a threshold above their cap. Now none do (a test holds every entry
+to it).
+
 The catalog key is found by one `resolveCatalogKey(catalog, vendor, model)`
 (`src/shared/model-catalog/resolve.ts`), across the vendor's providers in map order: the
 exact id; an Ave alias (`src/shared/model-catalog/aliases.ts`, empty today — every
@@ -155,14 +168,17 @@ vendor id the snapshot can describe is found by the other steps, and an alias ma
 join two ids documented to name one model); an entry whose `canonicalId` is the id;
 the id without a release-date suffix; the id with case and version separators folded
 (`claude-sonnet-4-6` → Copilot's `claude-sonnet-4.6`); the same ignoring a path prefix
-on either side (`openai/gpt-5.4` → Requesty's `gpt-5.4`). The folded, prefix and
-canonical steps answer only when exactly one entry matches.
+on either side (`openai/gpt-5.4` → Requesty's `gpt-5.4`). The alias step also drops a
+Vertex version tag (`@default`, `@20250929`) from either side, since Vertex lists Claude as
+`claude-opus-4-6@default` and Ave names it `claude-opus-4-6`. The version-tag, folded,
+prefix and canonical steps answer only when exactly one entry matches.
 
 A self-hosted or local endpoint is never matched by name. The user can name the entry it
 serves as `llm.vendors.<v>.catalogModel` (`<provider>/<id>`, `settings.json` only, like
 `contextWindow`); a named entry that is not in the catalog answers nothing rather than
 falling back to a name match, and it applies to the vendor block's own model, not to a
-marketplace preset reached through the same vendor.
+marketplace preset reached through the same vendor. The engine logs a named entry the
+catalog does not list once per route and name, so a typo does not pass silently.
 
 Each process installs one catalog (`src/shared/model-catalog/active.ts`), and reading
 before install throws. Main and headless install the verified bundled snapshot at the
@@ -170,8 +186,12 @@ start of `bootstrapCoreServices`; the snapshot is a dynamic import, so its data 
 an async chunk instead of the main bundle's initial budget. The renderer asks main for
 that copy over `ave:llm:get-model-catalog` and installs it before it mounts
 (`src/ui/renderer/model-catalog-bootstrap.ts`), so the first settings snapshot the
-context ring resolves is resolved against the engine's catalog. Tests install the
-bundled snapshot in a setup file (`src/__tests__/vitest-model-catalog.ts`).
+context ring resolves is resolved against the engine's catalog. If main cannot hand it
+over, main logs why and answers a refusal, and the window shows that the app cannot start
+and offers a reload instead of staying blank. Tests install the bundled snapshot in a
+setup file (`src/__tests__/vitest-model-catalog.ts`); one test empties it and runs boot's
+own install step (`installBundledModelCatalog`), so a boot that resolved a model before
+installing one would fail there.
 
 Windows the snapshot of 2026-10-12 changes against the table (the rest agree): GPT-5.4
 Pro 1.1M → 1,050,000; GPT-4.1, 4.1 mini and nano 1M → 1,047,576; Gemini 2.5 Pro and Flash

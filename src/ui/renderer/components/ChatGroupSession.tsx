@@ -65,6 +65,8 @@ export interface ChatGroupEnvironment {
    * compaction against, so the ring and the compaction threshold agree.
    */
   llmContextWindow: number;
+  /** The active route's prompt cap below the window, when one is stated (`resolveContextWindowForRoute(...).inputLimit`). */
+  llmInputLimit?: number;
   settingsLoaded: boolean;
   subscriptionRuntimeSelected: boolean;
   subscriptionRuntimePolicy: SubscriptionRuntimeUiPolicy;
@@ -409,6 +411,7 @@ export function ChatGroupSession({
     useContextBudget({
       entries,
       contextWindow: env.llmContextWindow,
+      ...(env.llmInputLimit !== undefined ? { inputLimit: env.llmInputLimit } : {}),
       llmVendor: env.subscriptionRuntimeSelected ? undefined : env.llmVendor,
       llmModel: env.subscriptionRuntimeSelected ? undefined : env.llmModel,
       draftTokenEstimate,

@@ -351,3 +351,19 @@ describe("ave:app:info — refusal by returned value, not only by audit row", ()
     expect(typeof result.userDataPath).toBe("string");
   });
 });
+
+describe("the model catalog channel", () => {
+  it("answers a refusal, not a rejected invoke, when main has no catalog installed", async () => {
+    type Slot = { source?: unknown; resolved?: unknown };
+    const slot = (globalThis as Record<symbol, Slot | undefined>)[Symbol.for("ave.modelCatalog.active")] as Slot;
+    const saved = { ...slot };
+    delete slot.source;
+    delete slot.resolved;
+    try {
+      expect(await invoke(CHANNELS.llm.getModelCatalog, hostFrameEvent(), [])).toEqual({ ok: false, error: "catalog-unavailable" });
+    } finally {
+      Object.assign(slot, saved);
+    }
+    expect(await invoke(CHANNELS.llm.getModelCatalog, hostFrameEvent(), [])).toMatchObject({ ok: true });
+  });
+});
