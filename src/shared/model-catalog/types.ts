@@ -152,7 +152,13 @@ export interface ModelCatalogDocument {
   sha256: string;
 }
 
-/** `ave:llm:get-model-catalog`: the catalog main resolves against, or the frame refusal. */
+/**
+ * `ave:llm:get-model-catalog`: the catalog main resolves against, or the
+ * frame refusal. `refreshPolicy` is the managed policy's say over the refresh
+ * (design §7): `"off"` when the policy file turns it off or cannot be read,
+ * null when the policy leaves it to the user — so the settings switch can say
+ * when it is not the one deciding.
+ */
 export type ModelCatalogIpcResult =
-  | { ok: true; catalog: ModelCatalogDocument }
+  | { ok: true; catalog: ModelCatalogDocument; refreshPolicy: "off" | null }
   | { ok: false; error: "unauthorized-frame" | "catalog-unavailable" };

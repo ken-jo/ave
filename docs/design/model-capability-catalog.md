@@ -160,8 +160,10 @@ Precedence, per fact:
 `llm.vendors.<v>.contextWindow`), `provider-reported` (the route's `/models` row),
 `model-catalog` (with `catalogEntry`, the `<provider>/<id>` that answered),
 `pricing-catalog` (the hand-kept table, for a model the catalog does not know; slice 7
-removes it) and `fallback` (128K). Refreshed metadata joins in slice 6, above the bundled
-snapshot.
+removes it) and `fallback` (128K). Refreshed metadata (slice 6) joins as a whole
+document, not per fact: a verified refreshed copy no older than the bundled snapshot
+replaces it at boot (§7), so `model-catalog` answers from whichever catalog is in force and
+a run record's `modelCatalogSha256` names it.
 
 **The prompt cap.** Beside the window the resolver reports the model's prompt cap when the
 catalog states one below it (`inputLimit`, `inputLimitSource: "model-catalog"`, from
@@ -307,21 +309,54 @@ user overrides keep the highest precedence.
 
 ## 7. Refresh (slice 6)
 
-- Setting `llm.modelCatalog.refresh: "auto" | "off"`, default `"auto"` (owner decision);
-  organization policy can force it off.
-- The host fetches `https://models.dev/api.json` through `fetchPublicHttpResponse`
-  (`src/core/network-guard.ts`) with a conditional ETag request, a 15 s timeout and a
-  16 MB cap, prunes and normalizes it with the slice 1 code, and stores it under
-  `~/.ave/cache/model-catalog/` as an immutable `<sha256>.json` plus a `current.json`
-  pointer, each written temp file → fsync → rename. A failed or malformed fetch keeps the
-  last known good catalog; the first launch offline uses the bundled snapshot.
-- A refreshed catalog takes effect only at a lifecycle boundary — boot, or a moment with
-  no active run — so one run never sees two catalogs.
-- `AVE_MODEL_CATALOG=bundled|<sha256>` pins the catalog for headless runs and
-  benchmarks.
-- models.dev becomes a new outbound destination. The request carries no user data — it is
-  a plain GET of a public document — and is documented in `architecture.md` and in the
-  privacy and network pages in the same slice.
+- Setting `llm.modelCatalogRefresh: "auto" | "off"`, default `"auto"` (owner decision,
+  2026-10-12); a value that is neither reads as the default. The key is flat because the
+  env-backed settings registry addresses settings as `group.key`. The switch is in
+  Settings → Model → Model catalog (`ModelCatalogRefreshSection`), which also names the
+  catalog in force and says when the pin or the policy is deciding.
+- Organization policy turns it off with `{ "modelCatalog": { "refresh": "off" } }` in the
+  managed policy file (`getAdminPolicyPath()`). The section fails closed: a file or a
+  section that cannot be read exactly as written — bad JSON, a duplicate key, another
+  key or value — turns the refresh off (`refresh-policy.ts`).
+- `AVE_MODEL_CATALOG` pins the catalog for headless runs and benchmarks: `bundled`, the
+  `<sha256>` of a cached copy, or the absolute path of a catalog file. Any value turns the
+  refresh off. A pin that cannot be honoured — no such cached copy, a file that fails
+  `verifyModelCatalogDocument`, any other spelling — fails boot rather than running on
+  another catalog.
+- Precedence for whether a check may run: the pin, then the policy, then the setting.
+  It is decided at each check, so turning the switch off stops the next one without a
+  restart.
+- The host fetches `https://models.dev/api.json` and nothing else — no GitHub calls; the
+  refreshed copy carries the license of the catalog in force and leaves
+  `upstreamHeadAtFetch` and `upstreamSchemaBlob` absent — through
+  `fetchPublicHttpResponse` (`src/core/network-guard.ts`, each redirect hop re-checked,
+  private addresses refused) on the host's single-hop Chromium transport, never a plugin
+  path. The request is a conditional GET (`If-None-Match` with the stored ETag), with a 15 s
+  deadline over headers and body and a 16 MB cap enforced while the body streams. The
+  download is pruned and normalized with the slice 1 code, verified, and refused when a
+  catalog provider the catalog in force lists has no models in it, so a source that changed
+  shape cannot replace a working catalog with an empty one (`refresh.ts`).
+- The cache is `<AVE_HOME>/cache/model-catalog/`: an immutable `<sha256>.json` per catalog
+  and a `current.json` pointer `{version, sha256, etag?, checkedAt}`, each written
+  temp → fsync → rename (`cache.ts`). A 304 renews `checkedAt` only.
+- Cadence: a running interactive app checks at boot and then hourly, and sends a request
+  only when `checkedAt` is a day old. models.dev is a static document rebuilt when its
+  sources change, a few times a week; a day keeps a new model at most a day behind, the
+  ETag makes most checks a body-less 304, and a launch inside the day sends nothing. A
+  headless one-shot run never refreshes.
+- A refresh only writes the cache. The catalog a process resolves against is chosen once,
+  at boot (`selectBootModelCatalog`, `bundled.ts`): the pin; else the copy `current.json`
+  names, when it verifies and is not older than the bundled snapshot (an app update can
+  ship a newer snapshot); else the bundled snapshot. So a refreshed catalog takes effect at
+  the next launch, one run never sees two catalogs, and main and renderer always hold the
+  same one.
+- A failed or malformed fetch — a status other than 200/304, a timeout, the cap, bad JSON,
+  verification, coverage — leaves the cache as it was: the last good copy stays in force,
+  and with none the bundled snapshot. A damaged pointer or copy reads as absent at boot.
+  These fallbacks are tested offline (`src/core/model-catalog/__tests__/refresh.test.ts`).
+- models.dev is a new outbound destination. The request carries no user data — it is a
+  plain GET of a public document — and is documented in `architecture.md` and on the
+  Trust & Security page (`web/app/docs/host/trust-security`, `web/app/en/docs/host/trust-security`).
 
 ## 8. What the hand-kept table has that the catalog does not
 
@@ -363,6 +398,7 @@ Each slice is one pull request against `main`, opened in order:
 4. Modalities and tool capability.
 5. Pricing through the catalog, renderer overrides.
 6. Refresh, the setting and policy, `AVE_MODEL_CATALOG`, the network documentation.
+   Shipped as described in §7.
 7. Removal of the superseded tables and predicates, the request-shape table, documentation.
 
 This page goes stale when a slice changes what it describes; update it in that slice's

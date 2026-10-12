@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { installBundledModelCatalog } from "../bundled.js";
+import { installBootModelCatalog } from "../bundled.js";
 import { activeModelCatalog, installModelCatalog } from "../../../shared/model-catalog/active.js";
 import { resolveModelContextWindow } from "../../../shared/context-budget.js";
 import type { ModelCatalogDocument } from "../../../shared/model-catalog/types.js";
@@ -37,7 +37,7 @@ describe("boot's model catalog install", () => {
     expect(() => activeModelCatalog()).toThrow(/not installed/);
     expect(() => resolveModelContextWindow({ vendor: "openai", model: "gpt-5.2" })).toThrow(/not installed/);
 
-    await installBundledModelCatalog();
+    await installBootModelCatalog();
 
     const snapshot = JSON.parse(readFileSync(join(ROOT, "src/core/model-catalog/bundled-snapshot.json"), "utf-8")) as ModelCatalogDocument;
     expect(activeModelCatalog().sha256).toBe(snapshot.sha256);
@@ -47,7 +47,7 @@ describe("boot's model catalog install", () => {
   it("is the first step of bootstrapCoreServices that constructs anything", () => {
     const source = readFileSync(join(ROOT, "src/boot/services.ts"), "utf-8");
     const body = source.slice(source.indexOf("export async function bootstrapCoreServices"));
-    const install = body.indexOf("await installBundledModelCatalog();");
+    const install = body.indexOf("await installBootModelCatalog();");
     expect(install).toBeGreaterThan(0);
     // Everything before it is the log sink, which resolves no model.
     const firstConstruction = body.search(/\bnew [A-Z]\w*\(/);

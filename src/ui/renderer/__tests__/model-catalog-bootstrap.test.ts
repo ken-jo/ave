@@ -10,7 +10,7 @@ afterEach(() => installModelCatalog(installed));
 describe("installRendererModelCatalog", () => {
   it("installs the catalog main hands over, so the renderer resolves against main's copy", async () => {
     const fromMain = { ...installed, sha256: "f".repeat(64) } as ModelCatalogDocument;
-    await installRendererModelCatalog({ getModelCatalog: async () => ({ ok: true, catalog: fromMain }) });
+    await installRendererModelCatalog({ getModelCatalog: async () => ({ ok: true, catalog: fromMain, refreshPolicy: null }) });
     expect(activeModelCatalog()).toBe(fromMain);
   });
 

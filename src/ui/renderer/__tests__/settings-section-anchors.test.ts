@@ -31,6 +31,7 @@ const TAB_SOURCES: Record<SettingsTab, readonly string[]> = {
   llm: [
     "tabs/LlmTab.tsx",
     "tabs/PricingOverridesSection.tsx",
+    "tabs/ModelCatalogRefreshSection.tsx",
     "tabs/SubscriptionProvidersSection.tsx",
     "tabs/SubscriptionProvidersController.tsx",
   ],

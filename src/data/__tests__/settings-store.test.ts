@@ -3898,3 +3898,40 @@ it("notifies only the written settings key after persistence and releases observ
     expect(observer).toHaveBeenCalledTimes(1);
   } finally { await cleanupTmpDir(userDataPath); }
 });
+
+describe("SettingsService llm.modelCatalogRefresh", () => {
+  let userDataPath: string;
+
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-model-catalog-"));
+  });
+
+  afterEach(async () => {
+    await cleanupTmpDir(userDataPath);
+  });
+
+  const stored = (llm: Record<string, unknown>) => {
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ llm }), "utf-8");
+    return new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+  };
+
+  it("defaults the refresh on", () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("llm").modelCatalogRefresh).toBe("auto");
+  });
+
+  it("keeps a stored off and reads anything unreadable as the default", () => {
+    expect(stored({ modelCatalogRefresh: "off" }).get("llm").modelCatalogRefresh).toBe("off");
+    expect(stored({ modelCatalogRefresh: "never" }).get("llm").modelCatalogRefresh).toBe("auto");
+    expect(stored({ modelCatalogRefresh: { refresh: "off" } }).get("llm").modelCatalogRefresh).toBe("auto");
+  });
+
+  it("applies a patch from the settings switch and keeps it across a reload", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ llm: { modelCatalogRefresh: "off" } });
+    expect(service.get("llm").modelCatalogRefresh).toBe("off");
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm").modelCatalogRefresh).toBe("off");
+    await service.patch({ llm: { streamSmoothing: "word" } });
+    expect(service.get("llm").modelCatalogRefresh).toBe("off");
+  });
+});

@@ -168,6 +168,18 @@ export const ENV_BACKED_SETTINGS: readonly EnvBackedSetting[] = Object.freeze([
     forcedValue: (envValue: string | undefined) =>
       envValue === undefined ? undefined : USE_CACHE_ON_RE.test(envValue.trim()),
   },
+  // A pinned model catalog. `AVE_MODEL_CATALOG` names the catalog a run
+  // resolves against (`bundled`, a cached `<sha256>`, or an absolute file) —
+  // for headless runs and benchmarks that must not change catalog between
+  // launches — so any value turns the refresh off. Which catalog it names is
+  // read by the boot selection (`src/core/model-catalog/bundled.ts`), which
+  // refuses to boot on a value it cannot honour.
+  {
+    settingsPath: "llm.modelCatalogRefresh",
+    envVar: "AVE_MODEL_CATALOG",
+    forcedValue: (envValue: string | undefined) =>
+      forcesTextWhenNonEmpty(envValue) === undefined ? undefined : "off",
+  },
 ].map((entry) => Object.freeze(entry)));
 
 const KNOWN_PATHS: ReadonlySet<string> = Object.freeze(

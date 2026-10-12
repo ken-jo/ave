@@ -31,6 +31,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     modelListCache: {},
     pricingOverrides: [],
     pinnedModels: [],
+    modelCatalogRefresh: "auto",
   },
   chat: {
     systemPrompt:

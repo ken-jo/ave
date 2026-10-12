@@ -463,6 +463,16 @@ in the turn summary (`modelSettings.remainingContextOutputTokens`) and never cla
 request. Each turn records the catalog `sha256` and the effective window, output and
 reasoning with their sources in its turn summary and audit `turn` row
 (`src/shared/run-model-settings.ts`); see `docs/design/model-capability-catalog.md`.
+The catalog in force is chosen once per launch (`src/core/model-catalog/bundled.ts`): a
+`AVE_MODEL_CATALOG` pin (`bundled`, a cached `<sha256>`, or an absolute file path; a pin
+that cannot be honoured fails boot), else the verified refreshed copy in
+`<AVE_HOME>/cache/model-catalog/` when it is no older than the bundled snapshot, else
+the bundled snapshot. An interactive launch refreshes that cache from
+`https://models.dev/api.json` at most daily (`llm.modelCatalogRefresh`, default on; off
+under the pin or the managed policy's `modelCatalog.refresh: "off"`), through
+`fetchPublicHttpResponse` on the host's single-hop transport, never a plugin path: a
+plain GET carrying no user data, 15 s, 16 MB. A refreshed copy takes effect at the next
+launch, and any failed refresh keeps the catalog already in force.
 User-configured thinking budgets apply per API call, including each
 call after a tool result; they introduce no cumulative quota for a user turn.
 They are non-negative integers capped at the highest fixed preset strictly below

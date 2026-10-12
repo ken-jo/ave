@@ -170,6 +170,15 @@ function normalizePinnedModels(input: unknown): string[] {
   return out;
 }
 
+/**
+ * `llm.modelCatalogRefresh`: `"auto"` or `"off"`; anything else reads as
+ * absent, and absent is the documented default, on (design
+ * `model-capability-catalog.md` §7).
+ */
+function normalizeModelCatalogRefresh(input: unknown): "auto" | "off" {
+  return input === "off" ? "off" : "auto";
+}
+
 export function normalizeActiveChatRuntime(input: unknown): ActiveChatRuntime {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return { kind: "api" };
@@ -696,6 +705,7 @@ export function mergeLlmPatch(
     pinnedModels: normalizePinnedModels(
       "pinnedModels" in partial ? partial.pinnedModels : base.pinnedModels,
     ),
+    modelCatalogRefresh: normalizeModelCatalogRefresh(partial.modelCatalogRefresh ?? base.modelCatalogRefresh),
     // `llm.hostResolverMap` is deliberately NOT carried forward. The manual
     // Chromium host-resolver map was removed with the private-endpoint access
     // path, so a value still on disk from an older build is inert. Dropping it
@@ -828,6 +838,7 @@ export function pruneLazyLlmVendorBlocks(
     ),
     pricingOverrides: normalizePricingOverrides(llm.pricingOverrides),
     pinnedModels: normalizePinnedModels(llm.pinnedModels),
+    modelCatalogRefresh: normalizeModelCatalogRefresh(llm.modelCatalogRefresh),
   };
   if (marketplaceProviderPresetId) {
     prunedLlm.marketplaceProviderPresetId = marketplaceProviderPresetId;
