@@ -1,0 +1,230 @@
+/**
+ * The bundled model catalog's generator (issue #2501): committed models.dev
+ * input in, `src/core/model-catalog/bundled-snapshot.json` out.
+ *
+ * The input under `scripts/model-catalog/` is committed so the snapshot is
+ * reproducible from the repository alone: `models-dev-input.json` is the
+ * pruned download, `models-dev-source.json` records where and when it was
+ * downloaded, and `models-dev-LICENSE.txt` is the license the data is
+ * distributed under. `--fetch` replaces all three; everything else reads them.
+ */
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  buildModelCatalogDocument,
+  formatCatalogJson,
+  type ModelCatalogSource,
+} from "../../src/core/model-catalog/document.js";
+import type { CatalogDiagnostic } from "../../src/shared/model-catalog/normalize.js";
+import { pruneModelsDevDocument } from "../../src/shared/model-catalog/normalize.js";
+import { CATALOG_PROVIDERS_BY_VENDOR, catalogProviderIds } from "../../src/shared/model-catalog/provider-map.js";
+import type { CatalogModel, ModelCatalogDocument, ModelCatalogLicense } from "../../src/shared/model-catalog/types.js";
+import type { LLMVendor } from "../../src/shared/llm-vendor-defaults.js";
+import { DEFAULT_PRICING, type ModelPricing } from "../../src/shared/pricing-data.js";
+
+export const MODEL_CATALOG_LABEL = "[model-catalog]";
+const MODELS_DEV_API_URL = "https://models.dev/api.json";
+const MODELS_DEV_REPOSITORY = "https://github.com/anomalyco/models.dev";
+const MODELS_DEV_GITHUB_API = "https://api.github.com/repos/anomalyco/models.dev";
+const MODELS_DEV_BRANCH = "dev";
+const MODELS_DEV_SCHEMA_PATH = "packages/core/src/schema.ts";
+
+export const MODEL_CATALOG_PATHS = {
+  input: "scripts/model-catalog/models-dev-input.json",
+  source: "scripts/model-catalog/models-dev-source.json",
+  license: "scripts/model-catalog/models-dev-LICENSE.txt",
+  snapshot: "src/core/model-catalog/bundled-snapshot.json",
+} as const;
+
+/** Depth at which a JSON value is written on one line: a model record, in both files. */
+const INPUT_COMPACT_DEPTH = 3;
+const SNAPSHOT_COMPACT_DEPTH = 4;
+
+/** The license as the catalog carries it; the copyright line is read from the text, not restated. */
+function modelCatalogLicense(text: string): ModelCatalogLicense {
+  const copyright = text.split("\n").find((line) => line.startsWith("Copyright"));
+  if (!text.startsWith("MIT License") || !copyright) {
+    throw new Error(`${MODEL_CATALOG_PATHS.license} is not an MIT license with a copyright line`);
+  }
+  return { spdx: "MIT", copyright: copyright.trim(), repository: MODELS_DEV_REPOSITORY, text };
+}
+
+function readText(root: string, path: string): string {
+  try {
+    // A copy checked out with CRLF is the same input; the blob is LF (.gitattributes).
+    return readFileSync(join(root, path), "utf-8").replace(/\r\n/g, "\n");
+  } catch {
+    throw new Error(`${path} is missing; run bun run generate:model-catalog -- --fetch`);
+  }
+}
+
+/** The snapshot the committed input generates, as the bytes the file must hold. */
+export function generateModelCatalog(root: string): {
+  path: string;
+  text: string;
+  document: ModelCatalogDocument;
+  diagnostics: CatalogDiagnostic[];
+} {
+  const input: unknown = JSON.parse(readText(root, MODEL_CATALOG_PATHS.input));
+  const source = JSON.parse(readText(root, MODEL_CATALOG_PATHS.source)) as ModelCatalogSource;
+  const license = modelCatalogLicense(readText(root, MODEL_CATALOG_PATHS.license));
+  const { document, diagnostics } = buildModelCatalogDocument({
+    input,
+    providerIds: catalogProviderIds(),
+    source,
+    license,
+  });
+  return {
+    path: MODEL_CATALOG_PATHS.snapshot,
+    text: formatCatalogJson(document, SNAPSHOT_COMPACT_DEPTH),
+    document,
+    diagnostics,
+  };
+}
+
+/** The committed input files a download produces: the pruned document, its source record, and the license. */
+export async function fetchModelCatalogInput(fetchImpl: typeof fetch = fetch): Promise<{
+  input: string;
+  source: string;
+  license: string;
+}> {
+  const response = await fetchImpl(MODELS_DEV_API_URL, { signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error(`${MODELS_DEV_API_URL} answered ${response.status}`);
+  const raw = Buffer.from(await response.arrayBuffer());
+  const fetchedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const pruned = pruneModelsDevDocument(JSON.parse(raw.toString("utf-8")), catalogProviderIds());
+
+  // The deployed document carries no revision, so the repository head at
+  // download time is recorded as the nearest one. Best effort: an API limit
+  // must not stop a download that already succeeded.
+  let upstreamHeadAtFetch: string | undefined;
+  let upstreamSchemaBlob: string | undefined;
+  try {
+    const head = await fetchImpl(`${MODELS_DEV_GITHUB_API}/commits/${MODELS_DEV_BRANCH}`, { signal: AbortSignal.timeout(15_000) });
+    if (head.ok) upstreamHeadAtFetch = ((await head.json()) as { sha?: string }).sha;
+    if (upstreamHeadAtFetch) {
+      const schema = await fetchImpl(
+        `${MODELS_DEV_GITHUB_API}/contents/${MODELS_DEV_SCHEMA_PATH}?ref=${upstreamHeadAtFetch}`,
+        { signal: AbortSignal.timeout(15_000) },
+      );
+      if (schema.ok) upstreamSchemaBlob = ((await schema.json()) as { sha?: string }).sha;
+    }
+  } catch {
+    // Recorded as absent; the fields are optional for exactly this reason.
+  }
+  const licenseResponse = await fetchImpl(
+    `https://raw.githubusercontent.com/anomalyco/models.dev/${upstreamHeadAtFetch ?? MODELS_DEV_BRANCH}/LICENSE`,
+    { signal: AbortSignal.timeout(15_000) },
+  );
+  if (!licenseResponse.ok) throw new Error(`the models.dev LICENSE answered ${licenseResponse.status}`);
+  const license = (await licenseResponse.text()).replace(/\r\n/g, "\n");
+  modelCatalogLicense(license);
+
+  const etag = response.headers.get("etag") ?? undefined;
+  const source: ModelCatalogSource = {
+    url: MODELS_DEV_API_URL,
+    fetchedAt,
+    ...(etag ? { etag } : {}),
+    rawSha256: createHash("sha256").update(raw).digest("hex"),
+    ...(upstreamHeadAtFetch ? { upstreamHeadAtFetch } : {}),
+    ...(upstreamSchemaBlob ? { upstreamSchemaBlob } : {}),
+  };
+  return {
+    input: formatCatalogJson(pruned, INPUT_COMPACT_DEPTH),
+    source: formatCatalogJson(source, 1),
+    license,
+  };
+}
+
+// ── Comparison with the hand-kept table ──────────────────────────────────────
+
+const RATE_FIELDS = [
+  ["inputPer1M", "input"],
+  ["outputPer1M", "output"],
+  ["cacheReadPer1M", "cacheRead"],
+  ["cacheWritePer1M", "cacheWrite"],
+] as const;
+
+/** Fields of the hand-kept table the catalog has no counterpart for. */
+const HOST_ONLY_FIELDS = [
+  "contextWindow1MBeta",
+  "surchargeInputThreshold",
+  "surchargeInputMultiplier",
+  "surchargeOutputMultiplier",
+  "tpmDefault",
+] as const satisfies ReadonlyArray<keyof ModelPricing>;
+
+function catalogEntry(document: ModelCatalogDocument, vendor: string, model: string): { at: string; model: CatalogModel } | undefined {
+  const providers = CATALOG_PROVIDERS_BY_VENDOR[vendor as LLMVendor] ?? [];
+  for (const exactCase of [true, false]) {
+    for (const provider of providers) {
+      const models = document.providers[provider]?.models ?? {};
+      const key = exactCase ? (model in models ? model : undefined) : Object.keys(models).find((id) => id.toLowerCase() === model.toLowerCase());
+      if (key) return { at: `${provider}/${key}`, model: models[key] as CatalogModel };
+    }
+  }
+  return undefined;
+}
+
+const show = (value: number | undefined): string => (value === undefined ? "—" : String(value));
+
+/**
+ * Every row of `DEFAULT_PRICING` against the catalog, as Markdown: values
+ * that differ, rows the catalog has no entry for, and table fields the
+ * catalog cannot carry. The last two are what removing the table would lose.
+ */
+export function modelCatalogPricingReport(document: ModelCatalogDocument): string {
+  const differences: string[] = [];
+  const missing: string[] = [];
+  const hostOnly: string[] = [];
+  let matched = 0;
+  for (const [vendor, rows] of Object.entries(DEFAULT_PRICING)) {
+    for (const [model, row] of Object.entries(rows)) {
+      for (const field of HOST_ONLY_FIELDS) {
+        if (row[field] !== undefined) hostOnly.push(`| ${vendor} | ${model} | ${field} | ${row[field]} |`);
+      }
+      const entry = catalogEntry(document, vendor, model);
+      if (!entry) {
+        missing.push(`| ${vendor} | ${model} | ${row.contextWindow} | ${row.inputPer1M} / ${row.outputPer1M} |`);
+        continue;
+      }
+      matched += 1;
+      const changes: string[] = [];
+      if (entry.model.limits.context !== row.contextWindow) {
+        changes.push(`context ${row.contextWindow} → ${show(entry.model.limits.context)}`);
+      }
+      for (const [tableField, catalogField] of RATE_FIELDS) {
+        const before = row[tableField];
+        const after = entry.model.cost?.[catalogField];
+        if (before !== after) changes.push(`${catalogField} ${show(before)} → ${show(after)}`);
+      }
+      if (changes.length > 0) differences.push(`| ${vendor} | ${model} | ${entry.at} | ${changes.join("; ")} |`);
+    }
+  }
+  return [
+    `# DEFAULT_PRICING against catalog ${document.sha256.slice(0, 12)} (${document.provenance.fetchedAt})`,
+    "",
+    `${matched} rows have a catalog entry; ${differences.length} of them differ, ${missing.length} rows have none.`,
+    "Prices are USD per million tokens; `—` is absent. A cache rate the table leaves out is derived from the input rate at run time, so `— → n` there is the catalog stating what the host derives.",
+    "",
+    "## Values that differ",
+    "",
+    "| vendor | model | catalog entry | table → catalog |",
+    "| --- | --- | --- | --- |",
+    ...differences,
+    "",
+    "## Rows with no catalog entry",
+    "",
+    "| vendor | model | context | input / output |",
+    "| --- | --- | --- | --- |",
+    ...missing,
+    "",
+    "## Table fields with no catalog counterpart",
+    "",
+    "| vendor | model | field | value |",
+    "| --- | --- | --- | --- |",
+    ...hostOnly,
+    "",
+  ].join("\n");
+}
