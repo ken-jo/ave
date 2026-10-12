@@ -48,6 +48,7 @@ import {
   getVendoredSrtWinExePath,
   rewriteAsarPathToUnpacked,
 } from "./asrt-sandbox.js";
+import { errorMessage } from "../shared/error-message.js";
 
 type WindowsUserState = NonNullable<SandboxWindowsStatusInfo["userState"]>;
 type WindowsWfpState = NonNullable<SandboxWindowsStatusInfo["wfpState"]>;
@@ -99,6 +100,8 @@ interface AsrtWindowsInstallRuntimeLike {
 interface AsrtWindowsInstallDependencies {
   readonly loadRuntime?: () => Promise<AsrtWindowsInstallRuntimeLike>;
   readonly grantBackendAcl?: () => Promise<void>;
+  /** The pre-install status read (default {@link readAsrtWindowsStatus}). */
+  readonly readStatus?: () => Promise<SandboxWindowsStatusInfo>;
 }
 
 interface AsrtWindowsAclDependencies {
@@ -401,12 +404,36 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
 export async function installAsrtWindowsSandbox(
   dependencies: AsrtWindowsInstallDependencies = {},
 ): Promise<SandboxWindowsInstallResult> {
+  // Already ready: say so instead of asking for elevation that would change
+  // nothing (an elevated run re-installs in ~100 ms with no prompt, and the
+  // panel would otherwise look exactly as before). A status read that fails
+  // does not block the repair: the install below is the way out of it.
+  try {
+    const before = await (dependencies.readStatus ?? readAsrtWindowsStatus)();
+    if (before.applicable && before.ready) {
+      return {
+        outcome: "already-ready",
+        userState: before.userState ?? undefined,
+        wfpState: before.wfpState ?? undefined,
+        ready: true,
+      };
+    }
+  } catch (error) {
+    console.warn("[sandbox] Windows sandbox status could not be read before install; installing anyway", error);
+  }
+
   // Resolve the real module (for the explicit srt-win descriptor + the
   // WindowsSandboxError class) once; the install/verify functions may be
   // overridden by the DI seam for tests.
-  const { mod, srtWin } = await loadSrtWin();
-  const { installWindowsSandboxAsync, verifyWindowsWfpEgress } =
-    dependencies.loadRuntime ? await dependencies.loadRuntime() : mod;
+  let mod: typeof import("@anthropic-ai/sandbox-runtime");
+  let srtWin: SrtWinSpawn;
+  let runtime: AsrtWindowsInstallRuntimeLike;
+  try {
+    ({ mod, srtWin } = await loadSrtWin());
+    runtime = dependencies.loadRuntime ? await dependencies.loadRuntime() : mod;
+  } catch (error) {
+    return failedInstall(error, "unexpected");
+  }
 
   // ASRT 0.0.76: the install is ASYNC — the modal UAC prompt is still shown, but
   // the main-process event loop stays live (spinners/timers keep running) rather
@@ -414,62 +441,73 @@ export async function installAsrtWindowsSandbox(
   // descriptor is explicit (no implicit vendored fallback since 0.0.67).
   let result: AsrtWindowsInstallCancelledLike | AsrtWindowsInstallSuccessLike;
   try {
-    result = await installWindowsSandboxAsync({
+    result = await runtime.installWindowsSandboxAsync({
       proxyPortRange: DEFAULT_WINDOWS_PROXY_PORT_RANGE,
       srtWin,
     });
   } catch (error) {
     if (error instanceof mod.WindowsSandboxError) {
       if (error.code === "install_timeout") {
-        // The self-elevating install subprocess was killed by the 120s spawn
-        // timeout with the UAC consent dialog still open. Surface it distinctly so
-        // the caller can prompt the user to re-run and approve elevation promptly
-        // (a late approval after the timeout would half-complete).
-        throw new Error(
-          "ASRT Windows sandbox install timed out after 120s with the UAC consent " +
-            "prompt still open. Re-run the install and approve the elevation prompt.",
-        );
+        // The self-elevating install subprocess was killed by the 120 s spawn
+        // timeout with the UAC consent dialog still open (on my-window: a locked
+        // console, where the prompt cannot be answered). Nothing was accepted.
+        return { outcome: "timed-out" };
       }
       if (error.code === "install_ambient_failed") {
         // ASRT 0.0.76 exit 17: the WFP filters and the sandbox user may both be
         // in place, but the ambient write-deny stamps on the stock
-        // world-writable system directories did not land. Treating that as a
-        // generic failure would be dishonest in the dangerous direction — the
+        // world-writable system directories did not land. Treating that as
+        // installed would be dishonest in the dangerous direction — the
         // filesystem confinement Ave publishes for win32
         // (`sandboxConfinementForPlatform` → `filesystem: true`) assumes those
-        // stamps exist. Fail the install loudly so the capability is never
-        // published on a half-stamped machine.
-        throw new Error(
-          "ASRT Windows sandbox install could not deny-stamp the stock " +
+        // stamps exist. The install is NOT accepted.
+        return {
+          outcome: "failed",
+          errorCode: error.code,
+          message:
+            "ASRT Windows sandbox install could not deny-stamp the stock " +
             "world-writable system directories for the sandbox user, so the " +
             "filesystem confinement this sandbox reports would be incomplete. " +
             "The install was NOT accepted. Re-run it from an account that can " +
             "elevate, and check that no policy or security agent is reverting " +
             `ACL changes on the Windows system directories. (${error.message})`,
-        );
+        };
       }
+      return failedInstall(error, error.code);
     }
-    throw error;
+    return failedInstall(error, "unexpected");
   }
 
-  if ((result as AsrtWindowsInstallCancelledLike).cancelled) {
-    return { cancelled: true };
+  if ((result as AsrtWindowsInstallCancelledLike | undefined)?.cancelled) {
+    return { outcome: "cancelled", cancelled: true };
   }
 
-  await (dependencies.grantBackendAcl ?? grantAsrtWindowsBackendAcl)();
+  try {
+    await (dependencies.grantBackendAcl ?? grantAsrtWindowsBackendAcl)();
+  } catch (error) {
+    return failedInstall(error, "backend-acl", "The sandbox install ran, but Ave could not grant the sandbox users read access to its backend files");
+  }
 
-  const success = result as AsrtWindowsInstallSuccessLike;
-  const userState = normalizeAsrtWindowsUserState(success.user);
-  const wfpState = normalizeAsrtWindowsWfpState(success.wfp);
+  // A result without user/wfp (an unexpected ASRT shape) normalizes to
+  // absent → not ready → `installed-unverified`: what Ave can claim, no more.
+  const success = (result ?? {}) as Partial<AsrtWindowsInstallSuccessLike>;
+  const userState = normalizeAsrtWindowsUserState(success.user ?? {});
+  const wfpState = normalizeAsrtWindowsWfpState(success.wfp ?? {});
   const ready = await resolveAsrtWindowsReady(
     userState,
     wfpState,
-    verifyWindowsWfpEgress,
+    runtime.verifyWindowsWfpEgress,
     srtWin,
   );
   return {
+    outcome: ready ? "ready" : "installed-unverified",
     userState,
     wfpState,
     ready,
   };
+}
+
+function failedInstall(error: unknown, errorCode: string, context?: string): SandboxWindowsInstallResult {
+  const detail = errorMessage(error);
+  return { outcome: "failed", errorCode, message: context ? `${context}: ${detail}` : detail };
 }

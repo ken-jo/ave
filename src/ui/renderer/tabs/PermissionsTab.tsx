@@ -77,6 +77,93 @@ const DEFAULT_REVIEWER_SETTINGS: PermissionReviewerSettings = {
 
 const MS_PER_SECOND = 1_000;
 
+/** What the Windows install click led to, as the panel shows it. */
+interface WindowsInstallOutcomeView {
+  /** The main-side `outcome`, or `refused` / `unexpected` for other shapes. */
+  outcome: string;
+  tone: "success" | "info" | "warning" | "error";
+  text: string;
+}
+
+/**
+ * Every value `sandboxWindowsInstall` can resolve to — an outcome, an IPC
+ * refusal, an older shape, or something unexpected — becomes a visible state.
+ * The click must never end looking like nothing happened (issue #1608).
+ */
+function describeWindowsInstallResult(result: unknown): WindowsInstallOutcomeView {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return { outcome: "unexpected", tone: "error", text: t("permissionsTab.osSandboxWindowsInstallUnexpected", { detail: String(result) }) };
+  }
+  const record = result as Record<string, unknown>;
+  if (record.ok === false) {
+    const code = typeof record.error === "string" ? record.error : undefined;
+    const detail = typeof record.message === "string" && record.message.trim() ? record.message : undefined;
+    let message: string;
+    if (code === "user-keyboard-required") {
+      // This panel's own explanation says what to do; main's English detail adds nothing.
+      message = t("permissionsTab.osSandboxWindowsInstallNeedsClick");
+    } else {
+      // A common code localizes to a generic sentence; keep main's own detail
+      // beside it so the cause is still on screen.
+      const localized = formatIpcError(code, detail);
+      message = detail && detail !== localized ? `${localized} (${detail})` : localized;
+    }
+    return { outcome: "refused", tone: "error", text: t("permissionsTab.osSandboxWindowsInstallError", { message }) };
+  }
+  // An older main process answers without `outcome`; read what it did say.
+  const outcome = typeof record.outcome === "string"
+    ? record.outcome
+    : record.cancelled === true
+      ? "cancelled"
+      : record.ready === true
+        ? "ready"
+        : record.ready === false
+          ? "installed-unverified"
+          : undefined;
+  const state = (value: unknown) => (typeof value === "string" ? value : "?");
+  switch (outcome) {
+    case "ready":
+      return { outcome, tone: "success", text: t("permissionsTab.osSandboxWindowsInstallReady") };
+    case "already-ready":
+      return { outcome, tone: "info", text: t("permissionsTab.osSandboxWindowsInstallAlreadyReady") };
+    case "installed-unverified":
+      return {
+        outcome,
+        tone: "warning",
+        text: t("permissionsTab.osSandboxWindowsInstallUnverified", { userState: state(record.userState), wfpState: state(record.wfpState) }),
+      };
+    case "cancelled":
+      return { outcome, tone: "warning", text: t("permissionsTab.osSandboxWindowsInstallCancelled") };
+    case "timed-out":
+      return { outcome, tone: "error", text: t("permissionsTab.osSandboxWindowsInstallTimedOut") };
+    case "failed":
+      return {
+        outcome,
+        tone: "error",
+        text: t("permissionsTab.osSandboxWindowsInstallFailed", {
+          code: state(record.errorCode),
+          message: typeof record.message === "string" && record.message ? record.message : "-",
+        }),
+      };
+    default:
+      return {
+        outcome: "unexpected",
+        tone: "error",
+        text: t("permissionsTab.osSandboxWindowsInstallUnexpected", {
+          detail: outcome ?? (Object.keys(record).join(", ") || "{}"),
+        }),
+      };
+  }
+}
+
+const WINDOWS_INSTALL_OUTCOME_TONE: Record<WindowsInstallOutcomeView["tone"], string> = {
+  success: "border-success/(--opacity-medium) bg-success/(--opacity-faint) text-success",
+  info: "border-info/(--opacity-medium) bg-info/(--opacity-soft) text-info",
+  warning: "border-warning/(--opacity-medium) bg-warning/(--opacity-soft) text-warning",
+  error: "border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive",
+};
+
+
 function formatRevokeError(error: string | undefined, message: string | undefined): string {
   return formatIpcError(error, message, {
     codeMap: { "invalid-key": t("permissionsTab.errorInvalidKey") },
@@ -215,10 +302,10 @@ export function PermissionsTab({
   // `windowsStatus` holds the latest readiness snapshot once the user opts in on
   // win32; the panel renders off it. `windowsInstallBusy` disables the
   // "Re-provision" button while the UAC prompt is in flight.
-  // `windowsInstallCancelled` shows the cancelled banner after a UAC dismissal.
+  // `windowsInstallOutcome` is what the last click led to, shown until the next.
   const [windowsStatus, setWindowsStatus] = useState<SandboxWindowsStatusInfo | null>(null);
   const [windowsInstallBusy, setWindowsInstallBusy] = useState(false);
-  const [windowsInstallCancelled, setWindowsInstallCancelled] = useState(false);
+  const [windowsInstallOutcome, setWindowsInstallOutcome] = useState<WindowsInstallOutcomeView | null>(null);
 
   // ── Sub-agent parent adjudication ─────────────────
   // The master switch is a feature flag in app settings; the ceilings below it
@@ -589,8 +676,8 @@ export function PermissionsTab({
     const next = !sandboxEnabled;
     setSandboxBusy(true);
     setSandboxEnabled(next);
-    // Clear any stale "Install cancelled" banner whenever the toggle moves.
-    setWindowsInstallCancelled(false);
+    // Clear any stale install outcome whenever the toggle moves.
+    setWindowsInstallOutcome(null);
     try {
       const res = await getApi().updateSettings({ features: { osToolSandbox: next } });
       if (isIpcErrorResult(res)) {
@@ -630,35 +717,23 @@ export function PermissionsTab({
   const handleWindowsInstall = async () => {
     if (windowsInstallBusy) return;
     setWindowsInstallBusy(true);
-    setWindowsInstallCancelled(false);
+    setWindowsInstallOutcome(null);
     try {
-      const result = await window.ave.permission.sandboxWindowsInstall();
-      if (result.cancelled) {
-        // UAC dismissed — not an error. Keep the user's opt-in setting ON so
-        // the Windows consent panel remains visible and they can retry instead
-        // of seeing the toggle immediately snap back off.
-        setWindowsInstallCancelled(true);
-        setWindowsStatus(await window.ave.permission.sandboxWindowsStatus());
-        return;
+      let view: WindowsInstallOutcomeView;
+      try {
+        view = describeWindowsInstallResult(await window.ave.permission.sandboxWindowsInstall());
+      } catch (e) {
+        view = { outcome: "refused", tone: "error", text: t("permissionsTab.osSandboxWindowsInstallError", { message: errorMessage(e) }) };
       }
-      // Defensive: an error shape from the IPC (install threw or returned ok:false).
-      // Keep the user's opt-in setting ON and leave the consent panel available
-      // so a transient installer failure can be retried without re-enabling the
-      // setting first.
-      if ("ok" in result && result.ok === false) {
+      // Shown whatever the status re-read says: an unchanged panel is exactly
+      // what made the click look like a no-op. The user's opt-in stays ON in
+      // every case, so the panel remains the place to retry.
+      setWindowsInstallOutcome(view);
+      try {
         setWindowsStatus(await window.ave.permission.sandboxWindowsStatus());
-        const detail = (result as { ok: false; message?: string; error?: string }).message
-          ?? (result as { ok: false; message?: string; error?: string }).error
-          ?? "unknown error";
-        showBanner("error", t("permissionsTab.osSandboxWindowsInstallError", { message: detail }));
-        return;
+      } catch (e) {
+        showBanner("error", t("permissionsTab.osSandboxWindowsInstallError", { message: errorMessage(e) }));
       }
-      // Install ran — refresh the readiness snapshot so the panel advances to
-      // the ready or setup-status state (verbatim instructions still drive the copy).
-      const status = await window.ave.permission.sandboxWindowsStatus();
-      setWindowsStatus(status);
-    } catch (e) {
-      showBanner("error", t("permissionsTab.osSandboxWindowsInstallError", { message: errorMessage(e) }));
     } finally {
       setWindowsInstallBusy(false);
     }
@@ -1149,12 +1224,19 @@ export function PermissionsTab({
             </div>
           ) : null}
           {/* ── Windows srt-win consent flow ── */}
-          {windowsInstallCancelled ? (
+          {windowsInstallOutcome ? (
             <p
-              data-testid="os-sandbox-windows-install-cancelled"
-              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+              data-testid="os-sandbox-windows-install-outcome"
+              data-outcome={windowsInstallOutcome.outcome}
+              role={windowsInstallOutcome.tone === "error" ? "alert" : "status"}
+              className={`whitespace-pre-line rounded-md border px-3 py-2 text-[11px] ${WINDOWS_INSTALL_OUTCOME_TONE[windowsInstallOutcome.tone]}`}
             >
-              {t("permissionsTab.osSandboxWindowsInstallCancelled")}
+              {windowsInstallOutcome.text}
+            </p>
+          ) : null}
+          {windowsInstallBusy ? (
+            <p data-testid="os-sandbox-windows-install-pending" role="status" className="text-[11px] italic text-muted-foreground">
+              {t("permissionsTab.osSandboxWindowsInstallPending")}
             </p>
           ) : null}
           {sandboxEnabled && windowsStatus?.applicable && !windowsStatus.ready ? (

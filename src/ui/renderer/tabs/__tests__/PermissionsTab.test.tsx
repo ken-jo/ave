@@ -1229,8 +1229,84 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     });
 
     expect(updateSettings).not.toHaveBeenCalledWith({ features: { osToolSandbox: false } });
-    expect(screen.getByTestId("os-sandbox-windows-install-cancelled")).toBeTruthy();
+    expect(screen.getByTestId("os-sandbox-windows-install-outcome")).toHaveAttribute("data-outcome", "cancelled");
     expect(screen.getByTestId("os-sandbox-windows-consent")).toBeTruthy();
+  });
+
+  // Issue #1608: the click must always end in a visible state of its own. The
+  // status mock returns the same not-ready snapshot before and after, which is
+  // exactly when the old handler left the panel looking untouched.
+  async function clickInstall(result: () => Promise<unknown>) {
+    installApiWithWindows({ sandboxWindowsInstall: vi.fn(result) });
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("재설정"));
+    });
+    return screen.getByTestId("os-sandbox-windows-install-outcome");
+  }
+
+  it("shows that the install ran but could not be verified, for the shape an older main returns (#1608)", async () => {
+    const outcome = await clickInstall(async () => ({ userState: "ready", wfpState: "cannot-read", ready: false }));
+    expect(outcome).toHaveAttribute("data-outcome", "installed-unverified");
+    expect(outcome).toHaveTextContent("설정은 실행되었지만 Ave가 샌드박스가 동작하는지 확인하지 못했습니다(샌드박스 사용자: ready, 네트워크 필터: cannot-read)");
+  });
+
+  it.each([
+    [{ outcome: "installed-unverified", userState: "ready", wfpState: "cannot-read", ready: false }, "installed-unverified", "설정은 실행되었지만"],
+    [{ outcome: "ready", userState: "ready", wfpState: "installed", ready: true }, "ready", "Windows OS 격리 설정이 끝났고 확인되었습니다"],
+    [{ outcome: "already-ready", userState: "ready", wfpState: "installed", ready: true }, "already-ready", "이미 설정되어 있고 확인되었으므로 관리자 확인이 필요하지 않았습니다"],
+    [{ outcome: "cancelled", cancelled: true }, "cancelled", "관리자 권한이 허용되지 않아"],
+    [{ outcome: "timed-out" }, "timed-out", "2분 안에 Windows 관리자 확인 창에 응답이 없어"],
+    [{ outcome: "failed", errorCode: "install_wfp_failed", message: "WFP filter install failed" }, "failed", "Windows 샌드박스 설정 실패(install_wfp_failed): WFP filter install failed"],
+  ])("renders the %j outcome as a visible state", async (result, expected, text) => {
+    const outcome = await clickInstall(async () => result);
+    expect(outcome).toHaveAttribute("data-outcome", expected);
+    expect(outcome).toHaveTextContent(text);
+    expect(outcome.textContent).not.toMatch(/permissionsTab\./);
+  });
+
+  it.each([
+    ["null", null],
+    ["an empty object", {}],
+    ["an unknown outcome", { outcome: "rebooting" }],
+    ["a string", "done"],
+  ])("renders %s as an unexpected result, never as nothing", async (_label, result) => {
+    const outcome = await clickInstall(async () => result);
+    expect(outcome).toHaveAttribute("data-outcome", "unexpected");
+    expect(outcome).toHaveTextContent("Windows 샌드박스 설정이 Ave가 알 수 없는 결과를 반환했습니다");
+  });
+
+  it("renders a rejected IPC call and a localized refusal as errors", async () => {
+    const rejected = await clickInstall(async () => {
+      throw new Error("ipc channel closed");
+    });
+    expect(rejected).toHaveAttribute("data-outcome", "refused");
+    expect(rejected).toHaveTextContent("ipc channel closed");
+    cleanup();
+
+    const refused = await clickInstall(async () => ({ ok: false, error: "user-keyboard-required", message: "permission change requires active user gesture (keyboard intent)" }));
+    expect(refused).toHaveAttribute("data-outcome", "refused");
+    expect(refused.textContent).not.toContain("keyboard intent");
+    expect(refused).toHaveTextContent("재설정은 이 창에서 클릭했을 때만 시작되는데, Ave가 클릭을 확인하지 못했습니다");
+  });
+
+  it("tells the user to approve the Windows prompt while the install is in flight", async () => {
+    let finish: ((value: unknown) => void) | undefined;
+    installApiWithWindows({ sandboxWindowsInstall: vi.fn(() => new Promise((resolve) => { finish = resolve; })) });
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("재설정"));
+    });
+    expect(screen.getByTestId("os-sandbox-windows-install-pending")).toHaveTextContent("Windows 관리자 확인 창에서 허용하세요");
+    await act(async () => {
+      finish?.({ outcome: "timed-out" });
+    });
+    expect(screen.queryByTestId("os-sandbox-windows-install-pending")).toBeNull();
+    expect(screen.getByTestId("os-sandbox-windows-install-outcome")).toHaveAttribute("data-outcome", "timed-out");
   });
 });
 

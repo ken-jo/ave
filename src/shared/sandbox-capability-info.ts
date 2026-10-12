@@ -63,22 +63,46 @@ export interface SandboxWindowsStatusInfo {
 }
 
 /**
+ * What one click of the Windows "Re-provision" action led to. Every value is a
+ * state the Settings panel shows on its own, so the click never ends looking
+ * like nothing happened (issue #1608):
+ * - `ready`: the install ran and the sandbox is proven ready.
+ * - `installed-unverified`: the install ran (exit 0), but Ave could not prove
+ *   readiness afterwards; `userState`/`wfpState` say what it saw.
+ * - `already-ready`: the sandbox was already ready, so no elevation was asked.
+ * - `cancelled`: elevation was not granted (the prompt was dismissed, or
+ *   Windows could not show it). Nothing changed.
+ * - `timed-out`: nobody answered the elevation prompt within ASRT's 120 s
+ *   window (for example, the screen was locked). Nothing was accepted.
+ * - `failed`: the install or a step after it failed; `errorCode` is ASRT's
+ *   stable `WindowsSandboxError` code, `backend-acl`, or `unexpected`.
+ */
+type SandboxWindowsInstallOutcome =
+  | "ready"
+  | "installed-unverified"
+  | "already-ready"
+  | "cancelled"
+  | "timed-out"
+  | "failed";
+
+/**
  * Result of the user-consented Windows install (one self-elevating UAC).
- *
- * `cancelled: true` means the user dismissed the UAC prompt — NOT an error; the
- * install simply didn't run and the toggle should revert. On success the
- * post-install user + WFP state is returned so the renderer can advance without
- * a second round trip.
+ * `outcome` is always set; the other fields add detail to it.
  */
 export interface SandboxWindowsInstallResult {
-  /** True when the user dismissed UAC. Mutually exclusive with the state fields. */
+  outcome: SandboxWindowsInstallOutcome;
+  /** Set with `outcome: "cancelled"` (kept for older readers). */
   cancelled?: true;
-  /** Post-install sandbox user state (absent when `cancelled`). */
+  /** Sandbox user state after the install (or the pre-check, for `already-ready`). */
   userState?: "absent" | "incomplete" | "ready";
-  /** Post-install WFP state (absent when `cancelled`). */
+  /** WFP state after the install (or the pre-check, for `already-ready`). */
   wfpState?: "absent" | "installed" | "cannot-read";
-  /** Post-install readiness, using the same WFP verification rule as status. */
+  /** Readiness, using the same WFP verification rule as status. */
   ready?: boolean;
+  /** With `outcome: "failed"`: a stable machine code. */
+  errorCode?: string;
+  /** With `outcome: "failed"`: diagnostic detail (English, from ASRT or Ave). */
+  message?: string;
 }
 
 /** Which branch the boot-time sandbox gate took. */
