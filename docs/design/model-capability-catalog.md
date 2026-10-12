@@ -163,17 +163,17 @@ Precedence, per fact:
 removes it) and `fallback` (128K). Refreshed metadata joins in slice 6, above the bundled
 snapshot.
 
-**The prompt cap.** Beside the window the resolver reports the model's prompt cap when a
-source states one below it (`inputLimit`, `inputLimitSource`): what the endpoint
-reported (GitHub Copilot's `capabilities.limits.max_prompt_tokens`, read by
-`src/engine/llm/model-list.ts` with the window and output cap it nests beside it), else
-the catalog's `limits.input`. A declared window carries none. The usable budget is
+**The prompt cap.** Beside the window the resolver reports the model's prompt cap when the
+catalog states one below it (`inputLimit`, `inputLimitSource: "model-catalog"`, from
+`limits.input`). No `/models` endpoint Ave calls reports a prompt cap apart from the
+window — GitHub Models' `limits.max_input_tokens` is read as the window — so the catalog is
+the only source. A declared window carries none. The usable budget is
 `min(window − Ave's output reservation, prompt cap)` and the compaction threshold is 80%
 of it (`getUsableContext`, `getPreflightThreshold`), in the engine and in the renderer's
 context ring alike; a threshold the cap lowered is traced as `thresholdSource:
-"input-limit"`. Before, the threshold came from the window alone: Copilot GPT-5 mini (264K
-window, 128K prompt) compacted at 179,200, past what the endpoint accepts, and 100
-snapshot entries had a threshold above their cap. Now none do (a test holds every entry
+"input-limit"`. Before, the threshold came from the window alone: GPT-5.2 (400K window,
+272K prompt) compacted at 288,000, past what the endpoint accepts, and about 100 snapshot
+entries had a threshold above their cap. Now none do (a test holds every entry
 to it).
 
 The catalog key is found by one `resolveCatalogKey(catalog, vendor, model)`
@@ -182,7 +182,7 @@ exact id; an Ave alias (`src/shared/model-catalog/aliases.ts`, empty today — e
 vendor id the snapshot can describe is found by the other steps, and an alias may only
 join two ids documented to name one model); an entry whose `canonicalId` is the id;
 the id without a release-date suffix; the id with case and version separators folded
-(`claude-sonnet-4-6` → Copilot's `claude-sonnet-4.6`); the same ignoring a path prefix
+(`claude-sonnet-4-6` against a listed `claude-sonnet-4.6`); the same ignoring a path prefix
 on either side (`openai/gpt-5.4` → Requesty's `gpt-5.4`). The alias step also drops a
 Vertex version tag (`@default`, `@20250929`) from either side, since Vertex lists Claude as
 `claude-opus-4-6@default` and Ave names it `claude-opus-4-6`. The version-tag, folded,
@@ -210,9 +210,9 @@ installing one would fail there.
 
 Windows the snapshot of 2026-10-12 changes against the table (the rest agree): GPT-5.4
 Pro 1.1M → 1,050,000; GPT-4.1, 4.1 mini and nano 1M → 1,047,576; Gemini 2.5 Pro and Flash
-1M → 1,048,576, Gemini 2.5 Flash-Lite 128K → 1,048,576; Copilot GPT-5 mini 400K →
-264,000 and Copilot Claude Sonnet 4.6 1M → 200,000 (the table applied Anthropic's 1M
-beta window to the Copilot row; the catalog lists Copilot's own window). Claude Sonnet and Opus 4.6 stay at 1M: the
+1M → 1,048,576, Gemini 2.5 Flash-Lite 128K → 1,048,576. Copilot routes are not among them:
+the Copilot vendor maps to no catalog provider (§3.4), so its windows still come from
+GitHub Models' `/models` row, then the table. Claude Sonnet and Opus 4.6 stay at 1M: the
 catalog lists the window the adapter's beta header already delivers, and the decision to
 send that header stays on the table until slice 7.
 

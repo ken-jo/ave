@@ -89,8 +89,12 @@ export type ContextWindowSource =
   | "pricing-catalog"
   | "fallback";
 
-/** Who stated a model's prompt cap: the endpoint's `/models` row, or the catalog's `limits.input`. */
-export type InputLimitSource = "provider-reported" | "model-catalog";
+/**
+ * Who stated a model's prompt cap. Only the catalog's `limits.input` does
+ * today: no `/models` endpoint Ave calls reports a prompt cap apart from the
+ * window (GitHub Models' `limits.max_input_tokens` is read as the window).
+ */
+export type InputLimitSource = "model-catalog";
 
 export interface ResolvedContextWindow {
   readonly contextWindow: number;
@@ -144,18 +148,15 @@ function positiveTokenCount(value: number | undefined): number | undefined {
  * 4. The hand-kept pricing table's entry, for a model the catalog does not know.
  * 5. The conservative fallback window.
  *
- * The prompt cap is resolved beside the window: what the endpoint reported
- * (`reportedInput`), else the catalog entry's `limits.input`, kept only when
- * it is below the window. A declared window carries none — the user stated the
- * capacity of the endpoint they run.
+ * The prompt cap is resolved beside the window: the catalog entry's
+ * `limits.input`, kept only when it is below the window. A declared window
+ * carries none — the user stated the capacity of the endpoint they run.
  */
 export function resolveModelContextWindow(params: {
   vendor: string;
   model: string;
   configured?: number;
   reported?: number;
-  /** The endpoint's own prompt cap for this model (Copilot `max_prompt_tokens`). */
-  reportedInput?: number;
   /** A catalog entry the user named for this route, `<provider>/<id>`. */
   catalogModel?: string;
 }): ResolvedContextWindow {
@@ -175,14 +176,10 @@ export function resolveModelContextWindow(params: {
     if (pricing) return { contextWindow: effectiveContextWindow(pricing), source: "pricing-catalog" };
     return { contextWindow: FALLBACK_PRICING.contextWindow, source: "fallback" };
   })();
-  const reportedInput = positiveTokenCount(params.reportedInput);
   const catalogInput = positiveTokenCount(hit?.model.limits.input);
-  const cap: Pick<ResolvedContextWindow, "inputLimit" | "inputLimitSource"> | undefined = reportedInput !== undefined
-    ? { inputLimit: reportedInput, inputLimitSource: "provider-reported" }
-    : catalogInput !== undefined
-      ? { inputLimit: catalogInput, inputLimitSource: "model-catalog" }
-      : undefined;
-  return cap?.inputLimit !== undefined && cap.inputLimit < window.contextWindow ? { ...window, ...cap } : window;
+  return catalogInput !== undefined && catalogInput < window.contextWindow
+    ? { ...window, inputLimit: catalogInput, inputLimitSource: "model-catalog" }
+    : window;
 }
 
 /**
@@ -299,7 +296,6 @@ export function resolveContextWindowForRoute(
     model,
     ...(block.contextWindow !== undefined ? { configured: block.contextWindow } : {}),
     ...(entry?.contextLength !== undefined ? { reported: entry.contextLength } : {}),
-    ...(entry?.maxInputTokens !== undefined ? { reportedInput: entry.maxInputTokens } : {}),
     ...(catalogModel !== undefined ? { catalogModel } : {}),
   });
   const maxOutputTokens = positiveTokenCount(entry?.maxOutputTokens);
