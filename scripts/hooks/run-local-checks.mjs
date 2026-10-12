@@ -468,6 +468,25 @@ function getGitBlob(repoRoot, objectId, relativePath) {
   return decodeUtf8Strict(result.stdout);
 }
 
+function getPushedHistoryFullReason(repoRoot, baseSha, localSha) {
+  const history = captureOptional(commands.git, ["rev-list", "--parents", `${baseSha}..${localSha}`], repoRoot);
+  if (!history) return "pushed history could not be resolved";
+  for (const line of history.split("\n")) {
+    const [commit, ...parents] = line.split(" ");
+    if (parents.length === 0 || ![commit, ...parents].every((sha) => /^[0-9a-f]{40,64}$/.test(sha))) {
+      return "pushed history has no conservative parent";
+    }
+    for (const parent of parents) {
+      const entries = getChangedEntries(repoRoot, parent, commit);
+      if (entries === null) return "pushed history diff failed";
+      if (entries.length === 0 || classifyDocumentationChanges(entries).docsOnly) continue;
+      const selection = selectFastSourceChecks(entries);
+      if (!selection.eligible) return `${selection.reason} in pushed history`;
+    }
+  }
+  return null;
+}
+
 function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocation) {
   if (!parsedUpdates.complete || parsedUpdates.updates.length === 0) {
     return { docsOnly: false, reason: "ref updates could not be classified" };
@@ -504,21 +523,19 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocat
       !update.localRef.startsWith("refs/heads/") ||
       !update.remoteRef.startsWith("refs/heads/")
     ) {
-      targetedTestsEligible = false;
-      commentOnlyEligible = false;
-      targetedTestsReason ||= "only branch updates can use targeted tests";
+      return { docsOnly: false, reason: "non-branch updates require full checks" };
     } else if (isNewBranch) {
       commentOnlyEligible = false;
     } else if (isFastForwardUpdate(repoRoot, update.remoteSha, update.localSha) !== true) {
-      targetedTestsEligible = false;
-      commentOnlyEligible = false;
-      targetedTestsReason ||= "non-fast-forward updates require full checks";
+      return { docsOnly: false, reason: "non-fast-forward updates require full checks" };
     }
 
     const entries = getChangedEntries(repoRoot, baseSha, update.localSha);
     if (entries === null) {
       return { docsOnly: false, reason: `git diff failed for ${update.localRef}` };
     }
+    const historyReason = getPushedHistoryFullReason(repoRoot, baseSha, update.localSha);
+    if (historyReason) return { docsOnly: false, reason: historyReason };
     for (const entry of entries) {
       changedFiles.add(entry.path);
       changedEntries.push({ ...entry, baseSha, localSha: update.localSha });
@@ -534,6 +551,9 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocat
   }
   const documentation = classifyDocumentationChanges(changedEntries);
   if (!documentation.docsOnly) {
+    // The safety ceiling applies before the narrower comment and test tiers.
+    const fastSelection = selectFastSourceChecks(changedEntries);
+    if (!fastSelection.eligible) return { docsOnly: false, reason: fastSelection.reason };
     if (commentOnlyEligible) {
       const commentSelection = selectCommentOnlyAveAppFiles(
         changedEntries,
@@ -560,7 +580,6 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocat
           reason: selection.reason,
         };
       }
-      const fastSelection = selectFastSourceChecks(changedEntries);
       if (fastSelection.eligible) {
         return {
           docsOnly: false,
