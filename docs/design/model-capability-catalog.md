@@ -102,13 +102,28 @@ input. It has two fault outcomes:
 an Ave vendor id meets a catalog provider id. It is exhaustive over `LLMVendor`, so a new
 vendor fails typecheck until it is placed. A vendor maps to the catalog providers whose API
 host is the vendor's endpoint: Qwen and Qwen Code to `alibaba-cn` (DashScope's mainland
-host, not the international `alibaba`), Doubao to `volcengine` (Ark). The generic
+host, not the international `alibaba`), Doubao to `volcengine` (Ark). Copilot maps to
+`[]`: Ave's Copilot vendor calls GitHub Models (`models.github.ai`), which the catalog does
+not list, and the catalog's `github-copilot` provider is the Copilot API
+(`api.githubcopilot.com`), another service with other limits. A Copilot route's window comes
+from GitHub Models' own `/models` row (`limits.max_input_tokens`), then the pricing table,
+then the fallback. The generic
 OpenAI-compatible endpoint, local runtimes (Ollama, LM Studio) and vendors no catalog
 provider serves at their endpoint (SambaNova, LiteLLM, v0, HiCap, Nous, Huawei MaaS, Ask
 Sage, OCA) map to `[]`: their limits come from what the endpoint reports and what the user
 configures, never from a public model that happens to share a name. A mapped vendor's model
 the provider does not list stays unknown to the catalog (Doubao's default
 `doubao-1-5-pro-256k-250115` is one) and falls to the next source.
+
+The rule is held by a test against each provider's `api`, which the pruned input keeps:
+every mapped provider's host is the vendor's default endpoint's host, and where the
+catalog's path names a product beyond the version (z.ai's coding plan) the path matches
+too. Providers the catalog lists without an `api` (the first-party APIs reached through
+their own SDK packages) are listed with the reason. The vendor defaults follow the same
+documents: Baseten's Model APIs are `inference.baseten.co` (the old `model-api.baseten.co`
+does not resolve) and Nebius is `api.tokenfactory.nebius.com` (Token Factory, formerly AI
+Studio); a stored copy of either old default is rewritten on every load
+(`src/data/settings-store.ts`), and any other stored endpoint is kept.
 
 ### 3.5 Generator and committed input
 
@@ -127,7 +142,7 @@ and in the pre-push hook) fails when the snapshot differs from what the input ge
 a refresh's diff is one line per changed model. `--fetch` writes nothing unless every
 required download succeeded (a failed GitHub API call only leaves the upstream head and
 schema blob out; a failed license download fails the run). The snapshot of 2026-10-12
-holds 30 providers and 2,217 models in about 1 MB.
+holds 29 providers and 2,182 models in about 1 MB.
 
 ## 4. Resolution (slice 2)
 
@@ -194,16 +209,16 @@ user overrides keep the highest precedence.
 ## 8. What the hand-kept table has that the catalog does not
 
 `bun run generate:model-catalog -- --report` compares every `DEFAULT_PRICING` row with the
-snapshot. Against the snapshot of 2026-10-12: 42 rows have a catalog entry, 40 of them
+snapshot. Against the snapshot of 2026-10-12: 38 rows have a catalog entry, 36 of them
 differ (mostly cache rates the table derives at run time, and OpenAI and Gemini rows the
-table lists at zero); 43 rows have none. Slice 7 removes the table only after each of
+table lists at zero); 47 rows have none. Slice 7 removes the table only after each of
 these is answered:
 
 - **Dated and retired ids** (`claude-sonnet-4-20250514`, `claude-3-*`, `gpt-4.1-2025-04-14`,
   `o3-2025-04-16`, `gemini-1.5-*`, …): resolved by the aliases of §4 or allowed to fall to
   the host fallback.
-- **Copilot rows** the `github-copilot` provider does not list: resolved by aliases to the
-  originating model, or left to what the endpoint reports.
+- **Copilot rows**: the Copilot vendor maps to no catalog provider (§3.4); these windows
+  come from GitHub Models' `/models` report or the user's setting.
 - **Self-hosted rows** (`openai-compatible`: `Qwen3.6-35B-A3B-NVFP4` 262,144,
   `Nemotron-3-Nano-30B-A3B-FP8` 131,072): the vendor maps to no catalog provider by design;
   these windows come from the endpoint's report or the user's setting.
