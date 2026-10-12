@@ -23,8 +23,11 @@ test.beforeAll(async () => {
         import { TokenProgressRing } from "./src/ui/renderer/components/TokenProgressRing.tsx";
         import { TooltipProvider } from "./src/components/ui/tooltip.tsx";
         import { useCostEstimate } from "./src/ui/renderer/hooks/use-cost-estimate.ts";
+        import { installModelCatalog } from "./src/shared/model-catalog/active.ts";
+        import catalog from "./src/core/model-catalog/bundled-snapshot.json";
         import { loadLocaleMessages } from "./src/i18n/messages/index.ts";
         import { setLocale } from "./src/i18n/runtime.ts";
+        installModelCatalog(catalog);
         const entries = [
           ...[90000, 1000, 2000, 3000, 4000, 5000].map(tokensOut => ({ kind: "turn_summary", tokensIn: 2000, tokensOut })),
           { kind: "context_usage", tokensIn: 2000, source: "compact-estimate" },
