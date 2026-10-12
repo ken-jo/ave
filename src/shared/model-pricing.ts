@@ -29,8 +29,8 @@
  * the model the endpoint serves for its limits, and the public price of that
  * model is not what the user's own endpoint costs.
  */
-import { lookupBillablePricingOptional, type TokenRateTier, type TokenRates } from "./pricing-data.js";
-import type { PricingOverride } from "./pricing-overrides.js";
+import { lookupBillablePricingOptional, type TokenRateTier, type TokenRates, type UsageForCost } from "./pricing-data.js";
+import { isPricingOverrideRate, type PricingOverride } from "./pricing-overrides.js";
 import { activeModelCatalog } from "./model-catalog/active.js";
 import { resolveCatalogKey } from "./model-catalog/resolve.js";
 import type { CatalogModelCost } from "./model-catalog/types.js";
@@ -51,6 +51,69 @@ export type ResolvedModelPricing =
     };
 
 export type KnownModelPricing = Extract<ResolvedModelPricing, { rates: TokenRates }>;
+
+/** Usage and the price resolved when that provider request ran. */
+export interface ModelUsageSegment<Vendor extends string = string> {
+  vendorProvider: Vendor;
+  vendorModel: string;
+  tokenUsage: UsageForCost;
+  /** Absent only on records written before request prices were captured. */
+  pricing?: ResolvedModelPricing;
+}
+
+const OPTIONAL_TOKEN_RATE_FIELDS = [
+  "cacheReadPer1M", "cacheWritePer1M", "reasoningPer1M",
+  "surchargeInputThreshold", "surchargeInputMultiplier", "surchargeOutputMultiplier",
+] as const;
+const OPTIONAL_TIER_RATE_FIELDS = ["inputPer1M", "outputPer1M", "cacheReadPer1M", "cacheWritePer1M"] as const;
+
+/** Copy a price snapshot from an IPC or persisted record, validating every numeric field. */
+export function parseResolvedModelPricing(value: unknown): ResolvedModelPricing | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const obj = value as Record<string, unknown>;
+  if (obj.source === "unknown") {
+    return {
+      source: "unknown",
+      ...(typeof obj.catalogListsZero === "string" ? { catalogListsZero: obj.catalogListsZero } : {}),
+    };
+  }
+  if (obj.source !== "user" && obj.source !== "model-catalog" && obj.source !== "pricing-catalog") return undefined;
+  if (!obj.rates || typeof obj.rates !== "object" || Array.isArray(obj.rates)) return undefined;
+  const raw = obj.rates as Record<string, unknown>;
+  if (!isPricingOverrideRate(raw.inputPer1M) || !isPricingOverrideRate(raw.outputPer1M)) return undefined;
+  const rates: TokenRates = { inputPer1M: raw.inputPer1M, outputPer1M: raw.outputPer1M };
+  for (const key of OPTIONAL_TOKEN_RATE_FIELDS) {
+    if (raw[key] === undefined) continue;
+    if (!isPricingOverrideRate(raw[key])) return undefined;
+    rates[key] = raw[key];
+  }
+  if (raw.reasoningRateScope !== undefined) {
+    if (raw.reasoningRateScope !== "output") return undefined;
+    rates.reasoningRateScope = "output";
+  }
+  if (raw.tiers !== undefined) {
+    if (!Array.isArray(raw.tiers)) return undefined;
+    const tiers: TokenRateTier[] = [];
+    for (const value of raw.tiers) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+      const rawTier = value as Record<string, unknown>;
+      if (!isPricingOverrideRate(rawTier.afterInputTokens)) return undefined;
+      const tier: TokenRateTier = { afterInputTokens: rawTier.afterInputTokens };
+      for (const key of OPTIONAL_TIER_RATE_FIELDS) {
+        if (rawTier[key] === undefined) continue;
+        if (!isPricingOverrideRate(rawTier[key])) return undefined;
+        tier[key] = rawTier[key];
+      }
+      tiers.push(tier);
+    }
+    rates.tiers = tiers;
+  }
+  return {
+    source: obj.source,
+    rates,
+    ...(typeof obj.catalogEntry === "string" ? { catalogEntry: obj.catalogEntry } : {}),
+  };
+}
 
 export function resolveModelPricing(
   vendor: string,

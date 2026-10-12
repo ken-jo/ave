@@ -346,11 +346,15 @@ endpoint costs.
   zero does not establish free reasoning. Without a reported split, all output uses
   the output rate.
 
-Every cost surface reads these: the pre-send estimate (`use-cost-estimate.ts`), the
-per-turn badge (`TokenCostBadge`, priced per request segment), the usage dashboard and
-its CSV (`usage-stats.ts`, whose cache key now includes the catalog's `sha256`) and the
-run record, whose `modelSettings.pricing` keeps the resolved answer — source, entry and
-rates — so a past turn's cost can be read back at the rates it ran under. The renderer
+The pre-send estimate (`use-cost-estimate.ts`) resolves current prices. Each completed
+provider request records its resolved `pricing` in `usageByModel`; the per-turn badge,
+usage dashboard and CSV use that snapshot, including an unknown or explicit free
+price. For an older audit record without a request snapshot, the recorded primary-route
+price applies only to a segment matching the audit route; otherwise current prices
+apply. Older transcript segments without snapshots resolve current prices. The
+dashboard's cache key includes the catalog's `sha256` for those older records. The run's
+`modelSettings.pricing` records the primary route's answer; request snapshots also
+cover mixed-model turns. The renderer
 applies the corrections main resolves (`ave:usage:pricing-overrides`, fetched on each
 settings snapshot; `src/ui/renderer/hooks/use-pricing-overrides.ts`) instead of reading
 the setting raw, so an environment-forced list prices the estimate and the badge as it

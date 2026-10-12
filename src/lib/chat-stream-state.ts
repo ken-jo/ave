@@ -15,19 +15,9 @@ import {
 import { isExternalSurfaceInputOrigin } from "../shared/chat-origin.js";
 import { t } from "../i18n/index.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
+import { parseResolvedModelPricing, type ModelUsageSegment } from "../shared/model-pricing.js";
 
-export type TokenUsageSegment = {
-  vendorProvider: LLMVendor;
-  vendorModel: string;
-  tokenUsage: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens?: number;
-    cacheWriteTokens?: number;
-    /** The reasoning part of `outputTokens`, when the provider reported it. */
-    reasoningTokens?: number;
-  };
-};
+export type TokenUsageSegment = ModelUsageSegment<LLMVendor>;
 
 
 
@@ -1329,6 +1319,7 @@ function parseUsageByModel(value: unknown): TurnSummaryEntry["usageByModel"] | u
     const s = segment as {
       vendorProvider?: unknown;
       vendorModel?: unknown;
+      pricing?: unknown;
       tokenUsage?: {
         inputTokens?: unknown;
         outputTokens?: unknown;
@@ -1342,9 +1333,11 @@ function parseUsageByModel(value: unknown): TurnSummaryEntry["usageByModel"] | u
     if (!usage || !isFiniteNonNegative(usage.inputTokens) || !isFiniteNonNegative(usage.outputTokens)) {
       return [];
     }
+    const pricing = parseResolvedModelPricing(s.pricing);
     return [{
       vendorProvider: s.vendorProvider,
       vendorModel: s.vendorModel,
+      ...(pricing !== undefined ? { pricing } : {}),
       tokenUsage: {
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,

@@ -61,7 +61,7 @@ import { activeModelCatalog } from "../../shared/model-catalog/active.js";
 import type { ContextWindowSource } from "../../shared/context-budget.js";
 import type { RunModelSettings } from "../../shared/run-model-settings.js";
 import { resolveModelPricing } from "../../shared/model-pricing.js";
-import { resolvePricingOverrides } from "../../shared/pricing-overrides.js";
+import { resolvePricingOverrides, type PricingOverride } from "../../shared/pricing-overrides.js";
 import { isA2AQuestionInputRequiredControl } from "../../tools/agent-send.js";
 import {
   isA2AAgentCausalContext,
@@ -253,6 +253,7 @@ export async function queryLoop(
       ? undefined
       : model;
     const usageByModel: TokenUsageByModel[] = [];
+    const turnPricingOverrides = resolvePricingOverrides(llmSettings.pricingOverrides);
     const subscriptionUsage = createSubscriptionUsageCollector();
     // Report a branch the loop just took. Reporting can never change what the
     // loop does, so a listener that throws is swallowed here rather than
@@ -305,7 +306,7 @@ export async function queryLoop(
             },
             output: effectiveOutput,
             ...(reasoning ? { reasoning } : {}),
-            pricing: resolveModelPricing(llmSettings.provider, model, resolvePricingOverrides(llmSettings.pricingOverrides)),
+            pricing: resolveModelPricing(llmSettings.provider, model, turnPricingOverrides),
           };
         })();
     const withServingIdentity = (
@@ -397,6 +398,7 @@ export async function queryLoop(
           cacheWriteTokens: cacheWrite,
           ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
         },
+        turnPricingOverrides,
       );
       self.cumulativeUsage.inputTokens += adjustedInput;
       self.cumulativeUsage.outputTokens += usage.outputTokens;
@@ -2458,6 +2460,7 @@ function appendUsageForServingModel(
   vendorProvider: LLMVendor | undefined,
   vendorModel: string | undefined,
   usage: TokenUsage,
+  pricingOverrides: readonly PricingOverride[],
 ): void {
   if (vendorProvider === undefined || vendorModel === undefined) {
     return;
@@ -2465,6 +2468,7 @@ function appendUsageForServingModel(
   usageByModel.push({
     vendorProvider,
     vendorModel,
+    pricing: resolveModelPricing(vendorProvider, vendorModel, pricingOverrides),
     tokenUsage: {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,

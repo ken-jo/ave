@@ -21,6 +21,8 @@ import { isLLMVendor, type LLMVendor } from "./llm/types.js";
 import { computeCost, knownModelPricing, normalizeAiSdkUsageForCost, resolveModelPricing } from "./llm/pricing.js";
 import { activeModelCatalog } from "../shared/model-catalog/active.js";
 import { pricingOverridesSignature, type PricingOverride } from "../shared/pricing-overrides.js";
+import { parseResolvedModelPricing, type ResolvedModelPricing } from "../shared/model-pricing.js";
+import type { RunModelSettings } from "../shared/run-model-settings.js";
 
 export interface AuditTurnEntry {
   timestamp: string;
@@ -28,6 +30,7 @@ export interface AuditTurnEntry {
   type: string;
   tokenUsage?: AuditTokenUsage;
   usageByModel?: AuditUsageByModelSegment[];
+  modelSettings?: Pick<RunModelSettings, "pricing">;
   /** Untrusted persisted subscription telemetry; normalize before use. */
   subscriptionUsage?: unknown;
   route?: string;
@@ -159,6 +162,7 @@ type UsageSegment = {
   vendor: UsageVendor;
   model: string;
   tokenUsage: NonNullable<AuditTurnEntry["tokenUsage"]>;
+  pricing?: ResolvedModelPricing;
 };
 
 function parseSubscriptionUsageSegments(entry: AuditTurnEntry): SubscriptionUsageTelemetry[] {
@@ -172,6 +176,8 @@ function parseSubscriptionUsageSegments(entry: AuditTurnEntry): SubscriptionUsag
 }
 
 function parseUsageSegments(entry: AuditTurnEntry): UsageSegment[] {
+  const recordedRoute = parseRoute(entry.route);
+  const recordedPricing = parseResolvedModelPricing(entry.modelSettings?.pricing);
   if (entry.usageByModel?.length) {
     return entry.usageByModel.map((segment) => {
       const model = segment.vendorModel || "unknown";
@@ -179,7 +185,11 @@ function parseUsageSegments(entry: AuditTurnEntry): UsageSegment[] {
       // spent those tokens: keep the segment visible and unpriced, the same
       // way parseRoute treats an unrecognised route.
       return isLLMVendor(segment.vendorProvider)
-        ? { vendor: segment.vendorProvider, model, tokenUsage: segment.tokenUsage }
+        ? {
+            vendor: segment.vendorProvider, model, tokenUsage: segment.tokenUsage,
+            pricing: parseResolvedModelPricing(segment.pricing)
+              ?? (recordedRoute.vendor === segment.vendorProvider && recordedRoute.model === model ? recordedPricing : undefined),
+          }
         : { vendor: "unknown" as const, model: `${segment.vendorProvider}/${model}`, tokenUsage: segment.tokenUsage };
     });
   }
@@ -192,7 +202,7 @@ function parseUsageSegments(entry: AuditTurnEntry): UsageSegment[] {
       // usage and split Claude cache out before pricing/aggregation.
       ? normalizeAiSdkUsageForCost(entry.tokenUsage, vendor)
       : entry.tokenUsage;
-  return [{ vendor, model, tokenUsage }];
+  return [{ vendor, model, tokenUsage, pricing: recordedPricing }];
 }
 
 function addTo(
@@ -506,7 +516,7 @@ export function computeUsageSummary(
         cacheWriteTokens = 0,
       } = tokenUsage;
       const pricing = vendor !== "unknown"
-        ? knownModelPricing(resolveModelPricing(vendor, model, pricingOverrides))
+        ? knownModelPricing(segment.pricing ?? resolveModelPricing(vendor, model, pricingOverrides))
         : undefined;
       const costKnown = !!pricing;
       const cost = pricing && vendor !== "unknown"

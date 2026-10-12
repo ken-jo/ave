@@ -67,6 +67,45 @@ function summaryWithInput(inputTokens = 100): ReturnType<typeof computeUsageSumm
   ], new Date("2026-07-04T12:00:00Z"));
 }
 
+it("uses recorded request prices after a pricing correction changes", () => {
+  const entries = [turn({
+    route: "openai/gpt-5.4",
+    usageByModel: [{
+      vendorProvider: "openai", vendorModel: "gpt-5.4",
+      tokenUsage: { inputTokens: 100_000, outputTokens: 0 },
+      pricing: { source: "user", rates: { inputPer1M: 1, outputPer1M: 0 } },
+    }],
+  })];
+  const summary = computeUsageSummary(entries, new Date(), [
+    { vendor: "openai", model: "gpt-5.4", inputPer1M: 10, outputPer1M: 0 },
+  ]);
+  expect(summary.today.cost).toBeCloseTo(0.1, 9);
+  expect(summary.perModel[0].cost).toBeCloseTo(0.1, 9);
+});
+
+it("keeps a request recorded as unpriced unknown when the current catalog prices it", () => {
+  const summary = computeUsageSummary([turn({
+    usageByModel: [{
+      vendorProvider: "openai", vendorModel: "gpt-5.4",
+      tokenUsage: { inputTokens: 100_000, outputTokens: 0 },
+      pricing: { source: "unknown" },
+    }],
+  })], new Date());
+  expect(summary.today.unknownCostTurns).toBe(1);
+});
+
+it("uses the recorded primary price only for matching older request segments", () => {
+  const summary = computeUsageSummary([turn({
+    route: "openai/gpt-5.4",
+    modelSettings: { pricing: { source: "user", rates: { inputPer1M: 1, outputPer1M: 0 } } },
+    usageByModel: [
+      { vendorProvider: "openai", vendorModel: "gpt-5.4", tokenUsage: { inputTokens: 100_000, outputTokens: 0 } },
+      { vendorProvider: "claude", vendorModel: "claude-sonnet-4-6", tokenUsage: { inputTokens: 100_000, outputTokens: 0 } },
+    ],
+  })], new Date(), [{ vendor: "openai", model: "gpt-5.4", inputPer1M: 10, outputPer1M: 0 }]);
+  expect(summary.today.cost).toBeCloseTo(0.1 + 0.3, 9);
+});
+
 /**
  * Every bucket boundary in this file is the HOST's midnight, so the fixture
  * instants only mean what their comments say once the zone is pinned — and the

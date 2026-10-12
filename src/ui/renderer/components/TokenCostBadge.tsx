@@ -10,7 +10,7 @@ import {
   normalizeAiSdkUsageForCost,
   type TokenRates,
 } from "../../../shared/pricing-data.js";
-import { knownModelPricing, resolveModelPricing } from "../../../shared/model-pricing.js";
+import { knownModelPricing, parseResolvedModelPricing, resolveModelPricing, type ModelUsageSegment } from "../../../shared/model-pricing.js";
 import { usePricingOverrides } from "../hooks/use-pricing-overrides.js";
 import type { LLMVendor } from "../../../shared/llm-vendor-defaults.js";
 import type { SubscriptionUsageTelemetry } from "../../../shared/subscription-runtime.js";
@@ -46,17 +46,7 @@ export interface TokenCostBadgeProps {
    * segment so request-tier pricing such as OpenAI long-context surcharge is
    * not accidentally applied to an Ave turn aggregate.
    */
-  usageByModel?: Array<{
-    vendorProvider: LLMVendor;
-    vendorModel: string;
-    tokenUsage: {
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadTokens?: number;
-      cacheWriteTokens?: number;
-      reasoningTokens?: number;
-    };
-  }>;
+  usageByModel?: ModelUsageSegment<LLMVendor>[];
   /**
    * Non-billable subscription usage. When present this takes precedence over
    * API-key pricing inputs and is rendered as a token-only provenance badge.
@@ -157,7 +147,8 @@ function TokenCostBadgeImpl({
   const segmentCost = usageByModel && usageByModel.length > 0
     ? usageByModel.reduce<number | null>((sum, segment) => {
         if (sum === null) return null;
-        const segmentPricing = knownModelPricing(resolveModelPricing(segment.vendorProvider, segment.vendorModel, pricingOverrides));
+        const segmentPricing = knownModelPricing(parseResolvedModelPricing(segment.pricing)
+          ?? resolveModelPricing(segment.vendorProvider, segment.vendorModel, pricingOverrides));
         if (!segmentPricing) return null;
         return sum + computeCost(
           normalizeAiSdkUsageForCost(segment.tokenUsage, segment.vendorProvider),

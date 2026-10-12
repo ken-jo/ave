@@ -309,10 +309,10 @@ describe("ConversationLoop onTurnSummary", () => {
 
     expect(summary!.modelSettings?.pricing).toEqual({ source: "user", rates: { inputPer1M: 0.5, outputPer1M: 3 } });
     expect(summary!.usageByModel).toEqual([
-      expect.objectContaining({ tokenUsage: expect.objectContaining({ outputTokens: 10, reasoningTokens: 4 }) }),
+      expect.objectContaining({ pricing: summary!.modelSettings!.pricing, tokenUsage: expect.objectContaining({ outputTokens: 10, reasoningTokens: 4 }) }),
     ]);
     expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({
-      usageByModel: [expect.objectContaining({ tokenUsage: expect.objectContaining({ reasoningTokens: 4 }) })],
+      usageByModel: [expect.objectContaining({ pricing: summary!.modelSettings!.pricing, tokenUsage: expect.objectContaining({ reasoningTokens: 4 }) })],
     }));
   });
 

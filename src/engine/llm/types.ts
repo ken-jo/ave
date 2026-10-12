@@ -11,6 +11,7 @@
 // re-export here so existing engine-side callers keep their import
 // path while the type definition cannot drift between modules.
 import type { RunModelSettings } from "../../shared/run-model-settings.js";
+import type { ModelUsageSegment } from "../../shared/model-pricing.js";
 import {
   type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import type { MarketplaceInstalledProviderPreset } from "../../shared/marketplace-package-assets.js";
@@ -415,11 +416,7 @@ export interface TokenUsage {
   reasoningTokens?: number;
 }
 
-export interface TokenUsageByModel {
-  vendorProvider: LLMVendor;
-  vendorModel: string;
-  tokenUsage: TokenUsage;
-}
+export type TokenUsageByModel = ModelUsageSegment<LLMVendor>;
 
 /**
  * Turn-aggregate stats. Emitted live through `TurnCallbacks.onTurnSummary`

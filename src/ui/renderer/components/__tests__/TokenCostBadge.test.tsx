@@ -39,6 +39,26 @@ function renderInCostMode(props: Parameters<typeof TokenCostBadge>[0]) {
 describe("TokenCostBadge — cost parity with shared computeCost", () => {
   afterEach(() => cleanup());
 
+  it("uses recorded request prices after a pricing correction changes", async () => {
+    await syncPricingOverrides({ getPricingOverrides: async () => [
+      { vendor: "openai", model: "gpt-5.4", inputPer1M: 10, outputPer1M: 0 },
+    ] });
+    try {
+      renderInCostMode({
+        tokensIn: 100_000, freshInputTokens: 100_000, tokensOut: 0, vendor: "openai",
+        usageByModel: [{
+          vendorProvider: "openai", vendorModel: "gpt-5.4",
+          tokenUsage: { inputTokens: 100_000, outputTokens: 0 },
+          pricing: { source: "user", rates: { inputPer1M: 1, outputPer1M: 0 } },
+        }],
+      });
+      const numeric = Number((screen.getByText(/^≈ \$/).textContent ?? "").replace(/[^0-9.]/g, ""));
+      expect(numeric).toBe(0.1);
+    } finally {
+      await act(async () => { await syncPricingOverrides({ getPricingOverrides: async () => [] }); });
+    }
+  });
+
   it.each<{ vendor: LLMVendor; pricing: ModelPricing; label: string }>([
     { vendor: "claude", pricing: sonnet, label: "claude — cache additive at Anthropic ratios" },
     { vendor: "openai", pricing: gpt, label: "openai — provider-raw input includes cached tokens" },
@@ -96,7 +116,7 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
     expect(screen.getByText("미정")).toBeTruthy();
   });
 
-  it("sums OpenAI long-context pricing per request segment", () => {
+  it("sums tiered costs per request segment", () => {
     const pricing = lookupPricing("openai", "gpt-5.4");
     renderInCostMode({
       tokensIn: 410_000,

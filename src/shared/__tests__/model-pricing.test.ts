@@ -7,7 +7,7 @@
  * below are the snapshot of 2026-10-12's.
  */
 import { describe, expect, it } from "vitest";
-import { knownModelPricing, resolveModelPricing } from "../model-pricing.js";
+import { knownModelPricing, parseResolvedModelPricing, resolveModelPricing } from "../model-pricing.js";
 import { computeCost, promptTokensForTier, ratesForPrompt, type TokenRates } from "../pricing-data.js";
 import { activeModelCatalog } from "../model-catalog/active.js";
 import { CATALOG_PROVIDERS_BY_VENDOR } from "../model-catalog/provider-map.js";
@@ -19,6 +19,26 @@ function rates(vendor: string, model: string): TokenRates {
 }
 
 const MILLION = 1_000_000;
+
+describe("parseResolvedModelPricing", () => {
+  it("round-trips complete request prices and copies only pricing fields", () => {
+    const pricing = resolveModelPricing("gemini", "gemini-2.5-pro");
+    expect(parseResolvedModelPricing({ ...pricing, unrelated: "discard" })).toEqual(pricing);
+    expect(parseResolvedModelPricing(resolveModelPricing("qwen", "qwen-plus")))
+      .toEqual(resolveModelPricing("qwen", "qwen-plus"));
+    expect(parseResolvedModelPricing({ source: "unknown", unrelated: "discard" })).toEqual({ source: "unknown" });
+  });
+
+  it("retains explicit free request prices", () => {
+    const pricing = { source: "user", rates: { inputPer1M: 0, outputPer1M: 0 } };
+    expect(parseResolvedModelPricing(pricing)).toEqual(pricing);
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, "2"])("rejects a malformed rate %s", (invalid) => {
+    expect(parseResolvedModelPricing({ source: "user", rates: { inputPer1M: invalid, outputPer1M: 1 } })).toBeUndefined();
+    expect(parseResolvedModelPricing({ source: "model-catalog", rates: { inputPer1M: 1, outputPer1M: 2, tiers: [{ afterInputTokens: 10, cacheReadPer1M: invalid }] } })).toBeUndefined();
+  });
+});
 
 describe("resolveModelPricing — source order and provenance", () => {
   it("prices a model the catalog knows from its entry, and names the entry", () => {
@@ -100,9 +120,9 @@ describe("resolveModelPricing — source order and provenance", () => {
 });
 
 describe("computeCost — prompt-size tiers", () => {
-  it("prices Claude Haiku 5.5 at the base rate up to 100,000 prompt tokens and at the tier above", () => {
+  it("uses base rates through 100,000 prompt tokens and the tier above", () => {
     const haiku = rates("claude", "claude-haiku-5-5");
-    // Anthropic usage counts fresh input apart from the cache; the tier reads the whole prompt.
+    // Cache-additive usage counts fresh input apart from the cache; the tier reads the whole prompt.
     const at = { inputTokens: 60_000, cacheReadTokens: 40_000, outputTokens: MILLION };
     const over = { ...at, inputTokens: 60_001 };
     expect(promptTokensForTier(at, "claude")).toBe(100_000);
@@ -110,13 +130,13 @@ describe("computeCost — prompt-size tiers", () => {
     expect(computeCost(over, haiku, "claude")).toBeCloseTo((60_001 / MILLION) * 0.5 + 0.04 * 0.05 + 2.5, 9);
   });
 
-  it("prices GPT-5.4 at 2× input and 1.5× output once the prompt exceeds 272,000", () => {
+  it("applies 2× input and 1.5× output above 272,000 prompt tokens", () => {
     const gpt = rates("openai", "gpt-5.4");
     expect(computeCost({ inputTokens: 272_000, outputTokens: MILLION }, gpt, "openai")).toBeCloseTo(0.272 * 2.5 + 15, 9);
     expect(computeCost({ inputTokens: 272_001, outputTokens: MILLION }, gpt, "openai")).toBeCloseTo((272_001 / MILLION) * 5 + 22.5, 9);
   });
 
-  it("chooses a Gemini tier by the prompt including its cached part", () => {
+  it("chooses a cache-included route's tier by the whole prompt", () => {
     const pro = rates("gemini", "gemini-2.5-pro");
     // 150K fresh + 60K cached = 210K prompt: over 200K, so the tier's rates.
     const usage = { inputTokens: 210_000, cacheReadTokens: 60_000, outputTokens: 0 };
@@ -158,7 +178,7 @@ describe("computeCost — cache and reasoning rates", () => {
       .toBe(25);
   });
 
-  it("prices Gemini cache reads at the catalog's cache rate, not the input rate", () => {
+  it("prices cache reads at the published rate on a cache-included route", () => {
     const pro = rates("gemini", "gemini-2.5-pro");
     // 100K prompt, half of it cached: within the base tier.
     expect(computeCost({ inputTokens: 100_000, cacheReadTokens: 50_000, outputTokens: 0 }, pro, "gemini"))
@@ -173,7 +193,7 @@ describe("computeCost — cache and reasoning rates", () => {
       .toBeCloseTo(0.1 * 4 + 0.05 * 0.4 + 0.05 * 5, 9);
   });
 
-  it("uses Anthropic's catalog cache rates", () => {
+  it("uses published rates on a cache-additive route", () => {
     const opus = rates("claude", "claude-opus-5-5");
     expect(computeCost({ inputTokens: 0, cacheReadTokens: MILLION, cacheWriteTokens: MILLION, outputTokens: 0 }, opus, "claude"))
       .toBeCloseTo(0.2 + 5, 9);

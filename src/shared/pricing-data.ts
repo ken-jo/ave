@@ -105,7 +105,7 @@ export interface TokenRates {
   /**
    * Long-context input surcharge — input tokens BEYOND `surchargeInputThreshold`
    * trigger a session-wide price multiplier on BOTH input + output. The
-   * hand-kept table states OpenAI's gpt-5.4 / gpt-5.4-pro this way: when prompt
+   * hand-kept table states gpt-5.4 / gpt-5.4-pro this way: when prompt
    * > 272K, the full request is billed at 2x input + 1.5x output (issue #900).
    * The model catalog states the same prices as a tier; the table's form goes
    * with the table (issue #2501, slice 7).
@@ -120,7 +120,7 @@ export interface ModelPricing extends TokenRates {
   /** Default API tier context window in tokens. */
   contextWindow: number;
   /**
-   * Beta-tier context window (Anthropic `context-1m-2025-08-07`). When
+   * Beta-tier context window (`context-1m-2025-08-07`). When
    * defined, the adapter auto-sends the beta header and the model delivers
    * this larger window. Renderer / engine MUST resolve to this value when
    * present — see {@link effectiveContextWindow}.
@@ -287,7 +287,7 @@ export const FALLBACK_PRICING: ModelPricing = {
  * `FALLBACK_PRICING` on miss so cost / window math always has *some* value
  * to work with (zero pricing + 128K window — conservative).
  *
- * Does NOT consult env overrides. Use `engine/llm/pricing.ts:getModelPricing()`
+ * Does NOT consult env overrides. Use `shared/model-pricing.ts:resolveModelPricing()`
  * for the override-aware variant.
  */
 export function lookupPricing(
@@ -449,7 +449,7 @@ export function normalizeAiSdkUsageForCost<T extends UsageForCost | undefined>(
 
 /**
  * The prompt size a request's price tier is chosen by: every prompt token the
- * provider read, cached or not. Anthropic usage (after
+ * provider read, cached or not. Cache-additive usage (after
  * {@link normalizeAiSdkUsageForCost}) counts fresh input apart from the cache
  * lines, so they are added back; everyone else reports the cache inside the
  * prompt count already.
