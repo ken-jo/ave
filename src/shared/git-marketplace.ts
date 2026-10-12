@@ -277,7 +277,10 @@ export type VersionExclusionView = "min_app_version" | "host_protocol" | "yanked
 
 export interface VersionView {
   version: string;
-  commit: string;
+  /** Null for a legacy grant pin, which has no commit (design §16.3). */
+  commit: string | null;
+  /** Digest evidence that keeps an existing install's grant; never installable. */
+  legacyPin: boolean;
   publishedAt: string;
   minAppVersion: string;
   excluded: VersionExclusionView[];

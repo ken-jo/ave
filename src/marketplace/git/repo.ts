@@ -16,6 +16,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Parser, type ReadEntry } from "tar";
 import { canonicalZipEntryPathIdentity, sanitizeZipEntryPath } from "../../plugins/zip-entry-path.js";
+import { NULL_OBJECT_ID } from "../catalog/types.js";
 import { MarketplaceError } from "../errors.js";
 import { GitCommandError, type GitCommands, type GitRemote, GIT_TIMEOUTS_MS } from "./run-git.js";
 
@@ -44,6 +45,8 @@ export interface ExportedFile {
 
 function assertCommitId(value: string, what: string): void {
   if (!OID.test(value)) throw new Error(`${what} is not a 40-hex commit id: ${value}`);
+  // A legacy grant pin's commit (design §16.3): a caller reached git with a version that has no tree.
+  if (value === NULL_OBJECT_ID) throw new Error(`${what} is the all-zero object id, which names no commit or tree`);
 }
 
 /** Refuse a repository path before it reaches git as a pathspec. */

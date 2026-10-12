@@ -121,7 +121,7 @@ export function detail(item: CatalogEntryView, overrides: Partial<PackageDetailV
     components: null,
     rungs: [{ rung: "release", declared: true, pinned: true, detail: `${item.key.name}.zip`, unencrypted: false }],
     versions: [
-      { version: "1.0.0", commit: COMMIT_A, publishedAt: "2026-09-20T00:00:00.000Z", minAppVersion: "1.0.0", excluded: [], yankedReason: null, rolloutPercent: null, installed: false, candidate: true },
+      { version: "1.0.0", commit: COMMIT_A, publishedAt: "2026-09-20T00:00:00.000Z", minAppVersion: "1.0.0", legacyPin: false, excluded: [], yankedReason: null, rolloutPercent: null, installed: false, candidate: true },
     ],
     ...overrides,
   };

@@ -77,6 +77,19 @@ export interface IndexVersion {
   publishedAt: string;
 }
 
+/**
+ * The all-zero object id. A version listed at it is a legacy grant pin
+ * (design §16.3): digest evidence that keeps an existing install's host-secret
+ * grant, with a release sha256 and no git tree. It is not a commit, so it must
+ * never reach git (`git ls-tree 000…0` fails with "not a tree object").
+ */
+export const NULL_OBJECT_ID = "0".repeat(40);
+
+/** Whether `version` names a git tree; false for a legacy grant pin. */
+export function hasVersionTree(version: Pick<IndexVersion, "commit">): boolean {
+  return version.commit !== NULL_OBJECT_ID;
+}
+
 export interface AgentPluginComponents {
   skills: Array<{ name: string; hasScripts: boolean; digest: string }>;
   mcpServers: Record<string, StaticBundledMcpServer & { digest: string }>;

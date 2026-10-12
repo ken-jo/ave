@@ -755,6 +755,68 @@ describe("MarketplaceService", () => {
     });
   });
 
+  describe("a legacy grant pin (a digest-only version at the all-zero commit, design §16.3)", () => {
+    const NULL_COMMIT = "0".repeat(40);
+    const pinVersion = (version: string) => ({
+      version,
+      commit: NULL_COMMIT,
+      minAppVersion: "0.7.0",
+      authority: { capabilities: [], requires: { minAppVersion: "0.7.0" } },
+      artifact: { release: { repo: "acme/fixturepin", sha256: "a".repeat(64) } },
+      yanked: { reason: "Legacy field pin: receipt grant evidence only. Not installable.", at: AT.toISOString() },
+      publishedAt: AT.toISOString(),
+    });
+    /** A marketplace listing `fixturepin` with exactly these versions, newest first. */
+    async function pinned(versions: (head: string) => unknown[]) {
+      const source = market();
+      const head = source.repo.commit({ "notes/readme.txt": "fixture\n" }, "a commit a real version can name");
+      source.repo.commit({
+        "marketplace.2.json": text({
+          schemaVersion: 2,
+          name: "acme-tools",
+          displayName: "Acme Tools",
+          packages: [{ kind: "plugin", name: "fixturepin", path: "plugins/fixturepin", versions: versions(head) }],
+        }),
+      }, "list fixturepin");
+      await addMarket(source.url);
+      return { sourceId: "acme-tools", kind: "plugin" as const, name: "fixturepin" };
+    }
+
+    it("opens the detail without giving git the all-zero commit, and shows the pin as such", async () => {
+      const key = await pinned(() => [pinVersion("0.9.0"), pinVersion("0.8.0")]);
+      const detail = await service.detail(key);
+      expect(detail.provenance.versionCommit).toBeNull();
+      expect(detail.rungs).toEqual([]);
+      expect(detail.versions.map((item) => [item.version, item.commit, item.legacyPin, item.excluded.includes("yanked")])).toEqual([
+        ["0.9.0", null, true, true],
+        ["0.8.0", null, true, true],
+      ]);
+    });
+
+    it("shows the newest version that has a tree when nothing is offered", async () => {
+      const key = await pinned((head) => [
+        pinVersion("0.9.0"),
+        {
+          version: "0.8.0",
+          commit: head,
+          minAppVersion: "99.0.0",
+          authority: { capabilities: [], requires: { minAppVersion: "99.0.0" } },
+          artifact: { release: { repo: "acme/fixturepin", sha256: "b".repeat(64) } },
+          publishedAt: AT.toISOString(),
+        },
+      ]);
+      const detail = await service.detail(key);
+      expect(detail.provenance.versionCommit).not.toBeNull();
+      expect(detail.compatibility.minAppVersion).toBe("99.0.0");
+      expect(detail.versions.map((item) => [item.version, item.legacyPin])).toEqual([["0.9.0", true], ["0.8.0", false]]);
+    });
+
+    it("refuses to plan the pin before any git call", async () => {
+      const key = await pinned(() => [pinVersion("0.9.0")]);
+      await expect(service.planInstall({ ...key, version: "0.9.0" })).rejects.toMatchObject({ code: "PACKAGE_YANKED" });
+    });
+  });
+
   it("uses conditional policies for detail and install/update review", async () => {
     const source = market();
     await addMarket(source.url);

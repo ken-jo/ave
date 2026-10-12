@@ -464,6 +464,11 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
                         <span className="font-mono text-xs">{version.version}</span>
                         {version.candidate && <Badge className="h-5 px-1.5 text-[10px]">{t("gitMarketplace.version.latest")}</Badge>}
                         {version.installed && <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{t("gitMarketplace.version.installed")}</Badge>}
+                        {version.legacyPin && (
+                          <Badge variant="outline" className="h-5 px-1.5 text-[10px]" title={t("gitMarketplace.version.legacyPinHelp")} data-testid={`git-marketplace:version:${version.version}:legacy-pin`}>
+                            {t("gitMarketplace.version.legacyPin")}
+                          </Badge>
+                        )}
                         {version.excluded.map((reason) => (
                           <Badge key={reason} variant="outline" className="h-5 px-1.5 text-[10px]" title={reason === "yanked" ? version.yankedReason ?? undefined : undefined}>
                             {exclusionLabel(t, reason)}

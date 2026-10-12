@@ -59,7 +59,7 @@ import type { McpRuntimeSpec } from "../../plugins/types.js";
 import { AGENT_PLUGIN_DECLARATION_PATHS, extensionDeclarationPaths, type PayloadFile } from "../../plugins/contribution-approval-digest.js";
 import { packageUpdateSkipKey } from "../../shared/skipped-plugin-updates.js";
 import { aggregateCatalog, findRevocation, versionExclusions, type CatalogRow, type VersionChoiceContext } from "../catalog/aggregate.js";
-import { PACKAGE_KINDS, type AgentPluginComponents, type IndexVersion, type PackageKind, type PluginAuthority } from "../catalog/types.js";
+import { hasVersionTree, PACKAGE_KINDS, type AgentPluginComponents, type IndexVersion, type PackageKind, type PluginAuthority } from "../catalog/types.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { credentialRefusal } from "../catalog/validate.js";
 import { stageContentPackage, stagedConsent, type StagedContent } from "../content/store.js";
@@ -155,6 +155,17 @@ interface CapturedFolder {
  * only while the package is still installed with this identity.
  */
 type InstallIdentity = { sourceId: string | null; version: string | null; originCommit: string | null; digest: string | null } | null;
+
+/**
+ * The version the detail describes: the candidate; with none offered, the
+ * newest listed version that has a tree; with only legacy grant pins listed
+ * (design §16.3, before the first release from a source), the newest pin,
+ * shown without its tree. `versions[]` is newest first (index validation).
+ */
+function shownVersionOf(row: CatalogRow): IndexVersion | null {
+  if (row.choice.state === "candidate") return row.choice.version;
+  return row.package.versions.find(hasVersionTree) ?? row.package.versions[0] ?? null;
+}
 
 function installIdentity(record: InstalledRecord | null): InstallIdentity {
   return record ? { sourceId: record.sourceId, version: record.version, originCommit: record.originCommit, digest: record.digest ?? null } : null;
@@ -1592,7 +1603,8 @@ export class MarketplaceService implements RetirementEntryLookup {
     const installed = await this.installed(key.kind, key.name);
     const existing = new Set(this.registry.list().map((source) => source.id));
     const context = this.options.versionContext();
-    const shownVersion = row.choice.state === "candidate" ? row.choice.version : row.package.versions[0] ?? null;
+    const shownVersion = shownVersionOf(row);
+    const shownTree = shownVersion !== null && hasVersionTree(shownVersion);
     const installedHere = installed?.sourceId === key.sourceId ? installed.version : null;
     return {
       entry: this.entry(row, installed, rows, existing, label, badges),
@@ -1602,7 +1614,7 @@ export class MarketplaceService implements RetirementEntryLookup {
         folder: source.transport === "folder" ? { path: source.path, readAt: await this.folderReadAt(source.id, snapshot), contents: row.package.treeSha256 ?? null } : null,
         path: row.package.path,
         snapshotCommit: row.snapshotCommit,
-        versionCommit: shownVersion?.commit ?? null,
+        versionCommit: shownTree ? shownVersion.commit : null,
         publishedAt: shownVersion?.publishedAt ?? null,
       },
       compatibility: {
@@ -1612,7 +1624,8 @@ export class MarketplaceService implements RetirementEntryLookup {
       },
       authority: shownVersion?.authority ? authorityView(shownVersion.authority) : null,
       components: shownVersion?.components ?? null,
-      rungs: row.kind === "plugin" && shownVersion?.artifact ? await this.pluginRungViews(source, shownVersion, row.package.path) : [],
+      // A legacy grant pin has no tree to inspect and no rung that would install it.
+      rungs: row.kind === "plugin" && shownTree && shownVersion.artifact ? await this.pluginRungViews(source, shownVersion, row.package.path) : [],
       versions: versionViews(row, effectiveRevocations(snapshot, context.appVersion), context, installedHere),
     };
   }
