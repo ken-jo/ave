@@ -10,6 +10,7 @@
  *   4. when the side-chat loop is absent, handlers fail closed.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { EventEmitter } from "node:events";
 import type { IpcMainInvokeEvent } from "electron";
 import {
   MCP_RESOURCE_ATTACHMENTS_PER_TURN,
@@ -43,8 +44,12 @@ import { registerSideChatHandlers } from "../sidechat.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { deferred } from "../../../__tests__/test-helpers.js";
 
-function ev(url?: string, senderId = 1): IpcMainInvokeEvent {
-  return (url ? { senderFrame: { url }, sender: { id: senderId } } : { sender: { id: senderId } }) as unknown as IpcMainInvokeEvent;
+function rendererContents(senderId = 1): EventEmitter & { id: number } {
+  return Object.assign(new EventEmitter(), { id: senderId });
+}
+
+function ev(url?: string, senderId = 1, sender = rendererContents(senderId)): IpcMainInvokeEvent {
+  return (url ? { senderFrame: { url }, sender } : { sender }) as unknown as IpcMainInvokeEvent;
 }
 
 function makeSideLoop() {
@@ -323,6 +328,38 @@ describe("side-chat IPC domain", () => {
     } finally {
       turn.resolve({ route: "chat" });
       await Promise.all([pending, cancellation]);
+    }
+  });
+
+  it.each([
+    ["reloads", "did-start-navigation", { isMainFrame: true, isSameDocument: false }],
+    ["crashes", "render-process-gone", {}],
+    ["is destroyed", "destroyed", undefined],
+  ] as const)("cancels its accepted turn when the owning renderer %s", async (_label, eventName, details) => {
+    const turn = deferred<{ route: string }>();
+    const side = makeSideLoop();
+    side.abortCurrentTurn.mockImplementation(() => turn.resolve({ route: "chat" }));
+    side.runTurn.mockReturnValueOnce(turn.promise);
+    register(side, makeMainLoop());
+    const owner = rendererContents(1);
+    const peer = rendererContents(2);
+    const pending = handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html", 1, owner), {
+      input: "Own request", sendRequestId: "own-request",
+    });
+    try {
+      // A peer renderer's departure and in-document or subframe navigation do not orphan the turn.
+      peer.emit(eventName, details);
+      owner.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true });
+      owner.emit("did-start-navigation", { isMainFrame: false, isSameDocument: false });
+      expect(side.abortCurrentTurn).not.toHaveBeenCalled();
+      owner.emit(eventName, details);
+      expect(side.abortCurrentTurn).toHaveBeenCalledOnce();
+      await pending;
+      expect(owner.listenerCount("did-start-navigation") + owner.listenerCount("render-process-gone")
+        + owner.listenerCount("destroyed")).toBe(0);
+    } finally {
+      turn.resolve({ route: "chat" });
+      await pending;
     }
   });
 
