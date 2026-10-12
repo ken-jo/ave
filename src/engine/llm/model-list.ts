@@ -820,6 +820,9 @@ export async function refreshRouteModelList(params: {
   now?: number;
 }): Promise<boolean> {
   const { settingsService, fetchOptions, address } = params;
+  // This SDK selects its endpoint from project/location. The standard model
+  // list reader would instead resolve an unrelated stored baseUrl.
+  if (address.vendor === "vertex-ai") return false;
   const now = params.now ?? Date.now();
   // A preset that declares a static or manually configured model list is
   // saying it does not answer /models. Checked before anything is spent:

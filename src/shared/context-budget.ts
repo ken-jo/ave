@@ -295,7 +295,11 @@ export function resolveContextWindowForRoute(
   const model = activeLlmRouteModel(llm);
   const block = getLlmVendorSettings(llm.vendors, llm.provider);
   const address = llmRouteCatalogAddress(llm, installedProviderPresets);
-  const entry = cachedModelListEntry(llm.modelListCache, { ...address, model });
+  // Standard model-list reports do not describe a project/location SDK route.
+  // Older probes may have stored a dormant endpoint's report at the default key.
+  const entry = llm.provider === "vertex-ai"
+    ? undefined
+    : cachedModelListEntry(llm.modelListCache, { ...address, model });
   // A named catalog entry describes the vendor block's own model; a
   // marketplace preset reached through the same vendor runs a model of its own.
   const catalogModel = address.credentialScope === undefined ? block.catalogModel : undefined;

@@ -212,8 +212,9 @@ the same host serves multiple catalog products.
 `azure-foundry` addresses deployment aliases, which may reuse any public model id.
 Its resource hostname does not identify the deployed model: use an endpoint report,
 `catalogModel`, or `contextWindow`. `vertex-ai` derives its actual endpoint from the
-SDK's project and location; a stored `baseUrl` is unused by that adapter and its cached
-model list does not describe the active route.
+SDK's project and location. Its capacity comes from explicit settings or native
+catalog metadata. Standard `/models` cache reports and background probes are excluded
+because they target a generic endpoint rather than the SDK-managed route.
 
 A proxy serving the catalog model can declare `catalogModel` to select that entry,
 including its prompt cap. This setting wins over automatic catalog name matching; an
