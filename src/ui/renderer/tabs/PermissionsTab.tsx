@@ -201,7 +201,7 @@ function thrownErrorText(context: string, error: unknown): string {
 }
 
 /** A stable machine code (`user-keyboard-required`), as opposed to free text. */
-const IPC_ERROR_CODE_RE = /^[a-z][a-z0-9]*(?:[-_:.][a-z0-9]+)*$/;
+const IPC_ERROR_CODE_RE = /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$/;
 
 function ipcErrorCode(value: unknown): string | undefined {
   return typeof value === "string" && value.length <= 80 && IPC_ERROR_CODE_RE.test(value)

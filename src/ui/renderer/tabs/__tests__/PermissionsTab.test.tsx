@@ -27,7 +27,7 @@ import { PermissionsTab } from "../PermissionsTab.js";
 import { makeHookTrustRow as hook } from "./test-helpers.js";
 import type { HookTrustRow } from "../../types.js";
 import { isPolicyUserEditable, type PolicySource } from "../../../../shared/policy-editability.js";
-import { t } from "../../../../i18n/runtime.js";
+import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
 import { buildInternalApiSurface } from "../../../../preload/internal-api-surface.js";
 import { PERMISSIONS } from "../../../../shared/ipc-channels.js";
@@ -1303,7 +1303,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       render(<PermissionsTab />);
     });
     await act(async () => {
-      fireEvent.click(screen.getByText("재설정"));
+      fireEvent.click(screen.getByText(t("permissionsTab.osSandboxWindowsInstallButton")));
     });
     return { outcome: screen.getByTestId("os-sandbox-windows-install-outcome"), api };
   }
@@ -1340,7 +1340,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
 
   it.each([
     ["install_wfp_failed", "Base Filtering Engine"],
-    ["install_user_failed", "로컬 샌드박스 사용자 계정을 만들거나 설정하지 못해"],
+    ["install_user_failed", "로컬 샌드박스 사용자 계정을 만들거나 설정하지 못했"],
     ["install_config_conflict", "설정이 다른 Windows 샌드박스 네트워크 필터가 이미 있습니다"],
     ["install_ambient_failed", "시스템 폴더의 쓰기 차단이 적용되지 않아"],
     ["srt_win_not_found", "Windows 샌드박스 도우미가 없어"],
@@ -1372,7 +1372,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       throw new Error(RAW_DETAIL);
     });
     expect(rejected).toHaveAttribute("data-outcome", "refused");
-    expect(rejected).toHaveTextContent("Ave가 Windows 샌드박스 설정을 실행하지 못해");
+    expect(rejected).toHaveTextContent("Ave가 Windows 샌드박스 설정 결과를 받지 못했습니다");
     expectNoRawDetail();
     cleanup();
 
@@ -1380,6 +1380,38 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(refused).toHaveAttribute("data-outcome", "refused");
     expect(refused.textContent).not.toContain("keyboard intent");
     expect(refused).toHaveTextContent("재설정은 이 창에서 클릭했을 때만 시작되는데, Ave가 클릭을 확인하지 못했습니다");
+  });
+
+  it.each(["en", "ko"] as const)("keeps unconfirmed setup results honest in %s", async (locale) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    try {
+      const results = [
+        async () => { throw new Error(RAW_DETAIL); },
+        async () => ({ outcome: "unrecognized" }),
+        async () => ({ outcome: "cancelled", cancelled: true }),
+        ...["install_wfp_failed", "install_user_failed", "install_config_conflict"].map(
+          (errorCode) => async () => ({ outcome: "failed", errorCode }),
+        ),
+      ];
+      for (const result of results) {
+        const { outcome } = await clickInstall(result);
+        expect(outcome.textContent).not.toMatch(/nothing changed|stays off|nothing is confined|아무것도 바뀌지|꺼진 상태|아무것도 격리되지/);
+        expect(outcome.textContent).toMatch(/unconfirmed|sandbox status|준비 상태|샌드박스 상태|확인되지|확인하지 못/);
+        cleanup();
+      }
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
+  it.each([
+    { outcome: "failed", errorCode: "c:private.cache" },
+    { ok: false, error: "c:private.cache" },
+  ])("does not render a drive-relative path as a diagnostic code: %j", async (result) => {
+    const { outcome } = await clickInstall(async () => result);
+    expect(outcome.textContent).not.toContain("c:private.cache");
+    expect(outcome.getAttribute("data-error-code")).not.toBe("c:private.cache");
   });
 
   it("shows a localized banner, not the raw error, when the status re-read after install fails", async () => {
@@ -1435,6 +1467,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(pending).toHaveAttribute("data-phase", "installing");
     expect(pending).toHaveTextContent("최대 약 45초");
     expect(pending).toHaveTextContent("Windows가 관리자 권한을 요청하니 허용하세요");
+    expect(pending).toHaveTextContent("상태 확인이 끝난 뒤 관리자 확인과 설정 단계에 합계 2분의 제한이 적용됩니다");
 
     await act(async () => {
       finishInstall?.({ outcome: "ready", userState: "ready", wfpState: "installed", ready: true });
