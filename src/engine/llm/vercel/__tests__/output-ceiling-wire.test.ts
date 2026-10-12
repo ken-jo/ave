@@ -190,8 +190,8 @@ describe("resolved output ceiling on the native wire", () => {
     expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 48_000 });
   });
 
-  it("fits an ordinary thinking budget inside the SDK's lower model limit", async () => {
-    const { body } = await collectRequest(
+  it("fits a raw ordinary thinking budget inside the SDK's lower model limit", async () => {
+    const { body } = await collectInternalRequest(
       "claude", "claude-opus-4-1", { outputTokenLimit: 64_000, thinkingBudgetTokens: 48_000 },
     );
     expect(body.max_tokens).toBe(32_000);
@@ -326,7 +326,7 @@ describe("resolved output ceiling on the native wire", () => {
         '{"max_tokens":4096,"thinking":{"type":"enabled","budget_tokens":null}}',
       ]) {
         await expect(projectedFetch!("https://provider.invalid/v1/messages", { method: "POST", body }))
-          .rejects.toThrow("Numeric thinking request");
+          .rejects.toThrow("Output limit request");
       }
       expect(fetchResponse).toHaveBeenCalledOnce();
     } finally {

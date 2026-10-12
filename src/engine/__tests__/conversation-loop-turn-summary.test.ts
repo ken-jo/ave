@@ -15,6 +15,7 @@ import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import { VercelUnifiedProvider } from "../llm/vercel/adapter.js";
 import { estimateRequestInputProjection } from "../request-input-projection.js";
 import { contextBudgetForCurrentRuntime } from "../turn/compaction.js";
+import { activeModelCatalog, installModelCatalog } from "../../shared/model-catalog/active.js";
 import {
   A2A_INPUT_REQUIRED_CONTROL_KIND,
   A2A_INPUT_REQUIRED_CONTROL_VERSION,
@@ -276,6 +277,79 @@ describe("ConversationLoop onTurnSummary", () => {
     };
     expect(summary!.modelSettings).toEqual({ ...recorded, remainingContextOutputTokens: expect.any(Number) });
     expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: recorded }));
+  });
+
+  it.each(["unlisted", "without-output"].flatMap((entry) => [
+    { entry, vendor: "openai" as const, model: "gpt-4", catalogProvider: "openai" },
+    { entry, vendor: "claude" as const, model: "claude-3-haiku-20240307", catalogProvider: "anthropic" },
+  ]))("records the unknown route ceiling that every HTTP round sends: $vendor ($entry)", async ({ entry, vendor, model, catalogProvider }) => {
+    const catalog = activeModelCatalog();
+    installModelCatalog({ ...catalog, providers: {
+      ...catalog.providers,
+      [catalogProvider]: { models: { ...catalog.providers[catalogProvider]!.models,
+        "declared-model": { id: "declared-model", limits: { context: 128_000 } },
+      } },
+    } });
+    const settings = fakeLlmSettings({ provider: vendor, model });
+    settings.vendors[vendor].catalogModel = `${catalogProvider}/${entry === "unlisted" ? "not-listed" : "declared-model"}`;
+    settings.vendors[vendor].enableThinking = false;
+    const fetchResponse = vi.fn<typeof fetch>(async (): Promise<Response> => {
+      const firstRound = fetchResponse.mock.calls.length === 1;
+      if (vendor === "claude") {
+        const contentEvents = firstRound ? [
+          { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "ceiling-read", name: "read_value", input: {} } },
+          { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{}" } },
+        ] : [
+          { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+          { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "answer" } },
+        ];
+        const events = [
+          { type: "message_start", message: { id: "fixture-response", model, role: "assistant", usage: { input_tokens: 60 } } },
+          ...contentEvents,
+          { type: "content_block_stop", index: 0 },
+          { type: "message_delta", delta: { stop_reason: firstRound ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 10 } },
+          { type: "message_stop" },
+        ];
+        return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(`data: ${JSON.stringify({
+        id: "fixture-response", object: "chat.completion.chunk", created: 0, model,
+        choices: [{ index: 0, delta: firstRound
+          ? { role: "assistant", tool_calls: [{ index: 0, id: "ceiling-read", type: "function", function: { name: "read_value", arguments: "{}" } }] }
+          : { role: "assistant", content: "answer" },
+        finish_reason: firstRound ? "tool_calls" : "stop" }],
+        usage: { prompt_tokens: 60, completion_tokens: 10, total_tokens: 70 },
+      })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+    });
+    const readValue = vi.fn(async () => ({ output: "value", isError: false }));
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createDynamicTool({
+      name: "read_value", description: "Read the value.", source: "builtin", category: "read",
+      jsonSchema: { type: "object", properties: {} }, isReadOnly: () => true, execute: readValue,
+    }));
+    const auditLogger = new AuditLogger();
+    const logTurn = vi.spyOn(auditLogger, "logTurn");
+    const loop = createLoopWithRegistry(new VercelUnifiedProvider(vendor, "fixture-key", "https://provider.invalid/v1", fetchResponse), toolRegistry, {
+      settingsService: { get: () => settings, getSecret: () => "fixture-key" }, auditLogger,
+    } as never);
+    let summary: TurnSummary | undefined;
+    try {
+      const result = await loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { inputOrigin: "user-keyboard" });
+      expect(result.text).toBe("answer");
+      expect(readValue).toHaveBeenCalledOnce();
+      expect(fetchResponse).toHaveBeenCalledTimes(2);
+      const output = { requested: 32_000, requestedSource: "host-default", effective: 32_000, effectiveSource: "host-default" };
+      expect(summary?.modelSettings?.output).toEqual(output);
+      expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: expect.objectContaining({ output }) }));
+      for (const [, init] of fetchResponse.mock.calls) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        expect(body.max_tokens ?? body.max_completion_tokens).toBe(32_000);
+      }
+    } finally {
+      await auditLogger.close();
+      installModelCatalog(catalog);
+    }
+    expect(auditLogger.getWriterStats().pendingWrites).toBe(0);
   });
 
   it("sends no tool definitions to a model the catalog says takes none, and records that", async () => {

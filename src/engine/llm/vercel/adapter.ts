@@ -128,56 +128,67 @@ function supportsInterleavedNumericThinking(modelId: string): boolean {
   return match !== null && (match[1] === "opus" || match[2] !== "1");
 }
 
-interface NumericThinkingOutputProjection {
+interface NativeOutputProjection {
   outputTokenLimit: number;
   interleavedThinking: boolean;
+  numericThinking: boolean;
+  resolvedCeiling: boolean;
 }
 
-function projectNumericThinkingOutput(
+function projectNativeOutput(
   fetchImpl: typeof fetch,
-  projection: NumericThinkingOutputProjection,
+  projection: NativeOutputProjection,
 ): typeof fetch {
   return async (input, init) => {
     if (typeof init?.body !== "string") {
-      throw new Error("Numeric thinking request must contain a serialized JSON body");
+      throw new Error("Output limit request must contain a serialized JSON body");
     }
     let request: Record<string, unknown>;
     try {
       request = JSON.parse(init.body) as Record<string, unknown>;
     } catch {
-      throw new Error("Numeric thinking request must contain valid serialized JSON");
+      throw new Error("Output limit request must contain valid serialized JSON");
     }
     if (!request || typeof request !== "object" || Array.isArray(request)) {
-      throw new Error("Numeric thinking request must contain a JSON object");
+      throw new Error("Output limit request must contain a JSON object");
     }
     const sdkOutputTokenLimit = request.max_tokens;
-    const thinking = request.thinking as Record<string, unknown> | undefined;
-    const thinkingBudget = thinking?.budget_tokens;
     if (
       typeof sdkOutputTokenLimit !== "number" || !Number.isSafeInteger(sdkOutputTokenLimit) || sdkOutputTokenLimit < 1
-      || !thinking || thinking.type !== "enabled"
-      || typeof thinkingBudget !== "number" || !Number.isSafeInteger(thinkingBudget) || thinkingBudget < 1_024
     ) {
-      throw new Error("Numeric thinking request has invalid output or thinking limits");
+      throw new Error("Output limit request has an invalid output limit");
     }
     // The SDK adds numeric thinking to its output argument and may then apply
-    // a model limit. Project the host's total afterward, preserving that limit
-    // and the original guarded transport. SDK diagnostics retain its input body.
-    const outputTokenLimit = Math.min(sdkOutputTokenLimit, projection.outputTokenLimit);
-    if (!projection.interleavedThinking && outputTokenLimit <= 1_024) {
-      throw new Error("Output token limit must exceed 1024 when numeric thinking is not interleaved");
+    // a model-name limit. A resolved route owns its ceiling, including unknown;
+    // purpose-specific requests still meet that SDK limit. Preserve the guarded
+    // transport in both cases. SDK diagnostics retain its input body.
+    const outputTokenLimit = projection.resolvedCeiling
+      ? projection.outputTokenLimit
+      : Math.min(sdkOutputTokenLimit, projection.outputTokenLimit);
+    let boundedThinking: Record<string, unknown> | undefined;
+    if (projection.numericThinking) {
+      const thinking = request.thinking as Record<string, unknown> | undefined;
+      const thinkingBudget = thinking?.budget_tokens;
+      if (!thinking || thinking.type !== "enabled"
+        || typeof thinkingBudget !== "number" || !Number.isSafeInteger(thinkingBudget) || thinkingBudget < 1_024) {
+        throw new Error("Output limit request has invalid thinking limits");
+      }
+      if (!projection.interleavedThinking && outputTokenLimit <= 1_024) {
+        throw new Error("Output token limit must exceed 1024 when numeric thinking is not interleaved");
+      }
+      boundedThinking = {
+        ...thinking,
+        budget_tokens: projection.interleavedThinking
+          ? thinkingBudget
+          : Math.min(thinkingBudget, outputTokenLimit - 1),
+      };
     }
     return fetchImpl(input, {
       ...init,
       body: JSON.stringify({
         ...request,
         max_tokens: outputTokenLimit,
-        thinking: {
-          ...thinking,
-          budget_tokens: projection.interleavedThinking
-            ? thinkingBudget
-            : Math.min(thinkingBudget, outputTokenLimit - 1),
-        },
+        ...(boundedThinking ? { thinking: boundedThinking } : {}),
       }),
     });
   };
@@ -317,8 +328,9 @@ export class VercelUnifiedProvider implements LLMProvider {
       const model = this.resolveModel(
         params.model,
         hasTools,
-        numericThinking && outputTokenLimit !== undefined
-          ? { outputTokenLimit, interleavedThinking: interleavedNumericThinking }
+        slot === "claude" && outputTokenLimit !== undefined
+          && (numericThinking || params.outputCeiling !== undefined)
+          ? { outputTokenLimit, interleavedThinking: interleavedNumericThinking, numericThinking, resolvedCeiling: params.outputCeiling !== undefined }
           : undefined,
       );
 
@@ -583,7 +595,7 @@ export class VercelUnifiedProvider implements LLMProvider {
   private resolveModel(
     modelId: string,
     _hasTools: boolean,
-    numericOutputProjection?: NumericThinkingOutputProjection,
+    outputProjection?: NativeOutputProjection,
   ) {
     const slot = this.vendorSlot;
     assertCredentialedBaseUrlUsesHttps(
@@ -594,8 +606,8 @@ export class VercelUnifiedProvider implements LLMProvider {
     );
 
     if (slot === "claude") {
-      const fetchImpl = numericOutputProjection
-        ? projectNumericThinkingOutput(this.customFetch ?? globalThis.fetch, numericOutputProjection)
+      const fetchImpl = outputProjection
+        ? projectNativeOutput(this.customFetch ?? globalThis.fetch, outputProjection)
         : this.customFetch;
       const anthropic = createAnthropic({
         apiKey: this.apiKey,

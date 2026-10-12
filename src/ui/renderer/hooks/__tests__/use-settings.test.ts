@@ -7,6 +7,8 @@ import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.
 import { LLM_VENDOR_DEFAULTS } from "../../../../shared/llm-vendor-defaults.js";
 import { FALLBACK_PRICING } from "../../../../shared/pricing-data.js";
 import { llmModelListCacheKey } from "../../../../shared/llm-model-list.js";
+import { useCostEstimate } from "../use-cost-estimate.js";
+import { activeModelCatalog, installModelCatalog } from "../../../../shared/model-catalog/active.js";
 
 function makeSettings(): AppSettings {
   return fakeAppSettings({
@@ -30,6 +32,45 @@ function makeSettings(): AppSettings {
 }
 
 describe("useSettings", () => {
+  it.each(["unlisted", "without-output"].flatMap((entry) => [
+    { entry, vendor: "openai" as const, model: "gpt-4", catalogProvider: "openai" },
+    { entry, vendor: "claude" as const, model: "claude-3-haiku-20240307", catalogProvider: "anthropic" },
+  ]))("estimates output from an explicitly unknown route ceiling: $vendor ($entry)", async ({ entry, vendor, model, catalogProvider }) => {
+    const catalog = activeModelCatalog();
+    installModelCatalog({ ...catalog, providers: {
+      ...catalog.providers,
+      [catalogProvider]: { models: { ...catalog.providers[catalogProvider]!.models,
+        "declared-model": { id: "declared-model", limits: { context: 128_000 } },
+      } },
+    } });
+    try {
+      const settings = makeSettings();
+      settings.llm.provider = vendor;
+      settings.llm.vendors[vendor] = {
+        model, catalogModel: `${catalogProvider}/${entry === "unlisted" ? "not-listed" : "declared-model"}`,
+        enableThinking: false, thinkingBudgetTokens: 0,
+      };
+      const { api } = makeMockAveApi({ settings, hasApiKey: false });
+      const { result } = renderHook(() => {
+        const selected = useSettings(api as unknown as AveApi);
+        const { costEstimate } = useCostEstimate({
+          entries: [], draft: { text: "Report the result." },
+          llmVendor: selected.llmVendor, llmModel: selected.llmModel,
+          maxOutputTokens: selected.llmOutputTokenLimit.effective,
+          outputLimitSource: selected.llmOutputTokenLimit.effectiveSource,
+        });
+        return { selected, costEstimate };
+      });
+      await waitFor(() => expect(result.current.selected.settingsLoaded).toBe(true));
+      expect(result.current.selected.llmOutputTokenLimit).not.toHaveProperty("ceiling");
+      expect(result.current.selected.llmOutputTokenLimit.effective).toBe(32_000);
+      expect(result.current.costEstimate.outputTokens).toBe(32_000);
+      expect(result.current.costEstimate.outputLimitSource).toBe("host-default");
+    } finally {
+      installModelCatalog(catalog);
+    }
+  });
+
   it("updates processing detail immediately from a settings broadcast", async () => {
     const initial = makeSettings();
     initial.chat.processingDisplayLevel = "full";

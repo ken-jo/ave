@@ -15,6 +15,7 @@ import { FallbackProvider } from "../fallback-chain.js";
 import type { LLMProvider, StreamEvent } from "../../types.js";
 import { freshAllVendorBlocks, getLlmVendorSettings, requestedLlmOutputTokenLimit } from "../../../../shared/llm-vendor-defaults.js";
 import { resolveContextWindowForRoute, resolveOutputTokenLimit } from "../../../../shared/context-budget.js";
+import { llmModelListCacheKey } from "../../../../shared/llm-model-list.js";
 import { collectRoundStream } from "../../../turn/stream-collector.js";
 import { apiRoundLlmSettings } from "../../../turn/round-llm-settings.js";
 
@@ -91,6 +92,37 @@ describe("request fields the catalog decides", () => {
     expect(fetchResponse).toHaveBeenCalledOnce();
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
     expect(body.max_tokens ?? body.max_completion_tokens).toBe(route.output.effective);
+  });
+
+  it.each([false, true].flatMap((enableThinking) => [
+    { enableThinking, reported: undefined, expected: 32_000 },
+    { enableThinking, reported: 8_192, expected: 8_192 },
+  ]))("preserves the resolved ceiling through native message serialization: $reported (thinking $enableThinking)", async ({ enableThinking, reported, expected }) => {
+    const vendors = freshAllVendorBlocks();
+    vendors.claude.model = "claude-3-haiku-20240307";
+    vendors.claude.catalogModel = "anthropic/not-listed";
+    vendors.claude.enableThinking = enableThinking;
+    const modelListCache = reported === undefined ? undefined : {
+      [llmModelListCacheKey("claude")]: {
+        vendor: "claude", models: [vendors.claude.model], endpoint: "https://provider.invalid/v1/models",
+        modelEntries: [{ id: vendors.claude.model, maxOutputTokens: reported }], fetchedAt: new Date(0).toISOString(),
+      },
+    };
+    const route = resolveContextWindowForRoute({ provider: "claude", vendors, modelListCache });
+    if (reported === undefined) expect(route.output).not.toHaveProperty("ceiling");
+    else expect(route.output.ceilingSource).toBe("provider-reported");
+    expect(route.output.effective).toBe(expected);
+    const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
+    await collectRoundStream({
+      provider: new VercelUnifiedProvider("claude", "fixture-key", undefined, fetchResponse),
+      model: route.model, systemPrompt: "Report the result.",
+      messages: [{ role: "user", content: "Continue." }], toolSchemas: [],
+      llmSettings: apiRoundLlmSettings(vendors.claude, route.output, "none", route),
+    });
+    expect(fetchResponse).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
+    expect(body.max_tokens).toBe(expected);
+    if (enableThinking) expect(body.thinking).toMatchObject({ type: "enabled", budget_tokens: 8_000 });
   });
 
   it("sends the lowest level GPT-5 accepts for a budget that maps below it", async () => {
