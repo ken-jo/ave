@@ -5068,7 +5068,9 @@ off and on.
 `format-ipc-error-coverage`, `domain-exports` **unchanged** (no channel, no error
 code); `settings-section-anchors`, `settings-store`, `packaging-discipline-source`,
 `bootstrap-integration`, `use-send-message-resource`, `alert-predecessor` unchanged
-and run in the pre-push hook's lock suites; `test/scripts/*` unchanged.
+and run the affected suites while iterating; `test/scripts/*` unchanged.
+The pre-push hook's fixed lock selections are defined in
+`scripts/hooks/pre-push-source-policy.mjs`.
 
 ##### A2. The adversarial fixture
 

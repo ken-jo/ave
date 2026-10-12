@@ -160,6 +160,15 @@ describe("pre-push fast source tier", () => {
     }
   });
 
+  it("keeps the host protocol guidance aligned with the fixed lock selections", () => {
+    const doc = readFileSync(resolve(root, "docs/design/plugin-hostapi-protocol.md"), "utf8");
+    const start = doc.indexOf("`bootstrap-integration`, `use-send-message-resource`, `alert-predecessor` unchanged");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const guidance = doc.slice(start, doc.indexOf("##### A2.", start));
+    expect(guidance).not.toContain("and run in the pre-push hook's lock suites");
+    expect(guidance).toContain("`scripts/hooks/pre-push-source-policy.mjs`");
+  });
+
   it("wires the fast tier, its opt-out and its log line into the hook", () => {
     const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
     expect(hook).toContain('process.env.AVE_PREPUSH_FULL === "1"');
