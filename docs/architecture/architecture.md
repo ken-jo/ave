@@ -972,6 +972,9 @@ All tool execution flows through the registry and executor:
 The source of a tool changes display and audit metadata; it does not create a
 separate policy bypass.
 
+Permission-policy file precedence, conservative handling of administrative read
+failures, and edit locking follow [Policy Files](permission-policy-design.md#policy-files).
+
 ### Structured File Transfers
 
 `copy_path({sourcePath, destinationPath})` copies ordinary binary/text files or complete directory trees, including hidden ordinary entries and empty directories. `extract_archive({archivePath, destinationPath})` extracts tar and gzip-compressed tar, detected from content. Both are builtin write tools registered through `createFileTools()` in [file-tools.ts](../../src/tools/file-tools.ts). ZIP extraction and archive creation are unsupported. Shell recursive-copy and archive-mutation denials remain in force; denial guidance describes the supported alternatives and explicitly limits the tar alternative to extraction.

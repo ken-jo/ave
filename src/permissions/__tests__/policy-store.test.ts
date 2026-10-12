@@ -2,6 +2,7 @@
  * policy-store unit tests — B1 managed policy layer + §C2 admin-dir merge
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdir, open } from "node:fs/promises";
 import { loadPolicy, savePolicy, getAdminPolicyPath } from "../policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import { makeTestPolicy } from "./test-helpers.js";
@@ -12,10 +13,17 @@ import { makeTestPolicy } from "./test-helpers.js";
 type MockFileStore = Record<string, string>;
 
 const files: MockFileStore = {};
+const readErrors: Record<string, NodeJS.ErrnoException> = {};
+const { policyErrors } = vi.hoisted(() => ({ policyErrors: vi.fn() }));
+
+vi.mock("../../lib/logger.js", () => ({
+  createLogger: () => ({ error: policyErrors }),
+}));
 
 vi.mock("node:fs/promises", () => ({
   mkdir: vi.fn(async () => undefined),
   readFile: vi.fn(async (path: string) => {
+    if (readErrors[path]) throw readErrors[path];
     const content = files[path as string];
     if (content === undefined) {
       const err = Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
@@ -50,6 +58,8 @@ describe("policy-store", () => {
   beforeEach(() => {
     delete files[USER_PATH];
     delete files[ADMIN_PATH];
+    delete readErrors[USER_PATH];
+    delete readErrors[ADMIN_PATH];
     vi.clearAllMocks();
   });
 
@@ -160,25 +170,27 @@ describe("policy-store", () => {
     ).rejects.toThrow("Policy is managed by IT (admin-dir file exists)");
   });
 
-  it("admin-dir path가 invalid JSON일 때 user로 fallback", async () => {
+  it("invalid admin JSON keeps explicit approval on and locks edits", async () => {
     writeFile(USER_PATH,  makeTestPolicy({ requireExplicitApproval: false }));
     // 잘못된 JSON
     files[ADMIN_PATH] = "not-valid-json";
 
     const result = await loadPolicy(USER_PATH, ADMIN_PATH);
-    // admin parse 실패 → user만 적용
-    expect(result.source).toBe("user");
-    expect(result.requireExplicitApproval).toBe(false);
+    expect(result.source).toBe("merged");
+    expect(result.requireExplicitApproval).toBe(true);
+    expect(result.managed).toBe(true);
+    expect(isPolicyUserEditable(result)).toBe(false);
   });
 
-  it("admin-dir version 불일치 시 admin 무시, user로 fallback", async () => {
+  it("an unsupported admin version keeps explicit approval on and locks edits", async () => {
     writeFile(USER_PATH,  makeTestPolicy({ requireExplicitApproval: false }));
-    writeFile(ADMIN_PATH, JSON.stringify({ version: 2, requireExplicitApproval: true, managed: true, updatedAt: new Date().toISOString() }, null, 2) + "\n");
+    writeFile(ADMIN_PATH, { version: 2, requireExplicitApproval: true, managed: true, updatedAt: new Date().toISOString() });
 
     const result = await loadPolicy(USER_PATH, ADMIN_PATH);
-    // version 2 → null (ignored) → user만
-    expect(result.source).toBe("user");
-    expect(result.requireExplicitApproval).toBe(false);
+    expect(result.source).toBe("merged");
+    expect(result.requireExplicitApproval).toBe(true);
+    expect(result.managed).toBe(true);
+    expect(isPolicyUserEditable(result)).toBe(false);
   });
 
   // ══════════════════════════════════════════════════
@@ -251,12 +263,117 @@ describe("policy-store", () => {
     expect(Object.keys(result).sort()).toEqual(["adminPath", "managed", "requireExplicitApproval", "source", "updatedAt", "version"]);
   });
 
-  it("a policy file that is not a JSON object is ignored like an unreadable one", async () => {
+  it("a non-object admin policy keeps explicit approval on and locks edits", async () => {
     writeFile(USER_PATH, makeTestPolicy({ requireExplicitApproval: false }));
     files[ADMIN_PATH] = "[1]\n";
 
     const result = await loadPolicy(USER_PATH, ADMIN_PATH);
-    expect(result.source).toBe("user");
+    expect(result.source).toBe("merged");
+    expect(result.requireExplicitApproval).toBe(true);
+    expect(result.managed).toBe(true);
+    expect(isPolicyUserEditable(result)).toBe(false);
+  });
+
+  describe("invalid administrative policy", () => {
+    const invalidCases: Array<{ label: string; contents: string; readCode?: string }> = [
+      { label: "unreadable file", contents: '{"version":1}', readCode: "EACCES" },
+      { label: "denied read", contents: '{"version":1}', readCode: "EPERM" },
+      { label: "non-directory path", contents: '{"version":1}', readCode: "ENOTDIR" },
+      { label: "invalid JSON", contents: "RAW_POLICY_SECRET" },
+      { label: "array", contents: "[]" },
+      { label: "null", contents: "null" },
+      { label: "string", contents: '"RAW_POLICY_SECRET"' },
+      { label: "boolean", contents: "false" },
+      { label: "unsupported version", contents: '{"version":2}' },
+      { label: "mistyped version", contents: '{"version":"RAW_POLICY_SECRET"}' },
+      { label: "missing version", contents: "{}" },
+    ];
+
+    function seedAdminPolicy(policyCase: (typeof invalidCases)[number]): void {
+      files[ADMIN_PATH] = policyCase.contents;
+      if (policyCase.readCode) {
+        readErrors[ADMIN_PATH] = Object.assign(new Error("RAW_POLICY_SECRET"), { code: policyCase.readCode });
+      }
+    }
+
+    for (const userFilePresent of [false, true]) {
+      describe(userFilePresent ? "with a permissive user policy" : "without a user policy", () => {
+        it.each(invalidCases)("$label requires explicit approval and locks edits", async (policyCase) => {
+          if (userFilePresent) writeFile(USER_PATH, makeTestPolicy({ requireExplicitApproval: false }));
+          seedAdminPolicy(policyCase);
+
+          const loaded = await loadPolicy(USER_PATH, ADMIN_PATH);
+
+          expect(loaded.requireExplicitApproval).toBe(true);
+          expect(loaded.managed).toBe(true);
+          expect(loaded.source).toBe(userFilePresent ? "merged" : "admin");
+          expect(loaded.adminPath).toBe(ADMIN_PATH);
+          expect(isPolicyUserEditable(loaded)).toBe(false);
+        });
+
+        it.each(invalidCases)("$label rejects saves before creating or opening user state", async (policyCase) => {
+          if (userFilePresent) writeFile(USER_PATH, makeTestPolicy({ requireExplicitApproval: false }));
+          seedAdminPolicy(policyCase);
+          const originalUserFile = files[USER_PATH];
+
+          await expect(savePolicy({ requireExplicitApproval: false }, USER_PATH, ADMIN_PATH))
+            .rejects.toThrow("Policy is managed by IT (admin-dir file exists)");
+
+          expect(mkdir).not.toHaveBeenCalled();
+          expect(open).not.toHaveBeenCalled();
+          expect(files[USER_PATH]).toBe(originalUserFile);
+        });
+      });
+    }
+
+    it.each([
+      { label: "parser failure", contents: "RAW_POLICY_SECRET", reason: "not valid JSON" },
+      { label: "version mismatch", contents: '{"version":"RAW_POLICY_SECRET"}', reason: "version mismatch" },
+      { label: "read failure", contents: '{"version":1}', readCode: "EACCES", reason: "EACCES" },
+    ])("logs the $label reason without policy contents or exception text", async (policyCase) => {
+      seedAdminPolicy(policyCase);
+
+      await loadPolicy(USER_PATH, ADMIN_PATH);
+      await expect(savePolicy({}, USER_PATH, ADMIN_PATH)).rejects.toThrow();
+
+      expect(policyErrors).toHaveBeenCalledTimes(2);
+      const messages = policyErrors.mock.calls.flat().join(" ");
+      expect(messages).toContain(ADMIN_PATH);
+      expect(messages).toContain(policyCase.reason);
+      expect(messages).not.toContain("RAW_POLICY_SECRET");
+    });
+  });
+
+  it("an invalid user policy keeps its existing fallback when the admin policy is absent", async () => {
+    files[USER_PATH] = "not-valid-json";
+
+    const loaded = await loadPolicy(USER_PATH, ADMIN_PATH);
+    expect(loaded.source).toBe("defaults");
+    expect(loaded.managed).toBe(false);
+    expect(isPolicyUserEditable(loaded)).toBe(true);
+
+    const saved = await savePolicy({ requireExplicitApproval: false }, USER_PATH, ADMIN_PATH);
+    expect(saved.requireExplicitApproval).toBe(false);
+  });
+
+  it("a managed admin policy that leaves approval unstated preserves an explicit user false", async () => {
+    writeFile(USER_PATH, makeTestPolicy({ requireExplicitApproval: false }));
+    writeFile(ADMIN_PATH, { ...MARKETPLACE_ONLY, managed: true });
+
+    const loaded = await loadPolicy(USER_PATH, ADMIN_PATH);
+    expect(loaded.requireExplicitApproval).toBe(false);
+    expect(loaded.managed).toBe(true);
+    expect(isPolicyUserEditable(loaded)).toBe(false);
+    await expect(savePolicy({ requireExplicitApproval: false }, USER_PATH, ADMIN_PATH)).rejects.toThrow();
+  });
+
+  it("an explicit admin false takes precedence over an explicit user true", async () => {
+    writeFile(USER_PATH, makeTestPolicy({ requireExplicitApproval: true }));
+    writeFile(ADMIN_PATH, makeTestPolicy({ requireExplicitApproval: false, managed: true }));
+
+    const loaded = await loadPolicy(USER_PATH, ADMIN_PATH);
+    expect(loaded.requireExplicitApproval).toBe(false);
+    expect(loaded.adminOverrides).toContain("requireExplicitApproval");
   });
 
   // ══════════════════════════════════════════════════
@@ -295,7 +412,7 @@ describe("policy-store", () => {
         writeFile(USER_PATH,  makeTestPolicy({ managed: false }));
         writeFile(ADMIN_PATH, makeTestPolicy({ managed: true }));
       }],
-      // admin file is unreadable (bad JSON) → savePolicy sees no admin file
+      // Invalid admin files retain the edit lock.
       ["invalid admin JSON + user managed:false", () => {
         writeFile(USER_PATH, makeTestPolicy({ managed: false }));
         files[ADMIN_PATH] = "not-valid-json";

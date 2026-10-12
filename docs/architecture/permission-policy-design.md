@@ -10,6 +10,31 @@ The permission system prevents tools from executing merely because an LLM or a
 plugin requested them. The host classifies the request, applies hard safety
 rules, asks the user or reviewer where required, and records the result.
 
+## Policy Files
+
+[policy-store.ts](../../src/permissions/policy-store.ts) reads the user and
+system-admin `policy.json` files. A valid file is a JSON object with numeric
+`version:1`; mistyped safety booleans are normalized to their safe value, `true`.
+A valid admin file takes precedence for each field it states. Unstated admin
+fields fall through to the user value or the default. In particular, a valid
+admin file that omits `requireExplicitApproval`
+preserves an explicit user `false`, even if the admin file sets `managed:true`.
+An explicit admin `false` also overrides user `true`; precedence is not limited
+to tightening. Without either file stating the field, explicit approval stays on.
+The flag controls explicit decisions on approval cards; execution-mode,
+hard-deny, and reviewer gates still apply independently.
+
+Only `ENOENT` means the admin file is absent. Other read failures, invalid JSON,
+non-object JSON, or a missing, mistyped, or unsupported version produce a
+conservative permission policy: `requireExplicitApproval:true`, `managed:true`,
+and user edits locked. Loading does not fall back to a permissive user policy,
+and saving rejects before creating or opening user state. Diagnostics record
+the path and failure reason without policy contents or parser exception text.
+Any valid admin file also locks app-mediated user-policy edits, including one
+that omits `managed` or sets it to `false`.
+An invalid user file contributes no permission fields and does not create an
+administrative edit lock when the admin file is absent.
+
 ## Policy Inputs
 
 | Input | Meaning |
