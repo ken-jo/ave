@@ -13,9 +13,10 @@ if (typeof document !== "undefined") {
   primeHostMarketplaceApi();
   const root = document.getElementById("root");
   if (root) {
+    const api = getApi();
     // Mount only once the catalog is in: the first settings snapshot resolves
     // the context window against it (model-catalog-bootstrap.ts).
-    void installRendererModelCatalog(getApi()).then(() => {
+    void installRendererModelCatalog(api).then(() => {
       createRoot(root).render(
         <I18nSettingsProvider>
           <App />
@@ -23,7 +24,7 @@ if (typeof document !== "undefined") {
       );
     }, (error: unknown) => {
       // Main logged the refusal it answered; the window says why it is empty.
-      renderModelCatalogUnavailable(root, error);
+      return renderModelCatalogUnavailable(root, error, api);
     });
   }
 }

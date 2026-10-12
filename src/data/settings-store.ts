@@ -332,6 +332,14 @@ export interface LLMSettings {
    * brings its pins back rather than silently dropping them.
    */
   pinnedModels: string[];
+  /**
+   * The model catalog refresh (design `model-capability-catalog.md` §7).
+   * Absent means the default, `"auto"`: once a day the host fetches the public
+   * models.dev document and caches it for the next launch. `"off"` keeps the
+   * catalog to the last cached copy or the bundled snapshot. The
+   * `AVE_MODEL_CATALOG` pin and the managed policy file can also turn it off.
+   */
+  modelCatalogRefresh?: "auto" | "off";
 }
 
 /**
@@ -349,6 +357,7 @@ export interface LLMSettingsPatch {
   modelListCache?: LlmModelListCache;
   pricingOverrides?: PricingOverride[];
   pinnedModels?: string[];
+  modelCatalogRefresh?: "auto" | "off";
 }
 
 export interface ChatSettings {

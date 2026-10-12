@@ -67,6 +67,7 @@ import { isIpcErrorResult, type AveApi } from "../types.js";
 import { ConnectionRow, type ConnectionRowState } from "../components/ConnectionRow.js";
 import { SettingsHelpPopover, SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { PricingOverridesSection } from "./PricingOverridesSection.js";
+import { ModelCatalogRefreshSection } from "./ModelCatalogRefreshSection.js";
 import { useTranslation, type I18nContextValue } from "../../../i18n/react.js";
 import {
   SUBSCRIPTION_RUNTIME_API_COUNTERPART,
@@ -3339,6 +3340,9 @@ export function LlmTab(props: LlmTabProps) {
       {/* Per-model price corrections — self-contained: it reads and writes the
           one settings key it owns, so it does not join this tab's prop chain. */}
       <PricingOverridesSection />
+
+      {/* The model catalog refresh switch — self-contained like the section above. */}
+      <ModelCatalogRefreshSection />
     </div>
   );
 }

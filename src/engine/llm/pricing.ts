@@ -1,64 +1,29 @@
 /**
- * LLM Pricing + Context Window Registry
+ * LLM pricing — the engine's door to the shared price resolution.
  *
- * Thin Node-side layer over `src/shared/pricing-data.ts`. The shared module
- * holds the vendor/model/$-rate table (browser-safe, no Node-only imports) so
- * the renderer can import the same prices. This module layers per-model price
- * corrections on top.
- *
- * The corrections come from Settings (`llm.pricingOverrides`) or, for a
- * deployment that already sets it, `AVE_PRICING_OVERRIDE` — both resolved and
- * merged by `shared/pricing-overrides.ts`, so there is one rule rather than an
- * env path and a settings path that could disagree. Callers pass the resolved
- * list in; this module does not reach for a settings service, because the
- * usage aggregation that calls it has to cache against that same list.
- *
- * Values reflect publicly-announced list prices (2026-04). Free/unknown → 0.
+ * The rates come from `shared/model-pricing.ts` (user correction, then the
+ * model catalog, then the hand-kept table, else unknown), browser-safe so the
+ * renderer prices with the same function. The corrections come from Settings
+ * (`llm.pricingOverrides`) or, for a deployment that already sets it,
+ * `AVE_PRICING_OVERRIDE` — both resolved and merged by
+ * `shared/pricing-overrides.ts`. Callers pass the resolved list in; this
+ * module does not reach for a settings service, because the usage aggregation
+ * that calls it has to cache against that same list.
  */
 import type { LLMVendor } from "./types.js";
 import {
-  DEFAULT_PRICING,
   computeCost as sharedComputeCost,
-  hasKnownTokenPricing,
-  lookupPricing,
   normalizeAiSdkUsageForCost,
-  type ModelPricing,
+  type TokenRates,
   type UsageForCost,
 } from "../../shared/pricing-data.js";
-import {
-  applyPricingOverride,
-  type PricingOverride,
-} from "../../shared/pricing-overrides.js";
 
-export type { ModelPricing, UsageForCost };
+export type { TokenRates, UsageForCost };
 export { normalizeAiSdkUsageForCost };
-
-export function getModelPricing(
-  vendor: LLMVendor,
-  model: string,
-  overrides: readonly PricingOverride[] = [],
-): ModelPricing {
-  // Shared lookup (exact → prefix → FALLBACK_PRICING). lookupPricing already
-  // handles the miss path, so no extra wrapping needed here.
-  return applyPricingOverride(vendor, model, overrides, lookupPricing(vendor, model));
-}
-
-export function getBillableModelPricing(
-  vendor: LLMVendor,
-  model: string,
-  overrides: readonly PricingOverride[] = [],
-): ModelPricing | undefined {
-  const overridden = overrides.some((e) => e.vendor === vendor && e.model === model);
-  // A correction is a statement that this model IS billed at these rates, so
-  // it also answers the billable question — including for `azure-foundry`,
-  // whose spend the app cannot otherwise attribute.
-  if (!overridden && vendor === "azure-foundry") return undefined;
-  const pricing = getModelPricing(vendor, model, overrides);
-  return hasKnownTokenPricing(pricing) ? pricing : undefined;
-}
+export { resolveModelPricing, knownModelPricing } from "../../shared/model-pricing.js";
 
 /**
- * Compute cost (USD) for one turn — thin re-export over `shared/pricing-data.ts`.
+ * Compute cost (USD) for one request — thin re-export over `shared/pricing-data.ts`.
  *
  * The formula + vendor-asymmetry logic lives in the shared module so the
  * renderer billing badge (`TokenCostBadge`) consumes the same source of
@@ -67,10 +32,8 @@ export function getBillableModelPricing(
  */
 export function computeCost(
   usage: UsageForCost,
-  pricing: ModelPricing,
+  pricing: TokenRates,
   vendor: LLMVendor,
 ): number {
   return sharedComputeCost(usage, pricing, vendor);
 }
-
-export const PRICING_TABLE = DEFAULT_PRICING;

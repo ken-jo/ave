@@ -263,6 +263,8 @@ export function buildInternalApiSurface() {
   // This can trigger a provider-backed LLM call, so it is intentionally kept
   // out of the externally-parity-safe public surface and local API allowlist.
   getUsageDailySummary: async (input: unknown) => ipcRenderer.invoke(CHANNELS.usage.dailySummary, input),
+  // The price corrections in force, which the renderer's cost surfaces apply.
+  getPricingOverrides: async () => ipcRenderer.invoke(CHANNELS.usage.pricingOverrides) as Promise<unknown>,
   // ─── Interactive PTY terminal (#1444) ────────────────
   // Host-renderer-only surface. spawn/input/resize/kill are invokes; onData /
   // onExit subscribe to main→renderer events and return an unsubscribe fn (the

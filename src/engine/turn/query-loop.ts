@@ -54,12 +54,14 @@ import { parseStagedEnvelope } from "../../shared/staged-origins.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import { MAX_TOOL_CALLS_PER_ROUND } from "../../shared/subagent-policy.js";
-import { activeLlmRouteModel, getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
+import { getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
 import { apiRoundLlmSettings } from "./round-llm-settings.js";
 import { planReasoning } from "../llm/reasoning-plan.js";
 import { activeModelCatalog } from "../../shared/model-catalog/active.js";
 import type { ContextWindowSource } from "../../shared/context-budget.js";
 import type { RunModelSettings } from "../../shared/run-model-settings.js";
+import { resolveModelPricing } from "../../shared/model-pricing.js";
+import { resolvePricingOverrides, type PricingOverride } from "../../shared/pricing-overrides.js";
 import { isA2AQuestionInputRequiredControl } from "../../tools/agent-send.js";
 import {
   isA2AAgentCausalContext,
@@ -213,14 +215,13 @@ export async function queryLoop(
       llmSettings.vendors,
       llmSettings.provider,
     );
-    const activeModel = activeLlmRouteModel(llmSettings);
     const subscriptionRuntime = self.provider?.subscriptionRuntime;
     // Subscription transports have no host-verifiable API-key billing identity.
     // A future runtime must add an explicit subscription telemetry contract
     // before its usage can cross this engine boundary.
     const subscriptionUsageIsOpaque = subscriptionRuntime !== undefined;
     const runtimeContextBudget = contextBudgetForCurrentRuntime(self);
-    const model = subscriptionRuntime ? subscriptionRuntime.model ?? "default" : activeModel;
+    const model = runtimeContextBudget.model;
     // Login-backed runtimes own their own reasoning policy. Never project the
     // inactive API vendor's toggle/budget into a subscription prompt.
     //
@@ -234,10 +235,7 @@ export async function queryLoop(
     }
     const apiRound = subscriptionRuntime || effectiveOutput === undefined
       ? undefined
-      : apiRoundLlmSettings(activeBlock, effectiveOutput, llmSettings.streamSmoothing, {
-          ...(runtimeContextBudget.inputModalities !== undefined ? { inputModalities: runtimeContextBudget.inputModalities } : {}),
-          ...(runtimeContextBudget.toolCall !== undefined ? { toolCall: runtimeContextBudget.toolCall } : {}),
-        });
+      : apiRoundLlmSettings(activeBlock, effectiveOutput, llmSettings.streamSmoothing, runtimeContextBudget);
     const roundLlmSettings = apiRound ?? { streamSmoothing: llmSettings.streamSmoothing, enableThinking: false };
     // Subscription transports receive an ordinary serialized prompt for every
     // Ave round. Until a runtime exposes and proves a native assistant-prefill
@@ -253,8 +251,8 @@ export async function queryLoop(
     let servingVendorModel: string | undefined = subscriptionUsageIsOpaque
       ? undefined
       : model;
-    let fallbackSelected = false;
     const usageByModel: TokenUsageByModel[] = [];
+    const turnPricingOverrides = resolvePricingOverrides(llmSettings.pricingOverrides);
     const subscriptionUsage = createSubscriptionUsageCollector();
     // Report a branch the loop just took. Reporting can never change what the
     // loop does, so a listener that throws is swallowed here rather than
@@ -288,37 +286,27 @@ export async function queryLoop(
       ? []
       : withoutDroppedTools(self.rebuildToolSchemas(scope), droppedToolSchemaNames);
     let toolSchemas: ToolSchema[] = rebuildTurnToolSchemas();
-    // Recorded with the turn: the catalog, window, output and reasoning this
-    // route resolved, from the same functions the request is built with —
-    // the reasoning planned for the turn's request shape (its first round's
-    // tools), as the adapter plans it.
-    const turnModelSettings: RunModelSettings | undefined = apiRound === undefined || effectiveOutput === undefined
+    // Capacity stays fixed for the turn. Reasoning is recorded at each request
+    // boundary because a retry can change the tool shape and its wire control.
+    const modelSettingsBase: RunModelSettings | undefined = apiRound === undefined || effectiveOutput === undefined
       ? undefined
-      : (() => {
-          const reasoning = planReasoning({
-            vendor: llmSettings.provider,
-            model,
-            enableThinking: apiRound.enableThinking,
-            budgetTokens: apiRound.thinkingBudgetTokens ?? 10_000,
-            request: { hasTools: toolSchemas.length > 0, customBaseUrl: Boolean(activeBlock.baseUrl) },
-          });
-          return {
-            modelCatalogSha256: activeModelCatalog().sha256,
-            contextWindow: {
-              tokens: runtimeContextBudget.contextWindow ?? 0,
-              source: runtimeContextBudget.contextWindowSource as ContextWindowSource,
-              ...(runtimeContextBudget.catalogEntry !== undefined ? { catalogEntry: runtimeContextBudget.catalogEntry } : {}),
-              ...(runtimeContextBudget.inputLimit !== undefined && runtimeContextBudget.inputLimitSource !== undefined
-                ? { inputLimit: { tokens: runtimeContextBudget.inputLimit, source: runtimeContextBudget.inputLimitSource } }
-                : {}),
-            },
-            output: effectiveOutput,
-            ...(reasoning ? { reasoning } : {}),
-            ...(toolsWithheld
-              ? { tools: { sent: false as const, source: toolsWithheld.source, catalogEntry: toolsWithheld.catalogEntry } }
+      : {
+          modelCatalogSha256: activeModelCatalog().sha256,
+          contextWindow: {
+            tokens: runtimeContextBudget.contextWindow ?? 0,
+            source: runtimeContextBudget.contextWindowSource as ContextWindowSource,
+            ...(runtimeContextBudget.catalogEntry !== undefined ? { catalogEntry: runtimeContextBudget.catalogEntry } : {}),
+            ...(runtimeContextBudget.inputLimit !== undefined && runtimeContextBudget.inputLimitSource !== undefined
+              ? { inputLimit: { tokens: runtimeContextBudget.inputLimit, source: runtimeContextBudget.inputLimitSource } }
               : {}),
-          };
-        })();
+          },
+          output: effectiveOutput,
+          ...(toolsWithheld
+            ? { tools: { sent: false as const, source: toolsWithheld.source, catalogEntry: toolsWithheld.catalogEntry } }
+            : {}),
+          pricing: resolveModelPricing(llmSettings.provider, model, turnPricingOverrides),
+        };
+    let turnModelSettings: RunModelSettings | undefined;
     const withServingIdentity = (
       result: {
         text: string;
@@ -338,10 +326,10 @@ export async function queryLoop(
             vendorModel: servingVendorModel,
           }
         : {}),
-      // A fallback can change endpoints and named capabilities while keeping
-      // the same vendor/model identity. Primary settings cannot describe it.
+      // Fallbacks resolve generation again, even when their provider and model
+      // labels match: a fallback can change endpoints and named capabilities.
+      // Keep only facts from the last primary request.
       ...(turnModelSettings !== undefined
-        && !fallbackSelected
         && servingVendorProvider === llmSettings.provider && servingVendorModel === model
         ? { modelSettings: turnModelSettings }
         : {}),
@@ -350,11 +338,9 @@ export async function queryLoop(
     });
     const turnProvider = self.provider instanceof FallbackProvider
       ? self.provider.withCallbacks({
-        onFallback: (from, to) => {
-          fallbackSelected = true;
-          callbacks?.onFallback?.(from, to);
-        },
+        onFallback: callbacks?.onFallback,
         onStatus: (status) => {
+          if (status.phase === "fallback") turnModelSettings = undefined;
           if (
             !subscriptionUsageIsOpaque &&
             (status.phase === "attempt" || status.phase === "retry") &&
@@ -410,7 +396,9 @@ export async function queryLoop(
           outputTokens: usage.outputTokens,
           cacheReadTokens: cacheRead,
           cacheWriteTokens: cacheWrite,
+          ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
         },
+        turnPricingOverrides,
       );
       self.cumulativeUsage.inputTokens += adjustedInput;
       self.cumulativeUsage.outputTokens += usage.outputTokens;
@@ -1048,6 +1036,19 @@ export async function queryLoop(
         ...toolExposure,
         request: requestDiagnostics,
       });
+      let requestModelSettings: RunModelSettings | undefined;
+      if (modelSettingsBase !== undefined && apiRound !== undefined) {
+        const reasoning = planReasoning({
+          vendor: llmSettings.provider,
+          model,
+          enableThinking: apiRound.enableThinking,
+          budgetTokens: apiRound.thinkingBudgetTokens ?? 10_000,
+          baseUrl: runtimeContextBudget.baseUrl,
+          catalogModel: apiRound.catalogModel,
+          request: { hasTools: toolSchemas.length > 0 },
+        });
+        requestModelSettings = { ...modelSettingsBase, ...(reasoning ? { reasoning } : {}) };
+      }
       const stream = await collectActiveRuntimeRoundStream(
         {
           provider: turnProvider,
@@ -1060,6 +1061,21 @@ export async function queryLoop(
           continuationPrefill: continuationPrefillText !== undefined,
           onReasoningDelta: callbacks?.onReasoningDelta,
           onTextDelta: callbacks?.onTextDelta,
+          onRequestStarted: () => { turnModelSettings = requestModelSettings; },
+          ...(apiRound === undefined ? {} : {
+            onRequestControls: (controls: NonNullable<RunModelSettings["requestControls"]>) => {
+              // A fallback cleared these primary facts before its dispatch.
+              if (turnModelSettings === undefined) return;
+              const reasoning = turnModelSettings.reasoning;
+              turnModelSettings = {
+                ...turnModelSettings,
+                requestControls: { ...controls },
+                ...(reasoning?.kind === "anthropic-numeric" && controls.thinkingBudgetTokens !== undefined
+                  ? { reasoning: { ...reasoning, budgetTokens: controls.thinkingBudgetTokens } }
+                  : {}),
+              };
+            },
+          }),
         },
         self.deps.settingsService.get("llm").activeChatRuntime,
         () => self.abortCurrentTurn(new Error("active chat runtime changed")),
@@ -2473,6 +2489,7 @@ function appendUsageForServingModel(
   vendorProvider: LLMVendor | undefined,
   vendorModel: string | undefined,
   usage: TokenUsage,
+  pricingOverrides: readonly PricingOverride[],
 ): void {
   if (vendorProvider === undefined || vendorModel === undefined) {
     return;
@@ -2480,11 +2497,13 @@ function appendUsageForServingModel(
   usageByModel.push({
     vendorProvider,
     vendorModel,
+    pricing: resolveModelPricing(vendorProvider, vendorModel, pricingOverrides),
     tokenUsage: {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       ...(usage.cacheReadTokens !== undefined ? { cacheReadTokens: usage.cacheReadTokens } : {}),
       ...(usage.cacheWriteTokens !== undefined ? { cacheWriteTokens: usage.cacheWriteTokens } : {}),
+      ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
     },
   });
 }

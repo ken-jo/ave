@@ -73,3 +73,38 @@ describe("TokenProgressRing output limit source", () => {
     expect(row.textContent).toBe("출력 한도:모델 최대치 (모델 카탈로그)");
   });
 });
+
+describe("TokenProgressRing price source", () => {
+  const base = { inputTokens: 1_000, outputTokens: 1_000, inputCost: 0.001, outputCost: 0.01, total: 0.011 };
+
+  it("names who stated the rates the estimate uses", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    render(
+      <TooltipProvider>
+        <TokenProgressRing used={1_000} budget={64_000} costEstimate={{ ...base, pricingKnown: true, pricingSource: "user" }} />
+      </TooltipProvider>,
+    );
+    fireEvent.click(screen.getByTestId("token-progress-ring"));
+    const row = await screen.findByTestId("token-progress-ring-price-source");
+    expect(row.textContent).toBe("단가:사용자 보정");
+  });
+
+  it("says the catalog listed a zero rather than showing $0", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    render(
+      <TooltipProvider>
+        <TokenProgressRing
+          used={1_000}
+          budget={64_000}
+          costEstimate={{ ...base, inputCost: 0, outputCost: 0, total: 0, pricingKnown: false, catalogListsZero: "zai/glm-4.7-flash" }}
+        />
+      </TooltipProvider>,
+    );
+    fireEvent.click(screen.getByTestId("token-progress-ring"));
+    const unknown = await screen.findByTestId("token-progress-ring-cost-unknown");
+    expect(unknown.textContent).toContain("zai/glm-4.7-flash");
+    expect(unknown.textContent).toContain("$0");
+    expect(screen.queryByTestId("token-progress-ring-cost-total")).toBeNull();
+    expect(screen.queryByTestId("token-progress-ring-price-source")).toBeNull();
+  });
+});

@@ -306,9 +306,14 @@ export async function* streamWithFallback(
     }
     const entry = chain[i - 1]!;
     const apiKey = getApiKey(entry.provider);
-    // Resolved limits and capabilities describe the primary model only;
-    // the fallback transport resolves its own catalog facts.
-    const { outputCeiling: _primaryCeiling, modelCapabilities: _primaryCapabilities, ...fallbackParams } = params;
+    // Resolved limits, catalog identity and capabilities describe the primary
+    // model only; the fallback transport resolves its own catalog facts.
+    const {
+      outputCeiling: _primaryCeiling,
+      catalogModel: _primaryCatalogModel,
+      modelCapabilities: _primaryCapabilities,
+      ...fallbackParams
+    } = params;
     return {
       provider: _createProvider({
         vendor: entry.provider,
@@ -320,7 +325,11 @@ export async function* streamWithFallback(
       }),
       label: `${entry.provider}/${entry.model}`,
       identity: { provider: entry.provider, model: entry.model },
-      attemptParams: { ...fallbackParams, model: entry.model },
+      attemptParams: {
+        ...fallbackParams,
+        model: entry.model,
+        ...(params.requestedOutputTokenLimit !== undefined ? { outputTokenLimit: params.requestedOutputTokenLimit } : {}),
+      },
     };
   };
 

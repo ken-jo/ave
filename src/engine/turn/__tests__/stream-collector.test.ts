@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LLMProvider, StreamEvent, StreamTurnParams } from "../../llm/types.js";
-import { collectRoundStream } from "../stream-collector.js";
+import { collectActiveRuntimeRoundStream, collectRoundStream } from "../stream-collector.js";
 import { VercelUnifiedProvider } from "../../llm/vercel/adapter.js";
 import { getLocale, setLocale } from "../../../i18n/index.js";
 
@@ -74,6 +74,21 @@ describe("image capability refusal", () => {
 });
 
 describe("provider completion boundary", () => {
+  it.each(["started", "cancelled", "runtime-switched"] as const)(
+    "records dispatch only after the guards pass: %s", async (state) => {
+      const provider = new ScriptedProvider([{ type: "message_complete", stopReason: "end_turn" }]);
+      const controller = new AbortController();
+      if (state === "cancelled") controller.abort();
+      const onRequestStarted = vi.fn();
+      await collectActiveRuntimeRoundStream({ provider, model: "test-model", systemPrompt: "system", messages: [],
+        toolSchemas: [], llmSettings: LLM_SETTINGS, abortSignal: controller.signal, onRequestStarted },
+        state === "runtime-switched" ? { kind: "subscription", provider: "codex", model: "gpt-5.5-codex" } : undefined,
+        () => {});
+      expect(onRequestStarted).toHaveBeenCalledTimes(state === "started" ? 1 : 0);
+      expect(provider.lastParams === null).toBe(state !== "started");
+    },
+  );
+
   it.each<{ label: string; events: StreamEvent[] }>([
     { label: "empty stream", events: [] },
     { label: "partial text", events: [{ type: "text_delta", text: "partial-response" }] },

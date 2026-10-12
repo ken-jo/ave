@@ -8,7 +8,7 @@ import { resolveOutputTokenLimit } from "../../../../shared/context-budget.js";
 import { apiRoundLlmSettings } from "../../../turn/round-llm-settings.js";
 import { collectRoundStream } from "../../../turn/stream-collector.js";
 import { forbidAmbientFetch } from "../../../../__tests__/support/network-fetch-stubs.js";
-import type { ToolSchema } from "../../types.js";
+import type { StreamTurnParams, ToolSchema } from "../../types.js";
 import { createGuardedModelProviderFetch } from "../../marketplace-provider-fetch.js";
 import { VercelUnifiedProvider } from "../adapter.js";
 import { collectStreamEvents } from "./test-helpers.js";
@@ -51,7 +51,7 @@ async function collectRequest(
 async function collectInternalRequest(
   vendor: "openai-compatible" | "claude",
   model: string,
-  params: { outputTokenLimit?: number; thinkingBudgetTokens: number; enableThinking?: boolean },
+  params: { outputTokenLimit?: number; thinkingBudgetTokens: number; enableThinking?: boolean; onRequestControls?: StreamTurnParams["onRequestControls"] },
   toolSchemas: ToolSchema[] = [],
 ) {
   const fetchResponse = vi.fn<typeof fetch>(async () => new Response(responseBody(vendor), {
@@ -62,6 +62,7 @@ async function collectInternalRequest(
     provider, model, systemPrompt: "Return the result.",
     messages: [{ role: "user", content: "Report the value." }], toolSchemas,
     llmSettings: { enableThinking: true, ...params, streamSmoothing: "none" },
+    onRequestControls: params.onRequestControls,
   });
   expect(fetchResponse).toHaveBeenCalledTimes(1);
   const request = fetchResponse.mock.calls[0]![1]!;
@@ -73,6 +74,16 @@ async function collectInternalRequest(
 }
 
 describe("resolved output ceiling on the native wire", () => {
+  it("preserves the request when a serialized-control observer throws", async () => {
+    const onRequestControls = vi.fn(() => { throw new Error("observation refused"); });
+    const { body, result } = await collectInternalRequest("claude", "claude-sonnet-4-5", {
+      outputTokenLimit: 32_000, thinkingBudgetTokens: 8_000, onRequestControls,
+    });
+    expect(onRequestControls).toHaveBeenCalledExactlyOnceWith({ outputTokenLimit: 32_000, thinkingBudgetTokens: 8_000 });
+    expect(body).toMatchObject({ max_tokens: 32_000, thinking: { budget_tokens: 8_000 } });
+    expect(result).toMatchObject({ kind: "ok", text: "ok" });
+  });
+
   beforeEach(forbidAmbientFetch);
   afterEach(() => vi.unstubAllGlobals());
 
@@ -190,8 +201,8 @@ describe("resolved output ceiling on the native wire", () => {
     expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 48_000 });
   });
 
-  it("fits a raw ordinary thinking budget inside the SDK's lower model limit", async () => {
-    const { body } = await collectInternalRequest(
+  it("fits an ordinary thinking budget inside the SDK's lower model limit", async () => {
+    const { body } = await collectRequest(
       "claude", "claude-opus-4-1", { outputTokenLimit: 64_000, thinkingBudgetTokens: 48_000 },
     );
     expect(body.max_tokens).toBe(32_000);
@@ -326,7 +337,7 @@ describe("resolved output ceiling on the native wire", () => {
         '{"max_tokens":4096,"thinking":{"type":"enabled","budget_tokens":null}}',
       ]) {
         await expect(projectedFetch!("https://provider.invalid/v1/messages", { method: "POST", body }))
-          .rejects.toThrow("Output limit request");
+          .rejects.toThrow("Numeric thinking request");
       }
       expect(fetchResponse).toHaveBeenCalledOnce();
     } finally {

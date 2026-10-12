@@ -71,6 +71,27 @@ describe("useSettings", () => {
     }
   });
 
+  it("updates the window and prompt cap together when the route endpoint changes", async () => {
+    const initial = makeSettings();
+    initial.llm.vendors.openai!.model = "gpt-5.2";
+    let onSettingsUpdated: ((settings: AppSettings) => void) | undefined;
+    const { api } = makeMockAveApi({ settings: initial, hasApiKey: false });
+    api.onSettingsUpdated = vi.fn((handler) => {
+      onSettingsUpdated = handler as (settings: AppSettings) => void;
+      return vi.fn();
+    });
+    const { result } = renderHook(() => useSettings(api as unknown as AveApi));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    expect(result.current.llmContextWindow).toBe(400_000);
+    expect(result.current.llmInputLimit).toBe(272_000);
+
+    const next = structuredClone(initial);
+    next.llm.vendors.openai!.baseUrl = "https://gateway.invalid/v1";
+    act(() => onSettingsUpdated!(next));
+    expect(result.current.llmContextWindow).toBe(128_000);
+    expect(result.current.llmInputLimit).toBeUndefined();
+  });
+
   it("updates processing detail immediately from a settings broadcast", async () => {
     const initial = makeSettings();
     initial.chat.processingDisplayLevel = "full";

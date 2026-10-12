@@ -1,5 +1,5 @@
 /**
- * Per-model price corrections — the shared parse/merge/precedence rules.
+ * Per-model price corrections — the shared parse and precedence rules.
  *
  * The pair that matters most: the settings list and the deployed env blob are
  * two spellings of one thing, so a case proven for one has to hold for the
@@ -8,14 +8,12 @@
  */
 import { describe, it, expect } from "vitest";
 import {
-  applyPricingOverride,
   normalizePricingOverrides,
   parsePricingOverrideEnv,
   pricingOverridesSignature,
   resolvePricingOverrides,
   isPricingOverrideRate,
 } from "../pricing-overrides.js";
-import { lookupPricing } from "../pricing-data.js";
 
 const CLAUDE_SONNET = "claude-sonnet-4-6";
 
@@ -109,36 +107,6 @@ describe("resolvePricingOverrides", () => {
 
   it("falls back to the setting when the variable is set but unusable", () => {
     expect(resolvePricingOverrides(setting, { AVE_PRICING_OVERRIDE: "{oops" })).toEqual(setting);
-  });
-});
-
-describe("applyPricingOverride", () => {
-  it("merges the rates over the base rather than replacing the entry", () => {
-    const base = lookupPricing("claude", CLAUDE_SONNET);
-    const merged = applyPricingOverride("claude", CLAUDE_SONNET, [
-      { vendor: "claude", model: CLAUDE_SONNET, inputPer1M: 2, outputPer1M: 9 },
-    ]);
-    expect(merged.inputPer1M).toBe(2);
-    expect(merged.outputPer1M).toBe(9);
-    // The part a replacement would have destroyed.
-    expect(merged.contextWindow).toBe(base.contextWindow);
-    expect(merged.contextWindow1MBeta).toBe(base.contextWindow1MBeta);
-  });
-
-  it("returns the base untouched when nothing matches", () => {
-    const base = lookupPricing("claude", CLAUDE_SONNET);
-    expect(applyPricingOverride("claude", CLAUDE_SONNET, [])).toEqual(base);
-    expect(applyPricingOverride("claude", CLAUDE_SONNET, [
-      { vendor: "openai", model: "gpt-4o", inputPer1M: 1, outputPer1M: 1 },
-    ])).toEqual(base);
-  });
-
-  it("matches the exact model id, not a prefix of it", () => {
-    const overrides = [
-      { vendor: "claude", model: CLAUDE_SONNET, inputPer1M: 2, outputPer1M: 9 },
-    ];
-    expect(applyPricingOverride("claude", "claude-opus-4-6", overrides).inputPer1M)
-      .toBe(lookupPricing("claude", "claude-opus-4-6").inputPer1M);
   });
 });
 

@@ -304,6 +304,10 @@ vi.mock("../steps/post-boot.js", () => ({
   wireAnnouncementCheck: vi.fn(),
 }));
 
+vi.mock("../steps/model-catalog-refresh.js", () => ({
+  wireModelCatalogRefresh: vi.fn(async () => {}),
+}));
+
 vi.mock("../steps/reviewer-wiring.js", () => ({
   wireReviewerAgent: vi.fn(() => ({
     rationaleScopeReviewer: { reevaluate: vi.fn() },
@@ -632,6 +636,7 @@ vi.mock("../../ipc/domains/permissions.js", () => ({
 
 import { bootstrap, type AppServices } from "../../boot.js";
 import { wireAnnouncementCheck } from "../steps/post-boot.js";
+import { wireModelCatalogRefresh } from "../steps/model-catalog-refresh.js";
 
 // Boot resolves `~/.ave` through `AVE_HOME` (the retired-cache sweep in
 // marketplace-setup removes directories under it), so both boots below run
@@ -983,6 +988,7 @@ describe("bootstrap() integration lock", () => {
   it("opens the host's own service connections (interactive launch is unchanged)", () => {
     expect(h.captured["discretionaryEgress"]).toBe(true);
     expect(vi.mocked(wireAnnouncementCheck)).toHaveBeenCalled();
+    expect(vi.mocked(wireModelCatalogRefresh)).toHaveBeenCalledTimes(1);
     expect(
       (h.captured["mainConversationDeps"] as Record<string, unknown>)["approvalSurface"],
     ).toBe("interactive");
@@ -994,7 +1000,7 @@ describe("bootstrap() integration lock", () => {
  *
  * The rule is one fact — the `launch` argument — and this suite is what proves
  * each consequence comes off it: neither the release check, the telemetry
- * uploaders nor the announcement poll are started. (The git marketplace's sync starts with the window, in main.ts, so
+ * uploaders, the announcement poll nor the model catalog refresh are started. (The git marketplace's sync starts with the window, in main.ts, so
  * a headless boot never reaches it.) It also proves the halves of the
  * boundary that are NOT discretionary: revocations are still fed from the
  * local snapshots, and plugins on disk still load. The interactive boot above
@@ -1010,6 +1016,7 @@ describe("bootstrap() headless launch opens no discretionary service connection"
     // The interactive boot above already called each of these, and recorded its
     // own ordering; the assertions here are about what THIS boot does.
     vi.mocked(wireAnnouncementCheck).mockClear();
+    vi.mocked(wireModelCatalogRefresh).mockClear();
     h.order.length = 0;
     (h.captured["shutdownHooks"] as string[]).length = 0;
     headlessServices = await bootstrap(
@@ -1039,6 +1046,10 @@ describe("bootstrap() headless launch opens no discretionary service connection"
 
   it("does not schedule the announcement poll", () => {
     expect(vi.mocked(wireAnnouncementCheck)).not.toHaveBeenCalled();
+  });
+
+  it("does not refresh the model catalog", () => {
+    expect(vi.mocked(wireModelCatalogRefresh)).not.toHaveBeenCalled();
   });
 
   it("still loads the plugins already on disk", () => {

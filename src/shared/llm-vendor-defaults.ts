@@ -1042,11 +1042,11 @@ export function activeLlmRouteModel(llm: {
   provider: LLMVendor;
   vendors: LLMVendorSettingsMap;
   marketplaceProviderPresetId?: string;
-}): string {
-  return llmRouteModel(
+}, modelOverride?: string): string {
+  return (modelOverride ?? llmRouteModel(
     getLlmVendorSettings(llm.vendors, llm.provider),
     llm.provider === "openai-compatible" ? llm.marketplaceProviderPresetId : undefined,
-  );
+  )).trim();
 }
 
 

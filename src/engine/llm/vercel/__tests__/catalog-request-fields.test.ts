@@ -12,7 +12,7 @@ import type { LLMVendor } from "../../../../shared/llm-vendor-defaults.js";
 import { VercelUnifiedProvider } from "../adapter.js";
 import { planReasoning } from "../../reasoning-plan.js";
 import { FallbackProvider } from "../fallback-chain.js";
-import type { LLMProvider, StreamEvent } from "../../types.js";
+import type { LLMProvider, StreamEvent, StreamTurnParams } from "../../types.js";
 import { freshAllVendorBlocks, getLlmVendorSettings, requestedLlmOutputTokenLimit } from "../../../../shared/llm-vendor-defaults.js";
 import { resolveContextWindowForRoute, resolveOutputTokenLimit } from "../../../../shared/context-budget.js";
 import { llmModelListCacheKey } from "../../../../shared/llm-model-list.js";
@@ -23,12 +23,13 @@ import { apiRoundLlmSettings } from "../../../turn/round-llm-settings.js";
 async function sentBody(
   vendor: LLMVendor,
   model: string,
-  params: { outputTokenLimit?: number; thinkingBudgetTokens?: number; enableThinking?: boolean; tools?: boolean },
+  params: { outputTokenLimit?: number; thinkingBudgetTokens?: number; enableThinking?: boolean; tools?: boolean; baseUrl?: string; catalogModel?: string },
 ): Promise<Record<string, unknown>> {
   const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
-  const provider = new VercelUnifiedProvider(vendor, "fixture-key", undefined, fetchResponse);
+  const provider = new VercelUnifiedProvider(vendor, "fixture-key", params.baseUrl, fetchResponse);
   for await (const _event of provider.streamTurn({
     model,
+    catalogModel: params.catalogModel,
     systemPrompt: "Return the result.",
     messages: [{ role: "user", content: "Report the value." }],
     enableThinking: params.enableThinking ?? true,
@@ -48,6 +49,7 @@ describe("request fields the catalog decides", () => {
   afterEach(() => {
     installModelCatalog(bundled);
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("clamps a requested output above the model's ceiling to the ceiling", async () => {
@@ -97,7 +99,10 @@ describe("request fields the catalog decides", () => {
   it.each([false, true].flatMap((enableThinking) => [
     { enableThinking, reported: undefined, expected: 32_000 },
     { enableThinking, reported: 8_192, expected: 8_192 },
-  ]))("preserves the resolved ceiling through native message serialization: $reported (thinking $enableThinking)", async ({ enableThinking, reported, expected }) => {
+  ]))("records the SDK's narrower native limit beside the resolved ceiling: $reported (thinking $enableThinking)", async ({ enableThinking, reported, expected }) => {
+    // The route resolves its own ceiling (unknown or reported); native
+    // serialization may still narrow it to the SDK's model limit. The request
+    // controls observed after that projection are what the run records.
     const vendors = freshAllVendorBlocks();
     vendors.claude.model = "claude-3-haiku-20240307";
     vendors.claude.catalogModel = "anthropic/not-listed";
@@ -113,16 +118,42 @@ describe("request fields the catalog decides", () => {
     else expect(route.output.ceilingSource).toBe("provider-reported");
     expect(route.output.effective).toBe(expected);
     const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
+    const onRequestControls = vi.fn<NonNullable<StreamTurnParams["onRequestControls"]>>();
     await collectRoundStream({
       provider: new VercelUnifiedProvider("claude", "fixture-key", undefined, fetchResponse),
       model: route.model, systemPrompt: "Report the result.",
       messages: [{ role: "user", content: "Continue." }], toolSchemas: [],
       llmSettings: apiRoundLlmSettings(vendors.claude, route.output, "none", route),
+      onRequestControls,
     });
     expect(fetchResponse).toHaveBeenCalledOnce();
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
-    expect(body.max_tokens).toBe(expected);
-    if (enableThinking) expect(body.thinking).toMatchObject({ type: "enabled", budget_tokens: 8_000 });
+    // claude-3-haiku's SDK limit is 4,096, below either resolved ceiling.
+    expect(body.max_tokens).toBe(4_096);
+    const thinking = body.thinking as { budget_tokens?: number } | undefined;
+    expect(onRequestControls).toHaveBeenCalledExactlyOnceWith({
+      outputTokenLimit: 4_096,
+      ...(thinking?.budget_tokens === undefined ? {} : { thinkingBudgetTokens: thinking.budget_tokens }),
+    });
+    if (enableThinking) expect(thinking?.budget_tokens).toBeLessThan(4_096);
+  });
+
+  it("does not infer a public output ceiling from a gateway alias", async () => {
+    const body = await sentBody("openai", "gpt-4o", {
+      baseUrl: "https://gateway.invalid/v1", outputTokenLimit: 32_000, enableThinking: false,
+    });
+    expect(body.max_tokens ?? body.max_completion_tokens).toBe(32_000);
+  });
+
+  it("preserves effort on a tool request sent over the responses wire at a custom endpoint", async () => {
+    const body = await sentBody("openai", "gpt-5.4", {
+      baseUrl: "https://gateway.invalid/v1", thinkingBudgetTokens: 16_000, tools: true,
+    });
+    expect(body.input).toBeDefined();
+    expect(body.reasoning).toMatchObject({ effort: "high" });
+    expect(planReasoning({ vendor: "openai", model: "gpt-5.4", enableThinking: true, budgetTokens: 16_000,
+      baseUrl: "https://gateway.invalid/v1", request: { hasTools: true } }))
+      .toMatchObject({ kind: "openai-effort", effort: "high", source: "name-rule" });
   });
 
   it("sends the lowest level GPT-5 accepts for a budget that maps below it", async () => {
@@ -148,6 +179,39 @@ describe("request fields the catalog decides", () => {
     expect(body.reasoning_effort).toBeUndefined();
   });
 
+  it.each(["claude-3-5-sonnet-latest", "claude-sonnet-4-6"])(
+    "honors explicit unsupported reasoning for %s on both the record and wire", async (model) => {
+      installModelCatalog({
+        ...bundled,
+        providers: { ...bundled.providers, anthropic: { models: {
+          [model]: { id: model, limits: { context: 200_000, output: 32_000 }, reasoning: { supported: false } },
+        } } },
+      } as ModelCatalogDocument);
+      const body = await sentBody("claude", model, { thinkingBudgetTokens: 8_000, outputTokenLimit: 32_000 });
+      expect(body.thinking).toBeUndefined();
+      expect(body.output_config).toBeUndefined();
+      expect(planReasoning({ vendor: "claude", model, enableThinking: true, budgetTokens: 8_000,
+        request: { hasTools: false } }))
+        .toMatchObject({ kind: "none", source: "model-catalog" });
+    },
+  );
+
+  it.each(["openai-compatible", "litellm", "ollama", "lmstudio"] as const)(
+    "honors an explicitly identified non-reasoning model on the %s compatibility wire", async (vendor) => {
+      const catalogModel = "openai/gpt-4o";
+      const baseUrl = "https://gateway.invalid/v1";
+      const body = await sentBody(vendor, "served-model", {
+        catalogModel, baseUrl, thinkingBudgetTokens: 8_000,
+      });
+      expect(body.chat_template_kwargs).toMatchObject({ enable_thinking: false });
+      expect(body.thinking_token_budget).toBeUndefined();
+      expect(body.thinking_budget_tokens).toBeUndefined();
+      expect(planReasoning({ vendor, model: "served-model", catalogModel, baseUrl, enableThinking: true,
+        budgetTokens: 8_000, request: { hasTools: false } }))
+        .toMatchObject({ kind: "none", source: "model-catalog" });
+    },
+  );
+
   it("keeps the name rule for a reasoning model whose levels the catalog does not list", async () => {
     // Reasoning supported, no effort list: absent levels are unknown levels,
     // and reading them as "none" dropped the effort the name rule sends.
@@ -169,7 +233,7 @@ describe("request fields the catalog decides", () => {
 
   it("records the reasoning a GPT-5 tool turn on Chat Completions actually sends", async () => {
     // Copilot talks Chat Completions, which answers 400 to reasoning_effort with tools on GPT-5.x.
-    const request = { hasTools: true, customBaseUrl: false };
+    const request = { hasTools: true };
     const plan = planReasoning({ vendor: "copilot", model: "gpt-5.4", enableThinking: true, budgetTokens: 16_000, request });
     expect(plan).toMatchObject({ kind: "none", requestedEffort: "high", suppressed: "chat-completions-tool-turn" });
     const withTools = await sentBody("copilot", "gpt-5.4", { thinkingBudgetTokens: 16_000, tools: true });
@@ -204,8 +268,89 @@ describe("request fields the catalog decides", () => {
 });
 
 describe("the output limit a chat round records is the one it sends", () => {
+  const bundled = activeModelCatalog();
   beforeEach(forbidAmbientFetch);
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { installModelCatalog(bundled); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+
+  it.each([
+    ["openai", "gpt-4o", undefined, "max_completion_tokens"],
+    ["openai", "gpt-5.4-mini", undefined, "max_output_tokens"],
+    ["copilot", "gpt-5.4-mini", undefined, "max_completion_tokens"],
+    ["azure-foundry", "deployment-alias", "https://synthetic.openai.azure.com/openai/v1", "max_output_tokens"],
+    ["claude", "claude-sonnet-4-6", undefined, "max_tokens"],
+    ["gemini", "gemini-2.5-pro", undefined, "generationConfig"],
+    ["vertex-ai", "gemini-2.5-pro", "https://unused.invalid/v1", "generationConfig"],
+    ["openai-compatible", "served-model", "https://gateway.invalid/v1", "max_tokens"],
+    ["openrouter", "served-model", "https://openrouter.ai/api/v1", "max_tokens"],
+  ] as const)("preserves the resolved ceiling through the %s %s adapter", async (vendor, model, baseUrl, field) => {
+    // A synthetic SDK key prevents ambient credential discovery in this fixture.
+    if (vendor === "vertex-ai") vi.stubEnv("GOOGLE_VERTEX_API_KEY", "fixture-key");
+    const block = { ...getLlmVendorSettings({}, vendor), model, enableThinking: false, thinkingBudgetTokens: 0 };
+    const output = resolveOutputTokenLimit({ vendor, model, reported: 8_192,
+      requested: requestedLlmOutputTokenLimit(block), baseUrl });
+    const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
+    await collectRoundStream({
+      provider: new VercelUnifiedProvider(vendor, "fixture-key", baseUrl, fetchResponse,
+        vendor === "vertex-ai" ? { vertexProject: "synthetic-project", vertexLocation: "us-central1" } : {}),
+      model, systemPrompt: "Return the result.", messages: [{ role: "user", content: "Report the value." }],
+      toolSchemas: [], llmSettings: apiRoundLlmSettings(block, output, "none"),
+    });
+    expect(fetchResponse).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
+    const sent = field === "generationConfig"
+      ? (body.generationConfig as { maxOutputTokens: number }).maxOutputTokens
+      : body[field] ?? body.max_tokens;
+    expect(sent).toBe(output.effective);
+    expect(output).toMatchObject({ effective: 8_192, effectiveSource: "provider-reported" });
+  });
+
+  it("uses the route's explicit catalog identity for reasoning on the record and wire", async () => {
+    installModelCatalog({ ...bundled, providers: { ...bundled.providers, openai: { models: {
+      ...bundled.providers.openai!.models,
+      "low-effort-deployment": { id: "low-effort-deployment", limits: { context: 128_000 },
+        reasoning: { supported: true, effort: ["low"] } },
+    } } } } as ModelCatalogDocument);
+    const baseUrl = "https://gateway.invalid/v1";
+    const catalogModel = "openai/low-effort-deployment";
+    const block = getLlmVendorSettings({ openai: {
+      model: "gpt-5.4-mini", catalogModel, baseUrl, thinkingBudgetTokens: 16_000, enableThinking: true,
+    } }, "openai");
+    const output = resolveOutputTokenLimit({ vendor: "openai", model: block.model, catalogModel, baseUrl,
+      requested: requestedLlmOutputTokenLimit(block) });
+    const round = apiRoundLlmSettings(block, output, "none");
+    const plan = planReasoning({ vendor: "openai", model: block.model, baseUrl, catalogModel, enableThinking: true,
+      budgetTokens: round.thinkingBudgetTokens, request: { hasTools: false } });
+    const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
+    await collectRoundStream({ provider: new VercelUnifiedProvider("openai", "fixture-key", baseUrl, fetchResponse),
+      model: block.model, systemPrompt: "Return the result.", messages: [{ role: "user", content: "Report the value." }],
+      toolSchemas: [], llmSettings: round });
+    expect(fetchResponse).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
+    expect(plan).toMatchObject({ kind: "openai-effort", effort: "low", source: "model-catalog" });
+    expect(body.reasoning).toMatchObject({ effort: plan?.effort });
+  });
+
+  it("suppresses effort with tools on the chat wire for an explicitly identified deployment alias", async () => {
+    const model = "deployment-alias";
+    const catalogModel = "openai/gpt-5.4";
+    const baseUrl = "https://gateway.invalid/v1";
+    const block = { ...getLlmVendorSettings({}, "openai"), model, catalogModel, baseUrl, thinkingBudgetTokens: 16_000 };
+    const output = resolveOutputTokenLimit({ vendor: "openai", model, catalogModel, baseUrl,
+      requested: requestedLlmOutputTokenLimit(block) });
+    const round = apiRoundLlmSettings(block, output, "none");
+    const plan = planReasoning({ vendor: "openai", model, baseUrl, catalogModel, enableThinking: true,
+      budgetTokens: round.thinkingBudgetTokens, request: { hasTools: true } });
+    const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
+    await collectRoundStream({ provider: new VercelUnifiedProvider("openai", "fixture-key", baseUrl, fetchResponse),
+      model, systemPrompt: "Return the result.", messages: [{ role: "user", content: "Report the value." }],
+      toolSchemas: [{ name: "read_file", description: "Read a file", inputSchema: { type: "object", properties: {} } }],
+      llmSettings: round });
+    expect(fetchResponse).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
+    expect(body.messages).toBeDefined();
+    expect(body.reasoning_effort).toBeUndefined();
+    expect(plan).toMatchObject({ kind: "none", requestedEffort: "high", suppressed: "chat-completions-tool-turn" });
+  });
 
   async function roundBody(reported: number, outputTokenLimit: number) {
     const block = getLlmVendorSettings({ openai: { model: "gpt-5.4", enableThinking: false, thinkingBudgetTokens: 0, outputTokenLimit } }, "openai");
@@ -240,6 +385,29 @@ describe("the output limit a chat round records is the one it sends", () => {
     expect(output).toMatchObject({ effective: 8_192, effectiveSource: "provider-reported" });
     expect(body.max_output_tokens).toBe(8_192);
   });
+
+  it.each(["openai/missing-entry", "openai/unknown-output"])(
+    "does not rediscover an output ceiling after the route resolves %s as unknown", async (catalogModel) => {
+      installModelCatalog({ ...bundled, providers: { ...bundled.providers, openai: { models: {
+        ...bundled.providers.openai!.models,
+        "unknown-output": { id: "unknown-output", limits: { context: 128_000 } },
+      } } } } as ModelCatalogDocument);
+      const block = getLlmVendorSettings({ openai: {
+        model: "gpt-5.4-mini", catalogModel, outputTokenLimit: 150_000, enableThinking: false, thinkingBudgetTokens: 0,
+      } }, "openai");
+      const output = resolveOutputTokenLimit({ vendor: "openai", model: block.model, catalogModel,
+        requested: requestedLlmOutputTokenLimit(block) });
+      expect(output).toMatchObject({ effective: 150_000, effectiveSource: "user" });
+      expect(output.ceiling).toBeUndefined();
+      const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
+      await collectRoundStream({ provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse),
+        model: block.model, systemPrompt: "Return the result.", messages: [{ role: "user", content: "Report the value." }],
+        toolSchemas: [], llmSettings: apiRoundLlmSettings(block, output, "none") });
+      expect(fetchResponse).toHaveBeenCalledOnce();
+      const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
+      expect(body.max_output_tokens).toBe(output.effective);
+    },
+  );
 });
 
 describe("a fallback model's output ceiling", () => {
@@ -283,5 +451,33 @@ describe("a fallback model's output ceiling", () => {
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
     // The fallback's catalog ceiling bounds the request in both cases.
     expect(body.max_tokens ?? body.max_completion_tokens).toBe(16_384);
+  });
+
+  it.each([
+    ["openai", "gpt-4o", 16_384, undefined],
+    ["claude", "claude-sonnet-4-5", 32_000, 16_000],
+  ] as const)("reapplies original generation controls to the %s fallback", async (vendor, model, expectedOutput, expectedThinking) => {
+    vi.useFakeTimers();
+    const block = getLlmVendorSettings({ openai: {
+      model: "gpt-5.4", outputTokenLimit: 32_000, enableThinking: true, thinkingBudgetTokens: 16_000,
+    } }, "openai");
+    const output = resolveOutputTokenLimit({ vendor: "openai", model: block.model, reported: 4_096,
+      requested: requestedLlmOutputTokenLimit(block) });
+    expect(output.effective).toBe(4_096);
+    const primary: LLMProvider = { vendor: "openai", async *streamTurn() {
+      yield { type: "error", error: "503 fixture unavailable", classification: "network" };
+    } };
+    const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
+    const wrapped = new FallbackProvider(primary, [{ provider: vendor, model }], () => "fixture-key",
+      () => new VercelUnifiedProvider(vendor, "fixture-key", undefined, fetchResponse));
+    const drained = collectRoundStream({ provider: wrapped, model: block.model, systemPrompt: "Return the result.",
+      messages: [{ role: "user", content: "Report the value." }], toolSchemas: [],
+      llmSettings: apiRoundLlmSettings(block, output, "none") });
+    await vi.advanceTimersByTimeAsync(30_000);
+    await drained;
+    expect(fetchResponse).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
+    expect(body.max_tokens ?? body.max_completion_tokens).toBe(expectedOutput);
+    if (expectedThinking !== undefined) expect(body.thinking).toMatchObject({ budget_tokens: expectedThinking });
   });
 });

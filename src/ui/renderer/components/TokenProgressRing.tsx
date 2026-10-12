@@ -13,6 +13,13 @@ const OUTPUT_LIMIT_SOURCE_KEYS = {
   "model-catalog": "chatView.costOutputLimitSourceModelCatalog",
 } as const satisfies Record<NonNullable<EstimateBreakdown["outputLimitSource"]>, string>;
 
+/** Who stated the rates the estimate uses, as the tooltip names it. */
+const PRICE_SOURCE_KEYS = {
+  user: "chatView.costPriceSourceUser",
+  "model-catalog": "chatView.costPriceSourceModelCatalog",
+  "pricing-catalog": "chatView.costPriceSourcePricingCatalog",
+} as const satisfies Record<NonNullable<EstimateBreakdown["pricingSource"]>, string>;
+
 interface TokenProgressRingProps {
   used: number;
   budget: number;
@@ -207,8 +214,18 @@ export function TokenProgressRing({
                 <span>{t(OUTPUT_LIMIT_SOURCE_KEYS[costEstimate.outputLimitSource])}</span>
               </div>
             )}
+            {costEstimate.pricingSource !== undefined && (
+              <div className="flex justify-between gap-3 opacity-70" data-testid="token-progress-ring-price-source">
+                <span>{t("chatView.costPriceSourceLabel")}</span>
+                <span>{t(PRICE_SOURCE_KEYS[costEstimate.pricingSource])}</span>
+              </div>
+            )}
             {costEstimate.pricingKnown === false ? (
-              <div className="font-semibold">{t("chatView.costUnknownModel")}</div>
+              <div className="font-semibold" data-testid="token-progress-ring-cost-unknown">
+                {costEstimate.catalogListsZero !== undefined
+                  ? t("chatView.costCatalogListsZero", { entry: costEstimate.catalogListsZero })
+                  : t("chatView.costUnknownModel")}
+              </div>
             ) : (
               <div className={`flex justify-between gap-3 font-semibold ${costClass ?? ""}`}>
                 <span>{t("chatView.costTotalLabel")}</span>

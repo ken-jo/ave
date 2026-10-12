@@ -26,6 +26,11 @@ test('a price correction round-trips through the real settings service', async (
       return settings.llm?.pricingOverrides ?? [];
     });
 
+  const readResolvedOverrides = () => mainWindow.evaluate(async () => {
+    const api = (window as unknown as { aveApi: { getPricingOverrides: () => Promise<unknown> } }).aveApi;
+    return api.getPricingOverrides();
+  });
+
   // Nothing pins the variable in this harness, so the table must be editable.
   await expect(settingsPage.getByTestId('llm-pricing-overrides-forced')).toHaveCount(0);
   await expect(settingsPage.getByTestId('llm-pricing-overrides-empty')).toBeVisible();
@@ -46,12 +51,16 @@ test('a price correction round-trips through the real settings service', async (
   await expect.poll(readOverrides).toEqual([
     { vendor: 'claude', model: 'claude-sonnet-4-6', inputPer1M: 2.5, outputPer1M: 11 },
   ]);
+  await expect.poll(readResolvedOverrides).toEqual([
+    { vendor: 'claude', model: 'claude-sonnet-4-6', inputPer1M: 2.5, outputPer1M: 11 },
+  ]);
 
   // And back out again: a correction has to be removable, or a wrong rate is
   // as permanent as the list price it replaced.
   await settingsPage.getByTestId('llm-pricing-override-remove-0').click();
   await save.click();
   await expect.poll(readOverrides).toEqual([]);
+  await expect.poll(readResolvedOverrides).toEqual([]);
 
   await closeInlineSettings(app, settingsPage);
 });

@@ -16,7 +16,7 @@ import {
   buildModelCatalogDocument,
   formatCatalogJson,
   type ModelCatalogSource,
-} from "../../src/core/model-catalog/document.js";
+} from "../../src/core/model-catalog/document-builder.js";
 import type { CatalogDiagnostic } from "../../src/shared/model-catalog/normalize.js";
 import { pruneModelsDevDocument } from "../../src/shared/model-catalog/normalize.js";
 import { CATALOG_PROVIDERS_BY_VENDOR, catalogProviderIds } from "../../src/shared/model-catalog/provider-map.js";

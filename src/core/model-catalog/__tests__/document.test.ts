@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildModelCatalogDocument,
-  formatCatalogJson,
-  modelCatalogSha256,
-  verifyModelCatalogDocument,
-} from "../document.js";
+import { buildModelCatalogDocument, formatCatalogJson } from "../document-builder.js";
+import { modelCatalogSha256, verifyModelCatalogDocument } from "../document.js";
 import { MODEL_CATALOG_SCHEMA_VERSION } from "../../../shared/model-catalog/types.js";
 
 const LICENSE = { spdx: "MIT" as const, copyright: "Copyright (c) 2025 example", repository: "https://example.invalid/repo", text: "MIT License\n" };

@@ -14,6 +14,23 @@ import { getUsableContext, resolveContextWindowForRoute } from "../../../../shar
 import { freshAllVendorBlocks } from "../../../../shared/llm-vendor-defaults.js";
 
 describe("useContextBudget — effectiveBudget (Issue #912)", () => {
+  it("uses the resolved prompt cap and clears it when the route changes", () => {
+    const vendors = freshAllVendorBlocks();
+    vendors.openai.model = "gpt-5.2";
+    const route = resolveContextWindowForRoute({ provider: "openai", vendors });
+    const { result, rerender } = renderHook(
+      ({ inputLimit }: { inputLimit: number | undefined }) => useContextBudget({
+        entries: [{ kind: "context_usage", tokensIn: 136_000, source: "compact-estimate" }],
+        contextWindow: route.contextWindow, inputLimit,
+      }),
+      { initialProps: { inputLimit: route.inputLimit } },
+    );
+    expect(result.current.contextBudget).toBe(272_000);
+    expect(result.current.contextOverflowPct).toBe(0.5);
+    rerender({ inputLimit: undefined });
+    expect(result.current.contextBudget).toBe(360_000);
+  });
+
   it("uses turn_summary.tokensIn as the context-fill SOT", () => {
     const { result } = renderHook(() =>
       useContextBudget({

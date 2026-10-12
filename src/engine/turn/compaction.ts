@@ -34,8 +34,8 @@ import {
   resolveModelContextWindow,
   type ContextWindowSource,
   type ResolvedOutputTokenLimit,
+  type RouteContextWindow,
   type RouteModelCapabilities,
-  type InputLimitSource,
   type LlmRouteProviderPreset,
   type LlmRouteSettings,
 } from "../../shared/context-budget.js";
@@ -55,7 +55,9 @@ const SUBSCRIPTION_FALLBACK_USABLE_CONTEXT = getUsableContext(
   SUBSCRIPTION_FALLBACK_CONTEXT_WINDOW,
 );
 
-interface RuntimeContextBudget extends RouteModelCapabilities {
+interface RuntimeContextBudget
+  extends RouteModelCapabilities,
+    Pick<RouteContextWindow, "catalogEntry" | "inputLimit" | "inputLimitSource" | "baseUrl" | "catalogModel"> {
   readonly model: string;
   readonly preflight: number;
   readonly usableContext: number;
@@ -69,11 +71,6 @@ interface RuntimeContextBudget extends RouteModelCapabilities {
   readonly contextWindowSource: ContextWindowSource | "subscription-fallback";
   /** The resolved window itself, for an API route; observability only. */
   readonly contextWindow?: number;
-  /** The catalog entry that answered the window, `<provider>/<id>`. */
-  readonly catalogEntry?: string;
-  /** The prompt cap that bounds the budget, when one does, and who stated it. */
-  readonly inputLimit?: number;
-  readonly inputLimitSource?: InputLimitSource;
   /**
    * The output limit a chat request on this API route carries — requested,
    * the model's ceiling, and the smaller of the two. Absent for subscription
@@ -224,6 +221,8 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
           ? "reported-context-window"
           : getModelPreflightThresholdSource("openai", model),
         contextWindowSource: reportedIsTighter ? "provider-reported" : catalogWindow.source,
+        ...(catalogWindow.catalogEntry !== undefined ? { catalogEntry: catalogWindow.catalogEntry } : {}),
+        ...(catalogWindow.inputLimit !== undefined ? { inputLimit: catalogWindow.inputLimit, inputLimitSource: catalogWindow.inputLimitSource } : {}),
       };
     }
     return {
@@ -245,7 +244,7 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
     provider === "openai-compatible" && llmSettings.marketplaceProviderPresetId
       ? self.deps.settingsService.get("marketplace").installedProviderPresets
       : undefined;
-  const route = resolveContextWindowForRoute(llmSettings, installedProviderPresets);
+  const route = resolveContextWindowForRoute(llmSettings, installedProviderPresets, self.deps.modelOverride);
   const model = route.model;
   const identity = `${provider}/${model}`;
   if (route.unresolvedCatalogModel !== undefined) warnUnresolvedCatalogModelOnce(identity, route.unresolvedCatalogModel);
@@ -255,12 +254,16 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
   }
   return {
     model,
+    ...(route.baseUrl !== undefined ? { baseUrl: route.baseUrl } : {}),
+    ...(route.catalogModel !== undefined ? { catalogModel: route.catalogModel } : {}),
     preflight: getModelPreflightThreshold(provider, model, route.contextWindow, route.inputLimit),
     usableContext: getModelUsableContext(provider, model, route.contextWindow, route.inputLimit),
     identity,
     thresholdSource: getModelPreflightThresholdSource(provider, model, route.contextWindow, route.inputLimit),
     ...(route.inputLimit !== undefined ? { inputLimit: route.inputLimit } : {}),
     ...(route.inputLimitSource !== undefined ? { inputLimitSource: route.inputLimitSource } : {}),
+    ...(route.inputLimit !== undefined ? { inputLimit: route.inputLimit } : {}),
+    ...(route.catalogEntry !== undefined ? { catalogEntry: route.catalogEntry } : {}),
     contextWindowSource: route.source,
     contextWindow: route.contextWindow,
     ...(route.catalogEntry !== undefined ? { catalogEntry: route.catalogEntry } : {}),
@@ -642,10 +645,10 @@ export async function runPreflightGuard(
       return false;
     }
 
-    const { preflight, identity, thresholdSource, contextWindowSource, inputLimitSource } = contextBudgetForCurrentRuntime(self);
+    const { preflight, identity, thresholdSource, contextWindowSource, inputLimitSource, inputLimit, catalogEntry } = contextBudgetForCurrentRuntime(self);
     if (!forceRecover && !forceRateLimit && preflight <= 0) {
       tracePreflightGuard(self, "skipped", "invalid-preflight-threshold", {
-        threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, model: identity,
+        threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, inputLimit, catalogEntry, model: identity,
       });
       return false;
     }
@@ -665,7 +668,7 @@ export async function runPreflightGuard(
       : estimated;
     if (!forceRecover && !forceRateLimit && estimated < preflight && contextTokensIn < preflight) {
       tracePreflightGuard(self, "not-reached", "below-threshold", {
-        threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, model: identity, estimated, contextTokensIn,
+        threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, inputLimit, catalogEntry, model: identity, estimated, contextTokensIn,
       });
       return false;
     }
@@ -677,7 +680,7 @@ export async function runPreflightGuard(
           ? "estimate"
           : "context-tokens";
     tracePreflightGuard(self, "fired", triggerSource, {
-      threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, model: identity, estimated, contextTokensIn,
+      threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, inputLimit, catalogEntry, model: identity, estimated, contextTokensIn,
     });
 
     self.isCompacting = true;
