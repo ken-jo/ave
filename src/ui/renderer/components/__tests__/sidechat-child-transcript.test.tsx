@@ -271,6 +271,12 @@ describe("side-chat child transcript across host and renderer", () => {
         render(<Panel api={api} openStoredSession={false} surface={surface} />);
       }
       fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("side-chat")));
+      if (eventKind === "spawn") {
+        publish(CHANNELS.agentSpawn.event, {
+          type: "start", spawnId: "before-prelude-spawn", parentSessionId: sideSessionId,
+          taskState: A2ATaskState.SUBMITTED, title: "Child before identity",
+        } satisfies AgentSpawnEvent);
+      }
       try {
         const sideView = within(screen.getByTestId("side-chat-view"));
         fireEvent.change(sideView.getByTestId("composer-textarea"), { target: { value: "Start the first side turn" } });
@@ -282,6 +288,8 @@ describe("side-chat child transcript across host and renderer", () => {
         if (eventKind === "spawn") {
           openSubagentTab();
           await screen.findByRole("option", { name: /First side child/ });
+          expect(screen.getAllByTestId("chat-side-panel-subagent-row")).toHaveLength(1);
+          expect(screen.queryByRole("option", { name: /Child before identity/ })).toBeNull();
           await within(screen.getByTestId("chat-side-panel-subagent-detail")).findByText("Persisted side-chat child transcript");
           expect(read).toHaveBeenCalledExactlyOnceWith({ originSessionId: sideSessionId, childSessionId });
           expect(invoke).not.toHaveBeenCalledWith(CHANNELS.chat.getSubAgentTranscript, expect.anything(), expect.anything());

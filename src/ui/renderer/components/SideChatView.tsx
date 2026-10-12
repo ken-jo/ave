@@ -240,10 +240,16 @@ function SideChatSession({
       sessionOwnedBy(sessionIdRef.current, NO_CHILD_SESSIONS, id),
     [hasCurrentClaim],
   );
-  const { askQuestions, dismissAskQuestion } = useWorkflowTools(api, {
+  const { askQuestions: retainedQuestions, dismissAskQuestion } = useWorkflowTools(api, {
     ownsSession,
     drawsSession: ownsSession,
   });
+  const askQuestions = useMemo(
+    () => !sessionOwned || sessionId === null
+      ? NO_QUESTIONS
+      : retainedQuestions.filter((request) => sessionOwnedBy(sessionId, NO_CHILD_SESSIONS, request.sessionId)),
+    [retainedQuestions, sessionId, sessionOwned],
+  );
   // What the tile beside this panel publishes to the window on the side
   // chat's behalf: the window leaves this session's questions to this panel
   // and marks the way here while a card waits off screen.
@@ -545,7 +551,7 @@ function SideChatSession({
       </div>
       {/* Same z-index for both cards, so DOM order stacks them: the approval
           comes last and stays the topmost decision, as it does in ChatView. */}
-      <QuestionOverlay api={api} requests={sessionOwned ? askQuestions : NO_QUESTIONS} onResolved={dismissAskQuestion} />
+      <QuestionOverlay api={api} requests={askQuestions} onResolved={dismissAskQuestion} />
       <ApprovalDock
         queue={pendingApprovals}
         conversationLabel={t("chatPreviewRail.sideChat.title")}

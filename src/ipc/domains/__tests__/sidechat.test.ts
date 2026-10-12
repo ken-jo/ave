@@ -373,11 +373,13 @@ describe("side-chat IPC domain", () => {
     register(side, makeMainLoop());
     const handler = handlers.get(CHANNELS.sidechat.send)!;
 
-    const first = handler(ev("file:///index.html"), { input: "first" });
-    const second = await handler(ev("file:///index.html"), { input: "second" });
+    const first = handler(ev("file:///index.html"), { input: "first", sendRequestId: "first-request" });
+    const second = await handler(ev("file:///index.html"), { input: "second", sendRequestId: "second-request" });
 
     expect(second).toMatchObject({ ok: false, error: "streaming-active" });
     expect(side.runTurn).toHaveBeenCalledTimes(1);
+    expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "user_message")
+      .map(({ payload }) => (payload as { sendRequestId?: string }).sendRequestId)).toEqual(["first-request"]);
 
     releaseTurn();
     await first;
@@ -386,9 +388,46 @@ describe("side-chat IPC domain", () => {
     // completes on its own so this send is not held by the same latch.
     const settledTurn = vi.fn(async () => ({ route: "chat" }));
     side.runTurn = settledTurn;
-    const third = await handler(ev("file:///index.html"), { input: "third" });
+    const third = await handler(ev("file:///index.html"), { input: "third", sendRequestId: "third-request" });
     expect(third).toMatchObject({ ok: true });
     expect(settledTurn).toHaveBeenCalledTimes(1);
+    expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "user_message")
+      .map(({ payload }) => (payload as { sendRequestId?: string }).sendRequestId)).toEqual(["first-request", "third-request"]);
+  });
+
+  it("can start the next turn while an earlier failed reply awaits origin persistence", async () => {
+    const originReady = deferred<void>();
+    const nextTurnReady = deferred<{ route: string }>();
+    const side = makeSideLoop();
+    const main = makeMainLoop();
+    const store = makeSideChatStore();
+    store.saveSessionMetadata.mockReturnValueOnce(originReady.promise);
+    side.runTurn.mockImplementationOnce(async (...args: unknown[]) => {
+      (args[1] as { onError: (message: string) => void }).onError("First turn failed");
+      throw new Error("First turn failed");
+    }).mockReturnValueOnce(nextTurnReady.promise);
+    register(side, main, false, store);
+    const handler = handlers.get(CHANNELS.sidechat.send)!;
+    const first = handler(ev("file:///index.html"), {
+      input: "first", originSessionId: main.getSessionId(), sendRequestId: "first-request",
+    });
+    let firstSettled = false;
+    void Promise.resolve(first).then(() => { firstSettled = true; });
+    let next: unknown;
+    try {
+      await vi.waitFor(() => expect(store.saveSessionMetadata).toHaveBeenCalledOnce());
+      next = handler(ev("file:///index.html"), {
+        input: "next", originSessionId: main.getSessionId(), sendRequestId: "next-request",
+      });
+      expect(firstSettled).toBe(false);
+      expect(side.runTurn).toHaveBeenCalledTimes(2);
+      expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "user_message")
+        .map(({ payload }) => (payload as { sendRequestId?: string }).sendRequestId)).toEqual(["first-request", "next-request"]);
+    } finally {
+      originReady.resolve(undefined);
+      nextTurnReady.resolve({ route: "chat" });
+      await Promise.all([first, next]);
+    }
   });
 
   it("fails closed when the side-chat loop is absent", async () => {

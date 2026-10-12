@@ -24,7 +24,7 @@ function makeApi() {
     }),
   );
   const newSession = vi.fn(async () => ({ ok: true as const, sessionId: "side-2" }));
-  const load = vi.fn(async () => ({ ok: true as const, sessionId: "side-3", messages: [] }));
+  const load = vi.fn<NonNullable<AveApi["sideChat"]>["load"]>(async () => ({ ok: true, sessionId: "side-3", messages: [] }));
   const list = vi.fn(async () => ({ current: "side-1", sessions: [] }));
   const onStream = vi.fn((h: (e: ChatStreamEvent) => void) => {
     handlers.add(h);
@@ -60,6 +60,167 @@ function lastAssistant(entries: ChatEntry[]): Extract<ChatEntry, { kind: "assist
 }
 
 describe("useSideChat session identity", () => {
+  it.each(["refusal", "rejection"] as const)("does not revive an unaccepted send when its %s overlaps a queued send", async (replyMode) => {
+    const { api, spies } = makeApi();
+    const firstReply = deferred<void>();
+    const queuedReply = deferred<{ ok: false; error: string }>();
+    spies.send.mockImplementationOnce(async () => {
+      await firstReply.promise;
+      if (replyMode === "rejection") throw new Error("First transport failed");
+      return { ok: false, error: "streaming-active" };
+    }).mockReturnValueOnce(queuedReply.promise);
+    const { result } = renderHook(() => useSideChat(api));
+    let firstSend = Promise.resolve();
+    let queuedSend = Promise.resolve();
+    act(() => {
+      firstSend = result.current.send("First request");
+      queuedSend = result.current.send("Queued request", { inputOrigin: "queue-auto" });
+    });
+    try {
+      await act(async () => {
+        firstReply.resolve(undefined);
+        await firstSend;
+        queuedReply.resolve({ ok: false, error: "streaming-active" });
+        await queuedSend;
+      });
+      expect(result.current.isStreaming).toBe(false);
+      expect(spies.send).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => {
+        firstReply.resolve(undefined);
+        queuedReply.resolve({ ok: false, error: "streaming-active" });
+        await Promise.all([firstSend, queuedSend]);
+      });
+    }
+  });
+
+  it.each(["new", "load"] as const)("does not submit an interrupted draft after %s finishes during abort", async (transition) => {
+    const { api, emit, spies } = makeApi();
+    const abortReady = deferred<{ ok: true }>();
+    spies.abort.mockReturnValueOnce(abortReady.promise);
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.send("First request"); });
+    emit({ type: "user_message", sessionId: "side-first", streamId: 1, sendRequestId: spies.send.mock.calls[0]![3] });
+    let interruptedSend = Promise.resolve();
+    act(() => { interruptedSend = result.current.send("Interrupted draft"); });
+    expect(spies.abort).toHaveBeenCalledOnce();
+    try {
+      await act(async () => {
+        if (transition === "new") await result.current.newSession();
+        else await result.current.loadSession("side-3");
+      });
+      const currentEntries = result.current.entries;
+      await act(async () => {
+        abortReady.resolve({ ok: true });
+        await interruptedSend;
+      });
+      expect(spies.send).toHaveBeenCalledTimes(1);
+      expect(result.current.entries).toEqual(currentEntries);
+      expect(result.current.sessionId).toBe(transition === "new" ? "side-2" : "side-3");
+    } finally {
+      await act(async () => {
+        abortReady.resolve({ ok: true });
+        await interruptedSend;
+      });
+    }
+  });
+
+  it.each((["refusal", "rejection"] as const).flatMap((replyMode) =>
+    (["send", "new", "load"] as const).map((transition) => ({ replyMode, transition })),
+  ))("keeps a $transition transition intact when an earlier $replyMode arrives after its error frame", async ({ replyMode, transition }) => {
+    const { api, dispatch, spies } = makeApi();
+    const firstReply = deferred<void>();
+    const nextReply = deferred<{ ok: true; result: unknown }>();
+    spies.send.mockImplementationOnce(async () => {
+      await firstReply.promise;
+      if (replyMode === "rejection") throw new Error("Earlier transport failed");
+      return { ok: false, error: "streaming-active" };
+    }).mockReturnValueOnce(nextReply.promise);
+    const { result } = renderHook(() => useSideChat(api));
+    let firstSend = Promise.resolve();
+    let nextSend = Promise.resolve();
+    act(() => { firstSend = result.current.send("First request"); });
+    try {
+      await act(async () => {
+        dispatch({ type: "user_message", sessionId: "side-current", streamId: 1, sendRequestId: spies.send.mock.calls[0]![3] });
+        dispatch({ type: "error", error: "First turn failed", streamId: 1 });
+      });
+      expect(result.current.isStreaming).toBe(false);
+      if (transition === "send") {
+        act(() => { nextSend = result.current.send("Next request"); });
+        await act(async () => {
+          dispatch({ type: "user_message", sessionId: "side-current", streamId: 2, sendRequestId: spies.send.mock.calls[1]![3] });
+          dispatch({ type: "text_delta", text: "New", streamId: 2 });
+        });
+      } else {
+        await act(async () => {
+          if (transition === "new") await result.current.newSession();
+          else await result.current.loadSession("side-3");
+        });
+        expect(result.current.sessionId).toBe(transition === "new" ? "side-2" : "side-3");
+      }
+      const currentEntries = result.current.entries;
+      await act(async () => {
+        firstReply.resolve(undefined);
+        await firstSend;
+      });
+      expect(result.current.entries).toEqual(currentEntries);
+      expect(result.current.isStreaming).toBe(transition === "send");
+      if (transition === "send") {
+        await act(async () => { dispatch({ type: "text_delta", text: " answer", streamId: 2 }); });
+        expect(lastAssistant(result.current.entries)).toMatchObject({ text: "New answer", streaming: true });
+      }
+    } finally {
+      await act(async () => {
+        firstReply.resolve(undefined);
+        dispatch({ type: "done", streamId: 2 });
+        nextReply.resolve({ ok: true, result: {} });
+        await Promise.all([firstSend, nextSend]);
+      });
+    }
+  });
+
+  it.each(["idle", "pending"] as const)("keeps a retained transcript separate when a peer send is %s", async (peerState) => {
+    const { api, dispatch, spies } = makeApi();
+    spies.load.mockResolvedValueOnce({
+      ok: true, sessionId: "side-retained", messages: [
+        { index: 0, role: "assistant", content: "Retained answer" },
+      ],
+    });
+    const accepted = deferred<{ ok: true; result: unknown }>();
+    const refused = deferred<{ ok: false; error: string }>();
+    spies.send.mockReturnValueOnce(accepted.promise).mockReturnValueOnce(refused.promise);
+    const sender = renderHook(() => useSideChat(api));
+    const peer = renderHook(() => useSideChat(api));
+    await act(async () => { await peer.result.current.loadSession("side-retained"); });
+    let senderTurn = Promise.resolve();
+    let peerTurn = Promise.resolve();
+    act(() => {
+      senderTurn = sender.result.current.send("Sender request");
+      if (peerState === "pending") peerTurn = peer.result.current.send("Peer request");
+    });
+    const retainedEntries = peer.result.current.entries;
+    try {
+      await act(async () => {
+        dispatch({ type: "user_message", sessionId: "side-current", streamId: 1, sendRequestId: spies.send.mock.calls[0]![3] });
+        dispatch({ type: "text_delta", text: "Foreign answer", streamId: 1 });
+        dispatch({ type: "done", streamId: 1 });
+      });
+      expect(sender.result.current.entries).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "assistant", text: "Foreign answer" }),
+      ]));
+      expect(peer.result.current.entries).toEqual(retainedEntries);
+      expect(peer.result.current.sessionId).toBe("side-retained");
+      expect(peer.result.current.isStreaming).toBe(peerState === "pending");
+    } finally {
+      await act(async () => {
+        accepted.resolve({ ok: true, result: {} });
+        refused.resolve({ ok: false, error: "streaming-active" });
+        await Promise.all([senderTurn, peerTurn]);
+      });
+    }
+  });
+
   it.each(["idle", "pending"] as const)("binds the announced session only to its sending view when a peer is %s", async (peerState) => {
     const { api, dispatch, spies } = makeApi();
     const accepted = deferred<{ ok: true; result: unknown }>();
@@ -117,10 +278,10 @@ describe("useSideChat session identity", () => {
     await act(async () => {
       dispatch({ type: "user_message", text: "hello", streamId: 7 });
       expect(onSessionBound).not.toHaveBeenCalled();
-      dispatch({ type: "user_message", text: "hello", messageId: "row-1", sessionId: "side-live", streamId: 7, sendRequestId: spies.send.mock.calls.at(-1)![3] });
+      dispatch({ type: "user_message", text: "hello", messageId: "row-1", sessionId: "side-live", streamId: 8, sendRequestId: spies.send.mock.calls.at(-1)![3] });
       expect(onSessionBound).toHaveBeenCalledExactlyOnceWith("side-live");
       expect(beforeCommit).toEqual([null]);
-      dispatch({ type: "user_message", text: "hello", messageId: "row-1", sessionId: "side-live", streamId: 7, sendRequestId: spies.send.mock.calls.at(-1)![3] });
+      dispatch({ type: "user_message", text: "hello", messageId: "row-1", sessionId: "side-live", streamId: 8, sendRequestId: spies.send.mock.calls.at(-1)![3] });
       expect(onSessionBound).toHaveBeenCalledTimes(1);
     });
     expect(result.current.sessionId).toBe("side-live");
@@ -131,7 +292,7 @@ describe("useSideChat session identity", () => {
     expect(settled).toBe(false);
 
     await act(async () => {
-      dispatch({ type: "done", streamId: 7 });
+      dispatch({ type: "done", streamId: 8 });
       turn.resolve({ ok: true, result: {} });
       await pendingSend;
     });
@@ -588,6 +749,7 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
     await act(async () => {
       await result.current.send("drained row", { inputOrigin: "queue-auto" });
     });
+    expect(result.current.isStreaming).toBe(true);
 
     emit({ type: "text_delta", text: " world", streamId: 1 });
 

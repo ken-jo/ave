@@ -406,7 +406,8 @@ way to it:
 - **A side chat.** On the default tab without an `openRequest`, the host
   publishes its side-chat `sessionId` in the first send's existing
   `sidechat.stream` `user_message` frame before the loop runs tools, echoing
-  its `sendRequestId`. Only that locally submitted request binds the view.
+  its `sendRequestId`. Only that locally submitted request binds the view;
+  a foreign prelude cannot establish its stream or settle its pending send.
   The view synchronously updates its ownership refs, claims only its loop's session
   under `side-chat:<sessionId>`, and reports it to `ChatSidePanel` before later
   child, approval, or question events, while the send promise remains pending.
@@ -422,6 +423,8 @@ way to it:
   Sending again reacquires it even when the session id is unchanged. Retained
   child rows keep their transcript origin. The current owner draws its approvals
   and, through `useWorkflowTools`, its questions over its own composer.
+  Retained questions are drawn and published only for the currently owned
+  session, including after new or load switches it.
   The side chat's view stays mounted behind
   another tab (`ChatSidePanel` hides it rather than unmounting it), so the
   claim and the cards live on; while the panel is closed or the tab is not in

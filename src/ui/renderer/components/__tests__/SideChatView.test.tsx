@@ -476,6 +476,38 @@ describe("SideChatView — the cards its own turn parks", () => {
     expect(onSessionIdChange).toHaveBeenLastCalledWith("side-loaded");
   });
 
+  it.each(["new", "load"] as const)("keeps pending questions scoped to the current session after %s", async (transition) => {
+    const { api, emit, ask, spies } = makeAskApi();
+    const surface = approvalSurfaceStub();
+    const view = renderSurface(api, surface, true, { openRequest: undefined });
+    await startTurn();
+    emit({ type: "user_message", sessionId: "side-live", streamId: 1, sendRequestId: spies.send.mock.calls.at(-1)![3] });
+    ask(question("side-live"));
+    emit({ type: "done", streamId: 1 });
+    expect(screen.getAllByTestId(TEST_IDS.questionOverlay)).toHaveLength(1);
+
+    const nextSessionId = transition === "new" ? "side-2" : "side-loaded";
+    if (transition === "new") {
+      await act(async () => { fireEvent.click(screen.getByTestId("side-chat-new")); });
+    } else {
+      (api.sideChat!.load as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: true, sessionId: nextSessionId, messages: [] });
+      await view.update({ openRequest: { chatGroupId: "main", sessionId: nextSessionId, nonce: 1 } });
+    }
+    expect(surface.claims.ownerOf("side-live")).toBeNull();
+    expect(surface.claims.ownerOf(nextSessionId)).toBe(`side-chat:${nextSessionId}`);
+    expect(screen.queryByTestId(TEST_IDS.questionOverlay)).toBeNull();
+    expect(view.publishSideChatSurface).toHaveBeenLastCalledWith(expect.objectContaining({
+      sessionId: nextSessionId, askQuestions: [],
+    }));
+
+    const nextQuestion = question(nextSessionId);
+    ask(nextQuestion);
+    expect(screen.getAllByTestId(TEST_IDS.questionOverlay)).toHaveLength(1);
+    expect(view.publishSideChatSurface).toHaveBeenLastCalledWith(expect.objectContaining({
+      askQuestions: [nextQuestion],
+    }));
+  });
+
   it.each(["new", "load"] as const)("does not reclaim ownership when a deferred %s response arrives after unmount", async (transition) => {
     const { api, emit, spies } = makeAskApi();
     const surface = approvalSurfaceStub();
