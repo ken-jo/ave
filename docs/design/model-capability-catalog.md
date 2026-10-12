@@ -70,9 +70,13 @@ Each document carries `provenance` — the URL, `fetchedAt`, the response `etag`
 of the raw download (`rawSha256`), the repository head (`upstreamHeadAtFetch`) and schema
 blob (`upstreamSchemaBlob`) at download time, the sha256 of the pruned input
 (`inputSha256`) — and `license`, the MIT text the data is distributed under. `sha256` is
-the hash of the canonical JSON (sorted keys) of every other field: it names the catalog in
-a run record (slice 3) and lets a reader reject a damaged copy
-(`verifyModelCatalogDocument`). `THIRD-PARTY-NOTICES.md` reproduces the license.
+the hash of the canonical JSON (sorted keys) of `schemaVersion`, `license` and `providers`:
+it names the catalog's content in a run record (slice 3) and in the refresh cache
+(slice 6), and lets a reader reject a damaged copy (`verifyModelCatalogDocument`).
+Provenance is left out of the name on purpose: a second download of unchanged data has a
+new `fetchedAt` and possibly a new ETag, and must still be the same catalog, so a cache
+entry already stored under a name is kept rather than rewritten.
+`THIRD-PARTY-NOTICES.md` reproduces the license.
 
 ### 3.3 Normalization
 

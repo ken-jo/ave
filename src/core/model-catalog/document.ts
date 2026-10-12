@@ -4,9 +4,11 @@
  * The generator writes the bundled snapshot with these functions, and the
  * refresh (issue #2501 slice 6) writes each refreshed copy with the same
  * ones, so a catalog is the same bytes and the same `sha256` whichever
- * produced it. The hash is over the canonical JSON of every other field —
- * keys sorted, arrays in order — so it names the catalog's content, not the
- * whitespace a file happens to carry.
+ * produced it. The hash is over the canonical JSON — keys sorted, arrays in
+ * order — of what the catalog SAYS: its schema version, its license and its
+ * providers. Provenance is carried beside it and left out of the name, so two
+ * downloads of unchanged data (a new `fetchedAt`, a CDN's new ETag) are the
+ * same catalog in a run record and in the cache, not two.
  */
 import { createHash } from "node:crypto";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -25,10 +27,10 @@ function sha256Hex(text: string): string {
   return createHash("sha256").update(text, "utf-8").digest("hex");
 }
 
-/** The catalog's name: sha256 over the canonical JSON of the document without its own hash. */
-export function modelCatalogSha256(document: Omit<ModelCatalogDocument, "sha256">): string {
-  const { sha256: _ignored, ...content } = document as ModelCatalogDocument;
-  return sha256Hex(canonicalStringify(content));
+/** The catalog's name: sha256 over the canonical JSON of its schema version, license and providers. */
+export function modelCatalogSha256(document: Pick<ModelCatalogDocument, "schemaVersion" | "license" | "providers">): string {
+  const { schemaVersion, license, providers } = document;
+  return sha256Hex(canonicalStringify({ schemaVersion, license, providers }));
 }
 
 /**

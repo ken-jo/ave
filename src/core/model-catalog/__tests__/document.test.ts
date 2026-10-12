@@ -32,6 +32,18 @@ describe("model catalog document", () => {
     expect(a.sha256).toBe(b.sha256);
   });
 
+  it("names the content, so a second download of unchanged data is the same catalog", () => {
+    const first = build().document;
+    const second = buildModelCatalogDocument({
+      input: { alpha: { models: { modelone: { id: "modelone", limit: { context: 1000 } } } } },
+      providerIds: ["alpha"],
+      source: { ...SOURCE, fetchedAt: "2026-02-01T00:00:00Z", etag: "W/\"other\"" },
+      license: LICENSE,
+    }).document;
+    expect(second.provenance.fetchedAt).not.toBe(first.provenance.fetchedAt);
+    expect(second.sha256).toBe(first.sha256);
+  });
+
   it("refuses a copy whose content no longer matches its name", () => {
     const { document } = build();
     const damaged = structuredClone(document);

@@ -144,8 +144,10 @@ export interface ModelCatalogDocument {
   license: ModelCatalogLicense;
   providers: Record<string, CatalogProvider>;
   /**
-   * sha256 over the canonical JSON of every other field. Names this exact
-   * catalog in a run record and lets a reader reject a damaged copy.
+   * sha256 over the canonical JSON of `schemaVersion`, `license` and
+   * `providers` — the catalog's content, not its provenance. Names the facts a
+   * run used in its record and lets a reader reject a damaged copy; two
+   * downloads of unchanged data share it.
    */
   sha256: string;
 }

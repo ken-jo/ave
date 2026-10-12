@@ -32,9 +32,9 @@ accompanies the bundled package at the path noted above.
 
 ## models.dev model metadata
 
-- **What ships:** a normalized subset of the models.dev model catalog
+- **What is included:** a normalized subset of the models.dev model catalog
   (context and output limits, modalities, capability flags, reasoning
-  controls, listed prices) for the providers Ave vendors map to, bundled at
+  controls, listed prices) for the providers Ave vendors map to, kept at
   `src/core/model-catalog/bundled-snapshot.json`. The generator input it is
   made from is `scripts/model-catalog/models-dev-input.json`; where and when
   that input was downloaded is in `scripts/model-catalog/models-dev-source.json`.
