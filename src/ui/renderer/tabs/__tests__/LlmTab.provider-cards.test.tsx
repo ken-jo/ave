@@ -438,6 +438,29 @@ describe("LlmTab provider cards", () => {
     expect(Boolean(option.queryByTestId(`llm-tab:model-no-tools:${model}`))).toBe(!tools);
   });
 
+  it("draws every fact on a case-matched row from the one report its badges use", async () => {
+    const model = "GPT-4.1";
+    const modelListCache: LlmModelListCache = {
+      [llmModelListCacheKey("openai")]: {
+        vendor: "openai", models: ["gpt-4.1"], endpoint: "https://provider.invalid/v1/models",
+        modelEntries: [{
+          id: "gpt-4.1", provider: "Reported Lab", inputModalities: ["text", "image"],
+          supportedParameters: ["tools", "reasoning"],
+        }],
+        fetchedAt: new Date(0).toISOString(),
+      },
+    };
+    const vendors = freshAllVendorBlocks();
+    vendors.openai.model = model;
+    const { api } = profileApi({ vendors, modelListCache }, { hasApiKey: storedKeysFor("openai") });
+    await renderTab(api, { vendor: "openai", model });
+    expect(await chooserModelIds()).toContain(model);
+    const option = within(chooserOption(model));
+    expect(option.queryByTestId(`llm-tab:model-vision:${model}`)).not.toBeNull();
+    expect(option.queryByTestId(`llm-tab:model-reasoning:${model}`)).not.toBeNull();
+    expect(option.getByTestId(`llm-tab:model-provider:${model}`).textContent).toBe("Reported Lab");
+  });
+
   it.each([false, true].flatMap((reversed) => [
     { reversed, model: "GPT-3.5-Turbo", vision: true, tools: true },
     { reversed, model: "gpt-3.5-turbo", vision: false, tools: false },

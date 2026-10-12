@@ -2196,11 +2196,13 @@ export function LlmTab(props: LlmTabProps) {
         const value = unifiedValue(apiProviderId(rowId), modelId);
         if (pushed.has(value)) continue;
         pushed.add(value);
-        const entry = entries.get(modelId);
         const savedEntry = row.modelListKey ? cachedModelListEntry(savedModelListCache, {
           vendor: row.apiVendorId, model: modelId,
           baseUrl: reportedBaseUrl, credentialScope,
         }) : undefined;
+        // An exact live report first; otherwise the report the engine and the
+        // badges below match under the same rule, so one row never mixes two.
+        const entry = entries.get(modelId) ?? savedEntry;
         const toolCall = resolveToolCallSupport({
           vendor: row.apiVendorId,
           model: modelId,
