@@ -3298,7 +3298,16 @@ export function LlmTab(props: LlmTabProps) {
                           <SelectItem key={option} value={option}>
                             <ModelSelectItemContent
                               option={option}
-                              toolCall={resolveToolCallSupport({ vendor: entry.provider, model: option })}
+                              toolCall={resolveToolCallSupport({
+                                vendor: entry.provider,
+                                model: option,
+                                // The engine builds a fallback on its vendor block's saved
+                                // endpoint (provider.ts) and matches it under that endpoint's
+                                // identity, with no route catalog entry or report.
+                                ...(entry.provider !== "vertex-ai" && savedVendorBlocks[entry.provider]?.baseUrl
+                                  ? { baseUrl: savedVendorBlocks[entry.provider]!.baseUrl }
+                                  : {}),
+                              })}
                             />
                           </SelectItem>
                         ))}

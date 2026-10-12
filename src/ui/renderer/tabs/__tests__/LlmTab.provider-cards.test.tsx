@@ -695,6 +695,33 @@ describe("LlmTab provider cards", () => {
     expect(Boolean(within(chooserOption(model)).queryByTestId(`llm-tab:model-no-tools:${model}`))).toBe(badge);
   });
 
+  it.each([
+    { baseUrl: "https://gateway.invalid/v1", badge: false },
+    { baseUrl: "https://api.openai.com/v1", badge: true },
+  ])("matches a fallback row's tool badge under its saved endpoint like the engine: $baseUrl", async ({ baseUrl, badge }) => {
+    // provider.ts builds a fallback on the vendor block's saved baseUrl, and the
+    // adapter matches the catalog under that endpoint's identity.
+    const model = "gpt-3.5-turbo";
+    const { api } = profileApi({ vendors: { openai: { model, baseUrl } } }, {
+      hasApiKey: storedKeysFor("openai", "claude"),
+      listLlmModels: vi.fn(() => new Promise<LlmModelListResult>(() => {})),
+    });
+    await renderTab(api, {
+      vendor: "claude", model: "claude-sonnet-4-6",
+      fallbackOpen: true, fallbackChain: [{ provider: "openai", model }],
+    });
+    const section = screen.getByTestId("fallback-chain-section");
+    const triggers = [...section.querySelectorAll<HTMLElement>("[role='combobox']")];
+    openMenu(triggers[triggers.length - 1]!);
+    const option = await waitFor(() => {
+      const found = [...document.querySelectorAll<HTMLElement>("[role='option']")]
+        .find((node) => node.querySelector(`[data-model-id='${model}']`));
+      expect(found).toBeDefined();
+      return found!;
+    });
+    expect(Boolean(within(option).queryByTestId(`llm-tab:model-no-tools:${model}`))).toBe(badge);
+  });
+
   it.each(["pending", "failed"])("keeps the tool badge consistent with the engine during a %s capability cache save", async (saveState) => {
     const model = "gpt-3.5-turbo";
     const { api } = profileApi({
