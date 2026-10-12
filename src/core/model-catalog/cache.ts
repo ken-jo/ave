@@ -113,7 +113,7 @@ async function checkCacheDirectory(dir: string, allowAbsent = false): Promise<vo
 }
 
 /** The namespace helper owns directory creation and private modes. */
-export async function prepareModelCatalogCache(dir: string): Promise<void> {
+async function prepareModelCatalogCache(dir: string): Promise<void> {
   await checkCacheDirectory(dir, true);
   if (resolve(dir) === modelCatalogCacheDir()) {
     await cacheNamespace.childDir(".");

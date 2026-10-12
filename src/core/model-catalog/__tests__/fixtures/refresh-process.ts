@@ -3,7 +3,7 @@ import { appendFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 
-dns.lookup = (async () => [{ address: "93.184.215.14", family: 4 }]) as typeof dns.lookup;
+dns.lookup = (async () => [{ address: "93.184.215.14", family: 4 }]) as unknown as typeof dns.lookup;
 syncBuiltinESMExports();
 const { buildModelCatalogDocument } = await import("../../document.js");
 const { refreshModelCatalogCache, MODEL_CATALOG_REFRESH_URL } = await import("../../refresh.js");

@@ -76,7 +76,7 @@ export interface ModelCatalogRefreshOptions {
   timeoutMs?: number;
 }
 
-class RefreshFault extends Error {}
+class RefreshError extends Error {}
 
 function isoSeconds(date: Date): string {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -91,10 +91,10 @@ async function readCappedBody(response: Response, signal: AbortSignal): Promise<
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > MODEL_CATALOG_MAX_BYTES) {
     void response.body?.cancel().catch(() => undefined);
-    throw new RefreshFault(`response declares ${declared} bytes, over the ${MODEL_CATALOG_MAX_BYTES}-byte cap`);
+    throw new RefreshError(`response declares ${declared} bytes, over the ${MODEL_CATALOG_MAX_BYTES}-byte cap`);
   }
   const reader = response.body?.getReader();
-  if (!reader) throw new RefreshFault("response has no body");
+  if (!reader) throw new RefreshError("response has no body");
   const chunks: Uint8Array[] = [];
   let total = 0;
   // Cleanup may itself stall. Request it without making it part of the deadline.
@@ -109,7 +109,7 @@ async function readCappedBody(response: Response, signal: AbortSignal): Promise<
       if (next.done) break;
       total += next.value.byteLength;
       if (total > MODEL_CATALOG_MAX_BYTES) {
-        throw new RefreshFault(`response exceeds the ${MODEL_CATALOG_MAX_BYTES}-byte cap`);
+        throw new RefreshError(`response exceeds the ${MODEL_CATALOG_MAX_BYTES}-byte cap`);
       }
       chunks.push(next.value);
     }
@@ -179,34 +179,34 @@ async function refreshLockedModelCatalogCache(options: ModelCatalogRefreshOption
       if (response.status !== 200) {
         void response.body?.cancel().catch(() => undefined);
         if (response.status === 304 && pointer?.etag) return { response, raw: undefined };
-        throw new RefreshFault(`${MODEL_CATALOG_REFRESH_URL} answered ${response.status}`);
+        throw new RefreshError(`${MODEL_CATALOG_REFRESH_URL} answered ${response.status}`);
       }
       return { response, raw: await readCappedBody(response, signal) };
     }, {
       deadlineMs: timeoutMs,
       callerAbortSignal: options.signal,
-      createDeadlineError: () => new RefreshFault(`headers and body did not arrive within ${timeoutMs} ms`),
+      createDeadlineError: () => new RefreshError(`headers and body did not arrive within ${timeoutMs} ms`),
     });
     if (!download.ok) {
-      throw new RefreshFault(download.reason === "caller-abort" ? "aborted" : `request failed: ${errorMessage(download.error)}`);
+      throw new RefreshError(download.reason === "caller-abort" ? "aborted" : `request failed: ${errorMessage(download.error)}`);
     }
     const { response, raw } = download.value;
     if (!raw && pointer) {
       await writeModelCatalogPointer(options.dir, { ...pointer, checkedAt: isoSeconds(now()) });
       return { status: "not-modified", sha256: pointer.sha256 };
     }
-    if (!raw) throw new RefreshFault("response has no body");
+    if (!raw) throw new RefreshError("response has no body");
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw.toString("utf-8"));
     } catch {
-      throw new RefreshFault("response is not JSON");
+      throw new RefreshError("response is not JSON");
     }
     let pruned: ReturnType<typeof pruneModelsDevDocument>;
     try {
       pruned = pruneModelsDevDocument(parsed, catalogProviderIds());
     } catch (error) {
-      throw new RefreshFault(errorMessage(error));
+      throw new RefreshError(errorMessage(error));
     }
     const etag = response.headers.get("etag") ?? undefined;
     const fetchedAt = isoSeconds(now());
@@ -225,10 +225,10 @@ async function refreshLockedModelCatalogCache(options: ModelCatalogRefreshOption
     try {
       document = verifyModelCatalogDocument(built);
     } catch (error) {
-      throw new RefreshFault(`refreshed catalog rejected: ${errorMessage(error)}`);
+      throw new RefreshError(`refreshed catalog rejected: ${errorMessage(error)}`);
     }
     const coverage = coverageFault(document, options.reference);
-    if (coverage) throw new RefreshFault(coverage);
+    if (coverage) throw new RefreshError(coverage);
 
     await storeModelCatalog(options.dir, document);
     await pruneModelCatalogCache(options.dir, document.sha256, pointer?.sha256);
