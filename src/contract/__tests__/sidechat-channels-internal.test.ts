@@ -26,6 +26,7 @@ describe("sidechat channels are internal (fail-closed)", () => {
       new: "ave:sidechat:new",
       load: "ave:sidechat:load",
       abort: "ave:sidechat:abort",
+      getSubAgentTranscript: "ave:sidechat:get-sub-agent-transcript",
       stream: "ave:sidechat:stream",
       fallback: "ave:sidechat:fallback",
     });
@@ -45,6 +46,10 @@ describe("sidechat channels are internal (fail-closed)", () => {
       expect(extSet.has(channel), `leaked external-mutation: ${channel}`).toBe(false);
       expect(CHANNEL_GESTURE[channel], `gesture-classified: ${channel}`).toBeUndefined();
     }
+  });
+
+  it("uses a distinct owner-scoped channel for child transcript reads", () => {
+    expect(CHANNELS.sidechat.getSubAgentTranscript).not.toBe(CHANNELS.chat.getSubAgentTranscript);
   });
 
   it("stream/fallback are a DEDICATED pair, distinct from the main chat pair", () => {

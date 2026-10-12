@@ -44,11 +44,45 @@ import {
 import { isValidSessionId } from "../../memory/memory-manager.js";
 import { sanitizeOutgoingTurnContent, validateUserContentParts } from "../handlers/chat.js";
 import type { IpcDeps } from "../types.js";
+import type { SubAgentTranscriptResult } from "../../shared/subagent-transcript.js";
 
 const log = createLogger("sidechat");
 
 export function registerSideChatHandlers(deps: IpcDeps): void {
   const { sideChatConversationLoop, auditLogger, getMainWindow, settingsService } = deps;
+
+  ipcMain.handle(CHANNELS.sidechat.getSubAgentTranscript, (e, payload: unknown): SubAgentTranscriptResult => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.sidechat.getSubAgentTranscript, e);
+      return { ok: false, error: "unauthorized-frame" };
+    }
+    // Resolve the current owner for every read. A retained renderer surface
+    // cannot keep using a loop that the host has removed or replaced.
+    const currentLoop = deps.sideChatConversationLoop;
+    if (!currentLoop) return { ok: false, error: "side-chat-unavailable" };
+    const p = (payload && typeof payload === "object" && !Array.isArray(payload)
+      ? payload
+      : {}) as Record<string, unknown>;
+    const originSessionId = p.originSessionId;
+    if (typeof originSessionId !== "string" || !isValidSessionId(originSessionId)) {
+      return { ok: false, error: "invalid-origin-session-id" };
+    }
+    if (currentLoop.isSessionTransitioning() || originSessionId !== currentLoop.getSessionId()) {
+      return { ok: false, error: "origin-session-not-active" };
+    }
+    const childSessionId = p.childSessionId;
+    if (typeof childSessionId !== "string" || !isValidSessionId(childSessionId)) {
+      return { ok: false, error: "invalid-child-session-id" };
+    }
+    const runner = deps.getSubAgentRunner?.();
+    if (!runner) return { ok: false, error: "sub-agent-runner-unavailable" };
+    // Only the host-written child metadata establishes ownership here; a
+    // parent tool result cannot substitute for the child's persisted origin.
+    if (runner.isPersistedSpawnOfOrigin(originSessionId, childSessionId) !== true) {
+      return { ok: false, error: "sub-agent-reference-not-found" };
+    }
+    return runner.getPersistedTranscript({ originSessionId, childSessionId });
+  });
 
   // A side-chat loop is only wired in production boot. When absent (test
   // fixtures that boot only the main loop), every handler fails closed with a
