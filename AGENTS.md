@@ -272,16 +272,41 @@ Use the smallest check that can disprove the current change while iterating:
 - Packaging, permissions, IPC, sandbox, or release paths: add the focused
   security or packaged-app check required by the owning design.
 
-For production code and consumed documentation changes, pre-push runs
-`bun run typecheck`, full `bun run test`, and `bun run build` once. Documentation prose
-with no test or build consumer takes the static-policy path. Do not
-manually duplicate the full trio. After failure, rerun only failed or invalidated
-checks; the next push performs the complete gate. No CI workflow and no release
-gate runs Playwright. The suite (`bun run test:ui-e2e`) is local and seeds only
-fixture plugins from `test/fixtures`, so it needs nothing outside this repository;
-run only changed-flow specs unless the task requires more.
-An eligible test-only push uses the hook's targeted Vitest path; CI still runs
-its full checks for that change.
+Pre-push picks one tier and logs it with the reason
+(`scripts/hooks/run-local-checks.mjs` owns the rules):
+
+- docs-only: documentation prose with no test or build consumer takes the
+  static-policy path.
+- comment-only and test-only: an eligible test-only push uses the hook's
+  targeted Vitest path; a standalone-comment edit runs the typecheck gate.
+- fast, the default for a source branch push: the typecheck gate, the
+  duplicate-helper scan, the lock suites, the changed test files, and
+  `vitest related` for the changed modules. No full `bun run test`, no build.
+- full: `bun run typecheck`, full `bun run test`, `bun run build`, and
+  `check:gate-core`, for non-fast-forward updates, the default
+  branch, noncanonical paths, consumed documentation, deletions of modules,
+  non-module assets, mode changes, declaration files, generated catalogs,
+  runtime entry files, modules with no related test files, and global inputs
+  (`package.json`, `bun.lock`, compiler, Vitest and build configs, Vitest setup
+  files, `scripts/`, `.github/`), including earlier commits in the push.
+  `AVE_PREPUSH_FULL=1`
+  forces it for one push; `AVE_HOOKS_SKIP=1` still skips the hook.
+
+Every non-deletion ref update must name the checked-out `HEAD`. The tracked
+working tree and index must be clean before and after checks; otherwise the
+hook refuses and names the commit to check out. Push different commits
+separately. Deletion-only updates have no commit tree and skip code checks.
+Annotated tag objects cannot equal `HEAD`; push a branch or lightweight tag
+from their commit instead. Clear assume-unchanged and skip-worktree index
+flags so every tracked file can be verified in a complete checkout.
+
+The full suite and build run once before merge on the exact main + PR merged
+tree, and CI runs its full checks for every change. Do not manually duplicate
+the full trio around a push. After failure, rerun only failed or invalidated
+checks. No CI workflow and no release gate runs Playwright. The suite
+(`bun run test:ui-e2e`) is local and seeds only fixture plugins from
+`test/fixtures`, so it needs nothing outside this repository; run only
+changed-flow specs unless the task requires more.
 
 ### CI job composition
 
