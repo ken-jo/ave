@@ -559,6 +559,25 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     }
   });
 
+  it("returns the missing-transcript code when an owned child has no persisted messages", async () => {
+    const toolRegistry = new ToolRegistry();
+    const subStore = makeSubStore();
+    const runner = new SubAgentRunner({
+      parentDeps: buildLoopDeps(toolRegistry),
+      toolRegistry,
+      subAgentMemoryManager: subStore,
+    });
+    const originSessionId = "092d865f-192a-48ae-8603-8a838c39d4dc";
+    const childSessionId = "sub-6e7c039b-1ae80cfb-d8c8-4a02-806d-4f4d2872a62d";
+    await subStore.saveSessionMetadata(childSessionId, { sessionKind: "subagent", originSessionId });
+
+    expect(runner.isPersistedSpawnOfOrigin(originSessionId, childSessionId)).toBe(true);
+    expect(runner.getPersistedTranscript({ originSessionId, childSessionId })).toEqual({
+      ok: false,
+      error: "sub-agent-transcript-not-found",
+    });
+  });
+
   it("persists parent agent_spawn linkage and reloads the child transcript by explicit childSessionId", async () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
@@ -643,7 +662,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       });
       expect(crossOriginDirectTranscript).toEqual({
         ok: false,
-        error: "sub-agent transcript not found",
+        error: "sub-agent-transcript-not-found",
       });
       await subStore.saveSessionMetadata(result.childSessionId, {
         sessionKind: "subagent",
@@ -657,7 +676,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       });
       expect(missingLinkageTranscript).toEqual({
         ok: false,
-        error: "sub-agent transcript not found",
+        error: "sub-agent-transcript-not-found",
       });
     } finally {
       restore();

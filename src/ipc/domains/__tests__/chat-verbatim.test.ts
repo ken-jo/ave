@@ -453,6 +453,18 @@ describe("ave:chat:get-sub-agent-transcript", () => {
   const CHANNEL = "ave:chat:get-sub-agent-transcript";
   const SESSION_ID = "df98a854-4084-4ba1-8fbc-f00faea193bf";
 
+  it("returns the shared unavailable code when no sub-agent runner is configured", async () => {
+    const loop = makeConversationLoop(SESSION_ID, []);
+    const deps = await setupHandlers(loop);
+    const result = invokeRegisteredHandler(handlers, CHANNEL, {
+      originSessionId: SESSION_ID,
+      childSessionId: "sub-6e7c039b-1ae80cfb-d8c8-4a02-806d-4f4d2872a62d",
+    }, "main");
+
+    expect(result).toEqual({ ok: false, error: "sub-agent-runner-unavailable" });
+    expect(deps.memoryManager.rehydrateToolResultArtifacts).not.toHaveBeenCalled();
+  });
+
   function makeAgentSpawnMessages() {
     return [
       {
