@@ -105,6 +105,18 @@ describe("context budget — prompt cap and named catalog entry", () => {
     expect(budget.usableContext).toBe(272_000);
     expect(budget.thresholdSource).toBe("input-limit");
     expect(budget.inputLimitSource).toBe("model-catalog");
+    expect(budget.inputLimit).toBe(272_000);
+    expect(budget.catalogEntry).toBe("openai/gpt-5.2");
+  });
+
+  it("retains catalog facts when a subscription budget uses the prompt cap", () => {
+    const loop = loopOn("openai", "gpt-5.2");
+    loop.provider = { subscriptionRuntime: { kind: "subscription", provider: "codex", model: "gpt-5.2" } } as never;
+    const budget = contextBudgetForCurrentRuntime(loop);
+    expect(budget).toMatchObject({
+      preflight: 217_600, thresholdSource: "input-limit", contextWindowSource: "model-catalog",
+      inputLimit: 272_000, inputLimitSource: "model-catalog", catalogEntry: "openai/gpt-5.2",
+    });
   });
 
   it("warns once per route when the named catalog entry does not exist", () => {

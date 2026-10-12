@@ -167,7 +167,9 @@ snapshot.
 catalog states one below it (`inputLimit`, `inputLimitSource: "model-catalog"`, from
 `limits.input`). No `/models` endpoint Ave calls reports a prompt cap apart from the
 window (a gateway's `max_input_tokens` is read as the window), so the catalog is the only
-source. A declared window carries none. The usable budget is
+source. `catalogEntry` also identifies a catalog-supplied prompt cap beside an
+endpoint-reported window; preflight traces retain that entry, the cap value and its
+source for both API and subscription budgets. A declared window carries none. The usable budget is
 `min(window − Ave's output reservation, prompt cap)` and the compaction threshold is 80%
 of it (`getUsableContext`, `getPreflightThreshold`), in the engine and in the renderer's
 context ring alike; a threshold the cap lowered is traced as `thresholdSource:
@@ -195,17 +197,22 @@ falling back to a name match, and it applies to the vendor block's own model, no
 marketplace preset reached through the same vendor. The engine logs a named entry the
 catalog does not list once per route and name, so a typo does not pass silently.
 
-**A custom `baseUrl` on a mapped vendor still matches by name.** The host rule of §3.4
-holds the map to each vendor's default endpoint; at run time the user may point a mapped
-vendor elsewhere. The resolver does not compare that host with the provider's, for three
-reasons. A custom endpoint on a mapped vendor is in practice a proxy or gateway for that
-vendor's API (a LiteLLM or corporate egress proxy, a regional host) that serves the vendor's
-own model ids, so the upstream model's limits are the ones that apply. An endpoint serving
-other models under other ids misses by name, since every name step is exact or unique. And
-what the endpoint itself reports (`/models`) outranks the catalog, while a declared
-`contextWindow` or `catalogModel` outranks both, so a proxy with tighter limits is not held
-to the catalog's. A server that reuses a vendor's model id for a different model should use
-the generic OpenAI-compatible vendor, which never matches by name.
+**A custom `baseUrl` must establish model identity.** A mapped vendor matches by name
+only at its native API host, including resource-scoped or regional API hosts. A different
+host may serve a different deployment under the same id: a gateway exposing `gpt-5.2` for
+a 64K deployment and listing only that id does not establish the public model's 400K
+window or 272K prompt cap. Name uniqueness within the catalog cannot identify what the
+gateway runs. Both implicit catalog limits and legacy pricing windows are skipped there;
+absent a declaration or endpoint report, the source is explicitly `fallback`, and the
+engine probes the endpoint for metadata. The 128K fallback remains a guess; a deployment
+that reports no limits needs an explicit capacity setting. A product-specific path also must match where
+the same host serves multiple catalog products.
+
+A proxy serving the catalog model can declare `catalogModel` to select that entry,
+including its prompt cap. This setting wins over automatic catalog name matching; an
+endpoint-reported window still outranks the entry's context limit. A declared
+`contextWindow` outranks both and carries no inferred prompt cap. These distinctions
+apply equally to native and custom endpoints.
 
 Each process installs one catalog (`src/shared/model-catalog/active.ts`), and reading
 before install throws. Main and headless install the verified bundled snapshot at the

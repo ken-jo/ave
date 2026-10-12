@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lookupCatalogModel, resolveCatalogKey } from "../resolve.js";
+import { allowsImplicitModelLimits, lookupCatalogModel, resolveCatalogKey } from "../resolve.js";
 import type { CatalogModel, ModelCatalogDocument } from "../types.js";
 
 const entry = (id: string, extra: Partial<CatalogModel> = {}): CatalogModel => ({ id, limits: { context: 1000 }, ...extra });
@@ -105,5 +105,32 @@ describe("lookupCatalogModel", () => {
     for (const named of ["modelone", "/modelone", "openai/", "openai/MODELONE", "nowhere/modelone"]) {
       expect(lookupCatalogModel(models, named), named).toBeUndefined();
     }
+  });
+});
+
+describe("endpoint identity for implicit limits", () => {
+  it.each([
+    ["openai", undefined, true],
+    ["openai", " https://api.openai.com/v1/ ", true],
+    ["claude", "https://api.anthropic.com/v1", true],
+    ["gemini", "https://generativelanguage.googleapis.com/v1beta", true],
+    ["qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1", true],
+    ["azure-foundry", "https://synthetic.openai.azure.com/openai/v1", true],
+    ["azure-foundry", "https://synthetic.services.ai.azure.com/openai/v1", true],
+    ["vertex-ai", "https://us-central1-aiplatform.googleapis.com/v1", true],
+    ["vertex-ai", "https://aiplatform.googleapis.com/v1", true],
+    ["openai", "https://gateway.invalid/v1", false],
+    ["claude", "https://gateway.invalid/v1", false],
+    ["gemini", "https://gateway.invalid/v1", false],
+    ["qwen", "https://gateway.invalid/v1", false],
+    ["azure-foundry", "https://synthetic.openai.azure.com.gateway.invalid/v1", false],
+    ["vertex-ai", "https://us-central1-aiplatform.googleapis.com.gateway.invalid/v1", false],
+    ["openai", "https://api.openai.com:8443/v1", false],
+    ["openai", "http://api.openai.com/v1", false],
+    ["openai", "not-a-url", false],
+    ["zai-coding-plan", "https://api.z.ai/api/coding/paas/v4/", true],
+    ["zai-coding-plan", "https://api.z.ai/api/paas/v4", false],
+  ] as const)("%s at %s permits model-name limits: %s", (vendor, baseUrl, allowed) => {
+    expect(allowsImplicitModelLimits(vendor, baseUrl)).toBe(allowed);
   });
 });

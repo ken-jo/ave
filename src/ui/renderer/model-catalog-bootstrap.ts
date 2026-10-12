@@ -11,11 +11,12 @@
 import { installModelCatalog } from "../../shared/model-catalog/active.js";
 import { t } from "../../i18n/runtime.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { resolveIpcErrorKey } from "./format-ipc-error.js";
 import type { AveApi } from "./types.js";
 
 export async function installRendererModelCatalog(api: Pick<AveApi, "getModelCatalog">): Promise<void> {
   const result = await api.getModelCatalog();
-  if (!result.ok) throw new Error(`the host refused the model catalog: ${result.error}`);
+  if (!result.ok) throw new Error(result.error);
   installModelCatalog(result.catalog);
 }
 
@@ -35,7 +36,8 @@ export function renderModelCatalogUnavailable(root: HTMLElement, error: unknown)
   message.textContent = t("app.modelCatalogUnavailable");
   const detail = document.createElement("p");
   detail.style.cssText = "opacity:0.7;font-size:12px";
-  detail.textContent = errorMessage(error);
+  const errorKey = resolveIpcErrorKey(errorMessage(error));
+  detail.textContent = t(errorKey ?? "formatIpcError.catalogUnavailable");
   const reload = document.createElement("button");
   reload.type = "button";
   reload.textContent = t("errorBoundary.reloadButton");
