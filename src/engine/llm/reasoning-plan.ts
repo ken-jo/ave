@@ -36,7 +36,7 @@ export function isOpenAIReasoningModel(model: string): boolean {
  * Map Ave thinking budget (tokens) to OpenAI reasoning_effort.
  *   budget ≤   500 → "none"    (GPT-5.2+ only; callers ignore for older models)
  *   budget ≤ 3 000 → "low"
- *   budget ≥ 8 000 → "high"
+ *   budget > 8 000 → "high"
  *   else           → "medium"
  */
 export function mapReasoningEffort(
@@ -61,6 +61,11 @@ export function supportsReasoningEffortNone(model: string): boolean {
   const gptMajor = m.match(/gpt-(\d+)/);
   if (gptMajor) return Number(gptMajor[1]) >= 6;
   return false;
+}
+
+/** The native request protocol selected for this vendor and model. */
+export function usesOpenAIResponsesWire(vendor: LLMVendor, modelId: string): boolean {
+  return vendor === "azure-foundry" || (vendor === "openai" && isOpenAIReasoningModel(modelId));
 }
 
 /**
@@ -132,19 +137,21 @@ export interface ReasoningPlan {
 
 /**
  * Whether this request must not carry `reasoning_effort`: Chat Completions
- * answers 400 when GPT-5.x gets it together with tools. Copilot always talks
- * Chat Completions; OpenAI with a custom `baseUrl` may point at a proxy that
- * does. Native OpenAI uses the Responses API, which has no such restriction.
+ * answers 400 when GPT-5.x gets it together with tools. The actual protocol
+ * selected by the adapter decides this; changing an endpoint does not change
+ * that protocol. The responses wire has no such restriction.
  * One rule for the request and for the turn's record of it.
  */
 function chatCompletionsRejectsToolTurnEffort(params: {
   vendor: LLMVendor;
   model: string;
   hasTools: boolean;
-  customBaseUrl: boolean;
+  baseUrl?: string;
+  catalogModel?: string;
 }): boolean {
-  if (!params.hasTools || !params.model.toLowerCase().includes("gpt-5")) return false;
-  return params.vendor === "copilot" || (params.vendor === "openai" && params.customBaseUrl);
+  const identity = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl)?.id;
+  if (!params.hasTools || ![params.model, identity ?? ""].some((model) => model.toLowerCase().includes("gpt-5"))) return false;
+  return OPENAI_FAMILY.has(params.vendor) && !usesOpenAIResponsesWire(params.vendor, params.model);
 }
 
 const OPENAI_FAMILY: ReadonlySet<LLMVendor> = new Set(["openai", "copilot", "azure-foundry"]);
@@ -159,23 +166,31 @@ export function planReasoning(params: {
   model: string;
   enableThinking: boolean;
   budgetTokens: number;
+  baseUrl?: string;
+  catalogModel?: string;
   /** The request's shape, for the rules that depend on it. */
-  request: { hasTools: boolean; customBaseUrl: boolean };
+  request: { hasTools: boolean };
 }): ReasoningPlan | undefined {
   if (!params.enableThinking) return undefined;
   const plan = planReasoningLevel(params);
-  if (plan?.kind === "openai-effort" && chatCompletionsRejectsToolTurnEffort({ vendor: params.vendor, model: params.model, ...params.request })) {
+  if (plan?.kind === "openai-effort" && chatCompletionsRejectsToolTurnEffort({
+    vendor: params.vendor, model: params.model, baseUrl: params.baseUrl, catalogModel: params.catalogModel, ...params.request,
+  })) {
     return { kind: "none", requestedEffort: plan.requestedEffort, source: plan.source, suppressed: "chat-completions-tool-turn" };
   }
   return plan;
 }
 
-function planReasoningLevel(params: { vendor: LLMVendor; model: string; budgetTokens: number }): ReasoningPlan | undefined {
-  const entry = catalogModelFor(params.vendor, params.model)?.model;
+function planReasoningLevel(params: {
+  vendor: LLMVendor; model: string; budgetTokens: number; baseUrl?: string; catalogModel?: string;
+}): ReasoningPlan | undefined {
+  const entry = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl)?.model;
   const accepted = entry?.reasoning?.effort;
+  if (entry?.reasoning?.supported === false) {
+    return { kind: "none", source: "model-catalog" };
+  }
   if (OPENAI_FAMILY.has(params.vendor)) {
     const requestedEffort = mapReasoningEffort(params.budgetTokens);
-    if (entry?.reasoning?.supported === false) return { kind: "none", source: "model-catalog" };
     // A reasoning model whose levels the catalog does not list has unknown
     // levels, not none (absent means unknown): the name rule decides for it.
     const catalogEffort = entry?.reasoning?.supported === true && accepted ? nearestAcceptedEffort(requestedEffort, accepted) : undefined;

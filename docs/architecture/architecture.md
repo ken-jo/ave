@@ -449,7 +449,7 @@ Important rules:
   closed tile releases its loop. See `docs/design/tiled-chat-groups.md`.
 
 A long turn uses per-call limits and progress guidance. Each API-backed chat call
-carries the route's effective output limit as its native output ceiling
+is bounded by the route's effective output limit
 (`resolveContextWindowForRoute(...).output` in `src/shared/context-budget.ts`): the
 requested limit — the vendor block's `outputTokenLimit` when the user set one, else
 the host default of 32,000 (`requestedLlmOutputTokenLimit`, source `host-default`) —
@@ -461,7 +461,10 @@ request, which is where purpose-specific limits (finalize, background, memory,
 reviewer) meet it. The output that would still fit the remaining context is recorded
 in the turn summary (`modelSettings.remainingContextOutputTokens`) and never clamps a
 request. Each turn records the catalog `sha256` and the effective window, output and
-reasoning with their sources in its turn summary and audit `turn` row
+reasoning with their sources in its turn summary and audit `turn` row. Native
+serialization may narrow those limits further; `modelSettings.requestControls` keeps
+the serialized output and thinking controls beside the route's output resolution,
+and the recorded numeric reasoning budget matches that serialized value
 (`src/shared/run-model-settings.ts`); see `docs/design/model-capability-catalog.md`.
 User-configured thinking budgets apply per API call, including each
 call after a tool result; they introduce no cumulative quota for a user turn.

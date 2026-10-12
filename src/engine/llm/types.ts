@@ -10,7 +10,7 @@
 // settings store uses to validate `provider` at IPC boundaries. We
 // re-export here so existing engine-side callers keep their import
 // path while the type definition cannot drift between modules.
-import type { RunModelSettings } from "../../shared/run-model-settings.js";
+import type { RequestGenerationControls, RunModelSettings } from "../../shared/run-model-settings.js";
 import type { ModelUsageSegment } from "../../shared/model-pricing.js";
 import {
   type LLMVendor } from "../../shared/llm-vendor-defaults.js";
@@ -475,7 +475,7 @@ export interface TurnSummary {
    * What the turn's API route resolved about its model — the catalog it read,
    * the window, the output limit and the reasoning level with their sources,
    * and the output the remaining context would still have fit (diagnostics
-   * only). Absent for subscription runtimes and for a turn a fallback served.
+   * only). Absent for subscription runtimes and when the last request used a fallback.
    */
   modelSettings?: RunModelSettings;
   /**
@@ -515,20 +515,29 @@ export interface StreamTurnParams {
   tools?: ToolSchema[];
   /** Host-owned total output ceiling, projected into the native request. */
   outputTokenLimit?: number;
+  /** Original request before the primary model's ceiling, retained for fallback attempts. */
+  requestedOutputTokenLimit?: number;
   /**
    * The model's output ceiling the caller already resolved for this route
    * (endpoint report, else catalog) and clamped `outputTokenLimit` to. When
    * present the transport clamps to this and nothing else, so the request
    * carries the limit the turn records; when absent (purpose-specific
-   * callers) the transport clamps to the catalog's ceiling.
+   * callers) the transport clamps to the catalog's ceiling. `null` means the
+   * route resolved an unknown ceiling and must not be resolved again by name.
    */
-  outputCeiling?: number;
+  outputCeiling?: number | null;
+  /** Host observation of serialized numeric controls; never a model request field. */
+  onRequestControls?: (controls: RequestGenerationControls) => void;
+  /** Explicit catalog identity used by this route's reasoning decision. */
+  catalogModel?: string;
   /** Client-side stream smoothing (word/char chunking via Vercel smoothStream). */
   streamSmoothing?: StreamSmoothing;
   /** Enable extended thinking / reasoning (Claude Sonnet 4.5+, Opus 4+). */
   enableThinking?: boolean;
   /** Token budget for Claude extended thinking (1024–32000). Defaults to 10 000 when enableThinking is true. */
   thinkingBudgetTokens?: number;
+  /** Thinking budget before the primary output ceiling, re-bounded for a fallback. */
+  requestedThinkingBudgetTokens?: number;
   /**
    * finish_reason=length CONTINUATION. When true, the FINAL message in
    * `messages` is a partial assistant turn the model must CONTINUE verbatim

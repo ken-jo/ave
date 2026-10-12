@@ -30,7 +30,7 @@
 import { MODEL_CATALOG_ALIASES } from "./aliases.js";
 import { CATALOG_PROVIDERS_BY_VENDOR } from "./provider-map.js";
 import type { CatalogModel, ModelCatalogDocument } from "./types.js";
-import type { LLMVendor } from "../llm-vendor-defaults.js";
+import { isLLMVendor, isOpenAICompatiblePresetVendor, OPENAI_COMPATIBLE_VENDOR_PRESETS, type LLMVendor } from "../llm-vendor-defaults.js";
 
 type CatalogMatch = "exact" | "alias" | "version-tag" | "canonical" | "date-suffix" | "folded" | "unprefixed" | "named";
 
@@ -60,6 +60,54 @@ function lastSegment(id: string): string {
 
 function providersFor(vendor: string): readonly string[] {
   return Object.hasOwn(CATALOG_PROVIDERS_BY_VENDOR, vendor) ? CATALOG_PROVIDERS_BY_VENDOR[vendor as LLMVendor] : [];
+}
+
+const DEFAULT_API_ORIGINS: Partial<Record<LLMVendor, string>> = {
+  openai: "https://api.openai.com",
+  claude: "https://api.anthropic.com",
+  gemini: "https://generativelanguage.googleapis.com",
+};
+
+const OPENAI_NATIVE_API_HOSTS: readonly string[] = [
+  "api.openai.com",
+  "us.api.openai.com", "eu.api.openai.com", "au.api.openai.com", "ca.api.openai.com",
+  "jp.api.openai.com", "in.api.openai.com", "sg.api.openai.com", "kr.api.openai.com",
+  "gb.api.openai.com", "ae.api.openai.com",
+  "mtls.api.openai.com", "mtls-us.api.openai.com", "mtls-eu.api.openai.com",
+];
+
+/**
+ * A mapped vendor's model name describes its limits only at its own endpoint.
+ * A gateway may alias that name to a different deployment. Explicit settings
+ * and endpoint reports still answer; unmapped vendors keep their existing
+ * pricing rows until the legacy table is removed.
+ */
+export function allowsImplicitModelLimits(vendor: string, baseUrl?: string): boolean {
+  // This API addresses arbitrary deployment aliases, not public model ids.
+  // A resource hostname alone cannot identify the model behind an alias.
+  if (vendor === "azure-foundry") return false;
+  // Without an override, the route uses the vendor's native default.
+  if (providersFor(vendor).length === 0 || !baseUrl?.trim()) return true;
+  try {
+    const endpoint = new URL(baseUrl.trim());
+    if (endpoint.protocol !== "https:" || endpoint.port !== "") return false;
+    // Resource-scoped APIs use per-account or regional hosts.
+    if (vendor === "vertex-ai") {
+      return endpoint.hostname === "aiplatform.googleapis.com" || endpoint.hostname.endsWith("-aiplatform.googleapis.com");
+    }
+    if (vendor === "openai") return OPENAI_NATIVE_API_HOSTS.includes(endpoint.hostname);
+    const standard = isLLMVendor(vendor) && isOpenAICompatiblePresetVendor(vendor)
+      ? OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].baseUrl
+      : DEFAULT_API_ORIGINS[vendor as LLMVendor];
+    if (standard === undefined || endpoint.origin !== new URL(standard).origin) return false;
+    // Some paths select a different product on the same API host.
+    if (vendor === "zai" || vendor === "zai-coding-plan") {
+      return endpoint.pathname.replace(/\/+$/u, "") === new URL(standard).pathname.replace(/\/+$/u, "");
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function exact(catalog: Catalog, providers: readonly string[], id: string, match: CatalogMatch): CatalogModelHit | undefined {

@@ -217,6 +217,7 @@ describe("AuditLogger.logTurn() — helper correctness", () => {
         catalogEntry: "openai/gpt-5.4-mini",
         rates: { inputPer1M: 0.75, outputPer1M: 4.5, cacheReadPer1M: 0.075 },
       },
+      requestControls: { outputTokenLimit: 8_192 },
     };
     logger.logTurn({ sessionId: "s", input: "x", output: "y", toolCalls: [], route: "openai/gpt-5.4-mini", modelSettings });
     await logger.flush();

@@ -168,7 +168,9 @@ snapshot.
 catalog states one below it (`inputLimit`, `inputLimitSource: "model-catalog"`, from
 `limits.input`). No `/models` endpoint Ave calls reports a prompt cap apart from the
 window (a gateway's `max_input_tokens` is read as the window), so the catalog is the only
-source. A declared window carries none. The usable budget is
+source. `catalogEntry` also identifies a catalog-supplied prompt cap beside an
+endpoint-reported window; preflight traces retain that entry, the cap value and its
+source for both API and subscription budgets. A declared window carries none. The usable budget is
 `min(window − Ave's output reservation, prompt cap)` and the compaction threshold is 80%
 of it (`getUsableContext`, `getPreflightThreshold`), in the engine and in the renderer's
 context ring alike; a threshold the cap lowered is traced as `thresholdSource:
@@ -196,17 +198,34 @@ falling back to a name match, and it applies to the vendor block's own model, no
 marketplace preset reached through the same vendor. The engine logs a named entry the
 catalog does not list once per route and name, so a typo does not pass silently.
 
-**A custom `baseUrl` on a mapped vendor still matches by name.** The host rule of §3.4
-holds the map to each vendor's default endpoint; at run time the user may point a mapped
-vendor elsewhere. The resolver does not compare that host with the provider's, for three
-reasons. A custom endpoint on a mapped vendor is in practice a proxy or gateway for that
-vendor's API (a LiteLLM or corporate egress proxy, a regional host) that serves the vendor's
-own model ids, so the upstream model's limits are the ones that apply. An endpoint serving
-other models under other ids misses by name, since every name step is exact or unique. And
-what the endpoint itself reports (`/models`) outranks the catalog, while a declared
-`contextWindow` or `catalogModel` outranks both, so a proxy with tighter limits is not held
-to the catalog's. A server that reuses a vendor's model id for a different model should use
-the generic OpenAI-compatible vendor, which never matches by name.
+An API child with a profile model resolves the same route using that model, preserving
+the endpoint and credential scope. It does not inherit a named entry for the parent's
+model. That identity drives provider construction, preflight and usage accounting.
+
+**A custom `baseUrl` must establish model identity.** A mapped vendor matches by name
+only in its native public-model namespace, including documented regional and
+certificate-authenticated API hosts. A different
+host may serve a different deployment under the same id: a gateway exposing `gpt-5.2` for
+a 64K deployment and listing only that id does not establish the public model's 400K
+window or 272K prompt cap. Name uniqueness within the catalog cannot identify what the
+gateway runs. Both implicit catalog limits and legacy pricing windows are skipped there;
+absent a declaration or endpoint report, the source is explicitly `fallback`, and the
+engine probes the endpoint for metadata. The 128K fallback remains a guess; a deployment
+that reports no limits needs an explicit capacity setting. A product-specific path also must match where
+the same host serves multiple catalog products.
+
+`azure-foundry` addresses deployment aliases, which may reuse any public model id.
+Its resource hostname does not identify the deployed model: use an endpoint report,
+`catalogModel`, or `contextWindow`. `vertex-ai` derives its actual endpoint from the
+SDK's project and location. Its capacity comes from explicit settings or native
+catalog metadata. Standard `/models` cache reports and background probes are excluded
+because they target a generic endpoint rather than the SDK-managed route.
+
+A proxy serving the catalog model can declare `catalogModel` to select that entry,
+including its prompt cap. This setting wins over automatic catalog name matching; an
+endpoint-reported window still outranks the entry's context limit. A declared
+`contextWindow` outranks both and carries no inferred prompt cap. These distinctions
+apply equally to native and custom endpoints.
 
 Each process installs one catalog (`src/shared/model-catalog/active.ts`), and reading
 before install throws. Main and headless install the verified bundled snapshot at the
@@ -246,12 +265,16 @@ Implemented.
 
   The conversation loop sends `output.effective` with the thinking budget bounded
   against it (`src/engine/turn/round-llm-settings.ts`). The adapter also clamps every
-  request to the catalog ceiling, which is where the purpose-specific limits — finalize
+  request to the eligible catalog ceiling under the endpoint-identity rule in §4,
+  which is where the purpose-specific limits — finalize
   1,024; background 16,384; memory 1,400 / 1,600 / 4,000; work report 800 / 1,000;
   reviewer 256, all unchanged — meet it. Those callers do not see an endpoint-reported
   ceiling, only the catalog's. A fallback model does not inherit the primary route's
-  resolved ceiling: `streamWithFallback` drops it, and the adapter clamps the fallback's
-  request to the fallback model's own catalog ceiling.
+  resolved ceiling or named identity: `streamWithFallback` drops them, restores the
+  original requested output, and the adapter applies the fallback model's own ceiling.
+  The original thinking budget is bounded against that fallback's effective output.
+  A chat route also carries an explicitly unknown ceiling, so the adapter cannot
+  replace the record's unknown answer with a different name match.
 - **The default is no longer written into settings.** A vendor block stores
   `outputTokenLimit` only when the user set it; the default block has none. Before,
   every saved block carried the materialized 32,000, so a stored 32,000 could not say
@@ -264,6 +287,10 @@ Implemented.
   projected next input — is recorded in the turn summary only
   (`modelSettings.remainingContextOutputTokens`); no request is clamped by it.
 - **Reasoning** (`src/engine/llm/reasoning-plan.ts`, `planReasoning`). Where the catalog
+  resolves an identity, the route carries its endpoint and eligible named entry
+  into the plan and adapter together. A child or preset does not inherit the
+  generic row's named entry, and an SDK-managed route ignores a dormant endpoint.
+  Where the catalog
   knows the model, it decides whether an OpenAI-family route (OpenAI, Azure) sends
   `reasoning_effort` and at what level. Copilot maps to no catalog provider (§3.4), so
   the name rules decide there; they send an effort only to OpenAI reasoning models, and
@@ -278,10 +305,12 @@ Implemented.
   except with interleaved thinking, where the provider allows the budget to span the
   turn. Behavior changes against the bundled snapshot: GPT-5 sends `minimal` (was `low`)
   and GPT-5.1 sends `none` (was `low`) for a budget at or below 500; a model the catalog
-  marks as not reasoning gets no effort. A reasoning model whose levels the catalog does
+  marks as not reasoning gets no reasoning control, including numeric or adaptive
+  thinking. A reasoning model whose levels the catalog does
   not list keeps the name rule: absent levels are unknown, not none.
   Chat Completions answers 400 to `reasoning_effort` on a GPT-5 turn that carries tools
-  (Copilot, and OpenAI behind a custom `baseUrl`). That rule lives in `planReasoning`
+  on the chat-only route. A custom `baseUrl` does not change the adapter's selected
+  protocol; the responses route still carries effort with tools. That rule lives in `planReasoning`
   too (`chatCompletionsRejectsToolTurnEffort`): the plan comes back as `kind: "none"`
   with the requested effort and `suppressed: "chat-completions-tool-turn"`. The adapter
   and the turn record both take this one answer, so the record never shows an effort
@@ -289,8 +318,18 @@ Implemented.
 - **Run records.** The turn summary and the audit `turn` row carry `modelSettings`
   (`src/shared/run-model-settings.ts`): the catalog `sha256`, the window and its source
   and entry, the prompt cap that bounded the budget when one did (§4), the output block
-  above, and the reasoning plan as sent. It is omitted for
-  subscription runtimes and for a turn a fallback served on another model.
+  above, and the reasoning plan for the last primary request started. A retry
+  that drops tools recomputes that plan at the dispatch boundary, after runtime and
+  cancellation guards pass. A named catalog identity also identifies the model
+  family for chat tool-turn suppression, even when the route uses a deployment alias.
+  It is omitted for subscription runtimes and when the last request used a fallback,
+  even if its provider and model match the primary: that attempt resolves generation
+  limits again. A later primary request records its own resolution at dispatch.
+  The output block records the route's resolution, which also bounds the UI estimate.
+  Native serialization can narrow it further to a transport-known model limit.
+  Its serialized output and thinking limits are recorded as `requestControls`; the
+  recorded numeric reasoning budget is updated to that serialized value. The original
+  output resolution and its sources remain available beside those request controls.
 - **UI.** The renderer's cost estimate shows a range. The upper end is the cost with
   the output at `output.effective` (before, it assumed a fixed 4,096), and the tooltip
   names who set the limit. The lower end, and the color tier, use the expected output:

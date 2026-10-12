@@ -54,7 +54,7 @@ export function registerDevHandlers(deps: IpcDeps): void {
       deps.settingsService.get("marketplace").installedProviderPresets,
     );
     const model = route.model;
-    const effective = getModelPreflightThreshold(provider, model, route.contextWindow);
+    const effective = getModelPreflightThreshold(provider, model, route.contextWindow, route.inputLimit);
     return {
       ok: true,
       runtimeOverride: getRuntimePreflightOverride(),

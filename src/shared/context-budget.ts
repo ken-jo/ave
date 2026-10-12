@@ -26,7 +26,7 @@ import {
 } from "./llm-vendor-defaults.js";
 import { cachedModelListEntry, type LlmModelListCache } from "./llm-model-list.js";
 import { activeModelCatalog } from "./model-catalog/active.js";
-import { lookupCatalogModel, resolveCatalogKey, type CatalogModelHit } from "./model-catalog/resolve.js";
+import { allowsImplicitModelLimits, lookupCatalogModel, resolveCatalogKey, type CatalogModelHit } from "./model-catalog/resolve.js";
 import type { MarketplaceProviderModelDiscoveryPolicy } from "./marketplace-package-assets.js";
 
 /**
@@ -96,12 +96,12 @@ export type ContextWindowSource =
  * today: no `/models` endpoint Ave calls reports a prompt cap apart from the
  * window (GitHub Models' `limits.max_input_tokens` is read as the window).
  */
-export type InputLimitSource = "model-catalog";
+type InputLimitSource = "model-catalog";
 
 export interface ResolvedContextWindow {
   readonly contextWindow: number;
   readonly source: ContextWindowSource;
-  /** The catalog entry that answered, `<provider>/<id>`, when the source is `model-catalog`. */
+  /** The catalog entry that supplied the window or prompt cap, `<provider>/<id>`. */
   readonly catalogEntry?: string;
   /**
    * The model's prompt cap, when a source states one below the window. The
@@ -161,12 +161,14 @@ export function resolveModelContextWindow(params: {
   reported?: number;
   /** A catalog entry the user named for this route, `<provider>/<id>`. */
   catalogModel?: string;
+  /** The route's endpoint; custom hosts cannot establish model identity by name. */
+  baseUrl?: string;
 }): ResolvedContextWindow {
   const configured = positiveTokenCount(params.configured);
   if (configured !== undefined) {
     return { contextWindow: configured, source: "vendor-setting" };
   }
-  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel);
+  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl);
   const window = ((): ResolvedContextWindow => {
     const reported = positiveTokenCount(params.reported);
     if (reported !== undefined) return { contextWindow: reported, source: "provider-reported" };
@@ -174,13 +176,15 @@ export function resolveModelContextWindow(params: {
     if (hit && catalogWindow !== undefined) {
       return { contextWindow: catalogWindow, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` };
     }
-    const pricing = lookupPricingOptional(params.vendor, params.model);
+    const pricing = allowsImplicitModelLimits(params.vendor, params.baseUrl)
+      ? lookupPricingOptional(params.vendor, params.model)
+      : undefined;
     if (pricing) return { contextWindow: effectiveContextWindow(pricing), source: "pricing-catalog" };
     return { contextWindow: FALLBACK_PRICING.contextWindow, source: "fallback" };
   })();
   const catalogInput = positiveTokenCount(hit?.model.limits.input);
-  return catalogInput !== undefined && catalogInput < window.contextWindow
-    ? { ...window, inputLimit: catalogInput, inputLimitSource: "model-catalog" }
+  return hit !== undefined && catalogInput !== undefined && catalogInput < window.contextWindow
+    ? { ...window, catalogEntry: `${hit.provider}/${hit.id}`, inputLimit: catalogInput, inputLimitSource: "model-catalog" }
     : window;
 }
 
@@ -190,9 +194,10 @@ export function resolveModelContextWindow(params: {
  * the catalog answers nothing rather than falling back to the name: the user
  * said which model this is, and a name match could be a different one.
  */
-export function catalogModelFor(vendor: string, model: string, catalogModel?: string): CatalogModelHit | undefined {
+export function catalogModelFor(vendor: string, model: string, catalogModel?: string, baseUrl?: string): CatalogModelHit | undefined {
   const catalog = activeModelCatalog();
   if (catalogModel !== undefined) return lookupCatalogModel(catalog, catalogModel);
+  if (!allowsImplicitModelLimits(vendor, baseUrl)) return undefined;
   return resolveCatalogKey(catalog, vendor, model);
 }
 
@@ -245,10 +250,11 @@ export function resolveOutputCeiling(params: {
   model: string;
   reported?: number;
   catalogModel?: string;
+  baseUrl?: string;
 }): { ceiling: number; source: OutputCeilingSource } | undefined {
   const reported = positiveTokenCount(params.reported);
   if (reported !== undefined) return { ceiling: reported, source: "provider-reported" };
-  const catalog = positiveTokenCount(catalogModelFor(params.vendor, params.model, params.catalogModel)?.model.limits.output);
+  const catalog = positiveTokenCount(catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl)?.model.limits.output);
   return catalog === undefined ? undefined : { ceiling: catalog, source: "model-catalog" };
 }
 
@@ -259,6 +265,7 @@ export function resolveOutputTokenLimit(params: {
   requested: { value: number; source: LlmOutputTokenLimitSource };
   reported?: number;
   catalogModel?: string;
+  baseUrl?: string;
 }): ResolvedOutputTokenLimit {
   const { value: requested, source: requestedSource } = params.requested;
   const ceiling = resolveOutputCeiling(params);
@@ -284,6 +291,10 @@ export function resolveOutputTokenLimit(params: {
 export interface RouteContextWindow extends ResolvedContextWindow {
   /** The model this route runs on — `activeLlmRouteModel`'s answer. */
   readonly model: string;
+  /** The endpoint used to establish model identity; absent on an SDK-managed route. */
+  readonly baseUrl?: string;
+  /** The named identity eligible for this model, shared with its reasoning decision. */
+  readonly catalogModel?: string;
   /**
    * The provider's own ceiling on a completion for this model, when it
    * reported one. Carried beside the window for a caller that needs an output
@@ -345,9 +356,12 @@ export function llmRouteCatalogAddress(
   const preset = presetId
     ? installedProviderPresets?.find((installed) => installed.providerId === presetId)
     : undefined;
+  // This SDK derives its endpoint from project/location and ignores baseUrl.
+  // A dormant field and its cached model list must not describe that route.
+  const baseUrl = llm.provider === "vertex-ai" ? undefined : preset?.baseUrl ?? block.baseUrl;
   return {
     vendor: llm.provider,
-    ...(preset?.baseUrl ?? block.baseUrl ? { baseUrl: preset?.baseUrl ?? block.baseUrl } : {}),
+    ...(baseUrl ? { baseUrl } : {}),
     ...(presetId ? { credentialScope: presetId } : {}),
   };
 }
@@ -355,20 +369,28 @@ export function llmRouteCatalogAddress(
 export function resolveContextWindowForRoute(
   llm: LlmRouteSettings,
   installedProviderPresets?: readonly LlmRouteProviderPreset[],
+  modelOverride?: string,
 ): RouteContextWindow {
-  const model = activeLlmRouteModel(llm);
+  const model = activeLlmRouteModel(llm, modelOverride);
   const block = getLlmVendorSettings(llm.vendors, llm.provider);
   const address = llmRouteCatalogAddress(llm, installedProviderPresets);
-  const entry = cachedModelListEntry(llm.modelListCache, { ...address, model });
-  // A named catalog entry describes the vendor block's own model; a
-  // marketplace preset reached through the same vendor runs a model of its own.
-  const catalogModel = address.credentialScope === undefined ? block.catalogModel : undefined;
+  // Standard model-list reports do not describe a project/location SDK route.
+  // Older probes may have stored a dormant endpoint's report at the default key.
+  const entry = llm.provider === "vertex-ai"
+    ? undefined
+    : cachedModelListEntry(llm.modelListCache, { ...address, model });
+  // A named entry describes the block's own model, not a preset or a child
+  // running a different model through the same endpoint.
+  const catalogModel = address.credentialScope === undefined && model === block.model.trim()
+    ? block.catalogModel
+    : undefined;
   const resolved = resolveModelContextWindow({
     vendor: llm.provider,
     model,
     ...(block.contextWindow !== undefined ? { configured: block.contextWindow } : {}),
     ...(entry?.contextLength !== undefined ? { reported: entry.contextLength } : {}),
     ...(catalogModel !== undefined ? { catalogModel } : {}),
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
   });
   const maxOutputTokens = positiveTokenCount(entry?.maxOutputTokens);
   const output = resolveOutputTokenLimit({
@@ -377,11 +399,14 @@ export function resolveContextWindowForRoute(
     requested: requestedLlmOutputTokenLimit(block),
     ...(maxOutputTokens !== undefined ? { reported: maxOutputTokens } : {}),
     ...(catalogModel !== undefined ? { catalogModel } : {}),
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
   });
   const unresolved = catalogModel !== undefined && lookupCatalogModel(activeModelCatalog(), catalogModel) === undefined;
   return {
     ...resolved,
     model,
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
+    ...(catalogModel !== undefined ? { catalogModel } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     output,
     ...(unresolved ? { unresolvedCatalogModel: catalogModel } : {}),
