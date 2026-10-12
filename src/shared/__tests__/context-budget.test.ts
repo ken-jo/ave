@@ -6,6 +6,7 @@ import {
   llmRouteCatalogAddress,
   MAX_CREDIBLE_CONTEXT_WINDOW,
   resolveContextWindowForRoute,
+  resolveInputModalities,
   resolveModelContextWindow,
   resolveOutputTokenLimit,
 } from "../context-budget.js";
@@ -563,5 +564,60 @@ describe("the prompt cap beside the window", () => {
     });
     vendors["openai-compatible"].catalogModel = "openai/gpt-5.2";
     expect(resolveContextWindowForRoute({ provider: "openai-compatible", vendors })).not.toHaveProperty("unresolvedCatalogModel");
+  });
+});
+
+describe("a route's input modalities and tool support", () => {
+  function apiRoute(provider: "openai" | "openai-compatible", model: string, block: { catalogModel?: string; reportedInput?: string[] } = {}) {
+    const vendors = freshAllVendorBlocks();
+    const fields = vendors[provider];
+    fields.model = model;
+    if (provider === "openai-compatible") fields.baseUrl = "https://models.invalid/v1";
+    if (block.catalogModel !== undefined) fields.catalogModel = block.catalogModel;
+    const modelListCache: LlmModelListCache = {};
+    if (block.reportedInput) {
+      modelListCache[llmModelListCacheKey(provider, fields.baseUrl, "")] = {
+        vendor: provider,
+        endpoint: "https://models.invalid/v1/models",
+        models: [model],
+        modelEntries: [{ id: model, inputModalities: block.reportedInput }],
+        fetchedAt: new Date(0).toISOString(),
+      };
+    }
+    return { provider, vendors, modelListCache };
+  }
+
+  it("reads the catalog entry's input modalities", () => {
+    // GPT-4 (2023) is text only; the name rules had it taking images.
+    expect(resolveContextWindowForRoute(apiRoute("openai", "gpt-4")).inputModalities).toEqual({
+      input: ["text"],
+      source: "model-catalog",
+      catalogEntry: "openai/gpt-4",
+    });
+  });
+
+  it("takes what the endpoint reported over the catalog, and ignores an empty report", () => {
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "a-served-model", { reportedInput: ["text", "image"] })).inputModalities)
+      .toEqual({ input: ["text", "image"], source: "provider-reported" });
+    expect(resolveInputModalities({ vendor: "openai", model: "gpt-4", reported: [] })).toMatchObject({ source: "model-catalog" });
+    expect(resolveInputModalities({ vendor: "openai", model: "gpt-4", reported: ["Text", "IMAGE"] })?.input).toEqual(["text", "image"]);
+  });
+
+  it("reads the entry the user named for a self-hosted route, and nothing when it is not listed", () => {
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "a-served-model", { catalogModel: "openai/gpt-4o" })).inputModalities)
+      .toMatchObject({ input: expect.arrayContaining(["image"]), source: "model-catalog", catalogEntry: "openai/gpt-4o" });
+    // A named entry missing from the catalog answers nothing; the served id is not matched by name either.
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "gpt-4o", { catalogModel: "openai/not-a-listed-model" })))
+      .not.toHaveProperty("inputModalities");
+  });
+
+  it("carries the catalog's toolCall, and nothing where the catalog does not say", () => {
+    expect(resolveContextWindowForRoute(apiRoute("openai", "gpt-3.5-turbo")).toolCall).toEqual({
+      supported: false,
+      source: "model-catalog",
+      catalogEntry: "openai/gpt-3.5-turbo",
+    });
+    expect(resolveContextWindowForRoute(apiRoute("openai", "gpt-5.4")).toolCall).toMatchObject({ supported: true });
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "a-served-model"))).not.toHaveProperty("toolCall");
   });
 });

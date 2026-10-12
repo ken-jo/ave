@@ -298,12 +298,39 @@ Implemented.
   color a typical turn several times dearer than it is; a fixed guess would ignore how
   this conversation actually runs.
 
-## 6. Modalities and pricing (slices 4 and 5)
+## 6. Modalities and tools (slice 4), pricing (slice 5)
 
-Slice 4 replaces the vision regex lists with `modalities.input` and `attachment`, and
-reads tool support from `toolCall`. Slice 5 prices through the catalog, tiers included,
-and makes the renderer apply the user's pricing overrides as the engine already does;
-user overrides keep the highest precedence.
+Slice 4 is implemented.
+
+- **Images.** `supportsVision` (`src/engine/llm/vendor-capabilities.ts`) answers from the
+  model's stated input modalities: an `image` in them allows images on the turn, and its
+  absence refuses the send. The order is the window's (§4):
+  1. the endpoint's `/models` report (`inputModalities`; an empty list states nothing);
+  2. the catalog entry's `modalities.input` — the entry the user named for the route
+     (`catalogModel`), else the one the model id resolves to;
+  3. the name rules, where nobody states the modalities (slice 7 removes them).
+
+  `resolveContextWindowForRoute(...).inputModalities` carries steps 1–2 for the active
+  route. The renderer passes it to the composer and the send path, which refuse on the
+  same condition. A route whose named entry is missing from the catalog falls to the name
+  rules; it is not matched by name. A model-list row (the settings badge) has no route
+  and uses its own reported modalities, else the catalog entry for its id.
+- **Not `attachment`.** The catalog's `attachment` flag says a model accepts file parts.
+  The composer sends a file as a path the agent reads with its tools, never as a file part,
+  so the flag decides nothing here.
+- **Tools.** A model whose catalog entry says `toolCall: false` gets no tool definitions,
+  on every rebuild within the turn (`rebuildTurnToolSchemas` in
+  `src/engine/turn/query-loop.ts`). Its turn record carries
+  `modelSettings.tools: { sent: false, source: "model-catalog", catalogEntry }`.
+  - Absent `toolCall` is unknown, and tools are sent as before.
+  - Only the catalog answers. An endpoint's `supported_parameters` lists what a router
+    forwards, and a missing `tools` there is too weak a reason to turn the agent off.
+  - The rule follows the route's model. A fallback that serves the turn on another model
+    gets the same empty tool list.
+
+Slice 5 prices through the catalog, tiers included, and makes the renderer apply the
+user's pricing overrides as the engine already does; user overrides keep the highest
+precedence.
 
 ## 7. Refresh (slice 6)
 

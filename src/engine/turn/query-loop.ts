@@ -275,7 +275,16 @@ export async function queryLoop(
     // tools stay excluded — a mid-turn rebuild (request_plugin / tool_search)
     // must not reintroduce a tool the provider already rejected and re-break
     // the turn.
-    const rebuildTurnToolSchemas = (): ToolSchema[] => withoutDroppedTools(self.rebuildToolSchemas(scope), droppedToolSchemaNames);
+    //
+    // A model the catalog says takes no tool definitions (`toolCall: false`)
+    // gets none, on every rebuild: the provider would refuse the request, or
+    // the model would ignore the definitions and describe calls it cannot
+    // make. Absent means unknown, and unknown sends tools as before. The turn
+    // record says when they were withheld.
+    const toolsWithheld = runtimeContextBudget.toolCall?.supported === false ? runtimeContextBudget.toolCall : undefined;
+    const rebuildTurnToolSchemas = (): ToolSchema[] => toolsWithheld
+      ? []
+      : withoutDroppedTools(self.rebuildToolSchemas(scope), droppedToolSchemaNames);
     let toolSchemas: ToolSchema[] = rebuildTurnToolSchemas();
     // Recorded with the turn: the catalog, window, output and reasoning this
     // route resolved, from the same functions the request is built with —
@@ -303,6 +312,9 @@ export async function queryLoop(
             },
             output: effectiveOutput,
             ...(reasoning ? { reasoning } : {}),
+            ...(toolsWithheld
+              ? { tools: { sent: false as const, source: toolsWithheld.source, catalogEntry: toolsWithheld.catalogEntry } }
+              : {}),
           };
         })();
     const withServingIdentity = (

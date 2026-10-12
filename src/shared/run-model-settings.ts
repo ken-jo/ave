@@ -29,6 +29,17 @@ export interface RunModelSettings {
     readonly source: "model-catalog" | "name-rule";
   };
   /**
+   * Present only when the turn sent no tool definitions because the catalog
+   * says the model takes none (`toolCall: false`). Absent means the turn's
+   * tools were sent as usual.
+   */
+  readonly tools?: {
+    readonly sent: false;
+    readonly source: "model-catalog";
+    /** The catalog entry that said so, `<provider>/<id>`. */
+    readonly catalogEntry: string;
+  };
+  /**
    * The output that would still have fit the context window after the turn's
    * last request input. Diagnostics only: requests are never clamped by it.
    */

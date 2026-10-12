@@ -80,6 +80,8 @@ export interface UseSendMessageDeps {
   setAttachments: Dispatch<SetStateAction<Attachment[]>>;
   llmVendor: Settings["llmVendor"];
   llmModel: Settings["llmModel"];
+  /** The active route's input modalities, for the image gate. Optional: without them the catalog entry for the model's name decides. */
+  llmRouteModalities?: Settings["llmRouteModalities"];
   llmReadyWithoutApiKey: Settings["llmReadyWithoutApiKey"];
   /** Canonical safe status and raw-image budget for the selected runtime. */
   subscriptionRuntimePolicy: Settings["subscriptionRuntimePolicy"];
@@ -163,7 +165,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
     appendSystemEntry,
     setErrorWithThought, handleCompactCommand, sessionLoad, applyLoadedSession,
     refreshSessionId, refreshSessions, attachments, setAttachments,
-    llmVendor, llmModel, llmReadyWithoutApiKey, subscriptionRuntimePolicy,
+    llmVendor, llmModel, llmRouteModalities, llmReadyWithoutApiKey, subscriptionRuntimePolicy,
     settingsReady = true,
     onOpenSettings, setQuestion, handleAskRef,
   } = deps;
@@ -291,7 +293,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       if (
         hasImageAttachment
         && !subscriptionRuntimePolicy.subscriptionSelected
-        && !supportsVision(llmVendor, llmModel)
+        && !supportsVision(llmVendor, llmModel, llmRouteModalities)
       ) {
         setErrorWithThought(t("app.visionNotSupported", { llmModel }));
         return;
@@ -464,6 +466,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       attachments,
       llmVendor,
       llmModel,
+      llmRouteModalities,
       llmReadyWithoutApiKey,
       subscriptionRuntimePolicy,
       settingsReady,

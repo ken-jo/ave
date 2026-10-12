@@ -281,6 +281,69 @@ export function resolveOutputTokenLimit(params: {
   };
 }
 
+/** The kinds of input a model accepts, and who stated them. */
+export interface ResolvedInputModalities {
+  /** As the source spells them: `text`, `image`, `pdf`, `audio`, `video`. */
+  readonly input: readonly string[];
+  readonly source: "provider-reported" | "model-catalog";
+  /** `<provider>/<id>` when the catalog answered. */
+  readonly catalogEntry?: string;
+}
+
+/**
+ * A model's input modalities: what its endpoint reported in the `/models`
+ * handshake, else the catalog entry's `modalities.input`. `undefined` when
+ * neither states them, which is unknown, not "text only"; the caller's name
+ * rule decides then. An empty reported list states nothing. A reported list is
+ * an external value, folded to lower case so `Image` reads as the catalog's `image`.
+ */
+export function resolveInputModalities(params: {
+  vendor: string;
+  model: string;
+  reported?: readonly string[];
+  catalogModel?: string;
+}): ResolvedInputModalities | undefined {
+  if (params.reported !== undefined && params.reported.length > 0) {
+    return { input: params.reported.map((modality) => modality.toLowerCase()), source: "provider-reported" };
+  }
+  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel);
+  const input = hit?.model.modalities?.input;
+  return hit && input ? { input, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` } : undefined;
+}
+
+/**
+ * What the active route resolved about its model's inputs, for a caller that
+ * gates on them: `inputModalities` absent means nobody stated them.
+ */
+export interface RouteInputModalities {
+  readonly inputModalities?: ResolvedInputModalities;
+}
+
+/** Whether a model takes tool definitions, as the catalog states it. */
+export interface ResolvedToolCallSupport {
+  readonly supported: boolean;
+  readonly source: "model-catalog";
+  readonly catalogEntry: string;
+}
+
+/**
+ * The catalog's `toolCall` for a model. Only the catalog answers: an endpoint's
+ * `supported_parameters` list describes request parameters a router forwards,
+ * and reading a missing `tools` there as "no tools" would turn the agent off
+ * on a guess. Absent means unknown, and unknown sends tools as before.
+ */
+function resolveToolCallSupport(params: {
+  vendor: string;
+  model: string;
+  catalogModel?: string;
+}): ResolvedToolCallSupport | undefined {
+  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel);
+  const supported = hit?.model.toolCall;
+  return hit && supported !== undefined
+    ? { supported, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` }
+    : undefined;
+}
+
 export interface RouteContextWindow extends ResolvedContextWindow {
   /** The model this route runs on — `activeLlmRouteModel`'s answer. */
   readonly model: string;
@@ -301,6 +364,10 @@ export interface RouteContextWindow extends ResolvedContextWindow {
    * the engine reports the miss once, so a typo does not pass silently.
    */
   readonly unresolvedCatalogModel?: string;
+  /** The model's input modalities, when its endpoint or the catalog states them ({@link resolveInputModalities}). */
+  readonly inputModalities?: ResolvedInputModalities;
+  /** Whether the model takes tool definitions, when the catalog states it ({@link resolveToolCallSupport}). */
+  readonly toolCall?: ResolvedToolCallSupport;
 }
 
 /**
@@ -379,11 +446,24 @@ export function resolveContextWindowForRoute(
     ...(catalogModel !== undefined ? { catalogModel } : {}),
   });
   const unresolved = catalogModel !== undefined && lookupCatalogModel(activeModelCatalog(), catalogModel) === undefined;
+  const inputModalities = resolveInputModalities({
+    vendor: llm.provider,
+    model,
+    ...(entry?.inputModalities !== undefined ? { reported: entry.inputModalities } : {}),
+    ...(catalogModel !== undefined ? { catalogModel } : {}),
+  });
+  const toolCall = resolveToolCallSupport({
+    vendor: llm.provider,
+    model,
+    ...(catalogModel !== undefined ? { catalogModel } : {}),
+  });
   return {
     ...resolved,
     model,
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     output,
     ...(unresolved ? { unresolvedCatalogModel: catalogModel } : {}),
+    ...(inputModalities !== undefined ? { inputModalities } : {}),
+    ...(toolCall !== undefined ? { toolCall } : {}),
   };
 }

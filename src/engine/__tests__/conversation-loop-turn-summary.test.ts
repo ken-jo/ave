@@ -273,6 +273,46 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: recorded }));
   });
 
+  it("sends no tool definitions to a model the catalog says takes none, and records that", async () => {
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createDynamicTool({
+      name: "read_file",
+      description: "Read file",
+      source: "builtin",
+      category: "read",
+      jsonSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+      isReadOnly: () => true,
+      execute: async () => ({ output: "contents", isError: false }),
+    }));
+    const turnOn = async (model: string) => {
+      const sentTools: Array<string[] | undefined> = [];
+      const provider: LLMProvider = {
+        vendor: "openai",
+        async *streamTurn(params) {
+          sentTools.push(params.tools?.map((tool) => tool.name));
+          yield { type: "text_delta", text: "answer" };
+          yield { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 60, outputTokens: 10 } };
+        },
+      };
+      const loop = createLoopWithRegistry(provider, toolRegistry, {
+        settingsService: { get: () => fakeLlmSettings({ provider: "openai", model }), getSecret: () => "test-key" },
+      } as never);
+      let summary: TurnSummary | null = null;
+      await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { inputOrigin: "user-keyboard" });
+      return { sentTools, modelSettings: summary!.modelSettings };
+    };
+
+    // gpt-3.5-turbo: the catalog's toolCall is false.
+    const withheld = await turnOn("gpt-3.5-turbo");
+    // No `tools` key at all, so the adapter shapes the request as a no-tools one, as the record says.
+    expect(withheld.sentTools).toEqual([undefined]);
+    expect(withheld.modelSettings?.tools).toEqual({ sent: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" });
+    // The same registry reaches a model that takes tools, and the record says nothing.
+    const sent = await turnOn("gpt-5.4-mini");
+    expect(sent.sentTools[0]).toContain("read_file");
+    expect(sent.modelSettings).not.toHaveProperty("tools");
+  });
+
   it("emits a summary for a turn whose only output was reasoning", async () => {
     const toolRegistry = new ToolRegistry();
     // Reasoning with no text and no tool call: the loop re-prompts twice, the

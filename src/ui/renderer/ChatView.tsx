@@ -181,7 +181,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     attachments, setAttachments, attachmentNCounter,
     enableThinkingChat, processingDisplayLevel, reasoningAvailable, toggleThinking, usageAvailable, subscriptionRuntimePolicy, subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider, subscriptionUnavailableProvider, subscriptionPendingProvider,
     costEstimate, costBadgeClass, activeVendor,
-    llmVendor, llmModel,
+    llmVendor, llmModel, llmRouteModalities,
   } = useChatContext();
 
   // Checkpoint view-mode — null = live, non-null = viewing a past checkpoint
@@ -846,6 +846,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         subscriptionPendingProvider={runtimePendingProvider}
         llmVendor={llmVendor}
         llmModel={llmModel}
+        llmRouteModalities={llmRouteModalities}
         rolePresets={rolePresets}
         activePresetId={activePresetId}
         onSelectPreset={setActivePresetId}

@@ -34,6 +34,7 @@ import {
   resolveModelContextWindow,
   type ContextWindowSource,
   type ResolvedOutputTokenLimit,
+  type ResolvedToolCallSupport,
   type InputLimitSource,
   type LlmRouteProviderPreset,
   type LlmRouteSettings,
@@ -79,6 +80,8 @@ interface RuntimeContextBudget {
    * runtimes, whose protocol owns output control.
    */
   readonly output?: ResolvedOutputTokenLimit;
+  /** Whether the API route's model takes tool definitions, when the catalog states it. */
+  readonly toolCall?: ResolvedToolCallSupport;
 }
 
 /**
@@ -264,6 +267,7 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
     contextWindow: route.contextWindow,
     ...(route.catalogEntry !== undefined ? { catalogEntry: route.catalogEntry } : {}),
     output: route.output,
+    ...(route.toolCall !== undefined ? { toolCall: route.toolCall } : {}),
   };
 }
 

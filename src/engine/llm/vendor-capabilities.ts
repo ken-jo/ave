@@ -7,7 +7,14 @@
  * so the user removes them or picks another model. No send drops image parts on
  * the way to the provider.
  *
- * Source of truth (2026-04 snapshot):
+ * The model's stated input modalities decide (issue #2501): the endpoint's
+ * `/models` report, else the model catalog's `modalities.input`. Only an
+ * `image` there counts. The catalog's `attachment` flag does not: the composer
+ * sends a file as a path the agent reads with its tools, never as a file part
+ * the model has to accept.
+ *
+ * Where nothing states the modalities, the name rules below decide, as they
+ * did before the catalog (slice 7 removes them). Their 2026-04 snapshot:
  *   - Anthropic Claude 3+ family supports vision (3, 3.5, 3.7, 4, 4.5, 4.6, 4.7).
  *   - OpenAI: gpt-4o, gpt-4-turbo, gpt-4-vision, gpt-5* all support vision.
  *           o1, o1-mini, o3-mini reasoning models do NOT (text-only).
@@ -22,6 +29,7 @@ import {
   isOpenAICompatibleVendor,
   isSelfHostedVllmVendor,
 } from "../../shared/llm-vendor-defaults.js";
+import { resolveInputModalities, type RouteInputModalities } from "../../shared/context-budget.js";
 import type {
   MarketplaceInstalledProviderPreset,
   MarketplaceProviderPackageAsset,
@@ -48,10 +56,30 @@ const VISION_MODEL_PATTERNS = [
   /^gemini-/i,
 ];
 
-export function supportsVision(vendor: LLMVendor, model: string): boolean {
+/**
+ * Whether a turn on this model may carry images.
+ *
+ * `route` is the active route's resolution (`resolveContextWindowForRoute`),
+ * for a caller that has it: its `inputModalities` already weigh the endpoint's
+ * report and the catalog entry the user named for the route, and when it has
+ * none the name rules decide. It must not be re-resolved by name here: a named
+ * entry missing from the catalog answers nothing, and a name match could be a
+ * different model. A caller without a route (one row of a model list) gets the
+ * catalog entry the vendor's model id resolves to.
+ */
+export function supportsVision(
+  vendor: LLMVendor,
+  model: string,
+  route?: RouteInputModalities,
+): boolean {
   const m = model.trim();
   if (m.length === 0) return false;
+  const stated = route ? route.inputModalities : resolveInputModalities({ vendor, model: m });
+  if (stated) return stated.input.includes("image");
+  return supportsVisionByName(vendor, m);
+}
 
+function supportsVisionByName(vendor: LLMVendor, m: string): boolean {
   for (const re of NON_VISION_MODEL_PATTERNS) {
     if (re.test(m)) return false;
   }

@@ -19,7 +19,7 @@ import {
   type SubscriptionRuntimeId,
 } from "../../../shared/subscription-runtime.js";
 import { selectSubscriptionRuntimeUiPolicy, type SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-ui-policy.js";
-import { resolveContextWindowForRoute, type ResolvedOutputTokenLimit } from "../../../shared/context-budget.js";
+import { resolveContextWindowForRoute, type ResolvedOutputTokenLimit, type RouteInputModalities } from "../../../shared/context-budget.js";
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../../shared/llm-vendor-defaults.js";
 import {
   DEFAULT_PROCESSING_DISPLAY_LEVEL,
@@ -101,6 +101,14 @@ export interface UseSettingsResult {
    * is bounded by it, as the engine's compaction threshold is.
    */
   llmInputLimit: number | undefined;
+  /**
+   * The active route's input modalities, as its endpoint or the catalog states
+   * them (`resolveContextWindowForRoute(...).inputModalities`), for the image
+   * gate (`supportsVision(vendor, model, route)`). `undefined` until settings
+   * have resolved; a route whose modalities nobody states carries none, and the
+   * name rules decide for it.
+   */
+  llmRouteModalities: RouteInputModalities | undefined;
   /** True after an authoritative settings snapshot has been applied. */
   settingsLoaded: boolean;
   /** Cached `enableThinking` flag for the active vendor. */
@@ -139,6 +147,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
   const [llmContextWindow, setLlmContextWindow] = useState<number>(0);
   const [llmOutputTokenLimit, setLlmOutputTokenLimit] = useState<ResolvedOutputTokenLimit>(INITIAL_OUTPUT_TOKEN_LIMIT);
   const [llmInputLimit, setLlmInputLimit] = useState<number | undefined>(undefined);
+  const [llmRouteModalities, setLlmRouteModalities] = useState<UseSettingsResult["llmRouteModalities"]>(undefined);
   const [enableThinkingChat, setEnableThinkingChat] = useState<boolean>(true);
   const [processingDisplayLevel, setProcessingDisplayLevel] = useState<ProcessingDisplayLevel>(
     DEFAULT_PROCESSING_DISPLAY_LEVEL,
@@ -181,6 +190,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
       setLlmContextWindow(route.contextWindow);
       setLlmOutputTokenLimit(route.output);
       setLlmInputLimit(route.inputLimit);
+      setLlmRouteModalities(route.inputModalities !== undefined ? { inputModalities: route.inputModalities } : {});
       setEnableThinkingChat(block.enableThinking);
       setProcessingDisplayLevel(
         settings.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
@@ -332,6 +342,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     llmContextWindow,
     llmOutputTokenLimit,
     llmInputLimit,
+    llmRouteModalities,
     enableThinkingChat,
     processingDisplayLevel,
     llmReadyWithoutApiKey,

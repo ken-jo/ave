@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
-import type { ResolvedOutputTokenLimit } from "../../../shared/context-budget.js";
+import type { ResolvedOutputTokenLimit, RouteInputModalities } from "../../../shared/context-budget.js";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
@@ -68,6 +68,8 @@ export interface ChatGroupEnvironment {
   llmContextWindow: number;
   /** The active route's prompt cap below the window, when one is stated (`resolveContextWindowForRoute(...).inputLimit`). */
   llmInputLimit?: number;
+  /** The active route's input modalities, for the image gate; `undefined` until settings have resolved. */
+  llmRouteModalities: RouteInputModalities | undefined;
   settingsLoaded: boolean;
   subscriptionRuntimeSelected: boolean;
   subscriptionRuntimePolicy: SubscriptionRuntimeUiPolicy;
@@ -446,7 +448,7 @@ export function ChatGroupSession({
     beginStreamingRequest, finishStreamingRequest, markLastAssistantInterrupted, unmarkLastAssistantInterrupted,
     appendSystemEntry, setErrorWithThought, handleCompactCommand, sessionLoad, applyLoadedSession,
     refreshSessionId, refreshSessions: env.refreshSessions, attachments, setAttachments,
-    llmVendor: env.llmVendor, llmModel: env.llmModel,
+    llmVendor: env.llmVendor, llmModel: env.llmModel, llmRouteModalities: env.llmRouteModalities,
     llmReadyWithoutApiKey: env.chatReadyWithoutApiKey,
     settingsReady: env.settingsLoaded,
     subscriptionRuntimePolicy: env.subscriptionRuntimePolicy,
@@ -896,7 +898,7 @@ export function ChatGroupSession({
     toggleThinking: env.toggleThinking, costEstimate, costBadgeClass,
     activePricing,
     activeVendor: env.apiUsageProjectionAvailable ? env.llmVendor : undefined,
-    llmVendor: env.llmVendor, llmModel: env.llmModel,
+    llmVendor: env.llmVendor, llmModel: env.llmModel, llmRouteModalities: env.llmRouteModalities,
   }), [
     entries, streaming, editingEntryIdx, setEditingEntryIdx, editBusy,
     question, currentSessionId, hidden, env,

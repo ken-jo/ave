@@ -78,6 +78,7 @@ import { TEST_IDS } from "../../../shared/test-ids.js";
 import { formatTokensExact } from "../../../lib/cost-format.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
+import { resolveInputModalities } from "../../../shared/context-budget.js";
 
 export interface FallbackEntry {
   provider: LLMVendor;
@@ -2149,7 +2150,10 @@ export function LlmTab(props: LlmTabProps) {
             : row.label,
           modelId,
           ...(entry ? { entry } : {}),
-          ...(visionVendor && supportsVision(visionVendor, modelId) ? { vision: true } : {}),
+          // This row's own endpoint report, else the catalog entry for its id.
+          ...(visionVendor && supportsVision(visionVendor, modelId, {
+            inputModalities: resolveInputModalities({ vendor: visionVendor, model: modelId, reported: entry?.inputModalities }),
+          }) ? { vision: true } : {}),
           ...(isActiveRow && modelId === unlistedModel
             ? { unlisted: true, facts: t("llmTab.modelUnlisted") }
             : {}),
