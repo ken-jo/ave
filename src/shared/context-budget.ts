@@ -99,7 +99,7 @@ export type InputLimitSource = "model-catalog";
 export interface ResolvedContextWindow {
   readonly contextWindow: number;
   readonly source: ContextWindowSource;
-  /** The catalog entry that answered, `<provider>/<id>`, when the source is `model-catalog`. */
+  /** The catalog entry that supplied the window or prompt cap, `<provider>/<id>`. */
   readonly catalogEntry?: string;
   /**
    * The model's prompt cap, when a source states one below the window. The
@@ -181,8 +181,8 @@ export function resolveModelContextWindow(params: {
     return { contextWindow: FALLBACK_PRICING.contextWindow, source: "fallback" };
   })();
   const catalogInput = positiveTokenCount(hit?.model.limits.input);
-  return catalogInput !== undefined && catalogInput < window.contextWindow
-    ? { ...window, inputLimit: catalogInput, inputLimitSource: "model-catalog" }
+  return hit !== undefined && catalogInput !== undefined && catalogInput < window.contextWindow
+    ? { ...window, catalogEntry: `${hit.provider}/${hit.id}`, inputLimit: catalogInput, inputLimitSource: "model-catalog" }
     : window;
 }
 

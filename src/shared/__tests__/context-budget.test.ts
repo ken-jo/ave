@@ -447,6 +447,14 @@ describe("windows the bundled catalog corrects", () => {
  * entries had a threshold above their cap.
  */
 describe("the prompt cap beside the window", () => {
+  it("retains the named catalog source for a cap beside an endpoint-reported window", () => {
+    expect(resolveModelContextWindow({
+      vendor: "openai-compatible", model: "gateway-alias", reported: 600_000, catalogModel: "openai/gpt-5.2",
+    })).toEqual({
+      contextWindow: 600_000, source: "provider-reported", catalogEntry: "openai/gpt-5.2",
+      inputLimit: 272_000, inputLimitSource: "model-catalog",
+    });
+  });
   it("has no prompt cap for an unknown model", () => {
     const resolved = resolveModelContextWindow({ vendor: "openai", model: "unlisted-model" });
     expect(resolved).toEqual({ contextWindow: 128_000, source: "fallback" });

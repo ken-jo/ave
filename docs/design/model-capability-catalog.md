@@ -167,7 +167,9 @@ snapshot.
 catalog states one below it (`inputLimit`, `inputLimitSource: "model-catalog"`, from
 `limits.input`). No `/models` endpoint Ave calls reports a prompt cap apart from the
 window (a gateway's `max_input_tokens` is read as the window), so the catalog is the only
-source. A declared window carries none. The usable budget is
+source. `catalogEntry` also identifies a catalog-supplied prompt cap beside an
+endpoint-reported window; preflight traces retain that entry, the cap value and its
+source for both API and subscription budgets. A declared window carries none. The usable budget is
 `min(window − Ave's output reservation, prompt cap)` and the compaction threshold is 80%
 of it (`getUsableContext`, `getPreflightThreshold`), in the engine and in the renderer's
 context ring alike; a threshold the cap lowered is traced as `thresholdSource:

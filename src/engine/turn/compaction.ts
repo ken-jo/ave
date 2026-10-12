@@ -33,7 +33,7 @@ import {
   resolveContextWindowForRoute,
   resolveModelContextWindow,
   type ContextWindowSource,
-  type InputLimitSource,
+  type ResolvedContextWindow,
   type LlmRouteProviderPreset,
   type LlmRouteSettings,
 } from "../../shared/context-budget.js";
@@ -53,7 +53,7 @@ const SUBSCRIPTION_FALLBACK_USABLE_CONTEXT = getUsableContext(
   SUBSCRIPTION_FALLBACK_CONTEXT_WINDOW,
 );
 
-interface RuntimeContextBudget {
+interface RuntimeContextBudget extends Pick<ResolvedContextWindow, "catalogEntry" | "inputLimit" | "inputLimitSource"> {
   readonly model: string;
   readonly preflight: number;
   readonly usableContext: number;
@@ -65,8 +65,6 @@ interface RuntimeContextBudget {
    * came from. `fallback` says the whole budget rests on a guess.
    */
   readonly contextWindowSource: ContextWindowSource | "subscription-fallback";
-  /** Observability only — who stated the prompt cap that bounds the budget, when one does. */
-  readonly inputLimitSource?: InputLimitSource;
   /**
    * The provider's own ceiling on a completion for this model, when it
    * reported one. Carried so an output cap has a number to read; the budget
@@ -217,6 +215,8 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
           ? "reported-context-window"
           : getModelPreflightThresholdSource("openai", model),
         contextWindowSource: reportedIsTighter ? "provider-reported" : catalogWindow.source,
+        ...(catalogWindow.catalogEntry !== undefined ? { catalogEntry: catalogWindow.catalogEntry } : {}),
+        ...(catalogWindow.inputLimit !== undefined ? { inputLimit: catalogWindow.inputLimit, inputLimitSource: catalogWindow.inputLimitSource } : {}),
       };
     }
     return {
@@ -253,6 +253,8 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
     identity,
     thresholdSource: getModelPreflightThresholdSource(provider, model, route.contextWindow, route.inputLimit),
     ...(route.inputLimitSource !== undefined ? { inputLimitSource: route.inputLimitSource } : {}),
+    ...(route.inputLimit !== undefined ? { inputLimit: route.inputLimit } : {}),
+    ...(route.catalogEntry !== undefined ? { catalogEntry: route.catalogEntry } : {}),
     contextWindowSource: route.source,
     ...(route.maxOutputTokens !== undefined ? { maxOutputTokens: route.maxOutputTokens } : {}),
   };
@@ -630,10 +632,10 @@ export async function runPreflightGuard(
       return false;
     }
 
-    const { preflight, identity, thresholdSource, contextWindowSource, inputLimitSource } = contextBudgetForCurrentRuntime(self);
+    const { preflight, identity, thresholdSource, contextWindowSource, inputLimitSource, inputLimit, catalogEntry } = contextBudgetForCurrentRuntime(self);
     if (!forceRecover && !forceRateLimit && preflight <= 0) {
       tracePreflightGuard(self, "skipped", "invalid-preflight-threshold", {
-        threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, model: identity,
+        threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, inputLimit, catalogEntry, model: identity,
       });
       return false;
     }
@@ -653,7 +655,7 @@ export async function runPreflightGuard(
       : estimated;
     if (!forceRecover && !forceRateLimit && estimated < preflight && contextTokensIn < preflight) {
       tracePreflightGuard(self, "not-reached", "below-threshold", {
-        threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, model: identity, estimated, contextTokensIn,
+        threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, inputLimit, catalogEntry, model: identity, estimated, contextTokensIn,
       });
       return false;
     }
@@ -665,7 +667,7 @@ export async function runPreflightGuard(
           ? "estimate"
           : "context-tokens";
     tracePreflightGuard(self, "fired", triggerSource, {
-      threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, model: identity, estimated, contextTokensIn,
+      threshold: preflight, thresholdSource, contextWindowSource, inputLimitSource, inputLimit, catalogEntry, model: identity, estimated, contextTokensIn,
     });
 
     self.isCompacting = true;
