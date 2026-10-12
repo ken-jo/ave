@@ -318,17 +318,25 @@ export const MODELS_DEV_MODEL_FIELDS = [
 
 /**
  * The named providers' models out of a full models.dev `api.json`, each model
- * reduced to {@link MODELS_DEV_MODEL_FIELDS}. Provider-level fields (npm
- * package, env names, docs URL) are dropped; the host has its own. A provider
- * absent from the document is left out here and reported by the normalizer.
+ * reduced to {@link MODELS_DEV_MODEL_FIELDS}. Of the provider-level fields only
+ * `api` (the endpoint) is kept; the npm package, env names and docs URL are
+ * dropped, the host has its own. A provider absent from the document is left
+ * out here and reported by the normalizer.
  */
-export function pruneModelsDevDocument(document: unknown, providerIds: readonly string[]): Record<string, { models: Record<string, unknown> }> {
+export function pruneModelsDevDocument(
+  document: unknown,
+  providerIds: readonly string[],
+): Record<string, { api?: string; models: Record<string, unknown> }> {
   const root = record(document);
   if (!root) throw new Error("models.dev document is not an object");
-  const pruned: Record<string, { models: Record<string, unknown> }> = {};
+  const pruned: Record<string, { api?: string; models: Record<string, unknown> }> = {};
   for (const providerId of [...providerIds].sort()) {
-    const models = record(record(root[providerId])?.models);
+    const provider = record(root[providerId]);
+    const models = record(provider?.models);
     if (!models) continue;
+    // The provider's endpoint, kept so a test can hold the provider map to
+    // the rule that a vendor maps only to providers serving its own host.
+    const api = typeof provider?.api === "string" ? provider.api : undefined;
     const kept: Record<string, unknown> = {};
     for (const key of Object.keys(models).sort()) {
       const model = record(models[key]);
@@ -341,7 +349,7 @@ export function pruneModelsDevDocument(document: unknown, providerIds: readonly 
       for (const field of MODELS_DEV_MODEL_FIELDS) if (model[field] !== undefined) fields[field] = model[field];
       kept[key] = fields;
     }
-    pruned[providerId] = { models: kept };
+    pruned[providerId] = { ...(api !== undefined ? { api } : {}), models: kept };
   }
   return pruned;
 }

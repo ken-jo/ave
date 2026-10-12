@@ -50,6 +50,7 @@ import type { SessionGoal } from "../shared/session-goal.js";
 import type { ChatStreamEvent, ChatEntry } from "../lib/chat-stream-state.js";
 import type { AgentSpawnEvent } from "../shared/subagent-events.js";
 import type { SerializedHistoryMessage } from "../shared/chat-history.js";
+import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
 import type { TurnResult } from "../engine/conversation-loop.js";
 import type { AppBootstrapStatus } from "../shared/bootstrap-status.js";
 // Type-only: the renderer declares the surface it consumes; this file is the
@@ -331,6 +332,8 @@ export function buildInternalApiSurface() {
         | { ok: true; sessionId: string; messages: SerializedHistoryMessage[] }
         | { ok: false; error: string; messages: SerializedHistoryMessage[] }
       >,
+    getSubAgentTranscript: async (request: SubAgentTranscriptRequest) =>
+      ipcRenderer.invoke(CHANNELS.sidechat.getSubAgentTranscript, request) as Promise<SubAgentTranscriptResult>,
     abort: async () =>
       ipcRenderer.invoke(CHANNELS.sidechat.abort) as Promise<
         { ok: true } | { ok: false; error: string }
