@@ -226,7 +226,13 @@ export async function resolveApiKey(
   const llmSettings = deps.settingsService.get("llm") as {
     provider?: unknown;
     marketplaceProviderPresetId?: unknown;
+    retiredProvider?: unknown;
   };
+  // An unresolved profile has no active API vendor to choose for the plugin.
+  // Explicit plugin-owned provider choices keep their independent namespace.
+  if (llmSettings.retiredProvider && request.vendor === undefined) {
+    return { ok: false, reason: "no-host-vendor" };
+  }
   const defaultActiveProvider =
     typeof llmSettings.provider === "string" ? llmSettings.provider : "";
   // Map public vendor aliases before key lookup so the request reaches the
