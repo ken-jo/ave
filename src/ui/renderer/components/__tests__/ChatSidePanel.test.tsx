@@ -7,7 +7,7 @@ import type { AveApi } from "../../types.js";
 import type { ChatPreviewTarget, WorkspaceFileItem } from "../../preview/preview-targets.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { ApprovalSurfaceProvider } from "../../hooks/use-approval.js";
-import { approvalSurfaceStub } from "../../../../../test/renderer/helpers.js";
+import { approvalSurfaceStub, deferred } from "../../../../../test/renderer/helpers.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../../shared/side-browser.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
@@ -1508,12 +1508,14 @@ describe("ChatSidePanel", () => {
       originSessionId: "parent-session-1",
       childSessionId: "child-1",
     }));
-    const detail = screen.getByTestId("chat-side-panel-subagent-detail");
-    expect(within(detail).getByTestId("work-group")).toBeTruthy();
-    expect(detail.textContent).toContain("한국어로 오늘 뉴스 요약");
-    expect(detail.textContent).toContain("hydrated child final");
-    expect(detail.textContent).not.toContain("internal profile preamble");
-    expect(within(detail).getByTestId("chat-side-panel-subagent-transcript")).toBeTruthy();
+    await waitFor(() => {
+      const detail = screen.getByTestId("chat-side-panel-subagent-detail");
+      expect(within(detail).getByTestId("work-group")).toBeTruthy();
+      expect(detail.textContent).toContain("한국어로 오늘 뉴스 요약");
+      expect(detail.textContent).toContain("hydrated child final");
+      expect(detail.textContent).not.toContain("internal profile preamble");
+      expect(within(detail).getByTestId("chat-side-panel-subagent-transcript")).toBeTruthy();
+    });
   });
 
   it("subagent tab: renders a localized status label, not the raw enum", () => {
@@ -1766,11 +1768,17 @@ describe("ChatSidePanel", () => {
 
   it("subagent tab: hydrates a unified resume group by childSessionId only", async () => {
     const apiMock = api();
-    apiMock.chatGetSubAgentTranscript = vi.fn(async () => ({
-      ok: true,
-      childSessionId: "child-1",
-      messages: [{ index: 0, role: "assistant", content: "hydrated unified transcript" }],
-    }));
+    // Keep the response pending through the request assertion to exercise the
+    // interval between requesting a transcript and committing it to the DOM.
+    const transcriptReady = deferred<void>();
+    apiMock.chatGetSubAgentTranscript = vi.fn(async () => {
+      await transcriptReady.promise;
+      return {
+        ok: true,
+        childSessionId: "child-1",
+        messages: [{ index: 0, role: "assistant", content: "hydrated unified transcript" }],
+      };
+    });
     const subAgentSpawns: SubAgentSpawn[] = [
       {
         spawnId: "live-orig",
@@ -1803,7 +1811,11 @@ describe("ChatSidePanel", () => {
     expect(apiMock.chatGetSubAgentTranscript).not.toHaveBeenCalledWith(
       expect.objectContaining({ toolUseId: "resume-tool", spawnId: "live-orig" }),
     );
-    expect(screen.getByTestId("chat-side-panel-subagent-detail").textContent).toContain("hydrated unified transcript");
+    transcriptReady.resolve(undefined);
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-side-panel-subagent-detail").textContent).toContain("hydrated unified transcript");
+      expect(apiMock.chatGetSubAgentTranscript).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("subagent tab: keeps hydrated child transcript and live tail for the selected live spawn", async () => {
@@ -1842,9 +1854,11 @@ describe("ChatSidePanel", () => {
       originSessionId: "parent-session-1",
       childSessionId: "child-1",
     }));
-    const detail = screen.getByTestId("chat-side-panel-subagent-detail");
-    expect(detail.textContent).toContain("hydrated original transcript");
-    expect(detail.textContent).toContain("live resume tail");
+    await waitFor(() => {
+      const detail = screen.getByTestId("chat-side-panel-subagent-detail");
+      expect(detail.textContent).toContain("hydrated original transcript");
+      expect(detail.textContent).toContain("live resume tail");
+    });
   });
 
   it("subagent tab: empty state when the chat has no spawns", () => {
