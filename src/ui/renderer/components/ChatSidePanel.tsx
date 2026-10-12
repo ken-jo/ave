@@ -183,7 +183,8 @@ function SubAgentTranscriptDetail({
   // The conversation that started THIS agent — the side chat's, for an agent
   // its turn spawned — and the panel's conversation only for a restored row.
   const parentSessionId = spawn.parentSessionId ?? panelSessionId;
-  const hydrationKey = `${parentSessionId ?? ""}\u0001${spawn.childSessionId ?? ""}`;
+  const isTerminalSpawn = spawn.status === "done" || spawn.status === "error" || spawn.status === "interrupted";
+  const hydrationKey = `${parentSessionId ?? ""}\u0001${spawn.childSessionId ?? ""}\u0001${isTerminalSpawn ? "terminal" : "active"}`;
   const [hydrated, setHydrated] = useState<TranscriptHydration | null>(null);
   useEffect(() => {
     if (!parentSessionId || !spawn.childSessionId || typeof api.chatGetSubAgentTranscript !== "function") {
@@ -211,6 +212,7 @@ function SubAgentTranscriptDetail({
       cancelled = true;
     };
   }, [api, parentSessionId, spawn.childSessionId, hydrationKey]);
+  // Prevent a one-frame flash from the previous selection before effects run.
   const activeHydration = hydrated?.key === hydrationKey ? hydrated : null;
   const sourceEntries = useMemo(() => {
     const hydratedEntries = activeHydration?.status === "loaded" ? activeHydration.entries : [];
@@ -224,7 +226,7 @@ function SubAgentTranscriptDetail({
   const isHydrating = Boolean(parentSessionId && spawn.childSessionId
     && typeof api.chatGetSubAgentTranscript === "function"
     && (!activeHydration || activeHydration.status === "loading"));
-  const isHydrationFailed = activeHydration?.status === "failed";
+  const isHydrationFailed = isTerminalSpawn && activeHydration?.status === "failed";
   return (
     <div className="min-h-0 min-w-0 space-y-3 py-1" data-testid="chat-side-panel-subagent-transcript">
       {isHydrating ? (
