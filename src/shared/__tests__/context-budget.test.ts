@@ -854,6 +854,20 @@ describe("context limits behind a custom endpoint", () => {
     });
   });
 
+  it("does not infer input or tool capabilities for an aliased id at another host", () => {
+    // gpt-3.5-turbo is a no-tools, text-only catalog entry; a gateway's alias of that
+    // name is not that model, so neither fact may be taken from it.
+    const route = gatewayRoute();
+    route.vendors.openai.model = "gpt-3.5-turbo";
+    const resolved = resolveContextWindowForRoute(route);
+    expect(resolved).not.toHaveProperty("toolCall");
+    expect(resolved).not.toHaveProperty("inputModalities");
+    route.vendors.openai.baseUrl = "https://api.openai.com/v1";
+    expect(resolveContextWindowForRoute(route).toolCall).toEqual({
+      supported: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo",
+    });
+  });
+
   it("does not recover an unknown named entry from public pricing at a custom host", () => {
     const route = gatewayRoute();
     route.vendors.openai.catalogModel = "openai/not-listed";
@@ -874,6 +888,9 @@ describe("context limits behind a custom endpoint", () => {
       model: "gpt-5.2", contextWindow: 64_000, source: "vendor-setting",
       output: { requested: 32_000, requestedSource: "host-default", ceiling: 128_000, ceilingSource: "model-catalog",
         effective: 32_000, effectiveSource: "host-default" },
+      // The named entry also states the model's inputs and tool support.
+      inputModalities: expect.objectContaining({ source: "model-catalog", catalogEntry: "openai/gpt-5.2" }),
+      toolCall: expect.objectContaining({ source: "model-catalog", catalogEntry: "openai/gpt-5.2" }),
     });
   });
 

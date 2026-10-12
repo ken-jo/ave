@@ -311,9 +311,11 @@ export function resolveInputModalities(params: {
   model: string;
   reported?: readonly string[];
   catalogModel?: string;
+  /** The route's endpoint: an implicit name match follows the same identity rule as its limits (§4). */
+  baseUrl?: string;
   imageInput?: boolean;
 }): ResolvedInputModalities | undefined {
-  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel);
+  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl);
   const input = hit?.model.modalities?.input;
   const reported = params.reported?.map((modality) => modality.trim().toLowerCase()).filter(Boolean);
   const resolved: ResolvedInputModalities | undefined = params.catalogModel !== undefined && hit && input !== undefined
@@ -352,8 +354,10 @@ export function resolveToolCallSupport(params: {
   model: string;
   reported?: readonly string[];
   catalogModel?: string;
+  /** The route's endpoint: an implicit name match follows the same identity rule as its limits (§4). */
+  baseUrl?: string;
 }): ResolvedToolCallSupport | undefined {
-  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel);
+  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl);
   const supported = hit?.model.toolCall;
   if (params.catalogModel !== undefined && hit && supported !== undefined) {
     return { supported, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` };
@@ -491,12 +495,14 @@ export function resolveContextWindowForRoute(
     imageInput: llmRouteImageInput(block, model, address.credentialScope),
     ...(entry?.inputModalities !== undefined ? { reported: entry.inputModalities } : {}),
     ...(catalogModel !== undefined ? { catalogModel } : {}),
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
   });
   const toolCall = resolveToolCallSupport({
     vendor: llm.provider,
     model,
     ...(entry?.supportedParameters !== undefined ? { reported: entry.supportedParameters } : {}),
     ...(catalogModel !== undefined ? { catalogModel } : {}),
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
   });
   return {
     ...resolved,

@@ -2207,6 +2207,7 @@ export function LlmTab(props: LlmTabProps) {
         const toolCall = resolveToolCallSupport({
           vendor: row.apiVendorId,
           model: modelId,
+          baseUrl: reportedBaseUrl || undefined,
           reported: savedEntry?.supportedParameters,
           catalogModel: row.presetId ? undefined : savedVendorBlocks[row.apiVendorId]?.catalogModel,
         });
@@ -2224,6 +2225,7 @@ export function LlmTab(props: LlmTabProps) {
           ...(visionVendor && supportsVision(visionVendor, modelId, {
             inputModalities: resolveInputModalities({
               vendor: visionVendor, model: modelId,
+              baseUrl: reportedBaseUrl || undefined,
               imageInput: llmRouteImageInput(savedVendorBlocks[row.apiVendorId] ?? {}, modelId, row.presetId),
               reported: savedEntry?.inputModalities,
               catalogModel: row.presetId ? undefined : savedVendorBlocks[row.apiVendorId]?.catalogModel,

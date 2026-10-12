@@ -192,6 +192,17 @@ describe("tool capability at the wire boundary", () => {
     expect(fixture.body()).not.toHaveProperty("tools");
   });
 
+  it("keeps tools on direct calls to a same-name alias at another host", async () => {
+    // The catalog's gpt-3.5-turbo takes no tools; a gateway's model of that name is
+    // not that entry, under the same endpoint-identity rule as its output limit.
+    const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
+    const provider = new VercelUnifiedProvider("openai", "fixture-key", "https://gateway.invalid/v1", fetchResponse);
+    await collectStreamEvents(provider.streamTurn(request("gpt-3.5-turbo", { tools: TOOLS })));
+    expect(fetchResponse).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
+    expect(body.tools).toHaveLength(TOOLS.length);
+  });
+
   it("uses the resolved named entry instead of a conflicting name match", async () => {
     const fixture = wireFixture();
     await collectStreamEvents(fixture.provider.streamTurn(request("gpt-3.5-turbo", {

@@ -353,7 +353,8 @@ Slice 4 is implemented.
   1. the user's **Settings → Model → Image input** declaration for this model and
      provider route; if undeclared, the input list of the entry explicitly named with `catalogModel`;
   2. the endpoint's `/models` report (`inputModalities`; an empty list states nothing);
-  3. the catalog entry's `modalities.input` for the model id;
+  3. the catalog entry's `modalities.input` for the model id, matched by name only
+     where the endpoint establishes the model's identity (§4);
   4. the name rules, where nobody states the modalities (slice 7 removes them).
 
   **Image input** defaults to **Automatic**, preserving that fallback. **Supported**
@@ -374,7 +375,7 @@ Slice 4 is implemented.
   named entry and saved endpoint report.
   The API transport checks the same resolved route before sending any user or
   tool-result image, including direct calls and replayed history. A caller without a
-  route uses the catalog and name rules. A fallback resolves its own model rather than
+  route uses the catalog under the same endpoint-identity rule, then the name rules. A fallback resolves its own model rather than
   inheriting the primary route's reported or named capabilities.
   A transport refusal carries `image-input-unsupported`; the stream collector
   presents localized recovery guidance for retained conversation images and
@@ -388,7 +389,8 @@ Slice 4 is implemented.
   on every rebuild within the turn (`rebuildTurnToolSchemas` in
   `src/engine/turn/query-loop.ts`). Its turn record carries
   `modelSettings.tools: { sent: false, source: "model-catalog", catalogEntry }`.
-  - Absent `toolCall` is unknown, and tools are sent as before.
+  - Absent `toolCall` is unknown, and tools are sent as before. A same-name model at a
+    custom endpoint is not matched to the catalog by name (§4), so it keeps its tools.
   - A tool capability the user explicitly names with `catalogModel` wins over the
     endpoint report, including a no-tools entry when the endpoint reports `tools`.
     Otherwise an endpoint's explicit `tools` in `supported_parameters` overrides a catalog denial with

@@ -681,6 +681,20 @@ describe("LlmTab provider cards", () => {
     expect(within(chooserOption(model)).queryByTestId(`llm-tab:model-no-tools:${model}`)).not.toBeInTheDocument();
   });
 
+  it.each([
+    { baseUrl: "https://gateway.invalid/v1", badge: false },
+    { baseUrl: "https://api.openai.com/v1", badge: true },
+  ])("follows the engine's endpoint identity for a same-name model's tool badge: $baseUrl", async ({ baseUrl, badge }) => {
+    const model = "gpt-3.5-turbo";
+    const { api } = profileApi({ vendors: { openai: { model, baseUrl } } }, {
+      hasApiKey: storedKeysFor("openai"),
+      listLlmModels: vi.fn(() => new Promise<LlmModelListResult>(() => {})),
+    });
+    await renderTab(api, { vendor: "openai", baseUrl, model });
+    expect(await chooserModelIds()).toContain(model);
+    expect(Boolean(within(chooserOption(model)).queryByTestId(`llm-tab:model-no-tools:${model}`))).toBe(badge);
+  });
+
   it.each(["pending", "failed"])("keeps the tool badge consistent with the engine during a %s capability cache save", async (saveState) => {
     const model = "gpt-3.5-turbo";
     const { api } = profileApi({

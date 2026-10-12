@@ -65,7 +65,12 @@ import type { MarketplaceInstalledProviderPreset } from "../../../shared/marketp
 import { isGuardedInsecureCredentialedModelProviderFetch } from "../marketplace-provider-fetch.js";
 import { normalizeOutputTokenLimit } from "../output-token-limit.js";
 import { planReasoning, usesOpenAIResponsesWire } from "../reasoning-plan.js";
-import { resolveOutputCeiling, resolveToolCallSupport } from "../../../shared/context-budget.js";
+import {
+  resolveInputModalities,
+  resolveOutputCeiling,
+  resolveToolCallSupport,
+  type RouteModelCapabilities,
+} from "../../../shared/context-budget.js";
 import { supportsVision } from "../vendor-capabilities.js";
 import { toGrammarSafeToolSchemas } from "../grammar-safe-tool-schema.js";
 import { selectAssistantWireThinkingBlocks } from "../assistant-wire-content.js";
@@ -211,6 +216,20 @@ function observeRequestControls(
   };
 }
 
+function routelessModelCapabilities(params: {
+  vendor: string;
+  model: string;
+  baseUrl?: string;
+  catalogModel?: string;
+}): RouteModelCapabilities {
+  const inputModalities = resolveInputModalities(params);
+  const toolCall = resolveToolCallSupport(params);
+  return {
+    ...(inputModalities !== undefined ? { inputModalities } : {}),
+    ...(toolCall !== undefined ? { toolCall } : {}),
+  };
+}
+
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
 const CONTEXT_1M_BETA = "context-1m-2025-08-07";
 
@@ -291,12 +310,19 @@ export class VercelUnifiedProvider implements LLMProvider {
     const slot = this.vendorSlot;
 
     try {
+      // The endpoint that establishes model identity; an SDK-managed route has none.
+      const baseUrl = slot === "vertex-ai" ? undefined : this.providerMetadata?.baseUrl ?? this.baseUrl;
+      // A caller without a resolved route (a fallback, a direct call) gets the
+      // catalog under the same endpoint-identity rule the route would use.
+      const capabilities: RouteModelCapabilities = params.modelCapabilities ?? routelessModelCapabilities({
+        vendor: this.vendor, model: params.model, baseUrl, catalogModel: params.catalogModel,
+      });
       const hasImages = params.messages.some((message) =>
         message.role === "user"
           ? Array.isArray(message.content) && message.content.some((part) => part.type === "image")
           : message.role === "tool_result" && message.image !== undefined,
       );
-      if (hasImages && !supportsVision(this.vendor, params.model, params.modelCapabilities)) {
+      if (hasImages && !supportsVision(this.vendor, params.model, capabilities)) {
         yield { type: "error", error: "Model does not support image input", code: "image-input-unsupported", classification: "model" };
         return;
       }
@@ -313,10 +339,7 @@ export class VercelUnifiedProvider implements LLMProvider {
               : "derived-user",
         },
       );
-      const toolCall = params.modelCapabilities !== undefined
-        ? params.modelCapabilities.toolCall
-        : resolveToolCallSupport({ vendor: this.vendor, model: params.model });
-      const toolSchemas = toolCall?.supported === false ? undefined : params.tools;
+      const toolSchemas = capabilities.toolCall?.supported === false ? undefined : params.tools;
       const tools = buildTools(
         useOpenAIResponsesAliases
           ? remapToolSchemasForOpenAIResponses(toolSchemas)
@@ -330,7 +353,6 @@ export class VercelUnifiedProvider implements LLMProvider {
       // the limit the turn records. A purpose-specific limit (finalize,
       // background, memory, reviewer) arrives without one and meets the
       // catalog's here.
-      const baseUrl = slot === "vertex-ai" ? undefined : this.providerMetadata?.baseUrl ?? this.baseUrl;
       const ceiling = params.outputCeiling === undefined
         ? resolveOutputCeiling({ vendor: this.vendor, model: params.model, baseUrl, catalogModel: params.catalogModel })?.ceiling
         : params.outputCeiling ?? undefined;
