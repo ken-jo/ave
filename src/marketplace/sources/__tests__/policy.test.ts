@@ -1,5 +1,5 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { lstat, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -63,6 +63,17 @@ describe("loadMarketplacePolicy", () => {
     expect(await loadMarketplacePolicy(join(dir, "absent.json"))).toEqual({ ok: true, policy: EMPTY_MARKETPLACE_POLICY, path: join(dir, "absent.json") });
     writeFileSync(path, JSON.stringify({ version: 1, requireExplicitApproval: true, managed: false, updatedAt: "x" }));
     expect(await loadMarketplacePolicy(path)).toEqual({ ok: true, policy: EMPTY_MARKETPLACE_POLICY, path });
+  });
+
+  it("treats an ENOTDIR policy path as unreadable rather than unrestricted", async () => {
+    const parent = join(dir, "admin");
+    writeFileSync(parent, "not a directory");
+    expect(await loadMarketplacePolicy(join(parent, "policy.json"))).toMatchObject({ ok: false });
+  });
+
+  it("treats a dangling policy symlink as unreadable rather than unrestricted", async () => {
+    symlinkSync(join(dir, "missing-target.json"), path, "file");
+    expect(await loadMarketplacePolicy(path)).toMatchObject({ ok: false });
   });
 
   it("reads the design example and keeps a key listed in both lists as required only", async () => {
@@ -256,6 +267,7 @@ describe("FilePolicySource (§18.6)", () => {
   function coarseClock(clock: { stamp: number; now: number }) {
     const counts = { reads: 0 };
     const access: PolicyFileAccess = {
+      lstat: (file) => lstat(file),
       stat: async (file) => {
         const info = await stat(file);
         return { size: info.size, ino: info.ino, dev: info.dev, mtimeMs: clock.stamp, ctimeMs: clock.stamp };
@@ -385,6 +397,33 @@ describe("FilePolicySource (§18.6)", () => {
     expect(source.digest).toBe("absent");
     writeFileSync(join(dir, "absent.json"), JSON.stringify({ version: 1, marketplaces: { requireHttps: true } }));
     expect((await source.check())?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+  });
+
+  it("refreshes an absent policy to unreadable when a parent becomes a file", async () => {
+    const parent = join(dir, "admin");
+    const source = await FilePolicySource.open(join(parent, "policy.json"));
+    expect(source.digest).toBe("absent");
+    writeFileSync(parent, "not a directory");
+
+    const update = await source.check();
+
+    expect(update?.load).toMatchObject({ ok: false });
+    expect(update?.digest).toBe("unreadable:ENOTDIR");
+    source.apply(update!);
+    expect(source.load.ok).toBe(false);
+  });
+
+  it("refreshes an absent policy to unreadable when a dangling symlink appears", async () => {
+    const source = await FilePolicySource.open(path);
+    expect(source.digest).toBe("absent");
+    symlinkSync(join(dir, "missing-target.json"), path, "file");
+
+    const update = await source.check();
+
+    expect(update?.load).toMatchObject({ ok: false });
+    expect(update?.digest).toBe("unreadable:ENOENT");
+    source.apply(update!);
+    expect(source.load.ok).toBe(false);
   });
 });
 

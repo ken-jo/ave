@@ -8,6 +8,7 @@ import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
 import { aveHome } from "../shared/ave-home.js";
 import type { PolicySource } from "../shared/policy-editability.js";
+import { isAdminPolicyFileAbsent } from "../lib/admin-policy-file.js";
 const log = createLogger("policy-store");
 
 
@@ -130,8 +131,7 @@ async function readPolicyFile(filePath: string): Promise<PolicyFileRead> {
     raw = await readFile(filePath, "utf-8");
   } catch (err: unknown) {
     const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
-    // Only ENOENT is absence; other failures retain the administrative lock.
-    if (code === "ENOENT") return { status: "absent" };
+    if (await isAdminPolicyFileAbsent(filePath, err)) return { status: "absent" };
     log.error(`failed to read ${filePath} (${typeof code === "string" ? code : "unknown error"})`);
     return { status: "invalid" };
   }

@@ -14,6 +14,7 @@ type MockFileStore = Record<string, string>;
 
 const files: MockFileStore = {};
 const readErrors: Record<string, NodeJS.ErrnoException> = {};
+const symbolicLinks = new Set<string>();
 const { policyErrors } = vi.hoisted(() => ({ policyErrors: vi.fn() }));
 
 vi.mock("../../lib/logger.js", () => ({
@@ -22,6 +23,12 @@ vi.mock("../../lib/logger.js", () => ({
 
 vi.mock("node:fs/promises", () => ({
   mkdir: vi.fn(async () => undefined),
+  lstat: vi.fn(async (path: string) => {
+    if (files[path] !== undefined || symbolicLinks.has(path)) {
+      return { isSymbolicLink: () => symbolicLinks.has(path) };
+    }
+    throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+  }),
   readFile: vi.fn(async (path: string) => {
     if (readErrors[path]) throw readErrors[path];
     const content = files[path as string];
@@ -60,6 +67,7 @@ describe("policy-store", () => {
     delete files[ADMIN_PATH];
     delete readErrors[USER_PATH];
     delete readErrors[ADMIN_PATH];
+    symbolicLinks.clear();
     vi.clearAllMocks();
   });
 
@@ -272,6 +280,27 @@ describe("policy-store", () => {
     expect(result.requireExplicitApproval).toBe(true);
     expect(result.managed).toBe(true);
     expect(isPolicyUserEditable(result)).toBe(false);
+  });
+
+  it("a dangling admin symlink requires explicit approval and locks edits", async () => {
+    writeFile(USER_PATH, makeTestPolicy({ requireExplicitApproval: false }));
+    symbolicLinks.add(ADMIN_PATH);
+
+    const loaded = await loadPolicy(USER_PATH, ADMIN_PATH);
+
+    expect(loaded.requireExplicitApproval).toBe(true);
+    expect(loaded.managed).toBe(true);
+    expect(loaded.source).toBe("merged");
+    expect(isPolicyUserEditable(loaded)).toBe(false);
+  });
+
+  it("a dangling admin symlink rejects saves before opening user state", async () => {
+    symbolicLinks.add(ADMIN_PATH);
+
+    await expect(savePolicy({ requireExplicitApproval: false }, USER_PATH, ADMIN_PATH)).rejects.toThrow();
+    expect(mkdir).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    expect(files[USER_PATH]).toBeUndefined();
   });
 
   describe("invalid administrative policy", () => {
