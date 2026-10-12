@@ -1181,12 +1181,12 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     return { ave, updateSettings: api.updateSettings! };
   }
 
-  it("keeps opt-in enabled and shows error banner on ok:false error shape", async () => {
+  it("keeps opt-in enabled and shows a localized error, not main's raw detail, on an ok:false shape", async () => {
     const { updateSettings } = installApiWithWindows({
       sandboxWindowsInstall: vi.fn(async () => ({
         ok: false as const,
         error: "install-failed",
-        message: "srt-win returned non-zero",
+        message: String.raw`srt-win returned non-zero at C:\Users\example\AppData`,
       })),
     });
 
@@ -1195,10 +1195,8 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     });
 
     // The consent panel must be visible (sandboxEnabled=true, applicable, not ready).
-    const installBtn = screen.getByTestId("os-sandbox-windows-consent");
-    expect(installBtn).toBeTruthy();
+    expect(screen.getByTestId("os-sandbox-windows-consent")).toBeTruthy();
 
-    // Click "Re-provision" (i18n key osSandboxWindowsInstallButton → "재설정") — triggers the error-shape branch.
     await act(async () => {
       fireEvent.click(screen.getByText("재설정"));
     });
@@ -1207,9 +1205,13 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     // consent panel remains the place to retry/follow instructions.
     expect(updateSettings).not.toHaveBeenCalledWith({ features: { osToolSandbox: false } });
 
-    // An error banner must appear (the i18n key osSandboxWindowsInstallError
-    // wraps the detail: "Windows 샌드박스 설치 오류: {message}").
-    expect(screen.getByText(/srt-win returned non-zero/)).toBeTruthy();
+    // The refusal is visible and localized; main's free text (srt-win output,
+    // local paths with the user name) is not on screen.
+    const outcome = screen.getByTestId("os-sandbox-windows-install-outcome");
+    expect(outcome).toHaveAttribute("data-outcome", "refused");
+    expect(outcome).toHaveTextContent("Windows 샌드박스 설정 오류:");
+    expect(document.body.textContent).not.toContain("srt-win returned non-zero");
+    expect(document.body.textContent).not.toContain("AppData");
 
     // The consent panel must remain visible (toggle stays enabled).
     expect(screen.getByTestId("os-sandbox-windows-consent")).toBeTruthy();
@@ -1237,76 +1239,183 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
   // status mock returns the same not-ready snapshot before and after, which is
   // exactly when the old handler left the panel looking untouched.
   async function clickInstall(result: () => Promise<unknown>) {
-    installApiWithWindows({ sandboxWindowsInstall: vi.fn(result) });
+    const api = installApiWithWindows({ sandboxWindowsInstall: vi.fn(result) });
     await act(async () => {
       render(<PermissionsTab />);
     });
     await act(async () => {
       fireEvent.click(screen.getByText("재설정"));
     });
-    return screen.getByTestId("os-sandbox-windows-install-outcome");
+    return { outcome: screen.getByTestId("os-sandbox-windows-install-outcome"), api };
+  }
+
+  // What ASRT messages look like: srt-win output plus a path with the user name.
+  const RAW_DETAIL = String.raw`srt-win install exited 12: C:\Users\example\AppData\Local\ave`;
+
+  function expectNoRawDetail() {
+    expect(document.body.textContent).not.toContain("AppData");
+    expect(document.body.textContent).not.toContain("srt-win install exited");
   }
 
   it("shows that the install ran but could not be verified, for the shape an older main returns (#1608)", async () => {
-    const outcome = await clickInstall(async () => ({ userState: "ready", wfpState: "cannot-read", ready: false }));
+    const { outcome } = await clickInstall(async () => ({ userState: "ready", wfpState: "cannot-read", ready: false }));
     expect(outcome).toHaveAttribute("data-outcome", "installed-unverified");
-    expect(outcome).toHaveTextContent("설정은 실행되었지만 Ave가 샌드박스가 동작하는지 확인하지 못했습니다(샌드박스 사용자: ready, 네트워크 필터: cannot-read)");
+    expect(outcome).toHaveTextContent("설정은 실행되었지만 Ave가 샌드박스가 동작하는지 확인하지 못했습니다(샌드박스 사용자: 설정됨, 네트워크 필터: 관리자 권한 없이는 확인 불가)");
+    expect(outcome.textContent).not.toMatch(/cannot-read|: ready/);
   });
 
   it.each([
-    [{ outcome: "installed-unverified", userState: "ready", wfpState: "cannot-read", ready: false }, "installed-unverified", "설정은 실행되었지만"],
+    [{ outcome: "installed-unverified", userState: "incomplete", wfpState: "absent", ready: false }, "installed-unverified", "샌드박스 사용자: 일부만 설정됨, 네트워크 필터: 설치 안 됨"],
+    [{ outcome: "installed-unverified", userState: "absent", wfpState: "installed", ready: false }, "installed-unverified", "샌드박스 사용자: 설정 안 됨, 네트워크 필터: 설치됨"],
+    [{ outcome: "installed-unverified", userState: "mystery", ready: false }, "installed-unverified", "샌드박스 사용자: 알 수 없음, 네트워크 필터: 알 수 없음"],
     [{ outcome: "ready", userState: "ready", wfpState: "installed", ready: true }, "ready", "Windows OS 격리 설정이 끝났고 확인되었습니다"],
-    [{ outcome: "already-ready", userState: "ready", wfpState: "installed", ready: true }, "already-ready", "이미 설정되어 있고 확인되었으므로 관리자 확인이 필요하지 않았습니다"],
     [{ outcome: "cancelled", cancelled: true }, "cancelled", "관리자 권한이 허용되지 않아"],
     [{ outcome: "timed-out" }, "timed-out", "2분 안에 Windows 관리자 확인 창에 응답이 없어"],
-    [{ outcome: "failed", errorCode: "install_wfp_failed", message: "WFP filter install failed" }, "failed", "Windows 샌드박스 설정 실패(install_wfp_failed): WFP filter install failed"],
   ])("renders the %j outcome as a visible state", async (result, expected, text) => {
-    const outcome = await clickInstall(async () => result);
+    const { outcome } = await clickInstall(async () => result);
     expect(outcome).toHaveAttribute("data-outcome", expected);
     expect(outcome).toHaveTextContent(text);
     expect(outcome.textContent).not.toMatch(/permissionsTab\./);
   });
 
   it.each([
-    ["null", null],
-    ["an empty object", {}],
-    ["an unknown outcome", { outcome: "rebooting" }],
-    ["a string", "done"],
-  ])("renders %s as an unexpected result, never as nothing", async (_label, result) => {
-    const outcome = await clickInstall(async () => result);
-    expect(outcome).toHaveAttribute("data-outcome", "unexpected");
-    expect(outcome).toHaveTextContent("Windows 샌드박스 설정이 Ave가 알 수 없는 결과를 반환했습니다");
+    ["install_wfp_failed", "Base Filtering Engine"],
+    ["install_user_failed", "로컬 샌드박스 사용자 계정을 만들거나 설정하지 못해"],
+    ["install_config_conflict", "설정이 다른 Windows 샌드박스 네트워크 필터가 이미 있습니다"],
+    ["install_ambient_failed", "시스템 폴더의 쓰기 차단이 적용되지 않아"],
+    ["srt_win_not_found", "Windows 샌드박스 도우미가 없어"],
+    ["unexpected", "예상하지 못한 오류로 중단되었고"],
+    ["install_failed", "Windows 샌드박스 설정에 실패했고(install_failed)"],
+  ])("shows localized copy for failure code %s, never main's message", async (errorCode, text) => {
+    const { outcome } = await clickInstall(async () => ({ outcome: "failed", errorCode, message: RAW_DETAIL }));
+    expect(outcome).toHaveAttribute("data-outcome", "failed");
+    expect(outcome).toHaveAttribute("data-error-code", errorCode);
+    expect(outcome).toHaveTextContent(text);
+    expect(outcome.textContent).not.toMatch(/permissionsTab\.|force/);
+    expectNoRawDetail();
   });
 
-  it("renders a rejected IPC call and a localized refusal as errors", async () => {
-    const rejected = await clickInstall(async () => {
-      throw new Error("ipc channel closed");
+  it.each([
+    ["null", null],
+    ["an empty object", {}],
+    ["an unknown outcome", { outcome: "rebooting", detail: RAW_DETAIL }],
+    ["a string", RAW_DETAIL],
+  ])("renders %s as an unexpected result, never as nothing", async (_label, result) => {
+    const { outcome } = await clickInstall(async () => result);
+    expect(outcome).toHaveAttribute("data-outcome", "unexpected");
+    expect(outcome).toHaveTextContent("Windows 샌드박스 설정이 Ave가 알 수 없는 결과를 반환했습니다");
+    expectNoRawDetail();
+  });
+
+  it("renders a rejected IPC call and a localized refusal as errors, without raw text", async () => {
+    const { outcome: rejected } = await clickInstall(async () => {
+      throw new Error(RAW_DETAIL);
     });
     expect(rejected).toHaveAttribute("data-outcome", "refused");
-    expect(rejected).toHaveTextContent("ipc channel closed");
+    expect(rejected).toHaveTextContent("Ave가 Windows 샌드박스 설정을 실행하지 못해");
+    expectNoRawDetail();
     cleanup();
 
-    const refused = await clickInstall(async () => ({ ok: false, error: "user-keyboard-required", message: "permission change requires active user gesture (keyboard intent)" }));
+    const { outcome: refused } = await clickInstall(async () => ({ ok: false, error: "user-keyboard-required", message: "permission change requires active user gesture (keyboard intent)" }));
     expect(refused).toHaveAttribute("data-outcome", "refused");
     expect(refused.textContent).not.toContain("keyboard intent");
     expect(refused).toHaveTextContent("재설정은 이 창에서 클릭했을 때만 시작되는데, Ave가 클릭을 확인하지 못했습니다");
   });
 
-  it("tells the user to approve the Windows prompt while the install is in flight", async () => {
-    let finish: ((value: unknown) => void) | undefined;
-    installApiWithWindows({ sandboxWindowsInstall: vi.fn(() => new Promise((resolve) => { finish = resolve; })) });
+  it("says the sandbox is already set up, without asking for elevation, when the click-time check finds it ready", async () => {
+    const install = vi.fn(async () => ({ outcome: "ready" }));
+    const { ave } = installApiWithWindows({ sandboxWindowsInstall: install });
     await act(async () => {
       render(<PermissionsTab />);
     });
+    (ave.permission.sandboxWindowsStatus as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+      applicable: true, userState: "ready", wfpState: "cannot-read", ready: true, instructions: "",
+    }));
     await act(async () => {
       fireEvent.click(screen.getByText("재설정"));
     });
-    expect(screen.getByTestId("os-sandbox-windows-install-pending")).toHaveTextContent("Windows 관리자 확인 창에서 허용하세요");
+    expect(install).not.toHaveBeenCalled();
+    const outcome = screen.getByTestId("os-sandbox-windows-install-outcome");
+    expect(outcome).toHaveAttribute("data-outcome", "already-ready");
+    expect(outcome).toHaveTextContent("이미 설정되어 있고 확인되었으므로 관리자 확인이 필요하지 않았습니다");
+  });
+
+  it("still installs when the click-time status check fails", async () => {
+    const install = vi.fn(async () => ({ outcome: "cancelled", cancelled: true }));
+    const { ave } = installApiWithWindows({ sandboxWindowsInstall: install });
     await act(async () => {
-      finish?.({ outcome: "timed-out" });
+      render(<PermissionsTab />);
+    });
+    (ave.permission.sandboxWindowsStatus as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error(RAW_DETAIL));
+    await act(async () => {
+      fireEvent.click(screen.getByText("재설정"));
+    });
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("os-sandbox-windows-install-outcome")).toHaveAttribute("data-outcome", "cancelled");
+    expectNoRawDetail();
+  });
+
+  it("shows a localized banner, not the raw error, when the status re-read after install fails", async () => {
+    const { ave } = installApiWithWindows({ sandboxWindowsInstall: vi.fn(async () => ({ outcome: "timed-out" })) });
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    const status = ave.permission.sandboxWindowsStatus as ReturnType<typeof vi.fn>;
+    status.mockResolvedValueOnce({ applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "" });
+    status.mockRejectedValueOnce(new Error(RAW_DETAIL));
+    await act(async () => {
+      fireEvent.click(screen.getByText("재설정"));
+    });
+    expect(screen.getByTestId("os-sandbox-windows-install-outcome")).toHaveAttribute("data-outcome", "timed-out");
+    expect(screen.getByText(/설정 후 Ave가 Windows 샌드박스 상태를 다시 읽지 못했습니다/)).toBeTruthy();
+    expectNoRawDetail();
+  });
+
+  it("shows 'checking' while the click-time check runs and 'approve the prompt' only while the install runs", async () => {
+    let finishCheck: ((value: unknown) => void) | undefined;
+    let finishInstall: ((value: unknown) => void) | undefined;
+    let finishReread: ((value: unknown) => void) | undefined;
+    const install = vi.fn(() => new Promise((resolve) => { finishInstall = resolve; }));
+    const { ave } = installApiWithWindows({ sandboxWindowsInstall: install });
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    const status = ave.permission.sandboxWindowsStatus as ReturnType<typeof vi.fn>;
+    status.mockImplementationOnce(() => new Promise((resolve) => { finishCheck = resolve; }));
+    status.mockImplementationOnce(() => new Promise((resolve) => { finishReread = resolve; }));
+    const notReady = { applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "" };
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("재설정"));
+    });
+    // Checking: no prompt exists yet, so the hint must not ask to approve one.
+    let pending = screen.getByTestId("os-sandbox-windows-install-pending");
+    expect(pending).toHaveAttribute("data-phase", "checking");
+    expect(pending).toHaveTextContent("현재 Windows 샌드박스 설정을 확인하고 있습니다");
+    expect(pending.textContent).not.toContain("관리자 확인 창에서 허용하세요");
+    expect(install).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishCheck?.(notReady);
+    });
+    // Elevating: the install (and its UAC prompt) is in flight.
+    pending = screen.getByTestId("os-sandbox-windows-install-pending");
+    expect(pending).toHaveAttribute("data-phase", "elevating");
+    expect(pending).toHaveTextContent("Windows 관리자 확인 창에서 허용하세요");
+    expect(install).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      finishInstall?.({ outcome: "ready", userState: "ready", wfpState: "installed", ready: true });
+    });
+    // Re-reading status after the prompt is gone: back to "checking".
+    expect(screen.getByTestId("os-sandbox-windows-install-pending")).toHaveAttribute("data-phase", "checking");
+    expect(screen.getByTestId("os-sandbox-windows-install-outcome")).toHaveAttribute("data-outcome", "ready");
+
+    await act(async () => {
+      finishReread?.(notReady);
     });
     expect(screen.queryByTestId("os-sandbox-windows-install-pending")).toBeNull();
-    expect(screen.getByTestId("os-sandbox-windows-install-outcome")).toHaveAttribute("data-outcome", "timed-out");
+    expect(screen.getByTestId("os-sandbox-windows-install-outcome")).toHaveAttribute("data-outcome", "ready");
   });
 });
 

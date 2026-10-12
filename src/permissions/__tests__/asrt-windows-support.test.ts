@@ -88,14 +88,6 @@ function readAsrtWindowsUtilsSource(): string {
   );
 }
 
-const notReadyStatus = async () => ({
-  applicable: true,
-  userState: "absent" as const,
-  wfpState: "absent" as const,
-  ready: false,
-  instructions: "",
-});
-
 const READY_USER = {
   provisioned: true,
   sid: "S-1-5-21-1",
@@ -356,7 +348,6 @@ describe("asrt-windows-support adapter", () => {
     const events: string[] = [];
 
     const result = await installAsrtWindowsSandbox({
-      readStatus: notReadyStatus,
       loadRuntime: async () => ({
         installWindowsSandboxAsync: async () => {
           events.push("install");
@@ -397,7 +388,6 @@ describe("asrt-windows-support adapter", () => {
     const verifyWindowsWfpEgress = vi.fn(async () => undefined);
 
     const result = await installAsrtWindowsSandbox({
-      readStatus: notReadyStatus,
       loadRuntime: async () => ({
         installWindowsSandboxAsync: async () => ({ cancelled: true }),
         verifyWindowsWfpEgress,
@@ -422,7 +412,6 @@ describe("asrt-windows-support adapter", () => {
 
     await expect(
       installAsrtWindowsSandbox({
-      readStatus: notReadyStatus,
         loadRuntime: async () => ({
           installWindowsSandboxAsync: async () => {
             throw new WindowsSandboxError(
@@ -456,7 +445,6 @@ describe("asrt-windows-support adapter", () => {
 
     await expect(
       installAsrtWindowsSandbox({
-      readStatus: notReadyStatus,
         loadRuntime: async () => ({
           installWindowsSandboxAsync: async () => {
             throw new WindowsSandboxError(
@@ -469,11 +457,7 @@ describe("asrt-windows-support adapter", () => {
         }),
         grantBackendAcl,
       }),
-    ).resolves.toMatchObject({
-      outcome: "failed",
-      errorCode: "install_ambient_failed",
-      message: expect.stringMatching(/deny-stamp the stock world-writable system directories/i),
-    });
+    ).resolves.toEqual({ outcome: "failed", errorCode: "install_ambient_failed" });
 
     // Fail-closed: neither the backend ACL grant nor the readiness verification
     // may run for an install that was not accepted.
@@ -481,28 +465,26 @@ describe("asrt-windows-support adapter", () => {
     expect(verifyWindowsWfpEgress).not.toHaveBeenCalled();
   });
 
-  it("returns already-ready without asking for elevation when the sandbox is ready", async () => {
-    const installWindowsSandboxAsync = vi.fn();
-    const result = await installAsrtWindowsSandbox({
-      readStatus: async () => ({ applicable: true, userState: "ready", wfpState: "installed", ready: true, instructions: "" }),
-      loadRuntime: async () => ({ installWindowsSandboxAsync, verifyWindowsWfpEgress: vi.fn() }),
-      grantBackendAcl: vi.fn(),
-    });
-    expect(result).toEqual({ outcome: "already-ready", userState: "ready", wfpState: "installed", ready: true });
-    expect(installWindowsSandboxAsync).not.toHaveBeenCalled();
-  });
-
-  it("still installs when the pre-install status read fails", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const installWindowsSandboxAsync = vi.fn(async () => ({ cancelled: true as const }));
-    const result = await installAsrtWindowsSandbox({
-      readStatus: async () => { throw new Error("status spawn failed"); },
-      loadRuntime: async () => ({ installWindowsSandboxAsync, verifyWindowsWfpEgress: vi.fn() }),
-      grantBackendAcl: vi.fn(),
-    });
-    expect(installWindowsSandboxAsync).toHaveBeenCalledTimes(1);
-    expect(result.outcome).toBe("cancelled");
-    warn.mockRestore();
+  it("does not read status before installing: the renderer's checking phase owns that (#1608)", async () => {
+    // A pre-read here would run the up-to-30 s WFP verification a second time,
+    // behind the renderer's "approve the Windows prompt" hint.
+    const ORIGINAL_PLATFORM = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    // A machine that is already provisioned: a pre-read would answer "ready".
+    checkWindowsSandboxStatusAsyncMock.mockResolvedValue({ user: READY_USER, wfp: { state: "installed" } });
+    try {
+      const installWindowsSandboxAsync = vi.fn(async () => ({ cancelled: true as const }));
+      const result = await installAsrtWindowsSandbox({
+        loadRuntime: async () => ({ installWindowsSandboxAsync, verifyWindowsWfpEgress: vi.fn() }),
+        grantBackendAcl: vi.fn(),
+      });
+      expect(installWindowsSandboxAsync).toHaveBeenCalledTimes(1);
+      expect(checkWindowsSandboxStatusAsyncMock).not.toHaveBeenCalled();
+      expect(result).toEqual({ outcome: "cancelled", cancelled: true });
+    } finally {
+      Object.defineProperty(process, "platform", { value: ORIGINAL_PLATFORM, configurable: true });
+      checkWindowsSandboxStatusAsyncMock.mockReset();
+    }
   });
 
   it("returns installed-unverified when the install ran but readiness is not proven (issue #1608)", async () => {
@@ -512,7 +494,6 @@ describe("asrt-windows-support adapter", () => {
     const { WindowsSandboxError } = await import("@anthropic-ai/sandbox-runtime");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const result = await installAsrtWindowsSandbox({
-      readStatus: notReadyStatus,
       loadRuntime: async () => ({
         installWindowsSandboxAsync: async () => ({ user: READY_USER, wfp: { state: "cannot-read" } }),
         verifyWindowsWfpEgress: async () => {
@@ -527,7 +508,6 @@ describe("asrt-windows-support adapter", () => {
 
   it("returns installed-unverified for an install result without user or WFP state", async () => {
     const result = await installAsrtWindowsSandbox({
-      readStatus: notReadyStatus,
       loadRuntime: async () => ({
         installWindowsSandboxAsync: async () => ({}) as never,
         verifyWindowsWfpEgress: vi.fn(),
@@ -537,26 +517,37 @@ describe("asrt-windows-support adapter", () => {
     expect(result).toEqual({ outcome: "installed-unverified", userState: "absent", wfpState: "absent", ready: false });
   });
 
-  it("maps every other ASRT install error to failed with its stable code", async () => {
+  it("maps every other ASRT install error to failed with its stable code, and keeps the message in the main log", async () => {
+    // ASRT's messages carry srt-win stdout/stderr and local paths (the user
+    // profile among them). The result crossing IPC carries the code only.
     const { WindowsSandboxError } = await import("@anthropic-ai/sandbox-runtime");
-    for (const code of ["install_wfp_failed", "install_user_failed", "install_config_conflict", "install_failed", "spawn_failed"] as const) {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    for (const code of ["install_wfp_failed", "install_user_failed", "install_config_conflict", "install_failed", "spawn_failed", "srt_win_not_found"] as const) {
+      const detail = String.raw`srt-win: ${code} at C:\Users\example\AppData\Local\ave`;
       const result = await installAsrtWindowsSandbox({
-        readStatus: notReadyStatus,
         loadRuntime: async () => ({
           installWindowsSandboxAsync: async () => {
-            throw new WindowsSandboxError(code, `srt-win: ${code}`, "install");
+            throw new WindowsSandboxError(code, detail, "install");
           },
           verifyWindowsWfpEgress: vi.fn(),
         }),
         grantBackendAcl: vi.fn(),
       });
-      expect(result).toEqual({ outcome: "failed", errorCode: code, message: `srt-win: ${code}` });
+      expect(result).toEqual({ outcome: "failed", errorCode: code });
+      expect(JSON.stringify(result)).not.toContain("AppData");
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Windows sandbox install failed"),
+        expect.objectContaining({ errorCode: code, err: expect.objectContaining({ message: detail }) }),
+      );
     }
+    warn.mockRestore();
   });
 
-  it("maps a non-ASRT install error and a failed backend ACL grant to failed", async () => {
+  it("maps a non-ASRT install error, and an injected ACL grant that throws, to failed/unexpected", async () => {
+    // The default grant is best-effort and never throws; the catch only keeps
+    // the never-throw contract against an injected implementation.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const thrown = await installAsrtWindowsSandbox({
-      readStatus: notReadyStatus,
       loadRuntime: async () => ({
         installWindowsSandboxAsync: async () => {
           throw new Error("boom");
@@ -565,10 +556,9 @@ describe("asrt-windows-support adapter", () => {
       }),
       grantBackendAcl: vi.fn(),
     });
-    expect(thrown).toEqual({ outcome: "failed", errorCode: "unexpected", message: "boom" });
+    expect(thrown).toEqual({ outcome: "failed", errorCode: "unexpected" });
 
     const acl = await installAsrtWindowsSandbox({
-      readStatus: notReadyStatus,
       loadRuntime: async () => ({
         installWindowsSandboxAsync: async () => ({ user: READY_USER, wfp: { state: "installed" } }),
         verifyWindowsWfpEgress: vi.fn(),
@@ -577,7 +567,8 @@ describe("asrt-windows-support adapter", () => {
         throw new Error("icacls refused");
       },
     });
-    expect(acl).toMatchObject({ outcome: "failed", errorCode: "backend-acl", message: expect.stringMatching(/install ran.*icacls refused/) });
+    expect(acl).toEqual({ outcome: "failed", errorCode: "unexpected" });
+    warn.mockRestore();
   });
 
   it("pins the srt-win install exit codes the outcomes rest on", () => {

@@ -63,46 +63,46 @@ export interface SandboxWindowsStatusInfo {
 }
 
 /**
- * What one click of the Windows "Re-provision" action led to. Every value is a
- * state the Settings panel shows on its own, so the click never ends looking
- * like nothing happened (issue #1608):
+ * What the install half of one Windows "Re-provision" click led to. Every value
+ * is a state the Settings panel shows on its own, so the click never ends
+ * looking like nothing happened (issue #1608). The renderer reads status first
+ * (`sandboxWindowsStatus`) and only calls the install when the sandbox is not
+ * already ready, so an "already set up" answer never needs this channel.
  * - `ready`: the install ran and the sandbox is proven ready.
  * - `installed-unverified`: the install ran (exit 0), but Ave could not prove
  *   readiness afterwards; `userState`/`wfpState` say what it saw.
- * - `already-ready`: the sandbox was already ready, so no elevation was asked.
  * - `cancelled`: elevation was not granted (the prompt was dismissed, or
  *   Windows could not show it). Nothing changed.
  * - `timed-out`: nobody answered the elevation prompt within ASRT's 120 s
  *   window (for example, the screen was locked). Nothing was accepted.
  * - `failed`: the install or a step after it failed; `errorCode` is ASRT's
- *   stable `WindowsSandboxError` code, `backend-acl`, or `unexpected`.
+ *   stable `WindowsSandboxError` code or `unexpected`.
  */
 type SandboxWindowsInstallOutcome =
   | "ready"
   | "installed-unverified"
-  | "already-ready"
   | "cancelled"
   | "timed-out"
   | "failed";
 
 /**
  * Result of the user-consented Windows install (one self-elevating UAC).
- * `outcome` is always set; the other fields add detail to it.
+ * `outcome` is always set; the other fields add detail to it. It carries no
+ * free-text diagnostic: ASRT's messages hold srt-win output and local paths
+ * (including the user name), so they stay in the main-process log.
  */
 export interface SandboxWindowsInstallResult {
   outcome: SandboxWindowsInstallOutcome;
   /** Set with `outcome: "cancelled"` (kept for older readers). */
   cancelled?: true;
-  /** Sandbox user state after the install (or the pre-check, for `already-ready`). */
+  /** Sandbox user state after the install. */
   userState?: "absent" | "incomplete" | "ready";
-  /** WFP state after the install (or the pre-check, for `already-ready`). */
+  /** WFP state after the install. */
   wfpState?: "absent" | "installed" | "cannot-read";
   /** Readiness, using the same WFP verification rule as status. */
   ready?: boolean;
   /** With `outcome: "failed"`: a stable machine code. */
   errorCode?: string;
-  /** With `outcome: "failed"`: diagnostic detail (English, from ASRT or Ave). */
-  message?: string;
 }
 
 /** Which branch the boot-time sandbox gate took. */

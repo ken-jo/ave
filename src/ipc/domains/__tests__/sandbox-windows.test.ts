@@ -277,15 +277,15 @@ describe("sandboxWindowsInstall", () => {
     expect(result.ready).toBe(false);
   });
 
-  it("answers already-ready without a UAC prompt when the sandbox is already provisioned (#1608)", async () => {
+  it("installs without reading status first, even on a provisioned machine: the renderer checks first (#1608)", async () => {
     setProcessPlatform("win32");
     asrtState.userStatus = readyUserStatus();
     asrtState.wfpState = "installed";
+    asrtState.installResult = { user: readyUserStatus(), wfp: { state: "installed" } };
     await setup();
     const result = (await invoke(PERMISSIONS.sandboxWindowsInstall, hostFrameEvent(), { intent: USER_INTENT })) as Record<string, unknown>;
-    expect(result.outcome).toBe("already-ready");
-    expect(result.ready).toBe(true);
-    expect(asrtState.installCalls).toHaveLength(0);
+    expect(result.outcome).toBe("ready");
+    expect(asrtState.installCalls).toHaveLength(1);
   });
 
   it("reports ready:true when install lands user ready + WFP installed", async () => {
