@@ -41,6 +41,7 @@ vi.mock("../../safe-send.js", () => ({
 
 import { registerSideChatHandlers } from "../sidechat.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
+import { deferred } from "../../../__tests__/test-helpers.js";
 
 function ev(url?: string): IpcMainInvokeEvent {
   return (url ? { senderFrame: { url } } : {}) as unknown as IpcMainInvokeEvent;
@@ -116,6 +117,42 @@ beforeEach(() => {
 });
 
 describe("side-chat IPC domain", () => {
+  it("announces its current session before the first pending turn can publish tool events", async () => {
+    const pending = deferred<{ route: string }>();
+    const side = makeSideLoop();
+    const main = makeMainLoop();
+    let preludeAtTurnStart: unknown;
+    side.runTurn.mockImplementation(async () => {
+      preludeAtTurnStart = sent.find(({ payload }) => (payload as { type?: string }).type === "user_message")?.payload;
+      return pending.promise;
+    });
+    register(side, main);
+    const turn = handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html"), {
+      input: "first turn", originSessionId: main.getSessionId(),
+      sendRequestId: "side-request",
+    });
+    try {
+      expect(side.runTurn).toHaveBeenCalledOnce();
+      expect(preludeAtTurnStart).toMatchObject({
+        type: "user_message", sessionId: side.getSessionId(), streamId: 1,
+        sendRequestId: "side-request",
+      });
+      expect((preludeAtTurnStart as { sessionId: string }).sessionId).not.toBe(main.getSessionId());
+    } finally {
+      pending.resolve({ route: "chat" });
+      await turn;
+    }
+  });
+
+  it.each([null, 42, {}, [], "", " ", "x".repeat(257)])("refuses an invalid side-chat send correlation %j before starting a turn", async (sendRequestId) => {
+    const side = makeSideLoop();
+    register(side, makeMainLoop());
+    const result = await handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html"), { input: "hello", sendRequestId });
+    expect(result).toEqual({ ok: false, error: "invalid-input" });
+    expect(side.runTurn).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+  });
+
   it("send drives the side loop and streams to ave:sidechat:stream (never chat.stream)", async () => {
     const side = makeSideLoop();
     const main = makeMainLoop();

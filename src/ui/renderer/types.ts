@@ -591,6 +591,8 @@ export type AveApi = {
       attachments?: unknown[],
       /** The conversation this side chat belongs to — recorded at its first turn. */
       originSessionId?: string,
+      /** Opaque correlation echoed only in this send's side-chat user prelude. */
+      sendRequestId?: string,
     ) => Promise<
       | { ok: true; result: unknown }
       | { ok: false; error: string }

@@ -42,10 +42,12 @@ import {
   type ConversationStreamEventSink,
 } from "../handlers/chat-stream.js";
 import { isValidSessionId } from "../../memory/memory-manager.js";
+
 import { sanitizeOutgoingTurnContent, validateUserContentParts } from "../handlers/chat.js";
 import type { IpcDeps } from "../types.js";
 import type { SubAgentTranscriptResult } from "../../shared/subagent-transcript.js";
 
+const MAX_SEND_REQUEST_ID_LENGTH = 256;
 const log = createLogger("sidechat");
 
 export function registerSideChatHandlers(deps: IpcDeps): void {
@@ -138,8 +140,15 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.sidechat.send, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.send, e); return UNAUTHORIZED_FRAME; }
-    const p = (payload ?? {}) as { input?: unknown; attachments?: unknown; originSessionId?: unknown };
+    const p = (payload ?? {}) as { input?: unknown; attachments?: unknown; originSessionId?: unknown; sendRequestId?: unknown };
     if (typeof p.input !== "string") {
+      return { ok: false as const, error: "invalid-input" };
+    }
+    if (p.sendRequestId !== undefined && (
+      typeof p.sendRequestId !== "string"
+      || p.sendRequestId.trim().length === 0
+      || p.sendRequestId.length > MAX_SEND_REQUEST_ID_LENGTH
+    )) {
       return { ok: false as const, error: "invalid-input" };
     }
     const attachments = validateUserContentParts(p.attachments);
@@ -163,10 +172,14 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     }
     const win = getMainWindow();
     const streamId = ++nextSideStreamId;
+    // Bind the first turn's renderer ownership before tools can publish events.
+    const turnSideChatSessionId = loop.getSessionId();
     const sink: ConversationStreamEventSink = createLegacyChatStreamEventSink(
       buildSink(win?.webContents),
       {
         streamId,
+        sessionId: turnSideChatSessionId,
+        ...(typeof p.sendRequestId === "string" ? { sendRequestId: p.sendRequestId } : {}),
         streamChannel: CHANNELS.sidechat.stream,
         fallbackChannel: CHANNELS.sidechat.fallback,
       },
@@ -182,9 +195,6 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       p.input as string,
       attachments,
     );
-    // Read now, not after the turn: `new` and `load` swap the loop's session,
-    // and the side chat this turn belongs to is the one it started on.
-    const turnSideChatSessionId = loop.getSessionId();
     const turnPromise = (async () => {
       return runStreamedTurn(
         loop,

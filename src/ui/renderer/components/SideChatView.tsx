@@ -22,12 +22,12 @@
  * side-chat IPC channel so main-chat frames never appear here. The side chat
  * is a drawing surface of its own: tool APPROVAL requests the side loop
  * raises are drawn by this tab's own `ApprovalDock` and its `ask_user_question`
- * gates by its own `QuestionOverlay`. The panel claims its session for as
- * long as the session exists, so its cards never reach the tile beside it;
+ * gates by its own `QuestionOverlay`. The latest sending or loading view
+ * claims the session, so its cards never reach another retained view or tile;
  * while the panel is closed or another tab is up they wait here, and the
  * window marks the way to them (see `pendingAnswers`).
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ChevronDown, Plus } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
@@ -82,6 +82,7 @@ const NO_CHILD_SESSIONS: ReadonlySet<string> = new Set();
 /** Stable empty lists: the composer's inline menu memoizes on their identity. */
 const NO_COMMAND_ACTIONS: never[] = [];
 const NO_INLINE_PLUGINS: never[] = [];
+const NO_QUESTIONS: never[] = [];
 const NOOP_SELECT_PLUGIN = () => {};
 
 interface SideChatViewProps {
@@ -108,9 +109,11 @@ interface SideChatViewProps {
    * loop — and the agents it started — keeps running in main.
    */
   onSessionIdChange?: ((sessionId: string) => void) | undefined;
+  /** Lets the retained panel observe this exact claim after the side view closes. */
+  onSessionClaim?: ((isCurrent: () => boolean) => void) | undefined;
 }
 
-export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, onSessionIdChange }: SideChatViewProps) {
+export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, onSessionIdChange, onSessionClaim }: SideChatViewProps) {
   const { t } = useTranslation();
   // If side chat is unavailable (preload without the surface), surface a stable
   // disabled state rather than a broken composer.
@@ -133,6 +136,7 @@ export function SideChatView({ api, openRequest, onSessionsChanged, shown = true
       onSessionsChanged={onSessionsChanged}
       shown={shown}
       onSessionIdChange={onSessionIdChange}
+      onSessionClaim={onSessionClaim}
     />
   );
 }
@@ -144,8 +148,54 @@ function SideChatSession({
   onSessionsChanged,
   shown,
   onSessionIdChange,
+  onSessionClaim,
 }: SideChatViewProps & { sideChat: NonNullable<AveApi["sideChat"]>; shown: boolean }) {
   const { t } = useTranslation();
+  const chatContext = useOptionalChatContext();
+  // A side chat runs its own session; its approval cards belong in this panel,
+  // which holds the claim while hidden as well as while shown.
+  const approvals = useApprovalSurface();
+  useSyncExternalStore(approvals.claims.subscribe, approvals.claims.readVersion, approvals.claims.readVersion);
+  const sessionIdRef = useRef<string | null>(null);
+  const bindingActiveRef = useRef(true);
+  const onSessionIdChangeRef = useRef(onSessionIdChange);
+  const onSessionClaimRef = useRef(onSessionClaim);
+  const claimRef = useRef<{
+    sessionId: string;
+    claims: typeof approvals.claims;
+    ownsSession: (sessionId: string) => boolean;
+    release: () => void;
+  } | null>(null);
+  useLayoutEffect(() => {
+    onSessionIdChangeRef.current = onSessionIdChange;
+    onSessionClaimRef.current = onSessionClaim;
+  }, [onSessionIdChange, onSessionClaim]);
+  const hasCurrentClaim = useCallback(() => {
+    const claim = claimRef.current;
+    return bindingActiveRef.current && claim !== null &&
+      claim.claims.isClaimCurrent(`side-chat:${claim.sessionId}`, claim.ownsSession);
+  }, []);
+  const handleSessionBound = useCallback((next: string) => {
+    if (!bindingActiveRef.current) return;
+    const changed = sessionIdRef.current !== next;
+    sessionIdRef.current = next;
+    const claim = claimRef.current;
+    if (claim === null || claim.sessionId !== next || claim.claims !== approvals.claims || !hasCurrentClaim()) {
+      claim?.release();
+      const ownsSession = (id: string) => sessionOwnedBy(next, NO_CHILD_SESSIONS, id);
+      claimRef.current = {
+        sessionId: next,
+        claims: approvals.claims,
+        ownsSession,
+        release: approvals.claims.claim(`side-chat:${next}`, ownsSession),
+      };
+    }
+    // The predicate, claim and panel identity are ready before the host's next
+    // event in this dispatch, even while the session state awaits a render.
+    if (changed) onSessionIdChangeRef.current?.(next);
+    const current = claimRef.current!;
+    onSessionClaimRef.current?.(() => current.claims.isClaimCurrent(`side-chat:${next}`, current.ownsSession));
+  }, [approvals.claims, hasCurrentClaim]);
   // Called BEFORE `useMessageQueue` below, so the transcript's stream listener
   // is registered first and judges each frame first. That ordering is no longer
   // load-bearing — the shared verdict is a pure read and the queue's drain is
@@ -161,56 +211,46 @@ function SideChatSession({
     loadSession,
     abort,
     isCurrentTurnEvent,
-  } = useSideChat(api);
-  const chatContext = useOptionalChatContext();
-  // A side chat runs its own session; its approval cards belong in this panel,
-  // not in the tile beside it and not anywhere else. The panel claims the
-  // session for as long as the loop has one — closed panel, other tab, hidden
-  // tile included — and draws the card over its own composer. Off screen the
-  // card waits here rather than moving: the window marks the panel toggle,
-  // the tab and the sidebar row instead, and the user comes to it.
-  const approvals = useApprovalSurface();
+  } = useSideChat(api, { onSessionBound: handleSessionBound });
   const tileHidden = chatContext?.hidden === true;
-  useEffect(() => {
-    if (sessionId === null) return undefined;
-    return approvals.claims.claim(
-      `side-chat:${sessionId}`,
-      (id) => sessionOwnedBy(sessionId, NO_CHILD_SESSIONS, id),
-    );
-  }, [approvals.claims, sessionId]);
+  // Late session-mutation replies cannot restore a claim after teardown.
+  useLayoutEffect(() => {
+    bindingActiveRef.current = true;
+    if (sessionIdRef.current !== null) handleSessionBound(sessionIdRef.current);
+    return () => {
+      bindingActiveRef.current = false;
+      claimRef.current?.release();
+      claimRef.current = null;
+    };
+  }, [handleSessionBound]);
+  const sessionOwned = hasCurrentClaim();
   const pendingApprovals = useMemo(
-    () => (sessionId === null
+    () => (!sessionOwned || sessionId === null
       ? []
       : approvals.queue.filter((req) =>
         req.sessionId !== undefined && sessionOwnedBy(sessionId, NO_CHILD_SESSIONS, req.sessionId))),
-    [approvals.queue, sessionId],
+    [approvals.queue, sessionId, sessionOwned],
   );
   const approvalHead = pendingApprovals[0] ?? null;
   // The questions the side loop's turn parks, kept and drawn here for the
   // same reason the approvals are. The predicate reads the session through a
   // ref so the channel subscription survives a new or loaded session.
-  const sessionIdRef = useRef(sessionId);
   const ownsSession = useCallback(
-    (id: string) => sessionIdRef.current !== null && sessionOwnedBy(sessionIdRef.current, NO_CHILD_SESSIONS, id),
-    [],
+    (id: string) => hasCurrentClaim() && sessionIdRef.current !== null &&
+      sessionOwnedBy(sessionIdRef.current, NO_CHILD_SESSIONS, id),
+    [hasCurrentClaim],
   );
   const { askQuestions, dismissAskQuestion } = useWorkflowTools(api, {
     ownsSession,
     drawsSession: ownsSession,
   });
-  useLayoutEffect(() => {
-    sessionIdRef.current = sessionId;
-    // Told in the same commit the predicate moves, so the panel's agent list
-    // follows the session without a frame landing in between.
-    if (sessionId !== null) onSessionIdChange?.(sessionId);
-  }, [sessionId, onSessionIdChange]);
   // What the tile beside this panel publishes to the window on the side
   // chat's behalf: the window leaves this session's questions to this panel
   // and marks the way here while a card waits off screen.
   const publishSideChatSurface = chatContext?.publishSideChatSurface;
   useEffect(() => {
-    publishSideChatSurface?.(sessionId === null ? null : { sessionId, askQuestions, shown });
-  }, [publishSideChatSurface, sessionId, askQuestions, shown]);
+    publishSideChatSurface?.(!sessionOwned || sessionId === null ? null : { sessionId, askQuestions, shown });
+  }, [publishSideChatSurface, sessionId, askQuestions, shown, sessionOwned]);
   // Withdrawn on unmount only: a tile whose side chat is gone must not keep
   // reporting a session that nothing draws any more.
   useEffect(() => () => publishSideChatSurface?.(null), [publishSideChatSurface]);
@@ -505,7 +545,7 @@ function SideChatSession({
       </div>
       {/* Same z-index for both cards, so DOM order stacks them: the approval
           comes last and stays the topmost decision, as it does in ChatView. */}
-      <QuestionOverlay api={api} requests={askQuestions} onResolved={dismissAskQuestion} />
+      <QuestionOverlay api={api} requests={sessionOwned ? askQuestions : NO_QUESTIONS} onResolved={dismissAskQuestion} />
       <ApprovalDock
         queue={pendingApprovals}
         conversationLabel={t("chatPreviewRail.sideChat.title")}

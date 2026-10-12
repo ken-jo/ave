@@ -24,6 +24,9 @@ export interface LegacyChatStreamEventSource {
 export interface LegacyChatStreamProjectionOptions {
   /** Existing renderer stale-frame correlation id, if the turn owns one. */
   readonly streamId?: number;
+  /** Active side-chat session captured by its host send handler. */
+  readonly sessionId?: string;
+  readonly sendRequestId?: string;
   readonly streamChannel?: string;
   readonly fallbackChannel?: string;
 }
@@ -56,6 +59,8 @@ function projectPlatformConversationEventToLegacyChatFrame(
         text: event.ownerDetail.text,
         origin: event.origin,
         messageId: event.ownerDetail.messageId,
+        ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+        ...(options.sendRequestId !== undefined ? { sendRequestId: options.sendRequestId } : {}),
         ...(event.ownerDetail.hostSubmitted
           ? { hostSubmitted: event.ownerDetail.hostSubmitted }
           : {}),

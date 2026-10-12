@@ -35,7 +35,7 @@
  * panel. Only the informational `permission_review` STATUS card flows through
  * this transcript.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { t } from "../../../i18n/runtime.js";
 import {
   applyReasoningDelta,
@@ -98,10 +98,30 @@ export interface UseSideChat {
   isCurrentTurnEvent: (event: ChatStreamEvent) => boolean;
 }
 
-export function useSideChat(api: AveApi): UseSideChat {
+export interface UseSideChatOptions {
+  /** Acquires ownership on an accepted send, new or load, including the same session. */
+  onSessionBound?: (sessionId: string) => void;
+}
+
+export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideChat {
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const activeSendRequestIdRef = useRef<string | null>(null);
+  const boundSendRequestIdRef = useRef<string | null>(null);
+  const onSessionBoundRef = useRef(options?.onSessionBound);
+  useLayoutEffect(() => {
+    onSessionBoundRef.current = options?.onSessionBound;
+  }, [options?.onSessionBound]);
+  const recordSessionId = useCallback((next: string, acquired = true) => {
+    const changed = sessionIdRef.current !== next;
+    if (changed) {
+      sessionIdRef.current = next;
+      setSessionId(next);
+    }
+    if (changed || acquired) onSessionBoundRef.current?.(next);
+  }, []);
 
   // Stream-accumulator refs — mirror the main hook so `assistant_round` / `done`
   // can finalize the streamed body / thought exactly as the main transcript does.
@@ -138,6 +158,10 @@ export function useSideChat(api: AveApi): UseSideChat {
   const isStreamingRef = useRef(false);
   const setStreaming = useCallback((next: boolean) => {
     isStreamingRef.current = next;
+    if (!next) {
+      activeSendRequestIdRef.current = null;
+      boundSendRequestIdRef.current = null;
+    }
     setIsStreaming(next);
   }, []);
 
@@ -157,6 +181,8 @@ export function useSideChat(api: AveApi): UseSideChat {
   const resetStreamState = useCallback(() => {
     resetStreamAccumulators();
     activeStreamIdRef.current = null;
+    activeSendRequestIdRef.current = null;
+    boundSendRequestIdRef.current = null;
   }, [resetStreamAccumulators]);
 
   // Abort the in-flight turn when the view unmounts (e.g. switching workspace
@@ -201,7 +227,18 @@ export function useSideChat(api: AveApi): UseSideChat {
       if (!isCurrentTurnEvent(event)) return;
 
       const ev = event;
-      if (ev.type === "llm_status") {
+      if (ev.type === "user_message") {
+        if (isStreamingRef.current
+          && activeSendRequestIdRef.current !== null
+          && ev.sendRequestId === activeSendRequestIdRef.current
+          && typeof ev.sessionId === "string" && ev.sessionId.trim().length > 0) {
+          const acquired = boundSendRequestIdRef.current !== ev.sendRequestId;
+          boundSendRequestIdRef.current = ev.sendRequestId;
+          recordSessionId(ev.sessionId, acquired);
+        }
+        // The shared stream can reach another view whose own send is pending
+        // or idle. Only this request binds ownership; the user bubble is local.
+      } else if (ev.type === "llm_status") {
         // A terminal frame has closed this stream. Do not let delayed provider
         // status resurrect a dismissed placeholder after done, error, or abort.
         if (!isStreamingRef.current || finalAssistantRoundClosedRef.current) return;
@@ -287,7 +324,7 @@ export function useSideChat(api: AveApi): UseSideChat {
         delete w.__aveSideChatStream;
       }
     };
-  }, [api, resetStreamAccumulators, isCurrentTurnEvent, setStreaming, t]);
+  }, [api, resetStreamAccumulators, isCurrentTurnEvent, recordSessionId, setStreaming, t]);
 
   const abort = useCallback(async () => {
     if (!api.sideChat) return;
@@ -359,6 +396,8 @@ export function useSideChat(api: AveApi): UseSideChat {
       // Re-arm the stale-frame guard + clear accumulators: the next turn's first
       // frame adopts its freshly-allocated streamId (see activeStreamIdRef doc).
       resetStreamState();
+      const sendRequestId = crypto.randomUUID();
+      activeSendRequestIdRef.current = sendRequestId;
       setEntries((prev) => [
         ...prev,
         {
@@ -374,7 +413,7 @@ export function useSideChat(api: AveApi): UseSideChat {
       // from the stream). A rejected/failed result surfaces as an error entry so
       // the transcript never hangs on a permanent spinner.
       try {
-        const result = await api.sideChat.send(trimmed, opts?.attachments, opts?.originSessionId);
+        const result = await api.sideChat.send(trimmed, opts?.attachments, opts?.originSessionId, sendRequestId);
         if (!result.ok) {
           // Localized, not the raw code: this hook used to put the kebab-case string
           // straight in the transcript, so a Korean user tripping a bound read
@@ -428,8 +467,8 @@ export function useSideChat(api: AveApi): UseSideChat {
     setStreaming(false);
     setEntries([]);
     const res = await api.sideChat.new();
-    if (res.ok) setSessionId(res.sessionId);
-  }, [api, resetStreamState, setStreaming]);
+    if (res.ok) recordSessionId(res.sessionId);
+  }, [api, recordSessionId, resetStreamState, setStreaming]);
 
   const loadSession = useCallback(
     async (id: string) => {
@@ -444,10 +483,10 @@ export function useSideChat(api: AveApi): UseSideChat {
         // historyToEntries rebuilds tool groups / turn summaries / checkpoints
         // verbatim, identical to the main session-load path.
         setEntries(historyToEntries(res.messages));
-        setSessionId(res.sessionId);
+        recordSessionId(res.sessionId);
       }
     },
-    [api, resetStreamState, setStreaming],
+    [api, recordSessionId, resetStreamState, setStreaming],
   );
 
   // Per-turn provider-usage lookup keyed by turn-start index — same derivation

@@ -403,9 +403,26 @@ way to it:
   there is no frame to draw into. The pending-answer dot goes on the
   maximize control of the pane that covers it and on the conversation's
   sidebar row.
-- **A side chat.** Its panel claims its loop's session for as long as the loop
-  has one and draws its approvals and, through `useWorkflowTools`, its
-  questions over its own composer. The side chat's view stays mounted behind
+- **A side chat.** On the default tab without an `openRequest`, the host
+  publishes its side-chat `sessionId` in the first send's existing
+  `sidechat.stream` `user_message` frame before the loop runs tools, echoing
+  its `sendRequestId`. Only that locally submitted request binds the view.
+  The view synchronously updates its ownership refs, claims only its loop's session
+  under `side-chat:<sessionId>`, and reports it to `ChatSidePanel` before later
+  child, approval, or question events, while the send promise remains pending.
+  The focused tile checks this synchronous claim before adopting a question,
+  so it cannot take a second copy before the side-chat surface is published.
+  This id identifies the side-chat loop; the parent's `originSessionId`
+  groups the side chat, `streamId` correlates the turn, and `messageId`
+  identifies the transcript row. A later accepted send, new or load in another
+  retained view transfers the same session's claim before subsequent events;
+  the previous view stops drawing cards and its panel stops accepting new child
+  frames, including after the side-chat tab closes. Closing the tab alone
+  preserves pending child frames until another view acquires the claim.
+  Sending again reacquires it even when the session id is unchanged. Retained
+  child rows keep their transcript origin. The current owner draws its approvals
+  and, through `useWorkflowTools`, its questions over its own composer.
+  The side chat's view stays mounted behind
   another tab (`ChatSidePanel` hides it rather than unmounting it), so the
   claim and the cards live on; while the panel is closed or the tab is not in
   front the dot goes on the pane's work-panel toggle, on the side-chat tab, and

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { cn } from "../../../lib/utils.js";
 import type { WorkspaceTab, WorkspaceTabKind, WorkspaceTabsStore } from "../preview/workspace-tabs.js";
 import {
@@ -35,6 +35,7 @@ import { useVerticalSplit } from "../hooks/use-vertical-split.js";
 import type { SubAgentSpawn } from "../subagents/types.js";
 import { groupSubAgentSessions } from "../subagents/group-subagent-sessions.js";
 import { useWorkflowTools } from "../hooks/use-workflow-tools.js";
+import { useApprovalSurface } from "../hooks/use-approval.js";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { TranscriptRenderer } from "./TranscriptRenderer.js";
 import { historyToEntries } from "../utils/history.js";
@@ -736,9 +737,21 @@ export function ChatSidePanel({
   // main, and so do the agents it started. Their later frames still land here.
   // The side chat names its session; questions and skills stay with the view.
   const sideChatSessionIdRef = useRef<string | null>(null);
+  const sideChatEventsOwnedRef = useRef(false);
+  const sideChatClaimRef = useRef<(() => boolean) | null>(null);
+  const { claims } = useApprovalSurface();
+  useLayoutEffect(() => claims.subscribe(() => {
+    const current = sideChatSessionIdRef.current;
+    // Keep observing after the side tab closes. Releasing it alone preserves
+    // its pending child frames; another view's acquisition revokes new events.
+    if (current !== null && claims.ownerOf(current) === `side-chat:${current}` &&
+        sideChatClaimRef.current?.() !== true) {
+      sideChatEventsOwnedRef.current = false;
+    }
+  }), [claims]);
   const [sideChatSessionId, setSideChatSessionId] = useState<string | null>(null);
   const ownsSideChatAgent = useCallback(
-    (parentSessionId: string) => parentSessionId === sideChatSessionIdRef.current,
+    (parentSessionId: string) => sideChatEventsOwnedRef.current && parentSessionId === sideChatSessionIdRef.current,
     [],
   );
   const {
@@ -746,12 +759,18 @@ export function ChatSidePanel({
     resetForNewSession: forgetSideChatAgents,
   } = useWorkflowTools(api, { ownsSession: ownsSideChatAgent, drawsSession: drawsNoCard });
   const handleSideChatSession = useCallback((sessionId: string) => {
+    sideChatEventsOwnedRef.current = true;
     if (sessionId === sideChatSessionIdRef.current) return;
     // A new or loaded side chat does not inherit the previous one's agents.
     sideChatSessionIdRef.current = sessionId;
     setSideChatSessionId(sessionId);
     forgetSideChatAgents();
   }, [forgetSideChatAgents]);
+  const handleSideChatClaim = useCallback((isCurrent: () => boolean) => {
+    // Keep retained child history and its transcript origin when ownership moves.
+    sideChatClaimRef.current = isCurrent;
+    sideChatEventsOwnedRef.current = true;
+  }, []);
   const panelSubAgentSpawns = useMemo(() => {
     if (sideChatSubAgentSpawns.length === 0) return subAgentSpawns;
     const listed = new Set(subAgentSpawns.map((spawn) => spawn.spawnId));
@@ -1109,6 +1128,7 @@ export function ChatSidePanel({
                 onSessionsChanged={onSessionsChanged}
                 shown={sideChatActive}
                 onSessionIdChange={handleSideChatSession}
+                onSessionClaim={handleSideChatClaim}
               />
             </div>
           ) : null}

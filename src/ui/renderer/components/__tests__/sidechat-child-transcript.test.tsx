@@ -2,10 +2,11 @@
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useLayoutEffect, useMemo } from "react";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CHANNELS } from "../../../../contract/app-contract.js";
+import { CHANNELS, PERMISSIONS } from "../../../../contract/app-contract.js";
 import { sessionUuid } from "../../../../__tests__/support/session-uuid.js";
 import { cleanupTmpDir } from "../../../../__tests__/support/tmp-dir-teardown.js";
 import { MemoryManager } from "../../../../memory/memory-manager.js";
@@ -19,14 +20,15 @@ import { buildInternalApiSurface } from "../../../../preload/internal-api-surfac
 import { fakeLlmSettings } from "../../../../shared/__tests__/fake-llm-settings.js";
 import type { GenericMessage } from "../../../../engine/llm/types.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
-import { ApprovalSurfaceProvider } from "../../hooks/use-approval.js";
+import { ApprovalSurfaceProvider, useApproval, type ApprovalSurfaceContextValue } from "../../hooks/use-approval.js";
+import { ChatContextProvider, type ChatContextValue } from "../../context/ChatContext.js";
 import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
 import type { SubAgentSpawn } from "../../subagents/types.js";
 import type { AveApi } from "../../types.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
-import { approvalSurfaceStub, emptyToolActivity } from "../../../../../test/renderer/helpers.js";
-import { chatSidePanelLauncherTestId } from "../../../../shared/test-ids.js";
+import { approvalRequest, approvalSurfaceStub, deferred, emptyToolActivity } from "../../../../../test/renderer/helpers.js";
+import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../../shared/test-ids.js";
 import type { AgentSpawnEvent } from "../../../../shared/subagent-events.js";
 import { A2ATaskState } from "../../../../shared/a2a.js";
 
@@ -37,6 +39,9 @@ const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
 let senderFrame: { url: string } | null = { url: "file:///index.html" };
 const replies: Array<{ channel: string; result: unknown }> = [];
+function publish(channel: string, payload: unknown) {
+  for (const listener of listeners.get(channel) ?? []) listener({}, payload);
+}
 const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
   const handler = handlers.get(channel);
   if (!handler) throw new Error(`Unregistered test channel: ${channel}`);
@@ -80,6 +85,7 @@ function parentLoop(initialSessionId: string) {
     isSessionTransitioning: () => transitioning,
     hasProvider: () => true,
     hasActiveTurn: () => false,
+    runTurn: vi.fn(async () => ({ route: "chat" })),
     abortCurrentTurn: vi.fn(),
     loadSession: vi.fn(async (nextSessionId: string) => {
       sessionId = nextSessionId;
@@ -99,6 +105,7 @@ function parentLoop(initialSessionId: string) {
 
 let scratchHome: string;
 let previousAveHome: string | undefined;
+let previousAveDescriptor: PropertyDescriptor | undefined;
 
 beforeEach(() => {
   handlers.clear();
@@ -107,11 +114,14 @@ beforeEach(() => {
   invoke.mockClear();
   senderFrame = { url: "file:///index.html" };
   previousAveHome = process.env.AVE_HOME;
+  previousAveDescriptor = Object.getOwnPropertyDescriptor(window, "ave");
   scratchHome = mkdtempSync(join(tmpdir(), "ave-child-transcript-"));
   process.env.AVE_HOME = scratchHome;
 });
 
 afterEach(async () => {
+  if (previousAveDescriptor) Object.defineProperty(window, "ave", previousAveDescriptor);
+  else Reflect.deleteProperty(window, "ave");
   if (previousAveHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousAveHome;
   await cleanupTmpDir(scratchHome);
@@ -149,10 +159,11 @@ async function setup() {
     getSubAgentRunner: () => runner,
     settingsService: { get: (key: string) => key === "llm" ? fakeLlmSettings() : {} },
     auditLogger: { log: vi.fn() },
-    getMainWindow: () => null,
+    getMainWindow: () => ({ webContents: { send: publish, isDestroyed: () => false, on: vi.fn() } }),
   } as unknown as IpcDeps;
   registerChatHandlers(deps);
   registerSideChatHandlers(deps);
+  handlers.set(PERMISSIONS.approvalPending, async () => []);
   const publicApi = buildPublicSurface();
   const internalApi = buildInternalApiSurface();
   const { api: fixtureApi } = makeMockAveApi({ sideChat: true });
@@ -160,16 +171,27 @@ async function setup() {
     ...(fixtureApi as unknown as AveApi),
     ...publicApi.chatGroup(TILE_GROUP),
     sideChat: internalApi.sideChat,
+    approval: internalApi.approval,
     onAgentSpawnEvent: internalApi.onAgentSpawnEvent,
+    onAskUserQuestion: internalApi.onAskUserQuestion,
+    onAskUserQuestionTimeout: internalApi.onAskUserQuestionTimeout,
   };
   return { api, deps, runner, read, sideLoop, tileLoop };
 }
 
-function Panel({ api, spawns = [] }: { api: AveApi; spawns?: SubAgentSpawn[] }) {
+function Panel({ api, spawns = [], openStoredSession = true, surface }: {
+  api: AveApi;
+  spawns?: SubAgentSpawn[];
+  openStoredSession?: boolean;
+  surface?: ApprovalSurfaceContextValue;
+}) {
   const workspaceTabs = useWorkspaceTabs();
+  const defaultSurface = useMemo(approvalSurfaceStub, []);
+  const context = useMemo(() => ({ currentSessionId: tileSessionId, hasApiKey: true }) as ChatContextValue, []);
   return (
     <TooltipProvider>
-      <ApprovalSurfaceProvider value={approvalSurfaceStub()}>
+      <ApprovalSurfaceProvider value={surface ?? defaultSurface}>
+        <ChatContextProvider value={context}>
         <ChatSidePanel
           api={api}
           sessionId={tileSessionId}
@@ -184,11 +206,22 @@ function Panel({ api, spawns = [] }: { api: AveApi; spawns?: SubAgentSpawn[] }) 
           onWidthCommit={vi.fn()}
           onClose={vi.fn()}
           activity={emptyToolActivity()}
-          sideChatOpenRequest={{ chatGroupId: TILE_GROUP, sessionId: sideSessionId, nonce: 1 }}
+          {...(openStoredSession ? { sideChatOpenRequest: { chatGroupId: TILE_GROUP, sessionId: sideSessionId, nonce: 1 } } : {})}
         />
+        </ChatContextProvider>
       </ApprovalSurfaceProvider>
     </TooltipProvider>
   );
+}
+
+function ApprovalPanel({ api, onSurface }: {
+  api: AveApi;
+  onSurface: (surface: ApprovalSurfaceContextValue) => void;
+}) {
+  const approvals = useApproval();
+  const surface = useMemo(() => ({ ...approvalSurfaceStub(), ...approvals }), [approvals]);
+  useLayoutEffect(() => { onSurface(surface); }, [onSurface, surface]);
+  return <Panel api={api} openStoredSession={false} surface={surface} />;
 }
 
 function openSubagentTab() {
@@ -199,6 +232,81 @@ function openSubagentTab() {
 }
 
 describe("side-chat child transcript across host and renderer", () => {
+  it.each(["spawn", "question", "approval"] as const)(
+    "binds the first pending send without an open request before its %s events",
+    async (eventKind) => {
+      const { api, read, sideLoop } = await setup();
+      const pending = deferred<{ route: string }>();
+      const surface = approvalSurfaceStub();
+      const live: { surface: ApprovalSurfaceContextValue | null } = { surface: null };
+      let ownerAtTurnStart: string | null = null;
+      sideLoop.runTurn.mockImplementation(async () => {
+        ownerAtTurnStart = (live.surface ?? surface).claims.ownerOf(sideSessionId);
+        if (eventKind === "spawn") {
+          const event: AgentSpawnEvent = {
+            type: "start", spawnId: "first-side-spawn", parentSessionId: sideSessionId,
+            taskState: A2ATaskState.SUBMITTED, title: "First side child", childSessionId,
+          };
+          publish(CHANNELS.agentSpawn.event, event);
+          publish(CHANNELS.agentSpawn.event, { ...event, type: "done", taskState: A2ATaskState.COMPLETED, entries: [], toolCallCount: 0 });
+        } else if (eventKind === "question") {
+          publish(CHANNELS.askUserQuestion.request, {
+            id: "ask-side", sessionId: sideSessionId, createdAt: Date.now(),
+            questions: [{ question: "Question for the first side turn", choices: ["Continue", "Stop"] }],
+          });
+          publish(CHANNELS.askUserQuestion.request, {
+            id: "ask-main", sessionId: tileSessionId, createdAt: Date.now(),
+            questions: [{ question: "Foreign question must stay outside", choices: ["Continue", "Stop"] }],
+          });
+        } else {
+          publish(CHANNELS.approval.request, approvalRequest({ id: "approval-side", sessionId: sideSessionId, toolName: "side-task" }));
+          publish(CHANNELS.approval.request, approvalRequest({ id: "approval-main", sessionId: tileSessionId, toolName: "foreign-task" }));
+        }
+        return pending.promise;
+      });
+      if (eventKind === "approval") {
+        Object.defineProperty(window, "ave", { value: { approval: api.approval }, configurable: true, writable: true });
+        render(<ApprovalPanel api={api} onSurface={(next) => { live.surface = next; }} />);
+      } else {
+        render(<Panel api={api} openStoredSession={false} surface={surface} />);
+      }
+      fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("side-chat")));
+      try {
+        const sideView = within(screen.getByTestId("side-chat-view"));
+        fireEvent.change(sideView.getByTestId("composer-textarea"), { target: { value: "Start the first side turn" } });
+        fireEvent.click(sideView.getByTestId("composer-send-button"));
+        await waitFor(() => expect(sideLoop.runTurn).toHaveBeenCalledOnce());
+        expect(replies.some(({ channel }) => channel === CHANNELS.sidechat.send)).toBe(false);
+        expect(invoke).not.toHaveBeenCalledWith(CHANNELS.sidechat.load, expect.anything());
+        expect(invoke).not.toHaveBeenCalledWith(CHANNELS.sidechat.new);
+        if (eventKind === "spawn") {
+          openSubagentTab();
+          await screen.findByRole("option", { name: /First side child/ });
+          await within(screen.getByTestId("chat-side-panel-subagent-detail")).findByText("Persisted side-chat child transcript");
+          expect(read).toHaveBeenCalledExactlyOnceWith({ originSessionId: sideSessionId, childSessionId });
+          expect(invoke).not.toHaveBeenCalledWith(CHANNELS.chat.getSubAgentTranscript, expect.anything(), expect.anything());
+        } else if (eventKind === "question") {
+          const overlay = await sideView.findByTestId(TEST_IDS.questionOverlay);
+          expect(overlay).toHaveTextContent("Question for the first side turn");
+          expect(overlay).not.toHaveTextContent("Foreign question must stay outside");
+        } else {
+          const dock = await sideView.findByTestId(TEST_IDS.approvalDock);
+          expect(dock).toHaveTextContent("side-task");
+          expect(dock).not.toHaveTextContent("foreign-task");
+          expect(live.surface?.claims.ownerOf(tileSessionId)).toBeNull();
+          expect(listeners.get(CHANNELS.approval.request)?.size).toBe(1);
+        }
+        expect(ownerAtTurnStart).toBe(`side-chat:${sideSessionId}`);
+      } finally {
+        await act(async () => {
+          pending.resolve({ route: "chat" });
+          await pending.promise;
+          await Promise.allSettled(invoke.mock.results.map(({ value }) => value));
+        });
+      }
+    },
+  );
+
   it("renders the persisted child through its side-chat owner read", async () => {
     const { api, read } = await setup();
     render(<Panel api={api} />);

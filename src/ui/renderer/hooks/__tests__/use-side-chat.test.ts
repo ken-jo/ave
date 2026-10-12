@@ -5,6 +5,7 @@ import { renderHook, act } from "@testing-library/react";
 import { useSideChat } from "../use-side-chat.js";
 import type { ChatStreamEvent, ChatEntry } from "../../../../lib/chat-stream-state.js";
 import type { AveApi } from "../../types.js";
+import { deferred } from "../../../../../test/renderer/helpers.js";
 
 /**
  * A test double for the side-chat preload surface. Exposes an `emit` so the test
@@ -12,12 +13,12 @@ import type { AveApi } from "../../types.js";
  * plus spies for the invoke channels.
  */
 function makeApi() {
-  let handler: ((e: ChatStreamEvent) => void) | null = null;
+  const handlers = new Set<(e: ChatStreamEvent) => void>();
   const abort = vi.fn(async () => ({ ok: true as const }));
   // Typed as the real invoke is — either shape — so a test can hand back the
   // host's refusal without casting past the contract.
   const send = vi.fn(
-    async (): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> => ({
+    async (_input: string, _attachments?: unknown[], _originSessionId?: string, _sendRequestId?: string): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> => ({
       ok: true,
       result: {},
     }),
@@ -25,6 +26,12 @@ function makeApi() {
   const newSession = vi.fn(async () => ({ ok: true as const, sessionId: "side-2" }));
   const load = vi.fn(async () => ({ ok: true as const, sessionId: "side-3", messages: [] }));
   const list = vi.fn(async () => ({ current: "side-1", sessions: [] }));
+  const onStream = vi.fn((h: (e: ChatStreamEvent) => void) => {
+    handlers.add(h);
+    return () => {
+      handlers.delete(h);
+    };
+  });
   const api = {
     sideChat: {
       send,
@@ -32,19 +39,15 @@ function makeApi() {
       load,
       list,
       abort,
-      onStream: (h: (e: ChatStreamEvent) => void) => {
-        handler = h;
-        return () => {
-          handler = null;
-        };
-      },
+      onStream,
       onFallback: () => () => {},
     },
   } as unknown as AveApi;
   return {
     api,
-    emit: (e: ChatStreamEvent) => act(() => handler?.(e)),
-    spies: { abort, send, newSession, load, list },
+    dispatch: (e: ChatStreamEvent) => { for (const handler of handlers) handler(e); },
+    emit: (e: ChatStreamEvent) => act(() => { for (const handler of handlers) handler(e); }),
+    spies: { abort, send, newSession, load, list, onStream },
   };
 }
 
@@ -55,6 +58,165 @@ function lastAssistant(entries: ChatEntry[]): Extract<ChatEntry, { kind: "assist
   }
   return undefined;
 }
+
+describe("useSideChat session identity", () => {
+  it.each(["idle", "pending"] as const)("binds the announced session only to its sending view when a peer is %s", async (peerState) => {
+    const { api, dispatch, spies } = makeApi();
+    const accepted = deferred<{ ok: true; result: unknown }>();
+    const refused = deferred<{ ok: false; error: string }>();
+    spies.send.mockReturnValueOnce(accepted.promise).mockReturnValueOnce(refused.promise);
+    const onSenderSession = vi.fn();
+    const onPeerSession = vi.fn();
+    const sender = renderHook(() => useSideChat(api, { onSessionBound: onSenderSession }));
+    const peer = renderHook(() => useSideChat(api, { onSessionBound: onPeerSession }));
+    let senderTurn = Promise.resolve();
+    let peerTurn = Promise.resolve();
+    act(() => {
+      senderTurn = sender.result.current.send("sender turn");
+      if (peerState === "pending") peerTurn = peer.result.current.send("peer turn");
+    });
+    try {
+      const prelude = {
+        type: "user_message", sessionId: "side-accepted", streamId: 1,
+        sendRequestId: spies.send.mock.calls[0]?.[3],
+      };
+      await act(async () => { dispatch(prelude); });
+      expect(sender.result.current.sessionId).toBe("side-accepted");
+      expect(peer.result.current.sessionId).toBeNull();
+      expect(onSenderSession).toHaveBeenCalledExactlyOnceWith("side-accepted");
+      expect(onPeerSession).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        dispatch({ type: "done", streamId: 1 });
+        accepted.resolve({ ok: true, result: {} });
+        refused.resolve({ ok: false, error: "streaming-active" });
+        await Promise.all([senderTurn, peerTurn]);
+      });
+    }
+  });
+
+  it("records the first pending send's prelude before rendering without duplicating its user bubble", async () => {
+    const { api, dispatch, spies } = makeApi();
+    const turn = deferred<{ ok: true; result: unknown }>();
+    spies.send.mockReturnValueOnce(turn.promise);
+    const beforeCommit: Array<string | null> = [];
+    const onSessionBound = vi.fn(() => {
+      beforeCommit.push(result.current.sessionId);
+    });
+    const { result } = renderHook(() => useSideChat(api, { onSessionBound }));
+    let settled = false;
+    let pendingSend = Promise.resolve();
+    act(() => {
+      pendingSend = result.current.send("hello").then(() => { settled = true; });
+    });
+    expect(result.current.sessionId).toBeNull();
+    expect(spies.newSession).not.toHaveBeenCalled();
+    expect(spies.load).not.toHaveBeenCalled();
+    expect(spies.list).not.toHaveBeenCalled();
+
+    await act(async () => {
+      dispatch({ type: "user_message", text: "hello", streamId: 7 });
+      expect(onSessionBound).not.toHaveBeenCalled();
+      dispatch({ type: "user_message", text: "hello", messageId: "row-1", sessionId: "side-live", streamId: 7, sendRequestId: spies.send.mock.calls.at(-1)![3] });
+      expect(onSessionBound).toHaveBeenCalledExactlyOnceWith("side-live");
+      expect(beforeCommit).toEqual([null]);
+      dispatch({ type: "user_message", text: "hello", messageId: "row-1", sessionId: "side-live", streamId: 7, sendRequestId: spies.send.mock.calls.at(-1)![3] });
+      expect(onSessionBound).toHaveBeenCalledTimes(1);
+    });
+    expect(result.current.sessionId).toBe("side-live");
+    expect(result.current.entries.filter((entry) => entry.kind === "user")).toEqual([
+      expect.objectContaining({ kind: "user", text: "hello" }),
+    ]);
+    expect(result.current.isStreaming).toBe(true);
+    expect(settled).toBe(false);
+
+    await act(async () => {
+      dispatch({ type: "done", streamId: 7 });
+      turn.resolve({ ok: true, result: {} });
+      await pendingSend;
+    });
+    expect(settled).toBe(true);
+    expect(onSessionBound).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps its recorded identity when a prelude omits or malforms the session id", async () => {
+    const { api, emit, spies } = makeApi();
+    const onSessionBound = vi.fn();
+    const { result } = renderHook(() => useSideChat(api, { onSessionBound }));
+    await act(async () => { await result.current.send("hello"); });
+    const sendRequestId = spies.send.mock.calls.at(-1)![3];
+    emit({ type: "user_message", text: "hello", sessionId: "side-live", streamId: 1, sendRequestId });
+    expect(result.current.sessionId).toBe("side-live");
+    onSessionBound.mockClear();
+
+    for (const identity of [undefined, null, 17, {}, "", " \t\n"]) {
+      emit({ type: "user_message", text: "hello", sessionId: identity, streamId: 1, sendRequestId } as unknown as ChatStreamEvent);
+      expect(result.current.sessionId).toBe("side-live");
+    }
+    for (const correlation of [undefined, null, 42, {}, "", "foreign-request"]) {
+      emit({ type: "user_message", sessionId: "side-foreign", streamId: 1, sendRequestId: correlation } as unknown as ChatStreamEvent);
+      expect(result.current.sessionId).toBe("side-live");
+    }
+    emit({ type: "text_delta", text: "answer", sessionId: "side-other", streamId: 1 });
+    expect(result.current.sessionId).toBe("side-live");
+    expect(onSessionBound).not.toHaveBeenCalled();
+    expect(result.current.entries.filter((entry) => entry.kind === "user")).toHaveLength(1);
+  });
+
+  it("drops superseded and aborted preludes before they can change session ownership", async () => {
+    const { api, emit, spies } = makeApi();
+    const onSessionBound = vi.fn();
+    const { result } = renderHook(() => useSideChat(api, { onSessionBound }));
+    await act(async () => { await result.current.send("one"); });
+    const firstRequestId = spies.send.mock.calls.at(-1)![3];
+    emit({ type: "user_message", sessionId: "side-first", streamId: 1, sendRequestId: firstRequestId });
+    emit({ type: "user_message", sessionId: "side-foreign", streamId: 2, sendRequestId: firstRequestId });
+    expect(result.current.sessionId).toBe("side-first");
+    expect(onSessionBound).toHaveBeenCalledExactlyOnceWith("side-first");
+
+    await act(async () => { await result.current.abort(); });
+    emit({ type: "user_message", sessionId: "side-stale", streamId: 1, sendRequestId: firstRequestId });
+    expect(result.current.sessionId).toBe("side-first");
+    await act(async () => { await result.current.send("two"); });
+    const secondRequestId = spies.send.mock.calls.at(-1)![3];
+    expect(secondRequestId).not.toBe(firstRequestId);
+    emit({ type: "user_message", sessionId: "side-stale", streamId: 1, sendRequestId: firstRequestId });
+    emit({ type: "user_message", sessionId: "side-second", streamId: 2, sendRequestId: secondRequestId });
+    emit({ type: "user_message", sessionId: "side-first", streamId: 1, sendRequestId: firstRequestId });
+    expect(result.current.sessionId).toBe("side-second");
+    expect(onSessionBound.mock.calls).toEqual([["side-first"], ["side-second"]]);
+  });
+
+  it("shares session binding across new, load and preludes without resubscribing for callback changes", async () => {
+    const { api, emit, spies } = makeApi();
+    const firstCallback = vi.fn();
+    const nextCallback = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ onSessionBound }) => useSideChat(api, { onSessionBound }),
+      { initialProps: { onSessionBound: firstCallback } },
+    );
+    await act(async () => { await result.current.newSession(); });
+    expect(firstCallback).toHaveBeenCalledExactlyOnceWith("side-2");
+    await act(async () => { await result.current.loadSession("side-3"); });
+    await act(async () => { await result.current.loadSession("side-3"); });
+    expect(result.current.sessionId).toBe("side-3");
+    expect(firstCallback.mock.calls).toEqual([["side-2"], ["side-3"], ["side-3"]]);
+    const subscriptions = spies.onStream.mock.calls.length;
+
+    rerender({ onSessionBound: nextCallback });
+    expect(nextCallback).not.toHaveBeenCalled();
+    expect(spies.onStream).toHaveBeenCalledTimes(subscriptions);
+    await act(async () => { await result.current.send("hello"); });
+    const sendRequestId = spies.send.mock.calls.at(-1)![3];
+    emit({ type: "user_message", sessionId: "side-3", streamId: 8, sendRequestId });
+    expect(nextCallback).toHaveBeenCalledExactlyOnceWith("side-3");
+    emit({ type: "user_message", sessionId: "side-current", streamId: 8, sendRequestId });
+    expect(result.current.sessionId).toBe("side-current");
+    expect(nextCallback.mock.calls).toEqual([["side-3"], ["side-current"]]);
+    expect(firstCallback).toHaveBeenCalledTimes(3);
+    expect(spies.onStream).toHaveBeenCalledTimes(subscriptions);
+  });
+});
 
 describe("useSideChat stale-frame guard", () => {
   it("adopts the first frame's streamId and applies its deltas", async () => {
