@@ -624,7 +624,7 @@ function pluginOwnedReadRoots(): string[] {
  * it. On Windows both sides go through the same canonicaliser admission uses
  * (`canonicalizePathForMatch`: realpath, which expands 8.3 short names and
  * follows links, then `caseFoldForMatch`), so `…\acme\DATA\work` or
- * `C:\Users\IKCHA~1\…` is recognised as inside `…\acme\data` — a lexical,
+ * `C:\Users\RUNNER~1\…` is recognised as inside `…\acme\data` — a lexical,
  * case-sensitive comparison left such a spelling an independent root, and a
  * Windows grant on an independent root below `data\` is a grant on whatever
  * the plugin later puts there. Elsewhere the comparison stays lexical on the
