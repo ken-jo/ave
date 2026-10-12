@@ -210,8 +210,8 @@ test.describe("workspace rail UX redesign", () => {
     // exactly what the real spawn path stamps.
     const parentSessionId = await page.evaluate(
       async () => (await (window as unknown as {
-        ave: { chatSessions: () => Promise<{ current: string }> };
-      }).ave.chatSessions()).current,
+        aveApi: { chatSessions: () => Promise<{ current: string }> };
+      }).aveApi.chatSessions()).current,
     );
     const sendSpawn = async (event: Omit<AgentSpawnEvent, "parentSessionId">): Promise<void> => {
       await app.evaluate(({ BrowserWindow }, ev) => {
