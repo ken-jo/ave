@@ -3,10 +3,12 @@
  *
  * The one place an Ave vendor id meets a catalog provider id. The generator
  * reads it to decide what the bundled snapshot keeps; the resolver reads it to
- * look a model up. A vendor mapped to `[]` serves models no public catalog
- * describes — the generic custom endpoint and local runtimes — so its limits
- * come from what the endpoint reports and what the user configures, never
- * from a public name that happens to match.
+ * look a model up. A vendor is mapped to the catalog providers whose API
+ * host is the vendor's own endpoint. A vendor mapped to `[]` serves models no
+ * public catalog provider describes at that endpoint — the generic custom
+ * endpoint, local runtimes, and gateways the catalog does not list — so its
+ * limits come from what the endpoint reports and what the user configures,
+ * never from a public name that happens to match.
  *
  * Exhaustive over `LLMVendor`, so adding a vendor fails typecheck until it is
  * placed here.
@@ -46,9 +48,12 @@ export const CATALOG_PROVIDERS_BY_VENDOR: Readonly<Record<LLMVendor, readonly st
   kilo: ["kilo"],
   zai: ["zai"],
   "zai-coding-plan": ["zai-coding-plan"],
-  qwen: [],
-  "qwen-code": [],
-  doubao: [],
+  // DashScope's mainland endpoint (the vendors' baseUrl host), not the
+  // international `alibaba` provider: the two list different models.
+  qwen: ["alibaba-cn"],
+  "qwen-code": ["alibaba-cn"],
+  // Volcengine Ark, the doubao baseUrl host.
+  doubao: ["volcengine"],
   mistral: ["mistral"],
   moonshot: ["moonshotai"],
   asksage: [],

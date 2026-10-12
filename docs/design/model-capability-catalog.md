@@ -75,8 +75,13 @@ it names the catalog's content in a run record (slice 3) and in the refresh cach
 (slice 6), and lets a reader reject a damaged copy (`verifyModelCatalogDocument`).
 Provenance is left out of the name on purpose: a second download of unchanged data has a
 new `fetchedAt` and possibly a new ETag, and must still be the same catalog, so a cache
-entry already stored under a name is kept rather than rewritten.
-`THIRD-PARTY-NOTICES.md` reproduces the license.
+entry already stored under a name is kept rather than rewritten. A run record cites the
+catalog by `sha256` alone; provenance says where a copy came from and is checked for shape
+(`verifyModelCatalogDocument` refuses a copy whose provenance is malformed), but it is not
+part of what the record names. `THIRD-PARTY-NOTICES.md` reproduces the license, and the
+packaged app ships it as `licenses/models.dev/LICENSE-MIT` beside its resources
+(`resources/licenses/models.dev/`, kept equal to the committed input's license by
+`--check`).
 
 ### 3.3 Normalization
 
@@ -95,10 +100,15 @@ input. It has two fault outcomes:
 
 `CATALOG_PROVIDERS_BY_VENDOR` (`src/shared/model-catalog/provider-map.ts`) is the one place
 an Ave vendor id meets a catalog provider id. It is exhaustive over `LLMVendor`, so a new
-vendor fails typecheck until it is placed. The generic OpenAI-compatible endpoint, local
-runtimes (Ollama, LM Studio) and vendors with no catalog provider map to `[]`: their limits
-come from what the endpoint reports and what the user configures, never from a public
-model that happens to share a name.
+vendor fails typecheck until it is placed. A vendor maps to the catalog providers whose API
+host is the vendor's endpoint: Qwen and Qwen Code to `alibaba-cn` (DashScope's mainland
+host, not the international `alibaba`), Doubao to `volcengine` (Ark). The generic
+OpenAI-compatible endpoint, local runtimes (Ollama, LM Studio) and vendors no catalog
+provider serves at their endpoint (SambaNova, LiteLLM, v0, HiCap, Nous, Huawei MaaS, Ask
+Sage, OCA) map to `[]`: their limits come from what the endpoint reports and what the user
+configures, never from a public model that happens to share a name. A mapped vendor's model
+the provider does not list stays unknown to the catalog (Doubao's default
+`doubao-1-5-pro-256k-250115` is one) and falls to the next source.
 
 ### 3.5 Generator and committed input
 
@@ -114,8 +124,10 @@ from the committed input under `scripts/model-catalog/`:
 `--fetch` downloads a new input and regenerates; `--check` (run by `check:gate-core` in CI
 and in the pre-push hook) fails when the snapshot differs from what the input generates;
 `--report` prints the comparison of §8. Both JSON files are laid out one model per line, so
-a refresh's diff is one line per changed model. The snapshot of 2026-10-12 holds 28
-providers and 2,110 models in about 950 KB.
+a refresh's diff is one line per changed model. `--fetch` writes nothing unless every
+required download succeeded (a failed GitHub API call only leaves the upstream head and
+schema blob out; a failed license download fails the run). The snapshot of 2026-10-12
+holds 30 providers and 2,217 models in about 1 MB.
 
 ## 4. Resolution (slice 2)
 

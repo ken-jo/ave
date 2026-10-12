@@ -59,9 +59,31 @@ export function buildModelCatalogDocument(args: {
   return { document: { ...content, sha256: modelCatalogSha256(content) }, diagnostics };
 }
 
+const SHA256 = /^[0-9a-f]{64}$/;
+const GIT_OBJECT = /^[0-9a-f]{40}$/;
+
 /**
- * Reject a document that is not this schema version or whose content does
- * not hash to its stated name. Throws with the reason; a damaged or foreign
+ * What is wrong with a provenance record's shape, or `undefined`. Provenance
+ * is outside the hash, so a copy could carry any provenance under a valid
+ * name; the shape check keeps what a reader reports about a copy's origin
+ * well-formed. A run record cites the catalog by `sha256` alone.
+ */
+function provenanceShapeFault(provenance: ModelCatalogProvenance): string | undefined {
+  const optional = (value: unknown, pattern: RegExp): boolean => value === undefined || (typeof value === "string" && pattern.test(value));
+  if (typeof provenance.url !== "string" || !provenance.url.startsWith("https://")) return "has no https url";
+  if (typeof provenance.fetchedAt !== "string" || Number.isNaN(Date.parse(provenance.fetchedAt))) return "has no fetch time";
+  if (provenance.etag !== undefined && typeof provenance.etag !== "string") return "has a malformed etag";
+  if (typeof provenance.rawSha256 !== "string" || !SHA256.test(provenance.rawSha256)) return "has no download sha256";
+  if (typeof provenance.inputSha256 !== "string" || !SHA256.test(provenance.inputSha256)) return "has no input sha256";
+  if (!optional(provenance.upstreamHeadAtFetch, GIT_OBJECT)) return "has a malformed upstream head";
+  if (!optional(provenance.upstreamSchemaBlob, GIT_OBJECT)) return "has a malformed schema blob";
+  if (provenance.schemaVersion !== MODEL_CATALOG_SCHEMA_VERSION) return `names schema version ${String(provenance.schemaVersion)}`;
+  return undefined;
+}
+
+/**
+ * Reject a document that is not this schema version, whose provenance is
+ * malformed, or whose content does not hash to its stated name. Throws with the reason; a damaged or foreign
  * catalog is never read as a partial one.
  */
 export function verifyModelCatalogDocument(value: unknown): ModelCatalogDocument {
@@ -78,6 +100,8 @@ export function verifyModelCatalogDocument(value: unknown): ModelCatalogDocument
   if (document.provenance?.source !== "models.dev" || document.license?.spdx !== "MIT" || typeof document.providers !== "object" || document.providers === null) {
     throw new Error("model catalog is missing its provenance, license or providers");
   }
+  const provenanceFault = provenanceShapeFault(document.provenance);
+  if (provenanceFault) throw new Error(`model catalog provenance ${provenanceFault}`);
   const actual = modelCatalogSha256(document as ModelCatalogDocument);
   if (actual !== document.sha256) {
     throw new Error(`model catalog content hashes to ${actual}, not its stated ${document.sha256}`);
