@@ -269,7 +269,7 @@ export class VercelUnifiedProvider implements LLMProvider {
           : message.role === "tool_result" && message.image !== undefined,
       );
       if (hasImages && !supportsVision(this.vendor, params.model, params.modelCapabilities)) {
-        yield { type: "error", error: "Model does not support image input", classification: "model" };
+        yield { type: "error", error: "Model does not support image input", code: "image-input-unsupported", classification: "model" };
         return;
       }
       const useOpenAIResponsesAliases = usesOpenAIResponsesWire(slot, params.model);

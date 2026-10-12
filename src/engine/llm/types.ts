@@ -394,6 +394,8 @@ export type StreamEvent =
   | {
       type: "error";
       error: string;
+      /** A host capability refusal, translated by the stream collector. */
+      code?: "image-input-unsupported";
       classification?: string;
       providerError?: ProviderErrorDiagnostics;
     };

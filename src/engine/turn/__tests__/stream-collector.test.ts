@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LLMProvider, StreamEvent, StreamTurnParams } from "../../llm/types.js";
 import { collectRoundStream } from "../stream-collector.js";
+import { VercelUnifiedProvider } from "../../llm/vercel/adapter.js";
+import { getLocale, setLocale } from "../../../i18n/index.js";
+
+const initialLocale = getLocale();
+afterEach(() => setLocale(initialLocale));
 
 const LLM_SETTINGS = {
   streamSmoothing: "none" as const,
@@ -45,6 +50,28 @@ async function collect(events: readonly StreamEvent[]) {
     llmSettings: LLM_SETTINGS,
   });
 }
+
+describe("image capability refusal", () => {
+  it.each([
+    ["en", "Error: Images in this conversation cannot be sent to the selected model. Switch to an image-capable model, or start a new conversation without images."],
+    ["ko", "오류: 대화에 포함된 이미지를 선택한 모델로 보낼 수 없습니다. 이미지를 받는 모델로 바꾸거나, 이미지가 없는 새 대화를 시작해 주세요."],
+  ] as const)("localizes retained-image recovery in %s", async (locale, userMessage) => {
+    setLocale(locale);
+    const fetchResponse = vi.fn<typeof fetch>();
+    const result = await collectRoundStream({
+      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse),
+      model: "gpt-4", systemPrompt: "Describe the image.", toolSchemas: [], llmSettings: LLM_SETTINGS,
+      messages: [
+        { role: "assistant", content: "", toolCalls: [{ id: "image-call", name: "view_image", input: {} }] },
+        { role: "tool_result", toolUseId: "image-call", toolName: "view_image", content: "Image loaded", image: { mimeType: "image/png", data: "QUJD" } },
+        { role: "user", content: "Describe it." },
+      ],
+    });
+    expect(fetchResponse).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ kind: "stream_error", classification: "model", userMessage });
+    expect(result).not.toHaveProperty("toolCalls");
+  });
+});
 
 describe("provider completion boundary", () => {
   it.each<{ label: string; events: StreamEvent[] }>([

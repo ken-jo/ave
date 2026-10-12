@@ -232,14 +232,18 @@ export async function collectRoundStream(
           const classified = classifyProviderError(
             provider.subscriptionRuntime ? event.error : rawForClassification,
           );
-          const classification = event.providerError?.classification ?? classified.category;
+          const imageInputRefused = event.code === "image-input-unsupported";
+          const classification = imageInputRefused ? "model" : event.providerError?.classification ?? classified.category;
+          const userMessage = imageInputRefused
+            ? t("be_streamCollector.imageInputUnsupported")
+            : classified.userMessage;
           const providerError = withProviderErrorClassification(
             event.providerError ?? extractProviderErrorDiagnostics(event.error),
             classification,
           );
           return {
             kind: "stream_error",
-            userMessage: t("be_streamCollector.streamError", { userMessage: classified.userMessage }),
+            userMessage: t("be_streamCollector.streamError", { userMessage }),
             classification,
             providerError,
           };

@@ -323,6 +323,9 @@ Slice 4 is implemented.
   tool-result image, including direct calls and replayed history. A caller without a
   route uses the catalog and name rules. A fallback resolves its own model rather than
   inheriting the primary route's reported or named capabilities.
+  A transport refusal carries `image-input-unsupported`; the stream collector
+  presents localized recovery guidance for retained conversation images and
+  keeps the refusal classified as a model error.
 - **Not `attachment`.** The catalog's `attachment` flag says a model accepts file parts.
   The composer sends a file as a path the agent reads with its tools, never as a file part,
   so the flag decides nothing here.
