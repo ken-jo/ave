@@ -50,12 +50,6 @@ export type LlmModelListEntry = {
    */
   contextLength?: number;
   /**
-   * The largest prompt the endpoint accepts for this model, when it states
-   * one apart from the window (GitHub Copilot's `max_prompt_tokens`). The
-   * usable budget is bounded by it.
-   */
-  maxInputTokens?: number;
-  /**
    * The largest completion this model will produce, as the provider reports
    * it. Carried beside the window for a caller that needs an output ceiling;
    * nothing enforces a limit from it yet.

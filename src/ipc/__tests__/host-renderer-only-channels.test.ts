@@ -191,6 +191,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ...Object.values(CHANNELS.pluginStudio).map((channel): readonly [string, string, unknown[]] => ["plugin-studio", channel, []]),
   // Side chat runs arbitrary tools on a second loop.
   ["sidechat", CHANNELS.sidechat.send, [{ input: "x" }]],
+  ["sidechat", CHANNELS.sidechat.getSubAgentTranscript, [{ originSessionId: "test-session", childSessionId: "child-session" }]],
   // Routines and the session tasks list.
   ["routines", ROUTINES.list, []],
   ["session-tasks", CHANNELS.sessionTasks.list, []],
@@ -327,6 +328,24 @@ describe("host-renderer-only IPC channels", () => {
   it.each(HOST_ONLY_CHANNELS)("%s %s does not refuse the host renderer", async (_domain, channel, args) => {
     await invoke(channel, hostFrameEvent(), args);
     expect(guardRowsFor(channel)).toEqual([]);
+  });
+});
+
+describe("side-chat child transcript sender refusal", () => {
+  const request = { originSessionId: "test-session", childSessionId: "child-session" };
+
+  it("returns unauthorized-frame to a plugin shell before checking side-chat availability", async () => {
+    const result = await invoke(CHANNELS.sidechat.getSubAgentTranscript, pluginShellFrameEvent(), [request]);
+
+    expect(result).toEqual(UNAUTHORIZED_FRAME);
+    expect(guardRowsFor(CHANNELS.sidechat.getSubAgentTranscript)).toHaveLength(1);
+  });
+
+  it("admits the host sender before returning side-chat-unavailable", async () => {
+    const result = await invoke(CHANNELS.sidechat.getSubAgentTranscript, hostFrameEvent(), [request]);
+
+    expect(result).toEqual({ ok: false, error: "side-chat-unavailable" });
+    expect(guardRowsFor(CHANNELS.sidechat.getSubAgentTranscript)).toEqual([]);
   });
 });
 

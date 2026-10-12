@@ -516,7 +516,6 @@ function normalizeCachedModelListEntries(
     const ownedBy = normalizeCachedModelListString(record.ownedBy);
     const description = normalizeCachedModelListString(record.description, 4_096);
     const contextLength = normalizeCachedModelListNumber(record.contextLength);
-    const maxInputTokens = normalizeCachedModelListNumber(record.maxInputTokens);
     const maxOutputTokens = normalizeCachedModelListNumber(record.maxOutputTokens);
     const inputModalities = normalizeCachedModelListStringArray(record.inputModalities);
     const outputModalities = normalizeCachedModelListStringArray(record.outputModalities);
@@ -528,7 +527,6 @@ function normalizeCachedModelListEntries(
     if (ownedBy) entry.ownedBy = ownedBy;
     if (description) entry.description = description;
     if (contextLength !== undefined) entry.contextLength = contextLength;
-    if (maxInputTokens !== undefined) entry.maxInputTokens = maxInputTokens;
     if (maxOutputTokens !== undefined) entry.maxOutputTokens = maxOutputTokens;
     if (inputModalities) entry.inputModalities = inputModalities;
     if (outputModalities) entry.outputModalities = outputModalities;

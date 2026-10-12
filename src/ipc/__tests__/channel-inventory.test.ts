@@ -198,6 +198,11 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
     // before the snapshot diff even matters.
     expect(unique.length).toBeGreaterThan(50);
   });
+
+  it("registers the side-chat child transcript read exactly once without a side-chat loop", () => {
+    expect(channels.filter((channel) => channel === CHANNELS.sidechat.getSubAgentTranscript))
+      .toEqual([CHANNELS.sidechat.getSubAgentTranscript]);
+  });
   it("keeps subscription status invalidation internal and outbound-only", () => {
     const event = CHANNELS.settings.subscriptionRuntimeStatusUpdated;
     expect(event).toBe("ave:settings:subscription:status-updated");
@@ -497,6 +502,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:settings:update",
         "ave:shell:open-external",
         "ave:sidechat:abort",
+        "ave:sidechat:get-sub-agent-transcript",
         "ave:sidechat:load",
         "ave:sidechat:new",
         "ave:sidechat:send",

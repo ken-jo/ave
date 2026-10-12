@@ -754,6 +754,7 @@ export const CHANNELS = {
     new: "ave:sidechat:new", // invoke → { ok, sessionId }
     load: "ave:sidechat:load", // invoke (sessionId) → { ok, messages }
     abort: "ave:sidechat:abort", // invoke → { ok }
+    getSubAgentTranscript: "ave:sidechat:get-sub-agent-transcript", // invoke → owner-scoped child transcript
     stream: "ave:sidechat:stream", // event main→renderer ({ streamId, ...frame })
     fallback: "ave:sidechat:fallback", // event main→renderer (provider fallback)
   },

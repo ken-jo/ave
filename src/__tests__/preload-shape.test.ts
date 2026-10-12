@@ -586,6 +586,7 @@ describe("preload contextBridge world shape lock", () => {
           "setWebApiKey": "function",
           "sideChat": [
             "abort",
+            "getSubAgentTranscript",
             "load",
             "new",
             "onFallback",

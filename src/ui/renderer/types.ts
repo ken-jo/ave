@@ -16,6 +16,7 @@ import type { McpUiMessageOutcome } from "../../mcp/mcp-ui-message.js";
 import type { McpUiDownloadOutcome } from "../../mcp/mcp-app-download.js";
 import type { McpUiModelContextOutcome } from "../../mcp/mcp-app-model-context.js";
 import type { SerializedHistoryMessage } from "../../shared/chat-history.js";
+import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../../shared/subagent-transcript.js";
 import type { PluginConfigRecord } from "../../shared/plugin-config.js";
 import type { MarketplaceInstalledProviderPreset } from "../../shared/marketplace-package-assets.js";
 import type {
@@ -600,6 +601,8 @@ export type AveApi = {
       | { ok: true; sessionId: string; messages: SerializedHistoryMessage[] }
       | { ok: false; error: string; messages: SerializedHistoryMessage[] }
     >;
+    /** Reads a child of the active side-chat session; optional only in partial fixtures. */
+    getSubAgentTranscript?: (request: SubAgentTranscriptRequest) => Promise<SubAgentTranscriptResult>;
     abort: () => Promise<{ ok: true } | { ok: false; error: string }>;
     onStream: (handler: (event: ChatStreamEvent) => void) => () => void;
     onFallback: (handler: (payload: { from: string; to: string }) => void) => () => void;
@@ -813,20 +816,7 @@ export type AveApi = {
     toolUseId: string,
   ) => Promise<{ content: string; lineCount: number } | null>;
   /** Lazy-load the isolated child-session transcript for a sub-agent row. */
-  chatGetSubAgentTranscript?: (opts: {
-    originSessionId: string;
-    childSessionId: string;
-  }) => Promise<
-    | {
-        ok: true;
-        childSessionId: string;
-        messages: SerializedHistoryMessage[];
-        title?: string;
-        spawnId?: string;
-        originToolUseId?: string;
-      }
-    | { ok: false; error?: string }
-  >;
+  chatGetSubAgentTranscript?: (opts: SubAgentTranscriptRequest) => Promise<SubAgentTranscriptResult>;
   /** Issue #749: lazy-load full write_file diff when content exceeded preview limit.
    * Returns { before, after } from ~/.ave/diff-cache/<sessionId>/<toolUseId>.json,
    * or null when sidecar not found / session id invalid. */

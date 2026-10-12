@@ -98,11 +98,11 @@ describe("context budget — prompt cap and named catalog entry", () => {
   }
 
   it("bounds the threshold by the model's prompt cap and says so", () => {
-    // Copilot GPT-5 mini: 264K window, 128K prompt. Before: 179,200 from the window.
-    const budget = contextBudgetForCurrentRuntime(loopOn("copilot", "gpt-5-mini"));
+    // GPT-5.2: 400K window, 272K prompt. Before: 288,000 from the window.
+    const budget = contextBudgetForCurrentRuntime(loopOn("openai", "gpt-5.2"));
     expect(budget.contextWindowSource).toBe("model-catalog");
-    expect(budget.preflight).toBe(102_400);
-    expect(budget.usableContext).toBe(128_000);
+    expect(budget.preflight).toBe(217_600);
+    expect(budget.usableContext).toBe(272_000);
     expect(budget.thresholdSource).toBe("input-limit");
     expect(budget.inputLimitSource).toBe("model-catalog");
   });

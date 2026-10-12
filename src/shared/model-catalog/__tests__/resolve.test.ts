@@ -41,13 +41,13 @@ describe("resolveCatalogKey", () => {
   });
 
   it("folds case and version separators when exactly one entry matches", () => {
-    const models = catalog({ "github-copilot": [entry("model-4.6")] });
-    expect(resolveCatalogKey(models, "copilot", "Model-4-6")).toMatchObject({ id: "model-4.6", match: "folded" });
+    const models = catalog({ kilo: [entry("model-4.6")] });
+    expect(resolveCatalogKey(models, "kilo", "Model-4-6")).toMatchObject({ id: "model-4.6", match: "folded" });
   });
 
   it("refuses a folded match that names two entries", () => {
-    const models = catalog({ "github-copilot": [entry("model-4.6"), entry("model-4-6")] });
-    expect(resolveCatalogKey(models, "copilot", "MODEL-4-6")).toBeUndefined();
+    const models = catalog({ kilo: [entry("model-4.6"), entry("model-4-6")] });
+    expect(resolveCatalogKey(models, "kilo", "MODEL-4-6")).toBeUndefined();
   });
 
   it("ignores a path prefix on either side when exactly one entry matches", () => {

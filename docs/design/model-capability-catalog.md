@@ -102,13 +102,28 @@ input. It has two fault outcomes:
 an Ave vendor id meets a catalog provider id. It is exhaustive over `LLMVendor`, so a new
 vendor fails typecheck until it is placed. A vendor maps to the catalog providers whose API
 host is the vendor's endpoint: Qwen and Qwen Code to `alibaba-cn` (DashScope's mainland
-host, not the international `alibaba`), Doubao to `volcengine` (Ark). The generic
+host, not the international `alibaba`), Doubao to `volcengine` (Ark). Copilot maps to
+`[]`: Ave's Copilot vendor called GitHub Models (`models.github.ai`), which the catalog does
+not list and which GitHub retired on 2026-07-30; the catalog's `github-copilot` provider is
+the Copilot API (`api.githubcopilot.com`), another service. The vendor itself is being
+removed (owner decision of 2026-10-12; a re-added Copilot integration is tracked in #2657 and
+gets its mapping then), so it has no catalog mapping. The generic
 OpenAI-compatible endpoint, local runtimes (Ollama, LM Studio) and vendors no catalog
 provider serves at their endpoint (SambaNova, LiteLLM, v0, HiCap, Nous, Huawei MaaS, Ask
 Sage, OCA) map to `[]`: their limits come from what the endpoint reports and what the user
 configures, never from a public model that happens to share a name. A mapped vendor's model
 the provider does not list stays unknown to the catalog (Doubao's default
 `doubao-1-5-pro-256k-250115` is one) and falls to the next source.
+
+The rule is held by a test against each provider's `api`, which the pruned input keeps:
+every mapped provider's host is the vendor's default endpoint's host, and where the
+catalog's path names a product beyond the version (z.ai's coding plan) the path matches
+too. Providers the catalog lists without an `api` (the first-party APIs reached through
+their own SDK packages) are listed with the reason. The vendor defaults follow the same
+documents: Baseten's Model APIs are `inference.baseten.co` (the old `model-api.baseten.co`
+does not resolve) and Nebius is `api.tokenfactory.nebius.com` (Token Factory, formerly AI
+Studio); a stored copy of either old default is rewritten on every load
+(`src/data/settings-store.ts`), and any other stored endpoint is kept.
 
 ### 3.5 Generator and committed input
 
@@ -127,7 +142,7 @@ and in the pre-push hook) fails when the snapshot differs from what the input ge
 a refresh's diff is one line per changed model. `--fetch` writes nothing unless every
 required download succeeded (a failed GitHub API call only leaves the upstream head and
 schema blob out; a failed license download fails the run). The snapshot of 2026-10-12
-holds 30 providers and 2,217 models in about 1 MB.
+holds 29 providers and 2,182 models in about 1 MB.
 
 ## 4. Resolution (slice 2)
 
@@ -148,17 +163,17 @@ Precedence, per fact:
 removes it) and `fallback` (128K). Refreshed metadata joins in slice 6, above the bundled
 snapshot.
 
-**The prompt cap.** Beside the window the resolver reports the model's prompt cap when a
-source states one below it (`inputLimit`, `inputLimitSource`): what the endpoint
-reported (GitHub Copilot's `capabilities.limits.max_prompt_tokens`, read by
-`src/engine/llm/model-list.ts` with the window and output cap it nests beside it), else
-the catalog's `limits.input`. A declared window carries none. The usable budget is
+**The prompt cap.** Beside the window the resolver reports the model's prompt cap when the
+catalog states one below it (`inputLimit`, `inputLimitSource: "model-catalog"`, from
+`limits.input`). No `/models` endpoint Ave calls reports a prompt cap apart from the
+window (a gateway's `max_input_tokens` is read as the window), so the catalog is the only
+source. A declared window carries none. The usable budget is
 `min(window − Ave's output reservation, prompt cap)` and the compaction threshold is 80%
 of it (`getUsableContext`, `getPreflightThreshold`), in the engine and in the renderer's
 context ring alike; a threshold the cap lowered is traced as `thresholdSource:
-"input-limit"`. Before, the threshold came from the window alone: Copilot GPT-5 mini (264K
-window, 128K prompt) compacted at 179,200, past what the endpoint accepts, and 100
-snapshot entries had a threshold above their cap. Now none do (a test holds every entry
+"input-limit"`. Before, the threshold came from the window alone: GPT-5.2 (400K window,
+272K prompt) compacted at 288,000, past what the endpoint accepts, and about 100 snapshot
+entries had a threshold above their cap. Now none do (a test holds every entry
 to it).
 
 The catalog key is found by one `resolveCatalogKey(catalog, vendor, model)`
@@ -167,7 +182,7 @@ exact id; an Ave alias (`src/shared/model-catalog/aliases.ts`, empty today — e
 vendor id the snapshot can describe is found by the other steps, and an alias may only
 join two ids documented to name one model); an entry whose `canonicalId` is the id;
 the id without a release-date suffix; the id with case and version separators folded
-(`claude-sonnet-4-6` → Copilot's `claude-sonnet-4.6`); the same ignoring a path prefix
+(`claude-sonnet-4-6` against a listed `claude-sonnet-4.6`); the same ignoring a path prefix
 on either side (`openai/gpt-5.4` → Requesty's `gpt-5.4`). The alias step also drops a
 Vertex version tag (`@default`, `@20250929`) from either side, since Vertex lists Claude as
 `claude-opus-4-6@default` and Ave names it `claude-opus-4-6`. The version-tag, folded,
@@ -179,6 +194,18 @@ serves as `llm.vendors.<v>.catalogModel` (`<provider>/<id>`, `settings.json` onl
 falling back to a name match, and it applies to the vendor block's own model, not to a
 marketplace preset reached through the same vendor. The engine logs a named entry the
 catalog does not list once per route and name, so a typo does not pass silently.
+
+**A custom `baseUrl` on a mapped vendor still matches by name.** The host rule of §3.4
+holds the map to each vendor's default endpoint; at run time the user may point a mapped
+vendor elsewhere. The resolver does not compare that host with the provider's, for three
+reasons. A custom endpoint on a mapped vendor is in practice a proxy or gateway for that
+vendor's API (a LiteLLM or corporate egress proxy, a regional host) that serves the vendor's
+own model ids, so the upstream model's limits are the ones that apply. An endpoint serving
+other models under other ids misses by name, since every name step is exact or unique. And
+what the endpoint itself reports (`/models`) outranks the catalog, while a declared
+`contextWindow` or `catalogModel` outranks both, so a proxy with tighter limits is not held
+to the catalog's. A server that reuses a vendor's model id for a different model should use
+the generic OpenAI-compatible vendor, which never matches by name.
 
 Each process installs one catalog (`src/shared/model-catalog/active.ts`), and reading
 before install throws. Main and headless install the verified bundled snapshot at the
@@ -195,9 +222,9 @@ installing one would fail there.
 
 Windows the snapshot of 2026-10-12 changes against the table (the rest agree): GPT-5.4
 Pro 1.1M → 1,050,000; GPT-4.1, 4.1 mini and nano 1M → 1,047,576; Gemini 2.5 Pro and Flash
-1M → 1,048,576, Gemini 2.5 Flash-Lite 128K → 1,048,576; Copilot GPT-5 mini 400K →
-264,000 and Copilot Claude Sonnet 4.6 1M → 200,000 (the table applied Anthropic's 1M
-beta window to the Copilot row; the catalog lists Copilot's own window). Claude Sonnet and Opus 4.6 stay at 1M: the
+1M → 1,048,576, Gemini 2.5 Flash-Lite 128K → 1,048,576. Copilot routes are not among them:
+the Copilot vendor maps to no catalog provider and is being removed (§3.4). Claude Sonnet
+and Opus 4.6 stay at 1M: the
 catalog lists the window the adapter's beta header already delivers, and the decision to
 send that header stays on the table until slice 7.
 
@@ -283,16 +310,16 @@ user overrides keep the highest precedence.
 ## 8. What the hand-kept table has that the catalog does not
 
 `bun run generate:model-catalog -- --report` compares every `DEFAULT_PRICING` row with the
-snapshot. Against the snapshot of 2026-10-12: 42 rows have a catalog entry, 40 of them
+snapshot. Against the snapshot of 2026-10-12: 38 rows have a catalog entry, 36 of them
 differ (mostly cache rates the table derives at run time, and OpenAI and Gemini rows the
-table lists at zero); 43 rows have none. Slice 7 removes the table only after each of
+table lists at zero); 47 rows have none. Slice 7 removes the table only after each of
 these is answered:
 
 - **Dated and retired ids** (`claude-sonnet-4-20250514`, `claude-3-*`, `gpt-4.1-2025-04-14`,
   `o3-2025-04-16`, `gemini-1.5-*`, …): resolved by the aliases of §4 or allowed to fall to
   the host fallback.
-- **Copilot rows** the `github-copilot` provider does not list: resolved by aliases to the
-  originating model, or left to what the endpoint reports.
+- **Copilot rows**: the Copilot vendor maps to no catalog provider and is being removed
+  (§3.4); its rows go with it.
 - **Self-hosted rows** (`openai-compatible`: `Qwen3.6-35B-A3B-NVFP4` 262,144,
   `Nemotron-3-Nano-30B-A3B-FP8` 131,072): the vendor maps to no catalog provider by design;
   these windows come from the endpoint's report or the user's setting.

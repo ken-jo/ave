@@ -2156,7 +2156,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         return { ok: false, error: "origin-session-not-active" };
       }
       const runner = deps.getSubAgentRunner?.();
-      if (!runner) return { ok: false, error: "sub-agent runner not configured" };
+      if (!runner) return { ok: false, error: "sub-agent-runner-unavailable" };
       const childSessionId = typeof p.childSessionId === "string" && isValidSessionId(p.childSessionId)
         ? p.childSessionId
         : undefined;

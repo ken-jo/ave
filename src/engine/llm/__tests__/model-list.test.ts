@@ -107,24 +107,6 @@ describe("LLM model list sync", () => {
     ]);
   });
 
-  it("reads the window, the prompt cap and the output cap Copilot nests under capabilities", () => {
-    expect(
-      parseStandardModelListEntries({
-        object: "list",
-        data: [
-          {
-            id: "capped-model",
-            capabilities: { limits: { max_context_window_tokens: 264_000, max_prompt_tokens: 128_000, max_output_tokens: 64_000 } },
-          },
-          { id: "prompt-only", capabilities: { limits: { max_prompt_tokens: 90_000 } } },
-        ],
-      }),
-    ).toEqual([
-      { id: "capped-model", contextLength: 264_000, maxInputTokens: 128_000, maxOutputTokens: 64_000 },
-      { id: "prompt-only", maxInputTokens: 90_000 },
-    ]);
-  });
-
   it("prefers an explicit context_length over the gateway aliases for it", () => {
     expect(
       parseStandardModelListEntries({

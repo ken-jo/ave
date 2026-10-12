@@ -12,6 +12,7 @@ import type { ChatEntry, ChatStreamEvent } from "../../src/lib/chat-stream-state
 import type { AgentSpawnEvent as SharedAgentSpawnEvent } from "../../src/shared/subagent-events.js";
 import type { AppBootstrapStatus } from "../../src/shared/bootstrap-status.js";
 import type { SubscriptionRuntimeStatusUpdatedEvent } from "../../src/shared/subscription-runtime.js";
+import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../../src/shared/subagent-transcript.js";
 import type { SessionSummary } from "../../src/ui/renderer/hooks/use-sessions.js";
 import type { SessionFamily, SessionListKindFilter } from "../../src/shared/session-lookup.js";
 
@@ -791,6 +792,10 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
         send: vi.fn(async () => ({ ok: true, result: {} })),
         new: vi.fn(async () => ({ ok: true, sessionId: MOCK_SIDE_CHAT_SESSION_ID })),
         load: vi.fn(async () => ({ ok: true, sessionId: MOCK_SIDE_CHAT_SESSION_ID, messages: [] })),
+        getSubAgentTranscript: vi.fn(async (_request: SubAgentTranscriptRequest): Promise<SubAgentTranscriptResult> => ({
+          ok: false,
+          error: "sub-agent-reference-not-found",
+        })),
         list: vi.fn(async () => ({ current: null, sessions: [] })),
         abort: vi.fn(async () => ({ ok: true })),
         onStream: vi.fn(() => () => undefined),

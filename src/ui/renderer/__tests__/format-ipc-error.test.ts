@@ -3,9 +3,25 @@ import {
   formatIpcError,
   COMMON_IPC_ERROR_MESSAGES,
 } from "../format-ipc-error.js";
-import { t } from "../../../i18n/runtime.js";
+import { getLocale, setLocale, t } from "../../../i18n/runtime.js";
 
 describe("formatIpcError (SOT — #830)", () => {
+  it.each([
+    ["ko", "sub-agent-runner-unavailable", "지금은 서브에이전트를 사용할 수 없습니다."],
+    ["en", "sub-agent-runner-unavailable", "Sub-agents are unavailable right now."],
+    ["ko", "sub-agent-transcript-not-found", "서브에이전트 대화 기록을 찾을 수 없습니다."],
+    ["en", "sub-agent-transcript-not-found", "The sub-agent transcript could not be found."],
+  ] as const)("localizes the %s message for %s", (locale, code, expectedMessage) => {
+    const previousLocale = getLocale();
+    try {
+      setLocale(locale);
+      expect(formatIpcError(code, undefined)).toBe(expectedMessage);
+      expect(formatIpcError(code, "Backend detail")).toBe(expectedMessage);
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
   it.each([
     ["invalid-arguments", "formatIpcError.invalidInput"],
     ["no-alerts-service", "formatIpcError.notificationUnavailable"],
