@@ -18,7 +18,6 @@ const TECHNICAL_LITERALS: Record<string, readonly string[]> = {
   "be_routineSchedule.templateSourceDescription": ["agent-plugin:<package>:<templateId>"],
   "be_systemPromptBuilder.toolSchemasSourceNote": ["plugin:<id>"],
   "be_systemPromptBuilder.toolCatalogGroupingNote": ["plugin:<id>"],
-  "defaultTourScenarios.meetingSummaryStep3Body": ["~/.ave/plugins/"],
   "gitMarketplace.direct.gitHelp": ["plugin.json"],
   "gitMarketplace.error.noArtifact.folderHasNoBuild": ["plugin.json"],
   "gitMarketplace.review.notInstalled": ["plugin.json"],

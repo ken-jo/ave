@@ -22,8 +22,7 @@
     "marketplace",
     "local-indexing",
     "meetings",
-    "lyra-mail",
-    "vega-helper"
+    "lyra-mail"
   ],
   "homepage": "https://github.com/former_org/ave",
   "author": {
