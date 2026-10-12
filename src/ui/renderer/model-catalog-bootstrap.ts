@@ -9,7 +9,7 @@
  * engine — never against a missing one, and never against a different one.
  */
 import { installModelCatalog } from "../../shared/model-catalog/active.js";
-import { normalizeLocale, tryLoadLocaleMessages } from "../../i18n/index.js";
+import { DEFAULT_LOCALE, normalizeLocale, tryLoadLocaleMessages } from "../../i18n/index.js";
 import { setLocale, t } from "../../i18n/runtime.js";
 import type { AveApi } from "./types.js";
 
@@ -31,6 +31,7 @@ export async function renderModelCatalogUnavailable(
   api: Pick<AveApi, "getSettings">,
 ): Promise<void> {
   console.error("[renderer] model catalog unavailable; the app cannot resolve models", error);
+  document.documentElement.lang = setLocale(DEFAULT_LOCALE);
   const panel = document.createElement("div");
   panel.setAttribute("role", "alert");
   panel.dataset.testid = "model-catalog-unavailable";
@@ -50,7 +51,7 @@ export async function renderModelCatalogUnavailable(
     const settings = await api.getSettings();
     const locale = normalizeLocale(settings.appearance?.language);
     if (await tryLoadLocaleMessages(locale)) {
-      setLocale(locale);
+      document.documentElement.lang = setLocale(locale);
       message.textContent = t("app.modelCatalogUnavailable");
       reload.textContent = t("errorBoundary.reloadButton");
     }
