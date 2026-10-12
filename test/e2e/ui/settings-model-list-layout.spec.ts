@@ -2,6 +2,7 @@ import { test, expect } from './fixtures.js';
 import { closeInlineSettings, openInlineSettings } from './inline-settings.js';
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
+import { llmImageInputKey } from "../../../src/shared/llm-vendor-defaults.js";
 
 /**
  * Settings → Model: the model dropdown's layout.
@@ -94,7 +95,7 @@ for (const bundleId of ['moonstone', 'gallery'] as const) {
         }));
       }, { hasApiKey: CHANNELS.settings.hasApiKey, listLlmModels: CHANNELS.settings.listLlmModels });
       await mainWindow.evaluate(
-        async ({ cache, bundle, language }) => {
+        async ({ cache, bundle, language, imageInput }) => {
           const api = (window as unknown as {
             aveApi: { updateSettings: (patch: unknown) => Promise<unknown> };
           }).aveApi;
@@ -102,11 +103,13 @@ for (const bundleId of ['moonstone', 'gallery'] as const) {
             appearance: { schemaVersion: 2, bundleId: bundle, language },
             llm: {
               provider: 'openai-compatible', modelListCache: cache,
-              vendors: { 'openai-compatible': { model: cache['openai-compatible\n\n'].models[0], catalogModel: 'openai/gpt-3.5-turbo' } },
+              vendors: { 'openai-compatible': { model: cache['openai-compatible\n\n'].models[0], catalogModel: 'openai/gpt-3.5-turbo', imageInput } },
             },
           });
         },
-        { cache: seededModelListCache(), bundle: bundleId, language: locale },
+        { cache: seededModelListCache(), bundle: bundleId, language: locale,
+          imageInput: Object.fromEntries(MODEL_IDS.map((model) => [llmImageInputKey(model), true])),
+        },
       );
 
       const settingsPage = await openInlineSettings(app, mainWindow, 'llm');
@@ -163,6 +166,7 @@ for (const bundleId of ['moonstone', 'gallery'] as const) {
             badgeName: badge?.getAttribute('aria-label'),
             badgeHelp: badge?.getAttribute('title'),
             badgeWidth: badge?.getBoundingClientRect().width ?? 0,
+            visionBadge: item.querySelector('[data-testid^="llm-tab:model-vision:"]') !== null,
           };
         });
         return {
@@ -222,6 +226,8 @@ for (const bundleId of ['moonstone', 'gallery'] as const) {
         expect(item.badgeName).toBe(help);
         expect(item.badgeHelp).toBe(help);
         expect(item.badgeWidth).toBeGreaterThan(0);
+        // Explicit image support exercises vision and no-tools chips together.
+        expect(item.visionBadge).toBe(true);
       }
 
       await settingsPage.keyboard.press('Escape');
