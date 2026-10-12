@@ -37,8 +37,8 @@ test("budget-suspended sub-agent renders waiting in the workspace rail", async (
   // frames have to name the conversation this window is showing.
   const parentSessionId = await mainWindow.evaluate(
     async () => (await (window as unknown as {
-      ave: { chatSessions: () => Promise<{ current: string }> };
-    }).ave.chatSessions()).current,
+      aveApi: { chatSessions: () => Promise<{ current: string }> };
+    }).aveApi.chatSessions()).current,
   );
   await app.evaluate(({ BrowserWindow }, injectedEvents) => {
     const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
