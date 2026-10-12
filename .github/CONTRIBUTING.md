@@ -42,13 +42,18 @@ standalone Node in place; that would replace the binary used by Electron.
 Direct `bunx vitest` and `bun test` invocations fail fast by design; use the
 canonical wrapper command above for both full and targeted tests.
 
-Use the smallest affected checks while iterating. For production code changes and
-documentation consumed by runtime, tests, build, or workflows, the pre-push
-hook is the sole local full gate: it runs `bun run typecheck`, the full
-`bun run test`, and `bun run build` once. Documentation prose with no such
+Use the smallest affected checks while iterating. The pre-push hook logs the
+tier it picked and why. A source change on a branch push takes the fast tier:
+typecheck, the duplicate-helper scan, the lock suites, the changed test files,
+and `vitest related` for the changed modules. The full `bun run test` and
+`bun run build` run once before merge on the exact main + PR merged tree, and
+CI runs full checks. The hook keeps the full gate for deleted refs,
+non-fast-forward pushes, deleted modules, documentation consumed by runtime,
+tests, build, or workflows, and global inputs (`package.json`, `bun.lock`,
+compiler, Vitest and build configs, Vitest setup files, `scripts/`,
+`.github/`); `AVE_PREPUSH_FULL=1` forces it. Documentation prose with no such
 consumer skips those expensive gates after diff and policy checks. Eligible
-test-only pushes run typecheck and targeted Vitest in the hook; CI still runs
-full checks. Renames, deletes, and mixed changes run the full gate. Register
+test-only pushes run typecheck and targeted Vitest in the hook. Register
 documents read by native or non-Node processes, or through `openAsBlob`, in
 `scripts/hooks/documentation-references.json`; the read guard cannot see them.
 Every `main` push runs the full app suite in CI as a backstop. Do not duplicate

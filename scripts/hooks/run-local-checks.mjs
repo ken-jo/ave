@@ -13,6 +13,20 @@
 // realign it the same way `postinstall` does, then re-probe.
 //
 // Stages: pre-commit | pre-push | manual. Bypass once with AVE_HOOKS_SKIP=1.
+//
+// Pre-push tiers (the log names the tier and why):
+//   docs-only     unconsumed documentation: document safety and policy checks
+//   comment-only  standalone comment edits: typecheck gate
+//   test-only     test code only: typecheck gate, duplicates, targeted Vitest
+//   fast          other branch source changes: typecheck gate, duplicates,
+//                 lock suites, changed tests, `vitest related` (see
+//                 pre-push-source-policy.mjs)
+//   full          deleted refs, non-fast-forward or non-branch updates, the
+//                 default branch, noncanonical paths, global test/build
+//                 inputs, the manual stage, or AVE_PREPUSH_FULL=1: typecheck
+//                 gate, `bun run test`, `bun run build`, `check:gate-core`
+// The full suite and build of a fast push run once at merge time, on the
+// main + PR merged tree, and in CI.
 
 import { existsSync } from "node:fs";
 import { parsePrePushUpdates, readPrePushInput } from "./pre-push-ref-updates.mjs";
@@ -36,6 +50,10 @@ import {
 } from "./pre-push-markdown-policy.mjs";
 import { selectCommentOnlyAveAppFiles } from "./pre-push-comment-policy.mjs";
 import { selectTargetedAveAppVitestFiles } from "./pre-push-test-policy.mjs";
+import {
+  AVE_APP_LOCK_SUITES,
+  selectFastSourceChecks,
+} from "./pre-push-source-policy.mjs";
 
 const isWindows = process.platform === "win32";
 
@@ -460,9 +478,18 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocat
   let targetedTestsEligible = true;
   let targetedTestsReason = "";
   let commentOnlyEligible = true;
+  const protectedBranchNames = getProtectedBranchNames(repoRoot);
   for (const update of parsedUpdates.updates) {
     if (isNullObjectId(update.localSha)) {
       return { docsOnly: false, reason: `deleted ref ${update.remoteRef} requires full checks` };
+    }
+    // runPushPolicyChecks refuses these pushes first; the classifier does not
+    // rely on that ordering to keep the default branch on the full checks.
+    if (
+      update.remoteRef.startsWith("refs/heads/") &&
+      protectedBranchNames.has(update.remoteRef.slice("refs/heads/".length))
+    ) {
+      return { docsOnly: false, reason: `push to default branch ${update.remoteRef} requires full checks` };
     }
 
     const isNewBranch = isNullObjectId(update.remoteSha);
@@ -533,7 +560,18 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteName, remoteLocat
           reason: selection.reason,
         };
       }
-      targetedTestsReason ||= selection.reason;
+      const fastSelection = selectFastSourceChecks(changedEntries);
+      if (fastSelection.eligible) {
+        return {
+          docsOnly: false,
+          fastSource: true,
+          testFiles: fastSelection.testFiles,
+          relatedFiles: fastSelection.relatedFiles,
+          documentationEntries: fastSelection.documentationEntries,
+          reason: fastSelection.reason,
+        };
+      }
+      targetedTestsReason ||= fastSelection.reason;
     }
     return {
       docsOnly: false,
@@ -708,6 +746,38 @@ function runAppTargetedVitestChecks(dir, testFiles, supportTestFiles = []) {
   run(bun, ["run", "test:vitest", "--", "run", ...vitestArgs], dir, withoutGitContext());
 }
 
+function runAppFastSourceChecks(dir, testFiles, relatedFiles) {
+  const bun = available(commands.bun);
+  if (!bun) {
+    throw new Error("bun is required for fast ave source checks");
+  }
+  if (!hasPackageScript(dir, "check:test-duplicates")) {
+    throw new Error("ave fast source checks require the check:test-duplicates script");
+  }
+  for (const relativePath of [...AVE_APP_LOCK_SUITES, ...testFiles, ...relatedFiles]) {
+    if (!hasFile(join(dir, relativePath))) {
+      throw new Error(`fast ave source check input is missing: ${relativePath}`);
+    }
+  }
+
+  runAppTypecheckGate(dir, "fast source checks");
+  run(bun, ["run", "check:test-duplicates", "--", "--fail-on-duplicates"], dir);
+  ensureAppTestRuntimeAbi(dir);
+  const directArgs = [...new Set([...AVE_APP_LOCK_SUITES, ...testFiles])].map((file) => `./${file}`);
+  run(bun, ["run", "test:vitest", "--", "run", ...directArgs], dir, withoutGitContext());
+  if (relatedFiles.length > 0) {
+    // A module no test imports is still covered by the typecheck and the lock
+    // suites above, so an empty related set is not a failure.
+    const relatedArgs = relatedFiles.map((file) => `./${file}`);
+    run(
+      bun,
+      ["run", "test:vitest", "--", "related", "--run", "--passWithNoTests", ...relatedArgs],
+      dir,
+      withoutGitContext()
+    );
+  }
+}
+
 function runAppCommentOnlyChecks(dir) {
   runAppTypecheckGate(dir, "comment-only checks");
 }
@@ -741,26 +811,28 @@ if (stage === "pre-commit") {
   }
   runStagedSafetyChecks(repoRoot);
   const classification =
-    stage === "pre-push"
-      ? classifyPrePushChanges(repoRoot, prePushUpdates, remote, remoteLocation)
-      : { docsOnly: false };
+    stage !== "pre-push"
+      ? { docsOnly: false, reason: `${stage} stage runs the full checks` }
+      : process.env.AVE_PREPUSH_FULL === "1"
+        ? { docsOnly: false, reason: "AVE_PREPUSH_FULL=1 requested the full checks" }
+        : classifyPrePushChanges(repoRoot, prePushUpdates, remote, remoteLocation);
   if (classification.docsOnly) {
     checkPushedDocumentation(repoRoot, classification.pushedEntries);
     run(commands.node, ["--test", "test/scripts/check-asrt-version-claims.test.mjs"], repoRoot);
     run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot);
     console.log(
-      `[checks] docs-only pre-push: skipping lint/typecheck/test/build (${classification.reason})`
+      `[checks] tier=docs-only pre-push: skipping lint/typecheck/test/build (${classification.reason})`
     );
   } else if (classification.commentOnly) {
     console.log(
-      `[checks] comment-only pre-push: running typecheck; skipping full test/build (${classification.reason})`
+      `[checks] tier=comment-only pre-push: running typecheck; skipping full test/build (${classification.reason})`
     );
     runAppCommentOnlyChecks(repoRoot);
   } else if (classification.testOnly) {
     const testCodeFileCount =
       classification.testFiles.length + classification.testSupportFiles.length;
     console.log(
-      `[checks] test-only pre-push: running typecheck, duplicate-helper policy, and ` +
+      `[checks] tier=test-only pre-push: running typecheck, duplicate-helper policy, and ` +
         `${testCodeFileCount} targeted Vitest code file(s); skipping full test/build ` +
         `(${classification.reason})`
     );
@@ -769,7 +841,27 @@ if (stage === "pre-commit") {
       classification.testFiles,
       classification.supportTestFiles
     );
+  } else if (classification.fastSource) {
+    console.log(
+      `[checks] tier=fast pre-push: running typecheck, duplicate-helper policy, ` +
+        `${AVE_APP_LOCK_SUITES.length} lock suite(s), ${classification.testFiles.length} changed ` +
+        `test file(s), and Vitest related to ${classification.relatedFiles.length} module(s); ` +
+        `skipping full test/build, which the merge gate runs on the merged tree ` +
+        `(${classification.reason}; AVE_PREPUSH_FULL=1 runs the full checks)`
+    );
+    if (classification.documentationEntries.length > 0) {
+      checkPushedDocumentation(repoRoot, classification.documentationEntries);
+    }
+    runAppFastSourceChecks(
+      repoRoot,
+      classification.testFiles,
+      classification.relatedFiles
+    );
   } else {
+    console.log(
+      `[checks] tier=full ${stage}: running typecheck, full test, build, and gate-core ` +
+        `(${classification.reason})`
+    );
     runAppChecks(repoRoot);
   }
 } else {

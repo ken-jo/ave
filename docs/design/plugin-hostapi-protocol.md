@@ -4392,7 +4392,7 @@ carries the alerts gate the release process already imposes on the 0.13.0 draft
 (`docs/development/release-process.md`, "Include the new-mail and meeting-summary
 opt-in loss": the draft stays unpublished until `local-indexer` has published on the
 alert contract), which is not Publication's but is on the same draft. Gates: the full
-pre-push once; fresh CI on the rollup including the two confinement jobs;
+suite and build once on the merged tree; fresh CI on the rollup including the two confinement jobs;
 `check:plugin-host-protocol-mirror` with exactly one candidate and
 `check:plugin-host-protocol-client` clean; packaged smoke per OS. Lock suites:
 `packaging-discipline-source` only for the version-carrying assertions it already has.
@@ -4499,8 +4499,8 @@ Gates on the published release, not inputs to creating the tag:
 #### Gates common to every slice
 
 `bun run typecheck`; the narrow `bun run test:vitest -- run <dirs>` named per slice while
-iterating, then the full `bun run test` and `bun run build` once in the pre-push hook that
-owns them (`scripts/hooks/run-local-checks.mjs:738-746`); `check:knip:engine` against its
+iterating, then the full `bun run test` and `bun run build` once on the main + PR merged
+tree before merge (the pre-push hook runs its fast tier, `scripts/hooks/run-local-checks.mjs`); `check:knip:engine` against its
 baseline where a file or script is added; `.github/scripts/naming-gate.sh origin/main
 HEAD` with GNU grep; CI `build-and-test` and `naming-gate` green on the check rollup
 before merge, the macOS confinement job for S1, and the macOS and Linux confinement jobs
@@ -5068,7 +5068,7 @@ off and on.
 `format-ipc-error-coverage`, `domain-exports` **unchanged** (no channel, no error
 code); `settings-section-anchors`, `settings-store`, `packaging-discipline-source`,
 `bootstrap-integration`, `use-send-message-resource`, `alert-predecessor` unchanged
-and run once in the pre-push hook; `test/scripts/*` unchanged.
+and run in the pre-push hook's lock suites; `test/scripts/*` unchanged.
 
 ##### A2. The adversarial fixture
 
@@ -5688,7 +5688,7 @@ process and the confinement; the git extension's next version is required for it
 cache directory and network declarations"); the mirror candidate as the release process
 says (`docs/development/release-process.md:116-128`: Admission changes no protocol
 schema, so the `2/v0.14.0` candidate appears with the bump and differs from `v0.13.0`'s
-copy only by `$id`). Gates: the full pre-push once; fresh CI on the rollup with the three
+copy only by `$id`). Gates: the full suite and build once on the merged tree; fresh CI on the rollup with the three
 confinement jobs; packaged smoke per OS with the Doctor fields visible. The 14-day
 notice rule of §9.3 does **not** apply, because no protocol version is retired; that is
 the whole reason. The release notes **do** carry a compatibility entry, because a
@@ -5762,7 +5762,7 @@ finding against the decision, and does not route around it.
 #### Gates common to every host slice
 
 As §9.7's: `bun run typecheck`; the narrow `bun run test:vitest -- run <dirs>` named
-per slice, then the full `bun run test` and `bun run build` once in the pre-push hook;
+per slice, then the full `bun run test` and `bun run build` once on the merged tree before merge;
 `check:knip:engine`; `.github/scripts/naming-gate.sh origin/main HEAD`; CI
 `build-and-test` and `naming-gate` green on the rollup, plus the macOS and Linux
 confinement jobs for A1 and A2 (Windows is measured on a provisioned host, above). No slice merges with a `test.skip`, a stub fixture or an
