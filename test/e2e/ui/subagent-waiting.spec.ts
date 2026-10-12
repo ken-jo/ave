@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect } from "./fixtures.js";
 import type { AgentSpawnEvent } from "../../../src/shared/subagent-events.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 
