@@ -207,6 +207,27 @@ describe("refreshModelCatalogCache", () => {
     expect(pointer.ok && pointer.value.checkedAt).toBe(STALE.toISOString().replace(/\.\d{3}Z$/, "Z"));
   });
 
+  it("rejects an unsolicited 304 when the cached copy has no ETag", async () => {
+    const initial = respondWith(() => json(rawDocument()));
+    await refreshModelCatalogCache({ fetchImpl: initial.fetchImpl, dir, reference: BUNDLED, now: () => NOW });
+    const before = cacheFiles();
+    const { fetchImpl, calls } = respondWith(() => new Response(null, { status: 304 }));
+    const result = await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => STALE });
+    expect((calls[0]!.init.headers as Record<string, string>)["if-none-match"]).toBeUndefined();
+    expect(result).toMatchObject({ status: "failed", reason: expect.stringContaining("answered 304") });
+    expect(cacheFiles()).toEqual(before);
+  });
+
+  it("rejects an ETag that would publish an unreadable pointer", async () => {
+    const sha256 = await seedGoodCopy();
+    const before = readFileSync(join(dir, "current.json"), "utf-8");
+    const { fetchImpl } = respondWith(() => json(rawDocument(800_000), { etag: "x".repeat(64 * 1024) }));
+    const result = await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => STALE });
+    expect(result).toMatchObject({ status: "failed", reason: expect.stringContaining("65536-byte cap") });
+    expect(readFileSync(join(dir, "current.json"), "utf-8")).toBe(before);
+    expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "cache", document: { sha256 } });
+  });
+
   describe("a failed refresh keeps the last good copy", () => {
     const cases: Array<[string, () => Response | Promise<Response>, RegExp]> = [
       ["403", () => new Response("denied", { status: 403 }), /answered 403/],
@@ -269,17 +290,20 @@ describe("refreshModelCatalogCache", () => {
     });
 
     it("bounds a stalled DNS lookup by the total deadline", async () => {
-      let releaseLookup!: (answers: Array<{ address: string; family: number }>) => void;
-      lookupMock.mockImplementationOnce(() => new Promise((resolve) => { releaseLookup = resolve; }));
+      let releaseLookup: ((answers: Array<{ address: string; family: number }>) => void) | undefined;
+      let enteredLookup!: () => void;
+      const entered = new Promise<void>((resolve) => { enteredLookup = resolve; });
+      lookupMock.mockImplementationOnce(() => new Promise((resolve) => { releaseLookup = resolve; enteredLookup(); }));
       const { fetchImpl } = respondWith(() => json(rawDocument()));
       let settled: unknown;
       const pending = refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, timeoutMs: 30 })
         .then((result) => { settled = result; return result; });
       try {
+        await Promise.race([entered, pending.then(() => { throw new Error("download settled before the DNS fixture started"); })]);
         await new Promise((resolve) => setTimeout(resolve, 150));
         expect(settled).toMatchObject({ status: "failed", reason: expect.stringMatching(/30 ms/) });
       } finally {
-        releaseLookup([{ address: "93.184.215.14", family: 4 }]);
+        releaseLookup?.([{ address: "93.184.215.14", family: 4 }]);
         await pending;
       }
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -289,13 +313,17 @@ describe("refreshModelCatalogCache", () => {
     it("does not wait for a stalled cancellation after the deadline", async () => {
       let releaseCancel!: () => void;
       const cancellation = new Promise<void>((resolve) => { releaseCancel = resolve; });
-      const { fetchImpl } = respondWith(() => new Response(new ReadableStream<Uint8Array>({
-        pull: () => new Promise(() => {}), cancel: () => cancellation,
-      })));
+      let enteredBody!: () => void;
+      const entered = new Promise<void>((resolve) => { enteredBody = resolve; });
+      const { fetchImpl } = respondWith(() => {
+        enteredBody();
+        return new Response(new ReadableStream<Uint8Array>({ pull: () => new Promise(() => {}), cancel: () => cancellation }));
+      });
       let settled: unknown;
       const pending = refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, timeoutMs: 30 })
         .then((result) => { settled = result; return result; });
       try {
+        await Promise.race([entered, pending.then(() => { throw new Error("download settled before the body fixture started"); })]);
         await new Promise((resolve) => setTimeout(resolve, 150));
         expect(settled).toMatchObject({ status: "failed", reason: expect.stringMatching(/30 ms/) });
       } finally {

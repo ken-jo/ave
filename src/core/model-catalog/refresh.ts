@@ -1,5 +1,5 @@
 /**
- * The model catalog refresh (issue #2501 slice 6, design §7).
+ * The model catalog refresh (design §7).
  *
  * One plain GET of `https://models.dev/api.json` — no cookie, no credential,
  * nothing about the user or the conversation — through the host's guarded
@@ -17,10 +17,9 @@
  * entry. Without a usable cached copy, boot selects the bundled snapshot.
  *
  * Cadence: at most one request per {@link MODEL_CATALOG_REFRESH_INTERVAL_MS}.
- * models.dev is a static document rebuilt when its TOML sources change, a
- * handful of times a week; a day keeps a new model's window at most a day
- * behind while a conditional request (ETag) makes most checks a 304 with no
- * body. A launch inside that day sends nothing.
+ * Successful and failed attempts share that interval. An ETag permits a
+ * conditional request without downloading unchanged data. A launch inside
+ * that day sends nothing; applying new data still requires another launch.
  */
 import { createHash } from "node:crypto";
 import { pruneModelsDevDocument, type CatalogDiagnostic } from "../../shared/model-catalog/normalize.js";
@@ -59,7 +58,7 @@ export type ModelCatalogRefreshResult =
 export interface ModelCatalogRefreshOptions {
   /** The host's single-hop transport; redirects cannot widen the fixed source. */
   fetchImpl: typeof fetch;
-  /** The cache directory (`modelCatalogCacheDir()` in the app). */
+  /** The app uses `modelCatalogCacheDir()`; injected custom directories must already exist. */
   dir: string;
   /**
    * The catalog in force (the bundled snapshot or a verified cached copy):
@@ -86,7 +85,7 @@ function isoSeconds(date: Date): string {
 /**
  * The body, read under the cap and the deadline. A declared length over the
  * cap is refused before reading; a body that grows past it is cancelled at the
- * chunk that crosses it, so the cap bounds memory, not just the result.
+ * chunk that crosses it, so accumulated body bytes never exceed the cap.
  */
 async function readCappedBody(response: Response, signal: AbortSignal): Promise<Buffer> {
   const declared = Number(response.headers.get("content-length"));
@@ -179,7 +178,7 @@ async function refreshLockedModelCatalogCache(options: ModelCatalogRefreshOption
       signal.throwIfAborted();
       if (response.status !== 200) {
         void response.body?.cancel().catch(() => undefined);
-        if (response.status === 304 && pointer) return { response, raw: undefined };
+        if (response.status === 304 && pointer?.etag) return { response, raw: undefined };
         throw new RefreshFault(`${MODEL_CATALOG_REFRESH_URL} answered ${response.status}`);
       }
       return { response, raw: await readCappedBody(response, signal) };

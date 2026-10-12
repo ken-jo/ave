@@ -148,6 +148,12 @@ async function readRegularFile(path: string, maxBytes: number): Promise<string> 
   }
 }
 
+/** Publication must never create bytes the corresponding reader will refuse. */
+async function writeCappedCacheFile(path: string, text: string, maxBytes: number): Promise<void> {
+  if (Buffer.byteLength(text, "utf-8") > maxBytes) throw new Error(`model catalog file exceeds the ${maxBytes}-byte cap`);
+  await writeFileAtomicAtPath(path, text);
+}
+
 /** `current.json`: which cached copy is in force, and when the origin last confirmed it. */
 export interface ModelCatalogCachePointer {
   version: typeof POINTER_VERSION;
@@ -246,10 +252,10 @@ export async function storeModelCatalog(dir: string, document: ModelCatalogDocum
   verifyModelCatalogDocument(document);
   const existing = await readCachedModelCatalog(dir, document.sha256);
   if (existing.ok) return;
-  await writeFileAtomicAtPath(join(dir, `${document.sha256}.json`), formatCatalogJson(document, ENTRY_COMPACT_DEPTH));
+  await writeCappedCacheFile(join(dir, `${document.sha256}.json`), formatCatalogJson(document, ENTRY_COMPACT_DEPTH), MODEL_CATALOG_MAX_BYTES);
 }
 
 export async function writeModelCatalogPointer(dir: string, pointer: ModelCatalogCachePointer): Promise<void> {
   await prepareModelCatalogCache(dir);
-  await writeFileAtomicAtPath(join(dir, POINTER_FILE), `${JSON.stringify(pointer, null, 2)}\n`);
+  await writeCappedCacheFile(join(dir, POINTER_FILE), `${JSON.stringify(pointer, null, 2)}\n`, MAX_POINTER_BYTES);
 }
