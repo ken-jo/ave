@@ -186,7 +186,7 @@ function planReasoningLevel(params: {
 }): ReasoningPlan | undefined {
   const entry = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl)?.model;
   const accepted = entry?.reasoning?.effort;
-  if (entry?.reasoning?.supported === false && (OPENAI_FAMILY.has(params.vendor) || params.vendor === "claude")) {
+  if (entry?.reasoning?.supported === false) {
     return { kind: "none", source: "model-catalog" };
   }
   if (OPENAI_FAMILY.has(params.vendor)) {

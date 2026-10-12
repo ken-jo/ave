@@ -318,6 +318,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         catalogModel: params.catalogModel,
         request: { hasTools },
       });
+      const isThinkingEnabled = params.enableThinking === true && reasoningPlan?.kind !== "none";
       const numericThinking = reasoningPlan?.kind === "anthropic-numeric";
       const interleavedNumericThinking = numericThinking && hasTools
         && supportsInterleavedNumericThinking(params.model);
@@ -362,7 +363,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       if (isSelfHostedVllmVendor(slot)) {
         const compatOptions: Record<string, unknown> = {
           chat_template_kwargs: {
-            enable_thinking: params.enableThinking === true,
+            enable_thinking: isThinkingEnabled,
           },
         };
         // REASONING BUDGET. `enable_thinking` is a switch, not a dial: without
@@ -375,7 +376,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         // prompt drew 133 reasoning tokens unbudgeted and 31 at a budget of 32.
         // Servers that do not implement it ignore it, exactly as they do the
         // chat-template kwargs above.
-        if (params.enableThinking === true) {
+        if (isThinkingEnabled) {
           compatOptions.thinking_token_budget = budget;
           // The same spelling does not reach both servers this vendor class
           // fronts. vLLM reads `thinking_token_budget`; llama.cpp reads the

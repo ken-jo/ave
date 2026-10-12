@@ -22,12 +22,13 @@ import { apiRoundLlmSettings } from "../../../turn/round-llm-settings.js";
 async function sentBody(
   vendor: LLMVendor,
   model: string,
-  params: { outputTokenLimit?: number; thinkingBudgetTokens?: number; enableThinking?: boolean; tools?: boolean; baseUrl?: string },
+  params: { outputTokenLimit?: number; thinkingBudgetTokens?: number; enableThinking?: boolean; tools?: boolean; baseUrl?: string; catalogModel?: string },
 ): Promise<Record<string, unknown>> {
   const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
   const provider = new VercelUnifiedProvider(vendor, "fixture-key", params.baseUrl, fetchResponse);
   for await (const _event of provider.streamTurn({
     model,
+    catalogModel: params.catalogModel,
     systemPrompt: "Return the result.",
     messages: [{ role: "user", content: "Report the value." }],
     enableThinking: params.enableThinking ?? true,
@@ -122,6 +123,22 @@ describe("request fields the catalog decides", () => {
       expect(body.output_config).toBeUndefined();
       expect(planReasoning({ vendor: "claude", model, enableThinking: true, budgetTokens: 8_000,
         request: { hasTools: false } }))
+        .toMatchObject({ kind: "none", source: "model-catalog" });
+    },
+  );
+
+  it.each(["openai-compatible", "litellm", "ollama", "lmstudio"] as const)(
+    "honors an explicitly identified non-reasoning model on the %s compatibility wire", async (vendor) => {
+      const catalogModel = "openai/gpt-4o";
+      const baseUrl = "https://gateway.invalid/v1";
+      const body = await sentBody(vendor, "served-model", {
+        catalogModel, baseUrl, thinkingBudgetTokens: 8_000,
+      });
+      expect(body.chat_template_kwargs).toMatchObject({ enable_thinking: false });
+      expect(body.thinking_token_budget).toBeUndefined();
+      expect(body.thinking_budget_tokens).toBeUndefined();
+      expect(planReasoning({ vendor, model: "served-model", catalogModel, baseUrl, enableThinking: true,
+        budgetTokens: 8_000, request: { hasTools: false } }))
         .toMatchObject({ kind: "none", source: "model-catalog" });
     },
   );
