@@ -312,8 +312,8 @@ export async function queryLoop(
             vendorModel: servingVendorModel,
           }
         : {}),
-      // Only for the route the settings were resolved for: a fallback served
-      // the turn on another model whose limits these do not describe.
+      // Fallbacks resolve generation again, even when their provider and model
+      // labels match. Keep only facts from the last primary request.
       ...(turnModelSettings !== undefined
         && servingVendorProvider === llmSettings.provider && servingVendorModel === model
         ? { modelSettings: turnModelSettings }
@@ -325,6 +325,7 @@ export async function queryLoop(
       ? self.provider.withCallbacks({
         onFallback: callbacks?.onFallback,
         onStatus: (status) => {
+          if (status.phase === "fallback") turnModelSettings = undefined;
           if (
             !subscriptionUsageIsOpaque &&
             (status.phase === "attempt" || status.phase === "retry") &&

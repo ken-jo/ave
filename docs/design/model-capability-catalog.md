@@ -321,8 +321,9 @@ Implemented.
   that drops tools recomputes that plan at the dispatch boundary, after runtime and
   cancellation guards pass. A named catalog identity also identifies the model
   family for chat tool-turn suppression, even when the route uses a deployment alias.
-  It is omitted for
-  subscription runtimes and for a turn a fallback served on another model.
+  It is omitted for subscription runtimes and when the last request used a fallback,
+  even if its provider and model match the primary: that attempt resolves generation
+  limits again. A later primary request records its own resolution at dispatch.
 - **UI.** The renderer's cost estimate shows a range. The upper end is the cost with
   the output at `output.effective` (before, it assumed a fixed 4,096), and the tooltip
   names who set the limit. The lower end, and the color tier, use the expected output:

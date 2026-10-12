@@ -3,6 +3,7 @@ import { forbidAmbientFetch } from "../../../__tests__/support/network-fetch-stu
 import { InputClassifier } from "../../../core/input-classifier.js";
 import { RouteEngine } from "../../../core/route-engine.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
+import { isModelAvailableForVendor } from "../../../shared/llm-vendor-defaults.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { ConversationLoop } from "../../conversation-loop.js";
 import type { ProviderConfig, StreamEvent } from "../../llm/types.js";
@@ -25,15 +26,17 @@ vi.mock("../../llm/provider-factory.js", async (importOriginal) => ({
 }));
 
 async function requestOn(route: "child" | "preset" | "generic") {
+  if (route === "child") expect(isModelAvailableForVendor("openai", "gpt-5.4-pro")).toBe(true);
   const llm = route === "child"
-    ? fakeLlmSettings({ model: "gpt-5.2" })
+    ? fakeLlmSettings({ model: "gpt-5.4-mini" })
     : fakeLlmSettings({ provider: "openai-compatible", model: "served-child",
         ...(route === "preset" ? { marketplaceProviderPresetId: "fixture-preset" } : {}),
       });
   if (route !== "child") llm.vendors[llm.provider].baseUrl = "https://gateway.invalid/v1";
-  llm.vendors[llm.provider].catalogModel = route === "child" ? "openai/gpt-5.2" : "openai/gpt-4o";
+  llm.vendors[llm.provider].catalogModel = route === "child" ? "openai/gpt-5.4-mini" : "openai/gpt-4o";
+  if (route === "child") llm.vendors.openai.thinkingBudgetTokens = 500;
   const loop = new ConversationLoop({
-    ...(route === "child" ? { modelOverride: "gpt-4o" } : {}),
+    ...(route === "child" ? { modelOverride: "gpt-5.4-pro" } : {}),
     settingsService: {
       get: (key: string) => key === "marketplace" ? {
         installedProviderPresets: [{ providerId: "fixture-preset", baseUrl: "https://gateway.invalid/v1" }],
@@ -62,12 +65,12 @@ afterEach(() => vi.unstubAllGlobals());
 it.each(["wire", "record"] as const)("uses the child model's reasoning identity on the %s", async (surface) => {
   const { body, record } = await requestOn("child");
   if (surface === "wire") {
-    expect(body.model).toBe("gpt-4o");
-    expect(body.reasoning_effort).toBeUndefined();
-    expect(record.output.effective).toBe(16_384);
-    expect(body.max_tokens ?? body.max_completion_tokens).toBe(record.output.effective);
+    expect(body.model).toBe("gpt-5.4-pro");
+    expect(body.reasoning).toMatchObject({ effort: "medium" });
+    expect(record.output.effective).toBe(32_000);
+    expect(body.max_output_tokens).toBe(record.output.effective);
   } else {
-    expect(record.reasoning).toEqual({ kind: "none", source: "model-catalog" });
+    expect(record.reasoning).toEqual({ kind: "openai-effort", requestedEffort: "none", effort: "medium", source: "model-catalog" });
   }
 });
 

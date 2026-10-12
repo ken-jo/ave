@@ -472,7 +472,7 @@ export interface TurnSummary {
    * What the turn's API route resolved about its model — the catalog it read,
    * the window, the output limit and the reasoning level with their sources,
    * and the output the remaining context would still have fit (diagnostics
-   * only). Absent for subscription runtimes and for a turn a fallback served.
+   * only). Absent for subscription runtimes and when the last request used a fallback.
    */
   modelSettings?: RunModelSettings;
   /**
