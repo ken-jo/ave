@@ -197,6 +197,10 @@ falling back to a name match, and it applies to the vendor block's own model, no
 marketplace preset reached through the same vendor. The engine logs a named entry the
 catalog does not list once per route and name, so a typo does not pass silently.
 
+An API child with a profile model resolves the same route using that model, preserving
+the endpoint and credential scope. It does not inherit a named entry for the parent's
+model. That identity drives provider construction, preflight and usage accounting.
+
 **A custom `baseUrl` must establish model identity.** A mapped vendor matches by name
 only in its native public-model namespace, including documented regional and
 certificate-authenticated API hosts. A different
