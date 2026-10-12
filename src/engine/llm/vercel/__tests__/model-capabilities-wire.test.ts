@@ -26,7 +26,7 @@ function wireFixture(vendor: LLMProvider["vendor"] = "openai") {
   const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
   return {
     fetchResponse,
-    provider: new VercelUnifiedProvider(vendor, "fixture-key", vendor === "openrouter" ? "https://provider.invalid/v1" : undefined, fetchResponse),
+    provider: new VercelUnifiedProvider(vendor, "fixture-key", vendor === "openrouter" || vendor === "openai-compatible" ? "https://provider.invalid/v1" : undefined, fetchResponse),
     body: () => JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>,
   };
 }
@@ -85,6 +85,39 @@ describe("image capability at the wire boundary", () => {
       ],
     })));
     expect(fixture.fetchResponse).not.toHaveBeenCalled();
+  });
+
+  it("allows tool-result images on an unknown served id when the endpoint reports image input", async () => {
+    const fixture = wireFixture("openai-compatible");
+    await collectStreamEvents(fixture.provider.streamTurn(request("vision-model", {
+      modelCapabilities: { inputModalities: { input: ["text", "image"], source: "provider-reported" } },
+      messages: [
+        { role: "assistant", content: "", toolCalls: [{ id: "image-call", name: "view_image", input: {} }] },
+        { role: "tool_result", toolUseId: "image-call", toolName: "view_image", content: "Image loaded", image: { mimeType: "image/png", data: "QUJD" } },
+      ],
+    })));
+    expect(fixture.fetchResponse).toHaveBeenCalledOnce();
+    const messages = fixture.body().messages as Array<{ role: string; content: unknown }>;
+    const toolIndex = messages.findIndex((message) => message.role === "tool");
+    expect(toolIndex).toBeGreaterThanOrEqual(0);
+    expect(messages[toolIndex]).toMatchObject({ tool_call_id: "image-call", content: "Image loaded" });
+    expect(messages[toolIndex + 1]).toMatchObject({ role: "user", content: [
+      { type: "text", text: expect.stringContaining('call "image-call"') },
+      { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } },
+    ] });
+  });
+
+  it("refuses tool-result images when the endpoint reports text only despite an image-capable name", async () => {
+    const fixture = wireFixture("openai-compatible");
+    const events = await collectStreamEvents(fixture.provider.streamTurn(request("gpt-5.4-mini", {
+      modelCapabilities: { inputModalities: { input: ["text"], source: "provider-reported" } },
+      messages: [
+        { role: "assistant", content: "", toolCalls: [{ id: "image-call", name: "view_image", input: {} }] },
+        { role: "tool_result", toolUseId: "image-call", toolName: "view_image", content: "Image loaded", image: { mimeType: "image/png", data: "QUJD" } },
+      ],
+    })));
+    expect(fixture.fetchResponse).not.toHaveBeenCalled();
+    expect(events).toEqual([expect.objectContaining({ type: "error", classification: "model" })]);
   });
 
   it("does not inherit a primary endpoint's image capability on fallback", async () => {
