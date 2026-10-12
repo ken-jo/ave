@@ -28,16 +28,11 @@ import type { ModelCatalogDocument } from "../../shared/model-catalog/types.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { runWithAbortableDeadline } from "../../shared/abortable-deadline.js";
 import { fetchPublicHttpResponse } from "../network-guard.js";
-import {
-  readCurrentModelCatalog,
-  readModelCatalogCheck,
-  storeModelCatalog,
-  writeModelCatalogCheck,
-  writeModelCatalogPointer,
-} from "./cache.js";
-import { buildModelCatalogDocument, verifyModelCatalogDocument } from "./document.js";
+import { readCurrentModelCatalog } from "./cache.js";
+import { verifyModelCatalogDocument } from "./document.js";
+import { buildModelCatalogDocument } from "./document-builder.js";
 import { MODEL_CATALOG_MAX_BYTES } from "./limits.js";
-import { pruneModelCatalogCache, withModelCatalogCacheLock } from "./refresh-cache.js";
+import { pruneModelCatalogCache, readModelCatalogCheck, storeModelCatalog, withModelCatalogCacheLock, writeModelCatalogCheck, writeModelCatalogPointer } from "./refresh-cache.js";
 
 export { MODEL_CATALOG_MAX_BYTES } from "./limits.js";
 

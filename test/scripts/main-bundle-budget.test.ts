@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { describe, expect, it } from "vitest";
 import {
@@ -10,6 +11,9 @@ import {
   findUnexpectedMainBundleRootScripts,
   isSafeMainBundleManifestPath,
 } from "../../scripts/lib/main-bundle-budget.mjs";
+import { MAIN_BUNDLE_EXTERNALS } from "../../scripts/lib/main-bundle-externals.mjs";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const syntheticMetafile = {
   outputs: {
@@ -34,6 +38,53 @@ const syntheticMetafile = {
 };
 
 describe("main bundle budget", () => {
+  it("keeps refresh writers out of emitted startup code shared with the deferred refresh", async () => {
+    const outdir = resolve(REPO_ROOT, "dist/catalog-boundary-probe");
+    const result = await build({
+      absWorkingDir: REPO_ROOT, outdir,
+      stdin: {
+        contents: 'export { selectBootModelCatalog } from "./src/core/model-catalog/bundled.ts"; export const loadRefresh = () => import("./src/core/model-catalog/refresh.ts");',
+        resolveDir: REPO_ROOT, sourcefile: "catalog-main.ts", loader: "ts",
+      },
+      bundle: true, splitting: true, format: "esm", platform: "node", target: "node22",
+      preserveSymlinks: true, minify: true, keepNames: true,
+      write: false, metafile: true, external: [...MAIN_BUNDLE_EXTERNALS],
+    });
+    const outputs = new Map(Object.entries(result.metafile.outputs).map(([path, value]) => [
+      isAbsolute(path) ? path : resolve(REPO_ROOT, path), value,
+    ]));
+    const files = new Map(result.outputFiles.map((file) => [file.path, file]));
+    const entry = [...outputs].find(([, value]) => value.entryPoint === "catalog-main.ts");
+    expect(entry).toBeDefined();
+    const initial = new Set<string>();
+    const pending = [entry![0]];
+    while (pending.length > 0) {
+      const path = pending.pop()!;
+      if (initial.has(path)) continue;
+      initial.add(path);
+      for (const imported of outputs.get(path)!.imports) {
+        if (imported.external || imported.kind !== "import-statement") continue;
+        const absolute = resolve(REPO_ROOT, imported.path);
+        pending.push(outputs.has(absolute) ? absolute : resolve(dirname(path), imported.path));
+      }
+    }
+    const actualBytes = [...initial].reduce((sum, path) => sum + files.get(path)!.contents.length, 0);
+    const measurement = analyzeMainBundleMetafile(result.metafile, {
+      entryPoint: "catalog-main.ts",
+      requiredAsyncEntryPoint: resolve(REPO_ROOT, "src/core/model-catalog/refresh.ts"),
+    });
+    expect(measurement.initialBytes).toBe(actualBytes);
+    expect(measurement.requiredAsyncEntryIsInitial).toBe(false);
+    const eagerInputs = [...initial].flatMap((path) => Object.entries(outputs.get(path)!.inputs)
+      .filter(([, value]) => value.bytesInOutput > 0)
+      .map(([input]) => input.replaceAll("\\", "/")));
+    const deferredInputs = ["core/model-catalog/refresh-cache.ts", "core/model-catalog/document-builder.ts", "shared/model-catalog/normalize.ts"];
+    expect(eagerInputs.filter((input) => deferredInputs.some((path) => input.endsWith(path)))).toEqual([]);
+    const initialText = [...initial].map((path) => files.get(path)!.text).join("\n");
+    const writers = ["readModelCatalogCheck", "writeModelCatalogCheck", "prepareModelCatalogCache", "storeModelCatalog", "writeModelCatalogPointer", "withModelCatalogCacheLock", "buildModelCatalogDocument", "formatCatalogJson", "normalizeModelsDevProviders"];
+    expect(writers.filter((name) => initialText.includes(JSON.stringify(name)))).toEqual([]);
+  });
+
   it("counts only statically reachable outputs in the initial load", () => {
     const measurement = analyzeMainBundleMetafile(syntheticMetafile, {
       entryPoint: "/repo/src/main.ts",

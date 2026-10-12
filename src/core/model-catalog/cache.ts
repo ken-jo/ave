@@ -1,11 +1,11 @@
 /**
- * The refreshed model catalog's on-disk cache (design §7).
+ * Read-only access to the refreshed model catalog's on-disk cache (design §7).
  *
  * `<aveHome>/cache/model-catalog/` holds each refreshed catalog as an
  * immutable `<sha256>.json` and one mutable pointer, `current.json`, naming
  * the copy in force with the ETag and the time the origin last confirmed it.
- * Every file is written temp → fsync → rename, so a crash leaves the old
- * pointer or the new one, never half of either.
+ * Publication and attempt-state writes live in `refresh-cache.ts`; reads do
+ * not create directories or load those writer helpers.
  *
  * Reads never trust the disk: a copy is used only after
  * `verifyModelCatalogDocument` accepts it and its hash is the name the pointer
@@ -16,14 +16,11 @@ import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
-import { openFeatureNamespace, writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { aveHome } from "../../shared/ave-home.js";
 import type { ModelCatalogDocument } from "../../shared/model-catalog/types.js";
-import { formatCatalogJson, verifyModelCatalogDocument } from "./document.js";
-import { MODEL_CATALOG_MAX_BYTES } from "./limits.js";
-
-const cacheNamespace = openFeatureNamespace("cache");
+import { verifyModelCatalogDocument } from "./document.js";
+import { MODEL_CATALOG_MAX_BYTES, MODEL_CATALOG_POINTER_MAX_BYTES } from "./limits.js";
 
 /** Where the cache lives; resolved per call so `AVE_HOME` isolation is honoured. */
 export function modelCatalogCacheDir(): string {
@@ -33,28 +30,7 @@ export function modelCatalogCacheDir(): string {
 const POINTER_FILE = "current.json";
 const POINTER_VERSION = 1;
 const SHA256 = /^[0-9a-f]{64}$/;
-/** Same layout as the bundled snapshot: one line per model record. */
-const ENTRY_COMPACT_DEPTH = 4;
-const MAX_POINTER_BYTES = 64 * 1024;
-const CHECK_FILE = ".refresh-check.json";
 export { MODEL_CATALOG_CACHE_MAX_ENTRIES } from "./limits.js";
-
-/** Last attempted check, including failures; separate from successful confirmation. */
-export async function readModelCatalogCheck(dir: string): Promise<string | undefined> {
-  try {
-    await checkCacheDirectory(dir);
-    const value = JSON.parse(await readRegularFile(join(dir, CHECK_FILE), MAX_POINTER_BYTES)) as { version?: unknown; checkedAt?: unknown } | null;
-    if (value?.version === 1 && typeof value.checkedAt === "string" && Number.isFinite(Date.parse(value.checkedAt))) return value.checkedAt;
-  } catch {
-    // Missing or damaged scheduling state must not replace a usable catalog.
-  }
-  return undefined;
-}
-
-export async function writeModelCatalogCheck(dir: string, checkedAt: string): Promise<void> {
-  await prepareModelCatalogCache(dir);
-  await writeFileAtomicAtPath(join(dir, CHECK_FILE), `${JSON.stringify({ version: 1, checkedAt })}\n`);
-}
 
 /** Cache-owned directories must be directories, never links into another tree. */
 export async function checkCacheDirectory(dir: string, allowAbsent = false): Promise<void> {
@@ -67,16 +43,6 @@ export async function checkCacheDirectory(dir: string, allowAbsent = false): Pro
       throw error;
     }
   }
-}
-
-/** The namespace helper owns directory creation and private modes. */
-export async function prepareModelCatalogCache(dir: string): Promise<void> {
-  await checkCacheDirectory(dir, true);
-  if (resolve(dir) === modelCatalogCacheDir()) {
-    await cacheNamespace.childDir(".");
-    await cacheNamespace.childDir("model-catalog");
-  }
-  await checkCacheDirectory(dir);
 }
 
 /** Read one regular inode, capped even if its size changes during the read. */
@@ -105,12 +71,6 @@ export async function readRegularFile(path: string, maxBytes: number): Promise<s
   }
 }
 
-/** Publication must never create bytes the corresponding reader will refuse. */
-async function writeCappedCacheFile(path: string, text: string, maxBytes: number): Promise<void> {
-  if (Buffer.byteLength(text, "utf-8") > maxBytes) throw new Error(`model catalog file exceeds the ${maxBytes}-byte cap`);
-  await writeFileAtomicAtPath(path, text);
-}
-
 /** `current.json`: which cached copy is in force, and when the origin last confirmed it. */
 export interface ModelCatalogCachePointer {
   version: typeof POINTER_VERSION;
@@ -128,7 +88,7 @@ export async function readModelCatalogPointer(dir: string): Promise<CacheRead<Mo
   let text: string;
   try {
     await checkCacheDirectory(dir);
-    text = await readRegularFile(join(dir, POINTER_FILE), MAX_POINTER_BYTES);
+    text = await readRegularFile(join(dir, POINTER_FILE), MODEL_CATALOG_POINTER_MAX_BYTES);
   } catch (error) {
     return { ok: false, reason: isMissingPathError(error) ? "absent" : `pointer unreadable: ${errorMessage(error)}` };
   }
@@ -197,22 +157,4 @@ export async function readCurrentModelCatalog(dir: string): Promise<CacheRead<{ 
   const document = await readCachedModelCatalog(dir, pointer.value.sha256);
   if (!document.ok) return document;
   return { ok: true, value: { pointer: pointer.value, document: document.value } };
-}
-
-/**
- * Store a verified catalog under its name. An entry already stored under that
- * name and still verifying is kept, not rewritten: the name is the content, so
- * a second download of unchanged data is the same entry (design §3.2).
- */
-export async function storeModelCatalog(dir: string, document: ModelCatalogDocument): Promise<void> {
-  await prepareModelCatalogCache(dir);
-  verifyModelCatalogDocument(document);
-  const existing = await readCachedModelCatalog(dir, document.sha256);
-  if (existing.ok) return;
-  await writeCappedCacheFile(join(dir, `${document.sha256}.json`), formatCatalogJson(document, ENTRY_COMPACT_DEPTH), MODEL_CATALOG_MAX_BYTES);
-}
-
-export async function writeModelCatalogPointer(dir: string, pointer: ModelCatalogCachePointer): Promise<void> {
-  await prepareModelCatalogCache(dir);
-  await writeCappedCacheFile(join(dir, POINTER_FILE), `${JSON.stringify(pointer, null, 2)}\n`, MAX_POINTER_BYTES);
 }

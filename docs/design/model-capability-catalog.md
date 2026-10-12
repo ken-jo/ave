@@ -345,13 +345,14 @@ user overrides keep the highest precedence.
   shape cannot replace a working catalog with an empty one (`refresh.ts`).
 - The cache is `<AVE_HOME>/cache/model-catalog/`: an immutable `<sha256>.json` per catalog
   and a `current.json` pointer `{version, sha256, etag?, checkedAt}`, each written
-  temp → fsync → rename (`cache.ts`) with private namespace permissions (0700 directories,
+  temp → fsync → rename (`refresh-cache.ts`) with private namespace permissions (0700 directories,
   0600 files on POSIX). Reads reject linked cache directories and files, read one regular
   inode under a byte cap, and verify those same loaded bytes before use. Hash-only pointer
   names cannot escape the directory. Writers enforce the same byte caps as readers.
   A conditional 304 renews `checkedAt` only. A cross-process lock serializes each check
-  through publication (`refresh-cache.ts`); boot's read-only cache access does not load
-  that coordination. Publication keeps at most five hash-named files, protecting the
+  through publication (`refresh-cache.ts`). Boot's read-only cache access (`cache.ts`,
+  `document.ts`) does not load publication, attempt-state, normalization or formatting
+  helpers; document construction lives in `document-builder.ts`. Publication keeps at most five hash-named files, protecting the
   new copy and the preceding current copy; unrelated files are not pruned.
 - Cadence: a running interactive app checks at boot and then hourly, and sends a request
   only when the last attempt is a day old. `.refresh-check.json` records an attempt before

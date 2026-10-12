@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 dns.lookup = (async () => [{ address: "93.184.215.14", family: 4 }]) as unknown as typeof dns.lookup;
 syncBuiltinESMExports();
-const { buildModelCatalogDocument } = await import("../../document.js");
+const { buildModelCatalogDocument } = await import("../../document-builder.js");
 const { refreshModelCatalogCache, MODEL_CATALOG_REFRESH_URL } = await import("../../refresh.js");
 const home = process.argv[2]!;
 const input = { openai: { id: "openai", models: { fixture: { id: "fixture", limit: { context: 400_000 } } } } };

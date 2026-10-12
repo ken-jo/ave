@@ -13,7 +13,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, sy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildModelCatalogDocument } from "../document.js";
+import { buildModelCatalogDocument } from "../document-builder.js";
 import { selectBootModelCatalog } from "../bundled.js";
 import { MODEL_CATALOG_CACHE_MAX_ENTRIES, modelCatalogCacheDir, readCachedModelCatalog, readModelCatalogPointer } from "../cache.js";
 import {
@@ -419,6 +419,12 @@ describe("refreshModelCatalogCache", () => {
 });
 
 describe("selectBootModelCatalog", () => {
+  it("leaves an absent cache and its parent absent during boot selection", async () => {
+    const absent = join(dir, "absent", "model-catalog");
+    expect(await selectBootModelCatalog({ env: {}, dir: absent, loadBundled })).toMatchObject({ origin: "bundled" });
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
   it.each(["current.json", "entry"])("refuses a linked cache %s", async (name) => {
     const sha256 = await seedGoodCopy();
     const path = join(dir, name === "entry" ? `${sha256}.json` : name);
