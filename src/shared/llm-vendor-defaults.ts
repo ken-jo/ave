@@ -718,6 +718,8 @@ export interface LLMVendorSettings {
    * edited in `settings.json`, like {@link contextWindow}.
    */
   catalogModel?: string;
+  /** Image support declared for a model on this provider or preset route. */
+  imageInput?: Partial<Record<string, boolean>>;
   baseUrl?: string;
   vertexProject?: string;
   vertexLocation?: string;
@@ -931,6 +933,38 @@ function normalizeLlmCatalogModel(value: unknown): string | undefined {
   return trimmed;
 }
 
+/** A model declaration on one route must not configure another preset's model. */
+export function llmImageInputKey(model: string, presetId?: string): string {
+  return JSON.stringify([presetId?.trim() ?? "", model.trim()]);
+}
+
+function normalizeLlmImageInput(value: unknown): LLMVendorSettings["imageInput"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value).filter(([key, supported]) => {
+    if (typeof supported !== "boolean") return false;
+    try {
+      const scope: unknown = JSON.parse(key);
+      return Array.isArray(scope) && scope.length === 2
+        && scope.every((part) => typeof part === "string" && part.length <= MAX_PRESET_MODEL_ENTRY_LENGTH)
+        && scope[1].trim().length > 0 && key === llmImageInputKey(scope[1], scope[0]);
+    } catch {
+      return false;
+    }
+  });
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+export function llmRouteImageInput(
+  block: Pick<LLMVendorSettings, "imageInput">,
+  model: string,
+  presetId?: string,
+): boolean | undefined {
+  const key = llmImageInputKey(model, presetId);
+  const map = block.imageInput;
+  const value = map && Object.hasOwn(map, key) ? map[key] : undefined;
+  return typeof value === "boolean" ? value : undefined;
+}
+
 function normalizeLlmContextWindow(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) return undefined;
   return value;
@@ -953,6 +987,7 @@ export function getLlmVendorSettings(
   const outputTokenLimit = explicitLlmOutputTokenLimit(stored?.outputTokenLimit);
   const contextWindow = normalizeLlmContextWindow(stored?.contextWindow);
   const catalogModel = normalizeLlmCatalogModel(stored?.catalogModel);
+  const imageInput = normalizeLlmImageInput(stored?.imageInput);
   const block: LLMVendorSettings = {
     ...defaults,
     ...stored,
@@ -973,6 +1008,8 @@ export function getLlmVendorSettings(
   else delete block.contextWindow;
   if (catalogModel !== undefined) block.catalogModel = catalogModel;
   else delete block.catalogModel;
+  if (imageInput !== undefined) block.imageInput = imageInput;
+  else delete block.imageInput;
   return block;
 }
 

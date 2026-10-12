@@ -53,8 +53,8 @@ async function collect(events: readonly StreamEvent[]) {
 
 describe("image capability refusal", () => {
   it.each([
-    ["en", "Error: Images in this conversation cannot be sent to the selected model. Switch to an image-capable model, or start a new conversation without images."],
-    ["ko", "오류: 대화에 포함된 이미지를 선택한 모델로 보낼 수 없습니다. 이미지를 받는 모델로 바꾸거나, 이미지가 없는 새 대화를 시작해 주세요."],
+    ["en", "Error: Images in this conversation cannot be sent to the selected model. Switch to an image-capable model, or start a new conversation without images. If this custom model supports images, set Image input to Supported under Settings → Model → Image input."],
+    ["ko", "오류: 대화에 포함된 이미지를 선택한 모델로 보낼 수 없습니다. 이미지를 받는 모델로 바꾸거나, 이미지가 없는 새 대화를 시작해 주세요. 이 사용자 지정 모델이 이미지를 지원한다면 설정 → 모델 → 이미지 입력에서 이미지 입력을 지원으로 설정해 주세요."],
   ] as const)("localizes retained-image recovery in %s", async (locale, userMessage) => {
     setLocale(locale);
     const fetchResponse = vi.fn<typeof fetch>();

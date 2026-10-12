@@ -33,6 +33,7 @@ import {
   DEFAULT_LLM_VENDOR,
   freshAllVendorBlocks,
   getLlmVendorSettings,
+  llmImageInputKey,
 } from "../../shared/llm-vendor-defaults.js";
 import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
@@ -1208,6 +1209,19 @@ describe("SettingsService marketplace defaults", () => {
     // answers rather than a model borrowed from a gateway.
     expect(block.model).toBe("");
     expect(block.baseUrl).toBe("http://localhost:8001/v1");
+  });
+
+  it("persists and merges model image declarations, clears only the selected model, and retains inactive configuration", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const first = llmImageInputKey("opaque-model");
+    const second = llmImageInputKey("other-model", "fixture-provider");
+    await service.patch({ llm: { provider: "openai-compatible", vendors: { "openai-compatible": { imageInput: { [first]: true } } } } });
+    await service.patch({ llm: { vendors: { "openai-compatible": { imageInput: { [second]: false } } } } });
+    expect(getLlmVendorSettings(service.get("llm").vendors, "openai-compatible").imageInput).toEqual({ [first]: true, [second]: false });
+    await service.patch({ llm: { provider: "openai", vendors: { "openai-compatible": { imageInput: { [first]: undefined } } } } });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(getLlmVendorSettings(reloaded.get("llm").vendors, "openai-compatible").imageInput).toEqual({ [second]: false });
+    expect(JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf8")).llm.vendors["openai-compatible"].imageInput).toEqual({ [second]: false });
   });
 
   it("merges one preset's model into the map instead of replacing it", async () => {

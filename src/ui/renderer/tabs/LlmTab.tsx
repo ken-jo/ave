@@ -40,6 +40,9 @@ import {
   isRetiredLlmModel,
   isSelfHostedTrustedNetworkVendor,
   llmRouteModel,
+  llmImageInputKey,
+  llmRouteImageInput,
+  type LLMVendorSettings,
   LLM_VENDOR_DEFAULTS,
 } from "../../../shared/llm-vendor-defaults.js";
 import {
@@ -1257,12 +1260,35 @@ export function LlmTab(props: LlmTabProps) {
     Readonly<Record<string, {
       model?: string;
       catalogModel?: string;
+      imageInput?: LLMVendorSettings["imageInput"];
       presetModels?: Record<string, string>;
       baseUrl?: string;
       vertexProject?: string;
       vertexLocation?: string;
     }>>
   >({});
+  const [imageInputSaving, setImageInputSaving] = useState(false);
+  const [imageInputError, setImageInputError] = useState<string | null>(null);
+  const imageInputPresetId = vendor === "openai-compatible" ? marketplaceProviderPresetId : undefined;
+  const imageInputSelection = JSON.stringify([vendor, imageInputPresetId ?? "", activeModelValue]);
+  const selectedImageInput = llmRouteImageInput(savedVendorBlocks[vendor] ?? {}, activeModelValue, imageInputPresetId);
+  const handleImageInputChange = async (value: string) => {
+    if (!isLLMVendor(vendor) || !activeModelValue || imageInputSaving) return;
+    const selection = imageInputSelection;
+    const key = llmImageInputKey(activeModelValue, imageInputPresetId);
+    setImageInputSaving(true);
+    setImageInputError(null);
+    try {
+      const result = await api.updateSettings({ llm: { vendors: {
+        [vendor]: { imageInput: { [key]: value === "automatic" ? undefined : value === "supported" } },
+      } } });
+      if (isIpcErrorResult(result)) setImageInputError(selection);
+    } catch {
+      setImageInputError(selection);
+    } finally {
+      setImageInputSaving(false);
+    }
+  };
   /** Capability reports the engine can read, after the cache save succeeds. */
   const [savedModelListCache, setSavedModelListCache] = useState<LlmModelListCache>({});
   /**
@@ -2188,7 +2214,12 @@ export function LlmTab(props: LlmTabProps) {
           ...(toolCall ? { toolCall } : {}),
           // This row's own endpoint report, else the catalog entry for its id.
           ...(visionVendor && supportsVision(visionVendor, modelId, {
-            inputModalities: resolveInputModalities({ vendor: visionVendor, model: modelId, reported: entry?.inputModalities }),
+            inputModalities: resolveInputModalities({
+              vendor: visionVendor, model: modelId,
+              imageInput: llmRouteImageInput(savedVendorBlocks[row.apiVendorId] ?? {}, modelId, row.presetId),
+              reported: savedEntries.get(modelId)?.inputModalities,
+              catalogModel: row.presetId ? undefined : savedVendorBlocks[row.apiVendorId]?.catalogModel,
+            }),
           }) ? { vision: true } : {}),
           ...(isActiveRow && modelId === unlistedModel
             ? { unlisted: true, facts: t("llmTab.modelUnlisted") }
@@ -3090,6 +3121,29 @@ export function LlmTab(props: LlmTabProps) {
               </p>
             )}
           </div>
+          {subscription.activeRuntime.kind === "api" && activeModelValue && (
+            <div className="min-w-0 space-y-1.5">
+              <Label htmlFor="model-image-input">{t("llmTab.imageInput")}</Label>
+              <Select
+                value={selectedImageInput === undefined ? "automatic" : selectedImageInput ? "supported" : "unsupported"}
+                onValueChange={(value) => { void handleImageInputChange(value); }}
+                disabled={!settingsLoaded || !isLLMVendor(vendor) || imageInputSaving || Boolean(subscription.props.chatSelectionBusy)}
+              >
+                <SelectTrigger id="model-image-input" data-testid="llm-tab:image-input" aria-describedby="model-image-input-help">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="automatic">{t("llmTab.imageInputAutomatic")}</SelectItem>
+                  <SelectItem value="supported">{t("llmTab.imageInputSupported")}</SelectItem>
+                  <SelectItem value="unsupported">{t("llmTab.imageInputUnsupported")}</SelectItem>
+                </SelectContent>
+              </Select>
+              <p id="model-image-input-help" className="break-words text-xs text-muted-foreground">
+                {t("llmTab.imageInputHelp", { model: activeModelValue })}
+              </p>
+              {imageInputError === imageInputSelection && <p role="alert" className="text-xs text-destructive">{t("llmTab.imageInputSaveFailed")}</p>}
+            </div>
+          )}
           {connectionsList}
         </div>
       </SettingsSection>

@@ -19,6 +19,7 @@ import {
 import {
   activeLlmRouteModel,
   getLlmVendorSettings,
+  llmRouteImageInput,
   requestedLlmOutputTokenLimit,
   type LlmOutputTokenLimitSource,
   type LLMVendor,
@@ -285,14 +286,15 @@ export function resolveOutputTokenLimit(params: {
 export interface ResolvedInputModalities {
   /** As the source spells them: `text`, `image`, `pdf`, `audio`, `video`. */
   readonly input: readonly string[];
-  readonly source: "provider-reported" | "model-catalog";
+  /** Authority for the image gate; a vendor setting changes only `image`. */
+  readonly source: "vendor-setting" | "provider-reported" | "model-catalog";
   /** `<provider>/<id>` when the catalog answered. */
   readonly catalogEntry?: string;
 }
 
 /**
- * A model's input modalities: what its endpoint reported in the `/models`
- * handshake, else the catalog entry's `modalities.input`. `undefined` when
+ * A model's input modalities: the user's image declaration or named entry,
+ * then its endpoint's report, then the catalog match. `undefined` when
  * neither states them, which is unknown, not "text only"; the caller's name
  * rule decides then. An empty reported list states nothing. A reported list is
  * an external value, folded to lower case so `Image` reads as the catalog's `image`.
@@ -302,13 +304,21 @@ export function resolveInputModalities(params: {
   model: string;
   reported?: readonly string[];
   catalogModel?: string;
+  imageInput?: boolean;
 }): ResolvedInputModalities | undefined {
-  if (params.reported !== undefined && params.reported.length > 0) {
-    return { input: params.reported.map((modality) => modality.toLowerCase()), source: "provider-reported" };
-  }
   const hit = catalogModelFor(params.vendor, params.model, params.catalogModel);
   const input = hit?.model.modalities?.input;
-  return hit && input ? { input, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` } : undefined;
+  const reported = params.reported?.map((modality) => modality.trim().toLowerCase()).filter(Boolean);
+  const resolved: ResolvedInputModalities | undefined = params.catalogModel !== undefined && hit && input !== undefined
+    ? { input, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` }
+    : reported && reported.length > 0
+      ? { input: reported, source: "provider-reported" }
+      : hit && input ? { input, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` } : undefined;
+  if (params.imageInput !== undefined) {
+    const otherInputs = (resolved?.input ?? []).filter((modality) => modality !== "image");
+    return { input: params.imageInput ? [...otherInputs, "image"] : otherInputs, source: "vendor-setting" };
+  }
+  return resolved;
 }
 
 /**
@@ -325,7 +335,7 @@ export type ResolvedToolCallSupport =
   | { readonly supported: boolean; readonly source: "model-catalog"; readonly catalogEntry: string };
 
 /**
- * The user's named no-tools entry takes precedence over an endpoint report.
+ * The user's named tool capability takes precedence over an endpoint report.
  * Otherwise explicit endpoint support for `tools` overrides the catalog.
  * A missing parameter is not a denial: only a catalog `toolCall: false`
  * withholds tools. Absent means unknown and sends tools as before.
@@ -338,8 +348,8 @@ export function resolveToolCallSupport(params: {
 }): ResolvedToolCallSupport | undefined {
   const hit = catalogModelFor(params.vendor, params.model, params.catalogModel);
   const supported = hit?.model.toolCall;
-  if (params.catalogModel !== undefined && hit && supported === false) {
-    return { supported: false, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` };
+  if (params.catalogModel !== undefined && hit && supported !== undefined) {
+    return { supported, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` };
   }
   if (params.reported?.some((parameter) => parameter.trim().toLowerCase() === "tools")) {
     return { supported: true, source: "provider-reported" };
@@ -455,6 +465,7 @@ export function resolveContextWindowForRoute(
   const inputModalities = resolveInputModalities({
     vendor: llm.provider,
     model,
+    imageInput: llmRouteImageInput(block, model, address.credentialScope),
     ...(entry?.inputModalities !== undefined ? { reported: entry.inputModalities } : {}),
     ...(catalogModel !== undefined ? { catalogModel } : {}),
   });

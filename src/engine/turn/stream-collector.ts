@@ -20,6 +20,7 @@ import {
 } from "../../shared/subscription-runtime.js";
 import { providerMatchesActiveChatRuntime } from "./provider.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { imageInputRecoveryMessage } from "../../shared/model-capability-settings.js";
 
 export interface StreamCollectParams {
   provider: LLMProvider;
@@ -235,7 +236,7 @@ export async function collectRoundStream(
           const imageInputRefused = event.code === "image-input-unsupported";
           const classification = imageInputRefused ? "model" : event.providerError?.classification ?? classified.category;
           const userMessage = imageInputRefused
-            ? t("be_streamCollector.imageInputUnsupported")
+            ? `${t("be_streamCollector.imageInputUnsupported")} ${imageInputRecoveryMessage(t)}`
             : classified.userMessage;
           const providerError = withProviderErrorClassification(
             event.providerError ?? extractProviderErrorDiagnostics(event.error),

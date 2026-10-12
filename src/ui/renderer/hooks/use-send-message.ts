@@ -28,6 +28,7 @@ import {
 } from "../../../shared/session-lookup.js";
 import type { TranslateFn } from "../../../i18n/translate.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { imageInputRecoveryMessage } from "../../../shared/model-capability-settings.js";
 
 type Api = ReturnType<typeof getApi>;
 type ChatState = ReturnType<typeof useChatState>;
@@ -295,7 +296,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
         && !subscriptionRuntimePolicy.subscriptionSelected
         && !supportsVision(llmVendor, llmModel, llmRouteModalities)
       ) {
-        setErrorWithThought(t("app.visionNotSupported", { llmModel }));
+        setErrorWithThought(`${t("app.visionNotSupported", { llmModel })} ${imageInputRecoveryMessage(t)}`);
         return;
       }
       const requestId = ++turnRequestRef.current;

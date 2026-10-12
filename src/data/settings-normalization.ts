@@ -629,6 +629,9 @@ export function mergeLlmPatch(
       if (incoming.presetModels) {
         merged.presetModels = { ...previous.presetModels, ...incoming.presetModels };
       }
+      if (incoming.imageInput) {
+        merged.imageInput = { ...previous.imageInput, ...incoming.imageInput };
+      }
       vendors[v] = getLlmVendorSettings({ ...vendors, [v]: merged }, v);
     }
   }
@@ -718,6 +721,7 @@ const LLM_VENDOR_SETTING_KEYS = [
   "contextWindow",
   // Likewise the catalog entry a self-hosted route was named as.
   "catalogModel",
+  "imageInput",
   "baseUrl",
   "vertexProject",
   "vertexLocation",

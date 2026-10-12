@@ -13,6 +13,8 @@ import {
   freshAllVendorBlocks,
   freshVendorBlocks,
   getLlmVendorSettings,
+  llmImageInputKey,
+  llmRouteImageInput,
   requestedLlmOutputTokenLimit,
   getLlmThinkingBudgetLimit,
   getLlmThinkingBudgetRungs,
@@ -65,6 +67,22 @@ describe("isLLMVendor", () => {
     } else {
       expect.fail("raw should have narrowed to LLMVendor");
     }
+  });
+});
+
+describe("model image declarations", () => {
+  it("normalizes scoped boolean declarations and removes malformed or cleared values", () => {
+    const key = llmImageInputKey("opaque-model");
+    const presetKey = llmImageInputKey("opaque-model", "fixture-provider");
+    const block = getLlmVendorSettings({ "openai-compatible": {
+      ...LLM_VENDOR_DEFAULTS["openai-compatible"],
+      imageInput: { [key]: true, [presetKey]: false, bad: true, '["",""]': true, '["","cleared"]': undefined, '["","invalid"]': "true" as never },
+    } }, "openai-compatible");
+    expect(block.imageInput).toEqual({ [key]: true, [presetKey]: false });
+    expect(llmRouteImageInput(block, "opaque-model")).toBe(true);
+    expect(llmRouteImageInput(block, "opaque-model", "fixture-provider")).toBe(false);
+    expect(llmRouteImageInput(block, "other-model")).toBeUndefined();
+    expect(getLlmVendorSettings({ "openai-compatible": { ...block, imageInput: { [key]: undefined } } }, "openai-compatible").imageInput).toBeUndefined();
   });
 });
 

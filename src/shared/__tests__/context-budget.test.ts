@@ -11,7 +11,7 @@ import {
   resolveOutputTokenLimit,
 } from "../context-budget.js";
 import { FALLBACK_PRICING } from "../pricing-data.js";
-import { freshAllVendorBlocks } from "../llm-vendor-defaults.js";
+import { freshAllVendorBlocks, llmImageInputKey } from "../llm-vendor-defaults.js";
 import { llmModelListCacheKey, type LlmModelListCache } from "../llm-model-list.js";
 import { activeModelCatalog, installModelCatalog } from "../model-catalog/active.js";
 import type { CatalogModel, ModelCatalogDocument } from "../model-catalog/types.js";
@@ -572,12 +572,14 @@ describe("a route's input modalities and tool support", () => {
     catalogModel?: string;
     reportedInput?: string[];
     supportedParameters?: string[];
+    imageInput?: boolean;
   } = {}) {
     const vendors = freshAllVendorBlocks();
     const fields = vendors[provider];
     fields.model = model;
     if (provider === "openai-compatible") fields.baseUrl = "https://models.invalid/v1";
     if (block.catalogModel !== undefined) fields.catalogModel = block.catalogModel;
+    if (block.imageInput !== undefined) fields.imageInput = { [llmImageInputKey(model)]: block.imageInput };
     const modelListCache: LlmModelListCache = {};
     if (block.reportedInput !== undefined || block.supportedParameters !== undefined) {
       modelListCache[llmModelListCacheKey(provider, fields.baseUrl, "")] = {
@@ -617,6 +619,48 @@ describe("a route's input modalities and tool support", () => {
     // A named entry missing from the catalog answers nothing; the served id is not matched by name either.
     expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "gpt-4o", { catalogModel: "openai/not-a-listed-model" })))
       .not.toHaveProperty("inputModalities");
+  });
+
+  it.each([
+    { catalogModel: "openai/gpt-4", reportedInput: ["text", "image"], input: ["text"] },
+    { catalogModel: "openai/gpt-4o", reportedInput: ["text"], input: ["text", "image", "pdf"] },
+  ])("keeps the user's named input modalities above endpoint reports: %j", ({ catalogModel, reportedInput, input }) => {
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "opaque-model", { catalogModel, reportedInput })).inputModalities)
+      .toEqual({ input, source: "model-catalog", catalogEntry: catalogModel });
+  });
+
+  it("keeps the user's named positive tool capability above endpoint reports", () => {
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "opaque-model", {
+      catalogModel: "openai/gpt-4o", supportedParameters: ["tools"],
+    })).toolCall).toEqual({ supported: true, source: "model-catalog", catalogEntry: "openai/gpt-4o" });
+  });
+
+  it.each([true, false])("uses a saved image declaration before every capability source: %s", (imageInput) => {
+    const route = apiRoute("openai-compatible", "opaque-model", {
+      imageInput, catalogModel: imageInput ? "openai/gpt-4" : "openai/gpt-4o",
+      reportedInput: imageInput ? ["text"] : ["text", "image"],
+    });
+    expect(resolveContextWindowForRoute(route).inputModalities).toMatchObject({ source: "vendor-setting" });
+    expect(resolveContextWindowForRoute(route).inputModalities?.input.includes("image")).toBe(imageInput);
+  });
+
+  it("keeps declarations on their model and preset route, with unknown models conservative by default", () => {
+    const route = apiRoute("openai-compatible", "opaque-model", { imageInput: true });
+    expect(resolveContextWindowForRoute(route).inputModalities?.input).toContain("image");
+    route.vendors["openai-compatible"].model = "other-model";
+    expect(resolveContextWindowForRoute(route).inputModalities).toBeUndefined();
+    route.vendors["openai-compatible"].presetModels = { "fixture-provider": "opaque-model" };
+    const presetRoute = { ...route, marketplaceProviderPresetId: "fixture-provider" };
+    expect(resolveContextWindowForRoute(presetRoute).inputModalities).toBeUndefined();
+    route.vendors["openai-compatible"].imageInput![llmImageInputKey("opaque-model", "fixture-provider")] = false;
+    expect(resolveContextWindowForRoute(presetRoute).inputModalities).toEqual({ input: [], source: "vendor-setting" });
+  });
+
+  it("declares image support without inventing other input modalities", () => {
+    expect(resolveInputModalities({ vendor: "openai-compatible", model: "opaque-model", imageInput: true }))
+      .toEqual({ input: ["image"], source: "vendor-setting" });
+    expect(resolveInputModalities({ vendor: "openai-compatible", model: "opaque-model", imageInput: false, reported: ["text", "audio", "image"] }))
+      .toEqual({ input: ["text", "audio"], source: "vendor-setting" });
   });
 
   it("carries the catalog's toolCall, and nothing where the catalog does not say", () => {

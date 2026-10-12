@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { activeModelCatalog, installModelCatalog } from "../../../../shared/model-catalog/active.js";
-import { resolveToolCallSupport } from "../../../../shared/context-budget.js";
+import { resolveContextWindowForRoute, resolveInputModalities, resolveToolCallSupport } from "../../../../shared/context-budget.js";
+import { freshAllVendorBlocks, llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
 import type { LLMProvider, StreamTurnParams } from "../../types.js";
 import { VercelUnifiedProvider } from "../adapter.js";
 import { FallbackProvider } from "../fallback-chain.js";
@@ -42,6 +43,17 @@ function request(model: string, overrides: Partial<StreamTurnParams> = {}): Stre
 }
 
 describe("image capability at the wire boundary", () => {
+  it.each([undefined, true, false])("uses saved image declarations for an unknown custom model at the HTTP boundary: %s", async (imageInput) => {
+    const fixture = wireFixture("openai-compatible");
+    const vendors = freshAllVendorBlocks();
+    vendors["openai-compatible"].model = "opaque-model";
+    vendors["openai-compatible"].imageInput = imageInput === undefined ? undefined : { [llmImageInputKey("opaque-model")]: imageInput };
+    const modelCapabilities = resolveContextWindowForRoute({ provider: "openai-compatible", vendors });
+    const events = await collectStreamEvents(fixture.provider.streamTurn(request("opaque-model", { messages: IMAGE_MESSAGES, modelCapabilities })));
+    expect(fixture.fetchResponse).toHaveBeenCalledTimes(imageInput === true ? 1 : 0);
+    if (imageInput !== true) expect(events).toEqual([expect.objectContaining({ type: "error", code: "image-input-unsupported", classification: "model" })]);
+  });
+
   it("refuses direct image requests to a text-only catalog model before fetching", async () => {
     const fixture = wireFixture();
     const events = await collectStreamEvents(fixture.provider.streamTurn(request("gpt-4", { messages: IMAGE_MESSAGES })));
@@ -56,6 +68,19 @@ describe("image capability at the wire boundary", () => {
       modelCapabilities: { inputModalities: { input: ["text"], source: "provider-reported" } },
     })));
     expect(fixture.fetchResponse).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { catalogModel: "openai/gpt-4", reported: ["text", "image"], calls: 0 },
+    { catalogModel: "openai/gpt-4o", reported: ["text"], calls: 1 },
+  ])("keeps a named image capability above the endpoint at the HTTP boundary: %j", async ({ catalogModel, reported, calls }) => {
+    const fixture = wireFixture("openai-compatible");
+    const vendors = freshAllVendorBlocks();
+    vendors["openai-compatible"].model = "opaque-model";
+    vendors["openai-compatible"].catalogModel = catalogModel;
+    const inputModalities = resolveInputModalities({ vendor: "openai-compatible", model: "opaque-model", catalogModel, reported });
+    await collectStreamEvents(fixture.provider.streamTurn(request("opaque-model", { messages: IMAGE_MESSAGES, modelCapabilities: { inputModalities } })));
+    expect(fixture.fetchResponse).toHaveBeenCalledTimes(calls);
   });
 
   it("allows images the endpoint reports even when the catalog denies them", async () => {

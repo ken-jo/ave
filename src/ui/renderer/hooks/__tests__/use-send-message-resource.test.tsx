@@ -635,7 +635,7 @@ describe("handleAsk — images on a model that cannot read them", () => {
     expect(beginStreamingRequest).not.toHaveBeenCalled();
     expect(setQuestion).not.toHaveBeenCalled();
     expect(setAttachments).not.toHaveBeenCalled();
-    expect(setErrorWithThought).toHaveBeenCalledWith("app.visionNotSupported");
+    expect(setErrorWithThought).toHaveBeenCalledWith("app.visionNotSupported llmTab.imageInputRecovery");
   });
 
   it("refuses images a model's name would let through when the catalog lists it as text only", async () => {
@@ -647,7 +647,7 @@ describe("handleAsk — images on a model that cannot read them", () => {
     });
 
     expect(chatSend).not.toHaveBeenCalled();
-    expect(setErrorWithThought).toHaveBeenCalledWith("app.visionNotSupported");
+    expect(setErrorWithThought).toHaveBeenCalledWith("app.visionNotSupported llmTab.imageInputRecovery");
   });
 
   it("sends images when the route's endpoint reports the model reads them", async () => {

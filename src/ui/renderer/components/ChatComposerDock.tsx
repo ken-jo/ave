@@ -1,6 +1,7 @@
 import type React from "react";
 import { KeyRound, ShieldQuestion, Store } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
+import { imageInputRecoveryMessage } from "../../../shared/model-capability-settings.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover.js";
 import { useCallback, useEffect, useState, type RefObject } from "react";
 import { SessionTasksPanel } from "./SessionTasksPanel.js";
@@ -558,7 +559,7 @@ export function ChatComposerDock({
               className="mx-4 mt-1 text-xs text-warning"
               data-testid="composer-vision-unsupported-hint"
             >
-              {t("app.visionNotSupported", { llmModel })}
+              {t("app.visionNotSupported", { llmModel })} {imageInputRecoveryMessage(t)}
             </div>
           ) : null}
           <ComposerStatusRow

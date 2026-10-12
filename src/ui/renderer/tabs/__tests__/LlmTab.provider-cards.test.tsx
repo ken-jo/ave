@@ -11,6 +11,7 @@ import type {
 } from "../../../../shared/marketplace-package-assets.js";
 import type { SubscriptionProviderView } from "../SubscriptionProvidersSection.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
+import { llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
 
 const useSubscriptionProvidersMock = vi.hoisted(() => vi.fn());
 
@@ -146,7 +147,18 @@ function profileApi(profile: Profile, rest: MockApi = {}) {
   const api = makeApi({
     getSettings: vi.fn(async () => settings),
     updateSettings: vi.fn(async (patch: { llm?: Record<string, unknown> }) => {
-      settings = { ...settings, llm: { ...settings.llm, ...(patch.llm ?? {}) } };
+      const vendors = { ...settings.llm.vendors as Record<string, Record<string, unknown>> };
+      for (const [vendor, incoming] of Object.entries(patch.llm?.vendors as Record<string, Record<string, unknown>> ?? {})) {
+        const previous = vendors[vendor] ?? {};
+        vendors[vendor] = { ...previous, ...incoming };
+        if (incoming.imageInput) {
+          vendors[vendor].imageInput = Object.fromEntries(Object.entries({
+            ...previous.imageInput as Record<string, boolean>,
+            ...incoming.imageInput as Record<string, boolean | undefined>,
+          }).filter(([, value]) => value !== undefined));
+        }
+      }
+      settings = { ...settings, llm: { ...settings.llm, ...(patch.llm ?? {}), vendors } };
       publish();
       return settings;
     }),
@@ -400,6 +412,63 @@ beforeEach(() => {
 });
 
 describe("LlmTab provider cards", () => {
+  it("saves the active vendor model without a stale preset's scope", async () => {
+    const model = "gpt-5.4";
+    const { api } = profileApi({ vendors: { openai: { model } } }, { hasApiKey: storedKeysFor("openai") });
+    await renderTab(api, { vendor: "openai", model, marketplaceProviderPresetId: "stale-provider" });
+    openMenu(screen.getByRole("combobox", { name: "이미지 입력" }));
+    fireEvent.click(screen.getByRole("option", { name: /^지원$/ }));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { vendors: {
+      openai: { imageInput: { [llmImageInputKey(model)]: true } },
+    } } }));
+  });
+
+  it("lets an unknown custom model declare image support and return to automatic", async () => {
+    const model = "opaque-model";
+    const { api } = profileApi({ vendors: { "openai-compatible": { model, baseUrl: CUSTOM_ENDPOINT } } }, {
+      hasApiKey: storedKeysFor("openai-compatible"),
+    });
+    await renderTab(api, { vendor: "openai-compatible", baseUrl: CUSTOM_ENDPOINT, model });
+    const control = screen.getByRole("combobox", { name: "이미지 입력" });
+    expect(control).toHaveTextContent("자동");
+    expect(control).toHaveAccessibleDescription(expect.stringContaining(model));
+    openMenu(control);
+    fireEvent.click(screen.getByRole("option", { name: /^지원$/ }));
+    await waitFor(() => expect(control).toHaveTextContent("지원"));
+    expect(api.updateSettings).toHaveBeenCalledWith({ llm: { vendors: {
+      "openai-compatible": { imageInput: { [llmImageInputKey(model)]: true } },
+    } } });
+    expect(await chooserModelIds()).toContain(model);
+    expect(within(chooserOption(model)).getByTestId(`llm-tab:model-vision:${model}`)).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
+    openMenu(control);
+    fireEvent.click(screen.getByRole("option", { name: /^자동$/ }));
+    await waitFor(() => expect(control).toHaveTextContent("자동"));
+    expect(api.updateSettings).toHaveBeenCalledWith({ llm: { vendors: {
+      "openai-compatible": { imageInput: { [llmImageInputKey(model)]: undefined } },
+    } } });
+    expect(await chooserModelIds()).toContain(model);
+    expect(within(chooserOption(model)).queryByTestId(`llm-tab:model-vision:${model}`)).not.toBeInTheDocument();
+  });
+
+  it.each(["rejected", "refused"])("keeps the saved image capability after a %s declaration save", async (failure) => {
+    const model = "opaque-model";
+    const { api } = profileApi({ vendors: { "openai-compatible": { model, baseUrl: CUSTOM_ENDPOINT } } }, {
+      hasApiKey: storedKeysFor("openai-compatible"),
+      updateSettings: failure === "rejected"
+        ? vi.fn().mockRejectedValue(new Error("fixture settings write failed"))
+        : vi.fn().mockResolvedValue({ ok: false, error: "settings-update-failed" }),
+    });
+    await renderTab(api, { vendor: "openai-compatible", baseUrl: CUSTOM_ENDPOINT, model });
+    const control = screen.getByRole("combobox", { name: "이미지 입력" });
+    openMenu(control);
+    fireEvent.click(screen.getByRole("option", { name: /^지원$/ }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("이미지 입력 설정을 저장하지 못했습니다"));
+    expect(control).toHaveTextContent("자동");
+    expect(await chooserModelIds()).toContain(model);
+    expect(within(chooserOption(model)).queryByTestId(`llm-tab:model-vision:${model}`)).not.toBeInTheDocument();
+  });
+
   it.each([
     { model: "gpt-3.5-turbo", badge: true },
     { model: "gpt-4.1", badge: false },
@@ -459,6 +528,52 @@ describe("LlmTab provider cards", () => {
       const chip = within(chooserOption(model)).queryByTestId(`llm-tab:model-no-tools:${model}`);
       expect(Boolean(chip)).toBe(badge);
     });
+  });
+
+  it.each([
+    { catalogModel: "openai/gpt-4", reportedInput: ["text", "image"], vision: false },
+    { catalogModel: "openai/gpt-4o", reportedInput: ["text"], vision: true },
+  ])("uses the named route's input modalities for the vision badge: %j", async ({ catalogModel, reportedInput, vision }) => {
+    const model = "opaque-model";
+    const { api } = profileApi({
+      vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT, model, catalogModel } },
+    }, {
+      hasApiKey: storedKeysFor("openai-compatible"),
+      listLlmModels: vi.fn().mockResolvedValue({
+        ok: true, vendor: "openai-compatible", endpoint: `${CUSTOM_ENDPOINT}/models`, models: [model],
+        modelEntries: [{ id: model, inputModalities: reportedInput }], fetchedAt: new Date(0).toISOString(),
+      } satisfies LlmModelListResult),
+    });
+    await renderTab(api, { vendor: "openai-compatible", baseUrl: CUSTOM_ENDPOINT, model });
+    expect(await chooserModelIds()).toContain(model);
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled());
+    expect(Boolean(within(chooserOption(model)).queryByTestId(`llm-tab:model-vision:${model}`))).toBe(vision);
+  });
+
+  it.each(["pending", "failed"])("uses saved input modalities for the vision badge while a cache save is %s", async (saveState) => {
+    const model = "gpt-4o";
+    const { api } = profileApi({
+      vendors: { openai: { model } },
+      modelListCache: {
+        [["openai", "", ""].join("\n")]: {
+          vendor: "openai", models: [model], endpoint: "https://provider.invalid/v1/models",
+          modelEntries: [{ id: model, inputModalities: ["text"] }], fetchedAt: new Date(0).toISOString(),
+        },
+      },
+    }, {
+      hasApiKey: storedKeysFor("openai"),
+      listLlmModels: vi.fn().mockResolvedValue({
+        ok: true, vendor: "openai", endpoint: "https://provider.invalid/v1/models", models: [model],
+        modelEntries: [{ id: model, inputModalities: ["text", "image"] }], fetchedAt: new Date(1).toISOString(),
+      } satisfies LlmModelListResult),
+      updateSettings: saveState === "pending"
+        ? vi.fn(() => new Promise(() => {}))
+        : vi.fn().mockResolvedValue({ ok: false, error: "settings-update-failed" }),
+    });
+    await renderTab(api, { vendor: "openai", model });
+    expect(await chooserModelIds()).toContain(model);
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled());
+    expect(within(chooserOption(model)).queryByTestId(`llm-tab:model-vision:${model}`)).not.toBeInTheDocument();
   });
 
   it("does not apply the generic route's named no-tools entry to a preset", async () => {

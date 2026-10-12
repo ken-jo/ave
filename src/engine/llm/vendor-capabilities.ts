@@ -7,8 +7,8 @@
  * so the user removes them or picks another model. No send drops image parts on
  * the way to the provider.
  *
- * The model's stated input modalities decide: the endpoint's
- * `/models` report, else the model catalog's `modalities.input`. Only an
+ * The route's stated input modalities decide: the user's declaration or named
+ * entry, then the endpoint report, then the model catalog's input list. Only an
  * `image` there counts. The catalog's `attachment` flag does not: the composer
  * sends a file as a path the agent reads with its tools, never as a file part
  * the model has to accept.
@@ -60,11 +60,11 @@ const VISION_MODEL_PATTERNS = [
  * Whether a turn on this model may carry images.
  *
  * `route` is the active route's resolution (`resolveContextWindowForRoute`),
- * for a caller that has it: its `inputModalities` already weigh the endpoint's
- * report and the catalog entry the user named for the route, and when it has
+ * for a caller that has it: its `inputModalities` already apply user declarations,
+ * endpoint reports and catalog entries in that order, and when it has
  * none the name rules decide. It must not be re-resolved by name here: a named
  * entry missing from the catalog answers nothing, and a name match could be a
- * different model. A caller without a route (one row of a model list) gets the
+ * different model. A caller without a route (a direct model call) gets the
  * catalog entry the vendor's model id resolves to.
  */
 export function supportsVision(

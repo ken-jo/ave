@@ -305,27 +305,38 @@ Slice 4 is implemented.
 
 - **Images.** `supportsVision` (`src/engine/llm/vendor-capabilities.ts`) answers from the
   model's stated input modalities: an `image` in them allows images on the turn, and its
-  absence refuses the send. The order is the window's (§4):
-  1. the endpoint's `/models` report (`inputModalities`; an empty list states nothing);
-  2. the catalog entry's `modalities.input` — the entry the user named for the route
-     (`catalogModel`), else the one the model id resolves to;
-  3. the name rules, where nobody states the modalities (slice 7 removes them).
+  absence refuses the send. The order is:
+  1. the user's **Settings → Model → Image input** declaration for this model and
+     provider route; if undeclared, the input list of the entry explicitly named with `catalogModel`;
+  2. the endpoint's `/models` report (`inputModalities`; an empty list states nothing);
+  3. the catalog entry's `modalities.input` for the model id;
+  4. the name rules, where nobody states the modalities (slice 7 removes them).
+
+  **Image input** defaults to **Automatic**, preserving that fallback. **Supported**
+  and **Not supported** are stored in `llm.vendors.<vendor>.imageInput`, keyed by the
+  serialized pair `[presetId or "", modelId]`. Declarations are merged per key;
+  returning to Automatic clears only that model's declaration. A preset's declaration
+  cannot change another preset or the generic provider. It changes image support only,
+  retaining other reported modalities and leaving context, output and tools alone.
 
   The name rules are in `supportsVisionByName` in the same module. A stated catalog
   input list without `image`, including an empty list, refuses images.
 
-  `resolveContextWindowForRoute(...).inputModalities` carries steps 1–2 for the active
+  `resolveContextWindowForRoute(...).inputModalities` carries steps 1–3 for the active
   route. The renderer passes it to the composer and the send path, which refuse on the
-  same condition. A route whose named entry is missing from the catalog falls to the name
-  rules; it is not matched by name. A model-list row (the settings badge) has no route
-  and uses its own reported modalities, else the catalog entry for its id.
+  same condition. A named entry missing from the catalog states nothing: the endpoint
+  report can still answer, then the name rule, without another automatic catalog match.
+  The settings vision badge uses the same resolver with the row's saved declarations,
+  named entry and saved endpoint report.
   The API transport checks the same resolved route before sending any user or
   tool-result image, including direct calls and replayed history. A caller without a
   route uses the catalog and name rules. A fallback resolves its own model rather than
   inheriting the primary route's reported or named capabilities.
   A transport refusal carries `image-input-unsupported`; the stream collector
   presents localized recovery guidance for retained conversation images and
-  keeps the refusal classified as a model error.
+  keeps the refusal classified as a model error. Both this error and the composer
+  refusal name **Settings → Model → Image input → Supported** for a custom model
+  whose image support was not detected; the default is not loosened.
 - **Not `attachment`.** The catalog's `attachment` flag says a model accepts file parts.
   The composer sends a file as a path the agent reads with its tools, never as a file part,
   so the flag decides nothing here.
@@ -334,9 +345,9 @@ Slice 4 is implemented.
   `src/engine/turn/query-loop.ts`). Its turn record carries
   `modelSettings.tools: { sent: false, source: "model-catalog", catalogEntry }`.
   - Absent `toolCall` is unknown, and tools are sent as before.
-  - A no-tools entry the user explicitly names with `catalogModel` keeps tools
-    withheld even when the endpoint reports `tools`. Otherwise an endpoint's
-    explicit `tools` in `supported_parameters` overrides a catalog denial with
+  - A tool capability the user explicitly names with `catalogModel` wins over the
+    endpoint report, including a no-tools entry when the endpoint reports `tools`.
+    Otherwise an endpoint's explicit `tools` in `supported_parameters` overrides a catalog denial with
     `{ supported: true, source: "provider-reported" }`. A missing `tools` is not a
     denial and leaves the catalog answer intact.
   - The model picker shows a localized **No tools** badge only when this same resolved
