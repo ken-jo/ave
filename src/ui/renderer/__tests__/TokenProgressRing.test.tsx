@@ -46,3 +46,30 @@ describe("TokenProgressRing", () => {
     );
   });
 });
+
+describe("TokenProgressRing output limit source", () => {
+  it("names who set the output limit the estimate assumes", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    render(
+      <TooltipProvider>
+        <TokenProgressRing
+          used={1_000}
+          budget={64_000}
+          costEstimate={{
+            inputTokens: 1_000,
+            outputTokens: 16_384,
+            inputCost: 0.001,
+            outputCost: 0.01,
+            total: 0.011,
+            pricingKnown: true,
+            outputLimitSource: "model-catalog",
+          }}
+        />
+      </TooltipProvider>,
+    );
+    fireEvent.click(screen.getByTestId("token-progress-ring"));
+    const row = await screen.findByTestId("token-progress-ring-output-limit-source");
+    // Literal text, not the key: a missing catalog entry would render the key.
+    expect(row.textContent).toBe("출력 한도:모델 최대치 (모델 카탈로그)");
+  });
+});

@@ -3,12 +3,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { InputClassifier } from "../../core/input-classifier.js";
 import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
-import type { GenericMessage, LLMProvider, StreamEvent, ToolSchema,
+import type { GenericMessage, LLMProvider, StreamEvent, ToolSchema, TurnSummary,
 } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { PostTurnHookChain } from "../../hooks/post-turn-hook-chain.js";
+import { AuditLogger } from "../../audit/audit-logger.js";
+import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import { estimateRequestInputProjection } from "../request-input-projection.js";
 import { contextBudgetForCurrentRuntime } from "../turn/compaction.js";
@@ -207,6 +209,62 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(summary!.breakdown).toBeDefined();
     expect(summary!.breakdown!["read_file"].count).toBe(2);
     expect(summary!.breakdown!["list_directory"].count).toBe(1);
+  });
+
+  it("sends the effective output limit and records the route's resolved model settings", async () => {
+    // The route's /models handshake reported an 8,192-token completion
+    // ceiling. Before, that observation was carried and never applied: the
+    // round sent the block's 32,000, and the turn kept no record of either.
+    const sent: Array<{ outputTokenLimit?: number }> = [];
+    const provider: LLMProvider = {
+      vendor: "openai",
+      async *streamTurn(params) {
+        sent.push({ outputTokenLimit: params.outputTokenLimit });
+        yield { type: "text_delta", text: "answer" };
+        yield { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 60, outputTokens: 10 } };
+      },
+    };
+    const auditLogger = new AuditLogger();
+    const logTurn = vi.spyOn(auditLogger, "logTurn");
+    const loop = createLoopWithRegistry(provider, new ToolRegistry(), {
+      settingsService: {
+        get: () => ({
+          ...fakeLlmSettings({ provider: "openai", model: "gpt-5.4-mini" }),
+          modelListCache: {
+            [llmModelListCacheKey("openai")]: {
+              vendor: "openai",
+              endpoint: "https://api.openai.com/v1/models",
+              models: ["gpt-5.4-mini"],
+              modelEntries: [{ id: "gpt-5.4-mini", maxOutputTokens: 8_192 }],
+              fetchedAt: new Date(0).toISOString(),
+            },
+          },
+        }),
+        getSecret: () => "test-key",
+      },
+      auditLogger,
+    } as never);
+    let summary: TurnSummary | null = null;
+
+    await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { inputOrigin: "user-keyboard" });
+
+    expect(sent).toEqual([{ outputTokenLimit: 8_192 }]);
+    const recorded = {
+      modelCatalogSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      contextWindow: { tokens: 400_000, source: "model-catalog", catalogEntry: "openai/gpt-5.4-mini" },
+      output: {
+        requested: 32_000,
+        requestedSource: "host-default",
+        ceiling: 8_192,
+        ceilingSource: "provider-reported",
+        effective: 8_192,
+        effectiveSource: "provider-reported",
+      },
+      // Thinking budget 8,000 maps to "medium", which gpt-5.4-mini accepts.
+      reasoning: { kind: "openai-effort", requestedEffort: "medium", effort: "medium", source: "model-catalog" },
+    };
+    expect(summary!.modelSettings).toEqual({ ...recorded, remainingContextOutputTokens: expect.any(Number) });
+    expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: recorded }));
   });
 
   it("emits a summary for a turn whose only output was reasoning", async () => {

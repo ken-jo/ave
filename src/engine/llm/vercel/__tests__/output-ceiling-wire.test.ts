@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_LLM_OUTPUT_TOKEN_LIMIT,
   getLlmVendorSettings,
+  requestedLlmOutputTokenLimit,
 } from "../../../../shared/llm-vendor-defaults.js";
+import { resolveOutputTokenLimit } from "../../../../shared/context-budget.js";
+import { apiRoundLlmSettings } from "../../../turn/round-llm-settings.js";
 import { collectRoundStream } from "../../../turn/stream-collector.js";
 import { forbidAmbientFetch } from "../../../../__tests__/support/network-fetch-stubs.js";
 import type { ToolSchema } from "../../types.js";
@@ -37,8 +40,11 @@ async function collectRequest(
   overrides: { outputTokenLimit?: number; thinkingBudgetTokens?: number; enableThinking?: boolean } = {},
   toolSchemas: ToolSchema[] = [],
 ) {
+  // What the conversation loop sends: the block with its effective output
+  // limit (requested, clamped to the model's ceiling) and the budget bounded to it.
   const block = getLlmVendorSettings({ [vendor]: { model, enableThinking: true, thinkingBudgetTokens: 10_000, ...overrides } }, vendor);
-  return collectInternalRequest(vendor, model, block, toolSchemas);
+  const output = resolveOutputTokenLimit({ vendor, model, requested: requestedLlmOutputTokenLimit(block) });
+  return collectInternalRequest(vendor, model, apiRoundLlmSettings(block, output, "none"), toolSchemas);
 }
 
 /** Raw internal generation can use protocol capabilities outside user settings. */

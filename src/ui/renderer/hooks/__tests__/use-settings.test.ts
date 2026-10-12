@@ -130,7 +130,7 @@ describe("useSettings", () => {
         baseUrl: "https://models.invalid/v1",
         endpoint: "https://models.invalid/v1/models",
         models: ["a-model-no-catalog-knows"],
-        modelEntries: [{ id: "a-model-no-catalog-knows", contextLength: 229_376 }],
+        modelEntries: [{ id: "a-model-no-catalog-knows", contextLength: 229_376, maxOutputTokens: 8_192 }],
         fetchedAt: new Date(0).toISOString(),
       },
     };
@@ -138,6 +138,15 @@ describe("useSettings", () => {
     act(() => onSettingsUpdated!(reported));
 
     expect(result.current.llmContextWindow).toBe(229_376);
+    // The output limit the cost estimate assumes is the one the engine sends:
+    // the host default, clamped to the ceiling the endpoint reported. (Before,
+    // the renderer assumed a fixed 4,096 whatever the route.)
+    expect(result.current.llmOutputTokenLimit).toMatchObject({
+      requested: 32_000,
+      requestedSource: "host-default",
+      effective: 8_192,
+      effectiveSource: "provider-reported",
+    });
 
     // A window the user declared outranks what the provider reported, exactly
     // as it does on the engine side.

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import type { ResolvedOutputTokenLimit } from "../../../shared/context-budget.js";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
@@ -78,7 +79,9 @@ export interface ChatGroupEnvironment {
   chatReadyWithoutApiKey: boolean;
   checkApiKey: () => Promise<boolean>;
   onOpenSettings: (tab?: string) => void;
+  /** The active route's effective output limit and who set it (`resolveContextWindowForRoute(...).output`). */
   maxOutputTokens: number;
+  maxOutputTokensSource: ResolvedOutputTokenLimit["effectiveSource"];
 
   // composer configuration
   rolePresets: ChatContextValue["rolePresets"];
@@ -421,6 +424,7 @@ export function ChatGroupSession({
     llmVendor: env.subscriptionRuntimeSelected ? undefined : env.llmVendor,
     llmModel: env.subscriptionRuntimeSelected ? undefined : env.llmModel,
     maxOutputTokens: env.maxOutputTokens,
+    outputLimitSource: env.maxOutputTokensSource,
     enabled: env.apiUsageProjectionAvailable,
   });
   // Strict variant — `undefined` means "model not in catalog" so the cost

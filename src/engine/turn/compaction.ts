@@ -33,6 +33,7 @@ import {
   resolveContextWindowForRoute,
   resolveModelContextWindow,
   type ContextWindowSource,
+  type ResolvedOutputTokenLimit,
   type LlmRouteProviderPreset,
   type LlmRouteSettings,
 } from "../../shared/context-budget.js";
@@ -64,12 +65,16 @@ interface RuntimeContextBudget {
    * came from. `fallback` says the whole budget rests on a guess.
    */
   readonly contextWindowSource: ContextWindowSource | "subscription-fallback";
+  /** The resolved window itself, for an API route; observability only. */
+  readonly contextWindow?: number;
+  /** The catalog entry that answered the window, `<provider>/<id>`. */
+  readonly catalogEntry?: string;
   /**
-   * The provider's own ceiling on a completion for this model, when it
-   * reported one. Carried so an output cap has a number to read; the budget
-   * math here does not use it.
+   * The output limit a chat request on this API route carries — requested,
+   * the model's ceiling, and the smaller of the two. Absent for subscription
+   * runtimes, whose protocol owns output control.
    */
-  readonly maxOutputTokens?: number;
+  readonly output?: ResolvedOutputTokenLimit;
 }
 
 /**
@@ -232,7 +237,9 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
     identity,
     thresholdSource: getModelPreflightThresholdSource(provider, model, route.contextWindow),
     contextWindowSource: route.source,
-    ...(route.maxOutputTokens !== undefined ? { maxOutputTokens: route.maxOutputTokens } : {}),
+    contextWindow: route.contextWindow,
+    ...(route.catalogEntry !== undefined ? { catalogEntry: route.catalogEntry } : {}),
+    output: route.output,
   };
 }
 

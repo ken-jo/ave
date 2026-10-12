@@ -449,11 +449,21 @@ Important rules:
   closed tile releases its loop. See `docs/design/tiled-chat-groups.md`.
 
 A long turn uses per-call limits and progress guidance. Each API-backed chat call
-carries the active vendor block's effective `outputTokenLimit` as its native output
-ceiling. The canonical resolver in `src/shared/llm-vendor-defaults.ts` supplies
-the default for missing or invalid settings and preserves explicit positive
-integer limits. The default is a host budget, not a discovered per-model
-maximum. User-configured thinking budgets apply per API call, including each
+carries the route's effective output limit as its native output ceiling
+(`resolveContextWindowForRoute(...).output` in `src/shared/context-budget.ts`): the
+requested limit — the vendor block's `outputTokenLimit` when the user set one, else
+the host default of 32,000 (`requestedLlmOutputTokenLimit`, source `host-default`) —
+clamped to the model's output ceiling, which is what the endpoint's `/models` row
+reported, else the model catalog's `limits.output`; an unknown ceiling clamps
+nothing. A vendor block stores `outputTokenLimit` only when the user set it, so the
+default is never written back. The adapter applies the catalog ceiling to every
+request, which is where purpose-specific limits (finalize, background, memory,
+reviewer) meet it. The output that would still fit the remaining context is recorded
+in the turn summary (`modelSettings.remainingContextOutputTokens`) and never clamps a
+request. Each turn records the catalog `sha256` and the effective window, output and
+reasoning with their sources in its turn summary and audit `turn` row
+(`src/shared/run-model-settings.ts`); see `docs/design/model-capability-catalog.md`.
+User-configured thinking budgets apply per API call, including each
 call after a tool result; they introduce no cumulative quota for a user turn.
 They are non-negative integers capped at the highest fixed preset strictly below
 the effective output ceiling. Settings and composer share these presets: low

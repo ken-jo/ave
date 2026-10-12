@@ -140,6 +140,17 @@ const LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION = "llm-vendor-id-package-names";
  * {@link SettingsService.deleteRetiredMarketplaceApiKey}.
  */
 const MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION = "marketplace-server-settings-removed";
+/**
+ * One-time: a stored `outputTokenLimit` of exactly the old default is the
+ * default written back, not a choice. Every saved vendor block used to carry
+ * the materialized default, so 32000 in a block says nothing about the user;
+ * it is dropped once and the route reports `host-default`. A 32000 the user
+ * sets after this ran is kept (the marker suppresses a re-run), and saved
+ * blocks no longer carry the default at all. See {@link withoutFossilOutputTokenLimits}.
+ */
+const LLM_OUTPUT_TOKEN_LIMIT_DEFAULT_MIGRATION = "llm-output-token-limit-default";
+/** The value every block carried before the default stopped being written. */
+const FOSSIL_OUTPUT_TOKEN_LIMIT = 32_000;
 /** The removed keys, including the `real`-prefixed spellings older builds wrote. */
 const RETIRED_MARKETPLACE_SETTING_KEYS: readonly string[] = [
   "backend",
@@ -173,7 +184,27 @@ const KNOWN_MIGRATIONS: readonly string[] = [
   PROVIDER_PRESET_MODEL_SLOT_MIGRATION,
   LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION,
   MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION,
+  LLM_OUTPUT_TOKEN_LIMIT_DEFAULT_MIGRATION,
 ];
+
+/** The stored `llm` object with every vendor block's fossil default output limit removed. */
+function withoutFossilOutputTokenLimits(stored: Record<string, any>): Record<string, any> {
+  const llm = stored.llm;
+  if (llm === null || typeof llm !== "object" || Array.isArray(llm)) return stored;
+  const vendors = llm.vendors;
+  if (vendors === null || typeof vendors !== "object" || Array.isArray(vendors)) return stored;
+  const next: Record<string, unknown> = {};
+  for (const [vendorId, block] of Object.entries(vendors as Record<string, unknown>)) {
+    if (block !== null && typeof block === "object" && !Array.isArray(block)
+      && (block as Record<string, unknown>).outputTokenLimit === FOSSIL_OUTPUT_TOKEN_LIMIT) {
+      const { outputTokenLimit: _fossil, ...rest } = block as Record<string, unknown>;
+      next[vendorId] = rest;
+    } else {
+      next[vendorId] = block;
+    }
+  }
+  return { ...stored, llm: { ...llm, vendors: next } };
+}
 
 export type { LLMVendor, LLMVendorSettings };
 export { LLM_VENDORS };
@@ -1952,6 +1983,12 @@ export class SettingsService {
       if (!appliedMigrations.includes(LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION)) {
         parsed = withRenamedLlmVendorIds(stored, RENAMED_LLM_VENDOR_IDS);
         appliedMigrations.push(LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION);
+        migrationWriteBack = true;
+      }
+
+      if (!appliedMigrations.includes(LLM_OUTPUT_TOKEN_LIMIT_DEFAULT_MIGRATION)) {
+        parsed = withoutFossilOutputTokenLimits(parsed);
+        appliedMigrations.push(LLM_OUTPUT_TOKEN_LIMIT_DEFAULT_MIGRATION);
         migrationWriteBack = true;
       }
 

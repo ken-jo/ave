@@ -5,6 +5,14 @@ import { useTranslation } from "../../../i18n/react.js";
 import { formatCostBadge, type EstimateBreakdown } from "../../../lib/cost-estimator.js";
 import { formatTokensExact } from "../../../lib/cost-format.js";
 
+/** Who set the output limit the estimate assumes, as the tooltip names it. */
+const OUTPUT_LIMIT_SOURCE_KEYS = {
+  user: "chatView.costOutputLimitSourceUser",
+  "host-default": "chatView.costOutputLimitSourceHostDefault",
+  "provider-reported": "chatView.costOutputLimitSourceProviderReported",
+  "model-catalog": "chatView.costOutputLimitSourceModelCatalog",
+} as const satisfies Record<NonNullable<EstimateBreakdown["outputLimitSource"]>, string>;
+
 interface TokenProgressRingProps {
   used: number;
   budget: number;
@@ -183,6 +191,12 @@ export function TokenProgressRing({
                 {costEstimate.pricingKnown === false ? "" : ` · $${costEstimate.outputCost.toFixed(5)}`}
               </span>
             </div>
+            {costEstimate.outputLimitSource !== undefined && (
+              <div className="flex justify-between gap-3 opacity-70" data-testid="token-progress-ring-output-limit-source">
+                <span>{t("chatView.costOutputLimitLabel")}</span>
+                <span>{t(OUTPUT_LIMIT_SOURCE_KEYS[costEstimate.outputLimitSource])}</span>
+              </div>
+            )}
             {costEstimate.pricingKnown === false ? (
               <div className="font-semibold">{t("chatView.costUnknownModel")}</div>
             ) : (

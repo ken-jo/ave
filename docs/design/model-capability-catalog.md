@@ -1,10 +1,10 @@
 # Model capability catalog
 
 Status: decided (issue #2501, owner decisions of 2026-10-12); being implemented in the
-seven slices of §9. Slice 1 (the contract, the generator, the bundled snapshot and its
-provenance) and slice 2 (context windows resolve through the catalog, §4) are
-implemented. §5–§7 are the plan; until their slices land, output limits, reasoning
-controls, modalities and prices still come from the code paths named in §1 and §8.
+seven slices of §9. Slices 1 (the contract, the generator, the bundled snapshot and its
+provenance), 2 (context windows, §4) and 3 (output limits, reasoning levels and run
+records, §5) are implemented. §6–§7 are the plan; until their slices land, modalities
+and prices still come from the code paths named in §1 and §8.
 
 Anchors: `src/shared/model-catalog/` (types, provider map, normalizer),
 `src/core/model-catalog/` (document hashing and verification, the bundled snapshot),
@@ -171,20 +171,54 @@ send that header stays on the table until slice 7.
 
 ## 5. Output and reasoning (slice 3)
 
-- **Effective output** is the smaller of the requested value — user explicit, else the
-  purpose-specific limit, else the host default of 32,000 — and the model's output ceiling
-  (endpoint-reported, else catalog; unknown means no clamp). The output that would still
-  fit the remaining context is shown in diagnostics only; requests are not clamped by it.
-- A stored `outputTokenLimit` of exactly `32000` — the old default written back — is
-  migrated once to "default" and reported with source `host-default`.
-- A numeric thinking budget stays below `max_tokens`. An effort value must be in the
-  model's catalog list; otherwise it is lowered to the nearest supported value and the
-  change is recorded in diagnostics.
-- The UI and the cost estimate show the effective value and its source (replacing the
-  renderer's assumed 4,096), and each run records the catalog `sha256` and the effective
-  settings in its turn summary and audit entry.
-- The purpose-specific small limits stay as they are: finalize 1,024; background 16,384;
-  memory 1,400 / 1,600 / 4,000; work report 800 / 1,000; reviewer 256.
+Implemented.
+
+- **Effective output.** `resolveContextWindowForRoute(...).output` (`ResolvedOutputTokenLimit`)
+  is the smaller of the requested value and the model's output ceiling, with both
+  sources:
+  - requested: the vendor block's `outputTokenLimit` when the user set one (`user`),
+    else the host default of 32,000 (`host-default`);
+  - ceiling: the endpoint's `/models` `maxOutputTokens` (`provider-reported`, which was
+    carried and never applied before), else the catalog's `limits.output`
+    (`model-catalog`); unknown clamps nothing;
+  - `effectiveSource` is the requester when the request fit, the ceiling's source when
+    it was clamped.
+
+  The conversation loop sends `output.effective` with the thinking budget bounded
+  against it (`src/engine/turn/round-llm-settings.ts`). The adapter also clamps every
+  request to the catalog ceiling, which is where the purpose-specific limits — finalize
+  1,024; background 16,384; memory 1,400 / 1,600 / 4,000; work report 800 / 1,000;
+  reviewer 256, all unchanged — meet it. Those callers do not see an endpoint-reported
+  ceiling, only the catalog's.
+- **The default is no longer written into settings.** A vendor block stores
+  `outputTokenLimit` only when the user set it; the default block has none. Before,
+  every saved block carried the materialized 32,000, so a stored 32,000 could not say
+  whether the user chose it. The one-time migration `llm-output-token-limit-default`
+  drops a stored exactly-32,000 once; a 32,000 set afterwards is kept, and fresh
+  installs start with the marker applied.
+- **Remaining context** — the output the window still had room for after the turn's
+  projected next input — is recorded in the turn summary only
+  (`modelSettings.remainingContextOutputTokens`); no request is clamped by it.
+- **Reasoning** (`src/engine/llm/reasoning-plan.ts`, `planReasoning`). Where the catalog
+  knows the model, it decides whether an OpenAI-family route (OpenAI, Copilot, Azure)
+  sends `reasoning_effort` and at what level. The level Ave's budget maps to is sent if
+  the model accepts it, else the nearest accepted level below it, else the lowest
+  accepted. An adaptive Claude effort is held to the model's accepted levels the same
+  way. Where the catalog does not know the model, the previous name rules decide (slice 7
+  removes them). Request shape stays a host rule: adaptive vs numeric Claude thinking,
+  interleaved numeric thinking, and the Responses-vs-Chat routing. The catalog lists
+  effort levels for models that take numeric thinking and carries no interleaving flag
+  for Anthropic. Numeric budgets keep the adapter's existing rule: below `max_tokens`,
+  except with interleaved thinking, where the provider allows the budget to span the
+  turn. Behavior changes against the bundled snapshot: GPT-5 sends `minimal` (was `low`)
+  and GPT-5.1 sends `none` (was `low`) for a budget at or below 500; a model the catalog
+  marks as not reasoning gets no effort.
+- **Run records.** The turn summary and the audit `turn` row carry `modelSettings`
+  (`src/shared/run-model-settings.ts`): the catalog `sha256`, the window and its source
+  and entry, the output block above, and the reasoning plan as sent. It is omitted for
+  subscription runtimes and for a turn a fallback served on another model.
+- **UI.** The renderer's cost estimate assumes `output.effective` (it assumed a fixed
+  4,096) and the estimate tooltip names who set the limit.
 
 ## 6. Modalities and pricing (slices 4 and 5)
 

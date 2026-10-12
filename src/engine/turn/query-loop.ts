@@ -55,6 +55,11 @@ import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import { MAX_TOOL_CALLS_PER_ROUND } from "../../shared/subagent-policy.js";
 import { activeLlmRouteModel, getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
+import { apiRoundLlmSettings } from "./round-llm-settings.js";
+import { planReasoning } from "../llm/reasoning-plan.js";
+import { activeModelCatalog } from "../../shared/model-catalog/active.js";
+import type { ContextWindowSource } from "../../shared/context-budget.js";
+import type { RunModelSettings } from "../../shared/run-model-settings.js";
 import { isA2AQuestionInputRequiredControl } from "../../tools/agent-send.js";
 import {
   isA2AAgentCausalContext,
@@ -198,6 +203,8 @@ export async function queryLoop(
     subscriptionUsage: ReturnType<typeof createSubscriptionUsageCollector>["values"];
     vendorProvider?: LLMVendor;
     vendorModel?: string;
+    /** What this turn's API route resolved about its model; absent for subscription runtimes and fallbacks. */
+    modelSettings?: RunModelSettings;
     finalToolSchemas: ToolSchema[];
     promotedToolNames: string[];
   }> {
@@ -216,9 +223,41 @@ export async function queryLoop(
     const model = subscriptionRuntime ? subscriptionRuntime.model ?? "default" : activeModel;
     // Login-backed runtimes own their own reasoning policy. Never project the
     // inactive API vendor's toggle/budget into a subscription prompt.
-    const roundLlmSettings = subscriptionRuntime
-      ? { streamSmoothing: llmSettings.streamSmoothing, enableThinking: false }
-      : { ...activeBlock, streamSmoothing: llmSettings.streamSmoothing };
+    //
+    // An API route carries the effective output limit — the user's limit or the
+    // host default, clamped to the model's ceiling (endpoint report, else the
+    // catalog) — never the bare block value, which is absent for the default.
+    // The thinking budget is bounded against that same effective limit.
+    const effectiveOutput = runtimeContextBudget.output;
+    if (!subscriptionRuntime && effectiveOutput === undefined) {
+      throw new Error("API route resolved without an output limit");
+    }
+    const apiRound = subscriptionRuntime || effectiveOutput === undefined
+      ? undefined
+      : apiRoundLlmSettings(activeBlock, effectiveOutput, llmSettings.streamSmoothing);
+    const roundLlmSettings = apiRound ?? { streamSmoothing: llmSettings.streamSmoothing, enableThinking: false };
+    // Recorded with the turn: the catalog, window, output and reasoning this
+    // route resolved, from the same functions the request is built with.
+    const turnModelSettings: RunModelSettings | undefined = apiRound === undefined || effectiveOutput === undefined
+      ? undefined
+      : (() => {
+          const reasoning = planReasoning({
+            vendor: llmSettings.provider,
+            model,
+            enableThinking: apiRound.enableThinking,
+            budgetTokens: apiRound.thinkingBudgetTokens ?? 10_000,
+          });
+          return {
+            modelCatalogSha256: activeModelCatalog().sha256,
+            contextWindow: {
+              tokens: runtimeContextBudget.contextWindow ?? 0,
+              source: runtimeContextBudget.contextWindowSource as ContextWindowSource,
+              ...(runtimeContextBudget.catalogEntry !== undefined ? { catalogEntry: runtimeContextBudget.catalogEntry } : {}),
+            },
+            output: effectiveOutput,
+            ...(reasoning ? { reasoning } : {}),
+          };
+        })();
     // Subscription transports receive an ordinary serialized prompt for every
     // Ave round. Until a runtime exposes and proves a native assistant-prefill
     // continuation protocol, a max_tokens response must remain a partial
@@ -278,6 +317,12 @@ export async function queryLoop(
             vendorProvider: servingVendorProvider,
             vendorModel: servingVendorModel,
           }
+        : {}),
+      // Only for the route the settings were resolved for: a fallback served
+      // the turn on another model whose limits these do not describe.
+      ...(turnModelSettings !== undefined
+        && servingVendorProvider === llmSettings.provider && servingVendorModel === model
+        ? { modelSettings: turnModelSettings }
         : {}),
       finalToolSchemas: [...toolSchemas],
       promotedToolNames: [...new Set(promotedToolNamesForTurn)],

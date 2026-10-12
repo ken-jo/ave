@@ -10,6 +10,7 @@
 // settings store uses to validate `provider` at IPC boundaries. We
 // re-export here so existing engine-side callers keep their import
 // path while the type definition cannot drift between modules.
+import type { RunModelSettings } from "../../shared/run-model-settings.js";
 import {
   type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import type { MarketplaceInstalledProviderPreset } from "../../shared/marketplace-package-assets.js";
@@ -467,6 +468,13 @@ export interface TurnSummary {
   usageByModel?: TokenUsageByModel[];
   /** Non-billable subscription telemetry; never enters API-key pricing. */
   subscriptionUsage?: SubscriptionUsageTelemetry[];
+  /**
+   * What the turn's API route resolved about its model — the catalog it read,
+   * the window, the output limit and the reasoning level with their sources,
+   * and the output the remaining context would still have fit (diagnostics
+   * only). Absent for subscription runtimes and for a turn a fallback served.
+   */
+  modelSettings?: RunModelSettings;
   /**
    * How many times each loop branch fired this turn. Carried on the turn
    * summary so the persisted transcript answers "which path produced this

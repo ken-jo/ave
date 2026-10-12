@@ -19,7 +19,8 @@ import {
   type SubscriptionRuntimeId,
 } from "../../../shared/subscription-runtime.js";
 import { selectSubscriptionRuntimeUiPolicy, type SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-ui-policy.js";
-import { resolveContextWindowForRoute } from "../../../shared/context-budget.js";
+import { resolveContextWindowForRoute, type ResolvedOutputTokenLimit } from "../../../shared/context-budget.js";
+import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../../shared/llm-vendor-defaults.js";
 import {
   DEFAULT_PROCESSING_DISPLAY_LEVEL,
   type ProcessingDisplayLevel,
@@ -88,6 +89,12 @@ export interface UseSettingsResult {
    * rather than resolving it a second time.
    */
   llmContextWindow: number;
+  /**
+   * The active route's output limit — requested, the model's ceiling, and the
+   * effective value a request carries — from the same resolution as the
+   * window, so the cost estimate assumes the limit the engine sends.
+   */
+  llmOutputTokenLimit: ResolvedOutputTokenLimit;
   /** True after an authoritative settings snapshot has been applied. */
   settingsLoaded: boolean;
   /** Cached `enableThinking` flag for the active vendor. */
@@ -112,10 +119,19 @@ export interface UseSettingsResult {
   toggleThinking: (next: boolean) => Promise<void>;
 }
 
+/** Before the first snapshot: the host default, unclamped (nothing estimates until settings load). */
+const INITIAL_OUTPUT_TOKEN_LIMIT: ResolvedOutputTokenLimit = {
+  requested: DEFAULT_LLM_OUTPUT_TOKEN_LIMIT,
+  requestedSource: "host-default",
+  effective: DEFAULT_LLM_OUTPUT_TOKEN_LIMIT,
+  effectiveSource: "host-default",
+};
+
 export function useSettings(api: AveApi): UseSettingsResult {
   const [llmVendor, setLlmVendor] = useState<LLMVendor>(DEFAULT_LLM_VENDOR);
   const [llmModel, setLlmModel] = useState<string>("");
   const [llmContextWindow, setLlmContextWindow] = useState<number>(0);
+  const [llmOutputTokenLimit, setLlmOutputTokenLimit] = useState<ResolvedOutputTokenLimit>(INITIAL_OUTPUT_TOKEN_LIMIT);
   const [enableThinkingChat, setEnableThinkingChat] = useState<boolean>(true);
   const [processingDisplayLevel, setProcessingDisplayLevel] = useState<ProcessingDisplayLevel>(
     DEFAULT_PROCESSING_DISPLAY_LEVEL,
@@ -151,12 +167,12 @@ export function useSettings(api: AveApi): UseSettingsResult {
         block,
         provider === "openai-compatible" ? settings.llm.marketplaceProviderPresetId : undefined,
       ));
-      setLlmContextWindow(
-        resolveContextWindowForRoute(
-          { ...settings.llm, provider },
-          settings.marketplace?.installedProviderPresets,
-        ).contextWindow,
+      const route = resolveContextWindowForRoute(
+        { ...settings.llm, provider },
+        settings.marketplace?.installedProviderPresets,
       );
+      setLlmContextWindow(route.contextWindow);
+      setLlmOutputTokenLimit(route.output);
       setEnableThinkingChat(block.enableThinking);
       setProcessingDisplayLevel(
         settings.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
@@ -306,6 +322,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     llmVendor,
     llmModel,
     llmContextWindow,
+    llmOutputTokenLimit,
     enableThinkingChat,
     processingDisplayLevel,
     llmReadyWithoutApiKey,

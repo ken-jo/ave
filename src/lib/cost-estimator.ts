@@ -49,6 +49,8 @@ export interface EstimateBreakdown {
   outputCost: number;
   total: number;
   pricingKnown?: boolean;
+  /** Who set the output limit `outputTokens` assumes (see `ResolvedOutputTokenLimit.effectiveSource`). */
+  outputLimitSource?: "user" | "host-default" | "provider-reported" | "model-catalog";
 }
 
 export function estimateTurnCost(input: EstimateInput): EstimateBreakdown {

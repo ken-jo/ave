@@ -403,7 +403,12 @@ export function isMarketplaceEligibleLLMVendor(
  * marketplace providers are not materialized until selected or installed.
  */
 export const DEFAULT_LLM_VENDOR: LLMVendor = "openai";
-/** Default total output ceiling for an API-backed chat request. */
+/**
+ * The host's default request for an API-backed chat round's output, used when
+ * the user set none. A host budget, not a model's maximum: the effective
+ * limit is this or the user's value, clamped to the model's output ceiling
+ * (`resolveOutputTokenLimitForRoute` in `context-budget.ts`).
+ */
 export const DEFAULT_LLM_OUTPUT_TOKEN_LIMIT = 32_000;
 
 const DEFAULT_THINKING_BUDGET_TOKENS = 8_000;
@@ -420,9 +425,30 @@ interface LlmThinkingBudgetRung {
 }
 
 function normalizeLlmOutputTokenLimit(value: unknown): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
-    ? value
-    : DEFAULT_LLM_OUTPUT_TOKEN_LIMIT;
+  return explicitLlmOutputTokenLimit(value) ?? DEFAULT_LLM_OUTPUT_TOKEN_LIMIT;
+}
+
+/** A stored output limit the user set: a positive safe integer, else none. */
+function explicitLlmOutputTokenLimit(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+/** Who chose a route's requested output limit. */
+export type LlmOutputTokenLimitSource = "user" | "host-default";
+
+/**
+ * The output limit a vendor block requests, and who chose it. The block
+ * carries `outputTokenLimit` only when the user set one; absence is the host
+ * default, reported as such rather than written into the block, so the
+ * default can change without every saved block holding the old number.
+ */
+export function requestedLlmOutputTokenLimit(
+  block: Pick<LLMVendorSettings, "outputTokenLimit">,
+): { value: number; source: LlmOutputTokenLimitSource } {
+  const explicit = explicitLlmOutputTokenLimit(block.outputTokenLimit);
+  return explicit === undefined
+    ? { value: DEFAULT_LLM_OUTPUT_TOKEN_LIMIT, source: "host-default" }
+    : { value: explicit, source: "user" };
 }
 
 /** User budget cap: the highest preset strictly below output, or output minus one. */
@@ -648,13 +674,14 @@ export function canUseLlmVendorWithoutApiKey(
 export interface LLMVendorSettings {
   model: string;
   /**
-   * Per-request total output ceiling for API-backed chat. The settings resolver
-   * supplies DEFAULT_LLM_OUTPUT_TOKEN_LIMIT when absent and preserves a valid
-   * explicit positive integer. This bounds a round's generation, including
-   * reasoning where the provider counts it as output; it is not a claim about
-   * the model's supported maximum. The adapter projects the ceiling into the
-   * native request. Smaller internal generation limits belong to their callers.
-   * Managed subscription runtimes retain their own output control contract.
+   * The user's per-request total output limit for API-backed chat. Present
+   * only when the user set it (a positive integer); absent means the host
+   * default, which {@link requestedLlmOutputTokenLimit} supplies and reports
+   * as `host-default`. This bounds a round's generation, including reasoning
+   * where the provider counts it as output; the effective limit is this,
+   * clamped to the model's output ceiling. Smaller internal generation limits
+   * belong to their callers. Managed subscription runtimes retain their own
+   * output control contract.
    */
   outputTokenLimit?: number;
   /**
@@ -839,7 +866,6 @@ function defaultBlock(vendor: LLMVendor): LLMVendorSettings {
     ...(preset ? { baseUrl: preset.baseUrl } : {}),
     enableThinking: true,
     thinkingBudgetTokens: DEFAULT_THINKING_BUDGET_TOKENS,
-    outputTokenLimit: DEFAULT_LLM_OUTPUT_TOKEN_LIMIT,
   };
 }
 
@@ -916,7 +942,7 @@ export function getLlmVendorSettings(
   // A hand-edited `0`, fraction or negative would otherwise ride the `...stored`
   // spread all the way to the transport, which reads any non-positive value as
   // "no cap" — the setting would look applied and do nothing.
-  const outputTokenLimit = normalizeLlmOutputTokenLimit(stored?.outputTokenLimit);
+  const outputTokenLimit = explicitLlmOutputTokenLimit(stored?.outputTokenLimit);
   const contextWindow = normalizeLlmContextWindow(stored?.contextWindow);
   const catalogModel = normalizeLlmCatalogModel(stored?.catalogModel);
   const block: LLMVendorSettings = {
@@ -931,7 +957,8 @@ export function getLlmVendorSettings(
   };
   if (presetModels) block.presetModels = presetModels;
   else delete block.presetModels;
-  block.outputTokenLimit = outputTokenLimit;
+  if (outputTokenLimit !== undefined) block.outputTokenLimit = outputTokenLimit;
+  else delete block.outputTokenLimit;
   if (contextWindow !== undefined) block.contextWindow = contextWindow;
   else delete block.contextWindow;
   if (catalogModel !== undefined) block.catalogModel = catalogModel;

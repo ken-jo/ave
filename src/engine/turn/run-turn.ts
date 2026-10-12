@@ -751,6 +751,7 @@ async function runTurnInSpan(
               usageByModel: result.usageByModel,
               vendorProvider: result.vendorProvider,
               vendorModel: result.vendorModel,
+              ...(result.modelSettings ? { modelSettings: result.modelSettings } : {}),
             }
           : {}),
       });
@@ -845,6 +846,7 @@ async function runTurnInSpan(
           : {}),
         toolExposure: postTurnToolExposure,
         route: auditRoute,
+        ...(!isSubscriptionRuntime && result.modelSettings ? { modelSettings: result.modelSettings } : {}),
       });
       self.deps.idleScheduler?.signalConversation();
     }
@@ -986,6 +988,16 @@ async function runTurnInSpan(
           ? { decisionCounts: Object.fromEntries(turnDecisionCounts) }
           : {}),
         ...(breakdown ? { breakdown } : {}),
+        ...(!isSubscriptionRuntime && result.modelSettings
+          ? {
+              modelSettings: {
+                ...result.modelSettings,
+                // Diagnostics only: what the window still had room for after
+                // the turn's projected next input. No request is clamped by it.
+                remainingContextOutputTokens: Math.max(0, result.modelSettings.contextWindow.tokens - turnTokensIn),
+              },
+            }
+          : {}),
       };
       if (turnTrace) {
         turnTrace.span.setAttributes({

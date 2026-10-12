@@ -23,7 +23,10 @@ type CostEstimateParams = {
   llmVendor?: string;
   /** Omit when the active runtime has no verified billing contract. */
   llmModel?: string;
+  /** The route's effective output limit: the most a reply may cost in output. */
   maxOutputTokens: number;
+  /** Who set that limit, shown beside the output estimate. */
+  outputLimitSource?: EstimateBreakdown["outputLimitSource"];
 
   /** False suppresses all API-model-derived billing estimates. */
   enabled?: boolean;
@@ -46,7 +49,7 @@ export function useCostEstimate(params: CostEstimateParams & { enabled: boolean 
  * whole conversation.
  */
 export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate | DisabledCostEstimate {
-  const { entries, draft, llmVendor, llmModel, maxOutputTokens, enabled = true } = params;
+  const { entries, draft, llmVendor, llmModel, maxOutputTokens, outputLimitSource, enabled = true } = params;
 
   const contextCarrierTokens = useMemo(() => {
     if (!enabled) return undefined;
@@ -121,6 +124,10 @@ export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate
       pricingKnown: true,
     };
   }, [enabled, contextCarrierTokens, historySerialized, draft.text, draft.attachments, llmVendor, llmModel, maxOutputTokens]);
+  const sourcedCostEstimate = useMemo(
+    () => (costEstimate && outputLimitSource ? { ...costEstimate, outputLimitSource } : costEstimate),
+    [costEstimate, outputLimitSource],
+  );
 
   const costBadgeClass = useMemo(() => {
     if (!costEstimate) return undefined;
@@ -137,7 +144,7 @@ export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate
   }
   // The `costEstimate` memo returns undefined only through the disabled branch
   // above; retain that correlation for the overload contract.
-  return { costEstimate: costEstimate!, costBadgeClass: costBadgeClass! };
+  return { costEstimate: sourcedCostEstimate!, costBadgeClass: costBadgeClass! };
 }
 
 function computeEstimatedCost(

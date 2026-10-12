@@ -1608,12 +1608,16 @@ describe("SettingsService LLM per-vendor patching", () => {
       },
     }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    // The stored 32000 is the old materialized default (no migration marker),
+    // so it becomes the host default; the budget is bounded against the same 32000.
     expect(service.get("llm").vendors.openai).toMatchObject({
-      model: "fixture-model", enableThinking: true, thinkingBudgetTokens: 16_000, outputTokenLimit: 32_000,
+      model: "fixture-model", enableThinking: true, thinkingBudgetTokens: 16_000,
     });
+    expect(service.get("llm").vendors.openai?.outputTokenLimit).toBeUndefined();
     await service.patch({ llm: { vendors: { openai: { thinkingBudgetTokens: 14_000 } } } });
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("llm").vendors.openai).toMatchObject({ thinkingBudgetTokens: 14_000, outputTokenLimit: 32_000 });
+    expect(reloaded.get("llm").vendors.openai).toMatchObject({ thinkingBudgetTokens: 14_000 });
+    expect(reloaded.get("llm").vendors.openai?.outputTokenLimit).toBeUndefined();
   });
 
   it("clamps thinking on patches and output changes while preserving unrelated vendor fields", async () => {
@@ -3506,6 +3510,72 @@ describe("subAgentAutonomousWake un-fossilize migration", () => {
 
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("features")?.subAgentAutonomousWake).toBe(false);
+  });
+});
+
+describe("output token limit: the stored old default becomes the host default", () => {
+  const MARKER = "llm-output-token-limit-default";
+  let userDataPath: string;
+
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-output-limit-"));
+  });
+
+  afterEach(async () => {
+    await cleanupTmpDir(userDataPath);
+  });
+
+  function writeStored(contents: Record<string, unknown>): string {
+    const path = join(userDataPath, "ave-settings.json");
+    writeFileSync(path, JSON.stringify(contents), "utf-8");
+    return path;
+  }
+
+  it("drops a stored 32000 once, keeps any other value, and records the marker", async () => {
+    const path = writeStored({
+      llm: {
+        provider: "openai",
+        vendors: {
+          openai: { model: "gpt-5.4-mini", outputTokenLimit: 32_000 },
+          claude: { model: "claude-sonnet-4-6", outputTokenLimit: 64_000 },
+        },
+      },
+    });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("llm").vendors.openai?.outputTokenLimit).toBeUndefined();
+    expect(service.get("llm").vendors.claude?.outputTokenLimit).toBe(64_000);
+    // Any save persists the marker; afterwards the migration never re-runs.
+    await service.patch({} as never);
+    const onDisk = JSON.parse(readFileSync(path, "utf-8")) as {
+      appliedMigrations?: string[];
+      llm: { vendors: Record<string, { outputTokenLimit?: number }> };
+    };
+    expect(onDisk.appliedMigrations).toContain(MARKER);
+    expect(onDisk.llm.vendors.openai?.outputTokenLimit).toBeUndefined();
+  });
+
+  it("keeps a 32000 the user set after the migration ran", () => {
+    writeStored({
+      appliedMigrations: [MARKER],
+      llm: { provider: "openai", vendors: { openai: { model: "gpt-5.4-mini", outputTokenLimit: 32_000 } } },
+    });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("llm").vendors.openai?.outputTokenLimit).toBe(32_000);
+  });
+
+  it("does not write the default into any vendor block a save persists", async () => {
+    // Before, every saved block carried the materialized default, which is how
+    // 32000 came to stand for "never chosen".
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ llm: { vendors: { openai: { model: "gpt-5.4" } } } } as never);
+    const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as {
+      appliedMigrations?: string[];
+      llm: { vendors: Record<string, { outputTokenLimit?: number }> };
+    };
+    for (const [vendor, block] of Object.entries(onDisk.llm.vendors)) {
+      expect(block.outputTokenLimit, vendor).toBeUndefined();
+    }
+    expect(onDisk.appliedMigrations).toContain(MARKER);
   });
 });
 

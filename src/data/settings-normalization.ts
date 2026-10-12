@@ -710,6 +710,8 @@ const LLM_VENDOR_SETTING_KEYS = [
   // still configured: pruning it would put that route back on the fallback
   // window the moment chat moved to another vendor.
   "contextWindow",
+  // Likewise the catalog entry a self-hosted route was named as.
+  "catalogModel",
   "baseUrl",
   "vertexProject",
   "vertexLocation",

@@ -1,6 +1,7 @@
 
 
 import { randomUUID } from "node:crypto";
+import type { RunModelSettings } from "../shared/run-model-settings.js";
 import {
   accessSync,
   chmodSync,
@@ -349,6 +350,8 @@ export interface AuditEntry {
     deferredLoadedRatio: number | null;
   };
   route?: string;
+  /** On a `turn` row: what the turn's API route resolved about its model. */
+  modelSettings?: RunModelSettings;
 }
 
 export interface AuditSearchFilter {
@@ -1522,6 +1525,8 @@ export class AuditLogger {
       deferredLoadedRatio: number | null;
     };
     route: string;
+    /** What the turn's API route resolved about its model (catalog, window, output, reasoning). */
+    modelSettings?: RunModelSettings;
   }): void {
     const subscriptionUsage = params.subscriptionUsage
       ?.map((segment) => normalizeSubscriptionUsageTelemetry(segment))
@@ -1538,6 +1543,7 @@ export class AuditLogger {
       ...(subscriptionUsage && subscriptionUsage.length > 0 ? { subscriptionUsage } : {}),
       toolExposure: params.toolExposure,
       route: params.route,
+      ...(params.modelSettings ? { modelSettings: params.modelSettings } : {}),
     });
   }
 }

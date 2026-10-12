@@ -19,6 +19,8 @@ import {
 import {
   activeLlmRouteModel,
   getLlmVendorSettings,
+  requestedLlmOutputTokenLimit,
+  type LlmOutputTokenLimitSource,
   type LLMVendor,
   type LLMVendorSettingsMap,
 } from "./llm-vendor-defaults.js";
@@ -183,6 +185,71 @@ export interface LlmRouteProviderPreset {
   readonly modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy;
 }
 
+/** Where a model's output ceiling came from: the endpoint's own report, or the catalog. */
+export type OutputCeilingSource = "provider-reported" | "model-catalog";
+
+/**
+ * A route's output limit: what was asked for, what the model allows, and the
+ * smaller of the two that a request carries. An unknown ceiling clamps
+ * nothing. The output that would still fit the remaining context is NOT a
+ * part of this — it is reported in a run's diagnostics only, never used to
+ * shrink a request (owner decision, #2501).
+ */
+export interface ResolvedOutputTokenLimit {
+  readonly requested: number;
+  readonly requestedSource: LlmOutputTokenLimitSource;
+  readonly ceiling?: number;
+  readonly ceilingSource?: OutputCeilingSource;
+  readonly effective: number;
+  /** `requestedSource` when the request fit, the ceiling's source when it was clamped. */
+  readonly effectiveSource: LlmOutputTokenLimitSource | OutputCeilingSource;
+}
+
+/**
+ * The model's output ceiling: what its endpoint reported, else the catalog
+ * entry's `limits.output`. Values outside a credible range are ignored.
+ */
+export function resolveOutputCeiling(params: {
+  vendor: string;
+  model: string;
+  reported?: number;
+  catalogModel?: string;
+}): { ceiling: number; source: OutputCeilingSource } | undefined {
+  const reported = positiveTokenCount(params.reported);
+  if (reported !== undefined) return { ceiling: reported, source: "provider-reported" };
+  const catalog = positiveTokenCount(catalogModelFor(params.vendor, params.model, params.catalogModel)?.model.limits.output);
+  return catalog === undefined ? undefined : { ceiling: catalog, source: "model-catalog" };
+}
+
+/** The requested limit clamped to the model's ceiling, with both sources. */
+export function resolveOutputTokenLimit(params: {
+  vendor: string;
+  model: string;
+  requested: { value: number; source: LlmOutputTokenLimitSource };
+  reported?: number;
+  catalogModel?: string;
+}): ResolvedOutputTokenLimit {
+  const { value: requested, source: requestedSource } = params.requested;
+  const ceiling = resolveOutputCeiling(params);
+  if (!ceiling || ceiling.ceiling >= requested) {
+    return {
+      requested,
+      requestedSource,
+      ...(ceiling ? { ceiling: ceiling.ceiling, ceilingSource: ceiling.source } : {}),
+      effective: requested,
+      effectiveSource: requestedSource,
+    };
+  }
+  return {
+    requested,
+    requestedSource,
+    ceiling: ceiling.ceiling,
+    ceilingSource: ceiling.source,
+    effective: ceiling.ceiling,
+    effectiveSource: ceiling.source,
+  };
+}
+
 export interface RouteContextWindow extends ResolvedContextWindow {
   /** The model this route runs on — `activeLlmRouteModel`'s answer. */
   readonly model: string;
@@ -192,6 +259,11 @@ export interface RouteContextWindow extends ResolvedContextWindow {
    * ceiling; the budget math does not use it.
    */
   readonly maxOutputTokens?: number;
+  /**
+   * The output limit a chat request on this route carries, resolved once for
+   * the engine and the renderer's cost estimate alike.
+   */
+  readonly output: ResolvedOutputTokenLimit;
 }
 
 /**
@@ -262,9 +334,17 @@ export function resolveContextWindowForRoute(
     ...(catalogModel !== undefined ? { catalogModel } : {}),
   });
   const maxOutputTokens = positiveTokenCount(entry?.maxOutputTokens);
+  const output = resolveOutputTokenLimit({
+    vendor: llm.provider,
+    model,
+    requested: requestedLlmOutputTokenLimit(block),
+    ...(maxOutputTokens !== undefined ? { reported: maxOutputTokens } : {}),
+    ...(catalogModel !== undefined ? { catalogModel } : {}),
+  });
   return {
     ...resolved,
     model,
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    output,
   };
 }

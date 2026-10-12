@@ -7,6 +7,7 @@ import {
   MAX_CREDIBLE_CONTEXT_WINDOW,
   resolveContextWindowForRoute,
   resolveModelContextWindow,
+  resolveOutputTokenLimit,
 } from "../context-budget.js";
 import { FALLBACK_PRICING } from "../pricing-data.js";
 import { freshAllVendorBlocks } from "../llm-vendor-defaults.js";
@@ -330,6 +331,20 @@ describe("resolveContextWindowForRoute — one answer for the engine and the rin
     expect(resolveContextWindowForRoute(reported)).toMatchObject({ contextWindow: 229_376, source: "provider-reported" });
   });
 
+  it("carries the route's output: the host default, clamped by what the endpoint reported", () => {
+    expect(resolveContextWindowForRoute(routeSettings({ reported: { maxOutputTokens: 4_096 } })).output).toEqual({
+      requested: 32_000,
+      requestedSource: "host-default",
+      ceiling: 4_096,
+      ceilingSource: "provider-reported",
+      effective: 4_096,
+      effectiveSource: "provider-reported",
+    });
+    const explicit = routeSettings();
+    explicit.vendors["openai-compatible"].outputTokenLimit = 12_000;
+    expect(resolveContextWindowForRoute(explicit).output).toMatchObject({ effective: 12_000, effectiveSource: "user" });
+  });
+
   it("does not put the block's named entry on a marketplace preset's own model", () => {
     const settings = routeSettings({ presetId: "provider-alpha", baseUrl: "https://preset.invalid/v1" });
     settings.vendors["openai-compatible"].catalogModel = "openai/gpt-4.1";
@@ -435,5 +450,56 @@ describe("windows the bundled catalog corrects", () => {
 
   it("leaves dated ids the catalog has no entry for to the table", () => {
     expect(resolveModelContextWindow({ vendor: "claude", model: "claude-sonnet-4-20250514" })).toEqual({ contextWindow: 200_000, source: "pricing-catalog" });
+  });
+});
+
+describe("resolveOutputTokenLimit — the output a request carries", () => {
+  const user = { value: 64_000, source: "user" as const };
+  const hostDefault = { value: 32_000, source: "host-default" as const };
+
+  it("clamps the request to the catalog's ceiling and names the ceiling as the source", () => {
+    // gpt-4o lists 16,384 output tokens. Before, every route sent 32,000.
+    expect(resolveOutputTokenLimit({ vendor: "openai", model: "gpt-4o", requested: hostDefault })).toEqual({
+      requested: 32_000,
+      requestedSource: "host-default",
+      ceiling: 16_384,
+      ceilingSource: "model-catalog",
+      effective: 16_384,
+      effectiveSource: "model-catalog",
+    });
+  });
+
+  it("keeps a request under the ceiling, with the requester as the source", () => {
+    expect(resolveOutputTokenLimit({ vendor: "openai", model: "gpt-5.4", requested: user })).toMatchObject({
+      ceiling: 128_000,
+      effective: 64_000,
+      effectiveSource: "user",
+    });
+  });
+
+  it("takes the ceiling the endpoint reported over the catalog's", () => {
+    // The observed /models ceiling was carried and never applied before.
+    expect(resolveOutputTokenLimit({ vendor: "openai", model: "gpt-5.4", requested: user, reported: 8_192 })).toMatchObject({
+      ceiling: 8_192,
+      ceilingSource: "provider-reported",
+      effective: 8_192,
+      effectiveSource: "provider-reported",
+    });
+  });
+
+  it("clamps nothing when no ceiling is known", () => {
+    expect(resolveOutputTokenLimit({ vendor: "openai-compatible", model: "a-served-model", requested: user })).toEqual({
+      requested: 64_000,
+      requestedSource: "user",
+      effective: 64_000,
+      effectiveSource: "user",
+    });
+    expect(resolveOutputTokenLimit({ vendor: "openai-compatible", model: "a-served-model", requested: user, reported: 0 }).effective).toBe(64_000);
+  });
+
+  it("reads the named catalog entry's ceiling for a self-hosted route", () => {
+    expect(
+      resolveOutputTokenLimit({ vendor: "openai-compatible", model: "a-served-model", requested: user, catalogModel: "openai/gpt-4o" }),
+    ).toMatchObject({ effective: 16_384, effectiveSource: "model-catalog" });
   });
 });

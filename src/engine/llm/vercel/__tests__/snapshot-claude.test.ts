@@ -19,11 +19,10 @@ import { describe, it, expect, vi } from "vitest";
 import { collectStreamEvents as collect, streamFromArray as fromArray } from "./test-helpers.js";
 import type { StreamEvent } from "../../types.js";
 import {
-  mapBudgetToEffort,
-  supportsAdaptiveThinking,
   genericToModelMessages,
   fullStreamToStreamEvent,
 } from "../adapter.js";
+import { mapBudgetToEffort, supportsAdaptiveThinking } from "../../reasoning-plan.js";
 import { extractSignatureSafely } from "../signature-shim.js";
 
 

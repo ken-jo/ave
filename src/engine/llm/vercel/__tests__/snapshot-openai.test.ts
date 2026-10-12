@@ -18,7 +18,7 @@ import {
   mapReasoningEffort,
   isOpenAIReasoningModel,
   supportsReasoningEffortNone,
-} from "../adapter.js";
+} from "../../reasoning-plan.js";
 import { MAX_BACKGROUND_OUTPUT_TOKEN_LIMIT } from "../../output-token-limit.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../../../../tools/registry.js";
 import { unusedNetworkFetch } from "../../../../__tests__/support/network-fetch-stubs.js";

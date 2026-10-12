@@ -63,6 +63,8 @@ import { TOOL_SEARCH_TOOL_NAME } from "../../../tools/registry.js";
 import type { MarketplaceInstalledProviderPreset } from "../../../shared/marketplace-package-assets.js";
 import { isGuardedInsecureCredentialedModelProviderFetch } from "../marketplace-provider-fetch.js";
 import { normalizeOutputTokenLimit } from "../output-token-limit.js";
+import { isOpenAIReasoningModel, planReasoning, supportsAdaptiveThinking } from "../reasoning-plan.js";
+import { resolveOutputCeiling } from "../../../shared/context-budget.js";
 import { toGrammarSafeToolSchemas } from "../grammar-safe-tool-schema.js";
 import { selectAssistantWireThinkingBlocks } from "../assistant-wire-content.js";
 
@@ -115,77 +117,6 @@ const OPENAI_RESPONSES_TOOL_NAME_ALIAS_REVERSE: Readonly<Record<string, string>>
 // upstream would otherwise block the turn forever). Incremental tool arguments
 // count as activity even before they become a caller-facing tool call.
 const STREAM_IDLE_CEILING_MS = TOOL_TIMEOUT_POLICY.modelStreamIdleCeilingMs;
-
-export function isOpenAIReasoningModel(model: string): boolean {
-  const m = model.toLowerCase();
-  return (
-    m.includes("gpt-5") ||
-    m.includes("o1") ||
-    m.includes("o3") ||
-    m.includes("o4")
-  );
-}
-
-/**
- * Map Ave thinking budget (tokens) to OpenAI reasoning_effort.
- *   budget ≤   500 → "none"    (GPT-5.2+ only; callers ignore for older models)
- *   budget ≤ 3 000 → "low"
- *   budget ≥ 8 000 → "high"
- *   else           → "medium"
- */
-export function mapReasoningEffort(
-  budget: number,
-): "none" | "low" | "medium" | "high" {
-  if (budget <= 500) return "none";
-  if (budget <= 3000) return "low";
-  if (budget > 8000) return "high";
-  return "medium";
-}
-
-/**
- * Whether a model accepts `reasoning_effort: "none"`. Only GPT-5.2+ (and later
- * GPT majors) support it; o-series (o1/o3/o4) and GPT-5.0/5.1 reject it with a
- * 400. `mapReasoningEffort` can emit "none" for tiny budgets, so callers must
- * clamp it to "low" for models without the capability.
- */
-export function supportsReasoningEffortNone(model: string): boolean {
-  const m = model.toLowerCase();
-  const gpt5 = m.match(/gpt-5(?:\.(\d+))?/);
-  if (gpt5) return Number(gpt5[1] ?? "0") >= 2;
-  const gptMajor = m.match(/gpt-(\d+)/);
-  if (gptMajor) return Number(gptMajor[1]) >= 6;
-  return false;
-}
-
-/**
- * Map Ave thinking budget (tokens) to Anthropic adaptive-thinking effort.
- *   budget ≤ 3 000 → "low"
- *   budget ≤ 6 000 → "medium"
- *   budget ≤ 16 000 → "high"
- *   budget >  16 000 → "max"
- * Numeric thinking routes use their token budget directly.
- */
-export function mapBudgetToEffort(
-  budget: number,
-): "low" | "medium" | "high" | "max" {
-  if (budget <= 3000) return "low";
-  if (budget <= 6000) return "medium";
-  if (budget <= 16_000) return "high";
-  return "max";
-}
-
-/**
- * Adaptive thinking starts with version 4.6. A release date after the major
- * version is not a minor version; earlier models retain numeric thinking.
- */
-export function supportsAdaptiveThinking(modelId: string): boolean {
-  const m = modelId.toLowerCase();
-  const match = m.match(/claude-(?:[a-z]+-)?(\d+)(?:[-.](\d{1,2})(?=$|[-.]))?/);
-  if (!match) return false;
-  const major = Number(match[1]);
-  const minor = Number(match[2] ?? 0);
-  return major > 4 || (major === 4 && minor >= 6);
-}
 
 function supportsInterleavedNumericThinking(modelId: string): boolean {
   // Only these numeric-thinking generations support a budget across tool calls.
@@ -351,7 +282,14 @@ export class VercelUnifiedProvider implements LLMProvider {
       );
       const hasTools = Boolean(tools && Object.keys(tools).length > 0);
 
-      const outputTokenLimit = normalizeOutputTokenLimit(params.outputTokenLimit);
+      // The model's own ceiling bounds every request, whoever asked: the chat
+      // round already arrives clamped, and this is where a purpose-specific
+      // limit (finalize, background, memory, reviewer) meets it too.
+      const catalogCeiling = resolveOutputCeiling({ vendor: this.vendor, model: params.model })?.ceiling;
+      const requestedOutputTokenLimit = normalizeOutputTokenLimit(params.outputTokenLimit);
+      const outputTokenLimit = requestedOutputTokenLimit === undefined || catalogCeiling === undefined
+        ? requestedOutputTokenLimit
+        : Math.min(requestedOutputTokenLimit, catalogCeiling);
       const numericThinking = slot === "claude" && params.enableThinking === true
         && !supportsAdaptiveThinking(params.model);
       const interleavedNumericThinking = numericThinking && hasTools
@@ -368,16 +306,17 @@ export class VercelUnifiedProvider implements LLMProvider {
       // value: the OpenAI family as a coarse effort level, the self-hosted class
       // as an exact token budget further down.
       const budget = params.thinkingBudgetTokens ?? 10_000;
-      const rawReasoningEffort = mapReasoningEffort(budget);
-      // "none" is GPT-5.2+ only; clamp to "low" for o-series / GPT-5.0-5.1,
-      // which return 400 when sent reasoning_effort: "none".
-      const reasoningEffort =
-        rawReasoningEffort === "none" && !supportsReasoningEffortNone(params.model)
-          ? "low"
-          : rawReasoningEffort;
-      const isOpenAIReasoning =
-        (slot === "openai" || slot === "copilot" || slot === "azure-foundry") &&
-        isOpenAIReasoningModel(params.model);
+      // Which reasoning control and level: the catalog's accepted effort
+      // levels where it knows the model, the name rules where it does not
+      // (reasoning-plan.ts). The turn summary records this same answer.
+      const reasoningPlan = planReasoning({
+        vendor: this.vendor,
+        model: params.model,
+        enableThinking: params.enableThinking === true,
+        budgetTokens: budget,
+      });
+      const reasoningEffort = reasoningPlan?.kind === "openai-effort" ? reasoningPlan.effort : undefined;
+      const isOpenAIReasoning = reasoningPlan?.kind === "openai-effort";
 
       // Guard: Chat Completions returns 400 when reasoning_effort is set
       // alongside tools for gpt-5.x. Drop the flag on tool turns for:
@@ -492,11 +431,11 @@ export class VercelUnifiedProvider implements LLMProvider {
         const thinkingEnabled = params.enableThinking === true;
         const anthropicOpts: Record<string, unknown> = {};
         if (thinkingEnabled) {
-          if (supportsAdaptiveThinking(params.model)) {
+          if (reasoningPlan?.kind === "anthropic-adaptive") {
             anthropicOpts.thinking = {
               type: "adaptive",
             };
-            anthropicOpts.effort = mapBudgetToEffort(budget);
+            anthropicOpts.effort = reasoningPlan.effort;
           } else {
             anthropicOpts.thinking = {
               type: "enabled",
