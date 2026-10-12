@@ -504,7 +504,7 @@ describe("ave:chat:* with chat groups", () => {
       "group-2",
     ) as Promise<unknown>;
     await resumeEntered;
-    events["did-start-navigation"]![0]!({ isMainFrame: true, isSameDocument: false });
+    events["did-navigate"]![0]!();
     await Promise.resolve();
     expect(releaseChatGroupLoop).not.toHaveBeenCalledWith("group-2");
     expect(group.cleanupSession).not.toHaveBeenCalled();
@@ -521,11 +521,13 @@ describe("ave:chat:* with chat groups", () => {
     invoke(CHANNELS.chat.hasProvider, "group-2");
     invoke(CHANNELS.chat.hasProvider, "group-3");
     const before = groups.get("group-2")!;
-    expect(events["did-start-navigation"]).toHaveLength(1); // installed once, not per group
-    // An in-page navigation is not a reload.
-    events["did-start-navigation"]![0]!({ isMainFrame: true, isSameDocument: true });
+    expect(events["did-navigate"]).toHaveLength(1); // installed once, not per group
+    // A navigation attempt is not a reload: the window's will-navigate policy
+    // cancels an external link click after did-start-navigation has fired,
+    // and in-page or subframe navigation never replaces the tiles' document.
+    expect(events["did-start-navigation"]).toBeUndefined();
     expect(releaseChatGroupLoop).not.toHaveBeenCalled();
-    events["did-start-navigation"]![0]!({ isMainFrame: true, isSameDocument: false });
+    events["did-navigate"]![0]!();
     await vi.waitFor(() => {
       expect(releaseChatGroupLoop.mock.calls.map((call) => call[0]).sort()).toEqual(["group-2", "group-3"]);
     });

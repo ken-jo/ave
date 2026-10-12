@@ -957,9 +957,11 @@ export function registerChatHandlers(deps: IpcDeps): void {
         }
       }
     };
-    contents.on("did-start-navigation", (event) => {
-      if (event.isMainFrame && !event.isSameDocument) releaseAll("renderer reload released the tile");
-    });
+    // The committed main-frame document change, not `did-start-navigation`:
+    // that fires for every attempt, including a link click the main window's
+    // `will-navigate` policy cancels and opens externally while every tile
+    // stays on screen. `did-navigate` skips in-page and subframe navigation.
+    contents.on("did-navigate", () => releaseAll("renderer reload released the tile"));
     contents.on("render-process-gone", () => releaseAll("renderer process gone; tile released"));
   };
 
