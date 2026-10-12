@@ -10,6 +10,7 @@
  */
 import { installModelCatalog } from "../../shared/model-catalog/active.js";
 import { t } from "../../i18n/runtime.js";
+import { errorMessage } from "../../shared/error-message.js";
 import type { AveApi } from "./types.js";
 
 export async function installRendererModelCatalog(api: Pick<AveApi, "getModelCatalog">): Promise<void> {
@@ -34,7 +35,7 @@ export function renderModelCatalogUnavailable(root: HTMLElement, error: unknown)
   message.textContent = t("app.modelCatalogUnavailable");
   const detail = document.createElement("p");
   detail.style.cssText = "opacity:0.7;font-size:12px";
-  detail.textContent = error instanceof Error ? error.message : String(error);
+  detail.textContent = errorMessage(error);
   const reload = document.createElement("button");
   reload.type = "button";
   reload.textContent = t("errorBoundary.reloadButton");
