@@ -13,10 +13,9 @@
  * the boot selection answers with the bundled snapshot.
  */
 import { constants } from "node:fs";
-import { lstat, open, readdir, unlink } from "node:fs/promises";
+import { lstat, open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
-import { withFileLock, withInProcessFileQueue } from "../../lib/with-file-lock.js";
 import { openFeatureNamespace, writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { aveHome } from "../../shared/ave-home.js";
@@ -38,49 +37,7 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const ENTRY_COMPACT_DEPTH = 4;
 const MAX_POINTER_BYTES = 64 * 1024;
 const CHECK_FILE = ".refresh-check.json";
-const LOCK_FILE = ".refresh-lock";
-/** Keep the pending and current copies plus the newest remaining entries. */
-export const MODEL_CATALOG_CACHE_MAX_ENTRIES = 5;
-
-/** Called under the cache lock before publishing a new pointer. */
-export async function pruneModelCatalogCache(dir: string, nextSha256: string, currentSha256?: string): Promise<void> {
-  await checkCacheDirectory(dir);
-  const entries: Array<{ name: string; modifiedAt: number }> = [];
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    if (!entry.isFile() || !/^[0-9a-f]{64}\.json$/.test(entry.name)) continue;
-    const stat = await lstat(join(dir, entry.name));
-    if (stat.isFile()) entries.push({ name: entry.name, modifiedAt: stat.mtimeMs });
-  }
-  entries.sort((left, right) => right.modifiedAt - left.modifiedAt || left.name.localeCompare(right.name));
-  const keep = new Set([`${nextSha256}.json`, ...(currentSha256 ? [`${currentSha256}.json`] : [])]);
-  for (const entry of entries) {
-    if (keep.size < MODEL_CATALOG_CACHE_MAX_ENTRIES) keep.add(entry.name);
-  }
-  for (const entry of entries) {
-    if (!keep.has(entry.name)) await unlink(join(dir, entry.name));
-  }
-}
-
-/** Serialize the complete check and publication across processes sharing this cache. */
-export async function withModelCatalogCacheLock<T>(dir: string, work: () => Promise<T>): Promise<T> {
-  await prepareModelCatalogCache(dir);
-  const path = join(dir, LOCK_FILE);
-  return withInProcessFileQueue(path, async () => {
-    try {
-      await readRegularFile(path, MAX_POINTER_BYTES);
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-      await writeFileAtomicAtPath(path, "");
-    }
-    try {
-      const lock = await lstat(`${path}.lock`);
-      if (!lock.isDirectory() || lock.isSymbolicLink()) throw new Error("model catalog cache lock is not a regular directory");
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-    }
-    return withFileLock(path, work);
-  });
-}
+export { MODEL_CATALOG_CACHE_MAX_ENTRIES } from "./limits.js";
 
 /** Last attempted check, including failures; separate from successful confirmation. */
 export async function readModelCatalogCheck(dir: string): Promise<string | undefined> {
@@ -100,7 +57,7 @@ export async function writeModelCatalogCheck(dir: string, checkedAt: string): Pr
 }
 
 /** Cache-owned directories must be directories, never links into another tree. */
-async function checkCacheDirectory(dir: string, allowAbsent = false): Promise<void> {
+export async function checkCacheDirectory(dir: string, allowAbsent = false): Promise<void> {
   for (const path of [dirname(resolve(dir)), resolve(dir)]) {
     try {
       const entry = await lstat(path);
@@ -113,7 +70,7 @@ async function checkCacheDirectory(dir: string, allowAbsent = false): Promise<vo
 }
 
 /** The namespace helper owns directory creation and private modes. */
-async function prepareModelCatalogCache(dir: string): Promise<void> {
+export async function prepareModelCatalogCache(dir: string): Promise<void> {
   await checkCacheDirectory(dir, true);
   if (resolve(dir) === modelCatalogCacheDir()) {
     await cacheNamespace.childDir(".");
@@ -123,7 +80,7 @@ async function prepareModelCatalogCache(dir: string): Promise<void> {
 }
 
 /** Read one regular inode, capped even if its size changes during the read. */
-async function readRegularFile(path: string, maxBytes: number): Promise<string> {
+export async function readRegularFile(path: string, maxBytes: number): Promise<string> {
   const entry = await lstat(path);
   if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("model catalog file is not a regular file");
   const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK

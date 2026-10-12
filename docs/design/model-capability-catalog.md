@@ -350,7 +350,8 @@ user overrides keep the highest precedence.
   inode under a byte cap, and verify those same loaded bytes before use. Hash-only pointer
   names cannot escape the directory. Writers enforce the same byte caps as readers.
   A conditional 304 renews `checkedAt` only. A cross-process lock serializes each check
-  through publication. Publication keeps at most five hash-named files, protecting the
+  through publication (`refresh-cache.ts`); boot's read-only cache access does not load
+  that coordination. Publication keeps at most five hash-named files, protecting the
   new copy and the preceding current copy; unrelated files are not pruned.
 - Cadence: a running interactive app checks at boot and then hourly, and sends a request
   only when the last attempt is a day old. `.refresh-check.json` records an attempt before

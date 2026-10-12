@@ -30,15 +30,14 @@ import { runWithAbortableDeadline } from "../../shared/abortable-deadline.js";
 import { fetchPublicHttpResponse } from "../network-guard.js";
 import {
   readCurrentModelCatalog,
-  pruneModelCatalogCache,
   readModelCatalogCheck,
   storeModelCatalog,
-  withModelCatalogCacheLock,
   writeModelCatalogCheck,
   writeModelCatalogPointer,
 } from "./cache.js";
 import { buildModelCatalogDocument, verifyModelCatalogDocument } from "./document.js";
 import { MODEL_CATALOG_MAX_BYTES } from "./limits.js";
+import { pruneModelCatalogCache, withModelCatalogCacheLock } from "./refresh-cache.js";
 
 export { MODEL_CATALOG_MAX_BYTES } from "./limits.js";
 
