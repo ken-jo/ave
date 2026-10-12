@@ -433,6 +433,9 @@ if (actualUvBinarySha256 !== uvMeta.binarySha256) {
 
 const uvLicense = resolve(resourcesDir, "licenses", "uv", "LICENSE-MIT");
 if (!existsSync(uvLicense)) fail(`uv license notice missing: ${uvLicense}`);
+// The bundled model catalog is models.dev data (MIT); its notice ships beside it.
+const modelCatalogLicense = resolve(resourcesDir, "licenses", "models.dev", "LICENSE-MIT");
+if (!existsSync(modelCatalogLicense)) fail(`models.dev license notice missing: ${modelCatalogLicense}`);
 
 const localeCount = isMacAppPackage() ? validateMacElectronLocales() : validatePakElectronLocales();
 

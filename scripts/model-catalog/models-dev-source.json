@@ -1,8 +1,8 @@
 {
-  "etag": "W/\"c76d2561e84b3eadee30bb833a979574\"",
-  "fetchedAt": "2026-10-12T06:51:23Z",
-  "rawSha256": "c76d2561e84b3eadee30bb833a979574efb6b7271d0f1322408090fc233d7680",
-  "upstreamHeadAtFetch": "d433e99e7e17996b69c2b3139c38265ebcf05620",
+  "etag": "W/\"b561716383911ac2019f3c9361b9261d\"",
+  "fetchedAt": "2026-10-12T08:38:43Z",
+  "rawSha256": "b561716383911ac2019f3c9361b9261de7a4a897d14761622313287dd1a0729d",
+  "upstreamHeadAtFetch": "e69e1844210e5cfe7c7e7f68d57328bc7451a51c",
   "upstreamSchemaBlob": "eb51ccc5747a3f90491c0475e0da316a53770e19",
   "url": "https://models.dev/api.json"
 }

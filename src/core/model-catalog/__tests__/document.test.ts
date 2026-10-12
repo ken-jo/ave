@@ -59,6 +59,28 @@ describe("model catalog document", () => {
     expect(() => verifyModelCatalogDocument("{}")).toThrow(/not an object/);
   });
 
+  it("refuses malformed provenance, which the name does not cover", () => {
+    const { document } = build();
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ url: "http://example.invalid/api.json" }, /https url/],
+      [{ fetchedAt: "yesterday" }, /fetch time/],
+      [{ etag: 7 }, /etag/],
+      [{ rawSha256: "abc" }, /download sha256/],
+      [{ inputSha256: undefined }, /input sha256/],
+      [{ upstreamHeadAtFetch: "main" }, /upstream head/],
+      [{ upstreamSchemaBlob: "0".repeat(64) }, /schema blob/],
+      [{ schemaVersion: 2 }, /schema version 2/],
+    ];
+    for (const [patch, reason] of cases) {
+      const damaged = { ...document, provenance: { ...document.provenance, ...patch } };
+      // Still the same name: provenance is outside the hash.
+      expect(modelCatalogSha256(damaged)).toBe(document.sha256);
+      expect(() => verifyModelCatalogDocument(damaged), JSON.stringify(patch)).toThrow(reason);
+    }
+    const withHead = { ...document, provenance: { ...document.provenance, upstreamHeadAtFetch: "a".repeat(40), upstreamSchemaBlob: "b".repeat(40) } };
+    expect(verifyModelCatalogDocument(withHead)).toBe(withHead);
+  });
+
   it("lays JSON out one record per line at the given depth and reads back as the same value", () => {
     const value = { b: { y: { q: 1, p: [2, { s: 1, r: 0 }] }, x: {} }, a: 1 };
     const text = formatCatalogJson(value, 2);

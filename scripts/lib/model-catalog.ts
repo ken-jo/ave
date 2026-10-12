@@ -7,10 +7,11 @@
  * pruned download, `models-dev-source.json` records where and when it was
  * downloaded, and `models-dev-LICENSE.txt` is the license the data is
  * distributed under. `--fetch` replaces all three; everything else reads them.
+ * The packaged app ships the same license text from `resources/licenses/`.
  */
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   buildModelCatalogDocument,
   formatCatalogJson,
@@ -34,6 +35,8 @@ export const MODEL_CATALOG_PATHS = {
   input: "scripts/model-catalog/models-dev-input.json",
   source: "scripts/model-catalog/models-dev-source.json",
   license: "scripts/model-catalog/models-dev-LICENSE.txt",
+  /** The attribution the installer ships (`build.extraResources` → `licenses/models.dev`). */
+  packagedLicense: "resources/licenses/models.dev/LICENSE-MIT",
   snapshot: "src/core/model-catalog/bundled-snapshot.json",
 } as const;
 
@@ -84,7 +87,7 @@ export function generateModelCatalog(root: string): {
 }
 
 /** The committed input files a download produces: the pruned document, its source record, and the license. */
-export async function fetchModelCatalogInput(fetchImpl: typeof fetch = fetch): Promise<{
+async function fetchModelCatalogInput(fetchImpl: typeof fetch = fetch): Promise<{
   input: string;
   source: string;
   license: string;
@@ -135,6 +138,54 @@ export async function fetchModelCatalogInput(fetchImpl: typeof fetch = fetch): P
     source: formatCatalogJson(source, 1),
     license,
   };
+}
+
+function writeText(root: string, path: string, text: string): void {
+  const target = join(root, path);
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, text, "utf-8");
+}
+
+/** The snapshot the committed input generates, written, with the packaged license kept equal to the input's. */
+export function writeModelCatalog(root: string): ReturnType<typeof generateModelCatalog> {
+  const generated = generateModelCatalog(root);
+  writeText(root, generated.path, generated.text);
+  writeText(root, MODEL_CATALOG_PATHS.packagedLicense, generated.document.license.text);
+  return generated;
+}
+
+/**
+ * Download new input and regenerate. Every download finishes before the
+ * first file is written, so a failed run leaves the committed input as it was.
+ */
+export async function fetchAndWriteModelCatalog(
+  root: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ReturnType<typeof generateModelCatalog>> {
+  const { input, source, license } = await fetchModelCatalogInput(fetchImpl);
+  writeText(root, MODEL_CATALOG_PATHS.input, input);
+  writeText(root, MODEL_CATALOG_PATHS.source, source);
+  writeText(root, MODEL_CATALOG_PATHS.license, license);
+  return writeModelCatalog(root);
+}
+
+/** Why the committed files differ from what the input generates, or `undefined` when they match. */
+export function modelCatalogDrift(root: string): string | undefined {
+  const { path, text, document } = generateModelCatalog(root);
+  const committed = (relative: string): string | undefined => {
+    try {
+      return readFileSync(join(root, relative), "utf-8").replace(/\r\n/g, "\n");
+    } catch {
+      return undefined;
+    }
+  };
+  if (committed(path) !== text) {
+    return `${path} differs from what ${dirname(MODEL_CATALOG_PATHS.input)}/ generates`;
+  }
+  if (committed(MODEL_CATALOG_PATHS.packagedLicense) !== document.license.text) {
+    return `${MODEL_CATALOG_PATHS.packagedLicense} is not the license ${MODEL_CATALOG_PATHS.license} carries`;
+  }
+  return undefined;
 }
 
 // ── Comparison with the hand-kept table ──────────────────────────────────────
