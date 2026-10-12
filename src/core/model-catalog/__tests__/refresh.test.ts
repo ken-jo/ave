@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildModelCatalogDocument } from "../document.js";
 import { selectBootModelCatalog } from "../bundled.js";
-import { modelCatalogCacheDir, readCachedModelCatalog, readModelCatalogPointer } from "../cache.js";
+import { MODEL_CATALOG_CACHE_MAX_ENTRIES, modelCatalogCacheDir, readCachedModelCatalog, readModelCatalogPointer } from "../cache.js";
 import {
   MODEL_CATALOG_MAX_BYTES,
   MODEL_CATALOG_REFRESH_INTERVAL_MS,
@@ -175,6 +175,23 @@ describe("refreshModelCatalogCache", () => {
     const { fetchImpl, calls } = respondWith(() => json(rawDocument()));
     await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => NOW });
     expect(calls).toHaveLength(1);
+  });
+
+  it("bounds retained catalogs while keeping current and last-good copies", async () => {
+    writeFileSync(join(dir, "notes.json"), "unrelated");
+    const hashes: string[] = [];
+    for (let index = 0; index < MODEL_CATALOG_CACHE_MAX_ENTRIES + 3; index++) {
+      const { fetchImpl } = respondWith(() => json(rawDocument(400_000 + index)));
+      const result = await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => new Date(NOW.getTime() + index * MODEL_CATALOG_REFRESH_INTERVAL_MS) });
+      expect(result.status).toBe("updated");
+      hashes.push((result as { sha256: string }).sha256);
+    }
+    const names = readdirSync(dir).filter((name) => /^[0-9a-f]{64}\.json$/.test(name));
+    expect(names).toHaveLength(MODEL_CATALOG_CACHE_MAX_ENTRIES);
+    expect(names).toContain(`${hashes.at(-1)}.json`);
+    expect(names).toContain(`${hashes.at(-2)}.json`);
+    expect(readFileSync(join(dir, "notes.json"), "utf-8")).toBe("unrelated");
+    expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "cache", document: { sha256: hashes.at(-1) } });
   });
 
   it("asks conditionally once the copy is a day old, and a 304 only renews the pointer", async () => {

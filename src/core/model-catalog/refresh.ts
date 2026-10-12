@@ -31,6 +31,7 @@ import { runWithAbortableDeadline } from "../../shared/abortable-deadline.js";
 import { fetchPublicHttpResponse } from "../network-guard.js";
 import {
   readCurrentModelCatalog,
+  pruneModelCatalogCache,
   readModelCatalogCheck,
   storeModelCatalog,
   withModelCatalogCacheLock,
@@ -231,6 +232,7 @@ async function refreshLockedModelCatalogCache(options: ModelCatalogRefreshOption
     if (coverage) throw new RefreshFault(coverage);
 
     await storeModelCatalog(options.dir, document);
+    await pruneModelCatalogCache(options.dir, document.sha256, pointer?.sha256);
     await writeModelCatalogPointer(options.dir, {
       version: 1,
       sha256: document.sha256,
