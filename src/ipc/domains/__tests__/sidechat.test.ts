@@ -233,6 +233,52 @@ describe("side-chat IPC domain", () => {
     expect(main.abortCurrentTurn).not.toHaveBeenCalled();
   });
 
+  it("a refused request cannot abort a peer's active turn", async () => {
+    const turn = deferred<{ route: string }>();
+    const side = makeSideLoop();
+    side.runTurn.mockReturnValueOnce(turn.promise);
+    register(side, makeMainLoop());
+    const send = handlers.get(CHANNELS.sidechat.send)!;
+    const abort = handlers.get(CHANNELS.sidechat.abort)!;
+    const peer = send(ev("file:///index.html"), { input: "Peer request", sendRequestId: "peer-request" });
+    let cancellation: unknown;
+    try {
+      await expect(send(ev("file:///index.html"), { input: "Local request", sendRequestId: "local-request" }))
+        .resolves.toMatchObject({ ok: false, error: "streaming-active" });
+      cancellation = abort(ev("file:///index.html"), { sendRequestId: "local-request" });
+      expect(side.abortCurrentTurn).not.toHaveBeenCalled();
+      await expect(cancellation).resolves.toEqual({ ok: true });
+    } finally {
+      turn.resolve({ route: "chat" });
+      await Promise.all([peer, cancellation]);
+    }
+  });
+
+  it("the accepted request can abort its own active turn", async () => {
+    const turn = deferred<{ route: string }>();
+    const side = makeSideLoop();
+    side.runTurn.mockReturnValueOnce(turn.promise);
+    register(side, makeMainLoop());
+    const pending = handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html"), { input: "Own request", sendRequestId: "own-request" });
+    const cancellation = handlers.get(CHANNELS.sidechat.abort)!(ev("file:///index.html"), { sendRequestId: "own-request" });
+    try {
+      expect(side.abortCurrentTurn).toHaveBeenCalledOnce();
+    } finally {
+      turn.resolve({ route: "chat" });
+      await Promise.all([pending, cancellation]);
+    }
+  });
+
+  it.each([null, 17, [], {}, { sendRequestId: "" }, { sendRequestId: " " }, { sendRequestId: 17 }, { sendRequestId: "x".repeat(257) }])(
+    "refuses malformed scoped abort payload %j", async (payload) => {
+      const side = makeSideLoop();
+      register(side, makeMainLoop());
+      await expect(handlers.get(CHANNELS.sidechat.abort)!(ev("file:///index.html"), payload))
+        .resolves.toEqual({ ok: false, error: "invalid-send-request-id" });
+      expect(side.abortCurrentTurn).not.toHaveBeenCalled();
+    },
+  );
+
   it("new creates a fresh session on the side loop", async () => {
     const side = makeSideLoop();
     register(side, makeMainLoop());

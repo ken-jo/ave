@@ -6,7 +6,7 @@
  *   `ave:sidechat:send`  invoke  renderer→main → TurnResult | { ok:false, error }
  *   `ave:sidechat:new`   invoke  → { ok, sessionId }
  *   `ave:sidechat:load`  invoke  (sessionId) → { ok, sessionId, messages }
- *   `ave:sidechat:abort` invoke  → { ok }
+ *   `ave:sidechat:abort` invoke { sendRequestId? } → { ok }
  *   `ave:sidechat:stream`   event  main→renderer  { streamId, ...frame }
  *   `ave:sidechat:fallback` event  main→renderer  { from, to }
  *
@@ -116,6 +116,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   // Side-chat-OWNED stream-turn tracking — deliberately NOT shared with the main
   // chat's `activeStreamTurn`. A main abort must never cancel a side turn.
   let activeSideStreamTurn: Promise<TurnResult> | null = null;
+  let activeSideSendRequestId: string | null = null;
   let nextSideStreamId = 0;
 
   const buildSink = (wc: WebContents | undefined): ((channel: string, payload: unknown) => void) =>
@@ -208,7 +209,10 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
         },
       );
     })().finally(async () => {
-      if (activeSideStreamTurn === turnPromise) activeSideStreamTurn = null;
+      if (activeSideStreamTurn === turnPromise) {
+        activeSideStreamTurn = null;
+        activeSideSendRequestId = null;
+      }
       // After the turn, never before it. The turn is what gives this side chat
       // a file, and an await between the streaming guard above and the
       // `activeSideStreamTurn` assignment below would open exactly the window
@@ -220,6 +224,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       );
     });
     activeSideStreamTurn = turnPromise;
+    activeSideSendRequestId = typeof p.sendRequestId === "string" ? p.sendRequestId : null;
     try {
       const result = await turnPromise;
       return { ok: true as const, result };
@@ -261,8 +266,18 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     });
   });
 
-  ipcMain.handle(CHANNELS.sidechat.abort, async (e) => {
+  ipcMain.handle(CHANNELS.sidechat.abort, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.abort, e); return UNAUTHORIZED_FRAME; }
+    if (payload !== undefined) {
+      const sendRequestId = payload && typeof payload === "object" && !Array.isArray(payload)
+        ? (payload as Record<string, unknown>).sendRequestId
+        : undefined;
+      if (typeof sendRequestId !== "string" || sendRequestId.trim().length === 0 || sendRequestId.length > MAX_SEND_REQUEST_ID_LENGTH) {
+        return { ok: false as const, error: "invalid-send-request-id" };
+      }
+      // A pending local refusal and a finished turn own no current host turn.
+      if (sendRequestId !== activeSideSendRequestId) return { ok: true as const };
+    }
     await abortActiveSideTurn();
     return { ok: true as const };
   });

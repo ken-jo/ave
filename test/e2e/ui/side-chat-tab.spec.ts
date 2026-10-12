@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildE2eBaseSettings, buildE2eSecrets, buildIsolatedElectronEnv } from "./seeded-electron";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
+import { CHANNELS } from "../../../src/contract/app-contract.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../../..");
@@ -93,12 +94,35 @@ test.describe("side-chat tab", () => {
     await page.getByTestId(chatSidePanelLauncherTestId("side-chat")).click();
     await expect(page.getByTestId("side-chat-view")).toBeVisible();
 
-    // Start a turn so the reducer arms its stream (send resolves only when the
-    // turn ends, but the transcript is driven by the DEDICATED side stream).
+    // Bind a fixture turn through the real preload and dedicated side stream.
     const sideView = page.getByTestId("side-chat-view");
+    await app.evaluate(({ ipcMain }, { sendChannel, streamChannel }) => {
+      // Keep this renderer fixture independent of provider errors or timing.
+      ipcMain.removeHandler(sendChannel);
+      ipcMain.handle(sendChannel, (event, payload: { input: string; sendRequestId: string }) => {
+        event.sender.send(streamChannel, {
+          type: "user_message", text: payload.input, sessionId: "side-fixture", streamId: 1,
+          sendRequestId: payload.sendRequestId,
+        });
+        return { ok: true, result: {} };
+      });
+    }, { sendChannel: CHANNELS.sidechat.send, streamChannel: CHANNELS.sidechat.stream });
+    await page.evaluate(() => {
+      const w = window as unknown as {
+        aveApi: { sideChat: { onStream: (listener: (event: { type: string; streamId?: number }) => void) => () => void } };
+        __sideChatAcceptedStreamId?: number;
+      };
+      w.aveApi.sideChat.onStream((event) => {
+        if (event.type === "user_message" && typeof event.streamId === "number") {
+          w.__sideChatAcceptedStreamId = event.streamId;
+        }
+      });
+    });
     await sideView.getByTestId("composer-textarea").fill("run a tool");
     await expect(sideView.getByTestId("composer-send-button")).toBeEnabled();
     await sideView.getByTestId("composer-send-button").click();
+    await page.waitForFunction(() => typeof (window as unknown as { __sideChatAcceptedStreamId?: number }).__sideChatAcceptedStreamId === "number");
+    const streamId = await page.evaluate(() => (window as unknown as { __sideChatAcceptedStreamId: number }).__sideChatAcceptedStreamId);
 
     // Inject synthetic side-chat frames onto the DEDICATED side channel via the
     // dev-only E2E seam (AVE_DEV=1). This proves the side transcript renders
@@ -109,27 +133,27 @@ test.describe("side-chat tab", () => {
     const toolName = `side_fixture_${Date.now()}`;
     const result = `42 files (${toolUseId})`;
     const reasoning = `Side fixture reasoning (${groupId})`;
-    const seamAvailable = await page.evaluate(({ groupId, toolUseId, toolName, result, reasoning }) => {
+    const seamAvailable = await page.evaluate(({ groupId, toolUseId, toolName, result, reasoning, streamId }) => {
       type StreamFn = (event: unknown) => void;
       const w = window as unknown as { __aveSideChatStream?: { _emit?: StreamFn } };
       const emit = w.__aveSideChatStream?._emit;
       if (typeof emit !== "function") return false;
-      // streamId 1 is the first turn's id (main allocates ++nextSideStreamId).
-      emit({ type: "reasoning_delta", streamId: 1, text: reasoning });
+      // Use the accepted host turn's id after its ownership prelude.
+      emit({ type: "reasoning_delta", streamId, text: reasoning });
       emit({
         type: "permission_review",
-        streamId: 1,
+        streamId,
         reviewStatus: "reviewing",
         name: toolName,
         groupId,
         toolUseId,
         displayOrder: 0,
       });
-      emit({ type: "tool_start", streamId: 1, name: toolName, groupId, toolUseId, displayOrder: 0, input: {} });
-      emit({ type: "tool_end", streamId: 1, name: toolName, groupId, toolUseId, result, isError: false, durationMs: 900 });
-      emit({ type: "done", streamId: 1 });
+      emit({ type: "tool_start", streamId, name: toolName, groupId, toolUseId, displayOrder: 0, input: {} });
+      emit({ type: "tool_end", streamId, name: toolName, groupId, toolUseId, result, isError: false, durationMs: 900 });
+      emit({ type: "done", streamId });
       return true;
-    }, { groupId, toolUseId, toolName, result, reasoning });
+    }, { groupId, toolUseId, toolName, result, reasoning, streamId });
 
     expect(seamAvailable).toBe(true);
 

@@ -40,6 +40,11 @@ function makeApi() {
     api,
     dispatch: (e: ChatStreamEvent) => { for (const h of handlers) h(e); },
     emit: (e: ChatStreamEvent) => act(() => { for (const h of handlers) h(e); }),
+    acceptTurn: (streamId: number) => act(() => {
+      for (const h of handlers) h({
+        type: "user_message", sessionId: "side-1", streamId, sendRequestId: spies.send.mock.calls.at(-1)![3],
+      });
+    }),
     spies,
   };
 }
@@ -81,7 +86,7 @@ async function startTurn(text = "hello") {
 
 describe("SideChatView — New button gating during streaming", () => {
   it("disables the New button while a turn is streaming", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     renderView(api);
 
     // Idle → New is enabled.
@@ -89,6 +94,7 @@ describe("SideChatView — New button gating during streaming", () => {
     expect(newBtn.disabled).toBe(false);
 
     await startTurn();
+    acceptTurn(1);
     emit({ type: "text_delta", text: "streaming…", streamId: 1 });
 
     // Streaming → New is disabled (no mid-stream session swap).
@@ -127,10 +133,11 @@ describe("SideChatView — New button gating during streaming", () => {
   });
 
   it("does not render token or cost estimates for a subscription side-chat runtime", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     renderView(api, { hasApiKey: true, usageAvailable: false });
 
     await startTurn();
+    acceptTurn(1);
     emit({ type: "assistant_round", text: "answer", stopReason: "end_turn", hasToolCalls: false, streamId: 1 } as ChatStreamEvent);
     emit({
       type: "turn_summary",
@@ -150,9 +157,10 @@ describe("SideChatView — New button gating during streaming", () => {
 
 describe("SideChatView — processing detail parity", () => {
   it("uses the shared tools-only policy without hiding the final answer", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     renderView(api, { processingDisplayLevel: "tools" });
     await startTurn("inspect");
+    acceptTurn(1);
 
     emit({ type: "reasoning_delta", text: "side reasoning", streamId: 1 });
     emit({ type: "text_delta", text: "side intermediate", streamId: 1 });
@@ -188,11 +196,12 @@ describe("SideChatView — the main composer's input system", () => {
   });
 
   it("queues a plain Enter while a turn runs and drains it as the next turn on done", async () => {
-    const { api, emit, spies } = makeApi();
+    const { api, emit, spies, acceptTurn } = makeApi();
     renderView(api);
     const { textarea, view } = sideComposer();
 
     await startTurn("first");
+    acceptTurn(1);
     emit({ type: "text_delta", text: "working…", streamId: 1 });
     expect(spies.send).toHaveBeenCalledTimes(1);
 
@@ -213,11 +222,12 @@ describe("SideChatView — the main composer's input system", () => {
   });
 
   it("interrupts the running turn on ⌘⏎: abort settles first, then the new send goes out", async () => {
-    const { api, emit, spies } = makeApi();
+    const { api, emit, spies, acceptTurn } = makeApi();
     renderView(api);
     const { textarea } = sideComposer();
 
     await startTurn("first");
+    acceptTurn(1);
     emit({ type: "text_delta", text: "working…", streamId: 1 });
 
     fireEvent.change(textarea, { target: { value: "now instead" } });
@@ -231,11 +241,12 @@ describe("SideChatView — the main composer's input system", () => {
   });
 
   it("aborts the running turn on Esc inside the field when nothing is queued", async () => {
-    const { api, emit, spies } = makeApi();
+    const { api, emit, spies, acceptTurn } = makeApi();
     renderView(api);
     const { textarea } = sideComposer();
 
     await startTurn("first");
+    acceptTurn(1);
     emit({ type: "text_delta", text: "working…", streamId: 1 });
 
     fireEvent.keyDown(textarea, { key: "Escape" });
@@ -256,11 +267,12 @@ describe("SideChatView — the main composer's input system", () => {
   });
 
   it("flips the turn control to stop while a turn runs with an empty draft", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     renderView(api);
     const { view } = sideComposer();
 
     await startTurn("first");
+    acceptTurn(1);
     emit({ type: "text_delta", text: "working…", streamId: 1 });
     expect(view.getByTestId("composer-cancel-button")).toBeTruthy();
 

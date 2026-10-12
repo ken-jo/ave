@@ -14,7 +14,7 @@ import { deferred } from "../../../../../test/renderer/helpers.js";
  */
 function makeApi() {
   const handlers = new Set<(e: ChatStreamEvent) => void>();
-  const abort = vi.fn(async () => ({ ok: true as const }));
+  const abort = vi.fn(async (_sendRequestId?: string) => ({ ok: true as const }));
   // Typed as the real invoke is — either shape — so a test can hand back the
   // host's refusal without casting past the contract.
   const send = vi.fn(
@@ -47,6 +47,11 @@ function makeApi() {
     api,
     dispatch: (e: ChatStreamEvent) => { for (const handler of handlers) handler(e); },
     emit: (e: ChatStreamEvent) => act(() => { for (const handler of handlers) handler(e); }),
+    acceptTurn: (streamId: number) => act(() => {
+      for (const handler of handlers) handler({
+        type: "user_message", sessionId: "side-1", streamId, sendRequestId: send.mock.calls.at(-1)![3],
+      });
+    }),
     spies: { abort, send, newSession, load, list, onStream },
   };
 }
@@ -60,6 +65,90 @@ function lastAssistant(entries: ChatEntry[]): Extract<ChatEntry, { kind: "assist
 }
 
 describe("useSideChat session identity", () => {
+  it.each((["new", "load"] as const).flatMap((replyMode) =>
+    (["send", "new", "load"] as const).map((transition) => ({ replyMode, transition })),
+  ))("ignores an earlier $replyMode reply after a newer $transition binds its session", async ({ replyMode, transition }) => {
+    const { api, emit, spies } = makeApi();
+    const reply = deferred<{ ok: true; sessionId: string; messages: [] }>();
+    if (replyMode === "new") spies.newSession.mockReturnValueOnce(reply.promise);
+    else spies.load.mockReturnValueOnce(reply.promise);
+    const onSessionBound = vi.fn();
+    const { result } = renderHook(() => useSideChat(api, { onSessionBound }));
+    let earlier = Promise.resolve();
+    act(() => { earlier = replyMode === "new" ? result.current.newSession() : result.current.loadSession("side-earlier"); });
+    await act(async () => {
+      if (transition === "send") await result.current.send("Current request");
+      else if (transition === "new") await result.current.newSession();
+      else await result.current.loadSession("side-3");
+    });
+    if (transition === "send") {
+      emit({ type: "user_message", sessionId: "side-current", streamId: 1, sendRequestId: spies.send.mock.calls.at(-1)![3] });
+      emit({ type: "text_delta", text: "Current answer", streamId: 1 });
+    }
+    const currentEntries = result.current.entries;
+    const currentSession = result.current.sessionId;
+    onSessionBound.mockClear();
+    await act(async () => {
+      reply.resolve({ ok: true, sessionId: "side-earlier", messages: [] });
+      await earlier;
+    });
+    expect(result.current.sessionId).toBe(currentSession);
+    expect(result.current.entries).toEqual(currentEntries);
+    expect(result.current.isStreaming).toBe(transition === "send");
+    expect(onSessionBound).not.toHaveBeenCalled();
+  });
+
+  it.each(["new", "load"] as const)("ignores an earlier abort rejection after %s changes the session", async (transition) => {
+    const { api, spies, acceptTurn } = makeApi();
+    const reply = deferred<void>();
+    spies.abort.mockImplementationOnce(async () => {
+      await reply.promise;
+      throw new Error("Earlier abort failed");
+    });
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.send("First request"); });
+    acceptTurn(1);
+    let earlier = Promise.resolve();
+    act(() => { earlier = result.current.abort(); });
+    await act(async () => {
+      if (transition === "new") await result.current.newSession();
+      else await result.current.loadSession("side-3");
+    });
+    const currentEntries = result.current.entries;
+    await act(async () => {
+      reply.resolve(undefined);
+      await earlier;
+    });
+    expect(result.current.entries).toEqual(currentEntries);
+    expect(result.current.sessionId).toBe(transition === "new" ? "side-2" : "side-3");
+  });
+
+  it("rejects a peer's remaining frames when the view mounted after its prelude", async () => {
+    const { api, dispatch, spies } = makeApi();
+    dispatch({ type: "user_message", sessionId: "side-peer", streamId: 1, sendRequestId: "peer-request" });
+    const refused = deferred<{ ok: false; error: string }>();
+    spies.send.mockReturnValueOnce(refused.promise);
+    const { result } = renderHook(() => useSideChat(api));
+    let pending = Promise.resolve();
+    act(() => { pending = result.current.send("Local request"); });
+    const currentEntries = result.current.entries;
+    try {
+      await act(async () => {
+        dispatch({ type: "text_delta", text: "Peer answer", streamId: 1 });
+        dispatch({ type: "done", streamId: 1 });
+      });
+      expect(result.current.entries).toEqual(currentEntries);
+      expect(result.current.isStreaming).toBe(true);
+      expect(result.current.sessionId).toBeNull();
+      expect(result.current.isCurrentTurnEvent({ type: "done", streamId: 1 })).toBe(false);
+    } finally {
+      await act(async () => {
+        refused.resolve({ ok: false, error: "streaming-active" });
+        await pending;
+      });
+    }
+  });
+
   it.each(["refusal", "rejection"] as const)("does not revive an unaccepted send when its %s overlaps a queued send", async (replyMode) => {
     const { api, spies } = makeApi();
     const firstReply = deferred<void>();
@@ -318,7 +407,9 @@ describe("useSideChat session identity", () => {
       emit({ type: "user_message", sessionId: "side-foreign", streamId: 1, sendRequestId: correlation } as unknown as ChatStreamEvent);
       expect(result.current.sessionId).toBe("side-live");
     }
+    const currentEntries = result.current.entries;
     emit({ type: "text_delta", text: "answer", sessionId: "side-other", streamId: 1 });
+    expect(result.current.entries).toEqual(currentEntries);
     expect(result.current.sessionId).toBe("side-live");
     expect(onSessionBound).not.toHaveBeenCalled();
     expect(result.current.entries.filter((entry) => entry.kind === "user")).toHaveLength(1);
@@ -372,22 +463,59 @@ describe("useSideChat session identity", () => {
     emit({ type: "user_message", sessionId: "side-3", streamId: 8, sendRequestId });
     expect(nextCallback).toHaveBeenCalledExactlyOnceWith("side-3");
     emit({ type: "user_message", sessionId: "side-current", streamId: 8, sendRequestId });
-    expect(result.current.sessionId).toBe("side-current");
-    expect(nextCallback.mock.calls).toEqual([["side-3"], ["side-current"]]);
+    expect(result.current.sessionId).toBe("side-3");
+    expect(nextCallback.mock.calls).toEqual([["side-3"]]);
     expect(firstCallback).toHaveBeenCalledTimes(3);
     expect(spies.onStream).toHaveBeenCalledTimes(subscriptions);
   });
 });
 
 describe("useSideChat stale-frame guard", () => {
-  it("adopts the first frame's streamId and applies its deltas", async () => {
-    const { api, emit } = makeApi();
+  it.each(["abort", "unmount"] as const)("scopes %s to the local request while acceptance is pending", async (transition) => {
+    const { api, spies } = makeApi();
+    const reply = deferred<{ ok: false; error: string }>();
+    spies.send.mockReturnValueOnce(reply.promise);
+    const { result, unmount } = renderHook(() => useSideChat(api));
+    let pending = Promise.resolve();
+    act(() => { pending = result.current.send("Local request"); });
+    try {
+      if (transition === "abort") await act(async () => { await result.current.abort(); });
+      else unmount();
+      expect(spies.abort).toHaveBeenCalledExactlyOnceWith(spies.send.mock.calls[0]![3]);
+    } finally {
+      await act(async () => {
+        reply.resolve({ ok: false, error: "streaming-active" });
+        await pending;
+      });
+    }
+  });
+
+  it.each(["done", "error"] as const)("keeps the transcript closed after %s while sharing the terminal verdict", async (terminal) => {
+    const { api, emit, acceptTurn } = makeApi();
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.send("Own request"); });
+    acceptTurn(1);
+    emit({ type: "text_delta", text: "Own answer", streamId: 1 });
+    emit({ type: terminal, error: "Turn failed", streamId: 1 });
+    const closedEntries = result.current.entries;
+    emit({ type: "text_delta", text: "Late answer", streamId: 1 });
+    emit({ type: "reasoning_delta", text: "Late thought", streamId: 1 });
+    emit({ type: "assistant_round", text: "Late final", stopReason: "end_turn", streamId: 1 });
+    emit({ type: "tool_start", name: "late_tool", groupId: "late-group", toolUseId: "late-tool", streamId: 1 });
+    expect(result.current.entries).toEqual(closedEntries);
+    expect(result.current.isStreaming).toBe(false);
+    expect(result.current.isCurrentTurnEvent({ type: terminal, streamId: 1 })).toBe(true);
+  });
+
+  it("adopts the matching prelude's streamId and applies its deltas", async () => {
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("hello");
     });
-    // First frame of the turn establishes the active streamId.
+    acceptTurn(7);
+    // The matching user prelude establishes the active streamId.
     emit({ type: "text_delta", text: "wor", streamId: 7 });
     emit({ type: "text_delta", text: "ld", streamId: 7 });
 
@@ -399,12 +527,13 @@ describe("useSideChat stale-frame guard", () => {
   });
 
   it("keeps a max-token assistant round as work instead of a final answer", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("continue");
     });
+    acceptTurn(1);
     emit({ type: "text_delta", text: "truncated", streamId: 1 });
     emit({
       type: "assistant_round",
@@ -422,12 +551,13 @@ describe("useSideChat stale-frame guard", () => {
   });
 
   it("drops frames from a superseded turn (different streamId)", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("hello");
     });
+    acceptTurn(1);
     // Turn A adopts streamId 1.
     emit({ type: "text_delta", text: "A", streamId: 1 });
     // A late frame from a SUPERSEDED turn (streamId 2) must be dropped, not
@@ -441,13 +571,14 @@ describe("useSideChat stale-frame guard", () => {
   });
 
   it("re-arms on the next send so a new turn adopts its own streamId", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     // Turn 1 (streamId 1), completes.
     await act(async () => {
       await result.current.send("one");
     });
+    acceptTurn(1);
     emit({ type: "text_delta", text: "first", streamId: 1 });
     emit({ type: "done", streamId: 1 });
     expect(result.current.isStreaming).toBe(false);
@@ -456,6 +587,7 @@ describe("useSideChat stale-frame guard", () => {
     await act(async () => {
       await result.current.send("two");
     });
+    acceptTurn(2);
     emit({ type: "text_delta", text: "STALE", streamId: 1 });
     emit({ type: "text_delta", text: "second", streamId: 2 });
 
@@ -463,12 +595,13 @@ describe("useSideChat stale-frame guard", () => {
   });
 
   it("aborts the in-flight turn on unmount (tab switch teardown, no orphan)", async () => {
-    const { api, emit, spies } = makeApi();
+    const { api, emit, spies, acceptTurn } = makeApi();
     const { result, unmount } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("hello");
     });
+    acceptTurn(1);
     emit({ type: "text_delta", text: "streaming…", streamId: 1 });
     expect(result.current.isStreaming).toBe(true);
 
@@ -486,12 +619,13 @@ describe("useSideChat stale-frame guard", () => {
 
 describe("useSideChat unified-transcript rendering (tool / thinking / permission)", () => {
   it("renders retry and fallback status frames, then replaces them with real reasoning", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("recover the answer");
     });
+    acceptTurn(1);
     emit({ type: "llm_status", streamId: 1, phase: "retry", attempt: 2, maxAttempts: 5 });
     emit({ type: "llm_status", streamId: 1, phase: "fallback", to: "backup" });
 
@@ -515,18 +649,20 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
   });
 
   it("drops a stale retry-status frame before it reaches the side transcript", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("first");
     });
+    acceptTurn(1);
     emit({ type: "text_delta", streamId: 1, text: "first answer" });
     emit({ type: "done", streamId: 1 });
 
     await act(async () => {
       await result.current.send("second");
     });
+    acceptTurn(2);
     emit({ type: "llm_status", streamId: 1, phase: "retry", attempt: 2, maxAttempts: 5 });
     emit({ type: "text_delta", streamId: 2, text: "second answer" });
 
@@ -537,12 +673,13 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
   });
 
   it("removes a status-only placeholder when the side turn closes", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("recover without output");
     });
+    acceptTurn(1);
     emit({ type: "llm_status", streamId: 1, phase: "retry", attempt: 2, maxAttempts: 5 });
     emit({ type: "done", streamId: 1 });
 
@@ -553,12 +690,13 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
   });
 
   it("drops a late retry-status frame after the side turn has closed", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("recover then close");
     });
+    acceptTurn(1);
     emit({ type: "text_delta", streamId: 1, text: "completed answer" });
     emit({ type: "done", streamId: 1 });
     emit({ type: "llm_status", streamId: 1, phase: "retry", attempt: 2, maxAttempts: 5 });
@@ -570,12 +708,13 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
   });
 
   it("keeps real partial text visibly interrupted after a retry status", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("recover then stop");
     });
+    acceptTurn(1);
     emit({ type: "llm_status", streamId: 1, phase: "retry", attempt: 2, maxAttempts: 5 });
     emit({ type: "text_delta", streamId: 1, text: "partial answer" });
 
@@ -593,12 +732,13 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
   });
 
   it("renders a tool_start/tool_end pair as a tool_group entry (parity with main)", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("run a tool");
     });
+    acceptTurn(1);
     emit({
       type: "tool_start",
       streamId: 1,
@@ -622,12 +762,13 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
   });
 
   it("renders reasoning_delta as a reasoning entry (thinking parity)", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("think");
     });
+    acceptTurn(1);
     emit({ type: "reasoning_delta", text: "let me consider…", streamId: 1 });
 
     const reasoning = result.current.entries.find((e) => e.kind === "reasoning");
@@ -635,12 +776,13 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
   });
 
   it("upserts a permission_review status card (informational, not the modal)", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("do something risky");
     });
+    acceptTurn(1);
     emit({
       type: "permission_review",
       streamId: 1,
@@ -656,12 +798,13 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
   });
 
   it("keeps the permission_review verdict once its tool runs (parity with main)", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("do something risky");
     });
+    acceptTurn(1);
     emit({
       type: "permission_review",
       streamId: 1,
@@ -683,12 +826,13 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
   });
 
   it("appends a turn_summary entry and derives turnSummaryByTurnStart", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("hi");
     });
+    acceptTurn(1);
     emit({ type: "text_delta", text: "answer", streamId: 1 });
     emit({
       type: "turn_summary",
@@ -709,12 +853,13 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
   });
 
   it("renders a checkpoint divider on a side-chat compact_notice (not silently dropped)", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("long conversation");
     });
+    acceptTurn(1);
     emit({
       type: "compact_notice",
       streamId: 1,
@@ -735,12 +880,13 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
   // high-water mark those frames can never be adopted again — the answer would
   // freeze on screen while the host streamed on.
   it("keeps rendering the running turn when the host refuses the next send", async () => {
-    const { api, emit, spies } = makeApi();
+    const { api, emit, spies, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideChat(api));
 
     await act(async () => {
       await result.current.send("first");
     });
+    acceptTurn(1);
     emit({ type: "text_delta", text: "hello", streamId: 1 });
 
     // The end-of-turn drain raced a turn that had not finished: the host still
@@ -758,6 +904,26 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
         e.kind === "assistant" && e.streaming === true,
     );
     expect(streaming?.text).toBe("hello world");
+  });
+
+  it("does not restore an earlier running state after an accepted replacement fails", async () => {
+    const { api, emit, spies, acceptTurn } = makeApi();
+    const reply = deferred<{ ok: false; error: string }>();
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.send("Earlier request"); });
+    acceptTurn(1);
+    emit({ type: "text_delta", text: "Earlier answer", streamId: 1 });
+    spies.send.mockReturnValueOnce(reply.promise);
+    let pending = Promise.resolve();
+    act(() => { pending = result.current.send("Replacement request", { inputOrigin: "queue-auto" }); });
+    acceptTurn(2);
+    emit({ type: "error", error: "Replacement failed", streamId: 2 });
+    await act(async () => {
+      reply.resolve({ ok: false, error: "Replacement failed" });
+      await pending;
+    });
+    expect(result.current.isStreaming).toBe(false);
+    expect(result.current.isCurrentTurnEvent({ type: "text_delta", text: "Old tail", streamId: 1 })).toBe(false);
   });
 
   // The abort is awaited AFTER the transcript and the composer have already

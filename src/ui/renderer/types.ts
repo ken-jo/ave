@@ -591,7 +591,7 @@ export type AveApi = {
       attachments?: unknown[],
       /** The conversation this side chat belongs to — recorded at its first turn. */
       originSessionId?: string,
-      /** Opaque correlation echoed only in this send's side-chat user prelude. */
+      /** Opaque correlation echoed in the user prelude and used for scoped cancellation. */
       sendRequestId?: string,
     ) => Promise<
       | { ok: true; result: unknown }
@@ -604,7 +604,7 @@ export type AveApi = {
     >;
     /** Reads a child of the active side-chat session; optional only in partial fixtures. */
     getSubAgentTranscript?: (request: SubAgentTranscriptRequest) => Promise<SubAgentTranscriptResult>;
-    abort: () => Promise<{ ok: true } | { ok: false; error: string }>;
+    abort: (sendRequestId?: string) => Promise<{ ok: true } | { ok: false; error: string }>;
     onStream: (handler: (event: ChatStreamEvent) => void) => () => void;
     onFallback: (handler: (payload: { from: string; to: string }) => void) => () => void;
   };

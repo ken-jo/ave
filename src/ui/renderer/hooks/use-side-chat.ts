@@ -92,7 +92,7 @@ export interface UseSideChat {
   /**
    * Stale-frame verdict for one side-chat stream frame, shared with every other
    * subscriber on this channel (the message queue) so they agree on which turn
-   * a frame belongs to. Calling it ADOPTS the streamId of a turn's first frame,
+   * a frame belongs to. Calling it ADOPTS the streamId of a matching user prelude,
    * which is idempotent for a given frame however many subscribers ask.
    */
   isCurrentTurnEvent: (event: ChatStreamEvent) => boolean;
@@ -134,20 +134,22 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
   // Final assistant text is canonical at assistant_round(end_turn). Later deltas
   // in the same stream are protocol tail noise, not a new response.
   const finalAssistantRoundClosedRef = useRef(false);
+  const terminalStreamClosedRef = useRef(false);
 
-  // ── Isolation guard (unchanged from the lightweight hook) ──
+  // ── Isolation guard ──
   // Guards the reducer against stale frames after abort / new-session: only the
   // in-flight streamId is applied to the transcript. The main process allocates
   // the streamId monotonically (`++nextSideStreamId`), so the renderer cannot
   // know it at `send` time (the send invoke resolves only when the turn ENDS).
-  // Instead the FIRST frame of a turn ADOPTS its streamId here; any later frame
+  // Instead the matching user prelude ADOPTS its streamId here; any later frame
   // whose streamId differs is from a superseded turn and is dropped.
   // `send` / `abort` / `newSession` / `loadSession` re-arm `activeStreamIdRef`
-  // to null so the next turn's first frame adopts the new id. `done` and
+  // to null so the next turn's matching prelude adopts the new id. `done` and
   // `error` deliberately do NOT: a frame's verdict has to read the same for
   // every subscriber that asks about it during one dispatch, and the next
   // `send` re-arms before another turn can exist.
   const activeStreamIdRef = useRef<number | null>(null);
+  const activeStreamSessionIdRef = useRef<string | null>(null);
   // Highest streamId ever adopted. Because main allocates ids monotonically, a
   // straggler frame from a JUST-FINISHED turn carries a LOWER id than the next
   // turn's — after a re-arm we must adopt only a strictly-greater id so such a
@@ -179,13 +181,15 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
   }, []);
 
   // …and abandon the turn on top of that: the guard is re-armed so the NEXT
-  // turn's first frame adopts its own streamId. Only the deliberate transitions
+  // turn's matching prelude adopts its own streamId. Only the deliberate transitions
   // do this — starting a turn, stopping one, swapping sessions — never a frame
   // handler.
   const resetStreamState = useCallback(() => {
     sendGenerationRef.current += 1;
     resetStreamAccumulators();
     activeStreamIdRef.current = null;
+    activeStreamSessionIdRef.current = null;
+    terminalStreamClosedRef.current = false;
     activeSendRequestIdRef.current = null;
     boundSendRequestIdRef.current = null;
   }, [resetStreamAccumulators]);
@@ -197,7 +201,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
   // `api`-identity churn that re-runs the subscribe effect below.
   useEffect(() => {
     return () => {
-      if (isStreamingRef.current) void api.sideChat?.abort();
+      const sendRequestId = activeSendRequestIdRef.current;
+      if (isStreamingRef.current && sendRequestId !== null) void api.sideChat?.abort(sendRequestId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -221,6 +226,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       if (event.type === "user_message" && (
         activeSendRequestIdRef.current === null
         || event.sendRequestId !== activeSendRequestIdRef.current
+        || typeof event.sessionId !== "string" || event.sessionId.trim().length === 0
       )) {
         // A peer's prelude must not adopt its stream or let its tail settle
         // this view's pending send. Remember the id when the guard re-arms.
@@ -229,7 +235,15 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         }
         return false;
       }
-      if (activeStreamIdRef.current === null && !isStreamingRef.current) return false;
+      if (activeStreamIdRef.current === null) {
+        // A view mounted mid-turn may never have seen a peer's prelude. Its
+        // remaining frames cannot establish ownership of a pending local send.
+        if (!isStreamingRef.current || event.type !== "user_message") return false;
+        if (!judgeStreamFrame(event, activeStreamIdRef, maxStreamIdRef)) return false;
+        activeStreamSessionIdRef.current = event.sessionId!;
+        return true;
+      }
+      if (event.sessionId !== undefined && event.sessionId !== activeStreamSessionIdRef.current) return false;
       return judgeStreamFrame(event, activeStreamIdRef, maxStreamIdRef);
     },
     [],
@@ -243,6 +257,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     if (!api.sideChat) return;
     const handleSideStreamEvent = (event: ChatStreamEvent) => {
       if (!isCurrentTurnEvent(event)) return;
+      if (terminalStreamClosedRef.current) return;
 
       const ev = event;
       if (ev.type === "user_message") {
@@ -289,6 +304,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       } else if (isTranscriptFrame(ev)) {
         setEntries((p) => applyTranscriptFrame(p, ev));
       } else if (ev.type === "error") {
+        terminalStreamClosedRef.current = true;
         // Read the accumulated thought HERE, not inside the updater: React runs
         // the updater at flush time, by which point the synchronous
         // `resetStreamAccumulators()` below has already emptied the ref.
@@ -304,6 +320,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         setStreaming(false);
         resetStreamAccumulators();
       } else if (ev.type === "done") {
+        terminalStreamClosedRef.current = true;
         if (!finalAssistantRoundClosedRef.current && (streamRef.current || thoughtRef.current)) {
           const detected = detectFromStream(streamRef.current);
           const finalText = visibleText(detected.cleanedText);
@@ -361,7 +378,9 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     // updater, because the reset empties the ref synchronously while React
     // flushes the updater later.
     const thought = thoughtRef.current;
+    const sendRequestId = activeSendRequestIdRef.current;
     resetStreamState();
+    const abortGeneration = sendGenerationRef.current;
     setStreaming(false);
     setEntries((p) =>
       markTurnAssistantInterrupted(
@@ -382,8 +401,9 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     // if the host really is still busy it refuses that send with its own
     // message.
     try {
-      await api.sideChat.abort();
+      if (sendRequestId !== null) await api.sideChat.abort(sendRequestId);
     } catch (err) {
+      if (abortGeneration !== sendGenerationRef.current) return;
       setEntries((p) => setAssistantError(p, errorMessage(err), "", "stream-error"));
     }
   }, [api, resetStreamState, setStreaming]);
@@ -421,12 +441,14 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         sendRequestId: activeSendRequestIdRef.current,
         boundSendRequestId: boundSendRequestIdRef.current,
         activeStreamId: activeStreamIdRef.current,
+        activeStreamSessionId: activeStreamSessionIdRef.current,
+        terminalStreamClosed: terminalStreamClosedRef.current,
         stream: streamRef.current,
         thought: thoughtRef.current,
         finalAssistantRoundClosed: finalAssistantRoundClosedRef.current,
       };
-      // Re-arm the stale-frame guard + clear accumulators: the next turn's first
-      // frame adopts its freshly-allocated streamId (see activeStreamIdRef doc).
+      // Re-arm the stale-frame guard + clear accumulators: the next turn's
+      // matching prelude adopts its streamId (see activeStreamIdRef doc).
       resetStreamState();
       const sendGeneration = sendGenerationRef.current;
       const sendRequestId = crypto.randomUUID();
@@ -452,6 +474,9 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         const result = await pendingSend;
         if (sendGeneration !== sendGenerationRef.current) return;
         if (!result.ok) {
+          // Execution failures also return this shape. A matching prelude proves
+          // this request started a turn, so its failure cannot revive the prior one.
+          if (activeStreamIdRef.current !== null && terminalStreamClosedRef.current) return;
           // Localized, not the raw code: this hook used to put the kebab-case string
           // straight in the transcript, so a Korean user tripping a bound read
           // `too-many-resource-attachments`. Main chat already resolves codes through
@@ -465,12 +490,20 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
               "stream-error",
             ),
           );
+          if (activeStreamIdRef.current !== null) {
+            terminalStreamClosedRef.current = true;
+            setStreaming(false);
+            resetStreamAccumulators();
+            return;
+          }
           setStreaming(streamStateBeforeSend.streaming);
-          // The handler returned a verdict, so we know no turn was started.
+          // No matching prelude was accepted; restore the unstarted replacement.
           sendGenerationRef.current = streamStateBeforeSend.generation;
           activeSendRequestIdRef.current = streamStateBeforeSend.sendRequestId;
           boundSendRequestIdRef.current = streamStateBeforeSend.boundSendRequestId;
           activeStreamIdRef.current = streamStateBeforeSend.activeStreamId;
+          activeStreamSessionIdRef.current = streamStateBeforeSend.activeStreamSessionId;
+          terminalStreamClosedRef.current = streamStateBeforeSend.terminalStreamClosed;
           streamRef.current = streamStateBeforeSend.stream;
           thoughtRef.current = streamStateBeforeSend.thought;
           finalAssistantRoundClosedRef.current = streamStateBeforeSend.finalAssistantRoundClosed;
@@ -497,7 +530,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         if (pendingSendRef.current === pendingSend) pendingSendRef.current = null;
       }
     },
-    [api, abort, resetStreamState, setStreaming],
+    [api, abort, resetStreamAccumulators, resetStreamState, setStreaming],
   );
 
   const newSession = useCallback(async () => {
@@ -506,9 +539,11 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     // call, and that turn's trailing frames must not be read as belonging to the
     // session about to be opened.
     resetStreamState();
+    const sessionGeneration = sendGenerationRef.current;
     setStreaming(false);
     setEntries([]);
     const res = await api.sideChat.new();
+    if (sessionGeneration !== sendGenerationRef.current) return;
     if (res.ok) recordSessionId(res.sessionId);
   }, [api, recordSessionId, resetStreamState, setStreaming]);
 
@@ -517,8 +552,10 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       if (!api.sideChat) return;
       // Same window as `new`.
       resetStreamState();
+      const sessionGeneration = sendGenerationRef.current;
       setStreaming(false);
       const res = await api.sideChat.load(id);
+      if (sessionGeneration !== sendGenerationRef.current) return;
       if (res.ok) {
         // Reconstruct the full ChatEntry[] from persisted history — the side loop
         // is a real ConversationLoop writing the same GenericMessage meta, so
@@ -578,7 +615,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
  * Does this frame belong to the turn currently on screen? Adopting is part of
  * the answer: the main process allocates side-chat stream ids monotonically and
  * the renderer cannot know a turn's id at `send` time (the invoke resolves only
- * when the turn ENDS), so a turn's FIRST frame is what establishes it.
+ * when the turn ENDS), so its matching user prelude establishes it.
  */
 function judgeStreamFrame(
   event: ChatStreamEvent,
@@ -586,7 +623,7 @@ function judgeStreamFrame(
   maxStreamId: { current: number },
 ): boolean {
   const streamId = typeof event.streamId === "number" ? event.streamId : null;
-  if (streamId === null) return true;
+  if (streamId === null) return false;
   if (activeStreamId.current === null) {
     // Between turns: adopt this frame's streamId ONLY if it is newer than any
     // id we have already seen. A lower/equal id is a straggler from a finished
