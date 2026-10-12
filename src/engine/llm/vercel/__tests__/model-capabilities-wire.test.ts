@@ -139,6 +139,19 @@ describe("image capability at the wire boundary", () => {
 });
 
 describe("tool capability at the wire boundary", () => {
+  it("withholds HTTP tools for the user's named no-tools entry despite endpoint support", async () => {
+    const fixture = wireFixture("openai-compatible");
+    const toolCall = resolveToolCallSupport({
+      vendor: "openai-compatible", model: "a-served-model",
+      catalogModel: "openai/gpt-3.5-turbo", reported: ["tools"],
+    });
+    await collectStreamEvents(fixture.provider.streamTurn(request("a-served-model", {
+      tools: TOOLS, modelCapabilities: { toolCall },
+    })));
+    expect(fixture.fetchResponse).toHaveBeenCalledOnce();
+    expect(fixture.body()).not.toHaveProperty("tools");
+  });
+
   it("sends tools when the endpoint explicitly supports them despite the catalog", async () => {
     const fixture = wireFixture();
     const toolCall = resolveToolCallSupport({ vendor: "openai", model: "gpt-3.5-turbo", reported: ["tools"] });

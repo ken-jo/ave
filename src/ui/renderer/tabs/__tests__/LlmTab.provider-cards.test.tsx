@@ -437,7 +437,8 @@ describe("LlmTab provider cards", () => {
     { model: "gpt-4.1", catalogModel: "openai/gpt-3.5-turbo", badge: true },
     { model: "gpt-3.5-turbo", catalogModel: "openai/gpt-4.1", badge: false },
     { model: "gpt-3.5-turbo", catalogModel: "openai/not-listed", badge: false },
-  ])("uses the vendor route's named catalog entry for the tool badge: %j", async ({ model, catalogModel, badge }) => {
+    { model: "gpt-4.1", catalogModel: "openai/gpt-3.5-turbo", supportedParameters: ["tools"], badge: true },
+  ])("uses the vendor route's named catalog entry for the tool badge: %j", async ({ model, catalogModel, supportedParameters, badge }) => {
     const { api } = profileApi({
       vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT, model, catalogModel } },
     }, {
@@ -447,7 +448,7 @@ describe("LlmTab provider cards", () => {
         vendor: "openai-compatible",
         endpoint: `${CUSTOM_ENDPOINT}/models`,
         models: [model],
-        modelEntries: [{ id: model, contextLength: 777_000 }],
+        modelEntries: [{ id: model, contextLength: 777_000, ...(supportedParameters ? { supportedParameters } : {}) }],
         fetchedAt: "2026-01-01T00:00:00.000Z",
       } satisfies LlmModelListResult),
     });
@@ -488,11 +489,11 @@ describe("LlmTab provider cards", () => {
   it.each(["pending", "failed"])("keeps the tool badge consistent with the engine during a %s capability cache save", async (saveState) => {
     const model = "gpt-3.5-turbo";
     const { api } = profileApi({
-      vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT, model, catalogModel: "openai/gpt-3.5-turbo" } },
+      vendors: { openai: { model } },
     }, {
-      hasApiKey: storedKeysFor("openai-compatible"),
+      hasApiKey: storedKeysFor("openai"),
       listLlmModels: vi.fn().mockResolvedValue({
-        ok: true, vendor: "openai-compatible", endpoint: `${CUSTOM_ENDPOINT}/models`, models: [model],
+        ok: true, vendor: "openai", endpoint: "https://provider.invalid/v1/models", models: [model],
         modelEntries: [{ id: model, contextLength: 777_000, supportedParameters: ["tools"] }],
         fetchedAt: "2026-01-01T00:00:00.000Z",
       } satisfies LlmModelListResult),
@@ -500,7 +501,7 @@ describe("LlmTab provider cards", () => {
         ? vi.fn(() => new Promise(() => {}))
         : vi.fn().mockResolvedValue({ ok: false, error: "settings-update-failed" }),
     });
-    await renderTab(api, { vendor: "openai-compatible", baseUrl: CUSTOM_ENDPOINT, model });
+    await renderTab(api, { vendor: "openai", model });
     expect(await chooserModelIds()).toContain(model);
     await waitFor(() => expect(within(chooserOption(model)).getByTestId(`llm-tab:model-facts:${model}`)).toHaveTextContent("777k"));
     await waitFor(() => expect(api.updateSettings).toHaveBeenCalled());

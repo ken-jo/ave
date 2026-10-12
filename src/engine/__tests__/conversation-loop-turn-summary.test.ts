@@ -348,7 +348,7 @@ describe("ConversationLoop onTurnSummary", () => {
     }
   });
 
-  it.each([false, true])("records the named route's actual HTTP tools with endpoint support %s", async (reportedTools) => {
+  it.each([false, true])("preserves the named route's HTTP tool omission with endpoint support %s", async (reportedTools) => {
     const settings = fakeLlmSettings({ provider: "openai", model: "gpt-4.1" });
     settings.vendors.openai.catalogModel = "openai/gpt-3.5-turbo";
     if (reportedTools) {
@@ -382,13 +382,8 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(result.text).toBe("answer");
     expect(fetchResponse).toHaveBeenCalledOnce();
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
-    if (reportedTools) {
-      expect(body.tools).toEqual(expect.arrayContaining([expect.objectContaining({ function: expect.objectContaining({ name: "read_file" }) })]));
-      expect(summary?.modelSettings).not.toHaveProperty("tools");
-    } else {
-      expect(body).not.toHaveProperty("tools");
-      expect(summary?.modelSettings?.tools).toEqual({ sent: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" });
-    }
+    expect(body).not.toHaveProperty("tools");
+    expect(summary?.modelSettings?.tools).toEqual({ sent: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" });
   });
 
   it("omits primary route settings when a fallback keeps the same vendor and model", async () => {

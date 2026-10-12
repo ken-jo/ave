@@ -280,9 +280,9 @@ export async function queryLoop(
     // must not reintroduce a tool the provider already rejected and re-break
     // the turn.
     //
-    // Every rebuild honors the route's resolved tool capability. A catalog
-    // denial without a positive endpoint report sends none; unknown sends
-    // tools as before. The turn record notes the omission.
+    // Every rebuild honors the route's resolved tool capability, including
+    // an explicit named denial above a positive endpoint report. Unknown
+    // sends tools as before. The turn record notes the omission.
     const toolsWithheld = runtimeContextBudget.toolCall?.supported === false ? runtimeContextBudget.toolCall : undefined;
     const rebuildTurnToolSchemas = (): ToolSchema[] => toolsWithheld
       ? []

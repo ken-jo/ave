@@ -331,8 +331,10 @@ Slice 4 is implemented.
   `src/engine/turn/query-loop.ts`). Its turn record carries
   `modelSettings.tools: { sent: false, source: "model-catalog", catalogEntry }`.
   - Absent `toolCall` is unknown, and tools are sent as before.
-  - An endpoint's explicit `tools` in `supported_parameters` overrides a catalog denial
-    with `{ supported: true, source: "provider-reported" }`. A missing `tools` is not a
+  - A no-tools entry the user explicitly names with `catalogModel` keeps tools
+    withheld even when the endpoint reports `tools`. Otherwise an endpoint's
+    explicit `tools` in `supported_parameters` overrides a catalog denial with
+    `{ supported: true, source: "provider-reported" }`. A missing `tools` is not a
     denial and leaves the catalog answer intact.
   - The model picker shows a localized **No tools** badge only when this same resolved
     capability withholds tools. Its accessible name and tooltip explain that tools are

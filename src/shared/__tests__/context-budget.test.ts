@@ -633,10 +633,13 @@ describe("a route's input modalities and tool support", () => {
     expect(resolveContextWindowForRoute(apiRoute("openai", "gpt-3.5-turbo", {
       supportedParameters: ["tools"],
     })).toolCall).toEqual({ supported: true, source: "provider-reported" });
+  });
+
+  it("preserves the user's named no-tools entry above endpoint support", () => {
     expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "a-served-model", {
       catalogModel: "openai/gpt-3.5-turbo",
       supportedParameters: [" Tools "],
-    })).toolCall).toEqual({ supported: true, source: "provider-reported" });
+    })).toolCall).toEqual({ supported: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" });
   });
 
   it.each([{ supportedParameters: [] }, { supportedParameters: ["reasoning"] }])("does not infer tool support from an incomplete parameter report %j", ({ supportedParameters }) => {

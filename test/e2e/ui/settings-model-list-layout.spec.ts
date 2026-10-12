@@ -216,16 +216,12 @@ for (const bundleId of ['moonstone', 'gallery'] as const) {
         expect(item.labelWidth).toBeGreaterThan(0);
         expect(item.labelRight).toBeLessThanOrEqual(item.right + 1);
         if (!MODEL_IDS.includes(item.model ?? '')) continue;
-        const hasEndpointTools = MODEL_IDS.indexOf(item.model ?? '') % 11 === 0;
-        if (hasEndpointTools) {
-          expect(item.badgeText).toBeUndefined();
-        } else {
-          expect(item.badgeText).toBe(locale === 'ko' ? '도구 미지원' : 'No tools');
-          const help = locale === 'ko' ? '이 모델에는 도구를 보내지 않습니다' : 'Tools are not sent to this model.';
-          expect(item.badgeName).toBe(help);
-          expect(item.badgeHelp).toBe(help);
-          expect(item.badgeWidth).toBeGreaterThan(0);
-        }
+        // The user's named no-tools entry outranks even a positive endpoint report.
+        expect(item.badgeText).toBe(locale === 'ko' ? '도구 미지원' : 'No tools');
+        const help = locale === 'ko' ? '이 모델에는 도구를 보내지 않습니다' : 'Tools are not sent to this model.';
+        expect(item.badgeName).toBe(help);
+        expect(item.badgeHelp).toBe(help);
+        expect(item.badgeWidth).toBeGreaterThan(0);
       }
 
       await settingsPage.keyboard.press('Escape');

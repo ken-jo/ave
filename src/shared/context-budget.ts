@@ -325,7 +325,8 @@ export type ResolvedToolCallSupport =
   | { readonly supported: boolean; readonly source: "model-catalog"; readonly catalogEntry: string };
 
 /**
- * Explicit endpoint support for `tools` takes precedence over the catalog.
+ * The user's named no-tools entry takes precedence over an endpoint report.
+ * Otherwise explicit endpoint support for `tools` overrides the catalog.
  * A missing parameter is not a denial: only a catalog `toolCall: false`
  * withholds tools. Absent means unknown and sends tools as before.
  */
@@ -335,11 +336,14 @@ export function resolveToolCallSupport(params: {
   reported?: readonly string[];
   catalogModel?: string;
 }): ResolvedToolCallSupport | undefined {
+  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel);
+  const supported = hit?.model.toolCall;
+  if (params.catalogModel !== undefined && hit && supported === false) {
+    return { supported: false, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` };
+  }
   if (params.reported?.some((parameter) => parameter.trim().toLowerCase() === "tools")) {
     return { supported: true, source: "provider-reported" };
   }
-  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel);
-  const supported = hit?.model.toolCall;
   return hit && supported !== undefined
     ? { supported, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` }
     : undefined;
