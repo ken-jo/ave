@@ -98,6 +98,8 @@ export interface TokenRates {
    * at `outputPer1M`. Undefined → reasoning is ordinary output.
    */
   reasoningPer1M?: number;
+  /** A thinking-mode rate covers all output when the request reports positive reasoning tokens. */
+  reasoningRateScope?: "output";
   /** Prompt-size tiers, ascending by `afterInputTokens` (the model catalog's `cost.tiers`). */
   tiers?: readonly TokenRateTier[];
   /**
@@ -513,12 +515,13 @@ export function computeCost(
   const cacheWrite = nonNegative(usage.cacheWriteTokens);
   const reasoning = Math.min(output, nonNegative(usage.reasoningTokens));
   const rates = ratesForPrompt(pricing, promptTokensForTier(usage, vendor));
+  const pricedReasoning = rates.reasoningRateScope === "output" && reasoning > 0 ? output : reasoning;
 
   const per1M = (tokens: number, rate: number): number =>
     (tokens / 1_000_000) * rate;
   const outputCost = (outMul: number): number =>
-    per1M(output - reasoning, rates.outputPer1M * outMul)
-    + per1M(reasoning, (rates.reasoningPer1M ?? rates.outputPer1M) * outMul);
+    per1M(output - pricedReasoning, rates.outputPer1M * outMul)
+    + per1M(pricedReasoning, (rates.reasoningPer1M ?? rates.outputPer1M) * outMul);
 
   if (toPricingVendor(vendor) === "claude") {
     const { read: cacheReadRate, write: cacheWriteRate } = anthropicCacheRates(rates);

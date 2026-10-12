@@ -122,8 +122,8 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
     expect(numeric).toBeCloseTo(1, 2);
   });
 
-  it("prices a segment's reported reasoning at the catalog's reasoning rate", () => {
-    // Qwen Plus: output $0.287/M, reasoning $1.147/M; 600K text + 400K reasoning.
+  it("prices a segment's entire output at its thinking-mode rate", () => {
+    // The mode's output rate covers both thoughts and the final answer.
     renderInCostMode({
       tokensIn: 0,
       freshInputTokens: 0,
@@ -136,7 +136,7 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
       }],
     });
     const numeric = Number((screen.getByText(/^≈ \$/).textContent ?? "").replace(/[^0-9.]/g, ""));
-    expect(numeric).toBeCloseTo(0.6 * 0.287 + 0.4 * 1.147, 2);
+    expect(numeric).toBeCloseTo(1.147, 2);
   });
 
   it("prices each segment with the price correction main reports", async () => {

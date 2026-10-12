@@ -337,13 +337,14 @@ endpoint costs.
   1.25× input when the rates state none). Every other vendor's prompt is split into
   fresh, cache-read and cache-write parts, each at its rate, a missing cache rate being
   the input rate. Gemini and Vertex used to ignore the cache entirely.
-- **Reasoning.** models.dev's `cost.reasoning` is the price per million reasoning
-  tokens. The adapter now carries the provider's reported reasoning part of the output
-  (`outputTokenDetails.reasoningTokens`) through the request usage, the turn summary and
-  the audit row; that part is priced at the reasoning rate and the rest of the output
-  at the output rate. An absent or zero catalog reasoning rate uses the output rate;
-  a listed zero does not establish free reasoning. Without a reported split, all output
-  uses the output rate. Several mapped providers have catalog reasoning rates.
+- **Reasoning.** A positive `cost.reasoning` prices the reported reasoning subset of
+  output, with the remainder at the output rate. Entries from `alibaba-cn` instead
+  publish a thinking-mode output rate: once a request reports positive reasoning tokens, that rate
+  covers both thought and answer tokens. The adapter carries
+  `outputTokenDetails.reasoningTokens` through request usage, the turn summary and the
+  audit row. An absent or zero catalog reasoning rate uses the output rate; a listed
+  zero does not establish free reasoning. Without a reported split, all output uses
+  the output rate.
 
 Every cost surface reads these: the pre-send estimate (`use-cost-estimate.ts`), the
 per-turn badge (`TokenCostBadge`, priced per request segment), the usage dashboard and

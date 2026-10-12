@@ -179,16 +179,22 @@ describe("computeCost — cache and reasoning rates", () => {
       .toBeCloseTo(0.2 + 5, 9);
   });
 
-  it("prices reported reasoning tokens at the reasoning rate and the rest of the output at the output rate", () => {
+  it("prices the entire output at a thinking-mode rate when reasoning is reported", () => {
     const qwen = rates("qwen", "qwen-plus");
-    expect(qwen).toMatchObject({ outputPer1M: 0.287, reasoningPer1M: 1.147 });
+    expect(qwen).toMatchObject({ outputPer1M: 0.287, reasoningPer1M: 1.147, reasoningRateScope: "output" });
     expect(computeCost({ inputTokens: 0, outputTokens: MILLION, reasoningTokens: 400_000 }, qwen, "qwen"))
-      .toBeCloseTo(0.6 * 0.287 + 0.4 * 1.147, 9);
+      .toBeCloseTo(1.147, 9);
     // Without a reported split the whole output is ordinary output.
     expect(computeCost({ inputTokens: 0, outputTokens: MILLION }, qwen, "qwen")).toBeCloseTo(0.287, 9);
     // A reasoning count above the output is malformed and bounded by it.
     expect(computeCost({ inputTokens: 0, outputTokens: 100, reasoningTokens: 1_000 }, qwen, "qwen"))
       .toBeCloseTo((100 / MILLION) * 1.147, 12);
+  });
+
+  it("prices only the reasoning subset when the rate is token-specific", () => {
+    const pricing: TokenRates = { inputPer1M: 0, outputPer1M: 8, reasoningPer1M: 3 };
+    expect(computeCost({ inputTokens: 0, outputTokens: MILLION, reasoningTokens: 400_000 }, pricing, "openrouter"))
+      .toBeCloseTo(0.6 * 8 + 0.4 * 3, 9);
   });
 
   it("prices reasoning as ordinary output where no reasoning rate is stated", () => {

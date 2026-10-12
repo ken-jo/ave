@@ -71,7 +71,7 @@ export function resolveModelPricing(
   }
   const hit = resolveCatalogKey(activeModelCatalog(), vendor, model);
   const catalogEntry = hit ? `${hit.provider}/${hit.id}` : undefined;
-  const catalogRates = hit?.model.cost ? catalogTokenRates(hit.model.cost) : undefined;
+  const catalogRates = hit?.model.cost ? catalogTokenRates(hit.model.cost, hit.provider) : undefined;
   if (catalogEntry !== undefined && catalogRates !== undefined && listsAPrice(catalogRates)) {
     return { source: "model-catalog", rates: catalogRates, catalogEntry };
   }
@@ -105,7 +105,7 @@ export function knownModelPricing(pricing: ResolvedModelPricing): KnownModelPric
  * the input and the output price — one side alone is not a price for a
  * request, and the missing side is unknown, not zero.
  */
-function catalogTokenRates(cost: CatalogModelCost): TokenRates | undefined {
+function catalogTokenRates(cost: CatalogModelCost, provider: string): TokenRates | undefined {
   if (cost.input === undefined || cost.output === undefined) return undefined;
   const tiers: TokenRateTier[] = (cost.tiers ?? [])
     .map((tier) => ({
@@ -123,6 +123,11 @@ function catalogTokenRates(cost: CatalogModelCost): TokenRates | undefined {
     ...(cost.cacheWrite !== undefined ? { cacheWritePer1M: cost.cacheWrite } : {}),
     // A listed zero does not establish free reasoning; use the output rate.
     ...(cost.reasoning !== undefined && cost.reasoning > 0 ? { reasoningPer1M: cost.reasoning } : {}),
+    // This provider publishes a thinking-mode output rate, covering both
+    // the thought and the answer rather than only the reasoning subset.
+    ...(provider === "alibaba-cn" && cost.reasoning !== undefined && cost.reasoning > 0
+      ? { reasoningRateScope: "output" as const }
+      : {}),
     ...(tiers.length > 0 ? { tiers } : {}),
   };
 }
