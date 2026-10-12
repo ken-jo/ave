@@ -350,9 +350,12 @@ export function llmRouteCatalogAddress(
   const preset = presetId
     ? installedProviderPresets?.find((installed) => installed.providerId === presetId)
     : undefined;
+  // This SDK derives its endpoint from project/location and ignores baseUrl.
+  // A dormant field and its cached model list must not describe that route.
+  const baseUrl = llm.provider === "vertex-ai" ? undefined : preset?.baseUrl ?? block.baseUrl;
   return {
     vendor: llm.provider,
-    ...(preset?.baseUrl ?? block.baseUrl ? { baseUrl: preset?.baseUrl ?? block.baseUrl } : {}),
+    ...(baseUrl ? { baseUrl } : {}),
     ...(presetId ? { credentialScope: presetId } : {}),
   };
 }

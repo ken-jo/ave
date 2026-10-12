@@ -68,6 +68,14 @@ const DEFAULT_API_ORIGINS: Partial<Record<LLMVendor, string>> = {
   gemini: "https://generativelanguage.googleapis.com",
 };
 
+const OPENAI_NATIVE_API_HOSTS: readonly string[] = [
+  "api.openai.com",
+  "us.api.openai.com", "eu.api.openai.com", "au.api.openai.com", "ca.api.openai.com",
+  "jp.api.openai.com", "in.api.openai.com", "sg.api.openai.com", "kr.api.openai.com",
+  "gb.api.openai.com", "ae.api.openai.com",
+  "mtls.api.openai.com", "mtls-us.api.openai.com", "mtls-eu.api.openai.com",
+];
+
 /**
  * A mapped vendor's model name describes its limits only at its own endpoint.
  * A gateway may alias that name to a different deployment. Explicit settings
@@ -75,18 +83,19 @@ const DEFAULT_API_ORIGINS: Partial<Record<LLMVendor, string>> = {
  * pricing rows until the legacy table is removed.
  */
 export function allowsImplicitModelLimits(vendor: string, baseUrl?: string): boolean {
+  // This API addresses arbitrary deployment aliases, not public model ids.
+  // A resource hostname alone cannot identify the model behind an alias.
+  if (vendor === "azure-foundry") return false;
   // Without an override, the route uses the vendor's native default.
   if (providersFor(vendor).length === 0 || !baseUrl?.trim()) return true;
   try {
     const endpoint = new URL(baseUrl.trim());
     if (endpoint.protocol !== "https:" || endpoint.port !== "") return false;
     // Resource-scoped APIs use per-account or regional hosts.
-    if (vendor === "azure-foundry") {
-      return endpoint.hostname.endsWith(".openai.azure.com") || endpoint.hostname.endsWith(".services.ai.azure.com");
-    }
     if (vendor === "vertex-ai") {
       return endpoint.hostname === "aiplatform.googleapis.com" || endpoint.hostname.endsWith("-aiplatform.googleapis.com");
     }
+    if (vendor === "openai") return OPENAI_NATIVE_API_HOSTS.includes(endpoint.hostname);
     const standard = isLLMVendor(vendor) && isOpenAICompatiblePresetVendor(vendor)
       ? OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].baseUrl
       : DEFAULT_API_ORIGINS[vendor as LLMVendor];

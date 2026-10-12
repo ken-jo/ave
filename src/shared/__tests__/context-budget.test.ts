@@ -584,6 +584,35 @@ describe("the prompt cap beside the window", () => {
 });
 
 describe("context limits behind a custom endpoint", () => {
+  it.each([
+    "us.api.openai.com", "eu.api.openai.com", "au.api.openai.com", "ca.api.openai.com",
+    "jp.api.openai.com", "in.api.openai.com", "sg.api.openai.com", "kr.api.openai.com",
+    "gb.api.openai.com", "ae.api.openai.com", "mtls.api.openai.com",
+    "mtls-us.api.openai.com", "mtls-eu.api.openai.com",
+  ])("retains public model limits at a native regional or certificate origin: %s", (host) => {
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-5.2", baseUrl: `https://${host}/v1` }))
+      .toMatchObject({ contextWindow: 400_000, source: "model-catalog", inputLimit: 272_000 });
+  });
+
+  it("does not infer a deployment's model identity from its resource hostname", () => {
+    expect(resolveModelContextWindow({ vendor: "azure-foundry", model: "gpt-5.2", baseUrl: "https://synthetic.openai.azure.com/openai/v1" }))
+      .toEqual({ contextWindow: 128_000, source: "fallback" });
+  });
+
+  it("budgets a location-managed SDK route independently of an unused endpoint field", () => {
+    const vendors = freshAllVendorBlocks();
+    vendors["vertex-ai"].model = "gemini-2.5-flash";
+    vendors["vertex-ai"].baseUrl = "https://unused.invalid/v1";
+    const modelListCache: LlmModelListCache = {
+      [llmModelListCacheKey("vertex-ai", "https://unused.invalid/v1")]: {
+        vendor: "vertex-ai", endpoint: "https://unused.invalid/v1/models", models: ["gemini-2.5-flash"],
+        modelEntries: [{ id: "gemini-2.5-flash", contextLength: 64_000 }], fetchedAt: new Date(0).toISOString(),
+      },
+    };
+    expect(resolveContextWindowForRoute({ provider: "vertex-ai", vendors, modelListCache }))
+      .toMatchObject({ contextWindow: 1_048_576, source: "model-catalog" });
+  });
+
   function gatewayRoute(reported?: number) {
     const vendors = freshAllVendorBlocks();
     vendors.openai.baseUrl = "https://gateway.invalid/v1";

@@ -16,15 +16,13 @@ test.beforeAll(async () => {
       resolveDir: REPO_ROOT,
       contents: `
         import { installRendererModelCatalog, renderModelCatalogUnavailable } from "./src/ui/renderer/model-catalog-bootstrap.ts";
-        import { loadLocaleMessages } from "./src/i18n/messages/index.ts";
-        import { setLocale } from "./src/i18n/runtime.ts";
         window.showCatalogFailure = async (locale, code) => {
-          await loadLocaleMessages(locale);
-          setLocale(locale);
-          const failure = await installRendererModelCatalog({
+          const api = {
             getModelCatalog: async () => ({ ok: false, error: code }),
-          }).catch(error => error);
-          renderModelCatalogUnavailable(document.getElementById("root"), failure);
+            getSettings: async () => ({ appearance: { language: locale } }),
+          };
+          const failure = await installRendererModelCatalog(api).catch(error => error);
+          renderModelCatalogUnavailable(document.getElementById("root"), failure, api);
         };
       `,
     },
