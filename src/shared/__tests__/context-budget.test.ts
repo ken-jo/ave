@@ -613,6 +613,34 @@ describe("context limits behind a custom endpoint", () => {
       .toMatchObject({ contextWindow: 1_048_576, source: "model-catalog" });
   });
 
+  it("ignores generic endpoint reports under the default cache key for a location-managed SDK route", () => {
+    const vendors = freshAllVendorBlocks();
+    vendors["vertex-ai"].model = "gemini-2.5-flash";
+    vendors["vertex-ai"].baseUrl = "https://unused.invalid/v1";
+    const modelListCache: LlmModelListCache = {
+      [llmModelListCacheKey("vertex-ai")]: {
+        vendor: "vertex-ai", endpoint: "https://unused.invalid/v1/models", models: ["gemini-2.5-flash", "managed-unknown"],
+        modelEntries: [
+          { id: "gemini-2.5-flash", contextLength: 64_000, maxOutputTokens: 1_024 },
+          { id: "managed-unknown", contextLength: 64_000 },
+        ],
+        fetchedAt: new Date(0).toISOString(),
+      },
+    };
+    expect(resolveContextWindowForRoute({ provider: "vertex-ai", vendors, modelListCache }))
+      .toMatchObject({ contextWindow: 1_048_576, source: "model-catalog" });
+    vendors["vertex-ai"].model = "managed-unknown";
+    expect(resolveContextWindowForRoute({ provider: "vertex-ai", vendors, modelListCache }))
+      .toMatchObject({ contextWindow: 128_000, source: "fallback" });
+    vendors["vertex-ai"].contextWindow = 229_376;
+    expect(resolveContextWindowForRoute({ provider: "vertex-ai", vendors, modelListCache }))
+      .toMatchObject({ contextWindow: 229_376, source: "vendor-setting" });
+    delete vendors["vertex-ai"].contextWindow;
+    vendors["vertex-ai"].catalogModel = "google-vertex/gemini-2.5-flash";
+    expect(resolveContextWindowForRoute({ provider: "vertex-ai", vendors, modelListCache }))
+      .toMatchObject({ contextWindow: 1_048_576, source: "model-catalog" });
+  });
+
   function gatewayRoute(reported?: number) {
     const vendors = freshAllVendorBlocks();
     vendors.openai.baseUrl = "https://gateway.invalid/v1";

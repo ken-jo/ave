@@ -9,7 +9,7 @@
  * engine — never against a missing one, and never against a different one.
  */
 import { installModelCatalog } from "../../shared/model-catalog/active.js";
-import { setLocale, t } from "../../i18n/runtime.js";
+import { getLocale, setLocale, t } from "../../i18n/runtime.js";
 import { normalizeLocale } from "../../i18n/locale.js";
 import { tryLoadLocaleMessages } from "../../i18n/messages/index.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -35,6 +35,7 @@ export function renderModelCatalogUnavailable(
 ): void {
   console.error("[renderer] model catalog unavailable; the app cannot resolve models", error);
   const renderPanel = (): void => {
+    document.documentElement.lang = getLocale();
     const panel = document.createElement("div");
     panel.setAttribute("role", "alert");
     panel.dataset.testid = "model-catalog-unavailable";

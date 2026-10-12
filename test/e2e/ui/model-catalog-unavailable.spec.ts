@@ -45,7 +45,7 @@ for (const { locale, code, message, reloadLabel } of [
   },
 ] as const) {
   test(`startup refusal is localized in ${locale}`, async ({ page }, testInfo) => {
-    await page.setContent('<style>*{box-sizing:border-box}body{margin:0}</style><div id="root"></div>');
+    await page.setContent('<html lang="en"><head><style>*{box-sizing:border-box}body{margin:0}</style></head><body><div id="root"></div></body></html>');
     await page.addScriptTag({ content: bootstrapScript });
     await page.evaluate(async ({ locale, code }) => {
       const startup = window as unknown as { showCatalogFailure: (locale: string, code: string) => Promise<void> };
@@ -56,6 +56,7 @@ for (const { locale, code, message, reloadLabel } of [
     await expect(panel).toBeVisible();
     await expect(panel).not.toContainText(code);
     await expect(panel).toContainText(message);
+    await expect(page.locator("html")).toHaveAttribute("lang", locale);
     const reload = panel.getByRole("button", { name: reloadLabel, exact: true });
     await expect(reload).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath(`model-catalog-unavailable-${locale}.png`) });
