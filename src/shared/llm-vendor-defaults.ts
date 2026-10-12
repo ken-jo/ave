@@ -124,14 +124,14 @@ export const OPENAI_COMPATIBLE_VENDOR_PRESETS: Readonly<
   nebius: {
     label: "Nebius",
     apiKeyPlaceholder: "nebius_...",
-    baseUrl: "https://api.studio.nebius.ai/v1",
+    baseUrl: "https://api.tokenfactory.nebius.com/v1",
     defaultModel: "nvidia/nemotron-3-super-120b-a12b",
     modelOptions: ["nvidia/nemotron-3-super-120b-a12b"],
   },
   baseten: {
     label: "Baseten",
     apiKeyPlaceholder: "baseten_...",
-    baseUrl: "https://model-api.baseten.co/v1",
+    baseUrl: "https://inference.baseten.co/v1",
     defaultModel: "deepseek-ai/DeepSeek-V3.1",
     modelOptions: ["deepseek-ai/DeepSeek-V3.1"],
   },
