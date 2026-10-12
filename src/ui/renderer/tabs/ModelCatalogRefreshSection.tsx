@@ -17,6 +17,7 @@ import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNo
 import { useTranslation } from "../../../i18n/react.js";
 import { getApi } from "../api-client.js";
 import type { AppSettings } from "../types.js";
+import { isIpcErrorResult } from "../types.js";
 import { useSettingsSnapshot } from "../hooks/use-settings-snapshot.js";
 
 const SETTINGS_PATH = "llm.modelCatalogRefresh";
@@ -35,6 +36,9 @@ export function ModelCatalogRefreshSection() {
 
   const [loaded, setLoaded] = useState(false);
   const [enabled, setEnabled] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const [catalogState, setCatalogState] = useState<"loading" | "ready" | "failed">("loading");
   const [inForce, setInForce] = useState<CatalogInForce | null>(null);
 
   const applySnapshot = useCallback((s: AppSettings) => {
@@ -46,21 +50,33 @@ export function ModelCatalogRefreshSection() {
   useEffect(() => {
     let alive = true;
     void api.getModelCatalog().then((result) => {
-      if (!alive || !result.ok) return;
+      if (!alive) return;
+      if (!result.ok) { setCatalogState("failed"); return; }
       setInForce({
         fetchedAt: result.catalog.provenance.fetchedAt,
         sha256: result.catalog.sha256,
         policyOff: result.refreshPolicy === "off",
       });
-    });
+      setCatalogState("ready");
+    }).catch(() => { if (alive) setCatalogState("failed"); });
     return () => { alive = false; };
   }, [api]);
 
   const policyOff = inForce?.policyOff === true;
-  const toggle = useCallback((checked: boolean) => {
-    setEnabled(checked);
-    void api.updateSettings({ llm: { modelCatalogRefresh: checked ? "auto" : "off" } });
-  }, [api]);
+  const toggle = useCallback(async (checked: boolean) => {
+    if (saving) return;
+    setSaving(true);
+    setSaveFailed(false);
+    try {
+      const result = await api.updateSettings({ llm: { modelCatalogRefresh: checked ? "auto" : "off" } });
+      if (isIpcErrorResult(result)) setSaveFailed(true);
+      else applySnapshot(result);
+    } catch {
+      setSaveFailed(true);
+    } finally {
+      setSaving(false);
+    }
+  }, [api, applySnapshot, saving]);
 
   return (
     <SettingsSection
@@ -71,13 +87,23 @@ export function ModelCatalogRefreshSection() {
       <div className="flex items-center justify-between gap-4">
         <span className="text-sm font-medium">{t("llmTab.modelCatalogRefresh")}</span>
         <Switch
-          checked={enabled}
-          disabled={!loaded || envForced || policyOff}
+          checked={enabled && !envForced && !policyOff}
+          disabled={!loaded || catalogState !== "ready" || saving || envForced || policyOff}
           aria-label={t("llmTab.modelCatalogRefresh")}
           data-testid="llm-model-catalog-refresh"
           onCheckedChange={toggle}
         />
       </div>
+      {catalogState === "failed" && (
+        <p role="alert" className="mt-1 text-xs text-destructive">
+          {t("llmTab.modelCatalogUnavailable")}
+        </p>
+      )}
+      {saveFailed && (
+        <p role="alert" className="mt-1 text-xs text-destructive">
+          {t("settingsContent.saveErrorMessage", { tab: t("llmTab.pageTitle") })}
+        </p>
+      )}
       <p className="mt-1 text-xs text-muted-foreground" data-testid="llm-model-catalog-help">
         {t("llmTab.modelCatalogHelp")}
       </p>
