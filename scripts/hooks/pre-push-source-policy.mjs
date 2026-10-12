@@ -60,6 +60,7 @@ export const FULL_CHECK_GLOBAL_INPUT_FILES = Object.freeze([
   "src/__tests__/support/ave-home-isolation-guard.ts",
   "src/__tests__/vitest-ave-home.ts",
   "src/i18n/testing/vitest-ambient-intl.ts",
+  "src/shared/ave-home-test-guard.ts",
   "tsconfig.json",
   "tsconfig.tests.json",
   "vitest.config.ts",
@@ -70,6 +71,7 @@ const FULL_CHECK_GLOBAL_INPUT_PREFIXES = Object.freeze([
   ".github/",
   "config/",
   "scripts/",
+  "src/i18n/messages/",
 ]);
 
 const safeCliPath = /^[A-Za-z0-9._+@/-]+$/;
@@ -80,6 +82,9 @@ const importableModulePath = /^(?:src|test)\/(?:[^/]+\/)*[^/]+\.(?:ts|tsx|mts|ct
 export function isFullCheckGlobalInput(relativePath) {
   return (
     FULL_CHECK_GLOBAL_INPUT_FILES.includes(relativePath) ||
+    /(?:^|\/)tsconfig[^/]*\.json$/.test(relativePath) ||
+    /\.d\.(?:ts|mts|cts)$/.test(relativePath) ||
+    /(?:^|\/)[^/]*(?:preload|worker-entry|worker-main|child-main)\.(?:ts|tsx|js|mjs|cjs)$/.test(relativePath) ||
     FULL_CHECK_GLOBAL_INPUT_PREFIXES.some((prefix) => relativePath.startsWith(prefix))
   );
 }
@@ -134,7 +139,7 @@ export function selectFastSourceChecks(changes) {
     if (change.status !== "A" && change.status !== "M") {
       return ineligible(`Git status ${change.status || "unknown"} requires full checks`);
     }
-    if (change.newMode !== "100644") {
+    if (change.newMode !== "100644" || (change.status === "M" && change.oldMode !== change.newMode)) {
       return ineligible(`${path} file mode ${change.newMode} requires full checks`);
     }
     if (isCollectedVitestFile(path)) {

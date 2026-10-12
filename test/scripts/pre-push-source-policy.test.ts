@@ -118,12 +118,40 @@ describe("pre-push fast source tier", () => {
     const config = readFileSync(resolve(root, "config/vitest.analysis.config.ts"), "utf8");
     const setupLines = config
       .split("\n")
-      .filter((line) => /\b(?:setupFiles|globalSetup)\b|const AVE_HOME_GUARD =/.test(line));
+      .filter((line) => /\b(?:setupFiles|globalSetup)\b|const AVE_HOME_GUARD(?:_SEAM_PATH)? =/.test(line));
     const named = setupLines.flatMap((line) => [...line.matchAll(/rootPath\("([^"]+)"\)/g)].map((m) => m[1]));
     expect(named.length).toBeGreaterThanOrEqual(3);
     for (const path of new Set(named)) {
       expect(isFullCheckGlobalInput(path), `${path} is injected by the Vitest config`).toBe(true);
     }
+  });
+
+  it.each([
+    "tsconfig.build.json",
+    "src/shared/ave-home-test-guard.ts",
+    "src/shared/ambient.d.ts",
+    "src/shared/ambient.d.mts",
+    "src/i18n/messages/generated/statusBar.ts",
+    "src/i18n/messages/generated-locales/ko.ts",
+    "src/preload.ts",
+    "src/floating-dock-preload.ts",
+    "src/plugins/isolation/plugin-child-main.ts",
+    "src/engine/worker-entry.ts",
+  ])("requires full checks for an input outside runtime import coverage: %s", (path) => {
+    expect(selectFastSourceChecks([modified(path)]).eligible).toBe(false);
+  });
+
+  it("requires full checks when an executable module becomes a regular file", () => {
+    expect(selectFastSourceChecks([
+      { ...modified("src/engine/turn/provider.ts"), oldMode: "100755" },
+    ]).eligible).toBe(false);
+  });
+
+  it("requires full checks for a move represented by deletion and addition", () => {
+    expect(selectFastSourceChecks([
+      deleted("src/engine/turn/provider.ts"),
+      added("src/engine/turn/moved-provider.ts"),
+    ]).eligible).toBe(false);
   });
 
   it("names lock suites and global input files that exist", () => {
