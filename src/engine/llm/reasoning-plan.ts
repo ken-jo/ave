@@ -137,7 +137,7 @@ export interface ReasoningPlan {
  * does. Native OpenAI uses the Responses API, which has no such restriction.
  * One rule for the request and for the turn's record of it.
  */
-export function chatCompletionsRejectsToolTurnEffort(params: {
+function chatCompletionsRejectsToolTurnEffort(params: {
   vendor: LLMVendor;
   model: string;
   hasTools: boolean;
