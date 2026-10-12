@@ -9,6 +9,9 @@ test("budget-suspended sub-agent renders waiting in the workspace rail", async (
   t,
 }) => {
   await expect(mainWindow.getByTestId(TEST_IDS.chatViewRoot)).toBeVisible();
+  await mainWindow.getByTestId(TEST_IDS.panePanelToggle).click();
+  const rail = mainWindow.getByTestId("chat-side-panel-motion");
+  await expect(rail).toHaveCSS("opacity", "1");
 
   const events = [
     {
@@ -48,12 +51,16 @@ test("budget-suspended sub-agent renders waiting in the workspace rail", async (
     }
   }, events.map((event) => ({ ...event, parentSessionId })));
 
+  await expect(rail).toHaveAttribute("aria-hidden", "false");
   const row = mainWindow.getByTestId("chat-side-panel-subagent-row");
   await expect(row).toBeVisible({ timeout: 10_000 });
+  await expect(row).toBeInViewport();
   await expect(row).toContainText("Budget suspended agent");
   await expect(row).toContainText(t("subAgentCard.statusWaiting"));
   await expect(row).not.toContainText(t("subAgentCard.statusDone"));
   await expect(row.getByText(t("subAgentCard.statusWaiting"))).toHaveClass(/text-warning/);
+  const opacityAtCapture = await rail.evaluate((element) => getComputedStyle(element).opacity);
+  expect(opacityAtCapture).toBe("1");
 
   await test.info().attach("subagent-budget-waiting-rail.png", {
     body: await mainWindow.screenshot(),
