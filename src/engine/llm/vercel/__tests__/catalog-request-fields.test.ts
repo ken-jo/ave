@@ -97,12 +97,13 @@ describe("request fields the catalog decides", () => {
   });
 
   it.each([false, true].flatMap((enableThinking) => [
-    { enableThinking, reported: undefined, expected: 32_000 },
-    { enableThinking, reported: 8_192, expected: 8_192 },
-  ]))("records the SDK's narrower native limit beside the resolved ceiling: $reported (thinking $enableThinking)", async ({ enableThinking, reported, expected }) => {
-    // The route resolves its own ceiling (unknown or reported); native
-    // serialization may still narrow it to the SDK's model limit. The request
-    // controls observed after that projection are what the run records.
+    { enableThinking, reported: undefined, expected: 32_000, sent: 4_096 },
+    { enableThinking, reported: 8_192, expected: 8_192, sent: 8_192 },
+  ]))("sends an endpoint-reported ceiling past the SDK's name table and records what it sends: $reported (thinking $enableThinking)", async ({ enableThinking, reported, expected, sent }) => {
+    // An unknown ceiling lets native serialization narrow to the SDK's model
+    // limit (claude-3-haiku: 4,096). The endpoint's own report outranks that
+    // name table, so its ceiling reaches the wire. Either way the request
+    // controls observed after the projection are what the run records.
     const vendors = freshAllVendorBlocks();
     vendors.claude.model = "claude-3-haiku-20240307";
     vendors.claude.catalogModel = "anthropic/not-listed";
@@ -128,14 +129,13 @@ describe("request fields the catalog decides", () => {
     });
     expect(fetchResponse).toHaveBeenCalledOnce();
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
-    // claude-3-haiku's SDK limit is 4,096, below either resolved ceiling.
-    expect(body.max_tokens).toBe(4_096);
+    expect(body.max_tokens).toBe(sent);
     const thinking = body.thinking as { budget_tokens?: number } | undefined;
     expect(onRequestControls).toHaveBeenCalledExactlyOnceWith({
-      outputTokenLimit: 4_096,
+      outputTokenLimit: sent,
       ...(thinking?.budget_tokens === undefined ? {} : { thinkingBudgetTokens: thinking.budget_tokens }),
     });
-    if (enableThinking) expect(thinking?.budget_tokens).toBeLessThan(4_096);
+    if (enableThinking) expect(thinking?.budget_tokens).toBeLessThan(sent);
   });
 
   it("does not infer a public output ceiling from a gateway alias", async () => {
@@ -451,6 +451,47 @@ describe("a fallback model's output ceiling", () => {
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
     // The fallback's catalog ceiling bounds the request in both cases.
     expect(body.max_tokens ?? body.max_completion_tokens).toBe(16_384);
+  });
+
+  it("does not hand the primary's reported ceiling or its source to a fallback", async () => {
+    vi.useFakeTimers();
+    const primary: LLMProvider = {
+      vendor: "claude",
+      streamTurn: vi.fn(async function* (): AsyncGenerator<StreamEvent> {
+        yield { type: "error", error: "503 fixture unavailable", classification: "network" };
+      }),
+    };
+    const fallbackSent: StreamTurnParams[] = [];
+    const wrapped = new FallbackProvider(
+      primary,
+      [{ provider: "claude", model: "claude-3-haiku-20240307" }],
+      () => "fixture-key",
+      () => ({
+        vendor: "claude",
+        async *streamTurn(params: StreamTurnParams): AsyncIterable<StreamEvent> {
+          fallbackSent.push(params);
+          yield { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } };
+        },
+      }),
+    );
+    const drained = (async () => {
+      for await (const _event of wrapped.streamTurn({
+        model: "claude-3-haiku-20240307",
+        systemPrompt: "Return the result.",
+        messages: [{ role: "user", content: "Report the value." }],
+        enableThinking: false,
+        outputTokenLimit: 8_192,
+        outputCeiling: 8_192,
+        outputCeilingSource: "provider-reported",
+      })) {
+        // Drain.
+      }
+    })();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await drained;
+    expect(fallbackSent).toHaveLength(1);
+    expect(fallbackSent[0]).not.toHaveProperty("outputCeiling");
+    expect(fallbackSent[0]).not.toHaveProperty("outputCeilingSource");
   });
 
   it.each([

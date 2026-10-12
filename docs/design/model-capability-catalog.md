@@ -331,7 +331,9 @@ Implemented.
   even if its provider and model match the primary: that attempt resolves generation
   limits again. A later primary request records its own resolution at dispatch.
   The output block records the route's resolution, which also bounds the UI estimate.
-  Native serialization can narrow it further to a transport-known model limit.
+  Native serialization can narrow it further to a transport-known model limit,
+  except that an endpoint-reported ceiling outranks the SDK's model-name table and is
+  sent as resolved.
   Its serialized output and thinking limits are recorded as `requestControls`; the
   recorded numeric reasoning budget is updated to that serialized value. The original
   output resolution and its sources remain available beside those request controls.

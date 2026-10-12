@@ -337,7 +337,7 @@ describe("resolved output ceiling on the native wire", () => {
         '{"max_tokens":4096,"thinking":{"type":"enabled","budget_tokens":null}}',
       ]) {
         await expect(projectedFetch!("https://provider.invalid/v1/messages", { method: "POST", body }))
-          .rejects.toThrow("Numeric thinking request");
+          .rejects.toThrow("Output limit request");
       }
       expect(fetchResponse).toHaveBeenCalledOnce();
     } finally {

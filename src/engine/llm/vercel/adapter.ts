@@ -134,57 +134,69 @@ function supportsInterleavedNumericThinking(modelId: string): boolean {
   return match !== null && (match[1] === "opus" || match[2] !== "1");
 }
 
-interface NumericThinkingOutputProjection {
+interface NativeOutputProjection {
   outputTokenLimit: number;
   interleavedThinking: boolean;
+  numericThinking: boolean;
+  /** The route's ceiling came from the endpoint's own report. */
+  reportedCeiling: boolean;
 }
 
-function projectNumericThinkingOutput(
+function projectNativeOutput(
   fetchImpl: typeof fetch,
-  projection: NumericThinkingOutputProjection,
+  projection: NativeOutputProjection,
 ): typeof fetch {
   return async (input, init) => {
     if (typeof init?.body !== "string") {
-      throw new Error("Numeric thinking request must contain a serialized JSON body");
+      throw new Error("Output limit request must contain a serialized JSON body");
     }
     let request: Record<string, unknown>;
     try {
       request = JSON.parse(init.body) as Record<string, unknown>;
     } catch {
-      throw new Error("Numeric thinking request must contain valid serialized JSON");
+      throw new Error("Output limit request must contain valid serialized JSON");
     }
     if (!request || typeof request !== "object" || Array.isArray(request)) {
-      throw new Error("Numeric thinking request must contain a JSON object");
+      throw new Error("Output limit request must contain a JSON object");
     }
     const sdkOutputTokenLimit = request.max_tokens;
-    const thinking = request.thinking as Record<string, unknown> | undefined;
-    const thinkingBudget = thinking?.budget_tokens;
     if (
       typeof sdkOutputTokenLimit !== "number" || !Number.isSafeInteger(sdkOutputTokenLimit) || sdkOutputTokenLimit < 1
-      || !thinking || thinking.type !== "enabled"
-      || typeof thinkingBudget !== "number" || !Number.isSafeInteger(thinkingBudget) || thinkingBudget < 1_024
     ) {
-      throw new Error("Numeric thinking request has invalid output or thinking limits");
+      throw new Error("Output limit request has an invalid output limit");
     }
     // The SDK adds numeric thinking to its output argument and may then apply
-    // a model limit. Project the host's total afterward, preserving that limit
-    // and the original guarded transport. SDK diagnostics retain its input body.
-    const outputTokenLimit = Math.min(sdkOutputTokenLimit, projection.outputTokenLimit);
-    if (!projection.interleavedThinking && outputTokenLimit <= 1_024) {
-      throw new Error("Output token limit must exceed 1024 when numeric thinking is not interleaved");
+    // its model-name limit. An endpoint-reported ceiling outranks that table,
+    // so the route's effective limit is sent as resolved. Otherwise the SDK's
+    // narrower limit stands (requestControls records it). Either way the
+    // original guarded transport is kept; SDK diagnostics retain its input body.
+    const outputTokenLimit = projection.reportedCeiling
+      ? projection.outputTokenLimit
+      : Math.min(sdkOutputTokenLimit, projection.outputTokenLimit);
+    let boundedThinking: Record<string, unknown> | undefined;
+    if (projection.numericThinking) {
+      const thinking = request.thinking as Record<string, unknown> | undefined;
+      const thinkingBudget = thinking?.budget_tokens;
+      if (!thinking || thinking.type !== "enabled"
+        || typeof thinkingBudget !== "number" || !Number.isSafeInteger(thinkingBudget) || thinkingBudget < 1_024) {
+        throw new Error("Output limit request has invalid thinking limits");
+      }
+      if (!projection.interleavedThinking && outputTokenLimit <= 1_024) {
+        throw new Error("Output token limit must exceed 1024 when numeric thinking is not interleaved");
+      }
+      boundedThinking = {
+        ...thinking,
+        budget_tokens: projection.interleavedThinking
+          ? thinkingBudget
+          : Math.min(thinkingBudget, outputTokenLimit - 1),
+      };
     }
-    const thinkingBudgetTokens = projection.interleavedThinking
-      ? thinkingBudget
-      : Math.min(thinkingBudget, outputTokenLimit - 1);
     return fetchImpl(input, {
       ...init,
       body: JSON.stringify({
         ...request,
         max_tokens: outputTokenLimit,
-        thinking: {
-          ...thinking,
-          budget_tokens: thinkingBudgetTokens,
-        },
+        ...(boundedThinking ? { thinking: boundedThinking } : {}),
       }),
     });
   };
@@ -383,13 +395,18 @@ export class VercelUnifiedProvider implements LLMProvider {
       });
       const isThinkingEnabled = params.enableThinking === true && reasoningPlan?.kind !== "none";
       const numericThinking = reasoningPlan?.kind === "anthropic-numeric";
+      // Only a ceiling this route resolved from its endpoint's report; a
+      // purpose-specific or fallback request carries no source.
+      const reportedCeiling = params.outputCeiling !== undefined && params.outputCeiling !== null
+        && params.outputCeilingSource === "provider-reported";
       const interleavedNumericThinking = numericThinking && hasTools
         && supportsInterleavedNumericThinking(params.model);
       const model = this.resolveModel(
         params.model,
         hasTools,
-        numericThinking && outputTokenLimit !== undefined
-          ? { outputTokenLimit, interleavedThinking: interleavedNumericThinking }
+        slot === "claude" && outputTokenLimit !== undefined
+          && (numericThinking || reportedCeiling)
+          ? { outputTokenLimit, interleavedThinking: interleavedNumericThinking, numericThinking, reportedCeiling }
           : undefined,
         params.onRequestControls,
       );
@@ -629,7 +646,7 @@ export class VercelUnifiedProvider implements LLMProvider {
   private resolveModel(
     modelId: string,
     _hasTools: boolean,
-    numericOutputProjection?: NumericThinkingOutputProjection,
+    outputProjection?: NativeOutputProjection,
     onRequestControls?: StreamTurnParams["onRequestControls"],
   ) {
     const slot = this.vendorSlot;
@@ -644,8 +661,8 @@ export class VercelUnifiedProvider implements LLMProvider {
       const nativeFetch = onRequestControls
         ? observeRequestControls(this.customFetch ?? globalThis.fetch, onRequestControls)
         : this.customFetch;
-      const fetchImpl = numericOutputProjection
-        ? projectNumericThinkingOutput(nativeFetch ?? globalThis.fetch, numericOutputProjection)
+      const fetchImpl = outputProjection
+        ? projectNativeOutput(nativeFetch ?? globalThis.fetch, outputProjection)
         : nativeFetch;
       const anthropic = createAnthropic({
         apiKey: this.apiKey,

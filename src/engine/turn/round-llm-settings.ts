@@ -26,6 +26,7 @@ export function apiRoundLlmSettings<Smoothing extends string>(
   outputTokenLimit: number;
   requestedOutputTokenLimit: number;
   outputCeiling: Exclude<StreamTurnParams["outputCeiling"], undefined>;
+  outputCeilingSource?: StreamTurnParams["outputCeilingSource"];
   requestedThinkingBudgetTokens: number;
   streamSmoothing: Smoothing;
   modelCapabilities?: RouteModelCapabilities;
@@ -41,6 +42,7 @@ export function apiRoundLlmSettings<Smoothing extends string>(
     // the transport clamps to the same one instead of rediscovering another.
     // An explicitly unknown ceiling must not trigger another name match.
     outputCeiling: output.ceiling ?? null,
+    ...(output.ceilingSource === undefined ? {} : { outputCeilingSource: output.ceilingSource }),
     requestedThinkingBudgetTokens: block.thinkingBudgetTokens,
     // A resolved route's facts, even when empty: an unknown fact stays unknown
     // instead of matching again by name in the transport.

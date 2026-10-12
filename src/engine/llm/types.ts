@@ -11,7 +11,7 @@
 // re-export here so existing engine-side callers keep their import
 // path while the type definition cannot drift between modules.
 import type { RequestGenerationControls, RunModelSettings } from "../../shared/run-model-settings.js";
-import type { RouteModelCapabilities } from "../../shared/context-budget.js";
+import type { OutputCeilingSource, RouteModelCapabilities } from "../../shared/context-budget.js";
 import type { ModelUsageSegment } from "../../shared/model-pricing.js";
 import {
   type LLMVendor } from "../../shared/llm-vendor-defaults.js";
@@ -531,6 +531,12 @@ export interface StreamTurnParams {
    * route resolved an unknown ceiling and must not be resolved again by name.
    */
   outputCeiling?: number | null;
+  /**
+   * Who stated `outputCeiling`. An endpoint's own report outranks the native
+   * SDK's model-name table, so a Claude request carries the effective limit
+   * even where that table is lower; a catalog ceiling still meets the table.
+   */
+  outputCeilingSource?: OutputCeilingSource;
   /** Host observation of serialized numeric controls; never a model request field. */
   onRequestControls?: (controls: RequestGenerationControls) => void;
   /** Explicit catalog identity used by this route's reasoning decision. */

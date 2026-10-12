@@ -464,7 +464,8 @@ in the turn summary (`modelSettings.remainingContextOutputTokens`) and never cla
 request. Each API-backed turn whose last request uses the primary route records the
 catalog `sha256` and the effective window, output, reasoning and prices with their
 sources in its turn summary and audit `turn` row. Native serialization may narrow
-those limits further; `modelSettings.requestControls` keeps the serialized output
+those limits further (not when the endpoint reported the ceiling, which is sent as resolved);
+`modelSettings.requestControls` keeps the serialized output
 and thinking controls beside the route's output resolution, and the recorded numeric
 reasoning budget matches that serialized value
 (`src/shared/run-model-settings.ts`); see `docs/design/model-capability-catalog.md`.

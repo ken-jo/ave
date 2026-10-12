@@ -39,7 +39,7 @@ export interface StreamCollectParams {
    */
   llmSettings: Pick<StreamTurnParams,
     "thinkingBudgetTokens" | "requestedThinkingBudgetTokens" | "outputTokenLimit"
-    | "requestedOutputTokenLimit" | "outputCeiling" | "catalogModel" | "modelCapabilities"
+    | "requestedOutputTokenLimit" | "outputCeiling" | "outputCeilingSource" | "catalogModel" | "modelCapabilities"
   > & {
     streamSmoothing: "none" | "word" | "char";
     enableThinking: boolean;
@@ -158,6 +158,7 @@ export async function collectRoundStream(
         ? {}
         : { outputTokenLimit: llmSettings.outputTokenLimit }),
       ...(llmSettings.outputCeiling === undefined ? {} : { outputCeiling: llmSettings.outputCeiling }),
+      ...(llmSettings.outputCeilingSource === undefined ? {} : { outputCeilingSource: llmSettings.outputCeilingSource }),
       ...(llmSettings.modelCapabilities === undefined ? {} : { modelCapabilities: llmSettings.modelCapabilities }),
       ...(llmSettings.requestedOutputTokenLimit === undefined ? {} : { requestedOutputTokenLimit: llmSettings.requestedOutputTokenLimit }),
       ...(llmSettings.requestedThinkingBudgetTokens === undefined ? {} : { requestedThinkingBudgetTokens: llmSettings.requestedThinkingBudgetTokens }),

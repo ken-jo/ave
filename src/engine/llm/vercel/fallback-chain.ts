@@ -310,6 +310,7 @@ export async function* streamWithFallback(
     // model only; the fallback transport resolves its own catalog facts.
     const {
       outputCeiling: _primaryCeiling,
+      outputCeilingSource: _primaryCeilingSource,
       catalogModel: _primaryCatalogModel,
       modelCapabilities: _primaryCapabilities,
       ...fallbackParams
