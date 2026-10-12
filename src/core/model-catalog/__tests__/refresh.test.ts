@@ -5,8 +5,8 @@
  *
  * The refresh is an external-boundary fallback (AGENTS.md): every way the
  * download can fail must leave the last good copy — or, with none, the bundled
- * snapshot — in force, never nothing. Each failure case below therefore checks
- * the cache is unchanged AND what the next boot would select.
+ * snapshot — in force, never nothing. Failure cases check catalog bytes and,
+ * where relevant, next-boot selection separately from attempted-check metadata.
  */
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -91,7 +91,7 @@ afterEach(() => {
 });
 
 function cacheFiles(): Record<string, string> {
-  return Object.fromEntries(readdirSync(dir).sort().map((name) => [name, readFileSync(join(dir, name), "utf-8")]));
+  return Object.fromEntries(readdirSync(dir).filter((name) => !name.startsWith(".")).sort().map((name) => [name, readFileSync(join(dir, name), "utf-8")]));
 }
 
 /** A good refresh at `at`, so a failure after it has a last good copy to keep. */
@@ -151,6 +151,30 @@ describe("refreshModelCatalogCache", () => {
     });
     expect(result.status).toBe("fresh");
     expect(calls).toHaveLength(0);
+  });
+
+  it("throttles failed attempts across launches until a day has elapsed", async () => {
+    const { fetchImpl, calls } = respondWith(() => new Response(null, { status: 503 }));
+    expect((await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => NOW })).status).toBe("failed");
+    expect((await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => NOW })).status).toBe("throttled");
+    expect(calls).toHaveLength(1);
+    expect((await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => STALE })).status).toBe("failed");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("serializes concurrent refreshes into one request and one complete pointer", async () => {
+    const { fetchImpl, calls } = respondWith(() => json(rawDocument()));
+    const results = await Promise.all(Array.from({ length: 5 }, () => refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => NOW })));
+    expect(calls).toHaveLength(1);
+    expect(results.map((result) => result.status).sort()).toEqual(["fresh", "fresh", "fresh", "fresh", "updated"]);
+    expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "cache" });
+  });
+
+  it("rechecks after the clock moves behind the recorded check", async () => {
+    await seedGoodCopy(STALE);
+    const { fetchImpl, calls } = respondWith(() => json(rawDocument()));
+    await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => NOW });
+    expect(calls).toHaveLength(1);
   });
 
   it("asks conditionally once the copy is a day old, and a 304 only renews the pointer", async () => {
@@ -333,7 +357,7 @@ describe("refreshModelCatalogCache", () => {
     const sha256 = await seedGoodCopy();
     writeFileSync(join(dir, `${sha256}.json`), "{}");
     const { fetchImpl, calls } = respondWith(() => json(rawDocument(), { etag: "\"v2\"" }));
-    const result = await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => NOW });
+    const result = await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => STALE });
 
     expect(result.status).toBe("updated");
     expect((calls[0]!.init.headers as Record<string, string>)["if-none-match"]).toBeUndefined();

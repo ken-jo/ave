@@ -11,9 +11,10 @@
  *
  * A refresh only WRITES the cache. The catalog a process resolves against is
  * chosen once, at boot (`bundled.ts`), so a refreshed copy takes effect at the
- * next launch and one run never sees two catalogs. Any failure — network,
- * status, size, JSON, verification, coverage — leaves the cache exactly as it
- * was: the last good copy, or none and therefore the bundled snapshot.
+ * next launch and one run never sees two catalogs. Network, status, size, JSON,
+ * verification and coverage failures keep the last good catalog. Scheduling
+ * state still records the attempt; a failed publication may leave an unused
+ * entry. Without a usable cached copy, boot selects the bundled snapshot.
  *
  * Cadence: at most one request per {@link MODEL_CATALOG_REFRESH_INTERVAL_MS}.
  * models.dev is a static document rebuilt when its TOML sources change, a
@@ -30,7 +31,10 @@ import { runWithAbortableDeadline } from "../../shared/abortable-deadline.js";
 import { fetchPublicHttpResponse } from "../network-guard.js";
 import {
   readCurrentModelCatalog,
+  readModelCatalogCheck,
   storeModelCatalog,
+  withModelCatalogCacheLock,
+  writeModelCatalogCheck,
   writeModelCatalogPointer,
 } from "./cache.js";
 import { buildModelCatalogDocument, verifyModelCatalogDocument } from "./document.js";
@@ -48,6 +52,7 @@ export type ModelCatalogRefreshResult =
   | { status: "fresh"; sha256: string }
   | { status: "not-modified"; sha256: string }
   | { status: "updated"; sha256: string; diagnostics: CatalogDiagnostic[] }
+  | { status: "throttled" }
   | { status: "failed"; reason: string };
 
 export interface ModelCatalogRefreshOptions {
@@ -65,7 +70,7 @@ export interface ModelCatalogRefreshOptions {
   reference: ModelCatalogDocument;
   now?: () => Date;
   signal?: AbortSignal;
-  /** Bypass the interval: a stale or missing copy is always refreshed, a fresh one only when this is set. */
+  /** Bypass both the successful-confirmation and attempted-check intervals. */
   force?: boolean;
   /** Headers and body together; {@link MODEL_CATALOG_FETCH_TIMEOUT_MS} unless a test shortens it. */
   timeoutMs?: number;
@@ -128,17 +133,35 @@ function coverageFault(refreshed: ModelCatalogDocument, reference: ModelCatalogD
 /**
  * Bring the cache up to date: nothing when the copy in force was confirmed
  * within the interval, a conditional request otherwise. Never throws; a
- * failure is a result, and the cache is left as it was.
+ * failure is a result; a failed download preserves the usable cached catalog.
  */
 export async function refreshModelCatalogCache(options: ModelCatalogRefreshOptions): Promise<ModelCatalogRefreshResult> {
+  try {
+    return await withModelCatalogCacheLock(options.dir, () => refreshLockedModelCatalogCache(options));
+  } catch (error) {
+    return { status: "failed", reason: errorMessage(error) };
+  }
+}
+
+async function refreshLockedModelCatalogCache(options: ModelCatalogRefreshOptions): Promise<ModelCatalogRefreshResult> {
   const now = options.now ?? (() => new Date());
   try {
+    options.signal?.throwIfAborted();
     const current = await readCurrentModelCatalog(options.dir);
     // A pointer whose copy is damaged is not "in force": refresh without its ETag.
     const pointer = current.ok ? current.value.pointer : undefined;
-    if (pointer && !options.force && now().getTime() - Date.parse(pointer.checkedAt) < MODEL_CATALOG_REFRESH_INTERVAL_MS) {
+    const checkedAt = now();
+    const withinInterval = (at: string): boolean => {
+      const age = checkedAt.getTime() - Date.parse(at);
+      return age >= 0 && age < MODEL_CATALOG_REFRESH_INTERVAL_MS;
+    };
+    if (pointer && !options.force && withinInterval(pointer.checkedAt)) {
       return { status: "fresh", sha256: pointer.sha256 };
     }
+    const lastCheck = await readModelCatalogCheck(options.dir);
+    if (lastCheck && !options.force && withinInterval(lastCheck)) return { status: "throttled" };
+    // Persist before the request: a failure or process exit still counts as a check.
+    await writeModelCatalogCheck(options.dir, checkedAt.toISOString());
 
     const timeoutMs = options.timeoutMs ?? MODEL_CATALOG_FETCH_TIMEOUT_MS;
     const download = await runWithAbortableDeadline(async (signal) => {

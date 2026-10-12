@@ -16,6 +16,7 @@ import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
+import { withFileLock, withInProcessFileQueue } from "../../lib/with-file-lock.js";
 import { openFeatureNamespace, writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { aveHome } from "../../shared/ave-home.js";
@@ -36,6 +37,46 @@ const SHA256 = /^[0-9a-f]{64}$/;
 /** Same layout as the bundled snapshot: one line per model record. */
 const ENTRY_COMPACT_DEPTH = 4;
 const MAX_POINTER_BYTES = 64 * 1024;
+const CHECK_FILE = ".refresh-check.json";
+const LOCK_FILE = ".refresh-lock";
+
+/** Serialize the complete check and publication across processes sharing this cache. */
+export async function withModelCatalogCacheLock<T>(dir: string, work: () => Promise<T>): Promise<T> {
+  await prepareModelCatalogCache(dir);
+  const path = join(dir, LOCK_FILE);
+  return withInProcessFileQueue(path, async () => {
+    try {
+      await readRegularFile(path, MAX_POINTER_BYTES);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      await writeFileAtomicAtPath(path, "");
+    }
+    try {
+      const lock = await lstat(`${path}.lock`);
+      if (!lock.isDirectory() || lock.isSymbolicLink()) throw new Error("model catalog cache lock is not a regular directory");
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+    }
+    return withFileLock(path, work);
+  });
+}
+
+/** Last attempted check, including failures; separate from successful confirmation. */
+export async function readModelCatalogCheck(dir: string): Promise<string | undefined> {
+  try {
+    await checkCacheDirectory(dir);
+    const value = JSON.parse(await readRegularFile(join(dir, CHECK_FILE), MAX_POINTER_BYTES)) as { version?: unknown; checkedAt?: unknown } | null;
+    if (value?.version === 1 && typeof value.checkedAt === "string" && Number.isFinite(Date.parse(value.checkedAt))) return value.checkedAt;
+  } catch {
+    // Missing or damaged scheduling state must not replace a usable catalog.
+  }
+  return undefined;
+}
+
+export async function writeModelCatalogCheck(dir: string, checkedAt: string): Promise<void> {
+  await prepareModelCatalogCache(dir);
+  await writeFileAtomicAtPath(join(dir, CHECK_FILE), `${JSON.stringify({ version: 1, checkedAt })}\n`);
+}
 
 /** Cache-owned directories must be directories, never links into another tree. */
 async function checkCacheDirectory(dir: string, allowAbsent = false): Promise<void> {

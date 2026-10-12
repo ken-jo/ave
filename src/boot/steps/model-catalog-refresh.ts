@@ -60,7 +60,7 @@ export function wireModelCatalogRefresh(input: {
       } else if (result.status === "updated") {
         log.info({ sha256: result.sha256, dropped: result.diagnostics.length }, "model catalog refreshed; takes effect at the next launch");
       } else {
-        log.debug({ status: result.status, sha256: result.sha256 }, "model catalog current");
+        log.debug({ status: result.status, sha256: "sha256" in result ? result.sha256 : undefined }, "model catalog check complete");
       }
     } catch (error) {
       log.warn({ err: error }, "model catalog refresh check failed");

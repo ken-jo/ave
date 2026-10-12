@@ -33,6 +33,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "model-catalog-wire-"));
   calls = [];
   vi.stubEnv("AVE_MODEL_CATALOG", "");
+  vi.stubEnv("AVE_HOME", dir);
 });
 afterEach(() => {
   for (const stop of hooks.splice(0)) stop();
