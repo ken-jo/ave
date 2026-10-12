@@ -24,7 +24,7 @@ import {
 } from "./llm-vendor-defaults.js";
 import { cachedModelListEntry, type LlmModelListCache } from "./llm-model-list.js";
 import { activeModelCatalog } from "./model-catalog/active.js";
-import { lookupCatalogModel, resolveCatalogKey, type CatalogModelHit } from "./model-catalog/resolve.js";
+import { allowsImplicitModelLimits, lookupCatalogModel, resolveCatalogKey, type CatalogModelHit } from "./model-catalog/resolve.js";
 import type { MarketplaceProviderModelDiscoveryPolicy } from "./marketplace-package-assets.js";
 
 /**
@@ -159,12 +159,14 @@ export function resolveModelContextWindow(params: {
   reported?: number;
   /** A catalog entry the user named for this route, `<provider>/<id>`. */
   catalogModel?: string;
+  /** The route's endpoint; custom hosts cannot establish model identity by name. */
+  baseUrl?: string;
 }): ResolvedContextWindow {
   const configured = positiveTokenCount(params.configured);
   if (configured !== undefined) {
     return { contextWindow: configured, source: "vendor-setting" };
   }
-  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel);
+  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl);
   const window = ((): ResolvedContextWindow => {
     const reported = positiveTokenCount(params.reported);
     if (reported !== undefined) return { contextWindow: reported, source: "provider-reported" };
@@ -172,7 +174,9 @@ export function resolveModelContextWindow(params: {
     if (hit && catalogWindow !== undefined) {
       return { contextWindow: catalogWindow, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` };
     }
-    const pricing = lookupPricingOptional(params.vendor, params.model);
+    const pricing = allowsImplicitModelLimits(params.vendor, params.baseUrl)
+      ? lookupPricingOptional(params.vendor, params.model)
+      : undefined;
     if (pricing) return { contextWindow: effectiveContextWindow(pricing), source: "pricing-catalog" };
     return { contextWindow: FALLBACK_PRICING.contextWindow, source: "fallback" };
   })();
@@ -188,9 +192,10 @@ export function resolveModelContextWindow(params: {
  * the catalog answers nothing rather than falling back to the name: the user
  * said which model this is, and a name match could be a different one.
  */
-export function catalogModelFor(vendor: string, model: string, catalogModel?: string): CatalogModelHit | undefined {
+export function catalogModelFor(vendor: string, model: string, catalogModel?: string, baseUrl?: string): CatalogModelHit | undefined {
   const catalog = activeModelCatalog();
   if (catalogModel !== undefined) return lookupCatalogModel(catalog, catalogModel);
+  if (!allowsImplicitModelLimits(vendor, baseUrl)) return undefined;
   return resolveCatalogKey(catalog, vendor, model);
 }
 
@@ -297,6 +302,7 @@ export function resolveContextWindowForRoute(
     ...(block.contextWindow !== undefined ? { configured: block.contextWindow } : {}),
     ...(entry?.contextLength !== undefined ? { reported: entry.contextLength } : {}),
     ...(catalogModel !== undefined ? { catalogModel } : {}),
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
   });
   const maxOutputTokens = positiveTokenCount(entry?.maxOutputTokens);
   const unresolved = catalogModel !== undefined && lookupCatalogModel(activeModelCatalog(), catalogModel) === undefined;
