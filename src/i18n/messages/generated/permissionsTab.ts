@@ -61,7 +61,9 @@ export const en = {
   // Directory messages
   "permissionsTab.warnDirectoryAckRequired": "You must confirm the directory warnings before saving.",
   "permissionsTab.errorDirectoryAddError": "Error adding directory: {message}",
+  "permissionsTab.errorDirectoryAddFailed": "Could not add the directory.",
   "permissionsTab.errorDirectoryRemoveError": "Error removing directory: {message}",
+  "permissionsTab.errorDirectoryRemoveFailed": "Could not remove the directory.",
 
   // Page header
   "permissionsTab.pageTitle": "Permissions",
@@ -338,7 +340,9 @@ export const ko: Record<keyof typeof en, string> = {
 
   "permissionsTab.warnDirectoryAckRequired": "디렉터리 경고를 확인한 뒤 다시 승인해야 저장됩니다.",
   "permissionsTab.errorDirectoryAddError": "디렉터리 추가 중 오류: {message}",
+  "permissionsTab.errorDirectoryAddFailed": "디렉터리를 추가하지 못했습니다.",
   "permissionsTab.errorDirectoryRemoveError": "디렉터리 삭제 중 오류: {message}",
+  "permissionsTab.errorDirectoryRemoveFailed": "디렉터리를 제거하지 못했습니다.",
 
   "permissionsTab.pageTitle": "권한",
   "permissionsTab.pageDescription": "도구 권한 정책, 승인 동작, 디렉터리 화이트리스트를 설정합니다",

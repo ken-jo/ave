@@ -200,24 +200,34 @@ function thrownErrorText(context: string, error: unknown): string {
   return t("formatIpcError.unknownError");
 }
 
+/** A stable machine code (`user-keyboard-required`), as opposed to free text. */
+const IPC_ERROR_CODE_RE = /^[a-z][a-z0-9]*(?:[-_:.][a-z0-9]+)*$/;
+
 /**
  * An `ok: false` IPC result as this tab shows it: a known code in its
  * localized form, otherwise the action's own localized copy with the code. The
  * free-text `message` (English, possibly with paths) is logged, not shown.
+ * Some handlers (the slash-backed directory and reviewer dispatch) put free
+ * text in `error` itself, such as a "usage: /permission dir …" line; that is
+ * logged and replaced by the action's copy, without a code.
  */
 function ipcFailureText(
   context: string,
   result: { readonly error?: unknown; readonly message?: unknown },
-  fallback: string,
+  fallback: string | ((code: string | undefined) => string),
 ): string {
-  const code = typeof result.error === "string" && result.error ? result.error : undefined;
+  const error = typeof result.error === "string" && result.error ? result.error : undefined;
+  const code = error && IPC_ERROR_CODE_RE.test(error) ? error : undefined;
   console.warn(
     `[ave] permissions: ${context} failed:`,
-    code ?? "-",
+    error ?? "-",
     typeof result.message === "string" ? result.message : "",
   );
   if (code && resolveIpcErrorKey(code)) return formatIpcError(code, undefined);
-  return code && !fallback.includes(code) ? `${fallback} (${code})` : fallback;
+  // A template that places the code itself gets it (or "-"); a plain sentence
+  // gets the code appended.
+  if (typeof fallback === "function") return fallback(code);
+  return code ? `${fallback} (${code})` : fallback;
 }
 
 function formatRevokeError(error: string | undefined, message: string | undefined): string {
@@ -236,10 +246,10 @@ function formatReviewerDispatchError(error: string): string {
       t("permissionsTab.errorReviewerRewireHint"),
     ].join(" ");
   }
-  return formatIpcError(error, undefined, {
-    codeMap: { "user-keyboard-required": t("permissionsTab.errorUserKeyboardRequired") },
-    fallbackContext: t("permissionsTab.errorReviewerFallbackContext"),
-  });
+  if (error === "user-keyboard-required") return t("permissionsTab.errorUserKeyboardRequired");
+  // A slash-parse failure arrives here as English free text; ipcFailureText
+  // logs it and shows the localized reviewer-error copy instead.
+  return ipcFailureText("reviewer dispatch", { error }, t("permissionsTab.errorReviewerFallbackContext"));
 }
 
 function preserveSettingsScrollPosition(): () => void {
@@ -826,7 +836,7 @@ export function PermissionsTab({
         setNewPattern("");
         await refreshRules();
       } else {
-        showBanner("error", ipcFailureText("rule add", res, t("permissionsTab.errorRuleAddFailed", { error: res.error })));
+        showBanner("error", ipcFailureText("rule add", res, (code) => t("permissionsTab.errorRuleAddFailed", { error: code ?? "-" })));
       }
     } catch (e) {
       showBanner("error", t("permissionsTab.errorRuleAddError", { message: thrownErrorText("rule add", e) }));
@@ -842,7 +852,7 @@ export function PermissionsTab({
       if (res.ok) {
         await refreshRules();
       } else {
-        showBanner("error", ipcFailureText("rule remove", res, t("permissionsTab.errorRuleRemoveFailed", { error: res.error })));
+        showBanner("error", ipcFailureText("rule remove", res, (code) => t("permissionsTab.errorRuleRemoveFailed", { error: code ?? "-" })));
       }
     } catch (e) {
       showBanner("error", t("permissionsTab.errorRuleRemoveError", { message: thrownErrorText("rule remove", e) }));
@@ -886,7 +896,7 @@ export function PermissionsTab({
           showBanner("warn", t("permissionsTab.warnDirectoryAckRequired"));
         } else {
           setPendingDirectoryWarning(null);
-          showBanner("error", failed.error);
+          showBanner("error", ipcFailureText("directory add", failed, t("permissionsTab.errorDirectoryAddFailed")));
         }
       }
     } catch (e) {
@@ -905,7 +915,7 @@ export function PermissionsTab({
       if (res.ok && res.verb === "deny") {
         setDirectories(res.persisted);
       } else if (!res.ok) {
-        showBanner("error", res.error);
+        showBanner("error", ipcFailureText("directory remove", res, t("permissionsTab.errorDirectoryRemoveFailed")));
       }
     } catch (e) {
       showBanner("error", t("permissionsTab.errorDirectoryRemoveError", { message: thrownErrorText("directory remove", e) }));

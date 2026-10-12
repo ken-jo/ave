@@ -1549,6 +1549,95 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     warn.mockRestore();
   });
 
+  // The slash-backed directory dispatch puts chat-oriented English, or a bare
+  // IPC code, in `error` itself.
+  function dirDispatchFailing(failure: { add?: unknown; remove?: unknown }) {
+    const api = installApi([[]]);
+    mock(api.permission.dirDispatch).mockImplementation(async (rawArgs: string) => {
+      if (rawArgs === "list") {
+        return { ok: true, verb: "list", defaults: [], userAdditions: ["/tmp/ave-extra"], effective: [] };
+      }
+      if (rawArgs.startsWith("allow") && failure.add) return failure.add;
+      if (rawArgs.startsWith("deny") && failure.remove) return failure.remove;
+      return { ok: true, verb: "list", defaults: [], userAdditions: [], effective: [] };
+    });
+    return api;
+  }
+
+  async function addDirectory() {
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText("경로 (예: ~/Documents/project)"), { target: { value: "/tmp/other" } });
+      fireEvent.click(screen.getAllByText("추가").at(-1)!);
+    });
+  }
+
+  it.each([
+    ["chat-oriented usage text", { ok: false, error: "missing subcommand — usage: /permission dir <allow|deny|list> [path] [--session]" }, "디렉터리를 추가하지 못했습니다.", "usage:"],
+    ["a known IPC code", { ok: false, error: "user-keyboard-required" }, t("formatIpcError.userKeyboardRequired"), "user-keyboard-required"],
+  ] as const)("a directory add refused with %s shows localized copy", async (_label, add, shown, raw) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    dirDispatchFailing({ add });
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    await addDirectory();
+    expect(screen.getByText(shown)).toBeTruthy();
+    expect(document.body.textContent).not.toContain(raw);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("directory add failed"), add.error, "");
+    warn.mockRestore();
+  });
+
+  it.each([
+    ["free text", { ok: false, error: "workspace lifecycle unavailable" }, "디렉터리를 제거하지 못했습니다.", "workspace lifecycle"],
+    ["an unknown code", { ok: false, error: "dir-locked" }, "디렉터리를 제거하지 못했습니다. (dir-locked)", "-"],
+    ["the frame-trust code", { ok: false, error: "unauthorized-frame" }, t("formatIpcError.unauthorizedFrame"), "unauthorized-frame"],
+  ] as const)("a directory remove refused with %s shows localized copy", async (_label, remove, shown, raw) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    dirDispatchFailing({ remove });
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getAllByText("✕").at(-1)!);
+    });
+    expect(screen.getByText(shown)).toBeTruthy();
+    if (raw !== "-") expect(document.body.textContent).not.toContain(raw);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("directory remove failed"), remove.error, "");
+    warn.mockRestore();
+  });
+
+  it("a reviewer dispatch slash-parse failure shows the localized reviewer error, not the parser text", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const api = installApi([[]]);
+    mock(api.permission.reviewerDispatch).mockImplementation(async (rawArgs: string) => {
+      if (rawArgs === "show") {
+        return {
+          ok: true,
+          verb: "show",
+          settings: {
+            mode: "disabled",
+            provider: "openai",
+            model: "gpt-4o-mini",
+            fallbackOnError: "deny",
+            parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
+            interactive: { autoApprove: "off" },
+          },
+        };
+      }
+      return { ok: false, error: "unknown subcommand 'llm' — expected show|mode|model" };
+    });
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId(execModeTestId("auto")));
+    });
+    expect(screen.getByText(t("permissionsTab.errorReviewerFallbackContext"))).toBeTruthy();
+    expect(document.body.textContent).not.toContain("unknown subcommand");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("reviewer dispatch failed"), expect.stringContaining("unknown subcommand"), "");
+    warn.mockRestore();
+  });
+
   it("a load failure shows localized copy and logs the raw text", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const api = installApi([[]]);
