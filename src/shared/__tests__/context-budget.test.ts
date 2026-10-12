@@ -568,19 +568,27 @@ describe("the prompt cap beside the window", () => {
 });
 
 describe("a route's input modalities and tool support", () => {
-  function apiRoute(provider: "openai" | "openai-compatible", model: string, block: { catalogModel?: string; reportedInput?: string[] } = {}) {
+  function apiRoute(provider: "openai" | "openai-compatible", model: string, block: {
+    catalogModel?: string;
+    reportedInput?: string[];
+    supportedParameters?: string[];
+  } = {}) {
     const vendors = freshAllVendorBlocks();
     const fields = vendors[provider];
     fields.model = model;
     if (provider === "openai-compatible") fields.baseUrl = "https://models.invalid/v1";
     if (block.catalogModel !== undefined) fields.catalogModel = block.catalogModel;
     const modelListCache: LlmModelListCache = {};
-    if (block.reportedInput) {
+    if (block.reportedInput !== undefined || block.supportedParameters !== undefined) {
       modelListCache[llmModelListCacheKey(provider, fields.baseUrl, "")] = {
         vendor: provider,
         endpoint: "https://models.invalid/v1/models",
         models: [model],
-        modelEntries: [{ id: model, inputModalities: block.reportedInput }],
+        modelEntries: [{
+          id: model,
+          ...(block.reportedInput !== undefined ? { inputModalities: block.reportedInput } : {}),
+          ...(block.supportedParameters !== undefined ? { supportedParameters: block.supportedParameters } : {}),
+        }],
         fetchedAt: new Date(0).toISOString(),
       };
     }
@@ -619,5 +627,24 @@ describe("a route's input modalities and tool support", () => {
     });
     expect(resolveContextWindowForRoute(apiRoute("openai", "gpt-5.4")).toolCall).toMatchObject({ supported: true });
     expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "a-served-model"))).not.toHaveProperty("toolCall");
+  });
+
+  it("keeps tools when the endpoint explicitly supports them despite the catalog", () => {
+    expect(resolveContextWindowForRoute(apiRoute("openai", "gpt-3.5-turbo", {
+      supportedParameters: ["tools"],
+    })).toolCall).toEqual({ supported: true, source: "provider-reported" });
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "a-served-model", {
+      catalogModel: "openai/gpt-3.5-turbo",
+      supportedParameters: [" Tools "],
+    })).toolCall).toEqual({ supported: true, source: "provider-reported" });
+  });
+
+  it.each([{ supportedParameters: [] }, { supportedParameters: ["reasoning"] }])("does not infer tool support from an incomplete parameter report %j", ({ supportedParameters }) => {
+    expect(resolveContextWindowForRoute(apiRoute("openai", "gpt-3.5-turbo", { supportedParameters })).toolCall)
+      .toMatchObject({ supported: false, source: "model-catalog" });
+    expect(resolveContextWindowForRoute(apiRoute("openai", "gpt-5.4", { supportedParameters })).toolCall)
+      .toMatchObject({ supported: true, source: "model-catalog" });
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "a-served-model", { supportedParameters })))
+      .not.toHaveProperty("toolCall");
   });
 });

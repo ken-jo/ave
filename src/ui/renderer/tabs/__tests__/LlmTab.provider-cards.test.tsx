@@ -400,6 +400,113 @@ beforeEach(() => {
 });
 
 describe("LlmTab provider cards", () => {
+  it.each([
+    { model: "gpt-3.5-turbo", badge: true },
+    { model: "gpt-4.1", badge: false },
+    { model: "a-served-model", badge: false },
+    { model: "gpt-3.5-turbo", supportedParameters: ["tools"], badge: false },
+  ])("shows the no-tools badge only for a route that withholds tools: %j", async ({ model, supportedParameters, badge }) => {
+    const { api } = profileApi({ vendors: { openai: { model } } }, {
+      hasApiKey: storedKeysFor("openai"),
+      listLlmModels: vi.fn().mockResolvedValue({
+        ok: true,
+        vendor: "openai",
+        endpoint: "https://provider.invalid/v1/models",
+        models: [model],
+        modelEntries: [{ id: model, contextLength: 777_000, ...(supportedParameters ? { supportedParameters } : {}) }],
+        fetchedAt: "2026-01-01T00:00:00.000Z",
+      } satisfies LlmModelListResult),
+    });
+    await renderTab(api, { vendor: "openai", model });
+    expect(await chooserModelIds()).toContain(model);
+    await waitFor(() => expect(within(chooserOption(model)).getByTestId(`llm-tab:model-facts:${model}`)).toHaveTextContent("777k"));
+    await waitFor(() => {
+      const row = within(chooserOption(model));
+      const chip = row.queryByTestId(`llm-tab:model-no-tools:${model}`);
+      if (badge) {
+        expect(chip).toHaveTextContent("도구 미지원");
+        expect(chip).toHaveAccessibleName("이 모델에는 도구를 보내지 않습니다");
+        expect(chip).toHaveAttribute("title", "이 모델에는 도구를 보내지 않습니다");
+      } else {
+        expect(chip).not.toBeInTheDocument();
+      }
+    });
+  });
+
+  it.each([
+    { model: "gpt-4.1", catalogModel: "openai/gpt-3.5-turbo", badge: true },
+    { model: "gpt-3.5-turbo", catalogModel: "openai/gpt-4.1", badge: false },
+    { model: "gpt-3.5-turbo", catalogModel: "openai/not-listed", badge: false },
+  ])("uses the vendor route's named catalog entry for the tool badge: %j", async ({ model, catalogModel, badge }) => {
+    const { api } = profileApi({
+      vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT, model, catalogModel } },
+    }, {
+      hasApiKey: storedKeysFor("openai-compatible"),
+      listLlmModels: vi.fn().mockResolvedValue({
+        ok: true,
+        vendor: "openai-compatible",
+        endpoint: `${CUSTOM_ENDPOINT}/models`,
+        models: [model],
+        modelEntries: [{ id: model, contextLength: 777_000 }],
+        fetchedAt: "2026-01-01T00:00:00.000Z",
+      } satisfies LlmModelListResult),
+    });
+    await renderTab(api, { vendor: "openai-compatible", baseUrl: CUSTOM_ENDPOINT, model });
+    expect(await chooserModelIds()).toContain(model);
+    await waitFor(() => expect(within(chooserOption(model)).getByTestId(`llm-tab:model-facts:${model}`)).toHaveTextContent("777k"));
+    await waitFor(() => {
+      const chip = within(chooserOption(model)).queryByTestId(`llm-tab:model-no-tools:${model}`);
+      expect(Boolean(chip)).toBe(badge);
+    });
+  });
+
+  it("does not apply the generic route's named no-tools entry to a preset", async () => {
+    const gateway = preset("model-gateway", "Model Gateway", "https://gateway.example/v1");
+    const model = "gpt-4.1";
+    const { api } = profileApi({
+      vendors: { "openai-compatible": { catalogModel: "openai/gpt-3.5-turbo" } },
+      installedProviderPresets: [gateway],
+      modelListCache: {
+        [["openai-compatible", gateway.baseUrl, gateway.providerId].join("\n")]: {
+          vendor: "openai-compatible", baseUrl: gateway.baseUrl, credentialScope: gateway.providerId,
+          endpoint: `${gateway.baseUrl}/models`, models: [model], modelEntries: [{ id: model }],
+          fetchedAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+    }, {
+      hasApiKey: storedKeysFor(`marketplace-provider:${gateway.providerId}`),
+      listLlmModels: vi.fn(() => new Promise<LlmModelListResult>(() => {})),
+    });
+    await renderTab(api, {
+      vendor: "openai-compatible", model, marketplaceProviderPresets: [gateway],
+      marketplaceProviderPresetId: gateway.providerId,
+    });
+    expect(await chooserModelIds()).toContain(model);
+    expect(within(chooserOption(model)).queryByTestId(`llm-tab:model-no-tools:${model}`)).not.toBeInTheDocument();
+  });
+
+  it.each(["pending", "failed"])("keeps the tool badge consistent with the engine during a %s capability cache save", async (saveState) => {
+    const model = "gpt-3.5-turbo";
+    const { api } = profileApi({
+      vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT, model, catalogModel: "openai/gpt-3.5-turbo" } },
+    }, {
+      hasApiKey: storedKeysFor("openai-compatible"),
+      listLlmModels: vi.fn().mockResolvedValue({
+        ok: true, vendor: "openai-compatible", endpoint: `${CUSTOM_ENDPOINT}/models`, models: [model],
+        modelEntries: [{ id: model, contextLength: 777_000, supportedParameters: ["tools"] }],
+        fetchedAt: "2026-01-01T00:00:00.000Z",
+      } satisfies LlmModelListResult),
+      updateSettings: saveState === "pending"
+        ? vi.fn(() => new Promise(() => {}))
+        : vi.fn().mockResolvedValue({ ok: false, error: "settings-update-failed" }),
+    });
+    await renderTab(api, { vendor: "openai-compatible", baseUrl: CUSTOM_ENDPOINT, model });
+    expect(await chooserModelIds()).toContain(model);
+    await waitFor(() => expect(within(chooserOption(model)).getByTestId(`llm-tab:model-facts:${model}`)).toHaveTextContent("777k"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled());
+    expect(within(chooserOption(model)).getByTestId(`llm-tab:model-no-tools:${model}`)).toHaveTextContent("도구 미지원");
+  });
+
   it.each([[32_000, 16_000], [16_000, 8_000], [32_001, 32_000]])(
     "offers only presets below output %i", async (outputTokenLimit, expected) => {
       const { hooks } = await renderTab(makeApi(), { enableThinking: true, thinkingBudget: 4_000, outputTokenLimit });

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { activeModelCatalog, installModelCatalog } from "../../../../shared/model-catalog/active.js";
+import { resolveToolCallSupport } from "../../../../shared/context-budget.js";
 import type { LLMProvider, StreamTurnParams } from "../../types.js";
 import { VercelUnifiedProvider } from "../adapter.js";
 import { FallbackProvider } from "../fallback-chain.js";
@@ -105,6 +106,15 @@ describe("image capability at the wire boundary", () => {
 });
 
 describe("tool capability at the wire boundary", () => {
+  it("sends tools when the endpoint explicitly supports them despite the catalog", async () => {
+    const fixture = wireFixture();
+    const toolCall = resolveToolCallSupport({ vendor: "openai", model: "gpt-3.5-turbo", reported: ["tools"] });
+    await collectStreamEvents(fixture.provider.streamTurn(request("gpt-3.5-turbo", {
+      tools: TOOLS, modelCapabilities: { toolCall },
+    })));
+    expect(fixture.body().tools).toHaveLength(TOOLS.length);
+  });
+
   it("omits every tool definition on direct calls to a no-tools catalog model", async () => {
     const fixture = wireFixture();
     await collectStreamEvents(fixture.provider.streamTurn(request("gpt-3.5-turbo", { tools: TOOLS })));

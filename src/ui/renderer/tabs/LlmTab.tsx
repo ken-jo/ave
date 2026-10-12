@@ -78,7 +78,7 @@ import { TEST_IDS } from "../../../shared/test-ids.js";
 import { formatTokensExact } from "../../../lib/cost-format.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
-import { resolveInputModalities } from "../../../shared/context-budget.js";
+import { resolveInputModalities, resolveToolCallSupport, type ResolvedToolCallSupport } from "../../../shared/context-budget.js";
 
 export interface FallbackEntry {
   provider: LLMVendor;
@@ -792,6 +792,7 @@ function ModelSelectItemContent({
   entry,
   provider,
   vision,
+  toolCall,
   factsOverride,
   tone,
 }: {
@@ -801,6 +802,8 @@ function ModelSelectItemContent({
    *  serving it has answered. Undefined draws nothing: the badge is a positive
    *  claim, and a route that has not answered has not made one. */
   vision?: boolean;
+  /** The same capability result the request uses to withhold tool definitions. */
+  toolCall?: ResolvedToolCallSupport;
   /** Leading column: who serves this model. The caller decides whether the
    *  catalogue entry may name it — see `UnifiedModelOption.vendorLabel` — and
    *  the fallback chain lists a vendor's own models without one. */
@@ -814,6 +817,7 @@ function ModelSelectItemContent({
   const isFree = entry?.tags?.free === true || isOpenRouterFreeModel(option);
   const isRouter = entry?.tags?.router === true;
   const isLocal = entry?.tags?.local === true;
+  const isReasoning = modelEntryDoesReasoning(entry);
   // Provider is the leading column now, so it is NOT repeated in the trailing
   // facts — those are the numbers that differ between models.
   const facts = factsOverride ? [factsOverride] : [
@@ -824,58 +828,76 @@ function ModelSelectItemContent({
   ].filter((part): part is string => Boolean(part));
   return (
     <span
-      className="flex w-full min-w-0 items-center gap-2"
+      className="flex w-full min-w-0 flex-col gap-1"
       data-model-id={option}
       {...(isFree ? { title: t("llmTab.openRouterFreeDisclaimer") } : {})}
     >
-      {provider && (
-        <span
-          className="max-w-[9rem] shrink-0 truncate text-muted-foreground"
-          data-testid={`llm-tab:model-provider:${option}`}
-        >
-          {provider}
-        </span>
-      )}
-      <span className="min-w-0 flex-1 truncate">{option}</span>
-      {isFree && (
-        <Badge variant="secondary" className="h-4 shrink-0 px-1 text-[9px] uppercase">
-          {t("llmTab.openRouterFreeBadge")}
-        </Badge>
-      )}
-      {isRouter && (
-        <Badge variant="outline" className="h-4 shrink-0 px-1 text-[9px] uppercase">
-          {t("llmTab.modelRouterBadge")}
-        </Badge>
-      )}
-      {isLocal && (
-        <Badge variant="outline" className="h-4 shrink-0 px-1 text-[9px] uppercase">
-          {t("llmTab.modelLocalBadge")}
-        </Badge>
-      )}
-      {vision === true && (
-        <Badge
-          variant="outline"
-          className="h-4 shrink-0 px-1 text-[9px] uppercase"
-          data-testid={`llm-tab:model-vision:${option}`}
-        >
-          {t("llmTab.modelVisionBadge")}
-        </Badge>
-      )}
-      {modelEntryDoesReasoning(entry) && (
-        <Badge
-          variant="outline"
-          className="h-4 shrink-0 px-1 text-[9px] uppercase"
-          data-testid={`llm-tab:model-reasoning:${option}`}
-        >
-          {t("llmTab.modelReasoningBadge")}
-        </Badge>
-      )}
-      {facts.length > 0 && (
-        <span
-          className={`shrink-0 text-[10px] ${tone === "destructive" ? "text-destructive" : "text-muted-foreground"}`}
-          data-testid={`llm-tab:model-facts:${option}`}
-        >
-          {facts.join(" · ")}
+      <span className="flex w-full min-w-0 items-center gap-2">
+        {provider && (
+          <span
+            className="max-w-[9rem] min-w-0 truncate text-muted-foreground"
+            data-testid={`llm-tab:model-provider:${option}`}
+          >
+            {provider}
+          </span>
+        )}
+        <span className="min-w-0 flex-1 truncate">{option}</span>
+        {toolCall?.supported === false && (
+          <Badge
+            variant="outline"
+            className="h-4 shrink-0 px-1 text-[9px]"
+            data-testid={`llm-tab:model-no-tools:${option}`}
+            role="note"
+            title={t("llmTab.modelNoToolsHelp")}
+            aria-label={t("llmTab.modelNoToolsHelp")}
+          >
+            {t("llmTab.modelNoToolsBadge")}
+          </Badge>
+        )}
+      </span>
+      {(isFree || isRouter || isLocal || vision === true || isReasoning || facts.length > 0) && (
+        <span className="flex min-w-0 flex-wrap items-center gap-1 [[data-slot=select-value]_&]:hidden">
+          {isFree && (
+            <Badge variant="secondary" className="h-4 shrink-0 px-1 text-[9px] uppercase">
+              {t("llmTab.openRouterFreeBadge")}
+            </Badge>
+          )}
+          {isRouter && (
+            <Badge variant="outline" className="h-4 shrink-0 px-1 text-[9px] uppercase">
+              {t("llmTab.modelRouterBadge")}
+            </Badge>
+          )}
+          {isLocal && (
+            <Badge variant="outline" className="h-4 shrink-0 px-1 text-[9px] uppercase">
+              {t("llmTab.modelLocalBadge")}
+            </Badge>
+          )}
+          {vision === true && (
+            <Badge
+              variant="outline"
+              className="h-4 shrink-0 px-1 text-[9px] uppercase"
+              data-testid={`llm-tab:model-vision:${option}`}
+            >
+              {t("llmTab.modelVisionBadge")}
+            </Badge>
+          )}
+          {isReasoning && (
+            <Badge
+              variant="outline"
+              className="h-4 shrink-0 px-1 text-[9px] uppercase"
+              data-testid={`llm-tab:model-reasoning:${option}`}
+            >
+              {t("llmTab.modelReasoningBadge")}
+            </Badge>
+          )}
+          {facts.length > 0 && (
+            <span
+              className={`min-w-0 truncate text-[10px] ${tone === "destructive" ? "text-destructive" : "text-muted-foreground"}`}
+              data-testid={`llm-tab:model-facts:${option}`}
+            >
+              {facts.join(" · ")}
+            </span>
+          )}
         </span>
       )}
     </span>
@@ -911,6 +933,7 @@ interface UnifiedModelOption {
   /** Whether images may be attached on this model, per the route that serves
    *  it — the same gate the composer and the send path use. */
   vision?: boolean;
+  toolCall?: ResolvedToolCallSupport;
   /** Subscription-side facts, where there is no catalogue entry to read them from. */
   facts?: string;
   /** The provider exposes no model choice — this row IS the provider. */
@@ -1059,6 +1082,7 @@ function UnifiedModelSelect({
              leave the closed control showing a bare model id. */
           provider={option.vendorLabel}
           {...(option.vision === true ? { vision: true } : {})}
+          {...(option.toolCall ? { toolCall: option.toolCall } : {})}
           {...(option.facts ? { factsOverride: option.facts } : {})}
           {...(option.unlisted ? { tone: "destructive" as const } : {})}
         />
@@ -1232,12 +1256,15 @@ export function LlmTab(props: LlmTabProps) {
   const [savedVendorBlocks, setSavedVendorBlocks] = useState<
     Readonly<Record<string, {
       model?: string;
+      catalogModel?: string;
       presetModels?: Record<string, string>;
       baseUrl?: string;
       vertexProject?: string;
       vertexLocation?: string;
     }>>
   >({});
+  /** Capability reports the engine can read, after the cache save succeeds. */
+  const [savedModelListCache, setSavedModelListCache] = useState<LlmModelListCache>({});
   /**
    * Which providers actually have a key in the store.
    *
@@ -1504,6 +1531,7 @@ export function LlmTab(props: LlmTabProps) {
       setSettingsRevision((current) => current + 1);
       setPinnedModels(settings.llm?.pinnedModels ?? []);
       const cache = settings.llm?.modelListCache ?? {};
+      setSavedModelListCache((current) => sameSettingsValue(current, cache) ? current : cache);
       modelListCacheRef.current = cache;
       const cachedStates = modelListStatesFromCache(cache, marketplaceProviderPresets);
       setModelLists((current) => {
@@ -2122,6 +2150,7 @@ export function LlmTab(props: LlmTabProps) {
       const state = row.modelListKey ? modelLists[row.modelListKey] : undefined;
       const isActiveRow = rowId === activeApiRowId;
       const entries = modelEntryMap(state?.entries);
+      const savedEntries = modelEntryMap(row.modelListKey ? savedModelListCache[row.modelListKey]?.modelEntries : undefined);
       // Whether the catalogue may name its own models. An OpenAI-compatible
       // server answers `/models` with `owned_by: "openai"` for everything it
       // serves — its word for its own software, not for who made the model —
@@ -2141,6 +2170,12 @@ export function LlmTab(props: LlmTabProps) {
         if (pushed.has(value)) continue;
         pushed.add(value);
         const entry = entries.get(modelId);
+        const toolCall = resolveToolCallSupport({
+          vendor: row.apiVendorId,
+          model: modelId,
+          reported: savedEntries.get(modelId)?.supportedParameters,
+          catalogModel: row.presetId ? undefined : savedVendorBlocks[row.apiVendorId]?.catalogModel,
+        });
         options.push({
           value,
           providerId: apiProviderId(rowId),
@@ -2150,6 +2185,7 @@ export function LlmTab(props: LlmTabProps) {
             : row.label,
           modelId,
           ...(entry ? { entry } : {}),
+          ...(toolCall ? { toolCall } : {}),
           // This row's own endpoint report, else the catalog entry for its id.
           ...(visionVendor && supportsVision(visionVendor, modelId, {
             inputModalities: resolveInputModalities({ vendor: visionVendor, model: modelId, reported: entry?.inputModalities }),
@@ -2197,7 +2233,7 @@ export function LlmTab(props: LlmTabProps) {
     return options;
   }, [
     connections, rowChatBlocker, rowModelIds, modelLists, activeApiRowId,
-    unlistedModel, subscription.providers, t,
+    unlistedModel, subscription.providers, savedVendorBlocks, savedModelListCache, t,
   ]);
 
   const selectedUnifiedValue = subscription.activeRuntime.kind === "subscription"
@@ -3196,7 +3232,10 @@ export function LlmTab(props: LlmTabProps) {
                       <SelectContent className={SELECT_POPUP_LAYOUT}>
                         {fallbackModelOptions.map((option) => (
                           <SelectItem key={option} value={option}>
-                            <ModelSelectItemContent option={option} />
+                            <ModelSelectItemContent
+                              option={option}
+                              toolCall={resolveToolCallSupport({ vendor: entry.provider, model: option })}
+                            />
                           </SelectItem>
                         ))}
                       </SelectContent>

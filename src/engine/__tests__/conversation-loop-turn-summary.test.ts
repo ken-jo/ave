@@ -339,16 +339,27 @@ describe("ConversationLoop onTurnSummary", () => {
         inputModalities: { input: ["text"], source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" },
         toolCall: { supported: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" },
       });
+      const toolCall = request.modelCapabilities?.toolCall;
+      if (toolCall?.supported !== false) throw new Error("Expected tools to be withheld");
       expect(summary?.modelSettings?.tools).toEqual({
-        sent: false, source: request.modelCapabilities!.toolCall!.source,
-        catalogEntry: request.modelCapabilities!.toolCall!.catalogEntry,
+        sent: false, source: toolCall.source,
+        catalogEntry: toolCall.catalogEntry,
       });
     }
   });
 
-  it("records the tool omission that the named route actually sends over HTTP", async () => {
+  it.each([false, true])("records the named route's actual HTTP tools with endpoint support %s", async (reportedTools) => {
     const settings = fakeLlmSettings({ provider: "openai", model: "gpt-4.1" });
     settings.vendors.openai.catalogModel = "openai/gpt-3.5-turbo";
+    if (reportedTools) {
+      settings.modelListCache = {
+        [llmModelListCacheKey("openai", settings.vendors.openai.baseUrl, "")]: {
+          vendor: "openai", models: ["gpt-4.1"], endpoint: "https://provider.invalid/v1/models",
+          modelEntries: [{ id: "gpt-4.1", supportedParameters: ["tools"] }],
+          fetchedAt: "2026-01-01T00:00:00.000Z",
+        },
+      };
+    }
     const fetchResponse = vi.fn<typeof fetch>(async () => new Response(
       `data: ${JSON.stringify({
         id: "fixture-response", object: "chat.completion.chunk", created: 0, model: "gpt-4.1",
@@ -357,7 +368,13 @@ describe("ConversationLoop onTurnSummary", () => {
       })}\n\ndata: [DONE]\n\n`,
       { headers: { "content-type": "text/event-stream" } },
     ));
-    const loop = createLoopWithRegistry(new VercelUnifiedProvider("openai", "fixture-key", "https://provider.invalid/v1", fetchResponse), new ToolRegistry(), {
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createDynamicTool({
+      name: "read_file", description: "Read file", source: "builtin", category: "read",
+      jsonSchema: { type: "object", properties: {} }, isReadOnly: () => true,
+      execute: async () => ({ output: "contents", isError: false }),
+    }));
+    const loop = createLoopWithRegistry(new VercelUnifiedProvider("openai", "fixture-key", "https://provider.invalid/v1", fetchResponse), toolRegistry, {
       settingsService: { get: () => settings, getSecret: () => "test-key" },
     } as never);
     let summary: TurnSummary | undefined;
@@ -365,8 +382,13 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(result.text).toBe("answer");
     expect(fetchResponse).toHaveBeenCalledOnce();
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
-    expect(body).not.toHaveProperty("tools");
-    expect(summary?.modelSettings?.tools).toEqual({ sent: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" });
+    if (reportedTools) {
+      expect(body.tools).toEqual(expect.arrayContaining([expect.objectContaining({ function: expect.objectContaining({ name: "read_file" }) })]));
+      expect(summary?.modelSettings).not.toHaveProperty("tools");
+    } else {
+      expect(body).not.toHaveProperty("tools");
+      expect(summary?.modelSettings?.tools).toEqual({ sent: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" });
+    }
   });
 
   it("omits primary route settings when a fallback keeps the same vendor and model", async () => {

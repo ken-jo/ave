@@ -6,6 +6,8 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "llmTab.modelNoToolsBadge": "도구 미지원",
+  "llmTab.modelNoToolsHelp": "이 모델에는 도구를 보내지 않습니다",
   "pluginStudio.title": "플러그인 스튜디오",
   "pluginStudio.createTitle": "플러그인 만들기",
   "pluginStudio.create": "초안 만들기",

@@ -2,9 +2,9 @@
 
 Status: decided (issue #2501, owner decisions of 2026-10-12); being implemented in the
 seven slices of §9. Slices 1 (the contract, the generator, the bundled snapshot and its
-provenance), 2 (context windows, §4) and 3 (output limits, reasoning levels and run
-records, §5) are implemented. §6–§7 are the plan; until their slices land, modalities
-and prices still come from the code paths named in §1 and §8.
+provenance), 2 (context windows, §4), 3 (output limits, reasoning levels and run
+records, §5), and 4 (images and tools, §6) are implemented. Pricing and refresh in
+§6–§7 are the plan; prices still come from the code paths named in §1 and §8.
 
 Anchors: `src/shared/model-catalog/` (types, provider map, normalizer),
 `src/core/model-catalog/` (document hashing and verification, the bundled snapshot),
@@ -326,16 +326,27 @@ Slice 4 is implemented.
 - **Not `attachment`.** The catalog's `attachment` flag says a model accepts file parts.
   The composer sends a file as a path the agent reads with its tools, never as a file part,
   so the flag decides nothing here.
-- **Tools.** A model whose catalog entry says `toolCall: false` gets no tool definitions,
+- **Tools.** A route whose resolved tool capability is false gets no tool definitions,
   on every rebuild within the turn (`rebuildTurnToolSchemas` in
   `src/engine/turn/query-loop.ts`). Its turn record carries
   `modelSettings.tools: { sent: false, source: "model-catalog", catalogEntry }`.
   - Absent `toolCall` is unknown, and tools are sent as before.
-  - Only the catalog answers. An endpoint's `supported_parameters` lists what a router
-    forwards, and a missing `tools` there is too weak a reason to turn the agent off.
+  - An endpoint's explicit `tools` in `supported_parameters` overrides a catalog denial
+    with `{ supported: true, source: "provider-reported" }`. A missing `tools` is not a
+    denial and leaves the catalog answer intact.
+  - The model picker shows a localized **No tools** badge only when this same resolved
+    capability withholds tools. Its accessible name and tooltip explain that tools are
+    not sent to the model. It uses the row's saved endpoint report and the vendor route's
+    named catalog entry, excluding that named entry for marketplace presets. A pending
+    or failed cache save keeps the badge on the saved capability: a new positive report
+    hides it only after settings confirm the save. Subscription
+    runtimes own their tools and do not receive this API-route badge. The fallback picker
+    uses its model's catalog capability, as the fallback transport does. There is no
+    composer notice.
   - The rule follows the route's model. A fallback that serves the turn on another model
     gets the same offered tool list, bounded by its own catalog capability at the API
-    transport. Direct calls apply that transport check too. A primary route's named
+    transport; fallback calls carry no endpoint capability report. Direct calls apply
+    that transport check too. A primary route's named
     capability travels with the request so the transport cannot replace it with a
     conflicting name match.
     A fallback cannot regain tools the primary withheld. The turn's `modelSettings`

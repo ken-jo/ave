@@ -280,11 +280,9 @@ export async function queryLoop(
     // must not reintroduce a tool the provider already rejected and re-break
     // the turn.
     //
-    // A model the catalog says takes no tool definitions (`toolCall: false`)
-    // gets none, on every rebuild: the provider would refuse the request, or
-    // the model would ignore the definitions and describe calls it cannot
-    // make. Absent means unknown, and unknown sends tools as before. The turn
-    // record says when they were withheld.
+    // Every rebuild honors the route's resolved tool capability. A catalog
+    // denial without a positive endpoint report sends none; unknown sends
+    // tools as before. The turn record notes the omission.
     const toolsWithheld = runtimeContextBudget.toolCall?.supported === false ? runtimeContextBudget.toolCall : undefined;
     const rebuildTurnToolSchemas = (): ToolSchema[] => toolsWithheld
       ? []

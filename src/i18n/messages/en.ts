@@ -11,6 +11,8 @@
  * migrated off hardcoded strings.
  */
 export const en = {
+  "llmTab.modelNoToolsBadge": "No tools",
+  "llmTab.modelNoToolsHelp": "Tools are not sent to this model.",
   "pluginStudio.title": "Plugin Studio",
   "pluginStudio.createTitle": "Create a plugin",
   "pluginStudio.create": "Create draft",

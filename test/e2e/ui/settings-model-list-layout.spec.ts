@@ -1,6 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { closeInlineSettings, openInlineSettings } from './inline-settings.js';
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
+import { CHANNELS } from "../../../src/contract/app-contract.js";
 
 /**
  * Settings → Model: the model dropdown's layout.
@@ -43,7 +44,9 @@ function seededModelListCache() {
         provider: 'some-upstream-provider-name',
         contextLength: 1_048_576,
         pricing: { prompt: '0.00000012', completion: '0.00000042' },
-        tags: index % 5 === 0 ? { free: true } : {},
+        inputModalities: ['text', 'image'],
+        supportedParameters: index % 11 === 0 ? ['reasoning', 'tools'] : ['reasoning'],
+        tags: index === 1 ? { free: true, router: true, local: true } : index % 5 === 0 ? { free: true } : {},
       })),
       fetchedAt: '2026-01-01T00:00:00.000Z',
     },
@@ -77,21 +80,33 @@ for (const bundleId of ['moonstone', 'gallery'] as const) {
     { name: 'wide', width: 1200 },
     { name: 'narrow', width: 620 },
   ]) {
-    test(`model dropdown is trigger-aligned and uses the available height (${bundleId}, ${sizeName})`, async ({
+    const locale = bundleId === 'moonstone' ? 'en' : 'ko';
+    test(`model dropdown is trigger-aligned and uses the available height (${bundleId}, ${sizeName}, ${locale})`, async ({
       app,
       mainWindow,
-    }) => {
+    }, testInfo) => {
+      await app.evaluate(({ ipcMain }, channels) => {
+        ipcMain.removeHandler(channels.hasApiKey);
+        ipcMain.handle(channels.hasApiKey, (_event, provider) => provider === 'openai-compatible');
+        ipcMain.removeHandler(channels.listLlmModels);
+        ipcMain.handle(channels.listLlmModels, () => ({
+          ok: false, error: 'model-list-fetch-failed', message: 'No remote catalog in this fixture',
+        }));
+      }, { hasApiKey: CHANNELS.settings.hasApiKey, listLlmModels: CHANNELS.settings.listLlmModels });
       await mainWindow.evaluate(
-        async ({ cache, bundle }) => {
+        async ({ cache, bundle, language }) => {
           const api = (window as unknown as {
             aveApi: { updateSettings: (patch: unknown) => Promise<unknown> };
           }).aveApi;
           await api.updateSettings({
-            appearance: { schemaVersion: 2, bundleId: bundle },
-            llm: { provider: 'openai-compatible', modelListCache: cache },
+            appearance: { schemaVersion: 2, bundleId: bundle, language },
+            llm: {
+              provider: 'openai-compatible', modelListCache: cache,
+              vendors: { 'openai-compatible': { model: cache['openai-compatible\n\n'].models[0], catalogModel: 'openai/gpt-3.5-turbo' } },
+            },
           });
         },
-        { cache: seededModelListCache(), bundle: bundleId },
+        { cache: seededModelListCache(), bundle: bundleId, language: locale },
       );
 
       const settingsPage = await openInlineSettings(app, mainWindow, 'llm');
@@ -120,7 +135,7 @@ for (const bundleId of ['moonstone', 'gallery'] as const) {
       await expect(content).toBeVisible({ timeout: 10_000 });
       await expect(content.locator('[data-slot="select-item"]').first()).toBeVisible();
 
-      const metrics = await settingsPage.evaluate(() => {
+      const measure = () => {
         const node = document.querySelector('[data-slot="select-content"]') as HTMLElement | null;
         const trigger = document.querySelector('#model-select') as HTMLElement | null;
         const rect = (el: HTMLElement | null) => {
@@ -132,15 +147,22 @@ for (const bundleId of ['moonstone', 'gallery'] as const) {
           const item = el as HTMLElement;
           const r = item.getBoundingClientRect();
           // The id itself lives in the row's own truncating box.
-          const label = item.querySelector('span.truncate') as HTMLElement | null;
+          const label = item.querySelector('.flex-1.truncate') as HTMLElement | null;
           const labelRect = label?.getBoundingClientRect();
+          const badge = item.querySelector('[data-testid^="llm-tab:model-no-tools:"]') as HTMLElement | null;
           return {
+            model: item.querySelector('[data-model-id]')?.getAttribute('data-model-id'),
             text: (item.textContent ?? '').slice(0, 60),
             right: r.right,
             scrollWidth: item.scrollWidth,
             clientWidth: item.clientWidth,
             labelRight: labelRect?.right ?? 0,
+            labelWidth: labelRect?.width ?? 0,
             labelEllipsized: label ? getComputedStyle(label).textOverflow === 'ellipsis' : false,
+            badgeText: badge?.textContent,
+            badgeName: badge?.getAttribute('aria-label'),
+            badgeHelp: badge?.getAttribute('title'),
+            badgeWidth: badge?.getBoundingClientRect().width ?? 0,
           };
         });
         return {
@@ -151,6 +173,19 @@ for (const bundleId of ['moonstone', 'gallery'] as const) {
           itemCount: items.length,
           items,
         };
+      };
+      const cdp = await settingsPage.context().newCDPSession(settingsPage);
+      const { result, exceptionDetails } = await cdp.send('Runtime.evaluate', {
+        expression: `(${measure.toString()})()`, returnByValue: true,
+      });
+      await cdp.detach();
+      expect(exceptionDetails).toBeUndefined();
+      const metrics = result.value as ReturnType<typeof measure>;
+      await testInfo.attach('picker-row-metrics', {
+        body: JSON.stringify(metrics, null, 2), contentType: 'application/json',
+      });
+      await testInfo.attach('picker', {
+        body: await content.screenshot(), contentType: 'image/png',
       });
 
       expect(metrics.content).not.toBeNull();
@@ -175,10 +210,22 @@ for (const bundleId of ['moonstone', 'gallery'] as const) {
         expect(item.right).toBeLessThanOrEqual(popup.right + 1);
         // `select-content` is `overflow-x-hidden`: a row wider than its box is
         // clipped with no way to scroll to the rest of it.
-        expect(item.scrollWidth).toBeLessThanOrEqual(item.clientWidth + 1);
+        expect(item.scrollWidth, item.model ?? '').toBeLessThanOrEqual(item.clientWidth);
         // The id gets an ellipsis inside the row rather than pushing past it.
         expect(item.labelEllipsized).toBe(true);
+        expect(item.labelWidth).toBeGreaterThan(0);
         expect(item.labelRight).toBeLessThanOrEqual(item.right + 1);
+        if (!MODEL_IDS.includes(item.model ?? '')) continue;
+        const hasEndpointTools = MODEL_IDS.indexOf(item.model ?? '') % 11 === 0;
+        if (hasEndpointTools) {
+          expect(item.badgeText).toBeUndefined();
+        } else {
+          expect(item.badgeText).toBe(locale === 'ko' ? '도구 미지원' : 'No tools');
+          const help = locale === 'ko' ? '이 모델에는 도구를 보내지 않습니다' : 'Tools are not sent to this model.';
+          expect(item.badgeName).toBe(help);
+          expect(item.badgeHelp).toBe(help);
+          expect(item.badgeWidth).toBeGreaterThan(0);
+        }
       }
 
       await settingsPage.keyboard.press('Escape');

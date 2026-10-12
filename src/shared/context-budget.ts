@@ -319,24 +319,25 @@ export interface RouteInputModalities {
   readonly inputModalities?: ResolvedInputModalities;
 }
 
-/** Whether a model takes tool definitions, as the catalog states it. */
-export interface ResolvedToolCallSupport {
-  readonly supported: boolean;
-  readonly source: "model-catalog";
-  readonly catalogEntry: string;
-}
+/** Whether a route takes tool definitions, with the authority that states it. */
+export type ResolvedToolCallSupport =
+  | { readonly supported: true; readonly source: "provider-reported" }
+  | { readonly supported: boolean; readonly source: "model-catalog"; readonly catalogEntry: string };
 
 /**
- * The catalog's `toolCall` for a model. Only the catalog answers: an endpoint's
- * `supported_parameters` list describes request parameters a router forwards,
- * and reading a missing `tools` there as "no tools" would turn the agent off
- * on a guess. Absent means unknown, and unknown sends tools as before.
+ * Explicit endpoint support for `tools` takes precedence over the catalog.
+ * A missing parameter is not a denial: only a catalog `toolCall: false`
+ * withholds tools. Absent means unknown and sends tools as before.
  */
 export function resolveToolCallSupport(params: {
   vendor: string;
   model: string;
+  reported?: readonly string[];
   catalogModel?: string;
 }): ResolvedToolCallSupport | undefined {
+  if (params.reported?.some((parameter) => parameter.trim().toLowerCase() === "tools")) {
+    return { supported: true, source: "provider-reported" };
+  }
   const hit = catalogModelFor(params.vendor, params.model, params.catalogModel);
   const supported = hit?.model.toolCall;
   return hit && supported !== undefined
@@ -456,6 +457,7 @@ export function resolveContextWindowForRoute(
   const toolCall = resolveToolCallSupport({
     vendor: llm.provider,
     model,
+    ...(entry?.supportedParameters !== undefined ? { reported: entry.supportedParameters } : {}),
     ...(catalogModel !== undefined ? { catalogModel } : {}),
   });
   return {
