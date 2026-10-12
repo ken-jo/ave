@@ -11,8 +11,8 @@
  */
 import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
-import { readFile, stat as fsStat } from "node:fs/promises";
-import { isMissingPathError } from "../../lib/atomic-file.js";
+import { lstat, readFile, stat as fsStat } from "node:fs/promises";
+import { isAdminPolicyFileAbsent } from "../../lib/admin-policy-file.js";
 import { getAdminPolicyPath } from "../../permissions/policy-store.js";
 import { parseStrictJson, StrictJsonError } from "../catalog/strict-json.js";
 import { PACKAGE_KINDS, isPackageName, type PackageKind } from "../catalog/types.js";
@@ -391,6 +391,8 @@ type PolicyFileStat = Pick<Stats, "size" | "mtimeMs" | "ctimeMs" | "ino" | "dev"
  */
 export interface PolicyFileAccess {
   stat(path: string): Promise<PolicyFileStat>;
+  /** Inspect the entry itself, including a symlink whose target is absent. */
+  lstat(path: string): Promise<unknown>;
   readFile(path: string): Promise<string>;
   /** Wall-clock milliseconds: the clock the file's times are stamped from. */
   now(): number;
@@ -398,6 +400,7 @@ export interface PolicyFileAccess {
 
 const NODE_FILE_ACCESS: PolicyFileAccess = {
   stat: (path) => fsStat(path),
+  lstat: (path) => lstat(path),
   readFile: (path) => readFile(path, "utf8"),
   now: () => Date.now(),
 };
@@ -463,7 +466,7 @@ async function policyStat(path: string, access: PolicyFileAccess): Promise<strin
   try {
     return statKey(await access.stat(path));
   } catch (error) {
-    if (isMissingPathError(error)) return "absent";
+    if (await isAdminPolicyFileAbsent(path, error, (file) => access.lstat(file))) return "absent";
     return `unreadable:${(error as NodeJS.ErrnoException).code ?? "unknown"}`;
   }
 }
@@ -476,7 +479,7 @@ async function readPolicy(path: string, platform: NodeJS.Platform, access: Polic
     info = await access.stat(path);
     text = await access.readFile(path);
   } catch (error) {
-    if (isMissingPathError(error)) {
+    if (await isAdminPolicyFileAbsent(path, error, (file) => access.lstat(file))) {
       return { load: { ok: true, policy: EMPTY_MARKETPLACE_POLICY, path }, digest: "absent", stat: { key: "absent", readBegan: began } };
     }
     const code = (error as NodeJS.ErrnoException).code ?? "unknown";

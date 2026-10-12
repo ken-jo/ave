@@ -5578,13 +5578,20 @@ README.md                                # how to add the source; the policy exa
   → the preview shows `internal-network` and `unencrypted` warnings → confirm (§18.5).
   **How administrators add it** (managed policy, §12, §18.6):
 
+  The shared system `policy.json` requires numeric top-level `version: 1` even
+  when it contains only marketplace settings; see
+  [Policy Files](../architecture/permission-policy-design.md#policy-files).
+
   ```jsonc
-  "marketplaces": {
-    "additional": [{ "id": "corp", "url": "http://git.corp.example/<root>/ave/marketplace.git" }],
-    "requiredInstalls": [
-      { "kind": "plugin", "name": "orion-api", "source": "corp" },
-      { "kind": "plugin", "name": "ave-plugin-draco", "source": "corp" }
-    ]
+  {
+    "version": 1,
+    "marketplaces": {
+      "additional": [{ "id": "corp", "url": "http://git.corp.example/<root>/ave/marketplace.git" }],
+      "requiredInstalls": [
+        { "kind": "plugin", "name": "orion-api", "source": "corp" },
+        { "kind": "plugin", "name": "ave-plugin-draco", "source": "corp" }
+      ]
+    }
   }
   ```
 

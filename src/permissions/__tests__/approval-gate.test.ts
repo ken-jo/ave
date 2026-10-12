@@ -797,6 +797,19 @@ describe("ApprovalGate", () => {
     gate.resolve(req.id, { requestId: req.id, choice: "deny-once" });
   });
 
+  it("a policy object without requireExplicitApproval keeps approval explicit", async () => {
+    const wc = makeMockWebContents();
+    const { requireExplicitApproval: _dropped, ...withoutField } = makeTestPolicy({ requireExplicitApproval: false });
+    const gate = new ApprovalGate(wc as never, withoutField as never);
+    const req = makeRequest({ id: "req-field-missing" });
+
+    gate.requestAndWait(req);
+
+    expect(sentApprovalCards<ApprovalRequest>(wc)[0]!.requireExplicit).toBe(true);
+
+    gate.resolve(req.id, { requestId: req.id, choice: "deny-once" });
+  });
+
   it("forceExplicit은 완화 정책에서도 명시적 승인을 유지한다", async () => {
     const wc = makeMockWebContents();
     const policy = makeTestPolicy({ requireExplicitApproval: false });

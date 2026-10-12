@@ -10,6 +10,42 @@ The permission system prevents tools from executing merely because an LLM or a
 plugin requested them. The host classifies the request, applies hard safety
 rules, asks the user or reviewer where required, and records the result.
 
+## Policy Files
+
+[policy-store.ts](../../src/permissions/policy-store.ts) reads the user and
+system-admin `policy.json` files. For the permission reader, a valid file is a
+JSON object with numeric `version:1`. Mistyped `requireExplicitApproval` and
+`managed` booleans are normalized to their safe value, `true`.
+The numeric top-level `version:1` is required even when the managed file only
+configures `marketplaces` or `service`. Without it, the permission reader forces
+explicit approval and locks user editing; the section readers remain independent.
+A valid admin file takes precedence for each field it states. Unstated admin
+fields fall through to the user value or the default. In particular, a valid
+admin file that omits `requireExplicitApproval`
+preserves an explicit user `false`, even if the admin file sets `managed:true`.
+An explicit admin `false` also overrides user `true`; precedence is not limited
+to tightening. Without either file stating the field, explicit approval stays on.
+The flag controls explicit decisions on approval cards; execution-mode,
+hard-deny, and reviewer gates still apply independently.
+
+[admin-policy-file.ts](../../src/lib/admin-policy-file.ts) classifies a failed read
+as absence only when it reports `ENOENT` and `lstat` confirms no directory entry.
+A dangling symlink, `ENOTDIR`, or an inconclusive entry probe remains unreadable.
+All three administrative policy readers use this classification. Marketplace
+policy returns a blocked result on unreadable input; service resolution throws
+instead of falling back to the public endpoint.
+
+For the permission reader, unreadable files, invalid JSON, non-object JSON,
+or a missing, mistyped, or unsupported version produce a
+conservative permission policy: `requireExplicitApproval:true`, `managed:true`,
+and user edits locked. Loading does not fall back to a permissive user policy,
+and saving rejects before creating or opening user state. Diagnostics record
+the path and failure reason without policy contents or parser exception text.
+Any valid admin file also locks app-mediated user-policy edits, including one
+that omits `managed` or sets it to `false`.
+An invalid user file contributes no permission fields and does not create an
+administrative edit lock when the admin file is absent.
+
 ## Policy Inputs
 
 | Input | Meaning |

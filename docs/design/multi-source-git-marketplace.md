@@ -2033,25 +2033,33 @@ files is a device-management action).
 
 ## 12. Managed policy additions
 
+The shared system `policy.json` needs numeric top-level `version: 1`, including
+files that configure only `marketplaces` or `service`. The permission reader
+otherwise requires explicit approval and locks user-policy editing; see
+[Policy Files](../architecture/permission-policy-design.md#policy-files).
+
 ```jsonc
 // policy.json (system scope)
-"marketplaces": {
-  "allow": ["https://github.com/acme/*", "host:git.corp.example", "path:/srv/ave/*"],  // absent = no restriction
-  "block": ["host:git.example.org", "path:/tmp/*"],
-  "allowHttpHosts": ["git.corp.example"],                           // plain-http hosts that need no confirmation; default none
-  "requireHttps": false,                                            // true: plain http is a policy block, allowHttpHosts excepted
-  "blockPrivateNetworks": false,                                    // true: internal and this-computer targets are a policy block, policy-listed hosts excepted
-  "allowDirectInstall": true,
-  "allowLocalSources": true,                                        // false: no folder is a source or a direct install
-  "allowDisablingOfficial": false,
-  "additional": [
-    { "id": "corp", "url": "https://git.corp.example/ave/marketplace.git" },
-    { "id": "team-share", "path": "\\\\files.corp\\ave\\marketplace" }      // a folder: `path` instead of `url`
-  ],
-  "defaultInstalls": [{ "kind": "plugin", "name": "wiki-search", "source": "corp" }],
-  "requiredInstalls": [{ "kind": "plugin", "name": "orion-api", "source": "corp" }]
-},
-"service": { "baseUrl": "https://ave.corp.example" }
+{
+  "version": 1,
+  "marketplaces": {
+    "allow": ["https://github.com/acme/*", "host:git.corp.example", "path:/srv/ave/*"],  // absent = no restriction
+    "block": ["host:git.example.org", "path:/tmp/*"],
+    "allowHttpHosts": ["git.corp.example"],                           // plain-http hosts that need no confirmation; default none
+    "requireHttps": false,                                            // true: plain http is a policy block, allowHttpHosts excepted
+    "blockPrivateNetworks": false,                                    // true: internal and this-computer targets are a policy block, policy-listed hosts excepted
+    "allowDirectInstall": true,
+    "allowLocalSources": true,                                        // false: no folder is a source or a direct install
+    "allowDisablingOfficial": false,
+    "additional": [
+      { "id": "corp", "url": "https://git.corp.example/ave/marketplace.git" },
+      { "id": "team-share", "path": "\\\\files.corp\\ave\\marketplace" }      // a folder: `path` instead of `url`
+    ],
+    "defaultInstalls": [{ "kind": "plugin", "name": "wiki-search", "source": "corp" }],
+    "requiredInstalls": [{ "kind": "plugin", "name": "orion-api", "source": "corp" }]
+  },
+  "service": { "baseUrl": "https://ave.corp.example" }
+}
 ```
 
 - Patterns match repository identity (§7.1): the host plus the path compared
@@ -3994,14 +4002,17 @@ states that a local directory source is refused like `installLocal`
 >   which makes a fresh plan.
 
 ```jsonc
-"marketplaces": {
-  "requireHttps": false,          // true: plain http is a policy block (allowHttpHosts excepted)
-  "blockPrivateNetworks": false,  // true: internal and this-computer targets are a policy block (policy-listed hosts excepted)
-  "allowLocalSources": true,      // false: folder sources and folder installs are a policy block
-  "autoUpdate": "user",           // "user" | "on" | "off" (§18.7.2)
-  "allow": ["https://github.com/acme/*", "host:git.corp.example", "path:/opt/acme/marketplaces/*"],
-  "block": ["path:/tmp/*"],
-  "additional": [{ "id": "acme-local", "path": "/opt/acme/marketplaces/tools" }]
+{
+  "version": 1,
+  "marketplaces": {
+    "requireHttps": false,          // true: plain http is a policy block (allowHttpHosts excepted)
+    "blockPrivateNetworks": false,  // true: internal and this-computer targets are a policy block (policy-listed hosts excepted)
+    "allowLocalSources": true,      // false: folder sources and folder installs are a policy block
+    "autoUpdate": "user",           // "user" | "on" | "off" (§18.7.2)
+    "allow": ["https://github.com/acme/*", "host:git.corp.example", "path:/opt/acme/marketplaces/*"],
+    "block": ["path:/tmp/*"],
+    "additional": [{ "id": "acme-local", "path": "/opt/acme/marketplaces/tools" }]
+  }
 }
 ```
 

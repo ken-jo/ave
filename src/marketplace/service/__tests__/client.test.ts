@@ -2,7 +2,7 @@
  * The service endpoint (design §11): base resolution, the one-move rule, the
  * document's same-origin paths, the policy override, and announcements.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -108,6 +108,18 @@ describe("readPolicyServiceBase", () => {
     await expect(readPolicyServiceBase(join(dir, "none.json"))).resolves.toBeNull();
     await expect(readPolicyServiceBase(policy({ managed: true }))).resolves.toBeNull();
     await expect(readPolicyServiceBase(policy({ service: { baseUrl: "https://ave.corp.example/" } }))).resolves.toBe("https://ave.corp.example");
+  });
+
+  it("throws on an ENOTDIR policy path instead of falling back to the public base", async () => {
+    const parent = join(dir, "admin");
+    writeFileSync(parent, "not a directory");
+    await expect(readPolicyServiceBase(join(parent, "policy.json"))).rejects.toMatchObject({ code: "ENOTDIR" });
+  });
+
+  it("throws on a dangling policy symlink instead of falling back to the public base", async () => {
+    const path = join(dir, "policy.json");
+    symlinkSync(join(dir, "missing-target.json"), path, "file");
+    await expect(readPolicyServiceBase(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it.each([

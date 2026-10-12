@@ -8,7 +8,7 @@ import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
 import { aveHome } from "../shared/ave-home.js";
 import type { PolicySource } from "../shared/policy-editability.js";
-import { isMissingPathError } from "../lib/atomic-file.js";
+import { isAdminPolicyFileAbsent } from "../lib/admin-policy-file.js";
 const log = createLogger("policy-store");
 
 
@@ -83,28 +83,84 @@ async function withPolicyLock<T>(
 
 // ─── Read (single file) ───────────────────────────────
 
-async function readPolicyFile(filePath: string): Promise<PolicyFile | null> {
-  try {
-    const raw = await readFile(filePath, "utf-8");
-    const parsed = JSON.parse(raw) as PolicyFile;
-    if (parsed.version !== 1) {
+/**
+ * The fields a policy file states, each checked; a field the file does not
+ * state is absent. The file is written by hand or by device management (the
+ * admin file also carries other sections, such as `marketplaces`), so nothing
+ * here trusts its shape: a safety field of the wrong type reads as its safe
+ * value, never as "off".
+ */
+interface StatedPolicy {
+  requireExplicitApproval?: boolean;
+  managed?: boolean;
+  updatedAt?: string;
+}
 
-      log.error(`version mismatch in ${filePath}: expected 1, got ${parsed.version} — ignoring`);
-      return null;
+type PolicyFileRead =
+  | { status: "absent" }
+  | { status: "invalid" }
+  | { status: "valid"; fields: StatedPolicy };
+
+/** The safe value of each boolean safety field: explicit approval on, edits locked. */
+const SAFE_BOOLEANS = { requireExplicitApproval: true, managed: true } as const;
+
+function statedPolicy(filePath: string, parsed: Record<string, unknown>): StatedPolicy {
+  const stated: StatedPolicy = {};
+  for (const field of Object.keys(SAFE_BOOLEANS) as Array<keyof typeof SAFE_BOOLEANS>) {
+    const value = parsed[field];
+    if (value === undefined) continue;
+    if (typeof value === "boolean") {
+      stated[field] = value;
+    } else {
+      log.error(`${field} in ${filePath} is not a boolean — read as ${SAFE_BOOLEANS[field]}`);
+      stated[field] = SAFE_BOOLEANS[field];
     }
-    return parsed;
-  } catch (err: unknown) {
-    if (isMissingPathError(err)) return null;
-    // JSON parse errors and similar read failures log and fall back.
-    log.error(`failed to read ${filePath}: %s`, (err as Error).message);
-    return null;
   }
+  if (typeof parsed.updatedAt === "string") stated.updatedAt = parsed.updatedAt;
+  return stated;
+}
+
+/** A whole policy: what the file states over the defaults, so an unstated requireExplicitApproval stays true. */
+function completePolicy(stated: StatedPolicy): PolicyFile {
+  return { ...defaultPolicy(), ...stated, version: 1 };
+}
+
+async function readPolicyFile(filePath: string): Promise<PolicyFileRead> {
+  let raw: string;
+  try {
+    raw = await readFile(filePath, "utf-8");
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
+    if (await isAdminPolicyFileAbsent(filePath, err)) return { status: "absent" };
+    log.error(`failed to read ${filePath} (${typeof code === "string" ? code : "unknown error"})`);
+    return { status: "invalid" };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Parser error messages can contain the file's contents.
+    log.error(`${filePath} is not valid JSON`);
+    return { status: "invalid" };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    log.error(`${filePath} is not a JSON object`);
+    return { status: "invalid" };
+  }
+  const record = parsed as Record<string, unknown>;
+  if (record.version !== 1) {
+    log.error(`version mismatch in ${filePath}: expected 1`);
+    return { status: "invalid" };
+  }
+  return { status: "valid", fields: statedPolicy(filePath, record) };
 }
 
 // ─── Public API ──────────────────────────────────────
 
 /**
- * Load policy. When an admin-dir file exists, merge it with precedence over the user file.
+ * Load policy. A valid admin file overrides only the fields it states.
+ * An invalid or unreadable admin file requires explicit approval and locks edits.
  *
  * Returned `source` field:
  *  - "defaults": no file exists, so defaults are used
@@ -119,10 +175,14 @@ export async function loadPolicy(
   userPath = defaultUserPolicyPath(),
   adminPath = getAdminPolicyPath(),
 ): Promise<LoadedPolicy> {
-  const [userFile, adminFile] = await Promise.all([
+  const [userRead, adminRead] = await Promise.all([
     readPolicyFile(userPath),
     readPolicyFile(adminPath),
   ]);
+  const userFile = userRead.status === "valid" ? userRead.fields : null;
+  const adminFile: StatedPolicy | null = adminRead.status === "valid"
+    ? adminRead.fields
+    : adminRead.status === "invalid" ? SAFE_BOOLEANS : null;
 
   // case 1: neither exists, so use defaults.
   if (!userFile && !adminFile) {
@@ -131,16 +191,16 @@ export async function loadPolicy(
 
   // case 2: only the user file exists.
   if (userFile && !adminFile) {
-    return { ...userFile, source: "user" };
+    return { ...completePolicy(userFile), source: "user" };
   }
 
   // case 3: only the admin file exists.
   if (!userFile && adminFile) {
-    return { ...adminFile, source: "admin", adminPath };
+    return { ...completePolicy(adminFile), source: "admin", adminPath };
   }
 
-  // case 4: both exist, so merge with admin taking precedence.
-  const base = { ...defaultPolicy(), ...userFile! };
+  // case 4: both exist, so merge with admin taking precedence over what it states.
+  const base = completePolicy(userFile!);
   const overrides: string[] = [];
   const merged = { ...base };
 
@@ -157,7 +217,7 @@ export async function loadPolicy(
     if (!base.managed) overrides.push("managed");
   }
   // updatedAt: use admin's timestamp when merged
-  merged.updatedAt = adminFields.updatedAt;
+  merged.updatedAt = adminFields.updatedAt ?? base.updatedAt;
 
   return {
     ...merged,
@@ -172,7 +232,7 @@ export async function loadPolicy(
  * Save policy to disk.
  *
  * Blocking conditions, in priority order:
- *  1. admin-dir file exists → always throw "Policy is managed by IT (admin-dir file exists)"
+ *  1. admin-dir file is not absent, including read/validation failure → always throw
  *  2. user file managed: true → throw the localized managed-policy error
  *
  * The managed flag itself cannot be changed via patch; it belongs to the IT Admin API.
@@ -185,18 +245,19 @@ export async function savePolicy(
   return withPolicyLock(userPath, async () => {
     // Check admin-dir first.
     const adminFile = await readPolicyFile(adminPath);
-    if (adminFile !== null) {
+    if (adminFile.status !== "absent") {
       throw new Error("Policy is managed by IT (admin-dir file exists)");
     }
 
-    const existing = await readPolicyFile(userPath);
+    const userRead = await readPolicyFile(userPath);
+    const existing = userRead.status === "valid" ? userRead.fields : null;
 
     // Check user managed: true, preserving the existing B1 behavior.
     if (existing?.managed === true) {
       throw new Error(t("be_policyStore.managedPolicyUserCannotChange"));
     }
 
-    const current = existing ?? defaultPolicy();
+    const current = existing ? completePolicy(existing) : defaultPolicy();
     const updated: PolicyFile = {
       ...current,
       ...patch,

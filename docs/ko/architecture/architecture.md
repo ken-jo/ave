@@ -1960,23 +1960,23 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   도메인에 도달할 수 있다. Ave 1st-party plugin 신뢰 모델 하에서 허용되며,
   true per-worker 격리는 per-process proxy 를 갖춘 future ASRT 가 필요하다.
 - **Gate**: `osToolSandbox` feature flag (Settings → 권한) 또는
-  `AVE_SANDBOX_ENABLED=1`. **STAGED default (macOS-first)** (PR #1390 의
-  default-ON 을 단계화): `osToolSandbox` 기본값 = **`darwin` ON / `linux`+`win32`
-  OFF(opt-in)** — live-verified-active 인 macOS 만 우선 ON, Linux/Windows 는
-  C/D-series 샌드박스 QA 가 green 될 때까지 Settings 토글로 opt-in. _Convergence
-  plan_: C/D QA 통과 시 `src/data/settings-store.ts` 의
-  `osToolSandbox: process.platform === "darwin"` 단일 표현식을 `true` 로 flip.
-  `hostClassifiesRisk` 는 **전 플랫폼 default ON** — non-sandbox 플랫폼에서도
-  안전한 이유는 read-relaxation 이 sandbox-active 와 커플링되어(아래) fallback
-  하기 때문. 활성 불가 시 동작은 on-signal 출처로 갈린다:
+  `AVE_SANDBOX_ENABLED=1`. `osToolSandbox` 기본값은 **전 플랫폼 OFF(opt-in)**다.
+  [settings-defaults.ts의 결정 주석](../../../src/data/settings-defaults.ts#L237-L254)에
+  따라 호스트, 워커, 플러그인 자식 프로세스는 이 설정이 꺼져 있으면 OS 샌드박스
+  없이 실행되고, 켜져 있으면 같은 활성화 정책을 따른다. Settings 토글 또는
+  명시적 환경 변수로 활성화한다.
+  `hostClassifiesRisk`는 **전 플랫폼 default ON**이다. 파일시스템 격리가 실제로
+  활성화되지 않으면 플러그인 읽기의 승인 생략 대신 실행 전 승인을 요청한다.
+  활성 불가 시 동작은 on-signal 출처로 갈린다:
   **EXPLICIT** (`AVE_SANDBOX_ENABLED=1`, 명시적 power-user/CI 강제) +
-  mac/linux deps-missing → boot **fail-closed abort** (no-fallback 보존);
-  **DEFAULT/settings-on** (env 없이 기본값/토글로 ON) → **graceful degrade**
+  mac/linux 의존성 누락 또는 초기화 실패 → boot **fail-closed abort** (no-fallback 보존);
+  **settings-on** (env 없이 토글로 ON) → **graceful degrade**
   (loud `log.warn` + `isAsrtSandboxActive()=false` + boot 계속, non-bricking).
   Windows (srt-win 미설치) 는 explicit 이어도 항상 degrade (first-run brick
   방지). 결정은 `src/boot/steps/sandbox-gate.ts` `decideSandboxGate(
-  skip|activate|degrade|abort)` 한 곳. host-classify↔sandbox interlock 경고는
-  실제 `sandboxActive` 상태에서 발화(degrade 경로 포함). Gate 는 boot 에서
+  skip|activate|degrade|abort)` 한 곳. host-classify가 켜져 있고 실제
+  `sandboxActive`가 꺼져 있으면 interlock 경고를 표시한다(degrade 경로 포함).
+  Gate는 호스트 부팅 시
   _정확히 한 번_ 결정되며 runtime 변경 채널은 없다.
 - **Read-relaxation ↔ plugin effect-boundary FILESYSTEM-CONTAINMENT 커플링
   (confines-aware)**: foreground plugin read-relaxation

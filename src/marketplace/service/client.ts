@@ -19,6 +19,7 @@
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isMissingPathError, PRIVATE_DIR_MODE, writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
+import { isAdminPolicyFileAbsent } from "../../lib/admin-policy-file.js";
 import { createMarketplaceLogger } from "../log.js";
 import { parseStrictJson } from "../../shared/strict-json.js";
 import { parseMarketplaceAnnouncementRows, type MarketplaceAnnouncement } from "../../shared/marketplace-announcements.js";
@@ -142,7 +143,7 @@ export async function readPolicyServiceBase(policyPath: string): Promise<string 
   try {
     bytes = await readFile(policyPath);
   } catch (error) {
-    if (isMissingPathError(error)) return null;
+    if (await isAdminPolicyFileAbsent(policyPath, error)) return null;
     throw error;
   }
   let parsed: unknown;

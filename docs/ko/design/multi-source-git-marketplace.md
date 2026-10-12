@@ -1833,25 +1833,33 @@ comparator  := (">=" | ">" | "<=" | "<" | "=")? semver
 
 ## 12. 관리 정책 추가 항목
 
+시스템 `policy.json`은 `marketplaces`나 `service`만 설정하더라도 최상위에 숫자
+`version: 1`을 포함해야 합니다. 이 값이 없으면 권한 정책 로더가 명시적 승인을
+요구하고 사용자 정책 편집을 잠급니다. 자세한 규칙은
+[Policy Files](../../architecture/permission-policy-design.md#policy-files)를 따릅니다.
+
 ```jsonc
 // policy.json (system scope)
-"marketplaces": {
-  "allow": ["https://github.com/acme/*", "host:git.corp.example", "path:/srv/ave/*"],  // absent = no restriction
-  "block": ["host:git.example.org", "path:/tmp/*"],
-  "allowHttpHosts": ["git.corp.example"],                           // plain-http hosts that need no confirmation; default none
-  "requireHttps": false,                                            // true: plain http is a policy block, allowHttpHosts excepted
-  "blockPrivateNetworks": false,                                    // true: internal and this-computer targets are a policy block, policy-listed hosts excepted
-  "allowDirectInstall": true,
-  "allowLocalSources": true,                                        // false: no folder is a source or a direct install
-  "allowDisablingOfficial": false,
-  "additional": [
-    { "id": "corp", "url": "https://git.corp.example/ave/marketplace.git" },
-    { "id": "team-share", "path": "\\\\files.corp\\ave\\marketplace" }      // a folder: `path` instead of `url`
-  ],
-  "defaultInstalls": [{ "kind": "plugin", "name": "wiki-search", "source": "corp" }],
-  "requiredInstalls": [{ "kind": "plugin", "name": "orion-api", "source": "corp" }]
-},
-"service": { "baseUrl": "https://ave.corp.example" }
+{
+  "version": 1,
+  "marketplaces": {
+    "allow": ["https://github.com/acme/*", "host:git.corp.example", "path:/srv/ave/*"],  // absent = no restriction
+    "block": ["host:git.example.org", "path:/tmp/*"],
+    "allowHttpHosts": ["git.corp.example"],                           // plain-http hosts that need no confirmation; default none
+    "requireHttps": false,                                            // true: plain http is a policy block, allowHttpHosts excepted
+    "blockPrivateNetworks": false,                                    // true: internal and this-computer targets are a policy block, policy-listed hosts excepted
+    "allowDirectInstall": true,
+    "allowLocalSources": true,                                        // false: no folder is a source or a direct install
+    "allowDisablingOfficial": false,
+    "additional": [
+      { "id": "corp", "url": "https://git.corp.example/ave/marketplace.git" },
+      { "id": "team-share", "path": "\\\\files.corp\\ave\\marketplace" }      // a folder: `path` instead of `url`
+    ],
+    "defaultInstalls": [{ "kind": "plugin", "name": "wiki-search", "source": "corp" }],
+    "requiredInstalls": [{ "kind": "plugin", "name": "orion-api", "source": "corp" }]
+  },
+  "service": { "baseUrl": "https://ave.corp.example" }
+}
 ```
 
 - 패턴은 저장소 동일성(§7.1)과 비교합니다. 호스트와 대소문자를 무시한 경로이며
@@ -3506,14 +3514,17 @@ P3(`process` 런타임과 그 코드, `:3557`)와 P4(마켓플레이스 허용, 
 >   계획을 만듭니다.
 
 ```jsonc
-"marketplaces": {
-  "requireHttps": false,          // true: plain http is a policy block (allowHttpHosts excepted)
-  "blockPrivateNetworks": false,  // true: internal and this-computer targets are a policy block (policy-listed hosts excepted)
-  "allowLocalSources": true,      // false: folder sources and folder installs are a policy block
-  "autoUpdate": "user",           // "user" | "on" | "off" (§18.7.2)
-  "allow": ["https://github.com/acme/*", "host:git.corp.example", "path:/opt/acme/marketplaces/*"],
-  "block": ["path:/tmp/*"],
-  "additional": [{ "id": "acme-local", "path": "/opt/acme/marketplaces/tools" }]
+{
+  "version": 1,
+  "marketplaces": {
+    "requireHttps": false,          // true: plain http is a policy block (allowHttpHosts excepted)
+    "blockPrivateNetworks": false,  // true: internal and this-computer targets are a policy block (policy-listed hosts excepted)
+    "allowLocalSources": true,      // false: folder sources and folder installs are a policy block
+    "autoUpdate": "user",           // "user" | "on" | "off" (§18.7.2)
+    "allow": ["https://github.com/acme/*", "host:git.corp.example", "path:/opt/acme/marketplaces/*"],
+    "block": ["path:/tmp/*"],
+    "additional": [{ "id": "acme-local", "path": "/opt/acme/marketplaces/tools" }]
+  }
 }
 ```
 

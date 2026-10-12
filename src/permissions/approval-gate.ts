@@ -2428,7 +2428,8 @@ export class ApprovalGate {
       requireExplicit:
         req.kind === "rationale"
           ? true
-          : forceExplicit || this.currentPolicy.requireExplicitApproval,
+          // Only an explicit false relaxes it: a policy object that lost the field stays explicit.
+          : forceExplicit || this.currentPolicy.requireExplicitApproval !== false,
     };
 
     // §S1: sensitive-path hard-block — runs BEFORE anything else so that
