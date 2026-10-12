@@ -15,6 +15,7 @@ import type {
   UserKeyboardIntentSnapshot,
 } from "../shared/chat-origin.js";
 import type { SerializedHistoryMessage } from "../shared/chat-history.js";
+import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
 import type { SessionFamily, SessionListKindFilter, SessionListRow } from "../shared/session-lookup.js";
 import type { ChatStreamEvent } from "../lib/chat-stream-state.js";
 // Type-only: this builder implements part of the renderer-declared surface.
@@ -209,21 +210,8 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
     ipcRenderer.invoke(CHANNELS.chat.getVerbatimToolResult, { sessionId, toolUseId }, chatGroupId) as Promise<
       { content: string; lineCount: number } | null
     >,
-  chatGetSubAgentTranscript: async (opts: {
-    originSessionId: string;
-    childSessionId: string;
-  }) =>
-    ipcRenderer.invoke(CHANNELS.chat.getSubAgentTranscript, opts, chatGroupId) as Promise<
-      | {
-          ok: true;
-          childSessionId: string;
-          messages: SerializedHistoryMessage[];
-          title?: string;
-          spawnId?: string;
-          originToolUseId?: string;
-        }
-      | { ok: false; error?: string }
-    >,
+  chatGetSubAgentTranscript: async (opts: SubAgentTranscriptRequest) =>
+    ipcRenderer.invoke(CHANNELS.chat.getSubAgentTranscript, opts, chatGroupId) as Promise<SubAgentTranscriptResult>,
   // Issue #749: lazy-load full write_file diff when content exceeds preview limit
   chatGetWriteDiff: async (sessionId: string, toolUseId: string) =>
     ipcRenderer.invoke(CHANNELS.chat.getWriteDiff, { sessionId, toolUseId }) as Promise<

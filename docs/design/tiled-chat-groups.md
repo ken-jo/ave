@@ -138,6 +138,13 @@ in the same binary, so a default would only ever paper over a caller that
 forgot to say which tile it meant — and the symptom of that bug (a turn
 appearing in the wrong tile) is worse than a rejected call.
 
+The side-chat child viewer uses the separate internal
+`ave:sidechat:get-sub-agent-transcript` channel, scoped to the window-wide
+side-chat loop's current session. It carries no `chatGroupId` and does not
+widen the tile transcript channel. See
+[Persisted child transcript ownership](../blueprints/a2a-subagent-messaging.md#persisted-child-transcript-ownership)
+for its active-origin and persisted-metadata checks.
+
 ## Geometry: a split tree, not a list
 
 Tiles are arranged **freely, tmux style**: any leaf can be split horizontally or
