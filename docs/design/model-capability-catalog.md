@@ -412,7 +412,7 @@ Slice 4 is implemented.
     capability travels with the request so the transport cannot replace it with a
     conflicting name match.
     A fallback cannot regain tools the primary withheld. The turn's `modelSettings`
-    is omitted when a fallback participates (§5), so a primary model's
+    is omitted when the last request used a fallback (§5), so a primary model's
     omission is never recorded as the fallback's capability.
 
 **Pricing (slice 5) is implemented.** `resolveModelPricing(vendor, model, overrides)`

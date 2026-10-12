@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
+import { build, type Metafile, type OutputFile } from "esbuild";
 import { describe, expect, it } from "vitest";
 import {
   analyzeMainBundleMetafile,
@@ -37,7 +37,63 @@ const syntheticMetafile = {
   },
 };
 
+/** The outputs an entry loads before any dynamic import resolves, keyed by absolute path. */
+function staticallyLoadedOutputs(
+  result: { metafile: Metafile; outputFiles: OutputFile[] },
+  entryPoint: string,
+) {
+  const outputs = new Map(Object.entries(result.metafile.outputs).map(([path, value]) => [
+    isAbsolute(path) ? path : resolve(REPO_ROOT, path), value,
+  ]));
+  const files = new Map(result.outputFiles.map((file) => [file.path, file]));
+  const entry = [...outputs].find(([, value]) => value.entryPoint === entryPoint);
+  expect(entry).toBeDefined();
+  const initial = new Set<string>();
+  const pending = [entry![0]];
+  while (pending.length > 0) {
+    const path = pending.pop()!;
+    if (initial.has(path)) continue;
+    initial.add(path);
+    for (const imported of outputs.get(path)!.imports) {
+      if (imported.external || imported.kind !== "import-statement") continue;
+      const absolute = resolve(REPO_ROOT, imported.path);
+      pending.push(outputs.has(absolute) ? absolute : resolve(dirname(path), imported.path));
+    }
+  }
+  return { outputs, files, initial };
+}
+
 describe("main bundle budget", () => {
+  it("loads the round loop and its turn-only helpers on the first turn, not at startup", async () => {
+    const result = await build({
+      absWorkingDir: REPO_ROOT, outdir: resolve(REPO_ROOT, "dist/turn-boundary-probe"),
+      stdin: {
+        contents: 'export { runTurn } from "./src/engine/turn/run-turn.ts";',
+        resolveDir: REPO_ROOT, sourcefile: "turn-main.ts", loader: "ts",
+      },
+      bundle: true, splitting: true, format: "esm", platform: "node", target: "node22",
+      preserveSymlinks: true, minify: true, keepNames: true,
+      write: false, metafile: true, external: [...MAIN_BUNDLE_EXTERNALS],
+    });
+    const { outputs, initial } = staticallyLoadedOutputs(result, "turn-main.ts");
+    const measurement = analyzeMainBundleMetafile(result.metafile, {
+      entryPoint: "turn-main.ts",
+      requiredAsyncEntryPoint: resolve(REPO_ROOT, "src/engine/turn/query-loop.ts"),
+    });
+    expect(measurement.requiredAsyncEntryIsInitial).toBe(false);
+    const eagerInputs = [...initial].flatMap((path) => Object.entries(outputs.get(path)!.inputs)
+      .filter(([, value]) => value.bytesInOutput > 0)
+      .map(([input]) => input.replaceAll("\\", "/")));
+    // Turn-time code the startup budget does not pay for: the loop itself and
+    // the model-capability, reasoning and stream helpers only it reaches.
+    const deferredInputs = [
+      "engine/turn/query-loop.ts", "engine/turn/stream-collector.ts", "engine/turn/round-llm-settings.ts",
+      "engine/llm/vendor-capabilities.ts", "engine/llm/reasoning-plan.ts", "shared/model-capability-settings.ts",
+    ];
+    expect(eagerInputs.filter((input) => deferredInputs.some((path) => input.endsWith(path)))).toEqual([]);
+  });
+
+
   it("keeps refresh writers out of emitted startup code shared with the deferred refresh", async () => {
     const outdir = resolve(REPO_ROOT, "dist/catalog-boundary-probe");
     const result = await build({
@@ -50,24 +106,7 @@ describe("main bundle budget", () => {
       preserveSymlinks: true, minify: true, keepNames: true,
       write: false, metafile: true, external: [...MAIN_BUNDLE_EXTERNALS],
     });
-    const outputs = new Map(Object.entries(result.metafile.outputs).map(([path, value]) => [
-      isAbsolute(path) ? path : resolve(REPO_ROOT, path), value,
-    ]));
-    const files = new Map(result.outputFiles.map((file) => [file.path, file]));
-    const entry = [...outputs].find(([, value]) => value.entryPoint === "catalog-main.ts");
-    expect(entry).toBeDefined();
-    const initial = new Set<string>();
-    const pending = [entry![0]];
-    while (pending.length > 0) {
-      const path = pending.pop()!;
-      if (initial.has(path)) continue;
-      initial.add(path);
-      for (const imported of outputs.get(path)!.imports) {
-        if (imported.external || imported.kind !== "import-statement") continue;
-        const absolute = resolve(REPO_ROOT, imported.path);
-        pending.push(outputs.has(absolute) ? absolute : resolve(dirname(path), imported.path));
-      }
-    }
+    const { outputs, files, initial } = staticallyLoadedOutputs(result, "catalog-main.ts");
     const actualBytes = [...initial].reduce((sum, path) => sum + files.get(path)!.contents.length, 0);
     const measurement = analyzeMainBundleMetafile(result.metafile, {
       entryPoint: "catalog-main.ts",

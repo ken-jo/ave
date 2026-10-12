@@ -29,7 +29,7 @@ import {
 } from "../telemetry/tracing.js";
 import type { ChatInputOrigin } from "../../shared/chat-origin.js";
 import type { MessageMeta } from "../llm/types.js";
-import { queryLoop } from "./query-loop.js";
+import type * as QueryLoopModule from "./query-loop.js";
 import { initialToolTrustOrigin, summarizePermissionUserIntent,
 } from "./trust-origin.js";
 import { projectNextTurnInputTokens } from "../request-input-projection.js";
@@ -632,7 +632,12 @@ async function runTurnInSpan(
       promptLen: systemPrompt.length,
       activePlugins: scope.activePluginIds.size,
     });
-    let result: Awaited<ReturnType<typeof queryLoop>>;
+    // The round loop is loaded on the first turn, not at app start: it is the
+    // largest piece of the engine and startup never runs it. A failed load
+    // rejects this turn through the surrounding try/finally like any other
+    // queryLoop failure; it is never skipped or replaced.
+    const { queryLoop } = await import("./query-loop.js");
+    let result: Awaited<ReturnType<typeof QueryLoopModule.queryLoop>>;
     // Establish per-session ALS context so Gate 4 (plugin-runtime-delegate)
     // can consult the CALLING session's on-demand activation set. The context
     // uses effectiveSessionId (respects sessionIdOverride for sub-agents) and
