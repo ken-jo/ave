@@ -286,6 +286,23 @@ describe("validateIndexText", () => {
     expect(result.ok && result.value.index.packages[0]?.versions?.[0]?.artifact).toEqual(http);
   });
 
+  it("admits a legacy grant pin only as a yanked plugin version pinning its release digest (design §16.3)", () => {
+    const NULL_COMMIT = "0".repeat(40);
+    const yanked = { reason: "Legacy field pin: receipt grant evidence only. Not installable.", at: AT };
+    const pin = (patch: Record<string, unknown> = {}) => pluginVersion("0.9.0", { commit: NULL_COMMIT, yanked, ...patch });
+    const listing = (kind: string, versions: unknown[]) =>
+      validateIndexText(index([{ kind, name: "fixturepin", path: kind === "plugin" ? "plugins/fixturepin" : "skills/fixturepin", versions }]), context);
+    const kept = (result: ReturnType<typeof validateIndexText>) => (result.ok ? result.value.index.packages.length : -1);
+
+    expect(kept(listing("plugin", [pluginVersion("1.0.0"), pin()]))).toBe(1);
+    // Each of these would hand git a commit that names no tree, or offer what cannot install.
+    expect(kept(listing("plugin", [pin({ yanked: undefined })]))).toBe(0);
+    expect(kept(listing("plugin", [pin({ artifact: { release: { repo: "acme/alpha", tag: "v0.9.0", asset: "a.zip", sha256: SHA } } })]))).toBe(0);
+    expect(kept(listing("plugin", [pin({ artifact: { release: { repo: "acme/alpha", sha256: SHA }, tree: "plugins/fixturepin/build" } })]))).toBe(0);
+    expect(kept(listing("plugin", [pin({ artifact: { release: { repo: "acme/alpha" } } })]))).toBe(0);
+    expect(kept(listing("skill", [version("0.9.0", { commit: NULL_COMMIT, yanked })]))).toBe(0);
+  });
+
   it.each([
     ["unparseable JSON", "{"],
     ["an unknown root key", index([], { extra: 1 })],

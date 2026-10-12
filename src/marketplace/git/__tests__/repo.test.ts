@@ -77,6 +77,19 @@ describe("BareRepo", () => {
     await cleanupTmpDir(scratch);
   });
 
+  it("refuses the all-zero object id before git runs (a legacy grant pin has no tree, design §16.3)", async () => {
+    const calls: string[][] = [];
+    const runner = { run: async (args: readonly string[]) => { calls.push([...args]); throw new Error("git must not run"); } } as unknown as ConstructorParameters<typeof BareRepo>[0];
+    const bare = new BareRepo(runner, localRepoDir());
+    const zero = "0".repeat(40);
+    await expect(bare.lsTree(zero, null, false)).rejects.toThrow("all-zero object id");
+    await expect(bare.readFile(zero, "plugin.json", 1024)).rejects.toThrow("all-zero object id");
+    await expect(bare.hasCommit(zero)).rejects.toThrow("all-zero object id");
+    await expect(bare.commitTime(zero)).rejects.toThrow("all-zero object id");
+    await expect(bare.ensureBlobs(remote, zero, ["plugin.json"])).rejects.toThrow("all-zero object id");
+    expect(calls).toEqual([]);
+  });
+
   it("lists the remote HEAD and a named ref", async () => {
     const bare = await BareRepo.init(t.runner, localRepoDir());
     expect((await bare.lsRemote(remote)).get("HEAD")).toBe(second);

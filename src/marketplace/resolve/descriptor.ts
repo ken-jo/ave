@@ -8,7 +8,7 @@
  * the version's commit, which must still name the planned package.
  */
 import type { CatalogRow } from "../catalog/aggregate.js";
-import type { AgentPluginComponents, IndexVersion, PackageDescriptor, PackageKind } from "../catalog/types.js";
+import { hasVersionTree, type AgentPluginComponents, type IndexVersion, type PackageDescriptor, type PackageKind } from "../catalog/types.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { validateDescriptorText } from "../catalog/validate.js";
 import { readDirectPackage } from "../sources/direct-package.js";
@@ -67,6 +67,10 @@ export function candidateVersion(row: CatalogRow): IndexVersion {
 /** The plan fields every kind shares, for one listed version of the row. */
 export function planPackage(row: CatalogRow, version: IndexVersion): PackagePlan {
   if (!row.package.versions.includes(version)) throw new Error(`${row.name}@${version.version} is not a version of this row`);
+  // A legacy grant pin is grant evidence only (design §16.3): there is no tree to install from.
+  if (!hasVersionTree(version)) {
+    throw new MarketplaceError("PACKAGE_YANKED", `${row.name}@${version.version} is a legacy grant pin and cannot be installed`);
+  }
   return {
     sourceId: row.sourceId,
     sourceOrigin: row.sourceOrigin,

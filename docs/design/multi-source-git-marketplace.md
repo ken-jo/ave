@@ -3136,6 +3136,14 @@ On first boot of the new version:
   switch, so it has no working grant to keep and is not pinned. An entry
   with no matching pin loses the grant until it updates, and the boot notice
   says which plugin lost which key.
+- A pin whose version was never published from the repository's history is
+  listed at the all-zero commit (`0000…0000`): digest evidence, not a commit.
+  The index admits it only as a yanked plugin version whose artifact is a
+  release `sha256` and nothing else (no tag, asset, url, archive or tree). Such
+  a version never reaches git: the detail shows it as a grant record with no
+  tree and no delivery rungs, a plan for it is refused (`PACKAGE_YANKED`), and
+  the git layer refuses the all-zero id outright. With no candidate, the detail
+  describes the newest listed version that has a tree, else the newest pin.
 - `installSource: "admin"` becomes `user`; the keys of those packages are
   written to `packages/default-installs.json` as already applied, so nothing
   is reinstalled or removed.

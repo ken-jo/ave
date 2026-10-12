@@ -13,7 +13,7 @@ import type {
   VersionView,
 } from "../../shared/git-marketplace.js";
 import { versionExclusions, type CatalogRow, type VersionChoiceContext } from "../catalog/aggregate.js";
-import type { AgentPluginComponents, PackageKind, PluginArtifactPins, PluginAuthority, Revocation } from "../catalog/types.js";
+import { hasVersionTree, type AgentPluginComponents, type PackageKind, type PluginArtifactPins, type PluginAuthority, type Revocation } from "../catalog/types.js";
 import { parseMarketplaceErrorDetail, scrubMarketplaceErrorDetail, type MarketplaceError } from "../errors.js";
 import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
 import { updateFor, type InstallAction, type InstalledPackage } from "../resolve/identity.js";
@@ -193,7 +193,8 @@ export function versionViews(row: CatalogRow, revocations: readonly Revocation[]
   const candidate = row.choice.state === "candidate" ? row.choice.version.version : null;
   return row.package.versions.map((version) => ({
     version: version.version,
-    commit: version.commit,
+    commit: hasVersionTree(version) ? version.commit : null,
+    legacyPin: !hasVersionTree(version),
     publishedAt: version.publishedAt,
     minAppVersion: version.minAppVersion,
     excluded: versionExclusions(row.sourceId, row.kind, row.name, version, revocations, context),

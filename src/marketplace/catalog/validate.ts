@@ -28,14 +28,15 @@ import { CREDENTIAL_ISSUER_NAMES, holdsCredential, reservedPrefixIn } from "../.
 import type { MarketplaceErrorDetail } from "../errors.js";
 import { compareSemver } from "../../shared/semver-compare.js";
 import { parseStrictJson } from "./strict-json.js";
-import type {
-  AgentPluginComponents,
-  IndexPackage,
-  MarketplaceIndex,
-  PackageDescriptor,
-  PluginArtifactPins,
-  PluginAuthority,
-  RevocationsFile,
+import {
+  NULL_OBJECT_ID,
+  type AgentPluginComponents,
+  type IndexPackage,
+  type MarketplaceIndex,
+  type PackageDescriptor,
+  type PluginArtifactPins,
+  type PluginAuthority,
+  type RevocationsFile,
 } from "./types.js";
 import { parseVersionRange } from "./version-range.js";
 
@@ -292,6 +293,25 @@ function reservedPluginName(kind: string, name: string): string | null {
     : null;
 }
 
+/**
+ * A version at the all-zero commit is a legacy grant pin (design §16.3): a
+ * plugin's release digest kept so existing installs keep their grant. It has
+ * no tree, so it is yanked and pins nothing but that digest.
+ */
+function legacyPinRule(kind: string, version: IndexVersionShape): string | null {
+  if (version.commit !== NULL_OBJECT_ID) return null;
+  if (kind !== "plugin") return "only a plugin version can be a legacy grant pin (the all-zero commit)";
+  if (!version.yanked) return "a legacy grant pin (the all-zero commit) must be yanked";
+  const artifact = version.artifact;
+  const release = artifact?.release;
+  if (!release?.sha256 || release.tag || release.asset || release.url || artifact?.archive || artifact?.tree !== undefined) {
+    return "a legacy grant pin (the all-zero commit) pins only its release sha256";
+  }
+  return null;
+}
+
+type IndexVersionShape = NonNullable<IndexPackage["versions"]>[number];
+
 function indexPackageRules(entry: IndexPackage): string | null {
   const reserved = reservedPluginName(entry.kind, entry.name);
   if (reserved) return reserved;
@@ -314,6 +334,8 @@ function indexPackageRules(entry: IndexPackage): string | null {
     if (latest.yanked) return `latest ${entry.latest} is yanked`;
   }
   for (const version of versions) {
+    const pin = legacyPinRule(entry.kind, version);
+    if (pin) return `version ${version.version}: ${pin}`;
     if (entry.kind === "plugin") {
       if (!version.authority || !version.artifact) return `plugin version ${version.version} needs authority and artifact`;
       if (version.components !== undefined) return `version ${version.version}: components are for agent plugins only`;

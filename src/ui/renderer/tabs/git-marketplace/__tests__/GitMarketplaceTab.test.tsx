@@ -213,6 +213,27 @@ describe("GitMarketplaceTab package sheet", () => {
     expect(await within(sheet).findByText(/이 사본은 거부되었습니다\. 릴리스를 고정한 마켓플레이스에서 설치하세요\./)).toBeInTheDocument();
   });
 
+  it("marks a legacy grant pin and offers no install for it (design §16.3)", async () => {
+    const item = entry("team", "plugin", "fixturepin");
+    const fake = fakeMarketplace({ sources: [team], entries: [item] });
+    fake.market.packageDetail.mockResolvedValue({
+      ok: true,
+      value: detail(item, {
+        provenance: { sourceLabel: "Team", repository: "https://github.com/example/market.git", folder: null, path: "plugins/fixturepin", snapshotCommit: COMMIT_A, versionCommit: null, publishedAt: null },
+        rungs: [],
+        versions: [
+          { version: "0.9.0", commit: null, publishedAt: "2026-10-12T00:00:00.000Z", minAppVersion: "0.7.0", legacyPin: true, excluded: ["yanked"], yankedReason: "Legacy field pin.", rolloutPercent: null, installed: false, candidate: false },
+        ],
+      }),
+    });
+    renderTab(fake);
+    fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:fixturepin")).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    expect(await within(sheet).findByTestId("git-marketplace:version:0.9.0:legacy-pin")).toHaveTextContent("권한 기록 전용");
+    expect(within(within(sheet).getByTestId("git-marketplace:version:0.9.0")).queryByRole("button")).toBeNull();
+    expect(within(sheet).queryByTestId("git-marketplace:delivery-help")).toBeNull();
+  });
+
   it("passes only separately selected plugin servers with their reviewed digests", async () => {
     const item = entry("team", "agent-plugin", "meeting-kit");
     const components = { skills: [], prompts: [], agents: [], routineTemplates: [], hooks: [],
@@ -1035,8 +1056,8 @@ describe("a package from a folder (§18.4.8)", () => {
         provenance: { sourceLabel: "My folder", repository: null, folder: { path: "/Users/example/market", readAt: new Date(Date.now() - 4 * 60_000).toISOString(), contents: DIGEST }, path: "plugins/notes", snapshotCommit: REVISION, versionCommit: REVISION, publishedAt: null },
         rungs: [{ rung: "folder", declared: true, pinned: false, detail: null, unencrypted: false }],
         versions: [
-          { version: "1.1.0", commit: REVISION, publishedAt: "2026-09-30T00:00:00.000Z", minAppVersion: "1.0.0", excluded: [], yankedReason: null, rolloutPercent: null, installed: false, candidate: true },
-          { version: "1.0.0", commit: COMMIT_A, publishedAt: "2026-09-20T00:00:00.000Z", minAppVersion: "1.0.0", excluded: [], yankedReason: null, rolloutPercent: null, installed: false, candidate: false },
+          { version: "1.1.0", commit: REVISION, publishedAt: "2026-09-30T00:00:00.000Z", minAppVersion: "1.0.0", legacyPin: false, excluded: [], yankedReason: null, rolloutPercent: null, installed: false, candidate: true },
+          { version: "1.0.0", commit: COMMIT_A, publishedAt: "2026-09-20T00:00:00.000Z", minAppVersion: "1.0.0", legacyPin: false, excluded: [], yankedReason: null, rolloutPercent: null, installed: false, candidate: false },
         ],
       }),
     });
