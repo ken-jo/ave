@@ -248,6 +248,24 @@ describe("refreshModelCatalogCache", () => {
       expect(calls).toHaveLength(1);
       expect(cacheFiles()).toEqual(before);
     });
+
+    it.each([
+      "https://example.com/api.json",
+      "http://models.dev/api.json",
+      "https://models.dev/other.json",
+    ])("refuses a redirect away from the fixed source: %s", async (location) => {
+      await seedGoodCopy();
+      const before = cacheFiles();
+      const { fetchImpl, calls } = respondWith(({ url }) => url === MODEL_CATALOG_REFRESH_URL
+        ? new Response(null, { status: 302, headers: { location } })
+        : json(rawDocument(800_000)));
+      const result = await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => STALE });
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.init.redirect).toBe("manual");
+      expect(result.status).toBe("failed");
+      expect(cacheFiles()).toEqual(before);
+    });
   });
 
   it("with no cache yet, a failure leaves the bundled snapshot in force", async () => {

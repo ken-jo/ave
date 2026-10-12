@@ -3,7 +3,7 @@
  *
  * One plain GET of `https://models.dev/api.json` — no cookie, no credential,
  * nothing about the user or the conversation — through the host's guarded
- * public-HTTP path (`fetchPublicHttpResponse`: each redirect hop re-checked,
+ * public-HTTP path (`fetchPublicHttpResponse`: redirects refused,
  * private and loopback addresses refused) on the host's own transport. No
  * plugin path is involved. The download is capped at 16 MB while it streams,
  * pruned and normalized by the same code that builds the bundled snapshot,
@@ -49,7 +49,7 @@ export type ModelCatalogRefreshResult =
   | { status: "failed"; reason: string };
 
 export interface ModelCatalogRefreshOptions {
-  /** The host's single-hop transport; `fetchPublicHttpResponse` follows and checks each hop. */
+  /** The host's single-hop transport; redirects cannot widen the fixed source. */
   fetchImpl: typeof fetch;
   /** The cache directory (`modelCatalogCacheDir()` in the app). */
   dir: string;
@@ -157,9 +157,10 @@ export async function refreshModelCatalogCache(options: ModelCatalogRefreshOptio
       response = await fetchPublicHttpResponse(MODEL_CATALOG_REFRESH_URL, {
         fetchImpl: options.fetchImpl,
         method: "GET",
+        // This source is one exact HTTPS URL; a redirect is not another source grant.
+        maxRedirects: 0,
         headers: { accept: "application/json", ...(pointer?.etag ? { "if-none-match": pointer.etag } : {}) },
-        // `timeoutMs` is per hop; the signal bounds a redirect chain as a whole,
-        // and the body read below keeps the same deadline.
+        // The body read below keeps the same deadline as the request.
         timeoutMs,
         signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(options.signal ? [options.signal] : [])]),
       });
