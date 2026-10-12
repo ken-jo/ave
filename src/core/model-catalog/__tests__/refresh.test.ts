@@ -222,6 +222,22 @@ describe("refreshModelCatalogCache", () => {
       expect(cacheFiles()).toEqual(before);
     });
 
+    it("a download still streaming when the app quits", async () => {
+      await seedGoodCopy();
+      const before = cacheFiles();
+      const quit = new AbortController();
+      const { fetchImpl } = respondWith(() => {
+        setTimeout(() => quit.abort(), 20);
+        return new Response(new ReadableStream<Uint8Array>({ pull: () => new Promise(() => {}) }), { status: 200 });
+      });
+      const started = Date.now();
+      const result = await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => STALE, signal: quit.signal });
+
+      expect(Date.now() - started).toBeLessThan(3000);
+      expect(result).toEqual({ status: "failed", reason: "aborted" });
+      expect(cacheFiles()).toEqual(before);
+    });
+
     it("a redirect to a private address, refused by the guard", async () => {
       await seedGoodCopy();
       const before = cacheFiles();

@@ -79,7 +79,7 @@ function isoSeconds(date: Date): string {
  * cap is refused before reading; a body that grows past it is cancelled at the
  * chunk that crosses it, so the cap bounds memory, not just the result.
  */
-async function readCappedBody(response: Response, deadline: number, timeoutMs: number): Promise<Buffer> {
+async function readCappedBody(response: Response, deadline: number, timeoutMs: number, signal: AbortSignal | undefined): Promise<Buffer> {
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > MODEL_CATALOG_MAX_BYTES) {
     throw new RefreshFault(`response declares ${declared} bytes, over the ${MODEL_CATALOG_MAX_BYTES}-byte cap`);
@@ -88,6 +88,14 @@ async function readCappedBody(response: Response, deadline: number, timeoutMs: n
   if (!reader) throw new RefreshFault("response has no body");
   const chunks: Uint8Array[] = [];
   let total = 0;
+  // Shutdown aborts the read too, not only the request: a quit mid-download
+  // must not wait out the deadline.
+  const aborted = signal
+    ? new Promise<"aborted">((resolve) => {
+      if (signal.aborted) resolve("aborted");
+      else signal.addEventListener("abort", () => resolve("aborted"), { once: true });
+    })
+    : new Promise<never>(() => {});
   for (;;) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
@@ -98,7 +106,11 @@ async function readCappedBody(response: Response, deadline: number, timeoutMs: n
     const timedOut = new Promise<"timeout">((resolve) => {
       timer = setTimeout(() => resolve("timeout"), remaining);
     });
-    const next = await Promise.race([reader.read(), timedOut]).finally(() => clearTimeout(timer));
+    const next = await Promise.race([reader.read(), timedOut, aborted]).finally(() => clearTimeout(timer));
+    if (next === "aborted") {
+      await reader.cancel().catch(() => undefined);
+      throw new RefreshFault("aborted");
+    }
     if (next === "timeout") {
       await reader.cancel().catch(() => undefined);
       throw new RefreshFault(`body did not arrive within ${timeoutMs} ms`);
@@ -164,7 +176,7 @@ export async function refreshModelCatalogCache(options: ModelCatalogRefreshOptio
       throw new RefreshFault(`${MODEL_CATALOG_REFRESH_URL} answered ${response.status}`);
     }
 
-    const raw = await readCappedBody(response, deadline, timeoutMs);
+    const raw = await readCappedBody(response, deadline, timeoutMs, options.signal);
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw.toString("utf-8"));
