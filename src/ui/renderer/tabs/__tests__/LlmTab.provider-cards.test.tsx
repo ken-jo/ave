@@ -4,14 +4,16 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { installMockAveApi, type MockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
-import type { LlmModelListResult } from "../../../../shared/llm-model-list.js";
+import { llmModelListCacheKey, type LlmModelListCache, type LlmModelListResult } from "../../../../shared/llm-model-list.js";
 import type {
   MarketplaceInstalledProviderPreset,
   MarketplaceProviderModelDiscoveryPolicy,
 } from "../../../../shared/marketplace-package-assets.js";
 import type { SubscriptionProviderView } from "../SubscriptionProvidersSection.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
-import { llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
+import { freshAllVendorBlocks, llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
+import { resolveContextWindowForRoute } from "../../../../shared/context-budget.js";
+import { supportsVision } from "../../../../engine/llm/vendor-capabilities.js";
 
 const useSubscriptionProvidersMock = vi.hoisted(() => vi.fn());
 
@@ -412,6 +414,30 @@ beforeEach(() => {
 });
 
 describe("LlmTab provider cards", () => {
+  it.each([
+    { model: "GPT-4.1", reportedModel: "gpt-4.1", inputModalities: ["text"], supportedParameters: ["tools"], vision: false, tools: true },
+    { model: "GPT-4", reportedModel: "gpt-4", inputModalities: ["text", "image"], supportedParameters: ["tools"], vision: true, tools: true },
+    { model: "GPT-3.5-Turbo", reportedModel: "gpt-3.5-turbo", inputModalities: ["text"], supportedParameters: ["tools"], vision: false, tools: true },
+  ])("matches engine capabilities when the saved model and report differ in case: $model", async ({ model, reportedModel, inputModalities, supportedParameters, vision, tools }) => {
+    const modelListCache: LlmModelListCache = {
+      [llmModelListCacheKey("openai")]: {
+        vendor: "openai", models: [reportedModel], endpoint: "https://provider.invalid/v1/models",
+        modelEntries: [{ id: reportedModel, inputModalities, supportedParameters }], fetchedAt: new Date(0).toISOString(),
+      },
+    };
+    const vendors = freshAllVendorBlocks();
+    vendors.openai.model = model;
+    const route = resolveContextWindowForRoute({ provider: "openai", vendors, modelListCache });
+    expect(supportsVision("openai", model, route)).toBe(vision);
+    expect(route.toolCall?.supported).toBe(tools);
+    const { api } = profileApi({ vendors, modelListCache }, { hasApiKey: storedKeysFor("openai") });
+    await renderTab(api, { vendor: "openai", model });
+    expect(await chooserModelIds()).toContain(model);
+    const option = within(chooserOption(model));
+    expect(Boolean(option.queryByTestId(`llm-tab:model-vision:${model}`))).toBe(vision);
+    expect(Boolean(option.queryByTestId(`llm-tab:model-no-tools:${model}`))).toBe(!tools);
+  });
+
   it("saves the active vendor model without a stale preset's scope", async () => {
     const model = "gpt-5.4";
     const { api } = profileApi({ vendors: { openai: { model } } }, { hasApiKey: storedKeysFor("openai") });

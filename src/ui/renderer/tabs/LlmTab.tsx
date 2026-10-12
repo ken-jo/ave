@@ -46,6 +46,7 @@ import {
   LLM_VENDOR_DEFAULTS,
 } from "../../../shared/llm-vendor-defaults.js";
 import {
+  cachedModelListEntry,
   llmModelListCacheKey,
   type LlmModelListCache,
   type LlmModelListCacheEntry,
@@ -2176,7 +2177,7 @@ export function LlmTab(props: LlmTabProps) {
       const state = row.modelListKey ? modelLists[row.modelListKey] : undefined;
       const isActiveRow = rowId === activeApiRowId;
       const entries = modelEntryMap(state?.entries);
-      const savedEntries = modelEntryMap(row.modelListKey ? savedModelListCache[row.modelListKey]?.modelEntries : undefined);
+      const [, reportedBaseUrl, credentialScope] = row.modelListKey?.split("\n") ?? [];
       // Whether the catalogue may name its own models. An OpenAI-compatible
       // server answers `/models` with `owned_by: "openai"` for everything it
       // serves — its word for its own software, not for who made the model —
@@ -2196,10 +2197,14 @@ export function LlmTab(props: LlmTabProps) {
         if (pushed.has(value)) continue;
         pushed.add(value);
         const entry = entries.get(modelId);
+        const savedEntry = row.modelListKey ? cachedModelListEntry(savedModelListCache, {
+          vendor: row.apiVendorId, model: modelId,
+          baseUrl: reportedBaseUrl, credentialScope,
+        }) : undefined;
         const toolCall = resolveToolCallSupport({
           vendor: row.apiVendorId,
           model: modelId,
-          reported: savedEntries.get(modelId)?.supportedParameters,
+          reported: savedEntry?.supportedParameters,
           catalogModel: row.presetId ? undefined : savedVendorBlocks[row.apiVendorId]?.catalogModel,
         });
         options.push({
@@ -2217,7 +2222,7 @@ export function LlmTab(props: LlmTabProps) {
             inputModalities: resolveInputModalities({
               vendor: visionVendor, model: modelId,
               imageInput: llmRouteImageInput(savedVendorBlocks[row.apiVendorId] ?? {}, modelId, row.presetId),
-              reported: savedEntries.get(modelId)?.inputModalities,
+              reported: savedEntry?.inputModalities,
               catalogModel: row.presetId ? undefined : savedVendorBlocks[row.apiVendorId]?.catalogModel,
             }),
           }) ? { vision: true } : {}),

@@ -1224,6 +1224,22 @@ describe("SettingsService marketplace defaults", () => {
     expect(JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf8")).llm.vendors["openai-compatible"].imageInput).toEqual({ [second]: false });
   });
 
+  it("retains an inactive optional provider customized only by image input across pruning and reload", async () => {
+    const model = getLlmVendorSettings(undefined, "groq").model;
+    const key = llmImageInputKey(model);
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
+      llm: { provider: "openai", vendors: { groq: { imageInput: { [key]: false } } } },
+    }));
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("marketplace").installedProviderIds).toContain("groq");
+    expect(service.get("llm").vendors.groq?.imageInput).toEqual({ [key]: false });
+    await service.patch({ llm: { provider: "groq" } });
+    await service.patch({ llm: { provider: "openai" } });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("llm").provider).toBe("openai");
+    expect(reloaded.get("llm").vendors.groq?.imageInput).toEqual({ [key]: false });
+  });
+
   it("merges one preset's model into the map instead of replacing it", async () => {
     // The renderer sends the key it just chose and nothing else, so the store
     // has to merge: replacing the map would delete every other preset's model
