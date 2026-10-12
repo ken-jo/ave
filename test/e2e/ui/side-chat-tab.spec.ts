@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildE2eBaseSettings, buildIsolatedElectronEnv } from "./seeded-electron";
+import { buildE2eBaseSettings, buildE2eSecrets, buildIsolatedElectronEnv } from "./seeded-electron";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -34,6 +34,11 @@ test.describe("side-chat tab", () => {
       resolve(userDataDir, "ave-settings.json"),
       JSON.stringify(buildE2eBaseSettings(true), null, 2) + "\n",
       "utf-8",
+    );
+    writeFileSync(
+      resolve(userDataDir, "ave-secrets.json"),
+      JSON.stringify(buildE2eSecrets(), null, 2) + "\n",
+      { encoding: "utf-8", mode: 0o600 },
     );
     app = await electron.launch({
       args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
@@ -92,6 +97,7 @@ test.describe("side-chat tab", () => {
     // turn ends, but the transcript is driven by the DEDICATED side stream).
     const sideView = page.getByTestId("side-chat-view");
     await sideView.getByTestId("composer-textarea").fill("run a tool");
+    await expect(sideView.getByTestId("composer-send-button")).toBeEnabled();
     await sideView.getByTestId("composer-send-button").click();
 
     // Inject synthetic side-chat frames onto the DEDICATED side channel via the
@@ -100,32 +106,44 @@ test.describe("side-chat tab", () => {
     // shared primitives as the main transcript — the unification contract.
     const groupId = `e2e-side-${Date.now()}`;
     const toolUseId = `tu-side-${Date.now()}`;
-    const seamAvailable = await page.evaluate(({ groupId, toolUseId }) => {
+    const toolName = `side_fixture_${Date.now()}`;
+    const result = `42 files (${toolUseId})`;
+    const reasoning = `Side fixture reasoning (${groupId})`;
+    const seamAvailable = await page.evaluate(({ groupId, toolUseId, toolName, result, reasoning }) => {
       type StreamFn = (event: unknown) => void;
       const w = window as unknown as { __aveSideChatStream?: { _emit?: StreamFn } };
       const emit = w.__aveSideChatStream?._emit;
       if (typeof emit !== "function") return false;
       // streamId 1 is the first turn's id (main allocates ++nextSideStreamId).
-      emit({ type: "reasoning_delta", streamId: 1, text: "let me think about this…" });
+      emit({ type: "reasoning_delta", streamId: 1, text: reasoning });
       emit({
         type: "permission_review",
         streamId: 1,
         reviewStatus: "reviewing",
-        name: "bash",
+        name: toolName,
         groupId,
         toolUseId,
         displayOrder: 0,
       });
-      emit({ type: "tool_start", streamId: 1, name: "index_scan", groupId, toolUseId, displayOrder: 0, input: {} });
-      emit({ type: "tool_end", streamId: 1, name: "index_scan", groupId, toolUseId, result: "42 files", isError: false, durationMs: 900 });
+      emit({ type: "tool_start", streamId: 1, name: toolName, groupId, toolUseId, displayOrder: 0, input: {} });
+      emit({ type: "tool_end", streamId: 1, name: toolName, groupId, toolUseId, result, isError: false, durationMs: 900 });
+      emit({ type: "done", streamId: 1 });
       return true;
-    }, { groupId, toolUseId });
+    }, { groupId, toolUseId, toolName, result, reasoning });
 
-    test.skip(!seamAvailable, "Side-chat synthetic stream seam unavailable in this build — skipping.");
+    expect(seamAvailable).toBe(true);
 
-    // The shared WorkGroup primitive collapses the tool activity (identical to
-    // the main transcript). Its presence proves TranscriptRenderer is driving
-    // the side transcript, not the old bespoke AssistantCard-only view.
-    await expect(page.getByTestId("side-chat-view").getByTestId("work-group").first()).toBeVisible({ timeout: 5_000 });
+    const toolRow = sideView.getByTestId("tool-row-header").filter({ hasText: toolName.replace(/_/g, " ") });
+    await expect(toolRow).toBeVisible();
+    await expect(toolRow.getByTestId("permission-review-status-card")).toHaveAttribute("data-status", "reviewing");
+    await toolRow.click();
+    await expect(sideView.getByText(result, { exact: true })).toBeVisible();
+
+    const workGroup = sideView.getByTestId("work-group");
+    await expect(workGroup).toHaveCount(1);
+    const groupToggle = workGroup.locator(":scope > button");
+    if (await groupToggle.getAttribute("aria-expanded") === "false") await groupToggle.click();
+    await workGroup.getByRole("button", { name: /생각 완료|Thought complete/ }).click();
+    await expect(workGroup.getByText(reasoning, { exact: true })).toBeVisible();
   });
 });
