@@ -21,12 +21,14 @@
 //   fast          other branch source changes: typecheck gate, duplicates,
 //                 lock suites, changed tests, `vitest related` (see
 //                 pre-push-source-policy.mjs)
-//   full          deleted refs, non-fast-forward or non-branch updates, the
+//   full          non-fast-forward or non-branch updates, the
 //                 default branch, noncanonical paths, global test/build
 //                 inputs, the manual stage, or AVE_PREPUSH_FULL=1: typecheck
 //                 gate, `bun run test`, `bun run build`, `check:gate-core`
 // The full suite and build of a fast push run once at merge time, on the
 // main + PR merged tree, and in CI.
+// Every non-deletion update must name HEAD and the tracked checkout must be
+// clean before and after checks. Deletion-only pushes have no tree to check.
 
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -122,9 +124,10 @@ function isNamedPackage(dir, name) {
 // Command execution
 // ---------------------------------------------------------------------------
 
-function capture(cmd, args, cwd) {
+function capture(cmd, args, cwd, env = process.env) {
   const result = spawnSync(cmd, args, {
     cwd,
+    env,
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -305,6 +308,46 @@ function runPushPolicyChecks(repoRoot, parsedUpdates) {
       "Create a non-default branch and merge through a pull request.",
     ].join("\n")
   );
+}
+
+function runPushCheckoutChecks(repoRoot, parsedUpdates) {
+  const updates = parsedUpdates.updates.filter((update) => !isNullObjectId(update.localSha));
+  if (updates.length === 0) return { treeRequired: false };
+  const readCheckout = (args) => capture(commands.git, ["-C", repoRoot, ...args], repoRoot, withoutGitContext());
+  const head = readCheckout(["rev-parse", "--verify", "HEAD"]).toLowerCase();
+  const mismatched = [...new Set(updates.map((update) => update.localSha.toLowerCase()))]
+    .filter((sha) => sha !== head);
+  if (mismatched.length > 0) {
+    const checkoutInstructions = mismatched.flatMap((sha) => {
+      if (readCheckout(["cat-file", "-t", sha]) !== "tag") return [`  git checkout --detach ${sha}`];
+      return [
+        `  ${sha} is an annotated tag object, which cannot equal HEAD.`,
+        `  Check out its commit with git checkout --detach ${sha}^{commit}, then push that HEAD as a branch or lightweight tag.`,
+      ];
+    });
+    throw new Error([
+      `[PRE_PUSH_CHECKOUT_MISMATCH] refusing to check a push against unrelated HEAD ${head}.`,
+      "Check out each pushed commit and push it separately:",
+      ...checkoutInstructions,
+    ].join("\n"));
+  }
+  const hiddenTrackedFiles = readCheckout(["ls-files", "-v", "-z"]).split("\0")
+    .filter((entry) => /^[a-zS] /.test(entry));
+  if (hiddenTrackedFiles.length > 0) {
+    throw new Error([
+      "[PRE_PUSH_HIDDEN_TRACKED_FILES] cannot verify tracked files marked assume-unchanged or skip-worktree.",
+      "Clear those index flags and restore a complete checkout before pushing.",
+      `Check out the pushed commit: git checkout --detach ${head}`,
+    ].join("\n"));
+  }
+  const dirty = readCheckout(["status", "--porcelain=v1", "--untracked-files=no", "--ignore-submodules=none"]);
+  if (dirty) {
+    throw new Error([
+      "[PRE_PUSH_DIRTY_TREE] refusing push validation with tracked working-tree or index changes.",
+      `Commit or restore those changes, then check out the pushed commit: git checkout --detach ${head}`,
+    ].join("\n"));
+  }
+  return { treeRequired: true };
 }
 
 // On deploy hosts (operator-marked via env `AVE_DEPLOY_HOST=1`), refuse
@@ -835,6 +878,13 @@ function runAppCommentOnlyChecks(dir) {
 
 const { stage, repo, remote, remoteLocation } = parseArgs(process.argv.slice(2));
 const repoRoot = resolve(repo);
+const prePushUpdates =
+  stage === "pre-push" ? parsePrePushUpdates(readPrePushInput()) : null;
+let pushCheckout;
+if (stage === "pre-push") {
+  runPushPolicyChecks(repoRoot, prePushUpdates);
+  pushCheckout = runPushCheckoutChecks(repoRoot, prePushUpdates);
+}
 
 if (!isNamedPackage(repoRoot, "ave") && basename(repoRoot) !== "ave") {
   // App-scoped runner: fail loudly if a mis-wired hook points it at another
@@ -844,18 +894,17 @@ if (!isNamedPackage(repoRoot, "ave") && basename(repoRoot) !== "ave") {
   );
 }
 
-const prePushUpdates =
-  stage === "pre-push" ? parsePrePushUpdates(readPrePushInput()) : null;
-
 console.log(`[checks] stage=${stage} repo=${basename(repoRoot)}`);
+
+if (stage === "pre-push" && !pushCheckout.treeRequired) {
+  console.log("[checks] deletion-only or empty push: no commit tree requires checks");
+  process.exit(0);
+}
 
 if (stage === "pre-commit") {
   runCommitPolicyChecks(repoRoot);
   runStagedSafetyChecks(repoRoot);
 } else if (stage === "pre-push" || stage === "manual") {
-  if (stage === "pre-push") {
-    runPushPolicyChecks(repoRoot, prePushUpdates);
-  }
   runStagedSafetyChecks(repoRoot);
   let classification =
     stage !== "pre-push"
@@ -918,3 +967,5 @@ if (stage === "pre-commit") {
 } else {
   throw new Error(`unsupported stage: ${stage}`);
 }
+
+if (stage === "pre-push") runPushCheckoutChecks(repoRoot, prePushUpdates);

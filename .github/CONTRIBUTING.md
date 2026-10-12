@@ -49,7 +49,7 @@ and `vitest related` for the changed modules. Each source module must have
 related test files; empty discovery selects full checks and a zero-test run
 fails closed. The full `bun run test` and
 `bun run build` run once before merge on the exact main + PR merged tree, and
-CI runs full checks. The hook keeps the full gate for deleted refs,
+CI runs full checks. The hook keeps the full gate for
 non-fast-forward pushes, deleted modules, documentation consumed by runtime,
 tests, build, or workflows, declaration files, generated catalogs, runtime
 entries, non-module assets, mode changes, and global inputs (`package.json`, `bun.lock`,
@@ -67,6 +67,15 @@ gate runs Playwright. The suite (`bun run test:ui-e2e`) is local and self-contai
 it seeds only fixture plugins from `test/fixtures` and reads nothing outside this
 repository. UI changes require the targeted local flow check above. Never
 bypass hooks with `--no-verify` or a hook-skip environment variable.
+
+For every update that pushes a commit, check out that exact commit before
+pushing and keep the tracked working tree and index clean. The hook checks
+this before and after validation, and refuses a different commit with
+checkout instructions. Push different commits separately. Deletion-only
+updates skip code checks because they push no commit tree.
+Annotated tag objects cannot equal `HEAD`; check out their commit and push
+a branch or lightweight tag instead. A complete checkout with no
+assume-unchanged or skip-worktree index flags is required for validation.
 
 ## Architecture
 

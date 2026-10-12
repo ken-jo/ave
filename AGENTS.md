@@ -283,7 +283,7 @@ Pre-push picks one tier and logs it with the reason
   duplicate-helper scan, the lock suites, the changed test files, and
   `vitest related` for the changed modules. No full `bun run test`, no build.
 - full: `bun run typecheck`, full `bun run test`, `bun run build`, and
-  `check:gate-core`, for deleted refs, non-fast-forward updates, the default
+  `check:gate-core`, for non-fast-forward updates, the default
   branch, noncanonical paths, consumed documentation, deletions of modules,
   non-module assets, mode changes, declaration files, generated catalogs,
   runtime entry files, modules with no related test files, and global inputs
@@ -291,6 +291,14 @@ Pre-push picks one tier and logs it with the reason
   files, `scripts/`, `.github/`), including earlier commits in the push.
   `AVE_PREPUSH_FULL=1`
   forces it for one push; `AVE_HOOKS_SKIP=1` still skips the hook.
+
+Every non-deletion ref update must name the checked-out `HEAD`. The tracked
+working tree and index must be clean before and after checks; otherwise the
+hook refuses and names the commit to check out. Push different commits
+separately. Deletion-only updates have no commit tree and skip code checks.
+Annotated tag objects cannot equal `HEAD`; push a branch or lightweight tag
+from their commit instead. Clear assume-unchanged and skip-worktree index
+flags so every tracked file can be verified in a complete checkout.
 
 The full suite and build run once before merge on the exact main + PR merged
 tree, and CI runs its full checks for every change. Do not manually duplicate
