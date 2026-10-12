@@ -86,6 +86,15 @@ describe("request fields the catalog decides", () => {
     expect(body.reasoning_effort).toBeUndefined();
   });
 
+  it("keeps the name rule for a reasoning model whose levels the catalog does not list", async () => {
+    // github-copilot gpt-5.4-nano: reasoning supported, no effort list. Absent
+    // levels are unknown levels; reading them as "none" dropped the effort.
+    const entry = activeModelCatalog().providers["github-copilot"]?.models["gpt-5.4-nano"];
+    expect(entry?.reasoning).toEqual({ supported: true });
+    const body = await sentBody("copilot", "gpt-5.4-nano", { thinkingBudgetTokens: 16_000 });
+    expect(body.reasoning_effort ?? (body.reasoning as { effort?: unknown } | undefined)?.effort).toBe("high");
+  });
+
   it("lowers an adaptive Claude effort to the nearest level the model accepts", async () => {
     installModelCatalog({
       ...bundled,

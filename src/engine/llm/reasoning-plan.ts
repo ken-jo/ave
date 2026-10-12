@@ -143,12 +143,11 @@ export function planReasoning(params: {
   const accepted = entry?.reasoning?.effort;
   if (OPENAI_FAMILY.has(params.vendor)) {
     const requestedEffort = mapReasoningEffort(params.budgetTokens);
-    if (entry?.reasoning !== undefined) {
-      const effort = entry.reasoning.supported && accepted ? nearestAcceptedEffort(requestedEffort, accepted) : undefined;
-      return effort === undefined
-        ? { kind: "none", source: "model-catalog" }
-        : { kind: "openai-effort", requestedEffort, effort, source: "model-catalog" };
-    }
+    if (entry?.reasoning?.supported === false) return { kind: "none", source: "model-catalog" };
+    // A reasoning model whose levels the catalog does not list has unknown
+    // levels, not none (absent means unknown): the name rule decides for it.
+    const catalogEffort = entry?.reasoning?.supported === true && accepted ? nearestAcceptedEffort(requestedEffort, accepted) : undefined;
+    if (catalogEffort !== undefined) return { kind: "openai-effort", requestedEffort, effort: catalogEffort, source: "model-catalog" };
     if (!isOpenAIReasoningModel(params.model)) return { kind: "none", source: "name-rule" };
     // "none" is GPT-5.2+ only by name; o-series / GPT-5.0-5.1 reject it with a 400.
     const effort = requestedEffort === "none" && !supportsReasoningEffortNone(params.model) ? "low" : requestedEffort;

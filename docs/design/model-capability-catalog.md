@@ -212,7 +212,9 @@ Implemented.
   except with interleaved thinking, where the provider allows the budget to span the
   turn. Behavior changes against the bundled snapshot: GPT-5 sends `minimal` (was `low`)
   and GPT-5.1 sends `none` (was `low`) for a budget at or below 500; a model the catalog
-  marks as not reasoning gets no effort.
+  marks as not reasoning gets no effort. A reasoning model whose levels the catalog does
+  not list (Copilot `gpt-5.4-nano`) keeps the name rule: absent levels are unknown, not
+  none.
 - **Run records.** The turn summary and the audit `turn` row carry `modelSettings`
   (`src/shared/run-model-settings.ts`): the catalog `sha256`, the window and its source
   and entry, the output block above, and the reasoning plan as sent. It is omitted for
