@@ -248,19 +248,25 @@ Implemented.
   request to the catalog ceiling, which is where the purpose-specific limits — finalize
   1,024; background 16,384; memory 1,400 / 1,600 / 4,000; work report 800 / 1,000;
   reviewer 256, all unchanged — meet it. Those callers do not see an endpoint-reported
-  ceiling, only the catalog's.
+  ceiling, only the catalog's. A fallback model does not inherit the primary route's
+  resolved ceiling: `streamWithFallback` drops it, and the adapter clamps the fallback's
+  request to the fallback model's own catalog ceiling.
 - **The default is no longer written into settings.** A vendor block stores
   `outputTokenLimit` only when the user set it; the default block has none. Before,
   every saved block carried the materialized 32,000, so a stored 32,000 could not say
-  whether the user chose it. The one-time migration `llm-output-token-limit-default`
-  drops a stored exactly-32,000 once; a 32,000 set afterwards is kept, and fresh
-  installs start with the marker applied.
+  whether the user chose it. A value the user sets through settings is stamped
+  `outputTokenLimitSetByUser: true` (clearing the limit clears the stamp). Every load
+  drops a stored 32,000 that carries no stamp. This is not a one-time migration: an
+  older build reinstalled after this one writes the unstamped 32,000 back, and a
+  marker already on disk would leave it there.
 - **Remaining context** — the output the window still had room for after the turn's
   projected next input — is recorded in the turn summary only
   (`modelSettings.remainingContextOutputTokens`); no request is clamped by it.
 - **Reasoning** (`src/engine/llm/reasoning-plan.ts`, `planReasoning`). Where the catalog
-  knows the model, it decides whether an OpenAI-family route (OpenAI, Copilot, Azure)
-  sends `reasoning_effort` and at what level. The level Ave's budget maps to is sent if
+  knows the model, it decides whether an OpenAI-family route (OpenAI, Azure) sends
+  `reasoning_effort` and at what level. Copilot maps to no catalog provider (§3.4), so
+  the name rules decide there; they send an effort only to OpenAI reasoning models, and
+  none to a Claude model on Copilot. The level Ave's budget maps to is sent if
   the model accepts it, else the nearest accepted level below it, else the lowest
   accepted. An adaptive Claude effort is held to the model's accepted levels the same
   way. Where the catalog does not know the model, the previous name rules decide (slice 7
@@ -272,15 +278,25 @@ Implemented.
   turn. Behavior changes against the bundled snapshot: GPT-5 sends `minimal` (was `low`)
   and GPT-5.1 sends `none` (was `low`) for a budget at or below 500; a model the catalog
   marks as not reasoning gets no effort. A reasoning model whose levels the catalog does
-  not list (Copilot `gpt-5.4-nano`) keeps the name rule: absent levels are unknown, not
-  none.
+  not list keeps the name rule: absent levels are unknown, not none.
+  Chat Completions answers 400 to `reasoning_effort` on a GPT-5 turn that carries tools
+  (Copilot, and OpenAI behind a custom `baseUrl`). That rule lives in `planReasoning`
+  too (`chatCompletionsRejectsToolTurnEffort`): the plan comes back as `kind: "none"`
+  with the requested effort and `suppressed: "chat-completions-tool-turn"`. The adapter
+  and the turn record both take this one answer, so the record never shows an effort
+  the request dropped.
 - **Run records.** The turn summary and the audit `turn` row carry `modelSettings`
   (`src/shared/run-model-settings.ts`): the catalog `sha256`, the window and its source
   and entry, the prompt cap that bounded the budget when one did (§4), the output block
   above, and the reasoning plan as sent. It is omitted for
   subscription runtimes and for a turn a fallback served on another model.
-- **UI.** The renderer's cost estimate assumes `output.effective` (it assumed a fixed
-  4,096) and the estimate tooltip names who set the limit.
+- **UI.** The renderer's cost estimate shows a range. The upper end is the cost with
+  the output at `output.effective` (before, it assumed a fixed 4,096), and the tooltip
+  names who set the limit. The lower end, and the color tier, use the expected output:
+  the mean output of this conversation's last five completed turns, bounded by the
+  limit, or no output before the first turn completes. Tiering on the limit would
+  color a typical turn several times dearer than it is; a fixed guess would ignore how
+  this conversation actually runs.
 
 ## 6. Modalities and pricing (slices 4 and 5)
 
@@ -343,7 +359,7 @@ Each slice is one pull request against `main`, opened in order:
 1. Contract, generator, bundled snapshot with provenance, normalization and validation
    tests, the comparison report, this page, the third-party notice. No behavior change.
 2. Resolver (precedence, aliases, local endpoints) and the context-window consumers.
-3. Effective output and reasoning, the 32,000 migration, the adapter cutover, run records.
+3. Effective output and reasoning, the user-set output stamp, the adapter cutover, run records.
 4. Modalities and tool capability.
 5. Pricing through the catalog, renderer overrides.
 6. Refresh, the setting and policy, `AVE_MODEL_CATALOG`, the network documentation.
