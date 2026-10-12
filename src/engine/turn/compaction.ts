@@ -238,7 +238,7 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
     provider === "openai-compatible" && llmSettings.marketplaceProviderPresetId
       ? self.deps.settingsService.get("marketplace").installedProviderPresets
       : undefined;
-  const route = resolveContextWindowForRoute(llmSettings, installedProviderPresets);
+  const route = resolveContextWindowForRoute(llmSettings, installedProviderPresets, self.deps.modelOverride);
   const model = route.model;
   const identity = `${provider}/${model}`;
   if (route.unresolvedCatalogModel !== undefined) warnUnresolvedCatalogModelOnce(identity, route.unresolvedCatalogModel);

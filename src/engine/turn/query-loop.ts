@@ -54,7 +54,7 @@ import { parseStagedEnvelope } from "../../shared/staged-origins.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import { MAX_TOOL_CALLS_PER_ROUND } from "../../shared/subagent-policy.js";
-import { activeLlmRouteModel, getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
+import { getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
 import { isA2AQuestionInputRequiredControl } from "../../tools/agent-send.js";
 import {
   isA2AAgentCausalContext,
@@ -206,14 +206,13 @@ export async function queryLoop(
       llmSettings.vendors,
       llmSettings.provider,
     );
-    const activeModel = activeLlmRouteModel(llmSettings);
     const subscriptionRuntime = self.provider?.subscriptionRuntime;
     // Subscription transports have no host-verifiable API-key billing identity.
     // A future runtime must add an explicit subscription telemetry contract
     // before its usage can cross this engine boundary.
     const subscriptionUsageIsOpaque = subscriptionRuntime !== undefined;
     const runtimeContextBudget = contextBudgetForCurrentRuntime(self);
-    const model = subscriptionRuntime ? subscriptionRuntime.model ?? "default" : activeModel;
+    const model = runtimeContextBudget.model;
     // Login-backed runtimes own their own reasoning policy. Never project the
     // inactive API vendor's toggle/budget into a subscription prompt.
     const roundLlmSettings = subscriptionRuntime
