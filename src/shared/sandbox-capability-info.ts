@@ -73,8 +73,8 @@ export interface SandboxWindowsStatusInfo {
  *   readiness afterwards; `userState`/`wfpState` say what it saw.
  * - `cancelled`: elevation was not granted (the prompt was dismissed, or
  *   Windows could not show it). Nothing changed.
- * - `timed-out`: nobody answered the elevation prompt within ASRT's 120 s
- *   window (for example, the screen was locked). Nothing was accepted.
+ * - `timed-out`: setup exceeded the runtime's 120 s window. Its final state
+ *   is unconfirmed; partial setup changes may remain.
  * - `failed`: the install or a step after it failed; `errorCode` is ASRT's
  *   stable `WindowsSandboxError` code or `unexpected`.
  */

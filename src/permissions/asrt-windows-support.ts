@@ -455,9 +455,9 @@ export async function installAsrtWindowsSandbox(
     if (error instanceof mod.WindowsSandboxError) {
       if (error.code === "install_timeout") {
         // The self-elevating install subprocess was killed by the 120 s spawn
-        // timeout with the UAC consent dialog still open (on a locked console
-        // the prompt cannot be answered). Nothing was accepted.
-        log.warn({ errorCode: error.code, err: error }, "Windows sandbox install timed out waiting for elevation");
+        // timeout. The elevation prompt may still be open, or setup may have
+        // started already; this does not prove rollback or an unchanged host.
+        log.warn({ errorCode: error.code, err: error }, "Windows sandbox install timed out; result unconfirmed");
         return { outcome: "timed-out" };
       }
       // install_ambient_failed (ASRT 0.0.76 exit 17) lands here too: the WFP

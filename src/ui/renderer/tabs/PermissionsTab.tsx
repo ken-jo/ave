@@ -136,10 +136,10 @@ function describeWindowsInstallResult(result: unknown): WindowsInstallOutcomeVie
   }
   const record = result as Record<string, unknown>;
   if (record.ok === false) {
-    const code = typeof record.error === "string" ? record.error : undefined;
-    const message = formatIpcError(code, undefined, {
-      codeMap: { "user-keyboard-required": t("permissionsTab.osSandboxWindowsInstallNeedsClick") },
-    });
+    const code = ipcErrorCode(record.error);
+    const message = code === "user-keyboard-required"
+      ? t("permissionsTab.osSandboxWindowsInstallNeedsClick")
+      : ipcFailureText("Windows install", record, t("formatIpcError.unknownError"));
     return { outcome: "refused", tone: "error", text: t("permissionsTab.osSandboxWindowsInstallError", { message }), errorCode: code };
   }
   // An older main process answers without `outcome`; read what it did say.
@@ -171,7 +171,7 @@ function describeWindowsInstallResult(result: unknown): WindowsInstallOutcomeVie
     case "timed-out":
       return { outcome, tone: "error", text: t("permissionsTab.osSandboxWindowsInstallTimedOut") };
     case "failed": {
-      const errorCode = typeof record.errorCode === "string" && record.errorCode ? record.errorCode : "unexpected";
+      const errorCode = ipcErrorCode(record.errorCode) ?? "unexpected";
       const text = Object.hasOwn(WINDOWS_INSTALL_FAILURE_COPY, errorCode)
         ? WINDOWS_INSTALL_FAILURE_COPY[errorCode]()
         : t("permissionsTab.osSandboxWindowsInstallFailedOther", { code: errorCode });
@@ -203,6 +203,19 @@ function thrownErrorText(context: string, error: unknown): string {
 /** A stable machine code (`user-keyboard-required`), as opposed to free text. */
 const IPC_ERROR_CODE_RE = /^[a-z][a-z0-9]*(?:[-_:.][a-z0-9]+)*$/;
 
+function ipcErrorCode(value: unknown): string | undefined {
+  return typeof value === "string" && value.length <= 80 && IPC_ERROR_CODE_RE.test(value)
+    ? value
+    : undefined;
+}
+
+function sandboxKindText(kind: unknown): string {
+  if (kind === "full") return t("permissionsTab.osSandboxKindFull");
+  if (kind === "partial") return t("permissionsTab.osSandboxKindPartial");
+  if (kind === "none") return t("permissionsTab.osSandboxKindNone");
+  return t("permissionsTab.osSandboxKindUnknown");
+}
+
 /**
  * An `ok: false` IPC result as this tab shows it: a known code in its
  * localized form, otherwise the action's own localized copy with the code. The
@@ -217,7 +230,7 @@ function ipcFailureText(
   fallback: string | ((code: string | undefined) => string),
 ): string {
   const error = typeof result.error === "string" && result.error ? result.error : undefined;
-  const code = error && IPC_ERROR_CODE_RE.test(error) ? error : undefined;
+  const code = ipcErrorCode(error);
   console.warn(
     `[ave] permissions: ${context} failed:`,
     error ?? "-",
@@ -231,10 +244,9 @@ function ipcFailureText(
 }
 
 function formatRevokeError(error: string | undefined, message: string | undefined): string {
-  if (message) console.warn("[ave] permissions: revoke failed:", error ?? "-", message);
-  return formatIpcError(error, undefined, {
-    codeMap: { "invalid-key": t("permissionsTab.errorInvalidKey") },
-  });
+  return ipcFailureText("revoke", { error, message }, error === "invalid-key"
+    ? t("permissionsTab.errorInvalidKey")
+    : t("formatIpcError.unknownError"));
 }
 
 function formatReviewerDispatchError(error: string): string {
@@ -429,6 +441,9 @@ export function PermissionsTab({
       setDirectories(dirRes.ok && dirRes.verb === "list" ? dirRes.userAdditions : []);
       setReviewer(reviewerRes.settings);
       setSandboxCapability(sandboxRes);
+      console.warn("[ave] permissions: sandbox diagnostics:",
+        sandboxRes.potentialReason ?? sandboxRes.reason, sandboxRes.runtime?.reason,
+        sandboxRes.boot?.dependencyErrors);
       const osSandboxOn = settingsRes.features?.osToolSandbox ?? false;
       setSandboxEnabled(osSandboxOn);
       // Mirrors the store default (ON) for a settings file written before the
@@ -437,7 +452,9 @@ export function PermissionsTab({
       // On win32 with the setting already ON, surface the consent/setup state
       // on tab entry so the panel persists across navigations until ready.
       if (sandboxRes.platform === "win32" && osSandboxOn) {
-        setWindowsStatus(await window.ave.permission.sandboxWindowsStatus());
+        const status = await window.ave.permission.sandboxWindowsStatus();
+        if (status.instructions) console.warn("[ave] permissions: Windows setup diagnostics:", status.instructions);
+        setWindowsStatus(status);
       } else {
         setWindowsStatus(null);
       }
@@ -882,7 +899,8 @@ export function PermissionsTab({
         setPendingDirectoryWarning(null);
         setDirectories(res.persisted);
         if (res.warnings.length > 0) {
-          showBanner("warn", res.warnings.join(" "));
+          console.warn("[ave] permissions: directory warnings:", ...res.warnings);
+          showBanner("warn", t("permissionsTab.directoryWarningBody"));
         }
       } else if (!res.ok) {
         const failed = res as {
@@ -892,6 +910,7 @@ export function PermissionsTab({
           requiresAcknowledgement?: boolean;
         };
         if (failed.requiresAcknowledgement && failed.warnings?.length) {
+          console.warn("[ave] permissions: directory warnings:", ...failed.warnings);
           setPendingDirectoryWarning({ path: dir, warnings: failed.warnings });
           showBanner("warn", t("permissionsTab.warnDirectoryAckRequired"));
         } else {
@@ -1275,12 +1294,12 @@ export function PermissionsTab({
               <p className="italic">{t("permissionsTab.osSandboxRestartNote")}</p>
               {sandboxPotentialReason ? (
                 <p data-testid="os-sandbox-potential-reason">
-                  {t("permissionsTab.osSandboxPotentialReason", { reason: sandboxPotentialReason })}
+                  {t("permissionsTab.osSandboxPotentialReason", { reason: sandboxKindText(sandboxCapability.kind) })}
                 </p>
               ) : null}
               {sandboxRuntimeReason ? (
                 <p data-testid="os-sandbox-runtime-reason">
-                  {t("permissionsTab.osSandboxRuntimeReason", { reason: sandboxRuntimeReason })}
+                  {t("permissionsTab.osSandboxRuntimeReason", { reason: sandboxKindText(sandboxCapability.runtime?.kind) })}
                 </p>
               ) : null}
             </div>
@@ -1297,11 +1316,11 @@ export function PermissionsTab({
                   data-testid="os-sandbox-boot-degraded-detail"
                   className="whitespace-pre-line font-mono text-foreground"
                 >
-                  {sandboxBoot.dependencyErrors.join("\n")}
+                  {t("permissionsTab.osSandboxDiagnosticHint")}
                 </p>
               ) : null}
               <p className="italic">
-                {t("permissionsTab.osSandboxBootDegradedReason", { reason: sandboxBoot.reason })}
+                {t("permissionsTab.osSandboxBootDegradedReason", { reason: ipcErrorCode(sandboxBoot.reason) ?? "unknown" })}
               </p>
             </div>
           ) : null}
@@ -1333,14 +1352,13 @@ export function PermissionsTab({
             windowsStatus.userState !== "absent" ||
             windowsStatus.wfpState !== "absent" ? (
               // Install partially ran or status cannot be fully read. Show the
-              // verbatim ASRT instructions and keep the explicit retry action
-              // available. ASRT 0.0.76 no longer requires Windows sign-out.
+              // localized setup guidance and keep the explicit retry action
+              // available. Setup does not require signing out.
               <div
                 data-testid="os-sandbox-windows-setup-status"
                 className="space-y-2 rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-soft) px-3 py-2 text-[11px] text-info"
               >
                 <p className="font-medium">{t("permissionsTab.osSandboxWindowsReloginHeading")}</p>
-                <p className="whitespace-pre-line font-mono text-foreground">{windowsStatus.instructions}</p>
                 <p className="italic">{t("permissionsTab.osSandboxWindowsReloginPending")}</p>
                 <Button
                   type="button"
@@ -1366,9 +1384,7 @@ export function PermissionsTab({
               >
                 <p className="font-medium">{t("permissionsTab.osSandboxWindowsConsentHeading")}</p>
                 <p>{t("permissionsTab.osSandboxWindowsConsentBody")}</p>
-                {windowsStatus.instructions ? (
-                  <p className="whitespace-pre-line font-mono text-foreground">{windowsStatus.instructions}</p>
-                ) : null}
+                <p className="italic">{t("permissionsTab.osSandboxWindowsReloginPending")}</p>
                 <Button
                   type="button"
                   size="sm"
@@ -1771,11 +1787,7 @@ export function PermissionsTab({
               className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[12px] text-warning"
             >
               <p className="font-medium">{t("permissionsTab.directoryWarningTitle")}</p>
-              <ul className="mt-1 list-disc space-y-1 pl-4">
-                {pendingDirectoryWarning.warnings.map((warning) => (
-                  <li key={warning}>{warning}</li>
-                ))}
-              </ul>
+              <p className="mt-1">{t("permissionsTab.directoryWarningBody")}</p>
               <div className="mt-2 flex gap-2">
                 <Button
                   size="sm"
