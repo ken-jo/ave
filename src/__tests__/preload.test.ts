@@ -153,14 +153,13 @@ describe("preload — plugin webview asset URLs", () => {
     }]]);
   });
 
-  it.each([undefined, "side-request"])("bridges side-chat abort correlation %s on the existing channel", async (sendRequestId) => {
+  it("bridges side-chat cancellation identity on the existing channel", async () => {
+    const sendRequestId = "side-request";
     mockInvoke.mockResolvedValueOnce({ ok: true });
     const api = await loadAveApi();
     const sideChat = api["sideChat"] as NonNullable<AveApi["sideChat"]>;
     await sideChat.abort(sendRequestId);
-    expect(mockInvoke.mock.calls).toEqual([
-      sendRequestId === undefined ? [CHANNELS.sidechat.abort] : [CHANNELS.sidechat.abort, { sendRequestId }],
-    ]);
+    expect(mockInvoke.mock.calls).toEqual([[CHANNELS.sidechat.abort, { sendRequestId }]]);
   });
 
   it("bridges side-chat child transcripts with only the explicit owner request", async () => {

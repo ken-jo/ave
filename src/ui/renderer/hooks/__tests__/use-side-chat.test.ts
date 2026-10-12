@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, act, waitFor } from "@testing-library/react";
 import { useSideChat } from "../use-side-chat.js";
 import type { ChatStreamEvent, ChatEntry } from "../../../../lib/chat-stream-state.js";
 import type { AveApi } from "../../types.js";
 import { deferred } from "../../../../../test/renderer/helpers.js";
+import { sessionUuid } from "../../../../__tests__/support/session-uuid.js";
 
 /**
  * A test double for the side-chat preload surface. Exposes an `emit` so the test
@@ -14,7 +15,7 @@ import { deferred } from "../../../../../test/renderer/helpers.js";
  */
 function makeApi() {
   const handlers = new Set<(e: ChatStreamEvent) => void>();
-  const abort = vi.fn(async (_sendRequestId?: string) => ({ ok: true as const }));
+  const abort = vi.fn<NonNullable<AveApi["sideChat"]>["abort"]>(async () => ({ ok: true }));
   // Typed as the real invoke is — either shape — so a test can hand back the
   // host's refusal without casting past the contract.
   const send = vi.fn(
@@ -23,7 +24,7 @@ function makeApi() {
       result: {},
     }),
   );
-  const newSession = vi.fn(async () => ({ ok: true as const, sessionId: "side-2" }));
+  const newSession = vi.fn<NonNullable<AveApi["sideChat"]>["new"]>(async () => ({ ok: true, sessionId: "side-2" }));
   const load = vi.fn<NonNullable<AveApi["sideChat"]>["load"]>(async () => ({ ok: true, sessionId: "side-3", messages: [] }));
   const list = vi.fn(async () => ({ current: "side-1", sessions: [] }));
   const onStream = vi.fn((h: (e: ChatStreamEvent) => void) => {
@@ -64,7 +65,481 @@ function lastAssistant(entries: ChatEntry[]): Extract<ChatEntry, { kind: "assist
   return undefined;
 }
 
+const REFUSAL_RESPONSE_ORDERS = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] as const;
+const REFUSAL_INTENT_CASES = Object.freeze((["new", "load"] as const).flatMap((first) =>
+  (["new", "load", "send"] as const).flatMap((second) =>
+    (["new", "load", "send"] as const).flatMap((third) =>
+      REFUSAL_RESPONSE_ORDERS.map((order) => ({ first, second, third, order })),
+    ),
+  ),
+));
+
 describe("useSideChat session identity", () => {
+  it.each(REFUSAL_INTENT_CASES)("keeps the accepted $first across refused $second/$third in reply order $order", async ({ first, second, third, order }) => {
+    const { api, spies } = makeApi();
+    const initialSessionId = sessionUuid("sidechat-response-initial");
+    const acceptedSessionId = sessionUuid("sidechat-response-accepted");
+    spies.load.mockResolvedValueOnce({ ok: true, sessionId: initialSessionId, messages: [] });
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.loadSession(initialSessionId); });
+    type Reply = { ok: true; sessionId: string; messages: [] } | { ok: false; error: string; messages: [] };
+    const replies: Array<ReturnType<typeof deferred<Reply>>> = [];
+    const invoke = () => {
+      const reply = deferred<Reply>();
+      replies.push(reply);
+      return reply.promise;
+    };
+    spies.load.mockImplementation(invoke);
+    spies.newSession.mockImplementation(async () => {
+      const reply = await invoke();
+      return reply.ok ? { ok: true, sessionId: reply.sessionId } : { ok: false, error: reply.error };
+    });
+    spies.send.mockImplementation(async () => {
+      const reply = await invoke();
+      return reply.ok ? { ok: true, result: {} } : { ok: false, error: reply.error };
+    });
+    const pending: Array<Promise<void>> = [];
+    for (const intent of [first, second, third]) {
+      act(() => {
+        pending.push(intent === "new" ? result.current.newSession()
+          : intent === "load" ? result.current.loadSession(acceptedSessionId)
+          : result.current.send(`Draft ${pending.length}`));
+      });
+    }
+    await waitFor(() => expect(replies).toHaveLength(3));
+    let hostSessionId = initialSessionId;
+    // The first transition holds the host lease while the other two requests
+    // are handled, so both receive refusal without changing the host session.
+    for (const index of order) {
+      await act(async () => {
+        if (index === 0) {
+          hostSessionId = acceptedSessionId;
+          replies[index]!.resolve({ ok: true, sessionId: hostSessionId, messages: [] });
+        } else replies[index]!.resolve({ ok: false, error: "streaming-active", messages: [] });
+        await pending[index];
+      });
+    }
+    expect(result.current.sessionId).toBe(hostSessionId);
+    expect(result.current.isStreaming).toBe(false);
+    if (third === "send") {
+      expect(result.current.entries).toContainEqual(expect.objectContaining({ kind: "user", text: "Draft 2" }));
+    }
+  });
+
+  it.each(["refusal", "transport failure"] as const)("ignores an old send %s after restoring a session and accepting a fresh turn", async (outcome) => {
+    const { api, spies, emit } = makeApi();
+    const acceptedSessionId = sessionUuid("sidechat-restored-generation");
+    const acceptedLoad = deferred<{ ok: true; sessionId: string; messages: [] }>();
+    const refusedLoad = deferred<{ ok: false; error: string; messages: [] }>();
+    const oldSend = deferred<{ ok: false; error: string }>();
+    const freshSend = deferred<{ ok: true; result: unknown }>();
+    spies.load.mockReturnValueOnce(acceptedLoad.promise).mockReturnValueOnce(refusedLoad.promise);
+    spies.send.mockImplementationOnce(async () => {
+      const reply = await oldSend.promise;
+      if (outcome === "transport failure") throw new Error("Old transport failure");
+      return reply;
+    }).mockReturnValueOnce(freshSend.promise);
+    const { result } = renderHook(() => useSideChat(api));
+    let first = Promise.resolve();
+    let second = Promise.resolve();
+    let third = Promise.resolve();
+    act(() => { first = result.current.loadSession(acceptedSessionId); });
+    act(() => { second = result.current.send("Refused draft"); });
+    act(() => { third = result.current.loadSession("side-busy"); });
+    await act(async () => {
+      refusedLoad.resolve({ ok: false, error: "streaming-active", messages: [] });
+      await third;
+      acceptedLoad.resolve({ ok: true, sessionId: acceptedSessionId, messages: [] });
+      await first;
+    });
+    let fresh = Promise.resolve();
+    act(() => { fresh = result.current.send("Fresh request"); });
+    emit({ type: "user_message", streamId: 1, sessionId: acceptedSessionId, sendRequestId: spies.send.mock.calls.at(-1)![3] });
+    emit({ type: "text_delta", streamId: 1, text: "Fresh answer" });
+    const entriesBeforeReply = result.current.entries;
+    try {
+      await act(async () => {
+        oldSend.resolve({ ok: false, error: "streaming-active" });
+        await second;
+      });
+      expect(result.current.isStreaming).toBe(true);
+      expect(result.current.entries).toEqual(entriesBeforeReply);
+      expect(lastAssistant(result.current.entries)).toMatchObject({ text: "Fresh answer", streaming: true });
+    } finally {
+      await act(async () => {
+        emit({ type: "done", streamId: 1 });
+        freshSend.resolve({ ok: true, result: {} });
+        await fresh;
+      });
+    }
+  });
+
+  it("retains batched text when an interrupt arrives before render", async () => {
+    const { api, dispatch, acceptTurn } = makeApi();
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.send("Own request"); });
+    acceptTurn(1);
+    await act(async () => {
+      dispatch({ type: "llm_status", streamId: 1, phase: "retry", attempt: 2, maxAttempts: 5 });
+      dispatch({ type: "text_delta", streamId: 1, text: "Partial answer" });
+      await result.current.abort();
+    });
+    expect(lastAssistant(result.current.entries)).toMatchObject({
+      text: "Partial answer", interrupted: true, streaming: false,
+    });
+  });
+
+  it("keeps batched round text separate from the following round", async () => {
+    const { api, dispatch, acceptTurn } = makeApi();
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.send("Own request"); });
+    acceptTurn(1);
+    act(() => {
+      dispatch({ type: "text_delta", streamId: 1, text: "First " });
+      dispatch({ type: "text_delta", streamId: 1, text: "round" });
+      dispatch({ type: "assistant_round", streamId: 1, stopReason: "tool_use", hasToolCalls: true });
+      dispatch({ type: "text_delta", streamId: 1, text: "Second round" });
+    });
+    const answers = result.current.entries.filter((entry) => entry.kind === "assistant");
+    expect(answers).toMatchObject([
+      { text: "First round", phase: "work", streaming: false },
+      { text: "Second round", streaming: true },
+    ]);
+  });
+
+  it.each(((["new", "load"] as const).flatMap((originalTransition) =>
+    (["new", "load"] as const).flatMap((replacementTransition) =>
+      (["before", "after"] as const).map((replyOrder) => ({ originalTransition, replacementTransition, replyOrder })),
+    ),
+  )))("keeps an accepted $originalTransition when its busy $replacementTransition replacement replies $replyOrder completion", async ({ originalTransition, replacementTransition, replyOrder }) => {
+    const { api, spies } = makeApi();
+    const original = deferred<{ ok: true; sessionId: string; messages: [] }>();
+    const replacement = deferred<{ ok: false; error: string; messages: [] }>();
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.loadSession("side-3"); });
+    if (originalTransition === "new") spies.newSession.mockReturnValueOnce(original.promise.then(({ sessionId }) => ({ ok: true, sessionId })));
+    else spies.load.mockReturnValueOnce(original.promise);
+    if (replacementTransition === "new") spies.newSession.mockReturnValueOnce(replacement.promise.then(({ error }) => ({ ok: false, error })));
+    else spies.load.mockReturnValueOnce(replacement.promise);
+    let first = Promise.resolve();
+    let second = Promise.resolve();
+    act(() => { first = originalTransition === "new" ? result.current.newSession() : result.current.loadSession("side-next"); });
+    act(() => { second = replacementTransition === "new" ? result.current.newSession() : result.current.loadSession("side-refused"); });
+    const finishOriginal = async () => {
+      original.resolve({ ok: true, sessionId: "side-next", messages: [] });
+      await first;
+    };
+    const finishReplacement = async () => {
+      replacement.resolve({ ok: false, error: "streaming-active", messages: [] });
+      await second;
+    };
+    await act(async () => {
+      if (replyOrder === "before") { await finishReplacement(); await finishOriginal(); }
+      else { await finishOriginal(); await finishReplacement(); }
+    });
+    expect(result.current.sessionId).toBe("side-next");
+    expect(lastAssistant(result.current.entries)).toMatchObject({
+      text: "아직 응답을 생성하는 중입니다. 중지하거나 끝날 때까지 기다린 뒤 다시 보내 주세요.",
+      terminalError: true,
+    });
+    expect(result.current.entries.filter((entry) => entry.kind === "assistant" && entry.terminalError)).toHaveLength(1);
+  });
+
+  it("discards retained history when an accepted send binds a different host session", async () => {
+    const { api, spies, emit } = makeApi();
+    spies.load.mockResolvedValueOnce({
+      ok: true, sessionId: "side-old", messages: [{ index: 0, role: "user", content: "Old session prompt" }],
+    });
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.loadSession("side-old"); });
+    expect(result.current.entries.some((entry) => entry.kind === "user" && entry.text === "Old session prompt")).toBe(true);
+    await act(async () => { await result.current.send("New session prompt"); });
+    emit({ type: "user_message", streamId: 1, sessionId: "side-new", sendRequestId: spies.send.mock.calls.at(-1)![3] });
+    emit({ type: "text_delta", streamId: 1, text: "New session answer" });
+    expect(result.current.entries.some((entry) => entry.kind === "user" && entry.text === "Old session prompt")).toBe(false);
+    expect(result.current.entries.filter((entry) => entry.kind === "user")).toMatchObject([{ text: "New session prompt" }]);
+    expect(result.current.sessionId).toBe("side-new");
+  });
+
+  it.each(["before", "after"] as const)("preserves the accepted session through refused replacements resolved %s the latest refusal", async (earlierOrder) => {
+    const { api, spies } = makeApi();
+    const accepted = deferred<{ ok: true; sessionId: string; messages: [] }>();
+    const busy = deferred<{ ok: false; error: string; messages: [] }>();
+    const missing = deferred<{ ok: false; error: string; messages: [] }>();
+    spies.load.mockReturnValueOnce(accepted.promise).mockReturnValueOnce(busy.promise).mockReturnValueOnce(missing.promise);
+    const { result } = renderHook(() => useSideChat(api));
+    let first = Promise.resolve();
+    let second = Promise.resolve();
+    let third = Promise.resolve();
+    act(() => { first = result.current.loadSession("side-next"); });
+    act(() => { second = result.current.loadSession("side-busy"); });
+    act(() => { third = result.current.loadSession("side-missing"); });
+    const finishEarlier = async () => { busy.resolve({ ok: false, error: "streaming-active", messages: [] }); await second; };
+    const finishLatest = async () => { missing.resolve({ ok: false, error: "session-not-found", messages: [] }); await third; };
+    await act(async () => {
+      if (earlierOrder === "before") { await finishEarlier(); await finishLatest(); }
+      else { await finishLatest(); await finishEarlier(); }
+      accepted.resolve({ ok: true, sessionId: "side-next", messages: [] });
+      await first;
+    });
+    expect(result.current.sessionId).toBe("side-next");
+    expect(lastAssistant(result.current.entries)?.text).toBe("세션을 찾을 수 없습니다.");
+  });
+
+  it.each(["before", "after"] as const)("retains a refused send and its accepted load when the refusal replies %s the load", async (replyOrder) => {
+    const { api, spies } = makeApi();
+    const loaded = deferred<{ ok: true; sessionId: string; messages: [] }>();
+    const refused = deferred<{ ok: false; error: string }>();
+    spies.load.mockReturnValueOnce(loaded.promise);
+    spies.send.mockReturnValueOnce(refused.promise);
+    const { result } = renderHook(() => useSideChat(api));
+    let load = Promise.resolve();
+    let send = Promise.resolve();
+    act(() => { load = result.current.loadSession("side-next"); });
+    act(() => { send = result.current.send("Recoverable draft"); });
+    const finishLoad = async () => { loaded.resolve({ ok: true, sessionId: "side-next", messages: [] }); await load; };
+    const finishSend = async () => { refused.resolve({ ok: false, error: "streaming-active" }); await send; };
+    await act(async () => {
+      if (replyOrder === "before") { await finishSend(); await finishLoad(); }
+      else { await finishLoad(); await finishSend(); }
+    });
+    expect(result.current.sessionId).toBe("side-next");
+    expect(result.current.entries.filter((entry) => entry.kind === "user")).toMatchObject([{ text: "Recoverable draft" }]);
+    expect(lastAssistant(result.current.entries)).toMatchObject({
+      terminalError: true,
+      text: "아직 응답을 생성하는 중입니다. 중지하거나 끝날 때까지 기다린 뒤 다시 보내 주세요.",
+    });
+  });
+
+  it.each(["before", "after"] as const)("recovers a load through an intervening send refused %s the replacement load", async (replyOrder) => {
+    const { api, spies } = makeApi();
+    const accepted = deferred<{ ok: true; sessionId: string; messages: [] }>();
+    const refusedSend = deferred<{ ok: false; error: string }>();
+    const refusedLoad = deferred<{ ok: false; error: string; messages: [] }>();
+    spies.load.mockReturnValueOnce(accepted.promise).mockReturnValueOnce(refusedLoad.promise);
+    spies.send.mockReturnValueOnce(refusedSend.promise);
+    const { result } = renderHook(() => useSideChat(api));
+    let first = Promise.resolve();
+    let second = Promise.resolve();
+    let third = Promise.resolve();
+    act(() => { first = result.current.loadSession("side-next"); });
+    act(() => { second = result.current.send("Intervening draft"); });
+    act(() => { third = result.current.loadSession("side-refused"); });
+    const finishSend = async () => { refusedSend.resolve({ ok: false, error: "streaming-active" }); await second; };
+    const finishLoad = async () => { refusedLoad.resolve({ ok: false, error: "streaming-active", messages: [] }); await third; };
+    await act(async () => {
+      if (replyOrder === "before") { await finishSend(); await finishLoad(); }
+      else { await finishLoad(); await finishSend(); }
+      accepted.resolve({ ok: true, sessionId: "side-next", messages: [] });
+      await first;
+    });
+    expect(result.current.sessionId).toBe("side-next");
+    expect(lastAssistant(result.current.entries)?.terminalError).toBe(true);
+  });
+
+  it("retains every current refusal draft across delayed load hydration", async () => {
+    const { api, spies } = makeApi();
+    const accepted = deferred<{ ok: true; sessionId: string; messages: [] }>();
+    spies.load.mockReturnValueOnce(accepted.promise);
+    const { result } = renderHook(() => useSideChat(api));
+    let loading = Promise.resolve();
+    act(() => { loading = result.current.loadSession("side-next"); });
+    for (const draft of ["First draft", "Second draft"]) {
+      spies.send.mockResolvedValueOnce({ ok: false, error: "streaming-active" });
+      await act(async () => { await result.current.send(draft); });
+    }
+    await act(async () => { accepted.resolve({ ok: true, sessionId: "side-next", messages: [] }); await loading; });
+    expect(result.current.entries.filter((entry) => entry.kind === "user")).toMatchObject([
+      { text: "First draft" }, { text: "Second draft" },
+    ]);
+    expect(result.current.entries.filter((entry) => entry.kind === "assistant" && entry.terminalError)).toHaveLength(2);
+  });
+
+  it("does not dispatch an interrupted draft after its view unmounts", async () => {
+    const { api, spies, acceptTurn } = makeApi();
+    const firstReply = deferred<{ ok: true; result: unknown }>();
+    const abortReply = deferred<{ ok: true }>();
+    spies.send.mockReturnValueOnce(firstReply.promise);
+    spies.abort.mockReturnValueOnce(abortReply.promise);
+    const { result, unmount } = renderHook(() => useSideChat(api));
+    let first = Promise.resolve();
+    let replacement = Promise.resolve();
+    act(() => { first = result.current.send("First request"); });
+    acceptTurn(1);
+    act(() => { replacement = result.current.send("Interrupted draft"); });
+    expect(spies.abort).toHaveBeenCalledOnce();
+    unmount();
+    await act(async () => {
+      firstReply.resolve({ ok: true, result: {} });
+      abortReply.resolve({ ok: true });
+      await Promise.all([first, replacement]);
+    });
+    expect(spies.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not dispatch a queued replacement after its view unmounts", async () => {
+    const { api, spies, acceptTurn } = makeApi();
+    const reply = deferred<{ ok: true; result: unknown }>();
+    spies.send.mockReturnValueOnce(reply.promise);
+    const { result, unmount } = renderHook(() => useSideChat(api));
+    let first = Promise.resolve();
+    let queued = Promise.resolve();
+    act(() => { first = result.current.send("First request"); });
+    acceptTurn(1);
+    act(() => { queued = result.current.send("Queued draft", { inputOrigin: "queue-auto" }); });
+    unmount();
+    await act(async () => {
+      reply.resolve({ ok: true, result: {} });
+      await Promise.all([first, queued]);
+    });
+    expect(spies.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not dispatch queued work first invoked after view disposal", async () => {
+    const { api, spies } = makeApi();
+    const { result, unmount } = renderHook(() => useSideChat(api));
+    const send = result.current.send;
+    unmount();
+    await act(async () => { await send("Queued draft", { inputOrigin: "queue-auto" }); });
+    expect(spies.send).not.toHaveBeenCalled();
+  });
+
+  it("rejects an owned stream verdict after view disposal", async () => {
+    const { api, acceptTurn } = makeApi();
+    const { result, unmount } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.send("Own request"); });
+    acceptTurn(1);
+    const verdict = result.current.isCurrentTurnEvent;
+    unmount();
+    expect(verdict({ type: "done", streamId: 1 })).toBe(false);
+  });
+
+  it.each(["new", "load"] as const)("does not publish a late %s binding after view disposal", async (transition) => {
+    const { api, spies } = makeApi();
+    const reply = deferred<{ ok: true; sessionId: string; messages: [] }>();
+    if (transition === "new") spies.newSession.mockReturnValueOnce(reply.promise);
+    else spies.load.mockReturnValueOnce(reply.promise);
+    const onSessionBound = vi.fn();
+    const { result, unmount } = renderHook(() => useSideChat(api, { onSessionBound }));
+    let pending = Promise.resolve();
+    act(() => { pending = transition === "new" ? result.current.newSession() : result.current.loadSession("side-later"); });
+    unmount();
+    await act(async () => {
+      reply.resolve({ ok: true, sessionId: "side-later", messages: [] });
+      await pending;
+    });
+    expect(onSessionBound).not.toHaveBeenCalled();
+  });
+
+  it.each(["done", "error"] as const)("keeps a %s transcript unchanged after a late invoke rejection", async (terminal) => {
+    const { api, spies, acceptTurn, emit } = makeApi();
+    const reply = deferred<void>();
+    spies.send.mockImplementationOnce(async () => {
+      await reply.promise;
+      throw new Error("Late transport failure");
+    });
+    const { result } = renderHook(() => useSideChat(api));
+    let pending = Promise.resolve();
+    act(() => { pending = result.current.send("Own request"); });
+    acceptTurn(1);
+    emit({ type: "text_delta", text: "Confirmed answer", streamId: 1 });
+    emit({ type: terminal, error: "Confirmed failure", streamId: 1 });
+    const closed = result.current.entries;
+    await act(async () => { reply.resolve(undefined); await pending; });
+    expect(result.current.entries).toEqual(closed);
+    expect(result.current.isStreaming).toBe(false);
+  });
+
+  it("settles retained text and reports a refused session load", async () => {
+    const { api, spies, acceptTurn, emit } = makeApi();
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.send("Own request"); });
+    acceptTurn(1);
+    emit({ type: "text_delta", text: "Partial answer", streamId: 1 });
+    spies.load.mockResolvedValueOnce({ ok: false, error: "session-not-found", messages: [] });
+    await act(async () => { await result.current.loadSession("side-missing"); });
+    expect(result.current.entries).toContainEqual(expect.objectContaining({
+      kind: "assistant", text: "Partial answer", streaming: false, interrupted: true,
+    }));
+    expect(lastAssistant(result.current.entries)).toMatchObject({
+      text: "세션을 찾을 수 없습니다.", terminalError: true, streaming: false,
+    });
+    expect(result.current.sessionId).toBe("side-1");
+    expect(result.current.isStreaming).toBe(false);
+  });
+
+  it.each(["new", "load"] as const)("reports a refused %s session change", async (transition) => {
+    const { api, spies } = makeApi();
+    if (transition === "new") spies.newSession.mockResolvedValueOnce({ ok: false, error: "session-not-found" });
+    else spies.load.mockResolvedValueOnce({ ok: false, error: "session-not-found", messages: [] });
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => {
+      if (transition === "new") await result.current.newSession();
+      else await result.current.loadSession("side-missing");
+    });
+    expect(lastAssistant(result.current.entries)).toMatchObject({ text: "세션을 찾을 수 없습니다.", terminalError: true });
+  });
+
+  it("preserves a completed answer when a later session load is refused", async () => {
+    const { api, spies, acceptTurn, emit } = makeApi();
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.send("Own request"); });
+    acceptTurn(1);
+    emit({ type: "text_delta", text: "Completed answer", streamId: 1 });
+    emit({ type: "done", streamId: 1 });
+    spies.load.mockResolvedValueOnce({ ok: false, error: "session-not-found", messages: [] });
+    await act(async () => { await result.current.loadSession("side-missing"); });
+    expect(result.current.entries.find((entry) => entry.kind === "assistant" && entry.text === "Completed answer"))
+      .toMatchObject({ text: "Completed answer", streaming: false });
+    expect(result.current.entries.find((entry) => entry.kind === "assistant" && entry.text === "Completed answer"))
+      .not.toHaveProperty("interrupted");
+    expect(lastAssistant(result.current.entries)?.terminalError).toBe(true);
+  });
+
+  it("localizes a refused interruption after settling retained text", async () => {
+    const { api, spies, acceptTurn, emit } = makeApi();
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.send("Own request"); });
+    acceptTurn(1);
+    emit({ type: "text_delta", text: "Partial answer", streamId: 1 });
+    spies.abort.mockResolvedValueOnce({ ok: false, error: "invalid-send-request-id" });
+    await act(async () => { await result.current.abort(); });
+    expect(result.current.entries).toContainEqual(expect.objectContaining({
+      kind: "assistant", text: "Partial answer", interrupted: true, streaming: false,
+    }));
+    expect(lastAssistant(result.current.entries)?.text).toBe("잘못된 입력입니다.");
+  });
+
+  it.each(["new", "load"] as const)("reports a %s session transport rejection without propagating it", async (transition) => {
+    const { api, spies } = makeApi();
+    if (transition === "new") spies.newSession.mockRejectedValueOnce(new Error("Session transfer failed"));
+    else spies.load.mockRejectedValueOnce(new Error("Session transfer failed"));
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => {
+      const pending = transition === "new" ? result.current.newSession() : result.current.loadSession("side-missing");
+      await expect(pending).resolves.toBeUndefined();
+    });
+    expect(lastAssistant(result.current.entries)).toMatchObject({ text: "Session transfer failed", terminalError: true });
+  });
+
+  it.each(["new", "load"] as const)("drops a late %s session rejection after a newer send", async (transition) => {
+    const { api, spies, acceptTurn, emit } = makeApi();
+    const reply = deferred<void>();
+    const rejectLater = async () => { await reply.promise; throw new Error("Earlier session transfer failed"); };
+    if (transition === "new") spies.newSession.mockImplementationOnce(rejectLater);
+    else spies.load.mockImplementationOnce(rejectLater);
+    const { result } = renderHook(() => useSideChat(api));
+    let earlier = Promise.resolve();
+    act(() => { earlier = transition === "new" ? result.current.newSession() : result.current.loadSession("side-earlier"); });
+    await act(async () => { await result.current.send("Current request"); });
+    acceptTurn(1);
+    emit({ type: "text_delta", text: "Current answer", streamId: 1 });
+    const current = result.current.entries;
+    await act(async () => { reply.resolve(undefined); await expect(earlier).resolves.toBeUndefined(); });
+    expect(result.current.entries).toEqual(current);
+    expect(result.current.isStreaming).toBe(true);
+  });
+
   it.each((["new", "load"] as const).flatMap((replyMode) =>
     (["send", "new", "load"] as const).map((transition) => ({ replyMode, transition })),
   ))("ignores an earlier $replyMode reply after a newer $transition binds its session", async ({ replyMode, transition }) => {
@@ -725,6 +1200,7 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
     expect(lastAssistant(result.current.entries)).toMatchObject({
       text: "partial answer",
       interrupted: true,
+      streaming: false,
     });
     expect(result.current.entries.some(
       (entry) => entry.kind === "assistant" && entry.phase === "status",

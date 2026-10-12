@@ -336,10 +336,8 @@ export function buildInternalApiSurface() {
       >,
     getSubAgentTranscript: async (request: SubAgentTranscriptRequest) =>
       ipcRenderer.invoke(CHANNELS.sidechat.getSubAgentTranscript, request) as Promise<SubAgentTranscriptResult>,
-    abort: async (sendRequestId?: string) =>
-      (sendRequestId === undefined
-        ? ipcRenderer.invoke(CHANNELS.sidechat.abort)
-        : ipcRenderer.invoke(CHANNELS.sidechat.abort, { sendRequestId })) as Promise<
+    abort: async (sendRequestId: string) =>
+      ipcRenderer.invoke(CHANNELS.sidechat.abort, { sendRequestId }) as Promise<
         { ok: true } | { ok: false; error: string }
       >,
     onStream: (handler: (event: ChatStreamEvent) => void) => {

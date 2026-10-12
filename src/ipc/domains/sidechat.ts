@@ -6,7 +6,7 @@
  *   `ave:sidechat:send`  invoke  renderer→main → TurnResult | { ok:false, error }
  *   `ave:sidechat:new`   invoke  → { ok, sessionId }
  *   `ave:sidechat:load`  invoke  (sessionId) → { ok, sessionId, messages }
- *   `ave:sidechat:abort` invoke { sendRequestId? } → { ok }
+ *   `ave:sidechat:abort` invoke { sendRequestId } → { ok }
  *   `ave:sidechat:stream`   event  main→renderer  { streamId, ...frame }
  *   `ave:sidechat:fallback` event  main→renderer  { from, to }
  *
@@ -117,6 +117,8 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   // chat's `activeStreamTurn`. A main abort must never cancel a side turn.
   let activeSideStreamTurn: Promise<TurnResult> | null = null;
   let activeSideSendRequestId: string | null = null;
+  let activeSideSenderId: number | null = null;
+  const originWritesBySession = new Map<string, Promise<void>>();
   let nextSideStreamId = 0;
 
   const buildSink = (wc: WebContents | undefined): ((channel: string, payload: unknown) => void) =>
@@ -168,7 +170,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     // refuses the same case with `streaming-active` (its lease returns null);
     // the renderer's interrupt path aborts and awaits the turn first, so a user
     // gesture still goes through.
-    if (activeSideStreamTurn) {
+    if (activeSideStreamTurn || loop.isSessionTransitioning()) {
       return { ok: false as const, error: "streaming-active" };
     }
     const win = getMainWindow();
@@ -212,19 +214,30 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       if (activeSideStreamTurn === turnPromise) {
         activeSideStreamTurn = null;
         activeSideSendRequestId = null;
+        activeSideSenderId = null;
       }
       // After the turn, never before it. The turn is what gives this side chat
       // a file, and an await between the streaming guard above and the
       // `activeSideStreamTurn` assignment below would open exactly the window
       // that guard exists to close.
-      await recordSideChatOrigin(
+      // Execution may finish before its origin write. Serialize that session's
+      // read/write so a following turn cannot replace the first recorded parent.
+      const previousOriginWrite = originWritesBySession.get(turnSideChatSessionId) ?? Promise.resolve();
+      const originWrite = previousOriginWrite.then(() => recordSideChatOrigin(
         deps.sideChatMemoryManager,
         turnSideChatSessionId,
         p.originSessionId,
-      );
+      ));
+      originWritesBySession.set(turnSideChatSessionId, originWrite);
+      try {
+        await originWrite;
+      } finally {
+        if (originWritesBySession.get(turnSideChatSessionId) === originWrite) originWritesBySession.delete(turnSideChatSessionId);
+      }
     });
     activeSideStreamTurn = turnPromise;
     activeSideSendRequestId = typeof p.sendRequestId === "string" ? p.sendRequestId : null;
+    activeSideSenderId = e.sender.id;
     try {
       const result = await turnPromise;
       return { ok: true as const, result };
@@ -235,6 +248,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.sidechat.new, async (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.new, e); return UNAUTHORIZED_FRAME; }
+    if (loop.isSessionTransitioning()) return { ok: false as const, error: "streaming-active" };
     // Abort any in-flight turn first so its remaining frames never leak into the
     // fresh session (mirrors abort handler; contrast the prior unguarded call).
     return loop.runSessionTransition("sidechat-new", async (lease) => {
@@ -249,6 +263,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     if (!isValidSessionId(sessionId)) {
       return { ok: false as const, error: "invalid-session-id", messages: [] };
     }
+    if (loop.isSessionTransitioning()) return { ok: false as const, error: "streaming-active", messages: [] };
     // Abort any in-flight turn first so its remaining frames never leak into the
     // loaded session's transcript (same concurrency hazard as `new`).
     return loop.runSessionTransition("sidechat-load", async (lease) => {
@@ -268,16 +283,14 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.sidechat.abort, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.abort, e); return UNAUTHORIZED_FRAME; }
-    if (payload !== undefined) {
-      const sendRequestId = payload && typeof payload === "object" && !Array.isArray(payload)
-        ? (payload as Record<string, unknown>).sendRequestId
-        : undefined;
-      if (typeof sendRequestId !== "string" || sendRequestId.trim().length === 0 || sendRequestId.length > MAX_SEND_REQUEST_ID_LENGTH) {
-        return { ok: false as const, error: "invalid-send-request-id" };
-      }
-      // A pending local refusal and a finished turn own no current host turn.
-      if (sendRequestId !== activeSideSendRequestId) return { ok: true as const };
+    const sendRequestId = payload && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>).sendRequestId
+      : undefined;
+    if (typeof sendRequestId !== "string" || sendRequestId.trim().length === 0 || sendRequestId.length > MAX_SEND_REQUEST_ID_LENGTH) {
+      return { ok: false as const, error: "invalid-send-request-id" };
     }
+    // Neither another renderer nor an unaccepted or finished request owns this turn.
+    if (sendRequestId !== activeSideSendRequestId || e.sender.id !== activeSideSenderId) return { ok: true as const };
     await abortActiveSideTurn();
     return { ok: true as const };
   });

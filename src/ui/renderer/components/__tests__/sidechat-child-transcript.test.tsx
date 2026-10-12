@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useLayoutEffect, useMemo } from "react";
 import { mkdtempSync } from "node:fs";
@@ -21,6 +21,7 @@ import { fakeLlmSettings } from "../../../../shared/__tests__/fake-llm-settings.
 import type { GenericMessage } from "../../../../engine/llm/types.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { ApprovalSurfaceProvider, useApproval, type ApprovalSurfaceContextValue } from "../../hooks/use-approval.js";
+import { useSideChat } from "../../hooks/use-side-chat.js";
 import { ChatContextProvider, type ChatContextValue } from "../../context/ChatContext.js";
 import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
@@ -45,7 +46,7 @@ function publish(channel: string, payload: unknown) {
 const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
   const handler = handlers.get(channel);
   if (!handler) throw new Error(`Unregistered test channel: ${channel}`);
-  const result = await handler({ senderFrame }, ...args);
+  const result = await handler({ senderFrame, sender: { id: 1 } }, ...args);
   replies.push({ channel, result });
   return result;
 });
@@ -178,6 +179,53 @@ async function setup() {
   };
   return { api, deps, runner, read, sideLoop, tileLoop };
 }
+
+describe("side-chat session transition boundary", () => {
+  it("keeps the host and hook on the accepted session after a competing load is refused", async () => {
+    const { api, sideLoop } = await setup();
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.loadSession(sideSessionId); });
+    const entered = deferred<void>();
+    const completion = deferred<void>();
+    const loadSession = sideLoop.loadSession.getMockImplementation()!;
+    sideLoop.loadSession.mockImplementationOnce(async (next) => {
+      entered.resolve(undefined);
+      await completion.promise;
+      return loadSession(next);
+    });
+    let accepted = Promise.resolve();
+    act(() => { accepted = result.current.loadSession(replacementSessionId); });
+    await entered.promise;
+    try {
+      await act(async () => { await result.current.loadSession(tileSessionId); });
+      expect(replies.at(-1)).toMatchObject({
+        channel: CHANNELS.sidechat.load, result: { ok: false, error: "streaming-active" },
+      });
+    } finally {
+      await act(async () => { completion.resolve(undefined); await accepted; });
+    }
+    expect(sideLoop.getSessionId()).toBe(replacementSessionId);
+    expect(result.current.sessionId).toBe(sideLoop.getSessionId());
+    expect(result.current.entries).toContainEqual(expect.objectContaining({
+      kind: "assistant", terminalError: true,
+      text: "아직 응답을 생성하는 중입니다. 중지하거나 끝날 때까지 기다린 뒤 다시 보내 주세요.",
+    }));
+  });
+
+  it("does not show the previous session's rows under a peer's new host session", async () => {
+    const { api, sideLoop } = await setup();
+    sideLoop.getHistory().getMessages().push({ role: "user", content: "Old transcript" });
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.loadSession(sideSessionId); });
+    expect(result.current.entries).toContainEqual(expect.objectContaining({ kind: "user", text: "Old transcript" }));
+    await api.sideChat!.new();
+    sideLoop.getHistory().getMessages().splice(0);
+    await act(async () => { await result.current.send("New prompt"); });
+    expect(result.current.sessionId).toBe(sideLoop.getSessionId());
+    expect(result.current.sessionId).toBe(replacementSessionId);
+    expect(result.current.entries.filter((entry) => entry.kind === "user")).toMatchObject([{ text: "New prompt" }]);
+  });
+});
 
 function Panel({ api, spawns = [], openStoredSession = true, surface }: {
   api: AveApi;

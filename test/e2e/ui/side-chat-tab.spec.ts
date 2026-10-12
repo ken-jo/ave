@@ -89,6 +89,24 @@ test.describe("side-chat tab", () => {
     await expect(page.getByTestId("side-chat-new")).toBeEnabled();
   });
 
+  test("shows a localized refusal when a new side session cannot be opened", async () => {
+    await page.getByTestId(TEST_IDS.panePanelToggle).click();
+    await page.getByTestId(chatSidePanelLauncherTestId("side-chat")).click();
+    const sideView = page.getByTestId("side-chat-view");
+    await expect(sideView).toBeVisible();
+    await app.evaluate(({ ipcMain }, channel) => {
+      ipcMain.removeHandler(channel);
+      ipcMain.handle(channel, () => ({ ok: false, error: "streaming-active" }));
+    }, CHANNELS.sidechat.new);
+    await page.getByTestId("side-chat-new").click();
+    await expect(sideView.getByText(
+      "아직 응답을 생성하는 중입니다. 중지하거나 끝날 때까지 기다린 뒤 다시 보내 주세요.",
+      { exact: true },
+    )).toBeVisible();
+    await expect(page.getByTestId("side-chat-new")).toBeEnabled();
+    await page.screenshot({ path: test.info().outputPath("side-session-refusal.png"), fullPage: true });
+  });
+
   test("side-chat renders tool / thinking / permission through the shared TranscriptRenderer", async () => {
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await page.getByTestId(chatSidePanelLauncherTestId("side-chat")).click();

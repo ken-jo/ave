@@ -604,7 +604,7 @@ export type AveApi = {
     >;
     /** Reads a child of the active side-chat session; optional only in partial fixtures. */
     getSubAgentTranscript?: (request: SubAgentTranscriptRequest) => Promise<SubAgentTranscriptResult>;
-    abort: (sendRequestId?: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+    abort: (sendRequestId: string) => Promise<{ ok: true } | { ok: false; error: string }>;
     onStream: (handler: (event: ChatStreamEvent) => void) => () => void;
     onFallback: (handler: (payload: { from: string; to: string }) => void) => () => void;
   };
