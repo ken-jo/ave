@@ -42,6 +42,8 @@ export interface StreamCollectParams {
     thinkingBudgetTokens?: number;
     /** Per-vendor output ceiling; see LLMVendorSettings.outputTokenLimit. */
     outputTokenLimit?: number;
+    /** The model ceiling `outputTokenLimit` was resolved against; see StreamTurnParams.outputCeiling. */
+    outputCeiling?: number;
   };
   abortSignal?: AbortSignal;
   /**
@@ -152,6 +154,7 @@ export async function collectRoundStream(
       ...(llmSettings.outputTokenLimit === undefined
         ? {}
         : { outputTokenLimit: llmSettings.outputTokenLimit }),
+      ...(llmSettings.outputCeiling === undefined ? {} : { outputCeiling: llmSettings.outputCeiling }),
       abortSignal,
     }) as AsyncIterable<StreamEvent>) {
       if (abortSignal?.aborted) return { kind: "interrupted", text };

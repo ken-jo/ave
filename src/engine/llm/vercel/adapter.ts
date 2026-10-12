@@ -282,14 +282,18 @@ export class VercelUnifiedProvider implements LLMProvider {
       );
       const hasTools = Boolean(tools && Object.keys(tools).length > 0);
 
-      // The model's own ceiling bounds every request, whoever asked: the chat
-      // round already arrives clamped, and this is where a purpose-specific
-      // limit (finalize, background, memory, reviewer) meets it too.
-      const catalogCeiling = resolveOutputCeiling({ vendor: this.vendor, model: params.model })?.ceiling;
+      // The model's own ceiling bounds every request, whoever asked. A chat
+      // round arrives with the ceiling its route resolved (endpoint report,
+      // else catalog) and is clamped to exactly that, so the request carries
+      // the limit the turn records. A purpose-specific limit (finalize,
+      // background, memory, reviewer) arrives without one and meets the
+      // catalog's here.
+      const ceiling = params.outputCeiling
+        ?? resolveOutputCeiling({ vendor: this.vendor, model: params.model })?.ceiling;
       const requestedOutputTokenLimit = normalizeOutputTokenLimit(params.outputTokenLimit);
-      const outputTokenLimit = requestedOutputTokenLimit === undefined || catalogCeiling === undefined
+      const outputTokenLimit = requestedOutputTokenLimit === undefined || ceiling === undefined
         ? requestedOutputTokenLimit
-        : Math.min(requestedOutputTokenLimit, catalogCeiling);
+        : Math.min(requestedOutputTokenLimit, ceiling);
       const numericThinking = slot === "claude" && params.enableThinking === true
         && !supportsAdaptiveThinking(params.model);
       const interleavedNumericThinking = numericThinking && hasTools

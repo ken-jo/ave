@@ -10,6 +10,10 @@ import { activeModelCatalog, installModelCatalog } from "../../../../shared/mode
 import type { ModelCatalogDocument } from "../../../../shared/model-catalog/types.js";
 import type { LLMVendor } from "../../../../shared/llm-vendor-defaults.js";
 import { VercelUnifiedProvider } from "../adapter.js";
+import { getLlmVendorSettings, requestedLlmOutputTokenLimit } from "../../../../shared/llm-vendor-defaults.js";
+import { resolveOutputTokenLimit } from "../../../../shared/context-budget.js";
+import { collectRoundStream } from "../../../turn/stream-collector.js";
+import { apiRoundLlmSettings } from "../../../turn/round-llm-settings.js";
 
 /** The first request body the provider sent; the response is refused, which ends the turn after the request left. */
 async function sentBody(
@@ -102,5 +106,44 @@ describe("request fields the catalog decides", () => {
     const body = await sentBody("claude", "claude-sonnet-4-6", { thinkingBudgetTokens: 20_000 });
     expect(body.thinking).toEqual({ type: "adaptive" });
     expect(body.output_config).toMatchObject({ effort: "medium" });
+  });
+});
+
+describe("the output limit a chat round records is the one it sends", () => {
+  beforeEach(forbidAmbientFetch);
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function roundBody(reported: number, outputTokenLimit: number) {
+    const block = getLlmVendorSettings({ openai: { model: "gpt-5.4", enableThinking: false, outputTokenLimit } }, "openai");
+    const output = resolveOutputTokenLimit({
+      vendor: "openai",
+      model: "gpt-5.4",
+      requested: requestedLlmOutputTokenLimit(block),
+      reported,
+    });
+    const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
+    await collectRoundStream({
+      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse),
+      model: "gpt-5.4",
+      systemPrompt: "Return the result.",
+      messages: [{ role: "user", content: "Report the value." }],
+      toolSchemas: [],
+      llmSettings: apiRoundLlmSettings(block, output, "none"),
+    });
+    return { output, body: JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown> };
+  }
+
+  it("sends the user's limit when the endpoint reports a ceiling above the catalog's", async () => {
+    // Catalog: gpt-5.4 output 128,000. Endpoint reports 200,000; the user asks 150,000.
+    // Re-clamping to the catalog in the adapter would send 128,000 while the turn recorded 150,000.
+    const { output, body } = await roundBody(200_000, 150_000);
+    expect(output).toMatchObject({ effective: 150_000, effectiveSource: "user", ceiling: 200_000 });
+    expect(body.max_output_tokens).toBe(150_000);
+  });
+
+  it("sends the reported ceiling when it is below the request", async () => {
+    const { output, body } = await roundBody(8_192, 150_000);
+    expect(output).toMatchObject({ effective: 8_192, effectiveSource: "provider-reported" });
+    expect(body.max_output_tokens).toBe(8_192);
   });
 });

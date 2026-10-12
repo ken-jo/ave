@@ -15,10 +15,13 @@ export function apiRoundLlmSettings<Smoothing extends string>(
   block: LLMVendorSettings,
   output: ResolvedOutputTokenLimit,
   streamSmoothing: Smoothing,
-): LLMVendorSettings & { outputTokenLimit: number; streamSmoothing: Smoothing } {
+): LLMVendorSettings & { outputTokenLimit: number; outputCeiling?: number; streamSmoothing: Smoothing } {
   return {
     ...block,
     outputTokenLimit: output.effective,
+    // The ceiling the effective limit was resolved against travels with it, so
+    // the transport clamps to the same one instead of rediscovering another.
+    ...(output.ceiling !== undefined ? { outputCeiling: output.ceiling } : {}),
     thinkingBudgetTokens: normalizeLlmThinkingBudgetTokens(block.thinkingBudgetTokens, output.effective),
     streamSmoothing,
   };
