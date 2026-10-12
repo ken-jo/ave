@@ -405,7 +405,8 @@ Slice 4 is implemented.
     or failed cache save keeps the badge on the saved capability: a new positive report
     hides it only after settings confirm the save. Subscription
     runtimes own their tools and do not receive this API-route badge. The fallback picker
-    uses its model's catalog capability, as the fallback transport does. There is no
+    uses its model's catalog capability under its vendor block's saved endpoint, as the
+    fallback transport does. There is no
     composer notice.
   - The rule follows the route's model. A fallback that serves the turn on another model
     gets the same offered tool list, bounded by its own catalog capability at the API
