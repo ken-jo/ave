@@ -115,148 +115,15 @@ function buildFirstBootEssentials(): TourScenario {
 }
 
 /**
- * Plugin-specific scenario tours. These can be launched directly by an
- * onboarding surface or via `ave:tour:start`; when plugin-specific anchors
- * are not mounted yet, the anchor selector resolves to nothing and the
- * SpotlightTour centres the card so the user still sees the narrative.
- */
-function buildMeetingSummaryTour(): TourScenario {
-  return {
-    id: "meeting-summary-tour",
-    title: t("defaultTourScenarios.meetingSummaryTitle"),
-    steps: [
-      {
-        anchorSelector: '[data-tour-anchor="meeting-start"]',
-        title: t("defaultTourScenarios.meetingSummaryStep1Title"),
-        body: t("defaultTourScenarios.meetingSummaryStep1Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="meeting-stop"]',
-        title: t("defaultTourScenarios.meetingSummaryStep2Title"),
-        body: t("defaultTourScenarios.meetingSummaryStep2Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="meeting-summary-panel"]',
-        title: t("defaultTourScenarios.meetingSummaryStep3Title"),
-        body: t("defaultTourScenarios.meetingSummaryStep3Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="composer-input"]',
-        title: t("defaultTourScenarios.meetingSummaryStep4Title"),
-        body: t("defaultTourScenarios.meetingSummaryStep4Body"),
-        keyHint: ["⌘+?"],
-      },
-    ],
-  };
-}
-
-function buildDocSearchTour(): TourScenario {
-  return {
-    id: "doc-search-tour",
-    title: t("defaultTourScenarios.docSearchTitle"),
-    steps: [
-      {
-        anchorSelector: '[data-tour-anchor="indexer-folder-picker"]',
-        title: t("defaultTourScenarios.docSearchStep1Title"),
-        body: t("defaultTourScenarios.docSearchStep1Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="indexer-progress"]',
-        title: t("defaultTourScenarios.docSearchStep2Title"),
-        body: t("defaultTourScenarios.docSearchStep2Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="composer-input"]',
-        title: t("defaultTourScenarios.docSearchStep3Title"),
-        body: t("defaultTourScenarios.docSearchStep3Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="composer-input"]',
-        title: t("defaultTourScenarios.docSearchStep4Title"),
-        body: t("defaultTourScenarios.docSearchStep4Body"),
-        keyHint: ["⌘+?"],
-      },
-    ],
-  };
-}
-
-/**
- * Tutorial-X3 — per-plugin walkthrough scenarios. Each scenario spotlights
- * the *real* DOM anchors a plugin shell exposes (data-tour-anchor) so the
- * user sees the plugin's UI rather than a generic placeholder. Anchors
- * use `[data-tour-anchor="plugin-shell:<id>"]` so the plugin webview
- * shell can declare them once and every scenario reuses the selector.
- *
- * The 4th step in each scenario points at the composer so the tour ends
- * with the user back on the chat surface — preventing the user from
- * being stranded inside a plugin UI without a path back to chat.
- */
-function buildMeetingWalkthrough(): TourScenario {
-  return {
-    id: "meeting-walkthrough",
-    title: t("defaultTourScenarios.meetingWalkthroughTitle"),
-    steps: [
-      {
-        anchorSelector: '[data-tour-anchor="plugin-shell:meeting-record"]',
-        title: t("defaultTourScenarios.meetingWalkthroughStep1Title"),
-        body: t("defaultTourScenarios.meetingWalkthroughStep1Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="plugin-shell:meeting-history"]',
-        title: t("defaultTourScenarios.meetingWalkthroughStep2Title"),
-        body: t("defaultTourScenarios.meetingWalkthroughStep2Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="plugin-shell:meeting-actions"]',
-        title: t("defaultTourScenarios.meetingWalkthroughStep3Title"),
-        body: t("defaultTourScenarios.meetingWalkthroughStep3Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="composer-input"]',
-        title: t("defaultTourScenarios.meetingWalkthroughStep4Title"),
-        body: t("defaultTourScenarios.meetingWalkthroughStep4Body"),
-      },
-    ],
-  };
-}
-
-function buildIndexerWalkthrough(): TourScenario {
-  return {
-    id: "indexer-walkthrough",
-    title: t("defaultTourScenarios.indexerWalkthroughTitle"),
-    steps: [
-      {
-        anchorSelector: '[data-tour-anchor="plugin-shell:indexer-add-folder"]',
-        title: t("defaultTourScenarios.indexerWalkthroughStep1Title"),
-        body: t("defaultTourScenarios.indexerWalkthroughStep1Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="plugin-shell:indexer-status"]',
-        title: t("defaultTourScenarios.indexerWalkthroughStep2Title"),
-        body: t("defaultTourScenarios.indexerWalkthroughStep2Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="plugin-shell:indexer-search"]',
-        title: t("defaultTourScenarios.indexerWalkthroughStep3Title"),
-        body: t("defaultTourScenarios.indexerWalkthroughStep3Body"),
-      },
-      {
-        anchorSelector: '[data-tour-anchor="composer-input"]',
-        title: t("defaultTourScenarios.indexerWalkthroughStep4Title"),
-        body: t("defaultTourScenarios.indexerWalkthroughStep4Body"),
-      },
-    ],
-  };
-}
-
-/**
  * Registry — `SpotlightTour` consumes this map to resolve `scenarioId`
  * payloads received over `ave:tour:start`. New scenarios are added here;
  * the host-side store is unaware of the contents.
  *
- * Plugin-specific tours degrade gracefully when the owning plugin is not
- * installed: the anchor selector resolves to nothing and the SpotlightTour
- * centres the step card so the narrative is still legible.
+ * Host tours only: every step anchors on host UI. An extension introduces
+ * itself through its manifest's `onboarding` block (one `firstTask`, up to
+ * five `highlights`), which the host proposes generically after this tour —
+ * never through a scenario here. Plugin UI renders in a webview guest, so a
+ * host tour could not reach a plugin panel's elements anyway.
  *
  * Each property is a getter so scenario objects (with their translated
  * strings) are built lazily at access time, ensuring t() reads the current
@@ -265,10 +132,6 @@ function buildIndexerWalkthrough(): TourScenario {
 export const DEFAULT_TOUR_SCENARIOS: Readonly<Record<string, TourScenario>> = Object.freeze(
   Object.defineProperties({} as Record<string, TourScenario>, {
     "first-boot-essentials": { get: buildFirstBootEssentials, enumerable: true, configurable: false },
-    "meeting-walkthrough": { get: buildMeetingWalkthrough, enumerable: true, configurable: false },
-    "indexer-walkthrough": { get: buildIndexerWalkthrough, enumerable: true, configurable: false },
-    "meeting-summary-tour": { get: buildMeetingSummaryTour, enumerable: true, configurable: false },
-    "doc-search-tour": { get: buildDocSearchTour, enumerable: true, configurable: false },
   }),
 );
 

@@ -14,6 +14,9 @@
  */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { render, fireEvent } from "@testing-library/react";
 import { useEffect, useRef, useState } from "react";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
@@ -332,5 +335,59 @@ describe("host tour registry carries no scenario for a dissolved extension", () 
     const removed = /^defaultTourScenarios\.(vegaHelper|multiAgent)/;
     expect(Object.keys(tourEn).filter((key) => removed.test(key))).toEqual([]);
     expect(Object.keys(tourKo).filter((key) => removed.test(key))).toEqual([]);
+  });
+});
+
+describe("host tour registry holds host tours only", () => {
+  // Extensions declare their own guidance through `manifest.onboarding`
+  // (firstTask + highlights), which the host renders generically. A scenario in
+  // this map may therefore only walk host UI: every anchor it names must be a
+  // `data-tour-anchor` the host renderer itself ships. Plugin UI renders in a
+  // webview guest, so a plugin-panel anchor could never be reached anyway.
+  const rendererRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+  function hostRendererSources(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "__tests__" || entry.name === "onboarding") continue;
+        out.push(...hostRendererSources(path));
+      } else if (/\.tsx?$/.test(entry.name)) {
+        out.push(path);
+      }
+    }
+    return out;
+  }
+
+  const hostAnchors = new Set<string>();
+  for (const file of hostRendererSources(rendererRoot)) {
+    const source = readFileSync(file, "utf8");
+    for (const match of source.matchAll(/data-tour-anchor"?\s*[=:]\s*"([^"]+)"/g)) {
+      hostAnchors.add(match[1]);
+    }
+  }
+
+  it("finds the host anchors it checks against", () => {
+    // Control: an empty set would make the next assertion vacuous.
+    expect(hostAnchors.has("composer-input")).toBe(true);
+  });
+
+  it("every scenario anchor is one the host renderer ships", () => {
+    const missing: string[] = [];
+    for (const [id, scenario] of Object.entries(DEFAULT_TOUR_SCENARIOS)) {
+      for (const step of scenario.steps) {
+        const anchor = /^\[data-tour-anchor="([^"]+)"\]$/.exec(step.anchorSelector)?.[1];
+        if (!anchor || !hostAnchors.has(anchor)) missing.push(`${id}: ${step.anchorSelector}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("the tour catalog has no strings the scenarios do not use", () => {
+    const scenarioSource = readFileSync(join(rendererRoot, "onboarding", "default-tour-scenarios.ts"), "utf8");
+    const unused = Object.keys(tourEn).filter((key) => !scenarioSource.includes(`"${key}"`));
+    expect(unused).toEqual([]);
+    expect(Object.keys(tourKo).sort()).toEqual(Object.keys(tourEn).sort());
   });
 });
