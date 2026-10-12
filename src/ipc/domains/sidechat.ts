@@ -247,9 +247,11 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     // link click the main window's `will-navigate` policy cancels and opens
     // externally, which leaves the owning document alive and still streaming.
     // A main-frame load that fails (a reload while index.html is unreadable)
-    // replaces the document with an error page and raises `did-fail-load`
-    // instead of `did-navigate`; ERR_ABORTED (-3) there is a stopped load
-    // that keeps the document.
+    // commits an error page in place of the document without `did-navigate`.
+    // Electron raises `did-fail-provisional-load` only for such a committed
+    // error page; `did-fail-load` also fires while the document stays: for a
+    // `loadURL` it refuses as invalid (-300) and for a committed document's
+    // own load failing or being stopped (-354, -3).
     const owner = e.sender;
     const cancelOrphanedTurn = (): void => {
       if (activeSideStreamTurn === turnPromise) void abortActiveSideTurn();
@@ -258,7 +260,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       if (isMainFrame && errorCode !== -3 /* ERR_ABORTED */) cancelOrphanedTurn();
     };
     owner.on("did-navigate", cancelOrphanedTurn);
-    owner.on("did-fail-load", onOwnerLoadFailure);
+    owner.on("did-fail-provisional-load", onOwnerLoadFailure);
     owner.on("render-process-gone", cancelOrphanedTurn);
     owner.on("destroyed", cancelOrphanedTurn);
     try {
@@ -268,7 +270,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       return { ok: false as const, error: (err as Error).message };
     } finally {
       owner.removeListener("did-navigate", cancelOrphanedTurn);
-      owner.removeListener("did-fail-load", onOwnerLoadFailure);
+      owner.removeListener("did-fail-provisional-load", onOwnerLoadFailure);
       owner.removeListener("render-process-gone", cancelOrphanedTurn);
       owner.removeListener("destroyed", cancelOrphanedTurn);
     }

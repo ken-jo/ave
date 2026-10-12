@@ -333,7 +333,7 @@ describe("side-chat IPC domain", () => {
 
   it.each([
     ["reloads", "did-navigate", []],
-    ["fails to reload into an error page", "did-fail-load", [{}, -6, "ERR_FILE_NOT_FOUND", "file:///index.html", true]],
+    ["fails to reload into an error page", "did-fail-provisional-load", [{}, -6, "ERR_FILE_NOT_FOUND", "file:///index.html", true]],
     ["crashes", "render-process-gone", [{}]],
     ["is destroyed", "destroyed", []],
   ] as const)("cancels its accepted turn when the owning renderer %s", async (_label, eventName, args) => {
@@ -357,15 +357,21 @@ describe("side-chat IPC domain", () => {
       owner.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
       owner.emit("did-navigate-in-page", {});
       owner.emit("did-frame-navigate", {});
-      // A stopped load (ERR_ABORTED) and a failed subframe keep the document too.
+      // A failed subframe keeps the document too, and so does every main-frame
+      // `did-fail-load` without a committed error page (probed on Electron 44):
+      // a stopped load, a `loadURL` refused as invalid, and a committed
+      // document whose own load fails after commit.
+      owner.emit("did-fail-provisional-load", {}, -3, "ERR_ABORTED", "file:///index.html", true);
+      owner.emit("did-fail-provisional-load", {}, -6, "ERR_FILE_NOT_FOUND", "file:///frame.html", false);
       owner.emit("did-fail-load", {}, -3, "ERR_ABORTED", "file:///index.html", true);
-      owner.emit("did-fail-load", {}, -6, "ERR_FILE_NOT_FOUND", "file:///frame.html", false);
+      owner.emit("did-fail-load", {}, -300, "ERR_INVALID_URL", "http://[/", true);
+      owner.emit("did-fail-load", {}, -354, "ERR_CONTENT_LENGTH_MISMATCH", "file:///index.html", true);
       expect(side.abortCurrentTurn).not.toHaveBeenCalled();
       owner.emit(eventName, ...args);
       expect(side.abortCurrentTurn).toHaveBeenCalledOnce();
       await pending;
       expect(owner.listenerCount("did-start-navigation") + owner.listenerCount("did-navigate")
-        + owner.listenerCount("did-fail-load") + owner.listenerCount("render-process-gone")
+        + owner.listenerCount("did-fail-provisional-load") + owner.listenerCount("render-process-gone")
         + owner.listenerCount("destroyed")).toBe(0);
     } finally {
       turn.resolve({ route: "chat" });
@@ -380,7 +386,7 @@ describe("side-chat IPC domain", () => {
     const peer = rendererContents(2);
     const send = handlers.get(CHANNELS.sidechat.send)!;
     const watches = (contents: EventEmitter) => contents.listenerCount("did-navigate")
-      + contents.listenerCount("did-fail-load") + contents.listenerCount("render-process-gone") + contents.listenerCount("destroyed");
+      + contents.listenerCount("did-fail-provisional-load") + contents.listenerCount("render-process-gone") + contents.listenerCount("destroyed");
 
     side.runTurn.mockRejectedValueOnce(new Error("provider failed"));
     await expect(send(ev("file:///index.html", 1, owner), { input: "fails", sendRequestId: "failed-request" }))
