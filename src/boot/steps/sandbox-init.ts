@@ -55,8 +55,8 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
     );
 
     // Two independent on-signals. `explicitEnv` (AVE_SANDBOX_ENABLED=1) is the
-    // deliberate "I really mean it" override; `settingOn` is the shipped default
-    // (now true) / Settings toggle. The DISTINCTION drives degrade-vs-abort: see
+    // deliberate "I really mean it" override; `settingOn` is the Settings toggle
+    // (off by default). The DISTINCTION drives degrade-vs-abort: see
     // decideSandboxGate.
     const explicitEnv = process.env["AVE_SANDBOX_ENABLED"] === "1";
     const settingOn = settingsService.get("features")?.osToolSandbox ?? false;

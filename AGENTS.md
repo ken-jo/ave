@@ -211,11 +211,13 @@ Keep task-specific inventories in issues rather than in this instruction file.
 - Tool and MCP timeouts come from `src/shared/tool-timeout-policy.ts` and
   `TOOL_TIMEOUT_POLICY`; never hardcode them. Wire `runWithCeiling` cancellation
   through its `AbortController`.
-- ASRT is staged default-on for `darwin` and opt-in for `linux`/`win32`.
+- The OS tool sandbox is opt-in on every platform, per the decision comment beside
+  `osToolSandbox` in [settings-defaults.ts](src/data/settings-defaults.ts#L237-L254).
   On `darwin`/`linux`, explicit `AVE_SANDBOX_ENABLED=1` activation failure
-  aborts; default/settings mode may gracefully degrade. Windows always
-  degrades non-brickingly when unavailable. Preserve
-  relaxation/effect-boundary coupling.
+  aborts startup; settings activation warns and continues without OS isolation
+  when unavailable. Windows always warns and continues when unavailable.
+  Keep plugin read relaxation conditional on active filesystem confinement
+  and preserve effect-boundary enforcement.
 - No Fallback Code: a plugin manifest field updates its host schema and public
   contract in the same PR; a HostApi change updates the host protocol and all
   affected plugin contract copies at an app release tag.
