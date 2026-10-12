@@ -8,7 +8,9 @@ import {
   getLlmVendorSettings,
   narrowLlmVendor,
   isLLMVendor,
+  isRetiredLLMVendor,
   type LLMVendor,
+  type RetiredLLMVendor,
 } from "../../../shared/llm-vendor-defaults.js";
 import {
   DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES,
@@ -96,6 +98,11 @@ export interface UseSettingsResult {
   processingDisplayLevel: ProcessingDisplayLevel;
   /** True when the active vendor can run with no stored API key. */
   llmReadyWithoutApiKey: boolean;
+  /**
+   * The removed vendor the stored profile was moved off, until the user picks
+   * a provider in Settings. API-key chat is not ready while it is set.
+   */
+  retiredLlmProvider: RetiredLLMVendor | null;
   /** Single source of truth for selected subscription chat and attachment UX. */
   subscriptionRuntimePolicy: SubscriptionRuntimeUiPolicy;
   /** Active subscription runtime after untrusted settings boundary validation. */
@@ -121,6 +128,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     DEFAULT_PROCESSING_DISPLAY_LEVEL,
   );
   const [llmReadyWithoutApiKey, setLlmReadyWithoutApiKey] = useState(false);
+  const [retiredLlmProvider, setRetiredLlmProvider] = useState<RetiredLLMVendor | null>(null);
   const [activeSubscriptionRuntime, setActiveSubscriptionRuntime] =
     useState<SubscriptionChatRuntimeSelection | null>(null);
   const [subscriptionRuntimeCapabilities, setSubscriptionRuntimeCapabilities] =
@@ -162,6 +170,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
         settings.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
       );
       setLlmReadyWithoutApiKey(canUseSettingsWithoutApiKey(settings, provider));
+      setRetiredLlmProvider(isRetiredLLMVendor(settings.llm.retiredProvider) ? settings.llm.retiredProvider : null);
       const nextSubscriptionRuntime = activeSubscriptionRuntimeFromSettings(settings);
       const runtimeChanged = !sameSubscriptionRuntime(
         activeSubscriptionRuntimeRef.current,
@@ -309,6 +318,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     enableThinkingChat,
     processingDisplayLevel,
     llmReadyWithoutApiKey,
+    retiredLlmProvider,
     subscriptionRuntimePolicy,
     activeSubscriptionRuntime: subscriptionRuntimePolicy.activeSubscriptionRuntime,
     subscriptionChatReady: subscriptionRuntimePolicy.chatReady,

@@ -50,6 +50,9 @@ export const en = {
   "app.appErrorFallback": "An application error has occurred",
   "app.mainContentErrorFallback": "An error occurred in the main area — go to Settings → Marketplace in the top menu to update or remove the affected extension.",
   "app.guideErrorMessage": "⚠️ Failed to send guide instruction: {msg}",
+  "app.retiredProviderNoticeTitle": "GitHub Models has ended",
+  "app.retiredProviderNoticeBody": "GitHub retired the GitHub Models service that the Copilot provider used, so it was removed from Ave and its saved key deleted. Chat stays off until you choose another provider.",
+  "app.retiredProviderNoticeAction": "Choose a provider",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "app.routineFailedTitle": "[실패] 루틴",
@@ -102,4 +105,7 @@ export const ko: Record<keyof typeof en, string> = {
   "app.appErrorFallback": "앱 오류가 발생했습니다",
   "app.mainContentErrorFallback": "메인 영역에 오류가 발생했습니다 — 상단 메뉴에서 설정 → 마켓플레이스로 이동하여 해당 익스텐션을 업데이트하거나 제거해 주세요.",
   "app.guideErrorMessage": "⚠️ 방향 지시 전송 실패: {msg}",
+  "app.retiredProviderNoticeTitle": "GitHub Models 서비스가 종료되었습니다",
+  "app.retiredProviderNoticeBody": "Copilot 프로바이더가 쓰던 GitHub Models 서비스를 GitHub가 종료해, Ave에서 이 프로바이더를 제거하고 저장된 키를 삭제했습니다. 다른 프로바이더를 선택할 때까지 채팅은 꺼져 있습니다.",
+  "app.retiredProviderNoticeAction": "프로바이더 선택",
 };

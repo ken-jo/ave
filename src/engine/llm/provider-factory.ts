@@ -15,7 +15,6 @@ import type {
   StreamEvent,
   StreamTurnParams,
 } from "./types.js";
-import { COPILOT_BASE_URL } from "../../shared/llm-vendor-defaults.js";
 import { createOpenAiProvider } from "./openai/provider.js";
 
 let adapterModuleP: Promise<typeof import("./vercel/adapter.js")> | null = null;
@@ -38,10 +37,7 @@ class LazyVercelProvider implements LLMProvider {
   private getInner(): Promise<LLMProvider> {
     if (!this.innerP) {
       const cfg = this.config;
-      const baseUrl =
-        cfg.vendor === "copilot"
-          ? (cfg.baseUrl ?? COPILOT_BASE_URL)
-          : cfg.baseUrl;
+      const baseUrl = cfg.baseUrl;
       this.innerP = loadAdapterModule()
         .then(({ VercelUnifiedProvider }) => {
           const args = [

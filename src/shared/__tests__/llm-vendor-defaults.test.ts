@@ -26,7 +26,8 @@ import {
   DEFAULT_LLM_VENDOR,
   DEFAULT_LLM_OUTPUT_TOKEN_LIMIT,
   narrowLlmVendor,
-  COPILOT_BASE_URL,
+  isRetiredLLMVendor,
+  RETIRED_LLM_VENDOR_IDS,
 } from "../llm-vendor-defaults.js";
 
 describe("isLLMVendor", () => {
@@ -366,9 +367,13 @@ describe("narrowLlmVendor", () => {
   });
 });
 
-describe("COPILOT_BASE_URL", () => {
-  it("is the GitHub models inference endpoint both provider paths fall back to", () => {
-    expect(COPILOT_BASE_URL).toBe("https://models.github.ai/inference");
+describe("retired vendor ids", () => {
+  it("are not vendors: copilot (GitHub Models, retired 2026-07-30) is rejected, not aliased", () => {
+    expect(RETIRED_LLM_VENDOR_IDS).toEqual(["copilot"]);
+    expect(isLLMVendor("copilot")).toBe(false);
+    expect(isRetiredLLMVendor("copilot")).toBe(true);
+    expect(isRetiredLLMVendor("openai")).toBe(false);
+    expect(narrowLlmVendor("copilot")).toBe(DEFAULT_LLM_VENDOR);
   });
 });
 

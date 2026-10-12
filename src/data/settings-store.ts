@@ -23,8 +23,11 @@ import {
 import type { AlertSettings, RetiredPluginConfigRecord } from "../shared/alerts-types.js";
 import {
   isMarketplaceEligibleLLMVendor,
+  isRetiredLLMVendor,
   LLM_VENDORS,
+  RETIRED_LLM_VENDOR_IDS,
   type LLMVendor,
+  type RetiredLLMVendor,
   type LLMVendorSettingsMap,
   type LLMVendorSettings,
   type MarketplaceEligibleLLMVendor,
@@ -161,6 +164,17 @@ const RENAMED_LLM_VENDOR_IDS: Readonly<Record<string, LLMVendor>> = {
 };
 
 /**
+ * The removed vendor a stored `llm` block still names: as its `provider` (a
+ * profile written before the removal), or as the marker an earlier load left.
+ */
+function retiredLlmProviderOf(rawLlm: unknown): RetiredLLMVendor | undefined {
+  if (rawLlm === null || typeof rawLlm !== "object" || Array.isArray(rawLlm)) return undefined;
+  const record = rawLlm as { provider?: unknown; retiredProvider?: unknown };
+  if (isRetiredLLMVendor(record.provider)) return record.provider;
+  return isRetiredLLMVendor(record.retiredProvider) ? record.retiredProvider : undefined;
+}
+
+/**
  * Every one-time migration this build knows. Fresh-install and
  * corrupt-recovery settings start with ALL of them marked applied: a state
  * built from current defaults is by definition post-migration, and seeding
@@ -256,6 +270,16 @@ export interface LLMSettings {
    * brings its pins back rather than silently dropping them.
    */
   pinnedModels: string[];
+  /**
+   * Set when the stored profile named a vendor Ave has since removed
+   * ({@link RETIRED_LLM_VENDOR_IDS}). The load moved `provider` off it; this
+   * marker keeps that move from being silent. While it is set, API-key chat
+   * turns are refused (the active provider reads as not configured) and the
+   * window shows a notice, so a key the user saved for another, paid vendor is
+   * not used until they choose a provider themselves. Saving a provider from
+   * Settings clears it. Only the settings load sets it; no patch can.
+   */
+  retiredProvider?: RetiredLLMVendor;
 }
 
 /**
@@ -1178,6 +1202,23 @@ export class SettingsService {
   }
 
   /**
+   * Delete the API key stored for each removed vendor
+   * ({@link RETIRED_LLM_VENDOR_IDS}). Nothing can use it: the vendor's service
+   * is gone and no route reads the key. Runs on every boot and writes only
+   * while a key remains, so a failed delete is retried next boot and never
+   * fails the boot.
+   */
+  async deleteRetiredLlmVendorApiKeys(): Promise<void> {
+    for (const vendor of RETIRED_LLM_VENDOR_IDS) {
+      try {
+        await this.deleteSecret(`llm.apiKey.${vendor}`);
+      } catch (err) {
+        log.warn("retired vendor %s API key delete failed: %s", vendor, (err as Error).message);
+      }
+    }
+  }
+
+  /**
    * Move each API key stored under a renamed vendor id to the new id's key
    * (see {@link RENAMED_LLM_VENDOR_IDS}). Runs on every boot: it writes only
    * while an old key remains, so a move that failed is retried next boot. A
@@ -1964,6 +2005,15 @@ export class SettingsService {
         LLM_VENDORS.filter(isMarketplaceEligibleLLMVendor),
         undefined,
       );
+      // A profile still naming a removed vendor (RETIRED_LLM_VENDOR_IDS): the
+      // merge above has already moved `provider` to the default, because the
+      // id is no longer a vendor. Record the move so it is not silent, and
+      // keep a marker from an earlier load until the user picks a provider.
+      const retiredProvider = retiredLlmProviderOf(rawLlm);
+      if (retiredProvider) {
+        llm = { ...llm, retiredProvider };
+        if (isRetiredLLMVendor((rawLlm as { provider?: unknown }).provider)) migrationWriteBack = true;
+      }
       const marketplaceParsed: Record<string, unknown> = { ...(parsed.marketplace ?? {}) };
       // One-time: drop the server marketplace's settings and write the file
       // back, so they leave settings.json rather than only this process.

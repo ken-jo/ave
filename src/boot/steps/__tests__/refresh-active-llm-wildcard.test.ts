@@ -97,7 +97,7 @@ describe("createRefreshActiveLlmWildcard (#893 / PR #894 Cycle 3)", () => {
     ctx.setVendor("gemini");
     refresh();
     vi.advanceTimersByTime(50);
-    ctx.setVendor("copilot");
+    ctx.setVendor("azure-foundry");
     refresh();
 
     // Still inside the debounce window relative to the LAST refresh.

@@ -690,6 +690,12 @@ export function mergeLlmPatch(
     pinnedModels: normalizePinnedModels(
       "pinnedModels" in partial ? partial.pinnedModels : base.pinnedModels,
     ),
+    // The retired-provider marker is set by the settings load only. A patch
+    // that names a provider — the user saving their provider choice from
+    // Settings — resolves it; any other patch leaves it as it was.
+    ...(base.retiredProvider && !isLLMVendor(partial.provider)
+      ? { retiredProvider: base.retiredProvider }
+      : {}),
     // `llm.hostResolverMap` is deliberately NOT carried forward. The manual
     // Chromium host-resolver map was removed with the private-endpoint access
     // path, so a value still on disk from an older build is inert. Dropping it

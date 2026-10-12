@@ -607,7 +607,6 @@ function providerOptionsForPresets(
  */
 const STANDARD_CATALOGUE_ENDPOINT_VENDORS: ReadonlySet<string> = new Set([
   "openai",
-  "copilot",
 ]);
 
 /**

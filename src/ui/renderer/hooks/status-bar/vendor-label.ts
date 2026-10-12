@@ -21,8 +21,6 @@ export function shortVendorLabel(provider: string): string {
       return "OpenAI";
     case "gemini":
       return "Gemini";
-    case "copilot":
-      return "Copilot";
     case "azure-foundry":
       return "Azure";
     case "vertex-ai":
@@ -45,8 +43,6 @@ export function vendorEmoji(provider: string): string {
       return STATUS_BAR_VENDOR_EMOJIS.openai;
     case "gemini":
       return STATUS_BAR_VENDOR_EMOJIS.gemini;
-    case "copilot":
-      return STATUS_BAR_VENDOR_EMOJIS.copilot;
     case "azure-foundry":
       return STATUS_BAR_VENDOR_EMOJIS.azureFoundry;
     case "vertex-ai":

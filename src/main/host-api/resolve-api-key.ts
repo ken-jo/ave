@@ -118,7 +118,7 @@ export interface ResolveApiKeyDeps {
  * Map public-contract vendor names to host internal vendor names. The contract has
  * `"openai" | "azure-openai" | "vertex" | "anthropic"`; the host's
  * `LLM_VENDORS` union is
- * `"openai" | "azure-foundry" | "vertex-ai" | "claude" | "gemini" | "copilot"`.
+ * `"openai" | "azure-foundry" | "vertex-ai" | "claude" | "gemini"`.
  *
  * Only the three aliases that *differ* between the two surfaces are
  * mapped; `"openai"` passes through unchanged. Adding a new public alias
