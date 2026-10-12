@@ -369,6 +369,9 @@ export type ModelCardChoice = ApiModelCardChoice | SubscriptionModelCardChoice;
  * `subscriptionUseApiForChat` at the call site). Otherwise the current API
  * model leads when it is not itself pinned; otherwise it sits where the pin
  * order puts it.
+ * A retirement marker leaves the configured API model as an unselected
+ * candidate. Picking it is an explicit provider choice, even when the saved
+ * vendor and model do not change.
  *
  * `pinnedModels` stores ids only, so a stored id is matched against what is
  * actually offered — the active vendor's curated line plus every synced
@@ -423,12 +426,14 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
         // A pinned API model can equal the vendor/model the settings still
         // hold for the API path even while a subscription runtime is what
         // the chat is actually on — that stale match is not "current".
-        current: subscription === null && vendor === active && modelId === currentModel,
+        current: subscription === null && !llm.retiredProvider && vendor === active && modelId === currentModel,
       });
     }
   }
-  if (subscription === null && currentModel && !choices.some((choice) => choice.current)) {
-    choices.unshift({ kind: "api", vendor: active, vendorLabel: getVendorOption(active).label, modelId: currentModel, current: true });
+  if (subscription === null && currentModel && !choices.some((choice) =>
+    choice.kind === "api" && choice.vendor === active && choice.modelId === currentModel
+  )) {
+    choices.unshift({ kind: "api", vendor: active, vendorLabel: getVendorOption(active).label, modelId: currentModel, current: !llm.retiredProvider });
   }
   if (subscription) {
     const model = typeof subscription.model === "string" ? subscription.model.trim() : "";

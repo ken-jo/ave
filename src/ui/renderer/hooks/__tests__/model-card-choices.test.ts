@@ -9,6 +9,13 @@ function llm(overrides: Partial<AppSettings["llm"]>): AppSettings["llm"] {
 }
 
 describe("modelCardChoices", () => {
+  it.each([{ pinnedModels: [] }, { pinnedModels: ["gpt-5.4"] }])("offers the migrated model as an unresolved choice without duplicates: %j", ({ pinnedModels }) => {
+    const choices = modelCardChoices(llm({ retiredProvider: "copilot", pinnedModels }));
+    expect(choices).toEqual([
+      expect.objectContaining({ vendor: "openai", modelId: "gpt-5.4", current: false }),
+    ]);
+  });
+
   it("keeps pinned order and drops a pin nothing offers", () => {
     const choices = modelCardChoices(llm({
       pinnedModels: ["nowhere", "gpt-5.4-mini", "gpt-5.4"],
