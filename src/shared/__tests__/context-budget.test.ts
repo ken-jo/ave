@@ -308,6 +308,56 @@ describe("resolveContextWindowForRoute — one answer for the engine and the rin
     });
   });
 
+  it.each([false, true].flatMap((reversed) => [
+    { reversed, model: "Case-Model", contextWindow: 131_072, output: 8_192, input: ["text", "image"], tools: true },
+    { reversed, model: "case-model", contextWindow: 262_144, output: 16_384, input: ["text"], tools: undefined },
+  ]))("keeps case-distinct reports separate: $model ($reversed)", ({ reversed, model, contextWindow, output, input, tools }) => {
+    const settings = routeSettings({ reported: {} });
+    settings.vendors["openai-compatible"].model = model;
+    const cached = Object.values(settings.modelListCache)[0]!;
+    cached.models = ["Case-Model", "case-model"];
+    cached.modelEntries = [
+      { id: "Case-Model", contextLength: 131_072, maxOutputTokens: 8_192, inputModalities: ["text", "image"], supportedParameters: ["tools"] },
+      { id: "case-model", contextLength: 262_144, maxOutputTokens: 16_384, inputModalities: ["text"], supportedParameters: ["temperature"] },
+    ];
+    if (reversed) cached.modelEntries.reverse();
+    const route = resolveContextWindowForRoute(settings);
+    expect(route.contextWindow).toBe(contextWindow);
+    expect(route.output.effective).toBe(output);
+    expect(route.inputModalities?.input).toEqual(input);
+    expect(route.toolCall?.supported).toBe(tools);
+  });
+
+  it.each([false, true])("ignores an ambiguous case match instead of borrowing a report (reversed %s)", (reversed) => {
+    const settings = routeSettings({ reported: {} });
+    settings.vendors["openai-compatible"].model = "CASE-MODEL";
+    const cached = Object.values(settings.modelListCache)[0]!;
+    cached.models = ["Case-Model", "case-model"];
+    cached.modelEntries = [
+      { id: "Case-Model", contextLength: 131_072, maxOutputTokens: 8_192, inputModalities: ["text", "image"], supportedParameters: ["tools"] },
+      { id: "case-model", contextLength: 262_144, maxOutputTokens: 16_384, inputModalities: ["text"] },
+    ];
+    if (reversed) cached.modelEntries.reverse();
+    const route = resolveContextWindowForRoute(settings);
+    expect(route.source).not.toBe("provider-reported");
+    expect(route.output.effective).toBe(32_000);
+    expect(route.inputModalities).toBeUndefined();
+    expect(route.toolCall).toBeUndefined();
+  });
+
+  it.each(["case-model", "CASE-MODEL"])("does not borrow missing metadata from a case-distinct model: %s", (model) => {
+    const settings = routeSettings({ reported: {} });
+    settings.vendors["openai-compatible"].model = model;
+    const cached = Object.values(settings.modelListCache)[0]!;
+    cached.models = ["Case-Model", "case-model"];
+    cached.modelEntries = [{ id: "Case-Model", contextLength: 131_072, maxOutputTokens: 8_192, inputModalities: ["image"], supportedParameters: ["tools"] }];
+    const route = resolveContextWindowForRoute(settings);
+    expect(route.source).not.toBe("provider-reported");
+    expect(route.output.effective).toBe(32_000);
+    expect(route.inputModalities).toBeUndefined();
+    expect(route.toolCall).toBeUndefined();
+  });
+
   it("names the same cache coordinates a refresh has to write back to", () => {
     // A refresher that keys the row differently writes an answer the reader
     // never finds, so the probe repeats forever.

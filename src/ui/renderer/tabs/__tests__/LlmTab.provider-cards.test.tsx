@@ -438,6 +438,35 @@ describe("LlmTab provider cards", () => {
     expect(Boolean(option.queryByTestId(`llm-tab:model-no-tools:${model}`))).toBe(!tools);
   });
 
+  it.each([false, true].flatMap((reversed) => [
+    { reversed, model: "GPT-3.5-Turbo", vision: true, tools: true },
+    { reversed, model: "gpt-3.5-turbo", vision: false, tools: false },
+    { reversed, model: "gPt-3.5-tUrBo", vision: false, tools: false },
+  ]))("keeps case-distinct model badges separate: $model ($reversed)", async ({ reversed, model, vision, tools }) => {
+    const modelListCache: LlmModelListCache = {
+      [llmModelListCacheKey("openai")]: {
+        vendor: "openai", models: ["GPT-3.5-Turbo", "gpt-3.5-turbo"], endpoint: "https://provider.invalid/v1/models",
+        modelEntries: [
+          { id: "GPT-3.5-Turbo", inputModalities: ["text", "image"], supportedParameters: ["tools"] },
+          { id: "gpt-3.5-turbo", inputModalities: ["text"], supportedParameters: ["temperature"] },
+        ],
+        fetchedAt: new Date(0).toISOString(),
+      },
+    };
+    if (reversed) modelListCache[llmModelListCacheKey("openai")]!.modelEntries!.reverse();
+    const vendors = freshAllVendorBlocks();
+    vendors.openai.model = model;
+    const { api } = profileApi({ vendors, modelListCache }, { hasApiKey: storedKeysFor("openai") });
+    await renderTab(api, { vendor: "openai", model });
+    expect(await chooserModelIds()).toContain(model);
+    const option = within(chooserOption(model));
+    expect(Boolean(option.queryByTestId(`llm-tab:model-vision:${model}`))).toBe(vision);
+    expect(Boolean(option.queryByTestId(`llm-tab:model-no-tools:${model}`))).toBe(!tools);
+    const route = resolveContextWindowForRoute({ provider: "openai", vendors, modelListCache });
+    expect(supportsVision("openai", model, route)).toBe(vision);
+    expect(route.toolCall?.supported).toBe(tools);
+  });
+
   it("saves the active vendor model without a stale preset's scope", async () => {
     const model = "gpt-5.4";
     const { api } = profileApi({ vendors: { openai: { model } } }, { hasApiKey: storedKeysFor("openai") });
