@@ -45,13 +45,17 @@ canonical wrapper command above for both full and targeted tests.
 Use the smallest affected checks while iterating. The pre-push hook logs the
 tier it picked and why. A source change on a branch push takes the fast tier:
 typecheck, the duplicate-helper scan, the lock suites, the changed test files,
-and `vitest related` for the changed modules. The full `bun run test` and
+and `vitest related` for the changed modules. Each source module must have
+related test files; empty discovery selects full checks and a zero-test run
+fails closed. The full `bun run test` and
 `bun run build` run once before merge on the exact main + PR merged tree, and
 CI runs full checks. The hook keeps the full gate for deleted refs,
 non-fast-forward pushes, deleted modules, documentation consumed by runtime,
-tests, build, or workflows, and global inputs (`package.json`, `bun.lock`,
+tests, build, or workflows, declaration files, generated catalogs, runtime
+entries, non-module assets, mode changes, and global inputs (`package.json`, `bun.lock`,
 compiler, Vitest and build configs, Vitest setup files, `scripts/`,
-`.github/`); `AVE_PREPUSH_FULL=1` forces it. Documentation prose with no such
+`.github/`), including earlier commits in the push; `AVE_PREPUSH_FULL=1`
+forces it. Documentation prose with no such
 consumer skips those expensive gates after diff and policy checks. Eligible
 test-only pushes run typecheck and targeted Vitest in the hook. Register
 documents read by native or non-Node processes, or through `openAsBlob`, in

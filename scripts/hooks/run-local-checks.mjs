@@ -28,7 +28,8 @@
 // The full suite and build of a fast push run once at merge time, on the
 // main + PR merged tree, and in CI.
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { parsePrePushUpdates, readPrePushInput } from "./pre-push-ref-updates.mjs";
 import { checkPushedDocumentation } from "./pre-push-document-safety.mjs";
 import { withoutGitContext } from "../lib/git-process-environment.mjs";
@@ -52,6 +53,7 @@ import { selectCommentOnlyAveAppFiles } from "./pre-push-comment-policy.mjs";
 import { selectTargetedAveAppVitestFiles } from "./pre-push-test-policy.mjs";
 import {
   AVE_APP_LOCK_SUITES,
+  getRelatedCoverageFullReason,
   selectFastSourceChecks,
 } from "./pre-push-source-policy.mjs";
 
@@ -785,15 +787,41 @@ function runAppFastSourceChecks(dir, testFiles, relatedFiles) {
   const directArgs = [...new Set([...AVE_APP_LOCK_SUITES, ...testFiles])].map((file) => `./${file}`);
   run(bun, ["run", "test:vitest", "--", "run", ...directArgs], dir, withoutGitContext());
   if (relatedFiles.length > 0) {
-    // A module no test imports is still covered by the typecheck and the lock
-    // suites above, so an empty related set is not a failure.
     const relatedArgs = relatedFiles.map((file) => `./${file}`);
-    run(
-      bun,
-      ["run", "test:vitest", "--", "related", "--run", "--passWithNoTests", ...relatedArgs],
-      dir,
-      withoutGitContext()
-    );
+    const reportDirectory = mkdtempSync(join(tmpdir(), "ave-related-check-"));
+    const reportPath = join(reportDirectory, "report.json");
+    try {
+      run(
+        bun,
+        ["run", "test:vitest", "--", "related", "--run", "--reporter=default", "--reporter=json", `--outputFile=${reportPath}`, ...relatedArgs],
+        dir,
+        withoutGitContext()
+      );
+      const report = readJsonFile(reportPath);
+      if (!Number.isSafeInteger(report.numTotalTests) || report.numTotalTests <= 0 ||
+          !Number.isSafeInteger(report.numPassedTests) || report.numPassedTests <= 0) {
+        throw new Error("related tests ran zero tests; rerun with AVE_PREPUSH_FULL=1");
+      }
+    } finally {
+      rmSync(reportDirectory, { recursive: true, force: true });
+    }
+  }
+}
+
+function getFastSourceCoverageReason(dir, relatedFiles) {
+  if (relatedFiles.length === 0) return null;
+  const result = spawnSync(commands.node, [join(dir, "scripts/hooks/pre-push-related-tests.mjs"), ...relatedFiles], {
+    cwd: dir,
+    env: withoutGitContext(),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) return "related test discovery failed; full checks required";
+  try {
+    return getRelatedCoverageFullReason(relatedFiles, JSON.parse(result.stdout));
+  } catch {
+    return "related test discovery returned an invalid report; full checks required";
   }
 }
 
@@ -829,12 +857,16 @@ if (stage === "pre-commit") {
     runPushPolicyChecks(repoRoot, prePushUpdates);
   }
   runStagedSafetyChecks(repoRoot);
-  const classification =
+  let classification =
     stage !== "pre-push"
       ? { docsOnly: false, reason: `${stage} stage runs the full checks` }
       : process.env.AVE_PREPUSH_FULL === "1"
         ? { docsOnly: false, reason: "AVE_PREPUSH_FULL=1 requested the full checks" }
         : classifyPrePushChanges(repoRoot, prePushUpdates, remote, remoteLocation);
+  if (classification.fastSource) {
+    const reason = getFastSourceCoverageReason(repoRoot, classification.relatedFiles);
+    if (reason) classification = { docsOnly: false, reason };
+  }
   if (classification.docsOnly) {
     checkPushedDocumentation(repoRoot, classification.pushedEntries);
     run(commands.node, ["--test", "test/scripts/check-asrt-version-claims.test.mjs"], repoRoot);

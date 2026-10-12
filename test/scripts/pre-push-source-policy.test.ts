@@ -165,7 +165,10 @@ describe("pre-push fast source tier", () => {
     expect(hook).toContain('process.env.AVE_PREPUSH_FULL === "1"');
     expect(hook).toContain("[checks] tier=fast pre-push");
     expect(hook).toContain("[checks] tier=full ${stage}");
-    expect(hook).toContain('"related", "--run", "--passWithNoTests", ...relatedArgs]');
+    expect(hook).not.toContain('"--passWithNoTests"');
+    expect(hook).toContain('"--reporter=json"');
+    expect(hook.indexOf("getFastSourceCoverageReason(repoRoot,")).toBeGreaterThanOrEqual(0);
+    expect(hook.indexOf("getFastSourceCoverageReason(repoRoot,")).toBeLessThan(hook.indexOf("[checks] tier=fast pre-push"));
     expect(hook).toContain('"run", ...directArgs], dir, withoutGitContext()');
     // The skip switch is the shell hook's and keeps its meaning.
     const shellHook = readFileSync(resolve(root, "scripts/hooks/pre-push"), "utf8");

@@ -285,8 +285,11 @@ Pre-push picks one tier and logs it with the reason
 - full: `bun run typecheck`, full `bun run test`, `bun run build`, and
   `check:gate-core`, for deleted refs, non-fast-forward updates, the default
   branch, noncanonical paths, consumed documentation, deletions of modules,
-  and global inputs (`package.json`, `bun.lock`, compiler, Vitest and build
-  configs, Vitest setup files, `scripts/`, `.github/`). `AVE_PREPUSH_FULL=1`
+  non-module assets, mode changes, declaration files, generated catalogs,
+  runtime entry files, modules with no related test files, and global inputs
+  (`package.json`, `bun.lock`, compiler, Vitest and build configs, Vitest setup
+  files, `scripts/`, `.github/`), including earlier commits in the push.
+  `AVE_PREPUSH_FULL=1`
   forces it for one push; `AVE_HOOKS_SKIP=1` still skips the hook.
 
 The full suite and build run once before merge on the exact main + PR merged

@@ -99,6 +99,22 @@ function ineligible(reason) {
   return { eligible: false, reason, testFiles: [], relatedFiles: [], documentationEntries: [] };
 }
 
+export function getRelatedCoverageFullReason(relatedFiles, coverage) {
+  if (!Array.isArray(coverage) || coverage.length !== relatedFiles.length) {
+    return "related test coverage could not be resolved";
+  }
+  for (const source of relatedFiles) {
+    const records = coverage.filter((record) => record?.source === source);
+    if (records.length !== 1 || !Array.isArray(records[0].tests) || records[0].tests.length === 0) {
+      return `${source} has no related test files`;
+    }
+    if (!records[0].tests.every((path) => isCanonicalGitPath(path) && safeCliPath.test(path) && isCollectedVitestFile(path))) {
+      return `${source} has unrecognized related test files`;
+    }
+  }
+  return null;
+}
+
 /**
  * Decide whether a pushed change set can take the fast source tier.
  *
