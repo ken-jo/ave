@@ -157,6 +157,7 @@ export async function refreshModelCatalogCache(options: ModelCatalogRefreshOptio
       response = await fetchPublicHttpResponse(MODEL_CATALOG_REFRESH_URL, {
         fetchImpl: options.fetchImpl,
         method: "GET",
+        credentials: "omit",
         // This source is one exact HTTPS URL; a redirect is not another source grant.
         maxRedirects: 0,
         headers: { accept: "application/json", ...(pointer?.etag ? { "if-none-match": pointer.etag } : {}) },

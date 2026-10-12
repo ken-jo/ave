@@ -76,7 +76,11 @@ function createSingleHopFetch(): HostFetchTransport {
         settled = true;
         fn(value);
       };
-      const request = net.request({ url, method, redirect: "manual" });
+      const request = net.request({
+        url, method, redirect: "manual", bypassCustomProtocolHandlers: true,
+        // Public data downloads must not inherit cached session authentication.
+        ...(init.credentials === "omit" ? { credentials: "omit" as const } : {}),
+      });
       let handoffStarted = false;
       const handoff = (sendHeaders: () => void): void => {
         try {
