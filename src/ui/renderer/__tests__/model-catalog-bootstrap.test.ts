@@ -2,10 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { installRendererModelCatalog, renderModelCatalogUnavailable } from "../model-catalog-bootstrap.js";
 import { activeModelCatalog, installModelCatalog } from "../../../shared/model-catalog/active.js";
 import type { ModelCatalogDocument } from "../../../shared/model-catalog/types.js";
-import { t } from "../../../i18n/runtime.js";
+import { getLocale, setLocale, t } from "../../../i18n/runtime.js";
+import type { AppSettings } from "../types.js";
 
 const installed = activeModelCatalog();
-afterEach(() => installModelCatalog(installed));
+const initialLocale = getLocale();
+afterEach(() => {
+  installModelCatalog(installed);
+  setLocale(initialLocale);
+  vi.restoreAllMocks();
+});
 
 describe("installRendererModelCatalog", () => {
   it("installs the catalog main hands over, so the renderer resolves against main's copy", async () => {
@@ -23,17 +29,34 @@ describe("installRendererModelCatalog", () => {
 });
 
 describe("renderModelCatalogUnavailable", () => {
-  it("replaces the blank root with a visible reason and a reload", () => {
+  it.each(["en", "ko"])("reads the saved %s language and keeps startup diagnostics in the console", async (locale) => {
+    setLocale("en");
     const root = document.createElement("div");
     root.append(document.createElement("span"));
+    const error = new Error("Error invoking remote method 'ave:llm:get-model-catalog': No handler registered");
     const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
-    renderModelCatalogUnavailable(root, new Error("the host refused the model catalog: catalog-unavailable"));
-    quiet.mockRestore();
+    const getSettings = vi.fn(async () => ({ appearance: { language: locale } }) as AppSettings);
+    await renderModelCatalogUnavailable(root, error, { getSettings });
     const panel = root.querySelector('[data-testid="model-catalog-unavailable"]');
     expect(panel?.getAttribute("role")).toBe("alert");
     expect(root.children).toHaveLength(1);
+    expect(getLocale()).toBe(locale);
     expect(panel?.textContent).toContain(t("app.modelCatalogUnavailable"));
-    expect(panel?.textContent).toContain("catalog-unavailable");
-    expect(panel?.querySelector("button")).not.toBeNull();
+    expect(panel?.textContent).not.toContain(error.message);
+    expect(panel?.textContent).not.toContain("ave:llm:get-model-catalog");
+    expect(getSettings).toHaveBeenCalledOnce();
+    expect(panel?.querySelector("button")?.textContent).toBe(t("errorBoundary.reloadButton"));
+    expect(quiet).toHaveBeenCalledWith(expect.any(String), error);
+  });
+
+  it("shows a reload immediately even when reading the language fails", async () => {
+    const root = document.createElement("div");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const getSettings = vi.fn(async () => { throw new Error("settings channel unavailable"); });
+    const rendered = renderModelCatalogUnavailable(root, new Error("catalog unavailable"), { getSettings });
+    expect(root.querySelector("button")).not.toBeNull();
+    await rendered;
+    expect(root.textContent).toContain(t("app.modelCatalogUnavailable"));
+    expect(root.textContent).not.toContain("settings channel unavailable");
   });
 });

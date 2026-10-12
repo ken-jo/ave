@@ -23,7 +23,7 @@ if (typeof document !== "undefined") {
       );
     }, (error: unknown) => {
       // Main logged the refusal it answered; the window says why it is empty.
-      renderModelCatalogUnavailable(root, error);
+      return renderModelCatalogUnavailable(root, error, getApi());
     });
   }
 }
