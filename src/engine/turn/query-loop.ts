@@ -234,7 +234,10 @@ export async function queryLoop(
     }
     const apiRound = subscriptionRuntime || effectiveOutput === undefined
       ? undefined
-      : apiRoundLlmSettings(activeBlock, effectiveOutput, llmSettings.streamSmoothing);
+      : apiRoundLlmSettings(activeBlock, effectiveOutput, llmSettings.streamSmoothing, {
+          ...(runtimeContextBudget.inputModalities !== undefined ? { inputModalities: runtimeContextBudget.inputModalities } : {}),
+          ...(runtimeContextBudget.toolCall !== undefined ? { toolCall: runtimeContextBudget.toolCall } : {}),
+        });
     const roundLlmSettings = apiRound ?? { streamSmoothing: llmSettings.streamSmoothing, enableThinking: false };
     // Subscription transports receive an ordinary serialized prompt for every
     // Ave round. Until a runtime exposes and proves a native assistant-prefill
@@ -250,6 +253,7 @@ export async function queryLoop(
     let servingVendorModel: string | undefined = subscriptionUsageIsOpaque
       ? undefined
       : model;
+    let fallbackSelected = false;
     const usageByModel: TokenUsageByModel[] = [];
     const subscriptionUsage = createSubscriptionUsageCollector();
     // Report a branch the loop just took. Reporting can never change what the
@@ -336,9 +340,10 @@ export async function queryLoop(
             vendorModel: servingVendorModel,
           }
         : {}),
-      // Only for the route the settings were resolved for: a fallback served
-      // the turn on another model whose limits these do not describe.
+      // A fallback can change endpoints and named capabilities while keeping
+      // the same vendor/model identity. Primary settings cannot describe it.
       ...(turnModelSettings !== undefined
+        && !fallbackSelected
         && servingVendorProvider === llmSettings.provider && servingVendorModel === model
         ? { modelSettings: turnModelSettings }
         : {}),
@@ -347,7 +352,10 @@ export async function queryLoop(
     });
     const turnProvider = self.provider instanceof FallbackProvider
       ? self.provider.withCallbacks({
-        onFallback: callbacks?.onFallback,
+        onFallback: (from, to) => {
+          fallbackSelected = true;
+          callbacks?.onFallback?.(from, to);
+        },
         onStatus: (status) => {
           if (
             !subscriptionUsageIsOpaque &&
@@ -583,6 +591,7 @@ export async function queryLoop(
         const finalized = await finalizeAfterRoundCap({
           provider: turnProvider, model, systemPrompt,
           messages: self.history.getMessages(),
+          ...(apiRound?.modelCapabilities !== undefined ? { modelCapabilities: apiRound.modelCapabilities } : {}),
           ...(abortSignal ? { abortSignal } : {}),
         });
         turnUsage = mergeFinalizeUsage(turnUsage, finalized);
@@ -2506,6 +2515,7 @@ export interface RoundCapFinalizeParams {
   systemPrompt: string;
   /** Turn history as it stood when the budget ran out. */
   messages: GenericMessage[];
+  modelCapabilities?: import("../llm/types.js").StreamTurnParams["modelCapabilities"];
   abortSignal?: AbortSignal;
 }
 
@@ -2538,6 +2548,7 @@ export async function finalizeAfterRoundCap(
       model: params.model,
       systemPrompt: params.systemPrompt,
       messages,
+      ...(params.modelCapabilities !== undefined ? { modelCapabilities: params.modelCapabilities } : {}),
       // No `tools`: the call must summarize the work, never extend it.
       outputTokenLimit: FINALIZE_OUTPUT_TOKEN_LIMIT,
       ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),

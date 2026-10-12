@@ -8,20 +8,22 @@
  * round built from the bare block would send no output limit at all for the
  * default, or one the model rejects.
  */
-import type { ResolvedOutputTokenLimit } from "../../shared/context-budget.js";
+import type { ResolvedOutputTokenLimit, RouteModelCapabilities } from "../../shared/context-budget.js";
 import { normalizeLlmThinkingBudgetTokens, type LLMVendorSettings } from "../../shared/llm-vendor-defaults.js";
 
 export function apiRoundLlmSettings<Smoothing extends string>(
   block: LLMVendorSettings,
   output: ResolvedOutputTokenLimit,
   streamSmoothing: Smoothing,
-): LLMVendorSettings & { outputTokenLimit: number; outputCeiling?: number; streamSmoothing: Smoothing } {
+  modelCapabilities?: RouteModelCapabilities,
+): LLMVendorSettings & { outputTokenLimit: number; outputCeiling?: number; streamSmoothing: Smoothing; modelCapabilities?: RouteModelCapabilities } {
   return {
     ...block,
     outputTokenLimit: output.effective,
     // The ceiling the effective limit was resolved against travels with it, so
     // the transport clamps to the same one instead of rediscovering another.
     ...(output.ceiling !== undefined ? { outputCeiling: output.ceiling } : {}),
+    ...(modelCapabilities !== undefined ? { modelCapabilities } : {}),
     thinkingBudgetTokens: normalizeLlmThinkingBudgetTokens(block.thinkingBudgetTokens, output.effective),
     streamSmoothing,
   };

@@ -306,10 +306,9 @@ export async function* streamWithFallback(
     }
     const entry = chain[i - 1]!;
     const apiKey = getApiKey(entry.provider);
-    // The primary route's resolved ceiling describes the primary model only;
-    // a fallback model's request meets its own (the adapter resolves it from
-    // the catalog when none is passed).
-    const { outputCeiling: _primaryCeiling, ...fallbackParams } = params;
+    // Resolved limits and capabilities describe the primary model only;
+    // the fallback transport resolves its own catalog facts.
+    const { outputCeiling: _primaryCeiling, modelCapabilities: _primaryCapabilities, ...fallbackParams } = params;
     return {
       provider: _createProvider({
         vendor: entry.provider,

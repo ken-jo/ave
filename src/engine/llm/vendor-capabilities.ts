@@ -7,14 +7,14 @@
  * so the user removes them or picks another model. No send drops image parts on
  * the way to the provider.
  *
- * The model's stated input modalities decide (issue #2501): the endpoint's
+ * The model's stated input modalities decide: the endpoint's
  * `/models` report, else the model catalog's `modalities.input`. Only an
  * `image` there counts. The catalog's `attachment` flag does not: the composer
  * sends a file as a path the agent reads with its tools, never as a file part
  * the model has to accept.
  *
  * Where nothing states the modalities, the name rules below decide, as they
- * did before the catalog (slice 7 removes them). Their 2026-04 snapshot:
+ * did before the catalog. Their 2026-04 snapshot:
  *   - Anthropic Claude 3+ family supports vision (3, 3.5, 3.7, 4, 4.5, 4.6, 4.7).
  *   - OpenAI: gpt-4o, gpt-4-turbo, gpt-4-vision, gpt-5* all support vision.
  *           o1, o1-mini, o3-mini reasoning models do NOT (text-only).

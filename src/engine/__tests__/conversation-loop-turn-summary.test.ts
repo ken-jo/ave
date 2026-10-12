@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { InputClassifier } from "../../core/input-classifier.js";
 import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
-import type { GenericMessage, LLMProvider, StreamEvent, ToolSchema, TurnSummary,
+import type { GenericMessage, LLMProvider, StreamEvent, StreamTurnParams, ToolSchema, TurnSummary,
 } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
@@ -12,6 +12,7 @@ import { PostTurnHookChain } from "../../hooks/post-turn-hook-chain.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
+import { VercelUnifiedProvider } from "../llm/vercel/adapter.js";
 import { estimateRequestInputProjection } from "../request-input-projection.js";
 import { contextBudgetForCurrentRuntime } from "../turn/compaction.js";
 import {
@@ -311,6 +312,84 @@ describe("ConversationLoop onTurnSummary", () => {
     const sent = await turnOn("gpt-5.4-mini");
     expect(sent.sentTools[0]).toContain("read_file");
     expect(sent.modelSettings).not.toHaveProperty("tools");
+  });
+
+  it("carries named route capabilities on every round alongside the recorded tool omission", async () => {
+    const settings = fakeLlmSettings({ provider: "openai", model: "gpt-4.1" });
+    settings.vendors.openai.catalogModel = "openai/gpt-3.5-turbo";
+    const requests: StreamTurnParams[] = [];
+    const provider: LLMProvider = {
+      vendor: "openai",
+      async *streamTurn(params) {
+        requests.push(params);
+        if (requests.length === 1) yield { type: "reasoning_delta", text: "Plan the answer." };
+        else yield { type: "text_delta", text: "answer" };
+        yield { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 60, outputTokens: 10 } };
+      },
+    };
+    const loop = createLoopWithRegistry(provider, new ToolRegistry(), {
+      settingsService: { get: () => settings, getSecret: () => "test-key" },
+    } as never);
+    let summary: TurnSummary | undefined;
+    await loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { inputOrigin: "user-keyboard" });
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.tools).toBeUndefined();
+      expect(request.modelCapabilities).toEqual({
+        inputModalities: { input: ["text"], source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" },
+        toolCall: { supported: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" },
+      });
+      expect(summary?.modelSettings?.tools).toEqual({
+        sent: false, source: request.modelCapabilities!.toolCall!.source,
+        catalogEntry: request.modelCapabilities!.toolCall!.catalogEntry,
+      });
+    }
+  });
+
+  it("records the tool omission that the named route actually sends over HTTP", async () => {
+    const settings = fakeLlmSettings({ provider: "openai", model: "gpt-4.1" });
+    settings.vendors.openai.catalogModel = "openai/gpt-3.5-turbo";
+    const fetchResponse = vi.fn<typeof fetch>(async () => new Response(
+      `data: ${JSON.stringify({
+        id: "fixture-response", object: "chat.completion.chunk", created: 0, model: "gpt-4.1",
+        choices: [{ index: 0, delta: { role: "assistant", content: "answer" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 60, completion_tokens: 10, total_tokens: 70 },
+      })}\n\ndata: [DONE]\n\n`,
+      { headers: { "content-type": "text/event-stream" } },
+    ));
+    const loop = createLoopWithRegistry(new VercelUnifiedProvider("openai", "fixture-key", "https://provider.invalid/v1", fetchResponse), new ToolRegistry(), {
+      settingsService: { get: () => settings, getSecret: () => "test-key" },
+    } as never);
+    let summary: TurnSummary | undefined;
+    const result = await loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { inputOrigin: "user-keyboard" });
+    expect(result.text).toBe("answer");
+    expect(fetchResponse).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("tools");
+    expect(summary?.modelSettings?.tools).toEqual({ sent: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" });
+  });
+
+  it("omits primary route settings when a fallback keeps the same vendor and model", async () => {
+    vi.useFakeTimers();
+    const settings = fakeLlmSettings({ provider: "openai", model: "gpt-3.5-turbo" });
+    settings.vendors.openai.catalogModel = "openai/gpt-4.1";
+    const primary: LLMProvider = {
+      vendor: "openai",
+      async *streamTurn() { yield { type: "error", error: "503 fixture unavailable", classification: "network" }; },
+    };
+    const fallback = new FallbackProvider(primary, [{ provider: "openai", model: "gpt-3.5-turbo", baseUrl: "https://fallback.invalid/v1" }], () => "fixture-key", () => new FakeProvider([[
+      { type: "text_delta", text: "fallback answer" },
+      { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 60, outputTokens: 10 } },
+    ]]));
+    const loop = createLoopWithRegistry(fallback, new ToolRegistry(), {
+      settingsService: { get: () => settings, getSecret: () => "test-key" },
+    } as never);
+    let summary: TurnSummary | undefined;
+    const turn = loop.runTurn("Report the result.", { onTurnSummary: (value) => { summary = value; } }, undefined, { inputOrigin: "user-keyboard" });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect((await turn).text).toBe("fallback answer");
+    expect(summary).toMatchObject({ vendorProvider: "openai", vendorModel: "gpt-3.5-turbo" });
+    expect(summary?.modelSettings).toBeUndefined();
   });
 
   it("emits a summary for a turn whose only output was reasoning", async () => {

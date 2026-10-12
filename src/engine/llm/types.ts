@@ -11,6 +11,7 @@
 // re-export here so existing engine-side callers keep their import
 // path while the type definition cannot drift between modules.
 import type { RunModelSettings } from "../../shared/run-model-settings.js";
+import type { RouteModelCapabilities } from "../../shared/context-budget.js";
 import {
   type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import type { MarketplaceInstalledProviderPreset } from "../../shared/marketplace-package-assets.js";
@@ -510,6 +511,8 @@ export interface StreamTurnParams {
   systemPrompt: string;
   messages: GenericMessage[];
   tools?: ToolSchema[];
+  /** The route's resolved input/tool facts. An empty object preserves unknown facts without matching again by name. */
+  modelCapabilities?: RouteModelCapabilities;
   /** Host-owned total output ceiling, projected into the native request. */
   outputTokenLimit?: number;
   /**

@@ -34,7 +34,7 @@ import {
   resolveModelContextWindow,
   type ContextWindowSource,
   type ResolvedOutputTokenLimit,
-  type ResolvedToolCallSupport,
+  type RouteModelCapabilities,
   type InputLimitSource,
   type LlmRouteProviderPreset,
   type LlmRouteSettings,
@@ -55,7 +55,7 @@ const SUBSCRIPTION_FALLBACK_USABLE_CONTEXT = getUsableContext(
   SUBSCRIPTION_FALLBACK_CONTEXT_WINDOW,
 );
 
-interface RuntimeContextBudget {
+interface RuntimeContextBudget extends RouteModelCapabilities {
   readonly model: string;
   readonly preflight: number;
   readonly usableContext: number;
@@ -80,8 +80,6 @@ interface RuntimeContextBudget {
    * runtimes, whose protocol owns output control.
    */
   readonly output?: ResolvedOutputTokenLimit;
-  /** Whether the API route's model takes tool definitions, when the catalog states it. */
-  readonly toolCall?: ResolvedToolCallSupport;
 }
 
 /**
@@ -267,6 +265,7 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
     contextWindow: route.contextWindow,
     ...(route.catalogEntry !== undefined ? { catalogEntry: route.catalogEntry } : {}),
     output: route.output,
+    ...(route.inputModalities !== undefined ? { inputModalities: route.inputModalities } : {}),
     ...(route.toolCall !== undefined ? { toolCall: route.toolCall } : {}),
   };
 }

@@ -2,7 +2,7 @@
 
 
 
-import type { LLMProvider, StreamEvent, ToolCallBlock, ToolSchema, GenericMessage, TokenUsage, ThinkingBlock } from "../llm/types.js";
+import type { LLMProvider, StreamEvent, StreamTurnParams, ToolCallBlock, ToolSchema, GenericMessage, TokenUsage, ThinkingBlock } from "../llm/types.js";
 import { isContextLengthError } from "../auto-compact.js";
 import { prepareMarkedToolResultsForWire } from "../wire-serialize.js";
 import { classifyProviderError } from "../llm/error-classifier.js";
@@ -44,6 +44,7 @@ export interface StreamCollectParams {
     outputTokenLimit?: number;
     /** The model ceiling `outputTokenLimit` was resolved against; see StreamTurnParams.outputCeiling. */
     outputCeiling?: number;
+    modelCapabilities?: StreamTurnParams["modelCapabilities"];
   };
   abortSignal?: AbortSignal;
   /**
@@ -155,6 +156,7 @@ export async function collectRoundStream(
         ? {}
         : { outputTokenLimit: llmSettings.outputTokenLimit }),
       ...(llmSettings.outputCeiling === undefined ? {} : { outputCeiling: llmSettings.outputCeiling }),
+      ...(llmSettings.modelCapabilities === undefined ? {} : { modelCapabilities: llmSettings.modelCapabilities }),
       abortSignal,
     }) as AsyncIterable<StreamEvent>) {
       if (abortSignal?.aborted) return { kind: "interrupted", text };

@@ -289,7 +289,8 @@ Implemented.
   (`src/shared/run-model-settings.ts`): the catalog `sha256`, the window and its source
   and entry, the prompt cap that bounded the budget when one did (§4), the output block
   above, and the reasoning plan as sent. It is omitted for
-  subscription runtimes and for a turn a fallback served on another model.
+  subscription runtimes and when a fallback participates, including one that keeps
+  the vendor and model but changes endpoints.
 - **UI.** The renderer's cost estimate shows a range. The upper end is the cost with
   the output at `output.effective` (before, it assumed a fixed 4,096), and the tooltip
   names who set the limit. The lower end, and the color tier, use the expected output:
@@ -310,11 +311,18 @@ Slice 4 is implemented.
      (`catalogModel`), else the one the model id resolves to;
   3. the name rules, where nobody states the modalities (slice 7 removes them).
 
+  The name rules are in `supportsVisionByName` in the same module. A stated catalog
+  input list without `image`, including an empty list, refuses images.
+
   `resolveContextWindowForRoute(...).inputModalities` carries steps 1–2 for the active
   route. The renderer passes it to the composer and the send path, which refuse on the
   same condition. A route whose named entry is missing from the catalog falls to the name
   rules; it is not matched by name. A model-list row (the settings badge) has no route
   and uses its own reported modalities, else the catalog entry for its id.
+  The API transport checks the same resolved route before sending any user or
+  tool-result image, including direct calls and replayed history. A caller without a
+  route uses the catalog and name rules. A fallback resolves its own model rather than
+  inheriting the primary route's reported or named capabilities.
 - **Not `attachment`.** The catalog's `attachment` flag says a model accepts file parts.
   The composer sends a file as a path the agent reads with its tools, never as a file part,
   so the flag decides nothing here.
@@ -326,7 +334,13 @@ Slice 4 is implemented.
   - Only the catalog answers. An endpoint's `supported_parameters` lists what a router
     forwards, and a missing `tools` there is too weak a reason to turn the agent off.
   - The rule follows the route's model. A fallback that serves the turn on another model
-    gets the same empty tool list.
+    gets the same offered tool list, bounded by its own catalog capability at the API
+    transport. Direct calls apply that transport check too. A primary route's named
+    capability travels with the request so the transport cannot replace it with a
+    conflicting name match.
+    A fallback cannot regain tools the primary withheld. The turn's `modelSettings`
+    is omitted when a fallback participates (§5), so a primary model's
+    omission is never recorded as the fallback's capability.
 
 Slice 5 prices through the catalog, tiers included, and makes the renderer apply the
 user's pricing overrides as the engine already does; user overrides keep the highest

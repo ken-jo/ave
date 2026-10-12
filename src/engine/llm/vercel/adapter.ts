@@ -64,7 +64,8 @@ import type { MarketplaceInstalledProviderPreset } from "../../../shared/marketp
 import { isGuardedInsecureCredentialedModelProviderFetch } from "../marketplace-provider-fetch.js";
 import { normalizeOutputTokenLimit } from "../output-token-limit.js";
 import { isOpenAIReasoningModel, planReasoning, supportsAdaptiveThinking } from "../reasoning-plan.js";
-import { resolveOutputCeiling } from "../../../shared/context-budget.js";
+import { resolveOutputCeiling, resolveToolCallSupport } from "../../../shared/context-budget.js";
+import { supportsVision } from "../vendor-capabilities.js";
 import { toGrammarSafeToolSchemas } from "../grammar-safe-tool-schema.js";
 import { selectAssistantWireThinkingBlocks } from "../assistant-wire-content.js";
 
@@ -262,6 +263,15 @@ export class VercelUnifiedProvider implements LLMProvider {
     const slot = this.vendorSlot;
 
     try {
+      const hasImages = params.messages.some((message) =>
+        message.role === "user"
+          ? Array.isArray(message.content) && message.content.some((part) => part.type === "image")
+          : message.role === "tool_result" && message.image !== undefined,
+      );
+      if (hasImages && !supportsVision(this.vendor, params.model, params.modelCapabilities)) {
+        yield { type: "error", error: "Model does not support image input", classification: "model" };
+        return;
+      }
       const useOpenAIResponsesAliases = usesOpenAIResponsesWire(slot, params.model);
       const messages: ModelMessage[] = genericToModelMessages(
         useOpenAIResponsesAliases
@@ -275,10 +285,14 @@ export class VercelUnifiedProvider implements LLMProvider {
               : "derived-user",
         },
       );
+      const toolCall = params.modelCapabilities !== undefined
+        ? params.modelCapabilities.toolCall
+        : resolveToolCallSupport({ vendor: this.vendor, model: params.model });
+      const toolSchemas = toolCall?.supported === false ? undefined : params.tools;
       const tools = buildTools(
         useOpenAIResponsesAliases
-          ? remapToolSchemasForOpenAIResponses(params.tools)
-          : params.tools,
+          ? remapToolSchemasForOpenAIResponses(toolSchemas)
+          : toolSchemas,
       );
       const hasTools = Boolean(tools && Object.keys(tools).length > 0);
 

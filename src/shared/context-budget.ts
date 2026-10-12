@@ -332,7 +332,7 @@ export interface ResolvedToolCallSupport {
  * and reading a missing `tools` there as "no tools" would turn the agent off
  * on a guess. Absent means unknown, and unknown sends tools as before.
  */
-function resolveToolCallSupport(params: {
+export function resolveToolCallSupport(params: {
   vendor: string;
   model: string;
   catalogModel?: string;
@@ -344,7 +344,12 @@ function resolveToolCallSupport(params: {
     : undefined;
 }
 
-export interface RouteContextWindow extends ResolvedContextWindow {
+/** Capability facts resolved for one route; absent fields stay unknown. */
+export interface RouteModelCapabilities extends RouteInputModalities {
+  readonly toolCall?: ResolvedToolCallSupport;
+}
+
+export interface RouteContextWindow extends ResolvedContextWindow, RouteModelCapabilities {
   /** The model this route runs on — `activeLlmRouteModel`'s answer. */
   readonly model: string;
   /**
@@ -364,10 +369,6 @@ export interface RouteContextWindow extends ResolvedContextWindow {
    * the engine reports the miss once, so a typo does not pass silently.
    */
   readonly unresolvedCatalogModel?: string;
-  /** The model's input modalities, when its endpoint or the catalog states them ({@link resolveInputModalities}). */
-  readonly inputModalities?: ResolvedInputModalities;
-  /** Whether the model takes tool definitions, when the catalog states it ({@link resolveToolCallSupport}). */
-  readonly toolCall?: ResolvedToolCallSupport;
 }
 
 /**
