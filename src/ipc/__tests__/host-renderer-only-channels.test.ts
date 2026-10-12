@@ -224,6 +224,8 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["preview", CHANNELS.preview.readFile, ["/x"]],
   // Usage and cost history.
   ["usage", CHANNELS.usage.range, [{}]],
+  // The model catalog the renderer resolves against; only the host renderer installs it.
+  ["chat", CHANNELS.llm.getModelCatalog, []],
   // The preflight override is a developer switch over host behaviour.
   ["dev", CHANNELS.dev.getPreflightStatus, []],
   // Window controls act on the host BrowserWindow the shell is embedded in.

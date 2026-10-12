@@ -125,6 +125,9 @@ export const CHANNELS = {
   },
   llm: {
     ping: "ave:llm:ping",
+    // The model catalog the main process resolves against, handed to the
+    // renderer before it mounts so both sides resolve against the same one.
+    getModelCatalog: "ave:llm:get-model-catalog",
   },
   memory: {
     entriesList: "ave:memory:entries:list",

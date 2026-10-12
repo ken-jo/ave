@@ -83,6 +83,8 @@ import { MAIN_CHAT_GROUP_ID } from "../../contract/app-contract.js";
 import type { ConversationLoop } from "../../engine/conversation-loop.js";
 import { hasOnlyKeys } from "../../shared/is-record.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { activeModelCatalog } from "../../shared/model-catalog/active.js";
+import type { ModelCatalogIpcResult } from "../../shared/model-catalog/types.js";
 
 /** Refusal: the session named is already open in another tile of this window. */
 const SESSION_OPEN_IN_OTHER_GROUP = "session-open-in-other-group";
@@ -1009,6 +1011,13 @@ export function registerChatHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     return conversationLoop.pingProvider();
+  });
+  ipcMain.handle(CHANNELS.llm.getModelCatalog, (e): ModelCatalogIpcResult | typeof UNAUTHORIZED_FRAME => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.llm.getModelCatalog, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    return { ok: true, catalog: activeModelCatalog() };
   });
 
   const mainTurns = mainGroup.turns;

@@ -341,6 +341,24 @@ describe("LLM vendor defaults", () => {
     }
   });
 
+  it("carries a named catalog entry through trimmed, and drops one that is not <provider>/<id>", () => {
+    const named = (catalogModel: unknown) => getLlmVendorSettings(
+      {
+        "openai-compatible": {
+          ...LLM_VENDOR_DEFAULTS["openai-compatible"],
+          catalogModel,
+        } as unknown as LLMVendorSettings,
+      },
+      "openai-compatible",
+    ).catalogModel;
+    expect(named(" openai/gpt-4.1 ")).toBe("openai/gpt-4.1");
+    expect(named("openrouter/lab/model")).toBe("openrouter/lab/model");
+    for (const stored of ["gpt-4.1", "/gpt-4.1", "openai/", "open ai/gpt", "openai/gpt 4", 42, null, `openai/${"x".repeat(300)}`]) {
+      expect(named(stored), `stored ${String(stored)} must not survive`).toBeUndefined();
+    }
+    expect(getLlmVendorSettings(freshVendorBlocks(), "openai-compatible").catalogModel).toBeUndefined();
+  });
+
   it("includes each provider's default model in its dropdown options", () => {
     for (const v of LLM_VENDORS) {
       const options = LLM_VENDOR_MODEL_OPTIONS[v];

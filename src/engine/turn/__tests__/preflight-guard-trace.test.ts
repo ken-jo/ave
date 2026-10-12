@@ -79,7 +79,7 @@ describe("PREFLIGHT_GUARD trace step — fired path", () => {
       outcome: "fired",
       threshold,
       thresholdSource: "context-window",
-      contextWindowSource: "pricing-catalog",
+      contextWindowSource: "model-catalog",
       model: "claude/claude-sonnet-4-5",
       estimated: expect.any(Number),
       contextTokensIn: expect.any(Number),

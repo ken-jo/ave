@@ -1,10 +1,10 @@
 # Model capability catalog
 
 Status: decided (issue #2501, owner decisions of 2026-10-12); being implemented in the
-seven slices of §9. Slice 1 — the contract, the generator, the bundled snapshot and its
-provenance — is implemented. Nothing reads the catalog yet; until slice 2 lands, every
-behavior described after §4 is the plan, and the code paths named in §8 are still the
-ones in force.
+seven slices of §9. Slice 1 (the contract, the generator, the bundled snapshot and its
+provenance) and slice 2 (context windows resolve through the catalog, §4) are
+implemented. §5–§7 are the plan; until their slices land, output limits, reasoning
+controls, modalities and prices still come from the code paths named in §1 and §8.
 
 Anchors: `src/shared/model-catalog/` (types, provider map, normalizer),
 `src/core/model-catalog/` (document hashing and verification, the bundled snapshot),
@@ -128,14 +128,46 @@ Precedence, per fact:
 4. the bundled snapshot;
 5. a host fallback, recorded as source `host-fallback`.
 
-This extends `resolveModelContextWindow` (`src/shared/context-budget.ts`), whose sources
-today are vendor setting, provider-reported, pricing table and fallback. The catalog key is
-found by one `resolveCatalogKey(vendor, model)`: the provider map, then the exact id, then
-`canonicalId`, then date-suffix normalization, then case-fold, with Ave-owned aliases in
-one data file. A local or custom endpoint stays unknown unless the user names the catalog
-model it serves (`llm.vendors.<v>.catalogModel`). Context-window consumers — engine
-compaction, the renderer's context ring, the developer IPC — switch to the resolver; the
-renderer receives the resolved values over IPC rather than bundling the JSON.
+**Implemented for the context window (slice 2).** `resolveModelContextWindow`
+(`src/shared/context-budget.ts`) now answers, in order: `vendor-setting` (declared
+`llm.vendors.<v>.contextWindow`), `provider-reported` (the route's `/models` row),
+`model-catalog` (with `catalogEntry`, the `<provider>/<id>` that answered),
+`pricing-catalog` (the hand-kept table, for a model the catalog does not know; slice 7
+removes it) and `fallback` (128K). Refreshed metadata joins in slice 6, above the bundled
+snapshot.
+
+The catalog key is found by one `resolveCatalogKey(catalog, vendor, model)`
+(`src/shared/model-catalog/resolve.ts`), across the vendor's providers in map order: the
+exact id; an Ave alias (`src/shared/model-catalog/aliases.ts`, empty today — every
+vendor id the snapshot can describe is found by the other steps, and an alias may only
+join two ids documented to name one model); an entry whose `canonicalId` is the id;
+the id without a release-date suffix; the id with case and version separators folded
+(`claude-sonnet-4-6` → Copilot's `claude-sonnet-4.6`); the same ignoring a path prefix
+on either side (`openai/gpt-5.4` → Requesty's `gpt-5.4`). The folded, prefix and
+canonical steps answer only when exactly one entry matches.
+
+A self-hosted or local endpoint is never matched by name. The user can name the entry it
+serves as `llm.vendors.<v>.catalogModel` (`<provider>/<id>`, `settings.json` only, like
+`contextWindow`); a named entry that is not in the catalog answers nothing rather than
+falling back to a name match, and it applies to the vendor block's own model, not to a
+marketplace preset reached through the same vendor.
+
+Each process installs one catalog (`src/shared/model-catalog/active.ts`), and reading
+before install throws. Main and headless install the verified bundled snapshot at the
+start of `bootstrapCoreServices`; the snapshot is a dynamic import, so its data lands in
+an async chunk instead of the main bundle's initial budget. The renderer asks main for
+that copy over `ave:llm:get-model-catalog` and installs it before it mounts
+(`src/ui/renderer/model-catalog-bootstrap.ts`), so the first settings snapshot the
+context ring resolves is resolved against the engine's catalog. Tests install the
+bundled snapshot in a setup file (`src/__tests__/vitest-model-catalog.ts`).
+
+Windows the snapshot of 2026-10-12 changes against the table (the rest agree): GPT-5.4
+Pro 1.1M → 1,050,000; GPT-4.1, 4.1 mini and nano 1M → 1,047,576; Gemini 2.5 Pro and Flash
+1M → 1,048,576, Gemini 2.5 Flash-Lite 128K → 1,048,576; Copilot GPT-5 mini 400K →
+264,000 and Copilot Claude Sonnet 4.6 1M → 200,000 (the table applied Anthropic's 1M
+beta window to the Copilot row; the catalog lists Copilot's own window). Claude Sonnet and Opus 4.6 stay at 1M: the
+catalog lists the window the adapter's beta header already delivers, and the decision to
+send that header stays on the table until slice 7.
 
 ## 5. Output and reasoning (slice 3)
 

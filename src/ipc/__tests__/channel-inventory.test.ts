@@ -301,6 +301,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:home-docs:packaged:apply",
         "ave:home-docs:upgrade-markers:list",
         "ave:host:plugin-theme-notify",
+        "ave:llm:get-model-catalog",
         "ave:llm:ping",
         "ave:logs:tail",
         "ave:marketplace:boot-installs:dismiss",

@@ -151,3 +151,8 @@ export interface ModelCatalogDocument {
    */
   sha256: string;
 }
+
+/** `ave:llm:get-model-catalog`: the catalog main resolves against, or the frame refusal. */
+export type ModelCatalogIpcResult =
+  | { ok: true; catalog: ModelCatalogDocument }
+  | { ok: false; error: "unauthorized-frame" };

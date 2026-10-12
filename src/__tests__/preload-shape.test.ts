@@ -334,6 +334,7 @@ describe("preload contextBridge world shape lock", () => {
           "getAppInfo": "function",
           "getAppUpdateState": "function",
           "getBootstrapStatus": "function",
+          "getModelCatalog": "function",
           "getRuntimeCounts": "function",
           "getRuntimeEnv": "function",
           "getSessionGoal": "function",

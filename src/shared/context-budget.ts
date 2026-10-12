@@ -23,6 +23,8 @@ import {
   type LLMVendorSettingsMap,
 } from "./llm-vendor-defaults.js";
 import { cachedModelListEntry, type LlmModelListCache } from "./llm-model-list.js";
+import { activeModelCatalog } from "./model-catalog/active.js";
+import { lookupCatalogModel, resolveCatalogKey, type CatalogModelHit } from "./model-catalog/resolve.js";
 import type { MarketplaceProviderModelDiscoveryPolicy } from "./marketplace-package-assets.js";
 
 /**
@@ -58,6 +60,11 @@ export function getPreflightThreshold(contextWindow: number): number {
 /**
  * Which input the resolved context window came from, in priority order.
  *
+ * `model-catalog` is the generated catalog (`docs/design/model-capability-catalog.md`).
+ * `pricing-catalog` is the hand-kept `DEFAULT_PRICING` table, still consulted
+ * for a model the catalog does not know until issue #2501's last slice
+ * removes its context rows.
+ *
  * `fallback` means nothing knew the model's real capacity and the conservative
  * {@link FALLBACK_PRICING} window is in use. That is the case worth reporting:
  * a served model whose true window is larger gets compacted far earlier than it
@@ -67,12 +74,15 @@ export function getPreflightThreshold(contextWindow: number): number {
 export type ContextWindowSource =
   | "vendor-setting"
   | "provider-reported"
+  | "model-catalog"
   | "pricing-catalog"
   | "fallback";
 
 export interface ResolvedContextWindow {
   readonly contextWindow: number;
   readonly source: ContextWindowSource;
+  /** The catalog entry that answered, `<provider>/<id>`, when the source is `model-catalog`. */
+  readonly catalogEntry?: string;
 }
 
 /**
@@ -107,14 +117,19 @@ function positiveTokenCount(value: number | undefined): number | undefined {
  * 2. `reported` — what the provider itself said about this model in its
  *    `/v1/models` handshake. An external value, so the caller parses it
  *    defensively and passes `undefined` when the field was absent or malformed.
- * 3. The pricing catalog's entry for the model.
- * 4. The conservative fallback window.
+ * 3. The model catalog's entry: the one the user named for this route
+ *    (`llm.vendors.<vendor>.catalogModel`), else the one the vendor's model id
+ *    resolves to ({@link resolveCatalogKey}).
+ * 4. The hand-kept pricing table's entry, for a model the catalog does not know.
+ * 5. The conservative fallback window.
  */
 export function resolveModelContextWindow(params: {
   vendor: string;
   model: string;
   configured?: number;
   reported?: number;
+  /** A catalog entry the user named for this route, `<provider>/<id>`. */
+  catalogModel?: string;
 }): ResolvedContextWindow {
   const configured = positiveTokenCount(params.configured);
   if (configured !== undefined) {
@@ -124,11 +139,28 @@ export function resolveModelContextWindow(params: {
   if (reported !== undefined) {
     return { contextWindow: reported, source: "provider-reported" };
   }
-  const catalog = lookupPricingOptional(params.vendor, params.model);
-  if (catalog) {
-    return { contextWindow: effectiveContextWindow(catalog), source: "pricing-catalog" };
+  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel);
+  const catalogWindow = positiveTokenCount(hit?.model.limits.context);
+  if (hit && catalogWindow !== undefined) {
+    return { contextWindow: catalogWindow, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` };
+  }
+  const pricing = lookupPricingOptional(params.vendor, params.model);
+  if (pricing) {
+    return { contextWindow: effectiveContextWindow(pricing), source: "pricing-catalog" };
   }
   return { contextWindow: FALLBACK_PRICING.contextWindow, source: "fallback" };
+}
+
+/**
+ * The catalog entry for a model: the one the user named, when they named one,
+ * else the one the vendor's model id resolves to. A named entry that is not in
+ * the catalog answers nothing rather than falling back to the name: the user
+ * said which model this is, and a name match could be a different one.
+ */
+export function catalogModelFor(vendor: string, model: string, catalogModel?: string): CatalogModelHit | undefined {
+  const catalog = activeModelCatalog();
+  if (catalogModel !== undefined) return lookupCatalogModel(catalog, catalogModel);
+  return resolveCatalogKey(catalog, vendor, model);
 }
 
 /** The settings a route's context window is read out of. */
@@ -219,11 +251,15 @@ export function resolveContextWindowForRoute(
   const block = getLlmVendorSettings(llm.vendors, llm.provider);
   const address = llmRouteCatalogAddress(llm, installedProviderPresets);
   const entry = cachedModelListEntry(llm.modelListCache, { ...address, model });
+  // A named catalog entry describes the vendor block's own model; a
+  // marketplace preset reached through the same vendor runs a model of its own.
+  const catalogModel = address.credentialScope === undefined ? block.catalogModel : undefined;
   const resolved = resolveModelContextWindow({
     vendor: llm.provider,
     model,
     ...(block.contextWindow !== undefined ? { configured: block.contextWindow } : {}),
     ...(entry?.contextLength !== undefined ? { reported: entry.contextLength } : {}),
+    ...(catalogModel !== undefined ? { catalogModel } : {}),
   });
   const maxOutputTokens = positiveTokenCount(entry?.maxOutputTokens);
   return {
