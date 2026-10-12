@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { estimateOutgoingUserMessageTokens } from "../../../../shared/multimodal-token-estimate.js";
 import { useCostEstimate } from "../use-cost-estimate.js";
+import { costTier } from "../../../../lib/cost-estimator.js";
 import type { ChatEntry } from "../../../../lib/chat-stream-state.js";
 
 describe("useCostEstimate", () => {
@@ -125,3 +126,42 @@ describe("useCostEstimate", () => {
     expect(result.current.costBadgeClass).toBeUndefined();
   });
 });
+describe("useCostEstimate — the output limit is the range's upper end, not the tier", () => {
+  // About 2K tokens of input, an effective output limit of 32,000.
+  const carrier = (outputs: number[]): ChatEntry[] => [
+    ...outputs.map((tokensOut) => ({ kind: "turn_summary", tokensIn: 2_000, tokensOut } as unknown as ChatEntry)),
+    { kind: "context_usage", tokensIn: 2_000, source: "compact-estimate" },
+  ];
+  const estimate = (vendor: string, model: string, outputs: number[]) =>
+    renderHook(() => useCostEstimate({ entries: carrier(outputs), draft: { text: "" }, llmVendor: vendor, llmModel: model, maxOutputTokens: 32_000 })).result.current;
+
+  it.each([
+    // [vendor, model, most a turn may cost, tier before (from the most)]
+    ["claude", "claude-sonnet-4-6", 0.486, "text-warning"],
+    ["openai", "gpt-5.4-mini", 0.1455, "text-warning"],
+  ] as const)("%s %s: shows up to $%f, and tiers on the input before any turn has completed", (vendor, model, most, before) => {
+    const { costEstimate, costBadgeClass } = estimate(vendor, model, []);
+    expect(costEstimate.total).toBeCloseTo(most, 3);
+    // The tier the maximum alone would give, which colored every draft.
+    expect(costTierClassFor(costEstimate.total)).toBe(before);
+    expect(costEstimate.expected).toMatchObject({ tokens: 0, basis: "none" });
+    expect(costEstimate.expected!.total).toBeCloseTo(costEstimate.inputCost, 6);
+    expect(costBadgeClass).toBe("text-muted-foreground");
+  });
+
+  it.each([
+    // Recent turns averaged 1,500 output tokens.
+    ["claude", "claude-sonnet-4-6", 0.0285, "text-success"],
+    ["openai", "gpt-5.4-mini", 0.0082, "text-muted-foreground"],
+  ] as const)("%s %s: tiers on the output this conversation's turns produced", (vendor, model, expectedTotal, tier) => {
+    const { costEstimate, costBadgeClass } = estimate(vendor, model, [1_000, 2_000]);
+    expect(costEstimate.expected).toMatchObject({ tokens: 1_500, basis: "recent-turns" });
+    expect(costEstimate.expected!.total).toBeCloseTo(expectedTotal, 3);
+    expect(costBadgeClass).toBe(tier);
+  });
+});
+
+function costTierClassFor(total: number): string {
+  const tier = costTier(total);
+  return tier === "trivial" ? "text-muted-foreground" : tier === "low" ? "text-success" : tier === "medium" ? "text-warning" : "text-destructive";
+}

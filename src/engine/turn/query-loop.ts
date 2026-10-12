@@ -236,31 +236,6 @@ export async function queryLoop(
       ? undefined
       : apiRoundLlmSettings(activeBlock, effectiveOutput, llmSettings.streamSmoothing);
     const roundLlmSettings = apiRound ?? { streamSmoothing: llmSettings.streamSmoothing, enableThinking: false };
-    // Recorded with the turn: the catalog, window, output and reasoning this
-    // route resolved, from the same functions the request is built with.
-    const turnModelSettings: RunModelSettings | undefined = apiRound === undefined || effectiveOutput === undefined
-      ? undefined
-      : (() => {
-          const reasoning = planReasoning({
-            vendor: llmSettings.provider,
-            model,
-            enableThinking: apiRound.enableThinking,
-            budgetTokens: apiRound.thinkingBudgetTokens ?? 10_000,
-          });
-          return {
-            modelCatalogSha256: activeModelCatalog().sha256,
-            contextWindow: {
-              tokens: runtimeContextBudget.contextWindow ?? 0,
-              source: runtimeContextBudget.contextWindowSource as ContextWindowSource,
-              ...(runtimeContextBudget.catalogEntry !== undefined ? { catalogEntry: runtimeContextBudget.catalogEntry } : {}),
-              ...(runtimeContextBudget.inputLimit !== undefined && runtimeContextBudget.inputLimitSource !== undefined
-                ? { inputLimit: { tokens: runtimeContextBudget.inputLimit, source: runtimeContextBudget.inputLimitSource } }
-                : {}),
-            },
-            output: effectiveOutput,
-            ...(reasoning ? { reasoning } : {}),
-          };
-        })();
     // Subscription transports receive an ordinary serialized prompt for every
     // Ave round. Until a runtime exposes and proves a native assistant-prefill
     // continuation protocol, a max_tokens response must remain a partial
@@ -302,6 +277,34 @@ export async function queryLoop(
     // the turn.
     const rebuildTurnToolSchemas = (): ToolSchema[] => withoutDroppedTools(self.rebuildToolSchemas(scope), droppedToolSchemaNames);
     let toolSchemas: ToolSchema[] = rebuildTurnToolSchemas();
+    // Recorded with the turn: the catalog, window, output and reasoning this
+    // route resolved, from the same functions the request is built with —
+    // the reasoning planned for the turn's request shape (its first round's
+    // tools), as the adapter plans it.
+    const turnModelSettings: RunModelSettings | undefined = apiRound === undefined || effectiveOutput === undefined
+      ? undefined
+      : (() => {
+          const reasoning = planReasoning({
+            vendor: llmSettings.provider,
+            model,
+            enableThinking: apiRound.enableThinking,
+            budgetTokens: apiRound.thinkingBudgetTokens ?? 10_000,
+            request: { hasTools: toolSchemas.length > 0, customBaseUrl: Boolean(activeBlock.baseUrl) },
+          });
+          return {
+            modelCatalogSha256: activeModelCatalog().sha256,
+            contextWindow: {
+              tokens: runtimeContextBudget.contextWindow ?? 0,
+              source: runtimeContextBudget.contextWindowSource as ContextWindowSource,
+              ...(runtimeContextBudget.catalogEntry !== undefined ? { catalogEntry: runtimeContextBudget.catalogEntry } : {}),
+              ...(runtimeContextBudget.inputLimit !== undefined && runtimeContextBudget.inputLimitSource !== undefined
+                ? { inputLimit: { tokens: runtimeContextBudget.inputLimit, source: runtimeContextBudget.inputLimitSource } }
+                : {}),
+            },
+            output: effectiveOutput,
+            ...(reasoning ? { reasoning } : {}),
+          };
+        })();
     const withServingIdentity = (
       result: {
         text: string;

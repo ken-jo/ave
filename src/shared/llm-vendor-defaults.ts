@@ -685,6 +685,14 @@ export interface LLMVendorSettings {
    */
   outputTokenLimit?: number;
   /**
+   * Set beside `outputTokenLimit` when a user wrote it through this build's
+   * settings path. Builds before #2501 wrote the 32,000 default into every
+   * saved block and keep doing so after a downgrade; a 32,000 without this
+   * stamp is that default, not a choice, and is dropped on load
+   * (`src/data/settings-store.ts`).
+   */
+  outputTokenLimitSetByUser?: true;
+  /**
    * The prompt capacity of the model this vendor route serves, declared by the
    * user. Unset by default, and it outranks every other answer: the pricing
    * catalog cannot know a self-hosted or gateway-served model, and a provider
@@ -959,6 +967,8 @@ export function getLlmVendorSettings(
   else delete block.presetModels;
   if (outputTokenLimit !== undefined) block.outputTokenLimit = outputTokenLimit;
   else delete block.outputTokenLimit;
+  if (outputTokenLimit !== undefined && stored?.outputTokenLimitSetByUser === true) block.outputTokenLimitSetByUser = true;
+  else delete block.outputTokenLimitSetByUser;
   if (contextWindow !== undefined) block.contextWindow = contextWindow;
   else delete block.contextWindow;
   if (catalogModel !== undefined) block.catalogModel = catalogModel;

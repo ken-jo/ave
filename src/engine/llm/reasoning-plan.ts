@@ -123,6 +123,28 @@ export interface ReasoningPlan {
   readonly budgetTokens?: number;
   /** Which knowledge decided: the catalog entry, or the name rules for a model it does not know. */
   readonly source: "model-catalog" | "name-rule";
+  /**
+   * The effort the route would carry was dropped for this request: a tool turn
+   * on Chat Completions (see {@link chatCompletionsRejectsToolTurnEffort}).
+   */
+  readonly suppressed?: "chat-completions-tool-turn";
+}
+
+/**
+ * Whether this request must not carry `reasoning_effort`: Chat Completions
+ * answers 400 when GPT-5.x gets it together with tools. Copilot always talks
+ * Chat Completions; OpenAI with a custom `baseUrl` may point at a proxy that
+ * does. Native OpenAI uses the Responses API, which has no such restriction.
+ * One rule for the request and for the turn's record of it.
+ */
+export function chatCompletionsRejectsToolTurnEffort(params: {
+  vendor: LLMVendor;
+  model: string;
+  hasTools: boolean;
+  customBaseUrl: boolean;
+}): boolean {
+  if (!params.hasTools || !params.model.toLowerCase().includes("gpt-5")) return false;
+  return params.vendor === "copilot" || (params.vendor === "openai" && params.customBaseUrl);
 }
 
 const OPENAI_FAMILY: ReadonlySet<LLMVendor> = new Set(["openai", "copilot", "azure-foundry"]);
@@ -137,8 +159,18 @@ export function planReasoning(params: {
   model: string;
   enableThinking: boolean;
   budgetTokens: number;
+  /** The request's shape, for the rules that depend on it. */
+  request: { hasTools: boolean; customBaseUrl: boolean };
 }): ReasoningPlan | undefined {
   if (!params.enableThinking) return undefined;
+  const plan = planReasoningLevel(params);
+  if (plan?.kind === "openai-effort" && chatCompletionsRejectsToolTurnEffort({ vendor: params.vendor, model: params.model, ...params.request })) {
+    return { kind: "none", requestedEffort: plan.requestedEffort, source: plan.source, suppressed: "chat-completions-tool-turn" };
+  }
+  return plan;
+}
+
+function planReasoningLevel(params: { vendor: LLMVendor; model: string; budgetTokens: number }): ReasoningPlan | undefined {
   const entry = catalogModelFor(params.vendor, params.model)?.model;
   const accepted = entry?.reasoning?.effort;
   if (OPENAI_FAMILY.has(params.vendor)) {

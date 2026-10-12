@@ -618,6 +618,12 @@ export function mergeLlmPatch(
       // omit ≠ clear by design.
       const previous = getLlmVendorSettings(vendors, v);
       const merged: LLMVendorSettings = { ...previous, ...incoming };
+      // An output limit arriving through a patch is the user's: stamp it, so
+      // a later load tells it from the default older builds wrote back.
+      if (Object.hasOwn(incoming, "outputTokenLimit")) {
+        if (incoming.outputTokenLimit !== undefined) merged.outputTokenLimitSetByUser = true;
+        else delete merged.outputTokenLimitSetByUser;
+      }
       // `presetModels` is a store keyed by preset, not a single value: a patch
       // naming one preset's model must not delete every other preset's. A key
       // set to an empty string still clears that one, which is what an

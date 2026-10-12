@@ -3514,7 +3514,6 @@ describe("subAgentAutonomousWake un-fossilize migration", () => {
 });
 
 describe("output token limit: the stored old default becomes the host default", () => {
-  const MARKER = "llm-output-token-limit-default";
   let userDataPath: string;
 
   beforeEach(() => {
@@ -3531,7 +3530,9 @@ describe("output token limit: the stored old default becomes the host default", 
     return path;
   }
 
-  it("drops a stored 32000 once, keeps any other value, and records the marker", async () => {
+  type OnDisk = { appliedMigrations?: string[]; llm: { vendors: Record<string, { outputTokenLimit?: number; outputTokenLimitSetByUser?: true }> } };
+
+  it("drops a stored 32000 an older build wrote, and keeps any other value", async () => {
     const path = writeStored({
       llm: {
         provider: "openai",
@@ -3544,23 +3545,41 @@ describe("output token limit: the stored old default becomes the host default", 
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("llm").vendors.openai?.outputTokenLimit).toBeUndefined();
     expect(service.get("llm").vendors.claude?.outputTokenLimit).toBe(64_000);
-    // Any save persists the marker; afterwards the migration never re-runs.
     await service.patch({} as never);
-    const onDisk = JSON.parse(readFileSync(path, "utf-8")) as {
-      appliedMigrations?: string[];
-      llm: { vendors: Record<string, { outputTokenLimit?: number }> };
-    };
-    expect(onDisk.appliedMigrations).toContain(MARKER);
+    const onDisk = JSON.parse(readFileSync(path, "utf-8")) as OnDisk;
     expect(onDisk.llm.vendors.openai?.outputTokenLimit).toBeUndefined();
   });
 
-  it("keeps a 32000 the user set after the migration ran", () => {
+  it("keeps a 32000 the user set, across reloads", async () => {
+    const path = writeStored({ llm: { provider: "openai", vendors: { openai: { model: "gpt-5.4-mini" } } } });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ llm: { vendors: { openai: { outputTokenLimit: 32_000 } } } } as never);
+    expect(service.get("llm").vendors.openai).toMatchObject({ outputTokenLimit: 32_000, outputTokenLimitSetByUser: true });
+    expect((JSON.parse(readFileSync(path, "utf-8")) as OnDisk).llm.vendors.openai).toMatchObject({ outputTokenLimit: 32_000, outputTokenLimitSetByUser: true });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("llm").vendors.openai?.outputTokenLimit).toBe(32_000);
+    // Clearing the limit clears the stamp with it.
+    await reloaded.patch({ llm: { vendors: { openai: { outputTokenLimit: undefined } } } } as never);
+    expect(reloaded.get("llm").vendors.openai).not.toHaveProperty("outputTokenLimitSetByUser");
+  });
+
+  it("drops the 32000 an older build writes back after a downgrade, even once the old marker is on disk", () => {
+    // The updater can offer an older build. It writes 32000 into every block
+    // and keeps the marker an earlier version of this migration recorded; a
+    // one-time migration would then read those values as the user's.
     writeStored({
-      appliedMigrations: [MARKER],
-      llm: { provider: "openai", vendors: { openai: { model: "gpt-5.4-mini", outputTokenLimit: 32_000 } } },
+      appliedMigrations: ["llm-output-token-limit-default"],
+      llm: {
+        provider: "openai",
+        vendors: {
+          openai: { model: "gpt-5.4-mini", outputTokenLimit: 32_000 },
+          claude: { model: "claude-sonnet-4-6", outputTokenLimit: 32_000, outputTokenLimitSetByUser: true },
+        },
+      },
     });
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("llm").vendors.openai?.outputTokenLimit).toBe(32_000);
+    expect(service.get("llm").vendors.openai?.outputTokenLimit).toBeUndefined();
+    expect(service.get("llm").vendors.claude?.outputTokenLimit).toBe(32_000);
   });
 
   it("does not write the default into any vendor block a save persists", async () => {
@@ -3568,14 +3587,10 @@ describe("output token limit: the stored old default becomes the host default", 
     // 32000 came to stand for "never chosen".
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ llm: { vendors: { openai: { model: "gpt-5.4" } } } } as never);
-    const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as {
-      appliedMigrations?: string[];
-      llm: { vendors: Record<string, { outputTokenLimit?: number }> };
-    };
+    const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as OnDisk;
     for (const [vendor, block] of Object.entries(onDisk.llm.vendors)) {
       expect(block.outputTokenLimit, vendor).toBeUndefined();
     }
-    expect(onDisk.appliedMigrations).toContain(MARKER);
   });
 });
 

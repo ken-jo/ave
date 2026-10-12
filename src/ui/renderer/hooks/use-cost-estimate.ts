@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
-import { costTier, estimateTurnCost, type EstimateBreakdown } from "../../../lib/cost-estimator.js";
+import { costTier, estimateTurnCost, expectedTurnOutput, type EstimateBreakdown } from "../../../lib/cost-estimator.js";
 import {
   computeCost,
   lookupBillablePricingOptional,
@@ -124,20 +124,32 @@ export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate
       pricingKnown: true,
     };
   }, [enabled, contextCarrierTokens, historySerialized, draft.text, draft.attachments, llmVendor, llmModel, maxOutputTokens]);
-  const sourcedCostEstimate = useMemo(
-    () => (costEstimate && outputLimitSource ? { ...costEstimate, outputLimitSource } : costEstimate),
-    [costEstimate, outputLimitSource],
-  );
+  // What this conversation's turns have produced, not the most a turn may:
+  // the limit is the upper end of the range, never the tier on its own.
+  const completedTurnOutputs = useMemo(() => {
+    if (!enabled) return [];
+    return entries.flatMap((entry) => (entry.kind === "turn_summary" ? [entry.tokensOut] : []));
+  }, [enabled, entries.length, entries[entries.length - 1]]);
+  const sourcedCostEstimate = useMemo(() => {
+    if (!costEstimate) return costEstimate;
+    const expectedOutput = expectedTurnOutput(completedTurnOutputs, costEstimate.outputTokens);
+    const outputRate = costEstimate.outputTokens > 0 ? costEstimate.outputCost / costEstimate.outputTokens : 0;
+    return {
+      ...costEstimate,
+      ...(outputLimitSource ? { outputLimitSource } : {}),
+      expected: { ...expectedOutput, total: costEstimate.inputCost + expectedOutput.tokens * outputRate },
+    };
+  }, [costEstimate, outputLimitSource, completedTurnOutputs]);
 
   const costBadgeClass = useMemo(() => {
-    if (!costEstimate) return undefined;
-    if (costEstimate.pricingKnown === false) return "text-muted-foreground";
-    const t = costTier(costEstimate.total);
+    if (!sourcedCostEstimate) return undefined;
+    if (sourcedCostEstimate.pricingKnown === false) return "text-muted-foreground";
+    const t = costTier(sourcedCostEstimate.expected?.total ?? sourcedCostEstimate.total);
     if (t === "trivial") return "text-muted-foreground";
     if (t === "low") return "text-success";
     if (t === "medium") return "text-warning";
     return "text-destructive";
-  }, [costEstimate]);
+  }, [sourcedCostEstimate]);
 
   if (!enabled) {
     return { costEstimate: undefined, costBadgeClass: undefined };

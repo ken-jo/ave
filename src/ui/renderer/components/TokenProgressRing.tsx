@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { useTranslation } from "../../../i18n/react.js";
-import { formatCostBadge, type EstimateBreakdown } from "../../../lib/cost-estimator.js";
+import { formatCostBadge, formatCostRange, type EstimateBreakdown } from "../../../lib/cost-estimator.js";
 import { formatTokensExact } from "../../../lib/cost-format.js";
 
 /** Who set the output limit the estimate assumes, as the tooltip names it. */
@@ -191,6 +191,16 @@ export function TokenProgressRing({
                 {costEstimate.pricingKnown === false ? "" : ` · $${costEstimate.outputCost.toFixed(5)}`}
               </span>
             </div>
+            {costEstimate.expected !== undefined && (
+              <div className="flex justify-between gap-3 opacity-70" data-testid="token-progress-ring-expected-output">
+                <span>{t("chatView.costExpectedOutputLabel")}</span>
+                <span>
+                  {costEstimate.expected.basis === "recent-turns"
+                    ? `${formatTokensExact(costEstimate.expected.tokens)} tok · ${t("chatView.costExpectedBasisRecentTurns")}`
+                    : t("chatView.costExpectedBasisNone")}
+                </span>
+              </div>
+            )}
             {costEstimate.outputLimitSource !== undefined && (
               <div className="flex justify-between gap-3 opacity-70" data-testid="token-progress-ring-output-limit-source">
                 <span>{t("chatView.costOutputLimitLabel")}</span>
@@ -202,7 +212,11 @@ export function TokenProgressRing({
             ) : (
               <div className={`flex justify-between gap-3 font-semibold ${costClass ?? ""}`}>
                 <span>{t("chatView.costTotalLabel")}</span>
-                <span>{formatCostBadge(costEstimate.total, costEstimate.pricingKnown)}</span>
+                <span data-testid="token-progress-ring-cost-total">
+                  {costEstimate.expected !== undefined
+                    ? formatCostRange(costEstimate.expected.total, costEstimate.total)
+                    : formatCostBadge(costEstimate.total, costEstimate.pricingKnown)}
+                </span>
               </div>
             )}
           </div>

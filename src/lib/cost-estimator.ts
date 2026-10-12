@@ -51,6 +51,35 @@ export interface EstimateBreakdown {
   pricingKnown?: boolean;
   /** Who set the output limit `outputTokens` assumes (see `ResolvedOutputTokenLimit.effectiveSource`). */
   outputLimitSource?: "user" | "host-default" | "provider-reported" | "model-catalog";
+  /**
+   * The output this turn is expected to produce, and the total at that
+   * output. `outputTokens` and `total` are the most the turn may cost — the
+   * full output limit — and are shown as the upper end; the badge's tier is
+   * read from the expected total, so a large limit alone does not color every
+   * draft as expensive.
+   */
+  expected?: ExpectedOutput & { total: number };
+}
+
+/**
+ * The output a turn is expected to produce: the mean output of this
+ * conversation's completed turns (`recent-turns`), bounded by the limit, or
+ * nothing before the first turn completes (`none`) — the estimate then
+ * expects the input alone and shows the limit as the range's upper end.
+ */
+export interface ExpectedOutput {
+  tokens: number;
+  basis: "recent-turns" | "none";
+}
+
+/** Turns averaged for {@link expectedTurnOutput}: recent enough to follow the conversation's pace. */
+const EXPECTED_OUTPUT_TURNS = 5;
+
+export function expectedTurnOutput(completedTurnOutputs: readonly number[], maxOutputTokens: number): ExpectedOutput {
+  const recent = completedTurnOutputs.filter((tokens) => Number.isFinite(tokens) && tokens >= 0).slice(-EXPECTED_OUTPUT_TURNS);
+  if (recent.length === 0) return { tokens: 0, basis: "none" };
+  const mean = Math.ceil(recent.reduce((sum, tokens) => sum + tokens, 0) / recent.length);
+  return { tokens: Math.min(mean, Math.max(0, maxOutputTokens)), basis: "recent-turns" };
 }
 
 export function estimateTurnCost(input: EstimateInput): EstimateBreakdown {
@@ -102,4 +131,10 @@ export function costTier(total: number): CostTier {
 export function formatCostBadge(total: number, pricingKnown = true): string {
   if (!pricingKnown) return t("be_costEstimator.costUnknown");
   return `~${formatCost(total)}`;
+}
+
+/** The expected-to-most range, or the single figure when the two agree. */
+export function formatCostRange(expected: number, most: number): string {
+  if (formatCost(expected) === formatCost(most)) return `~${formatCost(most)}`;
+  return `~${formatCost(expected)} – ${formatCost(most)}`;
 }

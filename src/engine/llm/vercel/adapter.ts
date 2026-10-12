@@ -313,31 +313,18 @@ export class VercelUnifiedProvider implements LLMProvider {
       // Which reasoning control and level: the catalog's accepted effort
       // levels where it knows the model, the name rules where it does not
       // (reasoning-plan.ts). The turn summary records this same answer.
+      // The plan also drops the effort on a GPT-5.x tool turn over Chat
+      // Completions (chatCompletionsRejectsToolTurnEffort), the same rule the
+      // turn's record is planned with.
       const reasoningPlan = planReasoning({
         vendor: this.vendor,
         model: params.model,
         enableThinking: params.enableThinking === true,
         budgetTokens: budget,
+        request: { hasTools, customBaseUrl: Boolean(this.baseUrl) },
       });
       const reasoningEffort = reasoningPlan?.kind === "openai-effort" ? reasoningPlan.effort : undefined;
-      const isOpenAIReasoning = reasoningPlan?.kind === "openai-effort";
-
-      // Guard: Chat Completions returns 400 when reasoning_effort is set
-      // alongside tools for gpt-5.x. Drop the flag on tool turns for:
-      //   - copilot (always Chat Completions)
-      //   - openai with a custom baseUrl (may point at a Chat-Completions proxy
-      //     that cannot be assumed to support Responses API).
-      // Native OpenAI (no baseUrl override) uses Responses API and has no such
-      // restriction.
-      const isGpt5 = params.model.toLowerCase().includes("gpt-5");
-      const suppressReasoningForToolTurn =
-        (slot === "copilot" && isGpt5 && hasTools) ||
-        (slot === "openai" && Boolean(this.baseUrl) && isGpt5 && hasTools);
-
-      const useReasoning =
-        params.enableThinking === true &&
-        isOpenAIReasoning &&
-        !suppressReasoningForToolTurn;
+      const useReasoning = params.enableThinking === true && reasoningEffort !== undefined;
 
       // `reasoningSummary: 'detailed'` makes the Responses API stream
       // `response.reasoning_summary_text.delta` events — without it the model
