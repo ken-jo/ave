@@ -1330,7 +1330,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     [{ outcome: "ready", userState: "ready", wfpState: "installed", ready: true }, "ready", "Windows OS 격리 설정이 끝났고 확인되었습니다"],
     [{ outcome: "already-ready", userState: "ready", wfpState: "cannot-read", ready: true }, "already-ready", "이미 설정되어 있고 확인되었으므로 관리자 확인이 필요하지 않았습니다"],
     [{ outcome: "cancelled", cancelled: true }, "cancelled", "관리자 권한이 허용되지 않아"],
-    [{ outcome: "timed-out" }, "timed-out", "2분 안에 설정이 끝나지 않아"],
+    [{ outcome: "timed-out" }, "timed-out", "설치 프로그램이 2분 안에 끝나지 않아"],
   ])("renders the %j outcome as a visible state", async (result, expected, text) => {
     const { outcome } = await clickInstall(async () => result);
     expect(outcome).toHaveAttribute("data-outcome", expected);
@@ -1445,6 +1445,76 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     warn.mockRestore();
   });
 
+  it.each(["en", "ko"] as const)("scopes the timeout result to the installer deadline in %s", async (locale) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    try {
+      const { outcome } = await clickInstall(async () => ({ outcome: "timed-out" }));
+      expect(outcome).toHaveTextContent(locale === "en"
+        ? "The installer did not finish within 2 minutes"
+        : "설치 프로그램이 2분 안에 끝나지 않아");
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
+  it.each(["en", "ko"] as const)("explains a permission repair still pending beyond the installer deadline in %s", async (locale) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    const { grantAsrtWindowsBackendAcl, installAsrtWindowsSandbox } = await import("../../../../permissions/asrt-windows-support.js");
+    let finishRepair: ((error: Error | null) => void) | undefined;
+    const exec = vi.fn((
+      file: string,
+      _args: readonly string[],
+      _options: { readonly windowsHide?: boolean },
+      callback: (error: Error | null) => void,
+    ) => {
+      if (file.endsWith("icacls.exe")) callback(Object.assign(new Error("Access denied"), { code: 5 }));
+      else finishRepair = callback;
+    });
+    const install = vi.fn(() => installAsrtWindowsSandbox({
+      readStatus: async () => ({ applicable: true, userState: "incomplete", wfpState: "absent", ready: false, instructions: "" }),
+      loadRuntime: async () => ({
+        installWindowsSandboxAsync: async () => ({
+          user: { provisioned: true, sid: "S-1-5-21-1", groupExists: true, inBuiltinUsers: true, inSandboxGroup: true, hiddenFromLogon: true, credPresent: true },
+          wfp: { state: "installed" },
+        }),
+        verifyWindowsWfpEgress: vi.fn(),
+      }),
+      grantBackendAcl: () => grantAsrtWindowsBackendAcl({
+        execFile: exec,
+        pathExists: () => true,
+        resolvePackageRoot: () => String.raw`C:\fixture\runtime`,
+        systemRoot: String.raw`C:\Windows`,
+      }),
+    }));
+    installApiWithWindows({ sandboxWindowsInstall: install });
+    try {
+      await act(async () => { render(<PermissionsTab />); });
+      await act(async () => { fireEvent.click(screen.getByTestId("os-sandbox-windows-install")); });
+      await waitFor(() => expect(exec).toHaveBeenCalledTimes(2));
+      expect(exec.mock.calls[1]?.[0]).toMatch(/powershell\.exe$/);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_001); });
+      const pending = screen.getByTestId("os-sandbox-windows-install-pending");
+      expect(pending).toHaveAttribute("data-phase", "installing");
+      expect(screen.getByTestId("os-sandbox-windows-install")).toBeDisabled();
+      expect(pending).toHaveTextContent(locale === "en"
+        ? "The installer and its administrator prompt share a 2-minute limit"
+        : "설치 프로그램 실행과 해당 관리자 확인에는 합계 2분의 제한이 적용됩니다");
+      expect(pending).toHaveTextContent(locale === "en"
+        ? "Later status checks and permission repair can take longer and may show another administrator prompt"
+        : "이후 상태 확인과 권한 복구는 더 오래 걸릴 수 있고 관리자 확인이 다시 나타날 수 있습니다");
+      expect(screen.getByTestId("os-sandbox-windows-consent")).toHaveTextContent(locale === "en"
+        ? "Permission repair may ask for administrator approval again"
+        : "권한 복구 중 관리자 확인이 다시 나타날 수 있습니다");
+    } finally {
+      vi.useRealTimers();
+      await act(async () => { finishRepair?.(null); });
+      setLocale(previousLocale);
+    }
+  });
+
   it("invokes the install straight from the click, with one hint for the install and its own copy for the re-check", async () => {
     let finishInstall: ((value: unknown) => void) | undefined;
     let finishReread: ((value: unknown) => void) | undefined;
@@ -1467,7 +1537,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(pending).toHaveAttribute("data-phase", "installing");
     expect(pending).toHaveTextContent("최대 약 45초");
     expect(pending).toHaveTextContent("Windows가 관리자 권한을 요청하니 허용하세요");
-    expect(pending).toHaveTextContent("상태 확인이 끝난 뒤 관리자 확인과 설정 단계에 합계 2분의 제한이 적용됩니다");
+    expect(pending).toHaveTextContent("설치 프로그램 실행과 해당 관리자 확인에는 합계 2분의 제한이 적용됩니다");
 
     await act(async () => {
       finishInstall?.({ outcome: "ready", userState: "ready", wfpState: "installed", ready: true });
