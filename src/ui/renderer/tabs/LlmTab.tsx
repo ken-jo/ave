@@ -2214,7 +2214,7 @@ export function LlmTab(props: LlmTabProps) {
       const pickedRowId = parsed.providerId.slice(API_PROVIDER_PREFIX.length);
       const pickedPresetId = marketplaceProviderPresetIdFromSecretId(pickedRowId);
       const pickedPreset = pickedPresetId ? installedPresetById.get(pickedPresetId) : undefined;
-      if (pickedRowId === activeApiRowId) {
+      if (pickedRowId === activeApiRowId && !retiredLlmProvider) {
         // Same provider, different model: moving the vendor as well would
         // re-hydrate fields the user may have just changed.
         setModel(parsed.modelId);
@@ -2244,6 +2244,7 @@ export function LlmTab(props: LlmTabProps) {
     );
   }, [
     activeApiRowId, installedPresetById, marketplaceProviderPresetId,
+    retiredLlmProvider,
     onClearMarketplaceProviderPreset, onImmediateChange, onSelectMarketplaceProviderPreset,
     selectApiVendorModel, setModel,
     subscription.activeRuntime.kind, subscription.props.actions,

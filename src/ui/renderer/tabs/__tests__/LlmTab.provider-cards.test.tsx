@@ -407,6 +407,7 @@ describe("LlmTab provider cards", () => {
     const { hooks } = await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "gpt-5.4", retiredLlmProvider: "copilot" });
     await chooserModelIds();
     await act(async () => { pickChooserOption("gpt-5.4"); });
+    expect(hooks.selectApiVendorModel).toHaveBeenCalledWith("openai", "gpt-5.4");
     expect(hooks.onImmediateChange).toHaveBeenCalledOnce();
   });
   it.each([[32_000, 16_000], [16_000, 8_000], [32_001, 32_000]])(

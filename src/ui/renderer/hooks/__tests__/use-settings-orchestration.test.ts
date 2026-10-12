@@ -5,6 +5,8 @@ import type { AppSettings, AveApi } from "../../types.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.js";
 import { marketplaceProviderPresetSecretId } from "../../../../shared/marketplace-package-assets.js";
+import { mergeLlmPatch } from "../../../../data/settings-normalization.js";
+import type { LLMSettingsPatch } from "../../../../data/settings-store.js";
 
 function makeSettings(): AppSettings {
   return fakeAppSettings({
@@ -70,6 +72,44 @@ function makeSettingsWithVendor(vendor: string): AppSettings {
 }
 
 describe("useSettingsOrchestration", () => {
+  it.each(["chat", "web", "llm"])("keeps retirement pending when %s settings are saved without a provider choice", async (tab) => {
+    let settings = makeSettings();
+    settings.llm.retiredProvider = "copilot";
+    const { api } = makeMockAveApi({ settings });
+    api.updateSettings = vi.fn(async (patch: Parameters<AveApi["updateSettings"]>[0]) => {
+      settings = {
+        ...settings,
+        llm: mergeLlmPatch(settings.llm, patch.llm as LLMSettingsPatch ?? {}, settings.marketplace.installedProviderIds, settings.marketplace.installedProviderPresets),
+      };
+      return settings;
+    });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    act(() => result.current.setProcessingDisplayLevel("tools"));
+    await act(async () => { expect(await result.current.save(tab)).toBe(true); });
+    expect(settings.llm.retiredProvider).toBe("copilot");
+    expect(api.updateSettings.mock.calls[0]?.[0].llm).not.toHaveProperty("provider");
+  });
+
+  it("releases retirement after choosing the same provider and model explicitly", async () => {
+    let settings = makeSettings();
+    settings.llm.retiredProvider = "copilot";
+    const { api } = makeMockAveApi({ settings });
+    api.updateSettings = vi.fn(async (patch: Parameters<AveApi["updateSettings"]>[0]) => {
+      settings = {
+        ...settings,
+        llm: mergeLlmPatch(settings.llm, patch.llm as LLMSettingsPatch ?? {}, settings.marketplace.installedProviderIds, settings.marketplace.installedProviderPresets),
+      };
+      return settings;
+    });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    act(() => result.current.selectApiVendorModel("openai", "gpt-4o"));
+    await act(async () => { expect(await result.current.save("llm")).toBe(true); });
+    expect(settings.llm.retiredProvider).toBeUndefined();
+    expect(api.updateSettings.mock.calls[0]?.[0].llm).toHaveProperty("provider", "openai");
+  });
+
   it("carries the retirement marker to the chooser and clears it on a fresh settings snapshot", async () => {
     const settings = makeSettings();
     settings.llm.retiredProvider = "copilot";

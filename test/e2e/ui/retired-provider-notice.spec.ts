@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { closeInlineSettings, forceWideMainWindow } from './inline-settings.js';
+import { closeInlineSettings, forceWideMainWindow, openInlineSettings } from './inline-settings.js';
 import { TEST_IDS } from '../../../src/shared/test-ids.js';
 import type { AveApi } from '../../../src/ui/renderer/types.js';
 
@@ -16,6 +16,20 @@ test('a retired profile stays blocked until an explicit model choice', async ({ 
   await composer.fill('A draft held until a provider is chosen');
   await expect(send).toBeDisabled();
   await mainWindow.screenshot({ path: test.info().outputPath('retired-provider-notice.png') });
+
+  await openInlineSettings(app, mainWindow, 'chat');
+  const autoCompact = mainWindow.locator('[data-settings-section="chat-optimization"]').getByRole('checkbox').first();
+  await expect(autoCompact).toBeChecked();
+  await autoCompact.click();
+  await expect.poll(async () => {
+    const settings = await mainWindow.evaluate(() => (window as unknown as { aveApi: AveApi }).aveApi.getSettings());
+    return settings.chat.autoCompact;
+  }).toBe(false);
+  const afterChatSave = await mainWindow.evaluate(() => (window as unknown as { aveApi: AveApi }).aveApi.getSettings());
+  expect(afterChatSave.llm.retiredProvider).toBe('copilot');
+  await closeInlineSettings(app, mainWindow);
+  await expect(notice).toBeVisible();
+  await expect(send).toBeDisabled();
 
   await mainWindow.getByTestId('retired-provider-notice-action').click();
   const chooser = mainWindow.getByTestId(TEST_IDS.llmModelSelect);
