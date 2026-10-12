@@ -72,6 +72,29 @@ describe("pre-push classification precedence", () => {
     });
   });
 
+  it.each(["src/lib/example.ts", "test/example.test.ts"])("requires full checks when only %s is deleted", (path) => {
+    const result = classify([{ path, status: "D", oldMode: "100644", newMode: "000000" }]);
+    expect(result.testOnly).not.toBe(true);
+    expect(result.fastSource).not.toBe(true);
+  });
+
+  it("runs the destination of a renamed test instead of silently losing it", () => {
+    const result = classify([
+      { path: "test/old-name.test.ts", status: "D", oldMode: "100644", newMode: "000000" },
+      { path: "test/new-name.test.ts", status: "A", oldMode: "000000", newMode: "100644" },
+    ]);
+    expect(result).toMatchObject({ fastSource: true, testFiles: ["test/new-name.test.ts"] });
+  });
+
+  it.each(["config/vitest.analysis.config.ts", "src/__tests__/vitest-ave-home.ts", "tsconfig.tests.json", "package.json"])(
+    "keeps a sole global change on full checks: %s", (path) => {
+      const result = classify([modified(path)], { commentOnly: true });
+      expect(result.commentOnly).not.toBe(true);
+      expect(result.testOnly).not.toBe(true);
+      expect(result.fastSource).not.toBe(true);
+    },
+  );
+
   it("honors a full-tier input in an earlier pushed commit even after it was reverted", () => {
     const result = classify([modified("src/lib/example.ts")], { historyReason: "package.json changed in pushed history" });
     expect(result.fastSource).not.toBe(true);
@@ -109,5 +132,43 @@ describe("pre-push classification precedence", () => {
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
+  });
+
+  it("retains a merged main input even when a later commit removes it from the pushed net diff", () => {
+    const repo = mkdtempSync(join(tmpdir(), "pre-push-main-merge-"));
+    const env = gitFixtureEnv(repo);
+    const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
+    try {
+      git(["init", "-qb", "main"]);
+      git(["config", "user.name", "Fixture"]);
+      git(["config", "user.email", "fixture@example.invalid"]);
+      mkdirSync(join(repo, "src"));
+      writeFileSync(join(repo, "package.json"), "{}\n");
+      writeFileSync(join(repo, "src/example.ts"), "export const value = 1;\n");
+      git(["add", "."]);
+      git(["commit", "-qm", "initial fixture"]);
+      git(["checkout", "-qb", "topic"]);
+      writeFileSync(join(repo, "src/example.ts"), "export const value = 2;\n");
+      git(["commit", "-qam", "published source"]);
+      const published = git(["rev-parse", "HEAD"]);
+      git(["checkout", "-q", "main"]);
+      writeFileSync(join(repo, "package.json"), '{"scripts":{}}\n');
+      git(["commit", "-qam", "main input"]);
+      git(["checkout", "-q", "topic"]);
+      git(["merge", "--no-ff", "-qm", "merge main fixture", "main"]);
+      writeFileSync(join(repo, "package.json"), "{}\n");
+      writeFileSync(join(repo, "src/example.ts"), "export const value = 3;\n");
+      git(["commit", "-qam", "restore input and update source"]);
+      expect(git(["diff", "--name-only", published, "HEAD"])).toBe("src/example.ts");
+      const historyStart = source.indexOf("function decodeUtf8Strict(");
+      const historyEnd = source.indexOf("function classifyPrePushChanges(");
+      const historyReason = runInNewContext(`${source.slice(historyStart, historyEnd)}; getPushedHistoryFullReason`, {
+        commands: { git: "git" }, TextDecoder, Buffer, classifyDocumentationChanges, selectFastSourceChecks,
+        spawnSync: (command: string, args: string[], options: object) => spawnSync(command, args, { ...options, env }),
+        captureOptional: (_command: string, args: string[]) => git(args),
+      });
+      expect(historyReason(repo, published, git(["rev-parse", "HEAD"])))
+        .toContain("package.json is a global test or build input in pushed history");
+    } finally { rmSync(repo, { recursive: true, force: true }); }
   });
 });

@@ -130,8 +130,13 @@ describe("documentation consumer guard", () => {
   });
 
   it("rejects a new byte consumer of a previously referenced document", () => {
-    const referenced = resolve(root, "docs", "design", "plugin-hostapi-protocol.md");
+    const referenced = resolve(root, "docs", "blueprints", "plugin-process-isolation.md");
     expect(() => assertAllowedDocumentRead(referenced)).toThrow(/document-consumer/);
+  });
+
+  it("permits a document registered for the hook guidance check", () => {
+    const consumed = resolve(root, "docs", "design", "plugin-hostapi-protocol.md");
+    expect(() => assertAllowedDocumentRead(consumed)).not.toThrow();
   });
 
   it("rejects packaging and bundle inputs outside the consumed inventory", () => {
