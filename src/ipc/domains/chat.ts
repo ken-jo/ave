@@ -1017,7 +1017,15 @@ export function registerChatHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, CHANNELS.llm.getModelCatalog, e);
       return UNAUTHORIZED_FRAME;
     }
-    return { ok: true, catalog: activeModelCatalog() };
+    try {
+      return { ok: true, catalog: activeModelCatalog() };
+    } catch (error) {
+      // Main boots with the catalog installed; reaching this is a startup-order
+      // defect. Logged here, where the main log records it, and answered as a
+      // refusal the renderer shows instead of a window that never mounts.
+      log.error({ err: error }, "model catalog requested before main installed one");
+      return { ok: false, error: "catalog-unavailable" };
+    }
   });
 
   const mainTurns = mainGroup.turns;

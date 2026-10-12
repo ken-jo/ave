@@ -441,7 +441,7 @@ describe("windows the bundled catalog corrects", () => {
     ["copilot", "gpt-5-mini", 264_000, "github-copilot/gpt-5-mini"], // table: 400,000
     ["copilot", "claude-sonnet-4-6", 200_000, "github-copilot/claude-sonnet-4.6"], // table: 1,000,000 (Anthropic's 1M beta window on the Copilot row)
   ] as const)("%s %s → %i from %s", (vendor, model, contextWindow, catalogEntry) => {
-    expect(resolveModelContextWindow({ vendor, model })).toEqual({ contextWindow, source: "model-catalog", catalogEntry });
+    expect(resolveModelContextWindow({ vendor, model })).toMatchObject({ contextWindow, source: "model-catalog", catalogEntry });
   });
 
   it("keeps the 1M window the adapter's beta header delivers for Claude 4.6", () => {
@@ -501,5 +501,97 @@ describe("resolveOutputTokenLimit — the output a request carries", () => {
     expect(
       resolveOutputTokenLimit({ vendor: "openai-compatible", model: "a-served-model", requested: user, catalogModel: "openai/gpt-4o" }),
     ).toMatchObject({ effective: 16_384, effectiveSource: "model-catalog" });
+  });
+});
+
+/**
+ * A prompt cap below the window bounds the budget. Before, the threshold came
+ * from the window alone: Copilot GPT-5 mini (264K window, 128K prompt) compacted
+ * at 179,200 — past the prompt the endpoint accepts — and 100 snapshot entries
+ * had a threshold above their cap.
+ */
+describe("the prompt cap beside the window", () => {
+  it.each([
+    // [vendor, model, window, cap, threshold before, threshold now]
+    ["copilot", "gpt-5-mini", 264_000, 128_000, 179_200, 102_400],
+    ["openai", "gpt-5.2", 400_000, 272_000, 288_000, 217_600],
+    ["openai", "gpt-5.4", 1_050_000, 922_000, 808_000, 737_600],
+  ] as const)("%s %s: window %i, prompt cap %i → threshold %i → %i", (vendor, model, window, cap, before, now) => {
+    const resolved = resolveModelContextWindow({ vendor, model });
+    expect(resolved).toMatchObject({ contextWindow: window, inputLimit: cap, inputLimitSource: "model-catalog" });
+    expect(getPreflightThreshold(resolved.contextWindow)).toBe(before);
+    expect(getPreflightThreshold(resolved.contextWindow, resolved.inputLimit)).toBe(now);
+    expect(now).toBeLessThan(cap);
+  });
+
+  it("leaves no snapshot entry with a threshold past its prompt cap", () => {
+    const over: string[] = [];
+    for (const [provider, { models }] of Object.entries(activeModelCatalog().providers)) {
+      for (const [id, entry] of Object.entries(models)) {
+        const { context, input } = entry.limits;
+        if (!context || !input || input >= context) continue;
+        if (getPreflightThreshold(context, input) > input) over.push(`${provider}/${id}`);
+      }
+    }
+    expect(over).toEqual([]);
+  });
+
+  it("prefers the cap the endpoint reports, and keeps only a cap below the window", () => {
+    expect(resolveModelContextWindow({ vendor: "copilot", model: "gpt-5-mini", reportedInput: 100_000 })).toMatchObject({
+      inputLimit: 100_000,
+      inputLimitSource: "provider-reported",
+    });
+    const noCap = resolveModelContextWindow({ vendor: "claude", model: "claude-sonnet-4-6" });
+    expect(noCap).not.toHaveProperty("inputLimit");
+    // A cap at or above the window bounds nothing and is not reported.
+    expect(resolveModelContextWindow({ vendor: "copilot", model: "gpt-5-mini", reported: 100_000 })).not.toHaveProperty("inputLimit");
+  });
+
+  it("carries no cap under a declared window: the user stated the endpoint's capacity", () => {
+    expect(resolveModelContextWindow({ vendor: "copilot", model: "gpt-5-mini", configured: 264_000 })).toEqual({
+      contextWindow: 264_000,
+      source: "vendor-setting",
+    });
+  });
+
+  it("reads a route's reported prompt cap from its /models row", () => {
+    const vendors = freshAllVendorBlocks();
+    vendors["openai-compatible"].baseUrl = "https://models.invalid/v1";
+    vendors["openai-compatible"].model = "a-capped-model";
+    const key = llmModelListCacheKey("openai-compatible", "https://models.invalid/v1", "");
+    const route = resolveContextWindowForRoute({
+      provider: "openai-compatible",
+      vendors,
+      modelListCache: {
+        [key]: {
+          vendor: "openai-compatible",
+          endpoint: "https://models.invalid/v1/models",
+          models: ["a-capped-model"],
+          modelEntries: [{ id: "a-capped-model", contextLength: 264_000, maxInputTokens: 128_000 }],
+          fetchedAt: new Date(0).toISOString(),
+        },
+      },
+    });
+    expect(route).toMatchObject({ contextWindow: 264_000, source: "provider-reported", inputLimit: 128_000, inputLimitSource: "provider-reported" });
+    expect(getUsableContext(route.contextWindow, route.inputLimit)).toBe(128_000);
+  });
+
+  it("finds Vertex's tagged Claude entries by the id Ave uses", () => {
+    expect(resolveModelContextWindow({ vendor: "vertex-ai", model: "claude-opus-4-6" })).toMatchObject({
+      source: "model-catalog",
+      catalogEntry: "google-vertex/claude-opus-4-6@default",
+    });
+  });
+
+  it("names a catalogModel the catalog does not list, so the engine can report it", () => {
+    const vendors = freshAllVendorBlocks();
+    vendors["openai-compatible"].baseUrl = "https://models.invalid/v1";
+    vendors["openai-compatible"].model = "a-served-model";
+    vendors["openai-compatible"].catalogModel = "openai/not-a-listed-model";
+    expect(resolveContextWindowForRoute({ provider: "openai-compatible", vendors })).toMatchObject({
+      unresolvedCatalogModel: "openai/not-a-listed-model",
+    });
+    vendors["openai-compatible"].catalogModel = "openai/gpt-5.2";
+    expect(resolveContextWindowForRoute({ provider: "openai-compatible", vendors })).not.toHaveProperty("unresolvedCatalogModel");
   });
 });

@@ -253,6 +253,9 @@ export async function queryLoop(
               tokens: runtimeContextBudget.contextWindow ?? 0,
               source: runtimeContextBudget.contextWindowSource as ContextWindowSource,
               ...(runtimeContextBudget.catalogEntry !== undefined ? { catalogEntry: runtimeContextBudget.catalogEntry } : {}),
+              ...(runtimeContextBudget.inputLimit !== undefined && runtimeContextBudget.inputLimitSource !== undefined
+                ? { inputLimit: { tokens: runtimeContextBudget.inputLimit, source: runtimeContextBudget.inputLimitSource } }
+                : {}),
             },
             output: effectiveOutput,
             ...(reasoning ? { reasoning } : {}),

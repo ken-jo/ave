@@ -86,3 +86,40 @@ describe("context budget — unknown context window", () => {
     expect(logged.warn).not.toHaveBeenCalled();
   });
 });
+
+describe("context budget — prompt cap and named catalog entry", () => {
+  function loopOn(provider: string, model: string, block: Record<string, unknown> = {}): ConversationLoop {
+    const llm = fakeLlmSettings({ provider: provider as never, model }) as Record<string, unknown>;
+    Object.assign((llm.vendors as Record<string, Record<string, unknown>>)[provider]!, block);
+    return {
+      provider: null,
+      deps: { settingsService: { get: (key: string) => (key === "llm" ? llm : {}) } },
+    } as unknown as ConversationLoop;
+  }
+
+  it("bounds the threshold by the model's prompt cap and says so", () => {
+    // Copilot GPT-5 mini: 264K window, 128K prompt. Before: 179,200 from the window.
+    const budget = contextBudgetForCurrentRuntime(loopOn("copilot", "gpt-5-mini"));
+    expect(budget.contextWindowSource).toBe("model-catalog");
+    expect(budget.preflight).toBe(102_400);
+    expect(budget.usableContext).toBe(128_000);
+    expect(budget.thresholdSource).toBe("input-limit");
+    expect(budget.inputLimitSource).toBe("model-catalog");
+  });
+
+  it("warns once per route when the named catalog entry does not exist", () => {
+    const loop = loopOn("openai-compatible", "Qwen3.6-35B-A3B-NVFP4", { catalogModel: "openai/not-a-listed-model" });
+    contextBudgetForCurrentRuntime(loop);
+    contextBudgetForCurrentRuntime(loop);
+    expect(logged.warn).toHaveBeenCalledTimes(1);
+    const message = String(logged.warn.mock.calls[0]?.[0]);
+    expect(message).toContain("openai/not-a-listed-model");
+    expect(message).toContain("catalogModel");
+  });
+
+  it("says nothing about a named entry the catalog lists", () => {
+    const budget = contextBudgetForCurrentRuntime(loopOn("openai-compatible", "Qwen3.6-35B-A3B-NVFP4", { catalogModel: "openai/gpt-5.2" }));
+    expect(budget.contextWindowSource).toBe("model-catalog");
+    expect(logged.warn).not.toHaveBeenCalled();
+  });
+});

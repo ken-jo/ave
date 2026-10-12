@@ -251,7 +251,13 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(sent).toEqual([{ outputTokenLimit: 8_192 }]);
     const recorded = {
       modelCatalogSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
-      contextWindow: { tokens: 400_000, source: "model-catalog", catalogEntry: "openai/gpt-5.4-mini" },
+      contextWindow: {
+        tokens: 400_000,
+        source: "model-catalog",
+        catalogEntry: "openai/gpt-5.4-mini",
+        // The catalog's prompt cap, below the window, bounded the compaction budget.
+        inputLimit: { tokens: 272_000, source: "model-catalog" },
+      },
       output: {
         requested: 32_000,
         requestedSource: "host-default",

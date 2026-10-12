@@ -75,8 +75,13 @@ it names the catalog's content in a run record (slice 3) and in the refresh cach
 (slice 6), and lets a reader reject a damaged copy (`verifyModelCatalogDocument`).
 Provenance is left out of the name on purpose: a second download of unchanged data has a
 new `fetchedAt` and possibly a new ETag, and must still be the same catalog, so a cache
-entry already stored under a name is kept rather than rewritten.
-`THIRD-PARTY-NOTICES.md` reproduces the license.
+entry already stored under a name is kept rather than rewritten. A run record cites the
+catalog by `sha256` alone; provenance says where a copy came from and is checked for shape
+(`verifyModelCatalogDocument` refuses a copy whose provenance is malformed), but it is not
+part of what the record names. `THIRD-PARTY-NOTICES.md` reproduces the license, and the
+packaged app ships it as `licenses/models.dev/LICENSE-MIT` beside its resources
+(`resources/licenses/models.dev/`, kept equal to the committed input's license by
+`--check`).
 
 ### 3.3 Normalization
 
@@ -95,10 +100,15 @@ input. It has two fault outcomes:
 
 `CATALOG_PROVIDERS_BY_VENDOR` (`src/shared/model-catalog/provider-map.ts`) is the one place
 an Ave vendor id meets a catalog provider id. It is exhaustive over `LLMVendor`, so a new
-vendor fails typecheck until it is placed. The generic OpenAI-compatible endpoint, local
-runtimes (Ollama, LM Studio) and vendors with no catalog provider map to `[]`: their limits
-come from what the endpoint reports and what the user configures, never from a public
-model that happens to share a name.
+vendor fails typecheck until it is placed. A vendor maps to the catalog providers whose API
+host is the vendor's endpoint: Qwen and Qwen Code to `alibaba-cn` (DashScope's mainland
+host, not the international `alibaba`), Doubao to `volcengine` (Ark). The generic
+OpenAI-compatible endpoint, local runtimes (Ollama, LM Studio) and vendors no catalog
+provider serves at their endpoint (SambaNova, LiteLLM, v0, HiCap, Nous, Huawei MaaS, Ask
+Sage, OCA) map to `[]`: their limits come from what the endpoint reports and what the user
+configures, never from a public model that happens to share a name. A mapped vendor's model
+the provider does not list stays unknown to the catalog (Doubao's default
+`doubao-1-5-pro-256k-250115` is one) and falls to the next source.
 
 ### 3.5 Generator and committed input
 
@@ -114,8 +124,10 @@ from the committed input under `scripts/model-catalog/`:
 `--fetch` downloads a new input and regenerates; `--check` (run by `check:gate-core` in CI
 and in the pre-push hook) fails when the snapshot differs from what the input generates;
 `--report` prints the comparison of §8. Both JSON files are laid out one model per line, so
-a refresh's diff is one line per changed model. The snapshot of 2026-10-12 holds 28
-providers and 2,110 models in about 950 KB.
+a refresh's diff is one line per changed model. `--fetch` writes nothing unless every
+required download succeeded (a failed GitHub API call only leaves the upstream head and
+schema blob out; a failed license download fails the run). The snapshot of 2026-10-12
+holds 30 providers and 2,217 models in about 1 MB.
 
 ## 4. Resolution (slice 2)
 
@@ -136,6 +148,19 @@ Precedence, per fact:
 removes it) and `fallback` (128K). Refreshed metadata joins in slice 6, above the bundled
 snapshot.
 
+**The prompt cap.** Beside the window the resolver reports the model's prompt cap when a
+source states one below it (`inputLimit`, `inputLimitSource`): what the endpoint
+reported (GitHub Copilot's `capabilities.limits.max_prompt_tokens`, read by
+`src/engine/llm/model-list.ts` with the window and output cap it nests beside it), else
+the catalog's `limits.input`. A declared window carries none. The usable budget is
+`min(window − Ave's output reservation, prompt cap)` and the compaction threshold is 80%
+of it (`getUsableContext`, `getPreflightThreshold`), in the engine and in the renderer's
+context ring alike; a threshold the cap lowered is traced as `thresholdSource:
+"input-limit"`. Before, the threshold came from the window alone: Copilot GPT-5 mini (264K
+window, 128K prompt) compacted at 179,200, past what the endpoint accepts, and 100
+snapshot entries had a threshold above their cap. Now none do (a test holds every entry
+to it).
+
 The catalog key is found by one `resolveCatalogKey(catalog, vendor, model)`
 (`src/shared/model-catalog/resolve.ts`), across the vendor's providers in map order: the
 exact id; an Ave alias (`src/shared/model-catalog/aliases.ts`, empty today — every
@@ -143,14 +168,17 @@ vendor id the snapshot can describe is found by the other steps, and an alias ma
 join two ids documented to name one model); an entry whose `canonicalId` is the id;
 the id without a release-date suffix; the id with case and version separators folded
 (`claude-sonnet-4-6` → Copilot's `claude-sonnet-4.6`); the same ignoring a path prefix
-on either side (`openai/gpt-5.4` → Requesty's `gpt-5.4`). The folded, prefix and
-canonical steps answer only when exactly one entry matches.
+on either side (`openai/gpt-5.4` → Requesty's `gpt-5.4`). The alias step also drops a
+Vertex version tag (`@default`, `@20250929`) from either side, since Vertex lists Claude as
+`claude-opus-4-6@default` and Ave names it `claude-opus-4-6`. The version-tag, folded,
+prefix and canonical steps answer only when exactly one entry matches.
 
 A self-hosted or local endpoint is never matched by name. The user can name the entry it
 serves as `llm.vendors.<v>.catalogModel` (`<provider>/<id>`, `settings.json` only, like
 `contextWindow`); a named entry that is not in the catalog answers nothing rather than
 falling back to a name match, and it applies to the vendor block's own model, not to a
-marketplace preset reached through the same vendor.
+marketplace preset reached through the same vendor. The engine logs a named entry the
+catalog does not list once per route and name, so a typo does not pass silently.
 
 Each process installs one catalog (`src/shared/model-catalog/active.ts`), and reading
 before install throws. Main and headless install the verified bundled snapshot at the
@@ -158,8 +186,12 @@ start of `bootstrapCoreServices`; the snapshot is a dynamic import, so its data 
 an async chunk instead of the main bundle's initial budget. The renderer asks main for
 that copy over `ave:llm:get-model-catalog` and installs it before it mounts
 (`src/ui/renderer/model-catalog-bootstrap.ts`), so the first settings snapshot the
-context ring resolves is resolved against the engine's catalog. Tests install the
-bundled snapshot in a setup file (`src/__tests__/vitest-model-catalog.ts`).
+context ring resolves is resolved against the engine's catalog. If main cannot hand it
+over, main logs why and answers a refusal, and the window shows that the app cannot start
+and offers a reload instead of staying blank. Tests install the bundled snapshot in a
+setup file (`src/__tests__/vitest-model-catalog.ts`); one test empties it and runs boot's
+own install step (`installBundledModelCatalog`), so a boot that resolved a model before
+installing one would fail there.
 
 Windows the snapshot of 2026-10-12 changes against the table (the rest agree): GPT-5.4
 Pro 1.1M → 1,050,000; GPT-4.1, 4.1 mini and nano 1M → 1,047,576; Gemini 2.5 Pro and Flash
@@ -217,7 +249,8 @@ Implemented.
   none.
 - **Run records.** The turn summary and the audit `turn` row carry `modelSettings`
   (`src/shared/run-model-settings.ts`): the catalog `sha256`, the window and its source
-  and entry, the output block above, and the reasoning plan as sent. It is omitted for
+  and entry, the prompt cap that bounded the budget when one did (§4), the output block
+  above, and the reasoning plan as sent. It is omitted for
   subscription runtimes and for a turn a fallback served on another model.
 - **UI.** The renderer's cost estimate assumes `output.effective` (it assumed a fixed
   4,096) and the estimate tooltip names who set the limit.

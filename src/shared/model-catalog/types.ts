@@ -155,4 +155,4 @@ export interface ModelCatalogDocument {
 /** `ave:llm:get-model-catalog`: the catalog main resolves against, or the frame refusal. */
 export type ModelCatalogIpcResult =
   | { ok: true; catalog: ModelCatalogDocument }
-  | { ok: false; error: "unauthorized-frame" };
+  | { ok: false; error: "unauthorized-frame" | "catalog-unavailable" };

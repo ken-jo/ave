@@ -312,6 +312,10 @@
         "to": "licenses/uv"
       },
       {
+        "from": "resources/licenses/models.dev",
+        "to": "licenses/models.dev"
+      },
+      {
         "from": "resources/AGENTS.md",
         "to": "AGENTS.md"
       },

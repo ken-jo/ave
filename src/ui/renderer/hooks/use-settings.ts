@@ -95,6 +95,12 @@ export interface UseSettingsResult {
    * window, so the cost estimate assumes the limit the engine sends.
    */
   llmOutputTokenLimit: ResolvedOutputTokenLimit;
+  /**
+   * The active route's prompt cap, when one is stated below the window
+   * (`resolveContextWindowForRoute(...).inputLimit`). The ring's usable budget
+   * is bounded by it, as the engine's compaction threshold is.
+   */
+  llmInputLimit: number | undefined;
   /** True after an authoritative settings snapshot has been applied. */
   settingsLoaded: boolean;
   /** Cached `enableThinking` flag for the active vendor. */
@@ -132,6 +138,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
   const [llmModel, setLlmModel] = useState<string>("");
   const [llmContextWindow, setLlmContextWindow] = useState<number>(0);
   const [llmOutputTokenLimit, setLlmOutputTokenLimit] = useState<ResolvedOutputTokenLimit>(INITIAL_OUTPUT_TOKEN_LIMIT);
+  const [llmInputLimit, setLlmInputLimit] = useState<number | undefined>(undefined);
   const [enableThinkingChat, setEnableThinkingChat] = useState<boolean>(true);
   const [processingDisplayLevel, setProcessingDisplayLevel] = useState<ProcessingDisplayLevel>(
     DEFAULT_PROCESSING_DISPLAY_LEVEL,
@@ -173,6 +180,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
       );
       setLlmContextWindow(route.contextWindow);
       setLlmOutputTokenLimit(route.output);
+      setLlmInputLimit(route.inputLimit);
       setEnableThinkingChat(block.enableThinking);
       setProcessingDisplayLevel(
         settings.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
@@ -323,6 +331,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     llmModel,
     llmContextWindow,
     llmOutputTokenLimit,
+    llmInputLimit,
     enableThinkingChat,
     processingDisplayLevel,
     llmReadyWithoutApiKey,

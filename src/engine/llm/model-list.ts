@@ -474,6 +474,10 @@ function modelEntryFromRow(row: unknown): LlmModelListEntry | null {
   const architecture = optionalRecord(record.architecture);
   const topProvider = optionalRecord(record.top_provider);
   const limits = optionalRecord(record.limits);
+  // GitHub Copilot's `/models` nests the limits under `capabilities`, and
+  // states the window and the prompt cap apart: a 264K window may take a
+  // 128K prompt.
+  const capabilityLimits = optionalRecord(optionalRecord(record.capabilities)?.limits);
   const pricing = pricingFromRecord(record.pricing);
   const name = optionalString(record.name);
   const provider = optionalString(record.provider) ?? optionalString(record.publisher);
@@ -488,9 +492,12 @@ function modelEntryFromRow(row: unknown): LlmModelListEntry | null {
     ?? optionalNumber(topProvider?.context_length)
     ?? optionalNumber(limits?.max_input_tokens)
     ?? optionalNumber(record.max_input_tokens)
-    ?? optionalNumber(record.max_model_len);
+    ?? optionalNumber(record.max_model_len)
+    ?? optionalNumber(capabilityLimits?.max_context_window_tokens);
+  const maxInputTokens = optionalNumber(capabilityLimits?.max_prompt_tokens);
   const maxOutputTokens = optionalNumber(record.max_output_tokens)
-    ?? optionalNumber(limits?.max_output_tokens);
+    ?? optionalNumber(limits?.max_output_tokens)
+    ?? optionalNumber(capabilityLimits?.max_output_tokens);
   const inputModalities = optionalStringArray(architecture?.input_modalities)
     ?? optionalStringArray(record.supported_input_modalities);
   const outputModalities = optionalStringArray(architecture?.output_modalities)
@@ -503,6 +510,7 @@ function modelEntryFromRow(row: unknown): LlmModelListEntry | null {
     ...(ownedBy ? { ownedBy } : {}),
     ...(description ? { description } : {}),
     ...(contextLength !== undefined ? { contextLength } : {}),
+    ...(maxInputTokens !== undefined ? { maxInputTokens } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     ...(inputModalities ? { inputModalities } : {}),
     ...(outputModalities ? { outputModalities } : {}),

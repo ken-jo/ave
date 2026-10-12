@@ -55,6 +55,24 @@ export function getModelContextWindow(
 }
 
 /**
+ * The window and prompt cap the budget math reads. A caller that resolved the
+ * route passes both (`inputLimit` from the same resolution); one that knows
+ * only a vendor and a model gets the catalog's answer for both.
+ */
+function budgetWindow(
+  vendor: LLMVendor,
+  model: string,
+  resolvedContextWindow: number | undefined,
+  inputLimit: number | undefined,
+): { contextWindow: number; inputLimit?: number } {
+  if (resolvedContextWindow !== undefined) {
+    return { contextWindow: resolvedContextWindow, ...(inputLimit !== undefined ? { inputLimit } : {}) };
+  }
+  const resolved = resolveModelContextWindow({ vendor, model });
+  return { contextWindow: resolved.contextWindow, ...(resolved.inputLimit !== undefined ? { inputLimit: resolved.inputLimit } : {}) };
+}
+
+/**
  * Usable portion of the model's context window — what callers should treat
  * as the denominator for "fullness" math. Subtracts Ave fixed
  * buffer (output + safety reservation). See {@link getUsableContext}.
@@ -66,8 +84,10 @@ export function getModelUsableContext(
   vendor: LLMVendor,
   model: string,
   resolvedContextWindow?: number,
+  inputLimit?: number,
 ): number {
-  return getUsableContext(getModelContextWindow(vendor, model, resolvedContextWindow));
+  const window = budgetWindow(vendor, model, resolvedContextWindow, inputLimit);
+  return getUsableContext(window.contextWindow, window.inputLimit);
 }
 
 
@@ -77,12 +97,14 @@ export function getModelPreflightThreshold(
   vendor: LLMVendor,
   model: string,
   resolvedContextWindow?: number,
+  inputLimit?: number,
 ): number {
   // Priority: runtime override (UI slider) > env var (AVE_DEV_PREFLIGHT_OVERRIDE) > computed.
   if (_runtimePreflightOverride !== null) return _runtimePreflightOverride;
   const devOverride = readDevPreflightOverride();
   if (devOverride !== null) return devOverride;
-  const windowThreshold = getPreflightThreshold(getModelContextWindow(vendor, model, resolvedContextWindow));
+  const window = budgetWindow(vendor, model, resolvedContextWindow, inputLimit);
+  const windowThreshold = getPreflightThreshold(window.contextWindow, window.inputLimit);
 
 
   const pricing = lookupPricing(vendor, model);
@@ -95,7 +117,7 @@ export function getModelPreflightThreshold(
 
 /** Which input {@link getModelPreflightThreshold} actually used — observability only. */
 export type PreflightThresholdSource =
-  | "runtime-override" | "dev-env-override" | "tpm-capped" | "context-window";
+  | "runtime-override" | "dev-env-override" | "tpm-capped" | "input-limit" | "context-window";
 
 /**
  * Mirrors {@link getModelPreflightThreshold}'s own priority order so trace
@@ -107,16 +129,18 @@ export function getModelPreflightThresholdSource(
   vendor: LLMVendor,
   model: string,
   resolvedContextWindow?: number,
+  inputLimit?: number,
 ): PreflightThresholdSource {
   if (_runtimePreflightOverride !== null) return "runtime-override";
   if (readDevPreflightOverride() !== null) return "dev-env-override";
-  const windowThreshold = getPreflightThreshold(getModelContextWindow(vendor, model, resolvedContextWindow));
+  const window = budgetWindow(vendor, model, resolvedContextWindow, inputLimit);
+  const windowThreshold = getPreflightThreshold(window.contextWindow, window.inputLimit);
   const pricing = lookupPricing(vendor, model);
   if (typeof pricing.tpmDefault === "number" && pricing.tpmDefault > 0) {
     const tpmThreshold = Math.floor(pricing.tpmDefault * 0.8);
     if (tpmThreshold < windowThreshold) return "tpm-capped";
   }
-  return "context-window";
+  return windowThreshold < getPreflightThreshold(window.contextWindow) ? "input-limit" : "context-window";
 }
 
 let _devOverrideWarnedValue: number | null | undefined = undefined;
