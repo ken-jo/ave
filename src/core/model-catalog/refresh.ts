@@ -34,10 +34,11 @@ import {
   writeModelCatalogPointer,
 } from "./cache.js";
 import { buildModelCatalogDocument, verifyModelCatalogDocument } from "./document.js";
+import { MODEL_CATALOG_MAX_BYTES } from "./limits.js";
+
+export { MODEL_CATALOG_MAX_BYTES } from "./limits.js";
 
 export const MODEL_CATALOG_REFRESH_URL = "https://models.dev/api.json";
-/** The download cap (design §7). The full document is about 2 MB today. */
-export const MODEL_CATALOG_MAX_BYTES = 16 * 1024 * 1024;
 /** Headers and body together must arrive within this (design §7). */
 const MODEL_CATALOG_FETCH_TIMEOUT_MS = 15_000;
 /** One request a day at most; see the module comment for why. */
@@ -168,7 +169,7 @@ export async function refreshModelCatalogCache(options: ModelCatalogRefreshOptio
     }
     const { response, raw } = download.value;
     if (!raw && pointer) {
-      writeModelCatalogPointer(options.dir, { ...pointer, checkedAt: isoSeconds(now()) });
+      await writeModelCatalogPointer(options.dir, { ...pointer, checkedAt: isoSeconds(now()) });
       return { status: "not-modified", sha256: pointer.sha256 };
     }
     if (!raw) throw new RefreshFault("response has no body");
@@ -207,7 +208,7 @@ export async function refreshModelCatalogCache(options: ModelCatalogRefreshOptio
     if (coverage) throw new RefreshFault(coverage);
 
     await storeModelCatalog(options.dir, document);
-    writeModelCatalogPointer(options.dir, {
+    await writeModelCatalogPointer(options.dir, {
       version: 1,
       sha256: document.sha256,
       ...(etag ? { etag } : {}),

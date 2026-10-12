@@ -12,13 +12,18 @@
  * gives it. A pointer or copy that fails either check reads as a fault, which
  * the boot selection answers with the bundled snapshot.
  */
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { isMissingPathError, writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
+import { constants } from "node:fs";
+import { lstat, open } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { isMissingPathError } from "../../lib/atomic-file.js";
+import { openFeatureNamespace, writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { aveHome } from "../../shared/ave-home.js";
 import type { ModelCatalogDocument } from "../../shared/model-catalog/types.js";
 import { formatCatalogJson, verifyModelCatalogDocument } from "./document.js";
+import { MODEL_CATALOG_MAX_BYTES } from "./limits.js";
+
+const cacheNamespace = openFeatureNamespace("cache");
 
 /** Where the cache lives; resolved per call so `AVE_HOME` isolation is honoured. */
 export function modelCatalogCacheDir(): string {
@@ -30,6 +35,56 @@ const POINTER_VERSION = 1;
 const SHA256 = /^[0-9a-f]{64}$/;
 /** Same layout as the bundled snapshot: one line per model record. */
 const ENTRY_COMPACT_DEPTH = 4;
+const MAX_POINTER_BYTES = 64 * 1024;
+
+/** Cache-owned directories must be directories, never links into another tree. */
+async function checkCacheDirectory(dir: string, allowAbsent = false): Promise<void> {
+  for (const path of [dirname(resolve(dir)), resolve(dir)]) {
+    try {
+      const entry = await lstat(path);
+      if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("model catalog cache directory is not a regular directory");
+    } catch (error) {
+      if (allowAbsent && isMissingPathError(error)) continue;
+      throw error;
+    }
+  }
+}
+
+/** The namespace helper owns directory creation and private modes. */
+export async function prepareModelCatalogCache(dir: string): Promise<void> {
+  await checkCacheDirectory(dir, true);
+  if (resolve(dir) === modelCatalogCacheDir()) {
+    await cacheNamespace.childDir(".");
+    await cacheNamespace.childDir("model-catalog");
+  }
+  await checkCacheDirectory(dir);
+}
+
+/** Read one regular inode, capped even if its size changes during the read. */
+async function readRegularFile(path: string, maxBytes: number): Promise<string> {
+  const entry = await lstat(path);
+  if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("model catalog file is not a regular file");
+  const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK
+    | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW));
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.dev !== entry.dev || opened.ino !== entry.ino) throw new Error("model catalog file changed while opening");
+    if (opened.size > maxBytes) throw new Error(`model catalog file exceeds the ${maxBytes}-byte cap`);
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+      const buffer = Buffer.alloc(Math.min(64 * 1024, maxBytes + 1 - total));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (!bytesRead) break;
+      total += bytesRead;
+      if (total > maxBytes) throw new Error(`model catalog file exceeds the ${maxBytes}-byte cap`);
+      chunks.push(buffer.subarray(0, bytesRead));
+    }
+    return Buffer.concat(chunks).toString("utf-8");
+  } finally {
+    await handle.close();
+  }
+}
 
 /** `current.json`: which cached copy is in force, and when the origin last confirmed it. */
 export interface ModelCatalogCachePointer {
@@ -47,7 +102,8 @@ export type CacheRead<T> = { ok: true; value: T } | { ok: false; reason: string 
 export async function readModelCatalogPointer(dir: string): Promise<CacheRead<ModelCatalogCachePointer>> {
   let text: string;
   try {
-    text = await readFile(join(dir, POINTER_FILE), "utf-8");
+    await checkCacheDirectory(dir);
+    text = await readRegularFile(join(dir, POINTER_FILE), MAX_POINTER_BYTES);
   } catch (error) {
     return { ok: false, reason: isMissingPathError(error) ? "absent" : `pointer unreadable: ${errorMessage(error)}` };
   }
@@ -82,7 +138,7 @@ export async function readModelCatalogPointer(dir: string): Promise<CacheRead<Mo
 export async function readModelCatalogFile(path: string, expectedSha256?: string): Promise<CacheRead<ModelCatalogDocument>> {
   let text: string;
   try {
-    text = await readFile(path, "utf-8");
+    text = await readRegularFile(path, MODEL_CATALOG_MAX_BYTES);
   } catch (error) {
     return { ok: false, reason: `${path} unreadable: ${errorMessage(error)}` };
   }
@@ -99,8 +155,13 @@ export async function readModelCatalogFile(path: string, expectedSha256?: string
 }
 
 /** The cached copy `<sha256>.json`, verified against its name. */
-export function readCachedModelCatalog(dir: string, sha256: string): Promise<CacheRead<ModelCatalogDocument>> {
-  if (!SHA256.test(sha256)) return Promise.resolve({ ok: false, reason: `${sha256} is not a sha256` });
+export async function readCachedModelCatalog(dir: string, sha256: string): Promise<CacheRead<ModelCatalogDocument>> {
+  if (!SHA256.test(sha256)) return { ok: false, reason: `${sha256} is not a sha256` };
+  try {
+    await checkCacheDirectory(dir);
+  } catch (error) {
+    return { ok: false, reason: `cache directory unusable: ${errorMessage(error)}` };
+  }
   return readModelCatalogFile(join(dir, `${sha256}.json`), sha256);
 }
 
@@ -119,11 +180,14 @@ export async function readCurrentModelCatalog(dir: string): Promise<CacheRead<{ 
  * a second download of unchanged data is the same entry (design §3.2).
  */
 export async function storeModelCatalog(dir: string, document: ModelCatalogDocument): Promise<void> {
+  await prepareModelCatalogCache(dir);
+  verifyModelCatalogDocument(document);
   const existing = await readCachedModelCatalog(dir, document.sha256);
   if (existing.ok) return;
-  writeUtf8FileAtomicSync(join(dir, `${document.sha256}.json`), formatCatalogJson(document, ENTRY_COMPACT_DEPTH));
+  await writeFileAtomicAtPath(join(dir, `${document.sha256}.json`), formatCatalogJson(document, ENTRY_COMPACT_DEPTH));
 }
 
-export function writeModelCatalogPointer(dir: string, pointer: ModelCatalogCachePointer): void {
-  writeUtf8FileAtomicSync(join(dir, POINTER_FILE), `${JSON.stringify(pointer, null, 2)}\n`);
+export async function writeModelCatalogPointer(dir: string, pointer: ModelCatalogCachePointer): Promise<void> {
+  await prepareModelCatalogCache(dir);
+  await writeFileAtomicAtPath(join(dir, POINTER_FILE), `${JSON.stringify(pointer, null, 2)}\n`);
 }

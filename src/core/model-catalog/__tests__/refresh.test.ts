@@ -9,13 +9,13 @@
  * the cache is unchanged AND what the next boot would select.
  */
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildModelCatalogDocument } from "../document.js";
 import { selectBootModelCatalog } from "../bundled.js";
-import { readModelCatalogPointer } from "../cache.js";
+import { modelCatalogCacheDir, readCachedModelCatalog, readModelCatalogPointer } from "../cache.js";
 import {
   MODEL_CATALOG_MAX_BYTES,
   MODEL_CATALOG_REFRESH_INTERVAL_MS,
@@ -86,6 +86,7 @@ beforeEach(() => {
   lookupMock.mockClear();
 });
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -119,6 +120,10 @@ describe("refreshModelCatalogCache", () => {
 
     const sha256 = (result as { sha256: string }).sha256;
     expect(Object.keys(cacheFiles()).sort()).toEqual([`${sha256}.json`, "current.json"].sort());
+    if (process.platform !== "win32") {
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      for (const name of [`${sha256}.json`, "current.json"]) expect(statSync(join(dir, name)).mode & 0o777).toBe(0o600);
+    }
     const pointer = await readModelCatalogPointer(dir);
     expect(pointer).toEqual({ ok: true, value: { version: 1, sha256, etag: "\"v1\"", checkedAt: "2026-10-12T12:00:00Z" } });
 
@@ -336,6 +341,55 @@ describe("refreshModelCatalogCache", () => {
 });
 
 describe("selectBootModelCatalog", () => {
+  it.each(["current.json", "entry"])("refuses a linked cache %s", async (name) => {
+    const sha256 = await seedGoodCopy();
+    const path = join(dir, name === "entry" ? `${sha256}.json` : name);
+    const external = join(dir, "outside.json");
+    writeFileSync(external, readFileSync(path));
+    rmSync(path);
+    symlinkSync(external, path);
+    expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "bundled" });
+  });
+
+  it("refuses a linked cache directory", async () => {
+    await seedGoodCopy();
+    const linked = join(dir, "linked");
+    symlinkSync(dir, linked, "dir");
+    expect(await selectBootModelCatalog({ env: {}, dir: linked, loadBundled })).toMatchObject({ origin: "bundled" });
+  });
+
+  it("refuses to publish through a linked cache parent", async () => {
+    const home = join(dir, "home");
+    const outside = join(dir, "outside");
+    mkdirSync(home);
+    mkdirSync(outside);
+    symlinkSync(outside, join(home, "cache"), "dir");
+    vi.stubEnv("AVE_HOME", home);
+    const { fetchImpl } = respondWith(() => json(rawDocument()));
+    const result = await refreshModelCatalogCache({ fetchImpl, dir: modelCatalogCacheDir(), reference: BUNDLED });
+    expect(result.status).toBe("failed");
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it("caps a tampered cache file before parsing it", async () => {
+    const sha256 = await seedGoodCopy();
+    writeFileSync(join(dir, `${sha256}.json`), " ".repeat(MODEL_CATALOG_MAX_BYTES + 1));
+    expect(await readCachedModelCatalog(dir, sha256)).toMatchObject({ ok: false, reason: expect.stringContaining("byte cap") });
+  });
+
+  it("rejects a pointer trying to escape the directory", async () => {
+    await seedGoodCopy();
+    writeFileSync(join(dir, "current.json"), JSON.stringify({ version: 1, sha256: "../outside", checkedAt: NOW.toISOString() }));
+    expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "bundled" });
+  });
+
+  it("uses the same verified bytes after a cached path is replaced", async () => {
+    const sha256 = await seedGoodCopy();
+    const read = await readCachedModelCatalog(dir, sha256);
+    writeFileSync(join(dir, `${sha256}.json`), "{}");
+    expect(read).toMatchObject({ ok: true, value: { sha256, providers: { openai: { models: { "gpt-fixture": { limits: { context: 400_000 } } } } } } });
+  });
+
   it("falls to the bundled snapshot when the cached copy fails verification", async () => {
     const sha256 = await seedGoodCopy();
     const path = join(dir, `${sha256}.json`);
