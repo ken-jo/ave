@@ -290,7 +290,9 @@ describe("PermissionsTab hook quarantine notice", () => {
     );
 
     await waitFor(() => expect(screen.getByTestId("permissions-load-error"))
-      .toHaveTextContent("settings unavailable"));
+      .toHaveTextContent(t("permissionsTab.errorLoadFailed")));
+    // The thrown text is logged, not shown.
+    expect(screen.getByTestId("permissions-load-error").textContent).not.toContain("settings unavailable");
     expect(screen.getByTestId("exact-deny-draft")).toHaveTextContent("bash");
     await waitFor(() => expect(screen.getByTestId("exact-deny-focus-target")).toHaveFocus());
 
@@ -423,7 +425,9 @@ describe("PermissionsTab hook quarantine notice", () => {
 
     expect(api.permission.setMode).toHaveBeenCalledWith("auto");
     expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode llm");
-    expect(screen.getByText("사용자가 모드 변경을 거부했습니다.")).toBeTruthy();
+    // main's free-text message is logged; the screen shows localized copy and the code.
+    expect(screen.getByText("실행 모드 변경에 실패했습니다. (approval-denied)")).toBeTruthy();
+    expect(screen.queryByText("사용자가 모드 변경을 거부했습니다.")).toBeNull();
     const defaultButton = screen.getByTestId(execModeTestId("default"));
     const autoButton = screen.getByTestId(execModeTestId("auto"));
     expect(defaultButton.className).toContain("border-primary");
@@ -724,7 +728,8 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(api.permission.setMode).toHaveBeenCalledWith("auto");
     expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
     expect(screen.getByText(/이전 설정으로 복원했습니다/)).toBeTruthy();
-    expect(screen.getByText(/상세: missing provider/)).toBeTruthy();
+    // The rewire detail is a raw exception message from main: logged, not shown.
+    expect(document.body.textContent).not.toContain("missing provider");
   });
 
   it("adds and removes additional directories through the slash-backed IPC", async () => {
@@ -1019,7 +1024,9 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     });
     expect(api.permission.sandboxCapability).toHaveBeenCalledTimes(1);
     expect(toggle).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByText("저장 실패")).toBeTruthy();
+    // A known code shows its localized copy; main's message is logged, not shown.
+    expect(screen.getByText(t("formatIpcError.writeFailed"))).toBeTruthy();
+    expect(screen.queryByText("저장 실패")).toBeNull();
   });
 
   it("renders platform potential, runtime reason, and restart note as separate branches", async () => {
@@ -1475,6 +1482,84 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       expect(outcome).toHaveAttribute("data-outcome", "ready");
       expect(installed).toHaveLength(1);
     });
+  });
+});
+
+describe("PermissionsTab — failures never put raw text on screen", () => {
+  // What main's free-text messages and thrown errors can carry: English
+  // internals and local paths with the user's account name.
+  const RAW = String.raw`EACCES: open C:\Users\example\AppData\Local\ave\settings.json`;
+
+  async function renderTab() {
+    const api = installApi([[]]);
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    return api;
+  }
+
+  function expectNoRaw() {
+    expect(document.body.textContent).not.toContain("EACCES");
+    expect(document.body.textContent).not.toContain("AppData");
+  }
+
+  async function addRule() {
+    fireEvent.change(screen.getByTestId("permissions-rule-pattern-input"), { target: { value: "bash:ls" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("permissions-rule-add"));
+    });
+  }
+
+  type FailureCase = (api: ReturnType<typeof installApi>) => Promise<string>;
+  const mock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
+  const cases: ReadonlyArray<readonly [string, FailureCase]> = [
+    ["a mode change refused with a message", async (api) => {
+      mock(api.permission.setMode).mockResolvedValueOnce({ ok: false, error: "mode-locked", message: RAW });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId(execModeTestId("auto")));
+      });
+      return "실행 모드 변경에 실패했습니다. (mode-locked)";
+    }],
+    ["a mode change that throws", async (api) => {
+      mock(api.permission.setMode).mockRejectedValueOnce(new Error(RAW));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId(execModeTestId("auto")));
+      });
+      return t("formatIpcError.unknownError");
+    }],
+    ["a rule add refused with a message", async (api) => {
+      mock(api.permission.addRule).mockResolvedValueOnce({ ok: false, error: "rule-conflict", message: RAW });
+      await addRule();
+      return "rule-conflict";
+    }],
+    ["a rule add that throws", async (api) => {
+      mock(api.permission.addRule).mockRejectedValueOnce(new Error(RAW));
+      await addRule();
+      return t("formatIpcError.unknownError");
+    }],
+  ];
+
+  it.each(cases)("%s shows localized copy and logs the raw text", async (_label, failure) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const api = await renderTab();
+    const shown = await failure(api);
+    expect(screen.getByText((content) => content.includes(shown))).toBeTruthy();
+    expectNoRaw();
+    expect(warn.mock.calls.some((call) => call.some((arg) => typeof arg === "string" && arg.includes("EACCES")))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("a load failure shows localized copy and logs the raw text", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const api = installApi([[]]);
+    api.permission.getMode.mockRejectedValueOnce(new Error(RAW));
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    await waitFor(() => expect(screen.getByTestId("permissions-load-error")).toHaveTextContent(t("permissionsTab.errorLoadFailed")));
+    expectNoRaw();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("load failed"), RAW);
+    warn.mockRestore();
   });
 });
 

@@ -21,7 +21,7 @@ import {
   normalizeExecutionMode,
   type ExecutionModeDisplay,
 } from "../../../shared/permission-mode.js";
-import { formatIpcError } from "../format-ipc-error.js";
+import { formatIpcError, resolveIpcErrorKey } from "../format-ipc-error.js";
 import type {
   ExecutionMode,
   HookTrustRow,
@@ -190,20 +190,51 @@ const WINDOWS_INSTALL_OUTCOME_TONE: Record<WindowsInstallOutcomeView["tone"], st
 };
 
 
+/**
+ * A thrown IPC failure as this tab shows it. The thrown text can carry paths
+ * and internal messages, so it goes to the renderer log, and the screen gets
+ * localized copy only.
+ */
+function thrownErrorText(context: string, error: unknown): string {
+  console.warn(`[ave] permissions: ${context} failed:`, errorMessage(error));
+  return t("formatIpcError.unknownError");
+}
+
+/**
+ * An `ok: false` IPC result as this tab shows it: a known code in its
+ * localized form, otherwise the action's own localized copy with the code. The
+ * free-text `message` (English, possibly with paths) is logged, not shown.
+ */
+function ipcFailureText(
+  context: string,
+  result: { readonly error?: unknown; readonly message?: unknown },
+  fallback: string,
+): string {
+  const code = typeof result.error === "string" && result.error ? result.error : undefined;
+  console.warn(
+    `[ave] permissions: ${context} failed:`,
+    code ?? "-",
+    typeof result.message === "string" ? result.message : "",
+  );
+  if (code && resolveIpcErrorKey(code)) return formatIpcError(code, undefined);
+  return code && !fallback.includes(code) ? `${fallback} (${code})` : fallback;
+}
+
 function formatRevokeError(error: string | undefined, message: string | undefined): string {
-  return formatIpcError(error, message, {
+  if (message) console.warn("[ave] permissions: revoke failed:", error ?? "-", message);
+  return formatIpcError(error, undefined, {
     codeMap: { "invalid-key": t("permissionsTab.errorInvalidKey") },
   });
 }
 
 function formatReviewerDispatchError(error: string): string {
   if (error.startsWith("reviewer-rewire-failed:")) {
-    const detail = error.slice("reviewer-rewire-failed:".length).trim();
+    // The detail is a raw exception message from main: log it, do not show it.
+    console.warn("[ave] permissions: reviewer rewire failed:", error.slice("reviewer-rewire-failed:".length).trim());
     return [
       t("permissionsTab.errorReviewerRewireFailed"),
       t("permissionsTab.errorReviewerRewireHint"),
-      detail ? t("permissionsTab.errorReviewerRewireDetail", { detail }) : "",
-    ].filter(Boolean).join(" ");
+    ].join(" ");
   }
   return formatIpcError(error, undefined, {
     codeMap: { "user-keyboard-required": t("permissionsTab.errorUserKeyboardRequired") },
@@ -401,7 +432,8 @@ export function PermissionsTab({
         setWindowsStatus(null);
       }
     } catch (e) {
-      const message = errorMessage(e) || t("permissionsTab.errorLoadFailed");
+      console.warn("[ave] permissions: load failed:", errorMessage(e));
+      const message = t("permissionsTab.errorLoadFailed");
       // Same rule for the failure surface. A refresh that fails still has the
       // last-known state on screen, so it reports through the banner instead of
       // replacing what the user is reading with an error page.
@@ -468,7 +500,7 @@ export function PermissionsTab({
         approvalCacheKey: exactDenyDraft.approvalCacheKey,
       });
       if (!result.ok) {
-        showBanner("error", result.message ?? result.error ?? t("permissionsTab.exactDenySaveFailed"));
+        showBanner("error", ipcFailureText("exact deny save", result, t("permissionsTab.exactDenySaveFailed")));
         return;
       }
       await fetchApprovals();
@@ -478,7 +510,7 @@ export function PermissionsTab({
         document.querySelector<HTMLElement>(testIdSelector(TEST_IDS.settingsPageTitle))?.focus();
       });
     } catch (err) {
-      showBanner("error", t("permissionsTab.errorRevokeFailed", { message: errorMessage(err) }));
+      showBanner("error", t("permissionsTab.errorRevokeFailed", { message: thrownErrorText("exact deny save", err) }));
     } finally {
       setExactDenyBusy(false);
     }
@@ -527,7 +559,7 @@ export function PermissionsTab({
           return;
         }
       } catch (err) {
-        showBanner("error", t("permissionsTab.errorRevokeFailed", { message: errorMessage(err) }));
+        showBanner("error", t("permissionsTab.errorRevokeFailed", { message: thrownErrorText("revoke", err) }));
         return;
       }
       try {
@@ -536,7 +568,7 @@ export function PermissionsTab({
       } catch (err) {
         showBanner(
           "warn",
-          t("permissionsTab.errorRevokeRefreshFailed", { toolName, message: errorMessage(err) }),
+          t("permissionsTab.errorRevokeRefreshFailed", { toolName, message: thrownErrorText("approval list refresh", err) }),
         );
       }
     } finally {
@@ -564,7 +596,7 @@ export function PermissionsTab({
           setMode(normalizeExecutionMode(res.mode));
           modeChanged = true;
         } else {
-          showBanner("error", res.message ?? res.error ?? t("permissionsTab.errorModeChangeFailed"));
+          showBanner("error", ipcFailureText("mode change", res, t("permissionsTab.errorModeChangeFailed")));
           return;
         }
       }
@@ -591,7 +623,7 @@ export function PermissionsTab({
         }
       }
     } catch (e) {
-      showBanner("error", t("permissionsTab.errorModeChangeError", { message: errorMessage(e) }));
+      showBanner("error", t("permissionsTab.errorModeChangeError", { message: thrownErrorText("mode change", e) }));
     } finally {
       setModeBusy(false);
     }
@@ -612,7 +644,7 @@ export function PermissionsTab({
     } catch (error) {
       showBanner(
         "error",
-        t("permissionsTab.errorModeChangeError", { message: errorMessage(error) }),
+        t("permissionsTab.errorModeChangeError", { message: thrownErrorText("reviewer mode change", error) }),
       );
     } finally {
       setModeBusy(false);
@@ -630,13 +662,13 @@ export function PermissionsTab({
       });
       if (isIpcErrorResult(res)) {
         setAdjudicationEnabled(!next);
-        showBanner("error", res.message ?? t("permissionsTab.adjudicationToggleFailed"));
+        showBanner("error", ipcFailureText("adjudication toggle", res, t("permissionsTab.adjudicationToggleFailed")));
       }
     } catch (e) {
       setAdjudicationEnabled(!next);
       showBanner(
         "error",
-        t("permissionsTab.adjudicationToggleError", { message: errorMessage(e) }),
+        t("permissionsTab.adjudicationToggleError", { message: thrownErrorText("adjudication toggle", e) }),
       );
     } finally {
       setAdjudicationBusy(false);
@@ -675,7 +707,7 @@ export function PermissionsTab({
       setAdjudicationRevision((revision) => revision + 1);
       showBanner(
         "error",
-        t("permissionsTab.adjudicationToggleError", { message: errorMessage(error) }),
+        t("permissionsTab.adjudicationToggleError", { message: thrownErrorText("adjudication ceiling", error) }),
       );
     } finally {
       setAdjudicationBusy(false);
@@ -693,7 +725,7 @@ export function PermissionsTab({
       } else if (res.error === "managed") {
         showBanner("warn", t("permissionsTab.errorPolicyManaged"));
       } else {
-        showBanner("error", res.message ?? t("permissionsTab.errorPolicyChangeFailed"));
+        showBanner("error", ipcFailureText("policy change", res, t("permissionsTab.errorPolicyChangeFailed")));
       }
     } finally {
       setPolicyBusy(false);
@@ -711,7 +743,7 @@ export function PermissionsTab({
       const res = await getApi().updateSettings({ features: { osToolSandbox: next } });
       if (isIpcErrorResult(res)) {
         setSandboxEnabled(!next);
-        showBanner("error", res.message ?? t("permissionsTab.osSandboxToggleFailed"));
+        showBanner("error", ipcFailureText("OS sandbox toggle", res, t("permissionsTab.osSandboxToggleFailed")));
         return;
       }
       // Re-read capability so the activation note reflects the new state.
@@ -732,7 +764,7 @@ export function PermissionsTab({
       }
     } catch (e) {
       setSandboxEnabled(!next);
-      showBanner("error", t("permissionsTab.osSandboxToggleError", { message: errorMessage(e) }));
+      showBanner("error", t("permissionsTab.osSandboxToggleError", { message: thrownErrorText("OS sandbox toggle", e) }));
     } finally {
       setSandboxBusy(false);
     }
@@ -794,10 +826,10 @@ export function PermissionsTab({
         setNewPattern("");
         await refreshRules();
       } else {
-        showBanner("error", res.message ?? t("permissionsTab.errorRuleAddFailed", { error: res.error }));
+        showBanner("error", ipcFailureText("rule add", res, t("permissionsTab.errorRuleAddFailed", { error: res.error })));
       }
     } catch (e) {
-      showBanner("error", t("permissionsTab.errorRuleAddError", { message: errorMessage(e) }));
+      showBanner("error", t("permissionsTab.errorRuleAddError", { message: thrownErrorText("rule add", e) }));
     } finally {
       setRulesBusy(false);
     }
@@ -810,10 +842,10 @@ export function PermissionsTab({
       if (res.ok) {
         await refreshRules();
       } else {
-        showBanner("error", res.message ?? t("permissionsTab.errorRuleRemoveFailed", { error: res.error }));
+        showBanner("error", ipcFailureText("rule remove", res, t("permissionsTab.errorRuleRemoveFailed", { error: res.error })));
       }
     } catch (e) {
-      showBanner("error", t("permissionsTab.errorRuleRemoveError", { message: errorMessage(e) }));
+      showBanner("error", t("permissionsTab.errorRuleRemoveError", { message: thrownErrorText("rule remove", e) }));
     } finally {
       setRulesBusy(false);
     }
@@ -859,7 +891,7 @@ export function PermissionsTab({
       }
     } catch (e) {
       setPendingDirectoryWarning(null);
-      showBanner("error", t("permissionsTab.errorDirectoryAddError", { message: errorMessage(e) }));
+      showBanner("error", t("permissionsTab.errorDirectoryAddError", { message: thrownErrorText("directory add", e) }));
     } finally {
       setDirsBusy(false);
     }
@@ -876,7 +908,7 @@ export function PermissionsTab({
         showBanner("error", res.error);
       }
     } catch (e) {
-      showBanner("error", t("permissionsTab.errorDirectoryRemoveError", { message: errorMessage(e) }));
+      showBanner("error", t("permissionsTab.errorDirectoryRemoveError", { message: thrownErrorText("directory remove", e) }));
     } finally {
       setDirsBusy(false);
       restoreScroll();

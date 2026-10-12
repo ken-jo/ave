@@ -29,7 +29,6 @@ export const en = {
   "permissionsTab.errorInvalidKey": "Invalid approval key.",
   "permissionsTab.errorReviewerRewireFailed": "Failed to reconnect the permission reviewer runtime; restored previous settings.",
   "permissionsTab.errorReviewerRewireHint": "Check the provider API key, model name, and error-handling policy, then apply again.",
-  "permissionsTab.errorReviewerRewireDetail": "Detail: {detail}",
   "permissionsTab.errorUserKeyboardRequired": "Permission reviewer settings can only be changed from an active user input.",
   "permissionsTab.errorReviewerFallbackContext": "Permission reviewer error",
 
@@ -314,7 +313,6 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.errorInvalidKey": "유효하지 않은 승인 키입니다.",
   "permissionsTab.errorReviewerRewireFailed": "권한 리뷰어 런타임 재연결에 실패해 이전 설정으로 복원했습니다.",
   "permissionsTab.errorReviewerRewireHint": "공급자 API 키, 모델 이름, 오류 처리 정책을 확인한 뒤 다시 적용하세요.",
-  "permissionsTab.errorReviewerRewireDetail": "상세: {detail}",
   "permissionsTab.errorUserKeyboardRequired": "권한 리뷰어 설정 변경은 활성 사용자 입력에서만 실행할 수 있습니다.",
   "permissionsTab.errorReviewerFallbackContext": "권한 리뷰어 오류",
 
