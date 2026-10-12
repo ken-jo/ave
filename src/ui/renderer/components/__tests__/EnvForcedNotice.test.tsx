@@ -1,6 +1,7 @@
 import "../../../../../test/renderer/setup.js";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "../../../../../test/renderer/helpers.js";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../EnvForcedNotice.js";
 
@@ -54,11 +55,16 @@ describe("EnvForcedNotice", () => {
   });
 
   it("says nothing for a setting the environment is not forcing", async () => {
-    envForcedSettings.mockResolvedValue(["system.corpCaDebugLog"]);
+    const forcedPaths = deferred<readonly string[]>();
+    envForcedSettings.mockReturnValue(forcedPaths.promise);
 
     render(<Harness settingsPath="system.corpCaEnabled" />);
 
     await waitFor(() => expect(envForcedSettings).toHaveBeenCalled());
+    await act(async () => {
+      forcedPaths.resolve(["system.corpCaDebugLog"]);
+      await forcedPaths.promise;
+    });
     expect(screen.queryByTestId("notice")).toBeNull();
   });
 
@@ -66,11 +72,16 @@ describe("EnvForcedNotice", () => {
     // A path the host reports but the registry does not know is a wiring
     // mistake; a sentence naming an empty variable tells the user less than
     // silence does.
-    envForcedSettings.mockResolvedValue(["system.notARegisteredSetting"]);
+    const forcedPaths = deferred<readonly string[]>();
+    envForcedSettings.mockReturnValue(forcedPaths.promise);
 
     render(<Harness settingsPath="system.notARegisteredSetting" />);
 
     await waitFor(() => expect(envForcedSettings).toHaveBeenCalled());
+    await act(async () => {
+      forcedPaths.resolve(["system.notARegisteredSetting"]);
+      await forcedPaths.promise;
+    });
     expect(screen.queryByTestId("notice")).toBeNull();
   });
 });

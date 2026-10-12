@@ -3,7 +3,9 @@ import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { installMockAveApi, type MockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { deferred } from "../../../../../test/renderer/helpers.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
+import { t } from "../../../../i18n/runtime.js";
 import type { LlmModelListResult } from "../../../../shared/llm-model-list.js";
 import type {
   MarketplaceInstalledProviderPreset,
@@ -676,17 +678,33 @@ describe("LlmTab provider cards leave the chat route alone", () => {
   it("keeps the card on screen after its only credential is deleted", async () => {
     // This row exists because of the stored key and nothing else, so removing
     // the key used to remove the place a replacement could be entered.
-    const api = makeApi({ hasApiKey: storedKeysFor("claude") });
+    const deleted = deferred<{ ok: true }>();
+    const credentials = deferred<boolean>();
+    const api = makeApi({
+      hasApiKey: storedKeysFor("claude"),
+      deleteApiKey: vi.fn(() => deleted.promise),
+    });
     await renderTab(api, { vendor: "openai", model: "" });
 
     await screen.findByTestId("llm-tab:connection:claude");
     fireEvent.click(screen.getByTestId("llm-tab:connection:claude:toggle"));
-    api.hasApiKey = vi.fn(async () => false);
+    api.hasApiKey = vi.fn(() => credentials.promise);
     fireEvent.click(screen.getByText(/^(삭제|Delete|Remove)$/));
 
     await waitFor(() => expect(api.deleteApiKey).toHaveBeenCalledWith("claude"));
+    await act(async () => {
+      deleted.resolve({ ok: true });
+      await deleted.promise;
+    });
+    await waitFor(() => expect(api.hasApiKey).toHaveBeenCalledWith("claude"));
+    await act(async () => {
+      credentials.resolve(false);
+      await credentials.promise;
+    });
     expect(screen.getByTestId("llm-tab:connection:claude")).toBeInTheDocument();
     expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
+    expect(screen.getByTestId("llm-tab:api-key-status"))
+      .toHaveTextContent(t("llmTab.apiKeyNotSet"));
   });
 });
 
