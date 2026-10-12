@@ -540,6 +540,18 @@ describe("ave:chat:* with chat groups", () => {
     events["render-process-gone"]![0]!();
     await vi.waitFor(() => expect(releaseChatGroupLoop).toHaveBeenLastCalledWith("group-4"));
     expect(releaseChatGroupLoop).toHaveBeenLastCalledWith("group-4");
+    // A failed main-frame load commits an error page without did-navigate; a
+    // stopped load (ERR_ABORTED) or a failed subframe keeps the tiles' document.
+    invoke(CHANNELS.chat.hasProvider, "group-5");
+    expect(events["did-fail-load"]).toHaveLength(1);
+    const releasesBefore = releaseChatGroupLoop.mock.calls.length;
+    events["did-fail-load"]![0]!({}, -3, "ERR_ABORTED", "file:///index.html", true);
+    events["did-fail-load"]![0]!({}, -6, "ERR_FILE_NOT_FOUND", "file:///frame.html", false);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(groups.get("group-5")!.abortCurrentTurn).not.toHaveBeenCalled();
+    expect(releaseChatGroupLoop).toHaveBeenCalledTimes(releasesBefore);
+    events["did-fail-load"]![0]!({}, -6, "ERR_FILE_NOT_FOUND", "file:///index.html", true);
+    await vi.waitFor(() => expect(releaseChatGroupLoop).toHaveBeenLastCalledWith("group-5"));
   });
 
   it("refuses a non-primary group when the process cannot release one", async () => {

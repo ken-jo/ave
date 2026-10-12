@@ -961,7 +961,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
     // that fires for every attempt, including a link click the main window's
     // `will-navigate` policy cancels and opens externally while every tile
     // stays on screen. `did-navigate` skips in-page and subframe navigation.
+    // A main-frame load that fails commits an error page in place of the tiles
+    // without `did-navigate`; ERR_ABORTED (-3) is a stopped load that keeps them.
     contents.on("did-navigate", () => releaseAll("renderer reload released the tile"));
+    contents.on("did-fail-load", (_event, errorCode, _description, _url, isMainFrame) => {
+      if (isMainFrame && errorCode !== -3 /* ERR_ABORTED */) releaseAll("renderer load failed; tile released");
+    });
     contents.on("render-process-gone", () => releaseAll("renderer process gone; tile released"));
   };
 
