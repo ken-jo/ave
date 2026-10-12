@@ -70,6 +70,17 @@ function makeSettingsWithVendor(vendor: string): AppSettings {
 }
 
 describe("useSettingsOrchestration", () => {
+  it("carries the retirement marker to the chooser and clears it on a fresh settings snapshot", async () => {
+    const settings = makeSettings();
+    settings.llm.retiredProvider = "copilot";
+    const { api } = makeMockAveApi({ settings });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.retiredLlmProvider).toBe("copilot"));
+    const next = structuredClone(settings);
+    delete next.llm.retiredProvider;
+    act(() => result.current.hydrateLlmFromSettings(next));
+    expect(result.current.retiredLlmProvider).toBeNull();
+  });
   it("hydrates and saves the processing detail through the chat patch", async () => {
     const settings = makeSettings();
     settings.chat.processingDisplayLevel = "reasoning";

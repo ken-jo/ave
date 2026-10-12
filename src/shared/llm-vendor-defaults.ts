@@ -319,9 +319,6 @@ export type LLMVendor = (typeof LLM_VENDORS)[number];
  * `isLLMVendor` rejects them. They are recognized in exactly one place, the
  * settings load, so a profile that still names one is migrated off it with a
  * notice instead of being silently pointed at another vendor.
- *
- * - `copilot`: GitHub Models (`models.github.ai`), retired by GitHub on
- *   2026-07-30. A Copilot-API vendor is a separate, future addition.
  */
 export const RETIRED_LLM_VENDOR_IDS = ["copilot"] as const;
 

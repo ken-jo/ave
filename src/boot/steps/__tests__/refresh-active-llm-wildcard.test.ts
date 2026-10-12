@@ -231,4 +231,8 @@ describe("activeHostApiVendor", () => {
     expect(activeHostApiVendor({ provider: "openai", activeChatRuntime: { kind: "api" } })).toBe("openai");
     expect(activeHostApiVendor({ provider: "openai", activeChatRuntime: { kind: "subscription", provider: "codex" } })).toBeUndefined();
   });
+
+  it("does not expose the migrated provider while the retirement marker remains", () => {
+    expect(activeHostApiVendor({ provider: "openai", activeChatRuntime: { kind: "api" }, retiredProvider: "copilot" })).toBeUndefined();
+  });
 });

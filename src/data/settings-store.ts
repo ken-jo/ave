@@ -1256,8 +1256,9 @@ export class SettingsService {
     for (const vendor of RETIRED_LLM_VENDOR_IDS) {
       try {
         await this.deleteSecret(`llm.apiKey.${vendor}`);
-      } catch (err) {
-        log.warn("retired vendor %s API key delete failed: %s", vendor, (err as Error).message);
+      } catch {
+        // A secret-store exception can contain credential material.
+        log.warn("retired vendor %s API key delete failed; retrying next boot", vendor);
       }
     }
   }
@@ -1928,7 +1929,7 @@ export class SettingsService {
 
   /** Decrypt and return a stored secret value. */
   getSecret(key: string): string | null {
-    if (!this.secretReadable(key)) return null;
+    if (this.isRetiredLlmCredential(key) || !this.secretReadable(key)) return null;
     try {
       return this.secretStore.get(key);
     } catch (err) {
@@ -1939,14 +1940,26 @@ export class SettingsService {
 
   /** Security-sensitive consumers that must reject legacy `plain:` secret entries. */
   getEncryptedSecret(key: string): string | null {
-    if (!this.secretReadable(key)) return null;
+    if (this.isRetiredLlmCredential(key) || !this.secretReadable(key)) return null;
     return this.secretStore.getEncrypted(key);
+  }
+
+  /** Settings may offer a saved credential for an explicit provider choice without retrieving it. */
+  hasStoredSecret(key: string): boolean {
+    return this.secretReadable(key) && this.secretStore.has(key);
   }
 
   async deleteSecret(key: string): Promise<void> {
     await this.secretStore.delete(key);
     this.withheldSecretKeys.delete(key);
     this.secretStateChanged(key);
+  }
+
+  private isRetiredLlmCredential(key: string): boolean {
+    // Cover every host consumer before a credential is retrieved.
+    // An accepted provider choice releases this fence.
+    return Boolean(this.settings.llm.retiredProvider)
+      && (key.startsWith("llm.apiKey.") || key.startsWith("llm.marketplaceProvider."));
   }
 
   /**

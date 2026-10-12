@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +17,7 @@ vi.mock("electron", () => ({
 }));
 
 import { SettingsService, type SystemSettings } from "../settings-store.js";
+import { SecretDocumentStore } from "../secret-document-store.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { DEFAULT_SETTINGS } from "../settings-defaults.js";
 import { normalizeMarketplace } from "../settings-normalization.js";
@@ -3791,7 +3792,7 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
   });
 });
 
-describe("retired vendor copilot (GitHub Models, retired 2026-07-30)", () => {
+describe("retired vendor profile migration", () => {
   let userDataPath: string;
   let settingsPath: string;
   let secretsPath: string;
@@ -3863,7 +3864,66 @@ describe("retired vendor copilot (GitHub Models, retired 2026-07-30)", () => {
     expect(service.get("llm").retiredProvider).toBeUndefined();
   });
 
-  it("deletes a stored GitHub Models key and leaves other keys", async () => {
+  it.each([
+    { provider: "deepseek" },
+    { provider: "openai-compatible", marketplaceProviderPresetId: "missing-preset" },
+  ])("retains the retirement marker when a provider selection is unavailable: %j", async (llmPatch) => {
+    writeCopilotProfile();
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ llm: llmPatch as never });
+    expect(service.get("llm").retiredProvider).toBe("copilot");
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("llm").retiredProvider).toBe("copilot");
+  });
+
+  it("withholds host LLM credentials before reading the secret document until a provider is chosen", async () => {
+    writeCopilotProfile();
+    writePlainSecrets(secretsPath, { "llm.apiKey.openai": "credential-marker" });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
+    const read = vi.spyOn(SecretDocumentStore.prototype, "get");
+    const encryptedRead = vi.spyOn(SecretDocumentStore.prototype, "getEncrypted");
+    try {
+      for (const key of ["llm.apiKey.openai", "llm.apiKey.claude", "llm.marketplaceProvider.example.apiKey"]) {
+        expect(service.getSecret(key)).toBeNull();
+        expect(service.getEncryptedSecret(key)).toBeNull();
+      }
+      expect(read).not.toHaveBeenCalled();
+      expect(encryptedRead).not.toHaveBeenCalled();
+      expect(service.hasStoredSecret("llm.apiKey.openai")).toBe(true);
+      expect(service.hasStoredSecret("llm.apiKey.claude")).toBe(false);
+      expect(read).not.toHaveBeenCalled();
+      expect(encryptedRead).not.toHaveBeenCalled();
+      await service.patch({ llm: { provider: "openai" } });
+      service.getSecret("llm.apiKey.openai");
+      expect(read).toHaveBeenCalledOnce();
+    } finally {
+      read.mockRestore();
+      encryptedRead.mockRestore();
+    }
+  });
+
+  it("retries a failed retired credential deletion without blocking boot or logging the credential", async () => {
+    writePlainSecrets(secretsPath, { "llm.apiKey.copilot": "credential-marker" });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const deletion = vi.spyOn(service, "deleteSecret").mockRejectedValueOnce(new Error("credential-marker"));
+    try {
+      await expect(service.deleteRetiredLlmVendorApiKeys()).resolves.toBeUndefined();
+      const logContainsCredential = warn.mock.calls.some((call) => JSON.stringify(call).includes("credential-marker"));
+      expect(logContainsCredential).toBe(false);
+      await service.deleteRetiredLlmVendorApiKeys();
+      expect(service.getSecret("llm.apiKey.copilot")).toBeNull();
+      const afterDelete = statSync(secretsPath).mtimeMs;
+      await service.deleteRetiredLlmVendorApiKeys();
+      expect(statSync(secretsPath).mtimeMs).toBe(afterDelete);
+      expect(deletion).toHaveBeenCalledTimes(3);
+    } finally {
+      warn.mockRestore();
+      deletion.mockRestore();
+    }
+  });
+
+  it("deletes a retired vendor credential and preserves other keys", async () => {
     writePlainSecrets(secretsPath, { "llm.apiKey.copilot": "gh-models-token", "llm.apiKey.openai": "sk-keep" });
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
     expect(service.getSecret("llm.apiKey.copilot")).not.toBeNull();

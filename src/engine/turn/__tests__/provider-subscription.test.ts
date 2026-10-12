@@ -447,7 +447,7 @@ describe("buildProvider — profile moved off a retired vendor", () => {
             activeChatRuntime: { kind: "api" },
             provider: "openai",
             vendors: freshVendorBlocks(),
-            fallbackChain: [],
+            fallbackChain: [{ provider: "claude", model: "claude-sonnet-4-6" }],
             ...(retiredProvider ? { retiredProvider } : {}),
           }
           : { installedProviderPresets: [] }),
@@ -457,10 +457,11 @@ describe("buildProvider — profile moved off a retired vendor", () => {
     return { deps, getSecret };
   }
 
-  it("reads the API route as not configured until the user picks a provider", () => {
+  it.each([undefined, "role-model"])("blocks the API route and fallback keys with model override %s", (modelOverride) => {
     // The load moved a copilot profile to the default vendor. A key saved for
     // that vendor must not be used on the user's behalf.
     const { deps, getSecret } = apiDeps("copilot");
+    deps.modelOverride = modelOverride;
     expect(buildProvider(deps)).toBeNull();
     expect(getSecret).not.toHaveBeenCalled();
   });

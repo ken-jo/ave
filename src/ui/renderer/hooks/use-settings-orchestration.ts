@@ -109,6 +109,7 @@ export interface SettingsOrchestrationState {
   clearMarketplaceProviderPreset: () => void;
   // Lifecycle
   settingsLoaded: boolean;
+  retiredLlmProvider: AppSettings["llm"]["retiredProvider"] | null;
   saving: boolean;
   /**
    * Last save failure surface. Cleared on the next successful save.
@@ -725,6 +726,7 @@ export function useSettingsOrchestration(
     clearLastSaveError,
     hydrateLlmFromSettings,
     vendor,
+    retiredLlmProvider: settingsSnapshot?.llm.retiredProvider ?? null,
     providerCredentialDrafts, setProviderCredentialDrafts,
     saveProviderCredential,
     selectApiVendorModel,

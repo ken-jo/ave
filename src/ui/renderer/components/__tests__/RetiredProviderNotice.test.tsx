@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { RetiredProviderNotice } from "../RetiredProviderNotice.js";
 import { t } from "../../../../i18n/runtime.js";
+import { setLocale } from "../../../../i18n/runtime.js";
 
 afterEach(cleanup);
 
@@ -27,5 +28,17 @@ describe("RetiredProviderNotice", () => {
     expect(screen.queryByRole("button", { name: /dismiss|✕/i })).toBeNull();
     rerender(<RetiredProviderNotice retiredProvider={null} onChooseProvider={vi.fn()} />);
     expect(screen.queryByTestId("retired-provider-notice")).toBeNull();
+  });
+
+  it.each(["ko", "en"] as const)("does not claim credential deletion succeeded in %s", (locale) => {
+    setLocale(locale);
+    try {
+      render(<RetiredProviderNotice retiredProvider="copilot" onChooseProvider={vi.fn()} />);
+      const notice = screen.getByTestId("retired-provider-notice");
+      expect(notice.textContent).not.toMatch(/key deleted|키를 삭제했습니다/);
+      expect(notice.textContent).toMatch(/no longer used|사용되지 않습니다/);
+    } finally {
+      setLocale("ko");
+    }
   });
 });

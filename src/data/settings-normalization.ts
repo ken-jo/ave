@@ -672,6 +672,13 @@ export function mergeLlmPatch(
       ...entry,
       model: normalizeLlmVendorModel(entry.provider, entry.model),
     }));
+  const isProviderSelectionAccepted = isLLMVendor(partial.provider)
+    && activeProvider === partial.provider
+    && !removedActiveMarketplaceProviderPreset
+    && (activeProvider !== "openai-compatible"
+      || !requestedMarketplaceProviderPresetId
+      || (typeof requestedMarketplaceProviderPresetId === "string"
+        && marketplaceProviderPresetId === requestedMarketplaceProviderPresetId.trim()));
   return {
     activeChatRuntime,
     provider: activeProvider,
@@ -691,9 +698,9 @@ export function mergeLlmPatch(
       "pinnedModels" in partial ? partial.pinnedModels : base.pinnedModels,
     ),
     // The retired-provider marker is set by the settings load only. A patch
-    // that names a provider — the user saving their provider choice from
-    // Settings — resolves it; any other patch leaves it as it was.
-    ...(base.retiredProvider && !isLLMVendor(partial.provider)
+    // whose provider selection is accepted resolves it. A missing provider or
+    // preset that gets coerced to the default does not authorize that default.
+    ...(base.retiredProvider && !isProviderSelectionAccepted
       ? { retiredProvider: base.retiredProvider }
       : {}),
     // `llm.hostResolverMap` is deliberately NOT carried forward. The manual

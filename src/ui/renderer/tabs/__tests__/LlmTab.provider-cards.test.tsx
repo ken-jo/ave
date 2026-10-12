@@ -23,6 +23,7 @@ type ProviderCredentialDraft =
   import("../LlmTab.js").ProviderCredentialDraft;
 type ProviderCredentialSave =
   import("../LlmTab.js").ProviderCredentialSave;
+type RetiredLlmProvider = import("../LlmTab.js").LlmTabProps["retiredLlmProvider"];
 
 type MockApi = MockAveApi;
 
@@ -207,6 +208,7 @@ function settingsWithVendorBlocks(vendors: Record<string, Record<string, string>
 }
 
 interface TabProps {
+  retiredLlmProvider?: RetiredLlmProvider;
   vendor?: string;
   baseUrl?: string;
   /** Seeds the parent-held credential draft, as a half-typed card would. */
@@ -280,6 +282,7 @@ function TabHarness({
         marketplaceProviderPresets={props.marketplaceProviderPresets ?? NO_PRESETS}
         marketplaceProviderPresetId={props.marketplaceProviderPresetId ?? ""}
         vendor={props.vendor ?? "openai"}
+        retiredLlmProvider={props.retiredLlmProvider}
         baseUrl={props.baseUrl ?? ""}
         hasKey={props.hasKey ?? true}
         setHasKey={vi.fn()}
@@ -400,6 +403,12 @@ beforeEach(() => {
 });
 
 describe("LlmTab provider cards", () => {
+  it("accepts an explicit choice of the same model after a provider retirement", async () => {
+    const { hooks } = await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "gpt-5.4", retiredLlmProvider: "copilot" });
+    await chooserModelIds();
+    await act(async () => { pickChooserOption("gpt-5.4"); });
+    expect(hooks.onImmediateChange).toHaveBeenCalledOnce();
+  });
   it.each([[32_000, 16_000], [16_000, 8_000], [32_001, 32_000]])(
     "offers only presets below output %i", async (outputTokenLimit, expected) => {
       const { hooks } = await renderTab(makeApi(), { enableThinking: true, thinkingBudget: 4_000, outputTokenLimit });

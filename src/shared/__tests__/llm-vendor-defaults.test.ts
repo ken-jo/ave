@@ -368,7 +368,7 @@ describe("narrowLlmVendor", () => {
 });
 
 describe("retired vendor ids", () => {
-  it("are not vendors: copilot (GitHub Models, retired 2026-07-30) is rejected, not aliased", () => {
+  it("rejects retired provider ids without aliasing them", () => {
     expect(RETIRED_LLM_VENDOR_IDS).toEqual(["copilot"]);
     expect(isLLMVendor("copilot")).toBe(false);
     expect(isRetiredLLMVendor("copilot")).toBe(true);

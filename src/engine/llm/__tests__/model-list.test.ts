@@ -241,9 +241,8 @@ describe("LLM model list sync", () => {
     );
   });
 
-  it("refuses the retired copilot vendor without contacting GitHub Models", async () => {
-    // GitHub retired GitHub Models (models.github.ai) on 2026-07-30; Ave
-    // removed the vendor. A stale request naming it is an unknown provider.
+  it("refuses a retired vendor without contacting its endpoint", async () => {
+    // A stale request naming a removed vendor is an unknown provider.
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const result = await listLlmModelsFromSettings(
       makeSettingsService({ provider: "openai", baseUrl: "", secret: "token" }) as never,

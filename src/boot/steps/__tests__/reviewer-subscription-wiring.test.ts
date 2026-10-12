@@ -9,7 +9,52 @@ import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
 
 describe("wireReviewerAndPermissions subscription runtime", () => {
-  it("uses the shared active subscription factory and a transport-scoped reviewer identity", async () => {
+  it("blocks API reviewer credentials and parent-session adjudication while retirement is unresolved", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "reviewer-retired-"));
+    vi.resetModules();
+    const wireReviewerAgent = vi.fn((_input: unknown) => ({ rationaleScopeReviewer: {} }));
+    vi.doMock("electron", () => ({ BrowserWindow: { getAllWindows: () => [] } }));
+    vi.doMock("../reviewer-wiring.js", () => ({ wireReviewerAgent, LlmReviewerProviderAdapter: class {} }));
+    try {
+      const { wireReviewerAndPermissions } = await import("../reviewer-permission-wiring.js");
+      let retired = true;
+      const getSecret = vi.fn(() => "fixture-key");
+      const context = {
+        host: createBootHostFixture(), toolRegistry: { setDenyRules: vi.fn() },
+        permissionManager: new PermissionManager(join(tempDir, "permissions.json")),
+        settingsService: {
+          get: (key: string) => key === "llm" ? {
+            provider: "openai", activeChatRuntime: { kind: "api" },
+            vendors: { openai: { model: "gpt-4o" } }, ...(retired ? { retiredProvider: "copilot" } : {}),
+          } : {},
+          getSecret,
+        },
+        llmFetch: vi.fn(), getMainWindow: () => null, bootAuditLogger: { log: vi.fn() },
+        subscriptionProviderFactory: vi.fn(),
+      };
+      wireReviewerAndPermissions(context as never);
+      const options = wireReviewerAgent.mock.calls[0]?.[0] as unknown as {
+        streamProviderFor: (provider: string) => LLMProvider | null;
+        getSecret: (key: string) => string | null;
+        resolveParentSessionAdjudicationTarget: (id: string) => unknown;
+      };
+      expect(options.streamProviderFor("openai")).toBeNull();
+      expect(options.streamProviderFor("anthropic")).toBeNull();
+      expect(options.getSecret("llm.apiKey.azure-foundry")).toBeNull();
+      expect(options.getSecret("llm.apiKey.gemini")).toBeNull();
+      expect(options.resolveParentSessionAdjudicationTarget("parent")).toBeNull();
+      expect(getSecret).not.toHaveBeenCalled();
+      retired = false;
+      expect(options.streamProviderFor("openai")).not.toBeNull();
+      expect(getSecret).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("electron");
+      vi.doUnmock("../reviewer-wiring.js");
+      vi.resetModules();
+      await cleanupTmpDir(tempDir);
+    }
+  });
+  it.each([undefined, "copilot"] as const)("uses the explicitly selected subscription without releasing the API retirement marker %s", async (retiredProvider) => {
     const tempDir = mkdtempSync(join(tmpdir(), "reviewer-subscription-"));
     vi.resetModules();
     const wireReviewerAgent = vi.fn((_input: unknown) => ({ rationaleScopeReviewer: {} }));
@@ -41,6 +86,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
               // Deliberately different: reviewer must not consult this stale
               // API-key setting while the subscription runtime is active.
               provider: "claude",
+              retiredProvider,
               activeChatRuntime: selection,
               vendors: { claude: { model: "claude-sonnet-4-5" } },
             };
@@ -77,6 +123,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
       // subscription runtime owns the active reviewer transport.
       expect(options.streamProviderFor("claude")).toBeNull();
       expect(subscriptionProviderFactory).toHaveBeenCalledOnce();
+      expect(settingsService.getSecret).not.toHaveBeenCalled();
     } finally {
       vi.doUnmock("electron");
       vi.doUnmock("../reviewer-wiring.js");

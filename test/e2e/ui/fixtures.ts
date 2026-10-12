@@ -98,6 +98,8 @@ export type ElectronOptions = {
   seedPermissionMode: "default" | "allow" | undefined;
   seedViewFixturePlugin: boolean;
   seedApiKey: boolean;
+  /** Raw persisted provider id, including an id a newer build has retired. */
+  seedLlmProvider: string;
   seedLocale: "ko" | "en";
   /**
    * Launch with `AVE_DEV=1` (the default). A spec that checks what a user's
@@ -119,6 +121,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
   // Specs that assert the no-key / key-toggle state override with
   // `test.use({ seedApiKey: false })`.
   seedApiKey: [true, { option: true }],
+  seedLlmProvider: ["", { option: true }],
   // UI locale to seed. Defaults to 'en' — the production default (#1200) — so
   // ./fixtures specs exercise the English render path; their assertions go
   // through the `t` fixture so they resolve whatever is seeded. Specs that need
@@ -147,6 +150,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       seedAlertPlugin,
       seedPermissionMode,
       seedApiKey,
+      seedLlmProvider,
       seedLocale,
       devFlag,
     },
@@ -186,10 +190,14 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
         { encoding: "utf-8", mode: 0o600 },
       );
     }
+    const baseSettings = buildE2eBaseSettings(onboardingCompleted, seedLocale);
+    const initialSettings = seedLlmProvider
+      ? { ...baseSettings, llm: { provider: seedLlmProvider } }
+      : baseSettings;
     fs.writeFileSync(
       path.join(userDataDir, "ave-settings.json"),
       JSON.stringify(
-        buildE2eBaseSettings(onboardingCompleted, seedLocale),
+        initialSettings,
         null,
         2,
       ) + "\n",
