@@ -541,7 +541,9 @@ describe("LlmTab provider cards", () => {
     const control = screen.getByRole("combobox", { name: "이미지 입력" });
     openMenu(control);
     fireEvent.click(screen.getByRole("option", { name: /^지원$/ }));
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("이미지 입력 설정을 저장하지 못했습니다"));
+    // The renderer fixture's catalog policy is unavailable, which raises its own alert.
+    await waitFor(() => expect(screen.getAllByRole("alert").map((alert) => alert.textContent))
+      .toContainEqual(expect.stringContaining("이미지 입력 설정을 저장하지 못했습니다")));
     expect(control).toHaveTextContent("자동");
     expect(await chooserModelIds()).toContain(model);
     expect(within(chooserOption(model)).queryByTestId(`llm-tab:model-vision:${model}`)).not.toBeInTheDocument();
