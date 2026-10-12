@@ -7,6 +7,12 @@
  */
 import type { ContextWindowSource, ResolvedContextWindow, ResolvedOutputTokenLimit } from "./context-budget.js";
 
+/** Numeric controls after native request serialization and its final projection. */
+export interface RequestGenerationControls {
+  readonly outputTokenLimit: number;
+  readonly thinkingBudgetTokens?: number;
+}
+
 export interface RunModelSettings {
   /** `sha256` of the model catalog the run resolved against. */
   readonly modelCatalogSha256: string;
@@ -18,8 +24,10 @@ export interface RunModelSettings {
     /** The prompt cap below the window that bounded the compaction budget, when one did. */
     readonly inputLimit?: { readonly tokens: number; readonly source: NonNullable<ResolvedContextWindow["inputLimitSource"]> };
   };
-  /** The output limit each request carried, and its sources. */
+  /** The route's resolved output limit and its sources, before native request shaping. */
   readonly output: ResolvedOutputTokenLimit;
+  /** Serialized controls when native shaping may narrow the route's resolved limits. */
+  readonly requestControls?: RequestGenerationControls;
   /** The reasoning control sent, when thinking was on and the route has one. */
   readonly reasoning?: {
     readonly kind: "openai-effort" | "anthropic-adaptive" | "anthropic-numeric" | "none";

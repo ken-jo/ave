@@ -55,6 +55,7 @@ export interface StreamCollectParams {
   onTextDelta?: (text: string) => void;
   /** Called at provider dispatch after runtime and cancellation guards pass. */
   onRequestStarted?: () => void;
+  onRequestControls?: StreamTurnParams["onRequestControls"];
 }
 
 export type StreamCollectResult =
@@ -159,6 +160,7 @@ export async function collectRoundStream(
       ...(llmSettings.requestedOutputTokenLimit === undefined ? {} : { requestedOutputTokenLimit: llmSettings.requestedOutputTokenLimit }),
       ...(llmSettings.requestedThinkingBudgetTokens === undefined ? {} : { requestedThinkingBudgetTokens: llmSettings.requestedThinkingBudgetTokens }),
       ...(llmSettings.catalogModel === undefined ? {} : { catalogModel: llmSettings.catalogModel }),
+      ...(params.onRequestControls === undefined ? {} : { onRequestControls: params.onRequestControls }),
       abortSignal,
     }) as AsyncIterable<StreamEvent>) {
       if (abortSignal?.aborted) return { kind: "interrupted", text };

@@ -1044,6 +1044,20 @@ export async function queryLoop(
           onReasoningDelta: callbacks?.onReasoningDelta,
           onTextDelta: callbacks?.onTextDelta,
           onRequestStarted: () => { turnModelSettings = requestModelSettings; },
+          ...(apiRound === undefined ? {} : {
+            onRequestControls: (controls: NonNullable<RunModelSettings["requestControls"]>) => {
+              // A fallback cleared these primary facts before its dispatch.
+              if (turnModelSettings === undefined) return;
+              const reasoning = turnModelSettings.reasoning;
+              turnModelSettings = {
+                ...turnModelSettings,
+                requestControls: { ...controls },
+                ...(reasoning?.kind === "anthropic-numeric" && controls.thinkingBudgetTokens !== undefined
+                  ? { reasoning: { ...reasoning, budgetTokens: controls.thinkingBudgetTokens } }
+                  : {}),
+              };
+            },
+          }),
         },
         self.deps.settingsService.get("llm").activeChatRuntime,
         () => self.abortCurrentTurn(new Error("active chat runtime changed")),

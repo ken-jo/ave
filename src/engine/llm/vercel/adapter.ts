@@ -167,6 +167,9 @@ function projectNumericThinkingOutput(
     if (!projection.interleavedThinking && outputTokenLimit <= 1_024) {
       throw new Error("Output token limit must exceed 1024 when numeric thinking is not interleaved");
     }
+    const thinkingBudgetTokens = projection.interleavedThinking
+      ? thinkingBudget
+      : Math.min(thinkingBudget, outputTokenLimit - 1);
     return fetchImpl(input, {
       ...init,
       body: JSON.stringify({
@@ -174,12 +177,36 @@ function projectNumericThinkingOutput(
         max_tokens: outputTokenLimit,
         thinking: {
           ...thinking,
-          budget_tokens: projection.interleavedThinking
-            ? thinkingBudget
-            : Math.min(thinkingBudget, outputTokenLimit - 1),
+          budget_tokens: thinkingBudgetTokens,
         },
       }),
     });
+  };
+}
+
+function observeRequestControls(
+  fetchImpl: typeof fetch,
+  onRequestControls: NonNullable<StreamTurnParams["onRequestControls"]>,
+): typeof fetch {
+  return async (input, init) => {
+    try {
+      if (typeof init?.body === "string") {
+        const request = JSON.parse(init.body) as Record<string, unknown> | null;
+        const outputTokenLimit = typeof request?.max_tokens === "number"
+          ? normalizeOutputTokenLimit(request.max_tokens)
+          : undefined;
+        const thinking = request?.thinking as { type?: unknown; budget_tokens?: unknown } | undefined;
+        const thinkingBudgetTokens = thinking?.type === "enabled" && typeof thinking.budget_tokens === "number"
+          ? normalizeOutputTokenLimit(thinking.budget_tokens)
+          : undefined;
+        if (outputTokenLimit !== undefined) {
+          onRequestControls({ outputTokenLimit, ...(thinkingBudgetTokens === undefined ? {} : { thinkingBudgetTokens }) });
+        }
+      }
+    } catch {
+      // Observing the serialized controls must not change the request.
+    }
+    return fetchImpl(input, init);
   };
 }
 
@@ -328,6 +355,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         numericThinking && outputTokenLimit !== undefined
           ? { outputTokenLimit, interleavedThinking: interleavedNumericThinking }
           : undefined,
+        params.onRequestControls,
       );
       const reasoningEffort = reasoningPlan?.kind === "openai-effort" ? reasoningPlan.effort : undefined;
       const useReasoning = params.enableThinking === true && reasoningEffort !== undefined;
@@ -566,6 +594,7 @@ export class VercelUnifiedProvider implements LLMProvider {
     modelId: string,
     _hasTools: boolean,
     numericOutputProjection?: NumericThinkingOutputProjection,
+    onRequestControls?: StreamTurnParams["onRequestControls"],
   ) {
     const slot = this.vendorSlot;
     assertCredentialedBaseUrlUsesHttps(
@@ -576,9 +605,12 @@ export class VercelUnifiedProvider implements LLMProvider {
     );
 
     if (slot === "claude") {
-      const fetchImpl = numericOutputProjection
-        ? projectNumericThinkingOutput(this.customFetch ?? globalThis.fetch, numericOutputProjection)
+      const nativeFetch = onRequestControls
+        ? observeRequestControls(this.customFetch ?? globalThis.fetch, onRequestControls)
         : this.customFetch;
+      const fetchImpl = numericOutputProjection
+        ? projectNumericThinkingOutput(nativeFetch ?? globalThis.fetch, numericOutputProjection)
+        : nativeFetch;
       const anthropic = createAnthropic({
         apiKey: this.apiKey,
         ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),

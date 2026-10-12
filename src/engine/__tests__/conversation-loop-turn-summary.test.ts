@@ -519,6 +519,7 @@ describe("ConversationLoop onTurnSummary", () => {
       vendor: "openai",
       async *streamTurn(params: StreamTurnParams): AsyncIterable<StreamEvent> {
         primarySent.push(params);
+        params.onRequestControls?.({ outputTokenLimit: params.outputTokenLimit! });
         if (primarySent.length <= 5) {
           yield { type: "error", error: "503 fixture unavailable", classification: "network" };
         } else {
@@ -530,6 +531,7 @@ describe("ConversationLoop onTurnSummary", () => {
       vendor: "openai",
       async *streamTurn(params: StreamTurnParams): AsyncIterable<StreamEvent> {
         fallbackSent.push(params);
+        params.onRequestControls?.({ outputTokenLimit: params.outputTokenLimit! });
         if (resumePrimary) yield { type: "tool_call", id: "fallback-call", name: "read_item", input: {} };
         else yield { type: "text_delta", text: "done" };
         yield { type: "message_complete", stopReason: resumePrimary ? "tool_use" : "end_turn", usage: { inputTokens: 10, outputTokens: 1 } };
@@ -580,6 +582,7 @@ describe("ConversationLoop onTurnSummary", () => {
     const records = await sameIdentityFallbackRecords(true);
     for (const record of [records.summary, records.audit]) {
       expect(record.modelSettings?.output).toMatchObject({ effective: 4_096, effectiveSource: "provider-reported" });
+      expect(record.modelSettings?.requestControls).toEqual({ outputTokenLimit: 4_096 });
     }
   });
 

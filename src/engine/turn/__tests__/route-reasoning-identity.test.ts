@@ -25,16 +25,21 @@ vi.mock("../../llm/provider-factory.js", async (importOriginal) => ({
   ),
 }));
 
-async function requestOn(route: "child" | "preset" | "generic") {
+async function requestOn(route: "child" | "preset" | "generic" | "sdk-capped", enableThinking = true) {
   if (route === "child") expect(isModelAvailableForVendor("openai", "gpt-5.4-pro")).toBe(true);
   const llm = route === "child"
     ? fakeLlmSettings({ model: "gpt-5.4-mini" })
-    : fakeLlmSettings({ provider: "openai-compatible", model: "served-child",
+    : route === "sdk-capped"
+      ? fakeLlmSettings({ provider: "claude", model: "claude-opus-4-1", outputTokenLimit: 64_000 })
+      : fakeLlmSettings({ provider: "openai-compatible", model: "served-child",
         ...(route === "preset" ? { marketplaceProviderPresetId: "fixture-preset" } : {}),
       });
   if (route !== "child") llm.vendors[llm.provider].baseUrl = "https://gateway.invalid/v1";
-  llm.vendors[llm.provider].catalogModel = route === "child" ? "openai/gpt-5.4-mini" : "openai/gpt-4o";
+  llm.vendors[llm.provider].catalogModel = route === "child" ? "openai/gpt-5.4-mini"
+    : route === "sdk-capped" ? "anthropic/claude-opus-4-5" : "openai/gpt-4o";
   if (route === "child") llm.vendors.openai.thinkingBudgetTokens = 500;
+  if (route === "sdk-capped") llm.vendors.claude.thinkingBudgetTokens = 48_000;
+  llm.vendors[llm.provider].enableThinking = enableThinking;
   const loop = new ConversationLoop({
     ...(route === "child" ? { modelOverride: "gpt-5.4-pro" } : {}),
     settingsService: {
@@ -91,6 +96,27 @@ it("retains the named identity for the generic row's own model", async () => {
   expect(body.chat_template_kwargs).toMatchObject({ enable_thinking: false });
   expect(body.thinking_token_budget).toBeUndefined();
   expect(record.reasoning).toEqual({ kind: "none", source: "model-catalog" });
+});
+
+it.each(["output", "thinking"] as const)("records serialized %s controls when the native shape narrows the route's limits", async (control) => {
+  const { body, record } = await requestOn("sdk-capped");
+  expect(record.output.effective).toBe(64_000);
+  expect(body.max_tokens).toBe(32_000);
+  expect(body.thinking).toMatchObject({ budget_tokens: 31_999 });
+  if (control === "output") {
+    expect(record).toMatchObject({ requestControls: { outputTokenLimit: 32_000, thinkingBudgetTokens: 31_999 } });
+  } else {
+    expect(record.reasoning?.budgetTokens).toBe(31_999);
+  }
+});
+
+it("records a native output clamp when thinking is disabled", async () => {
+  const { body, record } = await requestOn("sdk-capped", false);
+  expect(record.output.effective).toBe(64_000);
+  expect(body.max_tokens).toBe(32_000);
+  expect(body.thinking).toBeUndefined();
+  expect(record).toMatchObject({ requestControls: { outputTokenLimit: 32_000 } });
+  expect(record.reasoning).toBeUndefined();
 });
 
 it("records reasoning independently of a dormant endpoint on an SDK-managed route", async () => {

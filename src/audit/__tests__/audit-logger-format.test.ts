@@ -212,6 +212,7 @@ describe("AuditLogger.logTurn() — helper correctness", () => {
         effectiveSource: "provider-reported" as const,
       },
       reasoning: { kind: "openai-effort" as const, requestedEffort: "medium", effort: "medium", source: "model-catalog" as const },
+      requestControls: { outputTokenLimit: 8_192 },
     };
     logger.logTurn({ sessionId: "s", input: "x", output: "y", toolCalls: [], route: "openai/gpt-5.4-mini", modelSettings });
     await logger.flush();
