@@ -18,7 +18,8 @@ import {
   type SubscriptionUsageTelemetry,
 } from "../shared/subscription-runtime.js";
 import { isLLMVendor, type LLMVendor } from "./llm/types.js";
-import { getBillableModelPricing, computeCost, normalizeAiSdkUsageForCost } from "./llm/pricing.js";
+import { computeCost, knownModelPricing, normalizeAiSdkUsageForCost, resolveModelPricing } from "./llm/pricing.js";
+import { activeModelCatalog } from "../shared/model-catalog/active.js";
 import { pricingOverridesSignature, type PricingOverride } from "../shared/pricing-overrides.js";
 
 export interface AuditTurnEntry {
@@ -505,15 +506,11 @@ export function computeUsageSummary(
         cacheWriteTokens = 0,
       } = tokenUsage;
       const pricing = vendor !== "unknown"
-        ? getBillableModelPricing(vendor, model, pricingOverrides)
+        ? knownModelPricing(resolveModelPricing(vendor, model, pricingOverrides))
         : undefined;
       const costKnown = !!pricing;
       const cost = pricing && vendor !== "unknown"
-        ? computeCost(
-            { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens },
-            pricing,
-            vendor,
-          )
+        ? computeCost(tokenUsage, pricing.rates, vendor)
         : 0;
 
       if (dKey === todayKey) addTo(today, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, vendor, cost, costKnown);
@@ -686,6 +683,9 @@ function createUsageSummaryCacheKey(params: {
     query: params.query,
     localDate: localDateKey(params.now),
     pricingOverride: pricingOverridesSignature(params.pricingOverrides),
+    // The catalog prices what no correction does, so a different catalog is a
+    // different answer for the same audit rows.
+    modelCatalog: activeModelCatalog().sha256,
     manifest: params.manifest,
   });
 }

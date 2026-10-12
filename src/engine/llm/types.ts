@@ -407,6 +407,12 @@ export interface TokenUsage {
   outputTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /**
+   * The reasoning part of `outputTokens` (AI SDK
+   * `outputTokenDetails.reasoningTokens`), when the provider reported it.
+   * Priced apart only where the model's rates state a reasoning price.
+   */
+  reasoningTokens?: number;
 }
 
 export interface TokenUsageByModel {

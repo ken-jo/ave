@@ -2,14 +2,15 @@
 
 Status: decided (issue #2501, owner decisions of 2026-10-12); being implemented in the
 seven slices of §9. Slices 1 (the contract, the generator, the bundled snapshot and its
-provenance), 2 (context windows, §4) and 3 (output limits, reasoning levels and run
-records, §5) are implemented. §6–§7 are the plan; until their slices land, modalities
-and prices still come from the code paths named in §1 and §8.
+provenance), 2 (context windows, §4), 3 (output limits, reasoning levels and run
+records, §5) and 5 (prices, §6) are implemented. The rest of §6 and §7 are the plan;
+until their slices land, modalities still come from the code paths named in §1 and §8.
 
 Anchors: `src/shared/model-catalog/` (types, provider map, normalizer),
 `src/core/model-catalog/` (document hashing and verification, the bundled snapshot),
 `scripts/lib/model-catalog.ts` and `scripts/generate-model-catalog.ts` (the generator),
-`scripts/model-catalog/` (the committed input). Today's hand-kept tables are
+`scripts/model-catalog/` (the committed input), `src/shared/model-pricing.ts` (price
+resolution, §6). Today's hand-kept tables are
 `src/shared/pricing-data.ts`, `src/engine/llm/vendor-capabilities.ts` and the name
 predicates in `src/engine/llm/vercel/adapter.ts`.
 
@@ -59,7 +60,7 @@ the repository head and the schema file's blob at download time as the nearest r
   `0` is read as not stated.
 - **A listed `0` price is the source's statement, not "free".** In the full document about 650 models list zero;
   some are free tiers, many are unpriced. Cost display treats a zero price as "listed
-  zero" (slice 5).
+  zero": it is not shown as $0, and the estimate says the catalog listed it (§6).
 - Prices are USD per million tokens. `tiers` replace the base rates once the prompt
   exceeds `afterInputTokens`; the source's older `context_over_200k` form is read as a
   tier at 200,000 when no `tiers` are listed. Only prompt-size tiers are carried.
@@ -301,9 +302,68 @@ Implemented.
 ## 6. Modalities and pricing (slices 4 and 5)
 
 Slice 4 replaces the vision regex lists with `modalities.input` and `attachment`, and
-reads tool support from `toolCall`. Slice 5 prices through the catalog, tiers included,
-and makes the renderer apply the user's pricing overrides as the engine already does;
-user overrides keep the highest precedence.
+reads tool support from `toolCall`.
+
+**Pricing (slice 5) is implemented.** `resolveModelPricing(vendor, model, overrides)`
+(`src/shared/model-pricing.ts`) is the one place the price sources are ordered, and
+answers the rates with their source:
+
+1. `user` — a correction for this exact vendor and model (`llm.pricingOverrides`, or
+   `AVE_PRICING_OVERRIDE`, which replaces the whole list). It states what the
+   deployment pays and is taken whole: no catalog tier or reasoning rate is mixed in,
+   and a stated zero is a known $0.
+2. `model-catalog` — the entry `resolveCatalogKey` finds (§4), with `catalogEntry`.
+3. `pricing-catalog` — the hand-kept row, for a model the catalog does not price
+   (slice 7 removes it). Azure deployments still never borrow OpenAI's row.
+4. `unknown` — shown as unknown, never as $0.
+
+A catalog entry with no price, or with only one of input and output, is unknown at its
+rank; one that lists input and output at zero falls through as well, and when nothing
+else prices the model the answer is `unknown` with `catalogListsZero` naming the entry.
+A self-hosted route is not priced from the entry its user named as `catalogModel` (§4):
+that names the model for its limits, and the public price is not what the user's own
+endpoint costs.
+
+`computeCost` (`src/shared/pricing-data.ts`) prices one provider request:
+
+- **Tiers.** The highest tier whose `afterInputTokens` the prompt exceeds (strictly: a
+  prompt exactly at the boundary pays the base) replaces the base rates for the whole
+  request; a rate the tier does not state keeps the base rate. The prompt is every
+  prompt token the provider read: fresh input plus the cache lines for Anthropic, whose
+  usage counts them apart, and the reported input for everyone else, whose count
+  already includes the cache. A turn is priced per request (`usageByModel`): a turn's
+  rounds summed are not one prompt.
+- **Cache.** Anthropic adds cache reads and writes at their rates (derived at 0.1× and
+  1.25× input when the rates state none). Every other vendor's prompt is split into
+  fresh, cache-read and cache-write parts, each at its rate, a missing cache rate being
+  the input rate. Gemini and Vertex used to ignore the cache entirely.
+- **Reasoning.** models.dev's `cost.reasoning` is the price per million reasoning
+  tokens. The adapter now carries the provider's reported reasoning part of the output
+  (`outputTokenDetails.reasoningTokens`) through the request usage, the turn summary and
+  the audit row; that part is priced at the reasoning rate and the rest of the output
+  at the output rate. With no reasoning rate, or no reported split, all output is
+  output. The catalog states reasoning rates for Qwen (DashScope), DeepSeek and Nebius
+  models among the mapped providers.
+
+Every cost surface reads these: the pre-send estimate (`use-cost-estimate.ts`), the
+per-turn badge (`TokenCostBadge`, priced per request segment), the usage dashboard and
+its CSV (`usage-stats.ts`, whose cache key now includes the catalog's `sha256`) and the
+run record, whose `modelSettings.pricing` keeps the resolved answer — source, entry and
+rates — so a past turn's cost can be read back at the rates it ran under. The renderer
+applies the corrections main resolves (`ave:usage:pricing-overrides`, fetched on each
+settings snapshot; `src/ui/renderer/hooks/use-pricing-overrides.ts`) instead of reading
+the setting raw, so an environment-forced list prices the estimate and the badge as it
+prices the dashboard. Before, the renderer applied no correction at all. The estimate's
+tooltip names who stated the rates, or that the catalog listed the model at zero.
+
+Prices the snapshot of 2026-10-12 changes against the table: models the table listed
+at zero or not at all are now priced — Gemini 2.5 Pro, Flash and Flash-Lite, GPT-5.1,
+5.2 and 5.3 Codex, GPT-4o and 4o mini, GPT-4.1 nano, o1, o3, o4-mini, Claude Haiku 5.5 (with
+its 100K tier) and Vertex AI models among them; GPT-5 mini drops from $1.25/$10 to the
+listed $0.25/$2; Azure deployments named for a model the catalog's `azure` provider
+lists are priced at that entry (before, Azure was unpriced without a correction).
+Claude's dated ids (`claude-sonnet-4-20250514`, `claude-3-*`) still price from the
+table.
 
 ## 7. Refresh (slice 6)
 
@@ -345,7 +405,9 @@ these is answered:
     request-shape fact, and it moves to a host-owned request-shape table with the
     interleaved-thinking handling (slice 7).
   - `surchargeInputThreshold` / multipliers (GPT-5.4 and 5.4 Pro) — the catalog states the
-    same prices as a tier at 272,000 (2× input, 1.5× output) and slice 5 reads the tier.
+    same prices as a tier at 272,000 (2× input, 1.5× output), and slice 5 prices those
+    models from the tier; the table's form is read only for a model priced from the
+    table, and goes with it.
   - `tpmDefault` (GPT-5.4 mini and nano) — a host throttling default, kept in the
     host-policy module.
 

@@ -7,23 +7,18 @@ import { useTranslation } from "../../../i18n/react.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import {
   computeCost,
-  lookupBillablePricingOptional,
   normalizeAiSdkUsageForCost,
-  type ModelPricing,
+  type TokenRates,
 } from "../../../shared/pricing-data.js";
+import { knownModelPricing, resolveModelPricing } from "../../../shared/model-pricing.js";
+import { usePricingOverrides } from "../hooks/use-pricing-overrides.js";
 import type { LLMVendor } from "../../../shared/llm-vendor-defaults.js";
 import type { SubscriptionUsageTelemetry } from "../../../shared/subscription-runtime.js";
 import { formatCost, formatTokens, formatTokensExact } from "../../../lib/cost-format.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 
-export interface TokenCostBadgePricing {
-  inputPer1M: number;
-  outputPer1M: number;
-
-  cacheReadPer1M?: number;
-
-  cacheWritePer1M?: number;
-}
+/** The turn's rates, resolved by the caller through `resolveModelPricing`. */
+export type TokenCostBadgePricing = TokenRates;
 
 export interface TokenCostBadgeProps {
   /** Turn-end projected context input. Tooltip-only here. */
@@ -59,6 +54,7 @@ export interface TokenCostBadgeProps {
       outputTokens: number;
       cacheReadTokens?: number;
       cacheWriteTokens?: number;
+      reasoningTokens?: number;
     };
   }>;
   /**
@@ -93,6 +89,7 @@ function TokenCostBadgeImpl({
   // 클릭으로 cost 토글 가능 (pricing 이 있을 때만).
   const { t } = useTranslation();
   const [mode, setMode] = useState<"tokens" | "cost">("tokens");
+  const pricingOverrides = usePricingOverrides();
   const hasSubscriptionUsage = (subscriptionUsage?.length ?? 0) > 0;
 
   // Subscription telemetry has no per-call price. Keep it entirely out of
@@ -155,18 +152,16 @@ function TokenCostBadgeImpl({
   const costInputTokens = effectiveVendor === "claude"
     ? freshInputTokens
     : freshInputTokens + cacheReadTokens + cacheWriteTokens;
-  // `contextWindow` is irrelevant to the cost formula but `ModelPricing`
-  // requires it structurally, so we pin a dummy 0 — computeCost never reads
-  // it. Effective vendor defaults to "claude" for back-compat with tests that
-  // omit the prop (production callers always propagate from ChatContext).
+  // Each provider request is priced on its own: a price tier is chosen by one
+  // request's prompt, and a turn's rounds summed are not one prompt.
   const segmentCost = usageByModel && usageByModel.length > 0
     ? usageByModel.reduce<number | null>((sum, segment) => {
         if (sum === null) return null;
-        const segmentPricing = lookupBillablePricingOptional(segment.vendorProvider, segment.vendorModel);
+        const segmentPricing = knownModelPricing(resolveModelPricing(segment.vendorProvider, segment.vendorModel, pricingOverrides));
         if (!segmentPricing) return null;
         return sum + computeCost(
           normalizeAiSdkUsageForCost(segment.tokenUsage, segment.vendorProvider),
-          segmentPricing,
+          segmentPricing.rates,
           segment.vendorProvider,
         );
       }, 0)
@@ -181,7 +176,7 @@ function TokenCostBadgeImpl({
           cacheReadTokens,
           cacheWriteTokens,
         },
-        { ...(pricing as ModelPricing), contextWindow: (pricing as Partial<ModelPricing>).contextWindow ?? 0 },
+        pricing,
         effectiveVendor,
       )
     : null;

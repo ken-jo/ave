@@ -1245,6 +1245,8 @@ export type AveApi = {
   getUsageSummary: (days?: number) => Promise<UsageSummaryShape>;
   getUsageRange: (opts: { dateFrom: string; dateTo: string }) => Promise<UsageSummaryShape>;
   getUsageDailySummary: (input: UsageDailySummaryInput) => Promise<UsageDailySummaryResult>;
+  /** The price corrections in force; untrusted until `normalizePricingOverrides` reads it. */
+  getPricingOverrides: () => Promise<unknown>;
   exportUsageCsv: (rows: Array<Record<string, string | number>>) => Promise<{ ok: boolean; filePath?: string; canceled?: boolean }>;
   plugins: {
     getPerfStats: () => Promise<Record<string, PluginPerfStats>>;

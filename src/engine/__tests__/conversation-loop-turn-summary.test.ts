@@ -268,9 +268,52 @@ describe("ConversationLoop onTurnSummary", () => {
       },
       // Thinking budget 8,000 maps to "medium", which gpt-5.4-mini accepts.
       reasoning: { kind: "openai-effort", requestedEffort: "medium", effort: "medium", source: "model-catalog" },
+      // The rates the turn is priced at, and the entry that stated them.
+      pricing: {
+        source: "model-catalog",
+        catalogEntry: "openai/gpt-5.4-mini",
+        rates: { inputPer1M: 0.75, outputPer1M: 4.5, cacheReadPer1M: 0.075 },
+      },
     };
     expect(summary!.modelSettings).toEqual({ ...recorded, remainingContextOutputTokens: expect.any(Number) });
     expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: recorded }));
+  });
+
+  it("records a user price correction as the run's pricing and keeps reported reasoning tokens per request", async () => {
+    const provider: LLMProvider = {
+      vendor: "openai",
+      async *streamTurn() {
+        yield { type: "text_delta", text: "answer" };
+        yield {
+          type: "message_complete",
+          stopReason: "end_turn",
+          usage: { inputTokens: 60, outputTokens: 10, reasoningTokens: 4 },
+        };
+      },
+    };
+    const auditLogger = new AuditLogger();
+    const logTurn = vi.spyOn(auditLogger, "logTurn");
+    const loop = createLoopWithRegistry(provider, new ToolRegistry(), {
+      settingsService: {
+        get: () => ({
+          ...fakeLlmSettings({ provider: "openai", model: "gpt-5.4-mini" }),
+          pricingOverrides: [{ vendor: "openai", model: "gpt-5.4-mini", inputPer1M: 0.5, outputPer1M: 3 }],
+        }),
+        getSecret: () => "test-key",
+      },
+      auditLogger,
+    } as never);
+    let summary: TurnSummary | null = null;
+
+    await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { inputOrigin: "user-keyboard" });
+
+    expect(summary!.modelSettings?.pricing).toEqual({ source: "user", rates: { inputPer1M: 0.5, outputPer1M: 3 } });
+    expect(summary!.usageByModel).toEqual([
+      expect.objectContaining({ tokenUsage: expect.objectContaining({ outputTokens: 10, reasoningTokens: 4 }) }),
+    ]);
+    expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({
+      usageByModel: [expect.objectContaining({ tokenUsage: expect.objectContaining({ reasoningTokens: 4 }) })],
+    }));
   });
 
   it("emits a summary for a turn whose only output was reasoning", async () => {

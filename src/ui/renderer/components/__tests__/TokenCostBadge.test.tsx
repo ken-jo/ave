@@ -10,7 +10,8 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { act, render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { syncPricingOverrides } from "../../hooks/use-pricing-overrides.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { TokenCostBadge } from "../TokenCostBadge.js";
 import { computeCost, lookupPricing, type ModelPricing } from "../../../../shared/pricing-data.js";
@@ -119,6 +120,46 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
     const costSpan = screen.getByText(/^≈ \$/);
     const numeric = Number((costSpan.textContent ?? "").replace(/[^0-9.]/g, ""));
     expect(numeric).toBeCloseTo(1, 2);
+  });
+
+  it("prices a segment's reported reasoning at the catalog's reasoning rate", () => {
+    // Qwen Plus: output $0.287/M, reasoning $1.147/M; 600K text + 400K reasoning.
+    renderInCostMode({
+      tokensIn: 0,
+      freshInputTokens: 0,
+      tokensOut: 1_000_000,
+      vendor: "qwen",
+      usageByModel: [{
+        vendorProvider: "qwen",
+        vendorModel: "qwen-plus",
+        tokenUsage: { inputTokens: 0, outputTokens: 1_000_000, reasoningTokens: 400_000 },
+      }],
+    });
+    const numeric = Number((screen.getByText(/^≈ \$/).textContent ?? "").replace(/[^0-9.]/g, ""));
+    expect(numeric).toBeCloseTo(0.6 * 0.287 + 0.4 * 1.147, 2);
+  });
+
+  it("prices each segment with the price correction main reports", async () => {
+    await act(async () => {
+      await syncPricingOverrides({
+        getPricingOverrides: async () => [{ vendor: "openai", model: "gpt-5.4", inputPer1M: 10, outputPer1M: 0 }],
+      });
+    });
+    try {
+      renderInCostMode({
+        tokensIn: 100_000,
+        freshInputTokens: 100_000,
+        tokensOut: 0,
+        vendor: "openai",
+        usageByModel: [{ vendorProvider: "openai", vendorModel: "gpt-5.4", tokenUsage: { inputTokens: 100_000, outputTokens: 0 } }],
+      });
+      const numeric = Number((screen.getByText(/^≈ \$/).textContent ?? "").replace(/[^0-9.]/g, ""));
+      expect(numeric).toBeCloseTo(1, 2);
+    } finally {
+      await act(async () => {
+        await syncPricingOverrides({ getPricingOverrides: async () => [] });
+      });
+    }
   });
 
   it("renders nothing when both tokensIn and headline tokens are zero", () => {

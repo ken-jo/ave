@@ -17,7 +17,6 @@
  * way in rather than handled as a second case, so there is exactly one merge
  * rule, one validity rule, and one cache signature.
  */
-import { lookupPricing, type ModelPricing } from "./pricing-data.js";
 
 /**
  * One corrected model rate.
@@ -135,35 +134,6 @@ export function resolvePricingOverrides(
   const fromEnv = parsePricingOverrideEnv(env.AVE_PRICING_OVERRIDE);
   if (fromEnv.length > 0) return fromEnv;
   return setting ?? [];
-}
-
-/**
- * The base rates with any correction for this model laid over them.
- *
- * A merge, not a replacement. The override carries prices only, so replacing
- * would drop `contextWindow` — and a `ModelPricing` with no context window is
- * a value the type says cannot exist, handed to callers that budget against
- * it. The previous env path replaced, which is why an env blob had to restate
- * the context window to avoid corrupting it.
- */
-export function applyPricingOverride(
-  vendor: string,
-  model: string,
-  overrides: readonly PricingOverride[],
-  base: ModelPricing = lookupPricing(vendor, model),
-): ModelPricing {
-  const match = overrides.find((entry) => entry.vendor === vendor && entry.model === model);
-  if (!match) return base;
-  const merged: ModelPricing = {
-    ...base,
-    inputPer1M: match.inputPer1M,
-    outputPer1M: match.outputPer1M,
-  };
-  for (const key of OPTIONAL_PRICING_OVERRIDE_RATES) {
-    const value = match[key];
-    if (value !== undefined) merged[key] = value;
-  }
-  return merged;
 }
 
 /**

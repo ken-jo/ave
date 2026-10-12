@@ -1037,6 +1037,9 @@ type StreamUsageRaw = {
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
   };
+  outputTokenDetails?: {
+    reasoningTokens?: number;
+  };
 };
 
 export async function* fullStreamToStreamEvent(
@@ -1164,6 +1167,7 @@ export async function* fullStreamToStreamEvent(
         const cacheWriteTokens =
           p.providerMetadata?.anthropic?.cacheCreationInputTokens ??
           usageRaw?.inputTokenDetails?.cacheWriteTokens;
+        const reasoningTokens = usageRaw?.outputTokenDetails?.reasoningTokens;
         const usage = usageRaw
           ? {
               inputTokens:
@@ -1172,6 +1176,7 @@ export async function* fullStreamToStreamEvent(
                 usageRaw.outputTokens ?? usageRaw.completionTokens ?? 0,
               ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
               ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+              ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
             }
           : undefined;
         yield {

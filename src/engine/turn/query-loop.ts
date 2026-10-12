@@ -60,6 +60,8 @@ import { planReasoning } from "../llm/reasoning-plan.js";
 import { activeModelCatalog } from "../../shared/model-catalog/active.js";
 import type { ContextWindowSource } from "../../shared/context-budget.js";
 import type { RunModelSettings } from "../../shared/run-model-settings.js";
+import { resolveModelPricing } from "../../shared/model-pricing.js";
+import { resolvePricingOverrides } from "../../shared/pricing-overrides.js";
 import { isA2AQuestionInputRequiredControl } from "../../tools/agent-send.js";
 import {
   isA2AAgentCausalContext,
@@ -303,6 +305,7 @@ export async function queryLoop(
             },
             output: effectiveOutput,
             ...(reasoning ? { reasoning } : {}),
+            pricing: resolveModelPricing(llmSettings.provider, model, resolvePricingOverrides(llmSettings.pricingOverrides)),
           };
         })();
     const withServingIdentity = (
@@ -392,6 +395,7 @@ export async function queryLoop(
           outputTokens: usage.outputTokens,
           cacheReadTokens: cacheRead,
           cacheWriteTokens: cacheWrite,
+          ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
         },
       );
       self.cumulativeUsage.inputTokens += adjustedInput;
@@ -2466,6 +2470,7 @@ function appendUsageForServingModel(
       outputTokens: usage.outputTokens,
       ...(usage.cacheReadTokens !== undefined ? { cacheReadTokens: usage.cacheReadTokens } : {}),
       ...(usage.cacheWriteTokens !== undefined ? { cacheWriteTokens: usage.cacheWriteTokens } : {}),
+      ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
     },
   });
 }

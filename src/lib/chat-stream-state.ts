@@ -24,6 +24,8 @@ export type TokenUsageSegment = {
     outputTokens: number;
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
+    /** The reasoning part of `outputTokens`, when the provider reported it. */
+    reasoningTokens?: number;
   };
 };
 
@@ -1332,6 +1334,7 @@ function parseUsageByModel(value: unknown): TurnSummaryEntry["usageByModel"] | u
         outputTokens?: unknown;
         cacheReadTokens?: unknown;
         cacheWriteTokens?: unknown;
+        reasoningTokens?: unknown;
       };
     };
     if (!isLLMVendor(s.vendorProvider) || typeof s.vendorModel !== "string" || s.vendorModel.length === 0) return [];
@@ -1347,6 +1350,7 @@ function parseUsageByModel(value: unknown): TurnSummaryEntry["usageByModel"] | u
         outputTokens: usage.outputTokens,
         ...(isFiniteNonNegative(usage.cacheReadTokens) ? { cacheReadTokens: usage.cacheReadTokens } : {}),
         ...(isFiniteNonNegative(usage.cacheWriteTokens) ? { cacheWriteTokens: usage.cacheWriteTokens } : {}),
+        ...(isFiniteNonNegative(usage.reasoningTokens) ? { reasoningTokens: usage.reasoningTokens } : {}),
       },
     }];
   });

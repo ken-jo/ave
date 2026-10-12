@@ -35,7 +35,6 @@ import { composeOutgoing as composeOutgoingUtil, type ComposedOutgoing } from ".
 import { estimateOutgoingUserMessageTokens } from "../../../shared/multimodal-token-estimate.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { HEADER_BUTTON_CLASS } from "./PaneFrame.js";
-import { lookupBillablePricingOptional } from "../../../shared/pricing-data.js";
 import { McpPromptArgsDialog } from "../dialogs/McpPromptArgsDialog.js";
 import { AgentPluginPromptArgsDialog } from "../dialogs/AgentPluginPromptArgsDialog.js";
 import { formatAgentPluginTemplatePrompt, type AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
@@ -430,16 +429,6 @@ export function ChatGroupSession({
     outputLimitSource: env.maxOutputTokensSource,
     enabled: env.apiUsageProjectionAvailable,
   });
-  // Strict variant — `undefined` means "model not in catalog" so the cost
-  // toggle in TokenCostBadge stays disabled rather than showing $0 from
-  // FALLBACK_PRICING.
-  const activePricing = useMemo(
-    () => env.apiUsageProjectionAvailable
-      ? lookupBillablePricingOptional(env.llmVendor, env.llmModel)
-      : undefined,
-    [env.apiUsageProjectionAvailable, env.llmVendor, env.llmModel],
-  );
-
   const { handleAsk } = useSendMessage({
     api, t, streaming, checkApiKey: env.checkApiKey, composeOutgoing,
     appendUserEntry, dropUserEntry, resetStreamAccumulators,
@@ -894,7 +883,6 @@ export function ChatGroupSession({
     processingDisplayLevel: env.processingDisplayLevel,
     reasoningAvailable: env.chatReasoningAvailable,
     toggleThinking: env.toggleThinking, costEstimate, costBadgeClass,
-    activePricing,
     activeVendor: env.apiUsageProjectionAvailable ? env.llmVendor : undefined,
     llmVendor: env.llmVendor, llmModel: env.llmModel,
   }), [
@@ -902,7 +890,7 @@ export function ChatGroupSession({
     question, currentSessionId, hidden, env,
     contextOverflowPct, usedTokens, contextBudget, effectiveBudget,
     tpmLimit, tpmPct, isTpmOverflow,
-    attachments, costEstimate, costBadgeClass, activePricing,
+    attachments, costEstimate, costBadgeClass,
   ]);
 
   const content = (

@@ -282,6 +282,8 @@ export interface AuditTokenUsage {
   outputTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /** The reasoning part of `outputTokens`, when the provider reported it. */
+  reasoningTokens?: number;
 }
 
 /** One provider request segment of a turn's usage, kept unmerged for tiered pricing. */
@@ -1500,12 +1502,7 @@ export class AuditLogger {
     usageByModel?: Array<{
       vendorProvider: string;
       vendorModel: string;
-      tokenUsage: {
-        inputTokens: number;
-        outputTokens: number;
-        cacheReadTokens?: number;
-        cacheWriteTokens?: number;
-      };
+      tokenUsage: AuditTokenUsage;
     }>;
     /** Non-billable subscription telemetry; sanitized again before write. */
     subscriptionUsage?: SubscriptionUsageTelemetry[];

@@ -2,10 +2,11 @@
  * What a run resolved about its model, kept with the run (issue #2501): the
  * catalog it resolved against and the effective values with where each came
  * from. Carried on the turn summary and on the audit `turn` row, so a past
- * turn's window, output limit and reasoning level can be read back as they
+ * turn's window, output limit, reasoning level and prices can be read back as they
  * were — not re-derived from today's settings and today's catalog.
  */
 import type { ContextWindowSource, InputLimitSource, ResolvedOutputTokenLimit } from "./context-budget.js";
+import type { ResolvedModelPricing } from "./model-pricing.js";
 
 export interface RunModelSettings {
   /** `sha256` of the model catalog the run resolved against. */
@@ -28,6 +29,12 @@ export interface RunModelSettings {
     readonly budgetTokens?: number;
     readonly source: "model-catalog" | "name-rule";
   };
+  /**
+   * The rates the turn's requests are priced at and who stated them (a user
+   * correction, the catalog entry, the hand-kept table), or `unknown`. A past
+   * turn's cost can be read back at the rates it ran under.
+   */
+  readonly pricing: ResolvedModelPricing;
   /**
    * The output that would still have fit the context window after the turn's
    * last request input. Diagnostics only: requests are never clamped by it.

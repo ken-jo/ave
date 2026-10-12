@@ -1534,11 +1534,6 @@
     },
     {
       "type": "types",
-      "file": "src/lib/cost-estimator.ts",
-      "name": "ModelPricingLite"
-    },
-    {
-      "type": "types",
       "file": "src/lib/stream-markers.ts",
       "name": "DetectorResult"
     },

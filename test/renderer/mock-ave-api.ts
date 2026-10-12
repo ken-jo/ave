@@ -700,6 +700,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
 
     getUsageSummary: vi.fn(async () => usage),
     getUsageDailySummary: vi.fn(async () => ({ ok: false, error: "mock-unavailable" })),
+    getPricingOverrides: vi.fn(async () => []),
     getAppInfo: vi.fn(async () => appInfo),
     // Routine API
     listRoutines: vi.fn(async () => []),
