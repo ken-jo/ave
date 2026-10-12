@@ -114,7 +114,7 @@ describe("the output limit a chat round records is the one it sends", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   async function roundBody(reported: number, outputTokenLimit: number) {
-    const block = getLlmVendorSettings({ openai: { model: "gpt-5.4", enableThinking: false, outputTokenLimit } }, "openai");
+    const block = getLlmVendorSettings({ openai: { model: "gpt-5.4", enableThinking: false, thinkingBudgetTokens: 0, outputTokenLimit } }, "openai");
     const output = resolveOutputTokenLimit({
       vendor: "openai",
       model: "gpt-5.4",
