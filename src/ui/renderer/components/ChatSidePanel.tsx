@@ -168,10 +168,12 @@ function mergeHydratedTranscriptWithLiveTail(hydratedEntries: ChatEntry[], liveE
 function SubAgentTranscriptDetail({
   api,
   parentSessionId: panelSessionId,
+  sideChatSessionId,
   spawn,
 }: {
   api: AveApi;
   parentSessionId?: string;
+  sideChatSessionId: string | null;
   spawn: SubAgentSpawn;
 }) {
   const { t } = useTranslation();
@@ -179,13 +181,17 @@ function SubAgentTranscriptDetail({
   // The conversation that started THIS agent — the side chat's, for an agent
   // its turn spawned — and the panel's conversation only for a restored row.
   const parentSessionId = spawn.parentSessionId ?? panelSessionId;
-  const hydrationKey = `${parentSessionId ?? ""}\u0001${spawn.childSessionId ?? ""}`;
+  const isSideChatSpawn = sideChatSessionId !== null && spawn.parentSessionId === sideChatSessionId;
+  const hydrationKey = `${isSideChatSpawn ? "side-chat" : "tile"}\u0001${parentSessionId ?? ""}\u0001${spawn.childSessionId ?? ""}`;
   const [hydrated, setHydrated] = useState<{ key: string; entries: ChatEntry[] } | null>(null);
   useEffect(() => {
     setHydrated(null);
-    if (!parentSessionId || !spawn.childSessionId || typeof api.chatGetSubAgentTranscript !== "function") return;
+    const getSubAgentTranscript = isSideChatSpawn
+      ? api.sideChat?.getSubAgentTranscript
+      : api.chatGetSubAgentTranscript;
+    if (!parentSessionId || !spawn.childSessionId || typeof getSubAgentTranscript !== "function") return;
     let cancelled = false;
-    void api.chatGetSubAgentTranscript({
+    void getSubAgentTranscript({
       originSessionId: parentSessionId,
       childSessionId: spawn.childSessionId,
     }).then((result) => {
@@ -199,7 +205,7 @@ function SubAgentTranscriptDetail({
     return () => {
       cancelled = true;
     };
-  }, [api, parentSessionId, spawn.childSessionId, hydrationKey]);
+  }, [api, isSideChatSpawn, parentSessionId, spawn.childSessionId, hydrationKey]);
   const sourceEntries = useMemo(() => {
     const hydratedEntries = hydrated?.key === hydrationKey ? hydrated.entries : [];
     if (spawn.childSessionId && hydratedEntries.length > 0) {
@@ -249,10 +255,12 @@ function SubAgentTranscriptDetail({
 function SubAgentViewer({
   api,
   parentSessionId,
+  sideChatSessionId,
   subAgentSpawns,
 }: {
   api: AveApi;
   parentSessionId?: string;
+  sideChatSessionId: string | null;
   subAgentSpawns: SubAgentSpawn[];
 }) {
   const { t } = useTranslation();
@@ -335,6 +343,7 @@ function SubAgentViewer({
               <SubAgentTranscriptDetail
                 api={api}
                 {...(parentSessionId ? { parentSessionId } : {})}
+                sideChatSessionId={sideChatSessionId}
                 spawn={selectedSpawn}
               />
             ) : (
@@ -727,6 +736,7 @@ export function ChatSidePanel({
   // main, and so do the agents it started. Their later frames still land here.
   // The side chat names its session; questions and skills stay with the view.
   const sideChatSessionIdRef = useRef<string | null>(null);
+  const [sideChatSessionId, setSideChatSessionId] = useState<string | null>(null);
   const ownsSideChatAgent = useCallback(
     (parentSessionId: string) => parentSessionId === sideChatSessionIdRef.current,
     [],
@@ -739,6 +749,7 @@ export function ChatSidePanel({
     if (sessionId === sideChatSessionIdRef.current) return;
     // A new or loaded side chat does not inherit the previous one's agents.
     sideChatSessionIdRef.current = sessionId;
+    setSideChatSessionId(sessionId);
     forgetSideChatAgents();
   }, [forgetSideChatAgents]);
   const panelSubAgentSpawns = useMemo(() => {
@@ -1074,6 +1085,7 @@ export function ChatSidePanel({
             <SubAgentViewer
               api={api}
               {...(sessionId ? { parentSessionId: sessionId } : {})}
+              sideChatSessionId={sideChatSessionId}
               subAgentSpawns={panelSubAgentSpawns}
             />
           ) : activeTab.kind === "activity" ? (

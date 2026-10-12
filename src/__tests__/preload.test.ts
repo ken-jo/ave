@@ -8,6 +8,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
+import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
+import type { AveApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
@@ -138,6 +140,65 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.pluginStudio.writeDraft, { name: "team-kit" });
     expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.pluginStudio.previewInstallFromFile);
     expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.pluginStudio.exportInstalled, "team-kit", true);
+  });
+
+  it("bridges side-chat child transcripts with only the explicit owner request", async () => {
+    const request: SubAgentTranscriptRequest = {
+      originSessionId: "side-origin",
+      childSessionId: "side-child",
+    };
+    const response: SubAgentTranscriptResult = {
+      ok: true,
+      childSessionId: request.childSessionId,
+      messages: [{ index: 0, role: "assistant", content: "Persisted child answer" }],
+      title: "Child transcript",
+      spawnId: "side-spawn",
+      originToolUseId: "side-tool-use",
+    };
+    mockInvoke.mockResolvedValueOnce(response);
+    const api = await loadAveApi();
+    const sideChat = api["sideChat"] as NonNullable<AveApi["sideChat"]>;
+
+    expect(typeof sideChat.getSubAgentTranscript).toBe("function");
+    const result = await sideChat.getSubAgentTranscript!(request);
+
+    expect(result).toEqual(response);
+    expect(mockInvoke.mock.calls).toEqual([[CHANNELS.sidechat.getSubAgentTranscript, request]]);
+  });
+
+  it("returns side-chat transcript refusals without a tile read", async () => {
+    const request: SubAgentTranscriptRequest = {
+      originSessionId: "side-origin",
+      childSessionId: "foreign-child",
+    };
+    const response: SubAgentTranscriptResult = { ok: false, error: "sub-agent-reference-not-found" };
+    mockInvoke.mockResolvedValueOnce(response);
+    const api = await loadAveApi();
+    const sideChat = api["sideChat"] as NonNullable<AveApi["sideChat"]>;
+
+    expect(typeof sideChat.getSubAgentTranscript).toBe("function");
+    const result = await sideChat.getSubAgentTranscript!(request);
+
+    expect(result).toEqual(response);
+    expect(mockInvoke.mock.calls).toEqual([[CHANNELS.sidechat.getSubAgentTranscript, request]]);
+  });
+
+  it.each([MAIN_CHAT_GROUP_ID, "group-2"])("keeps tile child transcript reads scoped to %s", async (chatGroupId) => {
+    const request: SubAgentTranscriptRequest = {
+      originSessionId: "tile-origin",
+      childSessionId: "tile-child",
+    };
+    const response: SubAgentTranscriptResult = { ok: true, childSessionId: request.childSessionId, messages: [] };
+    mockInvoke.mockResolvedValueOnce(response);
+    const { buildPublicSurface } = await import("../preload/public-surface.js");
+    const publicApi = buildPublicSurface();
+    const surface = chatGroupId === MAIN_CHAT_GROUP_ID ? publicApi : publicApi.chatGroup(chatGroupId);
+
+    const result = await surface.chatGetSubAgentTranscript(request);
+
+    expect(result).toEqual(response);
+    expect(mockInvoke.mock.calls).toEqual([[CHANNELS.chat.getSubAgentTranscript, request, chatGroupId]]);
+    expect("sideChat" in surface).toBe(false);
   });
 
   it("exposes pluginShellUrl as a file:// string under dist/src/", async () => {

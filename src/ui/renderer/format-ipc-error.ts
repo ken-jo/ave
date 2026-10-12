@@ -114,6 +114,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "origin-session-not-active": "formatIpcError.originSessionNotActive",
   "invalid-child-session-id": "formatIpcError.invalidChildSessionId",
   "sub-agent-reference-not-found": "formatIpcError.subAgentReferenceNotFound",
+  "sub-agent-runner-unavailable": "formatIpcError.subAgentRunnerUnavailable",
+  "sub-agent-transcript-not-found": "formatIpcError.subAgentTranscriptNotFound",
   "session-not-found": "formatIpcError.sessionNotFound",
   "side-chat-unavailable": "formatIpcError.sideChatUnavailable",
   "project-not-allowed": "formatIpcError.projectNotAllowed",
