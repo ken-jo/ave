@@ -2437,7 +2437,7 @@ export class SubAgentRunner {
       const result = makeResult(id, meta);
       if (result) return result;
     }
-    return { ok: false, error: "sub-agent transcript not found" };
+    return { ok: false, error: "sub-agent-transcript-not-found" };
   }
 
   interruptRun(id: string, originSessionId: string): { ok: boolean; message: string; run?: SubAgentRunSnapshot } {

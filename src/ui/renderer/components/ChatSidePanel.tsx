@@ -22,6 +22,7 @@ import {
   DropdownMenuTrigger,
 } from "../../../components/ui/dropdown-menu.js";
 import { useTranslation } from "../../../i18n/react.js";
+import { formatIpcError } from "../format-ipc-error.js";
 import { SIDE_PANEL_DEFAULT_WIDTH, SIDE_PANEL_MIN_RESERVE } from "../../../shared/side-panel.js";
 import { ToolActivityBody, ToolActivityWorkspace, toolActivityTotal, type ToolActivityState } from "./ToolActivity.js";
 import { EdgeResizeBar } from "./EdgeResizeBar.js";
@@ -166,16 +167,19 @@ function mergeHydratedTranscriptWithLiveTail(hydratedEntries: ChatEntry[], liveE
 }
 
 type TranscriptHydration =
-  | { key: string; status: "loading" | "failed" }
+  | { key: string; status: "loading" }
+  | { key: string; status: "failed"; error?: string }
   | { key: string; status: "loaded"; entries: ChatEntry[] };
 
 function SubAgentTranscriptDetail({
   api,
   parentSessionId: panelSessionId,
+  sideChatSessionId,
   spawn,
 }: {
   api: AveApi;
   parentSessionId?: string;
+  sideChatSessionId: string | null;
   spawn: SubAgentSpawn;
 }) {
   const { t } = useTranslation();
@@ -184,23 +188,27 @@ function SubAgentTranscriptDetail({
   // its turn spawned — and the panel's conversation only for a restored row.
   const parentSessionId = spawn.parentSessionId ?? panelSessionId;
   const isTerminalSpawn = spawn.status === "done" || spawn.status === "error" || spawn.status === "interrupted";
-  const hydrationKey = `${parentSessionId ?? ""}\u0001${spawn.childSessionId ?? ""}\u0001${isTerminalSpawn ? "terminal" : "active"}`;
+  const isSideChatSpawn = sideChatSessionId !== null && spawn.parentSessionId === sideChatSessionId;
+  const hydrationKey = `${isSideChatSpawn ? "side-chat" : "tile"}\u0001${parentSessionId ?? ""}\u0001${spawn.childSessionId ?? ""}\u0001${isTerminalSpawn ? "terminal" : "active"}`;
+  const getSubAgentTranscript = isSideChatSpawn
+    ? api.sideChat?.getSubAgentTranscript
+    : api.chatGetSubAgentTranscript;
   const [hydrated, setHydrated] = useState<TranscriptHydration | null>(null);
   useEffect(() => {
-    if (!parentSessionId || !spawn.childSessionId || typeof api.chatGetSubAgentTranscript !== "function") {
+    if (!parentSessionId || !spawn.childSessionId || typeof getSubAgentTranscript !== "function") {
       setHydrated(null);
       return;
     }
     setHydrated({ key: hydrationKey, status: "loading" });
     let cancelled = false;
-    void api.chatGetSubAgentTranscript({
+    void getSubAgentTranscript({
       originSessionId: parentSessionId,
       childSessionId: spawn.childSessionId,
     }).then((result) => {
       if (cancelled) return;
       setHydrated(result.ok
         ? { key: hydrationKey, status: "loaded", entries: historyToEntries(result.messages) }
-        : { key: hydrationKey, status: "failed" });
+        : { key: hydrationKey, status: "failed", error: result.error });
     }).catch(() => {
       // Fail closed for persisted transcript hydration. The child JSONL keyed by
       // childSessionId is the only persisted transcript SOT; parent tool results
@@ -211,7 +219,7 @@ function SubAgentTranscriptDetail({
     return () => {
       cancelled = true;
     };
-  }, [api, parentSessionId, spawn.childSessionId, hydrationKey]);
+  }, [getSubAgentTranscript, parentSessionId, spawn.childSessionId, hydrationKey]);
   // Prevent a one-frame flash from the previous selection before effects run.
   const activeHydration = hydrated?.key === hydrationKey ? hydrated : null;
   const sourceEntries = useMemo(() => {
@@ -224,9 +232,13 @@ function SubAgentTranscriptDetail({
   const entries = useMemo(() => subAgentTranscriptEntries(spawn, sourceEntries), [spawn, sourceEntries]);
   const sessionId = spawn.childSessionId ?? spawn.spawnId;
   const isHydrating = Boolean(parentSessionId && spawn.childSessionId
-    && typeof api.chatGetSubAgentTranscript === "function"
+    && typeof getSubAgentTranscript === "function"
     && (!activeHydration || activeHydration.status === "loading"));
   const isHydrationFailed = isTerminalSpawn && activeHydration?.status === "failed";
+  const transcriptNotice = isSideChatSpawn && !isTerminalSpawn && activeHydration?.status === "failed"
+    && activeHydration.error === "sub-agent-transcript-not-found"
+    ? formatIpcError(activeHydration.error, undefined)
+    : null;
   return (
     <div className="min-h-0 min-w-0 space-y-3 py-1" data-testid="chat-side-panel-subagent-transcript">
       {isHydrating ? (
@@ -237,6 +249,11 @@ function SubAgentTranscriptDetail({
       {isHydrationFailed ? (
         <div role="alert" className="py-1 text-xs text-destructive">
           {t("subAgentCard.transcriptLoadFailed")}
+        </div>
+      ) : null}
+      {transcriptNotice ? (
+        <div className="py-1 text-xs text-muted-foreground">
+          {transcriptNotice}
         </div>
       ) : null}
       {entries.length > 0 ? (
@@ -277,10 +294,12 @@ function SubAgentTranscriptDetail({
 function SubAgentViewer({
   api,
   parentSessionId,
+  sideChatSessionId,
   subAgentSpawns,
 }: {
   api: AveApi;
   parentSessionId?: string;
+  sideChatSessionId: string | null;
   subAgentSpawns: SubAgentSpawn[];
 }) {
   const { t } = useTranslation();
@@ -363,6 +382,7 @@ function SubAgentViewer({
               <SubAgentTranscriptDetail
                 api={api}
                 {...(parentSessionId ? { parentSessionId } : {})}
+                sideChatSessionId={sideChatSessionId}
                 spawn={selectedSpawn}
               />
             ) : (
@@ -512,9 +532,6 @@ function ContentTabView({
  * (`WorkspaceLauncherMenu`) — so both surfaces share one list and one set of
  * shortcuts. `renderItem` lets each surface wrap a row in its own element
  * (a plain `button` for the inline list, a `DropdownMenuItem` for the menu).
- *
- * `사이드채팅` (side chat) is a planned launcher item but is DEFERRED — it is not
- * in `WORKSPACE_TAB_LAUNCHER` and no functional entry is added here.
  */
 function LauncherItems({
   onOpen,
@@ -755,6 +772,7 @@ export function ChatSidePanel({
   // main, and so do the agents it started. Their later frames still land here.
   // The side chat names its session; questions and skills stay with the view.
   const sideChatSessionIdRef = useRef<string | null>(null);
+  const [sideChatSessionId, setSideChatSessionId] = useState<string | null>(null);
   const ownsSideChatAgent = useCallback(
     (parentSessionId: string) => parentSessionId === sideChatSessionIdRef.current,
     [],
@@ -767,6 +785,7 @@ export function ChatSidePanel({
     if (sessionId === sideChatSessionIdRef.current) return;
     // A new or loaded side chat does not inherit the previous one's agents.
     sideChatSessionIdRef.current = sessionId;
+    setSideChatSessionId(sessionId);
     forgetSideChatAgents();
   }, [forgetSideChatAgents]);
   const panelSubAgentSpawns = useMemo(() => {
@@ -1102,6 +1121,7 @@ export function ChatSidePanel({
             <SubAgentViewer
               api={api}
               {...(sessionId ? { parentSessionId: sessionId } : {})}
+              sideChatSessionId={sideChatSessionId}
               subAgentSpawns={panelSubAgentSpawns}
             />
           ) : activeTab.kind === "activity" ? (
