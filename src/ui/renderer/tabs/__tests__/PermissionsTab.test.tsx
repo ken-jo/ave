@@ -6,6 +6,13 @@ import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 
+// The real preload surface is used by the issue #1608 gesture test below; its
+// ipcRenderer is routed to a fake main per test.
+const { ipcInvoke } = vi.hoisted(() => ({ ipcInvoke: vi.fn() }));
+vi.mock("electron", () => ({
+  ipcRenderer: { invoke: ipcInvoke, on: vi.fn(), removeListener: vi.fn(), send: vi.fn() },
+}));
+
 vi.mock("../../../../components/ui/scroll-area.js", () => ({
   ScrollArea: ({ children, className }: { children: ReactNode; className?: string }) => (
     <div className={className}>{children}</div>
@@ -18,6 +25,9 @@ import type { HookTrustRow } from "../../types.js";
 import { isPolicyUserEditable, type PolicySource } from "../../../../shared/policy-editability.js";
 import { t } from "../../../../i18n/runtime.js";
 import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
+import { buildInternalApiSurface } from "../../../../preload/internal-api-surface.js";
+import { PERMISSIONS } from "../../../../shared/ipc-channels.js";
+import { hasUserKeyboardIntent } from "../../../../shared/chat-origin.js";
 
 /**
  * Mirrors the `PERMISSIONS.policyGet` handler: the host attaches `editable`
@@ -1269,6 +1279,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     [{ outcome: "installed-unverified", userState: "absent", wfpState: "installed", ready: false }, "installed-unverified", "샌드박스 사용자: 설정 안 됨, 네트워크 필터: 설치됨"],
     [{ outcome: "installed-unverified", userState: "mystery", ready: false }, "installed-unverified", "샌드박스 사용자: 알 수 없음, 네트워크 필터: 알 수 없음"],
     [{ outcome: "ready", userState: "ready", wfpState: "installed", ready: true }, "ready", "Windows OS 격리 설정이 끝났고 확인되었습니다"],
+    [{ outcome: "already-ready", userState: "ready", wfpState: "cannot-read", ready: true }, "already-ready", "이미 설정되어 있고 확인되었으므로 관리자 확인이 필요하지 않았습니다"],
     [{ outcome: "cancelled", cancelled: true }, "cancelled", "관리자 권한이 허용되지 않아"],
     [{ outcome: "timed-out" }, "timed-out", "2분 안에 Windows 관리자 확인 창에 응답이 없어"],
   ])("renders the %j outcome as a visible state", async (result, expected, text) => {
@@ -1322,57 +1333,38 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(refused).toHaveTextContent("재설정은 이 창에서 클릭했을 때만 시작되는데, Ave가 클릭을 확인하지 못했습니다");
   });
 
-  it("says the sandbox is already set up, without asking for elevation, when the click-time check finds it ready", async () => {
-    const install = vi.fn(async () => ({ outcome: "ready" }));
-    const { ave } = installApiWithWindows({ sandboxWindowsInstall: install });
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
-    (ave.permission.sandboxWindowsStatus as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
-      applicable: true, userState: "ready", wfpState: "cannot-read", ready: true, instructions: "",
-    }));
-    await act(async () => {
-      fireEvent.click(screen.getByText("재설정"));
-    });
-    expect(install).not.toHaveBeenCalled();
-    const outcome = screen.getByTestId("os-sandbox-windows-install-outcome");
-    expect(outcome).toHaveAttribute("data-outcome", "already-ready");
-    expect(outcome).toHaveTextContent("이미 설정되어 있고 확인되었으므로 관리자 확인이 필요하지 않았습니다");
-  });
-
-  it("still installs when the click-time status check fails", async () => {
-    const install = vi.fn(async () => ({ outcome: "cancelled", cancelled: true }));
-    const { ave } = installApiWithWindows({ sandboxWindowsInstall: install });
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
-    (ave.permission.sandboxWindowsStatus as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error(RAW_DETAIL));
-    await act(async () => {
-      fireEvent.click(screen.getByText("재설정"));
-    });
-    expect(install).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("os-sandbox-windows-install-outcome")).toHaveAttribute("data-outcome", "cancelled");
-    expectNoRawDetail();
-  });
-
   it("shows a localized banner, not the raw error, when the status re-read after install fails", async () => {
     const { ave } = installApiWithWindows({ sandboxWindowsInstall: vi.fn(async () => ({ outcome: "timed-out" })) });
     await act(async () => {
       render(<PermissionsTab />);
     });
-    const status = ave.permission.sandboxWindowsStatus as ReturnType<typeof vi.fn>;
-    status.mockResolvedValueOnce({ applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "" });
-    status.mockRejectedValueOnce(new Error(RAW_DETAIL));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    (ave.permission.sandboxWindowsStatus as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error(RAW_DETAIL));
     await act(async () => {
       fireEvent.click(screen.getByText("재설정"));
     });
     expect(screen.getByTestId("os-sandbox-windows-install-outcome")).toHaveAttribute("data-outcome", "timed-out");
     expect(screen.getByText(/설정 후 Ave가 Windows 샌드박스 상태를 다시 읽지 못했습니다/)).toBeTruthy();
     expectNoRawDetail();
+    // The detail goes to the renderer log instead of the screen.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("sandboxWindowsStatus re-read failed"), RAW_DETAIL);
+    warn.mockRestore();
   });
 
-  it("shows 'checking' while the click-time check runs and 'approve the prompt' only while the install runs", async () => {
-    let finishCheck: ((value: unknown) => void) | undefined;
+  it("logs a rejected or refused install with its code", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await clickInstall(async () => {
+      throw new Error(RAW_DETAIL);
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("sandboxWindowsInstall rejected"), RAW_DETAIL);
+    cleanup();
+    warn.mockClear();
+    await clickInstall(async () => ({ ok: false, error: "user-keyboard-required", message: "x" }));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("sandboxWindowsInstall refused"), "user-keyboard-required");
+    warn.mockRestore();
+  });
+
+  it("invokes the install straight from the click, with one hint for the install and its own copy for the re-check", async () => {
     let finishInstall: ((value: unknown) => void) | undefined;
     let finishReread: ((value: unknown) => void) | undefined;
     const install = vi.fn(() => new Promise((resolve) => { finishInstall = resolve; }));
@@ -1381,41 +1373,108 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       render(<PermissionsTab />);
     });
     const status = ave.permission.sandboxWindowsStatus as ReturnType<typeof vi.fn>;
-    status.mockImplementationOnce(() => new Promise((resolve) => { finishCheck = resolve; }));
+    const statusCallsAtMount = status.mock.calls.length;
     status.mockImplementationOnce(() => new Promise((resolve) => { finishReread = resolve; }));
-    const notReady = { applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "" };
 
     await act(async () => {
       fireEvent.click(screen.getByText("재설정"));
     });
-    // Checking: no prompt exists yet, so the hint must not ask to approve one.
-    let pending = screen.getByTestId("os-sandbox-windows-install-pending");
-    expect(pending).toHaveAttribute("data-phase", "checking");
-    expect(pending).toHaveTextContent("현재 Windows 샌드박스 설정을 확인하고 있습니다");
-    expect(pending.textContent).not.toContain("관리자 확인 창에서 허용하세요");
-    expect(install).not.toHaveBeenCalled();
-
-    await act(async () => {
-      finishCheck?.(notReady);
-    });
-    // Elevating: the install (and its UAC prompt) is in flight.
-    pending = screen.getByTestId("os-sandbox-windows-install-pending");
-    expect(pending).toHaveAttribute("data-phase", "elevating");
-    expect(pending).toHaveTextContent("Windows 관리자 확인 창에서 허용하세요");
+    // No status read stands between the click and the install.
     expect(install).toHaveBeenCalledTimes(1);
+    expect(status.mock.calls.length).toBe(statusCallsAtMount);
+    let pending = screen.getByTestId("os-sandbox-windows-install-pending");
+    expect(pending).toHaveAttribute("data-phase", "installing");
+    expect(pending).toHaveTextContent("최대 약 45초");
+    expect(pending).toHaveTextContent("Windows가 관리자 권한을 요청하니 허용하세요");
 
     await act(async () => {
       finishInstall?.({ outcome: "ready", userState: "ready", wfpState: "installed", ready: true });
     });
-    // Re-reading status after the prompt is gone: back to "checking".
-    expect(screen.getByTestId("os-sandbox-windows-install-pending")).toHaveAttribute("data-phase", "checking");
+    pending = screen.getByTestId("os-sandbox-windows-install-pending");
+    expect(pending).toHaveAttribute("data-phase", "refreshing");
+    expect(pending).toHaveTextContent("결과를 확인하고 있습니다");
+    expect(pending.textContent).not.toContain("관리자 권한");
     expect(screen.getByTestId("os-sandbox-windows-install-outcome")).toHaveAttribute("data-outcome", "ready");
 
     await act(async () => {
-      finishReread?.(notReady);
+      finishReread?.({ applicable: true, userState: "ready", wfpState: "installed", ready: true, instructions: "" });
     });
     expect(screen.queryByTestId("os-sandbox-windows-install-pending")).toBeNull();
-    expect(screen.getByTestId("os-sandbox-windows-install-outcome")).toHaveAttribute("data-outcome", "ready");
+  });
+
+  describe("through the real preload surface (issue #1608 gesture expiry)", () => {
+    // Electron 44 measured: navigator.userActivation.isActive is true ~4.8 s
+    // after a click and false by ~5.3 s. The fake keeps that window.
+    const ACTIVATION_WINDOW_MS = 5_000;
+    // Slower than the window: a real status read is up to ~45 s.
+    const STATUS_READ_MS = 6_000;
+    let clickedAt: number | null = null;
+    let originalActivation: PropertyDescriptor | undefined;
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      clickedAt = null;
+      originalActivation = Object.getOwnPropertyDescriptor(navigator, "userActivation");
+      Object.defineProperty(navigator, "userActivation", {
+        configurable: true,
+        get: () => ({ isActive: clickedAt !== null && Date.now() - clickedAt < ACTIVATION_WINDOW_MS }),
+      });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      if (originalActivation) Object.defineProperty(navigator, "userActivation", originalActivation);
+      else delete (navigator as unknown as Record<string, unknown>).userActivation;
+      ipcInvoke.mockReset();
+    });
+
+    it("keeps the click's gesture valid for the install when a status read takes longer than the activation window", async () => {
+      const notReady = { applicable: true, userState: "ready", wfpState: "cannot-read", ready: false, instructions: "" };
+      const installed: unknown[] = [];
+      // Fake main: the install handler validates the intent at entry with the
+      // same predicate the real handler uses, then spends a status read.
+      ipcInvoke.mockImplementation(async (channel: string, payload?: { intent?: unknown }) => {
+        if (channel === PERMISSIONS.sandboxWindowsStatus) {
+          await new Promise((resolve) => setTimeout(resolve, STATUS_READ_MS));
+          return notReady;
+        }
+        if (channel === PERMISSIONS.sandboxWindowsInstall) {
+          if (!hasUserKeyboardIntent(payload?.intent)) {
+            return { ok: false, error: "user-keyboard-required", message: "permission change requires active user gesture (keyboard intent)" };
+          }
+          await new Promise((resolve) => setTimeout(resolve, STATUS_READ_MS));
+          installed.push(payload);
+          return { outcome: "ready", userState: "ready", wfpState: "installed", ready: true };
+        }
+        throw new Error(`unexpected channel ${channel}`);
+      });
+      const preload = buildInternalApiSurface().permission;
+      const { ave } = installApiWithWindows({
+        sandboxWindowsStatus: vi.fn(async () => notReady),
+        sandboxWindowsInstall: vi.fn(),
+      });
+      await act(async () => {
+        render(<PermissionsTab />);
+      });
+      // From here on the panel talks to main only through the real preload.
+      ave.permission.sandboxWindowsStatus = vi.fn(() => preload.sandboxWindowsStatus());
+      ave.permission.sandboxWindowsInstall = vi.fn(() => preload.sandboxWindowsInstall());
+
+      clickedAt = Date.now();
+      await act(async () => {
+        fireEvent.click(screen.getByText("재설정"));
+      });
+      for (let i = 0; i < 4; i += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(STATUS_READ_MS);
+        });
+      }
+
+      const outcome = screen.getByTestId("os-sandbox-windows-install-outcome");
+      expect(outcome).not.toHaveAttribute("data-outcome", "refused");
+      expect(outcome).toHaveAttribute("data-outcome", "ready");
+      expect(installed).toHaveLength(1);
+    });
   });
 });
 

@@ -79,11 +79,11 @@ const MS_PER_SECOND = 1_000;
 
 /** What the Windows install click led to, as the panel shows it. */
 interface WindowsInstallOutcomeView {
-  /** The main-side `outcome`, `already-ready`, or `refused` / `unexpected`. */
+  /** The main-side `outcome`, or `refused` / `unexpected` for other shapes. */
   outcome: string;
   tone: "success" | "info" | "warning" | "error";
   text: string;
-  /** With `outcome: "failed"`: the stable code main reported. */
+  /** With `outcome: "failed"` / `refused`: the stable code main reported. */
   errorCode?: string;
 }
 
@@ -140,7 +140,7 @@ function describeWindowsInstallResult(result: unknown): WindowsInstallOutcomeVie
     const message = formatIpcError(code, undefined, {
       codeMap: { "user-keyboard-required": t("permissionsTab.osSandboxWindowsInstallNeedsClick") },
     });
-    return { outcome: "refused", tone: "error", text: t("permissionsTab.osSandboxWindowsInstallError", { message }) };
+    return { outcome: "refused", tone: "error", text: t("permissionsTab.osSandboxWindowsInstallError", { message }), errorCode: code };
   }
   // An older main process answers without `outcome`; read what it did say.
   const outcome = typeof record.outcome === "string"
@@ -155,6 +155,8 @@ function describeWindowsInstallResult(result: unknown): WindowsInstallOutcomeVie
   switch (outcome) {
     case "ready":
       return { outcome, tone: "success", text: t("permissionsTab.osSandboxWindowsInstallReady") };
+    case "already-ready":
+      return { outcome, tone: "info", text: t("permissionsTab.osSandboxWindowsInstallAlreadyReady") };
     case "installed-unverified":
       return {
         outcome,
@@ -325,11 +327,12 @@ export function PermissionsTab({
   // app-install time; this panel is the re-provision/repair fallback).
   // `windowsStatus` holds the latest readiness snapshot once the user opts in on
   // win32; the panel renders off it. `windowsInstallPhase` is where a click is:
-  // "checking" (status read, no prompt yet) or "elevating" (the UAC prompt is
-  // up); while it is set the "Re-provision" button is disabled.
+  // "installing" (main checks status, then may raise the UAC prompt) or
+  // "refreshing" (re-reading status afterwards); while it is set the
+  // "Re-provision" button is disabled.
   // `windowsInstallOutcome` is what the last click led to, shown until the next.
   const [windowsStatus, setWindowsStatus] = useState<SandboxWindowsStatusInfo | null>(null);
-  const [windowsInstallPhase, setWindowsInstallPhase] = useState<"checking" | "elevating" | null>(null);
+  const [windowsInstallPhase, setWindowsInstallPhase] = useState<"installing" | "refreshing" | null>(null);
   const windowsInstallBusy = windowsInstallPhase !== null;
   const [windowsInstallOutcome, setWindowsInstallOutcome] = useState<WindowsInstallOutcomeView | null>(null);
 
@@ -743,44 +746,32 @@ export function PermissionsTab({
   const handleWindowsInstall = async () => {
     if (windowsInstallBusy) return;
     setWindowsInstallOutcome(null);
-    // First, "checking": read status. It can take up to ~30 s (the WFP
-    // egress check), and it must not run under the "approve the Windows
-    // prompt" hint, because no prompt exists yet. Already ready → say so and
-    // never ask for elevation. A failed read does not block the repair: the
-    // install is the way out of it.
-    setWindowsInstallPhase("checking");
+    // The install is invoked straight from the click: preload stamps the
+    // click's transient user activation onto the call, and that lapses after
+    // ~5 s. Main validates it at entry, then reads status (up to ~45 s) and
+    // raises the UAC prompt only when setup is needed (issue #1608).
+    setWindowsInstallPhase("installing");
     try {
-      try {
-        const before = await window.ave.permission.sandboxWindowsStatus();
-        if (before.applicable && before.ready) {
-          setWindowsStatus(before);
-          setWindowsInstallOutcome({
-            outcome: "already-ready",
-            tone: "info",
-            text: t("permissionsTab.osSandboxWindowsInstallAlreadyReady"),
-          });
-          return;
-        }
-      } catch {
-        // Fall through to the install; the outcome below is what gets shown.
-      }
-      // Then "elevating": the install raises the UAC prompt.
-      setWindowsInstallPhase("elevating");
       let view: WindowsInstallOutcomeView;
       try {
         view = describeWindowsInstallResult(await window.ave.permission.sandboxWindowsInstall());
-      } catch {
-        // main logs the failure; the renderer shows no raw text from it.
+      } catch (error) {
+        // Main logs its own failure; this records the renderer's side of it.
+        console.warn("[ave] sandboxWindowsInstall rejected:", errorMessage(error));
         view = { outcome: "refused", tone: "error", text: t("permissionsTab.osSandboxWindowsInstallRejected") };
+      }
+      if (view.outcome === "refused") {
+        console.warn("[ave] sandboxWindowsInstall refused:", view.errorCode ?? "rejected");
       }
       // Shown whatever the status re-read says: an unchanged panel is exactly
       // what made the click look like a no-op. The user's opt-in stays ON in
       // every case, so the panel remains the place to retry.
       setWindowsInstallOutcome(view);
-      setWindowsInstallPhase("checking");
+      setWindowsInstallPhase("refreshing");
       try {
         setWindowsStatus(await window.ave.permission.sandboxWindowsStatus());
-      } catch {
+      } catch (error) {
+        console.warn("[ave] sandboxWindowsStatus re-read failed:", errorMessage(error));
         showBanner("error", t("permissionsTab.osSandboxWindowsStatusRefreshFailed"));
       }
     } finally {
@@ -1291,9 +1282,9 @@ export function PermissionsTab({
               role="status"
               className="text-[11px] italic text-muted-foreground"
             >
-              {windowsInstallPhase === "checking"
-                ? t("permissionsTab.osSandboxWindowsInstallChecking")
-                : t("permissionsTab.osSandboxWindowsInstallPending")}
+              {windowsInstallPhase === "installing"
+                ? t("permissionsTab.osSandboxWindowsInstallPending")
+                : t("permissionsTab.osSandboxWindowsInstallRefreshing")}
             </p>
           ) : null}
           {sandboxEnabled && windowsStatus?.applicable && !windowsStatus.ready ? (

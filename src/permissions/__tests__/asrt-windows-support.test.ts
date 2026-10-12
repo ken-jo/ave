@@ -465,26 +465,32 @@ describe("asrt-windows-support adapter", () => {
     expect(verifyWindowsWfpEgress).not.toHaveBeenCalled();
   });
 
-  it("does not read status before installing: the renderer's checking phase owns that (#1608)", async () => {
-    // A pre-read here would run the up-to-30 s WFP verification a second time,
-    // behind the renderer's "approve the Windows prompt" hint.
-    const ORIGINAL_PLATFORM = process.platform;
-    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-    // A machine that is already provisioned: a pre-read would answer "ready".
-    checkWindowsSandboxStatusAsyncMock.mockResolvedValue({ user: READY_USER, wfp: { state: "installed" } });
-    try {
-      const installWindowsSandboxAsync = vi.fn(async () => ({ cancelled: true as const }));
-      const result = await installAsrtWindowsSandbox({
-        loadRuntime: async () => ({ installWindowsSandboxAsync, verifyWindowsWfpEgress: vi.fn() }),
-        grantBackendAcl: vi.fn(),
-      });
-      expect(installWindowsSandboxAsync).toHaveBeenCalledTimes(1);
-      expect(checkWindowsSandboxStatusAsyncMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ outcome: "cancelled", cancelled: true });
-    } finally {
-      Object.defineProperty(process, "platform", { value: ORIGINAL_PLATFORM, configurable: true });
-      checkWindowsSandboxStatusAsyncMock.mockReset();
-    }
+  it("returns already-ready without asking for elevation when the sandbox is ready (#1608)", async () => {
+    // Main reads status after the IPC entry has validated the click's gesture,
+    // so a slow read cannot outlive it; a ready sandbox needs no UAC prompt.
+    const installWindowsSandboxAsync = vi.fn();
+    const result = await installAsrtWindowsSandbox({
+      readStatus: async () => ({ applicable: true, userState: "ready", wfpState: "cannot-read", ready: true, instructions: "" }),
+      loadRuntime: async () => ({ installWindowsSandboxAsync, verifyWindowsWfpEgress: vi.fn() }),
+      grantBackendAcl: vi.fn(),
+    });
+    expect(result).toEqual({ outcome: "already-ready", userState: "ready", wfpState: "cannot-read", ready: true });
+    expect(installWindowsSandboxAsync).not.toHaveBeenCalled();
+  });
+
+  it("still installs when the pre-install status read fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const installWindowsSandboxAsync = vi.fn(async () => ({ cancelled: true as const }));
+    const result = await installAsrtWindowsSandbox({
+      readStatus: async () => {
+        throw new Error("status spawn failed");
+      },
+      loadRuntime: async () => ({ installWindowsSandboxAsync, verifyWindowsWfpEgress: vi.fn() }),
+      grantBackendAcl: vi.fn(),
+    });
+    expect(installWindowsSandboxAsync).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ outcome: "cancelled", cancelled: true });
+    warn.mockRestore();
   });
 
   it("returns installed-unverified when the install ran but readiness is not proven (issue #1608)", async () => {

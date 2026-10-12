@@ -63,12 +63,12 @@ export interface SandboxWindowsStatusInfo {
 }
 
 /**
- * What the install half of one Windows "Re-provision" click led to. Every value
- * is a state the Settings panel shows on its own, so the click never ends
- * looking like nothing happened (issue #1608). The renderer reads status first
- * (`sandboxWindowsStatus`) and only calls the install when the sandbox is not
- * already ready, so an "already set up" answer never needs this channel.
+ * What one Windows "Re-provision" click led to. Every value is a state the
+ * Settings panel shows on its own, so the click never ends looking like nothing
+ * happened (issue #1608). Main reads status first, after validating the
+ * click's gesture intent, and raises the UAC prompt only when it is needed.
  * - `ready`: the install ran and the sandbox is proven ready.
+ * - `already-ready`: the sandbox was already ready, so no elevation was asked.
  * - `installed-unverified`: the install ran (exit 0), but Ave could not prove
  *   readiness afterwards; `userState`/`wfpState` say what it saw.
  * - `cancelled`: elevation was not granted (the prompt was dismissed, or
@@ -81,6 +81,7 @@ export interface SandboxWindowsStatusInfo {
 type SandboxWindowsInstallOutcome =
   | "ready"
   | "installed-unverified"
+  | "already-ready"
   | "cancelled"
   | "timed-out"
   | "failed";
@@ -95,9 +96,9 @@ export interface SandboxWindowsInstallResult {
   outcome: SandboxWindowsInstallOutcome;
   /** Set with `outcome: "cancelled"` (kept for older readers). */
   cancelled?: true;
-  /** Sandbox user state after the install. */
+  /** Sandbox user state after the install (or the pre-check, for `already-ready`). */
   userState?: "absent" | "incomplete" | "ready";
-  /** WFP state after the install. */
+  /** WFP state after the install (or the pre-check, for `already-ready`). */
   wfpState?: "absent" | "installed" | "cannot-read";
   /** Readiness, using the same WFP verification rule as status. */
   ready?: boolean;

@@ -1557,9 +1557,10 @@ export type AvePermissionApi = {
    * MUTATING: trigger the one-time Windows srt-win install (one self-elevating
    * UAC prompt). The ONLY user-consented privilege-escalation entry point —
    * call ONLY from an explicit "Install now" click. Resolves to the install's
-   * `outcome` (ready, installed-unverified, cancelled, timed-out, failed) or
-   * to an IPC refusal; the caller shows every one. It does not read status
-   * first: the caller checks `sandboxWindowsStatus` before calling it.
+   * `outcome` (ready, already-ready, installed-unverified, cancelled,
+   * timed-out, failed) or to an IPC refusal; the caller shows every one.
+   * Call it directly from the click, with no await before it: the click's
+   * user activation lapses after ~5 s, and main reads status itself.
    */
   sandboxWindowsInstall: () => Promise<SandboxWindowsInstallResult | IpcErrorResult>;
   /** Subscribe to default-mode repeated-approval hints for LLM permission review. */

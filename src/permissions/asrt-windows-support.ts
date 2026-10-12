@@ -102,6 +102,8 @@ interface AsrtWindowsInstallRuntimeLike {
 interface AsrtWindowsInstallDependencies {
   readonly loadRuntime?: () => Promise<AsrtWindowsInstallRuntimeLike>;
   readonly grantBackendAcl?: () => Promise<void>;
+  /** The pre-install status read (default {@link readAsrtWindowsStatus}). */
+  readonly readStatus?: () => Promise<SandboxWindowsStatusInfo>;
 }
 
 interface AsrtWindowsAclDependencies {
@@ -404,9 +406,27 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
 export async function installAsrtWindowsSandbox(
   dependencies: AsrtWindowsInstallDependencies = {},
 ): Promise<SandboxWindowsInstallResult> {
-  // No status pre-read here: the renderer reads status (its "checking" phase)
-  // and calls this only when the sandbox is not already ready, so the up-to-30 s
-  // WFP verification never runs again behind the "approve the prompt" hint.
+  // Status is read HERE, after the IPC handler has validated the click's
+  // gesture intent, and not in the renderer before it calls this: a status read
+  // can take ~45 s (15 s srt-win status + 30 s WFP egress verify), and the
+  // renderer's transient user activation lapses after ~5 s, so an install
+  // invoked after a renderer-side read is refused as `user-keyboard-required`
+  // on exactly the machines that need the repair. Already ready → no UAC.
+  // A status read that fails does not block the repair: the install is the
+  // way out of it.
+  try {
+    const before = await (dependencies.readStatus ?? readAsrtWindowsStatus)();
+    if (before.applicable && before.ready) {
+      return {
+        outcome: "already-ready",
+        userState: before.userState ?? undefined,
+        wfpState: before.wfpState ?? undefined,
+        ready: true,
+      };
+    }
+  } catch (error) {
+    log.warn({ err: error }, "Windows sandbox status could not be read before install; installing anyway");
+  }
 
   // Resolve the real module (for the explicit srt-win descriptor + the
   // WindowsSandboxError class) once; the install/verify functions may be
