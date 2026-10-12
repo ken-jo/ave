@@ -13,8 +13,8 @@ import { VercelUnifiedProvider } from "../adapter.js";
 import { planReasoning } from "../../reasoning-plan.js";
 import { FallbackProvider } from "../fallback-chain.js";
 import type { LLMProvider, StreamEvent } from "../../types.js";
-import { getLlmVendorSettings, requestedLlmOutputTokenLimit } from "../../../../shared/llm-vendor-defaults.js";
-import { resolveOutputTokenLimit } from "../../../../shared/context-budget.js";
+import { freshAllVendorBlocks, getLlmVendorSettings, requestedLlmOutputTokenLimit } from "../../../../shared/llm-vendor-defaults.js";
+import { resolveContextWindowForRoute, resolveOutputTokenLimit } from "../../../../shared/context-budget.js";
 import { collectRoundStream } from "../../../turn/stream-collector.js";
 import { apiRoundLlmSettings } from "../../../turn/round-llm-settings.js";
 
@@ -65,6 +65,32 @@ describe("request fields the catalog decides", () => {
     // gpt-4o: catalog output 16,384. Before: 32,000.
     const body = await sentBody("openai", "gpt-4o", { outputTokenLimit: 32_000, enableThinking: false });
     expect(body.max_tokens ?? body.max_completion_tokens).toBe(16_384);
+  });
+
+  it.each(["unlisted", "without-output"])("preserves a route's resolved unknown ceiling instead of matching its name again: %s", async (entry) => {
+    installModelCatalog({ ...bundled, providers: {
+      ...bundled.providers,
+      openai: { models: { ...bundled.providers.openai!.models,
+        "declared-model": { id: "declared-model", limits: { context: 128_000 } },
+      } },
+    } });
+    const vendors = freshAllVendorBlocks();
+    vendors.openai.model = "gpt-4";
+    vendors.openai.catalogModel = entry === "unlisted" ? "openai/not-listed" : "openai/declared-model";
+    vendors.openai.enableThinking = false;
+    const route = resolveContextWindowForRoute({ provider: "openai", vendors });
+    expect(route.output).not.toHaveProperty("ceiling");
+    expect(route.output.effective).toBe(32_000);
+    const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
+    await collectRoundStream({
+      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse),
+      model: route.model, systemPrompt: "Report the result.",
+      messages: [{ role: "user", content: "Continue." }], toolSchemas: [],
+      llmSettings: apiRoundLlmSettings(vendors.openai, route.output, "none", route),
+    });
+    expect(fetchResponse).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
+    expect(body.max_tokens ?? body.max_completion_tokens).toBe(route.output.effective);
   });
 
   it("sends the lowest level GPT-5 accepts for a budget that maps below it", async () => {
@@ -191,9 +217,9 @@ describe("a fallback model's output ceiling", () => {
     vi.unstubAllGlobals();
   });
 
-  it("is its own, not the ceiling the primary route resolved", async () => {
+  it.each([200_000, null])("uses its own ceiling after the primary resolved %s", async (outputCeiling) => {
     vi.useFakeTimers();
-    // The primary route resolved an endpoint-reported ceiling of 200,000 and asks 150,000.
+    // The primary route carries a reported ceiling or an explicitly unknown one.
     const primary: LLMProvider = {
       vendor: "openai",
       streamTurn: vi.fn(async function* (): AsyncGenerator<StreamEvent> {
@@ -214,7 +240,7 @@ describe("a fallback model's output ceiling", () => {
         messages: [{ role: "user", content: "Report the value." }],
         enableThinking: false,
         outputTokenLimit: 150_000,
-        outputCeiling: 200_000,
+        outputCeiling,
       })) {
         // Drain: the fallback's request is refused, which ends the turn.
       }
@@ -223,7 +249,7 @@ describe("a fallback model's output ceiling", () => {
     await drained;
     expect(fetchResponse).toHaveBeenCalled();
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
-    // gpt-4o: catalog output 16,384. Inheriting the primary's 200,000 sent 150,000.
+    // The fallback's catalog ceiling bounds the request in both cases.
     expect(body.max_tokens ?? body.max_completion_tokens).toBe(16_384);
   });
 });

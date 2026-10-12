@@ -301,9 +301,11 @@ export class VercelUnifiedProvider implements LLMProvider {
       // else catalog) and is clamped to exactly that, so the request carries
       // the limit the turn records. A purpose-specific limit (finalize,
       // background, memory, reviewer) arrives without one and meets the
-      // catalog's here.
-      const ceiling = params.outputCeiling
-        ?? resolveOutputCeiling({ vendor: this.vendor, model: params.model })?.ceiling;
+      // catalog's here. A route's explicit null keeps its unknown ceiling
+      // instead of matching again.
+      const ceiling = params.outputCeiling === undefined
+        ? resolveOutputCeiling({ vendor: this.vendor, model: params.model })?.ceiling
+        : params.outputCeiling ?? undefined;
       const requestedOutputTokenLimit = normalizeOutputTokenLimit(params.outputTokenLimit);
       const outputTokenLimit = requestedOutputTokenLimit === undefined || ceiling === undefined
         ? requestedOutputTokenLimit

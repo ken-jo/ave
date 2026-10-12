@@ -244,10 +244,11 @@ Implemented.
     it was clamped.
 
   The conversation loop sends `output.effective` with the thinking budget bounded
-  against it (`src/engine/turn/round-llm-settings.ts`). The adapter also clamps every
-  request to the catalog ceiling, which is where the purpose-specific limits — finalize
-  1,024; background 16,384; memory 1,400 / 1,600 / 4,000; work report 800 / 1,000;
-  reviewer 256, all unchanged — meet it. Those callers do not see an endpoint-reported
+  against it (`src/engine/turn/round-llm-settings.ts`) and carries the ceiling it
+  resolved. The adapter honors that ceiling, including an explicitly unknown one,
+  without another catalog name match. Purpose-specific limits — finalize 1,024;
+  background 16,384; memory 1,400 / 1,600 / 4,000; work report 800 / 1,000; reviewer
+  256, all unchanged — meet the catalog ceiling. Those callers do not see an endpoint-reported
   ceiling, only the catalog's. A fallback model does not inherit the primary route's
   resolved ceiling: `streamWithFallback` drops it, and the adapter clamps the fallback's
   request to the fallback model's own catalog ceiling.

@@ -10,19 +10,21 @@
  */
 import type { ResolvedOutputTokenLimit, RouteModelCapabilities } from "../../shared/context-budget.js";
 import { normalizeLlmThinkingBudgetTokens, type LLMVendorSettings } from "../../shared/llm-vendor-defaults.js";
+import type { StreamTurnParams } from "../llm/types.js";
 
 export function apiRoundLlmSettings<Smoothing extends string>(
   block: LLMVendorSettings,
   output: ResolvedOutputTokenLimit,
   streamSmoothing: Smoothing,
   modelCapabilities?: RouteModelCapabilities,
-): LLMVendorSettings & { outputTokenLimit: number; outputCeiling?: number; streamSmoothing: Smoothing; modelCapabilities?: RouteModelCapabilities } {
+): LLMVendorSettings & { outputTokenLimit: number; outputCeiling: Exclude<StreamTurnParams["outputCeiling"], undefined>; streamSmoothing: Smoothing; modelCapabilities?: RouteModelCapabilities } {
   return {
     ...block,
     outputTokenLimit: output.effective,
     // The ceiling the effective limit was resolved against travels with it, so
     // the transport clamps to the same one instead of rediscovering another.
-    ...(output.ceiling !== undefined ? { outputCeiling: output.ceiling } : {}),
+    // An explicitly unknown ceiling must not trigger another name match.
+    outputCeiling: output.ceiling ?? null,
     ...(modelCapabilities !== undefined ? { modelCapabilities } : {}),
     thinkingBudgetTokens: normalizeLlmThinkingBudgetTokens(block.thinkingBudgetTokens, output.effective),
     streamSmoothing,

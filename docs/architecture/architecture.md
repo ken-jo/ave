@@ -456,9 +456,10 @@ the host default of 32,000 (`requestedLlmOutputTokenLimit`, source `host-default
 clamped to the model's output ceiling, which is what the endpoint's `/models` row
 reported, else the model catalog's `limits.output`; an unknown ceiling clamps
 nothing. A vendor block stores `outputTokenLimit` only when the user set it, so the
-default is never written back. The adapter applies the catalog ceiling to every
-request, which is where purpose-specific limits (finalize, background, memory,
-reviewer) meet it. The output that would still fit the remaining context is recorded
+default is never written back. The adapter preserves the route's resolved
+ceiling, including an unknown one, without another catalog name match.
+Purpose-specific limits (finalize, background, memory, reviewer) meet the catalog
+ceiling. The output that would still fit the remaining context is recorded
 in the turn summary (`modelSettings.remainingContextOutputTokens`) and never clamps a
 request. Each turn records the catalog `sha256` and the effective window, output and
 reasoning with their sources in its turn summary and audit `turn` row

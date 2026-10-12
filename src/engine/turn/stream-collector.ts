@@ -44,7 +44,7 @@ export interface StreamCollectParams {
     /** Per-vendor output ceiling; see LLMVendorSettings.outputTokenLimit. */
     outputTokenLimit?: number;
     /** The model ceiling `outputTokenLimit` was resolved against; see StreamTurnParams.outputCeiling. */
-    outputCeiling?: number;
+    outputCeiling?: StreamTurnParams["outputCeiling"];
     modelCapabilities?: StreamTurnParams["modelCapabilities"];
   };
   abortSignal?: AbortSignal;
