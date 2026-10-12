@@ -8,9 +8,11 @@ import type { AveApi } from "../types.js";
 
 const installed = activeModelCatalog();
 const initialLocale = getLocale();
+const initialDocumentLanguage = document.documentElement.lang;
 afterEach(() => {
   installModelCatalog(installed);
   setLocale(initialLocale);
+  document.documentElement.lang = initialDocumentLanguage;
   vi.restoreAllMocks();
 });
 
@@ -32,13 +34,28 @@ describe("installRendererModelCatalog", () => {
 describe("renderModelCatalogUnavailable", () => {
   it("hydrates the persisted locale when the application cannot mount", async () => {
     setLocale("en");
+    document.documentElement.lang = "en";
     const root = document.createElement("div");
     vi.spyOn(console, "error").mockImplementation(() => {});
     const getSettings = vi.fn(async () => ({ appearance: { language: "ko" } }) as Awaited<ReturnType<AveApi["getSettings"]>>);
     renderModelCatalogUnavailable(root, new Error("unauthorized-frame"), { getSettings });
     await waitFor(() => expect(root.textContent).toContain("인증되지 않은 프레임"));
+    expect(document.documentElement.lang).toBe("ko");
     expect(getSettings).toHaveBeenCalledOnce();
     expect(root.textContent).not.toContain("unauthorized-frame");
+  });
+
+  it("sets the fallback document language when settings cannot be read", async () => {
+    setLocale("ko");
+    document.documentElement.lang = "en";
+    const root = document.createElement("div");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const getSettings = vi.fn(async () => { throw new Error("settings unavailable"); });
+    renderModelCatalogUnavailable(root, new Error("catalog-unavailable"), { getSettings });
+    await waitFor(() => expect(getSettings).toHaveBeenCalledOnce());
+    await expect(getSettings.mock.results[0]!.value).rejects.toThrow("settings unavailable");
+    expect(document.documentElement.lang).toBe("ko");
+    expect(root.textContent).toContain(t("app.modelCatalogUnavailable"));
   });
 
   it("replaces the blank root with a visible reason and a reload", () => {
