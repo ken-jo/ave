@@ -15,6 +15,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isMissingPathError, writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
+import { errorMessage } from "../../shared/error-message.js";
 import { aveHome } from "../../shared/ave-home.js";
 import type { ModelCatalogDocument } from "../../shared/model-catalog/types.js";
 import { formatCatalogJson, verifyModelCatalogDocument } from "./document.js";
@@ -42,17 +43,13 @@ export interface ModelCatalogCachePointer {
 
 export type CacheRead<T> = { ok: true; value: T } | { ok: false; reason: string };
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /** The pointer, or why there is none usable. An absent pointer is `reason: "absent"`. */
 export async function readModelCatalogPointer(dir: string): Promise<CacheRead<ModelCatalogCachePointer>> {
   let text: string;
   try {
     text = await readFile(join(dir, POINTER_FILE), "utf-8");
   } catch (error) {
-    return { ok: false, reason: isMissingPathError(error) ? "absent" : `pointer unreadable: ${errorText(error)}` };
+    return { ok: false, reason: isMissingPathError(error) ? "absent" : `pointer unreadable: ${errorMessage(error)}` };
   }
   let value: unknown;
   try {
@@ -87,13 +84,13 @@ export async function readModelCatalogFile(path: string, expectedSha256?: string
   try {
     text = await readFile(path, "utf-8");
   } catch (error) {
-    return { ok: false, reason: `${path} unreadable: ${errorText(error)}` };
+    return { ok: false, reason: `${path} unreadable: ${errorMessage(error)}` };
   }
   let document: ModelCatalogDocument;
   try {
     document = verifyModelCatalogDocument(JSON.parse(text));
   } catch (error) {
-    return { ok: false, reason: `${path}: ${errorText(error)}` };
+    return { ok: false, reason: `${path}: ${errorMessage(error)}` };
   }
   if (expectedSha256 !== undefined && document.sha256 !== expectedSha256) {
     return { ok: false, reason: `${path} holds catalog ${document.sha256}, not ${expectedSha256}` };

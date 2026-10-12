@@ -25,6 +25,7 @@ import { createHash } from "node:crypto";
 import { pruneModelsDevDocument, type CatalogDiagnostic } from "../../shared/model-catalog/normalize.js";
 import { catalogProviderIds } from "../../shared/model-catalog/provider-map.js";
 import type { ModelCatalogDocument } from "../../shared/model-catalog/types.js";
+import { errorMessage } from "../../shared/error-message.js";
 import { fetchPublicHttpResponse } from "../network-guard.js";
 import {
   readCurrentModelCatalog,
@@ -163,7 +164,7 @@ export async function refreshModelCatalogCache(options: ModelCatalogRefreshOptio
         signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(options.signal ? [options.signal] : [])]),
       });
     } catch (error) {
-      throw new RefreshFault(`request failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw new RefreshFault(`request failed: ${errorMessage(error)}`);
     }
 
     if (response.status === 304 && pointer) {
@@ -187,7 +188,7 @@ export async function refreshModelCatalogCache(options: ModelCatalogRefreshOptio
     try {
       pruned = pruneModelsDevDocument(parsed, catalogProviderIds());
     } catch (error) {
-      throw new RefreshFault(error instanceof Error ? error.message : String(error));
+      throw new RefreshFault(errorMessage(error));
     }
     const etag = response.headers.get("etag") ?? undefined;
     const fetchedAt = isoSeconds(now());
@@ -206,7 +207,7 @@ export async function refreshModelCatalogCache(options: ModelCatalogRefreshOptio
     try {
       document = verifyModelCatalogDocument(built);
     } catch (error) {
-      throw new RefreshFault(`refreshed catalog rejected: ${error instanceof Error ? error.message : String(error)}`);
+      throw new RefreshFault(`refreshed catalog rejected: ${errorMessage(error)}`);
     }
     const coverage = coverageFault(document, options.reference);
     if (coverage) throw new RefreshFault(coverage);
@@ -220,6 +221,6 @@ export async function refreshModelCatalogCache(options: ModelCatalogRefreshOptio
     });
     return { status: "updated", sha256: document.sha256, diagnostics };
   } catch (error) {
-    return { status: "failed", reason: error instanceof Error ? error.message : String(error) };
+    return { status: "failed", reason: errorMessage(error) };
   }
 }
