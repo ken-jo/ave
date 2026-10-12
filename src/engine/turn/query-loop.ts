@@ -233,7 +233,7 @@ export async function queryLoop(
     }
     const apiRound = subscriptionRuntime || effectiveOutput === undefined
       ? undefined
-      : apiRoundLlmSettings(activeBlock, effectiveOutput, llmSettings.streamSmoothing);
+      : apiRoundLlmSettings(activeBlock, effectiveOutput, llmSettings.streamSmoothing, runtimeContextBudget);
     const roundLlmSettings = apiRound ?? { streamSmoothing: llmSettings.streamSmoothing, enableThinking: false };
     // Subscription transports receive an ordinary serialized prompt for every
     // Ave round. Until a runtime exposes and proves a native assistant-prefill
@@ -1024,7 +1024,7 @@ export async function queryLoop(
           model,
           enableThinking: apiRound.enableThinking,
           budgetTokens: apiRound.thinkingBudgetTokens ?? 10_000,
-          baseUrl: activeBlock.baseUrl,
+          baseUrl: runtimeContextBudget.baseUrl,
           catalogModel: apiRound.catalogModel,
           request: { hasTools: toolSchemas.length > 0 },
         });

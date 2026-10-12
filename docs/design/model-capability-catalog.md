@@ -286,6 +286,10 @@ Implemented.
   projected next input — is recorded in the turn summary only
   (`modelSettings.remainingContextOutputTokens`); no request is clamped by it.
 - **Reasoning** (`src/engine/llm/reasoning-plan.ts`, `planReasoning`). Where the catalog
+  resolves an identity, the route carries its endpoint and eligible named entry
+  into the plan and adapter together. A child or preset does not inherit the
+  generic row's named entry, and an SDK-managed route ignores a dormant endpoint.
+  Where the catalog
   knows the model, it decides whether an OpenAI-family route (OpenAI, Azure) sends
   `reasoning_effort` and at what level. Copilot maps to no catalog provider (§3.4), so
   the name rules decide there; they send an effort only to OpenAI reasoning models, and

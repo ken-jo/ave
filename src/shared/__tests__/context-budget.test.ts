@@ -609,8 +609,9 @@ describe("context limits behind a custom endpoint", () => {
         modelEntries: [{ id: "gemini-2.5-flash", contextLength: 64_000 }], fetchedAt: new Date(0).toISOString(),
       },
     };
-    expect(resolveContextWindowForRoute({ provider: "vertex-ai", vendors, modelListCache }))
-      .toMatchObject({ contextWindow: 1_048_576, source: "model-catalog" });
+    const route = resolveContextWindowForRoute({ provider: "vertex-ai", vendors, modelListCache });
+    expect(route).toMatchObject({ contextWindow: 1_048_576, source: "model-catalog" });
+    expect(route.baseUrl).toBeUndefined();
   });
 
   it("ignores generic endpoint reports under the default cache key for a location-managed SDK route", () => {
@@ -659,6 +660,7 @@ describe("context limits behind a custom endpoint", () => {
 
   it("does not infer catalog or pricing limits for an aliased id at another host", () => {
     expect(resolveContextWindowForRoute(gatewayRoute())).toEqual({
+      baseUrl: "https://gateway.invalid/v1",
       model: "gpt-5.2", contextWindow: 128_000, source: "fallback",
       output: { requested: 32_000, requestedSource: "host-default", effective: 32_000, effectiveSource: "host-default" },
     });
@@ -666,6 +668,7 @@ describe("context limits behind a custom endpoint", () => {
 
   it("uses the gateway's own report without a same-name public prompt cap", () => {
     expect(resolveContextWindowForRoute(gatewayRoute(512_000))).toEqual({
+      baseUrl: "https://gateway.invalid/v1",
       model: "gpt-5.2", contextWindow: 512_000, source: "provider-reported",
       output: { requested: 32_000, requestedSource: "host-default", effective: 32_000, effectiveSource: "host-default" },
     });
@@ -687,6 +690,7 @@ describe("context limits behind a custom endpoint", () => {
     });
     route.vendors.openai.contextWindow = 64_000;
     expect(resolveContextWindowForRoute(route)).toEqual({
+      baseUrl: "https://gateway.invalid/v1", catalogModel: "openai/gpt-5.2",
       model: "gpt-5.2", contextWindow: 64_000, source: "vendor-setting",
       output: { requested: 32_000, requestedSource: "host-default", ceiling: 128_000, ceilingSource: "model-catalog",
         effective: 32_000, effectiveSource: "host-default" },

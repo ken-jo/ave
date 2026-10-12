@@ -34,7 +34,7 @@ import {
   resolveModelContextWindow,
   type ContextWindowSource,
   type ResolvedOutputTokenLimit,
-  type ResolvedContextWindow,
+  type RouteContextWindow,
   type LlmRouteProviderPreset,
   type LlmRouteSettings,
 } from "../../shared/context-budget.js";
@@ -54,7 +54,7 @@ const SUBSCRIPTION_FALLBACK_USABLE_CONTEXT = getUsableContext(
   SUBSCRIPTION_FALLBACK_CONTEXT_WINDOW,
 );
 
-interface RuntimeContextBudget extends Pick<ResolvedContextWindow, "catalogEntry" | "inputLimit" | "inputLimitSource"> {
+interface RuntimeContextBudget extends Pick<RouteContextWindow, "catalogEntry" | "inputLimit" | "inputLimitSource" | "baseUrl" | "catalogModel"> {
   readonly model: string;
   readonly preflight: number;
   readonly usableContext: number;
@@ -251,6 +251,8 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
   }
   return {
     model,
+    ...(route.baseUrl !== undefined ? { baseUrl: route.baseUrl } : {}),
+    ...(route.catalogModel !== undefined ? { catalogModel: route.catalogModel } : {}),
     preflight: getModelPreflightThreshold(provider, model, route.contextWindow, route.inputLimit),
     usableContext: getModelUsableContext(provider, model, route.contextWindow, route.inputLimit),
     identity,

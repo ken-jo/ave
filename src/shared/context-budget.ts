@@ -291,6 +291,10 @@ export function resolveOutputTokenLimit(params: {
 export interface RouteContextWindow extends ResolvedContextWindow {
   /** The model this route runs on — `activeLlmRouteModel`'s answer. */
   readonly model: string;
+  /** The endpoint used to establish model identity; absent on an SDK-managed route. */
+  readonly baseUrl?: string;
+  /** The named identity eligible for this model, shared with its reasoning decision. */
+  readonly catalogModel?: string;
   /**
    * The provider's own ceiling on a completion for this model, when it
    * reported one. Carried beside the window for a caller that needs an output
@@ -401,6 +405,8 @@ export function resolveContextWindowForRoute(
   return {
     ...resolved,
     model,
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
+    ...(catalogModel !== undefined ? { catalogModel } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     output,
     ...(unresolved ? { unresolvedCatalogModel: catalogModel } : {}),
