@@ -56,8 +56,8 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, CHANNELS.sidechat.getSubAgentTranscript, e);
       return { ok: false, error: "unauthorized-frame" };
     }
-    // Resolve the current owner for every read. A retained renderer surface
-    // cannot keep using a loop that the host has removed or replaced.
+    // Production reuses one side-chat loop while its active session changes.
+    // Resolve that session for each read and refuse an unavailable loop.
     const currentLoop = deps.sideChatConversationLoop;
     if (!currentLoop) return { ok: false, error: "side-chat-unavailable" };
     const p = (payload && typeof payload === "object" && !Array.isArray(payload)

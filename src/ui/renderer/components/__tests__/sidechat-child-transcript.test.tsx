@@ -244,7 +244,7 @@ describe("side-chat child transcript across host and renderer", () => {
     expect(read).not.toHaveBeenCalled();
   });
 
-  it("denies a retained preload read after the host side chat closes", async () => {
+  it("denies a retained preload read if the configured side-chat loop is unavailable", async () => {
     const { api, deps, read } = await setup();
     deps.sideChatConversationLoop = undefined;
     await expect(api.sideChat!.getSubAgentTranscript!({ originSessionId: sideSessionId, childSessionId }))

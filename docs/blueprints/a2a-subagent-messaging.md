@@ -62,6 +62,8 @@ Notes:
 
 The internal `sidechat.getSubAgentTranscript` channel (`ave:sidechat:get-sub-agent-transcript`) reads a child transcript only for the exact session currently held by the host's window-wide side-chat loop. The request carries `originSessionId` and `childSessionId`; sender/frame validation and exact active-origin validation precede child lookup. The read is denied when no loop exists or the requested session is no longer active. Ownership requires the child's host-written metadata to contain `sessionKind: "subagent"` and the exact `originSessionId`, checked by `isPersistedSpawnOfOrigin` before `getPersistedTranscript` reads the isolated child namespace. The side-chat read does not authorize a child from a parent-transcript reference.
 
+Reads are also denied while `isSessionTransitioning()` reports an in-progress side-chat session change.
+
 The panel uses this read only when the selected spawn's `parentSessionId` matches the side-chat session recorded by its view. If the side-chat read is unavailable, it does not retry through the tile channel. The existing `chat.getSubAgentTranscript` channel stays scoped to its tile's active main session and retains its existing ownership checks. The two reads share request/result wire types; neither creates a side-chat loop per tile nor changes spawn depth, tool permissions, or background parent-delivery capability.
 
 ### Ph2 implementation contract

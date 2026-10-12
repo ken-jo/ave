@@ -19,7 +19,7 @@ const SIDE_SESSION = "34fd6270-309d-4e47-878b-75c0742a6ac2";
 const CHILD_SESSION = "sub-owned-1ae80cfb-d8c8-4a02-806d-4f4d2872a62d";
 const FOREIGN_ORIGIN = "89df5053-7dd8-4550-85c5-1a11011f7868";
 const FOREIGN_CHILD = "sub-foreign-cafeb2d0-9bb2-4190-8f4f-26b2ebe2e507";
-const REPLACEMENT_SESSION = "5f711b23-ee4f-4cbb-88e0-53b872bbda82";
+const OTHER_SESSION = "5f711b23-ee4f-4cbb-88e0-53b872bbda82";
 const REQUEST: SubAgentTranscriptRequest = {
   originSessionId: SIDE_SESSION,
   childSessionId: CHILD_SESSION,
@@ -91,16 +91,16 @@ describe("side-chat child transcript owner boundary", () => {
     expect(runner.getPersistedTranscript).not.toHaveBeenCalled();
   });
 
-  it("denies reads after the host side chat closes", () => {
+  it("denies reads if the configured side-chat loop is unavailable", () => {
     const { deps, getSubAgentRunner } = setup();
     deps.sideChatConversationLoop = undefined;
     expect(read()).toEqual({ ok: false, error: "side-chat-unavailable" });
     expect(getSubAgentRunner).not.toHaveBeenCalled();
   });
 
-  it("denies the old origin after the side-chat session is replaced", () => {
+  it("denies the previous origin after the loop changes its active session", () => {
     const { sideLoop, getSubAgentRunner } = setup();
-    sideLoop.getSessionId.mockReturnValue(REPLACEMENT_SESSION);
+    sideLoop.getSessionId.mockReturnValue(OTHER_SESSION);
     expect(read()).toEqual({ ok: false, error: "origin-session-not-active" });
     expect(getSubAgentRunner).not.toHaveBeenCalled();
   });
