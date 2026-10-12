@@ -27,7 +27,7 @@
  * English `error` (project CLAUDE.md — IPC English / UI Korean).
  */
 import { ipcMain } from "electron";
-import type { Event as ElectronEvent, WebContents, WebContentsDidStartNavigationEventParams } from "electron";
+import type { WebContents } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { sendToWebContents } from "../safe-send.js";
@@ -242,14 +242,15 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     // requires, and page unload skips the hook's teardown cancel. Its document
     // was the turn's only owner, so its departure cancels the turn; otherwise
     // the reloaded view could neither stop it nor send until it finished.
+    // Departure is the committed main-frame document change (`did-navigate`),
+    // not `did-start-navigation`: that fires for every attempt, including a
+    // link click the main window's `will-navigate` policy cancels and opens
+    // externally, which leaves the owning document alive and still streaming.
     const owner = e.sender;
     const cancelOrphanedTurn = (): void => {
       if (activeSideStreamTurn === turnPromise) void abortActiveSideTurn();
     };
-    const onOwnerNavigation = (event: ElectronEvent<WebContentsDidStartNavigationEventParams>): void => {
-      if (event.isMainFrame && !event.isSameDocument) cancelOrphanedTurn();
-    };
-    owner.on("did-start-navigation", onOwnerNavigation);
+    owner.on("did-navigate", cancelOrphanedTurn);
     owner.on("render-process-gone", cancelOrphanedTurn);
     owner.on("destroyed", cancelOrphanedTurn);
     try {
@@ -258,7 +259,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     } catch (err) {
       return { ok: false as const, error: (err as Error).message };
     } finally {
-      owner.removeListener("did-start-navigation", onOwnerNavigation);
+      owner.removeListener("did-navigate", cancelOrphanedTurn);
       owner.removeListener("render-process-gone", cancelOrphanedTurn);
       owner.removeListener("destroyed", cancelOrphanedTurn);
     }

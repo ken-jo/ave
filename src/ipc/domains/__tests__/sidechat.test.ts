@@ -332,7 +332,7 @@ describe("side-chat IPC domain", () => {
   });
 
   it.each([
-    ["reloads", "did-start-navigation", { isMainFrame: true, isSameDocument: false }],
+    ["reloads", "did-navigate", undefined],
     ["crashes", "render-process-gone", {}],
     ["is destroyed", "destroyed", undefined],
   ] as const)("cancels its accepted turn when the owning renderer %s", async (_label, eventName, details) => {
@@ -347,20 +347,58 @@ describe("side-chat IPC domain", () => {
       input: "Own request", sendRequestId: "own-request",
     });
     try {
-      // A peer renderer's departure and in-document or subframe navigation do not orphan the turn.
+      // A peer renderer's departure, in-document or subframe navigation, and a
+      // main-frame navigation the window's will-navigate policy then cancels
+      // (an external link click) leave the owning document alive.
       peer.emit(eventName, details);
       owner.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true });
       owner.emit("did-start-navigation", { isMainFrame: false, isSameDocument: false });
+      owner.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+      owner.emit("did-navigate-in-page", {});
+      owner.emit("did-frame-navigate", {});
       expect(side.abortCurrentTurn).not.toHaveBeenCalled();
       owner.emit(eventName, details);
       expect(side.abortCurrentTurn).toHaveBeenCalledOnce();
       await pending;
-      expect(owner.listenerCount("did-start-navigation") + owner.listenerCount("render-process-gone")
+      expect(owner.listenerCount("did-start-navigation") + owner.listenerCount("did-navigate")
+        + owner.listenerCount("render-process-gone")
         + owner.listenerCount("destroyed")).toBe(0);
     } finally {
       turn.resolve({ route: "chat" });
       await pending;
     }
+  });
+
+  it("keeps one departure watch per accepted turn and none after a turn fails", async () => {
+    const side = makeSideLoop();
+    register(side, makeMainLoop());
+    const owner = rendererContents(1);
+    const peer = rendererContents(2);
+    const send = handlers.get(CHANNELS.sidechat.send)!;
+    const watches = (contents: EventEmitter) => contents.listenerCount("did-navigate")
+      + contents.listenerCount("render-process-gone") + contents.listenerCount("destroyed");
+
+    side.runTurn.mockRejectedValueOnce(new Error("provider failed"));
+    await expect(send(ev("file:///index.html", 1, owner), { input: "fails", sendRequestId: "failed-request" }))
+      .resolves.toMatchObject({ ok: false });
+    expect(watches(owner)).toBe(0);
+    await send(ev("file:///index.html", 1, owner), { input: "first", sendRequestId: "first-request" });
+    expect(watches(owner)).toBe(0);
+
+    // A later turn belongs to its own sender; the earlier owner leaving does not reach it.
+    const turn = deferred<{ route: string }>();
+    side.runTurn.mockReturnValueOnce(turn.promise);
+    const pending = send(ev("file:///index.html", 2, peer), { input: "peer", sendRequestId: "peer-request" });
+    try {
+      expect(watches(peer)).toBe(3);
+      owner.emit("did-navigate");
+      owner.emit("destroyed");
+      expect(side.abortCurrentTurn).not.toHaveBeenCalled();
+    } finally {
+      turn.resolve({ route: "chat" });
+      await pending;
+    }
+    expect(watches(peer)).toBe(0);
   });
 
   it.each([undefined, null, 17, [], {}, { sendRequestId: "" }, { sendRequestId: " " }, { sendRequestId: 17 }, { sendRequestId: "x".repeat(257) }])(
