@@ -3,7 +3,7 @@
  * `model-capability-catalog.md` §7).
  *
  * On by default: once a day the host fetches the public models.dev document,
- * the source of each model's context window, output limit and list price, and
+ * the source of model context windows and output ceilings, and
  * caches it for the next launch. Off keeps the last cached copy or the
  * snapshot this build ships. The section says when something other than this
  * switch is deciding — a `AVE_MODEL_CATALOG` pin or the managed policy file

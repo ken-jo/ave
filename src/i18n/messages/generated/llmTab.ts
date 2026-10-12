@@ -1,4 +1,4 @@
-// AUTO-GENERATED — i18n migration. Source: src/ui/renderer/tabs/LlmTab.tsx. Do not edit by hand.
+// Model settings messages: source for the generated locale barrels.
 export const en = {
   "llmTab.saving": "Saving…",
   "llmTab.save": "Save",
@@ -80,9 +80,9 @@ export const en = {
   "llmTab.fallbackDesc": "If no response arrives within 1 second or a 5xx/429/network error occurs, the same model is retried 5 times before switching to each entry in order.",
   // per-model price corrections (AVE_PRICING_OVERRIDE surfaced)
   "llmTab.modelCatalogTitle": "Model catalog",
-  "llmTab.modelCatalogDesc": "Context windows, output limits and list prices for each model come from the public models.dev catalog.",
+  "llmTab.modelCatalogDesc": "The public model catalog supplies context windows and output ceilings. Endpoint reports and your settings also determine the limits in use.",
   "llmTab.modelCatalogRefresh": "Refresh the catalog daily",
-  "llmTab.modelCatalogHelp": "Once a day the app downloads https://models.dev/api.json. The request is a plain download: it carries no account, key, prompt or anything else about you. A new copy takes effect at the next launch. Off keeps the last downloaded copy, or the catalog this version ships with.",
+  "llmTab.modelCatalogHelp": "At most once a day the app downloads https://models.dev/api.json. It sends no account, key, cookie, prompt, file or conversation; the server sees your IP address and ordinary request headers. A new copy takes effect at the next launch. Off uses a verified cached copy that is no older than the bundled catalog, or the bundled catalog.",
   "llmTab.modelCatalogEnvForced": "The environment variable {envVar} pins the catalog for this launch, so the refresh is off.",
   "llmTab.modelCatalogPolicyOff": "Your organization's policy has turned the refresh off.",
   "llmTab.modelCatalogInForce": "In use now: the catalog of {date} ({sha}).",
@@ -183,9 +183,9 @@ export const ko: Record<keyof typeof en, string> = {
   "llmTab.fallbackDesc": "첫 응답이 1초 안에 오지 않거나 5xx/429/네트워크 오류가 나면 같은 모델을 5회 시도한 뒤 순서대로 전환할 벤더·모델 목록입니다.",
   // 모델별 단가 보정 (AVE_PRICING_OVERRIDE 표면화)
   "llmTab.modelCatalogTitle": "모델 카탈로그",
-  "llmTab.modelCatalogDesc": "모델별 컨텍스트 창, 출력 한도, 공시 단가는 공개 카탈로그 models.dev 에서 가져옵니다.",
+  "llmTab.modelCatalogDesc": "공개 모델 카탈로그에서 컨텍스트 창과 출력 한도를 참고합니다. 공급자 응답과 사용자 설정도 실제 적용되는 한도를 결정합니다.",
   "llmTab.modelCatalogRefresh": "카탈로그 매일 갱신",
-  "llmTab.modelCatalogHelp": "하루에 한 번 https://models.dev/api.json 을 내려받습니다. 단순 다운로드 요청이라 계정, API 키, 프롬프트 등 사용자에 관한 정보는 보내지 않습니다. 새로 받은 카탈로그는 다음 실행부터 적용됩니다. 끄면 마지막으로 받은 카탈로그나 이 버전에 포함된 카탈로그를 씁니다.",
+  "llmTab.modelCatalogHelp": "하루에 많아야 한 번 https://models.dev/api.json 을 내려받습니다. 계정, API 키, 쿠키, 프롬프트, 파일, 대화는 보내지 않으며 서버는 IP 주소와 일반 요청 헤더를 볼 수 있습니다. 새 카탈로그는 다음 실행부터 적용됩니다. 끄면 번들보다 오래되지 않은 검증된 캐시를 쓰고, 없으면 번들 카탈로그를 씁니다.",
   "llmTab.modelCatalogEnvForced": "환경 변수 {envVar} 가 이번 실행의 카탈로그를 고정하고 있어 갱신이 꺼져 있습니다.",
   "llmTab.modelCatalogPolicyOff": "조직 정책이 갱신을 끄도록 설정되어 있습니다.",
   "llmTab.modelCatalogInForce": "현재 사용 중: {date} 기준 카탈로그 ({sha})",

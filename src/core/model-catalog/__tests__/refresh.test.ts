@@ -26,6 +26,7 @@ import { decideModelCatalogRefresh, readModelCatalogRefreshPolicy } from "../ref
 import { pruneModelsDevDocument } from "../../../shared/model-catalog/normalize.js";
 import { catalogProviderIds } from "../../../shared/model-catalog/provider-map.js";
 import type { ModelCatalogDocument } from "../../../shared/model-catalog/types.js";
+import { activeModelCatalog } from "../../../shared/model-catalog/active.js";
 
 const lookupMock = vi.fn(async () => [{ address: "93.184.215.14", family: 4 }]);
 vi.mock("node:dns", () => ({ promises: { lookup: () => lookupMock() } }));
@@ -105,6 +106,14 @@ async function seedGoodCopy(at = NOW): Promise<string> {
 const STALE = new Date(NOW.getTime() + MODEL_CATALOG_REFRESH_INTERVAL_MS + 1000);
 
 describe("refreshModelCatalogCache", () => {
+  it("keeps the installed process catalog unchanged until another boot", async () => {
+    const installed = activeModelCatalog();
+    const { fetchImpl } = respondWith(() => json(rawDocument()));
+    expect((await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => NOW })).status).toBe("updated");
+    expect(activeModelCatalog()).toBe(installed);
+    expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "cache" });
+  });
+
   it("downloads one public document with nothing about the user, and stores it for the next boot", async () => {
     const { fetchImpl, calls } = respondWith(() => json(rawDocument(), { etag: "\"v1\"" }));
     const result = await refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => NOW });

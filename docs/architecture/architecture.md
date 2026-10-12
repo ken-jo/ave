@@ -460,7 +460,7 @@ default is never written back. The adapter applies the catalog ceiling to every
 request, which is where purpose-specific limits (finalize, background, memory,
 reviewer) meet it. The output that would still fit the remaining context is recorded
 in the turn summary (`modelSettings.remainingContextOutputTokens`) and never clamps a
-request. Each turn records the catalog `sha256` and the effective window, output and
+request. Each API-backed turn served on the primary route records the catalog `sha256` and the effective window, output and
 reasoning with their sources in its turn summary and audit `turn` row
 (`src/shared/run-model-settings.ts`); see `docs/design/model-capability-catalog.md`.
 The catalog in force is chosen once per launch (`src/core/model-catalog/bundled.ts`): a
@@ -471,8 +471,12 @@ the bundled snapshot. An interactive launch refreshes that cache from
 `https://models.dev/api.json` at most daily (`llm.modelCatalogRefresh`, default on; off
 under the pin or the managed policy's `modelCatalog.refresh: "off"`), through
 `fetchPublicHttpResponse` on the host's single-hop transport, never a plugin path: a
-plain GET carrying no user data, 15 s, 16 MB. A refreshed copy takes effect at the next
-launch, and any failed refresh keeps the catalog already in force.
+GET omitting session authentication, cookies and user content; redirects are refused,
+headers and body share a 15 s deadline, and decompressed body bytes are capped at
+16,777,216. The source sees the IP address and ordinary transport headers. Failed
+attempts also count toward the daily cadence; publication retains at most five cached
+catalogs. A refreshed copy takes effect at the next launch, and any failed refresh keeps
+the catalog already in force. See [the refresh contract](../design/model-capability-catalog.md#7-refresh-slice-6).
 User-configured thinking budgets apply per API call, including each
 call after a tool result; they introduce no cumulative quota for a user turn.
 They are non-negative integers capped at the highest fixed preset strictly below

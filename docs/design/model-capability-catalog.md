@@ -3,8 +3,8 @@
 Status: decided (issue #2501, owner decisions of 2026-10-12); being implemented in the
 seven slices of §9. Slices 1 (the contract, the generator, the bundled snapshot and its
 provenance), 2 (context windows, §4) and 3 (output limits, reasoning levels and run
-records, §5) are implemented. §6–§7 are the plan; until their slices land, modalities
-and prices still come from the code paths named in §1 and §8.
+records, §5), and refresh (§7) are implemented. Modalities and prices still come from
+the code paths named in §1 and §8 until §6 lands.
 
 Anchors: `src/shared/model-catalog/` (types, provider map, normalizer),
 `src/core/model-catalog/` (document hashing and verification, the bundled snapshot),
@@ -147,13 +147,16 @@ holds 29 providers and 2,182 models in about 1 MB.
 ## 4. Resolution (slice 2)
 
 One resolver answers each fact for a `(vendor, model)` route with a value and its source.
-Precedence, per fact:
+Precedence, per fact, using one catalog document selected at boot (§7):
 
 1. the user's explicit setting;
 2. what the live endpoint reports (the `/models` cache);
-3. refreshed catalog metadata (§7);
-4. the bundled snapshot;
-5. a host fallback, recorded as source `host-fallback`.
+3. metadata from the selected catalog;
+4. a host fallback, recorded as source `host-fallback`.
+
+A field absent from a refreshed catalog does not consult the bundled copy. During
+migration, the legacy pricing table still fills unknown context windows before the
+host fallback, as described below.
 
 **Implemented for the context window (slice 2).** `resolveModelContextWindow`
 (`src/shared/context-budget.ts`) now answers, in order: `vendor-setting` (declared
@@ -210,8 +213,8 @@ to the catalog's. A server that reuses a vendor's model id for a different model
 the generic OpenAI-compatible vendor, which never matches by name.
 
 Each process installs one catalog (`src/shared/model-catalog/active.ts`), and reading
-before install throws. Main and headless install the verified bundled snapshot at the
-start of `bootstrapCoreServices`; the snapshot is a dynamic import, so its data lands in
+before install throws. Main and headless install the verified boot-selected catalog at the
+start of `bootstrapCoreServices`; the bundled snapshot is a dynamic import, so its data lands in
 an async chunk instead of the main bundle's initial budget. The renderer asks main for
 that copy over `ave:llm:get-model-catalog` and installs it before it mounts
 (`src/ui/renderer/model-catalog-bootstrap.ts`), so the first settings snapshot the
@@ -246,8 +249,8 @@ Implemented.
     it was clamped.
 
   The conversation loop sends `output.effective` with the thinking budget bounded
-  against it (`src/engine/turn/round-llm-settings.ts`). The adapter also clamps every
-  request to the catalog ceiling, which is where the purpose-specific limits — finalize
+  against it (`src/engine/turn/round-llm-settings.ts`). The adapter uses that same
+  resolved ceiling when supplied; other requests meet the catalog ceiling. That is where the purpose-specific limits — finalize
   1,024; background 16,384; memory 1,400 / 1,600 / 4,000; work report 800 / 1,000;
   reviewer 256, all unchanged — meet it. Those callers do not see an endpoint-reported
   ceiling, only the catalog's. A fallback model does not inherit the primary route's
@@ -319,31 +322,42 @@ user overrides keep the highest precedence.
   section that cannot be read exactly as written — bad JSON, a duplicate key, another
   key or value — turns the refresh off (`refresh-policy.ts`).
 - `AVE_MODEL_CATALOG` pins the catalog for headless runs and benchmarks: `bundled`, the
-  `<sha256>` of a cached copy, or the absolute path of a catalog file. Any value turns the
+  `<sha256>` of a retained cached copy, or the absolute path of a catalog file. A nonblank value turns the
   refresh off. A pin that cannot be honoured — no such cached copy, a file that fails
   `verifyModelCatalogDocument`, any other spelling — fails boot rather than running on
-  another catalog.
+  another catalog. Cache retention can remove an old hash pin; a separate file pinned by
+  absolute path is the durable option for reproducing an older run.
 - Precedence for whether a check may run: the pin, then the policy, then the setting.
   It is decided at each check, so turning the switch off stops the next one without a
   restart.
-- The host fetches `https://models.dev/api.json` and nothing else — no GitHub calls; the
+- The host fetches only `https://models.dev/api.json`; the
   refreshed copy carries the license of the catalog in force and leaves
   `upstreamHeadAtFetch` and `upstreamSchemaBlob` absent — through
-  `fetchPublicHttpResponse` (`src/core/network-guard.ts`, each redirect hop re-checked,
-  private addresses refused) on the host's single-hop Chromium transport, never a plugin
-  path. The request is a conditional GET (`If-None-Match` with the stored ETag), with a 15 s
-  deadline over headers and body and a 16 MB cap enforced while the body streams. The
+  `fetchPublicHttpResponse` (`src/core/network-guard.ts`, private addresses refused), with
+  redirects refused, on the host's single-hop transport, never a plugin path. The request
+  omits session credentials and carries `Accept: application/json`, plus `If-None-Match`
+  when the cached copy has an ETag. An unsolicited 304 is refused. A 15 s wall-clock deadline
+  bounds headers and body even when DNS or cancellation stalls; the 16 MB (16,777,216-byte)
+  cap is enforced on decompressed bytes while the body streams. Certificate errors do not
+  cause an HTTP retry. The
   download is pruned and normalized with the slice 1 code, verified, and refused when a
   catalog provider the catalog in force lists has no models in it, so a source that changed
   shape cannot replace a working catalog with an empty one (`refresh.ts`).
 - The cache is `<AVE_HOME>/cache/model-catalog/`: an immutable `<sha256>.json` per catalog
   and a `current.json` pointer `{version, sha256, etag?, checkedAt}`, each written
-  temp → fsync → rename (`cache.ts`). A 304 renews `checkedAt` only.
+  temp → fsync → rename (`cache.ts`) with private namespace permissions (0700 directories,
+  0600 files on POSIX). Reads reject linked cache directories and files, read one regular
+  inode under a byte cap, and verify those same loaded bytes before use. Hash-only pointer
+  names cannot escape the directory. Writers enforce the same byte caps as readers.
+  A conditional 304 renews `checkedAt` only. A cross-process lock serializes each check
+  through publication. Publication keeps at most five hash-named files, protecting the
+  new copy and the preceding current copy; unrelated files are not pruned.
 - Cadence: a running interactive app checks at boot and then hourly, and sends a request
-  only when `checkedAt` is a day old. models.dev is a static document rebuilt when its
-  sources change, a few times a week; a day keeps a new model at most a day behind, the
-  ETag makes most checks a body-less 304, and a launch inside the day sends nothing. A
-  headless one-shot run never refreshes.
+  only when the last attempt is a day old. `.refresh-check.json` records an attempt before
+  requesting, including failures; `current.json.checkedAt` still records successful
+  confirmation. A launch inside that day sends nothing. A backward clock change permits
+  rechecking instead of treating a future timestamp as indefinitely fresh. Headless runs
+  never refresh. This interval limits checks; updates apply only after another launch.
 - A refresh only writes the cache. The catalog a process resolves against is chosen once,
   at boot (`selectBootModelCatalog`, `bundled.ts`): the pin; else the copy `current.json`
   names, when it verifies and is not older than the bundled snapshot (an app update can
@@ -351,11 +365,13 @@ user overrides keep the highest precedence.
   the next launch, one run never sees two catalogs, and main and renderer always hold the
   same one.
 - A failed or malformed fetch — a status other than 200/304, a timeout, the cap, bad JSON,
-  verification, coverage — leaves the cache as it was: the last good copy stays in force,
-  and with none the bundled snapshot. A damaged pointer or copy reads as absent at boot.
+  verification, coverage — preserves the usable catalog. Scheduling state records failed
+  attempts, and a failed publication can leave an unreferenced entry. With no usable
+  cached copy, boot uses the bundled snapshot. A damaged pointer or copy reads as absent at boot.
   These fallbacks are tested offline (`src/core/model-catalog/__tests__/refresh.test.ts`).
-- models.dev is a new outbound destination. The request carries no user data — it is a
-  plain GET of a public document — and is documented in `architecture.md` and on the
+- The source is an outbound destination owned by this feature. The request carries no
+  account, API key, session authentication, cookie, prompt, file or conversation; the
+  server sees the IP address and ordinary transport headers. It is documented in `architecture.md` and on the
   Trust & Security page (`web/app/docs/host/trust-security`, `web/app/en/docs/host/trust-security`).
 
 ## 8. What the hand-kept table has that the catalog does not
