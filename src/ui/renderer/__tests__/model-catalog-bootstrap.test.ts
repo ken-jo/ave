@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "@testing-library/react";
 import { installRendererModelCatalog, renderModelCatalogUnavailable } from "../model-catalog-bootstrap.js";
 import { activeModelCatalog, installModelCatalog } from "../../../shared/model-catalog/active.js";
 import type { ModelCatalogDocument } from "../../../shared/model-catalog/types.js";
@@ -26,12 +27,39 @@ describe("installRendererModelCatalog", () => {
   it("fails rather than mounting against no catalog when main refuses", async () => {
     await expect(
       installRendererModelCatalog({ getModelCatalog: async () => ({ ok: false, error: "unauthorized-frame" }) }),
-    ).rejects.toThrow(/refused the model catalog/);
+    ).rejects.toThrow("unauthorized-frame");
     expect(activeModelCatalog()).toBe(installed);
   });
 });
 
 describe("renderModelCatalogUnavailable", () => {
+  it("hydrates the persisted locale and localizes a host frame refusal before the application mounts", async () => {
+    setLocale("en");
+    document.documentElement.lang = "en";
+    const root = document.createElement("div");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const getSettings = vi.fn(async () => ({ appearance: { language: "ko" } }) as AppSettings);
+    await renderModelCatalogUnavailable(root, new Error("unauthorized-frame"), { getSettings });
+    expect(root.textContent).toContain("인증되지 않은 프레임");
+    expect(document.documentElement.lang).toBe("ko");
+    expect(getSettings).toHaveBeenCalledOnce();
+    expect(root.textContent).not.toContain("unauthorized-frame");
+  });
+
+  it("sets the English document language when settings cannot be read", async () => {
+    setLocale("ko");
+    document.documentElement.lang = "ko";
+    const root = document.createElement("div");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const getSettings = vi.fn(async () => { throw new Error("settings unavailable"); });
+    await renderModelCatalogUnavailable(root, new Error("catalog-unavailable"), { getSettings });
+    expect(getSettings).toHaveBeenCalledOnce();
+    expect(getLocale()).toBe("en");
+    expect(document.documentElement.lang).toBe("en");
+    expect(root.textContent).toContain(t("app.modelCatalogUnavailable"));
+    expect(root.textContent).toContain(t("formatIpcError.catalogUnavailable"));
+  });
+
   it.each(["en", "ko"])("aligns the document language with the saved %s startup copy", async (locale) => {
     setLocale("en");
     document.documentElement.lang = locale === "en" ? "ko" : "en";
@@ -119,5 +147,83 @@ describe("renderModelCatalogUnavailable", () => {
     await rendered;
     expect(root.textContent).toContain(t("app.modelCatalogUnavailable"));
     expect(root.textContent).not.toContain("settings channel unavailable");
+  });
+
+  it("replaces the blank root with a visible reason and a reload without a settings channel", async () => {
+    const root = document.createElement("div");
+    root.append(document.createElement("span"));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await renderModelCatalogUnavailable(root, new Error("catalog-unavailable"));
+    const panel = root.querySelector('[data-testid="model-catalog-unavailable"]');
+    expect(panel?.getAttribute("role")).toBe("alert");
+    expect(root.children).toHaveLength(1);
+    expect(panel?.textContent).toContain(t("app.modelCatalogUnavailable"));
+    expect(panel?.textContent).toContain(t("formatIpcError.catalogUnavailable"));
+    expect(panel?.textContent).not.toContain("catalog-unavailable");
+    expect(panel?.querySelector("button")).not.toBeNull();
+  });
+
+  it("keeps transport diagnostics out of the startup panel", async () => {
+    const root = document.createElement("div");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await renderModelCatalogUnavailable(root, new Error("invoke failed at a private transport"));
+    expect(root.textContent).toContain(t("formatIpcError.catalogUnavailable"));
+    expect(root.textContent).not.toContain("invoke failed at a private transport");
+  });
+
+  it("localizes the frame refusal from the host", async () => {
+    const root = document.createElement("div");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const failure = await installRendererModelCatalog({
+      getModelCatalog: async () => ({ ok: false, error: "unauthorized-frame" }),
+    }).catch((error: unknown) => error);
+    await renderModelCatalogUnavailable(root, failure);
+    expect(root.textContent).toContain(t("formatIpcError.unauthorizedFrame"));
+    expect(root.textContent).not.toContain("unauthorized-frame");
+  });
+
+  it.each(["message", "stringification"])("keeps the reload usable when diagnostic %s is unreadable", async (failure) => {
+    const error = failure === "message"
+      ? Object.defineProperty(new Error(), "message", { get() { throw new Error("unreadable diagnostic fixture"); } })
+      : { toString() { throw new Error("unprintable diagnostic fixture"); } };
+    const root = document.createElement("div");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(renderModelCatalogUnavailable(root, error)).resolves.toBeUndefined();
+    expect(root.textContent).toContain(t("formatIpcError.catalogUnavailable"));
+    expect(root.querySelector("button")?.textContent).toBe("Reload");
+    expect(root.outerHTML).not.toContain("diagnostic fixture");
+  });
+
+  it("uses one captured host API for catalog failure and saved language in the renderer entry", async () => {
+    const root = document.createElement("div");
+    root.id = "root";
+    document.body.append(root);
+    const api = {
+      getModelCatalog: vi.fn(async () => ({ ok: false, error: "unauthorized-frame" })),
+      getSettings: vi.fn(async () => ({ appearance: { language: "ko" } }) as AppSettings),
+    };
+    const getApi = vi.fn(() => api);
+    const createRoot = vi.fn();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.doMock("../api-client.js", () => ({ getApi }));
+    vi.doMock("../host-marketplace-api.js", () => ({ primeHostMarketplaceApi: vi.fn() }));
+    vi.doMock("../App.js", () => ({ App: () => null }));
+    vi.doMock("../context/I18nSettingsProvider.js", () => ({ I18nSettingsProvider: () => null }));
+    vi.doMock("react-dom/client", () => ({ createRoot }));
+    try {
+      await import("../../../renderer.js");
+      await waitFor(() => expect(root.textContent).toContain("인증되지 않은 프레임"));
+      expect(getApi).toHaveBeenCalledOnce();
+      expect(api.getSettings).toHaveBeenCalledOnce();
+      expect(document.documentElement.lang).toBe("ko");
+      expect(createRoot).not.toHaveBeenCalled();
+    } finally {
+      root.remove();
+      vi.doUnmock("../api-client.js");
+      vi.doUnmock("../host-marketplace-api.js");
+      vi.doUnmock("../App.js");
+      vi.doUnmock("../context/I18nSettingsProvider.js");
+      vi.doUnmock("react-dom/client");
+    }
   });
 });

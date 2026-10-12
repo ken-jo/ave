@@ -10,7 +10,8 @@ import type { ChatEntry, CheckpointTrigger } from "../../../lib/chat-stream-stat
 import type { LLMVendor } from "../../../shared/llm-vendor-defaults.js";
 import { debugLog } from "../../../lib/debug-stream.js";
 import { detectFromStream } from "../../../lib/stream-markers.js";
-import { lookupBillablePricingOptional } from "../../../shared/pricing-data.js";
+import { knownModelPricing, resolveModelPricing } from "../../../shared/model-pricing.js";
+import { usePricingOverrides } from "../hooks/use-pricing-overrides.js";
 import { highlightText } from "../utils/html-preview.js";
 import { trustOriginLabel } from "../utils/trust-origin-label.js";
 import { classifyTurnEntries, isTurnStartEntry } from "../utils/classify-turn-entries.js";
@@ -176,6 +177,7 @@ export function TranscriptRenderer({
 }: SharedTranscriptProps): React.ReactElement {
   const { t } = useTranslation();
   const openNativeContextMenu = useNativeContextMenu();
+  const pricingOverrides = usePricingOverrides();
 
   // Cluster fields with explicit inert defaults. These defaults ARE the
   // no-regression contract: forgetting one produces wrong runtime output
@@ -797,7 +799,7 @@ export function TranscriptRenderer({
       const summaryVendor = summary?.vendorProvider;
       const hasSubscriptionUsage = (summary?.subscriptionUsage?.length ?? 0) > 0;
       const summaryPricing = !hasSubscriptionUsage && summary?.vendorProvider && summary.vendorModel
-        ? lookupBillablePricingOptional(summary.vendorProvider, summary.vendorModel)
+        ? knownModelPricing(resolveModelPricing(summary.vendorProvider, summary.vendorModel, pricingOverrides))?.rates
         : undefined;
       // Mutating actions are gated on BOTH (a) not being in a read-only
       // view-mode slice AND (b) the callback being present. Main passes all
@@ -875,6 +877,7 @@ export function TranscriptRenderer({
     workGroupsForceOpen,
     processingDisplayLevel,
     entries,
+    pricingOverrides,
   ]);
 
   return <>{rendered}</>;

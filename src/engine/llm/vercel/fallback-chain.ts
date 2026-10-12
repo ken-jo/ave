@@ -309,7 +309,7 @@ export async function* streamWithFallback(
     // The primary route's resolved ceiling describes the primary model only;
     // a fallback model's request meets its own (the adapter resolves it from
     // the catalog when none is passed).
-    const { outputCeiling: _primaryCeiling, ...fallbackParams } = params;
+    const { outputCeiling: _primaryCeiling, catalogModel: _primaryCatalogModel, ...fallbackParams } = params;
     return {
       provider: _createProvider({
         vendor: entry.provider,
@@ -321,7 +321,11 @@ export async function* streamWithFallback(
       }),
       label: `${entry.provider}/${entry.model}`,
       identity: { provider: entry.provider, model: entry.model },
-      attemptParams: { ...fallbackParams, model: entry.model },
+      attemptParams: {
+        ...fallbackParams,
+        model: entry.model,
+        ...(params.requestedOutputTokenLimit !== undefined ? { outputTokenLimit: params.requestedOutputTokenLimit } : {}),
+      },
     };
   };
 

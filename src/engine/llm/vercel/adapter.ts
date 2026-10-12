@@ -38,6 +38,7 @@ import {
   isOpenAICompatibleVendor,
   isSelfHostedVllmVendor,
   COPILOT_BASE_URL,
+  normalizeLlmThinkingBudgetTokens,
 } from "../../../shared/llm-vendor-defaults.js";
 import { createLogger } from "../../../lib/logger.js";
 import { normalizeLocalUserContentParts } from "../../../main/subscription-attachment-input.js";
@@ -63,7 +64,7 @@ import { TOOL_SEARCH_TOOL_NAME } from "../../../tools/registry.js";
 import type { MarketplaceInstalledProviderPreset } from "../../../shared/marketplace-package-assets.js";
 import { isGuardedInsecureCredentialedModelProviderFetch } from "../marketplace-provider-fetch.js";
 import { normalizeOutputTokenLimit } from "../output-token-limit.js";
-import { isOpenAIReasoningModel, planReasoning, supportsAdaptiveThinking } from "../reasoning-plan.js";
+import { planReasoning, usesOpenAIResponsesWire } from "../reasoning-plan.js";
 import { resolveOutputCeiling } from "../../../shared/context-budget.js";
 import { toGrammarSafeToolSchemas } from "../grammar-safe-tool-schema.js";
 import { selectAssistantWireThinkingBlocks } from "../assistant-wire-content.js";
@@ -166,6 +167,9 @@ function projectNumericThinkingOutput(
     if (!projection.interleavedThinking && outputTokenLimit <= 1_024) {
       throw new Error("Output token limit must exceed 1024 when numeric thinking is not interleaved");
     }
+    const thinkingBudgetTokens = projection.interleavedThinking
+      ? thinkingBudget
+      : Math.min(thinkingBudget, outputTokenLimit - 1);
     return fetchImpl(input, {
       ...init,
       body: JSON.stringify({
@@ -173,12 +177,36 @@ function projectNumericThinkingOutput(
         max_tokens: outputTokenLimit,
         thinking: {
           ...thinking,
-          budget_tokens: projection.interleavedThinking
-            ? thinkingBudget
-            : Math.min(thinkingBudget, outputTokenLimit - 1),
+          budget_tokens: thinkingBudgetTokens,
         },
       }),
     });
+  };
+}
+
+function observeRequestControls(
+  fetchImpl: typeof fetch,
+  onRequestControls: NonNullable<StreamTurnParams["onRequestControls"]>,
+): typeof fetch {
+  return async (input, init) => {
+    try {
+      if (typeof init?.body === "string") {
+        const request = JSON.parse(init.body) as Record<string, unknown> | null;
+        const outputTokenLimit = typeof request?.max_tokens === "number"
+          ? normalizeOutputTokenLimit(request.max_tokens)
+          : undefined;
+        const thinking = request?.thinking as { type?: unknown; budget_tokens?: unknown } | undefined;
+        const thinkingBudgetTokens = thinking?.type === "enabled" && typeof thinking.budget_tokens === "number"
+          ? normalizeOutputTokenLimit(thinking.budget_tokens)
+          : undefined;
+        if (outputTokenLimit !== undefined) {
+          onRequestControls({ outputTokenLimit, ...(thinkingBudgetTokens === undefined ? {} : { thinkingBudgetTokens }) });
+        }
+      }
+    } catch {
+      // Observing the serialized controls must not change the request.
+    }
+    return fetchImpl(input, init);
   };
 }
 
@@ -288,28 +316,20 @@ export class VercelUnifiedProvider implements LLMProvider {
       // the limit the turn records. A purpose-specific limit (finalize,
       // background, memory, reviewer) arrives without one and meets the
       // catalog's here.
-      const ceiling = params.outputCeiling
-        ?? resolveOutputCeiling({ vendor: this.vendor, model: params.model })?.ceiling;
+      const baseUrl = slot === "vertex-ai" ? undefined : this.providerMetadata?.baseUrl ?? this.baseUrl;
+      const ceiling = params.outputCeiling === undefined
+        ? resolveOutputCeiling({ vendor: this.vendor, model: params.model, baseUrl, catalogModel: params.catalogModel })?.ceiling
+        : params.outputCeiling ?? undefined;
       const requestedOutputTokenLimit = normalizeOutputTokenLimit(params.outputTokenLimit);
       const outputTokenLimit = requestedOutputTokenLimit === undefined || ceiling === undefined
         ? requestedOutputTokenLimit
         : Math.min(requestedOutputTokenLimit, ceiling);
-      const numericThinking = slot === "claude" && params.enableThinking === true
-        && !supportsAdaptiveThinking(params.model);
-      const interleavedNumericThinking = numericThinking && hasTools
-        && supportsInterleavedNumericThinking(params.model);
-      const model = this.resolveModel(
-        params.model,
-        hasTools,
-        numericThinking && outputTokenLimit !== undefined
-          ? { outputTokenLimit, interleavedThinking: interleavedNumericThinking }
-          : undefined,
-      );
-
       // How much reasoning we are willing to pay for. Both families read this
       // value: the OpenAI family as a coarse effort level, the self-hosted class
       // as an exact token budget further down.
-      const budget = params.thinkingBudgetTokens ?? 10_000;
+      const budget = params.requestedThinkingBudgetTokens === undefined
+        ? params.thinkingBudgetTokens ?? 10_000
+        : normalizeLlmThinkingBudgetTokens(params.requestedThinkingBudgetTokens, outputTokenLimit);
       // Which reasoning control and level: the catalog's accepted effort
       // levels where it knows the model, the name rules where it does not
       // (reasoning-plan.ts). The turn summary records this same answer.
@@ -321,8 +341,22 @@ export class VercelUnifiedProvider implements LLMProvider {
         model: params.model,
         enableThinking: params.enableThinking === true,
         budgetTokens: budget,
-        request: { hasTools, customBaseUrl: Boolean(this.baseUrl) },
+        baseUrl,
+        catalogModel: params.catalogModel,
+        request: { hasTools },
       });
+      const isThinkingEnabled = params.enableThinking === true && reasoningPlan?.kind !== "none";
+      const numericThinking = reasoningPlan?.kind === "anthropic-numeric";
+      const interleavedNumericThinking = numericThinking && hasTools
+        && supportsInterleavedNumericThinking(params.model);
+      const model = this.resolveModel(
+        params.model,
+        hasTools,
+        numericThinking && outputTokenLimit !== undefined
+          ? { outputTokenLimit, interleavedThinking: interleavedNumericThinking }
+          : undefined,
+        params.onRequestControls,
+      );
       const reasoningEffort = reasoningPlan?.kind === "openai-effort" ? reasoningPlan.effort : undefined;
       const useReasoning = params.enableThinking === true && reasoningEffort !== undefined;
 
@@ -357,7 +391,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       if (isSelfHostedVllmVendor(slot)) {
         const compatOptions: Record<string, unknown> = {
           chat_template_kwargs: {
-            enable_thinking: params.enableThinking === true,
+            enable_thinking: isThinkingEnabled,
           },
         };
         // REASONING BUDGET. `enable_thinking` is a switch, not a dial: without
@@ -370,7 +404,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         // prompt drew 133 reasoning tokens unbudgeted and 31 at a budget of 32.
         // Servers that do not implement it ignore it, exactly as they do the
         // chat-template kwargs above.
-        if (params.enableThinking === true) {
+        if (isThinkingEnabled) {
           compatOptions.thinking_token_budget = budget;
           // The same spelling does not reach both servers this vendor class
           // fronts. vLLM reads `thinking_token_budget`; llama.cpp reads the
@@ -419,20 +453,12 @@ export class VercelUnifiedProvider implements LLMProvider {
       // Project the selected thinking mode and supported beta opt-ins.
       let headers: Record<string, string> | undefined;
       if (slot === "claude") {
-        const thinkingEnabled = params.enableThinking === true;
         const anthropicOpts: Record<string, unknown> = {};
-        if (thinkingEnabled) {
-          if (reasoningPlan?.kind === "anthropic-adaptive") {
-            anthropicOpts.thinking = {
-              type: "adaptive",
-            };
-            anthropicOpts.effort = reasoningPlan.effort;
-          } else {
-            anthropicOpts.thinking = {
-              type: "enabled",
-              budgetTokens: budget,
-            };
-          }
+        if (reasoningPlan?.kind === "anthropic-adaptive") {
+          anthropicOpts.thinking = { type: "adaptive" };
+          anthropicOpts.effort = reasoningPlan.effort;
+        } else if (reasoningPlan?.kind === "anthropic-numeric") {
+          anthropicOpts.thinking = { type: "enabled", budgetTokens: reasoningPlan.budgetTokens };
         }
         if (Object.keys(anthropicOpts).length > 0) {
           providerOptions = { ...(providerOptions ?? {}), anthropic: anthropicOpts };
@@ -568,6 +594,7 @@ export class VercelUnifiedProvider implements LLMProvider {
     modelId: string,
     _hasTools: boolean,
     numericOutputProjection?: NumericThinkingOutputProjection,
+    onRequestControls?: StreamTurnParams["onRequestControls"],
   ) {
     const slot = this.vendorSlot;
     assertCredentialedBaseUrlUsesHttps(
@@ -578,9 +605,12 @@ export class VercelUnifiedProvider implements LLMProvider {
     );
 
     if (slot === "claude") {
-      const fetchImpl = numericOutputProjection
-        ? projectNumericThinkingOutput(this.customFetch ?? globalThis.fetch, numericOutputProjection)
+      const nativeFetch = onRequestControls
+        ? observeRequestControls(this.customFetch ?? globalThis.fetch, onRequestControls)
         : this.customFetch;
+      const fetchImpl = numericOutputProjection
+        ? projectNumericThinkingOutput(nativeFetch ?? globalThis.fetch, numericOutputProjection)
+        : nativeFetch;
       const anthropic = createAnthropic({
         apiKey: this.apiKey,
         ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
@@ -607,7 +637,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       // Responses API for reasoning families (gpt-5.x / o-series); Chat
       // Completions for legacy gpt-4.x. This matches the Vercel SDK's
       // documented routing and avoids silent 400s on tool turns.
-      return isOpenAIReasoningModel(modelId)
+      return usesOpenAIResponsesWire(slot, modelId)
         ? openai.responses(modelId)
         : openai.chat(modelId);
     }
@@ -1037,6 +1067,9 @@ type StreamUsageRaw = {
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
   };
+  outputTokenDetails?: {
+    reasoningTokens?: number;
+  };
 };
 
 export async function* fullStreamToStreamEvent(
@@ -1164,6 +1197,7 @@ export async function* fullStreamToStreamEvent(
         const cacheWriteTokens =
           p.providerMetadata?.anthropic?.cacheCreationInputTokens ??
           usageRaw?.inputTokenDetails?.cacheWriteTokens;
+        const reasoningTokens = usageRaw?.outputTokenDetails?.reasoningTokens;
         const usage = usageRaw
           ? {
               inputTokens:
@@ -1172,6 +1206,7 @@ export async function* fullStreamToStreamEvent(
                 usageRaw.outputTokens ?? usageRaw.completionTokens ?? 0,
               ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
               ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+              ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
             }
           : undefined;
         yield {
@@ -1265,10 +1300,6 @@ function createProviderErrorEvent(err: unknown): Extract<StreamEvent, { type: "e
     classification: mapped.classification,
     providerError: mapped.providerError,
   };
-}
-
-function usesOpenAIResponsesWire(slot: VercelVendor, modelId: string): boolean {
-  return slot === "azure-foundry" || (slot === "openai" && isOpenAIReasoningModel(modelId));
 }
 
 function toOpenAIResponsesToolName(toolName: string): string {

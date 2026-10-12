@@ -7,6 +7,7 @@ import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } fro
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { handleUsageSummary, handleUsageRange, handleUsageDailySummary, type UsageDailySummaryInput } from "../handlers/usage.js";
+import { resolvePricingOverrides, type PricingOverride } from "../../shared/pricing-overrides.js";
 
 export function registerUsageHandlers(deps: IpcDeps): void {
   const { auditLogger } = deps;
@@ -21,6 +22,14 @@ export function registerUsageHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.usage.range, async (e, opts: { dateFrom: string; dateTo: string }) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.usage.range, e); return UNAUTHORIZED_FRAME; }
     return handleUsageRange(opts, auditLogger, pricingOverrides());
+  });
+
+  // The renderer's estimate and per-turn cost read the same corrections the
+  // usage summary does. Resolved here, in main, because the environment that
+  // can force the list is main's.
+  ipcMain.handle(CHANNELS.usage.pricingOverrides, (e): readonly PricingOverride[] | typeof UNAUTHORIZED_FRAME => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.usage.pricingOverrides, e); return UNAUTHORIZED_FRAME; }
+    return resolvePricingOverrides(pricingOverrides());
   });
 
   ipcMain.handle(CHANNELS.usage.dailySummary, async (e, input: UsageDailySummaryInput) => {

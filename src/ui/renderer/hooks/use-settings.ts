@@ -20,6 +20,7 @@ import {
 } from "../../../shared/subscription-runtime.js";
 import { selectSubscriptionRuntimeUiPolicy, type SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-ui-policy.js";
 import { resolveContextWindowForRoute, type ResolvedOutputTokenLimit } from "../../../shared/context-budget.js";
+import { syncPricingOverrides } from "./use-pricing-overrides.js";
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../../shared/llm-vendor-defaults.js";
 import {
   DEFAULT_PROCESSING_DISPLAY_LEVEL,
@@ -178,6 +179,11 @@ export function useSettings(api: AveApi): UseSettingsResult {
         { ...settings.llm, provider },
         settings.marketplace?.installedProviderPresets,
       );
+      // A saved price correction arrives as a settings snapshot; the list in
+      // force is main's answer, which the environment can override.
+      void syncPricingOverrides(api).catch((error: unknown) => {
+        console.error("[use-settings] pricing overrides could not be read", error);
+      });
       setLlmContextWindow(route.contextWindow);
       setLlmOutputTokenLimit(route.output);
       setLlmInputLimit(route.inputLimit);
@@ -201,7 +207,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
       }
       setSettingsLoaded(true);
     },
-    [],
+    [api],
   );
 
   const refresh = useCallback(async () => {

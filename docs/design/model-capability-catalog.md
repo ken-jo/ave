@@ -2,14 +2,15 @@
 
 Status: decided (issue #2501, owner decisions of 2026-10-12); being implemented in the
 seven slices of §9. Slices 1 (the contract, the generator, the bundled snapshot and its
-provenance), 2 (context windows, §4) and 3 (output limits, reasoning levels and run
-records, §5), and refresh (§7) are implemented. Modalities and prices still come from
-the code paths named in §1 and §8 until §6 lands.
+provenance), 2 (context windows, §4), 3 (output limits, reasoning levels and run
+records, §5), 5 (prices, §6) and 6 (refresh, §7) are implemented. Modalities remain
+the plan in §6 and still come from the code paths named in §1 and §8.
 
 Anchors: `src/shared/model-catalog/` (types, provider map, normalizer),
 `src/core/model-catalog/` (document hashing and verification, the bundled snapshot),
 `scripts/lib/model-catalog.ts` and `scripts/generate-model-catalog.ts` (the generator),
-`scripts/model-catalog/` (the committed input). Today's hand-kept tables are
+`scripts/model-catalog/` (the committed input), `src/shared/model-pricing.ts` (price
+resolution, §6). Today's hand-kept tables are
 `src/shared/pricing-data.ts`, `src/engine/llm/vendor-capabilities.ts` and the name
 predicates in `src/engine/llm/vercel/adapter.ts`.
 
@@ -59,7 +60,7 @@ the repository head and the schema file's blob at download time as the nearest r
   `0` is read as not stated.
 - **A listed `0` price is the source's statement, not "free".** In the full document about 650 models list zero;
   some are free tiers, many are unpriced. Cost display treats a zero price as "listed
-  zero" (slice 5).
+  zero": it is not shown as $0, and the estimate says the catalog listed it (§6).
 - Prices are USD per million tokens. `tiers` replace the base rates once the prompt
   exceeds `afterInputTokens`; the source's older `context_over_200k` form is read as a
   tier at 200,000 when no `tiers` are listed. Only prompt-size tiers are carried.
@@ -172,7 +173,9 @@ a run record's `modelCatalogSha256` names it.
 catalog states one below it (`inputLimit`, `inputLimitSource: "model-catalog"`, from
 `limits.input`). No `/models` endpoint Ave calls reports a prompt cap apart from the
 window (a gateway's `max_input_tokens` is read as the window), so the catalog is the only
-source. A declared window carries none. The usable budget is
+source. `catalogEntry` also identifies a catalog-supplied prompt cap beside an
+endpoint-reported window; preflight traces retain that entry, the cap value and its
+source for both API and subscription budgets. A declared window carries none. The usable budget is
 `min(window − Ave's output reservation, prompt cap)` and the compaction threshold is 80%
 of it (`getUsableContext`, `getPreflightThreshold`), in the engine and in the renderer's
 context ring alike; a threshold the cap lowered is traced as `thresholdSource:
@@ -200,17 +203,34 @@ falling back to a name match, and it applies to the vendor block's own model, no
 marketplace preset reached through the same vendor. The engine logs a named entry the
 catalog does not list once per route and name, so a typo does not pass silently.
 
-**A custom `baseUrl` on a mapped vendor still matches by name.** The host rule of §3.4
-holds the map to each vendor's default endpoint; at run time the user may point a mapped
-vendor elsewhere. The resolver does not compare that host with the provider's, for three
-reasons. A custom endpoint on a mapped vendor is in practice a proxy or gateway for that
-vendor's API (a LiteLLM or corporate egress proxy, a regional host) that serves the vendor's
-own model ids, so the upstream model's limits are the ones that apply. An endpoint serving
-other models under other ids misses by name, since every name step is exact or unique. And
-what the endpoint itself reports (`/models`) outranks the catalog, while a declared
-`contextWindow` or `catalogModel` outranks both, so a proxy with tighter limits is not held
-to the catalog's. A server that reuses a vendor's model id for a different model should use
-the generic OpenAI-compatible vendor, which never matches by name.
+An API child with a profile model resolves the same route using that model, preserving
+the endpoint and credential scope. It does not inherit a named entry for the parent's
+model. That identity drives provider construction, preflight and usage accounting.
+
+**A custom `baseUrl` must establish model identity.** A mapped vendor matches by name
+only in its native public-model namespace, including documented regional and
+certificate-authenticated API hosts. A different
+host may serve a different deployment under the same id: a gateway exposing `gpt-5.2` for
+a 64K deployment and listing only that id does not establish the public model's 400K
+window or 272K prompt cap. Name uniqueness within the catalog cannot identify what the
+gateway runs. Both implicit catalog limits and legacy pricing windows are skipped there;
+absent a declaration or endpoint report, the source is explicitly `fallback`, and the
+engine probes the endpoint for metadata. The 128K fallback remains a guess; a deployment
+that reports no limits needs an explicit capacity setting. A product-specific path also must match where
+the same host serves multiple catalog products.
+
+`azure-foundry` addresses deployment aliases, which may reuse any public model id.
+Its resource hostname does not identify the deployed model: use an endpoint report,
+`catalogModel`, or `contextWindow`. `vertex-ai` derives its actual endpoint from the
+SDK's project and location. Its capacity comes from explicit settings or native
+catalog metadata. Standard `/models` cache reports and background probes are excluded
+because they target a generic endpoint rather than the SDK-managed route.
+
+A proxy serving the catalog model can declare `catalogModel` to select that entry,
+including its prompt cap. This setting wins over automatic catalog name matching; an
+endpoint-reported window still outranks the entry's context limit. A declared
+`contextWindow` outranks both and carries no inferred prompt cap. These distinctions
+apply equally to native and custom endpoints.
 
 Each process installs one catalog (`src/shared/model-catalog/active.ts`), and reading
 before install throws. Main and headless install the verified boot-selected catalog at the
@@ -250,12 +270,16 @@ Implemented.
 
   The conversation loop sends `output.effective` with the thinking budget bounded
   against it (`src/engine/turn/round-llm-settings.ts`). The adapter uses that same
-  resolved ceiling when supplied; other requests meet the catalog ceiling. That is where the purpose-specific limits — finalize
+  resolved ceiling when supplied; other requests meet the eligible catalog ceiling
+  under the endpoint-identity rule in §4. That is where the purpose-specific limits — finalize
   1,024; background 16,384; memory 1,400 / 1,600 / 4,000; work report 800 / 1,000;
   reviewer 256, all unchanged — meet it. Those callers do not see an endpoint-reported
   ceiling, only the catalog's. A fallback model does not inherit the primary route's
-  resolved ceiling: `streamWithFallback` drops it, and the adapter clamps the fallback's
-  request to the fallback model's own catalog ceiling.
+  resolved ceiling or named identity: `streamWithFallback` drops them, restores the
+  original requested output, and the adapter applies the fallback model's own ceiling.
+  The original thinking budget is bounded against that fallback's effective output.
+  A chat route also carries an explicitly unknown ceiling, so the adapter cannot
+  replace the record's unknown answer with a different name match.
 - **The default is no longer written into settings.** A vendor block stores
   `outputTokenLimit` only when the user set it; the default block has none. Before,
   every saved block carried the materialized 32,000, so a stored 32,000 could not say
@@ -268,6 +292,10 @@ Implemented.
   projected next input — is recorded in the turn summary only
   (`modelSettings.remainingContextOutputTokens`); no request is clamped by it.
 - **Reasoning** (`src/engine/llm/reasoning-plan.ts`, `planReasoning`). Where the catalog
+  resolves an identity, the route carries its endpoint and eligible named entry
+  into the plan and adapter together. A child or preset does not inherit the
+  generic row's named entry, and an SDK-managed route ignores a dormant endpoint.
+  Where the catalog
   knows the model, it decides whether an OpenAI-family route (OpenAI, Azure) sends
   `reasoning_effort` and at what level. Copilot maps to no catalog provider (§3.4), so
   the name rules decide there; they send an effort only to OpenAI reasoning models, and
@@ -282,10 +310,12 @@ Implemented.
   except with interleaved thinking, where the provider allows the budget to span the
   turn. Behavior changes against the bundled snapshot: GPT-5 sends `minimal` (was `low`)
   and GPT-5.1 sends `none` (was `low`) for a budget at or below 500; a model the catalog
-  marks as not reasoning gets no effort. A reasoning model whose levels the catalog does
+  marks as not reasoning gets no reasoning control, including numeric or adaptive
+  thinking. A reasoning model whose levels the catalog does
   not list keeps the name rule: absent levels are unknown, not none.
   Chat Completions answers 400 to `reasoning_effort` on a GPT-5 turn that carries tools
-  (Copilot, and OpenAI behind a custom `baseUrl`). That rule lives in `planReasoning`
+  on the chat-only route. A custom `baseUrl` does not change the adapter's selected
+  protocol; the responses route still carries effort with tools. That rule lives in `planReasoning`
   too (`chatCompletionsRejectsToolTurnEffort`): the plan comes back as `kind: "none"`
   with the requested effort and `suppressed: "chat-completions-tool-turn"`. The adapter
   and the turn record both take this one answer, so the record never shows an effort
@@ -293,8 +323,18 @@ Implemented.
 - **Run records.** The turn summary and the audit `turn` row carry `modelSettings`
   (`src/shared/run-model-settings.ts`): the catalog `sha256`, the window and its source
   and entry, the prompt cap that bounded the budget when one did (§4), the output block
-  above, and the reasoning plan as sent. It is omitted for
-  subscription runtimes and for a turn a fallback served on another model.
+  above, and the reasoning plan for the last primary request started. A retry
+  that drops tools recomputes that plan at the dispatch boundary, after runtime and
+  cancellation guards pass. A named catalog identity also identifies the model
+  family for chat tool-turn suppression, even when the route uses a deployment alias.
+  It is omitted for subscription runtimes and when the last request used a fallback,
+  even if its provider and model match the primary: that attempt resolves generation
+  limits again. A later primary request records its own resolution at dispatch.
+  The output block records the route's resolution, which also bounds the UI estimate.
+  Native serialization can narrow it further to a transport-known model limit.
+  Its serialized output and thinking limits are recorded as `requestControls`; the
+  recorded numeric reasoning budget is updated to that serialized value. The original
+  output resolution and its sources remain available beside those request controls.
 - **UI.** The renderer's cost estimate shows a range. The upper end is the cost with
   the output at `output.effective` (before, it assumed a fixed 4,096), and the tooltip
   names who set the limit. The lower end, and the color tier, use the expected output:
@@ -306,9 +346,73 @@ Implemented.
 ## 6. Modalities and pricing (slices 4 and 5)
 
 Slice 4 replaces the vision regex lists with `modalities.input` and `attachment`, and
-reads tool support from `toolCall`. Slice 5 prices through the catalog, tiers included,
-and makes the renderer apply the user's pricing overrides as the engine already does;
-user overrides keep the highest precedence.
+reads tool support from `toolCall`.
+
+**Pricing (slice 5) is implemented.** `resolveModelPricing(vendor, model, overrides)`
+(`src/shared/model-pricing.ts`) is the one place the price sources are ordered, and
+answers the rates with their source:
+
+1. `user` — a correction for this exact vendor and model (`llm.pricingOverrides`, or
+   `AVE_PRICING_OVERRIDE`, which replaces the whole list). It states what the
+   deployment pays and is taken whole: no catalog tier or reasoning rate is mixed in,
+   and a stated zero is a known $0.
+2. `model-catalog` — the entry `resolveCatalogKey` finds (§4), with `catalogEntry`.
+3. `pricing-catalog` — the hand-kept row, for a model the catalog does not price
+   (slice 7 removes it). Azure deployments still never borrow OpenAI's row.
+4. `unknown` — shown as unknown, never as $0.
+
+A catalog entry with no price, or with only one of input and output, is unknown at its
+rank; one that lists input and output at zero falls through as well, and when nothing
+else prices the model the answer is `unknown` with `catalogListsZero` naming the entry.
+A self-hosted route is not priced from the entry its user named as `catalogModel` (§4):
+that names the model for its limits, and the public price is not what the user's own
+endpoint costs.
+
+`computeCost` (`src/shared/pricing-data.ts`) prices one provider request:
+
+- **Tiers.** The highest tier whose `afterInputTokens` the prompt exceeds (strictly: a
+  prompt exactly at the boundary pays the base) replaces the base rates for the whole
+  request; a rate the tier does not state keeps the base rate. The prompt is every
+  prompt token the provider read: fresh input plus the cache lines for Anthropic, whose
+  usage counts them apart, and the reported input for everyone else, whose count
+  already includes the cache. A turn is priced per request (`usageByModel`): a turn's
+  rounds summed are not one prompt.
+- **Cache.** Anthropic adds cache reads and writes at their rates (derived at 0.1× and
+  1.25× input when the rates state none). Every other vendor's prompt is split into
+  fresh, cache-read and cache-write parts, each at its rate, a missing cache rate being
+  the input rate. Gemini and Vertex used to ignore the cache entirely.
+- **Reasoning.** A positive `cost.reasoning` prices the reported reasoning subset of
+  output, with the remainder at the output rate. Entries from `alibaba-cn` instead
+  publish a thinking-mode output rate: once a request reports positive reasoning tokens, that rate
+  covers both thought and answer tokens. The adapter carries
+  `outputTokenDetails.reasoningTokens` through request usage, the turn summary and the
+  audit row. An absent or zero catalog reasoning rate uses the output rate; a listed
+  zero does not establish free reasoning. Without a reported split, all output uses
+  the output rate.
+
+The pre-send estimate (`use-cost-estimate.ts`) resolves current prices. Each completed
+provider request records its resolved `pricing` in `usageByModel`; the per-turn badge,
+usage dashboard and CSV use that snapshot, including an unknown or explicit free
+price. For an older audit record without a request snapshot, the recorded primary-route
+price applies only to a segment matching the audit route; otherwise current prices
+apply. Older transcript segments without snapshots resolve current prices. The
+dashboard's cache key includes the catalog's `sha256` for those older records. The run's
+`modelSettings.pricing` records the primary route's answer; request snapshots also
+cover mixed-model turns. The renderer
+applies the corrections main resolves (`ave:usage:pricing-overrides`, fetched on each
+settings snapshot; `src/ui/renderer/hooks/use-pricing-overrides.ts`) instead of reading
+the setting raw, so an environment-forced list prices the estimate and the badge as it
+prices the dashboard. Before, the renderer applied no correction at all. The estimate's
+tooltip names who stated the rates, or that the catalog listed the model at zero.
+
+Prices the snapshot of 2026-10-12 changes against the table: models the table listed
+at zero or not at all are now priced — Gemini 2.5 Pro, Flash and Flash-Lite, GPT-5.1,
+5.2 and 5.3 Codex, GPT-4o and 4o mini, GPT-4.1 nano, o1, o3, o4-mini, Claude Haiku 5.5 (with
+its 100K tier) and Vertex AI models among them; GPT-5 mini drops from $1.25/$10 to the
+listed $0.25/$2; Azure deployments named for a model the catalog's `azure` provider
+lists are priced at that entry (before, Azure was unpriced without a correction).
+Claude's dated ids (`claude-sonnet-4-20250514`, `claude-3-*`) still price from the
+table.
 
 ## 7. Refresh (slice 6)
 
@@ -398,7 +502,9 @@ these is answered:
     request-shape fact, and it moves to a host-owned request-shape table with the
     interleaved-thinking handling (slice 7).
   - `surchargeInputThreshold` / multipliers (GPT-5.4 and 5.4 Pro) — the catalog states the
-    same prices as a tier at 272,000 (2× input, 1.5× output) and slice 5 reads the tier.
+    same prices as a tier at 272,000 (2× input, 1.5× output), and slice 5 prices those
+    models from the tier; the table's form is read only for a model priced from the
+    table, and goes with it.
   - `tpmDefault` (GPT-5.4 mini and nano) — a host throttling default, kept in the
     host-policy module.
 

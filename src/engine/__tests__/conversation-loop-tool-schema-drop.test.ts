@@ -7,24 +7,26 @@
  * mirror of the provider's strict-mode rules. These tests drive a real
  * ConversationLoop with two in-scope builtin tools and a provider that 400s.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { InputClassifier } from "../../core/input-classifier.js";
 import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
-import type { LLMProvider, StreamEvent, StreamTurnParams,
+import type { LLMProvider, StreamEvent, StreamTurnParams, TurnSummary,
 } from "../llm/types.js";
+import type { LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import type { TurnDecisionEvent } from "../turn/types.js";
 
+afterEach(() => vi.restoreAllMocks());
+
 /** Provider that records the tool names it was handed on each streamTurn call. */
 class ToolRecordingProvider implements LLMProvider {
-  readonly vendor = "openai" as const;
   private index = 0;
   readonly toolNamesPerCall: string[][] = [];
-  constructor(private readonly turns: StreamEvent[][]) {}
+  constructor(private readonly turns: StreamEvent[][], readonly vendor: LLMVendor = "openai") {}
   async *streamTurn(input: StreamTurnParams): AsyncIterable<StreamEvent> {
     this.toolNamesPerCall.push((input.tools ?? []).map((t) => t.name));
     yield* this.turns[this.index++] ?? [];
@@ -49,6 +51,7 @@ type ToolSpec = { name: string; source?: "builtin" | "mcp" };
 function makeLoop(
   provider: LLMProvider,
   tools: ToolSpec[] = [{ name: "good_tool" }, { name: "bad_tool" }],
+  settings = fakeLlmSettings(),
 ) {
   const toolRegistry = new ToolRegistry();
   for (const { name, source = "builtin" } of tools) {
@@ -71,7 +74,7 @@ function makeLoop(
   }
   const loop = new ConversationLoop({
     settingsService: {
-      get: () => fakeLlmSettings(),
+      get: () => settings,
       getSecret: () => "test-key",
     },
     systemPromptBuilder: { build: () => "system" },
@@ -85,6 +88,44 @@ function makeLoop(
 }
 
 describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", () => {
+  it("records the reasoning of the retry after the last rejected tool is removed", async () => {
+    const provider = new ToolRecordingProvider([
+      [rejection("bad_tool")],
+      [{ type: "text_delta", text: "done" }, { type: "message_complete", stopReason: "end_turn" }],
+    ], "copilot");
+    const settings = fakeLlmSettings({ provider: "copilot", model: "gpt-5.4", outputTokenLimit: 32_000 });
+    settings.vendors.copilot.enableThinking = true;
+    settings.vendors.copilot.thinkingBudgetTokens = 16_000;
+    const loop = makeLoop(provider, [{ name: "bad_tool" }], settings);
+    let summary: TurnSummary | undefined;
+    await loop.runTurn("go", { onTurnSummary: (value) => { summary = value; } }, undefined,
+      { inputOrigin: "user-keyboard" });
+    expect(provider.toolNamesPerCall).toEqual([["bad_tool"], []]);
+    expect(summary?.modelSettings?.reasoning).toMatchObject({ kind: "openai-effort", effort: "high" });
+    expect(summary?.modelSettings?.reasoning).not.toHaveProperty("suppressed");
+  });
+
+  it("keeps the previous request record when a runtime switch prevents the reduced-tool retry", async () => {
+    const provider = new ToolRecordingProvider([[rejection("bad_tool")]], "copilot");
+    const settings = fakeLlmSettings({ provider: "copilot", model: "gpt-5.4", outputTokenLimit: 32_000 });
+    settings.vendors.copilot.enableThinking = true;
+    settings.vendors.copilot.thinkingBudgetTokens = 16_000;
+    let switched = false;
+    Object.defineProperty(settings, "activeChatRuntime", { get: () => switched
+      ? { kind: "subscription", provider: "codex", model: "gpt-5.5-codex" }
+      : undefined });
+    const loop = makeLoop(provider, [{ name: "bad_tool" }], settings);
+    const logTurn = vi.spyOn(loop.auditLogger, "logTurn");
+    const result = await loop.runTurn("go", {
+      onDecision: (event) => { if (event.kind === "tool_schema.drop") switched = true; },
+    }, undefined, { inputOrigin: "user-keyboard" });
+    expect(provider.toolNamesPerCall).toEqual([["bad_tool"]]);
+    expect(result.stopReason).toBe("interrupted");
+    expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: expect.objectContaining({
+      reasoning: expect.objectContaining({ kind: "none", suppressed: "chat-completions-tool-turn" }),
+    }) }));
+  });
+
   it("drops the rejected tool and retries the round with the reduced tool set", async () => {
     const provider = new ToolRecordingProvider([
       [rejection("bad_tool")],

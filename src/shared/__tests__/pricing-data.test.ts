@@ -1,12 +1,11 @@
 /**
- * Shared pricing-data tests — ensure engine (pricing.ts) and the shared
- * module expose the same prices, and that a price correction changes the
- * engine's answer without changing the shared table it is layered over.
+ * Shared pricing-data tests — the hand-kept table, the cost formula, and the
+ * seam where a price correction changes the resolved price without changing
+ * the shared table.
  */
 import { describe, expect, it } from "vitest";
 import {
   computeCost,
-  DEFAULT_PRICING,
   effectiveContextWindow,
   FALLBACK_PRICING,
   lookupBillablePricingOptional,
@@ -14,35 +13,12 @@ import {
   lookupPricingOptional,
   normalizeAiSdkUsageForCost,
 } from "../pricing-data.js";
-import { getModelPricing, PRICING_TABLE } from "../../engine/llm/pricing.js";
+import { resolveModelPricing as engineResolveModelPricing } from "../../engine/llm/pricing.js";
+import { resolveModelPricing } from "../model-pricing.js";
 
 describe("shared pricing-data", () => {
-  it("engine and shared module expose the same default table", () => {
-    // PRICING_TABLE is re-exported from the shared DEFAULT_PRICING — identity
-    // equality guarantees the engine can't silently fork.
-    expect(PRICING_TABLE).toBe(DEFAULT_PRICING);
-  });
-
-  it("shared + engine return the same prices for known models (no correction)", () => {
-    // No environment dance: `getModelPricing` takes its corrections as an
-    // argument now, so an uncorrected call is uncorrected whatever is exported.
-    const samples: Array<[string, string]> = [
-      ["claude", "claude-sonnet-4-6"],
-      ["claude", "claude-opus-4-6"],
-      ["claude", "claude-opus-4-5"],
-      ["claude", "claude-haiku-4-5"],
-      ["openai", "gpt-5.4"],
-      ["openai", "gpt-5.4-mini"],
-      ["azure-foundry", "gpt-5.4-mini"],
-      ["openai", "gpt-4.1"],
-      ["gemini", "gemini-2.5-flash"],
-      ["copilot", "gpt-4.1"],
-    ];
-    for (const [vendor, model] of samples) {
-      const fromShared = lookupPricing(vendor, model);
-      const fromEngine = getModelPricing(vendor as any, model);
-      expect(fromEngine).toEqual(fromShared);
-    }
+  it("the engine prices with the shared resolver, not a copy of it", () => {
+    expect(engineResolveModelPricing).toBe(resolveModelPricing);
   });
 
   it("prefix fallback matches known model family", () => {
@@ -154,10 +130,9 @@ describe("engine pricing with a price correction", () => {
     { vendor: "claude", model: "claude-sonnet-4-6", inputPer1M: 99, outputPer1M: 199 },
   ];
 
-  it("getModelPricing applies the correction it is given", () => {
-    const p = getModelPricing("claude", "claude-sonnet-4-6", CORRECTION);
-    expect(p.inputPer1M).toBe(99);
-    expect(p.outputPer1M).toBe(199);
+  it("the resolver applies the correction it is given", () => {
+    const p = resolveModelPricing("claude", "claude-sonnet-4-6", CORRECTION);
+    expect(p).toEqual({ source: "user", rates: { inputPer1M: 99, outputPer1M: 199 } });
   });
 
   it("shared lookupPricing stays the uncorrected list price", () => {
@@ -166,9 +141,11 @@ describe("engine pricing with a price correction", () => {
     expect(p.outputPer1M).toBe(15);
   });
 
-  it("no correction means the default table, not zero cost", () => {
-    expect(getModelPricing("claude", "claude-sonnet-4-6").inputPer1M).toBe(3);
-    expect(getModelPricing("claude", "claude-sonnet-4-6", []).inputPer1M).toBe(3);
+  it("no correction means the listed price, not zero cost", () => {
+    for (const pricing of [resolveModelPricing("claude", "claude-sonnet-4-6"), resolveModelPricing("claude", "claude-sonnet-4-6", [])]) {
+      expect(pricing.source).toBe("model-catalog");
+      expect(pricing.source !== "unknown" && pricing.rates.inputPer1M).toBe(3);
+    }
   });
 
   it("lookupPricingOptional returns undefined on miss (strict variant)", () => {

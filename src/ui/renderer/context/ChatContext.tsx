@@ -3,7 +3,6 @@ import type React from "react";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import type { RolePreset } from "../../../data/role-presets.js";
 import type { EstimateBreakdown } from "../../../lib/cost-estimator.js";
-import type { ModelPricing } from "../../../shared/pricing-data.js";
 import type { LLMVendor } from "../../../shared/llm-vendor-defaults.js";
 import type { Attachment } from "../types/attachments.js";
 import type { SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-ui-policy.js";
@@ -128,12 +127,6 @@ export interface ChatContextValue {
   // Cost (unknown for runtimes without a verified billing contract).
   costEstimate?: EstimateBreakdown;
   costBadgeClass?: string;
-
-
-
-  activePricing?: ModelPricing;
-
-
 
   activeVendor?: LLMVendor;
 

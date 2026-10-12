@@ -26,7 +26,10 @@
  * IMPORTANT: this module must stay pure — no `process.env`, no Node-only
  * imports. All env-override logic lives in `engine/llm/pricing.ts`.
  *
- * Pricing source: list prices announced by each vendor. Free / unknown → 0.
+ * Pricing source: list prices announced by each vendor. A zero row is not a
+ * price: `lookupBillablePricingOptional` skips it, and the price resolution
+ * (`shared/model-pricing.ts`) reads this table only for a model the model
+ * catalog does not price.
  * Context window source: vendor model docs. Last verified 2026-10-08 (Claude
  * rows); other vendors' rows were last verified 2026-05.
  */
@@ -58,12 +61,23 @@ export function toPricingVendor(vendor: string): PricingVendor {
     : "openai-compatible";
 }
 
-/** $ per 1M tokens, plus context window metadata. */
-export interface ModelPricing {
+/**
+ * A price tier: once a request's prompt exceeds `afterInputTokens`, the rates
+ * it states replace the base rates for that whole request. A rate the tier
+ * does not state keeps the base rate.
+ */
+export interface TokenRateTier {
+  afterInputTokens: number;
+  inputPer1M?: number;
+  outputPer1M?: number;
+  cacheReadPer1M?: number;
+  cacheWritePer1M?: number;
+}
+
+/** What one request costs per token: $ per 1M tokens, nothing about capacity. */
+export interface TokenRates {
   inputPer1M: number;
   outputPer1M: number;
-  /** Default API tier context window in tokens. */
-  contextWindow: number;
   /**
    * Cache read price ($/1M tokens). Anthropic bills prompt-cache hits as a
    * separate additive line; OpenAI/Azure-compatible providers report cached
@@ -78,29 +92,40 @@ export interface ModelPricing {
    */
   cacheWritePer1M?: number;
   /**
-   * Beta-tier context window (Anthropic `context-1m-2025-08-07`). When
+   * Reasoning-token price ($/1M tokens), when the model bills reasoning apart
+   * from the rest of its output. The reasoning tokens a provider reports are
+   * part of the output count; they are priced at this rate and the remainder
+   * at `outputPer1M`. Undefined → reasoning is ordinary output.
+   */
+  reasoningPer1M?: number;
+  /** A thinking-mode rate covers all output when the request reports positive reasoning tokens. */
+  reasoningRateScope?: "output";
+  /** Prompt-size tiers, ascending by `afterInputTokens` (the model catalog's `cost.tiers`). */
+  tiers?: readonly TokenRateTier[];
+  /**
+   * Long-context input surcharge — input tokens BEYOND `surchargeInputThreshold`
+   * trigger a session-wide price multiplier on BOTH input + output. The
+   * hand-kept table states gpt-5.4 / gpt-5.4-pro this way: when prompt
+   * > 272K, the full request is billed at 2x input + 1.5x output (issue #900).
+   * The model catalog states the same prices as a tier; the table's form goes
+   * with the table (issue #2501, slice 7).
+   */
+  surchargeInputThreshold?: number;
+  surchargeInputMultiplier?: number;
+  surchargeOutputMultiplier?: number;
+}
+
+/** A hand-kept table row: token rates plus the context window metadata the table also carries. */
+export interface ModelPricing extends TokenRates {
+  /** Default API tier context window in tokens. */
+  contextWindow: number;
+  /**
+   * Beta-tier context window (`context-1m-2025-08-07`). When
    * defined, the adapter auto-sends the beta header and the model delivers
    * this larger window. Renderer / engine MUST resolve to this value when
    * present — see {@link effectiveContextWindow}.
    */
   contextWindow1MBeta?: number;
-  /**
-   * Long-context input surcharge — input tokens BEYOND `surchargeInputThreshold`
-   * trigger a session-wide price multiplier on BOTH input + output. Currently
-   * applies to OpenAI's gpt-5.4 / gpt-5.4-pro: when prompt > 272K, the full
-   * session is billed at 2x input + 1.5x output. Renderer cost badge + cost
-   * estimator MUST honor this so users see real billing, not standard-tier
-   * understatement (issue #900).
-   *
-   * Set on per-model basis when the provider documents such a tier. Undefined
-   * → standard tier only (no surcharge).
-   */
-  surchargeInputThreshold?: number;
-  surchargeInputMultiplier?: number;
-  surchargeOutputMultiplier?: number;
-
-
-
   tpmDefault?: number;
 }
 
@@ -115,7 +140,7 @@ export const DEFAULT_PRICING: Record<PricingVendor, Record<string, ModelPricing>
   // `anthropicCacheRates` would otherwise derive 0.1×. Cache writes stay at the
   // derived 1.25× (5m TTL) for every row below.
   // Not listed: Haiku 5.5 — its price depends on prompt length (≤100K vs above),
-  // and the `claude` branch of `computeCost` has no tier support yet.
+  // which the model catalog states as a tier and `computeCost` applies.
   claude: {
     "claude-fable-5-1":            { inputPer1M: 10,   outputPer1M: 50, contextWindow: 1_000_000, cacheReadPer1M: 0.25 },
     "claude-fable-5":              { inputPer1M: 10,   outputPer1M: 50, contextWindow: 1_000_000 },
@@ -262,7 +287,7 @@ export const FALLBACK_PRICING: ModelPricing = {
  * `FALLBACK_PRICING` on miss so cost / window math always has *some* value
  * to work with (zero pricing + 128K window — conservative).
  *
- * Does NOT consult env overrides. Use `engine/llm/pricing.ts:getModelPricing()`
+ * Does NOT consult env overrides. Use `shared/model-pricing.ts:resolveModelPricing()`
  * for the override-aware variant.
  */
 export function lookupPricing(
@@ -313,7 +338,7 @@ export function lookupPricingOptional(
   return undefined;
 }
 
-export function hasKnownTokenPricing(
+function hasKnownTokenPricing(
   pricing: Pick<ModelPricing, "inputPer1M" | "outputPer1M"> | undefined,
 ): pricing is ModelPricing {
   return !!pricing && (pricing.inputPer1M > 0 || pricing.outputPer1M > 0);
@@ -363,7 +388,7 @@ export function lookupBillablePricingOptional(
  * sync without duplication.
  */
 export function anthropicCacheRates(
-  pricing: Pick<ModelPricing, "inputPer1M" | "cacheReadPer1M" | "cacheWritePer1M">,
+  pricing: Pick<TokenRates, "inputPer1M" | "cacheReadPer1M" | "cacheWritePer1M">,
 ): { read: number; write: number } {
   return {
     read: pricing.cacheReadPer1M ?? pricing.inputPer1M * 0.1,
@@ -391,6 +416,12 @@ export interface UsageForCost {
   outputTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /**
+   * The part of `outputTokens` the provider reports as reasoning (AI SDK
+   * `outputTokenDetails.reasoningTokens`). Priced at `reasoningPer1M` when the
+   * rates state one; otherwise it is ordinary output.
+   */
+  reasoningTokens?: number;
 }
 
 /**
@@ -417,11 +448,57 @@ export function normalizeAiSdkUsageForCost<T extends UsageForCost | undefined>(
 }
 
 /**
- * Compute cost (USD) for one turn of usage against per-1M pricing.
+ * The prompt size a request's price tier is chosen by: every prompt token the
+ * provider read, cached or not. Cache-additive usage (after
+ * {@link normalizeAiSdkUsageForCost}) counts fresh input apart from the cache
+ * lines, so they are added back; everyone else reports the cache inside the
+ * prompt count already.
+ */
+export function promptTokensForTier(usage: UsageForCost, vendor: string): number {
+  const input = nonNegative(usage.inputTokens);
+  if (toPricingVendor(vendor) !== "claude") return input;
+  return input + nonNegative(usage.cacheReadTokens) + nonNegative(usage.cacheWriteTokens);
+}
+
+/**
+ * The rates in force for a request whose prompt is `promptTokens` long: the
+ * highest tier the prompt exceeds (strictly — a prompt exactly at the boundary
+ * is billed at the rates below it), with any rate the tier does not state kept
+ * from the base. No tiers, or a prompt within the first, is the base.
+ */
+export function ratesForPrompt(rates: TokenRates, promptTokens: number): TokenRates {
+  let tier: TokenRateTier | undefined;
+  for (const candidate of rates.tiers ?? []) {
+    if (promptTokens > candidate.afterInputTokens && (tier === undefined || candidate.afterInputTokens > tier.afterInputTokens)) {
+      tier = candidate;
+    }
+  }
+  if (tier === undefined) return rates;
+  return {
+    ...rates,
+    inputPer1M: tier.inputPer1M ?? rates.inputPer1M,
+    outputPer1M: tier.outputPer1M ?? rates.outputPer1M,
+    ...(tier.cacheReadPer1M !== undefined ? { cacheReadPer1M: tier.cacheReadPer1M } : {}),
+    ...(tier.cacheWritePer1M !== undefined ? { cacheWritePer1M: tier.cacheWritePer1M } : {}),
+  };
+}
+
+function nonNegative(n: number | undefined): number {
+  // Token usage is monotonic, so a negative or non-finite value is malformed
+  // upstream data; letting it through would produce negative USD and pollute
+  // the usage dashboard.
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * Compute cost (USD) for one request's usage against per-1M rates.
  *
  * Vendor argument selects how `inputTokens` and the cache fields combine —
  * see {@link UsageForCost} for the semantic asymmetry between Anthropic
- * (cache-additive) and OpenAI / Gemini (cache-included).
+ * (cache-additive) and everyone else (cache-included). The price tier is
+ * chosen by the request's whole prompt ({@link promptTokensForTier}), so a
+ * caller must price each provider request on its own: a turn's sum of rounds
+ * is not one prompt.
  *
  * Lives here (not in `engine/llm/pricing.ts`) so renderer-side billing UI
  * (`TokenCostBadge`) consumes the same formula without pulling Node-only
@@ -429,65 +506,48 @@ export function normalizeAiSdkUsageForCost<T extends UsageForCost | undefined>(
  */
 export function computeCost(
   usage: UsageForCost,
-  pricing: ModelPricing,
+  pricing: TokenRates,
   vendor: string,
 ): number {
-  // Clamp non-finite + negative inputs to 0 — token usage is monotonic, so a
-  // negative value indicates upstream malformed data; letting it through
-  // would produce negative USD and pollute the usage dashboard.
-  const safe = (n: number | undefined): number =>
-    typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
-
-  const input = safe(usage.inputTokens);
-  const output = safe(usage.outputTokens);
-  const cacheRead = safe(usage.cacheReadTokens);
-  const cacheWrite = safe(usage.cacheWriteTokens);
+  const input = nonNegative(usage.inputTokens);
+  const output = nonNegative(usage.outputTokens);
+  const cacheRead = nonNegative(usage.cacheReadTokens);
+  const cacheWrite = nonNegative(usage.cacheWriteTokens);
+  const reasoning = Math.min(output, nonNegative(usage.reasoningTokens));
+  const rates = ratesForPrompt(pricing, promptTokensForTier(usage, vendor));
+  const pricedReasoning = rates.reasoningRateScope === "output" && reasoning > 0 ? output : reasoning;
 
   const per1M = (tokens: number, rate: number): number =>
     (tokens / 1_000_000) * rate;
+  const outputCost = (outMul: number): number =>
+    per1M(output - pricedReasoning, rates.outputPer1M * outMul)
+    + per1M(pricedReasoning, (rates.reasoningPer1M ?? rates.outputPer1M) * outMul);
 
-  switch (toPricingVendor(vendor)) {
-    case "claude": {
-
-
-      const { read: cacheReadRate, write: cacheWriteRate } = anthropicCacheRates(pricing);
-      return (
-        per1M(input, pricing.inputPer1M) +
-        per1M(cacheRead, cacheReadRate) +
-        per1M(cacheWrite, cacheWriteRate) +
-        per1M(output, pricing.outputPer1M)
-      );
-    }
-    case "openai":
-    case "copilot":
-    case "azure-foundry":
-    case "openai-compatible": {
-
-      // double-count. Instead split the provider-reported prompt tokens into
-      // fresh + cached portions so OpenAI/Azure published cached-input rates
-      // are visible in Ave cost surfaces.
-      //
-
-
-      const inSurcharge =
-        typeof pricing.surchargeInputThreshold === "number"
-        && input > pricing.surchargeInputThreshold;
-      const inMul = inSurcharge ? (pricing.surchargeInputMultiplier ?? 1) : 1;
-      const outMul = inSurcharge ? (pricing.surchargeOutputMultiplier ?? 1) : 1;
-      const cachedInput = Math.min(input, cacheRead);
-      const freshInput = Math.max(0, input - cachedInput);
-      const cachedInputRate = pricing.cacheReadPer1M ?? pricing.inputPer1M;
-      return (
-        per1M(freshInput, pricing.inputPer1M * inMul) +
-        per1M(cachedInput, cachedInputRate * inMul) +
-        per1M(output, pricing.outputPer1M * outMul)
-      );
-    }
-    case "gemini":
-    case "vertex-ai": {
-
-
-      return per1M(input, pricing.inputPer1M) + per1M(output, pricing.outputPer1M);
-    }
+  if (toPricingVendor(vendor) === "claude") {
+    const { read: cacheReadRate, write: cacheWriteRate } = anthropicCacheRates(rates);
+    return (
+      per1M(input, rates.inputPer1M) +
+      per1M(cacheRead, cacheReadRate) +
+      per1M(cacheWrite, cacheWriteRate) +
+      outputCost(1)
+    );
   }
+  // The provider's prompt count already includes the cache, so adding the
+  // cache lines on top would double-count. Split the prompt into fresh, cache
+  // read and cache write instead, so a published cache rate shows in every
+  // cost surface; a cache rate the rates do not state is the input rate.
+  const inSurcharge =
+    typeof rates.surchargeInputThreshold === "number"
+    && input > rates.surchargeInputThreshold;
+  const inMul = inSurcharge ? (rates.surchargeInputMultiplier ?? 1) : 1;
+  const outMul = inSurcharge ? (rates.surchargeOutputMultiplier ?? 1) : 1;
+  const cachedRead = Math.min(input, cacheRead);
+  const cachedWrite = Math.min(input - cachedRead, cacheWrite);
+  const freshInput = input - cachedRead - cachedWrite;
+  return (
+    per1M(freshInput, rates.inputPer1M * inMul) +
+    per1M(cachedRead, (rates.cacheReadPer1M ?? rates.inputPer1M) * inMul) +
+    per1M(cachedWrite, (rates.cacheWritePer1M ?? rates.inputPer1M) * inMul) +
+    outputCost(outMul)
+  );
 }

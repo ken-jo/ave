@@ -44,7 +44,7 @@ import {
   type AuditTurnEntry,
   type UsageTrendPoint,
 } from "../usage-stats.js";
-import { getModelPricing, computeCost } from "../llm/pricing.js";
+import { computeCost, knownModelPricing, resolveModelPricing } from "../llm/pricing.js";
 import { resolvePricingOverrides } from "../../shared/pricing-overrides.js";
 
 function turn(partial: Partial<AuditTurnEntry>): AuditTurnEntry {
@@ -66,6 +66,45 @@ function summaryWithInput(inputTokens = 100): ReturnType<typeof computeUsageSumm
     }),
   ], new Date("2026-07-04T12:00:00Z"));
 }
+
+it("uses recorded request prices after a pricing correction changes", () => {
+  const entries = [turn({
+    route: "openai/gpt-5.4",
+    usageByModel: [{
+      vendorProvider: "openai", vendorModel: "gpt-5.4",
+      tokenUsage: { inputTokens: 100_000, outputTokens: 0 },
+      pricing: { source: "user", rates: { inputPer1M: 1, outputPer1M: 0 } },
+    }],
+  })];
+  const summary = computeUsageSummary(entries, new Date(), [
+    { vendor: "openai", model: "gpt-5.4", inputPer1M: 10, outputPer1M: 0 },
+  ]);
+  expect(summary.today.cost).toBeCloseTo(0.1, 9);
+  expect(summary.perModel[0].cost).toBeCloseTo(0.1, 9);
+});
+
+it("keeps a request recorded as unpriced unknown when the current catalog prices it", () => {
+  const summary = computeUsageSummary([turn({
+    usageByModel: [{
+      vendorProvider: "openai", vendorModel: "gpt-5.4",
+      tokenUsage: { inputTokens: 100_000, outputTokens: 0 },
+      pricing: { source: "unknown" },
+    }],
+  })], new Date());
+  expect(summary.today.unknownCostTurns).toBe(1);
+});
+
+it("uses the recorded primary price only for matching older request segments", () => {
+  const summary = computeUsageSummary([turn({
+    route: "openai/gpt-5.4",
+    modelSettings: { pricing: { source: "user", rates: { inputPer1M: 1, outputPer1M: 0 } } },
+    usageByModel: [
+      { vendorProvider: "openai", vendorModel: "gpt-5.4", tokenUsage: { inputTokens: 100_000, outputTokens: 0 } },
+      { vendorProvider: "claude", vendorModel: "claude-sonnet-4-6", tokenUsage: { inputTokens: 100_000, outputTokens: 0 } },
+    ],
+  })], new Date(), [{ vendor: "openai", model: "gpt-5.4", inputPer1M: 10, outputPer1M: 0 }]);
+  expect(summary.today.cost).toBeCloseTo(0.1 + 0.3, 9);
+});
 
 /**
  * Every bucket boundary in this file is the HOST's midnight, so the fixture
@@ -317,7 +356,7 @@ describe("usage-stats", () => {
   });
 
   it("respects env pricing override", () => {
-    // `getModelPricing` no longer reads the environment for itself — the
+    // The price resolver does not read the environment for itself — the
     // resolver decides between the setting and the variable, and the caller
     // that caches on the answer hands it in. The claim under test is the same:
     // an env blob makes the reported price the corrected one.
@@ -332,15 +371,13 @@ describe("usage-stats", () => {
         },
       }),
     });
-    const p = getModelPricing("claude", "claude-sonnet-4-6", overrides);
-    expect(p.inputPer1M).toBe(100);
-    // The context window survives, because the override merges over the base
-    // instead of replacing it — the old path only kept it if the blob restated it.
-    expect(p.contextWindow).toBe(200_000);
+    const p = knownModelPricing(resolveModelPricing("claude", "claude-sonnet-4-6", overrides));
+    expect(p?.source).toBe("user");
+    expect(p?.rates.inputPer1M).toBe(100);
     expect(
       computeCost(
         { inputTokens: 1_000_000, outputTokens: 1_000_000 },
-        p,
+        p!.rates,
         "claude",
       ),
     ).toBeCloseTo(200, 5);
@@ -488,7 +525,8 @@ describe("usage-stats", () => {
         timestamp: new Date().toISOString(),
         sessionId: "legacy-openai",
         type: "turn",
-        route: "openai/gpt-4o",
+        // A zero row in the hand-kept table that the catalog does not price.
+        route: "openai/o1-mini",
         tokenUsage: {
           inputTokens: 10_000,
           outputTokens: 1_000,
@@ -501,11 +539,11 @@ describe("usage-stats", () => {
     expect(summary.today.unknownCostTurns).toBe(1);
   });
 
-  it("marks Azure Foundry model-name inherited pricing as unknown without an explicit override", () => {
+  it("prices an Azure deployment named for a model from the catalog's Azure entry", () => {
     const entries: AuditTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
-        sessionId: "azure-model-alias",
+        sessionId: "azure-model-name",
         type: "turn",
         route: "azure-foundry/gpt-5.4-mini",
         tokenUsage: {
@@ -517,6 +555,22 @@ describe("usage-stats", () => {
     ];
     const summary = computeUsageSummary(entries, new Date());
     expect(summary.perVendor[0].vendor).toBe("azure-foundry");
+    // azure/gpt-5.4-mini: 5K fresh at $0.75/M + 5K cached at $0.075/M + 1K out at $4.5/M.
+    expect(summary.perVendor[0].cost).toBeCloseTo(0.008625, 9);
+    expect(summary.perVendor[0].unknownCostTurns ?? 0).toBe(0);
+  });
+
+  it("does not lend OpenAI's table price to an Azure deployment alias", () => {
+    const entries: AuditTurnEntry[] = [
+      {
+        timestamp: new Date().toISOString(),
+        sessionId: "azure-model-alias",
+        type: "turn",
+        route: "azure-foundry/gpt-5.4-mini-prod-eastus",
+        tokenUsage: { inputTokens: 10_000, outputTokens: 1_000 },
+      },
+    ];
+    const summary = computeUsageSummary(entries, new Date());
     expect(summary.perVendor[0].cost).toBe(0);
     expect(summary.perVendor[0].unknownCostTurns).toBe(1);
   });
@@ -735,7 +789,7 @@ describe("usage-stats", () => {
   });
 
   it("OpenAI billing-contract: cached input is discounted without changing total token volume", () => {
-    const gpt54mini = getModelPricing("openai", "gpt-5.4-mini");
+    const gpt54mini = knownModelPricing(resolveModelPricing("openai", "gpt-5.4-mini"))!.rates;
     const cached = computeCost(
       { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 900_000 },
       gpt54mini,

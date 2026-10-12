@@ -2,7 +2,7 @@
 
 
 
-import type { LLMProvider, StreamEvent, ToolCallBlock, ToolSchema, GenericMessage, TokenUsage, ThinkingBlock } from "../llm/types.js";
+import type { LLMProvider, StreamTurnParams, StreamEvent, ToolCallBlock, ToolSchema, GenericMessage, TokenUsage, ThinkingBlock } from "../llm/types.js";
 import { isContextLengthError } from "../auto-compact.js";
 import { prepareMarkedToolResultsForWire } from "../wire-serialize.js";
 import { classifyProviderError } from "../llm/error-classifier.js";
@@ -36,14 +36,12 @@ export interface StreamCollectParams {
    * Sampling defaults stay with the provider. The resolved output ceiling and
    * thinking policy travel separately from presentation-only stream smoothing.
    */
-  llmSettings: {
+  llmSettings: Pick<StreamTurnParams,
+    "thinkingBudgetTokens" | "requestedThinkingBudgetTokens" | "outputTokenLimit"
+    | "requestedOutputTokenLimit" | "outputCeiling" | "catalogModel"
+  > & {
     streamSmoothing: "none" | "word" | "char";
     enableThinking: boolean;
-    thinkingBudgetTokens?: number;
-    /** Per-vendor output ceiling; see LLMVendorSettings.outputTokenLimit. */
-    outputTokenLimit?: number;
-    /** The model ceiling `outputTokenLimit` was resolved against; see StreamTurnParams.outputCeiling. */
-    outputCeiling?: number;
   };
   abortSignal?: AbortSignal;
   /**
@@ -55,6 +53,9 @@ export interface StreamCollectParams {
 
   onReasoningDelta?: (text: string) => void;
   onTextDelta?: (text: string) => void;
+  /** Called at provider dispatch after runtime and cancellation guards pass. */
+  onRequestStarted?: () => void;
+  onRequestControls?: StreamTurnParams["onRequestControls"];
 }
 
 export type StreamCollectResult =
@@ -138,6 +139,7 @@ export async function collectRoundStream(
   const wireMessages = prepareMarkedToolResultsForWire(messages);
 
   try {
+    params.onRequestStarted?.();
     for await (const event of provider.streamTurn({
       model,
       systemPrompt,
@@ -155,6 +157,10 @@ export async function collectRoundStream(
         ? {}
         : { outputTokenLimit: llmSettings.outputTokenLimit }),
       ...(llmSettings.outputCeiling === undefined ? {} : { outputCeiling: llmSettings.outputCeiling }),
+      ...(llmSettings.requestedOutputTokenLimit === undefined ? {} : { requestedOutputTokenLimit: llmSettings.requestedOutputTokenLimit }),
+      ...(llmSettings.requestedThinkingBudgetTokens === undefined ? {} : { requestedThinkingBudgetTokens: llmSettings.requestedThinkingBudgetTokens }),
+      ...(llmSettings.catalogModel === undefined ? {} : { catalogModel: llmSettings.catalogModel }),
+      ...(params.onRequestControls === undefined ? {} : { onRequestControls: params.onRequestControls }),
       abortSignal,
     }) as AsyncIterable<StreamEvent>) {
       if (abortSignal?.aborted) return { kind: "interrupted", text };

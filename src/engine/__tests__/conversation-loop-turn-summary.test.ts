@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { InputClassifier } from "../../core/input-classifier.js";
 import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
-import type { GenericMessage, LLMProvider, StreamEvent, ToolSchema, TurnSummary,
+import type { GenericMessage, LLMProvider, StreamEvent, StreamTurnParams, ToolSchema, TurnSummary,
 } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
@@ -268,9 +268,52 @@ describe("ConversationLoop onTurnSummary", () => {
       },
       // Thinking budget 8,000 maps to "medium", which gpt-5.4-mini accepts.
       reasoning: { kind: "openai-effort", requestedEffort: "medium", effort: "medium", source: "model-catalog" },
+      // The rates the turn is priced at, and the entry that stated them.
+      pricing: {
+        source: "model-catalog",
+        catalogEntry: "openai/gpt-5.4-mini",
+        rates: { inputPer1M: 0.75, outputPer1M: 4.5, cacheReadPer1M: 0.075 },
+      },
     };
     expect(summary!.modelSettings).toEqual({ ...recorded, remainingContextOutputTokens: expect.any(Number) });
     expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({ modelSettings: recorded }));
+  });
+
+  it("records a user price correction as the run's pricing and keeps reported reasoning tokens per request", async () => {
+    const provider: LLMProvider = {
+      vendor: "openai",
+      async *streamTurn() {
+        yield { type: "text_delta", text: "answer" };
+        yield {
+          type: "message_complete",
+          stopReason: "end_turn",
+          usage: { inputTokens: 60, outputTokens: 10, reasoningTokens: 4 },
+        };
+      },
+    };
+    const auditLogger = new AuditLogger();
+    const logTurn = vi.spyOn(auditLogger, "logTurn");
+    const loop = createLoopWithRegistry(provider, new ToolRegistry(), {
+      settingsService: {
+        get: () => ({
+          ...fakeLlmSettings({ provider: "openai", model: "gpt-5.4-mini" }),
+          pricingOverrides: [{ vendor: "openai", model: "gpt-5.4-mini", inputPer1M: 0.5, outputPer1M: 3 }],
+        }),
+        getSecret: () => "test-key",
+      },
+      auditLogger,
+    } as never);
+    let summary: TurnSummary | null = null;
+
+    await loop.runTurn("질문", { onTurnSummary: (s) => { summary = s; } }, undefined, { inputOrigin: "user-keyboard" });
+
+    expect(summary!.modelSettings?.pricing).toEqual({ source: "user", rates: { inputPer1M: 0.5, outputPer1M: 3 } });
+    expect(summary!.usageByModel).toEqual([
+      expect.objectContaining({ pricing: summary!.modelSettings!.pricing, tokenUsage: expect.objectContaining({ outputTokens: 10, reasoningTokens: 4 }) }),
+    ]);
+    expect(logTurn).toHaveBeenCalledWith(expect.objectContaining({
+      usageByModel: [expect.objectContaining({ pricing: summary!.modelSettings!.pricing, tokenUsage: expect.objectContaining({ reasoningTokens: 4 }) })],
+    }));
   });
 
   it("emits a summary for a turn whose only output was reasoning", async () => {
@@ -507,6 +550,83 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(auditLogger.logTurn).toHaveBeenCalledWith(
       expect.objectContaining({ route: "openai/gpt-5.4-mini" }),
     );
+  });
+
+  async function sameIdentityFallbackRecords(resumePrimary = false) {
+    vi.useFakeTimers();
+    const model = "gpt-5.4-mini";
+    const llm = fakeLlmSettings({ model });
+    const primarySent: StreamTurnParams[] = [];
+    const fallbackSent: StreamTurnParams[] = [];
+    const provider = new FallbackProvider({
+      vendor: "openai",
+      async *streamTurn(params: StreamTurnParams): AsyncIterable<StreamEvent> {
+        primarySent.push(params);
+        params.onRequestControls?.({ outputTokenLimit: params.outputTokenLimit! });
+        if (primarySent.length <= 5) {
+          yield { type: "error", error: "503 fixture unavailable", classification: "network" };
+        } else {
+          yield { type: "text_delta", text: "primary done" };
+          yield { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 20, outputTokens: 2 } };
+        }
+      },
+    }, [{ provider: "openai", model }], () => "test-key", () => ({
+      vendor: "openai",
+      async *streamTurn(params: StreamTurnParams): AsyncIterable<StreamEvent> {
+        fallbackSent.push(params);
+        params.onRequestControls?.({ outputTokenLimit: params.outputTokenLimit! });
+        if (resumePrimary) yield { type: "tool_call", id: "fallback-call", name: "read_item", input: {} };
+        else yield { type: "text_delta", text: "done" };
+        yield { type: "message_complete", stopReason: resumePrimary ? "tool_use" : "end_turn", usage: { inputTokens: 10, outputTokens: 1 } };
+      },
+    }));
+    const auditLogger = { logTurn: vi.fn(), logToolCall: vi.fn(), isPermissionAuditChainReady: () => false };
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({
+      name: "read_item", description: "Read an item", source: "builtin", category: "read", version: "1",
+      jsonSchema: { type: "object", properties: {} }, isReadOnly: () => true,
+      execute: async () => ({ output: "value", isError: false }),
+    }));
+    const loop = createLoopWithRegistry(provider, registry, {
+      settingsService: {
+        get: () => ({ ...llm, modelListCache: {
+          [llmModelListCacheKey("openai", llm.vendors.openai.baseUrl)]: {
+            vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: [model],
+            modelEntries: [{ id: model, maxOutputTokens: 4_096 }], fetchedAt: new Date(0).toISOString(),
+          },
+        } }),
+        getSecret: () => "test-key",
+      } as never,
+      auditLogger: auditLogger as never,
+    });
+    const onTurnSummary = vi.fn<(summary: TurnSummary) => void>();
+    const pending = loop.runTurn("reply", { onTurnSummary }, undefined, { inputOrigin: "user-keyboard" });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await pending;
+    expect(primarySent).toHaveLength(resumePrimary ? 6 : 5);
+    expect(primarySent[0]?.model).toBe(model);
+    expect(primarySent[0]?.outputTokenLimit).toBe(4_096);
+    expect(fallbackSent).toHaveLength(1);
+    expect(fallbackSent[0]?.model).toBe(model);
+    expect(fallbackSent[0]?.outputTokenLimit).toBe(32_000);
+    expect(fallbackSent[0]?.outputCeiling).toBeUndefined();
+    expect(onTurnSummary).toHaveBeenCalledTimes(1);
+    expect(auditLogger.logTurn).toHaveBeenCalledTimes(1);
+    return { summary: onTurnSummary.mock.calls[0]![0], audit: auditLogger.logTurn.mock.calls[0]![0] };
+  }
+
+  it.each(["summary", "audit"] as const)("omits primary resolution from a same-identity fallback's %s record", async (surface) => {
+    const record = (await sameIdentityFallbackRecords())[surface];
+    expect(record).toBeDefined();
+    expect(record.modelSettings).toBeUndefined();
+  });
+
+  it("records a later primary request after a fallback tool round", async () => {
+    const records = await sameIdentityFallbackRecords(true);
+    for (const record of [records.summary, records.audit]) {
+      expect(record.modelSettings?.output).toMatchObject({ effective: 4_096, effectiveSource: "provider-reported" });
+      expect(record.modelSettings?.requestControls).toEqual({ outputTokenLimit: 4_096 });
+    }
   });
 
   it("keeps mixed-provider fallback rounds out of single-model turn badge pricing", async () => {

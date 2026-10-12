@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { costTier, estimateTokens, estimateTurnCost, formatCostBadge } from "../cost-estimator.js";
+import { costTier, estimateTokens, estimateTurnTokens, formatCostBadge } from "../cost-estimator.js";
 
 describe("cost-estimator", () => {
   it("re-exports the shared engine heuristic, including Korean weighting", () => {
@@ -9,29 +9,24 @@ describe("cost-estimator", () => {
     expect(estimateTokens("안녕".repeat(100))).toBe(66);
   });
 
-  it("estimateTurnCost sums history + draft against the pricing table", () => {
-    const out = estimateTurnCost({
+  it("estimateTurnTokens sums history + draft and takes the output limit", () => {
+    const out = estimateTurnTokens({
       historySerialized: ["{\"role\":\"user\",\"content\":\"hi\"}"],
       draft: "hello world",
       maxOutputTokens: 1000,
-      pricing: { inputPer1M: 3, outputPer1M: 15 },
     });
     expect(out.inputTokens).toBeGreaterThan(0);
     expect(out.outputTokens).toBe(1000);
-    expect(out.outputCost).toBeCloseTo((1000 / 1_000_000) * 15);
-    expect(out.total).toBeCloseTo(out.inputCost + out.outputCost);
   });
 
-  it("zero draft yields only history input cost", () => {
-    const out = estimateTurnCost({
+  it("zero draft and no history yield no tokens", () => {
+    const out = estimateTurnTokens({
       historySerialized: [],
       draft: "",
       maxOutputTokens: 0,
-      pricing: { inputPer1M: 3, outputPer1M: 15 },
     });
     expect(out.inputTokens).toBe(0);
     expect(out.outputTokens).toBe(0);
-    expect(out.total).toBe(0);
   });
 
   it("costTier bucketing matches the spec thresholds", () => {
