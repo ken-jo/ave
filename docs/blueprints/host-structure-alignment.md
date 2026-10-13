@@ -1,5 +1,7 @@
 # Host Structure Alignment (#1409 SDK/API/CLI boundary + #1411 mega-file decomposition)
 
+> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
+
 > Status: **Landed** (single-PR, atomic commits C0–C19, branch `refactor/host-structure-alignment`).
 > Supersedes the "first refactor target" framing of #1411 with a full, dependency-ordered
 > decomposition, and lands the #1409 contract firewall that makes both safe in one PR.

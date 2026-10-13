@@ -322,7 +322,7 @@ owns that discipline itself; the conformance suite checks it (§10).
 0.0.76's `srt-win exec` relays the target's stdout but no stdin (measured 2026-10-10:
 `echo hi | srt-win exec -- cmd /c more` prints nothing), so on that one path the reference
 runtime does not use its pipes for the protocol (`child-loopback-link.ts`). The child
-listens on `127.0.0.1:0` and writes one line to stdout — `AVE-CHILD-LISTEN <port> <nonce>`,
+listens on `127.0.0.1:0` and writes one line to stdout — `Ave-CHILD-LISTEN <port> <nonce>`,
 the nonce 32 fresh random bytes that never cross the socket. The host reads that line from
 the stdout it owns and connects from `127.0.0.1`; then both ends prove they hold the
 nonce, each proof bound to that one TCP connection by both ends' addresses and ports,
@@ -4511,7 +4511,7 @@ Verified on 2026-10-03, each with the source that proves it.
    (`git ls-remote --tags`); `package.json` is still `0.13.0`; `mirror.json` holds
    `2/v0.13.0` as the candidate (`publishedTag: null`, `generatedFrom: ee7fcbc04`) and
    `2/v0.12.0` still unpublished. E2′ has not run: no Actions run exists on
-   `former_org/ave` since 2026-09-22. The marketplace §18 slices B–G (#2602,
+   `ken-jo/ave` since 2026-09-22. The marketplace §18 slices B–G (#2602,
    #2606, #2607, #2613, #2614, #2615, #2616) are on `main` too, so folder sources,
    policy `additional[]`, `requiredInstalls` binding and automatic updates exist in the
    tree this plan builds on.
@@ -4636,7 +4636,7 @@ Verified on 2026-10-03, each with the source that proves it.
     The repository's daily `validate` run (`.github/workflows/validate.yml`, job
     `published`, `:140-160`) has failed every day since 2026-09-25 (runs 36090539502 …
     36960604551) at `git clone --quiet --filter=blob:none
-    https://github.com/former_org/ave.git` with "fatal: could not read Username
+    https://github.com/ken-jo/ave.git` with "fatal: could not read Username
     for 'https://github.com'": anonymous access to a repository the API reports as
     `visibility: public` returns 404 (`curl` 2026-10-03), which is the organization flag
     `TODO.md` records, not a defect in the job.

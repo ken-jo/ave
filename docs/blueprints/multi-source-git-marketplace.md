@@ -151,7 +151,7 @@ the mockup, including layout measurements at the narrow width tier.
 
 | PR | Content |
 |---|---|
-| 5.1 | `web/public/.well-known/former-service.json` and `web/public/announcements/v1.json` (initially empty list) |
+| 5.1 | `web/public/.well-known/ave-service.json` and `web/public/announcements/v1.json` (initially empty list) |
 | 5.2 | `service/client.ts`: base resolution (policy → accepted move for this build constant → build constant), `movedTo` accepted only with a matching `movedFrom`, at most one move per build constant; announcement fetch and cache, `en` label fallback, dismissed ids unchanged |
 | 5.3 | Telemetry reads its same-origin endpoint from the service document; inactive when absent; no marketplace API key |
 

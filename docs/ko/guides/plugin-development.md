@@ -826,7 +826,7 @@ Hello World / Local Indexer / Meeting 의 실제 플러그인 소스는 공식 �
 - `plugins/local-indexer/source/`
 - `plugins/meeting/source/`
 
-예전 개별 저장소(`ave-plugin-meeting` 등)와 `ave-plugin-template` 은 보관(archive)되었습니다. 새 플러그인은 같은 저장소의 `templates/extension/` 에서 시작하고, 각 플러그인의 `src/hostPlugin.ts` 를 현행 HostApi 사용 패턴 레퍼런스로 삼으세요. 플러그인은 앱 릴리스 태그의 공개 계약·매니페스트 스키마·호스트 프로토콜 스키마를 `contract/` 로 벤더링해 쓰고 (`contract/sources.json` 에 태그와 해시 기록), 앱 0.12.0 이상용 플러그인은 `extensions["ai.agent-connector.ave"].requires.hostProtocol: "2"` 를 선언합니다.
+예전 개별 저장소(`ave-plugin-meeting` 등)와 `ave-plugin-template` 은 보관(archive)되었습니다. 새 플러그인은 같은 저장소의 `templates/extension/` 에서 시작하고, 각 플러그인의 `src/hostPlugin.ts` 를 현행 HostApi 사용 패턴 레퍼런스로 삼으세요. 플러그인은 앱 릴리스 태그의 공개 계약·매니페스트 스키마·호스트 프로토콜 스키마를 `contract/` 로 벤더링해 쓰고 (`contract/sources.json` 에 태그와 해시 기록), 앱 0.14.0 이상용 플러그인은 `extensions["ai.agent-connector.ave"].requires.hostProtocol: "3"` 과 `requires.minAppVersion: "0.14.0"` 을 선언합니다. 프로토콜 3은 `ave/*` 와이어이므로, 프로토콜 2(`ave/*`)로 만든 플러그인은 Ave 릴리스 태그에서 계약을 다시 벤더링해야 합니다.
 
 ---
 

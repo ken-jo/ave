@@ -1,5 +1,7 @@
 # Research: Network-Restricted Sandbox Evaluation Framework
 
+> 기록 문서: 앱 이름이 Ave였을 때 작성되어 당시의 이름과 경로를 그대로 둡니다. 현재 앱은 Ave이며 데이터 폴더는 `~/.ave`, 환경 변수는 `AVE_*`입니다.
+
 **Status: DECIDED** (all E-D1–E-D5 finalized 2026-05-16)
 
 **Issue**: #691 (sandbox capability + reviewer SOT integration)

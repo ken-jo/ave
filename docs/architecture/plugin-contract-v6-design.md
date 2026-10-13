@@ -1,5 +1,7 @@
 # Plugin Contract v6 — Pure MCP Tool Object (single SoT) + MCP Isolation Parity (#885)
 
+> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
+
 > Historical implementation design. Its tool-shape decisions remain useful,
 > but its SDK package and release instructions are superseded by
 > [the app release tag contract](../design/multi-source-git-marketplace.md#56-plugin-contract-for-authors).

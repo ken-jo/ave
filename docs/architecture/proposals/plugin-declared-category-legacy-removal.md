@@ -1,5 +1,7 @@
 # Plugin Declared-Category Legacy Removal
 
+> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
+
 > Status: **Proposal** (issue #2112, part 1 of 3). Inventory reflects the code
 > as of this branch; source files and tests are authoritative when this prose
 > and implementation disagree.

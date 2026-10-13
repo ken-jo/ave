@@ -126,7 +126,7 @@ Tool sets `_meta.ui.resourceUri:"ui://<plugin>/<view>"`; host `resources/read` f
 
 ## 4. Where #811 command hooks fit
 
-**MCP has no host-side tool-call hook/veto primitive** (elicitation is server-initiated, not a host policy gate). So **hooks remain entirely a Ave-host concern, layered around the host's MCP `tools/call`.** The #811 hook-runtime-expansion design (`docs/architecture/hook-runtime-expansion-design.md`) is fully compatible — only fire-point anchoring changes:
+**MCP has no host-side tool-call hook/veto primitive** (elicitation is server-initiated, not a host policy gate). So **hooks remain entirely an Ave-host concern, layered around the host's MCP `tools/call`.** The #811 hook-runtime-expansion design (`docs/architecture/hook-runtime-expansion-design.md`) is fully compatible — only fire-point anchoring changes:
 
 | #811 element | MCP-aligned anchoring |
 |------------------------------------------------------- |---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

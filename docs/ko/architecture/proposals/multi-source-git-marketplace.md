@@ -1,5 +1,7 @@
 # 멀티 소스 Git 마켓플레이스 — 아키텍처
 
+> 기록 문서: 앱 이름이 Ave였을 때 작성되어 당시의 이름과 경로를 그대로 둡니다. 현재 앱은 Ave이며 데이터 폴더는 `~/.ave`, 환경 변수는 `AVE_*`입니다.
+
 > 상태: **구현됨** (오너 결정 2026-09-23, git 마켓플레이스 전환 2026-09-25). 영어 원문
 > [../../../architecture/proposals/multi-source-git-marketplace.md](../../../architecture/proposals/multi-source-git-marketplace.md)이
 > 기준이고, 이 문서는 그 한국어 미러입니다. 내용이 다르면 영어 원문을 따릅니다.

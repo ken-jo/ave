@@ -1,5 +1,7 @@
 # MCP Apps — What #1593 Unlocked (Assessment, and What Shipped)
 
+> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
+
 - Status: **Assessment CLOSED — every item below landed in PR #1600.** Kept as the decision record: it is why the #1600 work exists, and it carries one correction that changed the plan mid-flight (see *Correction*).
 - Forward-looking SoT for plugin authors is **not this file** — it is `docs/guides/mcp-app-authoring.md`. Read that to build an app; read this to understand why the host looks the way it does.
 - Trigger: PR #1593 (`02efcb87`) replaced the dead hand-rolled MCP-Apps bridge with the upstream `@modelcontextprotocol/ext-apps` `AppBridge` over a host-owned sandbox-proxy transport. This doc answered: *now that the bridge landed, what can we improve on the app and plugin side that we could not before?*

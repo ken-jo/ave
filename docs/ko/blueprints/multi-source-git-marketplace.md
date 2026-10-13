@@ -149,7 +149,7 @@ Harbor Serif 페이스가 적용되었습니다.
 
 | PR | 내용 |
 |---|---|
-| 5.1 | `web/public/.well-known/former-service.json`과 `web/public/announcements/v1.json`(처음엔 빈 목록) |
+| 5.1 | `web/public/.well-known/ave-service.json`과 `web/public/announcements/v1.json`(처음엔 빈 목록) |
 | 5.2 | `service/client.ts`: base 결정(정책 → 이 빌드 상수에 대해 받아들인 이전 → 빌드 상수), `movedFrom`이 맞을 때만 `movedTo` 수락, 빌드 상수당 최대 한 번. 공지 가져오기와 캐시, `en` 라벨 대체, 닫은 id는 그대로 |
 | 5.3 | 텔레메트리는 서비스 문서에서 같은 오리진 엔드포인트를 읽고, 없으면 비활성. 마켓플레이스 API 키 없음 |
 

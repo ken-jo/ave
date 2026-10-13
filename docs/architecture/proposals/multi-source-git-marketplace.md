@@ -1,5 +1,7 @@
 # Multi-source Git Marketplace — Architecture
 
+> Historical record: written when the app was named Ave, so names and paths below are as they were then. The app is now Ave (data folder `~/.ave`, environment variables `AVE_*`).
+
 > Status: **Implemented** (owner decisions 2026-09-23; the app switched to
 > the git marketplace on 2026-09-25). Supersedes the single-server marketplace
 > model of the removed `src/plugins/cloud-marketplace-fetcher.ts` and the

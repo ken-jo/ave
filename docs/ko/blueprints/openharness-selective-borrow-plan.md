@@ -1,5 +1,7 @@
 # OpenHarness Selective Borrow Plan
 
+> 기록 문서: 앱 이름이 Ave였을 때 작성되어 당시의 이름과 경로를 그대로 둡니다. 현재 앱은 Ave이며 데이터 폴더는 `~/.ave`, 환경 변수는 `AVE_*`입니다.
+
 > **Status**: Design / executed — 2026-04-15
 > **Upstream**: [HKUDS/OpenHarness](https://github.com/HKUDS/OpenHarness) v0.1.6 (MIT License, Python CLI agent harness)
 > **Decision**: Reject full fork, adopt **selective TS port + architectural inspiration**
