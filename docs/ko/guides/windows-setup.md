@@ -32,7 +32,7 @@ git clone https://github.com/ken-jo/ave.git
 
 ```
 former_org/
-└── ave/                  ← host (여기서 빌드·실행)
+└── ave/                       ← host (여기서 빌드·실행)
 ```
 
 ## 2. 설치
