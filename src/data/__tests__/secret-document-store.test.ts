@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
 import { FileLockReleaseError } from "../../lib/with-file-lock.js";
@@ -82,6 +82,21 @@ function parseDocument(path: string): {
 describe("SecretDocumentStore atomicity and policy", () => {
   let root: string;
   let path: string;
+
+  // The first child of a run pays the cold start — tsx compiling the fixture's
+  // import graph, and on Windows the first scan of the spawned binary — which
+  // took the first cross-process case to 13.7 s, then past its 20 s budget, on
+  // the Windows runner while the later ones took 3-4 s. One child run here
+  // pays it once, so each case's budget covers only its own contention.
+  beforeAll(async () => {
+    const warm = mkdtempSync(join(tmpdir(), "ave-secret-document-warm-"));
+    try {
+      const result = await waitForExit(spawnNode([childFixture, "set", join(warm, "ave-secrets.json"), "warm", "up"]));
+      expect(result.code, result.stderr).toBe(0);
+    } finally {
+      await cleanupTmpDir(warm);
+    }
+  }, 120_000);
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "ave-secret-document-"));
