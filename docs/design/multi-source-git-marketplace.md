@@ -2066,7 +2066,7 @@ otherwise requires explicit approval and locks user-policy editing; see
       { "id": "team-share", "path": "\\\\files.corp\\ave\\marketplace" }      // a folder: `path` instead of `url`
     ],
     "defaultInstalls": [{ "kind": "plugin", "name": "wiki-search", "source": "corp" }],
-    "requiredInstalls": [{ "kind": "plugin", "name": "orion-api", "source": "corp" }]
+    "requiredInstalls": [{ "kind": "plugin", "name": "portal", "source": "corp" }]
   },
   "service": { "baseUrl": "https://ave.corp.example" }
 }

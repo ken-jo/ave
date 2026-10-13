@@ -166,7 +166,7 @@ export interface OpenAuthWindowResult {
  * When a visible auth window for the same key is already open or its
  * open-promise is still in-flight, a second `openAuthWindow` call focuses the
  * existing window and awaits the existing promise instead of spawning a second
- * `BrowserWindow` — fixing the ORION double-login-window (a webview `bootstrapAuth`
+ * `BrowserWindow` — fixing a portal double-login-window (a webview `bootstrapAuth`
  * plus a host-triggered `loginTool` both firing).
  *
  * `show: false` silent warmups are intentionally EXCLUDED — they are invisible,

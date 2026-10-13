@@ -1,5 +1,8 @@
 # Extensions and plugins
 
+Plugin names such as `mail`, `portal`, `assistant` and `ave-plugin-repo` in this
+record are generic stand-ins for plugins that are no longer part of this project.
+
 Status: design, decided by owner direction of 2026-09-27 and the owner decisions
 recorded in §8; implementation follows the slices of §7. This page supersedes
 [`../architecture/proposals/plugin-concept-vs-portable-standard.md`](../architecture/proposals/plugin-concept-vs-portable-standard.md)
@@ -29,7 +32,7 @@ The owner's direction splits today's single "plugin" concept in two:
 
 | | **Extension** | **Plugin** |
 |---|---|---|
-| What it is | Today's code plugin: `meeting`, `lyra-mail`, `local-indexer`, `vega-helper`, `hello-world`, the `templates/plugin` scaffold, `orion` (`orion-api`), `git` | A standard Agent Plugins 1.0.0 bundle: skills, MCP servers, prompts, agent profiles, routine templates and (one slice later) hooks, with no Ave runtime code |
+| What it is | Today's code plugin: `meeting`, `mail`, `local-indexer`, `assistant`, `hello-world`, the `templates/plugin` scaffold, `orion` (`portal`), `git` | A standard Agent Plugins 1.0.0 bundle: skills, MCP servers, prompts, agent profiles, routine templates and (one slice later) hooks, with no Ave runtime code |
 | Structural marker | `extensions["ai.agent-connector.ave"].entry` (required today, `schemas/plugin-manifest.schema.json:122-125`, `:135-138`), or the `process` entry the amendment adds (amendment §2.1) | no `entry` and no `process` under `extensions["ai.agent-connector.ave"]` |
 | Runs | its own confined process speaking `ave/host/*` and MCP (protocol design §2, §3) | nothing of its own. Its MCP servers run as MCP servers do today; its hooks run as bundled hooks do; its other components are content the host reads |
 | Lifecycle gates | Lease and Admission (amendment §9.1) | the content install path and the per-component consent of §3 |
@@ -1306,7 +1309,7 @@ Vocabulary only, in the surfaces that speak to users and readers:
 
 | Identifier | Stays | Why |
 |---|---|---|
-| Plugin IDs (`^[a-z][a-z0-9-]*$`, `AGENTS.md:135`) | `meeting`, `lyra-mail`, … | They key the registry, the receipts, `~/.ave/plugins/<id>/` and its `data/`, host-secret grants (marketplace design §10.3), `pluginAccess` grants, alert kinds (`<pluginId>--<kind>`), routine scopes and audit rows. A rename is a data migration of every user's home directory for a word |
+| Plugin IDs (`^[a-z][a-z0-9-]*$`, `AGENTS.md:135`) | `meeting`, `mail`, … | They key the registry, the receipts, `~/.ave/plugins/<id>/` and its `data/`, host-secret grants (marketplace design §10.3), `pluginAccess` grants, alert kinds (`<pluginId>--<kind>`), routine scopes and audit rows. A rename is a data migration of every user's home directory for a word |
 | Tool names (`^[a-zA-Z_][a-zA-Z0-9_]*$`) | unchanged | They are the model-facing surface and the permission rules' keys; the three namespaces stay distinct without runtime conversion (`AGENTS.md:189-190`) |
 | IPC channels `ave:plugins:*`, `ave:marketplace:*` | unchanged | Locked by the channel inventory (`src/ipc/__tests__/channel-inventory.test.ts:1-8`) and the preload shape (`src/__tests__/preload-shape.test.ts:1-9`); a rename is a coherent handler/preload/type/caller/test change that buys nothing users see |
 | `plugin.json` file name | unchanged | Agent Plugins §5.1 mandates it for both extensions and plugins; it is the specification's name, not Ave's |
@@ -1343,7 +1346,7 @@ repository's `templates/plugin` directory is renamed `templates/extension` at th
 republish wave (§6.4) because it is documentation for authors and the app never reads
 it (marketplace design §3.2: "the client never reads them"); the amendment validates
 and updates it in source at X (amendment §6.4, "Applicability"), and the rename rides
-that update. `orion` (`orion-api`, company git) and `git` (its own repository) change their
+that update. `orion` (`portal`, company git) and `git` (its own repository) change their
 README wording under this design; their republish with protocol 2 is the amendment's
 requirement, not this page's, and happens regardless.
 

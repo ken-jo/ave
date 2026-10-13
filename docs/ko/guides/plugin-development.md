@@ -284,7 +284,7 @@ interface Tool {
 #### id
 
 - 플러그인 패키지 식별자. **시스템이 플러그인을 추적하는 유일한 키**.
-- 현재 출시된 플러그인은 모두 flat 형식 (`meeting`, `local-indexer`, `lyra-mail`).
+- 현재 출시된 플러그인은 모두 flat 형식 (`meeting`, `local-indexer`).
 - 도트 형식 (`com.example.meeting-recorder`) 도 허용되지만 **필수 아님**.
 - UI 슬롯 ID, 이벤트 네임스페이스의 프리픽스로 사용 가능.
 - ⚠️ **LLM tool name 과 별개** — `id` 에 도트가 있어도 `tools[]` 는 언더스코어만 허용.
@@ -316,7 +316,7 @@ interface Tool {
 
 #### capabilities (선택)
 
-- 기능 태그. `lyra-mail-consumer` 만 런타임에서 강제되고, 나머지는 선언 기반 discoverability 용. 자세히는 [capabilities 체계](#capabilities-체계).
+- 기능 태그. 일부만 런타임에서 강제되고, 나머지는 선언 기반 discoverability 용. 자세히는 [capabilities 체계](#capabilities-체계).
 
 #### startupTimeoutMs (선택)
 
@@ -447,12 +447,6 @@ interface PluginHostApi {
   saveNote(title: string, content: string): void;
   getSecret(key: string): string | null;
 
-  // Microsoft Graph (capabilities: ["lyra-mail-consumer"] 선언 필수)
-  getLyraMailToken(): Promise<string | null>;
-  startLyraMailAuth(openBrowser: (url: string) => Promise<void>): Promise<void>;
-  isLyraMailAuthenticated(): boolean;
-  getLyraMailAccount(): string | null;                 // ← 문자열 또는 null
-
   // 확장 API
   callLlm(prompt: string, options?: { maxTokens?: number; systemPrompt?: string },
   ): Promise<string>;
@@ -518,33 +512,7 @@ hostApi.saveNote(`기록-${id.slice(0,8)}`, `# ${title}\n\n${body}`);
 | `llm.apiKey.anthropic` | Anthropic API 키 |
 | `llm.apiKey.google` | Google API 키 |
 
-### 7. Microsoft Graph 메서드 (capability gated)
-
-아래 메서드들은 `manifest.capabilities` 에 `"lyra-mail-consumer"` 가 **선언되어야** 호출 가능합니다. 미선언 플러그인이 호출 시 `capability not declared: lyra-mail-consumer` 예외가 던져집니다.
-
-```typescript
-// 인증 상태
-const signedIn: boolean = hostApi.isLyraMailAuthenticated();
-
-// 계정 식별자 (문자열; 일반적으로 homeAccountId 또는 username)
-const account: string | null = hostApi.getLyraMailAccount();
-
-// OAuth 플로우 — 호스트가 생성한 URL 을 어떻게 열지 플러그인이 결정
-await hostApi.startLyraMailAuth(async (url) => {
-  // 렌더러가 URL 을 내부 뷰/외부 브라우저로 열도록 처리
-  await shell.openExternal(url);
-});
-
-// 액세스 토큰 (자동 갱신 포함)
-const token: string | null = await hostApi.getLyraMailToken();
-
-// 인증 상태 변경은 `lyra-mail.auth.changed` 이벤트로 수신
-hostApi.onEvent("lyra-mail.auth.changed", () => {
-  context.log(`auth changed → ${hostApi.isLyraMailAuthenticated()}`);
-});
-```
-
-### 8. callLlm() — 호스트 LLM 공유
+### 7. callLlm() — 호스트 LLM 공유
 
 호스트가 관리하는 LLM 프로바이더를 통해 텍스트를 생성합니다. 플러그인이 직접 LLM 키를 보유하지 않고도 인텔리전트 기능을 구현할 수 있습니다.
 
@@ -561,7 +529,7 @@ const summary = await hostApi.callLlm("이 회의록을 3줄로 요약해줘", {
 - 모든 호출은 AuditLogger 에 `tool_call` 이벤트로 기록됩니다 (`pluginId`, `promptLen`, `maxTokens`).
 - 호스트 LLM 이 준비되지 않으면 에러.
 
-### 9. logEvent()
+### 8. logEvent()
 
 `AuditLogger` 로 구조화된 로그 이벤트를 라우팅합니다. 자동으로 `plugin:<pluginId>` 컨텍스트, `sessionId="plugin"` 태그가 붙습니다.
 
@@ -569,7 +537,7 @@ const summary = await hostApi.callLlm("이 회의록을 3줄로 요약해줘", {
 hostApi.logEvent("warn", "upstream timeout", { url, elapsedMs });
 ```
 
-### 10. onShutdown()
+### 9. onShutdown()
 
 Electron `before-quit` 직전에 호출되는 정리 훅을 등록합니다.
 
@@ -665,15 +633,12 @@ capability 는 호스트가 특정 pluginId 를 몰라도 통합 지점을 결�
 | capability | 의미 | 강제? | 예시 |
 |-------------------- |-------------------------------------------------- |--------------- |------------- |
 | `meeting-recorder` | 실시간 음성 캡처 + STT | advisory | meeting |
-| `mail-source` | 이메일 소스 연결 | advisory | lyra-mail |
-| `calendar-source` | 캘린더 소스 연결 | advisory | lyra-mail |
-| `background-watcher` | 플러그인 `start()` lifecycle 안에서 폴러/워처 기동 | advisory | lyra-mail |
+| `mail-source` | 이메일 소스 연결 | advisory | 메일·캘린더 플러그인 |
+| `calendar-source` | 캘린더 소스 연결 | advisory | 메일·캘린더 플러그인 |
+| `background-watcher` | 플러그인 `start()` lifecycle 안에서 폴러/워처 기동 | advisory | 메일·캘린더 플러그인 |
 | `knowledge-index` | 문서 인덱스/검색 제공 | advisory | local-indexer |
-| `lyra-mail-consumer` | HostApi 의 LYRA Mail 메서드 사용 | **강제** (§B-5) | lyra-mail |
 
-현재 **런타임이 강제하는 capability 는 `lyra-mail-consumer` 하나뿐**입니다. 미선언 플러그인이 `getLyraMailToken` / `startLyraMailAuth` / `isLyraMailAuthenticated` / `getLyraMailAccount` 중 하나라도 호출하면 `capability not declared: lyra-mail-consumer` 예외가 발생합니다.
-
-나머지는 discoverability 용 — 정책·UI·라우팅이 필요에 따라 조회합니다. enum 화 및 capability 기반 게이팅 확대는 [열린 TODO](#미구현--열린-todo) 참고.
+이 태그들은 discoverability 용 — 정책·UI·라우팅이 필요에 따라 조회합니다. enum 화 및 capability 기반 게이팅 확대는 [열린 TODO](#미구현--열린-todo) 참고.
 
 ---
 
@@ -809,10 +774,6 @@ const hostApi: PluginHostApi = {
   addTask: vi.fn(),
   saveNote: vi.fn(),
   getSecret: vi.fn(() => null),
-  getLyraMailToken: vi.fn(async () => null),
-  startLyraMailAuth: vi.fn(async (_openBrowser) => {}),
-  isLyraMailAuthenticated: vi.fn(() => false),
-  getLyraMailAccount: vi.fn(() => null),    // string | null
   callLlm: vi.fn(async () => "mock"),
   logEvent: vi.fn(),
   onShutdown: vi.fn(),
@@ -839,7 +800,6 @@ ave/plugins/installed/{plugin-id}/
   "version": 1,
   "plugins": [
     { "id": "meeting",   "manifestPath": "plugins/installed/meeting/plugin.json",   "enabled": true },
-    { "id": "lyra-mail",  "manifestPath": "plugins/installed/lyra-mail/plugin.json",  "enabled": true },
     { "id": "local-indexer", "manifestPath": "plugins/installed/local-indexer/plugin.json", "enabled": true }
   ]
 }
@@ -860,14 +820,13 @@ ave/plugins/installed/{plugin-id}/
 
 ## 완전한 예제
 
-Hello World / Local Indexer / Meeting / Microsoft 365 (Outlook 메일+캘린더) 의 실제 플러그인 소스는 공식 마켓플레이스 모노레포 [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace) 의 `plugins/<name>/source/` 에 있습니다:
+Hello World / Local Indexer / Meeting 의 실제 플러그인 소스는 공식 마켓플레이스 모노레포 [`ken-jo/agent-marketplace`](https://github.com/ken-jo/agent-marketplace) 의 `plugins/<name>/source/` 에 있습니다:
 
 - `plugins/hello-world/source/` (최소 예제)
 - `plugins/local-indexer/source/`
 - `plugins/meeting/source/`
-- `plugins/lyra-mail/source/` (구 `ave-plugin-lyra-post` + `ave-plugin-lyra-cal` 통합)
 
-예전 개별 저장소(`ave-plugin-meeting` 등)와 `ave-plugin-template` 은 보관(archive)되었고, vega-helper 플러그인은 은퇴했습니다. 새 플러그인은 같은 저장소의 `templates/extension/` 에서 시작하고, 각 플러그인의 `src/hostPlugin.ts` 를 현행 HostApi 사용 패턴 레퍼런스로 삼으세요. 플러그인은 앱 릴리스 태그의 공개 계약·매니페스트 스키마·호스트 프로토콜 스키마를 `contract/` 로 벤더링해 쓰고 (`contract/sources.json` 에 태그와 해시 기록), 앱 0.12.0 이상용 플러그인은 `extensions["ai.agent-connector.ave"].requires.hostProtocol: "2"` 를 선언합니다.
+예전 개별 저장소(`ave-plugin-meeting` 등)와 `ave-plugin-template` 은 보관(archive)되었습니다. 새 플러그인은 같은 저장소의 `templates/extension/` 에서 시작하고, 각 플러그인의 `src/hostPlugin.ts` 를 현행 HostApi 사용 패턴 레퍼런스로 삼으세요. 플러그인은 앱 릴리스 태그의 공개 계약·매니페스트 스키마·호스트 프로토콜 스키마를 `contract/` 로 벤더링해 쓰고 (`contract/sources.json` 에 태그와 해시 기록), 앱 0.12.0 이상용 플러그인은 `extensions["ai.agent-connector.ave"].requires.hostProtocol: "2"` 를 선언합니다.
 
 ---
 
@@ -877,7 +836,7 @@ Hello World / Local Indexer / Meeting / Microsoft 365 (Outlook 메일+캘린더)
   - [ ] `id`, `name`, `version`, `entry`, `tools` 필수 필드
   - [ ] `description` 1줄 요약 (LLM 카탈로그 품질)
   - [ ] `tools[]` 언더스코어 패턴, `^[a-zA-Z_][a-zA-Z0-9_]*$`
-  - [ ] 필요 시 `capabilities`, `lyra-mail-consumer` 등
+  - [ ] 필요 시 `capabilities` 등
   - [ ] 각 `tools[]` 항목에 `_meta.ui.visibility` 설정 (LLM 전용 `["model"]` / UI·auth 전용 `["app"]` / 겸용 `["model","app"]`)
   - [ ] `startupTimeoutMs` (start 가 느릴 수 있다면)
   - [ ] 각 `tools[].description` ≥ 10자
@@ -902,7 +861,7 @@ Hello World / Local Indexer / Meeting / Microsoft 365 (Outlook 메일+캘린더)
 아래 항목은 가이드·스키마·정책상 정의되어 있지만 **현재 런타임에서 강제되지 않는** 사항이거나 아직 도구/스크립트가 없는 사항입니다. 향후 스프린트에서 좁힐 대상.
 
 1. **`notificationEvents.event ⊂ eventSubscriptions` 교차 검증** — 선언했지만 구독하지 않아 알림이 절대 뜨지 않는 상태 경고가 없음.
-2. **`capabilities` enum 화** — 현재 `lyra-mail-consumer` 만 런타임에서 강제. 나머지는 자유 문자열. 정책 게이트 확장 필요.
+2. **`capabilities` enum 화** — 일부만 런타임에서 강제. 나머지는 자유 문자열. 정책 게이트 확장 필요.
 3. **`eventSubscriptions` 민감 이벤트 allowlist / 네임스페이스 정책** — 임의 플러그인이 `email.*`, `calendar.*` 같은 타 플러그인 네임스페이스를 구독할 수 있음.
 4. **`ui[]` kind 별 필드 규약** 은 스키마가 담고 있지만, 실제 로더는 엄격한 fallback 처리(`entry ?? page`)를 하므로 일부 오탈자가 silent 하게 넘어갈 여지가 남음.
 

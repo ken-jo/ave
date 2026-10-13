@@ -201,9 +201,9 @@ Every Ave plugin repository is private — verified against the org:
 ```
 ave-plugin-meeting          PRIVATE
 ave-plugin-local-indexer    PRIVATE
-ave-plugin-lyra-mail         PRIVATE
-ave-plugin-orion               PRIVATE
-ave-plugin-vega-helper   PRIVATE
+ave-plugin-mail         PRIVATE
+ave-plugin-portal               PRIVATE
+ave-plugin-assistant   PRIVATE
 ave-plugin-template         PRIVATE
 agent-marketplace             PRIVATE
 ave                     PUBLIC
@@ -215,7 +215,7 @@ Two consequences, and they pull in opposite directions:
 
 - **Good.** Signing does not publish private repository names, tag names, commit
   SHAs, or the internal reusable-workflow path to a globally readable log.
-  `ave-plugin-orion` is an internal-API integration whose *existence* is currently
+  `ave-plugin-portal` is an internal-API integration whose *existence* is currently
   gated to the internal network (`_version_publicly_visible`). Putting it in
   public Rekor would defeat that, permanently and unremovably. Public Sigstore is
   therefore not an option for Ave regardless of anything else.
@@ -255,12 +255,12 @@ two facts do not compose.
 
 The escape routes, and why each is closed:
 
-- **Make the plugin repos public.** Not available. `ave-plugin-orion` is an
+- **Make the plugin repos public.** Not available. `ave-plugin-portal` is an
   internal-API integration whose catalog visibility is deliberately gated to the
   internal network, and `marketplace-internal-visibility` exists precisely to
   keep its existence off the public catalog. Publishing the repository would
   defeat that more thoroughly than the catalog gate protects it. The same
-  argument applies to `ave-plugin-lyra-mail`.
+  argument applies to `ave-plugin-mail`.
 - **Sign against the Sigstore public good instance directly with `cosign`,
   bypassing GitHub's attestation product.** This works technically — Fulcio
   accepts the Actions OIDC token from a private repo — but it writes the
@@ -509,7 +509,7 @@ For `ave-plugin-meeting@1.2.3` the pinned claim is, in full:
 | `extensions.issuer` | `https://token.actions.githubusercontent.com` | exact. Selects GitHub Actions OIDC and nothing else. |
 | `subjectAlternativeName` | `^https://github\.com/former_org/\.github/\.github/workflows/marketplace-publish\.yml@refs/heads/main$` — anchored | the **Build Signer**: only the org's reusable publish workflow may sign. A workflow in the plugin repo itself cannot. |
 | OID `…57264.1.12` Source Repository URI | `https://github.com/former_org/<slug-repo>` | exact, per plugin, derived from the catalog row |
-| OID `…57264.1.15` Source Repository Identifier | the numeric repo id | survives renames; `pageindex → local-indexer` and `vega-early → vega-helper` both happened |
+| OID `…57264.1.15` Source Repository Identifier | the numeric repo id | survives renames; `pageindex → local-indexer` and `vega-early → assistant` both happened |
 | OID `…57264.1.17` Source Repository Owner Identifier | the numeric `former_org` org id | a repo named `former_org/ave-plugin-meeting` in a *different* account cannot match |
 | OID `…57264.1.14` Source Repository Ref | `refs/tags/v<version>` — exact, from the catalog version | binds the artifact to the released tag, not to a branch |
 | OID `…57264.1.18` Build Config URI | `https://github.com/former_org/<slug-repo>/.github/workflows/publish.yml@refs/tags/v<version>` | the **caller**'s top-level workflow, distinct from the Build Signer above. Pins that the thin caller was the entry point. |

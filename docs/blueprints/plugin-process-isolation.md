@@ -1136,9 +1136,9 @@ reader does not spend a quarter building the wire that cannot work.*
 *It opened naming TWO. `meeting` came off the list the same day, by the second
 of the two routes below, and its section is kept as a worked example of that
 route rather than deleted — the shape it took is the one the next such
-migration should copy. `orion-api` is what remains.*
+migration should copy. `portal` is what remains.*
 
-`vega-helper`, `lyra-mail` and `local-indexer` were admitted the same way
+`assistant`, `mail` and `local-indexer` were admitted the same way
 each time: an ambient axis had a mediated form, and the plugin was changed to
 use it. `authRedirect` replaced a socket. `pickFolders` replaced `dialog`.
 `pluginSocketDir` replaced a loopback bind. `userHome`/`aveHome` replaced a
@@ -1153,11 +1153,11 @@ never a command, a script, or a function body. That is why each of these could
 be added without moving the boundary, and it is exactly what the plugins below
 could not be reduced to.
 
-`orion-api` and `meeting` did not fit that shape, and the reason was the same for
+`portal` and `meeting` did not fit that shape, and the reason was the same for
 both. **Neither was blocked on a missing host API. Both shipped code written to
 run somewhere the boundary does not reach.**
 
-- `orion-api` drives portal pages with Playwright. Of its 36 `evaluate` call
+- `portal` drives portal pages with Playwright. Of its 36 `evaluate` call
   sites, 29 pass a **function body** that is compiled and run inside an
   authenticated page. Still open. (Counts at plugin 0.19.2; the section opened
   with 40/31 at an earlier version.)
@@ -1177,7 +1177,7 @@ migrations rather than wires:
 2. **The need is met by data instead of code** — a REST call, a parameter, a
    declarative spec — so nothing needs to execute anywhere privileged.
 
-### `orion-api` — one id, three unrelated problems
+### `portal` — one id, three unrelated problems
 
 Measured per client file, which is what shows they are not one problem.
 **Re-measured at plugin 0.19.2**, and three of the original rows had gone stale
@@ -1195,7 +1195,7 @@ untouched things that had since moved:
 | the directory-identity client | 0 | 0 | **closed**, and not a browser problem |
 
 Three clients completed route (2), which is the existence proof that the route
-works for this portal. Three more have begun it. So the bulk of `orion-api` is not
+works for this portal. Three more have begun it. So the bulk of `portal` is not
 a design question; it is unfinished work with a proven pattern.
 
 Two corrections worth stating on their own, because each retires a reason to

@@ -50,8 +50,6 @@ Ave App은 채팅, 워크 모드, 도구 호출, 익스텐션, 로컬 상태, �
 
 - `@ave/plugin-local-indexer`
 - `@ave/plugin-meeting`
-- `@ave/plugin-lyra-mail`
-- `@ave/plugin-vega-helper`
 
 ## 개발 환경
 

@@ -108,7 +108,7 @@ The **Ave host becomes an MCP _host_** that runs **one MCP client per loaded plu
 ### 3.4 Events (hybrid)
 
 - **List-change** (`tools`/`resources`/`prompts` set changed) → MCP `notifications/*/list_changed` via `subscriptions/listen` opt-in (ecosystem interop).
-- **Ave domain events** (`${id}.verb.noun`) + **cross-plugin grants** (`pluginAccess.plugins[].events`, `assertPluginEventAccess`/`EmitAccess`) → **stay host-internal**, outside MCP conformance. This preserves the proactive architecture (e.g. vega-helper reacting to `email.action.needed`/`meeting.summary.created`) and the audited cross-plugin event-grant security model, which MCP cannot express (no plugin↔plugin pub/sub). Plugins reach the bus via the host-internal HostApi surface, exactly as today.
+- **Ave domain events** (`${id}.verb.noun`) + **cross-plugin grants** (`pluginAccess.plugins[].events`, `assertPluginEventAccess`/`EmitAccess`) → **stay host-internal**, outside MCP conformance. This preserves the proactive architecture (e.g. assistant reacting to `email.action.needed`/`meeting.summary.created`) and the audited cross-plugin event-grant security model, which MCP cannot express (no plugin↔plugin pub/sub). Plugins reach the bus via the host-internal HostApi surface, exactly as today.
 
 ### 3.5 HostApi → MCP (no host server)
 

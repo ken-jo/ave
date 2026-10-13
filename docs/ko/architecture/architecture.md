@@ -2117,9 +2117,9 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   hard-assert 하므로 prune drift 가 빌드를 깬다. 런타임 resolver
   (`getSrtWinPath()` 등) 는 미변경.
 - **Plugin egress SOT**: `local-indexer` 의 long-lived Python worker provider
-  egress 는 broker + `hostApi.hostFetch` chokepoint 로 수렴한다. `orion` 는
-  Python worker 가 없고 Playwright 브라우저 SSO + 사내망 HTTP/HTTPS endpoint 를
-  직접 다루는 예외이므로, 허용 호스트는 `ave-plugin-orion/plugin.json` 의
+  egress 는 broker + `hostApi.hostFetch` chokepoint 로 수렴한다. Python worker 없이
+  브라우저 SSO + 사설망 HTTP/HTTPS endpoint 를 직접 다루는 플러그인은
+  예외이므로, 허용 호스트는 해당 플러그인 `plugin.json` 의
   `networkAccess.allowedDomains` 가 SOT 이다 (§9 plugin egress 참조).
 
 **Files:** `src/permissions/asrt-sandbox.ts` (어댑터 + NETWORK ENFORCEMENT
@@ -3095,9 +3095,9 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
   (hard-throw 안 함).
 - **Plugin egress SOT**: `ave-plugin-local-indexer` 의 Python worker provider
   egress 는 broker 가 host-side upstream 을 고정하고 `hostApi.hostFetch`
-  (Tier A NetworkGuard) 로 호출한다. `ave-plugin-orion` 는 Python worker 가
-  없고 Playwright 브라우저 SSO + 사내망 HTTP/HTTPS endpoint 를 직접 다루는
-  예외이므로, `ave-plugin-orion/plugin.json` 의 `networkAccess.allowedDomains`
+  (Tier A NetworkGuard) 로 호출한다. Python worker 없이 브라우저 SSO +
+  사설망 HTTP/HTTPS endpoint 를 직접 다루는 플러그인은 예외이므로, 해당
+  플러그인 `plugin.json` 의 `networkAccess.allowedDomains`
   가 허용 호스트 SOT 이다. 새 direct egress 는 manifest allow-list 없이 추가하지
   않는다.
 - **Apache attribution / 라이선스**: ASRT (`@anthropic-ai/sandbox-runtime`) 는
@@ -3226,7 +3226,7 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 | `tools[]._meta["ave/pathFields"]` | `string[]` | 파일 경로 입력 필드를 Host의 allowed-directory 검사로 연결한다.                                                                                                                                                                                                                                                                                                                   |
 | `tools[]._meta["ave/operationPolicy"]` | `PluginToolOperationPolicy`                     | operation별 최소 risk와 read/write 제약을 선언한다. 권한 확장이 아니라 제한만 가능하다.                                                                                                                                                                                                                                                                                           |
 | `skills`, `hooks`, `mcpServers`           | `Array<{ id, path }>`                           | 서명된 artifact 안의 plugin-owned contribution. Host가 상대 경로와 namespace를 검증하고 원자적 lifecycle로 투영한다. |
-| `capabilities` | **closed enum** (`src/plugins/capabilities.ts`) | `mail-source` / `calendar-source` / `meeting-recorder` / `knowledge-index` (emit namespace 게이트), `host:overlay` (HostApi `triggerConversation` 게이트) 는 enforced. `lyra-mail-consumer`, `background-watcher` 는 advisory/self-identification label. |
+| `capabilities` | **closed enum** (`src/plugins/capabilities.ts`) | `mail-source` / `calendar-source` / `meeting-recorder` / `knowledge-index` (emit namespace 게이트), `host:overlay` (HostApi `triggerConversation` 게이트) 는 enforced. `background-watcher` 등 나머지는 advisory/self-identification label. |
 | `startupTimeoutMs` | integer (1~60000) | `Promise.race` 기반 start() 하드 타임아웃. 초과 시 fail-soft drop. |
 | `eventSubscriptions` | `string[]` | 호스트 이벤트 구독 대상. `memory.private.*` / `settings.apiKey.*` / `audit.*` / `dlp.*` (`PLUGIN_PRIVATE_NAMESPACES`) 는 **거부**. public namespace (`meeting` / `calendar` / `email` / `index`) 는 허용, 그 외는 warn. (2026-05-11: `task` 는 host owner 폐기로 retire. 플러그인-소유 namespace 는 host 가 의도적으로 알지 않으므로 신규 추가 안 함 — open-source-readiness 룰.) |
 | `notificationEvents` | `Array<{ event, titleField?, bodyField? }>` | `registerPluginNotifications()` 가 manifest 만 읽어 OS 알림 핸들러를 자동 배선. |
@@ -3243,7 +3243,7 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 > - `required: true` (default — `required` 누락 object 와 legacy string-form `"<id>"` 모두 `normalizeDependencies` 가 동일 의미로 정규화): 해당 plugin 이 installed registry 에 없으면 install 거부 + `MissingPluginDependenciesError`. 사용자가 직접 dep 을 먼저 설치해야 함.
 > - `required: false`: install 진행. **컨슈머 플러그인은 dep-absent 케이스를 runtime degrade** (detector idle / tool envelope `{status:'<dep>_unavailable'}` 등) 해야 한다 — host 는 강제하지 않는다.
 >
-> 회귀 사례 (issue #92): pre-fix 호스트가 `dependencies[]` 를 recursive auto-install 시도하던 시절, `vega-helper` (user policy) 가 `lyra-mail` (admin policy) 를 `required: false` 로 선언했음에도 user actor 로 lyra-mail install 이 cascade 되어 admin-guard 가 차단 → user 가 vega-helper 를 설치 못 함. Fix 는 cascade install 자체를 제거하고 hard-required 미설치만 명확한 preflight 로 거부하도록 단순화. Plugin System CI 의 invariant: marketplace install path 는 declared `dependencies[]` 를 **재귀적으로 install 하지 않는다**.
+> 회귀 사례 (issue #92): pre-fix 호스트가 `dependencies[]` 를 recursive auto-install 시도하던 시절, user policy 플러그인이 admin policy 플러그인을 `required: false` 로 선언했음에도 user actor 로 그 dependency install 이 cascade 되어 admin-guard 가 차단 → user 가 컨슈머 플러그인을 설치 못 함. Fix 는 cascade install 자체를 제거하고 hard-required 미설치만 명확한 preflight 로 거부하도록 단순화. Plugin System CI 의 invariant: marketplace install path 는 declared `dependencies[]` 를 **재귀적으로 install 하지 않는다**.
 
 **마켓플레이스 검증:** 플러그인은 git 마켓플레이스로 게시한다([설계서](../design/multi-source-git-marketplace.md)). Host는 스냅숏 커밋이 고정한 아티팩트(release·archive는 sha256, 또는 고정 트리)를 받아, 스테이징한 `plugin.json`이 설명자의 `minAppVersion`·권한 필드와 같은지 확인하고 폐기된 `installPolicy`·`publisher`가 있으면 거부한 뒤 install receipt를 저장한다. 설치된 매니페스트에 남은 두 필드는 로더가 경고 한 번과 함께 무시한다.
 
@@ -3263,7 +3263,7 @@ wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 번들 플러그인 4개를 운영하면서 두 가지 패턴에서 LLM 파라미터 추론 실패가 반복 관찰되었다:
 
 1. **바이너리/배열 데이터** (`meeting_push_chunk.chunk.pcm16leMono`): LLM이 `number[]` 대신 base64 string을 시도.
-2. **nested required + 배열 항목** (`lyramail_calendar_create.attendees`): LLM이 `string[]` 대신 단일 문자열 전달.
+2. **nested required + 배열 항목** (`calendar_create.attendees`): LLM이 `string[]` 대신 단일 문자열 전달.
 
 generic schema(`{ payload: object }`)는 LLM에 파라미터 구조를 전달하지
 못한다. 따라서 모든 manifest Tool 객체가 자신의 `inputSchema`를 직접
@@ -3444,8 +3444,8 @@ PR 3 에서 Microsoft Graph 인증이 호스트에서 플러그인으로 이전�
   - loopback HTTP redirect 또는 custom protocol 핸들러
   - `safeStorage` 토큰 캐시 (플러그인 namespace 안)
   - 자체 settings UI (host `PluginConfigTab` 의 key-value 또는 plugin-view embedded module)
-- 플러그인 manifest 에 `capabilities` 자기-식별 라벨을 선언한다 (예: `lyra-mail-consumer`). 이 capability 는 PR 3 이후 advisory — host 측 게이트가 아니라 플러그인 분류·문서화 목적.
-- 호스트는 **OAuth-specific 코드를 포함하지 않는다**. LYRA Mail / Slack / Notion 등 외부 ID provider 는 모두 해당 플러그인이 소유.
+- 플러그인 manifest 에 `capabilities` 자기-식별 라벨을 선언할 수 있다. advisory 라벨은 host 측 게이트가 아니라 플러그인 분류·문서화 목적.
+- 호스트는 **OAuth-specific 코드를 포함하지 않는다**. Microsoft Graph / Slack / Notion 등 외부 ID provider 는 모두 해당 플러그인이 소유.
 
 **근거**
 1. **OSS 친화성**: 호스트가 enterprise tenant ID / client ID 를 소스에 두지 않고, 플러그인이 자기 config 에 둔다. 호스트 코드 자체는 어떤 외부 서비스도 모름.
@@ -3459,17 +3459,7 @@ PR 3 에서 Microsoft Graph 인증이 호스트에서 플러그인으로 이전�
 - MSAL/OAuth 라이브러리 버전 SBOM 등록
 - 토큰 노출 경로 (logs, telemetry, error messages) 스크럽
 
-**lyra-mail 플러그인 (현행 reference)** — `ave-plugin-lyra-mail`:
-- `src/auth/config.ts` — Azure AD app registration (external + corporate tenant)
-- `src/auth/msal-client.ts` — `@azure/msal-node` 래퍼, silentRefresh + interactive auth + envEpoch race guard
-- `src/auth/token-store.ts` — Electron `safeStorage` 암호화, `<hostRoot>/plugins/lyra-mail/tokens/token-{env}.json`
-- `src/auth/migrator.ts` — 구 host `~/.ave/lyra-mail-token-{env}.json` 1회 자동 이전 (PR 3b 호환 유틸)
-- 환경 (external / corporate) 선택은 PluginConfigTab 의 `pluginConfigs["lyra-mail"].environment` key
-- v0.1.30 부터 embedded-module UI (`lyramail-calendar-control` / `lyramail-email-control`) 제거 — settings 는 host `PluginConfigTab` 단독, embedded 모듈 reference 는 플러그인 소유 UI 로 이전. 이 결정은 CLAUDE.md 의 "dumb pipe" identity (LLM-free fetch + 폴링 + 이벤트 발행만) 와 align.
-
-**lyra-mail 한정 escape hatch — `loginInExternalBrowser` 토글 (v0.1.29 +)**: 기본은 in-app `BrowserWindow` (PR #44, agent-hub mirror) 이지만, 사용자가 configSchema 로 `loginInExternalBrowser=true` 를 설정하면 `shell.openExternal` 로 시스템 기본 브라우저에 IdP 페이지를 띄우는 옛 흐름으로 전환할 수 있다 — corp-CA / WebView2 GPO / SSO 쿠키 격리 같은 환경 회귀의 안전망. MSAL loopback redirect 가 양쪽 모드에서 동일하게 동작하기 때문에 가능한 우연이며, **다른 OAuth 플러그인이 일반화하지 말 것** (Slack/Notion/Google 등은 redirect 메커니즘이 다를 수 있음). default off 라 §9.4a "agent-hub mirror" 정책은 그대로 유효.
-
-**Capability 네이밍**: `lyra-mail-consumer` 는 kebab-case capability 네이밍 컨벤션을 따르며, 동일 컨벤션으로 `mail-source`, `calendar-source`, `meeting-recorder`, `background-watcher`, `knowledge-index` 가 사용된다. HostApi overlay gate 는 reserved host namespace 인 `host:overlay` 를 사용한다.
+**Capability 네이밍**: capability 는 kebab-case 네이밍 컨벤션을 따른다 (`mail-source`, `calendar-source`, `meeting-recorder`, `background-watcher`, `knowledge-index`). HostApi overlay gate 는 reserved host namespace 인 `host:overlay` 를 사용한다.
 
 **Overlay Trigger — `host:overlay` capability:** plugin 이 신호 관찰 후 host overlay 에 plugin-authored prompt 를 staged 하도록 요청하는 surface. `hostApi.triggerConversation()` 호출 권한은 `host:overlay` 로만 부여한다. 일반 plugin 에 `host:overlay` 를 부여하지 말 것 — 사용자가 입력하지 않은 prompt 를 사용자에게 보여주고 확인 시 main chat 에 삽입할 수 있는 권한이므로. 안전 계약 / spec / gate 는 [`overlay-trigger.md`](../references/overlay-trigger.md) 참조.
 
@@ -3490,9 +3480,9 @@ PR 3 에서 Microsoft Graph 인증이 호스트에서 플러그인으로 이전�
 {
   "auth": {
     "label": "Microsoft 계정",      // optional; 기본은 manifest.name
-    "statusTool": "lyramail_status",  // 필수, app-only Tool
-    "loginTool": "lyramail_auth",     // 필수, app-only Tool
-    "logoutTool": "lyramail_signout", // optional, app-only Tool
+    "statusTool": "mail_status",     // 필수, app-only Tool
+    "loginTool": "mail_auth",        // 필수, app-only Tool
+    "logoutTool": "mail_signout",    // optional, app-only Tool
     "partitionDomains": [             // optional — `openAuthPartitionViewer` 호출 시만 필수
       "outlook.office.com",
       "login.microsoftonline.com",
@@ -3503,7 +3493,7 @@ PR 3 에서 Microsoft Graph 인증이 호스트에서 플러그인으로 이전�
 
 세 이름은 모두 `tools[]`의 app-only Tool을 가리켜야 한다. `manifest-validation.ts` 의 cross-field validator가 load-time에 이를 강제한다.
 
-`partitionDomains[]` 는 `hostApi.openAuthPartitionViewer()` 의 dot-boundary suffix-match allow-list — 자세한 거부 패턴 / 3-layer defense / lyra-mail 예시는 [`plugin-tool-schema-design.md` §2.4.1](../references/plugin-tool-schema-design.md) 참조.
+`partitionDomains[]` 는 `hostApi.openAuthPartitionViewer()` 의 dot-boundary suffix-match allow-list — 자세한 거부 패턴 / 3-layer defense / 예시는 [`plugin-tool-schema-design.md` §2.4.1](../references/plugin-tool-schema-design.md) 참조.
 
 **StatusTool 반환 형 (recommended)**
 
@@ -3522,14 +3512,14 @@ Tool 계약 전반의 별 작업으로 deferred.
 플러그인은 인증 상태 전이 (로그인 성공 / 로그아웃 / refresh 실패) 시 다음 이벤트를 emit 한다:
 
 ```ts
-hostApi.emitEvent(`${pluginId}.auth.changed`);  // 예: "lyra-mail.auth.changed"
+hostApi.emitEvent(`${pluginId}.auth.changed`);  // 예: "my-plugin.auth.changed"
 ```
 
 - `manifest.emittedEvents[]` 에 같은 이름을 등록해야 호스트 event-bridge 가 renderer 로 전달 (`boot/steps/ipc-bridge.ts`).
 - **이름의 `${pluginId}` 부분은 manifest `id` 필드를 그대로 사용** — `_`↔`-` 변환/정규화 없음. 호스트 hook (`use-plugin-auth-status.ts`) 이 `${manifest.id}.auth.changed` 로 strict subscribe 하므로 plugin 이 `agent_hub.auth.changed` (underscore) 로 emit 하면 manifest id `agent-hub` (dash) 와 mismatch 되어 badge refresh 가 안 걸린다 (ave-plugin-hydra#131 회귀 사례).
 - `manifest-validation.ts` 의 cross-field check 가 `auth` 선언 시 `emittedEvents[]` 에 `${id}.auth.changed` 가 빠져있으면 load-time `log.warn` 발행 — drift 신호 (soft warn, hard fail 은 grace 후 별 PR 에서 전환 검토).
 - 네임스페이스는 plugin id prefix 라 `classifySubscription` 에서 `neutral` 로 떨어지지만 (private 아님), `boot/steps/ipc-bridge.ts` 가 neutral / public 둘 다 forward.
-- 호스트 `usePluginAuthStatuses` 훅이 이벤트를 받아 statusTool 를 재호출 → 뱃지 갱신. **폴링 안 함** — 폐기된 `onLyraMailAuthChange` host-callback 안티패턴 회귀 방지.
+- 호스트 `usePluginAuthStatuses` 훅이 이벤트를 받아 statusTool 를 재호출 → 뱃지 갱신. **폴링 안 함** — 폐기된 플러그인 전용 auth-change host-callback 안티패턴 회귀 방지.
 
 **호스트 UI surface**
 
@@ -3544,13 +3534,12 @@ hostApi.emitEvent(`${pluginId}.auth.changed`);  // 예: "lyra-mail.auth.changed"
 **플러그인 PR 연결 (host-plugin-contract-sync)**
 
 호스트 PR landing 후 다음을 같은 sync 사이클에 맞춤:
-- `ave-plugin-lyra-mail`: `auth: { statusTool: "lyramail_status", loginTool: "lyramail_auth", logoutTool: "lyramail_signout" }` + `emittedEvents` 에 `"lyra-mail.auth.changed"` + MSAL 상태 전이에서 emit
-- `ave-plugin-lyra-mail`: `auth: { statusTool: "lyra_mail_status", loginTool: "lyra_mail_login" }` + `emittedEvents` 에 `"lyra-mail.auth.changed"` + 쿠키 auth 흐름에서 emit
+- auth 를 선언하는 플러그인: `auth: { statusTool, loginTool, logoutTool? }` + `emittedEvents` 에 `"<id>.auth.changed"` + 인증 상태 전이에서 emit
 - auth 를 선언하지 않는 플러그인: manifest 변경 없음.
 
 **의도적으로 deferred 된 항목** — 별 PR 로 추적:
 - `auth.statusTool` 의 `outputSchema` 강제 검증 (Tool outputSchema 인프라 큰 작업)
-- `agent-hub` 의 connection-status 까지 흡수하는 generic `statusBadge` 일반화 (3+ consumer 룰 — 현재는 lyra-mail + lyra-mail 둘만 auth)
+- `agent-hub` 의 connection-status 까지 흡수하는 generic `statusBadge` 일반화 (3+ consumer 룰)
 - LayoutGrid 아이콘 자체에 미인증 점 뱃지 (Settings 외 발견성 강화)
 - `registry.json` 캐시 (현재 event-driven refresh 로 충분 — 풀고 싶은 flicker 문제 없음)
 
@@ -3855,7 +3844,7 @@ graph LR
 
 **차용한 구성 요소:** Skills = agent profile, Memory = `~/.ave/work-board/memories/{USER,MEMORY}.md` (업무 흐름 학습), Crons = RoutinesScheduler 연동 예약 실행, Self-improvement = run 결과로 skill/memory 보정.
 
-**Supersedes:** `ave-agent-hub` 서버 + `ave-plugin-hydra` 플러그인은 Work Board 기능에 대해 디커미션(서버 2026-06-15 셧다운). 저장소 `~/.ave/plugins/agent-hub/board.json` → `~/.ave/work-board/board.json` (부팅 1회 마이그레이션). `work_item.due_soon {itemId,title,notifiedAt}` 계약은 호스트가 계속 emit (vega-helper 소비 보존).
+**Supersedes:** `ave-agent-hub` 서버 + `ave-plugin-hydra` 플러그인은 Work Board 기능에 대해 디커미션(서버 2026-06-15 셧다운). 저장소 `~/.ave/plugins/agent-hub/board.json` → `~/.ave/work-board/board.json` (부팅 1회 마이그레이션). `work_item.due_soon {itemId,title,notifiedAt}` 계약은 호스트가 계속 emit (구독 플러그인 소비 보존).
 
 **Phased delivery:** P1 도메인 스켈레톤(`src/work-board/`, `~/.ave/work-board/`) + WorkItem 포팅 + 프로페셔널 칸반 UI(host renderer `activeView='work-board'`). P2 네이티브 plan→approve→execute 오케스트레이션. P3 Skills/Memory/일일·주간 reports + due_soon 계약. P4 플러그인 디커미션 + 데이터 마이그레이션 + 샘플 데이터.
 

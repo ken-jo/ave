@@ -225,7 +225,7 @@ following boundary; it does not reopen ph3's loopback listener contract.
 Persistence, administrative trust review, key lifecycle distribution,
 credential provisioning, endpoint health, and remote routing are deliberately
 deferred beyond P4-1. No later stage may infer routability from `trusted`
-alone. Plugin vega-helper registration is not part of this roadmap.
+alone. Plugin assistant registration is not part of this roadmap.
 
 #### P4-2 durable Agent Card registry contract
 
@@ -1500,7 +1500,7 @@ are obtained out of band rather than embedded in an Agent Card.
   is a separate post-routing policy change with its own threat model, user
   approval contract, limits, and regression review.
 - Plugin/HostApi integration, Marketplace behavior, meeting, local-indexer,
-  plugin-SDK alignment, vega-helper registration, private/LAN routing,
+  plugin-SDK alignment, assistant registration, private/LAN routing,
   streaming, push notification, non-Bearer authentication, and Agent Hub Task
   relay/storage are excluded. They are neither prerequisites nor fallback paths.
 
@@ -1508,7 +1508,7 @@ are obtained out of band rather than embedded in an Agent Card.
 
 | Gate | Required evidence |
 | --- | --- |
-| Ownership | generic host-owned remote A2A client and control-plane interfaces; no plugin, HostApi, Marketplace, vega-helper, meeting, local-indexer, or plugin-SDK dependency |
+| Ownership | generic host-owned remote A2A client and control-plane interfaces; no plugin, HostApi, Marketplace, assistant, meeting, local-indexer, or plugin-SDK dependency |
 | Plane separation | Agent Hub issues only bounded no-store route snapshots; packet capture plus Hub response/storage/log/audit assertions prove every Task payload, response, Task/context ID, artifact, `secret_reference`, raw reference derivative, and secret stays outside Hub and every Task method travels only between the client host and exact remote A2A server |
 | Opt-in | separate immutable boot gate defaults OFF; disabled mode performs zero control-plane, secret, DNS, socket, listener, or Task-journal effect and does not change ph3 loopback behavior |
 | Eligibility | one immutable unambiguous no-store snapshot proves active target + active exact trust-key revision + active exact credential binding/revision ID and bounded version/provider/external_version metadata + current advertised-interface declaration/reachability health + explicit host/operation route policy + separately pinned exact-send-replay specification digest; health is never replay-conformance evidence, trusted or healthy alone is never enough, and every Send/Get/continue/Cancel resolves again as the last control-plane gate before data-plane I/O |
@@ -1636,7 +1636,7 @@ Resulting constraints:
 
 1. Ph2 sends to an active recipient only at its safe inter-round boundary; interrupt/restart is a separate explicit operation.
 2. Ph3 keeps the wire opt-in and loopback-only and proves COMPLETED, INPUT_REQUIRED continuation, CANCELED, and rejected authentication against the real handler in-app (since 2026-10-09; the official TCK run and external-client smoke were retired).
-3. Ph4 owns cross-machine trust, the Agent Hub Agent Card registry, and the later host↔Agent Hub remote route. Plugin vega-helper registration is excluded. None of those relaxes D8's depth-1 creation stop.
+3. Ph4 owns cross-machine trust, the Agent Hub Agent Card registry, and the later host↔Agent Hub remote route. Plugin assistant registration is excluded. None of those relaxes D8's depth-1 creation stop.
 
 ## References
 

@@ -27,12 +27,12 @@ git marketplace, which leaves 59; the counts below are after that removal.
 | `reshoot` | 7 | Must be re-captured. Redaction cannot fix it, or would destroy what the image is there to show. |
 | `redact` | 2 | One contiguous region carries the problem and is not the subject of the shot. |
 | `keep` | 9 | Nothing on screen identifies a third party or exposes a credential. |
-| `superseded` | 17 | The internal-portal plugin page and its images are removed by the in-flight de-identification change. No capture work here. |
+| `superseded` | 17 | A retired plugin page and its images were removed. No capture work here. |
 | `replaced` | 24 | Re-captured from seeded data by the harness. |
 
 Twenty-four images have been replaced with seeded captures so far, and the
 ratchet now stands at **9**. Seventeen of the twenty-four moved it:
-`plugin-permission-grant`, the six `vega-helper-*` cards, the four `meeting-*`
+`plugin-permission-grant`, the six `alert-*` cards, the four `meeting-*`
 panel images, the three third-party `local-indexer-*` panel images, and the three
 `local-indexer-search*` answers. Between them they carried the worst of the
 backlog — two work addresses, a
@@ -136,7 +136,7 @@ is not a docs-site key. Of the remaining 36, **25 capture end-to-end today**:
 `chat-app-update`, `chat-question-card`, `chat-todo-queue`, `chat-tool-thinking`,
 `chat-permission-directory`, `chat-permission-risk`, `chat-permission-llm-review`,
 `plugin-permission-grant`, `meeting-upcoming`, the three `meeting-minutes*` keys,
-the six `vega-helper-*` keys, the four `local-indexer-*` panel keys, and the
+the six `alert-*` keys, the four `local-indexer-*` panel keys, and the
 three `local-indexer-search*` answers. The rest carry an explicit `skip` with a
 stated blocker. Those blockers are real, not missing effort:
 
@@ -176,7 +176,7 @@ that buys the most coverage per unit of work:
    the ones listed under `replaced`.
 2. **The overlay card sent on its own channel — done, and it needed no plugin
    change.** The earlier pass concluded these six needed a synthetic detector
-   inside the vega-helper plugin. That was aiming at the wrong layer. The
+   inside the plugin that raised them. That was aiming at the wrong layer. The
    detector is not what the images show; the host's overlay card is, and the
    host builds that card in one place from one IPC message
    (`host-api-factory.ts` → `ave:overlay:show`). `pushPluginOverlay` in
@@ -243,9 +243,9 @@ the result before committing.
 | --- | --- | --- | --- |
 | `meeting-outlook-mail.png` | `meeting-outlook-mail` | `/docs/host/integration-recipes` | **Highest severity in this list.** Two recipients with names, grades and full organisational paths, and a sender signature block carrying a department chain and a direct mobile number. Retake with fabricated recipients and a demo signature. |
 | `meeting-outlook-mail-2.png` | `meeting-outlook-mail-2` | `/docs/host/integration-recipes` | Same recipients; signature partly in frame. Retake as the second step of the same fabricated flow. |
-| `outlook-login-trigger.png` | `outlook-login-trigger` | `/docs/plugins/lyra-mail` | A work address, colleague names, room and building codes and an organisational path — **and the identity overlay is drawn diagonally across the answer text**. This is the clearest case in the set that redaction cannot solve. Retake against a demo mailbox. |
-| `outlook-login-window.png` | `outlook-login-window` | `/docs/plugins/lyra-mail` | The form itself is empty and carries no personal data, **but the identity overlay is legible across the dialog**. Retake on a machine that does not apply it. *Disagreement with the earlier pass: this reads clean on inspection and is not — it is a reshoot solely because of the overlay.* |
-| `outlook-login-after.png` | `outlook-login-after` | `/docs/plugins/lyra-mail` | The signed-in mailbox address, a second person's name and their address, an internal policy notice — and the overlay, carrying a different trailing value than the one on the trigger frame. Retake against a demo mailbox with fabricated messages. |
+| `outlook-login-trigger.png` | `outlook-login-trigger` | (page removed) | A work address, colleague names, room and building codes and an organisational path — **and the identity overlay is drawn diagonally across the answer text**. This is the clearest case in the set that redaction cannot solve. Retake against a demo mailbox. |
+| `outlook-login-window.png` | `outlook-login-window` | (page removed) | The form itself is empty and carries no personal data, **but the identity overlay is legible across the dialog**. Retake on a machine that does not apply it. *Disagreement with the earlier pass: this reads clean on inspection and is not — it is a reshoot solely because of the overlay.* |
+| `outlook-login-after.png` | `outlook-login-after` | (page removed) | The signed-in mailbox address, a second person's name and their address, an internal policy notice — and the overlay, carrying a different trailing value than the one on the trigger frame. Retake against a demo mailbox with fabricated messages. |
 | `meeting-record.png` | `meeting-record` | `/docs/plugins/meeting` | Briefing panel lists a mandatory internal training entry naming two employer sites. Retake with a fabricated day's agenda. |
 | `meeting-record-stt.png` | `meeting-record-stt` | `/docs/plugins/meeting` | Same briefing plus an interim transcription of a real meeting. Retake from the fabricated recording. |
 
@@ -269,7 +269,7 @@ screenshot exists to show.
 Captured by the harness from seeded data, amplification-checked, and recorded in
 the manifest as `seeded` under the `host-capture-seed` account. Re-capture one
 with `node scripts/capture-screenshots.mjs --skip-build --grep <key>`; the six
-`chat-*` and six `vega-helper-*` rows need nothing else;
+`chat-*` and six `alert-*` rows need nothing else;
 `plugin-permission-grant` needs one more thing, noted under the table. The two
 approval-dock crops differ between runs by one row — the tool-call id — and are
 otherwise byte-identical.
@@ -283,12 +283,12 @@ otherwise byte-identical.
 | `chat-permission-directory.png` | `chat-permission-directory` | The directory-level read grant, over an invented path outside the profile's allowed scope. Replaces a frame that printed the publisher's home directory in six places. |
 | `chat-permission-risk.png` | `chat-permission-risk` | A HIGH-risk shell approval with its impact detail expanded. The verdict comes from the scripted reviewer — see the tamper check under "The scripted provider". |
 | `chat-permission-llm-review.png` | `chat-permission-llm-review` | The in-flight review card for a shell call, captured while the scripted reviewer's answer is still streaming. |
-| `vega-helper-conflict.png` | `vega-helper-conflict` | The real host overlay card for a fabricated schedule conflict, summary expanded so the alert is legible rather than clamped to two lines. Came off the third-party backlog. |
-| `vega-helper-conflict-2.png` | `vega-helper-conflict-2` | The state after the card's primary action: the `overlay:calendar-conflict-prep` imported-trigger bubble, then a scripted reply detailing both events and offering three ways out. Replaces the highest-severity frame in the set — it printed a base64 calendar identifier from which a mailbox identifier was recoverable. |
-| `vega-helper-reminder.png` | `vega-helper-reminder` | A fabricated pre-meeting reminder card. Replaces a frame carrying two work addresses and a colleague's name, grade and full organisational path. |
-| `vega-helper-reminder-2.png` | `vega-helper-reminder-2` | Its confirmed state, showing the provenance bubble and a scripted prep summary. Replaces the second frame with a recoverable calendar identifier. |
-| `vega-helper-meeting-end-trigger.png` | `vega-helper-meeting-end-trigger` | A fabricated meeting-end summary card. |
-| `vega-helper-meeting-end-trigger-2.png` | `vega-helper-meeting-end-trigger-2` | Its confirmed state with the follow-up options. Replaces a frame of internal commercial subject matter. |
+| `alert-conflict.png` | `alert-conflict` | The real host overlay card for a fabricated schedule conflict, summary expanded so the alert is legible rather than clamped to two lines. Came off the third-party backlog. |
+| `alert-conflict-2.png` | `alert-conflict-2` | The state after the card's primary action: the `overlay:calendar-conflict-prep` imported-trigger bubble, then a scripted reply detailing both events and offering three ways out. Replaces the highest-severity frame in the set — it printed a base64 calendar identifier from which a mailbox identifier was recoverable. |
+| `alert-reminder.png` | `alert-reminder` | A fabricated pre-meeting reminder card. Replaces a frame carrying two work addresses and a colleague's name, grade and full organisational path. |
+| `alert-reminder-2.png` | `alert-reminder-2` | Its confirmed state, showing the provenance bubble and a scripted prep summary. Replaces the second frame with a recoverable calendar identifier. |
+| `alert-meeting-end-trigger.png` | `alert-meeting-end-trigger` | A fabricated meeting-end summary card. |
+| `alert-meeting-end-trigger-2.png` | `alert-meeting-end-trigger-2` | Its confirmed state with the follow-up options. Replaces a frame of internal commercial subject matter. |
 | `meeting-upcoming.png` | `meeting-upcoming` | The real upcoming-meeting panel over a fabricated prep seeded into `preps.json`. Replaces the frame that printed a live conference join link next to its meeting password, host key and meeting key, plus three people's names, grades and organisational paths. |
 | `meeting-minutes.png` | `meeting-minutes` | The minutes detail view of a fabricated finalised session: summary, highlights, action items. |
 | `meeting-minutes-2.png` | `meeting-minutes-2` | The 중간 리파인 sub-tab of the same session — two intermediate summaries over a growing prefix of the transcript. |
@@ -306,7 +306,7 @@ more than this repository: their panels come from sibling plugin repos, whose
 `dist/` is not committed, so that clone has to be present and built (`bun install
 && bun run build`) before the harness can seed it. Without it the harness reports
 the bundle missing and the key captures nothing. The six `chat-*` and six
-`vega-helper-*` rows need no sibling clone.
+`alert-*` rows need no sibling clone.
 
 The four `meeting-*` captures also run at a 1120px viewport rather than the
 default 1600px, and that is load-bearing rather than cosmetic. The page shell
@@ -320,7 +320,7 @@ last 46px — the right edge of every card and control — falls off the element
 artefact**, and is worth an issue in the plugin repo independently of
 screenshots.
 
-Every string in the six `vega-helper-*` captures is invented in `matrix.ts`
+Every string in the six `alert-*` captures is invented in `matrix.ts`
 rather than read from anything on the capturing machine, and every address in
 them is at `example.invalid` — reserved by RFC 2606, so it cannot resolve to a
 real mailbox. Rule 7 of the guard enforces that mechanically; see below.
@@ -340,7 +340,7 @@ frame. One note worth recording rather than acting on:
 | --- | --- | --- |
 | `chat-app-update.png` | `chat-app-update` | `/docs/getting-started/updates` |
 | `chat-plugin-panel.png` | `chat-plugin-panel` | `/docs/chat/plugin-panel`<br>`/docs/getting-started/login` |
-| `outlook-logout.png` | `outlook-logout` | `/docs/plugins/lyra-mail` |
+| `outlook-logout.png` | `outlook-logout` | (page removed) |
 | `ah-dashboard.png` | `ah-dashboard` | `/docs/servers/agent-hub` |
 | `ah-workboard.png` | `ah-workboard` | `/docs/servers/agent-hub/workboard` |
 | `ah-worklog.png` | `ah-worklog` | `/docs/servers/agent-hub/workboard` |
@@ -350,16 +350,8 @@ frame. One note worth recording rather than acting on:
 
 ### `superseded` — 17
 
-The internal-portal plugin page and its images are removed by the in-flight
-de-identification change. Listed for completeness so the count reconciles to 71;
-no capture work belongs here, and this list should empty itself when that change
-merges.
-
-`orion-login`, `orion-attendance`, `orion-attendance-2`, `orion-attendance-3`, `orion-approval`,
-`orion-parking`, `orion-meeting-room`, `orion-meeting-room-2`, `orion-meeting-room-3`,
-`orion-meeting-room-4`, `orion-meeting-room-5`, `orion-video-call`, `orion-video-call-2`,
-`orion-video-call-3`, `orion-video-call-4`, `orion-assistant`, `orion-assistant-2` — all on
-`/docs/plugins/orion-api`.
+A retired plugin page and its images were removed. Listed only so the count
+reconciles to 71; no capture work belongs here.
 
 ## Order of work
 
@@ -368,7 +360,7 @@ merges.
    what it unblocks. That is where `plugin-permission-grant` and the six `chat-*`
    replacements came from.
 3. Apply the two `redact` masks. Cheap, and removes real exposure immediately.
-4. Re-shoot the six `vega-helper-*` images (done — see the `replaced` table).
+4. Re-shoot the six `alert-*` images (done — see the `replaced` table).
    Highest concentration of third-party content, and all six went at once.
 5. Re-shoot the `meeting-*` panel keys against a fabricated corpus (done — see
    the `replaced` table). The rest of the `meeting-*` and `outlook-*` clusters

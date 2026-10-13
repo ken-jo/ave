@@ -27,11 +27,10 @@ contract source.
 
 Official extensions live in the official marketplace monorepo
 `ken-jo/agent-marketplace` under `plugins/<name>/source/` (hello-world,
-local-indexer, meeting, lyra-mail); their `src/hostPlugin.ts` files are the
+local-indexer, meeting); their `src/hostPlugin.ts` files are the
 current HostApi usage references. A new extension starts from
 `templates/extension/` in that repository. The former per-plugin
-`ave-plugin-*` repositories and `ave-plugin-template` are archived, and the
-vega-helper extension is retired.
+`ave-plugin-*` repositories and `ave-plugin-template` are archived.
 
 The manifest should include:
 

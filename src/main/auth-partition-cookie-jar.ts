@@ -2,7 +2,7 @@
  * Auth-partition cookie jar — the host-side vault for a plugin's harvested
  * session cookies.
  *
- * The single trust boundary for ORION-style plugins that authenticate by
+ * The single trust boundary for portal-style plugins that authenticate by
  * harvesting a portal session (no SSO/OAuth is offered upstream, so the session
  * cookie IS the credential). Before this module the harvested cookie VALUES
  * were returned to the plugin and re-attached from plugin memory / a plugin
@@ -13,7 +13,7 @@
  * ever learns that a cookie of a given NAME exists, never its value.
  *
  * Cookie SCOPING is a byte-for-byte port of the plugin's former `cookieScope.ts`
- * (the SoT every ORION egress client shared) so the host attaches exactly the
+ * (the SoT every portal egress client shared) so the host attaches exactly the
  * cookies the plugin used to. In particular it preserves the ONE deliberate,
  * documented divergence from RFC 6265 §5.4: a Secure cookie is NOT withheld on
  * an `http://` request, because legacy corporate portals serve authenticated

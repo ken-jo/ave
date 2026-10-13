@@ -102,7 +102,7 @@ why a high ceiling is still needed for future large surfaces:
 | Plugin | Tools |
 | --- | ---: |
 | `agent-hub` | 43 |
-| `lyra-mail` | 30 |
+| `mail` | 30 |
 | `meeting` | 29 |
 | `orion` | 29 |
 | `local-indexer` | 19 |

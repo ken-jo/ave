@@ -3,7 +3,7 @@
  *
  * Plugins choose one of two rendering paths via the manifest:
  *   • `iconText`  — short text (1-4 chars) rendered inside the avatar circle
- *                   (e.g. `"ORION"`, `"MTG"`). Takes precedence over `icon`.
+ *                   (e.g. `"AB"`, `"MTG"`). Takes precedence over `icon`.
  *                   Useful when no Lucide glyph matches the plugin's domain
  *                   identity. Rendered synchronously — no Suspense needed.
  *   • `icon`      — Lucide PascalCase name (e.g. `"Mic"`). Host lazy-loads
@@ -66,7 +66,7 @@ function buildTextIcon(rawText: string): ComponentType<LucideProps> {
         // of a smaller slot and collide with the adjacent label (the "EPEP"
         // overlap in the slash picker).
         className: `${className ?? ""} inline-flex items-center justify-center overflow-hidden font-bold leading-none tracking-normal`.trim(),
-        // Screen readers should announce the badge text — e.g. "ORION" — since
+        // Screen readers should announce the badge text — e.g. "AB" — since
         // it carries the plugin's identity. The visual label below the
         // avatar may be the same or richer; double-announce is acceptable.
         "aria-label": text,

@@ -1686,7 +1686,7 @@ export interface PluginEntry {
   icon?: string;
   /**
    * Short text (1-4 chars) rendered in place of the Lucide icon — e.g.
-   * `"ORION"`. Takes precedence over `icon` when both are set.
+   * `"AB"`. Takes precedence over `icon` when both are set.
    */
   iconText?: string;
   /**

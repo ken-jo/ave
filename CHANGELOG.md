@@ -772,15 +772,14 @@ v0.7.2 이전에는 닿을 수 없던 경로입니다. 플러그인이 broker �
 912px 로 렌더됐고, 창을 약 1180px 이상으로 넓혀도 화면은 그대로였습니다.
 
 플러그인들이 각자 콘텐츠 컬럼을 캡하도록 고쳐졌으므로(meeting 860,
-local-indexer 900, lyra-mail·vega-helper 720) 클램프는 가릴 것이 없어졌습니다.
+local-indexer 900, 그 밖의 플러그인 720) 클램프는 가릴 것이 없어졌습니다.
 이제 패널은 페인 전체를 받고, 웹뷰 폭이 창을 따라갑니다.
 
 - 플러그인 UI 작성 규약을 `docs/guides/plugin-development.md` 에 명시했습니다:
   고정 `width` 대신 `max-width` 로 캡할 것, `@media` 보다 `@container` 를 쓸 것,
   넓은 표는 자기 컨테이너 안에서 가로 스크롤할 것.
 
-이 버전과 함께 배포되는 플러그인 버전: meeting 0.8.1, local-indexer 0.6.1,
-orion-api 0.21.1, lyra-mail 0.5.1, vega-helper 0.11.1.
+이 버전과 함께 배포되는 플러그인 버전: meeting 0.8.1, local-indexer 0.6.1 외 3개.
 
 ## v0.7.0 — 2026-08-26
 
@@ -794,14 +793,14 @@ v0.6.3 은 배포되지 않았습니다. v0.6.2 에서 올라오는 경우 아�
 
 ### 플러그인 프로세스 격리 — 전 플러그인 적용 완료
 
-v0.6.3 에서 `vega-helper` 하나였던 격리 대상이 이번 릴리즈에서 다섯 개
+v0.6.3 에서 플러그인 하나였던 격리 대상이 이번 릴리즈에서 다섯 개
 전부로 확대되었습니다. 각 승격은 해당 플러그인이 자식 프로세스 경계를 실제로
 넘을 수 있는지 실측한 뒤에만 이루어졌습니다.
 
-- **`lyra-mail` 격리 실행** (#2257)
+- **메일·캘린더 플러그인 격리 실행** (#2257)
 - **`local-indexer` 격리 실행** (#2264)
 - **`meeting` 격리 실행** (#2268)
-- **`orion-api` 격리 실행** (#2272) — 마지막 관문이었던 브라우저 의존을 제거한
+- **포털 플러그인 격리 실행** (#2272) — 마지막 관문이었던 브라우저 의존을 제거한
   플러그인 0.20.0 과 짝을 이룹니다.
 
 경계를 넘기 위해 필요했던 호스트 쪽 기반:
@@ -1091,7 +1090,7 @@ Hardening release for marketplace recovery, permission review, Windows shell saf
 
 ## v0.5.2 — 2026-07-12
 
-Completes the MCP Apps program and renames the vendor `_meta` namespace. A patch release — the wire contract is unchanged and the rename is transitionally dual-read, so installed plugins keep working. It also republishes the host so plugins pinned at `requires.minAppVersion` `0.5.2` (lyra-mail / ep / git) become installable again.
+Completes the MCP Apps program and renames the vendor `_meta` namespace. A patch release — the wire contract is unchanged and the rename is transitionally dual-read, so installed plugins keep working. It also republishes the host so plugins pinned at `requires.minAppVersion` `0.5.2` become installable again.
 
 ### MCP Apps — plugin `ui://` cards, the full app→host surface (#1600)
 
@@ -1270,7 +1269,7 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 ### Plugins / Routines
 
-- **Vega helper routine cleanup** (PR #1404) — removes the legacy vega-helper wakeup fixture and aligns the briefing routine path with the current plugin behavior.
+- **Assistant plugin routine cleanup** (PR #1404) — removes the legacy assistant-plugin wakeup fixture and aligns the briefing routine path with the current plugin behavior.
 
 ### 검증
 
@@ -1784,7 +1783,7 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 
 ### 개선
 
-- Onboarding pace + animation, Boot splash 우하단 stack, App 버전 SoT 정정, Demo 모드 host-resolver-rules, Cross-platform 정합, vega-early → vega-helper rename, uv CI cache.
+- Onboarding pace + animation, Boot splash 우하단 stack, App 버전 SoT 정정, Demo 모드 host-resolver-rules, Cross-platform 정합, proactive plugin rename, uv CI cache.
 
 ### 버그 fix
 

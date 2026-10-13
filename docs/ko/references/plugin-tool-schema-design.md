@@ -24,7 +24,7 @@
 
 **핵심 원칙:**
 
-1. **Capability gate = HostApi + 선언적 capability** — HostApi 자체가 1차 게이트이며, `capabilities[]` + 각 tool 의 `_meta.ui.visibility` (renderer 노출 allowlist) 는 LYRA Mail · 이벤트 namespace 등 HostApi 단독으로 표현 불가능한 2차 게이트를 보강한다.
+1. **Capability gate = HostApi + 선언적 capability** — HostApi 자체가 1차 게이트이며, `capabilities[]` + 각 tool 의 `_meta.ui.visibility` (renderer 노출 allowlist) 는 이벤트 namespace 등 HostApi 단독으로 표현 불가능한 2차 게이트를 보강한다.
 2. **SDK schema first** — 모든 `tools[]` 항목은 pure MCP `Tool` 객체로 `name`, `description`, `inputSchema`, `_meta?` 를 선언한다. path 판정은 `_meta["ave/pathFields"]` 가 SOT 이고, per-tool category 는 manifest 필드가 아니라 host 가 invocation 별로 분류한다 (플러그인이 자기 위험도를 스스로 매기지 않는다).
 3. **In-process + try/catch** — worker_threads 격리 없이 95% 장애를 커버. 런타임 복잡도를 낮게 유지.
 4. **플러그인 저자가 스키마 수기 작성** — zod 자동추출 금지. 번들 크기·버전 충돌 없음.
@@ -40,7 +40,7 @@ interface PluginManifest {
   /**
    * 플러그인 고유 식별자. flat form 을 권장한다 —
    * 영문 소문자/숫자/`-`/`_`/`.` 허용 (`^[a-zA-Z][a-zA-Z0-9._-]*$`, 3~128자).
-   * 실제 번들 플러그인(meeting / local-indexer / lyra-mail) 은 모두 flat id
+   * 실제 번들 플러그인(meeting / local-indexer) 은 모두 flat id
    * 를 사용한다. dot-form (`com.example.meeting-recorder`) 도 허용하지만 강제하지
    * 않는다.
    */
@@ -155,7 +155,7 @@ interface Tool {
 | `eventSubscriptions[]` | 호스트 이벤트 라우팅 | boot |
 | `notificationEvents[]` | `registerPluginNotifications()` — OS 알림 자동 등록 | boot |
 | `tools[]._meta.ui.visibility` | `PluginRuntime.callFromUi()` app-visible allowlist | renderer IPC 호출 |
-| `capabilities[]` | HostApi LYRA Mail 게이트 + `emitEvent` namespace 게이트 | 런타임 전반 |
+| `capabilities[]` | HostApi capability 게이트 + `emitEvent` namespace 게이트 | 런타임 전반 |
 | `dependencies` | Marketplace install **preflight gate**. `required:true` (default — string form / `required` 누락 object 포함) 미설치 시 install 거부 + `MissingPluginDependenciesError`; `required:false` 는 install 통과 + 컨슈머 책임으로 degrade. **Host 는 dep 을 auto-install 하지 않는다** (issue #92). | install |
 | `pluginAccess` | Cross-plugin tool/event access gate + agent approval scope grant | runtime |
 
@@ -345,8 +345,8 @@ Renderer UI 는 `ave:plugins:call` IPC 를 통해 app-visible 플러그인 tool 
 { "name": "meeting_sessions",   "_meta": { "ui": { "visibility": ["model", "app"] } } }
 
 // OK — 파괴적 동작도 app-visible 로 노출 가능. 플러그인이 자체 UI 에서 확인 다이얼로그를 구현해야 함
-{ "name": "lyramail_email_reply",     "_meta": { "ui": { "visibility": ["model", "app"] } } }
-{ "name": "lyramail_calendar_delete", "_meta": { "ui": { "visibility": ["model", "app"] } } }
+{ "name": "mail_email_reply",     "_meta": { "ui": { "visibility": ["model", "app"] } } }
+{ "name": "mail_calendar_delete", "_meta": { "ui": { "visibility": ["model", "app"] } } }
 
 // OK — UI 전용 메서드 (app-only). LLM에는 노출되지 않음
 { "name": "meeting_push_chunk", "_meta": { "ui": { "visibility": ["app"] } } }
@@ -358,7 +358,6 @@ Renderer UI 는 `ave:plugins:call` IPC 를 통해 app-visible 플러그인 tool 
 
 | 값 | 강제/자문 | 역할 |
 |------------------------ |-------------------- |------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lyra-mail-consumer` | advisory (PR 3 이후) | Microsoft Graph 를 사용하는 플러그인의 자기-식별 라벨. PR 3 에서 host 측 MS HostApi 메서드가 모두 제거되어 강제할 게이트가 없으므로 advisory 로 강등. lyra-mail 플러그인이 자체 MSAL + safeStorage 로 직접 인증 처리 (architecture.md §9.4a "Plugin-Owned OAuth Authentication" 참조). |
 | `external-auth-consumer` | **enforced** | `openAuthWindow` 호출 필수. 실 Chromium 창을 띄워 외부 포털 세션 쿠키를 수집하는 민감 operation — 선언적 opt-in 없이는 거부. |
 | `mail-source` | **enforced** | `email.*` 이벤트 emit 게이트. 미선언 시 emit 이 드롭되고 warn. |
 | `calendar-source` | **enforced** | `calendar.*` emit 게이트. |
@@ -387,25 +386,25 @@ Renderer UI 는 `ave:plugins:call` IPC 를 통해 app-visible 플러그인 tool 
 
 ### 2.4 `auth` — Plugin-Owned OAuth 의 Host UI Surface
 
-OAuth-flow 를 소유한 플러그인 (lyra-mail, lyra-mail 등) 이 호스트 Settings UI 에 generic 미인증 / 인증됨 뱃지 + 로그인/로그아웃 버튼을 제공하기 위한 _선언적_ 계약. 호스트는 OAuth 코드를 모르고, 단지 manifest 에 적힌 tool 이름을 dispatch + standardized 이벤트를 listen 한다. architecture.md §9.4a "Plugin-Owned OAuth — Host UI Surface" 와 짝.
+OAuth-flow 를 소유한 플러그인이 호스트 Settings UI 에 generic 미인증 / 인증됨 뱃지 + 로그인/로그아웃 버튼을 제공하기 위한 _선언적_ 계약. 호스트는 OAuth 코드를 모르고, 단지 manifest 에 적힌 tool 이름을 dispatch + standardized 이벤트를 listen 한다. architecture.md §9.4a "Plugin-Owned OAuth — Host UI Surface" 와 짝.
 
 **Manifest 형**
 
 ```jsonc
 {
   "tools": [
-    { "name": "lyramail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    { "name": "mail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
     },
-    { "name": "lyramail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    { "name": "mail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
     },
-    { "name": "lyramail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    { "name": "mail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
     },
   ],
   "auth": {
     "label": "Microsoft 계정",      // optional; 기본 manifest.name
-    "statusTool": "lyramail_status",  // 필수, visibility ["app"]
-    "loginTool": "lyramail_auth",     // 필수, visibility ["app"]
-    "logoutTool": "lyramail_signout", // optional, visibility ["app"]
+    "statusTool": "mail_status",  // 필수, visibility ["app"]
+    "loginTool": "mail_auth",     // 필수, visibility ["app"]
+    "logoutTool": "mail_signout", // optional, visibility ["app"]
   },
 }
 ```
@@ -423,29 +422,29 @@ interface PluginAuthStatusResult {
 
 호스트 defensive parse — 추가 필드는 무시. `outputSchema` 강제 검증은 별 PR 로 tool outputSchema 인프라 작업 후 도입.
 
-**`<pluginId>.auth.changed` 이벤트** — 인증 전이 시 plugin 이 emit. `manifest.emittedEvents[]` 등록 필수. 호스트 `usePluginAuthStatuses` 훅이 받아 statusTool 재호출 → 뱃지 갱신. **폴링 안 함.** `ave-plugin-lyra-mail` / `ave-plugin-orion-classic` 가 PR 와 함께 emit 흐름 추가.
+**`<pluginId>.auth.changed` 이벤트** — 인증 전이 시 plugin 이 emit. `manifest.emittedEvents[]` 등록 필수. 호스트 `usePluginAuthStatuses` 훅이 받아 statusTool 재호출 → 뱃지 갱신. **폴링 안 함.**
 
 > **이름 규칙**: `<pluginId>` 는 manifest `id` 필드 literal — `_`↔`-` 정규화 없음. tool 이름 prefix (`meeting_*`, `agent_hub_*`) 와 다른 형식이라 mirror 하지 말 것. 예) `id: "foo-bar"` (dash) 인 플러그인의 auth 이벤트는 정확히 `foo-bar.auth.changed` 여야 하며, `foo_bar.auth.changed` (underscore) 는 host hook 의 strict subscribe 와 매치 안 되어 뱃지 stuck. `manifest-validation.ts` 의 cross-field check 가 `auth` 선언 시 `emittedEvents[]` 에 `${id}.auth.changed` 가 빠져있으면 load-time `log.warn` 발행 — 같은 룰이 architecture.md §9.4a 에 명시됨.
 
-**예시 (lyra-mail 플러그인)**
+**예시 (mail 플러그인)**
 
 ```jsonc
 {
   "tools": [
     /* non-auth LLM tools ... */
-    { "name": "lyramail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    { "name": "mail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
     },
-    { "name": "lyramail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    { "name": "mail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
     },
-    { "name": "lyramail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    { "name": "mail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
     },
   ],
-  "emittedEvents": ["lyra-mail.auth.changed" /* ... */],
+  "emittedEvents": ["mail.auth.changed" /* ... */],
   "auth": {
     "label": "Microsoft 계정",
-    "statusTool": "lyramail_status",
-    "loginTool": "lyramail_auth",
-    "logoutTool": "lyramail_signout",
+    "statusTool": "mail_status",
+    "loginTool": "mail_auth",
+    "logoutTool": "mail_signout",
   },
 }
 ```
@@ -485,31 +484,31 @@ OAuth-flow 를 소유한 플러그인이 자기 `persist:plugin-auth:<pluginId>`
 2. `auth.partitionDomains[]` 에 non-empty hostname 리스트 선언
 3. (선택) `auth.{statusTool, loginTool, logoutTool}` 로 host UI 뱃지/버튼 surface 활성화
 
-**예시 (lyra-mail 플러그인 — Outlook 캘린더 뷰어 surface 추가)**
+**예시 (mail 플러그인 — Outlook 캘린더 뷰어 surface 추가)**
 
 ```jsonc
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "lyra-mail",
+  "name": "mail",
   "extensions": { "ai.agent-connector.ave": {
   "capabilities": ["external-auth-consumer"],
   "tools": [
-    { "name": "lyramail_open_outlook_calendar", "description": "Outlook 캘린더 뷰어를 연다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["model", "app"] } },
+    { "name": "mail_open_outlook_calendar", "description": "Outlook 캘린더 뷰어를 연다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["model", "app"] } },
     },
     /* ... 기타 tool ... */
-    { "name": "lyramail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    { "name": "mail_status",  "description": "인증 상태를 반환한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
     },
-    { "name": "lyramail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    { "name": "mail_auth",    "description": "로그인 플로우를 시작한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
     },
-    { "name": "lyramail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
+    { "name": "mail_signout", "description": "로그아웃한다.", "inputSchema": { "type": "object", "properties": {} }, "_meta": { "ui": { "visibility": ["app"] } },
     },
   ],
-  "emittedEvents": ["lyra-mail.auth.changed"],
+  "emittedEvents": ["mail.auth.changed"],
   "auth": {
     "label": "Microsoft 계정",
-    "statusTool": "lyramail_status",
-    "loginTool": "lyramail_auth",
-    "logoutTool": "lyramail_signout",
+    "statusTool": "mail_status",
+    "loginTool": "mail_auth",
+    "logoutTool": "mail_signout",
     "partitionDomains": [
       "outlook.office.com",
       "login.microsoftonline.com",
@@ -573,7 +572,7 @@ plugin.json
 [manifest:<unknown>] JSON parse error (Unexpected token ...). Example: {"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"sample",...}
 [manifest:meeting] schema validation failed (/path/to/plugin.json): /tools/0/name must match pattern "^[a-zA-Z_][a-zA-Z0-9_]*$"
 Invalid tool name 'meeting.start' in plugin 'meeting' at 'tools[0]' (/path/to/plugin.json): tool names must match ^[a-zA-Z_][a-zA-Z0-9_]*$ (start with letter/underscore, then letters/digits/underscores). Example: "tools": ["meeting_start"] (not "meeting.start")
-[plugin-runtime] managed plugin 'ave-plugin-lyra-mail' rejected — signature invalid
+[plugin-runtime] managed plugin 'ave-plugin-mail' rejected — signature invalid
 [plugin-runtime] managed plugin 'meeting' rejected — signature file missing
 ```
 
@@ -696,11 +695,11 @@ export function mount(host: PluginHost): PluginInstance {
 
 > **교훈**: `pcm16leMono`는 TypeScript에서 `number[]`로 전달된다. JSON Schema `items.type: "integer"`로 LLM에 명시하지 않으면 LLM이 base64 string을 시도할 수 있다.
 
-### 예시 2: lyramail_calendar_create (nested required + attendees 배열)
+### 예시 2: mail_calendar_create (nested required + attendees 배열)
 
 ```json
 {
-  "name": "lyramail_calendar_create",
+  "name": "mail_calendar_create",
   "description": "Microsoft Graph를 통해 캘린더 일정 생성. 참석자 이메일 배열을 지원한다.",
   "inputSchema": {
     "type": "object",
@@ -723,17 +722,17 @@ export function mount(host: PluginHost): PluginInstance {
 }
 ```
 
-### 예시 3: lyramail_email_reply (사전 조건 명시)
+### 예시 3: mail_email_reply (사전 조건 명시)
 
 ```json
 {
-  "name": "lyramail_email_reply",
-  "description": "지정 이메일에 답장. lyramail_email_list 또는 lyramail_email_read로 id를 먼저 획득해야 함.",
+  "name": "mail_email_reply",
+  "description": "지정 이메일에 답장. mail_email_list 또는 mail_email_read로 id를 먼저 획득해야 함.",
   "inputSchema": {
     "type": "object",
     "required": ["id", "body"],
     "properties": {
-      "id": { "type": "string", "description": "lyramail_email_list 응답의 id 필드" },
+      "id": { "type": "string", "description": "mail_email_list 응답의 id 필드" },
       "body": { "type": "string", "description": "답장 본문 (plain text 또는 HTML)" },
       "subject": { "type": "string", "description": "선택. 생략 시 원본 제목 유지" },
       "to": { "type": "string", "description": "선택. 생략 시 원본 발신자에게 답장" }
@@ -767,9 +766,8 @@ export function mount(host: PluginHost): PluginInstance {
 | `saveNote(title, content)` | `~/.ave/plugins/<id>/notes/`에 회의록·요약 저장 (플러그인 namespace 내부) | 대용량 바이너리 저장 |
 | `getSecret(key)` | 암호화된 API 키 조회 | 키를 메모리에 캐시 후 재사용 (매번 호출) |
 | (플러그인 간 직접 tool 호출 없음) | 다른 플러그인에게 작업을 요청하거나 결과를 받으려면 `emitEvent` / `onEvent` 이벤트 계약으로 모델링 | peer plugin module import, handler 직접 호출, 권한 우회 |
-<!-- PR 3c: getLyraMailToken / startLyraMailAuth / isLyraMailAuthenticated / getLyraMailAccount / onLyraMailAuthChange / withLyraMailRetry — host HostApi 에서 제거됨. lyra-mail 플러그인이 자체 MSAL 소유. architecture.md §9.4a "Plugin-Owned OAuth Authentication" 참조. -->
 | `callLlm(prompt, options?)` | 호스트 LLM 으로 단발 텍스트 생성 (플러그인 분류·요약) | 대화 히스토리·streaming·tool_use 필요 시 (플러그인이 직접 SDK 사용) |
-| `openAuthWindow(options)` ([external-auth-consumer] 필요) | 외부 포털 interactive 로그인 창을 띄우고 지정 도메인 쿠키 수집 (Selenium/webdriver 대체) | OAuth-style localhost callback이 되는 표준 플로우 (→ LYRA Mail 패턴 사용) |
+| `openAuthWindow(options)` ([external-auth-consumer] 필요) | 외부 포털 interactive 로그인 창을 띄우고 지정 도메인 쿠키 수집 (Selenium/webdriver 대체) | OAuth-style localhost callback이 되는 표준 플로우 (→ Microsoft Graph 패턴 사용) |
 | `triggerConversation(spec)` ([host:overlay] 필요) | 관찰된 신호를 바탕으로 overlay prompt 를 host overlay 에 staged | 사용자 input → tool 결과 패턴 (chat 으로 충분) — 자세한 사용 패턴 / 안전 계약은 [`overlay-trigger.md`](./overlay-trigger.md) |
 | `getInstalledPluginIds()` | 다른 플러그인 설치 여부 체크 — 의존성-인식 detector / 조건부 UI | 우선순위 추론 (insertion order ≠ priority). 향후 capability-filtered 변종 (`getProvidersFor(capability)`) 가 superseding 예정 — Phase 1 은 unscoped |
 | `onPluginsChanged(handler)` | install/uninstall 발생 시 reactive 재구성 (예: detector list rebuild). handler 는 `PluginLifecycleEvent` 받음 (`{type, pluginId, source}` discriminated union, self-event 자동 필터). production consumer 는 `source: "local-dev"` 무시 권장 | `updated` (버전 bump) — 별도 spec 진행 중 (P0 미지원). handler 는 forward-compat 위해 `default:` 분기 필수 |
@@ -902,15 +900,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 - `index_add_folder` 는 `/etc`, `/usr`, `~/.ssh` 등 위험 경로를 플러그인이 스스로 차단 — HostApi 레벨 제어 없음.
 - 각 tool `inputSchema` 필수: `index_add_folder` 는 path 인자를 `_meta["ave/pathFields"]` 로 선언한다 (effective category 는 host 가 분류).
 
-### 5.3 LYRA Mail (`lyra-mail`)
-
-**파일:** `ken-jo/agent-marketplace` 의 `plugins/lyra-mail/source/src/hostPlugin.ts`
-
-- `capabilities: ["mail-source", "calendar-source", "lyra-mail-consumer"]`.
-- 인증은 플러그인 자체 MSAL + safeStorage 경로가 소유한다. Host 는 provider-specific token HostApi 를 제공하지 않는다.
-- 메일/캘린더 mutation tool 의 effective category(`write`/`network`)는 host 가 invocation 별로 분류하고, UI 호출이 필요하면 `_meta.ui.visibility` 에 `"app"` 을 추가한다.
-
-### 5.4 Agent Hub (`agent-hub`) — 은퇴
+### 5.3 Agent Hub (`agent-hub`) — 은퇴
 
 Agent Hub 플러그인과 `ave-plugin-hydra` 저장소는 폐기되었다. 현행 플러그인 소스가 없으므로 케이스스터디에서 뺀다. 최소 예제는 같은 모노레포의 `plugins/hello-world/source/src/hostPlugin.ts` 를 본다.
 
@@ -924,7 +914,7 @@ HostApi 에 새 메서드를 추가하려면:
 
 1. **3개 이상의 플러그인이 동일 기능을 필요로 해야** — 1~2개는 플러그인이 직접 구현.
 2. 보안·감사 통제가 필요한 경우 (예: 파일 쓰기, 외부 네트워크) — 1개 플러그인도 가능.
-3. host 앱이 이미 가진 서비스를 노출하는 경우 (예: LYRA Mail 토큰).
+3. host 앱이 이미 가진 서비스를 노출하는 경우.
 
 ### 6.2 추가 절차
 
@@ -941,7 +931,7 @@ HostApi 에 새 메서드를 추가하려면:
 |------------------------------------------------------------- |------------------------- |-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **worker_threads / process 격리** | ❌ 기각 | in-process + try/catch 로 95% 장애 커버. 격리 시 IPC 오버헤드 + 디버깅 복잡도 증가. |
 | **marketplace artifact 검증** | ✅ **승인** | 플러그인 저자는 서명을 만들지 않습니다. 호스트는 git 마켓플레이스 커밋이 고정한 아티팩트(sha256 또는 트리)를 설치 시 검증하고 로드 시 install receipt 해시를 확인합니다. §2.1. |
-| **`permissions[]` 선언형 필드** | ⚠️ **부분 승인** | full permission 문자열 배열은 기각되었지만, 다음 3종의 선언형 게이트가 대체 도입됨: (1) renderer→plugin allowlist (당시 `uiActions` map; #885 Phase R 이후 각 tool 의 `_meta.ui.visibility` — 파괴적 도구의 확인 UX 는 플러그인이 책임), (2) `capabilities[]` — `lyra-mail-consumer` HostApi gate + event-emit namespace gate, (3) `PLUGIN_PRIVATE_NAMESPACES` — subscription deny-list. §2.2, §2.3. |
+| **`permissions[]` 선언형 필드** | ⚠️ **부분 승인** | full permission 문자열 배열은 기각되었지만, 다음 3종의 선언형 게이트가 대체 도입됨: (1) renderer→plugin allowlist (당시 `uiActions` map; #885 Phase R 이후 각 tool 의 `_meta.ui.visibility` — 파괴적 도구의 확인 UX 는 플러그인이 책임), (2) `capabilities[]` — `mail-consumer` HostApi gate + event-emit namespace gate, (3) `PLUGIN_PRIVATE_NAMESPACES` — subscription deny-list. §2.2, §2.3. |
 | **LLM invoke HostApi 추상화 (full surface)** | ❌ 기각 (callLlm 만 채택) | 단발 텍스트 생성 `callLlm()` 만 Phase 1에서 채택 (§4). streaming·tool_choice·thinking·multi-turn 등 vendor 편차 큰 surface 는 여전히 기각. |
 | **파일 watcher HostApi (`watchFiles`)** | ❌ 기각 | local-indexer 1개 플러그인만 필요. "3+ 플러그인 규칙" 미충족. |
 | **zod 자동 schema 추출** | ❌ 기각 | 번들 크기 증가, zod 버전 충돌. 수기 작성이 LLM 최적화 면에서도 우수. |

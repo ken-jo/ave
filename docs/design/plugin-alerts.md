@@ -1,16 +1,19 @@
 # Plugin alerts — a host delivery contract, declared per kind
 
+Plugin names such as `mail`, `portal`, `assistant` and `ave-plugin-repo` in this
+record are generic stand-ins for plugins that are no longer part of this project.
+
 The code packages described here are called extensions in user-facing copy.
 
 Status: proposed design, not implemented. Owner decisions recorded in this
 page: the alert *mechanism* is raised to the host contract; each plugin
 declares what it alerts on in its manifest and detects it itself; the host
-owns delivery; every alert kind is opt-in; the `vega-helper` plugin
+owns delivery; every alert kind is opt-in; the `assistant` plugin
 dissolves into the plugins that own its signals. Line references are against
 ave `origin/main` at `ccf81ced5` and the official marketplace monorepo at
-`origin/main` `6a4d3b3` (2026-09-25: `plugins/vega-helper/source` 0.11.3,
-`plugins/lyra-mail/source` 0.5.3, `plugins/meeting/source` 0.8.5); the internal
-`orion-api` plugin is 0.21.5.
+`origin/main` `6a4d3b3` (2026-09-25: `plugins/assistant/source` 0.11.3,
+`plugins/mail/source` 0.5.3, `plugins/meeting/source` 0.8.5); the internal
+`portal` plugin is 0.21.5.
 
 "The alerts release" below is the ave release that carries all seven
 host pull requests of the plan (Pull request plan, below); a release with
@@ -28,7 +31,7 @@ Three partial mechanisms exist today and do not compose:
   maps a bus event's fields to an OS notification, registered by
   `registerPluginNotifications` (`src/boot/plugins.ts:159-259`) and fired as
   `kind: "plugin"` through `NotificationService` (line 244). The title and body
-  are whatever fields the plugin names — `lyra-mail` sends the raw sender and
+  are whatever fields the plugin names — `mail` sends the raw sender and
   subject of every new mail to the OS notification centre. There is no card, no
   per-plugin cooldown beyond the 5 s kind cooldown
   (`src/main/notification-service.ts:117-129`), and no user toggle.
@@ -45,7 +48,7 @@ Three partial mechanisms exist today and do not compose:
   fail-closed and all-or-nothing), one open card per declared kind, upsert by
   `(kind, key)`, and a durable, retractable card on the Work Board.
 
-`vega-helper` (`plugins/vega-helper/source/src/hostPlugin.ts`, 1523 lines)
+`assistant` (`plugins/assistant/source/src/hostPlugin.ts`, 1523 lines)
 built the missing composition in plugin space: per-intent cooldown, a fixed
 per-intent OS notification (`notification-metadata.ts`), user toggles stored in
 its own `configSchema` (`disabledDetectors`, `osNotificationsEnabled`,
@@ -54,7 +57,7 @@ but not the card, and relay events so other plugins could act. Every one of
 those is delivery, and delivery is the host's job. What the host must **not**
 take is the content: mail keywords, sender allow-lists, meeting-room phrasing,
 organisation names and tool names all stay in the plugins that own the signal
-(`AGENTS.md` > Organizational identifiers, lines 168-173; the decoupling audit
+(`AGENTS.md` > Architecture and security invariants; the decoupling audit
 `src/plugins/__tests__/app-plugin-decoupling-audit.test.ts`).
 
 ## The contract
@@ -150,7 +153,7 @@ truncated to 32 characters, where `installSecret` is 32 random bytes the host
 creates once in the `alerts` feature namespace. It is the only identity that
 reaches the overlay item, the audit log, bus events and `open.json`; the raw
 `key` never leaves the call. The HMAC matters because plugin keys can be
-guessable (vega-helper's fallback key is `mail-intent:<subject>|<sender>`,
+guessable (assistant's fallback key is `mail-intent:<subject>|<sender>`,
 `decide.ts:145`), and a plain hash of a guessable key is reversible.
 
 **Upsert and closed state.** Re-raising an identity whose card is open
@@ -250,12 +253,12 @@ window.
    carries in its own `inherits[]` entry (`sourceId: "ave"`, the fixed and
    reserved official id, `src/marketplace/sources/official.ts:23`) — the
    package's `sourceId` must equal the hint or be `null` (an old snapshot, a
-   company-source `orion-api` arriving before the official sync, or a
+   company-source `portal` arriving before the official sync, or a
    never-bound package must all block, not double, while an unrelated
    package that merely shares the name cannot block a user who never syncs
    the official source); once the entry is known, a package matches when its
    `sourceId` equals the source that carries the entry or is `null`. An
-   internal mirror that republishes vega-helper under its own source id
+   internal mirror that republishes assistant under its own source id
    does not match the hint and would run beside the successors; that rare
    case is accepted. This is the generic rule that closes
    every double-alert window: the successor stays silent until the
@@ -343,9 +346,9 @@ declaring `due-soon` would otherwise share the settings key and could withdraw
 the host's card. `scanAndEmitDueSoon` (`src/work-board/due-soon.ts:55`) keeps
 emitting `work_board.work_item.due_soon` for plugin subscribers and
 additionally raises the host kind, so the nudge is visible with no plugin
-installed — today it is visible only because `vega-helper` subscribed to
+installed — today it is visible only because `assistant` subscribed to
 it. The kind is `defaultEnabled: false` like every other; how a former
-vega-helper user's `work-item-due-soon` choice reaches it is under
+assistant user's `work-item-due-soon` choice reaches it is under
 Migration (the host cannot name the plugin, so the mapping is marketplace
 data). A host kind has no predecessor to block on, so on the first boot of
 the alerts release it resolves to off before any retirement has happened;
@@ -504,7 +507,7 @@ what a damaged retired record means is under Migration.
 
 **Opt-in is the rule, and it is a visible loss.** Every kind in this page
 declares `defaultEnabled: false`, including the successors of the OS
-notifications that `lyra-mail` (`email.new`, `email.action.needed`) and
+notifications that `mail` (`email.new`, `email.action.needed`) and
 `meeting` (`meeting.summary.created`, `meeting.summary.degraded`) send today
 through `notificationEvents`. When those plugins update, users stop receiving
 new-mail and meeting-summary notifications until they turn the corresponding
@@ -599,7 +602,7 @@ export const ALERTS = {
 | Mechanism | Fate | Deprecation owner | Removal condition |
 | --- | --- | --- | --- |
 | `notificationEvents` | Deprecated at the alerts release. Keeps working through the window; the host warns once per plugin at load when a manifest declares both `alerts.kinds` and `notificationEvents`, and the marketplace repository check flags a descriptor that declares `notificationEvents` with `minAppVersion` at or above the alerts release. | ave maintainer | The follow-on release PR adds `notificationEvents` to `RETIRED_EXTENSION_FIELDS` (`manifest-validation.ts:95`), which drops the field with a warning instead of failing the strict vendor block (`manifest-validation.ts:447-493`), and removes `registerPluginNotifications` and the contract type. Prerequisite: `local-indexer` has published a version on the alert contract. |
-| `triggerConversation` | **Survives** for one-time suggestions: a plugin-authored prompt that seeds a conversation once (the local-indexer rescan suggestion, `plugins/local-indexer/source/src/rescanSuggestion.ts:210`; the daily-briefing routine suggestion below). Those carry no third-party content and need arguments a typed slot cannot express (`routine_schedule` calls). Structural limit, not a review rule: a plugin whose manifest declares an `alerts` block also declares its overlay suggestion sources — `alerts.suggestions: ["overlay:lyra-mail-daily-briefing-routine"]`, at most 4 entries, each a full `triggerConversation` `source` string that validation checks against `OVERLAY_TRIGGER_SOURCE_PATTERN` (`^overlay:[a-z][a-z0-9-]*$`, `staged-origins.ts:108`) and the `--` ban — and for such a plugin `triggerConversation` accepts only a declared source (`ConversationTriggerResult.reason: "source_not_declared"`, a new member of the union at `public-contract.ts:1989-1994`) and at most one acceptance per declared source per 30 days (`reason: "suggestion_limit"`; `trigger-gate.ts`, stored in the `alerts` namespace). The overlay source is distinct from the routine's idempotency marker (`RoutineRecord.source`, `suggestion:lyra-mail:daily-briefing`, checked with `hasRoutineBySource`), exactly as vega-helper keeps `overlay:vega-helper-daily-briefing-routine` and `suggestion:vega-helper:daily-briefing` apart (`dailyBriefingRoutineSuggestion.ts:18,21`). Declaring the source is the grant; the fixed list is what stops a plugin from rotating suffixes on the free source string, which the source pattern would otherwise allow. Scoping is fail-closed: a manifest that carries an `alerts` block counts as "declared" even when the block is refused as malformed, so a deliberately broken block cannot evade the limit. So the path can only serve a handful of one-time suggestions. The limit is scoped to plugins on the contract because the plugins that are not yet on it are exactly the ones the transition must not silence: vega-helper 0.11.3 raises every recurring alert through `triggerConversation` with one fixed `source` per intent (`decide.ts:160,282,362,428,498`, `meeting-room-suggest-detector.ts:261`, `webex-link-missing-detector.ts:196`, `video-conference-reserved-detector.ts:167`, `meeting-summary-detector.ts:140`), and while it is installed its successors' kinds are blocked — an unscoped limit would leave that window, which is indefinite for a policy-locked package, with no alerts at all. Declaring `alerts` is the plugin's statement that its recurring alerts use the contract. Until the scoping is lifted, a plugin without an `alerts` block evades the limit; that is accepted — such a plugin has the unlimited path today and loses it at the follow-on release, when every official plugin is on the contract. `visibility` and `priority` are accepted and ignored. | ave maintainer | `visibility` and `priority` leave `ConversationTriggerSpec` in the follow-on release PR, which also drops the `alerts`-block scoping once `notificationEvents` is retired and every official plugin is on the contract. |
+| `triggerConversation` | **Survives** for one-time suggestions: a plugin-authored prompt that seeds a conversation once (the local-indexer rescan suggestion, `plugins/local-indexer/source/src/rescanSuggestion.ts:210`; the daily-briefing routine suggestion below). Those carry no third-party content and need arguments a typed slot cannot express (`routine_schedule` calls). Structural limit, not a review rule: a plugin whose manifest declares an `alerts` block also declares its overlay suggestion sources — `alerts.suggestions: ["overlay:mail-daily-briefing-routine"]`, at most 4 entries, each a full `triggerConversation` `source` string that validation checks against `OVERLAY_TRIGGER_SOURCE_PATTERN` (`^overlay:[a-z][a-z0-9-]*$`, `staged-origins.ts:108`) and the `--` ban — and for such a plugin `triggerConversation` accepts only a declared source (`ConversationTriggerResult.reason: "source_not_declared"`, a new member of the union at `public-contract.ts:1989-1994`) and at most one acceptance per declared source per 30 days (`reason: "suggestion_limit"`; `trigger-gate.ts`, stored in the `alerts` namespace). The overlay source is distinct from the routine's idempotency marker (`RoutineRecord.source`, `suggestion:mail:daily-briefing`, checked with `hasRoutineBySource`), exactly as assistant keeps `overlay:assistant-daily-briefing-routine` and `suggestion:assistant:daily-briefing` apart (`dailyBriefingRoutineSuggestion.ts:18,21`). Declaring the source is the grant; the fixed list is what stops a plugin from rotating suffixes on the free source string, which the source pattern would otherwise allow. Scoping is fail-closed: a manifest that carries an `alerts` block counts as "declared" even when the block is refused as malformed, so a deliberately broken block cannot evade the limit. So the path can only serve a handful of one-time suggestions. The limit is scoped to plugins on the contract because the plugins that are not yet on it are exactly the ones the transition must not silence: assistant 0.11.3 raises every recurring alert through `triggerConversation` with one fixed `source` per intent (`decide.ts:160,282,362,428,498`, `meeting-room-suggest-detector.ts:261`, `webex-link-missing-detector.ts:196`, `video-conference-reserved-detector.ts:167`, `meeting-summary-detector.ts:140`), and while it is installed its successors' kinds are blocked — an unscoped limit would leave that window, which is indefinite for a policy-locked package, with no alerts at all. Declaring `alerts` is the plugin's statement that its recurring alerts use the contract. Until the scoping is lifted, a plugin without an `alerts` block evades the limit; that is accepted — such a plugin has the unlimited path today and loses it at the follow-on release, when every official plugin is on the contract. `visibility` and `priority` are accepted and ignored. | ave maintainer | `visibility` and `priority` leave `ConversationTriggerSpec` in the follow-on release PR, which also drops the `alerts`-block scoping once `notificationEvents` is retired and every official plugin is on the contract. |
 | `workProposals` / `proposeWork` | Unchanged. A proposal is durable work; an alert is a time-bound nudge. | — | — |
 
 ## Plugin-side changes
@@ -614,7 +617,7 @@ grounded in that: nothing trusts "any mail source". Every grant, capability
 and dependency added below is a `PLUGIN_AUTHORITY_FIELDS` change and lands in
 the plugin's `ave-package.json` descriptor in the same commit.
 
-### lyra-mail 0.5.3 → 0.6.0 (`requires.minAppVersion`: the alerts release)
+### mail 0.5.3 → 0.6.0 (`requires.minAppVersion`: the alerts release)
 
 Gains:
 
@@ -626,8 +629,8 @@ Gains:
   (slots `subject`, `conflictSubject`, `eventId:ref`). Each declares
   `osNotification` with the plugin's fixed body text
   (`notification-metadata.ts`) and, except `mail-new`, `inherits` from
-  `vega-helper`.
-- Moved code from `plugins/vega-helper/source/src/decision/`:
+  `assistant`.
+- Moved code from `plugins/assistant/source/src/decision/`:
   `mail-keywords.ts`, `meeting-detector.ts`, `approval-detector.ts`,
   `action-detector.ts`, `reply-detector.ts`, `calendar-event-detector.ts`,
   `calendar-conflict-detector.ts`, `classify-l2.ts` (over `hostApi.callLlm`,
@@ -643,43 +646,43 @@ Gains:
   (`calendarWatcher.ts:185, :215`).
 - A new owned event **`calendar.events.loaded`** `{ events: CalendarEvent[],
   reason: "first-load" | "auth-changed" | "requested" }` with full rows
-  (`plugins/lyra-mail/source/src/calendar/types.ts:1-14`: `attendees`,
+  (`plugins/mail/source/src/calendar/types.ts:1-14`: `attendees`,
   `bodyText`, `organizer`, `onlineMeetingUrl`, `webLink`, `isOnlineMeeting`,
   `location`), covering today and tomorrow (two days), emitted on the
   watcher's first successful load, on
-  `lyra-mail.auth.changed`, and in answer to `meeting.calendar.snapshot.requested`
-  (a meeting-owned event; lyra-mail subscribes with a
+  `mail.auth.changed`, and in answer to `meeting.calendar.snapshot.requested`
+  (a meeting-owned event; mail subscribes with a
   `pluginAccess.plugins[{ pluginId: "meeting", events: [...] }]` grant). The
   answer is served from a 60 s cache of the last two-day fetch, so a burst
   of requests (meeting restarting twice, or several successors starting
-  together) costs one Graph call; a request cannot loop, because lyra-mail
+  together) costs one Graph call; a request cannot loop, because mail
   never requests and meeting never answers. The answer path exists because
   the loaded event is push-only: the watcher
   fetches immediately at start (`calendarWatcher.ts:58`), typically before
   `meeting` has subscribed, and `meeting` restarts on every update and on a
   `config.set` that changes cleartext config while no restart is unsafe
   (`host-api-factory.ts:626-650`, rule at `config-restart-policy.ts:87`),
-  which includes the one that turns its calendar automation on. vega-helper pulled the same snapshot
+  which includes the one that turns its calendar automation on. assistant pulled the same snapshot
   at its own start and on `plugin.installed` (`hostPlugin.ts:1173`). This
   replaces the snapshot it requested at boot (`calendarDays: 2`,
   `hostPlugin.ts:373`): the watcher itself emits no `calendar.event.added` on
   first load (`calendarWatcher.ts:141-146`) and `injectEvent` (`:106`) emits
   none, and it sees today only.
-- The daily-briefing tool **`lyramail_daily_briefing`**: vega-helper's
+- The daily-briefing tool **`mail_daily_briefing`**: assistant's
   isolated generate function moved in — mail list, two-day calendar, then a
   tool-less `hostApi.callLlm` with the plugin's injection banner and
   directives, returning the briefing text. Raw mail never enters a session
-  that holds write tools (`lyramail_email_reply`, `lyramail_calendar_create`);
+  that holds write tools (`mail_email_reply`, `mail_calendar_create`);
   the briefing routine calls this one tool.
 - `host:overlay`, for one suggestion: the daily-briefing routine setup
-  (Migration). Two sources, as in vega-helper: the overlay trigger's
-  `source: "overlay:lyra-mail-daily-briefing-routine"`, declared in
+  (Migration). Two sources, as in assistant: the overlay trigger's
+  `source: "overlay:mail-daily-briefing-routine"`, declared in
   `alerts.suggestions`, and the proposed routine's idempotency marker
-  `source: "suggestion:lyra-mail:daily-briefing"`, checked with
+  `source: "suggestion:mail:daily-briefing"`, checked with
   `hasRoutineBySource`.
 
-Deleted: `eventSubscriptions: ["vega_helper.snapshot.requested"]`, the
-`pluginAccess.plugins[vega-helper]` grant, the `lyra-mail.snapshot.ready`
+Deleted: `eventSubscriptions: ["assistant.snapshot.requested"]`, the
+`pluginAccess.plugins[assistant]` grant, the `mail.snapshot.ready`
 emit and its handler, and both `notificationEvents` entries. Bus events
 (`email.*`, `calendar.*`) are otherwise unchanged.
 
@@ -690,62 +693,62 @@ Gains:
 - `alerts.kinds`, all `defaultEnabled: false`: `summary-ready` (slots `title`,
   `highlights:list(3)`, `actionItems:list(3)`, `sessionId:ref`; the follow-up
   call-to-action of `meetingSummaryPrompt` becomes the template; inherits
-  vega-helper's `meeting-summary`), `summary-degraded` (`summary-only`:
+  assistant's `meeting-summary`), `summary-degraded` (`summary-only`:
   toast or OS notification, nothing to the model).
 - Moved: `meeting-summary-detector.ts` and its template, raised at the
   `meeting.summary.created` emit site (`plugins/meeting/source/src/hostPlugin.ts:2843`).
 - **Calendar automation, plugin-owned.** Subscribes to `calendar.events.loaded`,
   `calendar.event.added`, `calendar.event.upcoming`, `calendar.event.starting`
-  with a `pluginAccess.plugins[{ pluginId: "lyra-mail", events: [...] }]`
-  grant, and ports the relay from `vega-helper` `hostPlugin.ts`:
+  with a `pluginAccess.plugins[{ pluginId: "mail", events: [...] }]`
+  grant, and ports the relay from `assistant` `hostPlugin.ts`:
   `isRecordableCalendarEvent`, bulk prep registration from the loaded rows,
   the 5-minute prep timer and the start timer, once-per-event `prepTriggered`
   / `recordingStarted` sets, and `meetingContextForCalendar` over the full
   row. The `wa-<hash>` session-id derivation is **kept** and the once-per-event
   sets are keyed by `eventId` across both the plugin's own subscriptions and
-  vega-helper's `vega_helper.meeting.prep.requested` /
+  assistant's `assistant.meeting.prep.requested` /
   `.recording.requested` relay events, which the plugin keeps handling through
-  the window, so an overlap with a still-installed vega-helper is
+  the window, so an overlap with a still-installed assistant is
   idempotent rather than doubled. At start, and again whenever the automation
   is switched on, the plugin emits its own `meeting.calendar.snapshot.requested`
   and receives `calendar.events.loaded` with `reason: "requested"` (grant
   above). A flat plugin setting `calendarAutomationEnabled: boolean` gates
-  it, **default off**; `configInherits` sets it on for former vega-helper
+  it, **default off**; `configInherits` sets it on for former assistant
   users (Migration).
-- The three `vega_helper.*.requested` subscriptions, their grant and their
+- The three `assistant.*.requested` subscriptions, their grant and their
   handlers stay until the follow-on plugin release, then go.
 
 Deleted now: both `notificationEvents` entries (`meeting.summary.created`
 with raw title and summary, `meeting.summary.degraded`).
 
-### orion-api 0.21.5 → 0.22.0 (company git; `requires.minAppVersion`: the alerts release)
+### portal 0.21.5 → 0.22.0 (company git; `requires.minAppVersion`: the alerts release)
 
 Gains: `alerts.kinds` `room-suggest`, `webex-link-missing`,
 `conference-prep-register`, all `defaultEnabled: false`, with the plugin's own
 templates (they may name ORION facilities and tools) and `inherits` from
-vega-helper's three ORION intents; `eventSubscriptions: ["calendar.event.added"]`
-with a grant to `lyra-mail` (the ORION detectors took only `added` in
-vega-helper; running them over `calendar.events.loaded` would re-alert on
+assistant's three ORION intents; `eventSubscriptions: ["calendar.event.added"]`
+with a grant to `mail` (the ORION detectors took only `added` in
+assistant; running them over `calendar.events.loaded` would re-alert on
 every boot); moved
 `meeting-room-suggest-detector.ts`, `webex-link-missing-detector.ts`,
 `video-conference-reserved-detector.ts` and templates;
 `dependencies: [{ pluginId: "meeting", required: false }]` because the
 prep-register prompt tells the model to call `meeting_bulk_upsert_preps`. The
-reservation detector runs in-process at the `orion-api.video-conference.reserved`
-emit site (`ave-plugin-orion/src/hostPlugin.ts:2667`); the event stays for other
+reservation detector runs in-process at the `portal.video-conference.reserved`
+emit site (`ave-plugin-portal/src/hostPlugin.ts:2667`); the event stays for other
 subscribers. `host:overlay` is not needed: alerts do not use it.
 
-### vega-helper
+### assistant
 
 No further version. Retired by revocation (below). Its chat tools
-`vega_helper_set_detector_enabled`, `vega_helper_list_detectors` and
-`vega_helper_generate_daily_briefing` retire with it; the Settings section
-replaces the first two and `lyramail_daily_briefing` the third. Its
+`assistant_set_detector_enabled`, `assistant_list_detectors` and
+`assistant_generate_daily_briefing` retire with it; the Settings section
+replaces the first two and `mail_daily_briefing` the third. Its
 marketplace index entry **stays** until the legacy-binding window closes
 (`docs/design/multi-source-git-marketplace.md` §16.3 binds a pre-marketplace
 install only when the id exists in the official snapshot; a user upgrading
 straight from an old build after the entry vanished would keep an unbound
-vega-helper that no revocation can reach). The directory is deleted in the
+assistant that no revocation can reach). The directory is deleted in the
 follow-on monorepo change, with the revocation entry kept.
 
 ### local-indexer
@@ -760,28 +763,28 @@ declared sources.
 ### Release order and the combinations
 
 The alerts release ships first. The monorepo then lands **one commit** with
-`lyra-mail` 0.6.0, `meeting` 0.9.0, the descriptor changes, the re-vendored
+`mail` 0.6.0, `meeting` 0.9.0, the descriptor changes, the re-vendored
 `contract/` and `tools/vendor/marketplace-check.js`, and the conditional
-revocation of `vega-helper`; `orion-api` 0.22.0 is published to the company
+revocation of `assistant`; `portal` 0.22.0 is published to the company
 source the same day. Plugins do not auto-update, sources sync independently,
 and an uninstall can fail, so the predecessor rule (step 3) is what makes the
 pairings safe rather than the order:
 
 | App | Plugins | Outcome |
 | --- | --- | --- |
-| before the alerts release | any | Nothing changes: 0.6.0 / 0.9.0 / 0.22.0 are `upgrade_required` (`chooseVersion`, `src/marketplace/catalog/aggregate.ts:129`), the conditional file is not evaluated, `vega-helper` keeps running. |
+| before the alerts release | any | Nothing changes: 0.6.0 / 0.9.0 / 0.22.0 are `upgrade_required` (`chooseVersion`, `src/marketplace/catalog/aggregate.ts:129`), the conditional file is not evaluated, `assistant` keeps running. |
 | alerts release, snapshot pinned by an older app at the same commit | old | The snapshot's format version is older, so the first sync rebuilds it at the same pin (Retirement) and the conditional entry appears; until then the retirement entry is unknown, so any installed successor's kinds are blocked by the predecessor's name alone. |
-| alerts release, after sync | old lyra-mail / meeting | The revocation uninstalls `vega-helper` (retired record written). Mail and calendar cards stop until the user accepts the offered `lyra-mail` update; the marketplace tab shows the revoked package with a reason naming the successors, and the update badge is on. The old `notificationEvents` keep firing in the window. Bounded vanish, no doubling. |
-| alerts release | new plugins, vega-helper gone | Contract path only; kinds resolve from the retired record. |
-| alerts release | new lyra-mail, old meeting | Calendar automation vanishes until `meeting` updates; mail and calendar alerts work. |
-| alerts release | new meeting, old lyra-mail | `calendar.events.loaded` does not exist yet; preps appear only from `upcoming`; summary alerts work. |
-| alerts release | `orion-api` 0.22.0 from the company source before the official source synced | The retirement entry is not known yet, so its three kinds are `blocked_by_predecessor` by name while vega-helper is installed; the reserved-event path works once it is gone. |
-| alerts release | revocation applied mid-session, uninstall failed (`service.ts:1080-1081`) or the package is `lockedByPolicy` / a required install | Vega-helper stays installed and revoked, and keeps running until the next restart because `markRevoked` acts only at load; the successors' kinds stay blocked while it is loaded (no doubling), the retired record was already written when the revocation was applied (Migration), and after the restart the load is refused, the block lifts and the kinds resolve from that record. The Settings note reads "silenced at next restart" while it is loaded; a policy-locked predecessor that is not revoked shows "managed by policy" and blocks until policy changes. |
-| alerts release | vega-helper with `sourceId === null` (never bound) | The per-source feed (`service.ts:1043-1045`) cannot reach it, but the index entry still exists so legacy binding can; a `null` source matches the predecessor rule, so inheriting kinds are blocked, and vega-helper itself keeps alerting through `triggerConversation` (the acceptance limit does not apply to it). |
+| alerts release, after sync | old mail / meeting | The revocation uninstalls `assistant` (retired record written). Mail and calendar cards stop until the user accepts the offered `mail` update; the marketplace tab shows the revoked package with a reason naming the successors, and the update badge is on. The old `notificationEvents` keep firing in the window. Bounded vanish, no doubling. |
+| alerts release | new plugins, assistant gone | Contract path only; kinds resolve from the retired record. |
+| alerts release | new mail, old meeting | Calendar automation vanishes until `meeting` updates; mail and calendar alerts work. |
+| alerts release | new meeting, old mail | `calendar.events.loaded` does not exist yet; preps appear only from `upcoming`; summary alerts work. |
+| alerts release | `portal` 0.22.0 from the company source before the official source synced | The retirement entry is not known yet, so its three kinds are `blocked_by_predecessor` by name while assistant is installed; the reserved-event path works once it is gone. |
+| alerts release | revocation applied mid-session, uninstall failed (`service.ts:1080-1081`) or the package is `lockedByPolicy` / a required install | Assistant plugin stays installed and revoked, and keeps running until the next restart because `markRevoked` acts only at load; the successors' kinds stay blocked while it is loaded (no doubling), the retired record was already written when the revocation was applied (Migration), and after the restart the load is refused, the block lifts and the kinds resolve from that record. The Settings note reads "silenced at next restart" while it is loaded; a policy-locked predecessor that is not revoked shows "managed by policy" and blocks until policy changes. |
+| alerts release | assistant with `sourceId === null` (never bound) | The per-source feed (`service.ts:1043-1045`) cannot reach it, but the index entry still exists so legacy binding can; a `null` source matches the predecessor rule, so inheriting kinds are blocked, and assistant itself keeps alerting through `triggerConversation` (the acceptance limit does not apply to it). |
 
 The pairing "new meeting on an old app" is what forces `meeting` to require
 the alerts release: on an older app it would register preps beside
-`vega-helper`'s relay without the host-side blocking rule.
+`assistant`'s relay without the host-side blocking rule.
 
 ## Retirement by revocation
 
@@ -817,17 +820,17 @@ that cannot be trusted must not partially apply.
   "revocations": [
     {
       "kind": "plugin",
-      "name": "vega-helper",
+      "name": "assistant",
       "versions": "*",
       "appVersions": "0.12.0",
-      "reason": "Superseded by the plugin alert contract. Mail and calendar alerts ship in lyra-mail 0.6.0, meeting alerts in meeting 0.9.0, ORION alerts in orion-api 0.22.0.",
+      "reason": "Superseded by the plugin alert contract. Mail and calendar alerts ship in mail 0.6.0, meeting alerts in meeting 0.9.0, ORION alerts in portal 0.22.0.",
       "at": "2026-10-01T00:00:00Z",
       "action": "uninstall",
       "successors": {
         "plugins": [
-          { "pluginId": "lyra-mail" },
+          { "pluginId": "mail" },
           { "pluginId": "meeting" },
-          { "pluginId": "orion-api", "anySource": true }
+          { "pluginId": "portal", "anySource": true }
         ],
         "hostKinds": [
           { "kind": "@host:due-soon",
@@ -1029,7 +1032,7 @@ the successors without the host naming any plugin.
 
    ```jsonc
    "inherits": [{
-     "pluginId": "vega-helper",
+     "pluginId": "assistant",
      "sourceId": "ave",   // required; predecessor source hint, used only before the retirement entry is known (step 3)
      "enabled":        { "key": "disabledDetectors",     "listed": "disabled", "values": ["mail-reply", "reply-detection"] },
      "osNotification": { "key": "osNotificationIntents", "listed": "enabled",  "values": ["mail-reply"], "masterKey": "osNotificationsEnabled" }
@@ -1044,14 +1047,14 @@ the successors without the host naming any plugin.
    true unless any of `values` is in the
    list at `key` (or false unless listed, per `listed`); `osNotification`
    likewise, and false when `masterKey` is `false`. Because the record holds the *effective* config,
-   a user who never opened vega-helper's settings inherits its defaults
+   a user who never opened assistant's settings inherits its defaults
    (alerts on), and a user who saved only `disabledDetectors` keeps the
    default OS-notification intents. With no record at all — the user never
    had the plugin, or had it disabled — the kind's `defaultEnabled: false`
    applies. `values` lists both current and legacy spellings, which is where
    `LEGACY_INTENT_REMAP` (`hostPlugin.ts`: `meeting-detection`,
    `approval-detection`, `action-detection`, `reply-detection`) goes; the
-   three ORION intents are inherited by `orion-api`'s kinds the same way, and the
+   three ORION intents are inherited by `portal`'s kinds the same way, and the
    host kind's mapping travels in the revocation entry's `successors` block
    with the same shape.
 3. **`configInherits` on a plugin manifest** fills a flat plugin config key
@@ -1061,8 +1064,8 @@ the successors without the host naming any plugin.
 
    ```jsonc
    "configInherits": [
-     { "pluginId": "vega-helper", "from": "meetingDetectorAllowedSenderDomains", "to": "alertSenderDomains" },  // lyra-mail
-     { "pluginId": "vega-helper", "to": "calendarAutomationEnabled", "value": true }                          // meeting
+     { "pluginId": "assistant", "from": "meetingDetectorAllowedSenderDomains", "to": "alertSenderDomains" },  // mail
+     { "pluginId": "assistant", "to": "calendarAutomationEnabled", "value": true }                          // meeting
    ]
    ```
 
@@ -1089,12 +1092,12 @@ the successors without the host naming any plugin.
    makes meeting emit `meeting.calendar.snapshot.requested` when its
    automation is switched on this way. This carries a customised sender list
    (`*`, extra domains) and turns meeting's calendar automation on for former
-   vega-helper users only.
+   assistant users only.
 4. **The daily-briefing routine.** The record with
-   `source: "suggestion:vega-helper:daily-briefing"` has a pre-prompt that
-   calls `vega_helper_generate_daily_briefing` and
-   `request_plugin({pluginId:'vega-helper'})`, and a scope of
-   `{ mode: "allow", ids: ["vega-helper"] }`
+   `source: "suggestion:assistant:daily-briefing"` has a pre-prompt that
+   calls `assistant_generate_daily_briefing` and
+   `request_plugin({pluginId:'assistant'})`, and a scope of
+   `{ mode: "allow", ids: ["assistant"] }`
    (`dailyBriefingRoutineSuggestion.ts`). The generic host rule for the
    scheduler: a scheduled `llm-session` routine whose allow-list names **no**
    installed plugin (registry) is skipped with
@@ -1102,12 +1105,12 @@ the successors without the host naming any plugin.
    missing runs and is marked `needsAttention` with the missing ids;
    `RoutinePanel.tsx` shows both with a remove action. "Installed", not
    "loaded", so a plugin update at the scheduled minute is not a skip. The
-   replacement is proposed once by `lyra-mail` 0.6.0
-   (`hasRoutineBySource("suggestion:lyra-mail:daily-briefing")`, ledger in its
-   data dir): a routine whose pre-prompt calls `lyramail_daily_briefing` and
-   presents its result, scope `{ mode: "allow", ids: ["lyra-mail"] }`. That
-   scope still exposes lyra-mail's write tools (`lyramail_email_reply`,
-   `lyramail_calendar_create`, `lyramail_calendar_delete`) to the routine's
+   replacement is proposed once by `mail` 0.6.0
+   (`hasRoutineBySource("suggestion:mail:daily-briefing")`, ledger in its
+   data dir): a routine whose pre-prompt calls `mail_daily_briefing` and
+   presents its result, scope `{ mode: "allow", ids: ["mail"] }`. That
+   scope still exposes mail's write tools (`mail_email_reply`,
+   `mail_calendar_create`, `mail_calendar_delete`) to the routine's
    session, and the briefing text is a summary of untrusted mail; the
    routine therefore relies on the tool-stage headless lane
    (`src/tools/pipeline/reviewer-dispatch.ts:80-101`), which is always on:
@@ -1118,7 +1121,7 @@ the successors without the host naming any plugin.
    guarantee: it sits behind `features.hostClassifiesRisk`, which defaults
    to false (`src/boot/steps/plugin-runtime.ts:291-294`, "pure pass-through";
    `host-api-factory.ts:968`). So the briefing can propose a reply, never
-   send one; a test pins that `lyramail_email_reply` is refused in a routine
+   send one; a test pins that `mail_email_reply` is refused in a routine
    under default settings. That lane is a stated dependency of this design,
    not a new rule.
 
@@ -1141,7 +1144,7 @@ the successors without the host naming any plugin.
 | Marketplace | `src/marketplace/sources/{snapshot,sync}.ts`, `catalog/{types,validate,aggregate}.ts`, `app/{service,views,revocations}.ts`, `repository-check.ts`, `schemas/marketplace/revocations-by-app.schema.json` | snapshot format version, raw conditional entries, `effectiveRevocations` accessor for every reader |
 | Uninstall | `src/plugins/uninstall-lifecycle.ts`, `src/plugins/plugin-uninstall-cleanup-journal.ts`, `src/marketplace/app/service.ts` (`applyRevocations` writes the retired record; `uninstall` passes `retain`), `src/marketplace/app/ports.ts` (`InstallerPorts.plugin.uninstall(name, retain?)`), `src/ipc/domains/git-marketplace.ts:151` (installer port), `src/ipc/domains/plugins.ts` | retired record written at revocation time; internal `retain` option captured at prepare and persisted in the journal record; the journal's `has(pluginId)` port gates retired-record removal |
 | Routines | `src/boot/routine.ts`, `src/main/routines-scheduler.ts`, `RoutinePanel.tsx`, `src/shared/routines-types.ts` | `plugins-missing` skip, `needsAttention` |
-| Retirement of host references | Done by the PR that removed the host's plugin tours: `src/ui/renderer/onboarding/default-tour-scenarios.ts` keeps only `first-boot-essentials`. Removed with their catalog keys: `vega-helper-tour` and `vega-helper-walkthrough` (the last host code that named the plugin), `multi-agent-tour` (agent-hub, archived), and the four tours for live extensions — `meeting-summary-tour`, `doc-search-tour`, `meeting-walkthrough`, `indexer-walkthrough` — whose anchors existed in neither the host nor the plugins and which nothing started. An extension introduces itself through `manifest.onboarding` instead. The rest was already gone: the `OUT_OF_PROCESS_PLUGIN_IDS` census in `out-of-process-plugins.ts`, the per-file exemption in `app-plugin-decoupling-audit.test.ts` (which exempts no file now), and the plugin literals in the test harnesses (the Playwright suite and the screenshot harness seed only `test/fixtures/e2e-plugins`). | `tour-anchors-trigger.test.tsx` keeps the registry to host tours: every anchor must be one the host renderer ships, and no catalog key goes unused |
+| Retirement of host references | Done by the PR that removed the host's plugin tours: `src/ui/renderer/onboarding/default-tour-scenarios.ts` keeps only `first-boot-essentials`. Removed with their catalog keys: `assistant-tour` and `assistant-walkthrough` (the last host code that named the plugin), `multi-agent-tour` (agent-hub, archived), and the four tours for live extensions — `meeting-summary-tour`, `doc-search-tour`, `meeting-walkthrough`, `indexer-walkthrough` — whose anchors existed in neither the host nor the plugins and which nothing started. An extension introduces itself through `manifest.onboarding` instead. The rest was already gone: the `OUT_OF_PROCESS_PLUGIN_IDS` census in `out-of-process-plugins.ts`, the per-file exemption in `app-plugin-decoupling-audit.test.ts` (which exempts no file now), and the plugin literals in the test harnesses (the Playwright suite and the screenshot harness seed only `test/fixtures/e2e-plugins`). | `tour-anchors-trigger.test.tsx` keeps the registry to host tours: every anchor must be one the host renderer ships, and no catalog key goes unused |
 | Docs | `docs/architecture/architecture.md` (Plugin Runtime), `docs/references/overlay-trigger.md`, `CHANGELOG.md` | contract, deprecations, the opt-in loss |
 | i18n | `src/i18n/messages/generated/alerts.ts` | `alerts.*`, `be_alerts.*` |
 
@@ -1311,7 +1314,7 @@ Contract tests (host):
   as malformed still counts as declared; a `source` containing `--` is
   rejected for every plugin; for a plugin without an `alerts` block the
   acceptance limit does not apply.
-- Routine lane: `lyramail_email_reply` invoked from a routine session under
+- Routine lane: `mail_email_reply` invoked from a routine session under
   default settings (`hostClassifiesRisk` off, no reviewer attached) is
   refused by `reviewer-dispatch.ts`; with a reviewer attached a non-low
   verdict is still refused.
@@ -1351,20 +1354,20 @@ Contract tests (host):
 - Deprecation: the load warn for `notificationEvents` + `alerts`; in the
   follow-on change, the field is dropped with a warning, not a load failure.
 
-Per-plugin tests (monorepo and `orion-api`): the ported detector suites, unchanged
+Per-plugin tests (monorepo and `portal`): the ported detector suites, unchanged
 in verdicts; a manifest ↔ runtime lockstep extension of each plugin's
 `scripts/validate-events.mjs` that scans `raiseAlert({ kind: "<literal>" })`
 against `alerts.kinds`; a canary that no `raiseAlert` call passes a raw
 subject or sender as `key`; `inherits` values include the legacy spellings;
-`configInherits` targets exist in `configSchema`; lyra-mail's
+`configInherits` targets exist in `configSchema`; mail's
 `calendar.events.loaded` on first load, auth change and in answer to
 `meeting.calendar.snapshot.requested`, with full rows, and two requests
 within 60 s cost one Graph call; meeting emits the request at start and
 when its automation is switched on (including the `configInherits` restart),
 and keys its
 once-per-`eventId` sets across its own subscriptions and the relay events;
-orion-api does not subscribe to `calendar.events.loaded`;
-`lyramail_daily_briefing` calls `callLlm` with no tools and the injection
+portal does not subscribe to `calendar.events.loaded`;
+`mail_daily_briefing` calls `callLlm` with no tools and the injection
 banner.
 
 CDP checks (port 9222 against a built app; the `test/e2e/ui` harness):
@@ -1382,7 +1385,7 @@ CDP checks (port 9222 against a built app; the `test/e2e/ui` harness):
   draw nothing.
 - OS notification path: with the window unfocused the notification fires;
   focused, the toast appears instead, unless the kind bypasses.
-- `test/screenshots/matrix.ts` re-keys the `vega-helper-*` cards to
+- `test/screenshots/matrix.ts` re-keys the `assistant-*` cards to
   `alert-*` with `source: { kind: "alert", … }`. The Playwright suite seeds no
   repository plugin: `plugin-load.spec.ts` checks the in-repository view
   fixture (`test/fixtures/e2e-plugins/view-fixture.ts`).
@@ -1424,7 +1427,7 @@ ave:
    and acceptance rules for `triggerConversation`. Its CHANGELOG entry
    states the one compatibility change for third-party plugins: a
    `triggerConversation` `source` containing `--` is now rejected (no
-   official plugin uses one — vega-helper's sources and
+   official plugin uses one — assistant's sources and
    `overlay:local-indexer-nightly-rescan` contain none). Gates: common +
    trigger-gate, overlay, notification-service,
    isolation wire, runtime event suites + a CDP run with the seeded fixture
@@ -1458,22 +1461,22 @@ that version at publication, not before.
 
 Official monorepo (one commit, after the alerts release is published):
 
-- `lyra-mail` 0.6.0 and `meeting` 0.9.0 with `minAppVersion` at the alerts
-  release; descriptor changes (lyra-mail `host:overlay`, meeting and later
-  orion-api `pluginAccess` grants, vega-helper grant removals);
-  `policy/revocations-by-app.json` with the `vega-helper` entry; the
+- `mail` 0.6.0 and `meeting` 0.9.0 with `minAppVersion` at the alerts
+  release; descriptor changes (mail `host:overlay`, meeting and later
+  portal `pluginAccess` grants, assistant grant removals);
+  `policy/revocations-by-app.json` with the `assistant` entry; the
   re-vendored `contract/` and `tools/vendor/marketplace-check.js`. Gates:
   each plugin's typecheck, `vitest`, `validate-events.mjs` (extended), plugin
   CI; `node tools/index.mjs --check` and `marketplace-check.js` on the new
   file; a manual run on the alerts release of each pairing in the table.
 - `local-indexer` on the alert contract before the follow-on release PR.
-- With the follow-on release: delete `plugins/vega-helper/`, regenerate the
+- With the follow-on release: delete `plugins/assistant/`, regenerate the
   index, keep the revocation entry; meeting drops the relay subscriptions.
 
-Company git: `orion-api` 0.22.0 with `minAppVersion` at the alerts release,
+Company git: `portal` 0.22.0 with `minAppVersion` at the alerts release,
 published the same day as the monorepo commit. Gates: ported suites,
-`validate-events.mjs`, a run on the alerts release with `lyra-mail` 0.6.0 and
-`meeting` 0.9.0, and one with vega-helper still installed (blocked kinds).
+`validate-events.mjs`, a run on the alerts release with `mail` 0.6.0 and
+`meeting` 0.9.0, and one with assistant still installed (blocked kinds).
 
 ## Decisions recorded
 
@@ -1510,18 +1513,18 @@ published the same day as the monorepo commit. Gates: ported suites,
 - The routine session's write-tool guard is the tool-stage headless lane
   (`reviewer-dispatch.ts`), which denies non-low; the effect-boundary lane
   is off by default and is not relied on.
-- The daily briefing is one `lyra-mail` tool with a tool-less LLM call and a
-  routine scoped to `lyra-mail` only.
+- The daily briefing is one `mail` tool with a tool-less LLM call and a
+  routine scoped to `mail` only.
 - The OS notification body is static.
 - `alerts` stays outside `PLUGIN_AUTHORITY_FIELDS`; consent for kinds that
   appear in an update comes from the resolve-off rule, not from review.
 - Every kind, including the successors of today's new-mail and
   meeting-summary notifications, is `defaultEnabled: false`; former
-  vega-helper users inherit their choices from the retired record;
+  assistant users inherit their choices from the retired record;
   everyone else opts in.
-- Meeting's calendar automation is on only for former vega-helper users,
+- Meeting's calendar automation is on only for former assistant users,
   through `configInherits`.
-- `calendar.events.loaded` covers two days, matching vega-helper's
+- `calendar.events.loaded` covers two days, matching assistant's
   snapshot, so preps for tomorrow register at boot as they did; it is pushed
   on first load and auth change and answered on `meeting.calendar.snapshot.requested`.
   More days would cost Graph quota on every auth change and every answer for

@@ -26,7 +26,7 @@ export type PluginUiExtensionView = {
   icon?: string;
   /**
    * Optional short text (1-4 chars) used in place of a Lucide icon — e.g.
-   * `"ORION"`, `"MTG"`. Takes precedence over `icon` when both are declared.
+   * `"AB"`, `"MTG"`. Takes precedence over `icon` when both are declared.
    */
   iconText?: string;
   extension: {

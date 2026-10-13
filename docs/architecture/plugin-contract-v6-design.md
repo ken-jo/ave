@@ -56,7 +56,7 @@ The plugin tool contract has **three scattered method surfaces** joined by name 
 
 The scatter forces load-time cross-field validation (`toolSchemas` keys ⊆ `tools ∪ uiActions`, auth-tool placement rules, the #1554 overlap warn), and the **governed-vs-bypass security boundary reads two sources at once** (`src/boot/plugin-tool-invocation.ts:33-37`). Consolidating to one MCP-shaped object per tool makes every one of these single-source, and feeds the **already-live loopback projection** (`src/mcp/plugin-server-projection.ts`) without a translation step.
 
-Real-manifest scale (per-surface, verified 2026-07-09): meeting declares 28 `tools[]` entries (24 also UI-invokable) **plus 4 UI-only methods (the schemaless upload quad) — 32 tool objects total after migration**; lyra-mail 27 `tools[]`, 12 UI-invokable, 3 UI-only (the auth trio) — 30 objects. **A method is very commonly BOTH model-facing and UI-invokable** — the surface model expresses this as membership in a visibility array, not an either/or.
+Real-manifest scale (per-surface, verified 2026-07-09): meeting declares 28 `tools[]` entries (24 also UI-invokable) **plus 4 UI-only methods (the schemaless upload quad) — 32 tool objects total after migration**; mail 27 `tools[]`, 12 UI-invokable, 3 UI-only (the auth trio) — 30 objects. **A method is very commonly BOTH model-facing and UI-invokable** — the surface model expresses this as membership in a visibility array, not an either/or.
 
 ## 2. Axis (a) — the tool object is a pure MCP `Tool`
 
@@ -71,7 +71,7 @@ Real-manifest scale (per-surface, verified 2026-07-09): meeting declares 28 `too
   "tools": [
     {
       // --- pure MCP Tool fields ---
-      "name": "lyramail_email_list",
+      "name": "mail_email_list",
       "title": "이메일 목록",                       // optional
       "description": "받은 편지함의 최근 이메일…",
       "inputSchema": { "type": "object", "properties": { "top": { … } }, "additionalProperties": false },
@@ -94,13 +94,13 @@ Real-manifest scale (per-surface, verified 2026-07-09): meeting declares 28 `too
       }
     },
     {
-      "name": "lyramail_status",
+      "name": "mail_status",
       "description": "현재 인증 상태를 반환…",
       "inputSchema": { "type": "object", "properties": {} },
       "_meta": { "ui": { "visibility": ["app"] } }   // UI-only (the old uiActions-only case)
     }
   ],
-  "auth": { "statusTool": "lyramail_status", "loginTool": "lyramail_auth", "logoutTool": "lyramail_signout" }
+  "auth": { "statusTool": "mail_status", "loginTool": "mail_auth", "logoutTool": "mail_signout" }
 }
 ```
 
@@ -263,7 +263,7 @@ BOTH shapes (a `oneOf` on `tools`: legacy `string[]` vs MCP `Tool[]`).
 ### 3.2 Removal gate (must be GREEN before Phase R)
 
 1. All 6 first-party plugins + template publish pure-form manifests (a3):
-   `for r in meeting lyra-mail vega-helper local-indexer ep git template; do node -e "process.exit(typeof require('../ave-plugin-'+process.argv[1]+'/plugin.json').tools[0]==='object'?0:1)" "$r" || echo "NOT MIGRATED: $r"; done`
+   `for r in meeting mail assistant local-indexer ep git template; do node -e "process.exit(typeof require('../ave-plugin-'+process.argv[1]+'/plugin.json').tools[0]==='object'?0:1)" "$r" || echo "NOT MIGRATED: $r"; done`
 2. Marketplace catalog re-published; installed-manifest scan on a test profile shows zero legacy shapes.
 3. `PluginMarketplaceItem.toolSchemas`/`.tools` consumers migrated (`types.ts:615,646`, SDK).
 
@@ -340,13 +340,13 @@ can never see a `Tool[]`).
 | **R (removal)** | Delete legacy `toolSchemas`/`uiActions`/`PluginUiActionSpec` + removed-field plumbing + dormant deprecation machinery + compat branch (§3). **First-party-only assumption:** the removal gate verifies first-party + catalog manifests; a sideloaded third-party LEGACY manifest fails load post-R with the schema's clear reject error (accepted — the ecosystem is first-party at this stage) | removal gate §3.2 green; sweep §3.3 = 0; tsc/vitest/build green |
 
 **Cross-repo sweep (must move in-session per CLAUDE.md §Cross-repo contract sync):**
-`ave` (host) · `ave-plugin-sdk` (v5.22.0 → **v6**) · 6 plugins (`meeting`, `lyra-mail`, `vega-helper`,
+`ave` (host) · `ave-plugin-sdk` (v5.22.0 → **v6**) · 6 plugins (`meeting`, `mail`, `assistant`,
 `local-indexer`, `orion`, `git`) · `ave-plugin-template` · `agent-marketplace` (catalog
 `PluginMarketplaceItem.tools`/`.toolSchemas` mirror + publisher schema).
 
 ## 6. Open items (non-blocking)
 
-- `ave-plugin-vega-helper-briefing-routine` has **no** standalone `plugin.json` (verified) — excluded
+- `ave-plugin-assistant-briefing-routine` has **no** standalone `plugin.json` (verified) — excluded
   from the migration set.
 - b1 lazy per-server CDN-allowlist registration: confirm the `webRequest` filter can be (re)installed for a
   dynamic partition name without leaking a prior server's allowlist.

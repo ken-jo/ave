@@ -983,8 +983,8 @@
               <ul class="urows warnrows">
                 <li><span>Your organization requires wiki-search from corp, but that marketplace has not been reached yet.</span>
                   <div class="row"><button class="btn" type="button">Refresh source</button></div></li>
-                <li><span>Your organization requires orion-api from corp, but that marketplace does not list it.</span>
-                  <span class="ver">orion-api is installed from team-tools instead; it may stand in the way.</span>
+                <li><span>Your organization requires portal from corp, but that marketplace does not list it.</span>
+                  <span class="ver">portal is installed from team-tools instead; it may stand in the way.</span>
                   <div class="row"><button class="btn" type="button">Refresh source</button><button class="btn danger" type="button">Remove from team-tools…</button></div></li>
                 <li><span>Your organization requires notes-sync from corp, but that marketplace is hidden, so nothing installs from it. Show it again in Sources.</span>
                   <div class="row"><button class="btn" type="button" data-go="folders">Show sources</button></div></li>
@@ -1046,7 +1046,7 @@
               <div class="grid" style="grid-template-columns:repeat(auto-fill, minmax(200px, 1fr))">
                 <article class="card"><div class="card-top"><div class="glyph">Mt</div><div><h3>Meeting</h3><span class="ver">0.8.4</span></div></div><p class="desc">Record meetings, transcribe audio, and produce summaries.</p><div class="card-foot"><span class="badge official"><svg class="i"><use href="#i-shield"/></svg>Ave Official</span><span class="state update">Update 0.9.0</span></div></article>
                 <article class="card"><div class="card-top"><div class="glyph">Pr</div><div><h3>Proofread</h3><span class="ver">1.2.0</span></div></div><p class="desc">Korean proofreading skill from a team folder.</p><div class="card-foot"><span class="badge">team-share</span><span class="badge">Local folder</span><span class="state installed">Installed</span></div></article>
-                <article class="card"><div class="card-top"><div class="glyph">ORION</div><div><h3>ORION</h3><span class="ver">3.2.0</span></div></div><p class="desc">Orion extension approvals and schedules.</p><div class="card-foot"><span class="badge">corp</span><span class="state required" title="Your organization's policy file requires this package, so it cannot be uninstalled or disabled here.">Required by your organization</span></div></article>
+                <article class="card"><div class="card-top"><div class="glyph">ORION</div><div><h3>ORION</h3><span class="ver">3.2.0</span></div></div><p class="desc">Portal approvals and schedules.</p><div class="card-foot"><span class="badge">corp</span><span class="state required" title="Your organization's policy file requires this package, so it cannot be uninstalled or disabled here.">Required by your organization</span></div></article>
               </div>
             </div>
             <aside class="sheet" aria-label="Package sheet, automatic updates">
@@ -1207,7 +1207,7 @@
     { g: "Ad", n: "API Designer", k: "skill", d: "Design REST or GraphQL APIs, versioning, pagination and error formats.", s: "official", v: "1.1.0", st: ["installed", "Installed"] },
     { g: "Rf", n: "Release Captain", k: "agent", d: "Coordinates release checklists across repositories.", s: "team-tools", v: "0.3.0", st: ["blocked", "Requires Ave 0.12"] },
     { g: "Ba", n: "Browser Automation", k: "mcp", d: "Headless browser server. Withdrawn by its publisher.", s: "official", v: "0.6.2", st: ["yanked", "Yanked"] },
-    { g: "ORION", n: "ORION", k: "plugin", d: "Orion extension approvals and schedules. Kept installed by your organization.", s: "corp", v: "3.2.0", st: ["required", "Required by your organization"] },
+    { g: "ORION", n: "ORION", k: "plugin", d: "Portal approvals and schedules. Kept installed by your organization.", s: "corp", v: "3.2.0", st: ["required", "Required by your organization"] },
     { g: "Dg", n: "Diagram Kit", k: "skill", d: "Draw sequence and flow diagrams from a description.", s: "old-team", v: "1.0.4", st: ["removed", "Source removed"] }
   ];
   const badge = (s) => s === "official"
