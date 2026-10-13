@@ -99,7 +99,7 @@ import {
   setWindowManager,
 } from "./main/app-state.js";
 
-const log = createLogger("ave");
+const log = createLogger("retiredname");
 
 // Early boot environment — workspace cwd, plugin-asset protocol scheme, WSL/GPU
 // switches, app name/AppUserModelId, and packaged-env scrub.
