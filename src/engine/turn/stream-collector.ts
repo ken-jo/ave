@@ -2,7 +2,7 @@
 
 
 
-import type { LLMProvider, StreamEvent, ToolCallBlock, ToolSchema, GenericMessage, TokenUsage, ThinkingBlock } from "../llm/types.js";
+import type { LLMProvider, StreamTurnParams, StreamEvent, ToolCallBlock, ToolSchema, GenericMessage, TokenUsage, ThinkingBlock } from "../llm/types.js";
 import { isContextLengthError } from "../auto-compact.js";
 import { prepareMarkedToolResultsForWire } from "../wire-serialize.js";
 import { classifyProviderError } from "../llm/error-classifier.js";
@@ -20,6 +20,7 @@ import {
 } from "../../shared/subscription-runtime.js";
 import { providerMatchesActiveChatRuntime } from "./provider.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { imageInputRecoveryMessage } from "../../shared/model-capability-settings.js";
 
 export interface StreamCollectParams {
   provider: LLMProvider;
@@ -36,12 +37,12 @@ export interface StreamCollectParams {
    * Sampling defaults stay with the provider. The resolved output ceiling and
    * thinking policy travel separately from presentation-only stream smoothing.
    */
-  llmSettings: {
+  llmSettings: Pick<StreamTurnParams,
+    "thinkingBudgetTokens" | "requestedThinkingBudgetTokens" | "outputTokenLimit"
+    | "requestedOutputTokenLimit" | "outputCeiling" | "outputCeilingSource" | "catalogModel" | "modelCapabilities"
+  > & {
     streamSmoothing: "none" | "word" | "char";
     enableThinking: boolean;
-    thinkingBudgetTokens?: number;
-    /** Per-vendor output ceiling; see LLMVendorSettings.outputTokenLimit. */
-    outputTokenLimit?: number;
   };
   abortSignal?: AbortSignal;
   /**
@@ -53,6 +54,9 @@ export interface StreamCollectParams {
 
   onReasoningDelta?: (text: string) => void;
   onTextDelta?: (text: string) => void;
+  /** Called at provider dispatch after runtime and cancellation guards pass. */
+  onRequestStarted?: () => void;
+  onRequestControls?: StreamTurnParams["onRequestControls"];
 }
 
 export type StreamCollectResult =
@@ -136,6 +140,7 @@ export async function collectRoundStream(
   const wireMessages = prepareMarkedToolResultsForWire(messages);
 
   try {
+    params.onRequestStarted?.();
     for await (const event of provider.streamTurn({
       model,
       systemPrompt,
@@ -152,6 +157,13 @@ export async function collectRoundStream(
       ...(llmSettings.outputTokenLimit === undefined
         ? {}
         : { outputTokenLimit: llmSettings.outputTokenLimit }),
+      ...(llmSettings.outputCeiling === undefined ? {} : { outputCeiling: llmSettings.outputCeiling }),
+      ...(llmSettings.outputCeilingSource === undefined ? {} : { outputCeilingSource: llmSettings.outputCeilingSource }),
+      ...(llmSettings.modelCapabilities === undefined ? {} : { modelCapabilities: llmSettings.modelCapabilities }),
+      ...(llmSettings.requestedOutputTokenLimit === undefined ? {} : { requestedOutputTokenLimit: llmSettings.requestedOutputTokenLimit }),
+      ...(llmSettings.requestedThinkingBudgetTokens === undefined ? {} : { requestedThinkingBudgetTokens: llmSettings.requestedThinkingBudgetTokens }),
+      ...(llmSettings.catalogModel === undefined ? {} : { catalogModel: llmSettings.catalogModel }),
+      ...(params.onRequestControls === undefined ? {} : { onRequestControls: params.onRequestControls }),
       abortSignal,
     }) as AsyncIterable<StreamEvent>) {
       if (abortSignal?.aborted) return { kind: "interrupted", text };
@@ -227,14 +239,18 @@ export async function collectRoundStream(
           const classified = classifyProviderError(
             provider.subscriptionRuntime ? event.error : rawForClassification,
           );
-          const classification = event.providerError?.classification ?? classified.category;
+          const imageInputRefused = event.code === "image-input-unsupported";
+          const classification = imageInputRefused ? "model" : event.providerError?.classification ?? classified.category;
+          const userMessage = imageInputRefused
+            ? `${t("be_streamCollector.imageInputUnsupported")} ${imageInputRecoveryMessage(t)}`
+            : classified.userMessage;
           const providerError = withProviderErrorClassification(
             event.providerError ?? extractProviderErrorDiagnostics(event.error),
             classification,
           );
           return {
             kind: "stream_error",
-            userMessage: t("be_streamCollector.streamError", { userMessage: classified.userMessage }),
+            userMessage: t("be_streamCollector.streamError", { userMessage }),
             classification,
             providerError,
           };

@@ -449,11 +449,41 @@ Important rules:
   closed tile releases its loop. See `docs/design/tiled-chat-groups.md`.
 
 A long turn uses per-call limits and progress guidance. Each API-backed chat call
-carries the active vendor block's effective `outputTokenLimit` as its native output
-ceiling. The canonical resolver in `src/shared/llm-vendor-defaults.ts` supplies
-the default for missing or invalid settings and preserves explicit positive
-integer limits. The default is a host budget, not a discovered per-model
-maximum. User-configured thinking budgets apply per API call, including each
+is bounded by the route's effective output limit
+(`resolveContextWindowForRoute(...).output` in `src/shared/context-budget.ts`): the
+requested limit — the vendor block's `outputTokenLimit` when the user set one, else
+the host default of 32,000 (`requestedLlmOutputTokenLimit`, source `host-default`) —
+clamped to the model's output ceiling, which is what the endpoint's `/models` row
+reported, else the model catalog's `limits.output`; an unknown ceiling clamps
+nothing. A vendor block stores `outputTokenLimit` only when the user set it, so the
+default is never written back. The adapter honours the route's resolved ceiling when
+supplied, including an unknown ceiling; other requests meet the eligible catalog
+ceiling, which is where purpose-specific limits (finalize, background, memory,
+reviewer) meet it. The output that would still fit the remaining context is recorded
+in the turn summary (`modelSettings.remainingContextOutputTokens`) and never clamps a
+request. Each API-backed turn whose last request uses the primary route records the
+catalog `sha256` and the effective window, output, reasoning and prices with their
+sources in its turn summary and audit `turn` row. Native serialization may narrow
+those limits further (not when the endpoint reported the ceiling, which is sent as resolved);
+`modelSettings.requestControls` keeps the serialized output
+and thinking controls beside the route's output resolution, and the recorded numeric
+reasoning budget matches that serialized value
+(`src/shared/run-model-settings.ts`); see `docs/design/model-capability-catalog.md`.
+The catalog in force is chosen once per launch (`src/core/model-catalog/bundled.ts`): a
+`AVE_MODEL_CATALOG` pin (`bundled`, a cached `<sha256>`, or an absolute file path; a pin
+that cannot be honoured fails boot), else the verified refreshed copy in
+`<AVE_HOME>/cache/model-catalog/` when it is no older than the bundled snapshot, else
+the bundled snapshot. An interactive launch refreshes that cache from
+`https://models.dev/api.json` at most daily (`llm.modelCatalogRefresh`, default on; off
+under the pin or the managed policy's `modelCatalog.refresh: "off"`), through
+`fetchPublicHttpResponse` on the host's single-hop transport, never a plugin path: a
+GET omitting session authentication, cookies and user content; redirects are refused,
+headers and body share a 15 s deadline, and decompressed body bytes are capped at
+16,777,216. The source sees the IP address and ordinary transport headers. Failed
+attempts also count toward the daily cadence; publication retains at most five cached
+catalogs. A refreshed copy takes effect at the next launch, and any failed refresh keeps
+the catalog already in force. See [the refresh contract](../design/model-capability-catalog.md#7-refresh-slice-6).
+User-configured thinking budgets apply per API call, including each
 call after a tool result; they introduce no cumulative quota for a user turn.
 They are non-negative integers capped at the highest fixed preset strictly below
 the effective output ceiling. Settings and composer share these presets: low

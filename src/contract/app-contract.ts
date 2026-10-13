@@ -584,6 +584,10 @@ export const CHANNELS = {
     range: "ave:usage:range",
     dailySummary: "ave:usage:daily-summary",
     exportCsv: "ave:usage:export-csv",
+    // The price corrections in force (the setting, or the deployment's
+    // `AVE_PRICING_OVERRIDE`), so the renderer prices with the list the
+    // usage dashboard prices with.
+    pricingOverrides: "ave:usage:pricing-overrides",
   },
   // ── preload-swept channel groups ───────────────────────────────────────────
   // Added so the preload surfaces (public/internal) reference the contract SOT

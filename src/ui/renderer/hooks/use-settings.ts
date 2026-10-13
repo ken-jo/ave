@@ -21,7 +21,9 @@ import {
   type SubscriptionRuntimeId,
 } from "../../../shared/subscription-runtime.js";
 import { selectSubscriptionRuntimeUiPolicy, type SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-ui-policy.js";
-import { resolveContextWindowForRoute } from "../../../shared/context-budget.js";
+import { resolveContextWindowForRoute, type ResolvedOutputTokenLimit, type RouteInputModalities } from "../../../shared/context-budget.js";
+import { syncPricingOverrides } from "./use-pricing-overrides.js";
+import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../../shared/llm-vendor-defaults.js";
 import {
   DEFAULT_PROCESSING_DISPLAY_LEVEL,
   type ProcessingDisplayLevel,
@@ -91,11 +93,25 @@ export interface UseSettingsResult {
    */
   llmContextWindow: number;
   /**
+   * The active route's output limit — requested, the model's ceiling, and the
+   * effective value a request carries — from the same resolution as the
+   * window, so the cost estimate assumes the limit the engine sends.
+   */
+  llmOutputTokenLimit: ResolvedOutputTokenLimit;
+  /**
    * The active route's prompt cap, when one is stated below the window
    * (`resolveContextWindowForRoute(...).inputLimit`). The ring's usable budget
    * is bounded by it, as the engine's compaction threshold is.
    */
   llmInputLimit: number | undefined;
+  /**
+   * The active route's input modalities, as its endpoint or the catalog states
+   * them (`resolveContextWindowForRoute(...).inputModalities`), for the image
+   * gate (`supportsVision(vendor, model, route)`). `undefined` until settings
+   * have resolved; a route whose modalities nobody states carries none, and the
+   * name rules decide for it.
+   */
+  llmRouteModalities: RouteInputModalities | undefined;
   /** True after an authoritative settings snapshot has been applied. */
   settingsLoaded: boolean;
   /** Cached `enableThinking` flag for the active vendor. */
@@ -125,11 +141,21 @@ export interface UseSettingsResult {
   toggleThinking: (next: boolean) => Promise<void>;
 }
 
+/** Before the first snapshot: the host default, unclamped (nothing estimates until settings load). */
+const INITIAL_OUTPUT_TOKEN_LIMIT: ResolvedOutputTokenLimit = {
+  requested: DEFAULT_LLM_OUTPUT_TOKEN_LIMIT,
+  requestedSource: "host-default",
+  effective: DEFAULT_LLM_OUTPUT_TOKEN_LIMIT,
+  effectiveSource: "host-default",
+};
+
 export function useSettings(api: AveApi): UseSettingsResult {
   const [llmVendor, setLlmVendor] = useState<LLMVendor>(DEFAULT_LLM_VENDOR);
   const [llmModel, setLlmModel] = useState<string>("");
   const [llmContextWindow, setLlmContextWindow] = useState<number>(0);
+  const [llmOutputTokenLimit, setLlmOutputTokenLimit] = useState<ResolvedOutputTokenLimit>(INITIAL_OUTPUT_TOKEN_LIMIT);
   const [llmInputLimit, setLlmInputLimit] = useState<number | undefined>(undefined);
+  const [llmRouteModalities, setLlmRouteModalities] = useState<UseSettingsResult["llmRouteModalities"]>(undefined);
   const [enableThinkingChat, setEnableThinkingChat] = useState<boolean>(true);
   const [processingDisplayLevel, setProcessingDisplayLevel] = useState<ProcessingDisplayLevel>(
     DEFAULT_PROCESSING_DISPLAY_LEVEL,
@@ -170,8 +196,15 @@ export function useSettings(api: AveApi): UseSettingsResult {
         { ...settings.llm, provider },
         settings.marketplace?.installedProviderPresets,
       );
+      // A saved price correction arrives as a settings snapshot; the list in
+      // force is main's answer, which the environment can override.
+      void syncPricingOverrides(api).catch((error: unknown) => {
+        console.error("[use-settings] pricing overrides could not be read", error);
+      });
       setLlmContextWindow(route.contextWindow);
+      setLlmOutputTokenLimit(route.output);
       setLlmInputLimit(route.inputLimit);
+      setLlmRouteModalities(route.inputModalities !== undefined ? { inputModalities: route.inputModalities } : {});
       setEnableThinkingChat(block.enableThinking);
       setProcessingDisplayLevel(
         settings.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
@@ -193,7 +226,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
       }
       setSettingsLoaded(true);
     },
-    [],
+    [api],
   );
 
   const refresh = useCallback(async () => {
@@ -322,7 +355,9 @@ export function useSettings(api: AveApi): UseSettingsResult {
     llmVendor,
     llmModel,
     llmContextWindow,
+    llmOutputTokenLimit,
     llmInputLimit,
+    llmRouteModalities,
     enableThinkingChat,
     processingDisplayLevel,
     llmReadyWithoutApiKey,

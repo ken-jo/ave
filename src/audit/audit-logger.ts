@@ -1,6 +1,8 @@
 
 
 import { randomUUID } from "node:crypto";
+import type { RunModelSettings } from "../shared/run-model-settings.js";
+import type { ModelUsageSegment } from "../shared/model-pricing.js";
 import {
   accessSync,
   chmodSync,
@@ -281,14 +283,12 @@ export interface AuditTokenUsage {
   outputTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /** The reasoning part of `outputTokens`, when the provider reported it. */
+  reasoningTokens?: number;
 }
 
 /** One provider request segment of a turn's usage, kept unmerged for tiered pricing. */
-export interface AuditUsageByModelSegment {
-  vendorProvider: string;
-  vendorModel: string;
-  tokenUsage: AuditTokenUsage;
-}
+export type AuditUsageByModelSegment = ModelUsageSegment;
 
 export interface AuditEntry {
 
@@ -349,6 +349,8 @@ export interface AuditEntry {
     deferredLoadedRatio: number | null;
   };
   route?: string;
+  /** On a `turn` row: what the turn's API route resolved about its model. */
+  modelSettings?: RunModelSettings;
 }
 
 export interface AuditSearchFilter {
@@ -1494,16 +1496,7 @@ export class AuditLogger {
       cacheReadTokens?: number;
       cacheWriteTokens?: number;
     };
-    usageByModel?: Array<{
-      vendorProvider: string;
-      vendorModel: string;
-      tokenUsage: {
-        inputTokens: number;
-        outputTokens: number;
-        cacheReadTokens?: number;
-        cacheWriteTokens?: number;
-      };
-    }>;
+    usageByModel?: AuditUsageByModelSegment[];
     /** Non-billable subscription telemetry; sanitized again before write. */
     subscriptionUsage?: SubscriptionUsageTelemetry[];
     toolExposure?: {
@@ -1522,6 +1515,8 @@ export class AuditLogger {
       deferredLoadedRatio: number | null;
     };
     route: string;
+    /** What the turn's API route resolved about its model (catalog, window, output, reasoning). */
+    modelSettings?: RunModelSettings;
   }): void {
     const subscriptionUsage = params.subscriptionUsage
       ?.map((segment) => normalizeSubscriptionUsageTelemetry(segment))
@@ -1538,6 +1533,7 @@ export class AuditLogger {
       ...(subscriptionUsage && subscriptionUsage.length > 0 ? { subscriptionUsage } : {}),
       toolExposure: params.toolExposure,
       route: params.route,
+      ...(params.modelSettings ? { modelSettings: params.modelSettings } : {}),
     });
   }
 }

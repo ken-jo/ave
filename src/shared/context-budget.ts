@@ -19,6 +19,9 @@ import {
 import {
   activeLlmRouteModel,
   getLlmVendorSettings,
+  llmRouteImageInput,
+  requestedLlmOutputTokenLimit,
+  type LlmOutputTokenLimitSource,
   type LLMVendor,
   type LLMVendorSettingsMap,
 } from "./llm-vendor-defaults.js";
@@ -219,15 +222,177 @@ export interface LlmRouteProviderPreset {
   readonly modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy;
 }
 
-export interface RouteContextWindow extends ResolvedContextWindow {
+/** Where a model's output ceiling came from: the endpoint's own report, or the catalog. */
+export type OutputCeilingSource = "provider-reported" | "model-catalog";
+
+/**
+ * A route's output limit: what was asked for, what the model allows, and the
+ * smaller of the two that a request carries. An unknown ceiling clamps
+ * nothing. The output that would still fit the remaining context is NOT a
+ * part of this — it is reported in a run's diagnostics only, never used to
+ * shrink a request (owner decision, #2501).
+ */
+export interface ResolvedOutputTokenLimit {
+  readonly requested: number;
+  readonly requestedSource: LlmOutputTokenLimitSource;
+  readonly ceiling?: number;
+  readonly ceilingSource?: OutputCeilingSource;
+  readonly effective: number;
+  /** `requestedSource` when the request fit, the ceiling's source when it was clamped. */
+  readonly effectiveSource: LlmOutputTokenLimitSource | OutputCeilingSource;
+}
+
+/**
+ * The model's output ceiling: what its endpoint reported, else the catalog
+ * entry's `limits.output`. Values outside a credible range are ignored.
+ */
+export function resolveOutputCeiling(params: {
+  vendor: string;
+  model: string;
+  reported?: number;
+  catalogModel?: string;
+  baseUrl?: string;
+}): { ceiling: number; source: OutputCeilingSource } | undefined {
+  const reported = positiveTokenCount(params.reported);
+  if (reported !== undefined) return { ceiling: reported, source: "provider-reported" };
+  const catalog = positiveTokenCount(catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl)?.model.limits.output);
+  return catalog === undefined ? undefined : { ceiling: catalog, source: "model-catalog" };
+}
+
+/** The requested limit clamped to the model's ceiling, with both sources. */
+export function resolveOutputTokenLimit(params: {
+  vendor: string;
+  model: string;
+  requested: { value: number; source: LlmOutputTokenLimitSource };
+  reported?: number;
+  catalogModel?: string;
+  baseUrl?: string;
+}): ResolvedOutputTokenLimit {
+  const { value: requested, source: requestedSource } = params.requested;
+  const ceiling = resolveOutputCeiling(params);
+  if (!ceiling || ceiling.ceiling >= requested) {
+    return {
+      requested,
+      requestedSource,
+      ...(ceiling ? { ceiling: ceiling.ceiling, ceilingSource: ceiling.source } : {}),
+      effective: requested,
+      effectiveSource: requestedSource,
+    };
+  }
+  return {
+    requested,
+    requestedSource,
+    ceiling: ceiling.ceiling,
+    ceilingSource: ceiling.source,
+    effective: ceiling.ceiling,
+    effectiveSource: ceiling.source,
+  };
+}
+
+/** The kinds of input a model accepts, and who stated them. */
+export interface ResolvedInputModalities {
+  /** As the source spells them: `text`, `image`, `pdf`, `audio`, `video`. */
+  readonly input: readonly string[];
+  /** Authority for the image gate; a vendor setting changes only `image`. */
+  readonly source: "vendor-setting" | "provider-reported" | "model-catalog";
+  /** `<provider>/<id>` when the catalog answered. */
+  readonly catalogEntry?: string;
+}
+
+/**
+ * A model's input modalities: the user's image declaration or named entry,
+ * then its endpoint's report, then the catalog match. `undefined` when
+ * neither states them, which is unknown, not "text only"; the caller's name
+ * rule decides then. An empty reported list states nothing. A reported list is
+ * an external value, folded to lower case so `Image` reads as the catalog's `image`.
+ */
+export function resolveInputModalities(params: {
+  vendor: string;
+  model: string;
+  reported?: readonly string[];
+  catalogModel?: string;
+  /** The route's endpoint: an implicit name match follows the same identity rule as its limits (§4). */
+  baseUrl?: string;
+  imageInput?: boolean;
+}): ResolvedInputModalities | undefined {
+  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl);
+  const input = hit?.model.modalities?.input;
+  const reported = params.reported?.map((modality) => modality.trim().toLowerCase()).filter(Boolean);
+  const resolved: ResolvedInputModalities | undefined = params.catalogModel !== undefined && hit && input !== undefined
+    ? { input, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` }
+    : reported && reported.length > 0
+      ? { input: reported, source: "provider-reported" }
+      : hit && input ? { input, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` } : undefined;
+  if (params.imageInput !== undefined) {
+    const otherInputs = (resolved?.input ?? []).filter((modality) => modality !== "image");
+    return { input: params.imageInput ? [...otherInputs, "image"] : otherInputs, source: "vendor-setting" };
+  }
+  return resolved;
+}
+
+/**
+ * What the active route resolved about its model's inputs, for a caller that
+ * gates on them: `inputModalities` absent means nobody stated them.
+ */
+export interface RouteInputModalities {
+  readonly inputModalities?: ResolvedInputModalities;
+}
+
+/** Whether a route takes tool definitions, with the authority that states it. */
+export type ResolvedToolCallSupport =
+  | { readonly supported: true; readonly source: "provider-reported" }
+  | { readonly supported: boolean; readonly source: "model-catalog"; readonly catalogEntry: string };
+
+/**
+ * The user's named tool capability takes precedence over an endpoint report.
+ * Otherwise explicit endpoint support for `tools` overrides the catalog.
+ * A missing parameter is not a denial: only a catalog `toolCall: false`
+ * withholds tools. Absent means unknown and sends tools as before.
+ */
+export function resolveToolCallSupport(params: {
+  vendor: string;
+  model: string;
+  reported?: readonly string[];
+  catalogModel?: string;
+  /** The route's endpoint: an implicit name match follows the same identity rule as its limits (§4). */
+  baseUrl?: string;
+}): ResolvedToolCallSupport | undefined {
+  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl);
+  const supported = hit?.model.toolCall;
+  if (params.catalogModel !== undefined && hit && supported !== undefined) {
+    return { supported, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` };
+  }
+  if (params.reported?.some((parameter) => parameter.trim().toLowerCase() === "tools")) {
+    return { supported: true, source: "provider-reported" };
+  }
+  return hit && supported !== undefined
+    ? { supported, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` }
+    : undefined;
+}
+
+/** Capability facts resolved for one route; absent fields stay unknown. */
+export interface RouteModelCapabilities extends RouteInputModalities {
+  readonly toolCall?: ResolvedToolCallSupport;
+}
+
+export interface RouteContextWindow extends ResolvedContextWindow, RouteModelCapabilities {
   /** The model this route runs on — `activeLlmRouteModel`'s answer. */
   readonly model: string;
+  /** The endpoint used to establish model identity; absent on an SDK-managed route. */
+  readonly baseUrl?: string;
+  /** The named identity eligible for this model, shared with its reasoning decision. */
+  readonly catalogModel?: string;
   /**
    * The provider's own ceiling on a completion for this model, when it
    * reported one. Carried beside the window for a caller that needs an output
    * ceiling; the budget math does not use it.
    */
   readonly maxOutputTokens?: number;
+  /**
+   * The output limit a chat request on this route carries, resolved once for
+   * the engine and the renderer's cost estimate alike.
+   */
+  readonly output: ResolvedOutputTokenLimit;
   /**
    * The `llm.vendors.<vendor>.catalogModel` the user named for this route when
    * the catalog has no such entry. The window then comes from the next source;
@@ -315,11 +480,39 @@ export function resolveContextWindowForRoute(
     ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
   });
   const maxOutputTokens = positiveTokenCount(entry?.maxOutputTokens);
+  const output = resolveOutputTokenLimit({
+    vendor: llm.provider,
+    model,
+    requested: requestedLlmOutputTokenLimit(block),
+    ...(maxOutputTokens !== undefined ? { reported: maxOutputTokens } : {}),
+    ...(catalogModel !== undefined ? { catalogModel } : {}),
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
+  });
   const unresolved = catalogModel !== undefined && lookupCatalogModel(activeModelCatalog(), catalogModel) === undefined;
+  const inputModalities = resolveInputModalities({
+    vendor: llm.provider,
+    model,
+    imageInput: llmRouteImageInput(block, model, address.credentialScope),
+    ...(entry?.inputModalities !== undefined ? { reported: entry.inputModalities } : {}),
+    ...(catalogModel !== undefined ? { catalogModel } : {}),
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
+  });
+  const toolCall = resolveToolCallSupport({
+    vendor: llm.provider,
+    model,
+    ...(entry?.supportedParameters !== undefined ? { reported: entry.supportedParameters } : {}),
+    ...(catalogModel !== undefined ? { catalogModel } : {}),
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
+  });
   return {
     ...resolved,
     model,
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
+    ...(catalogModel !== undefined ? { catalogModel } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    output,
     ...(unresolved ? { unresolvedCatalogModel: catalogModel } : {}),
+    ...(inputModalities !== undefined ? { inputModalities } : {}),
+    ...(toolCall !== undefined ? { toolCall } : {}),
   };
 }

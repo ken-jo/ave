@@ -143,6 +143,17 @@ const LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION = "llm-vendor-id-package-names";
  * {@link SettingsService.deleteRetiredMarketplaceApiKey}.
  */
 const MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION = "marketplace-server-settings-removed";
+/**
+ * The value every saved vendor block carried before the default stopped
+ * being written. A stored `outputTokenLimit` of exactly this, without the
+ * `outputTokenLimitSetByUser` stamp this build writes with a user's value, is
+ * the default written back and is dropped on every load, so the route reports
+ * `host-default`. Every load, not once behind a marker: a build from before
+ * the stamp, reinstalled through the updater's downgrade offer, writes 32000
+ * into every block again, and a marker would then leave those values reading
+ * as the user's after the re-upgrade. See {@link withoutFossilOutputTokenLimits}.
+ */
+const FOSSIL_OUTPUT_TOKEN_LIMIT = 32_000;
 /** The removed keys, including the `real`-prefixed spellings older builds wrote. */
 const RETIRED_MARKETPLACE_SETTING_KEYS: readonly string[] = [
   "backend",
@@ -188,6 +199,27 @@ const KNOWN_MIGRATIONS: readonly string[] = [
   LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION,
   MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION,
 ];
+
+/** The stored `llm` object with every unstamped fossil default output limit removed, and whether one was. */
+function withoutFossilOutputTokenLimits(stored: Record<string, any>): { stored: Record<string, any>; changed: boolean } {
+  const llm = stored.llm;
+  if (llm === null || typeof llm !== "object" || Array.isArray(llm)) return { stored, changed: false };
+  const vendors = llm.vendors;
+  if (vendors === null || typeof vendors !== "object" || Array.isArray(vendors)) return { stored, changed: false };
+  let changed = false;
+  const next: Record<string, unknown> = {};
+  for (const [vendorId, block] of Object.entries(vendors as Record<string, unknown>)) {
+    const fields = block !== null && typeof block === "object" && !Array.isArray(block) ? block as Record<string, unknown> : undefined;
+    if (fields?.outputTokenLimit === FOSSIL_OUTPUT_TOKEN_LIMIT && fields.outputTokenLimitSetByUser !== true) {
+      const { outputTokenLimit: _fossil, ...rest } = fields;
+      next[vendorId] = rest;
+      changed = true;
+    } else {
+      next[vendorId] = block;
+    }
+  }
+  return changed ? { stored: { ...stored, llm: { ...llm, vendors: next } }, changed } : { stored, changed };
+}
 
 /**
  * Endpoints a vendor's default `baseUrl` used to name, and the one it names
@@ -315,6 +347,14 @@ export interface LLMSettings {
    */
   pinnedModels: string[];
   /**
+   * The model catalog refresh (design `model-capability-catalog.md` §7).
+   * Absent means the default, `"auto"`: once a day the host fetches the public
+   * models.dev document and caches it for the next launch. `"off"` keeps the
+   * catalog to the last cached copy or the bundled snapshot. The
+   * `AVE_MODEL_CATALOG` pin and the managed policy file can also turn it off.
+   */
+  modelCatalogRefresh?: "auto" | "off";
+  /**
    * Set when the stored profile named a vendor Ave has since removed
    * ({@link RETIRED_LLM_VENDOR_IDS}). The load moved `provider` off it; this
    * marker keeps that move from being silent. While it is set, API-key chat
@@ -341,6 +381,7 @@ export interface LLMSettingsPatch {
   modelListCache?: LlmModelListCache;
   pricingOverrides?: PricingOverride[];
   pinnedModels?: string[];
+  modelCatalogRefresh?: "auto" | "off";
 }
 
 export interface ChatSettings {
@@ -2050,6 +2091,12 @@ export class SettingsService {
       if (!appliedMigrations.includes(LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION)) {
         parsed = withRenamedLlmVendorIds(stored, RENAMED_LLM_VENDOR_IDS);
         appliedMigrations.push(LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION);
+        migrationWriteBack = true;
+      }
+
+      const withoutFossils = withoutFossilOutputTokenLimits(parsed);
+      if (withoutFossils.changed) {
+        parsed = withoutFossils.stored;
         migrationWriteBack = true;
       }
 

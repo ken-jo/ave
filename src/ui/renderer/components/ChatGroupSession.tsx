@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import type { ResolvedOutputTokenLimit, RouteInputModalities } from "../../../shared/context-budget.js";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
@@ -34,7 +35,6 @@ import { composeOutgoing as composeOutgoingUtil, type ComposedOutgoing } from ".
 import { estimateOutgoingUserMessageTokens } from "../../../shared/multimodal-token-estimate.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { HEADER_BUTTON_CLASS } from "./PaneFrame.js";
-import { lookupBillablePricingOptional } from "../../../shared/pricing-data.js";
 import { McpPromptArgsDialog } from "../dialogs/McpPromptArgsDialog.js";
 import { AgentPluginPromptArgsDialog } from "../dialogs/AgentPluginPromptArgsDialog.js";
 import { formatAgentPluginTemplatePrompt, type AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
@@ -67,6 +67,8 @@ export interface ChatGroupEnvironment {
   llmContextWindow: number;
   /** The active route's prompt cap below the window, when one is stated (`resolveContextWindowForRoute(...).inputLimit`). */
   llmInputLimit?: number;
+  /** The active route's input modalities, for the image gate; `undefined` until settings have resolved. */
+  llmRouteModalities: RouteInputModalities | undefined;
   settingsLoaded: boolean;
   subscriptionRuntimeSelected: boolean;
   subscriptionRuntimePolicy: SubscriptionRuntimeUiPolicy;
@@ -80,7 +82,9 @@ export interface ChatGroupEnvironment {
   chatReadyWithoutApiKey: boolean;
   checkApiKey: () => Promise<boolean>;
   onOpenSettings: (tab?: string) => void;
+  /** The active route's effective output limit and who set it (`resolveContextWindowForRoute(...).output`). */
   maxOutputTokens: number;
+  maxOutputTokensSource: ResolvedOutputTokenLimit["effectiveSource"];
 
   // composer configuration
   rolePresets: ChatContextValue["rolePresets"];
@@ -431,25 +435,16 @@ export function ChatGroupSession({
     llmVendor: env.subscriptionRuntimeSelected ? undefined : env.llmVendor,
     llmModel: env.subscriptionRuntimeSelected ? undefined : env.llmModel,
     maxOutputTokens: env.maxOutputTokens,
+    outputLimitSource: env.maxOutputTokensSource,
     enabled: env.apiUsageProjectionAvailable,
   });
-  // Strict variant — `undefined` means "model not in catalog" so the cost
-  // toggle in TokenCostBadge stays disabled rather than showing $0 from
-  // FALLBACK_PRICING.
-  const activePricing = useMemo(
-    () => env.apiUsageProjectionAvailable
-      ? lookupBillablePricingOptional(env.llmVendor, env.llmModel)
-      : undefined,
-    [env.apiUsageProjectionAvailable, env.llmVendor, env.llmModel],
-  );
-
   const { handleAsk } = useSendMessage({
     api, t, streaming, checkApiKey: env.checkApiKey, composeOutgoing,
     appendUserEntry, dropUserEntry, resetStreamAccumulators,
     beginStreamingRequest, finishStreamingRequest, markLastAssistantInterrupted, unmarkLastAssistantInterrupted,
     appendSystemEntry, setErrorWithThought, handleCompactCommand, sessionLoad, applyLoadedSession,
     refreshSessionId, refreshSessions: env.refreshSessions, attachments, setAttachments,
-    llmVendor: env.llmVendor, llmModel: env.llmModel,
+    llmVendor: env.llmVendor, llmModel: env.llmModel, llmRouteModalities: env.llmRouteModalities,
     llmReadyWithoutApiKey: env.chatReadyWithoutApiKey,
     settingsReady: env.settingsLoaded,
     subscriptionRuntimePolicy: env.subscriptionRuntimePolicy,
@@ -896,15 +891,14 @@ export function ChatGroupSession({
     processingDisplayLevel: env.processingDisplayLevel,
     reasoningAvailable: env.chatReasoningAvailable,
     toggleThinking: env.toggleThinking, costEstimate, costBadgeClass,
-    activePricing,
     activeVendor: env.apiUsageProjectionAvailable ? env.llmVendor : undefined,
-    llmVendor: env.llmVendor, llmModel: env.llmModel,
+    llmVendor: env.llmVendor, llmModel: env.llmModel, llmRouteModalities: env.llmRouteModalities,
   }), [
     entries, streaming, editingEntryIdx, setEditingEntryIdx, editBusy,
     question, currentSessionId, hidden, env,
     contextOverflowPct, usedTokens, contextBudget, effectiveBudget,
     tpmLimit, tpmPct, isTpmOverflow,
-    attachments, costEstimate, costBadgeClass, activePricing,
+    attachments, costEstimate, costBadgeClass,
   ]);
 
   const content = (

@@ -109,9 +109,6 @@ import { errorMessage } from "../../shared/error-message.js";
 
 // ─── App ────────────────────────────────────────────
 
-/** The per-turn output ceiling the cost projection assumes. */
-const MAX_OUTPUT_TOKENS = 4096;
-
 /** A canvas not laid out yet measures 0x0 — that is "unmeasured", not "no room". */
 function measuredCanvasSize(canvas: HTMLElement | null) {
   return canvas && canvas.clientWidth > 0 && canvas.clientHeight > 0
@@ -868,7 +865,9 @@ export function App() {
     llmVendor,
     llmModel,
     llmContextWindow,
+    llmOutputTokenLimit,
     llmInputLimit,
+    llmRouteModalities,
     enableThinkingChat,
     processingDisplayLevel,
     llmReadyWithoutApiKey,
@@ -1448,7 +1447,7 @@ export function App() {
    * make adding one a change in two places.
    */
   const chatGroupEnvironment = useMemo<ChatGroupEnvironment>(() => ({
-    llmVendor, llmModel, llmContextWindow, llmInputLimit, settingsLoaded,
+    llmVendor, llmModel, llmContextWindow, llmInputLimit, llmRouteModalities, settingsLoaded,
     subscriptionRuntimeSelected, subscriptionRuntimePolicy,
     subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
     subscriptionUnavailableProvider, subscriptionPendingProvider,
@@ -1458,7 +1457,11 @@ export function App() {
     // not expose. Keep this control fail-closed with send/attachment UX.
     chatReasoningAvailable: settingsLoaded && activeSubscriptionRuntime === null,
     effectiveLlmReady, chatReadyWithoutApiKey, checkApiKey,
-    onOpenSettings, maxOutputTokens: MAX_OUTPUT_TOKENS,
+    // The route's effective output limit — what the engine sends, not an
+    // assumed 4,096 — so the output estimate is the most a reply may cost.
+    onOpenSettings,
+    maxOutputTokens: llmOutputTokenLimit.effective,
+    maxOutputTokensSource: llmOutputTokenLimit.effectiveSource,
     rolePresets, activePreset, activePresetId, setActivePresetId,
     enableThinkingChat, toggleThinking,
     processingDisplayLevel,
@@ -1487,11 +1490,11 @@ export function App() {
     onProjectError: handleProjectError,
     pendingAnswers,
   }), [
-    llmVendor, llmModel, llmContextWindow, llmInputLimit, settingsLoaded, subscriptionRuntimeSelected, subscriptionRuntimePolicy,
+    llmVendor, llmModel, llmContextWindow, llmInputLimit, llmRouteModalities, settingsLoaded, subscriptionRuntimeSelected, subscriptionRuntimePolicy,
     subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
     subscriptionUnavailableProvider, subscriptionPendingProvider,
     apiUsageProjectionAvailable, activeSubscriptionRuntime,
-    effectiveLlmReady, chatReadyWithoutApiKey, checkApiKey, onOpenSettings,
+    effectiveLlmReady, chatReadyWithoutApiKey, checkApiKey, onOpenSettings, llmOutputTokenLimit,
     rolePresets, activePreset, activePresetId, setActivePresetId,
     enableThinkingChat, toggleThinking, processingDisplayLevel, refreshSessions, focusChatGroup, sessions,
     sideChatOpenRequest,

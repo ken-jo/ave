@@ -7,6 +7,8 @@ import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.
 import { LLM_VENDOR_DEFAULTS } from "../../../../shared/llm-vendor-defaults.js";
 import { FALLBACK_PRICING } from "../../../../shared/pricing-data.js";
 import { llmModelListCacheKey } from "../../../../shared/llm-model-list.js";
+import { useCostEstimate } from "../use-cost-estimate.js";
+import { activeModelCatalog, installModelCatalog } from "../../../../shared/model-catalog/active.js";
 
 function makeSettings(): AppSettings {
   return fakeAppSettings({
@@ -30,6 +32,45 @@ function makeSettings(): AppSettings {
 }
 
 describe("useSettings", () => {
+  it.each(["unlisted", "without-output"].flatMap((entry) => [
+    { entry, vendor: "openai" as const, model: "gpt-4", catalogProvider: "openai" },
+    { entry, vendor: "claude" as const, model: "claude-3-haiku-20240307", catalogProvider: "anthropic" },
+  ]))("estimates output from an explicitly unknown route ceiling: $vendor ($entry)", async ({ entry, vendor, model, catalogProvider }) => {
+    const catalog = activeModelCatalog();
+    installModelCatalog({ ...catalog, providers: {
+      ...catalog.providers,
+      [catalogProvider]: { models: { ...catalog.providers[catalogProvider]!.models,
+        "declared-model": { id: "declared-model", limits: { context: 128_000 } },
+      } },
+    } });
+    try {
+      const settings = makeSettings();
+      settings.llm.provider = vendor;
+      settings.llm.vendors[vendor] = {
+        model, catalogModel: `${catalogProvider}/${entry === "unlisted" ? "not-listed" : "declared-model"}`,
+        enableThinking: false, thinkingBudgetTokens: 0,
+      };
+      const { api } = makeMockAveApi({ settings, hasApiKey: false });
+      const { result } = renderHook(() => {
+        const selected = useSettings(api as unknown as AveApi);
+        const { costEstimate } = useCostEstimate({
+          entries: [], draft: { text: "Report the result." },
+          llmVendor: selected.llmVendor, llmModel: selected.llmModel,
+          maxOutputTokens: selected.llmOutputTokenLimit.effective,
+          outputLimitSource: selected.llmOutputTokenLimit.effectiveSource,
+        });
+        return { selected, costEstimate };
+      });
+      await waitFor(() => expect(result.current.selected.settingsLoaded).toBe(true));
+      expect(result.current.selected.llmOutputTokenLimit).not.toHaveProperty("ceiling");
+      expect(result.current.selected.llmOutputTokenLimit.effective).toBe(32_000);
+      expect(result.current.costEstimate.outputTokens).toBe(32_000);
+      expect(result.current.costEstimate.outputLimitSource).toBe("host-default");
+    } finally {
+      installModelCatalog(catalog);
+    }
+  });
+
   it("updates the window and prompt cap together when the route endpoint changes", async () => {
     const initial = makeSettings();
     initial.llm.vendors.openai!.model = "gpt-5.2";
@@ -151,7 +192,7 @@ describe("useSettings", () => {
         baseUrl: "https://models.invalid/v1",
         endpoint: "https://models.invalid/v1/models",
         models: ["a-model-no-catalog-knows"],
-        modelEntries: [{ id: "a-model-no-catalog-knows", contextLength: 229_376 }],
+        modelEntries: [{ id: "a-model-no-catalog-knows", contextLength: 229_376, maxOutputTokens: 8_192 }],
         fetchedAt: new Date(0).toISOString(),
       },
     };
@@ -159,6 +200,15 @@ describe("useSettings", () => {
     act(() => onSettingsUpdated!(reported));
 
     expect(result.current.llmContextWindow).toBe(229_376);
+    // The output limit the cost estimate assumes is the one the engine sends:
+    // the host default, clamped to the ceiling the endpoint reported. (Before,
+    // the renderer assumed a fixed 4,096 whatever the route.)
+    expect(result.current.llmOutputTokenLimit).toMatchObject({
+      requested: 32_000,
+      requestedSource: "host-default",
+      effective: 8_192,
+      effectiveSource: "provider-reported",
+    });
 
     // A window the user declared outranks what the provider reported, exactly
     // as it does on the engine side.

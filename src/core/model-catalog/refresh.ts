@@ -1,0 +1,239 @@
+/**
+ * The model catalog refresh (design §7).
+ *
+ * One plain GET of `https://models.dev/api.json` — no cookie, no credential,
+ * nothing about the user or the conversation — through the host's guarded
+ * public-HTTP path (`fetchPublicHttpResponse`: redirects refused,
+ * private and loopback addresses refused) on the host's own transport. No
+ * plugin path is involved. The download is capped at 16 MB while it streams,
+ * pruned and normalized by the same code that builds the bundled snapshot,
+ * verified, and stored in the cache (`cache.ts`).
+ *
+ * A refresh only WRITES the cache. The catalog a process resolves against is
+ * chosen once, at boot (`bundled.ts`), so a refreshed copy takes effect at the
+ * next launch and one run never sees two catalogs. Network, status, size, JSON,
+ * verification and coverage failures keep the last good catalog. Scheduling
+ * state still records the attempt; a failed publication may leave an unused
+ * entry. Without a usable cached copy, boot selects the bundled snapshot.
+ *
+ * Cadence: at most one request per {@link MODEL_CATALOG_REFRESH_INTERVAL_MS}.
+ * Successful and failed attempts share that interval. An ETag permits a
+ * conditional request without downloading unchanged data. A launch inside
+ * that day sends nothing; applying new data still requires another launch.
+ */
+import { createHash } from "node:crypto";
+import { pruneModelsDevDocument, type CatalogDiagnostic } from "../../shared/model-catalog/normalize.js";
+import { catalogProviderIds } from "../../shared/model-catalog/provider-map.js";
+import type { ModelCatalogDocument } from "../../shared/model-catalog/types.js";
+import { errorMessage } from "../../shared/error-message.js";
+import { runWithAbortableDeadline } from "../../shared/abortable-deadline.js";
+import { fetchPublicHttpResponse } from "../network-guard.js";
+import { readCurrentModelCatalog } from "./cache.js";
+import { verifyModelCatalogDocument } from "./document.js";
+import { buildModelCatalogDocument } from "./document-builder.js";
+import { MODEL_CATALOG_MAX_BYTES } from "./limits.js";
+import { pruneModelCatalogCache, readModelCatalogCheck, storeModelCatalog, withModelCatalogCacheLock, writeModelCatalogCheck, writeModelCatalogPointer } from "./refresh-cache.js";
+
+export { MODEL_CATALOG_MAX_BYTES } from "./limits.js";
+
+export const MODEL_CATALOG_REFRESH_URL = "https://models.dev/api.json";
+/** Headers and body together must arrive within this (design §7). */
+const MODEL_CATALOG_FETCH_TIMEOUT_MS = 15_000;
+/** One request a day at most; see the module comment for why. */
+export const MODEL_CATALOG_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+export type ModelCatalogRefreshResult =
+  | { status: "fresh"; sha256: string }
+  | { status: "not-modified"; sha256: string }
+  | { status: "updated"; sha256: string; diagnostics: CatalogDiagnostic[] }
+  | { status: "throttled" }
+  | { status: "failed"; reason: string };
+
+export interface ModelCatalogRefreshOptions {
+  /** The host's single-hop transport; redirects cannot widen the fixed source. */
+  fetchImpl: typeof fetch;
+  /** The app uses `modelCatalogCacheDir()`; injected custom directories must already exist. */
+  dir: string;
+  /**
+   * The catalog in force (the bundled snapshot or a verified cached copy):
+   * its license is the one a refreshed copy carries — the same MIT text, so
+   * the refresh fetches nothing but the data — and every catalog provider it
+   * lists must still list a model in a refreshed copy, so a source that
+   * changed shape cannot replace a working catalog with an empty one.
+   */
+  reference: ModelCatalogDocument;
+  now?: () => Date;
+  signal?: AbortSignal;
+  /** Bypass both the successful-confirmation and attempted-check intervals. */
+  force?: boolean;
+  /** Headers and body together; {@link MODEL_CATALOG_FETCH_TIMEOUT_MS} unless a test shortens it. */
+  timeoutMs?: number;
+}
+
+class RefreshError extends Error {}
+
+function isoSeconds(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/**
+ * The body, read under the cap and the deadline. A declared length over the
+ * cap is refused before reading; a body that grows past it is cancelled at the
+ * chunk that crosses it, so accumulated body bytes never exceed the cap.
+ */
+async function readCappedBody(response: Response, signal: AbortSignal): Promise<Buffer> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MODEL_CATALOG_MAX_BYTES) {
+    void response.body?.cancel().catch(() => undefined);
+    throw new RefreshError(`response declares ${declared} bytes, over the ${MODEL_CATALOG_MAX_BYTES}-byte cap`);
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new RefreshError("response has no body");
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  // Cleanup may itself stall. Request it without making it part of the deadline.
+  const cancel = (): void => { void reader.cancel().catch(() => undefined); };
+  signal.addEventListener("abort", cancel, { once: true });
+  let completed = false;
+  try {
+    for (;;) {
+      signal.throwIfAborted();
+      const next = await reader.read();
+      signal.throwIfAborted();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > MODEL_CATALOG_MAX_BYTES) {
+        throw new RefreshError(`response exceeds the ${MODEL_CATALOG_MAX_BYTES}-byte cap`);
+      }
+      chunks.push(next.value);
+    }
+    completed = true;
+    return Buffer.concat(chunks);
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    if (!completed) cancel();
+    reader.releaseLock();
+  }
+}
+
+/** Every catalog provider the reference lists must still list a model. */
+function coverageFault(refreshed: ModelCatalogDocument, reference: ModelCatalogDocument): string | undefined {
+  const missing = Object.keys(reference.providers)
+    .filter((id) => Object.keys(refreshed.providers[id]?.models ?? {}).length === 0)
+    .sort();
+  return missing.length > 0 ? `refreshed catalog lists no models for ${missing.join(", ")}` : undefined;
+}
+
+/**
+ * Bring the cache up to date: nothing when the copy in force was confirmed
+ * within the interval, a conditional request otherwise. Never throws; a
+ * failure is a result; a failed download preserves the usable cached catalog.
+ */
+export async function refreshModelCatalogCache(options: ModelCatalogRefreshOptions): Promise<ModelCatalogRefreshResult> {
+  try {
+    return await withModelCatalogCacheLock(options.dir, () => refreshLockedModelCatalogCache(options));
+  } catch (error) {
+    return { status: "failed", reason: errorMessage(error) };
+  }
+}
+
+async function refreshLockedModelCatalogCache(options: ModelCatalogRefreshOptions): Promise<ModelCatalogRefreshResult> {
+  const now = options.now ?? (() => new Date());
+  try {
+    options.signal?.throwIfAborted();
+    const current = await readCurrentModelCatalog(options.dir);
+    // A pointer whose copy is damaged is not "in force": refresh without its ETag.
+    const pointer = current.ok ? current.value.pointer : undefined;
+    const checkedAt = now();
+    const withinInterval = (at: string): boolean => {
+      const age = checkedAt.getTime() - Date.parse(at);
+      return age >= 0 && age < MODEL_CATALOG_REFRESH_INTERVAL_MS;
+    };
+    if (pointer && !options.force && withinInterval(pointer.checkedAt)) {
+      return { status: "fresh", sha256: pointer.sha256 };
+    }
+    const lastCheck = await readModelCatalogCheck(options.dir);
+    if (lastCheck && !options.force && withinInterval(lastCheck)) return { status: "throttled" };
+    // Persist before the request: a failure or process exit still counts as a check.
+    await writeModelCatalogCheck(options.dir, checkedAt.toISOString());
+
+    const timeoutMs = options.timeoutMs ?? MODEL_CATALOG_FETCH_TIMEOUT_MS;
+    const download = await runWithAbortableDeadline(async (signal) => {
+      const response = await fetchPublicHttpResponse(MODEL_CATALOG_REFRESH_URL, {
+        fetchImpl: options.fetchImpl,
+        method: "GET",
+        credentials: "omit",
+        // This source is one exact HTTPS URL; a redirect is not another source grant.
+        maxRedirects: 0,
+        headers: { accept: "application/json", ...(pointer?.etag ? { "if-none-match": pointer.etag } : {}) },
+        timeoutMs,
+        signal,
+      });
+      signal.throwIfAborted();
+      if (response.status !== 200) {
+        void response.body?.cancel().catch(() => undefined);
+        if (response.status === 304 && pointer?.etag) return { response, raw: undefined };
+        throw new RefreshError(`${MODEL_CATALOG_REFRESH_URL} answered ${response.status}`);
+      }
+      return { response, raw: await readCappedBody(response, signal) };
+    }, {
+      deadlineMs: timeoutMs,
+      callerAbortSignal: options.signal,
+      createDeadlineError: () => new RefreshError(`headers and body did not arrive within ${timeoutMs} ms`),
+    });
+    if (!download.ok) {
+      throw new RefreshError(download.reason === "caller-abort" ? "aborted" : `request failed: ${errorMessage(download.error)}`);
+    }
+    const { response, raw } = download.value;
+    if (!raw && pointer) {
+      await writeModelCatalogPointer(options.dir, { ...pointer, checkedAt: isoSeconds(now()) });
+      return { status: "not-modified", sha256: pointer.sha256 };
+    }
+    if (!raw) throw new RefreshError("response has no body");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw.toString("utf-8"));
+    } catch {
+      throw new RefreshError("response is not JSON");
+    }
+    let pruned: ReturnType<typeof pruneModelsDevDocument>;
+    try {
+      pruned = pruneModelsDevDocument(parsed, catalogProviderIds());
+    } catch (error) {
+      throw new RefreshError(errorMessage(error));
+    }
+    const etag = response.headers.get("etag") ?? undefined;
+    const fetchedAt = isoSeconds(now());
+    const { document: built, diagnostics } = buildModelCatalogDocument({
+      input: pruned,
+      providerIds: catalogProviderIds(),
+      source: {
+        url: MODEL_CATALOG_REFRESH_URL,
+        fetchedAt,
+        ...(etag ? { etag } : {}),
+        rawSha256: createHash("sha256").update(raw).digest("hex"),
+      },
+      license: options.reference.license,
+    });
+    let document: ModelCatalogDocument;
+    try {
+      document = verifyModelCatalogDocument(built);
+    } catch (error) {
+      throw new RefreshError(`refreshed catalog rejected: ${errorMessage(error)}`);
+    }
+    const coverage = coverageFault(document, options.reference);
+    if (coverage) throw new RefreshError(coverage);
+
+    await storeModelCatalog(options.dir, document);
+    await pruneModelCatalogCache(options.dir, document.sha256, pointer?.sha256);
+    await writeModelCatalogPointer(options.dir, {
+      version: 1,
+      sha256: document.sha256,
+      ...(etag ? { etag } : {}),
+      checkedAt: fetchedAt,
+    });
+    return { status: "updated", sha256: document.sha256, diagnostics };
+  } catch (error) {
+    return { status: "failed", reason: errorMessage(error) };
+  }
+}

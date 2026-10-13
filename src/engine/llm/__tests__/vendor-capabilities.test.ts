@@ -1,4 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
+import { activeModelCatalog, installModelCatalog } from "../../../shared/model-catalog/active.js";
+import type { ModelCatalogDocument } from "../../../shared/model-catalog/types.js";
 import {
   providerPackageSupportsReviewerAdapter,
   supportsVision,
@@ -40,6 +42,44 @@ describe("supportsVision", () => {
 
   it("empty model name returns false", () => {
     expect(supportsVision("claude", "")).toBe(false);
+  });
+});
+
+describe("supportsVision — the model's stated input modalities decide", () => {
+  const bundled = activeModelCatalog();
+  afterEach(() => installModelCatalog(bundled));
+
+  it.each([
+    // [vendor, model, the catalog's answer] — each one the name rules got wrong.
+    ["openai", "o3", true],
+    ["openai", "o1", true],
+    ["openai", "o4-mini", true],
+    ["xai", "grok-4.20-0309-non-reasoning", true],
+    ["openai", "gpt-4", false],
+    ["zai-coding-plan", "glm-5.2", false],
+  ] as const)("%s %s takes images: %s, as the catalog lists", (vendor, model, expected) => {
+    expect(supportsVision(vendor, model)).toBe(expected);
+  });
+
+  it("follows the route's modalities, and the name rule when the route states none", () => {
+    // The route said text only for a name the rules would let through.
+    expect(supportsVision("openai", "gpt-4o", { inputModalities: { input: ["text"], source: "provider-reported" } })).toBe(false);
+    expect(supportsVision("openai-compatible", "a-served-model", { inputModalities: { input: ["text", "image"], source: "provider-reported" } })).toBe(true);
+    // A route with nothing stated is not re-resolved by name: the name rule decides
+    // (the catalog lists gpt-4 as text only, the rule says images).
+    expect(supportsVision("openai", "gpt-4", {})).toBe(true);
+  });
+
+  it("does not read a model that takes file attachments as taking images", () => {
+    // The composer sends a file as a path the agent reads; `attachment` is not an image input.
+    installModelCatalog({
+      ...bundled,
+      providers: {
+        ...bundled.providers,
+        openai: { models: { "gpt-4o": { id: "gpt-4o", limits: { context: 128_000 }, modalities: { input: ["text", "pdf"], output: ["text"] }, attachment: true } } },
+      },
+    } as ModelCatalogDocument);
+    expect(supportsVision("openai", "gpt-4o")).toBe(false);
   });
 });
 

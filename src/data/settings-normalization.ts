@@ -170,6 +170,15 @@ function normalizePinnedModels(input: unknown): string[] {
   return out;
 }
 
+/**
+ * `llm.modelCatalogRefresh`: `"auto"` or `"off"`; anything else reads as
+ * absent, and absent is the documented default, on (design
+ * `model-capability-catalog.md` §7).
+ */
+function normalizeModelCatalogRefresh(input: unknown): "auto" | "off" {
+  return input === "off" ? "off" : "auto";
+}
+
 export function normalizeActiveChatRuntime(input: unknown): ActiveChatRuntime {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return { kind: "api" };
@@ -616,12 +625,21 @@ export function mergeLlmPatch(
       // omit ≠ clear by design.
       const previous = getLlmVendorSettings(vendors, v);
       const merged: LLMVendorSettings = { ...previous, ...incoming };
+      // An output limit arriving through a patch is the user's: stamp it, so
+      // a later load tells it from the default older builds wrote back.
+      if (Object.hasOwn(incoming, "outputTokenLimit")) {
+        if (incoming.outputTokenLimit !== undefined) merged.outputTokenLimitSetByUser = true;
+        else delete merged.outputTokenLimitSetByUser;
+      }
       // `presetModels` is a store keyed by preset, not a single value: a patch
       // naming one preset's model must not delete every other preset's. A key
       // set to an empty string still clears that one, which is what an
       // unconfigured route means — the normalizer drops it.
       if (incoming.presetModels) {
         merged.presetModels = { ...previous.presetModels, ...incoming.presetModels };
+      }
+      if (incoming.imageInput) {
+        merged.imageInput = { ...previous.imageInput, ...incoming.imageInput };
       }
       vendors[v] = getLlmVendorSettings({ ...vendors, [v]: merged }, v);
     }
@@ -697,6 +715,7 @@ export function mergeLlmPatch(
     pinnedModels: normalizePinnedModels(
       "pinnedModels" in partial ? partial.pinnedModels : base.pinnedModels,
     ),
+    modelCatalogRefresh: normalizeModelCatalogRefresh(partial.modelCatalogRefresh ?? base.modelCatalogRefresh),
     // The retired-provider marker is set by the settings load only. A patch
     // whose provider selection is accepted resolves it. A missing provider or
     // preset that gets coerced to the default does not authorize that default.
@@ -723,6 +742,9 @@ const LLM_VENDOR_SETTING_KEYS = [
   // still configured: pruning it would put that route back on the fallback
   // window the moment chat moved to another vendor.
   "contextWindow",
+  // Likewise the catalog entry a self-hosted route was named as.
+  "catalogModel",
+  "imageInput",
   "baseUrl",
   "vertexProject",
   "vertexLocation",
@@ -833,6 +855,7 @@ export function pruneLazyLlmVendorBlocks(
     ),
     pricingOverrides: normalizePricingOverrides(llm.pricingOverrides),
     pinnedModels: normalizePinnedModels(llm.pinnedModels),
+    modelCatalogRefresh: normalizeModelCatalogRefresh(llm.modelCatalogRefresh),
   };
   if (marketplaceProviderPresetId) {
     prunedLlm.marketplaceProviderPresetId = marketplaceProviderPresetId;

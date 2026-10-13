@@ -3,6 +3,7 @@
 
 
 
+import type { RunModelSettings } from "../shared/run-model-settings.js";
 import { markStaleToolResults } from "../engine/auto-compact.js";
 import { detectFromStream, type DetectorResult } from "../engine/checkpoint-detector.js";
 import { isLLMVendor, type GenericMessage, type TokenUsage, type TokenUsageByModel } from "../engine/llm/types.js";
@@ -70,6 +71,8 @@ export interface PostTurnHookContext {
    */
   vendorProvider?: string;
   vendorModel?: string;
+  /** What the turn's API route resolved about its model, for the audit row. */
+  modelSettings?: RunModelSettings;
   /** A natural completion is required before automatic capture is eligible. */
   stopReason?: string;
 }
@@ -233,6 +236,7 @@ export class PostTurnHookChain {
         subscriptionUsage: ctx.subscriptionUsage,
         toolExposure: ctx.toolExposure,
         route: auditRoute,
+        ...(ctx.modelSettings ? { modelSettings: ctx.modelSettings } : {}),
       });
     } catch (err) {
       log.warn("audit failed: %s", err);

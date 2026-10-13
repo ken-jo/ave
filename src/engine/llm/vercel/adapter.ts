@@ -37,6 +37,7 @@ import { projectToolCallForWire } from "../types.js";
 import {
   isOpenAICompatibleVendor,
   isSelfHostedVllmVendor,
+  normalizeLlmThinkingBudgetTokens,
 } from "../../../shared/llm-vendor-defaults.js";
 import { createLogger } from "../../../lib/logger.js";
 import { normalizeLocalUserContentParts } from "../../../main/subscription-attachment-input.js";
@@ -62,6 +63,14 @@ import { TOOL_SEARCH_TOOL_NAME } from "../../../tools/registry.js";
 import type { MarketplaceInstalledProviderPreset } from "../../../shared/marketplace-package-assets.js";
 import { isGuardedInsecureCredentialedModelProviderFetch } from "../marketplace-provider-fetch.js";
 import { normalizeOutputTokenLimit } from "../output-token-limit.js";
+import { planReasoning, usesOpenAIResponsesWire } from "../reasoning-plan.js";
+import {
+  resolveInputModalities,
+  resolveOutputCeiling,
+  resolveToolCallSupport,
+  type RouteModelCapabilities,
+} from "../../../shared/context-budget.js";
+import { supportsVision } from "../vendor-capabilities.js";
 import { toGrammarSafeToolSchemas } from "../grammar-safe-tool-schema.js";
 import { selectAssistantWireThinkingBlocks } from "../assistant-wire-content.js";
 
@@ -115,77 +124,6 @@ const OPENAI_RESPONSES_TOOL_NAME_ALIAS_REVERSE: Readonly<Record<string, string>>
 // count as activity even before they become a caller-facing tool call.
 const STREAM_IDLE_CEILING_MS = TOOL_TIMEOUT_POLICY.modelStreamIdleCeilingMs;
 
-export function isOpenAIReasoningModel(model: string): boolean {
-  const m = model.toLowerCase();
-  return (
-    m.includes("gpt-5") ||
-    m.includes("o1") ||
-    m.includes("o3") ||
-    m.includes("o4")
-  );
-}
-
-/**
- * Map Ave thinking budget (tokens) to OpenAI reasoning_effort.
- *   budget ≤   500 → "none"    (GPT-5.2+ only; callers ignore for older models)
- *   budget ≤ 3 000 → "low"
- *   budget ≥ 8 000 → "high"
- *   else           → "medium"
- */
-export function mapReasoningEffort(
-  budget: number,
-): "none" | "low" | "medium" | "high" {
-  if (budget <= 500) return "none";
-  if (budget <= 3000) return "low";
-  if (budget > 8000) return "high";
-  return "medium";
-}
-
-/**
- * Whether a model accepts `reasoning_effort: "none"`. Only GPT-5.2+ (and later
- * GPT majors) support it; o-series (o1/o3/o4) and GPT-5.0/5.1 reject it with a
- * 400. `mapReasoningEffort` can emit "none" for tiny budgets, so callers must
- * clamp it to "low" for models without the capability.
- */
-export function supportsReasoningEffortNone(model: string): boolean {
-  const m = model.toLowerCase();
-  const gpt5 = m.match(/gpt-5(?:\.(\d+))?/);
-  if (gpt5) return Number(gpt5[1] ?? "0") >= 2;
-  const gptMajor = m.match(/gpt-(\d+)/);
-  if (gptMajor) return Number(gptMajor[1]) >= 6;
-  return false;
-}
-
-/**
- * Map Ave thinking budget (tokens) to Anthropic adaptive-thinking effort.
- *   budget ≤ 3 000 → "low"
- *   budget ≤ 6 000 → "medium"
- *   budget ≤ 16 000 → "high"
- *   budget >  16 000 → "max"
- * Numeric thinking routes use their token budget directly.
- */
-export function mapBudgetToEffort(
-  budget: number,
-): "low" | "medium" | "high" | "max" {
-  if (budget <= 3000) return "low";
-  if (budget <= 6000) return "medium";
-  if (budget <= 16_000) return "high";
-  return "max";
-}
-
-/**
- * Adaptive thinking starts with version 4.6. A release date after the major
- * version is not a minor version; earlier models retain numeric thinking.
- */
-export function supportsAdaptiveThinking(modelId: string): boolean {
-  const m = modelId.toLowerCase();
-  const match = m.match(/claude-(?:[a-z]+-)?(\d+)(?:[-.](\d{1,2})(?=$|[-.]))?/);
-  if (!match) return false;
-  const major = Number(match[1]);
-  const minor = Number(match[2] ?? 0);
-  return major > 4 || (major === 4 && minor >= 6);
-}
-
 function supportsInterleavedNumericThinking(modelId: string): boolean {
   // Only these numeric-thinking generations support a budget across tool calls.
   // Release dates do not change a generation's capabilities.
@@ -195,58 +133,111 @@ function supportsInterleavedNumericThinking(modelId: string): boolean {
   return match !== null && (match[1] === "opus" || match[2] !== "1");
 }
 
-interface NumericThinkingOutputProjection {
+interface NativeOutputProjection {
   outputTokenLimit: number;
   interleavedThinking: boolean;
+  numericThinking: boolean;
+  /** The route's ceiling came from the endpoint's own report. */
+  reportedCeiling: boolean;
 }
 
-function projectNumericThinkingOutput(
+function projectNativeOutput(
   fetchImpl: typeof fetch,
-  projection: NumericThinkingOutputProjection,
+  projection: NativeOutputProjection,
 ): typeof fetch {
   return async (input, init) => {
     if (typeof init?.body !== "string") {
-      throw new Error("Numeric thinking request must contain a serialized JSON body");
+      throw new Error("Output limit request must contain a serialized JSON body");
     }
     let request: Record<string, unknown>;
     try {
       request = JSON.parse(init.body) as Record<string, unknown>;
     } catch {
-      throw new Error("Numeric thinking request must contain valid serialized JSON");
+      throw new Error("Output limit request must contain valid serialized JSON");
     }
     if (!request || typeof request !== "object" || Array.isArray(request)) {
-      throw new Error("Numeric thinking request must contain a JSON object");
+      throw new Error("Output limit request must contain a JSON object");
     }
     const sdkOutputTokenLimit = request.max_tokens;
-    const thinking = request.thinking as Record<string, unknown> | undefined;
-    const thinkingBudget = thinking?.budget_tokens;
     if (
       typeof sdkOutputTokenLimit !== "number" || !Number.isSafeInteger(sdkOutputTokenLimit) || sdkOutputTokenLimit < 1
-      || !thinking || thinking.type !== "enabled"
-      || typeof thinkingBudget !== "number" || !Number.isSafeInteger(thinkingBudget) || thinkingBudget < 1_024
     ) {
-      throw new Error("Numeric thinking request has invalid output or thinking limits");
+      throw new Error("Output limit request has an invalid output limit");
     }
     // The SDK adds numeric thinking to its output argument and may then apply
-    // a model limit. Project the host's total afterward, preserving that limit
-    // and the original guarded transport. SDK diagnostics retain its input body.
-    const outputTokenLimit = Math.min(sdkOutputTokenLimit, projection.outputTokenLimit);
-    if (!projection.interleavedThinking && outputTokenLimit <= 1_024) {
-      throw new Error("Output token limit must exceed 1024 when numeric thinking is not interleaved");
+    // its model-name limit. An endpoint-reported ceiling outranks that table,
+    // so the route's effective limit is sent as resolved. Otherwise the SDK's
+    // narrower limit stands (requestControls records it). Either way the
+    // original guarded transport is kept; SDK diagnostics retain its input body.
+    const outputTokenLimit = projection.reportedCeiling
+      ? projection.outputTokenLimit
+      : Math.min(sdkOutputTokenLimit, projection.outputTokenLimit);
+    let boundedThinking: Record<string, unknown> | undefined;
+    if (projection.numericThinking) {
+      const thinking = request.thinking as Record<string, unknown> | undefined;
+      const thinkingBudget = thinking?.budget_tokens;
+      if (!thinking || thinking.type !== "enabled"
+        || typeof thinkingBudget !== "number" || !Number.isSafeInteger(thinkingBudget) || thinkingBudget < 1_024) {
+        throw new Error("Output limit request has invalid thinking limits");
+      }
+      if (!projection.interleavedThinking && outputTokenLimit <= 1_024) {
+        throw new Error("Output token limit must exceed 1024 when numeric thinking is not interleaved");
+      }
+      boundedThinking = {
+        ...thinking,
+        budget_tokens: projection.interleavedThinking
+          ? thinkingBudget
+          : Math.min(thinkingBudget, outputTokenLimit - 1),
+      };
     }
     return fetchImpl(input, {
       ...init,
       body: JSON.stringify({
         ...request,
         max_tokens: outputTokenLimit,
-        thinking: {
-          ...thinking,
-          budget_tokens: projection.interleavedThinking
-            ? thinkingBudget
-            : Math.min(thinkingBudget, outputTokenLimit - 1),
-        },
+        ...(boundedThinking ? { thinking: boundedThinking } : {}),
       }),
     });
+  };
+}
+
+function observeRequestControls(
+  fetchImpl: typeof fetch,
+  onRequestControls: NonNullable<StreamTurnParams["onRequestControls"]>,
+): typeof fetch {
+  return async (input, init) => {
+    try {
+      if (typeof init?.body === "string") {
+        const request = JSON.parse(init.body) as Record<string, unknown> | null;
+        const outputTokenLimit = typeof request?.max_tokens === "number"
+          ? normalizeOutputTokenLimit(request.max_tokens)
+          : undefined;
+        const thinking = request?.thinking as { type?: unknown; budget_tokens?: unknown } | undefined;
+        const thinkingBudgetTokens = thinking?.type === "enabled" && typeof thinking.budget_tokens === "number"
+          ? normalizeOutputTokenLimit(thinking.budget_tokens)
+          : undefined;
+        if (outputTokenLimit !== undefined) {
+          onRequestControls({ outputTokenLimit, ...(thinkingBudgetTokens === undefined ? {} : { thinkingBudgetTokens }) });
+        }
+      }
+    } catch {
+      // Observing the serialized controls must not change the request.
+    }
+    return fetchImpl(input, init);
+  };
+}
+
+function routelessModelCapabilities(params: {
+  vendor: string;
+  model: string;
+  baseUrl?: string;
+  catalogModel?: string;
+}): RouteModelCapabilities {
+  const inputModalities = resolveInputModalities(params);
+  const toolCall = resolveToolCallSupport(params);
+  return {
+    ...(inputModalities !== undefined ? { inputModalities } : {}),
+    ...(toolCall !== undefined ? { toolCall } : {}),
   };
 }
 
@@ -330,6 +321,22 @@ export class VercelUnifiedProvider implements LLMProvider {
     const slot = this.vendorSlot;
 
     try {
+      // The endpoint that establishes model identity; an SDK-managed route has none.
+      const baseUrl = slot === "vertex-ai" ? undefined : this.providerMetadata?.baseUrl ?? this.baseUrl;
+      // A caller without a resolved route (a fallback, a direct call) gets the
+      // catalog under the same endpoint-identity rule the route would use.
+      const capabilities: RouteModelCapabilities = params.modelCapabilities ?? routelessModelCapabilities({
+        vendor: this.vendor, model: params.model, baseUrl, catalogModel: params.catalogModel,
+      });
+      const hasImages = params.messages.some((message) =>
+        message.role === "user"
+          ? Array.isArray(message.content) && message.content.some((part) => part.type === "image")
+          : message.role === "tool_result" && message.image !== undefined,
+      );
+      if (hasImages && !supportsVision(this.vendor, params.model, capabilities)) {
+        yield { type: "error", error: "Model does not support image input", code: "image-input-unsupported", classification: "model" };
+        return;
+      }
       const useOpenAIResponsesAliases = usesOpenAIResponsesWire(slot, params.model);
       const messages: ModelMessage[] = genericToModelMessages(
         useOpenAIResponsesAliases
@@ -343,55 +350,67 @@ export class VercelUnifiedProvider implements LLMProvider {
               : "derived-user",
         },
       );
+      const toolSchemas = capabilities.toolCall?.supported === false ? undefined : params.tools;
       const tools = buildTools(
         useOpenAIResponsesAliases
-          ? remapToolSchemasForOpenAIResponses(params.tools)
-          : params.tools,
+          ? remapToolSchemasForOpenAIResponses(toolSchemas)
+          : toolSchemas,
       );
       const hasTools = Boolean(tools && Object.keys(tools).length > 0);
 
-      const outputTokenLimit = normalizeOutputTokenLimit(params.outputTokenLimit);
-      const numericThinking = slot === "claude" && params.enableThinking === true
-        && !supportsAdaptiveThinking(params.model);
+      // The model's own ceiling bounds every request, whoever asked. A chat
+      // round arrives with the ceiling its route resolved (endpoint report,
+      // else catalog) and is clamped to exactly that, so the request carries
+      // the limit the turn records. A purpose-specific limit (finalize,
+      // background, memory, reviewer) arrives without one and meets the
+      // catalog's here.
+      const ceiling = params.outputCeiling === undefined
+        ? resolveOutputCeiling({ vendor: this.vendor, model: params.model, baseUrl, catalogModel: params.catalogModel })?.ceiling
+        : params.outputCeiling ?? undefined;
+      const requestedOutputTokenLimit = normalizeOutputTokenLimit(params.outputTokenLimit);
+      const outputTokenLimit = requestedOutputTokenLimit === undefined || ceiling === undefined
+        ? requestedOutputTokenLimit
+        : Math.min(requestedOutputTokenLimit, ceiling);
+      // How much reasoning we are willing to pay for. Both families read this
+      // value: the OpenAI family as a coarse effort level, the self-hosted class
+      // as an exact token budget further down.
+      const budget = params.requestedThinkingBudgetTokens === undefined
+        ? params.thinkingBudgetTokens ?? 10_000
+        : normalizeLlmThinkingBudgetTokens(params.requestedThinkingBudgetTokens, outputTokenLimit);
+      // Which reasoning control and level: the catalog's accepted effort
+      // levels where it knows the model, the name rules where it does not
+      // (reasoning-plan.ts). The turn summary records this same answer.
+      // The plan also drops the effort on a GPT-5.x tool turn over Chat
+      // Completions (chatCompletionsRejectsToolTurnEffort), the same rule the
+      // turn's record is planned with.
+      const reasoningPlan = planReasoning({
+        vendor: this.vendor,
+        model: params.model,
+        enableThinking: params.enableThinking === true,
+        budgetTokens: budget,
+        baseUrl,
+        catalogModel: params.catalogModel,
+        request: { hasTools },
+      });
+      const isThinkingEnabled = params.enableThinking === true && reasoningPlan?.kind !== "none";
+      const numericThinking = reasoningPlan?.kind === "anthropic-numeric";
+      // Only a ceiling this route resolved from its endpoint's report; a
+      // purpose-specific or fallback request carries no source.
+      const reportedCeiling = params.outputCeiling !== undefined && params.outputCeiling !== null
+        && params.outputCeilingSource === "provider-reported";
       const interleavedNumericThinking = numericThinking && hasTools
         && supportsInterleavedNumericThinking(params.model);
       const model = this.resolveModel(
         params.model,
         hasTools,
-        numericThinking && outputTokenLimit !== undefined
-          ? { outputTokenLimit, interleavedThinking: interleavedNumericThinking }
+        slot === "claude" && outputTokenLimit !== undefined
+          && (numericThinking || reportedCeiling)
+          ? { outputTokenLimit, interleavedThinking: interleavedNumericThinking, numericThinking, reportedCeiling }
           : undefined,
+        params.onRequestControls,
       );
-
-      // How much reasoning we are willing to pay for. Both families read this
-      // value: the OpenAI family as a coarse effort level, the self-hosted class
-      // as an exact token budget further down.
-      const budget = params.thinkingBudgetTokens ?? 10_000;
-      const rawReasoningEffort = mapReasoningEffort(budget);
-      // "none" is GPT-5.2+ only; clamp to "low" for o-series / GPT-5.0-5.1,
-      // which return 400 when sent reasoning_effort: "none".
-      const reasoningEffort =
-        rawReasoningEffort === "none" && !supportsReasoningEffortNone(params.model)
-          ? "low"
-          : rawReasoningEffort;
-      const isOpenAIReasoning =
-        (slot === "openai" || slot === "azure-foundry") &&
-        isOpenAIReasoningModel(params.model);
-
-      // Guard: Chat Completions returns 400 when reasoning_effort is set
-      // alongside tools for gpt-5.x. Drop the flag on tool turns for openai
-      // with a custom baseUrl (it may point at a Chat-Completions proxy that
-      // cannot be assumed to support Responses API).
-      // Native OpenAI (no baseUrl override) uses Responses API and has no such
-      // restriction.
-      const isGpt5 = params.model.toLowerCase().includes("gpt-5");
-      const suppressReasoningForToolTurn =
-        slot === "openai" && Boolean(this.baseUrl) && isGpt5 && hasTools;
-
-      const useReasoning =
-        params.enableThinking === true &&
-        isOpenAIReasoning &&
-        !suppressReasoningForToolTurn;
+      const reasoningEffort = reasoningPlan?.kind === "openai-effort" ? reasoningPlan.effort : undefined;
+      const useReasoning = params.enableThinking === true && reasoningEffort !== undefined;
 
       // `reasoningSummary: 'detailed'` makes the Responses API stream
       // `response.reasoning_summary_text.delta` events — without it the model
@@ -424,7 +443,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       if (isSelfHostedVllmVendor(slot)) {
         const compatOptions: Record<string, unknown> = {
           chat_template_kwargs: {
-            enable_thinking: params.enableThinking === true,
+            enable_thinking: isThinkingEnabled,
           },
         };
         // REASONING BUDGET. `enable_thinking` is a switch, not a dial: without
@@ -437,7 +456,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         // prompt drew 133 reasoning tokens unbudgeted and 31 at a budget of 32.
         // Servers that do not implement it ignore it, exactly as they do the
         // chat-template kwargs above.
-        if (params.enableThinking === true) {
+        if (isThinkingEnabled) {
           compatOptions.thinking_token_budget = budget;
           // The same spelling does not reach both servers this vendor class
           // fronts. vLLM reads `thinking_token_budget`; llama.cpp reads the
@@ -486,20 +505,12 @@ export class VercelUnifiedProvider implements LLMProvider {
       // Project the selected thinking mode and supported beta opt-ins.
       let headers: Record<string, string> | undefined;
       if (slot === "claude") {
-        const thinkingEnabled = params.enableThinking === true;
         const anthropicOpts: Record<string, unknown> = {};
-        if (thinkingEnabled) {
-          if (supportsAdaptiveThinking(params.model)) {
-            anthropicOpts.thinking = {
-              type: "adaptive",
-            };
-            anthropicOpts.effort = mapBudgetToEffort(budget);
-          } else {
-            anthropicOpts.thinking = {
-              type: "enabled",
-              budgetTokens: budget,
-            };
-          }
+        if (reasoningPlan?.kind === "anthropic-adaptive") {
+          anthropicOpts.thinking = { type: "adaptive" };
+          anthropicOpts.effort = reasoningPlan.effort;
+        } else if (reasoningPlan?.kind === "anthropic-numeric") {
+          anthropicOpts.thinking = { type: "enabled", budgetTokens: reasoningPlan.budgetTokens };
         }
         if (Object.keys(anthropicOpts).length > 0) {
           providerOptions = { ...(providerOptions ?? {}), anthropic: anthropicOpts };
@@ -634,7 +645,8 @@ export class VercelUnifiedProvider implements LLMProvider {
   private resolveModel(
     modelId: string,
     _hasTools: boolean,
-    numericOutputProjection?: NumericThinkingOutputProjection,
+    outputProjection?: NativeOutputProjection,
+    onRequestControls?: StreamTurnParams["onRequestControls"],
   ) {
     const slot = this.vendorSlot;
     assertCredentialedBaseUrlUsesHttps(
@@ -645,9 +657,12 @@ export class VercelUnifiedProvider implements LLMProvider {
     );
 
     if (slot === "claude") {
-      const fetchImpl = numericOutputProjection
-        ? projectNumericThinkingOutput(this.customFetch ?? globalThis.fetch, numericOutputProjection)
+      const nativeFetch = onRequestControls
+        ? observeRequestControls(this.customFetch ?? globalThis.fetch, onRequestControls)
         : this.customFetch;
+      const fetchImpl = outputProjection
+        ? projectNativeOutput(nativeFetch ?? globalThis.fetch, outputProjection)
+        : nativeFetch;
       const anthropic = createAnthropic({
         apiKey: this.apiKey,
         ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
@@ -674,7 +689,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       // Responses API for reasoning families (gpt-5.x / o-series); Chat
       // Completions for legacy gpt-4.x. This matches the Vercel SDK's
       // documented routing and avoids silent 400s on tool turns.
-      return isOpenAIReasoningModel(modelId)
+      return usesOpenAIResponsesWire(slot, modelId)
         ? openai.responses(modelId)
         : openai.chat(modelId);
     }
@@ -1094,6 +1109,9 @@ type StreamUsageRaw = {
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
   };
+  outputTokenDetails?: {
+    reasoningTokens?: number;
+  };
 };
 
 export async function* fullStreamToStreamEvent(
@@ -1221,6 +1239,7 @@ export async function* fullStreamToStreamEvent(
         const cacheWriteTokens =
           p.providerMetadata?.anthropic?.cacheCreationInputTokens ??
           usageRaw?.inputTokenDetails?.cacheWriteTokens;
+        const reasoningTokens = usageRaw?.outputTokenDetails?.reasoningTokens;
         const usage = usageRaw
           ? {
               inputTokens:
@@ -1229,6 +1248,7 @@ export async function* fullStreamToStreamEvent(
                 usageRaw.outputTokens ?? usageRaw.completionTokens ?? 0,
               ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
               ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+              ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
             }
           : undefined;
         yield {
@@ -1322,10 +1342,6 @@ function createProviderErrorEvent(err: unknown): Extract<StreamEvent, { type: "e
     classification: mapped.classification,
     providerError: mapped.providerError,
   };
-}
-
-function usesOpenAIResponsesWire(slot: VercelVendor, modelId: string): boolean {
-  return slot === "azure-foundry" || (slot === "openai" && isOpenAIReasoningModel(modelId));
 }
 
 function toOpenAIResponsesToolName(toolName: string): string {

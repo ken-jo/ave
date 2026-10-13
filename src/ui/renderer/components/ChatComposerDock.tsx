@@ -1,6 +1,7 @@
 import type React from "react";
 import { KeyRound, ShieldQuestion, Store } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
+import { imageInputRecoveryMessage } from "../../../shared/model-capability-settings.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover.js";
 import { useCallback, useEffect, useState, type RefObject } from "react";
 import { SessionTasksPanel } from "./SessionTasksPanel.js";
@@ -31,6 +32,7 @@ import type { AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-pro
 import { subscriptionImageAttachmentLimitViolation, type SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-ui-policy.js";
 import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
 import type { LLMVendor } from "../../../shared/llm-vendor-defaults.js";
+import type { RouteInputModalities } from "../../../shared/context-budget.js";
 type InputStatusRow = React.ComponentProps<typeof ComposerStatusRow>["statusRow"];
 
 export interface ChatComposerDockProps {
@@ -83,6 +85,8 @@ export interface ChatComposerDockProps {
   /** The API-key model the draft would go to — read for the image capability gate. */
   llmVendor: LLMVendor;
   llmModel: string;
+  /** That route's input modalities, as its endpoint or the catalog states them; `undefined` until settings have resolved. */
+  llmRouteModalities: RouteInputModalities | undefined;
   rolePresets: RolePreset[];
   activePresetId: string;
   onSelectPreset: (id: string) => void;
@@ -132,6 +136,8 @@ interface ComposerRuntimeGateInput {
    */
   llmVendor?: LLMVendor;
   llmModel?: string;
+  /** That route's input modalities; `undefined` until settings have resolved. */
+  llmRouteModalities?: RouteInputModalities;
 }
 
 interface ComposerRuntimeGates {
@@ -173,6 +179,7 @@ export function resolveComposerRuntimeGates({
   attachments,
   llmVendor,
   llmModel,
+  llmRouteModalities,
 }: ComposerRuntimeGateInput): ComposerRuntimeGates {
   const runtimeImageAttachmentProvider = subscriptionRuntimePolicy
     ? subscriptionRuntimePolicy.imageAttachmentProvider
@@ -201,12 +208,13 @@ export function resolveComposerRuntimeGates({
   // A selected subscription runtime is exempt: it owns image capability itself
   // and the API-key model is not in that path. The model name is only known once
   // settings have resolved; until then the composer states nothing about it.
+  // The route's stated modalities decide, as on the send path.
   const draftImagesRejectedByModel =
     subscriptionRuntimePolicy?.subscriptionSelected !== true
     && llmVendor !== undefined
     && llmModel !== undefined
     && attachments.some((attachment) => attachment.kind === "image")
-    && !supportsVision(llmVendor, llmModel);
+    && !supportsVision(llmVendor, llmModel, llmRouteModalities);
   const draftHasUnsupportedAttachment =
     (runtimeImageAttachmentProvider !== undefined
       && attachments.some((attachment) => attachment.kind === "image"))
@@ -280,6 +288,7 @@ export function ChatComposerDock({
   subscriptionPendingProvider,
   llmVendor,
   llmModel,
+  llmRouteModalities,
   rolePresets,
   activePresetId,
   onSelectPreset,
@@ -364,6 +373,7 @@ export function ChatComposerDock({
     attachments,
     llmVendor,
     llmModel,
+    llmRouteModalities,
   });
   const composerInputDisabled = viewMode !== null || (hasApiKey === false && (
     runtimeUnavailable
@@ -549,7 +559,7 @@ export function ChatComposerDock({
               className="mx-4 mt-1 text-xs text-warning"
               data-testid="composer-vision-unsupported-hint"
             >
-              {t("app.visionNotSupported", { llmModel })}
+              {t("app.visionNotSupported", { llmModel })} {imageInputRecoveryMessage(t)}
             </div>
           ) : null}
           <ComposerStatusRow

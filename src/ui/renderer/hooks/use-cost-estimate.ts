@@ -1,14 +1,14 @@
 import { useMemo } from "react";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
-import { costTier, estimateTurnCost, type EstimateBreakdown } from "../../../lib/cost-estimator.js";
+import { costTier, estimateTurnTokens, expectedTurnOutput, type EstimateBreakdown } from "../../../lib/cost-estimator.js";
 import {
   computeCost,
-  lookupBillablePricingOptional,
-  lookupPricing,
   toPricingVendor,
-  type ModelPricing,
   type PricingVendor,
+  type TokenRates,
 } from "../../../shared/pricing-data.js";
+import { resolveModelPricing } from "../../../shared/model-pricing.js";
+import { usePricingOverrides } from "./use-pricing-overrides.js";
 import {
   estimateOutgoingUserMessageTokens,
   toUserContentForEstimation,
@@ -23,7 +23,10 @@ type CostEstimateParams = {
   llmVendor?: string;
   /** Omit when the active runtime has no verified billing contract. */
   llmModel?: string;
+  /** The route's effective output limit: the most a reply may cost in output. */
   maxOutputTokens: number;
+  /** Who set that limit, shown beside the output estimate. */
+  outputLimitSource?: EstimateBreakdown["outputLimitSource"];
 
   /** False suppresses all API-model-derived billing estimates. */
   enabled?: boolean;
@@ -46,7 +49,8 @@ export function useCostEstimate(params: CostEstimateParams & { enabled: boolean 
  * whole conversation.
  */
 export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate | DisabledCostEstimate {
-  const { entries, draft, llmVendor, llmModel, maxOutputTokens, enabled = true } = params;
+  const { entries, draft, llmVendor, llmModel, maxOutputTokens, outputLimitSource, enabled = true } = params;
+  const pricingOverrides = usePricingOverrides();
 
   const contextCarrierTokens = useMemo(() => {
     if (!enabled) return undefined;
@@ -81,8 +85,13 @@ export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate
 
   const costEstimate = useMemo(() => {
     if (!enabled) return undefined;
-    const pricing = lookupBillablePricingOptional(llmVendor ?? "", llmModel ?? "");
-    const contextPricing = pricing ?? lookupPricing(llmVendor ?? "", llmModel ?? "");
+    const resolved = resolveModelPricing(llmVendor ?? "", llmModel ?? "", pricingOverrides);
+    const pricing = resolved.source === "unknown" ? undefined : resolved.rates;
+    // Where the rates came from, or why there are none: a model the catalog
+    // lists at zero is said so, never shown as a $0 estimate.
+    const provenance: Pick<EstimateBreakdown, "pricingSource" | "catalogListsZero"> = resolved.source === "unknown"
+      ? (resolved.catalogListsZero !== undefined ? { catalogListsZero: resolved.catalogListsZero } : {})
+      : { pricingSource: resolved.source };
     const attachments = draft.attachments ?? [];
     const draftContent = toUserContentForEstimation(draft.text, attachments);
     const draftTokens = estimateOutgoingUserMessageTokens(draft.text, attachments);
@@ -100,50 +109,59 @@ export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate
         outputCost,
         total,
         pricingKnown: !!pricing,
+        ...provenance,
       };
     }
-    const estimated = estimateTurnCost({ historySerialized, draft: draftContent, draftTokens, maxOutputTokens, pricing: pricing ?? contextPricing });
-    const inputTokens = estimated.inputTokens;
+    const estimated = estimateTurnTokens({ historySerialized, draft: draftContent, draftTokens, maxOutputTokens });
     if (!pricing) {
-      return {
-        ...estimated,
-        inputTokens,
-        inputCost: 0,
-        outputCost: 0,
-        total: 0,
-        pricingKnown: false,
-      };
+      return { ...estimated, inputCost: 0, outputCost: 0, total: 0, pricingKnown: false, ...provenance };
     }
     return {
       ...estimated,
-      inputTokens,
-      ...computeEstimatedCost(inputTokens, estimated.outputTokens, pricing, pricingVendor),
+      ...computeEstimatedCost(estimated.inputTokens, estimated.outputTokens, pricing, pricingVendor),
       pricingKnown: true,
+      ...provenance,
     };
-  }, [enabled, contextCarrierTokens, historySerialized, draft.text, draft.attachments, llmVendor, llmModel, maxOutputTokens]);
+  }, [enabled, contextCarrierTokens, historySerialized, draft.text, draft.attachments, llmVendor, llmModel, maxOutputTokens, pricingOverrides]);
+  // What this conversation's turns have produced, not the most a turn may:
+  // the limit is the upper end of the range, never the tier on its own.
+  const completedTurnOutputs = useMemo(() => {
+    if (!enabled) return [];
+    return entries.flatMap((entry) => (entry.kind === "turn_summary" ? [entry.tokensOut] : []));
+  }, [enabled, entries.length, entries[entries.length - 1]]);
+  const sourcedCostEstimate = useMemo(() => {
+    if (!costEstimate) return costEstimate;
+    const expectedOutput = expectedTurnOutput(completedTurnOutputs, costEstimate.outputTokens);
+    const outputRate = costEstimate.outputTokens > 0 ? costEstimate.outputCost / costEstimate.outputTokens : 0;
+    return {
+      ...costEstimate,
+      ...(outputLimitSource ? { outputLimitSource } : {}),
+      expected: { ...expectedOutput, total: costEstimate.inputCost + expectedOutput.tokens * outputRate },
+    };
+  }, [costEstimate, outputLimitSource, completedTurnOutputs]);
 
   const costBadgeClass = useMemo(() => {
-    if (!costEstimate) return undefined;
-    if (costEstimate.pricingKnown === false) return "text-muted-foreground";
-    const t = costTier(costEstimate.total);
+    if (!sourcedCostEstimate) return undefined;
+    if (sourcedCostEstimate.pricingKnown === false) return "text-muted-foreground";
+    const t = costTier(sourcedCostEstimate.expected?.total ?? sourcedCostEstimate.total);
     if (t === "trivial") return "text-muted-foreground";
     if (t === "low") return "text-success";
     if (t === "medium") return "text-warning";
     return "text-destructive";
-  }, [costEstimate]);
+  }, [sourcedCostEstimate]);
 
   if (!enabled) {
     return { costEstimate: undefined, costBadgeClass: undefined };
   }
   // The `costEstimate` memo returns undefined only through the disabled branch
   // above; retain that correlation for the overload contract.
-  return { costEstimate: costEstimate!, costBadgeClass: costBadgeClass! };
+  return { costEstimate: sourcedCostEstimate!, costBadgeClass: costBadgeClass! };
 }
 
 function computeEstimatedCost(
   inputTokens: number,
   outputTokens: number,
-  pricing: ModelPricing,
+  pricing: TokenRates,
   vendor: PricingVendor,
 ): { inputCost: number; outputCost: number; total: number } {
   const inputCost = computeCost({ inputTokens, outputTokens: 0 }, pricing, vendor);

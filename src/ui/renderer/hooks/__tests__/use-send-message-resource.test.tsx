@@ -27,6 +27,7 @@ import type { Attachment } from "../../types/attachments.js";
 import type { UserContentPart } from "../../../../engine/llm/types.js";
 import { DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES, type SubscriptionChatRuntimeSelection } from "../../../../shared/subscription-runtime.js";
 import { selectSubscriptionRuntimeUiPolicy } from "../../utils/subscription-runtime-ui-policy.js";
+import { resolveComposerRuntimeGates } from "../../components/ChatComposerDock.js";
 
 const FENCE = [
   `${MCP_RESOURCE_FENCE_OPEN} server="hr-mcp" uri="file:///policy.md">`,
@@ -80,6 +81,7 @@ function setup(options?: {
   subscriptionRuntimePolicy?: UseSendMessageDeps["subscriptionRuntimePolicy"];
   llmVendor?: UseSendMessageDeps["llmVendor"];
   llmModel?: UseSendMessageDeps["llmModel"];
+  llmRouteModalities?: UseSendMessageDeps["llmRouteModalities"];
   checkApiKey?: UseSendMessageDeps["checkApiKey"];
   settingsReady?: boolean;
   streaming?: boolean;
@@ -168,6 +170,7 @@ function setup(options?: {
     setAttachments,
     llmVendor: options?.llmVendor ?? "anthropic",
     llmModel: options?.llmModel ?? "claude-sonnet-4-5",
+    ...(options?.llmRouteModalities !== undefined ? { llmRouteModalities: options.llmRouteModalities } : {}),
     llmReadyWithoutApiKey: true,
     subscriptionRuntimePolicy,
     settingsReady: options?.settingsReady ?? true,
@@ -632,7 +635,47 @@ describe("handleAsk — images on a model that cannot read them", () => {
     expect(beginStreamingRequest).not.toHaveBeenCalled();
     expect(setQuestion).not.toHaveBeenCalled();
     expect(setAttachments).not.toHaveBeenCalled();
-    expect(setErrorWithThought).toHaveBeenCalledWith("app.visionNotSupported");
+    expect(setErrorWithThought).toHaveBeenCalledWith("app.visionNotSupported llmTab.imageInputRecovery");
+  });
+
+  it("refuses images a model's name would let through when the catalog lists it as text only", async () => {
+    // GPT-4 (2023) reads no images; the name rules matched it as gpt-4*.
+    const { result, chatSend, setErrorWithThought } = setup({ attachments: IMAGE_ONLY, llmVendor: "openai", llmModel: "gpt-4" });
+
+    await act(async () => {
+      await result.current.handleAsk("review [Image #1]");
+    });
+
+    expect(chatSend).not.toHaveBeenCalled();
+    expect(setErrorWithThought).toHaveBeenCalledWith("app.visionNotSupported llmTab.imageInputRecovery");
+  });
+
+  it("sends images when the route's endpoint reports the model reads them", async () => {
+    const { result, chatSend, setErrorWithThought } = setup({
+      attachments: IMAGE_ONLY,
+      ...TEXT_ONLY,
+      llmRouteModalities: { inputModalities: { input: ["text", "image"], source: "provider-reported" } },
+    });
+
+    await act(async () => {
+      await result.current.handleAsk("review [Image #1]");
+    });
+
+    expect(setErrorWithThought).not.toHaveBeenCalled();
+    expect(chatSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the composer's send on the same condition the send path refuses", () => {
+    const gates = (llmModel: string, llmRouteModalities?: UseSendMessageDeps["llmRouteModalities"]) => resolveComposerRuntimeGates({
+      settingsLoaded: true,
+      attachments: IMAGE_ONLY,
+      llmVendor: "openai",
+      llmModel,
+      ...(llmRouteModalities !== undefined ? { llmRouteModalities } : {}),
+    }).draftImagesRejectedByModel;
+    expect(gates("gpt-4")).toBe(true);
+    expect(gates("gpt-3.5-turbo", { inputModalities: { input: ["text", "image"], source: "provider-reported" } })).toBe(false);
+    expect(gates("gpt-4o")).toBe(false);
   });
 
   it("sends once the images are gone, on the same text-only model", async () => {

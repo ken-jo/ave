@@ -11,6 +11,7 @@ import { fakeLlmSettings } from "../../src/shared/__tests__/fake-llm-settings.js
 import type { ChatEntry, ChatStreamEvent } from "../../src/lib/chat-stream-state.js";
 import type { AgentSpawnEvent as SharedAgentSpawnEvent } from "../../src/shared/subagent-events.js";
 import type { AppBootstrapStatus } from "../../src/shared/bootstrap-status.js";
+import type { ModelCatalogIpcResult } from "../../src/shared/model-catalog/types.js";
 import type { SubscriptionRuntimeStatusUpdatedEvent } from "../../src/shared/subscription-runtime.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../../src/shared/subagent-transcript.js";
 import type { SessionSummary } from "../../src/ui/renderer/hooks/use-sessions.js";
@@ -104,6 +105,8 @@ type ApiOverrides = {
   getSettings?: () => Promise<unknown>;
   /** Settings paths the environment is forcing on (see env-backed-settings). */
   envForcedSettings?: readonly string[];
+  /** The `ave:llm:get-model-catalog` answer; refused as unavailable unless a test supplies one. */
+  modelCatalog?: ModelCatalogIpcResult;
   /** Hosts the telemetry endpoint may point at (see main/telemetry). */
   telemetryAllowedHosts?: readonly string[];
   personaPrompts?: unknown[];
@@ -351,6 +354,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     // notice says so explicitly, and every other test gets the ordinary case
     // rather than a rejected promise from a missing method.
     envForcedSettings: vi.fn(async () => overrides.envForcedSettings ?? []),
+    getModelCatalog: vi.fn(async (): Promise<ModelCatalogIpcResult> => overrides.modelCatalog ?? { ok: false, error: "catalog-unavailable" }),
     telemetryAllowedHosts: vi.fn(async () => overrides.telemetryAllowedHosts ?? ["localhost"]),
     onSettingsUpdated: vi.fn((handler: (settings: unknown) => void) => {
       settingsUpdatedHandlers.add(handler);
@@ -700,6 +704,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
 
     getUsageSummary: vi.fn(async () => usage),
     getUsageDailySummary: vi.fn(async () => ({ ok: false, error: "mock-unavailable" })),
+    getPricingOverrides: vi.fn(async () => []),
     getAppInfo: vi.fn(async () => appInfo),
     // Routine API
     listRoutines: vi.fn(async () => []),

@@ -10,6 +10,9 @@
 // settings store uses to validate `provider` at IPC boundaries. We
 // re-export here so existing engine-side callers keep their import
 // path while the type definition cannot drift between modules.
+import type { RequestGenerationControls, RunModelSettings } from "../../shared/run-model-settings.js";
+import type { OutputCeilingSource, RouteModelCapabilities } from "../../shared/context-budget.js";
+import type { ModelUsageSegment } from "../../shared/model-pricing.js";
 import {
   type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import type { MarketplaceInstalledProviderPreset } from "../../shared/marketplace-package-assets.js";
@@ -392,6 +395,8 @@ export type StreamEvent =
   | {
       type: "error";
       error: string;
+      /** A host capability refusal, translated by the stream collector. */
+      code?: "image-input-unsupported";
       classification?: string;
       providerError?: ProviderErrorDiagnostics;
     };
@@ -406,13 +411,15 @@ export interface TokenUsage {
   outputTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /**
+   * The reasoning part of `outputTokens` (AI SDK
+   * `outputTokenDetails.reasoningTokens`), when the provider reported it.
+   * Priced apart only where the model's rates state a reasoning price.
+   */
+  reasoningTokens?: number;
 }
 
-export interface TokenUsageByModel {
-  vendorProvider: LLMVendor;
-  vendorModel: string;
-  tokenUsage: TokenUsage;
-}
+export type TokenUsageByModel = ModelUsageSegment<LLMVendor>;
 
 /**
  * Turn-aggregate stats. Emitted live through `TurnCallbacks.onTurnSummary`
@@ -468,6 +475,13 @@ export interface TurnSummary {
   /** Non-billable subscription telemetry; never enters API-key pricing. */
   subscriptionUsage?: SubscriptionUsageTelemetry[];
   /**
+   * What the turn's API route resolved about its model — the catalog it read,
+   * the window, the output limit and the reasoning level with their sources,
+   * and the output the remaining context would still have fit (diagnostics
+   * only). Absent for subscription runtimes and when the last request used a fallback.
+   */
+  modelSettings?: RunModelSettings;
+  /**
    * How many times each loop branch fired this turn. Carried on the turn
    * summary so the persisted transcript answers "which path produced this
    * answer" without a tracing backend attached; omitted when the turn made
@@ -502,14 +516,39 @@ export interface StreamTurnParams {
   systemPrompt: string;
   messages: GenericMessage[];
   tools?: ToolSchema[];
+  /** The route's resolved input/tool facts. An empty object preserves unknown facts without matching again by name. */
+  modelCapabilities?: RouteModelCapabilities;
   /** Host-owned total output ceiling, projected into the native request. */
   outputTokenLimit?: number;
+  /** Original request before the primary model's ceiling, retained for fallback attempts. */
+  requestedOutputTokenLimit?: number;
+  /**
+   * The positive, validated output ceiling the caller already resolved for this route
+   * (endpoint report, else catalog) and clamped `outputTokenLimit` to. When
+   * present the transport clamps to this and nothing else, so the request
+   * carries the limit the turn records; when absent (purpose-specific
+   * callers) the transport clamps to the catalog's ceiling. `null` means the
+   * route resolved an unknown ceiling and must not be resolved again by name.
+   */
+  outputCeiling?: number | null;
+  /**
+   * Who stated `outputCeiling`. An endpoint's own report outranks the native
+   * SDK's model-name table, so a Claude request carries the effective limit
+   * even where that table is lower; a catalog ceiling still meets the table.
+   */
+  outputCeilingSource?: OutputCeilingSource;
+  /** Host observation of serialized numeric controls; never a model request field. */
+  onRequestControls?: (controls: RequestGenerationControls) => void;
+  /** Explicit catalog identity used by this route's reasoning decision. */
+  catalogModel?: string;
   /** Client-side stream smoothing (word/char chunking via Vercel smoothStream). */
   streamSmoothing?: StreamSmoothing;
   /** Enable extended thinking / reasoning (Claude Sonnet 4.5+, Opus 4+). */
   enableThinking?: boolean;
   /** Token budget for Claude extended thinking (1024–32000). Defaults to 10 000 when enableThinking is true. */
   thinkingBudgetTokens?: number;
+  /** Thinking budget before the primary output ceiling, re-bounded for a fallback. */
+  requestedThinkingBudgetTokens?: number;
   /**
    * finish_reason=length CONTINUATION. When true, the FINAL message in
    * `messages` is a partial assistant turn the model must CONTINUE verbatim

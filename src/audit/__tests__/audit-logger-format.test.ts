@@ -198,6 +198,33 @@ describe("AuditLogger.logTurn() — helper correctness", () => {
     expect(entry?.route).toBe("meeting");
   });
 
+  it("writes the turn's resolved model settings to the row", async () => {
+    const logger = new AuditLogger();
+    const modelSettings = {
+      modelCatalogSha256: "a".repeat(64),
+      contextWindow: { tokens: 400_000, source: "model-catalog" as const, catalogEntry: "openai/gpt-5.4-mini" },
+      output: {
+        requested: 32_000,
+        requestedSource: "host-default" as const,
+        ceiling: 8_192,
+        ceilingSource: "provider-reported" as const,
+        effective: 8_192,
+        effectiveSource: "provider-reported" as const,
+      },
+      reasoning: { kind: "openai-effort" as const, requestedEffort: "medium", effort: "medium", source: "model-catalog" as const },
+      pricing: {
+        source: "model-catalog" as const,
+        catalogEntry: "openai/gpt-5.4-mini",
+        rates: { inputPer1M: 0.75, outputPer1M: 4.5, cacheReadPer1M: 0.075 },
+      },
+      requestControls: { outputTokenLimit: 8_192 },
+    };
+    logger.logTurn({ sessionId: "s", input: "x", output: "y", toolCalls: [], route: "openai/gpt-5.4-mini", modelSettings });
+    await logger.flush();
+    const entry = readLogLines().find((e) => e.type === "turn");
+    expect(entry?.modelSettings).toEqual(modelSettings);
+  });
+
   it("writes toolCalls array verbatim", async () => {
     const logger = new AuditLogger();
     const toolCalls = [{ name: "bash", isError: true }, { name: "read_file", isError: false }];

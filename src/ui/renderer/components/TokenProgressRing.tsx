@@ -2,8 +2,23 @@ import { useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { useTranslation } from "../../../i18n/react.js";
-import { formatCostBadge, type EstimateBreakdown } from "../../../lib/cost-estimator.js";
+import { formatCostBadge, formatCostRange, type EstimateBreakdown } from "../../../lib/cost-estimator.js";
 import { formatTokensExact } from "../../../lib/cost-format.js";
+
+/** Who set the output limit the estimate assumes, as the tooltip names it. */
+const OUTPUT_LIMIT_SOURCE_KEYS = {
+  user: "chatView.costOutputLimitSourceUser",
+  "host-default": "chatView.costOutputLimitSourceHostDefault",
+  "provider-reported": "chatView.costOutputLimitSourceProviderReported",
+  "model-catalog": "chatView.costOutputLimitSourceModelCatalog",
+} as const satisfies Record<NonNullable<EstimateBreakdown["outputLimitSource"]>, string>;
+
+/** Who stated the rates the estimate uses, as the tooltip names it. */
+const PRICE_SOURCE_KEYS = {
+  user: "chatView.costPriceSourceUser",
+  "model-catalog": "chatView.costPriceSourceModelCatalog",
+  "pricing-catalog": "chatView.costPriceSourcePricingCatalog",
+} as const satisfies Record<NonNullable<EstimateBreakdown["pricingSource"]>, string>;
 
 interface TokenProgressRingProps {
   used: number;
@@ -183,12 +198,42 @@ export function TokenProgressRing({
                 {costEstimate.pricingKnown === false ? "" : ` · $${costEstimate.outputCost.toFixed(5)}`}
               </span>
             </div>
+            {costEstimate.expected !== undefined && (
+              <div className="flex justify-between gap-3 opacity-70" data-testid="token-progress-ring-expected-output">
+                <span>{t("chatView.costExpectedOutputLabel")}</span>
+                <span>
+                  {costEstimate.expected.basis === "recent-turns"
+                    ? `${formatTokensExact(costEstimate.expected.tokens)} tok · ${t("chatView.costExpectedBasisRecentTurns")}`
+                    : t("chatView.costExpectedBasisNone")}
+                </span>
+              </div>
+            )}
+            {costEstimate.outputLimitSource !== undefined && (
+              <div className="flex justify-between gap-3 opacity-70" data-testid="token-progress-ring-output-limit-source">
+                <span>{t("chatView.costOutputLimitLabel")}</span>
+                <span>{t(OUTPUT_LIMIT_SOURCE_KEYS[costEstimate.outputLimitSource])}</span>
+              </div>
+            )}
+            {costEstimate.pricingSource !== undefined && (
+              <div className="flex justify-between gap-3 opacity-70" data-testid="token-progress-ring-price-source">
+                <span>{t("chatView.costPriceSourceLabel")}</span>
+                <span>{t(PRICE_SOURCE_KEYS[costEstimate.pricingSource])}</span>
+              </div>
+            )}
             {costEstimate.pricingKnown === false ? (
-              <div className="font-semibold">{t("chatView.costUnknownModel")}</div>
+              <div className="font-semibold" data-testid="token-progress-ring-cost-unknown">
+                {costEstimate.catalogListsZero !== undefined
+                  ? t("chatView.costCatalogListsZero", { entry: costEstimate.catalogListsZero })
+                  : t("chatView.costUnknownModel")}
+              </div>
             ) : (
               <div className={`flex justify-between gap-3 font-semibold ${costClass ?? ""}`}>
                 <span>{t("chatView.costTotalLabel")}</span>
-                <span>{formatCostBadge(costEstimate.total, costEstimate.pricingKnown)}</span>
+                <span data-testid="token-progress-ring-cost-total">
+                  {costEstimate.expected !== undefined
+                    ? formatCostRange(costEstimate.expected.total, costEstimate.total)
+                    : formatCostBadge(costEstimate.total, costEstimate.pricingKnown)}
+                </span>
               </div>
             )}
           </div>

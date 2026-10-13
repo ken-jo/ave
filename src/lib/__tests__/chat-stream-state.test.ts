@@ -1047,6 +1047,16 @@ describe("transcript frame reducer (shared by the main and the side chat)", () =
     }
   });
 
+  it("retains recorded request prices when a turn summary is restored", () => {
+    const pricing = { source: "user" as const, rates: { inputPer1M: 1, outputPer1M: 0 } };
+    const restored = parseTurnSummaryEvent(frame({
+      type: "turn_summary", turnDurationMs: 1, toolCount: 0, cumulativeToolMs: 0,
+      tokensIn: 100_000, freshInputTokens: 100_000, tokensOut: 0,
+      usageByModel: [{ vendorProvider: "openai", vendorModel: "gpt-5.4", tokenUsage: { inputTokens: 100_000, outputTokens: 0 }, pricing }],
+    }));
+    expect(restored?.usageByModel?.[0].pricing).toEqual(pricing);
+  });
+
   it("renders compact_notice as a checkpoint, with a context estimate only when the engine reported a reliable one", () => {
     const base = appendUserEntry([], "q");
     const withEstimate = applyTranscriptFrame(base, frame({ type: "compact_notice", removedMessages: 3, freedTokens: 900, estimatedAfter: 1200, trigger: "manual" }));

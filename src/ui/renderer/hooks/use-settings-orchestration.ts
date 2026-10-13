@@ -26,6 +26,7 @@ import {
   normalizeLlmThinkingBudgetTokens,
   type LLMVendor,
   type LLMVendorSettings,
+  requestedLlmOutputTokenLimit,
 } from "../../../shared/llm-vendor-defaults.js";
 import {
   marketplaceProviderPresetSecretId,
@@ -195,9 +196,11 @@ export function useSettingsOrchestration(
   const hydratedVendorRef = useRef<string | null>(null);
   const hydratedWebProviderRef = useRef<string | null>(null);
   const vendorInfo = getVendorOption(vendor);
-  const outputTokenLimit = getLlmVendorSettings(
+  // The limit this vendor block requests (the user's, else the host default);
+  // the reasoning presets offered are the ones below it.
+  const outputTokenLimit = requestedLlmOutputTokenLimit(getLlmVendorSettings(
     settingsSnapshot?.llm.vendors, vendor || DEFAULT_LLM_VENDOR,
-  ).outputTokenLimit!;
+  )).value;
   const effectiveThinkingBudget = normalizeLlmThinkingBudgetTokens(thinkingBudget, outputTokenLimit);
 
   useEffect(() => {

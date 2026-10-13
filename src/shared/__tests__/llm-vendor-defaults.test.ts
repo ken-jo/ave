@@ -13,6 +13,9 @@ import {
   freshAllVendorBlocks,
   freshVendorBlocks,
   getLlmVendorSettings,
+  llmImageInputKey,
+  llmRouteImageInput,
+  requestedLlmOutputTokenLimit,
   getLlmThinkingBudgetLimit,
   getLlmThinkingBudgetRungs,
   type LLMVendorSettings,
@@ -68,6 +71,22 @@ describe("isLLMVendor", () => {
   });
 });
 
+describe("model image declarations", () => {
+  it("normalizes scoped boolean declarations and removes malformed or cleared values", () => {
+    const key = llmImageInputKey("opaque-model");
+    const presetKey = llmImageInputKey("opaque-model", "fixture-provider");
+    const block = getLlmVendorSettings({ "openai-compatible": {
+      ...LLM_VENDOR_DEFAULTS["openai-compatible"],
+      imageInput: { [key]: true, [presetKey]: false, bad: true, '["",""]': true, '["","cleared"]': undefined, '["","invalid"]': "true" as never },
+    } }, "openai-compatible");
+    expect(block.imageInput).toEqual({ [key]: true, [presetKey]: false });
+    expect(llmRouteImageInput(block, "opaque-model")).toBe(true);
+    expect(llmRouteImageInput(block, "opaque-model", "fixture-provider")).toBe(false);
+    expect(llmRouteImageInput(block, "other-model")).toBeUndefined();
+    expect(getLlmVendorSettings({ "openai-compatible": { ...block, imageInput: { [key]: undefined } } }, "openai-compatible").imageInput).toBeUndefined();
+  });
+});
+
 describe("LLMVendorSettings", () => {
   it.each([
     [undefined, undefined, 8_000],
@@ -87,7 +106,10 @@ describe("LLMVendorSettings", () => {
       openai: { ...LLM_VENDOR_DEFAULTS.openai, thinkingBudgetTokens: thinkingBudgetTokens as number, outputTokenLimit },
     }, "openai");
     expect(block.thinkingBudgetTokens).toBe(expected);
-    expect(block.outputTokenLimit).toBe(outputTokenLimit ?? 32_000);
+    expect(block.outputTokenLimit).toBe(outputTokenLimit);
+    expect(requestedLlmOutputTokenLimit(block)).toEqual(
+      outputTokenLimit === undefined ? { value: 32_000, source: "host-default" } : { value: outputTokenLimit, source: "user" },
+    );
   });
 
   it.each([NaN, Infinity, -Infinity, -1, 1.5, "20000", null, {}, Number.MAX_VALUE])(
@@ -404,19 +426,21 @@ describe("getLlmVendorSettings output ceiling", () => {
     expect(block.outputTokenLimit).toBe(16_384);
   });
 
-  it("supplies the same default for fresh and pre-existing vendor blocks", () => {
+  it("leaves the default out of every block and reports it as the host's", () => {
+    // A block that carried the default could not say whether the user chose
+    // it, so a saved 32000 came to mean "never set" (the one-time migration
+    // in settings-store.ts drops those).
     expect(DEFAULT_LLM_OUTPUT_TOKEN_LIMIT).toBe(32_000);
     for (const vendor of LLM_VENDORS) {
-      expect(LLM_VENDOR_DEFAULTS[vendor].outputTokenLimit).toBe(DEFAULT_LLM_OUTPUT_TOKEN_LIMIT);
-      expect(getLlmVendorSettings(undefined, vendor).outputTokenLimit).toBe(DEFAULT_LLM_OUTPUT_TOKEN_LIMIT);
-      const stored = { ...LLM_VENDOR_DEFAULTS[vendor] };
-      delete stored.outputTokenLimit;
-      expect(getLlmVendorSettings({ [vendor]: stored }, vendor).outputTokenLimit).toBe(DEFAULT_LLM_OUTPUT_TOKEN_LIMIT);
+      expect(LLM_VENDOR_DEFAULTS[vendor].outputTokenLimit).toBeUndefined();
+      const block = getLlmVendorSettings(undefined, vendor);
+      expect(block.outputTokenLimit).toBeUndefined();
+      expect(requestedLlmOutputTokenLimit(block)).toEqual({ value: DEFAULT_LLM_OUTPUT_TOKEN_LIMIT, source: "host-default" });
     }
   });
 
   it.each([0, -1, 12.5, Number.NaN, "16384"])(
-    "resolves malformed ceiling %p to the default",
+    "drops a malformed limit %p, leaving the host default",
     (stored) => {
       // The transport reads any non-positive or non-integer value as "no cap",
       // so a value that survived here would look applied and do nothing.
@@ -429,7 +453,8 @@ describe("getLlmVendorSettings output ceiling", () => {
         },
         "openai",
       );
-      expect(block.outputTokenLimit).toBe(DEFAULT_LLM_OUTPUT_TOKEN_LIMIT);
+      expect(block.outputTokenLimit).toBeUndefined();
+      expect(requestedLlmOutputTokenLimit(block)).toEqual({ value: DEFAULT_LLM_OUTPUT_TOKEN_LIMIT, source: "host-default" });
     },
   );
 });

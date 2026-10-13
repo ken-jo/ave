@@ -75,6 +75,7 @@ import { McpAppModelContextStore } from "./mcp/mcp-app-model-context.js";
 import { initPluginRuntime } from "./boot/steps/plugin-runtime.js";
 import { feedRevocationsFromSnapshots } from "./boot/steps/revocation-bootstrap.js";
 import { createServiceClient } from "./boot/steps/service-endpoint.js";
+import { wireModelCatalogRefresh } from "./boot/steps/model-catalog-refresh.js";
 import { wireAnnouncementCheck, wireReleasePrep,
 } from "./boot/steps/post-boot.js";
 import { migrateCanonicalization } from "./permissions/user-approval-store.js";
@@ -201,7 +202,7 @@ export async function bootstrap(
   if (!headless && !mainWindow) throw new Error("Interactive boot requires a main window");
   if (headless) {
     log.info(
-      "boot: headless launch — no catalog sync, release check, polling or telemetry",
+      "boot: headless launch — no catalog sync, model catalog refresh, release check, polling or telemetry",
     );
   }
   const ctx = createBootContext({ projectRoot, mainWindow, getMainWindow, host });
@@ -963,6 +964,10 @@ export async function bootstrap(
       settingsService,
       listAnnouncements: () => serviceClient.announcements(),
     });
+    // Daily at most, on by default (design model-capability-catalog.md §7);
+    // it writes the cache only, and the next launch reads it. A headless run
+    // resolves against the cache or its AVE_MODEL_CATALOG pin and fetches nothing.
+    void wireModelCatalogRefresh({ settingsService, fetchImpl: ctx.singleHopNetworkFetch });
   }
   ctx.telemetry = telemetry;
   ctx.pluginTelemetry = pluginTelemetry;

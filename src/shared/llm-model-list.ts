@@ -106,12 +106,17 @@ export function cachedModelListEntry(
 ): LlmModelListEntry | undefined {
   if (!cache || !params.model) return undefined;
   const key = llmModelListCacheKey(params.vendor, params.baseUrl, params.credentialScope);
-  // Case-folded for the same reason the pricing catalog is: the id a settings
-  // row holds and the id the provider answers with are spelled by different
-  // people, and a case-only mismatch here silently costs the model its
-  // reported window.
+  const cached = cache[key];
+  const exact = cached?.modelEntries?.find((row) => row.id === params.model);
+  if (exact) return exact;
+  // Preserve distinct endpoint ids. A case-only spelling difference may use
+  // the report only when the complete model list names one candidate, even
+  // when another listed id has no metadata.
   const wanted = params.model.toLowerCase();
-  return cache[key]?.modelEntries?.find((row) => row.id.toLowerCase() === wanted);
+  const matches = cached?.models.filter((id) => id.toLowerCase() === wanted);
+  return matches?.length === 1
+    ? cached?.modelEntries?.find((row) => row.id === matches[0])
+    : undefined;
 }
 
 export type LlmModelListError =

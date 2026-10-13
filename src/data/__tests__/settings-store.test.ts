@@ -34,6 +34,7 @@ import {
   DEFAULT_LLM_VENDOR,
   freshAllVendorBlocks,
   getLlmVendorSettings,
+  llmImageInputKey,
 } from "../../shared/llm-vendor-defaults.js";
 import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
@@ -1211,6 +1212,35 @@ describe("SettingsService marketplace defaults", () => {
     expect(block.baseUrl).toBe("http://localhost:8001/v1");
   });
 
+  it("persists and merges model image declarations, clears only the selected model, and retains inactive configuration", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const first = llmImageInputKey("opaque-model");
+    const second = llmImageInputKey("other-model", "fixture-provider");
+    await service.patch({ llm: { provider: "openai-compatible", vendors: { "openai-compatible": { imageInput: { [first]: true } } } } });
+    await service.patch({ llm: { vendors: { "openai-compatible": { imageInput: { [second]: false } } } } });
+    expect(getLlmVendorSettings(service.get("llm").vendors, "openai-compatible").imageInput).toEqual({ [first]: true, [second]: false });
+    await service.patch({ llm: { provider: "openai", vendors: { "openai-compatible": { imageInput: { [first]: undefined } } } } });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(getLlmVendorSettings(reloaded.get("llm").vendors, "openai-compatible").imageInput).toEqual({ [second]: false });
+    expect(JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf8")).llm.vendors["openai-compatible"].imageInput).toEqual({ [second]: false });
+  });
+
+  it("retains an inactive optional provider customized only by image input across pruning and reload", async () => {
+    const model = getLlmVendorSettings(undefined, "groq").model;
+    const key = llmImageInputKey(model);
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
+      llm: { provider: "openai", vendors: { groq: { imageInput: { [key]: false } } } },
+    }));
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("marketplace").installedProviderIds).toContain("groq");
+    expect(service.get("llm").vendors.groq?.imageInput).toEqual({ [key]: false });
+    await service.patch({ llm: { provider: "groq" } });
+    await service.patch({ llm: { provider: "openai" } });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("llm").provider).toBe("openai");
+    expect(reloaded.get("llm").vendors.groq?.imageInput).toEqual({ [key]: false });
+  });
+
   it("merges one preset's model into the map instead of replacing it", async () => {
     // The renderer sends the key it just chose and nothing else, so the store
     // has to merge: replacing the map would delete every other preset's model
@@ -1661,12 +1691,16 @@ describe("SettingsService LLM per-vendor patching", () => {
       },
     }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    // The stored 32000 is the old materialized default (no migration marker),
+    // so it becomes the host default; the budget is bounded against the same 32000.
     expect(service.get("llm").vendors.openai).toMatchObject({
-      model: "fixture-model", enableThinking: true, thinkingBudgetTokens: 16_000, outputTokenLimit: 32_000,
+      model: "fixture-model", enableThinking: true, thinkingBudgetTokens: 16_000,
     });
+    expect(service.get("llm").vendors.openai?.outputTokenLimit).toBeUndefined();
     await service.patch({ llm: { vendors: { openai: { thinkingBudgetTokens: 14_000 } } } });
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("llm").vendors.openai).toMatchObject({ thinkingBudgetTokens: 14_000, outputTokenLimit: 32_000 });
+    expect(reloaded.get("llm").vendors.openai).toMatchObject({ thinkingBudgetTokens: 14_000 });
+    expect(reloaded.get("llm").vendors.openai?.outputTokenLimit).toBeUndefined();
   });
 
   it("clamps thinking on patches and output changes while preserving unrelated vendor fields", async () => {
@@ -3562,6 +3596,87 @@ describe("subAgentAutonomousWake un-fossilize migration", () => {
   });
 });
 
+describe("output token limit: the stored old default becomes the host default", () => {
+  let userDataPath: string;
+
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-output-limit-"));
+  });
+
+  afterEach(async () => {
+    await cleanupTmpDir(userDataPath);
+  });
+
+  function writeStored(contents: Record<string, unknown>): string {
+    const path = join(userDataPath, "ave-settings.json");
+    writeFileSync(path, JSON.stringify(contents), "utf-8");
+    return path;
+  }
+
+  type OnDisk = { appliedMigrations?: string[]; llm: { vendors: Record<string, { outputTokenLimit?: number; outputTokenLimitSetByUser?: true }> } };
+
+  it("drops a stored 32000 an older build wrote, and keeps any other value", async () => {
+    const path = writeStored({
+      llm: {
+        provider: "openai",
+        vendors: {
+          openai: { model: "gpt-5.4-mini", outputTokenLimit: 32_000 },
+          claude: { model: "claude-sonnet-4-6", outputTokenLimit: 64_000 },
+        },
+      },
+    });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("llm").vendors.openai?.outputTokenLimit).toBeUndefined();
+    expect(service.get("llm").vendors.claude?.outputTokenLimit).toBe(64_000);
+    await service.patch({} as never);
+    const onDisk = JSON.parse(readFileSync(path, "utf-8")) as OnDisk;
+    expect(onDisk.llm.vendors.openai?.outputTokenLimit).toBeUndefined();
+  });
+
+  it("keeps a 32000 the user set, across reloads", async () => {
+    const path = writeStored({ llm: { provider: "openai", vendors: { openai: { model: "gpt-5.4-mini" } } } });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ llm: { vendors: { openai: { outputTokenLimit: 32_000 } } } } as never);
+    expect(service.get("llm").vendors.openai).toMatchObject({ outputTokenLimit: 32_000, outputTokenLimitSetByUser: true });
+    expect((JSON.parse(readFileSync(path, "utf-8")) as OnDisk).llm.vendors.openai).toMatchObject({ outputTokenLimit: 32_000, outputTokenLimitSetByUser: true });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("llm").vendors.openai?.outputTokenLimit).toBe(32_000);
+    // Clearing the limit clears the stamp with it.
+    await reloaded.patch({ llm: { vendors: { openai: { outputTokenLimit: undefined } } } } as never);
+    expect(reloaded.get("llm").vendors.openai).not.toHaveProperty("outputTokenLimitSetByUser");
+  });
+
+  it("drops the 32000 an older build writes back after a downgrade, even once the old marker is on disk", () => {
+    // The updater can offer an older build. It writes 32000 into every block
+    // and keeps the marker an earlier version of this migration recorded; a
+    // one-time migration would then read those values as the user's.
+    writeStored({
+      appliedMigrations: ["llm-output-token-limit-default"],
+      llm: {
+        provider: "openai",
+        vendors: {
+          openai: { model: "gpt-5.4-mini", outputTokenLimit: 32_000 },
+          claude: { model: "claude-sonnet-4-6", outputTokenLimit: 32_000, outputTokenLimitSetByUser: true },
+        },
+      },
+    });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("llm").vendors.openai?.outputTokenLimit).toBeUndefined();
+    expect(service.get("llm").vendors.claude?.outputTokenLimit).toBe(32_000);
+  });
+
+  it("does not write the default into any vendor block a save persists", async () => {
+    // Before, every saved block carried the materialized default, which is how
+    // 32000 came to stand for "never chosen".
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ llm: { vendors: { openai: { model: "gpt-5.4" } } } } as never);
+    const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as OnDisk;
+    for (const [vendor, block] of Object.entries(onDisk.llm.vendors)) {
+      expect(block.outputTokenLimit, vendor).toBeUndefined();
+    }
+  });
+});
+
 function writePlainSecrets(secretsPath: string, entries: Record<string, string>): void {
   writeFileSync(secretsPath, `${JSON.stringify({
     version: 1,
@@ -3957,4 +4072,41 @@ it("notifies only the written settings key after persistence and releases observ
     await service.set("alerts", { ...service.get("alerts"), osNotificationsEnabled: true });
     expect(observer).toHaveBeenCalledTimes(1);
   } finally { await cleanupTmpDir(userDataPath); }
+});
+
+describe("SettingsService llm.modelCatalogRefresh", () => {
+  let userDataPath: string;
+
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-model-catalog-"));
+  });
+
+  afterEach(async () => {
+    await cleanupTmpDir(userDataPath);
+  });
+
+  const stored = (llm: Record<string, unknown>) => {
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ llm }), "utf-8");
+    return new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+  };
+
+  it("defaults the refresh on", () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("llm").modelCatalogRefresh).toBe("auto");
+  });
+
+  it("keeps a stored off and reads anything unreadable as the default", () => {
+    expect(stored({ modelCatalogRefresh: "off" }).get("llm").modelCatalogRefresh).toBe("off");
+    expect(stored({ modelCatalogRefresh: "never" }).get("llm").modelCatalogRefresh).toBe("auto");
+    expect(stored({ modelCatalogRefresh: { refresh: "off" } }).get("llm").modelCatalogRefresh).toBe("auto");
+  });
+
+  it("applies a patch from the settings switch and keeps it across a reload", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ llm: { modelCatalogRefresh: "off" } });
+    expect(service.get("llm").modelCatalogRefresh).toBe("off");
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm").modelCatalogRefresh).toBe("off");
+    await service.patch({ llm: { streamSmoothing: "word" } });
+    expect(service.get("llm").modelCatalogRefresh).toBe("off");
+  });
 });

@@ -19,11 +19,10 @@ import { describe, it, expect, vi } from "vitest";
 import { collectStreamEvents as collect, streamFromArray as fromArray } from "./test-helpers.js";
 import type { StreamEvent } from "../../types.js";
 import {
-  mapBudgetToEffort,
-  supportsAdaptiveThinking,
   genericToModelMessages,
   fullStreamToStreamEvent,
 } from "../adapter.js";
+import { mapBudgetToEffort, supportsAdaptiveThinking } from "../../reasoning-plan.js";
 import { extractSignatureSafely } from "../signature-shim.js";
 
 
@@ -396,6 +395,20 @@ describe("stream-mapper — Claude signature capture per-step", () => {
         cacheWriteTokens: 10,
       });
     }
+  });
+
+  it("carries the reported reasoning part of the output from outputTokenDetails", async () => {
+    const canned = [
+      {
+        type: "finish",
+        finishReason: "stop",
+        totalUsage: { inputTokens: 100, outputTokens: 40, outputTokenDetails: { textTokens: 15, reasoningTokens: 25 } },
+      },
+    ];
+    const events = await collect(fullStreamToStreamEvent(fromArray(canned), "openai"));
+    const last = events.at(-1);
+    expect(last?.type).toBe("message_complete");
+    expect(last?.type === "message_complete" && last.usage).toEqual({ inputTokens: 100, outputTokens: 40, reasoningTokens: 25 });
   });
 
   it("providerMetadata.anthropic takes precedence over SDK cachedInputTokens for cacheReadTokens", async () => {

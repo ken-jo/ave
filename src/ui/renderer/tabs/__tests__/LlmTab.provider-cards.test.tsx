@@ -6,13 +6,16 @@ import { installMockAveApi, type MockAveApi } from "../../../../../test/renderer
 import { deferred } from "../../../../../test/renderer/helpers.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { t } from "../../../../i18n/runtime.js";
-import type { LlmModelListResult } from "../../../../shared/llm-model-list.js";
+import { llmModelListCacheKey, type LlmModelListCache, type LlmModelListResult } from "../../../../shared/llm-model-list.js";
 import type {
   MarketplaceInstalledProviderPreset,
   MarketplaceProviderModelDiscoveryPolicy,
 } from "../../../../shared/marketplace-package-assets.js";
 import type { SubscriptionProviderView } from "../SubscriptionProvidersSection.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
+import { freshAllVendorBlocks, llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
+import { resolveContextWindowForRoute } from "../../../../shared/context-budget.js";
+import { supportsVision } from "../../../../engine/llm/vendor-capabilities.js";
 
 const useSubscriptionProvidersMock = vi.hoisted(() => vi.fn());
 
@@ -149,7 +152,18 @@ function profileApi(profile: Profile, rest: MockApi = {}) {
   const api = makeApi({
     getSettings: vi.fn(async () => settings),
     updateSettings: vi.fn(async (patch: { llm?: Record<string, unknown> }) => {
-      settings = { ...settings, llm: { ...settings.llm, ...(patch.llm ?? {}) } };
+      const vendors = { ...settings.llm.vendors as Record<string, Record<string, unknown>> };
+      for (const [vendor, incoming] of Object.entries(patch.llm?.vendors as Record<string, Record<string, unknown>> ?? {})) {
+        const previous = vendors[vendor] ?? {};
+        vendors[vendor] = { ...previous, ...incoming };
+        if (incoming.imageInput) {
+          vendors[vendor].imageInput = Object.fromEntries(Object.entries({
+            ...previous.imageInput as Record<string, boolean>,
+            ...incoming.imageInput as Record<string, boolean | undefined>,
+          }).filter(([, value]) => value !== undefined));
+        }
+      }
+      settings = { ...settings, llm: { ...settings.llm, ...(patch.llm ?? {}), vendors } };
       publish();
       return settings;
     }),
@@ -405,6 +419,336 @@ beforeEach(() => {
 });
 
 describe("LlmTab provider cards", () => {
+  it.each([
+    { model: "GPT-4.1", reportedModel: "gpt-4.1", inputModalities: ["text"], supportedParameters: ["tools"], vision: false, tools: true },
+    { model: "GPT-4", reportedModel: "gpt-4", inputModalities: ["text", "image"], supportedParameters: ["tools"], vision: true, tools: true },
+    { model: "GPT-3.5-Turbo", reportedModel: "gpt-3.5-turbo", inputModalities: ["text"], supportedParameters: ["tools"], vision: false, tools: true },
+  ])("matches engine capabilities when the saved model and report differ in case: $model", async ({ model, reportedModel, inputModalities, supportedParameters, vision, tools }) => {
+    const modelListCache: LlmModelListCache = {
+      [llmModelListCacheKey("openai")]: {
+        vendor: "openai", models: [reportedModel], endpoint: "https://provider.invalid/v1/models",
+        modelEntries: [{ id: reportedModel, inputModalities, supportedParameters }], fetchedAt: new Date(0).toISOString(),
+      },
+    };
+    const vendors = freshAllVendorBlocks();
+    vendors.openai.model = model;
+    const route = resolveContextWindowForRoute({ provider: "openai", vendors, modelListCache });
+    expect(supportsVision("openai", model, route)).toBe(vision);
+    expect(route.toolCall?.supported).toBe(tools);
+    const { api } = profileApi({ vendors, modelListCache }, { hasApiKey: storedKeysFor("openai") });
+    await renderTab(api, { vendor: "openai", model });
+    expect(await chooserModelIds()).toContain(model);
+    const option = within(chooserOption(model));
+    expect(Boolean(option.queryByTestId(`llm-tab:model-vision:${model}`))).toBe(vision);
+    expect(Boolean(option.queryByTestId(`llm-tab:model-no-tools:${model}`))).toBe(!tools);
+  });
+
+  it("draws every fact on a case-matched row from the one report its badges use", async () => {
+    const model = "GPT-4.1";
+    const modelListCache: LlmModelListCache = {
+      [llmModelListCacheKey("openai")]: {
+        vendor: "openai", models: ["gpt-4.1"], endpoint: "https://provider.invalid/v1/models",
+        modelEntries: [{
+          id: "gpt-4.1", provider: "Reported Lab", inputModalities: ["text", "image"],
+          supportedParameters: ["tools", "reasoning"],
+        }],
+        fetchedAt: new Date(0).toISOString(),
+      },
+    };
+    const vendors = freshAllVendorBlocks();
+    vendors.openai.model = model;
+    const { api } = profileApi({ vendors, modelListCache }, { hasApiKey: storedKeysFor("openai") });
+    await renderTab(api, { vendor: "openai", model });
+    expect(await chooserModelIds()).toContain(model);
+    const option = within(chooserOption(model));
+    expect(option.queryByTestId(`llm-tab:model-vision:${model}`)).not.toBeNull();
+    expect(option.queryByTestId(`llm-tab:model-reasoning:${model}`)).not.toBeNull();
+    expect(option.getByTestId(`llm-tab:model-provider:${model}`).textContent).toBe("Reported Lab");
+  });
+
+  it.each([false, true].flatMap((reversed) => [
+    { reversed, model: "GPT-3.5-Turbo", vision: true, tools: true },
+    { reversed, model: "gpt-3.5-turbo", vision: false, tools: false },
+    { reversed, model: "gPt-3.5-tUrBo", vision: false, tools: false },
+  ]))("keeps case-distinct model badges separate: $model ($reversed)", async ({ reversed, model, vision, tools }) => {
+    const modelListCache: LlmModelListCache = {
+      [llmModelListCacheKey("openai")]: {
+        vendor: "openai", models: ["GPT-3.5-Turbo", "gpt-3.5-turbo"], endpoint: "https://provider.invalid/v1/models",
+        modelEntries: [
+          { id: "GPT-3.5-Turbo", inputModalities: ["text", "image"], supportedParameters: ["tools"] },
+          { id: "gpt-3.5-turbo", inputModalities: ["text"], supportedParameters: ["temperature"] },
+        ],
+        fetchedAt: new Date(0).toISOString(),
+      },
+    };
+    if (reversed) modelListCache[llmModelListCacheKey("openai")]!.modelEntries!.reverse();
+    const vendors = freshAllVendorBlocks();
+    vendors.openai.model = model;
+    const { api } = profileApi({ vendors, modelListCache }, { hasApiKey: storedKeysFor("openai") });
+    await renderTab(api, { vendor: "openai", model });
+    expect(await chooserModelIds()).toContain(model);
+    const option = within(chooserOption(model));
+    expect(Boolean(option.queryByTestId(`llm-tab:model-vision:${model}`))).toBe(vision);
+    expect(Boolean(option.queryByTestId(`llm-tab:model-no-tools:${model}`))).toBe(!tools);
+    const route = resolveContextWindowForRoute({ provider: "openai", vendors, modelListCache });
+    expect(supportsVision("openai", model, route)).toBe(vision);
+    expect(route.toolCall?.supported).toBe(tools);
+  });
+
+  it("saves the active vendor model without a stale preset's scope", async () => {
+    const model = "gpt-5.4";
+    const { api } = profileApi({ vendors: { openai: { model } } }, { hasApiKey: storedKeysFor("openai") });
+    await renderTab(api, { vendor: "openai", model, marketplaceProviderPresetId: "stale-provider" });
+    openMenu(screen.getByRole("combobox", { name: "이미지 입력" }));
+    fireEvent.click(screen.getByRole("option", { name: /^지원$/ }));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { vendors: {
+      openai: { imageInput: { [llmImageInputKey(model)]: true } },
+    } } }));
+  });
+
+  it("lets an unknown custom model declare image support and return to automatic", async () => {
+    const model = "opaque-model";
+    const { api } = profileApi({ vendors: { "openai-compatible": { model, baseUrl: CUSTOM_ENDPOINT } } }, {
+      hasApiKey: storedKeysFor("openai-compatible"),
+    });
+    await renderTab(api, { vendor: "openai-compatible", baseUrl: CUSTOM_ENDPOINT, model });
+    const control = screen.getByRole("combobox", { name: "이미지 입력" });
+    expect(control).toHaveTextContent("자동");
+    expect(control).toHaveAccessibleDescription(expect.stringContaining(model));
+    openMenu(control);
+    fireEvent.click(screen.getByRole("option", { name: /^지원$/ }));
+    await waitFor(() => expect(control).toHaveTextContent("지원"));
+    expect(api.updateSettings).toHaveBeenCalledWith({ llm: { vendors: {
+      "openai-compatible": { imageInput: { [llmImageInputKey(model)]: true } },
+    } } });
+    expect(await chooserModelIds()).toContain(model);
+    expect(within(chooserOption(model)).getByTestId(`llm-tab:model-vision:${model}`)).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
+    openMenu(control);
+    fireEvent.click(screen.getByRole("option", { name: /^자동$/ }));
+    await waitFor(() => expect(control).toHaveTextContent("자동"));
+    expect(api.updateSettings).toHaveBeenCalledWith({ llm: { vendors: {
+      "openai-compatible": { imageInput: { [llmImageInputKey(model)]: undefined } },
+    } } });
+    expect(await chooserModelIds()).toContain(model);
+    expect(within(chooserOption(model)).queryByTestId(`llm-tab:model-vision:${model}`)).not.toBeInTheDocument();
+  });
+
+  it.each(["rejected", "refused"])("keeps the saved image capability after a %s declaration save", async (failure) => {
+    const model = "opaque-model";
+    const { api } = profileApi({ vendors: { "openai-compatible": { model, baseUrl: CUSTOM_ENDPOINT } } }, {
+      hasApiKey: storedKeysFor("openai-compatible"),
+      updateSettings: failure === "rejected"
+        ? vi.fn().mockRejectedValue(new Error("fixture settings write failed"))
+        : vi.fn().mockResolvedValue({ ok: false, error: "settings-update-failed" }),
+    });
+    await renderTab(api, { vendor: "openai-compatible", baseUrl: CUSTOM_ENDPOINT, model });
+    const control = screen.getByRole("combobox", { name: "이미지 입력" });
+    openMenu(control);
+    fireEvent.click(screen.getByRole("option", { name: /^지원$/ }));
+    // The renderer fixture's catalog policy is unavailable, which raises its own alert.
+    await waitFor(() => expect(screen.getAllByRole("alert").map((alert) => alert.textContent))
+      .toContainEqual(expect.stringContaining("이미지 입력 설정을 저장하지 못했습니다")));
+    expect(control).toHaveTextContent("자동");
+    expect(await chooserModelIds()).toContain(model);
+    expect(within(chooserOption(model)).queryByTestId(`llm-tab:model-vision:${model}`)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { model: "gpt-3.5-turbo", badge: true },
+    { model: "gpt-4.1", badge: false },
+    { model: "a-served-model", badge: false },
+    { model: "gpt-3.5-turbo", supportedParameters: ["tools"], badge: false },
+  ])("shows the no-tools badge only for a route that withholds tools: %j", async ({ model, supportedParameters, badge }) => {
+    const { api } = profileApi({ vendors: { openai: { model } } }, {
+      hasApiKey: storedKeysFor("openai"),
+      listLlmModels: vi.fn().mockResolvedValue({
+        ok: true,
+        vendor: "openai",
+        endpoint: "https://provider.invalid/v1/models",
+        models: [model],
+        modelEntries: [{ id: model, contextLength: 777_000, ...(supportedParameters ? { supportedParameters } : {}) }],
+        fetchedAt: "2026-01-01T00:00:00.000Z",
+      } satisfies LlmModelListResult),
+    });
+    await renderTab(api, { vendor: "openai", model });
+    expect(await chooserModelIds()).toContain(model);
+    await waitFor(() => expect(within(chooserOption(model)).getByTestId(`llm-tab:model-facts:${model}`)).toHaveTextContent("777k"));
+    await waitFor(() => {
+      const row = within(chooserOption(model));
+      const chip = row.queryByTestId(`llm-tab:model-no-tools:${model}`);
+      if (badge) {
+        expect(chip).toHaveTextContent("도구 미지원");
+        expect(chip).toHaveAccessibleName("이 모델에는 도구를 보내지 않습니다");
+        expect(chip).toHaveAttribute("title", "이 모델에는 도구를 보내지 않습니다");
+      } else {
+        expect(chip).not.toBeInTheDocument();
+      }
+    });
+  });
+
+  it.each([
+    { model: "gpt-4.1", catalogModel: "openai/gpt-3.5-turbo", badge: true },
+    { model: "gpt-3.5-turbo", catalogModel: "openai/gpt-4.1", badge: false },
+    { model: "gpt-3.5-turbo", catalogModel: "openai/not-listed", badge: false },
+    { model: "gpt-4.1", catalogModel: "openai/gpt-3.5-turbo", supportedParameters: ["tools"], badge: true },
+  ])("uses the vendor route's named catalog entry for the tool badge: %j", async ({ model, catalogModel, supportedParameters, badge }) => {
+    const { api } = profileApi({
+      vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT, model, catalogModel } },
+    }, {
+      hasApiKey: storedKeysFor("openai-compatible"),
+      listLlmModels: vi.fn().mockResolvedValue({
+        ok: true,
+        vendor: "openai-compatible",
+        endpoint: `${CUSTOM_ENDPOINT}/models`,
+        models: [model],
+        modelEntries: [{ id: model, contextLength: 777_000, ...(supportedParameters ? { supportedParameters } : {}) }],
+        fetchedAt: "2026-01-01T00:00:00.000Z",
+      } satisfies LlmModelListResult),
+    });
+    await renderTab(api, { vendor: "openai-compatible", baseUrl: CUSTOM_ENDPOINT, model });
+    expect(await chooserModelIds()).toContain(model);
+    await waitFor(() => expect(within(chooserOption(model)).getByTestId(`llm-tab:model-facts:${model}`)).toHaveTextContent("777k"));
+    await waitFor(() => {
+      const chip = within(chooserOption(model)).queryByTestId(`llm-tab:model-no-tools:${model}`);
+      expect(Boolean(chip)).toBe(badge);
+    });
+  });
+
+  it.each([
+    { catalogModel: "openai/gpt-4", reportedInput: ["text", "image"], vision: false },
+    { catalogModel: "openai/gpt-4o", reportedInput: ["text"], vision: true },
+  ])("uses the named route's input modalities for the vision badge: %j", async ({ catalogModel, reportedInput, vision }) => {
+    const model = "opaque-model";
+    const { api } = profileApi({
+      vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT, model, catalogModel } },
+    }, {
+      hasApiKey: storedKeysFor("openai-compatible"),
+      listLlmModels: vi.fn().mockResolvedValue({
+        ok: true, vendor: "openai-compatible", endpoint: `${CUSTOM_ENDPOINT}/models`, models: [model],
+        modelEntries: [{ id: model, inputModalities: reportedInput }], fetchedAt: new Date(0).toISOString(),
+      } satisfies LlmModelListResult),
+    });
+    await renderTab(api, { vendor: "openai-compatible", baseUrl: CUSTOM_ENDPOINT, model });
+    expect(await chooserModelIds()).toContain(model);
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled());
+    expect(Boolean(within(chooserOption(model)).queryByTestId(`llm-tab:model-vision:${model}`))).toBe(vision);
+  });
+
+  it.each(["pending", "failed"])("uses saved input modalities for the vision badge while a cache save is %s", async (saveState) => {
+    const model = "gpt-4o";
+    const { api } = profileApi({
+      vendors: { openai: { model } },
+      modelListCache: {
+        [["openai", "", ""].join("\n")]: {
+          vendor: "openai", models: [model], endpoint: "https://provider.invalid/v1/models",
+          modelEntries: [{ id: model, inputModalities: ["text"] }], fetchedAt: new Date(0).toISOString(),
+        },
+      },
+    }, {
+      hasApiKey: storedKeysFor("openai"),
+      listLlmModels: vi.fn().mockResolvedValue({
+        ok: true, vendor: "openai", endpoint: "https://provider.invalid/v1/models", models: [model],
+        modelEntries: [{ id: model, inputModalities: ["text", "image"] }], fetchedAt: new Date(1).toISOString(),
+      } satisfies LlmModelListResult),
+      updateSettings: saveState === "pending"
+        ? vi.fn(() => new Promise(() => {}))
+        : vi.fn().mockResolvedValue({ ok: false, error: "settings-update-failed" }),
+    });
+    await renderTab(api, { vendor: "openai", model });
+    expect(await chooserModelIds()).toContain(model);
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled());
+    expect(within(chooserOption(model)).queryByTestId(`llm-tab:model-vision:${model}`)).not.toBeInTheDocument();
+  });
+
+  it("does not apply the generic route's named no-tools entry to a preset", async () => {
+    const gateway = preset("model-gateway", "Model Gateway", "https://gateway.example/v1");
+    const model = "gpt-4.1";
+    const { api } = profileApi({
+      vendors: { "openai-compatible": { catalogModel: "openai/gpt-3.5-turbo" } },
+      installedProviderPresets: [gateway],
+      modelListCache: {
+        [["openai-compatible", gateway.baseUrl, gateway.providerId].join("\n")]: {
+          vendor: "openai-compatible", baseUrl: gateway.baseUrl, credentialScope: gateway.providerId,
+          endpoint: `${gateway.baseUrl}/models`, models: [model], modelEntries: [{ id: model }],
+          fetchedAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+    }, {
+      hasApiKey: storedKeysFor(`marketplace-provider:${gateway.providerId}`),
+      listLlmModels: vi.fn(() => new Promise<LlmModelListResult>(() => {})),
+    });
+    await renderTab(api, {
+      vendor: "openai-compatible", model, marketplaceProviderPresets: [gateway],
+      marketplaceProviderPresetId: gateway.providerId,
+    });
+    expect(await chooserModelIds()).toContain(model);
+    expect(within(chooserOption(model)).queryByTestId(`llm-tab:model-no-tools:${model}`)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { baseUrl: "https://gateway.invalid/v1", badge: false },
+    { baseUrl: "https://api.openai.com/v1", badge: true },
+  ])("follows the engine's endpoint identity for a same-name model's tool badge: $baseUrl", async ({ baseUrl, badge }) => {
+    const model = "gpt-3.5-turbo";
+    const { api } = profileApi({ vendors: { openai: { model, baseUrl } } }, {
+      hasApiKey: storedKeysFor("openai"),
+      listLlmModels: vi.fn(() => new Promise<LlmModelListResult>(() => {})),
+    });
+    await renderTab(api, { vendor: "openai", baseUrl, model });
+    expect(await chooserModelIds()).toContain(model);
+    expect(Boolean(within(chooserOption(model)).queryByTestId(`llm-tab:model-no-tools:${model}`))).toBe(badge);
+  });
+
+  it.each([
+    { baseUrl: "https://gateway.invalid/v1", badge: false },
+    { baseUrl: "https://api.openai.com/v1", badge: true },
+  ])("matches a fallback row's tool badge under its saved endpoint like the engine: $baseUrl", async ({ baseUrl, badge }) => {
+    // provider.ts builds a fallback on the vendor block's saved baseUrl, and the
+    // adapter matches the catalog under that endpoint's identity.
+    const model = "gpt-3.5-turbo";
+    const { api } = profileApi({ vendors: { openai: { model, baseUrl } } }, {
+      hasApiKey: storedKeysFor("openai", "claude"),
+      listLlmModels: vi.fn(() => new Promise<LlmModelListResult>(() => {})),
+    });
+    await renderTab(api, {
+      vendor: "claude", model: "claude-sonnet-4-6",
+      fallbackOpen: true, fallbackChain: [{ provider: "openai", model }],
+    });
+    const section = screen.getByTestId("fallback-chain-section");
+    const triggers = [...section.querySelectorAll<HTMLElement>("[role='combobox']")];
+    openMenu(triggers[triggers.length - 1]!);
+    const option = await waitFor(() => {
+      const found = [...document.querySelectorAll<HTMLElement>("[role='option']")]
+        .find((node) => node.querySelector(`[data-model-id='${model}']`));
+      expect(found).toBeDefined();
+      return found!;
+    });
+    expect(Boolean(within(option).queryByTestId(`llm-tab:model-no-tools:${model}`))).toBe(badge);
+  });
+
+  it.each(["pending", "failed"])("keeps the tool badge consistent with the engine during a %s capability cache save", async (saveState) => {
+    const model = "gpt-3.5-turbo";
+    const { api } = profileApi({
+      vendors: { openai: { model } },
+    }, {
+      hasApiKey: storedKeysFor("openai"),
+      listLlmModels: vi.fn().mockResolvedValue({
+        ok: true, vendor: "openai", endpoint: "https://provider.invalid/v1/models", models: [model],
+        modelEntries: [{ id: model, contextLength: 777_000, supportedParameters: ["tools"] }],
+        fetchedAt: "2026-01-01T00:00:00.000Z",
+      } satisfies LlmModelListResult),
+      updateSettings: saveState === "pending"
+        ? vi.fn(() => new Promise(() => {}))
+        : vi.fn().mockResolvedValue({ ok: false, error: "settings-update-failed" }),
+    });
+    await renderTab(api, { vendor: "openai", model });
+    expect(await chooserModelIds()).toContain(model);
+    await waitFor(() => expect(within(chooserOption(model)).getByTestId(`llm-tab:model-facts:${model}`)).toHaveTextContent("777k"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled());
+    expect(within(chooserOption(model)).getByTestId(`llm-tab:model-no-tools:${model}`)).toHaveTextContent("도구 미지원");
+  });
+
   it("accepts an explicit choice of the same model after a provider retirement", async () => {
     const { hooks } = await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "gpt-5.4", retiredLlmProvider: "copilot" });
     await chooserModelIds();

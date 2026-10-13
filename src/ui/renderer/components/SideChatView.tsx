@@ -290,6 +290,7 @@ function SideChatSession({
     attachments,
     llmVendor: chatContext?.llmVendor,
     llmModel: chatContext?.llmModel,
+    llmRouteModalities: chatContext?.llmRouteModalities,
   });
   // The side loop runs no local slash commands, so a missing credential blocks
   // the field outright — there is no keyless "/" path to keep open.

@@ -85,6 +85,8 @@ import { hasOnlyKeys } from "../../shared/is-record.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { activeModelCatalog } from "../../shared/model-catalog/active.js";
 import type { ModelCatalogIpcResult } from "../../shared/model-catalog/types.js";
+import { readModelCatalogRefreshPolicy } from "../../core/model-catalog/refresh-policy.js";
+import { getAdminPolicyPath } from "../../permissions/policy-store.js";
 
 /** Refusal: the session named is already open in another tile of this window. */
 const SESSION_OPEN_IN_OTHER_GROUP = "session-open-in-other-group";
@@ -1021,13 +1023,14 @@ export function registerChatHandlers(deps: IpcDeps): void {
     }
     return conversationLoop.pingProvider();
   });
-  ipcMain.handle(CHANNELS.llm.getModelCatalog, (e): ModelCatalogIpcResult | typeof UNAUTHORIZED_FRAME => {
+  ipcMain.handle(CHANNELS.llm.getModelCatalog, async (e): Promise<ModelCatalogIpcResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.llm.getModelCatalog, e);
       return UNAUTHORIZED_FRAME;
     }
     try {
-      return { ok: true, catalog: activeModelCatalog() };
+      const catalog = activeModelCatalog();
+      return { ok: true, catalog, refreshPolicy: await readModelCatalogRefreshPolicy(getAdminPolicyPath()) };
     } catch (error) {
       // Main boots with the catalog installed; reaching this is a startup-order
       // defect. Logged here, where the main log records it, and answered as a

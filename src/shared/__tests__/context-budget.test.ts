@@ -6,10 +6,12 @@ import {
   llmRouteCatalogAddress,
   MAX_CREDIBLE_CONTEXT_WINDOW,
   resolveContextWindowForRoute,
+  resolveInputModalities,
   resolveModelContextWindow,
+  resolveOutputTokenLimit,
 } from "../context-budget.js";
 import { FALLBACK_PRICING } from "../pricing-data.js";
-import { freshAllVendorBlocks } from "../llm-vendor-defaults.js";
+import { freshAllVendorBlocks, llmImageInputKey } from "../llm-vendor-defaults.js";
 import { llmModelListCacheKey, type LlmModelListCache } from "../llm-model-list.js";
 import { activeModelCatalog, installModelCatalog } from "../model-catalog/active.js";
 import type { CatalogModel, ModelCatalogDocument } from "../model-catalog/types.js";
@@ -310,6 +312,56 @@ describe("resolveContextWindowForRoute — one answer for the engine and the rin
     });
   });
 
+  it.each([false, true].flatMap((reversed) => [
+    { reversed, model: "Case-Model", contextWindow: 131_072, output: 8_192, input: ["text", "image"], tools: true },
+    { reversed, model: "case-model", contextWindow: 262_144, output: 16_384, input: ["text"], tools: undefined },
+  ]))("keeps case-distinct reports separate: $model ($reversed)", ({ reversed, model, contextWindow, output, input, tools }) => {
+    const settings = routeSettings({ reported: {} });
+    settings.vendors["openai-compatible"].model = model;
+    const cached = Object.values(settings.modelListCache)[0]!;
+    cached.models = ["Case-Model", "case-model"];
+    cached.modelEntries = [
+      { id: "Case-Model", contextLength: 131_072, maxOutputTokens: 8_192, inputModalities: ["text", "image"], supportedParameters: ["tools"] },
+      { id: "case-model", contextLength: 262_144, maxOutputTokens: 16_384, inputModalities: ["text"], supportedParameters: ["temperature"] },
+    ];
+    if (reversed) cached.modelEntries.reverse();
+    const route = resolveContextWindowForRoute(settings);
+    expect(route.contextWindow).toBe(contextWindow);
+    expect(route.output.effective).toBe(output);
+    expect(route.inputModalities?.input).toEqual(input);
+    expect(route.toolCall?.supported).toBe(tools);
+  });
+
+  it.each([false, true])("ignores an ambiguous case match instead of borrowing a report (reversed %s)", (reversed) => {
+    const settings = routeSettings({ reported: {} });
+    settings.vendors["openai-compatible"].model = "CASE-MODEL";
+    const cached = Object.values(settings.modelListCache)[0]!;
+    cached.models = ["Case-Model", "case-model"];
+    cached.modelEntries = [
+      { id: "Case-Model", contextLength: 131_072, maxOutputTokens: 8_192, inputModalities: ["text", "image"], supportedParameters: ["tools"] },
+      { id: "case-model", contextLength: 262_144, maxOutputTokens: 16_384, inputModalities: ["text"] },
+    ];
+    if (reversed) cached.modelEntries.reverse();
+    const route = resolveContextWindowForRoute(settings);
+    expect(route.source).not.toBe("provider-reported");
+    expect(route.output.effective).toBe(32_000);
+    expect(route.inputModalities).toBeUndefined();
+    expect(route.toolCall).toBeUndefined();
+  });
+
+  it.each(["case-model", "CASE-MODEL"])("does not borrow missing metadata from a case-distinct model: %s", (model) => {
+    const settings = routeSettings({ reported: {} });
+    settings.vendors["openai-compatible"].model = model;
+    const cached = Object.values(settings.modelListCache)[0]!;
+    cached.models = ["Case-Model", "case-model"];
+    cached.modelEntries = [{ id: "Case-Model", contextLength: 131_072, maxOutputTokens: 8_192, inputModalities: ["image"], supportedParameters: ["tools"] }];
+    const route = resolveContextWindowForRoute(settings);
+    expect(route.source).not.toBe("provider-reported");
+    expect(route.output.effective).toBe(32_000);
+    expect(route.inputModalities).toBeUndefined();
+    expect(route.toolCall).toBeUndefined();
+  });
+
   it("names the same cache coordinates a refresh has to write back to", () => {
     // A refresher that keys the row differently writes an answer the reader
     // never finds, so the probe repeats forever.
@@ -332,6 +384,20 @@ describe("resolveContextWindowForRoute — one answer for the engine and the rin
     const reported = routeSettings({ reported: { contextLength: 229_376 } });
     reported.vendors["openai-compatible"].catalogModel = "openai/gpt-4.1";
     expect(resolveContextWindowForRoute(reported)).toMatchObject({ contextWindow: 229_376, source: "provider-reported" });
+  });
+
+  it("carries the route's output: the host default, clamped by what the endpoint reported", () => {
+    expect(resolveContextWindowForRoute(routeSettings({ reported: { maxOutputTokens: 4_096 } })).output).toEqual({
+      requested: 32_000,
+      requestedSource: "host-default",
+      ceiling: 4_096,
+      ceilingSource: "provider-reported",
+      effective: 4_096,
+      effectiveSource: "provider-reported",
+    });
+    const explicit = routeSettings();
+    explicit.vendors["openai-compatible"].outputTokenLimit = 12_000;
+    expect(resolveContextWindowForRoute(explicit).output).toMatchObject({ effective: 12_000, effectiveSource: "user" });
   });
 
   it("does not put the block's named entry on a marketplace preset's own model", () => {
@@ -440,6 +506,57 @@ describe("windows the bundled catalog corrects", () => {
   });
 });
 
+describe("resolveOutputTokenLimit — the output a request carries", () => {
+  const user = { value: 64_000, source: "user" as const };
+  const hostDefault = { value: 32_000, source: "host-default" as const };
+
+  it("clamps the request to the catalog's ceiling and names the ceiling as the source", () => {
+    // gpt-4o lists 16,384 output tokens. Before, every route sent 32,000.
+    expect(resolveOutputTokenLimit({ vendor: "openai", model: "gpt-4o", requested: hostDefault })).toEqual({
+      requested: 32_000,
+      requestedSource: "host-default",
+      ceiling: 16_384,
+      ceilingSource: "model-catalog",
+      effective: 16_384,
+      effectiveSource: "model-catalog",
+    });
+  });
+
+  it("keeps a request under the ceiling, with the requester as the source", () => {
+    expect(resolveOutputTokenLimit({ vendor: "openai", model: "gpt-5.4", requested: user })).toMatchObject({
+      ceiling: 128_000,
+      effective: 64_000,
+      effectiveSource: "user",
+    });
+  });
+
+  it("takes the ceiling the endpoint reported over the catalog's", () => {
+    // The observed /models ceiling was carried and never applied before.
+    expect(resolveOutputTokenLimit({ vendor: "openai", model: "gpt-5.4", requested: user, reported: 8_192 })).toMatchObject({
+      ceiling: 8_192,
+      ceilingSource: "provider-reported",
+      effective: 8_192,
+      effectiveSource: "provider-reported",
+    });
+  });
+
+  it("clamps nothing when no ceiling is known", () => {
+    expect(resolveOutputTokenLimit({ vendor: "openai-compatible", model: "a-served-model", requested: user })).toEqual({
+      requested: 64_000,
+      requestedSource: "user",
+      effective: 64_000,
+      effectiveSource: "user",
+    });
+    expect(resolveOutputTokenLimit({ vendor: "openai-compatible", model: "a-served-model", requested: user, reported: 0 }).effective).toBe(64_000);
+  });
+
+  it("reads the named catalog entry's ceiling for a self-hosted route", () => {
+    expect(
+      resolveOutputTokenLimit({ vendor: "openai-compatible", model: "a-served-model", requested: user, catalogModel: "openai/gpt-4o" }),
+    ).toMatchObject({ effective: 16_384, effectiveSource: "model-catalog" });
+  });
+});
+
 /**
  * A prompt cap below the window bounds the budget. Before, the threshold came
  * from the window alone: GPT-5.2 (400K window, 272K prompt) compacted at
@@ -517,6 +634,135 @@ describe("the prompt cap beside the window", () => {
   });
 });
 
+describe("a route's input modalities and tool support", () => {
+  function apiRoute(provider: "openai" | "openai-compatible", model: string, block: {
+    catalogModel?: string;
+    reportedInput?: string[];
+    supportedParameters?: string[];
+    imageInput?: boolean;
+  } = {}) {
+    const vendors = freshAllVendorBlocks();
+    const fields = vendors[provider];
+    fields.model = model;
+    if (provider === "openai-compatible") fields.baseUrl = "https://models.invalid/v1";
+    if (block.catalogModel !== undefined) fields.catalogModel = block.catalogModel;
+    if (block.imageInput !== undefined) fields.imageInput = { [llmImageInputKey(model)]: block.imageInput };
+    const modelListCache: LlmModelListCache = {};
+    if (block.reportedInput !== undefined || block.supportedParameters !== undefined) {
+      modelListCache[llmModelListCacheKey(provider, fields.baseUrl, "")] = {
+        vendor: provider,
+        endpoint: "https://models.invalid/v1/models",
+        models: [model],
+        modelEntries: [{
+          id: model,
+          ...(block.reportedInput !== undefined ? { inputModalities: block.reportedInput } : {}),
+          ...(block.supportedParameters !== undefined ? { supportedParameters: block.supportedParameters } : {}),
+        }],
+        fetchedAt: new Date(0).toISOString(),
+      };
+    }
+    return { provider, vendors, modelListCache };
+  }
+
+  it("reads the catalog entry's input modalities", () => {
+    // GPT-4 (2023) is text only; the name rules had it taking images.
+    expect(resolveContextWindowForRoute(apiRoute("openai", "gpt-4")).inputModalities).toEqual({
+      input: ["text"],
+      source: "model-catalog",
+      catalogEntry: "openai/gpt-4",
+    });
+  });
+
+  it("takes what the endpoint reported over the catalog, and ignores an empty report", () => {
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "a-served-model", { reportedInput: ["text", "image"] })).inputModalities)
+      .toEqual({ input: ["text", "image"], source: "provider-reported" });
+    expect(resolveInputModalities({ vendor: "openai", model: "gpt-4", reported: [] })).toMatchObject({ source: "model-catalog" });
+    expect(resolveInputModalities({ vendor: "openai", model: "gpt-4", reported: ["Text", "IMAGE"] })?.input).toEqual(["text", "image"]);
+  });
+
+  it("reads the entry the user named for a self-hosted route, and nothing when it is not listed", () => {
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "a-served-model", { catalogModel: "openai/gpt-4o" })).inputModalities)
+      .toMatchObject({ input: expect.arrayContaining(["image"]), source: "model-catalog", catalogEntry: "openai/gpt-4o" });
+    // A named entry missing from the catalog answers nothing; the served id is not matched by name either.
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "gpt-4o", { catalogModel: "openai/not-a-listed-model" })))
+      .not.toHaveProperty("inputModalities");
+  });
+
+  it.each([
+    { catalogModel: "openai/gpt-4", reportedInput: ["text", "image"], input: ["text"] },
+    { catalogModel: "openai/gpt-4o", reportedInput: ["text"], input: ["text", "image", "pdf"] },
+  ])("keeps the user's named input modalities above endpoint reports: %j", ({ catalogModel, reportedInput, input }) => {
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "opaque-model", { catalogModel, reportedInput })).inputModalities)
+      .toEqual({ input, source: "model-catalog", catalogEntry: catalogModel });
+  });
+
+  it("keeps the user's named positive tool capability above endpoint reports", () => {
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "opaque-model", {
+      catalogModel: "openai/gpt-4o", supportedParameters: ["tools"],
+    })).toolCall).toEqual({ supported: true, source: "model-catalog", catalogEntry: "openai/gpt-4o" });
+  });
+
+  it.each([true, false])("uses a saved image declaration before every capability source: %s", (imageInput) => {
+    const route = apiRoute("openai-compatible", "opaque-model", {
+      imageInput, catalogModel: imageInput ? "openai/gpt-4" : "openai/gpt-4o",
+      reportedInput: imageInput ? ["text"] : ["text", "image"],
+    });
+    expect(resolveContextWindowForRoute(route).inputModalities).toMatchObject({ source: "vendor-setting" });
+    expect(resolveContextWindowForRoute(route).inputModalities?.input.includes("image")).toBe(imageInput);
+  });
+
+  it("keeps declarations on their model and preset route, with unknown models conservative by default", () => {
+    const route = apiRoute("openai-compatible", "opaque-model", { imageInput: true });
+    expect(resolveContextWindowForRoute(route).inputModalities?.input).toContain("image");
+    route.vendors["openai-compatible"].model = "other-model";
+    expect(resolveContextWindowForRoute(route).inputModalities).toBeUndefined();
+    route.vendors["openai-compatible"].presetModels = { "fixture-provider": "opaque-model" };
+    const presetRoute = { ...route, marketplaceProviderPresetId: "fixture-provider" };
+    expect(resolveContextWindowForRoute(presetRoute).inputModalities).toBeUndefined();
+    route.vendors["openai-compatible"].imageInput![llmImageInputKey("opaque-model", "fixture-provider")] = false;
+    expect(resolveContextWindowForRoute(presetRoute).inputModalities).toEqual({ input: [], source: "vendor-setting" });
+  });
+
+  it("declares image support without inventing other input modalities", () => {
+    expect(resolveInputModalities({ vendor: "openai-compatible", model: "opaque-model", imageInput: true }))
+      .toEqual({ input: ["image"], source: "vendor-setting" });
+    expect(resolveInputModalities({ vendor: "openai-compatible", model: "opaque-model", imageInput: false, reported: ["text", "audio", "image"] }))
+      .toEqual({ input: ["text", "audio"], source: "vendor-setting" });
+  });
+
+  it("carries the catalog's toolCall, and nothing where the catalog does not say", () => {
+    expect(resolveContextWindowForRoute(apiRoute("openai", "gpt-3.5-turbo")).toolCall).toEqual({
+      supported: false,
+      source: "model-catalog",
+      catalogEntry: "openai/gpt-3.5-turbo",
+    });
+    expect(resolveContextWindowForRoute(apiRoute("openai", "gpt-5.4")).toolCall).toMatchObject({ supported: true });
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "a-served-model"))).not.toHaveProperty("toolCall");
+  });
+
+  it("keeps tools when the endpoint explicitly supports them despite the catalog", () => {
+    expect(resolveContextWindowForRoute(apiRoute("openai", "gpt-3.5-turbo", {
+      supportedParameters: ["tools"],
+    })).toolCall).toEqual({ supported: true, source: "provider-reported" });
+  });
+
+  it("preserves the user's named no-tools entry above endpoint support", () => {
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "a-served-model", {
+      catalogModel: "openai/gpt-3.5-turbo",
+      supportedParameters: [" Tools "],
+    })).toolCall).toEqual({ supported: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" });
+  });
+
+  it.each([{ supportedParameters: [] }, { supportedParameters: ["reasoning"] }])("does not infer tool support from an incomplete parameter report %j", ({ supportedParameters }) => {
+    expect(resolveContextWindowForRoute(apiRoute("openai", "gpt-3.5-turbo", { supportedParameters })).toolCall)
+      .toMatchObject({ supported: false, source: "model-catalog" });
+    expect(resolveContextWindowForRoute(apiRoute("openai", "gpt-5.4", { supportedParameters })).toolCall)
+      .toMatchObject({ supported: true, source: "model-catalog" });
+    expect(resolveContextWindowForRoute(apiRoute("openai-compatible", "a-served-model", { supportedParameters })))
+      .not.toHaveProperty("toolCall");
+  });
+});
+
 describe("context limits behind a custom endpoint", () => {
   it.each([
     "us.api.openai.com", "eu.api.openai.com", "au.api.openai.com", "ca.api.openai.com",
@@ -543,8 +789,9 @@ describe("context limits behind a custom endpoint", () => {
         modelEntries: [{ id: "gemini-2.5-flash", contextLength: 64_000 }], fetchedAt: new Date(0).toISOString(),
       },
     };
-    expect(resolveContextWindowForRoute({ provider: "vertex-ai", vendors, modelListCache }))
-      .toMatchObject({ contextWindow: 1_048_576, source: "model-catalog" });
+    const route = resolveContextWindowForRoute({ provider: "vertex-ai", vendors, modelListCache });
+    expect(route).toMatchObject({ contextWindow: 1_048_576, source: "model-catalog" });
+    expect(route.baseUrl).toBeUndefined();
   });
 
   it("ignores generic endpoint reports under the default cache key for a location-managed SDK route", () => {
@@ -593,13 +840,31 @@ describe("context limits behind a custom endpoint", () => {
 
   it("does not infer catalog or pricing limits for an aliased id at another host", () => {
     expect(resolveContextWindowForRoute(gatewayRoute())).toEqual({
+      baseUrl: "https://gateway.invalid/v1",
       model: "gpt-5.2", contextWindow: 128_000, source: "fallback",
+      output: { requested: 32_000, requestedSource: "host-default", effective: 32_000, effectiveSource: "host-default" },
     });
   });
 
   it("uses the gateway's own report without a same-name public prompt cap", () => {
     expect(resolveContextWindowForRoute(gatewayRoute(512_000))).toEqual({
+      baseUrl: "https://gateway.invalid/v1",
       model: "gpt-5.2", contextWindow: 512_000, source: "provider-reported",
+      output: { requested: 32_000, requestedSource: "host-default", effective: 32_000, effectiveSource: "host-default" },
+    });
+  });
+
+  it("does not infer input or tool capabilities for an aliased id at another host", () => {
+    // gpt-3.5-turbo is a no-tools, text-only catalog entry; a gateway's alias of that
+    // name is not that model, so neither fact may be taken from it.
+    const route = gatewayRoute();
+    route.vendors.openai.model = "gpt-3.5-turbo";
+    const resolved = resolveContextWindowForRoute(route);
+    expect(resolved).not.toHaveProperty("toolCall");
+    expect(resolved).not.toHaveProperty("inputModalities");
+    route.vendors.openai.baseUrl = "https://api.openai.com/v1";
+    expect(resolveContextWindowForRoute(route).toolCall).toEqual({
+      supported: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo",
     });
   });
 
@@ -619,7 +884,13 @@ describe("context limits behind a custom endpoint", () => {
     });
     route.vendors.openai.contextWindow = 64_000;
     expect(resolveContextWindowForRoute(route)).toEqual({
+      baseUrl: "https://gateway.invalid/v1", catalogModel: "openai/gpt-5.2",
       model: "gpt-5.2", contextWindow: 64_000, source: "vendor-setting",
+      output: { requested: 32_000, requestedSource: "host-default", ceiling: 128_000, ceilingSource: "model-catalog",
+        effective: 32_000, effectiveSource: "host-default" },
+      // The named entry also states the model's inputs and tool support.
+      inputModalities: expect.objectContaining({ source: "model-catalog", catalogEntry: "openai/gpt-5.2" }),
+      toolCall: expect.objectContaining({ source: "model-catalog", catalogEntry: "openai/gpt-5.2" }),
     });
   });
 

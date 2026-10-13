@@ -416,7 +416,12 @@ export function isMarketplaceEligibleLLMVendor(
  * marketplace providers are not materialized until selected or installed.
  */
 export const DEFAULT_LLM_VENDOR: LLMVendor = "openai";
-/** Default total output ceiling for an API-backed chat request. */
+/**
+ * The host's default request for an API-backed chat round's output, used when
+ * the user set none. A host budget, not a model's maximum: the effective
+ * limit is this or the user's value, clamped to the model's output ceiling
+ * (`resolveOutputTokenLimitForRoute` in `context-budget.ts`).
+ */
 export const DEFAULT_LLM_OUTPUT_TOKEN_LIMIT = 32_000;
 
 const DEFAULT_THINKING_BUDGET_TOKENS = 8_000;
@@ -433,9 +438,30 @@ interface LlmThinkingBudgetRung {
 }
 
 function normalizeLlmOutputTokenLimit(value: unknown): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
-    ? value
-    : DEFAULT_LLM_OUTPUT_TOKEN_LIMIT;
+  return explicitLlmOutputTokenLimit(value) ?? DEFAULT_LLM_OUTPUT_TOKEN_LIMIT;
+}
+
+/** A stored output limit the user set: a positive safe integer, else none. */
+function explicitLlmOutputTokenLimit(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+/** Who chose a route's requested output limit. */
+export type LlmOutputTokenLimitSource = "user" | "host-default";
+
+/**
+ * The output limit a vendor block requests, and who chose it. The block
+ * carries `outputTokenLimit` only when the user set one; absence is the host
+ * default, reported as such rather than written into the block, so the
+ * default can change without every saved block holding the old number.
+ */
+export function requestedLlmOutputTokenLimit(
+  block: Pick<LLMVendorSettings, "outputTokenLimit">,
+): { value: number; source: LlmOutputTokenLimitSource } {
+  const explicit = explicitLlmOutputTokenLimit(block.outputTokenLimit);
+  return explicit === undefined
+    ? { value: DEFAULT_LLM_OUTPUT_TOKEN_LIMIT, source: "host-default" }
+    : { value: explicit, source: "user" };
 }
 
 /** User budget cap: the highest preset strictly below output, or output minus one. */
@@ -658,15 +684,24 @@ export function canUseLlmVendorWithoutApiKey(
 export interface LLMVendorSettings {
   model: string;
   /**
-   * Per-request total output ceiling for API-backed chat. The settings resolver
-   * supplies DEFAULT_LLM_OUTPUT_TOKEN_LIMIT when absent and preserves a valid
-   * explicit positive integer. This bounds a round's generation, including
-   * reasoning where the provider counts it as output; it is not a claim about
-   * the model's supported maximum. The adapter projects the ceiling into the
-   * native request. Smaller internal generation limits belong to their callers.
-   * Managed subscription runtimes retain their own output control contract.
+   * The user's per-request total output limit for API-backed chat. Present
+   * only when the user set it (a positive integer); absent means the host
+   * default, which {@link requestedLlmOutputTokenLimit} supplies and reports
+   * as `host-default`. This bounds a round's generation, including reasoning
+   * where the provider counts it as output; the effective limit is this,
+   * clamped to the model's output ceiling. Smaller internal generation limits
+   * belong to their callers. Managed subscription runtimes retain their own
+   * output control contract.
    */
   outputTokenLimit?: number;
+  /**
+   * Set beside `outputTokenLimit` when a user wrote it through this build's
+   * settings path. Builds before #2501 wrote the 32,000 default into every
+   * saved block and keep doing so after a downgrade; a 32,000 without this
+   * stamp is that default, not a choice, and is dropped on load
+   * (`src/data/settings-store.ts`).
+   */
+  outputTokenLimitSetByUser?: true;
   /**
    * The prompt capacity of the model this vendor route serves, declared by the
    * user. Unset by default, and it outranks every other answer: the pricing
@@ -693,6 +728,8 @@ export interface LLMVendorSettings {
    * edited in `settings.json`, like {@link contextWindow}.
    */
   catalogModel?: string;
+  /** Image support declared for a model on this provider or preset route. */
+  imageInput?: Partial<Record<string, boolean>>;
   baseUrl?: string;
   vertexProject?: string;
   vertexLocation?: string;
@@ -840,7 +877,6 @@ function defaultBlock(vendor: LLMVendor): LLMVendorSettings {
     ...(preset ? { baseUrl: preset.baseUrl } : {}),
     enableThinking: true,
     thinkingBudgetTokens: DEFAULT_THINKING_BUDGET_TOKENS,
-    outputTokenLimit: DEFAULT_LLM_OUTPUT_TOKEN_LIMIT,
   };
 }
 
@@ -898,6 +934,38 @@ function normalizeLlmCatalogModel(value: unknown): string | undefined {
   return trimmed;
 }
 
+/** A model declaration on one route must not configure another preset's model. */
+export function llmImageInputKey(model: string, presetId?: string): string {
+  return JSON.stringify([presetId?.trim() ?? "", model.trim()]);
+}
+
+function normalizeLlmImageInput(value: unknown): LLMVendorSettings["imageInput"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value).filter(([key, supported]) => {
+    if (typeof supported !== "boolean") return false;
+    try {
+      const scope: unknown = JSON.parse(key);
+      return Array.isArray(scope) && scope.length === 2
+        && scope.every((part) => typeof part === "string" && part.length <= MAX_PRESET_MODEL_ENTRY_LENGTH)
+        && scope[1].trim().length > 0 && key === llmImageInputKey(scope[1], scope[0]);
+    } catch {
+      return false;
+    }
+  });
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+export function llmRouteImageInput(
+  block: Pick<LLMVendorSettings, "imageInput">,
+  model: string,
+  presetId?: string,
+): boolean | undefined {
+  const key = llmImageInputKey(model, presetId);
+  const map = block.imageInput;
+  const value = map && Object.hasOwn(map, key) ? map[key] : undefined;
+  return typeof value === "boolean" ? value : undefined;
+}
+
 function normalizeLlmContextWindow(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) return undefined;
   return value;
@@ -917,9 +985,10 @@ export function getLlmVendorSettings(
   // A hand-edited `0`, fraction or negative would otherwise ride the `...stored`
   // spread all the way to the transport, which reads any non-positive value as
   // "no cap" — the setting would look applied and do nothing.
-  const outputTokenLimit = normalizeLlmOutputTokenLimit(stored?.outputTokenLimit);
+  const outputTokenLimit = explicitLlmOutputTokenLimit(stored?.outputTokenLimit);
   const contextWindow = normalizeLlmContextWindow(stored?.contextWindow);
   const catalogModel = normalizeLlmCatalogModel(stored?.catalogModel);
+  const imageInput = normalizeLlmImageInput(stored?.imageInput);
   const block: LLMVendorSettings = {
     ...defaults,
     ...stored,
@@ -932,11 +1001,16 @@ export function getLlmVendorSettings(
   };
   if (presetModels) block.presetModels = presetModels;
   else delete block.presetModels;
-  block.outputTokenLimit = outputTokenLimit;
+  if (outputTokenLimit !== undefined) block.outputTokenLimit = outputTokenLimit;
+  else delete block.outputTokenLimit;
+  if (outputTokenLimit !== undefined && stored?.outputTokenLimitSetByUser === true) block.outputTokenLimitSetByUser = true;
+  else delete block.outputTokenLimitSetByUser;
   if (contextWindow !== undefined) block.contextWindow = contextWindow;
   else delete block.contextWindow;
   if (catalogModel !== undefined) block.catalogModel = catalogModel;
   else delete block.catalogModel;
+  if (imageInput !== undefined) block.imageInput = imageInput;
+  else delete block.imageInput;
   return block;
 }
 

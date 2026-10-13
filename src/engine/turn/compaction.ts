@@ -33,7 +33,9 @@ import {
   resolveContextWindowForRoute,
   resolveModelContextWindow,
   type ContextWindowSource,
-  type ResolvedContextWindow,
+  type ResolvedOutputTokenLimit,
+  type RouteContextWindow,
+  type RouteModelCapabilities,
   type LlmRouteProviderPreset,
   type LlmRouteSettings,
 } from "../../shared/context-budget.js";
@@ -53,7 +55,9 @@ const SUBSCRIPTION_FALLBACK_USABLE_CONTEXT = getUsableContext(
   SUBSCRIPTION_FALLBACK_CONTEXT_WINDOW,
 );
 
-interface RuntimeContextBudget extends Pick<ResolvedContextWindow, "catalogEntry" | "inputLimit" | "inputLimitSource"> {
+interface RuntimeContextBudget
+  extends RouteModelCapabilities,
+    Pick<RouteContextWindow, "catalogEntry" | "inputLimit" | "inputLimitSource" | "baseUrl" | "catalogModel"> {
   readonly model: string;
   readonly preflight: number;
   readonly usableContext: number;
@@ -65,12 +69,14 @@ interface RuntimeContextBudget extends Pick<ResolvedContextWindow, "catalogEntry
    * came from. `fallback` says the whole budget rests on a guess.
    */
   readonly contextWindowSource: ContextWindowSource | "subscription-fallback";
+  /** The resolved window itself, for an API route; observability only. */
+  readonly contextWindow?: number;
   /**
-   * The provider's own ceiling on a completion for this model, when it
-   * reported one. Carried so an output cap has a number to read; the budget
-   * math here does not use it.
+   * The output limit a chat request on this API route carries — requested,
+   * the model's ceiling, and the smaller of the two. Absent for subscription
+   * runtimes, whose protocol owns output control.
    */
-  readonly maxOutputTokens?: number;
+  readonly output?: ResolvedOutputTokenLimit;
 }
 
 /**
@@ -248,15 +254,22 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
   }
   return {
     model,
+    ...(route.baseUrl !== undefined ? { baseUrl: route.baseUrl } : {}),
+    ...(route.catalogModel !== undefined ? { catalogModel: route.catalogModel } : {}),
     preflight: getModelPreflightThreshold(provider, model, route.contextWindow, route.inputLimit),
     usableContext: getModelUsableContext(provider, model, route.contextWindow, route.inputLimit),
     identity,
     thresholdSource: getModelPreflightThresholdSource(provider, model, route.contextWindow, route.inputLimit),
+    ...(route.inputLimit !== undefined ? { inputLimit: route.inputLimit } : {}),
     ...(route.inputLimitSource !== undefined ? { inputLimitSource: route.inputLimitSource } : {}),
     ...(route.inputLimit !== undefined ? { inputLimit: route.inputLimit } : {}),
     ...(route.catalogEntry !== undefined ? { catalogEntry: route.catalogEntry } : {}),
     contextWindowSource: route.source,
-    ...(route.maxOutputTokens !== undefined ? { maxOutputTokens: route.maxOutputTokens } : {}),
+    contextWindow: route.contextWindow,
+    ...(route.catalogEntry !== undefined ? { catalogEntry: route.catalogEntry } : {}),
+    output: route.output,
+    ...(route.inputModalities !== undefined ? { inputModalities: route.inputModalities } : {}),
+    ...(route.toolCall !== undefined ? { toolCall: route.toolCall } : {}),
   };
 }
 

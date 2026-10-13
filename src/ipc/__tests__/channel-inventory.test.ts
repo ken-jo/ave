@@ -545,6 +545,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:ui:native-context-menu",
         "ave:usage:daily-summary",
         "ave:usage:export-csv",
+        "ave:usage:pricing-overrides",
         "ave:usage:range",
         "ave:usage:summary",
         "ave:window:open-html-preview",

@@ -6,6 +6,16 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "be_streamCollector.imageInputUnsupported": "대화에 포함된 이미지를 선택한 모델로 보낼 수 없습니다. 이미지를 받는 모델로 바꾸거나, 이미지가 없는 새 대화를 시작해 주세요.",
+  "llmTab.modelNoToolsBadge": "도구 미지원",
+  "llmTab.modelNoToolsHelp": "이 모델에는 도구를 보내지 않습니다",
+  "llmTab.imageInput": "이미지 입력",
+  "llmTab.imageInputAutomatic": "자동",
+  "llmTab.imageInputSupported": "지원",
+  "llmTab.imageInputUnsupported": "미지원",
+  "llmTab.imageInputHelp": "이 제공자의 {model} 모델에 대한 이미지 지원을 지정합니다. 자동은 보고된 기능 또는 카탈로그를 사용하고, 없으면 모델 이름으로 판단합니다.",
+  "llmTab.imageInputSaveFailed": "이미지 입력 설정을 저장하지 못했습니다. 다시 시도해 주세요.",
+  "llmTab.imageInputRecovery": "이 사용자 지정 모델이 이미지를 지원한다면 {settingsPath}에서 이미지 입력을 지원으로 설정해 주세요.",
   "pluginStudio.title": "플러그인 스튜디오",
   "pluginStudio.createTitle": "플러그인 만들기",
   "pluginStudio.create": "초안 만들기",

@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LLMProvider, StreamEvent, StreamTurnParams } from "../../llm/types.js";
-import { collectRoundStream } from "../stream-collector.js";
+import { collectActiveRuntimeRoundStream, collectRoundStream } from "../stream-collector.js";
+import { VercelUnifiedProvider } from "../../llm/vercel/adapter.js";
+import { getLocale, setLocale } from "../../../i18n/index.js";
+
+const initialLocale = getLocale();
+afterEach(() => setLocale(initialLocale));
 
 const LLM_SETTINGS = {
   streamSmoothing: "none" as const,
@@ -46,7 +51,44 @@ async function collect(events: readonly StreamEvent[]) {
   });
 }
 
+describe("image capability refusal", () => {
+  it.each([
+    ["en", "Error: Images in this conversation cannot be sent to the selected model. Switch to an image-capable model, or start a new conversation without images. If this custom model supports images, set Image input to Supported under Settings → Model → Image input."],
+    ["ko", "오류: 대화에 포함된 이미지를 선택한 모델로 보낼 수 없습니다. 이미지를 받는 모델로 바꾸거나, 이미지가 없는 새 대화를 시작해 주세요. 이 사용자 지정 모델이 이미지를 지원한다면 설정 → 모델 → 이미지 입력에서 이미지 입력을 지원으로 설정해 주세요."],
+  ] as const)("localizes retained-image recovery in %s", async (locale, userMessage) => {
+    setLocale(locale);
+    const fetchResponse = vi.fn<typeof fetch>();
+    const result = await collectRoundStream({
+      provider: new VercelUnifiedProvider("openai", "fixture-key", undefined, fetchResponse),
+      model: "gpt-4", systemPrompt: "Describe the image.", toolSchemas: [], llmSettings: LLM_SETTINGS,
+      messages: [
+        { role: "assistant", content: "", toolCalls: [{ id: "image-call", name: "view_image", input: {} }] },
+        { role: "tool_result", toolUseId: "image-call", toolName: "view_image", content: "Image loaded", image: { mimeType: "image/png", data: "QUJD" } },
+        { role: "user", content: "Describe it." },
+      ],
+    });
+    expect(fetchResponse).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ kind: "stream_error", classification: "model", userMessage });
+    expect(result).not.toHaveProperty("toolCalls");
+  });
+});
+
 describe("provider completion boundary", () => {
+  it.each(["started", "cancelled", "runtime-switched"] as const)(
+    "records dispatch only after the guards pass: %s", async (state) => {
+      const provider = new ScriptedProvider([{ type: "message_complete", stopReason: "end_turn" }]);
+      const controller = new AbortController();
+      if (state === "cancelled") controller.abort();
+      const onRequestStarted = vi.fn();
+      await collectActiveRuntimeRoundStream({ provider, model: "test-model", systemPrompt: "system", messages: [],
+        toolSchemas: [], llmSettings: LLM_SETTINGS, abortSignal: controller.signal, onRequestStarted },
+        state === "runtime-switched" ? { kind: "subscription", provider: "codex", model: "gpt-5.5-codex" } : undefined,
+        () => {});
+      expect(onRequestStarted).toHaveBeenCalledTimes(state === "started" ? 1 : 0);
+      expect(provider.lastParams === null).toBe(state !== "started");
+    },
+  );
+
   it.each<{ label: string; events: StreamEvent[] }>([
     { label: "empty stream", events: [] },
     { label: "partial text", events: [{ type: "text_delta", text: "partial-response" }] },

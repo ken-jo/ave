@@ -8,7 +8,8 @@
  *
  * Also exercises:
  *   - Reasoning-effort mapping (4 cases).
- *   - Custom-baseUrl tool-turn reasoning_effort drop guard (Chat Completions 400 fix).
+ *   - Responses API tool turns keep reasoning_effort (the Chat Completions
+ *     tool-turn guard is pinned in catalog-request-fields.test.ts).
  *   - OpenAI gpt-5.x → /v1/responses routing (Responses API).
  */
 import { describe, it, expect, vi } from "vitest";
@@ -18,7 +19,7 @@ import {
   mapReasoningEffort,
   isOpenAIReasoningModel,
   supportsReasoningEffortNone,
-} from "../adapter.js";
+} from "../../reasoning-plan.js";
 import { MAX_BACKGROUND_OUTPUT_TOKEN_LIMIT } from "../../output-token-limit.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../../../../tools/registry.js";
 import { unusedNetworkFetch } from "../../../../__tests__/support/network-fetch-stubs.js";
@@ -109,9 +110,18 @@ describe("VercelUnifiedProvider — reasoning_effort 'none' clamp (#1574)", () =
   };
 
   it("clamps a tiny budget from 'none' to 'low' for models without the capability", async () => {
-    // budget 100 → mapReasoningEffort "none"; gpt-5-mini can't take it → "low"
-    const openai = await captureProviderOptions("gpt-5-mini", 100);
+    // budget 100 → mapReasoningEffort "none". The catalog does not list this
+    // id, so the name rule decides. It reads every id before GPT-5.2 as unable
+    // to take "none" → "low". (The catalog's own gpt-5.1 row does list "none".)
+    const openai = await captureProviderOptions("gpt-5.1-unlisted-fixture", 100);
     expect(openai?.reasoningEffort).toBe("low");
+  });
+
+  it("sends the lowest level a listed model accepts when it cannot take 'none'", async () => {
+    // The catalog lists gpt-5-mini's levels without "none"; the nearest
+    // accepted level is its lowest one.
+    const openai = await captureProviderOptions("gpt-5-mini", 100);
+    expect(openai?.reasoningEffort).toBe("minimal");
   });
 
   it("keeps 'none' for GPT-5.2+ which supports it", async () => {
@@ -1176,8 +1186,8 @@ describe("VercelUnifiedProvider openai-compatible", () => {
   });
 });
 
-describe("VercelUnifiedProvider openai — custom baseUrl proxy guard", () => {
-  it("drops reasoning_effort on tool turns for gpt-5.x when custom baseUrl is set", async () => {
+describe("custom endpoint request protocol", () => {
+  it("retains effort with tools on the responses wire at a custom endpoint", async () => {
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
       stream: (async function* () {
@@ -1231,8 +1241,8 @@ describe("VercelUnifiedProvider openai — custom baseUrl proxy guard", () => {
     );
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
-    // Custom baseUrl proxy may not support Responses API — treat as Chat-only.
-    expect(callArg.providerOptions).toBeUndefined();
+    expect(callArg.model).toMatchObject({ __mock: "responses" });
+    expect(callArg.providerOptions).toMatchObject({ openai: { reasoningEffort: "high", reasoningSummary: "detailed" } });
 
     vi.doUnmock("ai");
     vi.doUnmock("@ai-sdk/openai");

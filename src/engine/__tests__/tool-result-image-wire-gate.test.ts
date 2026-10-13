@@ -1,5 +1,5 @@
 /**
- * Tool-result images must reach the model on every API-key route. Native
+ * Tool-result images reach the model on image-capable API-key routes. Native
  * multimodal tool-output routes keep the image in the tool result; Chat
  * Completions routes append a host-origin user image after that result group.
  */
@@ -149,7 +149,7 @@ describe("tool_result image wire gate — actual request and estimates", () => {
     );
 
     for await (const _event of provider.streamTurn({
-      model: "vision-model",
+      model: "gpt-5.4-mini",
       systemPrompt: "",
       messages: [
         { role: "assistant", content: "", toolCalls: [{ id: "call-1", name: "view_image", input: {} }] },
@@ -162,6 +162,7 @@ describe("tool_result image wire gate — actual request and estimates", () => {
     expect(customFetch).toHaveBeenCalledTimes(1);
     const init = customFetch.mock.calls[0]?.[1] as RequestInit;
     const body = JSON.parse(String(init.body)) as { messages: Array<Record<string, unknown>> };
+    expect(body).toHaveProperty("model", "gpt-5.4-mini");
     const toolIndex = body.messages.findIndex((message) => message.role === "tool");
     const userIndex = body.messages.findIndex((message, index) => index > toolIndex && message.role === "user");
     expect(toolIndex).toBeGreaterThanOrEqual(0);
