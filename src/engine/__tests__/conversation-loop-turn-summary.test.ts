@@ -430,6 +430,8 @@ describe("ConversationLoop onTurnSummary", () => {
       expect(request.modelCapabilities).toEqual({
         inputModalities: { input: ["text"], source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" },
         toolCall: { supported: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" },
+        // The same named entry states the model's reasoning.
+        reasoning: { supported: false, source: "model-catalog", catalogEntry: "openai/gpt-3.5-turbo" },
       });
       const toolCall = request.modelCapabilities?.toolCall;
       if (toolCall?.supported !== false) throw new Error("Expected tools to be withheld");

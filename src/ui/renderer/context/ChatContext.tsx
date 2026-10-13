@@ -81,7 +81,7 @@ export interface ChatContextValue {
 
   effectiveBudget: number;
   // Issue #900 #1 — per-request TPM hint. tpmLimit undefined for models
-  // without a registered tpmDefault (most models) → UI hides the indicator.
+  // without a host TPM default (most models) → UI hides the indicator.
   tpmLimit: number | undefined;
   tpmPct: number | undefined;
   isTpmOverflow: boolean;

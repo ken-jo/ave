@@ -1,17 +1,15 @@
 /**
- * Write the bundled model catalog, check the committed copy, download new
- * input, or compare the catalog with the hand-kept pricing table.
+ * Write the bundled model catalog, check the committed copy, or download new
+ * input.
  *
  *   node --import tsx scripts/generate-model-catalog.ts           write the snapshot from the committed input
  *   node --import tsx scripts/generate-model-catalog.ts --check   fail if the snapshot or the packaged license differs from what the input generates
  *   node --import tsx scripts/generate-model-catalog.ts --fetch   download models.dev, replace the input, write the snapshot
- *   node --import tsx scripts/generate-model-catalog.ts --report  print DEFAULT_PRICING against the snapshot, as Markdown
  *
  * The generator is `scripts/lib/model-catalog.ts`; this file is its command
  * line, and it runs unconditionally for the reason
- * `generate-plugin-host-protocol-schema.ts` gives. Every run except
- * `--report` prints exactly one outcome line; only `wrote …` and `… match their
- * input` exit 0.
+ * `generate-plugin-host-protocol-schema.ts` gives. Every run prints exactly
+ * one outcome line; only `wrote …` and `… match their input` exit 0.
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,7 +18,6 @@ import {
   fetchAndWriteModelCatalog,
   generateModelCatalog,
   modelCatalogDrift,
-  modelCatalogPricingReport,
   writeModelCatalog,
 } from "./lib/model-catalog.js";
 
@@ -34,16 +31,12 @@ function outcome({ path, document, diagnostics }: ReturnType<typeof generateMode
   return `wrote ${path} (${Object.keys(document.providers).length} providers, ${models} models, ${diagnostics.length} diagnostics, sha256 ${document.sha256})`;
 }
 
-async function run(args: readonly string[]): Promise<string | undefined> {
-  if (args.length > 1 || (args.length === 1 && !["--check", "--fetch", "--report"].includes(args[0] as string))) {
-    throw new Error(`unexpected arguments '${args.join(" ")}'; the options are --check, --fetch and --report`);
+async function run(args: readonly string[]): Promise<string> {
+  if (args.length > 1 || (args.length === 1 && !["--check", "--fetch"].includes(args[0] as string))) {
+    throw new Error(`unexpected arguments '${args.join(" ")}'; the options are --check and --fetch`);
   }
   const mode = args[0];
   if (mode === "--fetch") return outcome(await fetchAndWriteModelCatalog(ROOT));
-  if (mode === "--report") {
-    console.log(modelCatalogPricingReport(generateModelCatalog(ROOT).document));
-    return undefined;
-  }
   if (mode !== "--check") return outcome(writeModelCatalog(ROOT));
   const drift = modelCatalogDrift(ROOT);
   if (drift) throw new Error(`${drift}. Run \`bun run generate:model-catalog\` and commit the result.`);
@@ -51,8 +44,7 @@ async function run(args: readonly string[]): Promise<string | undefined> {
 }
 
 try {
-  const result = await run(process.argv.slice(2));
-  if (result) console.log(`${LABEL} ${result}`);
+  console.log(`${LABEL} ${await run(process.argv.slice(2))}`);
 } catch (error) {
   // One line, not a stack: this is a gate's verdict, read in a build log.
   const message = error instanceof Error ? error.message : String(error);

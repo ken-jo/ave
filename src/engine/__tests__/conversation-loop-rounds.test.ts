@@ -30,7 +30,7 @@ import { genericToModelMessages, fullStreamToStreamEvent } from "../llm/vercel/a
 import { t } from "../../i18n/index.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import { MAX_BACKGROUND_OUTPUT_TOKEN_LIMIT } from "../llm/output-token-limit.js";
-import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../shared/llm-vendor-defaults.js";
+import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../shared/model-host-policy.js";
 
 class FakeProvider implements LLMProvider {
   readonly vendor = "openai" as const;

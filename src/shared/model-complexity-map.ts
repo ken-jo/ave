@@ -105,9 +105,9 @@ const EXPLICIT_MODEL_COMPLEXITY_MAP: Partial<
     high: "gpt-5.4",
   }),
   "vertex-ai": Object.freeze({
-    low: "gemini-2.5-flash-lite",
-    mid: "gemini-2.5-flash",
-    high: "gemini-2.5-pro",
+    low: "gemini-3.1-flash-lite",
+    mid: "gemini-3.5-flash",
+    high: "gemini-3.1-pro-preview",
   }),
   // Custom OpenAI-compatible endpoints are endpoint-defined and handshake-only:
   // there is no static catalog to map tiers against (see

@@ -4,15 +4,18 @@ import {
   getUsableContext,
   getPreflightThreshold,
   llmRouteCatalogAddress,
-  MAX_CREDIBLE_CONTEXT_WINDOW,
   resolveContextWindowForRoute,
+  listingJudgesRetirement,
   resolveInputModalities,
   resolveModelContextWindow,
+  resolveModelRetirement,
   resolveOutputTokenLimit,
+  resolveReasoningSupport,
+  resolveRouteModelRetirement,
 } from "../context-budget.js";
-import { FALLBACK_PRICING } from "../pricing-data.js";
+import { FALLBACK_CONTEXT_WINDOW, MAX_CREDIBLE_CONTEXT_WINDOW } from "../model-host-policy.js";
 import { freshAllVendorBlocks, llmImageInputKey } from "../llm-vendor-defaults.js";
-import { llmModelListCacheKey, type LlmModelListCache } from "../llm-model-list.js";
+import { llmModelListCacheKey, type LlmModelListCache, type LlmModelListCacheEntry } from "../llm-model-list.js";
 import { activeModelCatalog, installModelCatalog } from "../model-catalog/active.js";
 import type { CatalogModel, ModelCatalogDocument } from "../model-catalog/types.js";
 
@@ -137,23 +140,21 @@ describe("resolveModelContextWindow — where the budget's denominator comes fro
     expect(resolved).toEqual({ contextWindow: 229_376, source: "provider-reported" });
   });
 
-  it("reads the pricing catalog when neither input is present", () => {
-    const resolved = resolveModelContextWindow({
-      vendor: "openai-compatible",
-      model: "Qwen3.6-35B-A3B-NVFP4",
-    });
-
-    expect(resolved).toEqual({ contextWindow: 262_144, source: "pricing-catalog" });
-  });
-
-  it("matches the catalog entry whatever case the served id is spelled in", () => {
-    const resolved = resolveModelContextWindow({
-      vendor: "openai-compatible",
-      model: "qwen3.6-35b-a3b-nvfp4",
-    });
-
-    expect(resolved).toEqual({ contextWindow: 262_144, source: "pricing-catalog" });
-  });
+  it.each(["Qwen3.6-35B-A3B-NVFP4", "Nemotron-3-Nano-30B-A3B-FP8"])(
+    "takes a self-hosted %s window from the endpoint's report or the user, never a built-in row",
+    (model) => {
+      // The hand-kept table seeded these two Ave deployments (262,144 and
+      // 131,072) until slice 7. A self-hosted vendor maps to no catalog
+      // provider by design: the endpoint reports its window, or the user
+      // declares it; otherwise the window is the host's guess, and says so.
+      expect(resolveModelContextWindow({ vendor: "openai-compatible", model }))
+        .toEqual({ contextWindow: FALLBACK_CONTEXT_WINDOW, source: "fallback" });
+      expect(resolveModelContextWindow({ vendor: "openai-compatible", model, reported: 262_144 }))
+        .toEqual({ contextWindow: 262_144, source: "provider-reported" });
+      expect(resolveModelContextWindow({ vendor: "openai-compatible", model, configured: 131_072 }))
+        .toEqual({ contextWindow: 131_072, source: "vendor-setting" });
+    },
+  );
 
   it("names the fallback as a fallback so a caller can report the guess", () => {
     const resolved = resolveModelContextWindow({
@@ -162,7 +163,7 @@ describe("resolveModelContextWindow — where the budget's denominator comes fro
     });
 
     expect(resolved).toEqual({
-      contextWindow: FALLBACK_PRICING.contextWindow,
+      contextWindow: FALLBACK_CONTEXT_WINDOW,
       source: "fallback",
     });
   });
@@ -218,7 +219,7 @@ describe("resolveModelContextWindow — where the budget's denominator comes fro
         model: "a-model-no-catalog-knows",
         reported: 0,
       }),
-    ).toEqual({ contextWindow: FALLBACK_PRICING.contextWindow, source: "fallback" });
+    ).toEqual({ contextWindow: FALLBACK_CONTEXT_WINDOW, source: "fallback" });
   });
 });
 
@@ -410,7 +411,7 @@ describe("resolveContextWindowForRoute — one answer for the engine and the rin
 
   it("moves to the next source when the route has no handshake for the model", () => {
     expect(resolveContextWindowForRoute(routeSettings())).toMatchObject({
-      contextWindow: FALLBACK_PRICING.contextWindow,
+      contextWindow: FALLBACK_CONTEXT_WINDOW,
       source: "fallback",
     });
   });
@@ -440,15 +441,15 @@ describe("the model catalog's place in the order", () => {
     expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1", configured: 400_000 }).source).toBe("vendor-setting");
   });
 
-  it("leaves a model the catalog does not know, or knows without a window, to the pricing table", () => {
+  it("leaves a model the catalog does not know, or knows without a window, to the host fallback", () => {
     useCatalog({ openai: [{ id: "gpt-4.1", limits: {} }] });
-    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1" })).toEqual({ contextWindow: 1_000_000, source: "pricing-catalog" });
-    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1-nano" })).toEqual({ contextWindow: 1_000_000, source: "pricing-catalog" });
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1" })).toEqual({ contextWindow: FALLBACK_CONTEXT_WINDOW, source: "fallback" });
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1-nano" })).toEqual({ contextWindow: FALLBACK_CONTEXT_WINDOW, source: "fallback" });
   });
 
   it("does not believe a catalog window past the credible ceiling", () => {
     useCatalog({ openai: [{ id: "gpt-4.1", limits: { context: MAX_CREDIBLE_CONTEXT_WINDOW + 1 } }] });
-    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1" }).source).toBe("pricing-catalog");
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1" }).source).toBe("fallback");
   });
 
   it("never matches a self-hosted endpoint by name, and uses the entry the user names for it", () => {
@@ -464,10 +465,10 @@ describe("the model catalog's place in the order", () => {
   it("does not fall back to a name match when the named entry is not in the catalog", () => {
     useCatalog({ anthropic: [{ id: "claude-sonnet-4-6", limits: { context: 600_000 } }] });
     expect(catalogModelFor("claude", "claude-sonnet-4-6", "anthropic/not-listed")).toBeUndefined();
-    expect(resolveModelContextWindow({ vendor: "claude", model: "claude-sonnet-4-6", catalogModel: "anthropic/not-listed" }).source).toBe("pricing-catalog");
+    expect(resolveModelContextWindow({ vendor: "claude", model: "claude-sonnet-4-6", catalogModel: "anthropic/not-listed" }).source).toBe("fallback");
   });
 
-  it("throws when nothing installed a catalog, instead of answering from the table", () => {
+  it("throws when nothing installed a catalog, instead of answering from the fallback", () => {
     const slot = (globalThis as Record<symbol, { source?: unknown; resolved?: unknown }>)[Symbol.for("ave.modelCatalog.active")]!;
     const saved = { ...slot };
     delete slot.source;
@@ -501,8 +502,29 @@ describe("windows the bundled catalog corrects", () => {
     expect(resolveModelContextWindow({ vendor: "claude", model: "claude-sonnet-4-6" })).toMatchObject({ contextWindow: 1_000_000, source: "model-catalog" });
   });
 
-  it("leaves dated ids the catalog has no entry for to the table", () => {
-    expect(resolveModelContextWindow({ vendor: "claude", model: "claude-sonnet-4-20250514" })).toEqual({ contextWindow: 200_000, source: "pricing-catalog" });
+  it.each([
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
+    "claude-3-sonnet-20240229",
+    "claude-3-haiku-20240307",
+  ])("leaves the retired id %s, which the catalog does not list, to the host fallback", (model) => {
+    // The hand-kept table answered 200,000 until slice 7. No alias joins these
+    // ids to a listed entry: the catalog's anthropic provider lists none
+    // documented to be the same model.
+    expect(resolveModelContextWindow({ vendor: "claude", model })).toEqual({ contextWindow: FALLBACK_CONTEXT_WINDOW, source: "fallback" });
+  });
+
+  it.each([
+    ["openai", "gpt-4.1-2025-04-14", "openai/gpt-4.1"],
+    ["openai", "o3-2025-04-16", "openai/o3"],
+    ["openai", "o4-mini-2025-04-24", "openai/o4-mini"],
+    ["claude", "claude-sonnet-4-6-20260217", "anthropic/claude-sonnet-4-6"],
+    ["openai", "gpt-5.4-2026-03-05", "openai/gpt-5.4"],
+  ] as const)("resolves the dated id %s %s to its listed model %s", (vendor, model, catalogEntry) => {
+    expect(resolveModelContextWindow({ vendor, model })).toMatchObject({ source: "model-catalog", catalogEntry });
   });
 });
 
@@ -891,6 +913,7 @@ describe("context limits behind a custom endpoint", () => {
       // The named entry also states the model's inputs and tool support.
       inputModalities: expect.objectContaining({ source: "model-catalog", catalogEntry: "openai/gpt-5.2" }),
       toolCall: expect.objectContaining({ source: "model-catalog", catalogEntry: "openai/gpt-5.2" }),
+      reasoning: expect.objectContaining({ supported: true, source: "model-catalog", catalogEntry: "openai/gpt-5.2" }),
     });
   });
 
@@ -911,5 +934,188 @@ describe("context limits behind a custom endpoint", () => {
     expect(resolveContextWindowForRoute(route)).toMatchObject({
       contextWindow: 400_000, source: "model-catalog", inputLimit: 272_000,
     });
+  });
+});
+
+describe("resolveModelRetirement — design §6.1", () => {
+  const listing = (models: string[], complete = true): LlmModelListCacheEntry => ({
+    vendor: "openai",
+    endpoint: "https://api.openai.com/v1/models",
+    models,
+    ...(complete ? { complete: true as const } : {}),
+    fetchedAt: "2026-10-13T00:00:00.000Z",
+  });
+
+  it("ranks the vendor's listing above the catalog: a deprecated model it dropped is retired", () => {
+    expect(resolveModelRetirement({ vendor: "openai", model: "o4-mini", listing: listing(["gpt-5.4"]) })).toBe("unlisted");
+    // Still listed: only the catalog's deprecated tier applies.
+    expect(resolveModelRetirement({ vendor: "openai", model: "o4-mini", listing: listing(["o4-mini"]) })).toBe("catalog-deprecated");
+  });
+
+  it("puts a model the active catalog marks deprecated in the deprecated tier where the route establishes it", () => {
+    expect(activeModelCatalog().providers.openai?.models["o4-mini"]?.status).toBe("deprecated");
+    expect(resolveModelRetirement({ vendor: "openai", model: "o4-mini" })).toBe("catalog-deprecated");
+    // A dated snapshot of a deprecated model resolves to it.
+    expect(resolveModelRetirement({ vendor: "openai", model: "o4-mini-2025-04-16" })).toBe("catalog-deprecated");
+  });
+
+  it("does not retire by catalog where the route does not establish the model", () => {
+    expect(resolveModelRetirement({ vendor: "azure-foundry", model: "o4-mini" })).toBeUndefined();
+    expect(resolveModelRetirement({ vendor: "openai", model: "o4-mini", baseUrl: "https://proxy.invalid/v1" })).toBeUndefined();
+    expect(resolveModelRetirement({ vendor: "openai-compatible", model: "o4-mini" })).toBeUndefined();
+  });
+
+  it("keeps a model the catalog lists without a deprecated status", () => {
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-4o" })).toBeUndefined();
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-5.4" })).toBeUndefined();
+  });
+
+  it("retires a model the vendor's own complete listing no longer names", () => {
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-4o", listing: listing(["gpt-5.4"]) })).toBe("unlisted");
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-4o", listing: listing(["GPT-4O"]) })).toBeUndefined();
+    expect(resolveModelRetirement({
+      vendor: "deepseek", model: "deepseek-v4-pro", listing: { ...listing(["deepseek-flash"]), vendor: "deepseek" },
+    })).toBe("unlisted");
+  });
+
+  it("judges only an id the catalog knows exactly: an unknown id may be served without being listed", () => {
+    const complete = listing(["gpt-5.4", "gpt-4o"]);
+    // An OpenAI fine-tune is the account's own model, not a public catalog id.
+    expect(resolveModelRetirement({ vendor: "openai", model: "ft:gpt-4o-mini:fixture-org::abc123", listing: complete }))
+      .toBeUndefined();
+    // A model newer than the snapshot, which the catalog does not know yet.
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-9-fixture", listing: complete })).toBeUndefined();
+    // A Volcengine Ark inference endpoint and a Fireworks account model.
+    expect(listingJudgesRetirement("doubao")).toBe(true);
+    expect(resolveModelRetirement({
+      vendor: "doubao", model: "ep-20260101000000-fixture", listing: { ...listing(["doubao-seed-fixture"]), vendor: "doubao" },
+    })).toBeUndefined();
+    expect(resolveModelRetirement({
+      vendor: "fireworks", model: "accounts/fixture-account/models/fixture-ft",
+      listing: { ...listing(["accounts/fireworks/models/fixture"]), vendor: "fireworks" },
+    })).toBeUndefined();
+    // A catalogued id the same complete listing omits is still retired.
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-4.1", listing: complete })).toBe("unlisted");
+  });
+
+  it("proves nothing from a partial, missing or non-native listing", () => {
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-4o", listing: listing(["gpt-5.4"], false) })).toBeUndefined();
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-4o" })).toBeUndefined();
+    for (const [vendor, baseUrl] of [
+      ["openai", "https://proxy.invalid/v1"],
+      ["azure-foundry", "https://synthetic.openai.azure.com/openai/v1"],
+      ["openai-compatible", "https://models.invalid/v1"],
+      ["ollama", "http://127.0.0.1:11434/v1"],
+      ["lmstudio", undefined],
+      ["openrouter", undefined],
+      ["requesty", undefined],
+      ["vercel-ai-gateway", undefined],
+      ["huggingface", undefined],
+      ["aihubmix", undefined],
+      ["kilo", undefined],
+      ["litellm", undefined],
+    ] as const) {
+      expect(listingJudgesRetirement(vendor, baseUrl), `${vendor} ${baseUrl}`).toBe(false);
+      expect(resolveModelRetirement({ vendor, model: "fixture-model", ...(baseUrl ? { baseUrl } : {}), listing: listing(["other"]) }))
+        .toBeUndefined();
+    }
+    expect(listingJudgesRetirement("openai")).toBe(true);
+    expect(listingJudgesRetirement("openai", "https://api.openai.com/v1")).toBe(true);
+    expect(listingJudgesRetirement("deepseek")).toBe(true);
+  });
+
+  it("proves nothing about a model the catalog dates after the listing was taken", () => {
+    // gpt-5.4 is catalogued as released 2026-03-05: a listing from before then
+    // is stale for it, not evidence that OpenAI stopped serving it.
+    const before = { ...listing(["gpt-4o"]), fetchedAt: "2026-03-04T23:00:00.000Z" };
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-5.4", listing: before })).toBeUndefined();
+    // A listing taken on the release day may predate the launch.
+    const sameDay = { ...listing(["gpt-4o"]), fetchedAt: "2026-03-05T20:00:00.000Z" };
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-5.4", listing: sameDay })).toBeUndefined();
+    // A listing whose time cannot be read is no fresher.
+    const undated = { ...listing(["gpt-4o"]), fetchedAt: "not-a-time" };
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-5.4", listing: undated })).toBeUndefined();
+    // Taken after the release, the same listing does prove it gone.
+    expect(resolveModelRetirement({ vendor: "openai", model: "gpt-5.4", listing: listing(["gpt-4o"]) })).toBe("unlisted");
+  });
+
+  it("reads a release date given only to the month as the whole month", () => {
+    // The catalog dates qwen-mt-plus only as 2025-01: a listing from inside
+    // January may predate the release, so it proves nothing.
+    expect(activeModelCatalog().providers["alibaba-cn"]?.models["qwen-mt-plus"]?.releaseDate).toBe("2025-01");
+    const qwen = (fetchedAt: string) => ({ ...listing(["qwen-plus"]), vendor: "qwen", fetchedAt });
+    expect(resolveModelRetirement({ vendor: "qwen", model: "qwen-mt-plus", listing: qwen("2025-01-20T00:00:00.000Z") }))
+      .toBeUndefined();
+    expect(resolveModelRetirement({ vendor: "qwen", model: "qwen-mt-plus", listing: qwen("2025-02-01T00:00:00.000Z") }))
+      .toBe("unlisted");
+  });
+
+  it("never judges Vertex AI from a listing: its SDK answers no standard /models", () => {
+    expect(listingJudgesRetirement("vertex-ai")).toBe(false);
+    expect(resolveModelRetirement({ vendor: "vertex-ai", model: "gemini-3.5-flash", listing: listing(["other"]) }))
+      .toBeUndefined();
+  });
+
+  it("judges the active route from the listing cached at its own address", () => {
+    const vendors = freshAllVendorBlocks();
+    vendors.openai = { ...vendors.openai, model: "gpt-4o" };
+    const key = llmModelListCacheKey("openai", undefined, undefined);
+    const llm = { provider: "openai" as const, vendors, modelListCache: { [key]: listing(["gpt-5.4"]) } };
+    expect(resolveRouteModelRetirement(llm)).toBe("unlisted");
+    expect(resolveRouteModelRetirement({ ...llm, modelListCache: {} })).toBeUndefined();
+  });
+});
+
+describe("resolveReasoningSupport — one answer for the chooser and the engine", () => {
+  it("reads the endpoint's report of a reasoning parameter, preferring the unified object", () => {
+    for (const [parameters, control] of [
+      [["tools", "reasoning", "include_reasoning"], "reasoning"],
+      [["reasoning_effort", "include_reasoning"], "reasoning_effort"],
+      [["include_reasoning"], "include_reasoning"],
+      [["Reasoning"], "reasoning"],
+    ] as const) {
+      expect(resolveReasoningSupport({ vendor: "openrouter", model: "lab/unlisted-reasoner", reported: { supportedParameters: parameters } }))
+        .toEqual({ supported: true, source: "endpoint-report", control });
+    }
+  });
+
+  it("reads a reasoning price as support with no parameter to send", () => {
+    expect(resolveReasoningSupport({
+      vendor: "openai-compatible", model: "served-model", reported: { pricing: { internalReasoning: "0.000002" } },
+    })).toEqual({ supported: true, source: "endpoint-report" });
+  });
+
+  it("is unknown when nobody states it, and a report without a reasoning parameter is not a denial", () => {
+    expect(resolveReasoningSupport({ vendor: "openai-compatible", model: "served-model" })).toBeUndefined();
+    expect(resolveReasoningSupport({ vendor: "openai-compatible", model: "served-model", reported: { supportedParameters: ["tools"] } }))
+      .toBeUndefined();
+  });
+
+  it("orders the user's named entry, then the report, then the catalog's identity", () => {
+    // The named entry decides even against a report.
+    expect(resolveReasoningSupport({
+      vendor: "openai", model: "alias", catalogModel: "openai/gpt-4.1", reported: { supportedParameters: ["reasoning_effort"] },
+    })).toMatchObject({ supported: false, source: "model-catalog", catalogEntry: "openai/gpt-4.1" });
+    // A report outranks the implicit catalog match.
+    expect(resolveReasoningSupport({ vendor: "openai", model: "gpt-4.1", reported: { supportedParameters: ["reasoning_effort"] } }))
+      .toMatchObject({ source: "endpoint-report", control: "reasoning_effort" });
+    // Without a report the catalog answers, with its levels.
+    expect(resolveReasoningSupport({ vendor: "openai", model: "gpt-5.4" }))
+      .toMatchObject({ supported: true, source: "model-catalog", catalogEntry: "openai/gpt-5.4", efforts: expect.arrayContaining(["high"]) });
+  });
+
+  it("puts the route's report on the resolved route", () => {
+    const vendors = freshAllVendorBlocks();
+    vendors.openrouter = { ...vendors.openrouter, model: "lab/unlisted-reasoner" };
+    const cache: LlmModelListCache = {
+      [llmModelListCacheKey("openrouter", vendors.openrouter.baseUrl)]: {
+        vendor: "openrouter", endpoint: "https://openrouter.ai/api/v1/models", models: ["lab/unlisted-reasoner"],
+        modelEntries: [{ id: "lab/unlisted-reasoner", supportedParameters: ["reasoning"], pricing: { prompt: "0.000001", completion: "0.000002" } }],
+        fetchedAt: "2026-10-13T00:00:00.000Z",
+      },
+    };
+    const route = resolveContextWindowForRoute({ provider: "openrouter", vendors, modelListCache: cache });
+    expect(route.reasoning).toEqual({ supported: true, source: "endpoint-report", control: "reasoning" });
+    expect(route.reportedPricing).toEqual({ prompt: "0.000001", completion: "0.000002" });
   });
 });

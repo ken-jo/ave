@@ -92,12 +92,14 @@ describe("image capability at the wire boundary", () => {
     expect(fixture.fetchResponse).toHaveBeenCalledOnce();
   });
 
-  it("keeps a resolved unknown route on the name rule without a second catalog match", async () => {
+  it("refuses images on a resolved route that states no modalities, without a second catalog match", async () => {
+    // The catalog lists gpt-4o with image input; matching it again here would
+    // let images through on a route whose resolution stated nothing.
     const fixture = wireFixture();
-    await collectStreamEvents(fixture.provider.streamTurn(request("gpt-4", {
+    await collectStreamEvents(fixture.provider.streamTurn(request("gpt-4o", {
       messages: IMAGE_MESSAGES, modelCapabilities: {},
     })));
-    expect(fixture.fetchResponse).toHaveBeenCalledOnce();
+    expect(fixture.fetchResponse).not.toHaveBeenCalled();
   });
 
   it("refuses retained tool-result images on a text-only route", async () => {

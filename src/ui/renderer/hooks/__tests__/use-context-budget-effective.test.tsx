@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { estimateOutgoingUserMessageTokens } from "../../../../shared/multimodal-token-estimate.js";
 import { useContextBudget } from "../use-context-budget.js";
-import { FALLBACK_PRICING } from "../../../../shared/pricing-data.js";
+import { FALLBACK_CONTEXT_WINDOW } from "../../../../shared/model-host-policy.js";
 import { getUsableContext, resolveContextWindowForRoute } from "../../../../shared/context-budget.js";
 import { freshAllVendorBlocks } from "../../../../shared/llm-vendor-defaults.js";
 
@@ -108,7 +108,7 @@ describe("useContextBudget — effectiveBudget (Issue #912)", () => {
     expect(result.current.usedTokens).toBe(42_000 + draftTokenEstimate);
   });
   it("uses tpmLimit when smaller than contextBudget (nano)", () => {
-    // gpt-5.4-nano: contextWindow=400K, tpmDefault=200K → effectiveBudget=200K
+    // gpt-5.4-nano: contextWindow=400K, host TPM default=200K → effectiveBudget=200K
     const { result } = renderHook(() =>
       useContextBudget({ entries: [], contextWindow: 400_000, llmVendor: "openai", llmModel: "gpt-5.4-nano" }),
     );
@@ -118,7 +118,7 @@ describe("useContextBudget — effectiveBudget (Issue #912)", () => {
   });
 
   it("falls back to contextBudget when tpmLimit unset (most models)", () => {
-    // claude-sonnet-4-6: no tpmDefault → effectiveBudget == contextBudget
+    // claude-sonnet-4-6: no host TPM default → effectiveBudget == contextBudget
     const { result } = renderHook(() =>
       useContextBudget({ entries: [], contextWindow: 1_000_000, llmVendor: "claude", llmModel: "claude-sonnet-4-6" }),
     );
@@ -130,7 +130,7 @@ describe("useContextBudget — effectiveBudget (Issue #912)", () => {
     const { result } = renderHook(() =>
       useContextBudget({ entries: [], contextWindow: 400_000, llmVendor: "azure-foundry", llmModel: "gpt-5.4-mini" }),
     );
-    // gpt-5.4-mini now carries tpmDefault=200K (org Tier-1, empirically grounded
+    // gpt-5.4-mini now carries a host TPM default of 200K (org Tier-1, empirically grounded
     // by the indexer-turn 429); azure-foundry deployment ids inherit the full
     // OpenAI spec incl. tpm → effectiveBudget = min(contextBudget, tpmLimit).
     expect(result.current.tpmLimit).toBe(200_000);
@@ -139,13 +139,13 @@ describe("useContextBudget — effectiveBudget (Issue #912)", () => {
   });
 
   it("keeps contextBudget when tpmLimit happens to exceed it (defensive)", () => {
-    // Synthetic scenario via unknown model: lookupPricing falls back to a
-    // baseline contextWindow. Even if a future model registers tpmDefault
-    // larger than its window, the ring stays bounded by the smaller value.
+    // Synthetic scenario via unknown model at the host's fallback window. Even
+    // if a future model's host TPM default exceeded its window, the ring stays
+    // bounded by the smaller value.
     const { result } = renderHook(() =>
-      useContextBudget({ entries: [], contextWindow: FALLBACK_PRICING.contextWindow, llmVendor: "openai", llmModel: "nonexistent-model" }),
+      useContextBudget({ entries: [], contextWindow: FALLBACK_CONTEXT_WINDOW, llmVendor: "openai", llmModel: "nonexistent-model" }),
     );
-    // unknown model has no tpmDefault — fall through to contextBudget.
+    // unknown model has no host TPM default — fall through to contextBudget.
     expect(result.current.effectiveBudget).toBe(result.current.contextBudget);
   });
 
@@ -174,7 +174,7 @@ describe("useContextBudget — effectiveBudget (Issue #912)", () => {
 
     expect(result.current.contextBudget).toBe(getUsableContext(229_376));
     // And a renderer-side pricing lookup would have said otherwise.
-    expect(getUsableContext(FALLBACK_PRICING.contextWindow))
+    expect(getUsableContext(FALLBACK_CONTEXT_WINDOW))
       .not.toBe(result.current.contextBudget);
   });
 

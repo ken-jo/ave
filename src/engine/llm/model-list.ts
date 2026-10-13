@@ -30,7 +30,7 @@ import {
 } from "./marketplace-provider-fetch.js";
 import { secretKeyFor } from "./provider-factory.js";
 import { errorMessageWithCauseCode } from "../../shared/error-message.js";
-import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
+import { llmModelListCacheKey, MAX_CACHED_LLM_MODEL_IDS } from "../../shared/llm-model-list.js";
 import type { LlmRouteCatalogAddress } from "../../shared/context-budget.js";
 import { createLogger } from "../../lib/logger.js";
 
@@ -510,6 +510,23 @@ function modelEntryFromRow(row: unknown): LlmModelListEntry | null {
   return entry;
 }
 
+/**
+ * Whether a `/models` payload is the endpoint's whole list. A paginated answer
+ * says so — Anthropic's `has_more`, `next_page_token` or Google's
+ * `nextPageToken` — and a page cannot prove a model gone. Neither can a list
+ * the cache would truncate.
+ */
+export function modelListPayloadIsComplete(payload: unknown, modelCount: number): boolean {
+  if (modelCount >= MAX_CACHED_LLM_MODEL_IDS) return false;
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return true;
+  const record = payload as Record<string, unknown>;
+  if (record.has_more === true) return false;
+  return !["next_page_token", "nextPageToken"].some((key) => {
+    const token = record[key];
+    return typeof token === "string" ? token.trim() !== "" : token !== undefined && token !== null;
+  });
+}
+
 export function parseStandardModelListEntries(payload: unknown): LlmModelListEntry[] {
   const rows = modelListRows(payload);
 
@@ -735,6 +752,7 @@ export async function listLlmModelsFromSettings(
       endpoint: requestEndpoint,
       models: modelEntries.map((entry) => entry.id),
       modelEntries,
+      ...(modelListPayloadIsComplete(payload, modelEntries.length) ? { complete: true as const } : {}),
       fetchedAt: new Date().toISOString(),
     };
   } catch (err) {
@@ -858,6 +876,7 @@ export async function refreshRouteModelList(params: {
           endpoint: result.endpoint,
           models: result.models,
           ...(result.modelEntries ? { modelEntries: result.modelEntries } : {}),
+          ...(result.complete ? { complete: true } : {}),
           fetchedAt: result.fetchedAt,
         },
       },

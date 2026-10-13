@@ -2,7 +2,7 @@
  * LLM pricing — the engine's door to the shared price resolution.
  *
  * The rates come from `shared/model-pricing.ts` (user correction, then the
- * model catalog, then the hand-kept table, else unknown), browser-safe so the
+ * model catalog, else unknown), browser-safe so the
  * renderer prices with the same function. The corrections come from Settings
  * (`llm.pricingOverrides`) or, for a deployment that already sets it,
  * `AVE_PRICING_OVERRIDE` — both resolved and merged by

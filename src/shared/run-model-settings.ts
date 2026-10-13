@@ -31,11 +31,13 @@ export interface RunModelSettings {
   readonly requestControls?: RequestGenerationControls;
   /** The reasoning control sent, when thinking was on and the route has one. */
   readonly reasoning?: {
-    readonly kind: "openai-effort" | "anthropic-adaptive" | "anthropic-numeric" | "none";
+    readonly kind: "openai-effort" | "anthropic-adaptive" | "anthropic-numeric" | "endpoint-reasoning" | "none";
+    /** The parameter an `endpoint-reasoning` request carried, as the endpoint's report named it. */
+    readonly control?: "reasoning" | "reasoning_effort" | "include_reasoning";
     readonly requestedEffort?: string;
     readonly effort?: string;
     readonly budgetTokens?: number;
-    readonly source: "model-catalog" | "name-rule";
+    readonly source: "model-catalog" | "endpoint-report" | "request-shape" | "host-fallback";
     readonly suppressed?: "chat-completions-tool-turn";
   };
   /**
@@ -51,8 +53,9 @@ export interface RunModelSettings {
   };
   /**
    * The rates the turn's requests are priced at and who stated them (a user
-   * correction, the catalog entry, the hand-kept table), or `unknown`. A past
-   * turn's cost can be read back at the rates it ran under.
+   * correction or the catalog entry), or `unknown`. A past turn's cost can be
+   * read back at the rates it ran under; a record from a build before slice 7
+   * may name the retired hand-kept table (`RecordedModelPricing`).
    */
   readonly pricing: ResolvedModelPricing;
   /**

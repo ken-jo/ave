@@ -203,6 +203,15 @@ describe("useCostEstimate — prices through the catalog, with provenance", () =
     expect(corrected).toMatchObject({ pricingSource: "user", inputCost: 1, outputCost: 2 });
   });
 
+  it("prices from the route's own price report where the catalog cannot", () => {
+    const { result } = renderHook(() => useCostEstimate({
+      entries: atPrompt(1_000_000), draft: { text: "" }, llmVendor: "openrouter", llmModel: "lab/unlisted-reasoner", maxOutputTokens: 1_000_000,
+      pricingRoute: { reported: { prompt: "0.000001", completion: "0.000002" } },
+    }));
+    expect(result.current.costEstimate).toMatchObject({ pricingKnown: true, pricingSource: "endpoint-report" });
+    expect(result.current.costEstimate.outputCost).toBeCloseTo(2, 9);
+  });
+
   it("says the catalog listed a zero instead of showing $0", () => {
     const listedZero = estimateFor("zai", "glm-4.7-flash", atPrompt(1_000), 1_000);
     expect(listedZero).toMatchObject({ pricingKnown: false, catalogListsZero: "zai/glm-4.7-flash" });

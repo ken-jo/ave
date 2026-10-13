@@ -16,6 +16,36 @@ describe("modelCardChoices", () => {
     ]);
   });
 
+  it("does not offer a retired or deprecated model, saved or pinned (design §6.1)", () => {
+    // o4-mini: deprecated in the bundled catalog. The deprecated tier sets no
+    // marker, and the saved model is still hidden from the card.
+    const deprecated = modelCardChoices(llm({
+      vendors: { openai: { model: "o4-mini" } } as never,
+      pinnedModels: ["o4-mini", "gpt-5.4"],
+    }));
+    expect(deprecated.map((c) => [c.modelId, c.current])).toEqual([["gpt-5.4", false]]);
+    // The retired tier: the load's marker names a model the listing dropped.
+    const marked = modelCardChoices(llm({
+      retiredProvider: { vendor: "openai", model: "gpt-4o", reason: "unlisted" },
+      vendors: { openai: { model: "gpt-4o" } } as never,
+      pinnedModels: ["gpt-4o", "gpt-5.4"],
+    }));
+    expect(marked.map((c) => [c.modelId, c.current])).toEqual([["gpt-5.4", false]]);
+    const listed = modelCardChoices(llm({
+      pinnedModels: ["gpt-5.4-mini", "gpt-5.4"],
+      modelListCache: {
+        "openai\n\n": {
+          vendor: "openai",
+          endpoint: "https://api.openai.com/v1/models",
+          models: ["gpt-5.4"],
+          complete: true,
+          fetchedAt: "2026-10-13T00:00:00.000Z",
+        },
+      },
+    }));
+    expect(listed.map((c) => c.modelId)).toEqual(["gpt-5.4"]);
+  });
+
   it("keeps pinned order and drops a pin nothing offers", () => {
     const choices = modelCardChoices(llm({
       pinnedModels: ["nowhere", "gpt-5.4-mini", "gpt-5.4"],

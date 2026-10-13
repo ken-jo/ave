@@ -16,8 +16,8 @@ const OUTPUT_LIMIT_SOURCE_KEYS = {
 /** Who stated the rates the estimate uses, as the tooltip names it. */
 const PRICE_SOURCE_KEYS = {
   user: "chatView.costPriceSourceUser",
+  "endpoint-report": "chatView.costPriceSourceEndpointReport",
   "model-catalog": "chatView.costPriceSourceModelCatalog",
-  "pricing-catalog": "chatView.costPriceSourcePricingCatalog",
 } as const satisfies Record<NonNullable<EstimateBreakdown["pricingSource"]>, string>;
 
 interface TokenProgressRingProps {

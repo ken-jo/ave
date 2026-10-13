@@ -43,6 +43,21 @@ describe("supportsVision", () => {
   it("empty model name returns false", () => {
     expect(supportsVision("claude", "")).toBe(false);
   });
+
+  it("refuses images where nobody states the modalities, whatever the name", () => {
+    // Before slice 7 a name rule let these through: an Azure deployment name
+    // does not establish the model, nor does a custom endpoint, and the dated
+    // Claude 3 id is not in the catalog.
+    expect(supportsVision("azure-foundry", "gpt-4.1")).toBe(false);
+    expect(supportsVision("azure-foundry", "gpt-3.5-turbo")).toBe(false);
+    expect(supportsVision("claude", "claude-3-5-sonnet-20241022")).toBe(false);
+    expect(supportsVision("openrouter", "qwen-vl-max-fixture")).toBe(false);
+    expect(supportsVision("openai-compatible", "llama-4-scout-fixture")).toBe(false);
+  });
+
+  it("takes images where the user declares them for a model nobody describes", () => {
+    expect(supportsVision("azure-foundry", "gpt-4.1", { inputModalities: { input: ["image"], source: "vendor-setting" } })).toBe(true);
+  });
 });
 
 describe("supportsVision — the model's stated input modalities decide", () => {
@@ -61,13 +76,12 @@ describe("supportsVision — the model's stated input modalities decide", () => 
     expect(supportsVision(vendor, model)).toBe(expected);
   });
 
-  it("follows the route's modalities, and the name rule when the route states none", () => {
-    // The route said text only for a name the rules would let through.
+  it("follows the route's modalities, and refuses when the route states none", () => {
     expect(supportsVision("openai", "gpt-4o", { inputModalities: { input: ["text"], source: "provider-reported" } })).toBe(false);
     expect(supportsVision("openai-compatible", "a-served-model", { inputModalities: { input: ["text", "image"], source: "provider-reported" } })).toBe(true);
-    // A route with nothing stated is not re-resolved by name: the name rule decides
-    // (the catalog lists gpt-4 as text only, the rule says images).
-    expect(supportsVision("openai", "gpt-4", {})).toBe(true);
+    // A route with nothing stated is not re-resolved by name, and nothing is assumed:
+    // gpt-4o takes images by the catalog, but this route stated nothing for it.
+    expect(supportsVision("openai", "gpt-4o", {})).toBe(false);
   });
 
   it("does not read a model that takes file attachments as taking images", () => {

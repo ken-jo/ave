@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   listLlmModelsFromSettings,
   modelListEndpointFromBaseUrl,
+  modelListPayloadIsComplete,
   MODEL_LIST_REFRESH_TTL_MS,
   parseStandardModelListEntries,
   parseStandardModelListResponse,
@@ -9,7 +10,7 @@ import {
   resetModelListProbeStateForTesting,
 } from "../model-list.js";
 import { NetworkGuardError } from "../../../core/network-guard.js";
-import { llmModelListCacheKey } from "../../../shared/llm-model-list.js";
+import { llmModelListCacheKey, MAX_CACHED_LLM_MODEL_IDS } from "../../../shared/llm-model-list.js";
 import { llmRouteCatalogAddress, resolveContextWindowForRoute } from "../../../shared/context-budget.js";
 import { freshAllVendorBlocks } from "../../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretKey } from "../../../shared/marketplace-package-assets.js";
@@ -240,6 +241,32 @@ describe("LLM model list sync", () => {
         timeoutMs: 8000,
       }),
     );
+  });
+
+  it("marks a listing complete only when the answer is the whole list", async () => {
+    // Only a complete listing can prove a model retired (design §6.1).
+    const answer = (payload: unknown) => vi.fn(async () =>
+      new Response(JSON.stringify(payload), { status: 200 })) as unknown as typeof fetch;
+    const settingsService = makeSettingsService();
+    const whole = await listLlmModelsFromSettings(settingsService as never, { vendor: "openrouter" },
+      guardedFetchOptions(answer({ data: [{ id: "a-model" }] })));
+    expect(whole).toMatchObject({ ok: true, complete: true });
+    const page = await listLlmModelsFromSettings(settingsService as never, { vendor: "openrouter" },
+      guardedFetchOptions(answer({ data: [{ id: "a-model" }], has_more: true, last_id: "a-model" })));
+    expect(page).toMatchObject({ ok: true });
+    expect(page).not.toHaveProperty("complete");
+  });
+
+  it.each([
+    [{ data: [], has_more: false }, 1, true],
+    [[{ id: "bare-array" }], 1, true],
+    [{ data: [], has_more: true }, 1, false],
+    [{ data: [], next_page_token: "p2" }, 1, false],
+    [{ models: [], nextPageToken: "p2" }, 1, false],
+    [{ models: [], nextPageToken: "" }, 1, true],
+    [{ data: [] }, MAX_CACHED_LLM_MODEL_IDS, false],
+  ])("reads %j with %i ids as complete=%s", (payload, count, complete) => {
+    expect(modelListPayloadIsComplete(payload, count)).toBe(complete);
   });
 
   it("refuses a retired vendor without contacting its endpoint", async () => {

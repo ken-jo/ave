@@ -14,13 +14,14 @@ import { act, render, screen, cleanup, fireEvent } from "@testing-library/react"
 import { syncPricingOverrides } from "../../hooks/use-pricing-overrides.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { TokenCostBadge } from "../TokenCostBadge.js";
-import { computeCost, lookupPricing, type ModelPricing } from "../../../../shared/pricing-data.js";
+import { computeCost, type TokenRates } from "../../../../shared/pricing-data.js";
+import { knownModelPricing, resolveModelPricing } from "../../../../shared/model-pricing.js";
 import type { LLMVendor } from "../../../../shared/llm-vendor-defaults.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 
-const sonnet: ModelPricing = { inputPer1M: 3, outputPer1M: 15, contextWindow: 200_000 };
-const gpt: ModelPricing = { inputPer1M: 2, outputPer1M: 8, contextWindow: 1_000_000 };
-const flash: ModelPricing = { inputPer1M: 0, outputPer1M: 0, contextWindow: 1_000_000 };
+const sonnet: TokenRates = { inputPer1M: 3, outputPer1M: 15 };
+const gpt: TokenRates = { inputPer1M: 2, outputPer1M: 8 };
+const flash: TokenRates = { inputPer1M: 0, outputPer1M: 0 };
 
 function renderInCostMode(props: Parameters<typeof TokenCostBadge>[0]) {
   const result = render(
@@ -59,7 +60,7 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
     }
   });
 
-  it.each<{ vendor: LLMVendor; pricing: ModelPricing; label: string }>([
+  it.each<{ vendor: LLMVendor; pricing: TokenRates; label: string }>([
     { vendor: "claude", pricing: sonnet, label: "claude — cache additive at Anthropic ratios" },
     { vendor: "openai", pricing: gpt, label: "openai — provider-raw input includes cached tokens" },
     { vendor: "azure-foundry", pricing: gpt, label: "azure-foundry — provider-raw input includes cached tokens" },
@@ -115,8 +116,41 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
     expect(screen.getByText("미정")).toBeTruthy();
   });
 
+  it("prices a turn recorded at the retired hand-kept table's rates, in words", () => {
+    // Builds before slice 7 recorded `pricing-catalog` snapshots, some with the
+    // table's long-context surcharge; the model no longer resolves to a price
+    // today, so only the record can price it. Nothing may surface the retired
+    // source as a raw message key.
+    renderInCostMode({
+      tokensIn: 300_000, freshInputTokens: 300_000, tokensOut: 0, vendor: "openai",
+      usageByModel: [
+        {
+          vendorProvider: "claude", vendorModel: "claude-sonnet-4-20250514",
+          tokenUsage: { inputTokens: 100_000, outputTokens: 0 },
+          pricing: { source: "pricing-catalog", rates: { inputPer1M: 3, outputPer1M: 15 } },
+        },
+        {
+          vendorProvider: "openai", vendorModel: "gpt-5.4",
+          tokenUsage: { inputTokens: 300_000, outputTokens: 0 },
+          pricing: JSON.parse(JSON.stringify({ source: "pricing-catalog", rates: {
+            inputPer1M: 2.5, outputPer1M: 15, surchargeInputThreshold: 272_000, surchargeInputMultiplier: 2, surchargeOutputMultiplier: 1.5,
+          } })),
+        },
+      ],
+    });
+    expect(resolveModelPricing("claude", "claude-sonnet-4-20250514").source).toBe("unknown");
+    // 100K × $3 + 300K past the 272K tier × $5.
+    const numeric = Number((screen.getByText(/^≈ \$/).textContent ?? "").replace(/[^0-9.]/g, ""));
+    expect(numeric).toBeCloseTo(1.8, 2);
+    const shown = document.body.textContent ?? "";
+    const labels = [...document.querySelectorAll("[aria-label],[title]")]
+      .map((element) => `${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("title") ?? ""}`).join(" ");
+    expect(`${shown} ${labels}`).not.toMatch(/tokenCostBadge\.|chatView\.|pricing-catalog/);
+    expect(screen.queryByText(/No pricing data|가격 미등록/)).toBeNull();
+  });
+
   it("sums tiered costs per request segment", () => {
-    const pricing = lookupPricing("openai", "gpt-5.4");
+    const pricing = knownModelPricing(resolveModelPricing("openai", "gpt-5.4"))!.rates;
     renderInCostMode({
       tokensIn: 410_000,
       freshInputTokens: 400_000,

@@ -150,6 +150,9 @@ describe("tool_result image wire gate — actual request and estimates", () => {
 
     for await (const _event of provider.streamTurn({
       model: "gpt-5.4-mini",
+      // A custom endpoint does not establish the model, and no name rule
+      // grants images (slice 7): the endpoint's report states image input.
+      modelCapabilities: { inputModalities: { input: ["text", "image"], source: "provider-reported" } },
       systemPrompt: "",
       messages: [
         { role: "assistant", content: "", toolCalls: [{ id: "call-1", name: "view_image", input: {} }] },

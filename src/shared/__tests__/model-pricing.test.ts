@@ -37,6 +37,34 @@ describe("parseResolvedModelPricing", () => {
   it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, "2"])("rejects a malformed rate %s", (invalid) => {
     expect(parseResolvedModelPricing({ source: "user", rates: { inputPer1M: invalid, outputPer1M: 1 } })).toBeUndefined();
     expect(parseResolvedModelPricing({ source: "model-catalog", rates: { inputPer1M: 1, outputPer1M: 2, tiers: [{ afterInputTokens: 10, cacheReadPer1M: invalid }] } })).toBeUndefined();
+    expect(parseResolvedModelPricing({ source: "pricing-catalog", rates: { inputPer1M: 1, outputPer1M: 2, surchargeInputThreshold: invalid, surchargeInputMultiplier: 2 } })).toBeUndefined();
+  });
+
+  it("reads back a price an older build recorded from the hand-kept table", () => {
+    // Builds before slice 7 priced dated Claude ids from the table; their
+    // persisted turns keep that answer.
+    const recorded = { source: "pricing-catalog", rates: { inputPer1M: 1, outputPer1M: 5 } };
+    expect(parseResolvedModelPricing(recorded)).toEqual(recorded);
+  });
+
+  it("reads an older build's long-context surcharge as the tier it priced as", () => {
+    // The table stated gpt-5.4's long-context price as multipliers past 272K.
+    const recorded = parseResolvedModelPricing({
+      source: "pricing-catalog",
+      rates: { inputPer1M: 2.5, outputPer1M: 15, cacheReadPer1M: 0.25,
+        surchargeInputThreshold: 272_000, surchargeInputMultiplier: 2, surchargeOutputMultiplier: 1.5 },
+    });
+    expect(recorded).toEqual({
+      source: "pricing-catalog",
+      rates: { inputPer1M: 2.5, outputPer1M: 15, cacheReadPer1M: 0.25,
+        tiers: [{ afterInputTokens: 272_000, inputPer1M: 5, outputPer1M: 22.5, cacheReadPer1M: 0.5, cacheWritePer1M: 5 }] },
+    });
+    const tableRates = knownModelPricing(recorded!)!.rates;
+    // The figures the surcharge form produced (issue #900), cache included.
+    expect(computeCost({ inputTokens: 272_000, outputTokens: 10_000 }, tableRates, "openai")).toBeCloseTo(0.83, 5);
+    expect(computeCost({ inputTokens: 300_000, outputTokens: 10_000 }, tableRates, "openai")).toBeCloseTo(1.725, 5);
+    expect(computeCost({ inputTokens: 300_000, outputTokens: 0, cacheReadTokens: 100_000, cacheWriteTokens: 50_000 }, tableRates, "openai"))
+      .toBeCloseTo((150_000 * 5 + 100_000 * 0.5 + 50_000 * 5) / MILLION, 8);
   });
 });
 
@@ -76,11 +104,24 @@ describe("resolveModelPricing — source order and provenance", () => {
     expect(computeCost({ inputTokens: 10_000, outputTokens: 1_000 }, pricing!.rates, "openai-compatible")).toBe(0);
   });
 
-  it("falls to the hand-kept table for a model the catalog does not price", () => {
-    expect(resolveModelPricing("claude", "claude-3-5-haiku-20241022")).toEqual({
-      source: "pricing-catalog",
-      rates: { inputPer1M: 1, outputPer1M: 5 },
-    });
+  it.each([
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
+    "claude-3-sonnet-20240229",
+    "claude-3-haiku-20240307",
+  ])("answers unknown for the retired id %s the catalog does not list", (model) => {
+    // The hand-kept table priced these before slice 7. The catalog's anthropic
+    // provider lists no entry documented to be the same model, so no alias
+    // joins them: the price is unknown, never $0, until a correction states it.
+    expect(resolveModelPricing("claude", model)).toEqual({ source: "unknown" });
+  });
+
+  it("prices a dated id of a listed model from that model's entry", () => {
+    expect(resolveModelPricing("openai", "gpt-4.1-2025-04-14")).toMatchObject({ source: "model-catalog", catalogEntry: "openai/gpt-4.1" });
+    expect(resolveModelPricing("openai", "o3-2025-04-16")).toMatchObject({ source: "model-catalog", catalogEntry: "openai/o3" });
   });
 
   it("answers unknown when nothing prices the model", () => {
@@ -220,5 +261,57 @@ describe("computeCost — cache and reasoning rates", () => {
   it("prices reasoning as ordinary output where no reasoning rate is stated", () => {
     const gpt = rates("openai", "gpt-5.4");
     expect(computeCost({ inputTokens: 0, outputTokens: MILLION, reasoningTokens: 900_000 }, gpt, "openai")).toBeCloseTo(15, 9);
+  });
+});
+
+describe("resolveModelPricing — the endpoint's own price report", () => {
+  const report = { prompt: "0.0000025", completion: "0.00001", inputCacheRead: "0.00000025", inputCacheWrite: "0.000003", internalReasoning: "0.0000004" };
+
+  it("reads OpenRouter's USD-per-token strings as per-million rates", () => {
+    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reported: report })).toEqual({
+      source: "endpoint-report",
+      rates: { inputPer1M: 2.5, outputPer1M: 10, cacheReadPer1M: 0.25, cacheWritePer1M: 3, reasoningPer1M: 0.4 },
+    });
+  });
+
+  it("prices a route that does not establish the catalog's model from its report, not the name match", () => {
+    // An Azure deployment named like a catalog model, and a custom OpenAI endpoint.
+    expect(resolveModelPricing("azure-foundry", "gpt-4o", [], { reported: report })).toMatchObject({ source: "endpoint-report" });
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { baseUrl: "https://proxy.invalid/v1", reported: report }))
+      .toMatchObject({ source: "endpoint-report" });
+  });
+
+  it("keeps the catalog where the route establishes the model and the catalog prices it", () => {
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { reported: report })).toMatchObject({ source: "model-catalog", catalogEntry: "openai/gpt-5.4" });
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { baseUrl: "https://api.openai.com/v1", reported: report }))
+      .toMatchObject({ source: "model-catalog" });
+  });
+
+  it("takes the user's correction over the report", () => {
+    const override = { vendor: "openrouter", model: "lab/unlisted-reasoner", inputPer1M: 1, outputPer1M: 2 };
+    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [override], { reported: report })).toMatchObject({ source: "user" });
+  });
+
+  it.each([
+    [{ prompt: "-1", completion: "-1" }],
+    [{ prompt: "0", completion: "0" }],
+    [{ prompt: "0.000001" }],
+    [{ prompt: "free", completion: "0.000002" }],
+  ])("is not a price: %j", (reported) => {
+    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reported })).toEqual({ source: "unknown" });
+  });
+
+  it("drops an extra price that does not parse instead of the whole report", () => {
+    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reported: { prompt: "1e-6", completion: "0.000002", inputCacheRead: "n/a" } }))
+      .toEqual({ source: "endpoint-report", rates: { inputPer1M: 1, outputPer1M: 2 } });
+  });
+
+  it("reads a recorded endpoint-report snapshot back, and older records still read", () => {
+    const recorded = { source: "endpoint-report", rates: { inputPer1M: 2.5, outputPer1M: 10 } };
+    expect(parseResolvedModelPricing(recorded)).toEqual(recorded);
+    expect(parseResolvedModelPricing({ source: "pricing-catalog", rates: { inputPer1M: 1, outputPer1M: 2 } }))
+      .toEqual({ source: "pricing-catalog", rates: { inputPer1M: 1, outputPer1M: 2 } });
+    expect(parseResolvedModelPricing({ source: "model-catalog", rates: { inputPer1M: 1, outputPer1M: 2 }, catalogEntry: "openai/x" }))
+      .toMatchObject({ source: "model-catalog" });
   });
 });

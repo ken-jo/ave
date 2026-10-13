@@ -52,7 +52,7 @@ import {
   withProviderErrorClassification,
   type ProviderErrorDiagnostics,
 } from "../provider-error-diagnostics.js";
-import { lookupPricing } from "../../../shared/pricing-data.js";
+import { claudeBetaHeaders, claudeRequestShape, usesOpenAIResponsesWire } from "../../../shared/model-host-policy.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import {
   normalizeProviderToolAliasText,
@@ -63,10 +63,11 @@ import { TOOL_SEARCH_TOOL_NAME } from "../../../tools/registry.js";
 import type { MarketplaceInstalledProviderPreset } from "../../../shared/marketplace-package-assets.js";
 import { isGuardedInsecureCredentialedModelProviderFetch } from "../marketplace-provider-fetch.js";
 import { normalizeOutputTokenLimit } from "../output-token-limit.js";
-import { planReasoning, usesOpenAIResponsesWire } from "../reasoning-plan.js";
+import { planReasoning } from "../reasoning-plan.js";
 import {
   resolveInputModalities,
   resolveOutputCeiling,
+  resolveReasoningSupport,
   resolveToolCallSupport,
   type RouteModelCapabilities,
 } from "../../../shared/context-budget.js";
@@ -117,21 +118,11 @@ const OPENAI_RESPONSES_TOOL_NAME_ALIAS_REVERSE: Readonly<Record<string, string>>
       from,
     ]),
   );
-/** Detect OpenAI reasoning-model families (Responses API + reasoning_effort support). */
 // Idle ceiling for a streamed response: if no delta arrives within this window
 // the provider stream is treated as stalled and aborted (a hung proxy / dropped
 // upstream would otherwise block the turn forever). Incremental tool arguments
 // count as activity even before they become a caller-facing tool call.
 const STREAM_IDLE_CEILING_MS = TOOL_TIMEOUT_POLICY.modelStreamIdleCeilingMs;
-
-function supportsInterleavedNumericThinking(modelId: string): boolean {
-  // Only these numeric-thinking generations support a budget across tool calls.
-  // Release dates do not change a generation's capabilities.
-  const match = modelId.toLowerCase().match(
-    /^claude-(opus|sonnet)-4(?:-(0|1|5))?(?:-(?:\d{8}|latest))?$/,
-  );
-  return match !== null && (match[1] === "opus" || match[2] !== "1");
-}
 
 interface NativeOutputProjection {
   outputTokenLimit: number;
@@ -235,14 +226,13 @@ function routelessModelCapabilities(params: {
 }): RouteModelCapabilities {
   const inputModalities = resolveInputModalities(params);
   const toolCall = resolveToolCallSupport(params);
+  const reasoning = resolveReasoningSupport(params);
   return {
     ...(inputModalities !== undefined ? { inputModalities } : {}),
     ...(toolCall !== undefined ? { toolCall } : {}),
+    ...(reasoning !== undefined ? { reasoning } : {}),
   };
 }
-
-const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
-const CONTEXT_1M_BETA = "context-1m-2025-08-07";
 
 export function normalizeAzureFoundryBaseURL(rawBaseUrl: string): string {
   const parsedUrl = new URL(rawBaseUrl);
@@ -378,7 +368,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         ? params.thinkingBudgetTokens ?? 10_000
         : normalizeLlmThinkingBudgetTokens(params.requestedThinkingBudgetTokens, outputTokenLimit);
       // Which reasoning control and level: the catalog's accepted effort
-      // levels where it knows the model, the name rules where it does not
+      // levels where it states them, no effort where nobody does
       // (reasoning-plan.ts). The turn summary records this same answer.
       // The plan also drops the effort on a GPT-5.x tool turn over Chat
       // Completions (chatCompletionsRejectsToolTurnEffort), the same rule the
@@ -390,6 +380,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         budgetTokens: budget,
         baseUrl,
         catalogModel: params.catalogModel,
+        ...(capabilities.reasoning !== undefined ? { reasoning: capabilities.reasoning } : {}),
         request: { hasTools },
       });
       const isThinkingEnabled = params.enableThinking === true && reasoningPlan?.kind !== "none";
@@ -398,8 +389,10 @@ export class VercelUnifiedProvider implements LLMProvider {
       // purpose-specific or fallback request carries no source.
       const reportedCeiling = params.outputCeiling !== undefined && params.outputCeiling !== null
         && params.outputCeilingSource === "provider-reported";
+      // Request shape is a host rule (model-host-policy.ts), not a catalog fact.
+      const claudeShape = slot === "claude" ? claudeRequestShape(params.model) : undefined;
       const interleavedNumericThinking = numericThinking && hasTools
-        && supportsInterleavedNumericThinking(params.model);
+        && claudeShape?.interleavedNumericThinking === true;
       const model = this.resolveModel(
         params.model,
         hasTools,
@@ -502,6 +495,25 @@ export class VercelUnifiedProvider implements LLMProvider {
         };
       }
 
+      // An OpenAI-compatible endpoint whose `/models` report names a reasoning
+      // parameter gets that parameter and nothing else (reasoning-plan.ts):
+      // `reasoning: { effort }` (OpenRouter's unified object),
+      // `reasoning_effort` (the SDK's `reasoningEffort`), or
+      // `include_reasoning: true`, which OpenRouter defines as `reasoning: {}`.
+      if (reasoningPlan?.kind === "endpoint-reasoning") {
+        const reported: Record<string, unknown> =
+          reasoningPlan.control === "reasoning" ? { reasoning: { effort: reasoningPlan.effort } }
+          : reasoningPlan.control === "reasoning_effort" ? { reasoningEffort: reasoningPlan.effort }
+          : { include_reasoning: true };
+        providerOptions = {
+          ...(providerOptions ?? {}),
+          [OPENAI_COMPAT_PROVIDER_OPTIONS_KEY]: {
+            ...(providerOptions?.[OPENAI_COMPAT_PROVIDER_OPTIONS_KEY] ?? {}),
+            ...reported,
+          },
+        };
+      }
+
       // Project the selected thinking mode and supported beta opt-ins.
       let headers: Record<string, string> | undefined;
       if (slot === "claude") {
@@ -517,13 +529,10 @@ export class VercelUnifiedProvider implements LLMProvider {
         }
         // Beta header set: comma-joined per Anthropic's API convention. We
         // gather them in an array and emit one `anthropic-beta` value.
-        const betas: string[] = [];
-        if (lookupPricing("claude", params.model).contextWindow1MBeta !== undefined) {
-          betas.push(CONTEXT_1M_BETA);
-        }
-        if (interleavedNumericThinking) {
-          betas.push(INTERLEAVED_THINKING_BETA);
-        }
+        const betas = claudeBetaHeaders({
+          context1MBeta: claudeShape?.context1MBeta === true,
+          interleavedThinking: interleavedNumericThinking,
+        });
         if (betas.length > 0) {
           headers = { "anthropic-beta": betas.join(",") };
         }

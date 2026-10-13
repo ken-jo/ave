@@ -54,6 +54,12 @@ export const en = {
   "app.retiredProviderNoticeTitle": "GitHub Models has ended",
   "app.retiredProviderNoticeBody": "GitHub retired the GitHub Models service that the Copilot provider used, so this provider was removed from Ave. Its saved key is no longer used. Chat stays off until you choose another provider.",
   "app.retiredProviderNoticeAction": "Choose a provider",
+  "app.retiredModelNoticeTitle": "{model} is retired",
+  "app.retiredModelNoticeBodyUnlisted": "The provider's own model list no longer includes this model, so Ave no longer offers it. Chat stays off until you choose another model.",
+  "app.retiredModelNoticeAction": "Choose a model",
+  "app.deprecatedModelNoticeTitle": "{model} is scheduled for retirement",
+  "app.deprecatedModelNoticeBody": "The model catalog marks this model as deprecated by its provider. Chat still works for now; pick another model before the provider turns it off.",
+  "app.deprecatedModelNoticeDismiss": "Dismiss",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "app.routineFailedTitle": "[실패] 루틴",
@@ -110,4 +116,10 @@ export const ko: Record<keyof typeof en, string> = {
   "app.retiredProviderNoticeTitle": "GitHub Models 서비스가 종료되었습니다",
   "app.retiredProviderNoticeBody": "Copilot 프로바이더가 쓰던 GitHub Models 서비스를 GitHub가 종료해, Ave에서 이 프로바이더를 제거했습니다. 저장된 키는 더 이상 사용되지 않습니다. 다른 프로바이더를 선택할 때까지 채팅은 꺼져 있습니다.",
   "app.retiredProviderNoticeAction": "프로바이더 선택",
+  "app.retiredModelNoticeTitle": "{model} 모델은 더 이상 제공되지 않습니다",
+  "app.retiredModelNoticeBodyUnlisted": "프로바이더의 모델 목록에 이 모델이 더 이상 없어 Ave에서 더 이상 제공하지 않습니다. 다른 모델을 선택할 때까지 채팅은 꺼져 있습니다.",
+  "app.retiredModelNoticeAction": "모델 선택",
+  "app.deprecatedModelNoticeTitle": "{model} 모델은 지원 종료 예정입니다",
+  "app.deprecatedModelNoticeBody": "모델 카탈로그에 이 모델이 프로바이더에서 지원 중단 예정으로 표시되어 있습니다. 지금은 채팅을 계속할 수 있지만, 프로바이더가 제공을 끝내기 전에 다른 모델을 선택하세요.",
+  "app.deprecatedModelNoticeDismiss": "닫기",
 };

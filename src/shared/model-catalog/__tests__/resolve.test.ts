@@ -35,6 +35,26 @@ describe("resolveCatalogKey", () => {
     expect(resolveCatalogKey(models, "openai", "modelone-2025-01-01")).toMatchObject({ id: "modelone", match: "date-suffix" });
   });
 
+  it("strips a month-day snapshot suffix (-MMDD) too", () => {
+    // OpenAI names snapshots gpt-3.5-turbo-0125 and gpt-4-0613; DeepSeek and Kimi do the same.
+    const models = catalog({ openai: [entry("modelone")] });
+    for (const suffix of ["0125", "1106", "0613", "0101", "1231"]) {
+      expect(resolveCatalogKey(models, "openai", `modelone-${suffix}`)).toMatchObject({ id: "modelone", match: "date-suffix" });
+    }
+    // Four digits that are no month and day are a version, not a snapshot.
+    for (const suffix of ["1350", "0000", "0132", "2024"]) {
+      expect(resolveCatalogKey(models, "openai", `modelone-${suffix}`)).toBeUndefined();
+    }
+  });
+
+  it("resolves OpenAI's -MMDD snapshots in the bundled catalog to the listed model", async () => {
+    const { activeModelCatalog } = await import("../active.js");
+    for (const model of ["gpt-3.5-turbo-0125", "gpt-3.5-turbo-1106", "gpt-3.5-turbo-0613"]) {
+      expect(resolveCatalogKey(activeModelCatalog(), "openai", model)).toMatchObject({ provider: "openai", id: "gpt-3.5-turbo", match: "date-suffix" });
+    }
+    expect(resolveCatalogKey(activeModelCatalog(), "openai", "gpt-4-0613")).toMatchObject({ id: "gpt-4", match: "date-suffix" });
+  });
+
   it("prefers a dated entry the catalog lists over the undated one", () => {
     const models = catalog({ openai: [entry("modelone"), entry("modelone-20250101")] });
     expect(resolveCatalogKey(models, "openai", "modelone-20250101")).toMatchObject({ id: "modelone-20250101", match: "exact" });

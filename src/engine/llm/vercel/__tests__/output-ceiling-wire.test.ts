@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_LLM_OUTPUT_TOKEN_LIMIT,
   getLlmVendorSettings,
   requestedLlmOutputTokenLimit,
 } from "../../../../shared/llm-vendor-defaults.js";
+import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../../../shared/model-host-policy.js";
 import { resolveOutputTokenLimit } from "../../../../shared/context-budget.js";
 import { apiRoundLlmSettings } from "../../../turn/round-llm-settings.js";
 import { collectRoundStream } from "../../../turn/stream-collector.js";

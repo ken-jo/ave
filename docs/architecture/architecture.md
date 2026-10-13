@@ -469,6 +469,33 @@ those limits further (not when the endpoint reported the ceiling, which is sent 
 and thinking controls beside the route's output resolution, and the recorded numeric
 reasoning budget matches that serialized value
 (`src/shared/run-model-settings.ts`); see `docs/design/model-capability-catalog.md`.
+A model's window, price, input modalities and reasoning levels come from the user's
+settings, the endpoint's report or the catalog, never from its name. Where none states
+them, the window is the 128K host fallback (source `fallback`), the price is unknown,
+images are refused and an OpenAI-family request sends no reasoning effort. Host-owned
+values live in `src/shared/model-host-policy.ts`: the 32,000 default output, the 128K
+fallback, the credible-window ceiling, TPM defaults, and the request-shape table (the
+Claude 1M beta header and interleaved-thinking generations, adaptive vs numeric thinking,
+the Responses-vs-Chat wire choice).
+A model that is going away is in one of two tiers (`resolveModelRetirement`,
+`src/shared/context-budget.ts`). **Retired:** a public vendor's own complete `/models`
+listing on its native host no longer names it (never for local, self-hosted, gateway,
+custom-`baseUrl` or Azure routes; a failed or partial listing proves nothing). Only an
+id the active catalog knows exactly under the vendor's mapped provider can be judged;
+a fine-tune, an account-scoped deployment or a model newer than the snapshot never is. A saved
+selection at one sets the `llm.retiredProvider` marker at settings load
+(`{ vendor, model, reason: "unlisted" }` beside the removed-vendor string), which
+withholds API-key chat and credentials until the user picks — the same flow as a removed
+vendor. **Deprecated:** the active catalog marks it `deprecated` where the route
+establishes its identity; no marker, chat and credentials keep working, and the window
+shows a non-blocking notice. The listing outranks the catalog. Both tiers are hidden from
+every picker; the host keeps no retired-name list. See [retired models](../design/model-capability-catalog.md#61-retired-models-slice-7-follow-up-owner-direction-2026-10-13).
+Whether a route's model reasons and what it costs may also come from the route's
+own `/models` report (`resolveReasoningSupport`; `resolveModelPricing`'s
+`endpoint-report` source): the user's named entry, then the report, then the catalog. A
+commercial OpenAI-compatible endpoint receives only the reasoning parameter its report
+names (`reasoning`, `reasoning_effort` or `include_reasoning`); the self-hosted class keeps
+its own switch and budget. See [endpoint reports](../design/model-capability-catalog.md#51-reasoning-an-endpoint-reports-slice-7-follow-up-owner-direction-2026-10-13).
 The catalog in force is chosen once per launch (`src/core/model-catalog/bundled.ts`): a
 `AVE_MODEL_CATALOG` pin (`bundled`, a cached `<sha256>`, or an absolute file path; a pin
 that cannot be honoured fails boot), else the verified refreshed copy in

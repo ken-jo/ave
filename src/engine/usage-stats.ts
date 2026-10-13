@@ -21,7 +21,7 @@ import { isLLMVendor, type LLMVendor } from "./llm/types.js";
 import { computeCost, knownModelPricing, normalizeAiSdkUsageForCost, resolveModelPricing } from "./llm/pricing.js";
 import { activeModelCatalog } from "../shared/model-catalog/active.js";
 import { pricingOverridesSignature, type PricingOverride } from "../shared/pricing-overrides.js";
-import { parseResolvedModelPricing, type ResolvedModelPricing } from "../shared/model-pricing.js";
+import { parseResolvedModelPricing, type RecordedModelPricing } from "../shared/model-pricing.js";
 import type { RunModelSettings } from "../shared/run-model-settings.js";
 
 export interface AuditTurnEntry {
@@ -162,7 +162,7 @@ type UsageSegment = {
   vendor: UsageVendor;
   model: string;
   tokenUsage: NonNullable<AuditTurnEntry["tokenUsage"]>;
-  pricing?: ResolvedModelPricing;
+  pricing?: RecordedModelPricing;
 };
 
 function parseSubscriptionUsageSegments(entry: AuditTurnEntry): SubscriptionUsageTelemetry[] {

@@ -12,34 +12,53 @@
  *     resolved by `pricing-overrides.ts`). The correction states the rates the
  *     deployment pays, so it is taken whole: no catalog tier or reasoning rate
  *     is mixed into it, and a stated zero is a known $0.
- *  2. `model-catalog` — the catalog entry the vendor's model id resolves to
+ *  2. `endpoint-report` — the prices the route's own `/models` answer reports
+ *     (OpenRouter's convention: USD per token, as decimal strings), on a route
+ *     that does not establish the catalog's identity for its model (a custom
+ *     `baseUrl`, Azure, a self-hosted or gateway endpoint the catalog does not
+ *     map), or where the catalog has no price for it.
+ *  3. `model-catalog` — the catalog entry the vendor's model id resolves to
  *     (`resolveCatalogKey`), with its cache, reasoning and prompt-size tiers.
- *  3. `pricing-catalog` — the hand-kept `DEFAULT_PRICING` row, for a model the
- *     catalog does not price (removed with the table in slice 7).
  *  4. `unknown` — nothing priced the model. Never shown as $0.
  *
  * Absent is not free (§3.1): a catalog entry without a price is unknown at
  * that rank, and one listing input and output at zero is the source's
- * statement, which is not shown as "free" either — the next rank answers, and
- * when none does the result is `unknown` carrying the entry that listed zero,
- * so the surface can say so.
+ * statement, which is not shown as "free" either: the result is `unknown`
+ * carrying the entry that listed zero, so the surface can say so.
  *
  * A route the catalog cannot match by name (a self-hosted or local endpoint)
  * is not priced from the entry its user named as `catalogModel`: that names
  * the model the endpoint serves for its limits, and the public price of that
  * model is not what the user's own endpoint costs.
  */
-import { lookupBillablePricingOptional, type TokenRateTier, type TokenRates, type UsageForCost } from "./pricing-data.js";
+import type { TokenRateTier, TokenRates, UsageForCost } from "./pricing-data.js";
 import { isPricingOverrideRate, type PricingOverride } from "./pricing-overrides.js";
 import { activeModelCatalog } from "./model-catalog/active.js";
-import { resolveCatalogKey } from "./model-catalog/resolve.js";
+import { allowsImplicitModelLimits, resolveCatalogKey } from "./model-catalog/resolve.js";
 import type { CatalogModelCost } from "./model-catalog/types.js";
+import type { LlmModelListPricing } from "./llm-model-list.js";
 
-export type ModelPricingSource = "user" | "model-catalog" | "pricing-catalog";
+export type ModelPricingSource = "user" | "endpoint-report" | "model-catalog";
 
-export type ResolvedModelPricing =
+/** The route a price is resolved for: its endpoint and that endpoint's own price report. */
+export interface ModelPricingRoute {
+  /** Decides whether the route establishes the catalog's identity for its model (§4). */
+  readonly baseUrl?: string;
+  /** The route's last `/models` answer's prices for this model. */
+  readonly reported?: LlmModelListPricing;
+}
+
+/**
+ * Who stated the rates a recorded price snapshot carries. Builds before issue
+ * #2501's slice 7 also priced from the hand-kept table (`pricing-catalog`);
+ * their persisted turns and usage rows keep that answer, which is read back
+ * as it was recorded. Nothing resolves to it any more.
+ */
+type RecordedModelPricingSource = ModelPricingSource | "pricing-catalog";
+
+export type ResolvedModelPricing<Source extends RecordedModelPricingSource = ModelPricingSource> =
   | {
-      readonly source: ModelPricingSource;
+      readonly source: Source;
       readonly rates: TokenRates;
       /** `<provider>/<id>` when the catalog answered. */
       readonly catalogEntry?: string;
@@ -50,7 +69,10 @@ export type ResolvedModelPricing =
       readonly catalogListsZero?: string;
     };
 
-export type KnownModelPricing = Extract<ResolvedModelPricing, { rates: TokenRates }>;
+/** A price snapshot read back from an IPC or persisted record. */
+export type RecordedModelPricing = ResolvedModelPricing<RecordedModelPricingSource>;
+
+export type KnownModelPricing = Extract<RecordedModelPricing, { rates: TokenRates }>;
 
 /** Usage and the price resolved when that provider request ran. */
 export interface ModelUsageSegment<Vendor extends string = string> {
@@ -58,17 +80,41 @@ export interface ModelUsageSegment<Vendor extends string = string> {
   vendorModel: string;
   tokenUsage: UsageForCost;
   /** Absent only on records written before request prices were captured. */
-  pricing?: ResolvedModelPricing;
+  pricing?: RecordedModelPricing;
 }
 
-const OPTIONAL_TOKEN_RATE_FIELDS = [
-  "cacheReadPer1M", "cacheWritePer1M", "reasoningPer1M",
-  "surchargeInputThreshold", "surchargeInputMultiplier", "surchargeOutputMultiplier",
-] as const;
+const OPTIONAL_TOKEN_RATE_FIELDS = ["cacheReadPer1M", "cacheWritePer1M", "reasoningPer1M"] as const;
 const OPTIONAL_TIER_RATE_FIELDS = ["inputPer1M", "outputPer1M", "cacheReadPer1M", "cacheWritePer1M"] as const;
 
+/**
+ * A snapshot recorded by a build before slice 7 may state the hand-kept
+ * table's long-context surcharge (GPT-5.4 and 5.4 Pro: past 272,000 prompt
+ * tokens, 2× input and 1.5× output). It priced exactly as a prompt-size tier
+ * at that threshold with the multiplied rates — input and both cache rates
+ * (a missing cache rate being the input rate) at the input multiplier, output
+ * and reasoning at the output multiplier — so it is read back as that tier.
+ * Only non-Anthropic rows carried one, and only non-Anthropic cost math
+ * applied it.
+ */
+function recordedSurchargeTier(raw: Record<string, unknown>, rates: TokenRates): TokenRateTier | undefined | null {
+  const threshold = raw.surchargeInputThreshold;
+  const inputMultiplier = raw.surchargeInputMultiplier ?? 1;
+  const outputMultiplier = raw.surchargeOutputMultiplier ?? 1;
+  // Multipliers without a threshold never applied.
+  if (threshold === undefined) return undefined;
+  if (!isPricingOverrideRate(threshold) || !isPricingOverrideRate(inputMultiplier) || !isPricingOverrideRate(outputMultiplier)) return null;
+  if (rates.reasoningPer1M !== undefined && outputMultiplier !== 1) return null;
+  return {
+    afterInputTokens: threshold,
+    inputPer1M: rates.inputPer1M * inputMultiplier,
+    outputPer1M: rates.outputPer1M * outputMultiplier,
+    cacheReadPer1M: (rates.cacheReadPer1M ?? rates.inputPer1M) * inputMultiplier,
+    cacheWritePer1M: (rates.cacheWritePer1M ?? rates.inputPer1M) * inputMultiplier,
+  };
+}
+
 /** Copy a price snapshot from an IPC or persisted record, validating every numeric field. */
-export function parseResolvedModelPricing(value: unknown): ResolvedModelPricing | undefined {
+export function parseResolvedModelPricing(value: unknown): RecordedModelPricing | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const obj = value as Record<string, unknown>;
   if (obj.source === "unknown") {
@@ -77,7 +123,8 @@ export function parseResolvedModelPricing(value: unknown): ResolvedModelPricing 
       ...(typeof obj.catalogListsZero === "string" ? { catalogListsZero: obj.catalogListsZero } : {}),
     };
   }
-  if (obj.source !== "user" && obj.source !== "model-catalog" && obj.source !== "pricing-catalog") return undefined;
+  if (obj.source !== "user" && obj.source !== "endpoint-report" && obj.source !== "model-catalog"
+    && obj.source !== "pricing-catalog") return undefined;
   if (!obj.rates || typeof obj.rates !== "object" || Array.isArray(obj.rates)) return undefined;
   const raw = obj.rates as Record<string, unknown>;
   if (!isPricingOverrideRate(raw.inputPer1M) || !isPricingOverrideRate(raw.outputPer1M)) return undefined;
@@ -108,6 +155,13 @@ export function parseResolvedModelPricing(value: unknown): ResolvedModelPricing 
     }
     rates.tiers = tiers;
   }
+  const surchargeTier = recordedSurchargeTier(raw, rates);
+  if (surchargeTier === null) return undefined;
+  if (surchargeTier !== undefined) {
+    // The table never stated tiers beside a surcharge.
+    if (rates.tiers !== undefined) return undefined;
+    rates.tiers = [surchargeTier];
+  }
   return {
     source: obj.source,
     rates,
@@ -119,6 +173,7 @@ export function resolveModelPricing(
   vendor: string,
   model: string,
   overrides: readonly PricingOverride[] = [],
+  route?: ModelPricingRoute,
 ): ResolvedModelPricing {
   const override = overrides.find((entry) => entry.vendor === vendor && entry.model === model);
   if (override) {
@@ -135,23 +190,15 @@ export function resolveModelPricing(
   const hit = resolveCatalogKey(activeModelCatalog(), vendor, model);
   const catalogEntry = hit ? `${hit.provider}/${hit.id}` : undefined;
   const catalogRates = hit?.model.cost ? catalogTokenRates(hit.model.cost, hit.provider) : undefined;
-  if (catalogEntry !== undefined && catalogRates !== undefined && listsAPrice(catalogRates)) {
-    return { source: "model-catalog", rates: catalogRates, catalogEntry };
+  const catalogPrices = catalogEntry !== undefined && catalogRates !== undefined && listsAPrice(catalogRates);
+  const reportedRates = route?.reported ? endpointTokenRates(route.reported) : undefined;
+  // The endpoint's own price where the route does not establish the catalog's
+  // model (the name match there is a guess), or where the catalog has none.
+  if (reportedRates !== undefined && (!catalogPrices || !allowsImplicitModelLimits(vendor, route?.baseUrl))) {
+    return { source: "endpoint-report", rates: reportedRates };
   }
-  const row = lookupBillablePricingOptional(vendor, model);
-  if (row) {
-    return {
-      source: "pricing-catalog",
-      rates: {
-        inputPer1M: row.inputPer1M,
-        outputPer1M: row.outputPer1M,
-        ...(row.cacheReadPer1M !== undefined ? { cacheReadPer1M: row.cacheReadPer1M } : {}),
-        ...(row.cacheWritePer1M !== undefined ? { cacheWritePer1M: row.cacheWritePer1M } : {}),
-        ...(row.surchargeInputThreshold !== undefined ? { surchargeInputThreshold: row.surchargeInputThreshold } : {}),
-        ...(row.surchargeInputMultiplier !== undefined ? { surchargeInputMultiplier: row.surchargeInputMultiplier } : {}),
-        ...(row.surchargeOutputMultiplier !== undefined ? { surchargeOutputMultiplier: row.surchargeOutputMultiplier } : {}),
-      },
-    };
+  if (catalogPrices) {
+    return { source: "model-catalog", rates: catalogRates, catalogEntry };
   }
   return catalogEntry !== undefined && catalogRates !== undefined
     ? { source: "unknown", catalogListsZero: catalogEntry }
@@ -159,7 +206,7 @@ export function resolveModelPricing(
 }
 
 /** The rates, or `undefined` when nothing priced the model. */
-export function knownModelPricing(pricing: ResolvedModelPricing): KnownModelPricing | undefined {
+export function knownModelPricing(pricing: RecordedModelPricing): KnownModelPricing | undefined {
   return pricing.source === "unknown" ? undefined : pricing;
 }
 
@@ -193,6 +240,39 @@ function catalogTokenRates(cost: CatalogModelCost, provider: string): TokenRates
       : {}),
     ...(tiers.length > 0 ? { tiers } : {}),
   };
+}
+
+/**
+ * An endpoint's reported prices as token rates. The reports follow
+ * OpenRouter's `/models` convention: USD per token, as decimal strings
+ * (`"0.0000025"` is $2.50 per million). Both the prompt and the completion
+ * price must be stated and non-negative — OpenRouter reports `-1` for a
+ * router whose price depends on the model it picks — and a report of zero for
+ * both is not a price, as with the catalog. A cache or reasoning price that
+ * does not parse is left out rather than voiding the rest.
+ */
+function endpointTokenRates(pricing: LlmModelListPricing): TokenRates | undefined {
+  const inputPer1M = perMillion(pricing.prompt);
+  const outputPer1M = perMillion(pricing.completion);
+  if (inputPer1M === undefined || outputPer1M === undefined) return undefined;
+  const rates: TokenRates = { inputPer1M, outputPer1M };
+  const cacheReadPer1M = perMillion(pricing.inputCacheRead);
+  const cacheWritePer1M = perMillion(pricing.inputCacheWrite);
+  const reasoningPer1M = perMillion(pricing.internalReasoning);
+  if (cacheReadPer1M !== undefined) rates.cacheReadPer1M = cacheReadPer1M;
+  if (cacheWritePer1M !== undefined) rates.cacheWritePer1M = cacheWritePer1M;
+  // A zero reasoning price does not establish free reasoning; the output rate applies.
+  if (reasoningPer1M !== undefined && reasoningPer1M > 0) rates.reasoningPer1M = reasoningPer1M;
+  return listsAPrice(rates) ? rates : undefined;
+}
+
+/** A USD-per-token decimal string as USD per million tokens, or `undefined`. */
+function perMillion(value: string | undefined): number | undefined {
+  if (value === undefined || !/^\d+(?:\.\d+)?(?:[eE][-+]?\d+)?$/u.test(value.trim())) return undefined;
+  const perToken = Number(value.trim());
+  if (!Number.isFinite(perToken) || perToken < 0) return undefined;
+  // Strip the binary-float noise of the scaling ("0.0000004" × 1e6).
+  return Number((perToken * 1_000_000).toPrecision(12));
 }
 
 /** A listed zero input and output is the source's statement, not a price Ave shows. */

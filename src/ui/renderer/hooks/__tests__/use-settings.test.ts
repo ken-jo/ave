@@ -5,7 +5,7 @@ import type { AppSettings, AveApi } from "../../types.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.js";
 import { LLM_VENDOR_DEFAULTS } from "../../../../shared/llm-vendor-defaults.js";
-import { FALLBACK_PRICING } from "../../../../shared/pricing-data.js";
+import { FALLBACK_CONTEXT_WINDOW } from "../../../../shared/model-host-policy.js";
 import { llmModelListCacheKey } from "../../../../shared/llm-model-list.js";
 import { useCostEstimate } from "../use-cost-estimate.js";
 import { activeModelCatalog, installModelCatalog } from "../../../../shared/model-catalog/active.js";
@@ -160,7 +160,7 @@ describe("useSettings", () => {
     expect(result.current.llmReadyWithoutApiKey).toBe(true);
     // Nothing in this snapshot knows the model, so the route lands on the
     // conservative window — the same one the engine would budget against.
-    expect(result.current.llmContextWindow).toBe(FALLBACK_PRICING.contextWindow);
+    expect(result.current.llmContextWindow).toBe(FALLBACK_CONTEXT_WINDOW);
 
     unmount();
     expect(unsubscribe).toHaveBeenCalledOnce();

@@ -467,7 +467,7 @@ export interface TurnSummary {
   vendorProvider?: LLMVendor;
   vendorModel?: string;
   /**
-   * Per provider request usage segments. Kept unmerged so surcharge-sensitive
+   * Per provider request usage segments. Kept unmerged so prompt-size-tier
    * pricing (for example OpenAI long-context request tiers) is computed at
    * the same granularity the provider bills.
    */

@@ -8,9 +8,10 @@ import {
   getLlmVendorSettings,
   narrowLlmVendor,
   isLLMVendor,
-  isRetiredLLMVendor,
+  isLlmRouteRetirement,
+  isRetiredLlmModelMarker,
   type LLMVendor,
-  type RetiredLLMVendor,
+  type LlmRouteRetirement,
 } from "../../../shared/llm-vendor-defaults.js";
 import {
   DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES,
@@ -21,9 +22,18 @@ import {
   type SubscriptionRuntimeId,
 } from "../../../shared/subscription-runtime.js";
 import { selectSubscriptionRuntimeUiPolicy, type SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-ui-policy.js";
-import { resolveContextWindowForRoute, type ResolvedOutputTokenLimit, type RouteInputModalities } from "../../../shared/context-budget.js";
+import {
+  llmRouteCatalogAddress,
+  resolveContextWindowForRoute,
+  resolveModelRetirement,
+  resolveRouteModelRetirement,
+  type ResolvedOutputTokenLimit,
+  type RouteInputModalities,
+} from "../../../shared/context-budget.js";
+import { llmModelListCacheKey, type LlmModelListCacheEntry } from "../../../shared/llm-model-list.js";
+import type { ModelPricingRoute } from "../../../shared/model-pricing.js";
 import { syncPricingOverrides } from "./use-pricing-overrides.js";
-import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../../shared/llm-vendor-defaults.js";
+import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../../shared/model-host-policy.js";
 import {
   DEFAULT_PROCESSING_DISPLAY_LEVEL,
   type ProcessingDisplayLevel,
@@ -105,11 +115,17 @@ export interface UseSettingsResult {
    */
   llmInputLimit: number | undefined;
   /**
+   * The active route's endpoint and the prices its own `/models` answer
+   * reported, for the pre-send estimate (`resolveModelPricing`'s route), so it
+   * prices a request as the engine records it.
+   */
+  llmRoutePricing: ModelPricingRoute;
+  /**
    * The active route's input modalities, as its endpoint or the catalog states
    * them (`resolveContextWindowForRoute(...).inputModalities`), for the image
    * gate (`supportsVision(vendor, model, route)`). `undefined` until settings
-   * have resolved; a route whose modalities nobody states carries none, and the
-   * name rules decide for it.
+   * have resolved; a route whose modalities nobody states carries none, and
+   * the image gate refuses images for it.
    */
   llmRouteModalities: RouteInputModalities | undefined;
   /** True after an authoritative settings snapshot has been applied. */
@@ -121,10 +137,17 @@ export interface UseSettingsResult {
   /** True when the active vendor can run with no stored API key. */
   llmReadyWithoutApiKey: boolean;
   /**
-   * The removed vendor the stored profile was moved off, until the user picks
-   * a provider in Settings. API-key chat is not ready while it is set.
+   * The removed vendor the stored profile was moved off, or the retired model
+   * it names, until the user picks in Settings. API-key chat is not ready
+   * while it is set.
    */
-  retiredLlmProvider: RetiredLLMVendor | null;
+  retiredLlmProvider: LlmRouteRetirement | null;
+  /**
+   * The active API route's saved model when the catalog marks it deprecated
+   * and nothing retired the route (design `model-capability-catalog.md` §6.1).
+   * Chat keeps working on it; the window only says it is going away.
+   */
+  deprecatedLlmModel: string | null;
   /** Single source of truth for selected subscription chat and attachment UX. */
   subscriptionRuntimePolicy: SubscriptionRuntimeUiPolicy;
   /** Active subscription runtime after untrusted settings boundary validation. */
@@ -155,13 +178,15 @@ export function useSettings(api: AveApi): UseSettingsResult {
   const [llmContextWindow, setLlmContextWindow] = useState<number>(0);
   const [llmOutputTokenLimit, setLlmOutputTokenLimit] = useState<ResolvedOutputTokenLimit>(INITIAL_OUTPUT_TOKEN_LIMIT);
   const [llmInputLimit, setLlmInputLimit] = useState<number | undefined>(undefined);
+  const [llmRoutePricing, setLlmRoutePricing] = useState<ModelPricingRoute>({});
   const [llmRouteModalities, setLlmRouteModalities] = useState<UseSettingsResult["llmRouteModalities"]>(undefined);
   const [enableThinkingChat, setEnableThinkingChat] = useState<boolean>(true);
   const [processingDisplayLevel, setProcessingDisplayLevel] = useState<ProcessingDisplayLevel>(
     DEFAULT_PROCESSING_DISPLAY_LEVEL,
   );
   const [llmReadyWithoutApiKey, setLlmReadyWithoutApiKey] = useState(false);
-  const [retiredLlmProvider, setRetiredLlmProvider] = useState<RetiredLLMVendor | null>(null);
+  const [retiredLlmProvider, setRetiredLlmProvider] = useState<LlmRouteRetirement | null>(null);
+  const [deprecatedLlmModel, setDeprecatedLlmModel] = useState<string | null>(null);
   const [activeSubscriptionRuntime, setActiveSubscriptionRuntime] =
     useState<SubscriptionChatRuntimeSelection | null>(null);
   const [subscriptionRuntimeCapabilities, setSubscriptionRuntimeCapabilities] =
@@ -188,10 +213,11 @@ export function useSettings(api: AveApi): UseSettingsResult {
       const provider = narrowLlmVendor(settings.llm.provider);
       const block = getLlmVendorSettings(settings.llm.vendors, provider);
       setLlmVendor(provider);
-      setLlmModel(llmRouteModel(
+      const routeModel = llmRouteModel(
         block,
         provider === "openai-compatible" ? settings.llm.marketplaceProviderPresetId : undefined,
-      ));
+      );
+      setLlmModel(routeModel);
       const route = resolveContextWindowForRoute(
         { ...settings.llm, provider },
         settings.marketplace?.installedProviderPresets,
@@ -204,13 +230,30 @@ export function useSettings(api: AveApi): UseSettingsResult {
       setLlmContextWindow(route.contextWindow);
       setLlmOutputTokenLimit(route.output);
       setLlmInputLimit(route.inputLimit);
+      const nextRoutePricing: ModelPricingRoute = {
+        ...(route.baseUrl !== undefined ? { baseUrl: route.baseUrl } : {}),
+        ...(route.reportedPricing !== undefined ? { reported: route.reportedPricing } : {}),
+      };
+      // Content-compared: every settings broadcast resolves a fresh object, and
+      // a new identity would re-render every chat tile for the same route.
+      setLlmRoutePricing((current) =>
+        JSON.stringify(current) === JSON.stringify(nextRoutePricing) ? current : nextRoutePricing);
       setLlmRouteModalities(route.inputModalities !== undefined ? { inputModalities: route.inputModalities } : {});
       setEnableThinkingChat(block.enableThinking);
       setProcessingDisplayLevel(
         settings.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
       );
       setLlmReadyWithoutApiKey(canUseSettingsWithoutApiKey(settings, provider));
-      setRetiredLlmProvider(isRetiredLLMVendor(settings.llm.retiredProvider) ? settings.llm.retiredProvider : null);
+      const retiredRoute = isLlmRouteRetirement(settings.llm.retiredProvider) ? settings.llm.retiredProvider : null;
+      setRetiredLlmProvider(retiredRoute);
+      // The deprecated tier is the catalog's word alone; a listing that lands
+      // mid-session is judged by the next load, which may block the route.
+      const deprecated = retiredRoute === null && routeModel !== ""
+        && resolveRouteModelRetirement(
+          { ...settings.llm, provider, modelListCache: undefined },
+          settings.marketplace?.installedProviderPresets,
+        ) === "catalog-deprecated";
+      setDeprecatedLlmModel(deprecated ? routeModel : null);
       const nextSubscriptionRuntime = activeSubscriptionRuntimeFromSettings(settings);
       const runtimeChanged = !sameSubscriptionRuntime(
         activeSubscriptionRuntimeRef.current,
@@ -357,11 +400,13 @@ export function useSettings(api: AveApi): UseSettingsResult {
     llmContextWindow,
     llmOutputTokenLimit,
     llmInputLimit,
+    llmRoutePricing,
     llmRouteModalities,
     enableThinkingChat,
     processingDisplayLevel,
     llmReadyWithoutApiKey,
     retiredLlmProvider,
+    deprecatedLlmModel,
     subscriptionRuntimePolicy,
     activeSubscriptionRuntime: subscriptionRuntimePolicy.activeSubscriptionRuntime,
     subscriptionChatReady: subscriptionRuntimePolicy.chatReady,
@@ -426,7 +471,15 @@ export type ModelCardChoice = ApiModelCardChoice | SubscriptionModelCardChoice;
 export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
   const pinned = llm.pinnedModels ?? [];
   const offered = new Map<string, Set<LLMVendor>>();
-  const offer = (vendor: LLMVendor, modelId: string) => {
+  const activeAddress = llmRouteCatalogAddress(llm);
+  const activeListing = llm.modelListCache?.[
+    llmModelListCacheKey(activeAddress.vendor, activeAddress.baseUrl, activeAddress.credentialScope)
+  ];
+  // A retired model is not a choice (design `model-capability-catalog.md` §6.1).
+  const retired = (vendor: LLMVendor, modelId: string, baseUrl?: string, listing?: LlmModelListCacheEntry) =>
+    resolveModelRetirement({ vendor, model: modelId, ...(baseUrl ? { baseUrl } : {}), ...(listing ? { listing } : {}) }) !== undefined;
+  const offer = (vendor: LLMVendor, modelId: string, baseUrl?: string, listing?: LlmModelListCacheEntry) => {
+    if (retired(vendor, modelId, baseUrl, listing)) return;
     let models = offered.get(modelId);
     if (!models) {
       models = new Set();
@@ -443,9 +496,11 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
     // The cache is persisted host data keyed by vendor string; only entries
     // naming a known vendor can be offered as a pick.
     if (!isLLMVendor(entry.vendor)) continue;
-    for (const modelId of entry.models) offer(entry.vendor, modelId);
+    for (const modelId of entry.models) offer(entry.vendor, modelId, entry.baseUrl, entry);
   }
-  for (const modelId of getVendorOption(active).modelOptions) offer(active, modelId);
+  for (const modelId of getVendorOption(active).modelOptions) {
+    offer(active, modelId, activeAddress.baseUrl, activeListing);
+  }
   const activeBlock = llm.vendors[active];
   const currentModel = activeBlock && llmRouteModel(
     activeBlock,
@@ -473,7 +528,12 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
       });
     }
   }
-  if (subscription === null && currentModel && !choices.some((choice) =>
+  // A retired vendor leaves its configured model as an unselected candidate;
+  // a retired model is not offered at all.
+  const currentRetired = currentModel !== undefined && currentModel !== ""
+    && (isRetiredLlmModelMarker(llm.retiredProvider)
+      || retired(active, currentModel, activeAddress.baseUrl, activeListing));
+  if (subscription === null && currentModel && !currentRetired && !choices.some((choice) =>
     choice.kind === "api" && choice.vendor === active && choice.modelId === currentModel
   )) {
     choices.unshift({ kind: "api", vendor: active, vendorLabel: getVendorOption(active).label, modelId: currentModel, current: !llm.retiredProvider });

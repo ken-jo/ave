@@ -675,7 +675,7 @@ describe("usage-stats", () => {
     ).toBe(11_000);
   });
 
-  it("prices OpenAI long-context surcharge per provider request segment, not per Ave turn aggregate", () => {
+  it("prices OpenAI's long-context tier per provider request segment, not per Ave turn aggregate", () => {
     const entries: AuditTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
@@ -701,9 +701,9 @@ describe("usage-stats", () => {
       },
     ];
     const summary = computeUsageSummary(entries, new Date());
-    // Each provider request is below the >272K surcharge threshold:
+    // Each provider request is below the >272K tier:
     // 2 * (200K * $2.50/M) = $1. Aggregating first would incorrectly
-    // surcharge 400K at $5/M = $2.
+    // price 400K at the tier's $5/M = $2.
     expect(summary.perModel[0].cost).toBeCloseTo(1, 5);
   });
 

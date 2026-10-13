@@ -46,7 +46,7 @@ import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import { vendorSupportsLengthContinuation } from "../llm/vendor-capabilities.js";
 import { rejectedToolNameFromError, withoutDroppedTools } from "../llm/rejected-tool-schema.js";
 import { nextToolTrustOrigin, rationaleProvenanceFor } from "./trust-origin.js";
-import { contextBudgetForCurrentRuntime } from "./compaction.js";
+import { contextBudgetForCurrentRuntime, warnUnstatedReasoningOnce } from "./compaction.js";
 import { markStaleToolResults, evictAgedToolResultImages, isContextLengthError } from "../auto-compact.js";
 import { stripSuggestedReplies } from "../suggested-replies.js";
 import { GUIDE_JOINED_MAX_CHARS, mergeGuidanceApprovalReasonPrefixes } from "./guidance-limits.js";
@@ -60,7 +60,7 @@ import { planReasoning } from "../llm/reasoning-plan.js";
 import { activeModelCatalog } from "../../shared/model-catalog/active.js";
 import type { ContextWindowSource } from "../../shared/context-budget.js";
 import type { RunModelSettings } from "../../shared/run-model-settings.js";
-import { resolveModelPricing } from "../../shared/model-pricing.js";
+import { resolveModelPricing, type ModelPricingRoute } from "../../shared/model-pricing.js";
 import { resolvePricingOverrides, type PricingOverride } from "../../shared/pricing-overrides.js";
 import { isA2AQuestionInputRequiredControl } from "../../tools/agent-send.js";
 import {
@@ -286,6 +286,14 @@ export async function queryLoop(
       ? []
       : withoutDroppedTools(self.rebuildToolSchemas(scope), droppedToolSchemaNames);
     let toolSchemas: ToolSchema[] = rebuildTurnToolSchemas();
+    // The primary API route's endpoint and its own price report. A serving
+    // model other than the route's (a fallback) is priced without them.
+    const primaryPricingRoute = subscriptionRuntime
+      ? undefined
+      : {
+          ...(runtimeContextBudget.baseUrl !== undefined ? { baseUrl: runtimeContextBudget.baseUrl } : {}),
+          ...(runtimeContextBudget.reportedPricing !== undefined ? { reported: runtimeContextBudget.reportedPricing } : {}),
+        };
     // Capacity stays fixed for the turn. Reasoning is recorded at each request
     // boundary because a retry can change the tool shape and its wire control.
     const modelSettingsBase: RunModelSettings | undefined = apiRound === undefined || effectiveOutput === undefined
@@ -304,7 +312,7 @@ export async function queryLoop(
           ...(toolsWithheld
             ? { tools: { sent: false as const, source: toolsWithheld.source, catalogEntry: toolsWithheld.catalogEntry } }
             : {}),
-          pricing: resolveModelPricing(llmSettings.provider, model, turnPricingOverrides),
+          pricing: resolveModelPricing(llmSettings.provider, model, turnPricingOverrides, primaryPricingRoute),
         };
     let turnModelSettings: RunModelSettings | undefined;
     const withServingIdentity = (
@@ -399,6 +407,7 @@ export async function queryLoop(
           ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
         },
         turnPricingOverrides,
+        primaryPricingRoute ? { vendor: llmSettings.provider, model, ...primaryPricingRoute } : undefined,
       );
       self.cumulativeUsage.inputTokens += adjustedInput;
       self.cumulativeUsage.outputTokens += usage.outputTokens;
@@ -1045,8 +1054,10 @@ export async function queryLoop(
           budgetTokens: apiRound.thinkingBudgetTokens ?? 10_000,
           baseUrl: runtimeContextBudget.baseUrl,
           catalogModel: apiRound.catalogModel,
+          ...(apiRound.modelCapabilities?.reasoning !== undefined ? { reasoning: apiRound.modelCapabilities.reasoning } : {}),
           request: { hasTools: toolSchemas.length > 0 },
         });
+        warnUnstatedReasoningOnce({ identity: runtimeContextBudget.identity, vendor: llmSettings.provider, model }, reasoning);
         requestModelSettings = { ...modelSettingsBase, ...(reasoning ? { reasoning } : {}) };
       }
       const stream = await collectActiveRuntimeRoundStream(
@@ -2490,6 +2501,8 @@ function appendUsageForServingModel(
   vendorModel: string | undefined,
   usage: TokenUsage,
   pricingOverrides: readonly PricingOverride[],
+  /** The primary route, priced with its endpoint's report when it is the one serving. */
+  primaryRoute?: { vendor: string; model: string } & ModelPricingRoute,
 ): void {
   if (vendorProvider === undefined || vendorModel === undefined) {
     return;
@@ -2497,7 +2510,12 @@ function appendUsageForServingModel(
   usageByModel.push({
     vendorProvider,
     vendorModel,
-    pricing: resolveModelPricing(vendorProvider, vendorModel, pricingOverrides),
+    pricing: resolveModelPricing(
+      vendorProvider,
+      vendorModel,
+      pricingOverrides,
+      primaryRoute?.vendor === vendorProvider && primaryRoute.model === vendorModel ? primaryRoute : undefined,
+    ),
     tokenUsage: {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,

@@ -209,7 +209,9 @@ describe("buildProvider subscription model overrides", () => {
       usableContext: getModelUsableContext("openai", "gpt-5.5-codex"),
       identity: "subscription:codex/gpt-5.5-codex",
       thresholdSource: "context-window",
-      contextWindowSource: "pricing-catalog",
+      // gpt-5.5-codex is not in the catalog; the hand-kept table's "gpt-5"
+      // prefix row answered 400,000 until slice 7.
+      contextWindowSource: "fallback",
     });
   });
 

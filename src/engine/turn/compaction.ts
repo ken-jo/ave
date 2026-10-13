@@ -25,7 +25,7 @@ import {
 } from "../auto-compact.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
-import { FALLBACK_PRICING } from "../../shared/pricing-data.js";
+import { FALLBACK_CONTEXT_WINDOW } from "../../shared/model-host-policy.js";
 import {
   getPreflightThreshold,
   getUsableContext,
@@ -40,6 +40,7 @@ import {
   type LlmRouteSettings,
 } from "../../shared/context-budget.js";
 import { refreshRouteModelList } from "../llm/model-list.js";
+import type { ReasoningPlan } from "../llm/reasoning-plan.js";
 import type { SubscriptionChatRuntimeSelection } from "../../shared/subscription-runtime.js";
 
 const log = createLogger("ave");
@@ -57,7 +58,7 @@ const SUBSCRIPTION_FALLBACK_USABLE_CONTEXT = getUsableContext(
 
 interface RuntimeContextBudget
   extends RouteModelCapabilities,
-    Pick<RouteContextWindow, "catalogEntry" | "inputLimit" | "inputLimitSource" | "baseUrl" | "catalogModel"> {
+    Pick<RouteContextWindow, "catalogEntry" | "inputLimit" | "inputLimitSource" | "baseUrl" | "catalogModel" | "reportedPricing"> {
   readonly model: string;
   readonly preflight: number;
   readonly usableContext: number;
@@ -92,7 +93,7 @@ function warnFallbackContextWindowOnce(identity: string, model: string): void {
   if (fallbackContextWindowWarned.has(identity)) return;
   fallbackContextWindowWarned.add(identity);
   log.warn(
-    `context budget: no context window known for model '${model}' — using the ${FALLBACK_PRICING.contextWindow}-token fallback. `
+    `context budget: no context window known for model '${model}' — using the ${FALLBACK_CONTEXT_WINDOW}-token fallback. `
     + `Declare the endpoint's real capacity as llm.vendors.<vendor>.contextWindow, or sync the provider's model list so it can report one.`,
   );
 }
@@ -111,6 +112,29 @@ function warnUnresolvedCatalogModelOnce(identity: string, catalogModel: string):
   log.warn(
     `context budget: llm.vendors.<vendor>.catalogModel '${catalogModel}' for '${identity}' names no model catalog entry — `
     + "the window comes from the next source. Name an entry as <provider>/<id> from the catalog.",
+  );
+}
+
+const unstatedReasoningWarned = new Set<string>();
+
+/**
+ * Warn once per route that a thinking-enabled request carries no reasoning
+ * control because nobody states the effort levels its model accepts (the
+ * reasoning plan's `host-fallback`). Such a request also asks for no reasoning
+ * summary, so reasoning the user turned on would otherwise vanish from the
+ * turn without a word — on an Azure deployment or a custom endpoint whose
+ * model the catalog cannot identify.
+ */
+export function warnUnstatedReasoningOnce(
+  route: { identity: string; vendor: string; model: string },
+  plan: Pick<ReasoningPlan, "kind" | "source" | "suppressed"> | undefined,
+): void {
+  if (plan === undefined || plan.kind !== "none" || plan.source !== "host-fallback" || plan.suppressed !== undefined) return;
+  if (unstatedReasoningWarned.has(route.identity)) return;
+  unstatedReasoningWarned.add(route.identity);
+  log.warn(
+    `reasoning: no effort levels known for model '${route.model}' on '${route.identity}' — the request carries no reasoning_effort and no reasoning summary. `
+    + `Name the catalog entry the endpoint serves as llm.vendors.${route.vendor}.catalogModel (<provider>/<id>).`,
   );
 }
 
@@ -270,6 +294,8 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
     output: route.output,
     ...(route.inputModalities !== undefined ? { inputModalities: route.inputModalities } : {}),
     ...(route.toolCall !== undefined ? { toolCall: route.toolCall } : {}),
+    ...(route.reasoning !== undefined ? { reasoning: route.reasoning } : {}),
+    ...(route.reportedPricing !== undefined ? { reportedPricing: route.reportedPricing } : {}),
   };
 }
 

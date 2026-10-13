@@ -11,21 +11,28 @@
  *   headroom — single tool-result rounds blow past it. Ave reserves fixed
  *   output/safety buffers (27K / 30K / 40K) to prevent this asymmetric pinch.
  */
-import {
-  effectiveContextWindow,
-  FALLBACK_PRICING,
-  lookupPricingOptional,
-} from "./pricing-data.js";
+import { FALLBACK_CONTEXT_WINDOW, MAX_CREDIBLE_CONTEXT_WINDOW } from "./model-host-policy.js";
 import {
   activeLlmRouteModel,
   getLlmVendorSettings,
+  isLLMVendor,
+  isOpenAICompatiblePresetVendor,
   llmRouteImageInput,
+  OPENAI_COMPATIBLE_VENDOR_PRESETS,
   requestedLlmOutputTokenLimit,
+  type LlmModelRetirementReason,
   type LlmOutputTokenLimitSource,
   type LLMVendor,
   type LLMVendorSettingsMap,
 } from "./llm-vendor-defaults.js";
-import { cachedModelListEntry, type LlmModelListCache } from "./llm-model-list.js";
+import {
+  cachedModelListEntry,
+  llmModelListCacheKey,
+  type LlmModelListCache,
+  type LlmModelListCacheEntry,
+  type LlmModelListPricing,
+} from "./llm-model-list.js";
+import { CATALOG_PROVIDERS_BY_VENDOR } from "./model-catalog/provider-map.js";
 import { activeModelCatalog } from "./model-catalog/active.js";
 import { allowsImplicitModelLimits, lookupCatalogModel, resolveCatalogKey, type CatalogModelHit } from "./model-catalog/resolve.js";
 import type { MarketplaceProviderModelDiscoveryPolicy } from "./marketplace-package-assets.js";
@@ -75,12 +82,9 @@ export function getPreflightThreshold(contextWindow: number, inputLimit?: number
  * Which input the resolved context window came from, in priority order.
  *
  * `model-catalog` is the generated catalog (`docs/design/model-capability-catalog.md`).
- * `pricing-catalog` is the hand-kept `DEFAULT_PRICING` table, still consulted
- * for a model the catalog does not know until issue #2501's last slice
- * removes its context rows.
  *
  * `fallback` means nothing knew the model's real capacity and the conservative
- * {@link FALLBACK_PRICING} window is in use. That is the case worth reporting:
+ * {@link FALLBACK_CONTEXT_WINDOW} is in use. That is the case worth reporting:
  * a served model whose true window is larger gets compacted far earlier than it
  * needs to be, and one whose true window is smaller is never compacted early
  * enough.
@@ -89,7 +93,6 @@ export type ContextWindowSource =
   | "vendor-setting"
   | "provider-reported"
   | "model-catalog"
-  | "pricing-catalog"
   | "fallback";
 
 /**
@@ -114,18 +117,6 @@ export interface ResolvedContextWindow {
 }
 
 /**
- * The largest window a declared or reported value is believed at.
- *
- * Above this the number is far likelier to be a typo or a malformed field than
- * a real deployment: an extra digit on 229,376 reads as 2,293,760, whose
- * preflight threshold no conversation ever reaches, so compaction never runs
- * again and the turn dies on a provider context error instead. The largest
- * window the pricing catalog carries today is 2M, so this admits every real
- * model while refusing an order of magnitude past it.
- */
-export const MAX_CREDIBLE_CONTEXT_WINDOW = 4_000_000;
-
-/**
  * A token count only counts as an answer when it is a usable positive integer
  * within {@link MAX_CREDIBLE_CONTEXT_WINDOW}. Anything else is treated as
  * absent, so the next source answers instead.
@@ -148,8 +139,7 @@ function positiveTokenCount(value: number | undefined): number | undefined {
  * 3. The model catalog's entry: the one the user named for this route
  *    (`llm.vendors.<vendor>.catalogModel`), else the one the vendor's model id
  *    resolves to ({@link resolveCatalogKey}).
- * 4. The hand-kept pricing table's entry, for a model the catalog does not know.
- * 5. The conservative fallback window.
+ * 4. The host's conservative fallback window ({@link FALLBACK_CONTEXT_WINDOW}).
  *
  * The prompt cap is resolved beside the window: the catalog entry's
  * `limits.input`, kept only when it is below the window. A declared window
@@ -177,11 +167,7 @@ export function resolveModelContextWindow(params: {
     if (hit && catalogWindow !== undefined) {
       return { contextWindow: catalogWindow, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` };
     }
-    const pricing = allowsImplicitModelLimits(params.vendor, params.baseUrl)
-      ? lookupPricingOptional(params.vendor, params.model)
-      : undefined;
-    if (pricing) return { contextWindow: effectiveContextWindow(pricing), source: "pricing-catalog" };
-    return { contextWindow: FALLBACK_PRICING.contextWindow, source: "fallback" };
+    return { contextWindow: FALLBACK_CONTEXT_WINDOW, source: "fallback" };
   })();
   const catalogInput = positiveTokenCount(hit?.model.limits.input);
   return hit !== undefined && catalogInput !== undefined && catalogInput < window.contextWindow
@@ -200,6 +186,109 @@ export function catalogModelFor(vendor: string, model: string, catalogModel?: st
   if (catalogModel !== undefined) return lookupCatalogModel(catalog, catalogModel);
   if (!allowsImplicitModelLimits(vendor, baseUrl)) return undefined;
   return resolveCatalogKey(catalog, vendor, model);
+}
+
+/**
+ * Whether a route's own `/models` answer can prove one of its models retired
+ * (design `model-capability-catalog.md` §6.1): a public vendor that serves its
+ * own models, reached on its native host. Local runtimes, self-hosted and
+ * custom endpoints (no catalog provider), gateways, Azure deployments and any
+ * custom `baseUrl` list what that endpoint happens to route, so a missing id
+ * there says nothing about the model. Vertex AI's SDK selects its endpoint
+ * from project and location and never answers a standard `/models`, so a
+ * listing at its key is a dormant `baseUrl`'s (as `resolveContextWindowForRoute`
+ * already treats it).
+ */
+export function listingJudgesRetirement(vendor: string, baseUrl?: string): boolean {
+  if (!isLLMVendor(vendor) || CATALOG_PROVIDERS_BY_VENDOR[vendor].length === 0) return false;
+  if (vendor === "vertex-ai") return false;
+  if (isOpenAICompatiblePresetVendor(vendor) && OPENAI_COMPATIBLE_VENDOR_PRESETS[vendor].gateway) return false;
+  return allowsImplicitModelLimits(vendor, baseUrl);
+}
+
+/**
+ * Which retirement tier `model` is in on this route, or `undefined` when
+ * nothing says it is going away.
+ *
+ * - `"unlisted"` (retired, blocks the route): the route's last successful
+ *   listing was complete, comes from a route that
+ *   {@link listingJudgesRetirement}, and names no id equal to `model` ignoring
+ *   case. A failed, partial or missing listing proves nothing. Only a model
+ *   the active catalog knows by that exact id, under the vendor's mapped
+ *   provider, can be judged: an id it does not know (a fine-tune, an
+ *   account-scoped deployment or endpoint, a model newer than the snapshot)
+ *   may be served without appearing in the public list.
+ * - `"catalog-deprecated"` (deprecated, does not block): the active catalog
+ *   marks the model the route serves `deprecated` — judged only where the
+ *   route itself establishes that identity; a user's `catalogModel`
+ *   declaration describes a model's shape, not whether this host still
+ *   serves it.
+ *
+ * The listing outranks the catalog: a model the vendor no longer serves is
+ * retired even when the catalog only calls it deprecated.
+ */
+export function resolveModelRetirement(params: {
+  vendor: string;
+  model: string;
+  baseUrl?: string;
+  /** The route's last successful `/models` answer, from the settings cache. */
+  listing?: LlmModelListCacheEntry;
+}): LlmModelRetirementReason | undefined {
+  const model = params.model.trim();
+  if (!model) return undefined;
+  const listing = params.listing;
+  const hit = catalogModelFor(params.vendor, model, undefined, params.baseUrl);
+  if (hit?.match === "exact" && listing?.complete === true
+    && listingJudgesRetirement(params.vendor, params.baseUrl)
+    && !listingPredatesRelease(listing, hit.model.releaseDate)) {
+    const wanted = model.toLowerCase();
+    if (!listing.models.some((id) => id.toLowerCase() === wanted)) return "unlisted";
+  }
+  return hit?.model.status === "deprecated" ? "catalog-deprecated" : undefined;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whether a listing was taken before the model existed, by the catalog's
+ * release date: a stale answer cannot prove gone a model released after it
+ * (design `model-capability-catalog.md` §6.1). The whole period the date
+ * names counts as before: the release day, since a listing that day may
+ * predate the launch, and the whole month (or year) of a date the catalog
+ * gives only to that precision. A listing whose time cannot be read is as
+ * stale as one can be.
+ */
+function listingPredatesRelease(listing: LlmModelListCacheEntry, releaseDate: string | undefined): boolean {
+  if (releaseDate === undefined) return false;
+  const releasedBy = releasePeriodEnd(releaseDate);
+  if (releasedBy === undefined) return false;
+  const fetched = Date.parse(listing.fetchedAt);
+  return !Number.isFinite(fetched) || fetched < releasedBy;
+}
+
+/** The first instant after the period a catalog release date names, in UTC. */
+function releasePeriodEnd(releaseDate: string): number | undefined {
+  const month = /^(\d{4})-(\d{2})$/.exec(releaseDate);
+  if (month) return Date.UTC(Number(month[1]), Number(month[2]), 1);
+  const year = /^(\d{4})$/.exec(releaseDate);
+  if (year) return Date.UTC(Number(year[1]) + 1, 0, 1);
+  const released = Date.parse(releaseDate);
+  return Number.isFinite(released) ? released + DAY_MS : undefined;
+}
+
+/** {@link resolveModelRetirement} for a model on the active route's address. */
+export function resolveRouteModelRetirement(
+  llm: LlmRouteSettings,
+  installedProviderPresets?: readonly LlmRouteProviderPreset[],
+  modelOverride?: string,
+): LlmModelRetirementReason | undefined {
+  const address = llmRouteCatalogAddress(llm, installedProviderPresets);
+  return resolveModelRetirement({
+    vendor: address.vendor,
+    model: activeLlmRouteModel(llm, modelOverride),
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
+    listing: llm.modelListCache?.[llmModelListCacheKey(address.vendor, address.baseUrl, address.credentialScope)],
+  });
 }
 
 /** The settings a route's context window is read out of. */
@@ -302,8 +391,8 @@ export interface ResolvedInputModalities {
 /**
  * A model's input modalities: the user's image declaration or named entry,
  * then its endpoint's report, then the catalog match. `undefined` when
- * neither states them, which is unknown, not "text only"; the caller's name
- * rule decides then. An empty reported list states nothing. A reported list is
+ * neither states them: unknown, which the image gate (`supportsVision`) does
+ * not read as image support. An empty reported list states nothing. A reported list is
  * an external value, folded to lower case so `Image` reads as the catalog's `image`.
  */
 export function resolveInputModalities(params: {
@@ -370,9 +459,78 @@ export function resolveToolCallSupport(params: {
     : undefined;
 }
 
+/**
+ * The request parameter an endpoint's `/models` report names for reasoning,
+ * in the order the engine prefers it (design `model-capability-catalog.md`
+ * §5.1): OpenRouter's unified `reasoning` object, the OpenAI-style
+ * `reasoning_effort` level, and the `include_reasoning` switch.
+ */
+const REPORTED_REASONING_CONTROLS = ["reasoning", "reasoning_effort", "include_reasoning"] as const;
+export type ReportedReasoningControl = (typeof REPORTED_REASONING_CONTROLS)[number];
+
+/** Whether a route's model reasons, with the authority that states it. */
+export type ResolvedReasoningSupport =
+  | {
+      readonly supported: true;
+      readonly source: "endpoint-report";
+      /** The parameter the endpoint reported; absent when only a reasoning price says it reasons. */
+      readonly control?: ReportedReasoningControl;
+    }
+  | {
+      readonly supported: boolean;
+      readonly source: "model-catalog";
+      readonly catalogEntry: string;
+      /** The qualitative levels the entry accepts, when it lists them. */
+      readonly efforts?: readonly string[];
+    };
+
+/** What a `/models` row says about reasoning: its parameters and its prices. */
+export interface ReportedReasoningFacts {
+  readonly supportedParameters?: readonly string[];
+  readonly pricing?: { readonly internalReasoning?: string };
+}
+
+/**
+ * One rule for whether a route's model reasons, shared by the settings
+ * chooser and the engine. The user's named catalog entry decides first; then
+ * the endpoint's report — a reasoning parameter in `supported_parameters`, or
+ * an `internal_reasoning` price; then the catalog where the route establishes
+ * the model. A report that names no reasoning parameter is not a denial.
+ * `undefined` means nobody states it (the host fallback).
+ */
+export function resolveReasoningSupport(params: {
+  vendor: string;
+  model: string;
+  reported?: ReportedReasoningFacts;
+  catalogModel?: string;
+  /** The route's endpoint: an implicit name match follows the identity rule (§4). */
+  baseUrl?: string;
+}): ResolvedReasoningSupport | undefined {
+  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl);
+  const stated = hit?.model.reasoning;
+  const fromCatalog: ResolvedReasoningSupport | undefined = hit && stated
+    ? {
+        supported: stated.supported,
+        source: "model-catalog",
+        catalogEntry: `${hit.provider}/${hit.id}`,
+        ...(stated.effort !== undefined ? { efforts: stated.effort } : {}),
+      }
+    : undefined;
+  if (params.catalogModel !== undefined && fromCatalog) return fromCatalog;
+  const reportedParameters = new Set(
+    (params.reported?.supportedParameters ?? []).map((parameter) => parameter.trim().toLowerCase()),
+  );
+  const control = REPORTED_REASONING_CONTROLS.find((candidate) => reportedParameters.has(candidate));
+  if (control !== undefined || params.reported?.pricing?.internalReasoning !== undefined) {
+    return { supported: true, source: "endpoint-report", ...(control !== undefined ? { control } : {}) };
+  }
+  return fromCatalog;
+}
+
 /** Capability facts resolved for one route; absent fields stay unknown. */
 export interface RouteModelCapabilities extends RouteInputModalities {
   readonly toolCall?: ResolvedToolCallSupport;
+  readonly reasoning?: ResolvedReasoningSupport;
 }
 
 export interface RouteContextWindow extends ResolvedContextWindow, RouteModelCapabilities {
@@ -388,6 +546,8 @@ export interface RouteContextWindow extends ResolvedContextWindow, RouteModelCap
    * ceiling; the budget math does not use it.
    */
   readonly maxOutputTokens?: number;
+  /** The prices the route's own `/models` answer reported for this model, for `resolveModelPricing`. */
+  readonly reportedPricing?: LlmModelListPricing;
   /**
    * The output limit a chat request on this route carries, resolved once for
    * the engine and the renderer's cost estimate alike.
@@ -504,15 +664,24 @@ export function resolveContextWindowForRoute(
     ...(catalogModel !== undefined ? { catalogModel } : {}),
     ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
   });
+  const reasoning = resolveReasoningSupport({
+    vendor: llm.provider,
+    model,
+    ...(entry !== undefined ? { reported: entry } : {}),
+    ...(catalogModel !== undefined ? { catalogModel } : {}),
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
+  });
   return {
     ...resolved,
     model,
     ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
     ...(catalogModel !== undefined ? { catalogModel } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    ...(entry?.pricing !== undefined ? { reportedPricing: entry.pricing } : {}),
     output,
     ...(unresolved ? { unresolvedCatalogModel: catalogModel } : {}),
     ...(inputModalities !== undefined ? { inputModalities } : {}),
     ...(toolCall !== undefined ? { toolCall } : {}),
+    ...(reasoning !== undefined ? { reasoning } : {}),
   };
 }

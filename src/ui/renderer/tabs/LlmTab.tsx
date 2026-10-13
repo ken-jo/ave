@@ -34,10 +34,11 @@ import {
 import {
   canUseLlmVendorWithoutApiKey,
   isLLMVendor,
+  isRetiredLlmModelMarker,
   type LLMVendor,
+  type LlmModelRetirementReason,
   isOpenAICompatiblePresetVendor,
   isOpenAICompatibleVendor,
-  isRetiredLlmModel,
   isSelfHostedTrustedNetworkVendor,
   llmRouteModel,
   llmImageInputKey,
@@ -83,7 +84,15 @@ import { TEST_IDS } from "../../../shared/test-ids.js";
 import { formatTokensExact } from "../../../lib/cost-format.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
-import { resolveInputModalities, resolveToolCallSupport, type ResolvedToolCallSupport } from "../../../shared/context-budget.js";
+import {
+  resolveInputModalities,
+  resolveModelRetirement,
+  resolveReasoningSupport,
+  resolveToolCallSupport,
+  type ResolvedReasoningSupport,
+  type ResolvedToolCallSupport,
+} from "../../../shared/context-budget.js";
+import { planReasoning } from "../../../engine/llm/reasoning-plan.js";
 
 export interface FallbackEntry {
   provider: LLMVendor;
@@ -696,6 +705,7 @@ function modelOptionsFor(
   syncedOptions?: readonly string[],
   info: ProviderOption | VendorOption = getVendorInfo(vendorId),
   modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy,
+  isRetired: (model: string) => boolean = () => false,
 ): string[] {
   const hasSynced = Boolean(syncedOptions && syncedOptions.length > 0);
   // Handshake-only: for every provider whose catalogue is the endpoint's word
@@ -723,11 +733,54 @@ function modelOptionsFor(
   }
 
   const currentModel = selectedModel.trim();
-  if (currentModel && !isRetiredLlmModel(currentModel) && !options.includes(currentModel)) {
+  if (currentModel && !options.includes(currentModel)) {
     options.unshift(currentModel);
   }
 
-  return options;
+  // A retired model is not a choice, the saved one included: a saved
+  // selection pointing at one shows as unresolved instead (design
+  // `model-capability-catalog.md` §6.1).
+  return options.filter((option) => !isRetired(option));
+}
+
+/**
+ * Which retirement tier a model is in on the route this cache key names,
+ * judged from the catalog and that route's last successful listing.
+ */
+function modelRetirementOn(
+  cache: LlmModelListCache,
+  modelListKey: string | undefined,
+  vendorId: string,
+): (model: string) => LlmModelRetirementReason | undefined {
+  const [, baseUrl = ""] = modelListKey?.split("\n") ?? [];
+  const listing = modelListKey ? cache[modelListKey] : undefined;
+  return (model) => resolveModelRetirement({
+    vendor: vendorId,
+    model,
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(listing ? { listing } : {}),
+  });
+}
+
+/** Whether a model is in either retirement tier; both are hidden from the pickers. */
+function modelRetiredOn(
+  cache: LlmModelListCache,
+  modelListKey: string | undefined,
+  vendorId: string,
+): (model: string) => boolean {
+  const tier = modelRetirementOn(cache, modelListKey, vendorId);
+  return (model) => tier(model) !== undefined;
+}
+
+/** What a picker whose saved model is hidden shows instead, by tier. */
+function retiredModelPlaceholder(
+  t: (key: string, params?: Record<string, string | number>) => string,
+  reason: LlmModelRetirementReason,
+  model: string,
+): string {
+  return reason === "unlisted"
+    ? t("llmTab.modelRetiredPlaceholder", { model })
+    : t("llmTab.modelDeprecatedPlaceholder", { model });
 }
 
 /**
@@ -785,11 +838,30 @@ function modelEntryPricingLabel(entry: LlmModelListEntry | undefined): string | 
  * carries the signal; the sentence rides on the row's `title`, where it is one
  * hover away instead of one line tall on every row.
  */
-function modelEntryDoesReasoning(entry: LlmModelListEntry | undefined): boolean {
-  if (!entry) return false;
-  if (entry.pricing?.internalReasoning !== undefined) return true;
-  return (entry.supportedParameters ?? []).some((parameter) =>
-    parameter === "reasoning" || parameter === "include_reasoning");
+/**
+ * Whether thinking on this model would send no reasoning effort because
+ * nobody states the levels it accepts: the engine's own plan
+ * (`planReasoning`) answering from the host fallback. The level does not
+ * change that answer, so any budget asks the same question.
+ */
+function reasoningFallsToHost(params: {
+  vendor: LLMVendor;
+  model: string;
+  baseUrl?: string;
+  catalogModel?: string;
+  reasoning?: ResolvedReasoningSupport;
+}): boolean {
+  const plan = planReasoning({
+    vendor: params.vendor,
+    model: params.model,
+    enableThinking: true,
+    budgetTokens: 16_000,
+    ...(params.baseUrl ? { baseUrl: params.baseUrl } : {}),
+    ...(params.catalogModel !== undefined ? { catalogModel: params.catalogModel } : {}),
+    ...(params.reasoning !== undefined ? { reasoning: params.reasoning } : {}),
+    request: { hasTools: false },
+  });
+  return plan?.kind === "none" && plan.source === "host-fallback";
 }
 
 function ModelSelectItemContent({
@@ -798,6 +870,8 @@ function ModelSelectItemContent({
   provider,
   vision,
   toolCall,
+  reasoning,
+  reasoningUnstatedVendor,
   factsOverride,
   tone,
 }: {
@@ -809,6 +883,11 @@ function ModelSelectItemContent({
   vision?: boolean;
   /** The same capability result the request uses to withhold tool definitions. */
   toolCall?: ResolvedToolCallSupport;
+  /** The shared reasoning answer (`resolveReasoningSupport`) the engine plans with. */
+  reasoning?: ResolvedReasoningSupport;
+  /** Set when thinking here would send no effort (host fallback): the vendor whose
+   *  `catalogModel` setting supplies the levels, named in the badge's help. */
+  reasoningUnstatedVendor?: string;
   /** Leading column: who serves this model. The caller decides whether the
    *  catalogue entry may name it — see `UnifiedModelOption.vendorLabel` — and
    *  the fallback chain lists a vendor's own models without one. */
@@ -822,7 +901,7 @@ function ModelSelectItemContent({
   const isFree = entry?.tags?.free === true || isOpenRouterFreeModel(option);
   const isRouter = entry?.tags?.router === true;
   const isLocal = entry?.tags?.local === true;
-  const isReasoning = modelEntryDoesReasoning(entry);
+  const isReasoning = reasoning?.supported === true;
   // Provider is the leading column now, so it is NOT repeated in the trailing
   // facts — those are the numbers that differ between models.
   const facts = factsOverride ? [factsOverride] : [
@@ -857,6 +936,18 @@ function ModelSelectItemContent({
             aria-label={t("llmTab.modelNoToolsHelp")}
           >
             {t("llmTab.modelNoToolsBadge")}
+          </Badge>
+        )}
+        {reasoningUnstatedVendor !== undefined && (
+          <Badge
+            variant="outline"
+            className="h-4 shrink-0 px-1 text-[9px]"
+            data-testid={`llm-tab:model-reasoning-unstated:${option}`}
+            role="note"
+            title={t("llmTab.modelReasoningUnstatedHelp", { vendor: reasoningUnstatedVendor })}
+            aria-label={t("llmTab.modelReasoningUnstatedHelp", { vendor: reasoningUnstatedVendor })}
+          >
+            {t("llmTab.modelReasoningUnstatedBadge")}
           </Badge>
         )}
       </span>
@@ -939,6 +1030,9 @@ interface UnifiedModelOption {
    *  it — the same gate the composer and the send path use. */
   vision?: boolean;
   toolCall?: ResolvedToolCallSupport;
+  reasoning?: ResolvedReasoningSupport;
+  /** The vendor whose `catalogModel` would state the levels, when nobody does. */
+  reasoningUnstatedVendor?: string;
   /** Subscription-side facts, where there is no catalogue entry to read them from. */
   facts?: string;
   /** The provider exposes no model choice — this row IS the provider. */
@@ -1088,6 +1182,8 @@ function UnifiedModelSelect({
           provider={option.vendorLabel}
           {...(option.vision === true ? { vision: true } : {})}
           {...(option.toolCall ? { toolCall: option.toolCall } : {})}
+          {...(option.reasoning ? { reasoning: option.reasoning } : {})}
+          {...(option.reasoningUnstatedVendor ? { reasoningUnstatedVendor: option.reasoningUnstatedVendor } : {})}
           {...(option.facts ? { factsOverride: option.facts } : {})}
           {...(option.unlisted ? { tone: "destructive" as const } : {})}
         />
@@ -1253,9 +1349,7 @@ export function LlmTab(props: LlmTabProps) {
   const activeModelListCredentialScope = selectedMarketplaceProviderPreset?.providerId ?? "";
   const hasOnSave = typeof onSave === "function";
   const trimmedModel = model.trim();
-  const activeModelValue = trimmedModel && !isRetiredLlmModel(trimmedModel)
-    ? trimmedModel
-    : vendorInfo.defaultModel;
+  const activeModelValue = trimmedModel || vendorInfo.defaultModel;
   const [marketplaceProviderIds, setMarketplaceProviderIds] = useState<readonly string[]>([]);
   /** What is actually stored for each vendor, mirrored so the typed fields can
    *  say whether they still hold something uncommitted. */
@@ -1442,6 +1536,7 @@ export function LlmTab(props: LlmTabProps) {
               endpoint: result.endpoint,
               models: result.models,
               ...(result.modelEntries ? { modelEntries: result.modelEntries } : {}),
+              ...(result.complete ? { complete: true } : {}),
               fetchedAt: result.fetchedAt,
             };
             const nextCache = {
@@ -2109,8 +2204,11 @@ export function LlmTab(props: LlmTabProps) {
     const selectedModel = rowCredentialId(row) === activeApiRowId
       ? activeModelValue
       : rowSavedModel(row);
-    return modelOptionsFor(vendorId, selectedModel, synced, rowInfo, discoveryPolicy);
-  }, [activeApiRowId, activeModelValue, installedPresetById, modelLists, rowSavedModel]);
+    return modelOptionsFor(
+      vendorId, selectedModel, synced, rowInfo, discoveryPolicy,
+      modelRetiredOn(savedModelListCache, row.modelListKey, vendorId),
+    );
+  }, [activeApiRowId, activeModelValue, installedPresetById, modelLists, rowSavedModel, savedModelListCache]);
 
   /**
    * What stops this row's API route from answering a chat turn, or null.
@@ -2205,12 +2303,28 @@ export function LlmTab(props: LlmTabProps) {
         // An exact live report first; otherwise the report the engine and the
         // badges below match under the same rule, so one row never mixes two.
         const entry = entries.get(modelId) ?? savedEntry;
+        const rowCatalogModel = row.presetId ? undefined : savedVendorBlocks[row.apiVendorId]?.catalogModel;
         const toolCall = resolveToolCallSupport({
           vendor: row.apiVendorId,
           model: modelId,
           baseUrl: reportedBaseUrl || undefined,
           reported: savedEntry?.supportedParameters,
-          catalogModel: row.presetId ? undefined : savedVendorBlocks[row.apiVendorId]?.catalogModel,
+          catalogModel: rowCatalogModel,
+        });
+        // The same reasoning answer the engine plans the request with.
+        const reasoning = resolveReasoningSupport({
+          vendor: row.apiVendorId,
+          model: modelId,
+          ...(reportedBaseUrl ? { baseUrl: reportedBaseUrl } : {}),
+          ...(savedEntry ? { reported: savedEntry } : {}),
+          ...(rowCatalogModel !== undefined ? { catalogModel: rowCatalogModel } : {}),
+        });
+        const reasoningUnstated = visionVendor !== null && reasoningFallsToHost({
+          vendor: visionVendor,
+          model: modelId,
+          ...(reportedBaseUrl ? { baseUrl: reportedBaseUrl } : {}),
+          ...(rowCatalogModel !== undefined ? { catalogModel: rowCatalogModel } : {}),
+          ...(reasoning !== undefined ? { reasoning } : {}),
         });
         options.push({
           value,
@@ -2222,6 +2336,8 @@ export function LlmTab(props: LlmTabProps) {
           modelId,
           ...(entry ? { entry } : {}),
           ...(toolCall ? { toolCall } : {}),
+          ...(reasoning ? { reasoning } : {}),
+          ...(reasoningUnstated ? { reasoningUnstatedVendor: row.apiVendorId } : {}),
           // This row's own endpoint report, else the catalog entry for its id.
           ...(visionVendor && supportsVision(visionVendor, modelId, {
             inputModalities: resolveInputModalities({
@@ -2278,9 +2394,17 @@ export function LlmTab(props: LlmTabProps) {
     unlistedModel, subscription.providers, savedVendorBlocks, savedModelListCache, t,
   ]);
 
+  // The saved model is hidden from the chooser in either retirement tier, so
+  // the trigger names it and the tier instead of pointing at no option.
+  const activeModelRetirement = isRetiredLlmModelMarker(retiredLlmProvider)
+    ? retiredLlmProvider.reason
+    : modelRetirementOn(savedModelListCache, activeSyncRow?.modelListKey, vendor)(activeModelValue);
   const selectedUnifiedValue = subscription.activeRuntime.kind === "subscription"
     ? unifiedValue(subscription.activeRuntime.provider, subscription.activeRuntime.model ?? "")
-    : retiredLlmProvider ? "" : unifiedValue(apiProviderId(activeApiRowId), activeModelValue);
+    : retiredLlmProvider || activeModelRetirement ? "" : unifiedValue(apiProviderId(activeApiRowId), activeModelValue);
+  const unifiedPlaceholder = subscription.activeRuntime.kind === "api" && activeModelRetirement
+    ? retiredModelPlaceholder(t, activeModelRetirement, isRetiredLlmModelMarker(retiredLlmProvider) ? retiredLlmProvider.model : activeModelValue)
+    : vendorInfo.defaultModel;
 
   /**
    * A pick moves BOTH halves of the decision: which provider answers, and with
@@ -3120,7 +3244,7 @@ export function LlmTab(props: LlmTabProps) {
               onValueChange={handleUnifiedModelChange}
               pinned={pinnedModels}
               onTogglePin={handleTogglePin}
-              placeholder={vendorInfo.defaultModel}
+              placeholder={unifiedPlaceholder}
               popupClassName={SELECT_POPUP_LAYOUT}
               disabled={subscription.props.chatSelectionBusy ?? false}
             />
@@ -3254,14 +3378,23 @@ export function LlmTab(props: LlmTabProps) {
               {fallbackChain.map((entry, idx) => {
                 const fallbackVendorInfo = getVendorInfo(entry.provider);
                 const trimmedFallbackModel = entry.model.trim();
-                const fallbackModelValue = trimmedFallbackModel && !isRetiredLlmModel(trimmedFallbackModel)
-                  ? trimmedFallbackModel
-                  : fallbackVendorInfo.defaultModel;
-                const fallbackModelList = modelLists[vendorModelListKey(entry.provider)];
+                const fallbackModelListKey = vendorModelListKey(entry.provider);
+                const fallbackModelRetired = modelRetiredOn(savedModelListCache, fallbackModelListKey, entry.provider);
+                const savedFallbackModel = trimmedFallbackModel || fallbackVendorInfo.defaultModel;
+                // A saved fallback at a retired or deprecated model stays
+                // unselected until the user picks another; it is not swapped
+                // for a default.
+                const fallbackRetirement = modelRetirementOn(savedModelListCache, fallbackModelListKey, entry.provider)(savedFallbackModel);
+                const retiredFallbackModel = fallbackRetirement ? savedFallbackModel : null;
+                const fallbackModelValue = retiredFallbackModel ? "" : savedFallbackModel;
+                const fallbackModelList = modelLists[fallbackModelListKey];
                 const fallbackModelOptions = modelOptionsFor(
                   entry.provider,
                   fallbackModelValue,
                   optionsFromModelListState(fallbackModelList),
+                  undefined,
+                  undefined,
+                  fallbackModelRetired,
                 );
                 return (
                   <div key={idx} className="flex min-w-0 flex-col gap-2 sm:flex-row">
@@ -3294,26 +3427,40 @@ export function LlmTab(props: LlmTabProps) {
                       }}
                     >
                       <SelectTrigger className="min-w-0 flex-1 text-xs">
-                        <SelectValue placeholder={fallbackVendorInfo.defaultModel} />
+                        <SelectValue
+                          placeholder={retiredFallbackModel && fallbackRetirement
+                            ? retiredModelPlaceholder(t, fallbackRetirement, retiredFallbackModel)
+                            : fallbackVendorInfo.defaultModel}
+                        />
                       </SelectTrigger>
                       <SelectContent className={SELECT_POPUP_LAYOUT}>
-                        {fallbackModelOptions.map((option) => (
-                          <SelectItem key={option} value={option}>
-                            <ModelSelectItemContent
-                              option={option}
-                              toolCall={resolveToolCallSupport({
-                                vendor: entry.provider,
-                                model: option,
-                                // The engine builds a fallback on its vendor block's saved
-                                // endpoint (provider.ts) and matches it under that endpoint's
-                                // identity, with no route catalog entry or report.
-                                ...(entry.provider !== "vertex-ai" && savedVendorBlocks[entry.provider]?.baseUrl
-                                  ? { baseUrl: savedVendorBlocks[entry.provider]!.baseUrl }
-                                  : {}),
-                              })}
-                            />
-                          </SelectItem>
-                        ))}
+                        {fallbackModelOptions.map((option) => {
+                          // The engine builds a fallback on its vendor block's saved
+                          // endpoint (provider.ts) and matches it under that endpoint's
+                          // identity, with no route catalog entry or report.
+                          const fallbackRoute = {
+                            vendor: entry.provider,
+                            model: option,
+                            ...(entry.provider !== "vertex-ai" && savedVendorBlocks[entry.provider]?.baseUrl
+                              ? { baseUrl: savedVendorBlocks[entry.provider]!.baseUrl }
+                              : {}),
+                          };
+                          const fallbackReasoning = resolveReasoningSupport(fallbackRoute);
+                          const fallbackReasoningUnstated = reasoningFallsToHost({
+                            ...fallbackRoute,
+                            ...(fallbackReasoning !== undefined ? { reasoning: fallbackReasoning } : {}),
+                          });
+                          return (
+                            <SelectItem key={option} value={option}>
+                              <ModelSelectItemContent
+                                option={option}
+                                toolCall={resolveToolCallSupport(fallbackRoute)}
+                                {...(fallbackReasoning ? { reasoning: fallbackReasoning } : {})}
+                                {...(fallbackReasoningUnstated ? { reasoningUnstatedVendor: entry.provider } : {})}
+                              />
+                            </SelectItem>
+                          );
+                        })}
                       </SelectContent>
                     </Select>
                     <Button
