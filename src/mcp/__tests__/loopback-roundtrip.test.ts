@@ -1,6 +1,6 @@
 /**
  * End-to-end proof of the "plugin as MCP server" round-trip (#1230):
- * a Ave plugin manifest → PluginMcpServer → LoopbackTransport → McpClient →
+ * an Ave plugin manifest → PluginMcpServer → LoopbackTransport → McpClient →
  * discovered tools registered in the ToolRegistry → tools/call delegated back.
  * No sockets, no subprocess — the first-party in-process path.
  */

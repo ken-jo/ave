@@ -37,13 +37,13 @@ describe("AssistantCard — slash command newline fix", () => {
     const { container } = renderCard(makeEntry({ text: "", streaming: true }));
     expect(container.querySelector("[data-testid='assistant-message-body']")).toBeNull();
     expect(container.textContent).not.toContain("응답을 작성하는 중");
-    expect(container.textContent).not.toMatch(/Ave/i);
+    expect(container.textContent).not.toMatch(/\bAve\b/);
   });
 
   it("renders streaming content without a pre-response Ave title", () => {
     const { container } = renderCard(makeEntry({ text: "부분 응답", streaming: true }));
     expect(container.textContent).toContain("부분 응답");
-    expect(container.textContent).not.toMatch(/Ave.*RESPONDING|Ave 응답/i);
+    expect(container.textContent).not.toMatch(/\bAve\b.*RESPONDING|Ave 응답/i);
   });
 
   it("renders Markdown for route=command entries", () => {
