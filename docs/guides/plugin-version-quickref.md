@@ -16,7 +16,7 @@ This page owns extension compatibility rules, manifest version expectations, app
 - Korean-only material stays in the mirrored archive unless it is translated or summarized here.
 - Extension repositories vendor `src/plugins/public-contract.ts`,
   `schemas/plugin-manifest.schema.json` and
-  `schemas/plugin-host-protocol/2/protocol.schema.json` unchanged into `contract/`
+  `schemas/plugin-host-protocol/3/protocol.schema.json` unchanged into `contract/`
   at an app release tag. `contract/sources.json` records the source
   repository, the tag and each file's hash.
   The official marketplace monorepo `ken-jo/agent-marketplace` shares one root
@@ -28,8 +28,9 @@ This page owns extension compatibility rules, manifest version expectations, app
   The marketplace descriptor's `minAppVersion` must equal it.
 - Official extensions are developed in `ken-jo/agent-marketplace` under
   `plugins/<name>/source/`. Raise `version` in `plugin.json` and `package.json`
-  together (an extension for app 0.12.0 or later also declares
-  `requires.hostProtocol: "2"`) and merge; the release workflow builds `<name>-<version>.zip`, tags
+  together (an extension for app 0.14.0 or later also declares
+  `requires.hostProtocol: "3"` and `requires.minAppVersion: "0.14.0"`; apps
+  0.12–0.13 used protocol `"2"` on the `ave/*` wire, which Ave rejects) and merge; the release workflow builds `<name>-<version>.zip`, tags
   `<name>-v<version>`, and opens a pull request that pins the zip's sha256 in
   the descriptor. Merging that pull request publishes the version. Versions
   strictly increase and a published version never moves to another commit.

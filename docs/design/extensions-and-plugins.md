@@ -3,6 +3,17 @@
 Plugin names such as `mail`, `portal`, `assistant` and `ave-plugin-repo` in this
 record are generic stand-ins for plugins that are no longer part of this project.
 
+**Current contract.** The app is Ave and serves host protocol `"3"` only, the `ave/*`
+wire (`HOST_PROTOCOL_VERSIONS_SERVED`, `src/plugins/isolation/host-api-wire.ts:56`).
+An extension for app 0.14.0 or later declares
+`extensions["ai.agent-connector.ave"].requires.hostProtocol: "3"` and
+`requires.minAppVersion: "0.14.0"`, vendors
+`schemas/plugin-host-protocol/3/protocol.schema.json`, and a package is published
+with an `ave-package.json` descriptor; the user data folder is `~/.ave`. A protocol `2`
+package (the `ave/*` wire of apps 0.12–0.13) is refused before activation. The
+`ai.agent-connector.ave` manifest key and directory are unchanged. Where §6.3-6.4 below say
+`hostProtocol: "2"`, they record the 0.12.0 Lease wave, not the current rule.
+
 Status: design, decided by owner direction of 2026-09-27 and the owner decisions
 recorded in §8; implementation follows the slices of §7. This page supersedes
 [`../architecture/proposals/plugin-concept-vs-portable-standard.md`](../architecture/proposals/plugin-concept-vs-portable-standard.md)
@@ -1336,7 +1347,8 @@ which this design preserves (§2.1 item 3).
 
 What this section does **not** promise: that an installed pre-0.12.0 artifact keeps
 loading on 0.12.0. That is the amendment's cutoff (§6.4, "Cost, stated"): every code
-package built before X is refused on X until republished with `hostProtocol: "2"`. The
+package built before X is refused on X until republished with `hostProtocol: "2"` (on
+0.14.0 and later the declaration is `"3"`, see Current contract). The
 refusal and its update path are the amendment's, and the word "extension" changes
 neither.
 
@@ -1352,7 +1364,8 @@ requirement, not this page's, and happens regardless.
 ### 6.4 The Lease 0.12.0 cutoff: an opportunity, not a dependency
 
 The amendment fixes app 0.12.0 as the protocol-2 boundary (decision 9) and republishes
-every extension after its v0.11.0 alerts version, with `hostProtocol: "2"` and
+every extension after its v0.11.0 alerts version (the 0.14.0 protocol-3 wave repeats this
+with `"3"`), with `hostProtocol: "2"` and
 `minAppVersion` 0.12.0, in the sequence of amendment §9.5 (candidates against a packaged
 candidate app → app tag with a draft installer → re-vendor and publish every
 replacement, pins and both index files → publish the draft → alias). This design has no

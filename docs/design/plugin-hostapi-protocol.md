@@ -5,10 +5,26 @@ record are generic stand-ins for plugins that are no longer part of this project
 
 The code packages described here are called extensions in user-facing copy.
 
+**Current contract.** The app is Ave, and it serves host protocol `"3"` only
+(`HOST_PROTOCOL_VERSIONS_SERVED`, `src/plugins/isolation/host-api-wire.ts:56`;
+introduced by `332696eef`). Protocol 3 is the `ave/*` wire described in §3: host
+methods are `ave/host/*`, instance methods `ave/instance/*`, and invocation metadata
+travels in `_meta["ave/invocation"]`. Its schema and generated client are
+`schemas/plugin-host-protocol/3/protocol.schema.json` and
+`schemas/plugin-host-protocol/3/protocol-client.ts`; the golden fixtures live under
+`src/plugins/isolation/__tests__/fixtures/host-protocol/3/`. An extension for app
+0.14.0 or later declares `extensions["ai.agent-connector.ave"].requires.hostProtocol: "3"` and
+`requires.minAppVersion: "0.14.0"`; a protocol `2` package (the `ave/*` wire served
+by apps 0.12–0.13) is refused before activation and must be re-vendored from an Ave
+release tag. Where a step or decision below says `hostProtocol: "2"`, `…/2/…` or
+names an `ave-plugin-*` repository, it records that step at its pinned commit and
+is not the current rule.
+
 Status: design, decided; the wire step (§9.4) is implemented on `main`; the Lease step
 (§9.1, §4.1, §9.5) was amended on 2026-09-27 with decisions 8-26 (§13), in two rounds
 of independent review, and shipped as v0.12.0; the Publication step has its
-implementation plan in §9.7 (2026-09-28, decisions 27-47) and targets 0.13.0. It follows
+implementation plan in §9.7 (2026-09-28, decisions 27-47) and targets 0.13.0; Admission
+(§9.8, decisions 48-62) and the move to protocol `3` on the `ave/*` wire target 0.14.0. It follows
 the retirement of the `ave-plugin-sdk` repository: a plugin repository now vendors the
 contract (`public-contract.ts` and the manifest schema) from ave at a release tag and
 holds the copy to a recorded sha256 (`docs/design/multi-source-git-marketplace.md` §5.6;
@@ -785,7 +801,7 @@ typed client that receives a `data.code` it does not know throws a generic
 
 **Lease additions to the closed set (decision 16).** The set at `f1a8d191e`
 (`HOST_API_WIRE_ERROR_CODES`, `host-api-wire.ts:540-560`) has no lease or rate-limit
-category. Protocol `2` adds exactly these four codes; each is a thrown error on the
+category. Protocol `2` added exactly these four codes, and protocol `3` keeps them; each is a thrown error on the
 member that hit it, never a resolver `ok: false` (those are business outcomes and
 stay a result, §4.1.5):
 
@@ -1408,9 +1424,9 @@ and the acceptance tests of §9.1 assert its absence in every official caller.
 | `meeting` (official repository at `6a4d3b3`) | out of process (`out-of-process-plugins.ts:856-858`); two Bearer-authenticated STT requests in the Whisper adapter, chunk STT `plugins/meeting/source/src/adapters/openaiWhisperSttProvider.ts:169-198` (live chunks of at most 6 s, `:176-180`) and file STT `:270-309`, built from `handle.bearer()` (`src/hostPlugin.ts:1911`); `sttFetch` forwards `init` unchanged to `hostFetch` (`:1359-1380`); release on session abort (`:1877-1892`); private resolver cast (`:1853-1857`); **two upload routes**: the direct `meeting_upload_file` accepts up to 25 MiB (`:191`, `:4112-4136`) and passes the whole decoded file to `pipeline.ingestAudioFile` (`:4155-4159`), while the staged route accepts up to 500 MiB (`:198`, `:435-436`), segments through FFmpeg into 30 s 16 kHz mono PCM (`:201`, `:672-685`, `:2431-2436`) and throws on a segment over the cap (`:2451-2452`); the FFmpeg download is a no-auth fetch (`src/ffmpegRuntime.ts:424-433`) | one lease per STT session (`purpose: "stt"`); the adapter sends `auth: { lease }` and no `Authorization`; plugin-owned-key mode keeps its own header on no-lease requests; FFmpeg download stays a no-lease request; the cast is replaced by `ApiKeyLease`; `FormData` bodies, the serialized-multipart cap and the routing of both upload entry points are the prerequisites of §8 |
 | `local-indexer` (official repository at `6a4d3b3`) | out of process; the Python worker holds a per-session broker token only (`x-ave-egress-token`, `src/workerClient.ts:472-474`; `worker/embedding_client.py:159-167`, `:264`); the JS egress broker in the plugin child resolves the channel, injects the provider header (`src/egressBroker.ts:393-399`) and relays through `egressUpstreamFetch`, which is `hostApi.hostFetch` (`src/hostPlugin.ts:1572-1596`, wired at `:1698-1703`); the channel callbacks pass `null` handles so the reader branches reach the host key through `getSecret` (`:1629-1645` → `:1190`, `:1202` → `:1062`) | **broker with host lease attachment (decision 10)**: the broker keeps the worker token path and the Python credential routing unchanged (the worker's retry predicate does change, below); for each upstream request it resolves a lease (`purpose` `embedding` or `vision`, `vendor` from the channel), relays with `auth: { lease }` and no `api-key`/`Authorization`, awaits the **complete** buffered upstream body (the relay is already buffered, `:402-409`), then releases in `finally`; the worker's abort is linked to the use's `signal`. Plugin-owned-key mode (`readApiKeySource() !== "host"`) keeps its own header on a no-lease request. A maintained per-channel lease was rejected for the first release: it needs refresh/revoke state in the broker and a stale scan handle would be reused by query-time search (`worker/local_indexer_worker.py:573-587`); per-request costs one resolve and one release notification per upstream call, priced in §7.4, and is revisited only on measured evidence. There is no raw exception: a Python SDK on the worker side never held the shared key on the production path and does not need to. Error translation is below |
 | `mail` | obtains its own OAuth token and sends it through the host-bound transport (`:82`, `:35`, `runtime-http.ts:102-107`); `getSecret` appears only as an interface member (`src/hostPlugin.ts:84`) | no-lease requests; unchanged |
-| `portal` (`2f17388`) | bound transport (`src/hostTransport.ts:45-52`); cookie/refresh export as in §4.1 | unchanged by Lease; rebuilt and republished for `hostProtocol: "2"` |
-| `git` (`d71fb95`) | in process; direct `fetch` with cookie and GitHub auth (`src/hostPlugin.ts:797-806`) and with plugin LLM keys (`:920-932`); `~` expansion of `dataDirectory` (`:824-834`) written under (`:1140`) | rebuilt and republished for `hostProtocol: "2"` under the generic rule; the direct-fetch and external-directory migrations are Admission prerequisites (§9.1, §9.2 item 7), not Lease work |
-| `assistant`, `hello-world`, `templates/plugin` | no credential surface | republished for `hostProtocol: "2"` (assistant only if it is not already revoked by the alerts release, §9.5) |
+| `portal` (`2f17388`) | bound transport (`src/hostTransport.ts:45-52`); cookie/refresh export as in §4.1 | unchanged by Lease; rebuilt and republished for `hostProtocol: "2"` (the 0.12.0 wave; `"3"` since 0.14.0, see Current contract) |
+| `git` (`d71fb95`) | in process; direct `fetch` with cookie and GitHub auth (`src/hostPlugin.ts:797-806`) and with plugin LLM keys (`:920-932`); `~` expansion of `dataDirectory` (`:824-834`) written under (`:1140`) | rebuilt and republished for `hostProtocol: "2"` under the generic rule (the 0.12.0 wave; `"3"` since 0.14.0); the direct-fetch and external-directory migrations are Admission prerequisites (§9.1, §9.2 item 7), not Lease work |
+| `assistant`, `hello-world`, `templates/plugin` | no credential surface | republished for `hostProtocol: "2"` (the 0.12.0 wave; `"3"` since 0.14.0; assistant only if it is not already revoked by the alerts release, §9.5) |
 
 **Broker and worker error translation for `local-indexer`.** Today every thrown upstream
 error becomes HTTP 504 so the worker's tenacity retry and BM25-only fallback engage
@@ -5015,7 +5031,7 @@ The pre-push hook's fixed lock selections are defined in
 ##### A2. The adversarial fixture
 
 *Where it lives.* `src/plugins/isolation/__tests__/fixtures/adversarial/` — `plugin.json`
-(protocol `2`, `minAppVersion: "0.14.0"`, `networkAccess.allowedDomains: ["example.com"]`,
+(protocol `3`, `minAppVersion: "0.14.0"`, `networkAccess.allowedDomains: ["example.com"]`,
 `sandbox.write: [{ kind: "userChosenDirectory", configKey: "escapeDir", why: "the
 escape test's probe directory" }]`, `configSchema.properties.escapeDir` string, four tools),
 `entry.mjs` (the four tools and the `patch()` helper the control imports),

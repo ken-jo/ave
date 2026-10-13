@@ -154,7 +154,7 @@ or spoof another extension id.
 A JavaScript extension reaches the bridge through the `PluginHostApi` object it is
 handed. Underneath, each member is a JSON-RPC `ave/host/*` request on the
 extension's own stdio, and `schemas/plugin-host-protocol/3/protocol.schema.json`
-(protocol `2`, the version the host serves) describes every method, notification
+(protocol `3`, the version the host serves) describes every method, notification
 and error code of that channel. The file is generated from the host's own sources
 at each app release, so it describes what the host actually serves. To validate a frame, compile a method's `params`,
 `result`, `errors` or `events` sub-schema (for example
