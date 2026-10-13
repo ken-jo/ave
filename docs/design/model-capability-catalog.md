@@ -581,9 +581,9 @@ two-tier); nothing else puts it there, and the host keeps no list of retired nam
   `next_page_token`, `nextPageToken`) and every id fit the cache cap; the settings
   normalizer drops the flag when it truncates. A failed, partial or absent listing — and
   every cache entry written before the flag existed — proves nothing: unknown, not
-  retired. Neither does a stale one: a listing taken before the end of the day the
-  catalog says the model was released (or whose time cannot be read) cannot prove that
-  model gone.
+  retired. Neither does a stale one: a listing taken before the end of the period the
+  catalog says the model was released in — the day, or the whole month for a date given
+  only as `YYYY-MM` — (or whose time cannot be read) cannot prove that model gone.
 - **Deprecated (`"catalog-deprecated"`) — the catalog.** The active catalog marks the
   model `status: "deprecated"`. Judged only where the route itself establishes the model
   (`catalogModelFor` without a named entry, §4): a user's `catalogModel` declaration

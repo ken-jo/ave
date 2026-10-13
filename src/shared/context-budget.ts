@@ -252,16 +252,28 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /**
  * Whether a listing was taken before the model existed, by the catalog's
  * release date: a stale answer cannot prove gone a model released after it
- * (design `model-capability-catalog.md` §6.1). The release day counts as
- * after, since a listing that day may predate the launch. A listing whose
- * time cannot be read is as stale as one can be.
+ * (design `model-capability-catalog.md` §6.1). The whole period the date
+ * names counts as before: the release day, since a listing that day may
+ * predate the launch, and the whole month (or year) of a date the catalog
+ * gives only to that precision. A listing whose time cannot be read is as
+ * stale as one can be.
  */
 function listingPredatesRelease(listing: LlmModelListCacheEntry, releaseDate: string | undefined): boolean {
   if (releaseDate === undefined) return false;
-  const released = Date.parse(releaseDate);
-  if (!Number.isFinite(released)) return false;
+  const releasedBy = releasePeriodEnd(releaseDate);
+  if (releasedBy === undefined) return false;
   const fetched = Date.parse(listing.fetchedAt);
-  return !Number.isFinite(fetched) || fetched < released + DAY_MS;
+  return !Number.isFinite(fetched) || fetched < releasedBy;
+}
+
+/** The first instant after the period a catalog release date names, in UTC. */
+function releasePeriodEnd(releaseDate: string): number | undefined {
+  const month = /^(\d{4})-(\d{2})$/.exec(releaseDate);
+  if (month) return Date.UTC(Number(month[1]), Number(month[2]), 1);
+  const year = /^(\d{4})$/.exec(releaseDate);
+  if (year) return Date.UTC(Number(year[1]) + 1, 0, 1);
+  const released = Date.parse(releaseDate);
+  return Number.isFinite(released) ? released + DAY_MS : undefined;
 }
 
 /** {@link resolveModelRetirement} for a model on the active route's address. */

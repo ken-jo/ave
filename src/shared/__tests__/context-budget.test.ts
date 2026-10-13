@@ -1039,6 +1039,17 @@ describe("resolveModelRetirement — design §6.1", () => {
     expect(resolveModelRetirement({ vendor: "openai", model: "gpt-5.4", listing: listing(["gpt-4o"]) })).toBe("unlisted");
   });
 
+  it("reads a release date given only to the month as the whole month", () => {
+    // The catalog dates qwen-mt-plus only as 2025-01: a listing from inside
+    // January may predate the release, so it proves nothing.
+    expect(activeModelCatalog().providers["alibaba-cn"]?.models["qwen-mt-plus"]?.releaseDate).toBe("2025-01");
+    const qwen = (fetchedAt: string) => ({ ...listing(["qwen-plus"]), vendor: "qwen", fetchedAt });
+    expect(resolveModelRetirement({ vendor: "qwen", model: "qwen-mt-plus", listing: qwen("2025-01-20T00:00:00.000Z") }))
+      .toBeUndefined();
+    expect(resolveModelRetirement({ vendor: "qwen", model: "qwen-mt-plus", listing: qwen("2025-02-01T00:00:00.000Z") }))
+      .toBe("unlisted");
+  });
+
   it("never judges Vertex AI from a listing: its SDK answers no standard /models", () => {
     expect(listingJudgesRetirement("vertex-ai")).toBe(false);
     expect(resolveModelRetirement({ vendor: "vertex-ai", model: "gemini-3.5-flash", listing: listing(["other"]) }))
