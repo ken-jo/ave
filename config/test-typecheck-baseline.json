@@ -48,7 +48,7 @@
     "src/engine/llm/vercel/__tests__/snapshot-azure.test.ts": 4,
     "src/engine/llm/vercel/__tests__/snapshot-claude.test.ts": 9,
     "src/engine/llm/vercel/__tests__/snapshot-gemini.test.ts": 2,
-    "src/engine/llm/vercel/__tests__/snapshot-openai.test.ts": 20,
+    "src/engine/llm/vercel/__tests__/snapshot-openai.test.ts": 16,
     "src/engine/turn/__tests__/rationale-conversation-orchestration.test.ts": 5,
     "src/engine/turn/__tests__/rationale-query-loop-orchestration.test.ts": 14,
     "src/engine/turn/__tests__/rationale-real-stack.integration.test.ts": 3,
