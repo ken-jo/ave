@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CATALOG_PROVIDERS_BY_VENDOR } from "../provider-map.js";
 import {
   MODELS_DEV_MODEL_FIELDS,
   normalizeModelsDevProviders,
@@ -16,6 +17,9 @@ function normalizeOne(model: Record<string, unknown>) {
 }
 
 describe("normalizeModelsDevProviders", () => {
+  it("does not retain a catalog row for a retired vendor", () => {
+    expect(Object.hasOwn(CATALOG_PROVIDERS_BY_VENDOR, "copilot")).toBe(false);
+  });
   it("keeps an unstated fact absent instead of filling it in", () => {
     const { model, diagnostics } = normalizeOne({ id: "modelone" });
     expect(model).toEqual({ id: "modelone", limits: {} });

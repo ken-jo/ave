@@ -2,6 +2,7 @@
 # App-owned pre-push hook (installed by scripts/hooks/install.mjs, which points
 # core.hooksPath at scripts/hooks). Delegates to the ave-owned runner —
 # no external dev-tools checkout required. Bypass once: AVE_HOOKS_SKIP=1.
+# Force the full checks for one push: AVE_PREPUSH_FULL=1.
 set -eu
 
 if [ "${AVE_HOOKS_SKIP:-}" = "1" ] || [ "${SKIP_AVE_HOOKS:-}" = "1" ]; then

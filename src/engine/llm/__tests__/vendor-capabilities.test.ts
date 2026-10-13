@@ -45,18 +45,18 @@ describe("supportsVision", () => {
   });
 
   it("refuses images where nobody states the modalities, whatever the name", () => {
-    // Before slice 7 a name rule let these through: Copilot maps to no catalog
-    // provider, a custom endpoint does not establish the model, and the dated
+    // Before slice 7 a name rule let these through: an Azure deployment name
+    // does not establish the model, nor does a custom endpoint, and the dated
     // Claude 3 id is not in the catalog.
-    expect(supportsVision("copilot", "gpt-4.1")).toBe(false);
-    expect(supportsVision("copilot", "gpt-3.5-turbo")).toBe(false);
+    expect(supportsVision("azure-foundry", "gpt-4.1")).toBe(false);
+    expect(supportsVision("azure-foundry", "gpt-3.5-turbo")).toBe(false);
     expect(supportsVision("claude", "claude-3-5-sonnet-20241022")).toBe(false);
     expect(supportsVision("openrouter", "qwen-vl-max-fixture")).toBe(false);
     expect(supportsVision("openai-compatible", "llama-4-scout-fixture")).toBe(false);
   });
 
   it("takes images where the user declares them for a model nobody describes", () => {
-    expect(supportsVision("copilot", "gpt-4.1", { inputModalities: { input: ["image"], source: "vendor-setting" } })).toBe(true);
+    expect(supportsVision("azure-foundry", "gpt-4.1", { inputModalities: { input: ["image"], source: "vendor-setting" } })).toBe(true);
   });
 });
 

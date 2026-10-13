@@ -117,7 +117,7 @@ describe("normalizeAiSdkUsageForCost", () => {
     });
   });
 
-  it.each(["openai", "azure-foundry", "gemini", "vertex-ai", "copilot"] as const)(
+  it.each(["openai", "azure-foundry", "gemini", "vertex-ai"] as const)(
     "keeps %s provider prompt tokens cache-inclusive",
     (vendor) => {
       const usage = {

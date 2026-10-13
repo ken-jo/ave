@@ -63,7 +63,7 @@ export function supportsVision(
  * vendors fall back to the existing truncation notice until their prefill path
  * is wired:
  *   - claude  → assistant-prefill (blocked while extended thinking is ON)
- *   - openai/gemini/copilot/azure-foundry/vertex → append partial + "continue"
+ *   - openai/gemini/azure-foundry/vertex → append partial + "continue"
  *     user reprompt + host stitch
  * Shares the {@link isSelfHostedVllmVendor} SOT with the adapter's
  * `chat_template_kwargs`/`continue_final_message` guard so the request-shaping

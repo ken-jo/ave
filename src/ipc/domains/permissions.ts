@@ -317,7 +317,11 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // the renderer only invokes this from an explicit "Install now" click inside
   // the consent panel. Guard pattern mirrors the peer mutating handlers
   // (addRule/removeRule/setMode): foreign frames are rejected + audited, and a
-  // synthetic submission without an active user gesture is refused.
+  // synthetic submission without an active user gesture is refused. The
+  // intent is checked here, synchronously at entry and before any await: the
+  // status read inside installAsrtWindowsSandbox can take ~45 s, far longer
+  // than the renderer's ~5 s user activation, so the renderer must not read
+  // status before invoking this (issue #1608).
   ipcMain.handle(PERMISSIONS.sandboxWindowsInstall, async (e, payload: unknown): Promise<SandboxWindowsInstallResult | typeof UNAUTHORIZED_FRAME | { ok: false; error: string; message: string }> => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.sandboxWindowsInstall, e); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);

@@ -103,12 +103,8 @@ input. It has two fault outcomes:
 an Ave vendor id meets a catalog provider id. It is exhaustive over `LLMVendor`, so a new
 vendor fails typecheck until it is placed. A vendor maps to the catalog providers whose API
 host is the vendor's endpoint: Qwen and Qwen Code to `alibaba-cn` (DashScope's mainland
-host, not the international `alibaba`), Doubao to `volcengine` (Ark). Copilot maps to
-`[]`: Ave's Copilot vendor called GitHub Models (`models.github.ai`), which the catalog does
-not list and which GitHub retired on 2026-07-30; the catalog's `github-copilot` provider is
-the Copilot API (`api.githubcopilot.com`), another service. The vendor itself is being
-removed (owner decision of 2026-10-12; a re-added Copilot integration is tracked in #2657 and
-gets its mapping then), so it has no catalog mapping. The generic
+host, not the international `alibaba`), Doubao to `volcengine` (Ark). Removed vendors
+have no entry in the map; an unrelated catalog service cannot re-enable them. The generic
 OpenAI-compatible endpoint, local runtimes (Ollama, LM Studio) and vendors no catalog
 provider serves at their endpoint (SambaNova, LiteLLM, v0, HiCap, Nous, Huawei MaaS, Ask
 Sage, OCA) map to `[]`: their limits come from what the endpoint reports and what the user
@@ -302,7 +298,7 @@ Implemented.
   accepted. An adaptive Claude effort is held to the model's accepted levels the same
   way. Where nobody states the levels — the catalog does not know the model, lists no
   levels for it, or the route's endpoint does not establish its identity (§4: a custom
-  `baseUrl`, an Azure deployment alias, Copilot, which maps to no catalog provider) — an
+  `baseUrl` or an Azure deployment alias) — an
   OpenAI-family request carries no `reasoning_effort`, and the plan says so
   (`kind: "none"`, `source: "host-fallback"`, with the requested level). Such a request
   also asks for no reasoning summary, so the conversation loop logs it once per route
@@ -599,8 +595,8 @@ report after answering each kind of row:
   and cannot recover above it: Codex's own context-window report can only tighten a
   subscription budget, never raise it (that rule predates slice 7), and a subscription
   route has no `contextWindow` or `catalogModel` setting.
-- **Copilot rows** go with the Copilot vendor's empty mapping (§3.4): its routes take what
-  GitHub's `/models` reports, else the fallback.
+- **Retired vendor rows** (Copilot, removed with GitHub Models): absent from both the vendor
+  union and the provider map (§3.4).
 - **Self-hosted rows** (`openai-compatible`: `Qwen3.6-35B-A3B-NVFP4` 262,144,
   `Nemotron-3-Nano-30B-A3B-FP8` 131,072): these windows come from the endpoint's report or
   the user's `contextWindow`, else the fallback, which the engine logs once per route.

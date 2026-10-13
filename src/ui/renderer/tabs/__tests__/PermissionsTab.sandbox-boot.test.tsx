@@ -127,7 +127,7 @@ describe("PermissionsTab — boot sandbox outcome notice", () => {
     delete (window as unknown as { ave?: unknown }).ave;
   });
 
-  it("says the sandbox did not start, and shows the dependency error that names the fix", async () => {
+  it("says the sandbox did not start and directs dependency diagnostics to the log", async () => {
     installApi({
       action: "degrade",
       reason: "degrade-windows-not-installed",
@@ -138,8 +138,9 @@ describe("PermissionsTab — boot sandbox outcome notice", () => {
 
     expect(screen.getByTestId("os-sandbox-boot-degraded")).toBeInTheDocument();
     expect(screen.getByTestId("os-sandbox-boot-degraded-detail")).toHaveTextContent(
-      "cred=false",
+      "진단",
     );
+    expect(document.body.textContent).not.toContain("cred=false");
   });
 
   it("reports an abort the same way — the user is equally unprotected either way", async () => {

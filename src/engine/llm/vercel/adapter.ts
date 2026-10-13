@@ -37,7 +37,6 @@ import { projectToolCallForWire } from "../types.js";
 import {
   isOpenAICompatibleVendor,
   isSelfHostedVllmVendor,
-  COPILOT_BASE_URL,
   normalizeLlmThinkingBudgetTokens,
 } from "../../../shared/llm-vendor-defaults.js";
 import { createLogger } from "../../../lib/logger.js";
@@ -679,16 +678,6 @@ export class VercelUnifiedProvider implements LLMProvider {
       return usesOpenAIResponsesWire(slot, modelId)
         ? openai.responses(modelId)
         : openai.chat(modelId);
-    }
-
-    if (slot === "copilot") {
-      // GitHub Copilot / Models endpoint speaks Chat Completions only.
-      const openai = createOpenAI({
-        apiKey: this.apiKey,
-        baseURL: this.baseUrl || COPILOT_BASE_URL,
-        ...(this.customFetch ? { fetch: this.customFetch } : {}),
-      });
-      return openai.chat(modelId);
     }
 
     if (isOpenAICompatibleVendor(slot)) {

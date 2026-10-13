@@ -92,7 +92,7 @@ describe("host TPM default", () => {
   it.each([
     ["openai", "gpt-5.4"],
     ["openai", "gpt-4o-mini"],
-    ["copilot", "gpt-5.4-mini"],
+    ["openai-compatible", "gpt-5.4-mini"],
     ["openrouter", "gpt-5.4-mini"],
     ["claude", "claude-sonnet-4-6"],
   ])("%s %s has none", (vendor, model) => {

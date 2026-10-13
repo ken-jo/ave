@@ -97,7 +97,7 @@ describe("createRefreshActiveLlmWildcard (#893 / PR #894 Cycle 3)", () => {
     ctx.setVendor("gemini");
     refresh();
     vi.advanceTimersByTime(50);
-    ctx.setVendor("copilot");
+    ctx.setVendor("azure-foundry");
     refresh();
 
     // Still inside the debounce window relative to the LAST refresh.
@@ -230,5 +230,9 @@ describe("activeHostApiVendor", () => {
   it("projects only the active API provider", () => {
     expect(activeHostApiVendor({ provider: "openai", activeChatRuntime: { kind: "api" } })).toBe("openai");
     expect(activeHostApiVendor({ provider: "openai", activeChatRuntime: { kind: "subscription", provider: "codex" } })).toBeUndefined();
+  });
+
+  it("does not expose the migrated provider while the retirement marker remains", () => {
+    expect(activeHostApiVendor({ provider: "openai", activeChatRuntime: { kind: "api" }, retiredProvider: "copilot" })).toBeUndefined();
   });
 });

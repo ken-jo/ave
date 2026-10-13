@@ -93,6 +93,33 @@ describe("SecretDocumentStore atomicity and policy", () => {
     await cleanupTmpDir(root);
   });
 
+  it.each(["gnome_libsecret", "external_key"] as const)("reports stored presence without decrypting any credential using %s", async (backend) => {
+    const getSelectedStorageBackend = () => backend;
+    const writer = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption({ getSelectedStorageBackend }) });
+    await writer.set("alpha", "fixture-value");
+    await writer.set("unrelated", "another-fixture-value");
+    const decryptString = vi.fn(() => { throw new Error("must not decrypt"); });
+    const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption({ decryptString, getSelectedStorageBackend }) });
+    expect(store.has("alpha")).toBe(true);
+    expect(store.has("missing")).toBe(false);
+    expect(decryptString).not.toHaveBeenCalled();
+  });
+
+  it("rejects mismatched encryption backends before reporting presence", async () => {
+    const writer = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
+    await writer.set("alpha", "fixture-value");
+    const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption({ getSelectedStorageBackend: () => "external_key" }) });
+    expect(() => store.has("alpha")).toThrow(SecretDocumentValidationError);
+  });
+
+  it("preserves encryption policy when reporting credential presence", async () => {
+    const development = new SecretDocumentStore({ path, policy: "development", encryption: unavailableEncryption() });
+    await development.set("alpha", "fixture-value");
+    expect(development.has("alpha")).toBe(true);
+    const packaged = new SecretDocumentStore({ path, policy: "packaged", encryption: unavailableEncryption() });
+    expect(() => packaged.has("alpha")).toThrow(SecretEncryptionUnavailableError);
+  });
+
   it("serializes same-process set/set without losing either key", async () => {
     const first = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
     const second = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });

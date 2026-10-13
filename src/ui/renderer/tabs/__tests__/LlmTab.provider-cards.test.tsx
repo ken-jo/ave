@@ -26,6 +26,7 @@ type ProviderCredentialDraft =
   import("../LlmTab.js").ProviderCredentialDraft;
 type ProviderCredentialSave =
   import("../LlmTab.js").ProviderCredentialSave;
+type RetiredLlmProvider = import("../LlmTab.js").LlmTabProps["retiredLlmProvider"];
 
 type MockApi = MockAveApi;
 
@@ -221,6 +222,7 @@ function settingsWithVendorBlocks(vendors: Record<string, Record<string, string>
 }
 
 interface TabProps {
+  retiredLlmProvider?: RetiredLlmProvider;
   vendor?: string;
   baseUrl?: string;
   /** Seeds the parent-held credential draft, as a half-typed card would. */
@@ -294,6 +296,7 @@ function TabHarness({
         marketplaceProviderPresets={props.marketplaceProviderPresets ?? NO_PRESETS}
         marketplaceProviderPresetId={props.marketplaceProviderPresetId ?? ""}
         vendor={props.vendor ?? "openai"}
+        retiredLlmProvider={props.retiredLlmProvider}
         baseUrl={props.baseUrl ?? ""}
         hasKey={props.hasKey ?? true}
         setHasKey={vi.fn()}
@@ -414,6 +417,13 @@ beforeEach(() => {
 });
 
 describe("LlmTab provider cards", () => {
+  it("accepts an explicit choice of the same model after a provider retirement", async () => {
+    const { hooks } = await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "gpt-5.4", retiredLlmProvider: "copilot" });
+    await chooserModelIds();
+    await act(async () => { pickChooserOption("gpt-5.4"); });
+    expect(hooks.selectApiVendorModel).toHaveBeenCalledWith("openai", "gpt-5.4");
+    expect(hooks.onImmediateChange).toHaveBeenCalledOnce();
+  });
   it.each([
     { model: "GPT-4.1", reportedModel: "gpt-4.1", inputModalities: ["text"], supportedParameters: ["tools"], vision: false, tools: true },
     { model: "GPT-4", reportedModel: "gpt-4", inputModalities: ["text", "image"], supportedParameters: ["tools"], vision: true, tools: true },

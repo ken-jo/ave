@@ -11,6 +11,7 @@ import { contextBudgetForCurrentRuntime } from "../compaction.js";
 import { buildProvider, pingProvider } from "../provider.js";
 import { collectRoundStream } from "../stream-collector.js";
 import type { ConversationLoopDeps } from "../types.js";
+import { freshVendorBlocks } from "../../../shared/llm-vendor-defaults.js";
 import { subscriptionTransportFailure } from "../../../main/subscription-transport-error-diagnostics.js";
 import {
   MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH,
@@ -435,5 +436,40 @@ describe("subscription primary-only retries", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("buildProvider — profile moved off a retired vendor", () => {
+  function apiDeps(retiredProvider?: "copilot") {
+    const getSecret = vi.fn(() => "sk-openai-saved-for-another-vendor");
+    const deps = {
+      settingsService: {
+        get: vi.fn((key: string) => key === "llm"
+          ? {
+            activeChatRuntime: { kind: "api" },
+            provider: "openai",
+            vendors: freshVendorBlocks(),
+            fallbackChain: [{ provider: "claude", model: "claude-sonnet-4-6" }],
+            ...(retiredProvider ? { retiredProvider } : {}),
+          }
+          : { installedProviderPresets: [] }),
+        getSecret,
+      },
+    } as unknown as ConversationLoopDeps;
+    return { deps, getSecret };
+  }
+
+  it.each([undefined, "role-model"])("blocks the API route and fallback keys with model override %s", (modelOverride) => {
+    // The load moved a copilot profile to the default vendor. A key saved for
+    // that vendor must not be used on the user's behalf.
+    const { deps, getSecret } = apiDeps("copilot");
+    deps.modelOverride = modelOverride;
+    expect(buildProvider(deps)).toBeNull();
+    expect(getSecret).not.toHaveBeenCalled();
+  });
+
+  it("builds the API provider once the marker is gone (control)", () => {
+    const { deps } = apiDeps();
+    expect(buildProvider(deps)).not.toBeNull();
   });
 });

@@ -122,8 +122,8 @@ const unstatedReasoningWarned = new Set<string>();
  * control because nobody states the effort levels its model accepts (the
  * reasoning plan's `host-fallback`). Such a request also asks for no reasoning
  * summary, so reasoning the user turned on would otherwise vanish from the
- * turn without a word — on an Azure deployment, a Copilot route or a custom
- * endpoint whose model the catalog cannot identify.
+ * turn without a word — on an Azure deployment or a custom endpoint whose
+ * model the catalog cannot identify.
  */
 export function warnUnstatedReasoningOnce(
   route: { identity: string; vendor: string; model: string },

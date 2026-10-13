@@ -30,7 +30,6 @@ export const PRICING_VENDORS = [
   "claude",
   "openai",
   "gemini",
-  "copilot",
   "azure-foundry",
   "vertex-ai",
   "openai-compatible",

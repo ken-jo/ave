@@ -257,7 +257,7 @@ describe("sandboxWindowsInstall", () => {
     asrtState.installResult = { cancelled: true };
     await setup();
     const result = await invoke(PERMISSIONS.sandboxWindowsInstall, hostFrameEvent(), { intent: USER_INTENT });
-    expect(result).toEqual({ cancelled: true });
+    expect(result).toEqual({ outcome: "cancelled", cancelled: true });
     // The single UAC was attempted with the canonical proxy port range.
     expect(asrtState.installCalls).toHaveLength(1);
     expect(asrtState.installCalls[0].proxyPortRange).toEqual([60080, 60089]);
@@ -271,9 +271,21 @@ describe("sandboxWindowsInstall", () => {
     };
     await setup();
     const result = (await invoke(PERMISSIONS.sandboxWindowsInstall, hostFrameEvent(), { intent: USER_INTENT })) as Record<string, unknown>;
+    expect(result.outcome).toBe("installed-unverified");
     expect(result.userState).toBe("incomplete");
     expect(result.wfpState).toBe("installed");
     expect(result.ready).toBe(false);
+  });
+
+  it("answers already-ready without a UAC prompt when the sandbox is already provisioned (#1608)", async () => {
+    setProcessPlatform("win32");
+    asrtState.userStatus = readyUserStatus();
+    asrtState.wfpState = "installed";
+    await setup();
+    const result = (await invoke(PERMISSIONS.sandboxWindowsInstall, hostFrameEvent(), { intent: USER_INTENT })) as Record<string, unknown>;
+    expect(result.outcome).toBe("already-ready");
+    expect(result.ready).toBe(true);
+    expect(asrtState.installCalls).toHaveLength(0);
   });
 
   it("reports ready:true when install lands user ready + WFP installed", async () => {
@@ -284,6 +296,7 @@ describe("sandboxWindowsInstall", () => {
     };
     await setup();
     const result = (await invoke(PERMISSIONS.sandboxWindowsInstall, hostFrameEvent(), { intent: USER_INTENT })) as Record<string, unknown>;
+    expect(result.outcome).toBe("ready");
     expect(result.ready).toBe(true);
   });
 

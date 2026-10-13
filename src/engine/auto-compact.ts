@@ -439,7 +439,7 @@ export function evictAgedToolResultImages(
  *
  * 메시지 패턴:
  * - Anthropic: "prompt is too long"
- * - OpenAI / Copilot: `.code === "context_length_exceeded"` 또는 "maximum context length"
+ * - OpenAI: `.code === "context_length_exceeded"` 또는 "maximum context length"
  * - Gemini: "context window"
  *
  * 주의: `error.type` 필드나 HTTP 상태 코드는 직접 검사하지 않음.
