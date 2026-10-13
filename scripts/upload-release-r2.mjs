@@ -64,6 +64,12 @@ function awsRunner(env) {
     AWS_DEFAULT_REGION: "auto",
     AWS_EC2_METADATA_DISABLED: "true",
     AWS_PAGER: "",
+    // Send checksums only where an operation requires them. R2's compat table
+    // lists CRC32/CRC32C/SHA as composite-only, and AWS CLI v2.23+ adds a
+    // default CRC32 to every single-part put. TLS and the feed's sha512 carry
+    // integrity here.
+    AWS_REQUEST_CHECKSUM_CALCULATION: "when_required",
+    AWS_RESPONSE_CHECKSUM_VALIDATION: "when_required",
   };
   return (args) => {
     const result = spawnSync("aws", ["s3api", ...args, "--endpoint-url", endpoint, "--output", "json"], {

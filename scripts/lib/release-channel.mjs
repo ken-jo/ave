@@ -66,7 +66,7 @@ export function releaseChannel(packageJson) {
     fail(`package.json build.publish[0].channel must be "latest" (got ${JSON.stringify(entry.channel)})`);
   }
   if (entry.useMultipleRangeRequest !== false) {
-    fail("package.json build.publish[0].useMultipleRangeRequest must be false: R2 serves single byte ranges");
+    fail("package.json build.publish[0].useMultipleRangeRequest must be false: R2 documents single Range requests, and electron-updater otherwise sends multi-range ones");
   }
   let url;
   try {

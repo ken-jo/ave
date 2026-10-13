@@ -8,7 +8,8 @@ source repository is private, so installed apps never read it.
 
 - `package.json` `build.publish`: one `generic` entry,
   `https://downloads.agent-connector.ai/releases`, channel `latest`,
-  `useMultipleRangeRequest: false`. electron-builder embeds this entry as the
+  `useMultipleRangeRequest: false` (R2 documents single `Range` requests;
+  electron-updater otherwise sends multi-range ones). electron-builder embeds this entry as the
   packaged `app-update.yml`.
 - `scripts/lib/release-channel.mjs`: object layout, upload order, headers.
 - `scripts/upload-release-r2.mjs`: runs the plan (`--dry-run` prints it).
@@ -92,3 +93,13 @@ artifacts or its GitHub Release draft) to `releases/` with
 installers are still in the bucket, so the restored feed resolves immediately.
 Point the `latest/` aliases back the same way if the website must stop
 offering the bad build.
+
+## Re-running a Tag
+
+electron-builder output is not byte-reproducible. If the `installers` matrix
+is re-run for a tag whose `publish-r2` already uploaded, `publish-r2` stops
+with "already exists with different bytes" instead of replacing a released
+version (its cached copies and its feed's sha512 would disagree). Either
+delete that version's `releases/<Product>-<version>-*` objects in the bucket
+and re-run, or release a new patch tag. Re-running only `publish-r2` with the
+same artifacts is safe: identical objects are kept.
