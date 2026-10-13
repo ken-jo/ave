@@ -933,8 +933,7 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
     // grows sixteenfold over the sixteenfold input, quadratic work 256-fold, and backtracking far more. The time is the
     // thread's CPU time, which a loaded host does not charge while the thread waits to run: on wall time a long pass is
     // preempted in proportion to the load while a short one fits a time slice, and linear code then read as 270-fold
-    // growth at a load of 28. The two sizes alternate and the fastest of five each is kept, so a collection or a
-    // migration to a slower core that lands on one run is dropped.
+    // growth at a load of 28.
     const SMALL = 4 * 1024;
     const LARGE = 16 * SMALL;
     // The geometric mean of linear (16) and quadratic (256) growth: four times either way.
@@ -942,9 +941,9 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
     // A 64 KiB pass under this is fast whatever its growth: a ratio between runs of a few hundred microseconds
     // measures timer and JIT noise. The quadratic key regex took seconds here.
     const FAST_ENOUGH_MS = 5;
-    // Linux charges a thread's CPU time in whole scheduler ticks (4 ms at 250 Hz), so a single 4 KiB pass can read
-    // 0 ms and the ratio becomes Infinity. A 4 KiB pass that is judged is therefore repeated until the sample has
-    // spent at least this long and its per-pass mean kept, so a tick is a small fraction of it.
+    // Linux charges a thread's CPU time in whole scheduler ticks (4 ms at 250 Hz), so a single 4 KiB pass reads
+    // 0 ms and the ratio becomes Infinity. The 4 KiB pass is therefore repeated until the sample has spent at least
+    // this long and read as a per-pass mean, so a tick is a small fraction of it.
     const MIN_SAMPLE_MS = 20;
     const timed = (scrub: (text: string) => string, input: string, minSampleMs: number) => {
       const started = process.threadCpuUsage();
@@ -958,23 +957,13 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
       } while (spentMs < minSampleMs);
       return spentMs / passes;
     };
-    const fastestOf = (scrub: (text: string) => string, smallInput: string, largeInput: string) => {
-      let smallMs = Number.POSITIVE_INFINITY;
-      let largeMs = Number.POSITIVE_INFINITY;
-      for (let run = 0; run < 5; run++) {
-        smallMs = Math.min(smallMs, timed(scrub, smallInput, 0));
-        largeMs = Math.min(largeMs, timed(scrub, largeInput, 0));
-      }
-      return { smallMs, largeMs };
-    };
     const fastestPair = (scrub: (text: string) => string, smallInput: string, largeInput: string) => {
-      // Single passes first: most families are far under FAST_ENOUGH_MS and need no finer reading. Past it, the
-      // 64 KiB pass already spans more than a tick and only the 4 KiB pass is read again, as a per-pass mean.
-      const coarse = fastestOf(scrub, smallInput, largeInput);
-      if (coarse.largeMs < FAST_ENOUGH_MS) return coarse;
-      let smallMs = Number.POSITIVE_INFINITY;
-      for (let run = 0; run < 3; run++) smallMs = Math.min(smallMs, timed(scrub, smallInput, MIN_SAMPLE_MS));
-      return { smallMs, largeMs: coarse.largeMs };
+      // The fastest of five single 64 KiB passes, so a collection or a migration to a slower core that lands on one
+      // is dropped; one reading under FAST_ENOUGH_MS already settles that the family is fast, and nothing else is read.
+      let largeMs = Number.POSITIVE_INFINITY;
+      for (let run = 0; run < 5 && largeMs >= FAST_ENOUGH_MS; run++) largeMs = Math.min(largeMs, timed(scrub, largeInput, 0));
+      if (largeMs < FAST_ENOUGH_MS) return { smallMs: Number.NaN, largeMs };
+      return { smallMs: timed(scrub, smallInput, MIN_SAMPLE_MS), largeMs };
     };
     const familiesAt = (size: number) => {
       const fill = (unit: string, tail = "") => unit.repeat(Math.ceil(size / unit.length)).slice(0, size - tail.length) + tail;
@@ -1012,7 +1001,9 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
         expect(largeMs / smallMs, `${input.slice(0, 24)}: ${smallMs.toFixed(1)} ms at 4 KiB, ${largeMs.toFixed(1)} ms at 64 KiB`).toBeLessThan(MAX_GROWTH);
       }
     }
-  });
+    // The judgement reads CPU time, so load cannot move it; the wall time spent collecting that CPU time can. On the
+    // 4-core suite runner with every worker busy a few seconds of it ran past the 45 s default.
+  }, 180_000);
 
   it("takes any key holding a credential word, `auth` only as a whole segment", () => {
     expect(scrubDiagnosticSecrets("x: api_key=a X-Api-Key: b accessKey=c private-key=d credentials=e pwd=f Bearer=g x-auth=h GH_TOKEN=i author=j; oauth=k"))
