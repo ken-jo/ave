@@ -19,7 +19,6 @@ import {
   MODEL_CATALOG_PATHS,
   fetchAndWriteModelCatalog,
   generateModelCatalog,
-  modelCatalogPricingReport,
 } from "../../../../scripts/lib/model-catalog.js";
 import { verifyModelCatalogDocument } from "../document.js";
 import { MODELS_DEV_MODEL_FIELDS } from "../../../shared/model-catalog/normalize.js";
@@ -79,14 +78,6 @@ describe("bundled model catalog", () => {
       repository: "https://github.com/anomalyco/models.dev",
       text: license,
     });
-  });
-
-  it("reports the hand-kept rows the catalog cannot replace", () => {
-    const report = modelCatalogPricingReport(generated.document);
-    expect(report).toContain("## Rows with no catalog entry");
-    // Self-hosted endpoints map to no catalog provider, so their windows stay host-owned.
-    expect(report).toContain("| openai-compatible | Qwen3.6-35B-A3B-NVFP4 | 262144 | 0 / 0 |");
-    expect(report).toContain("| claude | claude-sonnet-4-6 | contextWindow1MBeta | 1000000 |");
   });
 });
 

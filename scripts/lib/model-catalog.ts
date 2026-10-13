@@ -19,10 +19,8 @@ import {
 } from "../../src/core/model-catalog/document-builder.js";
 import type { CatalogDiagnostic } from "../../src/shared/model-catalog/normalize.js";
 import { pruneModelsDevDocument } from "../../src/shared/model-catalog/normalize.js";
-import { CATALOG_PROVIDERS_BY_VENDOR, catalogProviderIds } from "../../src/shared/model-catalog/provider-map.js";
-import type { CatalogModel, ModelCatalogDocument, ModelCatalogLicense } from "../../src/shared/model-catalog/types.js";
-import type { LLMVendor } from "../../src/shared/llm-vendor-defaults.js";
-import { DEFAULT_PRICING, type ModelPricing } from "../../src/shared/pricing-data.js";
+import { catalogProviderIds } from "../../src/shared/model-catalog/provider-map.js";
+import type { ModelCatalogDocument, ModelCatalogLicense } from "../../src/shared/model-catalog/types.js";
 
 export const MODEL_CATALOG_LABEL = "[model-catalog]";
 const MODELS_DEV_API_URL = "https://models.dev/api.json";
@@ -186,96 +184,4 @@ export function modelCatalogDrift(root: string): string | undefined {
     return `${MODEL_CATALOG_PATHS.packagedLicense} is not the license ${MODEL_CATALOG_PATHS.license} carries`;
   }
   return undefined;
-}
-
-// ── Comparison with the hand-kept table ──────────────────────────────────────
-
-const RATE_FIELDS = [
-  ["inputPer1M", "input"],
-  ["outputPer1M", "output"],
-  ["cacheReadPer1M", "cacheRead"],
-  ["cacheWritePer1M", "cacheWrite"],
-] as const;
-
-/** Fields of the hand-kept table the catalog has no counterpart for. */
-const HOST_ONLY_FIELDS = [
-  "contextWindow1MBeta",
-  "surchargeInputThreshold",
-  "surchargeInputMultiplier",
-  "surchargeOutputMultiplier",
-  "tpmDefault",
-] as const satisfies ReadonlyArray<keyof ModelPricing>;
-
-function catalogEntry(document: ModelCatalogDocument, vendor: string, model: string): { at: string; model: CatalogModel } | undefined {
-  const providers = CATALOG_PROVIDERS_BY_VENDOR[vendor as LLMVendor] ?? [];
-  for (const exactCase of [true, false]) {
-    for (const provider of providers) {
-      const models = document.providers[provider]?.models ?? {};
-      const key = exactCase ? (model in models ? model : undefined) : Object.keys(models).find((id) => id.toLowerCase() === model.toLowerCase());
-      if (key) return { at: `${provider}/${key}`, model: models[key] as CatalogModel };
-    }
-  }
-  return undefined;
-}
-
-const show = (value: number | undefined): string => (value === undefined ? "—" : String(value));
-
-/**
- * Every row of `DEFAULT_PRICING` against the catalog, as Markdown: values
- * that differ, rows the catalog has no entry for, and table fields the
- * catalog cannot carry. The last two are what removing the table would lose.
- */
-export function modelCatalogPricingReport(document: ModelCatalogDocument): string {
-  const differences: string[] = [];
-  const missing: string[] = [];
-  const hostOnly: string[] = [];
-  let matched = 0;
-  for (const [vendor, rows] of Object.entries(DEFAULT_PRICING)) {
-    for (const [model, row] of Object.entries(rows)) {
-      for (const field of HOST_ONLY_FIELDS) {
-        if (row[field] !== undefined) hostOnly.push(`| ${vendor} | ${model} | ${field} | ${row[field]} |`);
-      }
-      const entry = catalogEntry(document, vendor, model);
-      if (!entry) {
-        missing.push(`| ${vendor} | ${model} | ${row.contextWindow} | ${row.inputPer1M} / ${row.outputPer1M} |`);
-        continue;
-      }
-      matched += 1;
-      const changes: string[] = [];
-      if (entry.model.limits.context !== row.contextWindow) {
-        changes.push(`context ${row.contextWindow} → ${show(entry.model.limits.context)}`);
-      }
-      for (const [tableField, catalogField] of RATE_FIELDS) {
-        const before = row[tableField];
-        const after = entry.model.cost?.[catalogField];
-        if (before !== after) changes.push(`${catalogField} ${show(before)} → ${show(after)}`);
-      }
-      if (changes.length > 0) differences.push(`| ${vendor} | ${model} | ${entry.at} | ${changes.join("; ")} |`);
-    }
-  }
-  return [
-    `# DEFAULT_PRICING against catalog ${document.sha256.slice(0, 12)} (${document.provenance.fetchedAt})`,
-    "",
-    `${matched} rows have a catalog entry; ${differences.length} of them differ, ${missing.length} rows have none.`,
-    "Prices are USD per million tokens; `—` is absent. A cache rate the table leaves out is derived from the input rate at run time, so `— → n` there is the catalog stating what the host derives.",
-    "",
-    "## Values that differ",
-    "",
-    "| vendor | model | catalog entry | table → catalog |",
-    "| --- | --- | --- | --- |",
-    ...differences,
-    "",
-    "## Rows with no catalog entry",
-    "",
-    "| vendor | model | context | input / output |",
-    "| --- | --- | --- | --- |",
-    ...missing,
-    "",
-    "## Table fields with no catalog counterpart",
-    "",
-    "| vendor | model | field | value |",
-    "| --- | --- | --- | --- |",
-    ...hostOnly,
-    "",
-  ].join("\n");
 }

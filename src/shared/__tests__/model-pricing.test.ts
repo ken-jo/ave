@@ -37,6 +37,34 @@ describe("parseResolvedModelPricing", () => {
   it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, "2"])("rejects a malformed rate %s", (invalid) => {
     expect(parseResolvedModelPricing({ source: "user", rates: { inputPer1M: invalid, outputPer1M: 1 } })).toBeUndefined();
     expect(parseResolvedModelPricing({ source: "model-catalog", rates: { inputPer1M: 1, outputPer1M: 2, tiers: [{ afterInputTokens: 10, cacheReadPer1M: invalid }] } })).toBeUndefined();
+    expect(parseResolvedModelPricing({ source: "pricing-catalog", rates: { inputPer1M: 1, outputPer1M: 2, surchargeInputThreshold: invalid, surchargeInputMultiplier: 2 } })).toBeUndefined();
+  });
+
+  it("reads back a price an older build recorded from the hand-kept table", () => {
+    // Builds before slice 7 priced dated Claude ids from the table; their
+    // persisted turns keep that answer.
+    const recorded = { source: "pricing-catalog", rates: { inputPer1M: 1, outputPer1M: 5 } };
+    expect(parseResolvedModelPricing(recorded)).toEqual(recorded);
+  });
+
+  it("reads an older build's long-context surcharge as the tier it priced as", () => {
+    // The table stated gpt-5.4's long-context price as multipliers past 272K.
+    const recorded = parseResolvedModelPricing({
+      source: "pricing-catalog",
+      rates: { inputPer1M: 2.5, outputPer1M: 15, cacheReadPer1M: 0.25,
+        surchargeInputThreshold: 272_000, surchargeInputMultiplier: 2, surchargeOutputMultiplier: 1.5 },
+    });
+    expect(recorded).toEqual({
+      source: "pricing-catalog",
+      rates: { inputPer1M: 2.5, outputPer1M: 15, cacheReadPer1M: 0.25,
+        tiers: [{ afterInputTokens: 272_000, inputPer1M: 5, outputPer1M: 22.5, cacheReadPer1M: 0.5, cacheWritePer1M: 5 }] },
+    });
+    const tableRates = knownModelPricing(recorded!)!.rates;
+    // The figures the surcharge form produced (issue #900), cache included.
+    expect(computeCost({ inputTokens: 272_000, outputTokens: 10_000 }, tableRates, "openai")).toBeCloseTo(0.83, 5);
+    expect(computeCost({ inputTokens: 300_000, outputTokens: 10_000 }, tableRates, "openai")).toBeCloseTo(1.725, 5);
+    expect(computeCost({ inputTokens: 300_000, outputTokens: 0, cacheReadTokens: 100_000, cacheWriteTokens: 50_000 }, tableRates, "openai"))
+      .toBeCloseTo((150_000 * 5 + 100_000 * 0.5 + 50_000 * 5) / MILLION, 8);
   });
 });
 
@@ -76,11 +104,24 @@ describe("resolveModelPricing — source order and provenance", () => {
     expect(computeCost({ inputTokens: 10_000, outputTokens: 1_000 }, pricing!.rates, "openai-compatible")).toBe(0);
   });
 
-  it("falls to the hand-kept table for a model the catalog does not price", () => {
-    expect(resolveModelPricing("claude", "claude-3-5-haiku-20241022")).toEqual({
-      source: "pricing-catalog",
-      rates: { inputPer1M: 1, outputPer1M: 5 },
-    });
+  it.each([
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
+    "claude-3-sonnet-20240229",
+    "claude-3-haiku-20240307",
+  ])("answers unknown for the retired id %s the catalog does not list", (model) => {
+    // The hand-kept table priced these before slice 7. The catalog's anthropic
+    // provider lists no entry documented to be the same model, so no alias
+    // joins them: the price is unknown, never $0, until a correction states it.
+    expect(resolveModelPricing("claude", model)).toEqual({ source: "unknown" });
+  });
+
+  it("prices a dated id of a listed model from that model's entry", () => {
+    expect(resolveModelPricing("openai", "gpt-4.1-2025-04-14")).toMatchObject({ source: "model-catalog", catalogEntry: "openai/gpt-4.1" });
+    expect(resolveModelPricing("openai", "o3-2025-04-16")).toMatchObject({ source: "model-catalog", catalogEntry: "openai/o3" });
   });
 
   it("answers unknown when nothing prices the model", () => {

@@ -17,7 +17,6 @@ const OUTPUT_LIMIT_SOURCE_KEYS = {
 const PRICE_SOURCE_KEYS = {
   user: "chatView.costPriceSourceUser",
   "model-catalog": "chatView.costPriceSourceModelCatalog",
-  "pricing-catalog": "chatView.costPriceSourcePricingCatalog",
 } as const satisfies Record<NonNullable<EstimateBreakdown["pricingSource"]>, string>;
 
 interface TokenProgressRingProps {

@@ -11,10 +11,6 @@
  *   headroom — single tool-result rounds blow past it. Ave reserves fixed
  *   output/safety buffers (27K / 30K / 40K) to prevent this asymmetric pinch.
  */
-import {
-  effectiveContextWindow,
-  lookupPricingOptional,
-} from "./pricing-data.js";
 import { FALLBACK_CONTEXT_WINDOW, MAX_CREDIBLE_CONTEXT_WINDOW } from "./model-host-policy.js";
 import {
   activeLlmRouteModel,
@@ -75,9 +71,6 @@ export function getPreflightThreshold(contextWindow: number, inputLimit?: number
  * Which input the resolved context window came from, in priority order.
  *
  * `model-catalog` is the generated catalog (`docs/design/model-capability-catalog.md`).
- * `pricing-catalog` is the hand-kept `DEFAULT_PRICING` table, still consulted
- * for a model the catalog does not know until issue #2501's last slice
- * removes its context rows.
  *
  * `fallback` means nothing knew the model's real capacity and the conservative
  * {@link FALLBACK_CONTEXT_WINDOW} is in use. That is the case worth reporting:
@@ -89,7 +82,6 @@ export type ContextWindowSource =
   | "vendor-setting"
   | "provider-reported"
   | "model-catalog"
-  | "pricing-catalog"
   | "fallback";
 
 /**
@@ -136,8 +128,7 @@ function positiveTokenCount(value: number | undefined): number | undefined {
  * 3. The model catalog's entry: the one the user named for this route
  *    (`llm.vendors.<vendor>.catalogModel`), else the one the vendor's model id
  *    resolves to ({@link resolveCatalogKey}).
- * 4. The hand-kept pricing table's entry, for a model the catalog does not know.
- * 5. The conservative fallback window.
+ * 4. The host's conservative fallback window ({@link FALLBACK_CONTEXT_WINDOW}).
  *
  * The prompt cap is resolved beside the window: the catalog entry's
  * `limits.input`, kept only when it is below the window. A declared window
@@ -165,10 +156,6 @@ export function resolveModelContextWindow(params: {
     if (hit && catalogWindow !== undefined) {
       return { contextWindow: catalogWindow, source: "model-catalog", catalogEntry: `${hit.provider}/${hit.id}` };
     }
-    const pricing = allowsImplicitModelLimits(params.vendor, params.baseUrl)
-      ? lookupPricingOptional(params.vendor, params.model)
-      : undefined;
-    if (pricing) return { contextWindow: effectiveContextWindow(pricing), source: "pricing-catalog" };
     return { contextWindow: FALLBACK_CONTEXT_WINDOW, source: "fallback" };
   })();
   const catalogInput = positiveTokenCount(hit?.model.limits.input);

@@ -43,7 +43,7 @@ export interface TokenCostBadgeProps {
   vendor?: LLMVendor;
   /**
    * Per provider request usage segments. When present, cost is summed per
-   * segment so request-tier pricing such as OpenAI long-context surcharge is
+   * segment so prompt-size tier pricing such as OpenAI's long-context tier is
    * not accidentally applied to an Ave turn aggregate.
    */
   usageByModel?: ModelUsageSegment<LLMVendor>[];

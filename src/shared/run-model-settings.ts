@@ -51,8 +51,9 @@ export interface RunModelSettings {
   };
   /**
    * The rates the turn's requests are priced at and who stated them (a user
-   * correction, the catalog entry, the hand-kept table), or `unknown`. A past
-   * turn's cost can be read back at the rates it ran under.
+   * correction or the catalog entry), or `unknown`. A past turn's cost can be
+   * read back at the rates it ran under; a record from a build before slice 7
+   * may name the retired hand-kept table (`RecordedModelPricing`).
    */
   readonly pricing: ResolvedModelPricing;
   /**

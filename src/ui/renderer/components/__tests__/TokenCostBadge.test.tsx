@@ -14,13 +14,14 @@ import { act, render, screen, cleanup, fireEvent } from "@testing-library/react"
 import { syncPricingOverrides } from "../../hooks/use-pricing-overrides.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { TokenCostBadge } from "../TokenCostBadge.js";
-import { computeCost, lookupPricing, type ModelPricing } from "../../../../shared/pricing-data.js";
+import { computeCost, type TokenRates } from "../../../../shared/pricing-data.js";
+import { knownModelPricing, resolveModelPricing } from "../../../../shared/model-pricing.js";
 import type { LLMVendor } from "../../../../shared/llm-vendor-defaults.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 
-const sonnet: ModelPricing = { inputPer1M: 3, outputPer1M: 15, contextWindow: 200_000 };
-const gpt: ModelPricing = { inputPer1M: 2, outputPer1M: 8, contextWindow: 1_000_000 };
-const flash: ModelPricing = { inputPer1M: 0, outputPer1M: 0, contextWindow: 1_000_000 };
+const sonnet: TokenRates = { inputPer1M: 3, outputPer1M: 15 };
+const gpt: TokenRates = { inputPer1M: 2, outputPer1M: 8 };
+const flash: TokenRates = { inputPer1M: 0, outputPer1M: 0 };
 
 function renderInCostMode(props: Parameters<typeof TokenCostBadge>[0]) {
   const result = render(
@@ -59,7 +60,7 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
     }
   });
 
-  it.each<{ vendor: LLMVendor; pricing: ModelPricing; label: string }>([
+  it.each<{ vendor: LLMVendor; pricing: TokenRates; label: string }>([
     { vendor: "claude", pricing: sonnet, label: "claude — cache additive at Anthropic ratios" },
     { vendor: "openai", pricing: gpt, label: "openai — provider-raw input includes cached tokens" },
     { vendor: "copilot", pricing: gpt, label: "copilot — provider-raw input includes cached tokens" },
@@ -117,7 +118,7 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
   });
 
   it("sums tiered costs per request segment", () => {
-    const pricing = lookupPricing("openai", "gpt-5.4");
+    const pricing = knownModelPricing(resolveModelPricing("openai", "gpt-5.4"))!.rates;
     renderInCostMode({
       tokensIn: 410_000,
       freshInputTokens: 400_000,

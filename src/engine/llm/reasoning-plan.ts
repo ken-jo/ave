@@ -72,7 +72,7 @@ function nearestAcceptedEffort(requested: EffortLevel, accepted: readonly string
   return below.at(-1) ?? levels[0];
 }
 
-export type ReasoningPlanSource = "model-catalog" | "request-shape" | "host-fallback";
+type ReasoningPlanSource = "model-catalog" | "request-shape" | "host-fallback";
 
 /** What a request's reasoning control is, as the adapter sends it. */
 export interface ReasoningPlan {

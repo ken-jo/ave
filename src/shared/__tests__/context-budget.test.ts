@@ -136,23 +136,21 @@ describe("resolveModelContextWindow — where the budget's denominator comes fro
     expect(resolved).toEqual({ contextWindow: 229_376, source: "provider-reported" });
   });
 
-  it("reads the pricing catalog when neither input is present", () => {
-    const resolved = resolveModelContextWindow({
-      vendor: "openai-compatible",
-      model: "Qwen3.6-35B-A3B-NVFP4",
-    });
-
-    expect(resolved).toEqual({ contextWindow: 262_144, source: "pricing-catalog" });
-  });
-
-  it("matches the catalog entry whatever case the served id is spelled in", () => {
-    const resolved = resolveModelContextWindow({
-      vendor: "openai-compatible",
-      model: "qwen3.6-35b-a3b-nvfp4",
-    });
-
-    expect(resolved).toEqual({ contextWindow: 262_144, source: "pricing-catalog" });
-  });
+  it.each(["Qwen3.6-35B-A3B-NVFP4", "Nemotron-3-Nano-30B-A3B-FP8"])(
+    "takes a self-hosted %s window from the endpoint's report or the user, never a built-in row",
+    (model) => {
+      // The hand-kept table seeded these two Ave deployments (262,144 and
+      // 131,072) until slice 7. A self-hosted vendor maps to no catalog
+      // provider by design: the endpoint reports its window, or the user
+      // declares it; otherwise the window is the host's guess, and says so.
+      expect(resolveModelContextWindow({ vendor: "openai-compatible", model }))
+        .toEqual({ contextWindow: FALLBACK_CONTEXT_WINDOW, source: "fallback" });
+      expect(resolveModelContextWindow({ vendor: "openai-compatible", model, reported: 262_144 }))
+        .toEqual({ contextWindow: 262_144, source: "provider-reported" });
+      expect(resolveModelContextWindow({ vendor: "openai-compatible", model, configured: 131_072 }))
+        .toEqual({ contextWindow: 131_072, source: "vendor-setting" });
+    },
+  );
 
   it("names the fallback as a fallback so a caller can report the guess", () => {
     const resolved = resolveModelContextWindow({
@@ -439,15 +437,15 @@ describe("the model catalog's place in the order", () => {
     expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1", configured: 400_000 }).source).toBe("vendor-setting");
   });
 
-  it("leaves a model the catalog does not know, or knows without a window, to the pricing table", () => {
+  it("leaves a model the catalog does not know, or knows without a window, to the host fallback", () => {
     useCatalog({ openai: [{ id: "gpt-4.1", limits: {} }] });
-    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1" })).toEqual({ contextWindow: 1_000_000, source: "pricing-catalog" });
-    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1-nano" })).toEqual({ contextWindow: 1_000_000, source: "pricing-catalog" });
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1" })).toEqual({ contextWindow: FALLBACK_CONTEXT_WINDOW, source: "fallback" });
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1-nano" })).toEqual({ contextWindow: FALLBACK_CONTEXT_WINDOW, source: "fallback" });
   });
 
   it("does not believe a catalog window past the credible ceiling", () => {
     useCatalog({ openai: [{ id: "gpt-4.1", limits: { context: MAX_CREDIBLE_CONTEXT_WINDOW + 1 } }] });
-    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1" }).source).toBe("pricing-catalog");
+    expect(resolveModelContextWindow({ vendor: "openai", model: "gpt-4.1" }).source).toBe("fallback");
   });
 
   it("never matches a self-hosted endpoint by name, and uses the entry the user names for it", () => {
@@ -463,10 +461,10 @@ describe("the model catalog's place in the order", () => {
   it("does not fall back to a name match when the named entry is not in the catalog", () => {
     useCatalog({ anthropic: [{ id: "claude-sonnet-4-6", limits: { context: 600_000 } }] });
     expect(catalogModelFor("claude", "claude-sonnet-4-6", "anthropic/not-listed")).toBeUndefined();
-    expect(resolveModelContextWindow({ vendor: "claude", model: "claude-sonnet-4-6", catalogModel: "anthropic/not-listed" }).source).toBe("pricing-catalog");
+    expect(resolveModelContextWindow({ vendor: "claude", model: "claude-sonnet-4-6", catalogModel: "anthropic/not-listed" }).source).toBe("fallback");
   });
 
-  it("throws when nothing installed a catalog, instead of answering from the table", () => {
+  it("throws when nothing installed a catalog, instead of answering from the fallback", () => {
     const slot = (globalThis as Record<symbol, { source?: unknown; resolved?: unknown }>)[Symbol.for("ave.modelCatalog.active")]!;
     const saved = { ...slot };
     delete slot.source;
@@ -500,8 +498,29 @@ describe("windows the bundled catalog corrects", () => {
     expect(resolveModelContextWindow({ vendor: "claude", model: "claude-sonnet-4-6" })).toMatchObject({ contextWindow: 1_000_000, source: "model-catalog" });
   });
 
-  it("leaves dated ids the catalog has no entry for to the table", () => {
-    expect(resolveModelContextWindow({ vendor: "claude", model: "claude-sonnet-4-20250514" })).toEqual({ contextWindow: 200_000, source: "pricing-catalog" });
+  it.each([
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
+    "claude-3-sonnet-20240229",
+    "claude-3-haiku-20240307",
+  ])("leaves the retired id %s, which the catalog does not list, to the host fallback", (model) => {
+    // The hand-kept table answered 200,000 until slice 7. No alias joins these
+    // ids to a listed entry: the catalog's anthropic provider lists none
+    // documented to be the same model.
+    expect(resolveModelContextWindow({ vendor: "claude", model })).toEqual({ contextWindow: FALLBACK_CONTEXT_WINDOW, source: "fallback" });
+  });
+
+  it.each([
+    ["openai", "gpt-4.1-2025-04-14", "openai/gpt-4.1"],
+    ["openai", "o3-2025-04-16", "openai/o3"],
+    ["openai", "o4-mini-2025-04-24", "openai/o4-mini"],
+    ["claude", "claude-sonnet-4-6-20260217", "anthropic/claude-sonnet-4-6"],
+    ["openai", "gpt-5.4-2026-03-05", "openai/gpt-5.4"],
+  ] as const)("resolves the dated id %s %s to its listed model %s", (vendor, model, catalogEntry) => {
+    expect(resolveModelContextWindow({ vendor, model })).toMatchObject({ source: "model-catalog", catalogEntry });
   });
 });
 

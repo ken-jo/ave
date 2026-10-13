@@ -79,11 +79,13 @@ describe("context budget — unknown context window", () => {
     expect(logged.warn).not.toHaveBeenCalled();
   });
 
-  it("says nothing when the pricing catalog knows the model", () => {
+  it("warns for a self-hosted model a built-in row used to describe", () => {
+    // The hand-kept table seeded this deployment's 262,144 window until slice
+    // 7. A self-hosted window comes from the endpoint's report or the user.
     const budget = contextBudgetForCurrentRuntime(loopOnModel("Qwen3.6-35B-A3B-NVFP4"));
 
-    expect(budget.contextWindowSource).toBe("pricing-catalog");
-    expect(logged.warn).not.toHaveBeenCalled();
+    expect(budget.contextWindowSource).toBe("fallback");
+    expect(logged.warn).toHaveBeenCalledTimes(1);
   });
 });
 

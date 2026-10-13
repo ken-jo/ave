@@ -14,32 +14,37 @@
  *     is mixed into it, and a stated zero is a known $0.
  *  2. `model-catalog` — the catalog entry the vendor's model id resolves to
  *     (`resolveCatalogKey`), with its cache, reasoning and prompt-size tiers.
- *  3. `pricing-catalog` — the hand-kept `DEFAULT_PRICING` row, for a model the
- *     catalog does not price (removed with the table in slice 7).
- *  4. `unknown` — nothing priced the model. Never shown as $0.
+ *  3. `unknown` — nothing priced the model. Never shown as $0.
  *
  * Absent is not free (§3.1): a catalog entry without a price is unknown at
  * that rank, and one listing input and output at zero is the source's
- * statement, which is not shown as "free" either — the next rank answers, and
- * when none does the result is `unknown` carrying the entry that listed zero,
- * so the surface can say so.
+ * statement, which is not shown as "free" either: the result is `unknown`
+ * carrying the entry that listed zero, so the surface can say so.
  *
  * A route the catalog cannot match by name (a self-hosted or local endpoint)
  * is not priced from the entry its user named as `catalogModel`: that names
  * the model the endpoint serves for its limits, and the public price of that
  * model is not what the user's own endpoint costs.
  */
-import { lookupBillablePricingOptional, type TokenRateTier, type TokenRates, type UsageForCost } from "./pricing-data.js";
+import type { TokenRateTier, TokenRates, UsageForCost } from "./pricing-data.js";
 import { isPricingOverrideRate, type PricingOverride } from "./pricing-overrides.js";
 import { activeModelCatalog } from "./model-catalog/active.js";
 import { resolveCatalogKey } from "./model-catalog/resolve.js";
 import type { CatalogModelCost } from "./model-catalog/types.js";
 
-export type ModelPricingSource = "user" | "model-catalog" | "pricing-catalog";
+export type ModelPricingSource = "user" | "model-catalog";
 
-export type ResolvedModelPricing =
+/**
+ * Who stated the rates a recorded price snapshot carries. Builds before issue
+ * #2501's slice 7 also priced from the hand-kept table (`pricing-catalog`);
+ * their persisted turns and usage rows keep that answer, which is read back
+ * as it was recorded. Nothing resolves to it any more.
+ */
+type RecordedModelPricingSource = ModelPricingSource | "pricing-catalog";
+
+export type ResolvedModelPricing<Source extends RecordedModelPricingSource = ModelPricingSource> =
   | {
-      readonly source: ModelPricingSource;
+      readonly source: Source;
       readonly rates: TokenRates;
       /** `<provider>/<id>` when the catalog answered. */
       readonly catalogEntry?: string;
@@ -50,7 +55,10 @@ export type ResolvedModelPricing =
       readonly catalogListsZero?: string;
     };
 
-export type KnownModelPricing = Extract<ResolvedModelPricing, { rates: TokenRates }>;
+/** A price snapshot read back from an IPC or persisted record. */
+export type RecordedModelPricing = ResolvedModelPricing<RecordedModelPricingSource>;
+
+export type KnownModelPricing = Extract<RecordedModelPricing, { rates: TokenRates }>;
 
 /** Usage and the price resolved when that provider request ran. */
 export interface ModelUsageSegment<Vendor extends string = string> {
@@ -58,17 +66,41 @@ export interface ModelUsageSegment<Vendor extends string = string> {
   vendorModel: string;
   tokenUsage: UsageForCost;
   /** Absent only on records written before request prices were captured. */
-  pricing?: ResolvedModelPricing;
+  pricing?: RecordedModelPricing;
 }
 
-const OPTIONAL_TOKEN_RATE_FIELDS = [
-  "cacheReadPer1M", "cacheWritePer1M", "reasoningPer1M",
-  "surchargeInputThreshold", "surchargeInputMultiplier", "surchargeOutputMultiplier",
-] as const;
+const OPTIONAL_TOKEN_RATE_FIELDS = ["cacheReadPer1M", "cacheWritePer1M", "reasoningPer1M"] as const;
 const OPTIONAL_TIER_RATE_FIELDS = ["inputPer1M", "outputPer1M", "cacheReadPer1M", "cacheWritePer1M"] as const;
 
+/**
+ * A snapshot recorded by a build before slice 7 may state the hand-kept
+ * table's long-context surcharge (GPT-5.4 and 5.4 Pro: past 272,000 prompt
+ * tokens, 2× input and 1.5× output). It priced exactly as a prompt-size tier
+ * at that threshold with the multiplied rates — input and both cache rates
+ * (a missing cache rate being the input rate) at the input multiplier, output
+ * and reasoning at the output multiplier — so it is read back as that tier.
+ * Only non-Anthropic rows carried one, and only non-Anthropic cost math
+ * applied it.
+ */
+function recordedSurchargeTier(raw: Record<string, unknown>, rates: TokenRates): TokenRateTier | undefined | null {
+  const threshold = raw.surchargeInputThreshold;
+  const inputMultiplier = raw.surchargeInputMultiplier ?? 1;
+  const outputMultiplier = raw.surchargeOutputMultiplier ?? 1;
+  // Multipliers without a threshold never applied.
+  if (threshold === undefined) return undefined;
+  if (!isPricingOverrideRate(threshold) || !isPricingOverrideRate(inputMultiplier) || !isPricingOverrideRate(outputMultiplier)) return null;
+  if (rates.reasoningPer1M !== undefined && outputMultiplier !== 1) return null;
+  return {
+    afterInputTokens: threshold,
+    inputPer1M: rates.inputPer1M * inputMultiplier,
+    outputPer1M: rates.outputPer1M * outputMultiplier,
+    cacheReadPer1M: (rates.cacheReadPer1M ?? rates.inputPer1M) * inputMultiplier,
+    cacheWritePer1M: (rates.cacheWritePer1M ?? rates.inputPer1M) * inputMultiplier,
+  };
+}
+
 /** Copy a price snapshot from an IPC or persisted record, validating every numeric field. */
-export function parseResolvedModelPricing(value: unknown): ResolvedModelPricing | undefined {
+export function parseResolvedModelPricing(value: unknown): RecordedModelPricing | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const obj = value as Record<string, unknown>;
   if (obj.source === "unknown") {
@@ -108,6 +140,13 @@ export function parseResolvedModelPricing(value: unknown): ResolvedModelPricing 
     }
     rates.tiers = tiers;
   }
+  const surchargeTier = recordedSurchargeTier(raw, rates);
+  if (surchargeTier === null) return undefined;
+  if (surchargeTier !== undefined) {
+    // The table never stated tiers beside a surcharge.
+    if (rates.tiers !== undefined) return undefined;
+    rates.tiers = [surchargeTier];
+  }
   return {
     source: obj.source,
     rates,
@@ -138,28 +177,13 @@ export function resolveModelPricing(
   if (catalogEntry !== undefined && catalogRates !== undefined && listsAPrice(catalogRates)) {
     return { source: "model-catalog", rates: catalogRates, catalogEntry };
   }
-  const row = lookupBillablePricingOptional(vendor, model);
-  if (row) {
-    return {
-      source: "pricing-catalog",
-      rates: {
-        inputPer1M: row.inputPer1M,
-        outputPer1M: row.outputPer1M,
-        ...(row.cacheReadPer1M !== undefined ? { cacheReadPer1M: row.cacheReadPer1M } : {}),
-        ...(row.cacheWritePer1M !== undefined ? { cacheWritePer1M: row.cacheWritePer1M } : {}),
-        ...(row.surchargeInputThreshold !== undefined ? { surchargeInputThreshold: row.surchargeInputThreshold } : {}),
-        ...(row.surchargeInputMultiplier !== undefined ? { surchargeInputMultiplier: row.surchargeInputMultiplier } : {}),
-        ...(row.surchargeOutputMultiplier !== undefined ? { surchargeOutputMultiplier: row.surchargeOutputMultiplier } : {}),
-      },
-    };
-  }
   return catalogEntry !== undefined && catalogRates !== undefined
     ? { source: "unknown", catalogListsZero: catalogEntry }
     : { source: "unknown" };
 }
 
 /** The rates, or `undefined` when nothing priced the model. */
-export function knownModelPricing(pricing: ResolvedModelPricing): KnownModelPricing | undefined {
+export function knownModelPricing(pricing: RecordedModelPricing): KnownModelPricing | undefined {
   return pricing.source === "unknown" ? undefined : pricing;
 }
 
