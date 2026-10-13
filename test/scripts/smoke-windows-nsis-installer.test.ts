@@ -708,7 +708,7 @@ describe("Windows NSIS installer smoke contracts", () => {
     const validEntry = {
       key: `HKEY_LOCAL_MACHINE\\${WINDOWS_UNINSTALL_REGISTRY_PATH}\\Ave`,
       view: "64",
-      values: { DisplayName: "RETIREDNAME" },
+      values: { DisplayName: "Ave" },
     };
     const validTree = {
       keyExists: true,
@@ -909,7 +909,7 @@ describe("Windows NSIS installer smoke contracts", () => {
     const validEntry = {
       key: `HKEY_LOCAL_MACHINE\\${WINDOWS_UNINSTALL_REGISTRY_PATH}\\Ave`,
       view: "64",
-      values: { DisplayName: "RETIREDNAME" },
+      values: { DisplayName: "Ave" },
     };
     const validResult = {
       keyExists: true,
