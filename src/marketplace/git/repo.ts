@@ -18,7 +18,7 @@ import { Parser, type ReadEntry } from "tar";
 import { canonicalZipEntryPathIdentity, sanitizeZipEntryPath } from "../../plugins/zip-entry-path.js";
 import { NULL_OBJECT_ID } from "../catalog/types.js";
 import { MarketplaceError } from "../errors.js";
-import { GitCommandError, type GitCommands, type GitRemote, GIT_TIMEOUTS_MS } from "./run-git.js";
+import { GitCommandError, type GitCommands, type GitRemote, type GitResult, type RunGitOptions, GIT_TIMEOUTS_MS } from "./run-git.js";
 
 const OID = /^[0-9a-f]{40}$/u;
 /** Upper bound on object ids requested in one fetch, to keep the command line bounded. */
@@ -66,11 +66,55 @@ export function assertRepoPath(path: string): void {
 /** How many of the remote's branches and tags a missing ref lists. */
 const LISTED_REFS = 10;
 
+/** The redirect statuses curl reports when git does not follow them (`http.followRedirects=false`). */
+const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * The address a call that a host redirected is tried at once more: the same
+ * scheme, host, port and path with `.git` appended, or null when there is
+ * none. The stored address never carries `.git` (source-url.ts), and GitLab
+ * answers `/group/repo` with a redirect to `/group/repo.git`. git never
+ * follows a redirect (run-git.ts) and the redirect's Location is not read:
+ * the retry goes to the host the call was bound to, so it is checked by the
+ * same address rule.
+ */
+function suffixRetryUrl(remote: GitRemote, error: unknown): string | null {
+  if (remote.url.scheme === "ssh" || remote.url.path.endsWith(".git")) return null;
+  if (!(error instanceof MarketplaceError) || error.code !== "SOURCE_UNREACHABLE") return null;
+  const detail = error.detail;
+  if (detail?.reason !== "http-status" || !("status" in detail) || !REDIRECT_STATUSES.has(detail.status)) return null;
+  return `${remote.url.url}.git`;
+}
+
 export class BareRepo {
   constructor(
     private readonly runner: GitCommands,
     readonly dir: string,
   ) {}
+
+  /**
+   * One call against `remote`, run once more at its `.git` address when the
+   * host answered it with a redirect ({@link suffixRetryUrl}). When that
+   * address holds no repository either, the redirect is what is reported.
+   */
+  private async remoteRun(
+    remote: GitRemote,
+    args: (url: string) => string[],
+    options: Omit<RunGitOptions, "remote">,
+  ): Promise<GitResult> {
+    try {
+      return await this.runner.run(args(remote.url.url), { ...options, remote });
+    } catch (error) {
+      const retryUrl = suffixRetryUrl(remote, error);
+      if (retryUrl === null) throw error;
+      try {
+        return await this.runner.run(args(retryUrl), { ...options, remote });
+      } catch (retryError) {
+        if (retryError instanceof MarketplaceError && retryError.code === "SOURCE_UNREACHABLE" && retryError.detail?.reason === "not-found") throw error;
+        throw retryError;
+      }
+    }
+  }
 
   static async init(runner: GitCommands, dir: string): Promise<BareRepo> {
     await mkdir(dirname(dir), { recursive: true });
@@ -80,8 +124,10 @@ export class BareRepo {
 
   /** `refs → oid` advertised by the remote (probe before add, §7.2). */
   async lsRemote(remote: GitRemote, ref?: string, signal?: AbortSignal): Promise<Map<string, string>> {
-    const args = ["ls-remote", "--", remote.url.url, ...(ref ? [ref] : ["HEAD"])];
-    const result = await this.runner.run(args, { remote, timeoutMs: GIT_TIMEOUTS_MS.lsRemote, ...(signal ? { signal } : {}) });
+    const result = await this.remoteRun(remote, (url) => ["ls-remote", "--", url, ...(ref ? [ref] : ["HEAD"])], {
+      timeoutMs: GIT_TIMEOUTS_MS.lsRemote,
+      ...(signal ? { signal } : {}),
+    });
     const refs = new Map<string, string>();
     for (const line of result.stdout.toString("utf8").split("\n")) {
       const [oid, name] = line.split("\t");
@@ -92,8 +138,7 @@ export class BareRepo {
 
   /** The remote's branch and tag names (`main`, `v1.2.0`), branches first, at most `limit`. */
   async refNames(remote: GitRemote, limit: number, signal?: AbortSignal): Promise<string[]> {
-    const refs = await this.runner.run(["ls-remote", "--refs", "--", remote.url.url, "refs/heads/*", "refs/tags/*"], {
-      remote,
+    const refs = await this.remoteRun(remote, (url) => ["ls-remote", "--refs", "--", url, "refs/heads/*", "refs/tags/*"], {
       timeoutMs: GIT_TIMEOUTS_MS.lsRemote,
       ...(signal ? { signal } : {}),
     });
@@ -116,9 +161,10 @@ export class BareRepo {
     }
     const target = `refs/ave/${localRef}`;
     try {
-      await this.runner.run(
-        ["fetch", "--filter=blob:none", "--no-tags", "--quiet", "--", remote.url.url, `+${source}:${target}`],
-        { gitDir: this.dir, remote, timeoutMs: GIT_TIMEOUTS_MS.fetch, ...(signal ? { signal } : {}) },
+      await this.remoteRun(
+        remote,
+        (url) => ["fetch", "--filter=blob:none", "--no-tags", "--quiet", "--", url, `+${source}:${target}`],
+        { gitDir: this.dir, timeoutMs: GIT_TIMEOUTS_MS.fetch, ...(signal ? { signal } : {}) },
       );
     } catch (error) {
       if (!(error instanceof MarketplaceError) || error.code !== "SOURCE_REF_NOT_FOUND") throw error;
@@ -211,9 +257,11 @@ export class BareRepo {
     for (const path of paths) assertRepoPath(path);
     const missing = await this.missingObjects(commit, paths);
     for (let index = 0; index < missing.length; index += MAX_OIDS_PER_FETCH) {
-      await this.runner.run(
-        ["fetch", "--filter=blob:none", "--no-tags", "--quiet", "--", remote.url.url, ...missing.slice(index, index + MAX_OIDS_PER_FETCH)],
-        { gitDir: this.dir, remote, timeoutMs: GIT_TIMEOUTS_MS.fetch, ...(signal ? { signal } : {}) },
+      const batch = missing.slice(index, index + MAX_OIDS_PER_FETCH);
+      await this.remoteRun(
+        remote,
+        (url) => ["fetch", "--filter=blob:none", "--no-tags", "--quiet", "--", url, ...batch],
+        { gitDir: this.dir, timeoutMs: GIT_TIMEOUTS_MS.fetch, ...(signal ? { signal } : {}) },
       );
     }
     if (missing.length > 0 && (await this.missingObjects(commit, paths)).length > 0) {
