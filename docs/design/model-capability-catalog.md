@@ -303,7 +303,9 @@ Implemented.
   levels for it, or the route's endpoint does not establish its identity (§4: a custom
   `baseUrl`, an Azure deployment alias, Copilot, which maps to no catalog provider) — an
   OpenAI-family request carries no `reasoning_effort`, and the plan says so
-  (`kind: "none"`, `source: "host-fallback"`, with the requested level). A level guessed
+  (`kind: "none"`, `source: "host-fallback"`, with the requested level). Such a request
+  also asks for no reasoning summary, so the conversation loop logs it once per route
+  when thinking is on, naming `llm.vendors.<vendor>.catalogModel`. A level guessed
   from a name is a 400 on a model that does not take it; naming the entry with
   `catalogModel` supplies the levels. Until slice 7 name rules (`isOpenAIReasoningModel`,
   `supportsReasoningEffortNone`) guessed one. Request shape stays a host rule, in the
@@ -579,14 +581,23 @@ report after answering each kind of row:
   (were 200K), `claude-3-5-sonnet-20241022`, `claude-3-5-haiku-20241022`,
   `claude-3-opus-20240229`, `claude-3-sonnet-20240229`, `claude-3-haiku-20240307` (200K);
   `gpt-5.3`, `gpt-5.2-codex`, `gpt-5.1-reasoning`, `gpt-5.1-pro`, `gpt-5.1-codex`,
-  `gpt-5.1-codex-mini`, `gpt-5.1-codex-max` (400K), `o1-mini` (128K), `gpt-4-32k`
-  (32,768: the fallback is larger than the retired model's window); `gemini-2.0-flash`
+  `gpt-5.1-codex-mini`, `gpt-5.1-codex-max` (400K), `o1-mini` (128K); `gpt-4-32k`
+  (32,768), `gpt-3.5-turbo-0125`, `gpt-3.5-turbo-1106` and `gpt-3.5-turbo-instruct`
+  (16,385), where the fallback is larger than the model's real window, so preflight
+  compaction cannot fire before the provider's context error. The date-suffix step does
+  not read a four-digit `-0125` suffix. These are deprecated snapshots: `-1106` shut down
+  on 2026-09-28 and `-0125` shuts down on 2026-10-23; the undated `gpt-3.5-turbo` and
+  `gpt-4` are catalogued at 16,385 and 8,192. A route still on one of them should declare
+  `contextWindow`. Also: `gemini-2.0-flash`
   (1,048,576), `gemini-2.0-flash-lite` (128K), `gemini-1.5-pro` (2,097,152),
   `gemini-1.5-flash` and `gemini-1.5-flash-8b` (1,048,576). The table also matched any id
   that began with one of its keys (`gpt-5.4-preview`, `gpt-5.5-codex` through `gpt-5`,
   `claude-opus-4-6-eval`), case-insensitively; such an id now resolves only through the
   steps of §4, which is the guess §4 refuses. A Codex subscription model id the catalog
-  does not list budgets against the same fallback; Codex's own report can only tighten it.
+  does not list (`gpt-5.5-codex`, for example) budgets against the same 128K fallback
+  and cannot recover above it: Codex's own context-window report can only tighten a
+  subscription budget, never raise it (that rule predates slice 7), and a subscription
+  route has no `contextWindow` or `catalogModel` setting.
 - **Copilot rows** go with the Copilot vendor's empty mapping (§3.4): its routes take what
   GitHub's `/models` reports, else the fallback.
 - **Self-hosted rows** (`openai-compatible`: `Qwen3.6-35B-A3B-NVFP4` 262,144,
