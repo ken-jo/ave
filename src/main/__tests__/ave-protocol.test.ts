@@ -193,7 +193,7 @@ describe("parseGitMarketplaceUri", () => {
     for (const url of [
       "ave://install/widget/calendar@ave",
       "ave://install/plugin/Calendar@ave",
-      "ave://install/plugin/calendar@Ave",
+      "ave://install/plugin/calendar@AVE",
       "ave://install/plugin/calendar@",
       "ave://install/plugin/@ave",
       "ave://install/plugin/cal--endar@ave",

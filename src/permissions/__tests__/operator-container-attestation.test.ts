@@ -498,7 +498,7 @@ describe("operator container attestation", () => {
     // is intentionally absent so this test cannot regenerate its own answer.
     const publicPem = [
       "-----BEGIN PUBLIC KEY-----",
-      "MCowBQYDK2VwAyEAfZcXu1W8Yxry4BDzsexlUEqX8JXInL1Va2TThkN3pF4=",
+      "MCowBQYDK2VwAyEAAna+qr4CfqJfTzFzSp1nW9Te8tFaINQckfctngHN+wI=",
       "-----END PUBLIC KEY-----",
       "",
     ].join("\n");
@@ -512,9 +512,9 @@ describe("operator container attestation", () => {
       claims: validClaims(),
     };
     const signature =
-      "Zyc4LaYqHmEyDO0O6khc+XLI2OvuUsX/GAsVDBYnyy5xc8rDYaWcq5TTWLhmQGjMlvyxc/ldv7+L13F+1yi4AA==";
+      "M35MhWI42EYO9AnxJGC4Cam/7rzlTHaH54EVfzbMzIeaDpOIQEoNhub0V0K3gJgtflfPRia4GcbI+q/jWH6WCg==";
     expect(payload.claims.mountInfo.sha256).toBe(
-      "f5337702932d9723aff35af9bee6f6c862a0124925836b67c890342206c980d9",
+      "8282308d9af3a8785d3f311a97f91342ebb4a5d247c733fb577e326707e4f14a",
     );
     f.io.setFile(KEY_PATH, publicPem);
     f.io.setFile(

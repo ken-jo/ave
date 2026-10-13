@@ -88,19 +88,28 @@ describe("MemoryManager AGENTS.md and MEMORY.md layout", () => {
     expect(index).toContain("## Saved Memories");
   });
 
-  it("migrates legacy Ave.md and memory/ into the new layout", () => {
+  it("migrates the legacy memory/ directory into the new layout", () => {
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(join(dir, "memory"), { recursive: true });
-    writeFileSync(join(dir, "Ave.md"), "# Legacy Ave", "utf-8");
     writeFileSync(join(dir, "memory", "old-note.md"), "# Old Note\n\nbody", "utf-8");
 
     const migrated = new MemoryManager({ aveDir: dir });
     migrated.load();
 
     expect(existsSync(join(dir, "AGENTS.md"))).toBe(true);
-    expect(existsSync(join(dir, "Ave.md"))).toBe(false);
     expect(existsSync(join(dir, "memories", "old-note.md"))).toBe(true);
-    expect(migrated.getAgentsMd()).toContain("Legacy Ave");
+  });
+
+  it("does not adopt a pre-rename Ave.md as the agents document", () => {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "Ave.md"), "# Pre-rename notes", "utf-8");
+
+    const fresh = new MemoryManager({ aveDir: dir });
+    fresh.load();
+
+    expect(existsSync(join(dir, "Ave.md"))).toBe(true);
+    expect(fresh.getAgentsMd()).not.toContain("Pre-rename notes");
   });
 
   it("updates MEMORY.md when saving a memory and injects it via getMemoryIndex", async () => {

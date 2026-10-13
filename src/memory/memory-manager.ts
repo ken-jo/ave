@@ -3459,7 +3459,6 @@ export class MemoryManager implements PromptMemorySource {
 
   private ensureStructure(): void {
     mkdirSync(this.aveDir, { recursive: true });
-    this.migrateLegacyFile("Ave.md", "AGENTS.md");
     this.migrateLegacyDirectory("memory", "memories");
 
     mkdirSync(this.memoryDir, { recursive: true });
@@ -4121,17 +4120,6 @@ export class MemoryManager implements PromptMemorySource {
       collision += 1;
     }
     return candidate;
-  }
-
-  private migrateLegacyFile(legacyName: string, currentName: string): void {
-    const legacyPath = join(this.aveDir, legacyName);
-    const currentPath = join(this.aveDir, currentName);
-    if (!existsSync(legacyPath)) return;
-    if (existsSync(currentPath)) {
-      log.warn(`${legacyName} exists but ${currentName} is already present; keeping ${currentName}`);
-      return;
-    }
-    renameSync(legacyPath, currentPath);
   }
 
   private migrateLegacyDirectory(legacyName: string, currentName: string): void {

@@ -234,7 +234,6 @@
     "test/renderer/audit-tab.test.tsx": 5,
     "test/renderer/chat-edit-resend.test.tsx": 1,
     "test/renderer/chat-stream-sequence.test.tsx": 1,
-    "test/renderer/ipc-sender-global.test.ts": 1,
     "test/renderer/mock-ave-api.ts": 7,
     "test/renderer/plugin-perf-tab.test.tsx": 5,
     "test/renderer/reasoning-card-collapse.test.tsx": 1,

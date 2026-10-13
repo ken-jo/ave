@@ -2440,21 +2440,6 @@
     {
       "type": "types",
       "file": "src/ui/renderer/types.ts",
-      "name": "Checkpoint"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/types.ts",
-      "name": "CheckpointTrigger"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/types.ts",
-      "name": "LLMVendorSettingsRenderer"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/types.ts",
       "name": "AveApprovalApi"
     },
     {
@@ -2511,6 +2496,21 @@
       "type": "types",
       "file": "src/ui/renderer/types.ts",
       "name": "AveWorkspaceApi"
+    },
+    {
+      "type": "types",
+      "file": "src/ui/renderer/types.ts",
+      "name": "Checkpoint"
+    },
+    {
+      "type": "types",
+      "file": "src/ui/renderer/types.ts",
+      "name": "CheckpointTrigger"
+    },
+    {
+      "type": "types",
+      "file": "src/ui/renderer/types.ts",
+      "name": "LLMVendorSettingsRenderer"
     },
     {
       "type": "types",

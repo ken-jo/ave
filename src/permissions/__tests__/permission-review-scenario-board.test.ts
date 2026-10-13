@@ -604,7 +604,7 @@ describe("permission-review-scenario-board-v2.html contract", () => {
         tool,
         pm,
         gate,
-        input: { endpoint: "https://github.com/repos/former_org/ave/issues" },
+        input: { endpoint: "https://github.com/repos/ave-project/ave/issues" },
       });
       expect(result[0].is_error).toBe(true);
       expect(execute).not.toHaveBeenCalled();

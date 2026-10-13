@@ -140,12 +140,12 @@ describe("auditUnauthorized", () => {
   it("redacts the user's home directory in file:// frame URLs", () => {
     const mockLogger = { log: vi.fn() };
     const home = os.homedir();
-    const event = foreignFrameEvent(`file://${home}/Documents/former_org/ave/dist/src/plugin-ui-shell.html`) as IpcMainInvokeEvent;
+    const event = foreignFrameEvent(`file://${home}/Documents/ave-project/ave/dist/src/plugin-ui-shell.html`) as IpcMainInvokeEvent;
     auditUnauthorized(mockLogger as never, "ave:test:channel", event);
     const parsed = JSON.parse(
       mockLogger.log.mock.calls[0][0].input as string,
     );
-    expect(parsed.frameUrl).toBe("file://<home>/Documents/former_org/ave/dist/src/plugin-ui-shell.html");
+    expect(parsed.frameUrl).toBe("file://<home>/Documents/ave-project/ave/dist/src/plugin-ui-shell.html");
     expect(parsed.frameUrl).not.toContain(home);
   });
 });

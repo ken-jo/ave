@@ -119,13 +119,13 @@ describe("computeCacheKey", () => {
       ...LOOKUP,
       toolName: "mcp_fetch",
       category: "network",
-      finalInput: { url: "https://api.github.com/repos/former_org/ave" },
+      finalInput: { url: "https://api.github.com/repos/ave-project/ave" },
     });
     const untrusted = computeCacheKey({
       ...LOOKUP,
       toolName: "mcp_fetch",
       category: "network",
-      finalInput: { url: "https://evil.example.test/repos/former_org/ave" },
+      finalInput: { url: "https://evil.example.test/repos/ave-project/ave" },
     });
     expect(trusted).not.toBe(untrusted);
   });

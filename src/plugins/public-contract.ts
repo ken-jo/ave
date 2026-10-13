@@ -1029,7 +1029,7 @@ export class MissingPluginDependenciesError extends Error {
 }
 
 /**
- * Mirror of the `runtime` block from `mcp.schema.json` (agent-marketplace#52).
+ * Mirror of the `runtime` block from `mcp.schema.json` (ave-marketplace#52).
  * Two transport branches; tokens in `args` (`$PLUGIN_DIR`, `$PYTHON`, `$NODE`)
  * are substituted by the host at install time.
  */

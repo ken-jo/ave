@@ -169,6 +169,8 @@ function repositoryReferences(source: string): Array<{ named: string; index: num
       const [owner, repo] = quoted ? [match[2], match[3]] : [match[1], match[2]];
       const index = match.index ?? 0;
       if (quoted && isProtocolName(source.slice(index + 1))) continue;
+      // A git ref namespace (`refs/ave/<name>`) shares the slug shape but never names a repository.
+      if (quoted && owner === "refs") continue;
       found.push({ named: `${owner}/${repo}`, index });
     }
   }
@@ -225,13 +227,14 @@ describe("repository identity source of truth", () => {
 
   it("reads a quoted repository path but not a quoted protocol name", () => {
     expect(NOTIFICATION_NAMESPACES).toEqual(["notifications/ave/"]);
-    expect(repositoryReferences(`const old = "former_org/ave/releases/latest";`)).toEqual([
-      { named: "former_org/ave", index: 12 },
+    expect(repositoryReferences(`const old = "ave-project/ave/releases/latest";`)).toEqual([
+      { named: "ave-project/ave", index: 12 },
     ]);
     expect(repositoryReferences(`const slug = 'some-owner/ave';`)).toEqual([
       { named: "some-owner/ave", index: 13 },
     ]);
     expect(repositoryReferences(`method: "${HOST_PROTOCOL_NOTIFICATIONS.log}"`)).toEqual([]);
+    expect(repositoryReferences("const target = `refs/ave/${localRef}`;")).toEqual([]);
     expect(repositoryReferences(`join(ROOT, "methods/ave/host/storage/read.json")`)).toEqual([]);
     // A golden-directory prefix alone does not excuse a non-method path.
     expect(repositoryReferences(`"methods/ave/releases"`)).toEqual([{ named: "methods/ave", index: 0 }]);

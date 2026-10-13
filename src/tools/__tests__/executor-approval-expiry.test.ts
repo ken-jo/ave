@@ -28,7 +28,7 @@ describe("tool approval expiration attribution", () => {
   let gate: ApprovalGate | undefined;
 
   beforeEach(async () => {
-    root = mkdtempSync(join(tmpdir(), "ave-approval-expiry-"));
+    root = mkdtempSync(join(tmpdir(), "averoval-expiry-"));
     workspace = join(root, "workspace");
     mkdirSync(workspace);
     previousHome = process.env.AVE_HOME;

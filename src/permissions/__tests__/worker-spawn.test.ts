@@ -676,7 +676,7 @@ describe("spawnWorker — Windows with gate ON", () => {
 
     const pluginDataDir = join(aveHome(), "plugins", "local-indexer", "data");
     const indexDir = join(pluginDataDir, "index");
-    const workerScript = "C:/retiredname/local-indexer/dist/worker/local_indexer_worker.py";
+    const workerScript = "C:/ave/local-indexer/dist/worker/local_indexer_worker.py";
     const pythonExecutable = "C:/Python/python.exe";
     const worker = await (async () => {
       try {

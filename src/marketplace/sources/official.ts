@@ -4,7 +4,7 @@
  *
  * The official source is a build constant, never a `sources.json` entry, so
  * no file on disk can repoint it. While this design is being built the
- * repository is private (decided 2026-09-23: the `former_org` organization
+ * repository is private (decided 2026-09-23: the `ave-project` organization
  * cannot host a new public repository or run CI), so the constant carries
  * token auth for github.com. Before the first public release built on this
  * design the repository becomes publicly readable or moves, and that
