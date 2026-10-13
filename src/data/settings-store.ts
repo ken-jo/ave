@@ -190,15 +190,16 @@ function retiredLlmProviderOf(rawLlm: unknown): RetiredLLMVendor | undefined {
 }
 
 /**
- * The active API route's saved model, when the catalog or the vendor's own
- * listing says it is retired (design `model-capability-catalog.md` §6.1).
+ * The active API route's saved model, when the vendor's own complete listing
+ * no longer names it (the retired tier, design `model-capability-catalog.md`
+ * §6.1). A model the catalog only calls deprecated keeps working and gets no
+ * marker; the window tells the user from the settings snapshot instead.
  * Judged afresh on every load, so a model that comes back is released and a
  * stored marker for a model the profile no longer names is dropped.
  */
 function retiredLlmModelOf(llm: LLMSettings): RetiredLlmModel | undefined {
-  const reason = resolveRouteModelRetirement(llm);
-  if (!reason) return undefined;
-  return { vendor: llm.provider, model: activeLlmRouteModel(llm), reason };
+  if (resolveRouteModelRetirement(llm) !== "unlisted") return undefined;
+  return { vendor: llm.provider, model: activeLlmRouteModel(llm), reason: "unlisted" };
 }
 
 /**
@@ -372,10 +373,11 @@ export interface LLMSettings {
    * Settings clears it. Only the settings load sets it; no patch can.
    *
    * The same marker carries a retired model (an object, not a vendor id):
-   * the load found the active route's saved model deprecated in the catalog
-   * or missing from its vendor's complete listing (design
-   * `model-capability-catalog.md` §6.1). Every gate above applies unchanged:
-   * the route stays unresolved until the user picks a model.
+   * the load found the active route's saved model missing from its vendor's
+   * complete listing (the retired tier, design `model-capability-catalog.md`
+   * §6.1). Every gate above applies unchanged: the route stays unresolved
+   * until the user picks a model. A model the catalog only calls deprecated
+   * never sets it.
    */
   retiredProvider?: LlmRouteRetirement;
   /**

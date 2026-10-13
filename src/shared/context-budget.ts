@@ -203,15 +203,21 @@ export function listingJudgesRetirement(vendor: string, baseUrl?: string): boole
 }
 
 /**
- * Why `model` is retired on this route, or `undefined` when nothing proves it.
+ * Which retirement tier `model` is in on this route, or `undefined` when
+ * nothing says it is going away.
  *
- * Retired means the active catalog marks the model the route serves
- * `deprecated` — judged only where the route itself establishes that identity;
- * a user's `catalogModel` declaration describes a model's shape, not whether
- * this host still serves it — or the route's last successful listing was
- * complete, comes from a route that {@link listingJudgesRetirement}, and names
- * no id equal to `model` ignoring case. A failed, partial or missing listing
- * proves nothing.
+ * - `"unlisted"` (retired, blocks the route): the route's last successful
+ *   listing was complete, comes from a route that
+ *   {@link listingJudgesRetirement}, and names no id equal to `model` ignoring
+ *   case. A failed, partial or missing listing proves nothing.
+ * - `"catalog-deprecated"` (deprecated, does not block): the active catalog
+ *   marks the model the route serves `deprecated` — judged only where the
+ *   route itself establishes that identity; a user's `catalogModel`
+ *   declaration describes a model's shape, not whether this host still
+ *   serves it.
+ *
+ * The listing outranks the catalog: a model the vendor no longer serves is
+ * retired even when the catalog only calls it deprecated.
  */
 export function resolveModelRetirement(params: {
   vendor: string;
@@ -222,13 +228,14 @@ export function resolveModelRetirement(params: {
 }): LlmModelRetirementReason | undefined {
   const model = params.model.trim();
   if (!model) return undefined;
-  if (catalogModelFor(params.vendor, model, undefined, params.baseUrl)?.model.status === "deprecated") {
-    return "catalog-deprecated";
-  }
   const listing = params.listing;
-  if (listing?.complete !== true || !listingJudgesRetirement(params.vendor, params.baseUrl)) return undefined;
-  const wanted = model.toLowerCase();
-  return listing.models.some((id) => id.toLowerCase() === wanted) ? undefined : "unlisted";
+  if (listing?.complete === true && listingJudgesRetirement(params.vendor, params.baseUrl)) {
+    const wanted = model.toLowerCase();
+    if (!listing.models.some((id) => id.toLowerCase() === wanted)) return "unlisted";
+  }
+  return catalogModelFor(params.vendor, model, undefined, params.baseUrl)?.model.status === "deprecated"
+    ? "catalog-deprecated"
+    : undefined;
 }
 
 /** {@link resolveModelRetirement} for a model on the active route's address. */

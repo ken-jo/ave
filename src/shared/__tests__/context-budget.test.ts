@@ -946,7 +946,13 @@ describe("resolveModelRetirement — design §6.1", () => {
     fetchedAt: "2026-10-13T00:00:00.000Z",
   });
 
-  it("retires a model the active catalog marks deprecated where the route establishes it", () => {
+  it("ranks the vendor's listing above the catalog: a deprecated model it dropped is retired", () => {
+    expect(resolveModelRetirement({ vendor: "openai", model: "o4-mini", listing: listing(["gpt-5.4"]) })).toBe("unlisted");
+    // Still listed: only the catalog's deprecated tier applies.
+    expect(resolveModelRetirement({ vendor: "openai", model: "o4-mini", listing: listing(["o4-mini"]) })).toBe("catalog-deprecated");
+  });
+
+  it("puts a model the active catalog marks deprecated in the deprecated tier where the route establishes it", () => {
     expect(activeModelCatalog().providers.openai?.models["o4-mini"]?.status).toBe("deprecated");
     expect(resolveModelRetirement({ vendor: "openai", model: "o4-mini" })).toBe("catalog-deprecated");
     // A dated snapshot of a deprecated model resolves to it.

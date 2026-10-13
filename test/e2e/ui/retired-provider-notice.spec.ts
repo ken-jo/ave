@@ -70,3 +70,62 @@ test('a retired profile stays blocked until an explicit model choice', async ({ 
   await expect(notice).toHaveCount(0);
   await expect(send).toBeEnabled();
 });
+
+// The deprecated tier (design model-capability-catalog §6.1): the catalog marks
+// the saved model deprecated. Chat keeps working; the window only says so.
+for (const locale of ['en', 'ko'] as const) {
+  test.describe(`deprecated model notice (${locale})`, () => {
+    test.use({ seedLlmProvider: 'openai', seedLocale: locale });
+
+    test('tells about a deprecated model without blocking chat', async ({ app, mainWindow, t }, testInfo) => {
+      await forceWideMainWindow(app);
+      await mainWindow.evaluate(async () => {
+        // o4-mini is `deprecated` in the bundled catalog.
+        await (window as unknown as { aveApi: AveApi }).aveApi.updateSettings({
+          llm: { provider: 'openai', vendors: { openai: { model: 'o4-mini' } } },
+        } as never);
+      });
+      const notice = mainWindow.getByTestId('deprecated-model-notice');
+      await expect(notice).toBeVisible();
+      await expect(notice).toHaveAttribute('role', 'status');
+      await expect(notice).toContainText(t('app.deprecatedModelNoticeTitle', { model: 'o4-mini' }));
+      await expect(notice).toContainText(t('app.deprecatedModelNoticeBody'));
+      await expect(mainWindow.getByTestId('retired-provider-notice')).toHaveCount(0);
+      const settings = await mainWindow.evaluate(() => (window as unknown as { aveApi: AveApi }).aveApi.getSettings());
+      expect(settings.llm.retiredProvider).toBeUndefined();
+      await mainWindow.getByTestId(TEST_IDS.composerTextarea).fill('A turn on a deprecated model');
+      await expect(mainWindow.getByRole('button', { name: t('bottomActionRow.sendButton'), exact: true })).toBeEnabled();
+
+      // Measured at a phone-like width: the notice and the page do not overflow.
+      await app.evaluate(({ BrowserWindow }) => {
+        for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.setContentSize(420, 900);
+      });
+      await expect(notice).toBeVisible();
+      const measure = () => {
+        const element = document.querySelector('[data-testid="deprecated-model-notice"]') as HTMLElement;
+        return {
+          notice: { scrollWidth: element.scrollWidth, clientWidth: element.clientWidth },
+          page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        };
+      };
+      const cdp = await mainWindow.context().newCDPSession(mainWindow);
+      const { result, exceptionDetails } = await cdp.send('Runtime.evaluate', { expression: `(${measure.toString()})()`, returnByValue: true });
+      await cdp.detach();
+      expect(exceptionDetails).toBeUndefined();
+      const metrics = result.value as ReturnType<typeof measure>;
+      expect(metrics.notice.scrollWidth).toBeLessThanOrEqual(metrics.notice.clientWidth);
+      expect(metrics.page).toBeLessThanOrEqual(0);
+      await testInfo.attach('deprecated-notice-metrics-narrow', { body: JSON.stringify(metrics), contentType: 'application/json' });
+      await testInfo.attach('deprecated-notice-narrow', { body: await notice.screenshot(), contentType: 'image/png' });
+      await forceWideMainWindow(app);
+
+      // The action opens the chooser, whose trigger names the model's tier.
+      await mainWindow.getByTestId('deprecated-model-notice-action').click();
+      await expect(mainWindow.getByTestId(TEST_IDS.llmModelSelect))
+        .toContainText(t('llmTab.modelDeprecatedPlaceholder', { model: 'o4-mini' }));
+      await closeInlineSettings(app, mainWindow);
+      await mainWindow.getByTestId('deprecated-model-notice-dismiss').click();
+      await expect(notice).toHaveCount(0);
+    });
+  });
+}

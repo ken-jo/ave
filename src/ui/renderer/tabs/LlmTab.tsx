@@ -34,7 +34,9 @@ import {
 import {
   canUseLlmVendorWithoutApiKey,
   isLLMVendor,
+  isRetiredLlmModelMarker,
   type LLMVendor,
+  type LlmModelRetirementReason,
   isOpenAICompatiblePresetVendor,
   isOpenAICompatibleVendor,
   isSelfHostedTrustedNetworkVendor,
@@ -742,14 +744,14 @@ function modelOptionsFor(
 }
 
 /**
- * Whether a model is retired on the route this cache key names, judged from
- * the catalog and that route's last successful listing.
+ * Which retirement tier a model is in on the route this cache key names,
+ * judged from the catalog and that route's last successful listing.
  */
-function modelRetiredOn(
+function modelRetirementOn(
   cache: LlmModelListCache,
   modelListKey: string | undefined,
   vendorId: string,
-): (model: string) => boolean {
+): (model: string) => LlmModelRetirementReason | undefined {
   const [, baseUrl = ""] = modelListKey?.split("\n") ?? [];
   const listing = modelListKey ? cache[modelListKey] : undefined;
   return (model) => resolveModelRetirement({
@@ -757,7 +759,28 @@ function modelRetiredOn(
     model,
     ...(baseUrl ? { baseUrl } : {}),
     ...(listing ? { listing } : {}),
-  }) !== undefined;
+  });
+}
+
+/** Whether a model is in either retirement tier; both are hidden from the pickers. */
+function modelRetiredOn(
+  cache: LlmModelListCache,
+  modelListKey: string | undefined,
+  vendorId: string,
+): (model: string) => boolean {
+  const tier = modelRetirementOn(cache, modelListKey, vendorId);
+  return (model) => tier(model) !== undefined;
+}
+
+/** What a picker whose saved model is hidden shows instead, by tier. */
+function retiredModelPlaceholder(
+  t: (key: string, params?: Record<string, string | number>) => string,
+  reason: LlmModelRetirementReason,
+  model: string,
+): string {
+  return reason === "unlisted"
+    ? t("llmTab.modelRetiredPlaceholder", { model })
+    : t("llmTab.modelDeprecatedPlaceholder", { model });
 }
 
 /**
@@ -2371,9 +2394,17 @@ export function LlmTab(props: LlmTabProps) {
     unlistedModel, subscription.providers, savedVendorBlocks, savedModelListCache, t,
   ]);
 
+  // The saved model is hidden from the chooser in either retirement tier, so
+  // the trigger names it and the tier instead of pointing at no option.
+  const activeModelRetirement = isRetiredLlmModelMarker(retiredLlmProvider)
+    ? retiredLlmProvider.reason
+    : modelRetirementOn(savedModelListCache, activeSyncRow?.modelListKey, vendor)(activeModelValue);
   const selectedUnifiedValue = subscription.activeRuntime.kind === "subscription"
     ? unifiedValue(subscription.activeRuntime.provider, subscription.activeRuntime.model ?? "")
-    : retiredLlmProvider ? "" : unifiedValue(apiProviderId(activeApiRowId), activeModelValue);
+    : retiredLlmProvider || activeModelRetirement ? "" : unifiedValue(apiProviderId(activeApiRowId), activeModelValue);
+  const unifiedPlaceholder = subscription.activeRuntime.kind === "api" && activeModelRetirement
+    ? retiredModelPlaceholder(t, activeModelRetirement, isRetiredLlmModelMarker(retiredLlmProvider) ? retiredLlmProvider.model : activeModelValue)
+    : vendorInfo.defaultModel;
 
   /**
    * A pick moves BOTH halves of the decision: which provider answers, and with
@@ -3213,7 +3244,7 @@ export function LlmTab(props: LlmTabProps) {
               onValueChange={handleUnifiedModelChange}
               pinned={pinnedModels}
               onTogglePin={handleTogglePin}
-              placeholder={vendorInfo.defaultModel}
+              placeholder={unifiedPlaceholder}
               popupClassName={SELECT_POPUP_LAYOUT}
               disabled={subscription.props.chatSelectionBusy ?? false}
             />
@@ -3350,9 +3381,11 @@ export function LlmTab(props: LlmTabProps) {
                 const fallbackModelListKey = vendorModelListKey(entry.provider);
                 const fallbackModelRetired = modelRetiredOn(savedModelListCache, fallbackModelListKey, entry.provider);
                 const savedFallbackModel = trimmedFallbackModel || fallbackVendorInfo.defaultModel;
-                // A saved fallback at a retired model stays unselected until
-                // the user picks another; it is not swapped for a default.
-                const retiredFallbackModel = fallbackModelRetired(savedFallbackModel) ? savedFallbackModel : null;
+                // A saved fallback at a retired or deprecated model stays
+                // unselected until the user picks another; it is not swapped
+                // for a default.
+                const fallbackRetirement = modelRetirementOn(savedModelListCache, fallbackModelListKey, entry.provider)(savedFallbackModel);
+                const retiredFallbackModel = fallbackRetirement ? savedFallbackModel : null;
                 const fallbackModelValue = retiredFallbackModel ? "" : savedFallbackModel;
                 const fallbackModelList = modelLists[fallbackModelListKey];
                 const fallbackModelOptions = modelOptionsFor(
@@ -3395,8 +3428,8 @@ export function LlmTab(props: LlmTabProps) {
                     >
                       <SelectTrigger className="min-w-0 flex-1 text-xs">
                         <SelectValue
-                          placeholder={retiredFallbackModel
-                            ? t("llmTab.modelRetiredPlaceholder", { model: retiredFallbackModel })
+                          placeholder={retiredFallbackModel && fallbackRetirement
+                            ? retiredModelPlaceholder(t, fallbackRetirement, retiredFallbackModel)
                             : fallbackVendorInfo.defaultModel}
                         />
                       </SelectTrigger>

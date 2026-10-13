@@ -4068,13 +4068,31 @@ describe("retired model profile (design model-capability-catalog §6.1)", () => 
     await cleanupTmpDir(userDataPath);
   });
 
-  it("marks a saved model the catalog deprecates, keeping the saved id", () => {
-    // o4-mini is `deprecated` in the bundled catalog.
+  /** A complete native OpenAI listing that no longer names `gpt-4o`. */
+  const listingWithout = (models: string[]) => ({
+    x: { vendor: "openai", endpoint: "https://api.openai.com/v1/models", models, complete: true, fetchedAt: "2026-10-13T00:00:00.000Z" },
+  });
+
+  it("does not block a saved model the catalog only deprecates, and keeps the saved id", () => {
+    // o4-mini is `deprecated` in the bundled catalog: the deprecated tier.
     writeProfile({ provider: "openai", vendors: { openai: { model: "o4-mini" } } });
     const llm = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm");
     expect(llm.provider).toBe("openai");
     expect(getLlmVendorSettings(llm.vendors, "openai").model).toBe("o4-mini");
-    expect(llm.retiredProvider).toEqual({ vendor: "openai", model: "o4-mini", reason: "catalog-deprecated" });
+    expect(llm.retiredProvider).toBeUndefined();
+  });
+
+  it("keeps the host's API credentials for a deprecated model", () => {
+    writeProfile({ provider: "openai", vendors: { openai: { model: "o4-mini" } } });
+    writePlainSecrets(join(userDataPath, "ave-secrets.json"), { "llm.apiKey.openai": "credential-marker" });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
+    expect(service.getSecret("llm.apiKey.openai")).toBe("credential-marker");
+  });
+
+  it("retires a deprecated model the vendor's complete listing also dropped: the listing outranks the catalog", () => {
+    writeProfile({ provider: "openai", vendors: { openai: { model: "o4-mini" } }, modelListCache: listingWithout(["gpt-5.4"]) });
+    const llm = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm");
+    expect(llm.retiredProvider).toEqual({ vendor: "openai", model: "o4-mini", reason: "unlisted" });
   });
 
   it("marks a saved model the vendor's last complete listing no longer names", () => {
@@ -4104,7 +4122,7 @@ describe("retired model profile (design model-capability-catalog §6.1)", () => 
     writeProfile({
       provider: "openai",
       vendors: { openai: { model: "gpt-5.4" } },
-      retiredProvider: { vendor: "openai", model: "o4-mini", reason: "catalog-deprecated" },
+      retiredProvider: { vendor: "openai", model: "gpt-4o", reason: "unlisted" },
     });
     expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm").retiredProvider).toBeUndefined();
   });
@@ -4115,10 +4133,10 @@ describe("retired model profile (design model-capability-catalog §6.1)", () => 
   });
 
   it("keeps the marker through ordinary saves and clears it when a model is picked", async () => {
-    writeProfile({ provider: "openai", vendors: { openai: { model: "o4-mini" } } });
+    writeProfile({ provider: "openai", vendors: { openai: { model: "gpt-4o" } }, modelListCache: listingWithout(["gpt-5.4"]) });
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ llm: { pinnedModels: ["gpt-5.4"] } });
-    expect(service.get("llm").retiredProvider).toMatchObject({ model: "o4-mini" });
+    expect(service.get("llm").retiredProvider).toMatchObject({ model: "gpt-4o" });
     await service.patch({ llm: { provider: "openai", vendors: { openai: { model: "gpt-5.4" } } } as never });
     expect(service.get("llm").retiredProvider).toBeUndefined();
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -4126,7 +4144,7 @@ describe("retired model profile (design model-capability-catalog §6.1)", () => 
   });
 
   it("withholds the host's API credentials while a retired model is unresolved", async () => {
-    writeProfile({ provider: "openai", vendors: { openai: { model: "o4-mini" } } });
+    writeProfile({ provider: "openai", vendors: { openai: { model: "gpt-4o" } }, modelListCache: listingWithout(["gpt-5.4"]) });
     writePlainSecrets(join(userDataPath, "ave-secrets.json"), { "llm.apiKey.openai": "credential-marker" });
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
     expect(service.getSecret("llm.apiKey.openai")).toBeNull();

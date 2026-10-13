@@ -743,10 +743,10 @@ describe("LlmTab provider cards", () => {
         models: ["gpt-5.4", "o3", "o4-mini"], fetchedAt: "2026-10-13T00:00:00.000Z",
       } satisfies LlmModelListResult),
     });
-    await renderTab(api, {
-      vendor: "openai", model: "o4-mini",
-      retiredLlmProvider: { vendor: "openai", model: "o4-mini", reason: "catalog-deprecated" },
-    });
+    // The deprecated tier sets no marker: the trigger names the model and its tier.
+    await renderTab(api, { vendor: "openai", model: "o4-mini" });
+    await waitFor(() => expect(screen.getByTestId(TEST_IDS.llmModelSelect))
+      .toHaveTextContent(t("llmTab.modelDeprecatedPlaceholder", { model: "o4-mini" })));
     const ids = await chooserModelIds();
     expect(ids).toContain("gpt-5.4");
     expect(ids).toContain("o3");

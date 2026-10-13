@@ -344,17 +344,26 @@ export function isRetiredLLMVendor(v: unknown): v is RetiredLLMVendor {
 }
 
 /**
- * Why a saved model counts as retired (design `model-capability-catalog.md`
- * §6.1): the active catalog marks it `deprecated`, or the vendor's own
- * complete `/models` listing on its native host no longer names it.
+ * The two tiers of a model going away (design `model-capability-catalog.md`
+ * §6.1):
+ * - `"unlisted"` (retired): the vendor's own complete `/models` listing on
+ *   its native host no longer names it. The route is blocked until the user
+ *   picks another model.
+ * - `"catalog-deprecated"` (deprecated): the active catalog marks it
+ *   `deprecated`. It is hidden from the pickers and the user is told, but the
+ *   route keeps working.
  */
 export type LlmModelRetirementReason = "catalog-deprecated" | "unlisted";
 
-/** The saved active model that the last settings load judged retired. */
+/**
+ * The saved active model that the last settings load found retired. Only the
+ * retired tier (`"unlisted"`) blocks the route; a deprecated model never
+ * carries this marker.
+ */
 export interface RetiredLlmModel {
   vendor: LLMVendor;
   model: string;
-  reason: LlmModelRetirementReason;
+  reason: "unlisted";
 }
 
 /**
@@ -369,7 +378,7 @@ export function isRetiredLlmModelMarker(v: unknown): v is RetiredLlmModel {
   const record = v as Partial<Record<keyof RetiredLlmModel, unknown>>;
   return isLLMVendor(record.vendor)
     && typeof record.model === "string" && record.model.trim() !== ""
-    && (record.reason === "catalog-deprecated" || record.reason === "unlisted");
+    && record.reason === "unlisted";
 }
 
 export function isLlmRouteRetirement(v: unknown): v is LlmRouteRetirement {

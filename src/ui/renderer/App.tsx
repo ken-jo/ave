@@ -9,7 +9,7 @@ import { CustomTitleBar } from "./components/CustomTitleBar.js";
 import { MainToolbar } from "./MainToolbar.js";
 import { Sidebar, isDarwinPlatform } from "./components/Sidebar.js";
 import { MarketplaceAnnouncementBanner } from "./components/MarketplaceAnnouncementBanner.js";
-import { RetiredProviderNotice } from "./components/RetiredProviderNotice.js";
+import { DeprecatedModelNotice, RetiredProviderNotice } from "./components/RetiredProviderNotice.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { DevToolsPanel } from "./components/DevToolsPanel.js";
 import { DevComponentLabels } from "./components/DevComponentLabels.js";
@@ -873,6 +873,7 @@ export function App() {
     processingDisplayLevel,
     llmReadyWithoutApiKey,
     retiredLlmProvider,
+    deprecatedLlmModel,
     subscriptionRuntimePolicy,
     refresh: refreshLlmSettings,
     settingsLoaded,
@@ -1997,6 +1998,10 @@ export function App() {
                     <RetiredProviderNotice
                       retiredProvider={subscriptionRuntimeSelected ? null : retiredLlmProvider}
                       onChooseProvider={() => onOpenSettings("llm")}
+                    />
+                    <DeprecatedModelNotice
+                      model={subscriptionRuntimeSelected ? null : deprecatedLlmModel}
+                      onChooseModel={() => onOpenSettings("llm")}
                     />
                     <MarketplaceAnnouncementBanner
                       announcements={marketplaceAnnouncements}

@@ -26,6 +26,7 @@ import {
   llmRouteCatalogAddress,
   resolveContextWindowForRoute,
   resolveModelRetirement,
+  resolveRouteModelRetirement,
   type ResolvedOutputTokenLimit,
   type RouteInputModalities,
 } from "../../../shared/context-budget.js";
@@ -141,6 +142,12 @@ export interface UseSettingsResult {
    * while it is set.
    */
   retiredLlmProvider: LlmRouteRetirement | null;
+  /**
+   * The active API route's saved model when the catalog marks it deprecated
+   * and nothing retired the route (design `model-capability-catalog.md` §6.1).
+   * Chat keeps working on it; the window only says it is going away.
+   */
+  deprecatedLlmModel: string | null;
   /** Single source of truth for selected subscription chat and attachment UX. */
   subscriptionRuntimePolicy: SubscriptionRuntimeUiPolicy;
   /** Active subscription runtime after untrusted settings boundary validation. */
@@ -179,6 +186,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
   );
   const [llmReadyWithoutApiKey, setLlmReadyWithoutApiKey] = useState(false);
   const [retiredLlmProvider, setRetiredLlmProvider] = useState<LlmRouteRetirement | null>(null);
+  const [deprecatedLlmModel, setDeprecatedLlmModel] = useState<string | null>(null);
   const [activeSubscriptionRuntime, setActiveSubscriptionRuntime] =
     useState<SubscriptionChatRuntimeSelection | null>(null);
   const [subscriptionRuntimeCapabilities, setSubscriptionRuntimeCapabilities] =
@@ -205,10 +213,11 @@ export function useSettings(api: AveApi): UseSettingsResult {
       const provider = narrowLlmVendor(settings.llm.provider);
       const block = getLlmVendorSettings(settings.llm.vendors, provider);
       setLlmVendor(provider);
-      setLlmModel(llmRouteModel(
+      const routeModel = llmRouteModel(
         block,
         provider === "openai-compatible" ? settings.llm.marketplaceProviderPresetId : undefined,
-      ));
+      );
+      setLlmModel(routeModel);
       const route = resolveContextWindowForRoute(
         { ...settings.llm, provider },
         settings.marketplace?.installedProviderPresets,
@@ -235,7 +244,16 @@ export function useSettings(api: AveApi): UseSettingsResult {
         settings.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
       );
       setLlmReadyWithoutApiKey(canUseSettingsWithoutApiKey(settings, provider));
-      setRetiredLlmProvider(isLlmRouteRetirement(settings.llm.retiredProvider) ? settings.llm.retiredProvider : null);
+      const retiredRoute = isLlmRouteRetirement(settings.llm.retiredProvider) ? settings.llm.retiredProvider : null;
+      setRetiredLlmProvider(retiredRoute);
+      // The deprecated tier is the catalog's word alone; a listing that lands
+      // mid-session is judged by the next load, which may block the route.
+      const deprecated = retiredRoute === null && routeModel !== ""
+        && resolveRouteModelRetirement(
+          { ...settings.llm, provider, modelListCache: undefined },
+          settings.marketplace?.installedProviderPresets,
+        ) === "catalog-deprecated";
+      setDeprecatedLlmModel(deprecated ? routeModel : null);
       const nextSubscriptionRuntime = activeSubscriptionRuntimeFromSettings(settings);
       const runtimeChanged = !sameSubscriptionRuntime(
         activeSubscriptionRuntimeRef.current,
@@ -388,6 +406,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     processingDisplayLevel,
     llmReadyWithoutApiKey,
     retiredLlmProvider,
+    deprecatedLlmModel,
     subscriptionRuntimePolicy,
     activeSubscriptionRuntime: subscriptionRuntimePolicy.activeSubscriptionRuntime,
     subscriptionChatReady: subscriptionRuntimePolicy.chatReady,
