@@ -105,6 +105,9 @@
                 "detached-operation",
                 "plugin-storage",
                 "plugin-storage-encryption-unavailable",
+                "lease-unavailable",
+                "lease-audience-denied",
+                "credential-conflict",
                 "host-internal"
               ]
             },
@@ -154,6 +157,9 @@
         "detached-operation",
         "plugin-storage",
         "plugin-storage-encryption-unavailable",
+        "lease-unavailable",
+        "lease-audience-denied",
+        "credential-conflict",
         "host-internal"
       ]
     },
@@ -210,6 +216,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -334,6 +343,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -450,6 +462,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -577,6 +592,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -684,6 +702,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -788,6 +809,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -901,6 +925,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1003,6 +1030,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1102,6 +1132,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1239,6 +1272,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1341,6 +1377,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1441,6 +1480,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1573,6 +1615,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1675,6 +1720,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1725,7 +1773,7 @@
       "ave/host/hostFetch": {
         "description": "Host-mediated outbound HTTPS through Electron's `net` (Chromium network stack). Unlike a plugin's own Node `fetch`/undici, this honors the OS proxy resolution INCLUDING PAC/WPAD auto-config and the OS trust store on every platform — so a plugin whose Node libraries can't be configured for the corporate proxy/CA (e.g. MSAL) can still reach the network on a TLS-inspecting corporate network. Capability-gated (external-auth-consumer) + SSRF-validated + audited host-side.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied, lease-unavailable, lease-audience-denied, credential-conflict.",
           "properties": {
             "code": {
               "type": "integer"
@@ -1774,6 +1822,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1876,6 +1927,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -1971,6 +2025,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2080,6 +2137,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2191,6 +2251,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2303,6 +2366,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2407,6 +2473,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2517,6 +2586,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2735,6 +2807,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2834,6 +2909,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -2941,6 +3019,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -3048,6 +3129,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -3290,6 +3374,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -3580,6 +3667,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -3683,6 +3773,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -3786,6 +3879,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -3888,6 +3984,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4104,6 +4203,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4274,6 +4376,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4373,6 +4478,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4472,6 +4580,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4571,6 +4682,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4670,6 +4784,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4769,6 +4886,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4875,6 +4995,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -4987,6 +5110,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -5094,6 +5220,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -5159,7 +5288,7 @@
         }
       },
       "ave/host/storage/writeEncrypted": {
-        "description": "Encrypt `plaintext` with the host's configured encryption provider and write the ciphertext bytes to `relPath`, inside the same sandboxed `pluginDataDir` root as every other method — identical absolute-path / lexical `..` / symlink-escape rejection applies. Parent directories are created as needed.",
+        "description": "Encrypt `plaintext` with the host's configured encryption provider and write the ciphertext bytes to `relPath`, inside the same sandboxed storage root as every other method — identical absolute-path / lexical `..` / symlink-escape rejection applies. Parent directories are created as needed.",
         "errors": {
           "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises plugin-storage, plugin-storage-encryption-unavailable, effect-boundary-denied.",
           "properties": {
@@ -5210,6 +5339,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -5313,6 +5445,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -5419,6 +5554,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -5591,6 +5729,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -5694,6 +5835,9 @@
                     "detached-operation",
                     "plugin-storage",
                     "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
                     "host-internal"
                   ]
                 },
@@ -6119,23 +6263,6 @@
       }
     },
     "notifications": {
-      "notifications/cancelled": {
-        "description": "child → host: cancel an in-flight `ave/host/*` request.",
-        "params": {
-          "properties": {
-            "reason": {
-              "type": "string"
-            },
-            "requestId": {
-              "$ref": "#/$defs/types/JsonRpcRequestId"
-            }
-          },
-          "required": [
-            "requestId"
-          ],
-          "type": "object"
-        }
-      },
       "notifications/ave/config/snapshot": {
         "description": "host → child: the plugin's resolved config changed.",
         "params": {
@@ -6257,6 +6384,23 @@
           },
           "required": [
             "subscriptionId"
+          ],
+          "type": "object"
+        }
+      },
+      "notifications/cancelled": {
+        "description": "child → host: cancel an in-flight `ave/host/*` request.",
+        "params": {
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "requestId": {
+              "$ref": "#/$defs/types/JsonRpcRequestId"
+            }
+          },
+          "required": [
+            "requestId"
           ],
           "type": "object"
         }
@@ -6587,6 +6731,241 @@
         ],
         "type": "object"
       },
+      "EntryPluginManifest": {
+        "properties": {
+          "alerts": {
+            "$ref": "#/$defs/types/PluginAlertsDeclaration"
+          },
+          "auth": {
+            "$ref": "#/$defs/types/PluginAuthSpec"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "config": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "configInherits": {
+            "items": {
+              "$ref": "#/$defs/types/ConfigInheritDeclaration"
+            },
+            "type": "array"
+          },
+          "configSchema": {
+            "$ref": "#/$defs/types/PluginConfigSchema"
+          },
+          "dependencies": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/types/DependencySpec"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "description": {
+            "type": "string"
+          },
+          "emittedEvents": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "entry": {
+            "type": "string"
+          },
+          "eventSubscriptions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "items": {
+                  "$ref": "#/$defs/types/EventSubscription"
+                },
+                "type": "array"
+              }
+            ]
+          },
+          "hooks": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "hostSecrets": {
+            "properties": {
+              "read": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "icon": {
+            "type": "string"
+          },
+          "iconText": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "mcpServers": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "networkAccess": {
+            "properties": {
+              "allowPrivateNetworks": {
+                "type": "boolean"
+              },
+              "allowedDomains": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "authCookiePartition": {
+                "type": "string"
+              },
+              "reasoning": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "allowedDomains"
+            ],
+            "type": "object"
+          },
+          "onboarding": {
+            "$ref": "#/$defs/types/PluginOnboardingSpec"
+          },
+          "packageName": {
+            "type": "string"
+          },
+          "pluginAccess": {
+            "$ref": "#/$defs/types/PluginAccessSpec"
+          },
+          "process": false,
+          "prompts": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "python": {
+            "properties": {
+              "interpreter": {
+                "type": "string"
+              },
+              "managedBy": {
+                "enum": [
+                  "ave",
+                  "self"
+                ],
+                "type": "string"
+              },
+              "requirementsLock": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "requires": {
+            "$ref": "#/$defs/types/RequiresSpec"
+          },
+          "routineTemplates": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "sandbox": {
+            "$ref": "#/$defs/types/PluginSandboxDeclaration"
+          },
+          "skills": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "startupTimeoutMs": {
+            "type": "number"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/$defs/types/Tool"
+            },
+            "type": "array"
+          },
+          "ui": {
+            "items": {
+              "$ref": "#/$defs/types/PluginUiExtension"
+            },
+            "type": "array"
+          },
+          "uiResources": {
+            "items": {
+              "$ref": "#/$defs/types/PluginUiResourceDecl"
+            },
+            "type": "array"
+          },
+          "uiSlots": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "string"
+          },
+          "workProposals": {
+            "properties": {
+              "kinds": {
+                "items": {
+                  "$ref": "#/$defs/types/WorkProposalKind"
+                },
+                "type": "array"
+              },
+              "reasoning": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kinds"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "description",
+          "entry",
+          "id",
+          "tools",
+          "version"
+        ],
+        "type": "object"
+      },
       "EventSubscription": {
         "properties": {
           "hint": {
@@ -6655,7 +7034,7 @@
         "type": "object"
       },
       "HostProtocolVersion": {
-        "const": "1",
+        "const": "3",
         "type": "string"
       },
       "JsonRpcRequestId": {
@@ -6773,6 +7152,9 @@
             ],
             "type": "object"
           },
+          "aveHome": {
+            "type": "string"
+          },
           "config": {
             "additionalProperties": {},
             "type": "object"
@@ -6785,9 +7167,6 @@
               "type": "string"
             },
             "type": "array"
-          },
-          "aveHome": {
-            "type": "string"
           },
           "pluginDataDir": {
             "type": "string"
@@ -7132,250 +7511,14 @@
         "type": "string"
       },
       "PluginManifest": {
-        "properties": {
-          "alerts": {
-            "$ref": "#/$defs/types/PluginAlertsDeclaration"
+        "anyOf": [
+          {
+            "$ref": "#/$defs/types/EntryPluginManifest"
           },
-          "auth": {
-            "$ref": "#/$defs/types/PluginAuthSpec"
-          },
-          "capabilities": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "config": {
-            "additionalProperties": {},
-            "type": "object"
-          },
-          "configInherits": {
-            "items": {
-              "$ref": "#/$defs/types/ConfigInheritDeclaration"
-            },
-            "type": "array"
-          },
-          "configSchema": {
-            "$ref": "#/$defs/types/PluginConfigSchema"
-          },
-          "dependencies": {
-            "items": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "$ref": "#/$defs/types/DependencySpec"
-                }
-              ]
-            },
-            "type": "array"
-          },
-          "description": {
-            "type": "string"
-          },
-          "emittedEvents": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "entry": {
-            "type": "string"
-          },
-          "eventSubscriptions": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "items": {
-                  "$ref": "#/$defs/types/EventSubscription"
-                },
-                "type": "array"
-              }
-            ]
-          },
-          "hooks": {
-            "items": {
-              "$ref": "#/$defs/types/PluginContributionDeclaration"
-            },
-            "type": "array"
-          },
-          "hostSecrets": {
-            "properties": {
-              "read": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              }
-            },
-            "type": "object"
-          },
-          "icon": {
-            "type": "string"
-          },
-          "iconText": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "mcpServers": {
-            "items": {
-              "$ref": "#/$defs/types/PluginContributionDeclaration"
-            },
-            "type": "array"
-          },
-          "name": {
-            "type": "string"
-          },
-          "networkAccess": {
-            "properties": {
-              "allowPrivateNetworks": {
-                "type": "boolean"
-              },
-              "allowedDomains": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "authCookiePartition": {
-                "type": "string"
-              },
-              "reasoning": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "allowedDomains"
-            ],
-            "type": "object"
-          },
-          "notificationEvents": {
-            "deprecated": true,
-            "items": {
-              "properties": {
-                "bodyField": {
-                  "type": "string"
-                },
-                "bypassFocusGate": {
-                  "type": "boolean"
-                },
-                "event": {
-                  "type": "string"
-                },
-                "titleField": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "event"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "onboarding": {
-            "$ref": "#/$defs/types/PluginOnboardingSpec"
-          },
-          "packageName": {
-            "type": "string"
-          },
-          "pluginAccess": {
-            "$ref": "#/$defs/types/PluginAccessSpec"
-          },
-          "python": {
-            "properties": {
-              "interpreter": {
-                "type": "string"
-              },
-              "managedBy": {
-                "enum": [
-                  "ave",
-                  "self"
-                ],
-                "type": "string"
-              },
-              "requirementsLock": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "requires": {
-            "$ref": "#/$defs/types/RequiresSpec"
-          },
-          "sandbox": {
-            "$ref": "#/$defs/types/PluginSandboxDeclaration"
-          },
-          "skills": {
-            "items": {
-              "$ref": "#/$defs/types/PluginContributionDeclaration"
-            },
-            "type": "array"
-          },
-          "startupTimeoutMs": {
-            "type": "number"
-          },
-          "tools": {
-            "items": {
-              "$ref": "#/$defs/types/Tool"
-            },
-            "type": "array"
-          },
-          "ui": {
-            "items": {
-              "$ref": "#/$defs/types/PluginUiExtension"
-            },
-            "type": "array"
-          },
-          "uiResources": {
-            "items": {
-              "$ref": "#/$defs/types/PluginUiResourceDecl"
-            },
-            "type": "array"
-          },
-          "uiSlots": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "version": {
-            "type": "string"
-          },
-          "workProposals": {
-            "properties": {
-              "kinds": {
-                "items": {
-                  "$ref": "#/$defs/types/WorkProposalKind"
-                },
-                "type": "array"
-              },
-              "reasoning": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "kinds"
-            ],
-            "type": "object"
+          {
+            "$ref": "#/$defs/types/ProcessPluginManifest"
           }
-        },
-        "required": [
-          "id",
-          "version",
-          "entry",
-          "tools",
-          "description"
-        ],
-        "type": "object"
+        ]
       },
       "PluginOnboardingAction": {
         "anyOf": [
@@ -7477,6 +7620,29 @@
             "type": "array"
           }
         },
+        "type": "object"
+      },
+      "PluginProcessEntry": {
+        "properties": {
+          "args": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+            "type": "string"
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "command"
+        ],
         "type": "object"
       },
       "PluginSandboxDeclaration": {
@@ -7770,6 +7936,241 @@
         ],
         "type": "object"
       },
+      "ProcessPluginManifest": {
+        "properties": {
+          "alerts": {
+            "$ref": "#/$defs/types/PluginAlertsDeclaration"
+          },
+          "auth": {
+            "$ref": "#/$defs/types/PluginAuthSpec"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "config": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "configInherits": {
+            "items": {
+              "$ref": "#/$defs/types/ConfigInheritDeclaration"
+            },
+            "type": "array"
+          },
+          "configSchema": {
+            "$ref": "#/$defs/types/PluginConfigSchema"
+          },
+          "dependencies": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/types/DependencySpec"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "description": {
+            "type": "string"
+          },
+          "emittedEvents": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "entry": false,
+          "eventSubscriptions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "items": {
+                  "$ref": "#/$defs/types/EventSubscription"
+                },
+                "type": "array"
+              }
+            ]
+          },
+          "hooks": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "hostSecrets": {
+            "properties": {
+              "read": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "icon": {
+            "type": "string"
+          },
+          "iconText": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "mcpServers": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "networkAccess": {
+            "properties": {
+              "allowPrivateNetworks": {
+                "type": "boolean"
+              },
+              "allowedDomains": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "authCookiePartition": {
+                "type": "string"
+              },
+              "reasoning": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "allowedDomains"
+            ],
+            "type": "object"
+          },
+          "onboarding": {
+            "$ref": "#/$defs/types/PluginOnboardingSpec"
+          },
+          "packageName": {
+            "type": "string"
+          },
+          "pluginAccess": {
+            "$ref": "#/$defs/types/PluginAccessSpec"
+          },
+          "process": {
+            "$ref": "#/$defs/types/PluginProcessEntry"
+          },
+          "prompts": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "python": {
+            "properties": {
+              "interpreter": {
+                "type": "string"
+              },
+              "managedBy": {
+                "enum": [
+                  "ave",
+                  "self"
+                ],
+                "type": "string"
+              },
+              "requirementsLock": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "requires": {
+            "$ref": "#/$defs/types/RequiresSpec"
+          },
+          "routineTemplates": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "sandbox": {
+            "$ref": "#/$defs/types/PluginSandboxDeclaration"
+          },
+          "skills": {
+            "items": {
+              "$ref": "#/$defs/types/PluginContributionDeclaration"
+            },
+            "type": "array"
+          },
+          "startupTimeoutMs": {
+            "type": "number"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/$defs/types/Tool"
+            },
+            "type": "array"
+          },
+          "ui": {
+            "items": {
+              "$ref": "#/$defs/types/PluginUiExtension"
+            },
+            "type": "array"
+          },
+          "uiResources": {
+            "items": {
+              "$ref": "#/$defs/types/PluginUiResourceDecl"
+            },
+            "type": "array"
+          },
+          "uiSlots": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "string"
+          },
+          "workProposals": {
+            "properties": {
+              "kinds": {
+                "items": {
+                  "$ref": "#/$defs/types/WorkProposalKind"
+                },
+                "type": "array"
+              },
+              "reasoning": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kinds"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "description",
+          "id",
+          "process",
+          "tools",
+          "version"
+        ],
+        "type": "object"
+      },
       "RequiresSpec": {
         "properties": {
           "capabilities": {
@@ -7918,6 +8319,38 @@
               "baseUrl": {
                 "type": "string"
               },
+              "exposure": {
+                "const": "lease",
+                "type": "string"
+              },
+              "handleId": {
+                "type": "string"
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "vendor": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "handleId",
+              "ok",
+              "exposure",
+              "vendor"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "baseUrl": {
+                "type": "string"
+              },
+              "exposure": {
+                "const": "raw",
+                "type": "string"
+              },
               "handleId": {
                 "type": "string"
               },
@@ -7935,6 +8368,7 @@
             "required": [
               "handleId",
               "ok",
+              "exposure",
               "vendor",
               "key"
             ],
@@ -7942,9 +8376,6 @@
           },
           {
             "properties": {
-              "handleId": {
-                "type": "string"
-              },
               "ok": {
                 "const": false,
                 "type": "boolean"
@@ -7954,7 +8385,6 @@
               }
             },
             "required": [
-              "handleId",
               "ok",
               "reason"
             ],
@@ -8075,6 +8505,17 @@
       },
       "WireRequestInit": {
         "properties": {
+          "auth": {
+            "properties": {
+              "lease": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "lease"
+            ],
+            "type": "object"
+          },
           "body": {
             "$ref": "#/$defs/types/WireBytes"
           },
@@ -8121,6 +8562,13 @@
       },
       "WireResolveApiKeyOptions": {
         "properties": {
+          "exposure": {
+            "enum": [
+              "lease",
+              "raw"
+            ],
+            "type": "string"
+          },
           "purpose": {
             "enum": [
               "llm",
@@ -8299,8 +8747,8 @@
       }
     }
   },
-  "$id": "https://former-site.invalid/schemas/plugin-host-protocol/1/v0.11.0/protocol.schema.json",
+  "$id": "https://former-site.invalid/schemas/plugin-host-protocol/3/v0.13.0/protocol.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Generated by scripts/generate-plugin-host-protocol-schema.ts from ave 0.11.0; do not edit. Each method names its params, its result and the errors it may reply with, and a method whose registration or handle outlives the reply names the payload of every notifications/ave/subscription frame for it under events; each notification names its params. docs/design/plugin-hostapi-protocol.md describes the protocol.",
-  "title": "Ave plugin host protocol 1"
+  "description": "Generated by scripts/generate-plugin-host-protocol-schema.ts from Ave 0.13.0; do not edit. Each method names its params, its result and the errors it may reply with, and a method whose registration or handle outlives the reply names the payload of every notifications/ave/subscription frame for it under events; each notification names its params. docs/design/plugin-hostapi-protocol.md describes the protocol.",
+  "title": "Ave plugin host protocol 3"
 }
