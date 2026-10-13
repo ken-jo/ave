@@ -929,37 +929,68 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
   });
 
   it("scrubs 64 KiB of adversarial text in linear time", () => {
-    const size = 64 * 1024;
-    const fill = (unit: string, tail = "") => unit.repeat(Math.ceil(size / unit.length)).slice(0, size - tail.length) + tail;
-    const inputs = [
-      fill("token", "!"), fill("token", "="), fill("a."), fill("a.", "://x@y"), fill("a@"), fill(" a@"), fill("a:b@"), fill("%"),
-      `token="${fill("\\")}`, fill('token="a'), fill("token='a"), `'${fill("\\")}':`, fill('\\"'),
-      fill("a="), fill("a:"), fill('"a":'), fill("token="), fill(" ="), `token${fill(" ")}=`, fill("--token "), fill("-"),
-      fill('"a'), fill("'a"), fill('"a" '), fill('"a:'), fill("'x=y' "), fill('"token":"a'), fill('\\\\"'), `"${fill("a:")}`,
-      fill('"a"\n'), `"a"${fill("\r\n")}:`, `"token":${fill("\n")}`, fill("'a' :"), fill(`"'a':`), fill('"token"\n:'), fill("'[REDACTED:X]':"),
-      fill('"token:a" :'), `"${fill("token=a ")}": x`, fill(`"'a b' token=c":`), `"${fill("'a")}":`,
-      fill('\\"a'), fill('\\"a\\\\\\"'), `\\"${fill('a\\\\\\"')}`, fill('\\"token\\":'), fill('\\"token\\":\\"a\\"'), fill('"token":\n"a"\n:'), fill("token: a :"),
-      `"${fill('\\"a')}": 1`, `"\\"${fill('a\\\\\\"')}": 1`, fill('\\"a \\"'), `"${fill('\\"token\\": ')}": 1`, fill("token=Basic "), `token=Basic${fill(" ")}x`,
-      `Authorization: Digest ${fill('a="b", ')}`, fill("Authorization: Basic a\n"), fill("x: Authorization: Basic "),
-      // The header stage reads escaped names and quotes: runs of backslashes and of near-names.
-      fill("\\u0041"), fill("\\\\u0041uthorizatio"), fill("Authorizatio"), fill('\\"Authorization\\"'), fill("\\nauthorization"), fill("--authorizatio"),
-      // Separator whitespace, raw and escaped, with no separator after it.
-      `Authorization${fill("\n")}`, `"Authorization"${fill("\\n")}`, `Authorization${fill("\\\\\\t")}`, fill("Authorization \n"), fill('"authorization"\\u000a'), `authorization:${fill(" \r\n")}`,
-      // Compound keys and escaped whitespace: long key runs, near-separators and escapes that decode to no whitespace.
-      fill("authorization_"), `authorization_${fill("a")}`, fill("x-authorization-token "), fill("authorization.x\\u00a0"), `Authorization${fill("\\u00a0")}`,
-      `Authorization${fill("\\\\u2003")}`, fill("authorization\\u005f"), fill("Authorization\\u0041"), `"authorization_x${fill("\\uFEFF")}"`,
-      // Quoted keys: names whose closing quote is far ahead, or never comes, at one depth or alternating depths.
-      `"${fill("authorization ")}`, fill('"authorization '), fill("'a authorization "), fill('"authorization \\"authorization '),
-      `"${fill("authorization\\u003a")}`, `\\"${fill("authorization\n")}\\": x`, fill('"x" authorization '),
-      // Names within one key window of a long backslash run: the run is read once per window, not once per step.
-      `${"authorization ".repeat(18)}${fill("\\")}`, `${"authorization ".repeat(18)}${fill("\\", "u0041")}`,
-    ];
-    for (const input of inputs) {
+    // Each family is scrubbed at 4 KiB and at 64 KiB, and the growth is judged, not a wall-clock bound: linear work
+    // grows sixteenfold over the sixteenfold input, quadratic work 256-fold, and backtracking far more. The time is the
+    // thread's CPU time, which a loaded host does not charge while the thread waits to run: on wall time a long pass is
+    // preempted in proportion to the load while a short one fits a time slice, and linear code then read as 270-fold
+    // growth at a load of 28. The two sizes alternate and the fastest of five each is kept, so a collection or a
+    // migration to a slower core that lands on one run is dropped.
+    const SMALL = 4 * 1024;
+    const LARGE = 16 * SMALL;
+    // The geometric mean of linear (16) and quadratic (256) growth: four times either way.
+    const MAX_GROWTH = 64;
+    // A 64 KiB pass under this is fast whatever its growth: a ratio between runs of a few hundred microseconds
+    // measures timer and JIT noise. The quadratic key regex took seconds here.
+    const FAST_ENOUGH_MS = 5;
+    const timed = (scrub: (text: string) => string, input: string) => {
+      const started = process.threadCpuUsage();
+      scrub(input);
+      const spent = process.threadCpuUsage(started);
+      return (spent.user + spent.system) / 1000;
+    };
+    const fastestPair = (scrub: (text: string) => string, smallInput: string, largeInput: string) => {
+      let smallMs = Number.POSITIVE_INFINITY;
+      let largeMs = Number.POSITIVE_INFINITY;
+      for (let run = 0; run < 5; run++) {
+        smallMs = Math.min(smallMs, timed(scrub, smallInput));
+        largeMs = Math.min(largeMs, timed(scrub, largeInput));
+      }
+      return { smallMs, largeMs };
+    };
+    const familiesAt = (size: number) => {
+      const fill = (unit: string, tail = "") => unit.repeat(Math.ceil(size / unit.length)).slice(0, size - tail.length) + tail;
+      return [
+        fill("token", "!"), fill("token", "="), fill("a."), fill("a.", "://x@y"), fill("a@"), fill(" a@"), fill("a:b@"), fill("%"),
+        `token="${fill("\\")}`, fill('token="a'), fill("token='a"), `'${fill("\\")}':`, fill('\\"'),
+        fill("a="), fill("a:"), fill('"a":'), fill("token="), fill(" ="), `token${fill(" ")}=`, fill("--token "), fill("-"),
+        fill('"a'), fill("'a"), fill('"a" '), fill('"a:'), fill("'x=y' "), fill('"token":"a'), fill('\\\\"'), `"${fill("a:")}`,
+        fill('"a"\n'), `"a"${fill("\r\n")}:`, `"token":${fill("\n")}`, fill("'a' :"), fill(`"'a':`), fill('"token"\n:'), fill("'[REDACTED:X]':"),
+        fill('"token:a" :'), `"${fill("token=a ")}": x`, fill(`"'a b' token=c":`), `"${fill("'a")}":`,
+        fill('\\"a'), fill('\\"a\\\\\\"'), `\\"${fill('a\\\\\\"')}`, fill('\\"token\\":'), fill('\\"token\\":\\"a\\"'), fill('"token":\n"a"\n:'), fill("token: a :"),
+        `"${fill('\\"a')}": 1`, `"\\"${fill('a\\\\\\"')}": 1`, fill('\\"a \\"'), `"${fill('\\"token\\": ')}": 1`, fill("token=Basic "), `token=Basic${fill(" ")}x`,
+        `Authorization: Digest ${fill('a="b", ')}`, fill("Authorization: Basic a\n"), fill("x: Authorization: Basic "),
+        // The header stage reads escaped names and quotes: runs of backslashes and of near-names.
+        fill("\\u0041"), fill("\\\\u0041uthorizatio"), fill("Authorizatio"), fill('\\"Authorization\\"'), fill("\\nauthorization"), fill("--authorizatio"),
+        // Separator whitespace, raw and escaped, with no separator after it.
+        `Authorization${fill("\n")}`, `"Authorization"${fill("\\n")}`, `Authorization${fill("\\\\\\t")}`, fill("Authorization \n"), fill('"authorization"\\u000a'), `authorization:${fill(" \r\n")}`,
+        // Compound keys and escaped whitespace: long key runs, near-separators and escapes that decode to no whitespace.
+        fill("authorization_"), `authorization_${fill("a")}`, fill("x-authorization-token "), fill("authorization.x\\u00a0"), `Authorization${fill("\\u00a0")}`,
+        `Authorization${fill("\\\\u2003")}`, fill("authorization\\u005f"), fill("Authorization\\u0041"), `"authorization_x${fill("\\uFEFF")}"`,
+        // Quoted keys: names whose closing quote is far ahead, or never comes, at one depth or alternating depths.
+        `"${fill("authorization ")}`, fill('"authorization '), fill("'a authorization "), fill('"authorization \\"authorization '),
+        `"${fill("authorization\\u003a")}`, `\\"${fill("authorization\n")}\\": x`, fill('"x" authorization '),
+        // Names within one key window of a long backslash run: the run is read once per window, not once per step.
+        `${"authorization ".repeat(18)}${fill("\\")}`, `${"authorization ".repeat(18)}${fill("\\", "u0041")}`,
+      ];
+    };
+    const small = familiesAt(SMALL);
+    const large = familiesAt(LARGE);
+    expect(large.map((input) => input.length)).toEqual(small.map((input) => input.length - SMALL + LARGE));
+    for (const [index, input] of large.entries()) {
       for (const scrub of [scrubDiagnosticSecrets, scrubSecretsForLLM]) {
-        const started = performance.now();
-        scrub(input);
-        // Generous for a loaded CI host; the quadratic key regex took seconds on each of the first two.
-        expect(performance.now() - started, input.slice(0, 24)).toBeLessThan(250);
+        const { smallMs, largeMs } = fastestPair(scrub, small[index], input);
+        if (largeMs < FAST_ENOUGH_MS) continue;
+        expect(largeMs / smallMs, `${input.slice(0, 24)}: ${smallMs.toFixed(1)} ms at 4 KiB, ${largeMs.toFixed(1)} ms at 64 KiB`).toBeLessThan(MAX_GROWTH);
       }
     }
   });

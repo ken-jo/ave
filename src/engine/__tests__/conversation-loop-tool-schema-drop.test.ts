@@ -88,6 +88,18 @@ function makeLoop(
   return loop;
 }
 
+/**
+ * A GPT-5.x route on Chat Completions: an OpenAI alias that names no Responses
+ * family, declared as GPT-5.4 in the catalog.
+ */
+function chatCompletionsGpt5Settings(): ReturnType<typeof fakeLlmSettings> {
+  const settings = fakeLlmSettings({ provider: "openai", model: "team-alias", outputTokenLimit: 32_000 });
+  settings.vendors.openai.catalogModel = "openai/gpt-5.4";
+  settings.vendors.openai.enableThinking = true;
+  settings.vendors.openai.thinkingBudgetTokens = 16_000;
+  return settings;
+}
+
 describe("ConversationLoop — the price a turn records (design §6, endpoint report)", () => {
   it("prices the primary route from its endpoint's own report when the catalog cannot", async () => {
     const model = "lab/unlisted-reasoner";
@@ -118,11 +130,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
       [rejection("bad_tool")],
       [{ type: "text_delta", text: "done" }, { type: "message_complete", stopReason: "end_turn" }],
     ], "openai");
-    const settings = fakeLlmSettings({ provider: "openai", model: "chat-alias-fixture", outputTokenLimit: 32_000 });
-    // The alias goes over Chat Completions; the declaration says it is GPT-5.4.
-    settings.vendors.openai.catalogModel = "openai/gpt-5.4";
-    settings.vendors.openai.enableThinking = true;
-    settings.vendors.openai.thinkingBudgetTokens = 16_000;
+    const settings = chatCompletionsGpt5Settings();
     const loop = makeLoop(provider, [{ name: "bad_tool" }], settings);
     let summary: TurnSummary | undefined;
     await loop.runTurn("go", { onTurnSummary: (value) => { summary = value; } }, undefined,
@@ -134,11 +142,7 @@ describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", ()
 
   it("keeps the previous request record when a runtime switch prevents the reduced-tool retry", async () => {
     const provider = new ToolRecordingProvider([[rejection("bad_tool")]], "openai");
-    const settings = fakeLlmSettings({ provider: "openai", model: "chat-alias-fixture", outputTokenLimit: 32_000 });
-    // The alias goes over Chat Completions; the declaration says it is GPT-5.4.
-    settings.vendors.openai.catalogModel = "openai/gpt-5.4";
-    settings.vendors.openai.enableThinking = true;
-    settings.vendors.openai.thinkingBudgetTokens = 16_000;
+    const settings = chatCompletionsGpt5Settings();
     let switched = false;
     Object.defineProperty(settings, "activeChatRuntime", { get: () => switched
       ? { kind: "subscription", provider: "codex", model: "gpt-5.5-codex" }

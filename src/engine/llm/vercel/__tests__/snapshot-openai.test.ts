@@ -8,7 +8,8 @@
  *
  * Also exercises:
  *   - Reasoning-effort mapping (4 cases).
- *   - Custom-baseUrl tool-turn reasoning_effort drop guard (Chat Completions 400 fix).
+ *   - Responses API tool turns keep reasoning_effort (the Chat Completions
+ *     tool-turn guard is pinned in catalog-request-fields.test.ts).
  *   - OpenAI gpt-5.x → /v1/responses routing (Responses API).
  */
 import { describe, it, expect, vi } from "vitest";
@@ -93,9 +94,9 @@ describe("VercelUnifiedProvider — reasoning_effort 'none' clamp (#1574)", () =
     return callArg.providerOptions?.openai;
   };
 
-  it("sends the lowest accepted level when the named entry does not accept 'none'", async () => {
+  it("sends the lowest level a listed model accepts when it cannot take 'none'", async () => {
     // budget 100 → mapReasoningEffort "none"; gpt-5-mini accepts minimal..high.
-    const openai = await captureProviderOptions("gpt-5-mini", 100, "openai/gpt-5-mini");
+    const openai = await captureProviderOptions("gpt-5-mini", 100);
     expect(openai?.reasoningEffort).toBe("minimal");
   });
 

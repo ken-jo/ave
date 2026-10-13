@@ -8,6 +8,7 @@ import "../../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { makeMockAveApi } from "../../../../../../test/renderer/mock-ave-api.js";
+import { deferred } from "../../../../../../test/renderer/helpers.js";
 import type { AveApi } from "../../../types.js";
 import { GitMarketplaceTab } from "../GitMarketplaceTab.js";
 import { PackageSheet } from "../PackageSheet.js";
@@ -561,12 +562,19 @@ describe("GitMarketplaceTab package sheet", () => {
     it("offers no Uninstall for a key nothing is installed from, even when a same-named package is installed from another source", async () => {
       const elsewhere = entry("team", "skill", "note", { state: { state: "installed", version: "1.0.0" } });
       const fake = fakeMarketplace({ sources: [team], entries: [elsewhere], deepLink: { action: "uninstall", key: { sourceId: HANDLE, kind: "skill", name: "note" } } });
+      const installedLookup = deferred<unknown>();
+      const readCatalog = fake.market.listCatalog.getMockImplementation() as GitMarketplaceApi["listCatalog"];
+      fake.market.listCatalog.mockImplementation((query: { installedOnly?: boolean }) => query.installedOnly ? installedLookup.promise : readCatalog(query));
       fake.market.packageDetail.mockResolvedValue(QUARANTINE);
       renderTab(fake);
 
       const sheet = await screen.findByTestId("git-marketplace:sheet");
       await within(sheet).findByText(/이 소스의 ID가 비밀번호나 토큰처럼 보여/u);
       await waitFor(() => expect(fake.market.listCatalog).toHaveBeenCalledWith({ installedOnly: true }));
+      await act(async () => {
+        installedLookup.resolve(await readCatalog({ installedOnly: true }));
+        await installedLookup.promise;
+      });
       expect(within(sheet).queryByTestId("git-marketplace:uninstall")).toBeNull();
     });
 
@@ -845,8 +853,14 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
 
   it("shows a notice the boot step publishes after the tab opened", async () => {
     const fake = fakeMarketplace({ sources: [official] });
+    const initialNotice = deferred<Awaited<ReturnType<GitMarketplaceApi["bootInstallNotice"]>>>();
+    fake.market.bootInstallNotice.mockReturnValueOnce(initialNotice.promise);
     renderTab(fake);
     await waitFor(() => expect(fake.market.bootInstallNotice).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      initialNotice.resolve({ ok: true, value: null });
+      await initialNotice.promise;
+    });
     expect(screen.queryByTestId("git-marketplace:boot-notice")).toBeNull();
 
     fake.applyBootInstalls(notice);
@@ -1093,14 +1107,6 @@ describe("PackageSheet: the Installed lookup behind a refused detail decides onl
   const listed = (entries: ReturnType<typeof entry>[]) => ({ ok: true as const, value: { entries, counts: {}, sourceCount: 1, syncedAt: null } });
   const UNAVAILABLE = { ok: false as const, code: "unavailable" as const, message: "the list could not be read" };
 
-  function deferred<T>() {
-    let resolve!: (value: T) => void;
-    const promise = new Promise<T>((done) => {
-      resolve = done;
-    });
-    return { promise, resolve };
-  }
-
   function sheet(fake: ReturnType<typeof fakeMarketplace>) {
     const props = { api: fake.market as unknown as GitMarketplaceApi, source: null, onClose: vi.fn(), onChanged: vi.fn(), onAutoUpdateSwitch: vi.fn(async () => null) };
     const view = render(<PackageSheet {...props} target={{ key: KEY, mode: "detail" }} />);
@@ -1143,7 +1149,8 @@ describe("PackageSheet: the Installed lookup behind a refused detail decides onl
     const secondDetail = deferred<unknown>();
     fake.market.packageDetail.mockResolvedValueOnce(QUARANTINE).mockReturnValueOnce(secondDetail.promise);
     const earlier = deferred<unknown>();
-    fake.market.listCatalog.mockReturnValueOnce(earlier.promise).mockResolvedValueOnce(UNAVAILABLE);
+    const currentLookup = deferred<unknown>();
+    fake.market.listCatalog.mockReturnValueOnce(earlier.promise).mockReturnValueOnce(currentLookup.promise);
     const { close, reopen } = sheet(fake);
     await waitFor(() => expect(fake.market.listCatalog).toHaveBeenCalledTimes(1));
 
@@ -1161,6 +1168,10 @@ describe("PackageSheet: the Installed lookup behind a refused detail decides onl
     });
     await refusalShown();
     await waitFor(() => expect(fake.market.listCatalog).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      currentLookup.resolve(UNAVAILABLE);
+      await currentLookup.promise;
+    });
     expect(screen.queryByTestId("git-marketplace:uninstall")).toBeNull();
   });
 
