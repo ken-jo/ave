@@ -218,22 +218,14 @@ export class ScriptHookManager {
     if (!pluginId || !generationId) {
       throw new Error("plugin Hook generation identity is required");
     }
-    const next = new Map(this.pluginRegistries);
     const generations = new Set(
       projections.map((projection) =>
         `${projection.owner.pluginId}\0${projection.owner.activationId}`),
     );
     generations.add(`${pluginId}\0${generationId}`);
-    for (const identity of generations) {
-      const [targetPluginId, targetGenerationId] = identity.split("\0");
-      for (const [key, entries] of next) {
-        if (entries.some((entry) =>
-          entry.owner?.pluginId === targetPluginId &&
-          entry.owner.activationId === targetGenerationId)) {
-          next.delete(key);
-        }
-      }
-    }
+    // Only this generation's registries: publish applies them to the live map
+    // so another plugin published in between is kept.
+    const replacements = new Map<string, readonly HookRegistryEntry[]>();
     for (const projection of projections) {
       if (!trust.isApproved(projection)) continue;
       const entries: ConfigHookRegistryEntry[] = projection.entries.map((entry) => ({
@@ -247,7 +239,7 @@ export class ScriptHookManager {
         owner: projection.owner,
         confinement: projection.confinement,
       }));
-      next.set(pluginProjectionKey(projection), Object.freeze(entries));
+      replacements.set(pluginProjectionKey(projection), Object.freeze(entries));
     }
     let published = false;
     return Object.freeze({
@@ -255,6 +247,18 @@ export class ScriptHookManager {
       generationId,
       publish: () => {
         if (published) return;
+        const next = new Map(this.pluginRegistries);
+        for (const identity of generations) {
+          const [targetPluginId, targetGenerationId] = identity.split("\0");
+          for (const [key, entries] of next) {
+            if (entries.some((entry) =>
+              entry.owner?.pluginId === targetPluginId &&
+              entry.owner.activationId === targetGenerationId)) {
+              next.delete(key);
+            }
+          }
+        }
+        for (const [key, entries] of replacements) next.set(key, entries);
         this.pluginRegistries = next;
         this.generation += 1;
         published = true;

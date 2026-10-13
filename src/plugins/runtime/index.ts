@@ -3778,6 +3778,23 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
     });
   }
 
+  /** The live method map with `pluginId`'s methods replaced by `methods`. */
+  private methodMapWith(
+    pluginId: string,
+    methods: ReadonlyMap<string, PluginToolHandler>,
+  ): Map<string, { pluginId: string; handler: PluginToolHandler }> {
+    const next = new Map(this.methodMap);
+    for (const [toolName, entry] of next) {
+      if (entry.pluginId === pluginId) next.delete(toolName);
+    }
+    for (const [toolName, handler] of methods) {
+      const owner = next.get(toolName)?.pluginId;
+      if (owner && owner !== pluginId) throw new Error(`Duplicate plugin method registered: ${toolName}`);
+      next.set(toolName, { pluginId, handler });
+    }
+    return next;
+  }
+
   prepareRuntimeGeneration(
     runtime: PluginRuntimeGenerationProjection,
     predecessorGenerationId: string | undefined,
@@ -3790,17 +3807,10 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
       [{ pluginId, alias: runtime.installId ?? undefined }],
       runtime.installId === null ? [] : [runtime.installId],
     );
-    const nextMethods = new Map(this.methodMap);
-    for (const [toolName, entry] of nextMethods) {
-      if (entry.pluginId === pluginId) nextMethods.delete(toolName);
-    }
-    for (const toolName of runtime.methods.keys()) {
-      const owner = nextMethods.get(toolName)?.pluginId;
-      if (owner && owner !== pluginId) throw new Error(`Duplicate plugin method registered: ${toolName}`);
-      nextMethods.set(toolName, { pluginId, handler: runtime.methods.get(toolName)! });
-    }
-    const nextPlugins = new Map(this.plugins);
-    nextPlugins.set(pluginId, {
+    // Refuse a method another plugin owns now; publish checks again against
+    // whatever was published in between.
+    this.methodMapWith(pluginId, runtime.methods);
+    const plugin: LoadedPlugin = {
       activationId: runtime.activationId,
       manifest: runtime.manifest,
       pluginRoot: runtime.pluginRoot,
@@ -3814,9 +3824,8 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
       lifecycleHookScope: runtime.lifecycleHookScope,
       arm: runtime.arm,
       confinement: runtime.confinement,
-    });
-    const nextDisposers = new Map(this.disposers);
-    nextDisposers.set(pluginId, [...(runtime.disposers ?? [])]);
+    };
+    const disposers = [...(runtime.disposers ?? [])];
     const predecessorAuthKey = predecessorGenerationId === undefined
       ? undefined
       : `${pluginId}\0${predecessorGenerationId}`;
@@ -3837,12 +3846,15 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
         if (published) return;
         // Publishing is only done for a committed generation.
         handOver();
+        // Other plugins publish while this one awaits its commit, so the next
+        // maps are built from the live ones here, not from a prepare-time copy.
+        const nextMethods = this.methodMapWith(pluginId, runtime.methods);
         this.plugins.get(pluginId)?.hostEffects?.supersede();
         publishHostEffects?.();
         this.publishValidatedPluginInstallAlias(pluginId, runtime.installId ?? undefined);
         this.methodMap = nextMethods;
-        this.plugins = nextPlugins;
-        this.disposers = nextDisposers;
+        this.plugins = new Map(this.plugins).set(pluginId, plugin);
+        this.disposers = new Map(this.disposers).set(pluginId, disposers);
         this.committedUnmappedGenerations.delete(pluginId);
         this.rememberPluginManifest(pluginId, runtime.manifest, runtime.approvedPluginAccess);
         this.markPluginUiRevision(pluginId);
@@ -3873,14 +3885,6 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
     pluginId: string,
     predecessorGenerationId: string | undefined,
   ): PreparedPluginRuntimeRemovalPublication {
-    const nextMethods = new Map(this.methodMap);
-    for (const [toolName, entry] of nextMethods) {
-      if (entry.pluginId === pluginId) nextMethods.delete(toolName);
-    }
-    const nextPlugins = new Map(this.plugins);
-    nextPlugins.delete(pluginId);
-    const nextDisposers = new Map(this.disposers);
-    nextDisposers.delete(pluginId);
     const predecessorAuthKey = predecessorGenerationId === undefined
       ? undefined
       : `${pluginId}\0${predecessorGenerationId}`;
@@ -3890,7 +3894,11 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
       publish: () => {
         if (published) return;
         this.plugins.get(pluginId)?.hostEffects?.supersede();
-        this.methodMap = nextMethods;
+        const nextPlugins = new Map(this.plugins);
+        nextPlugins.delete(pluginId);
+        const nextDisposers = new Map(this.disposers);
+        nextDisposers.delete(pluginId);
+        this.methodMap = this.methodMapWith(pluginId, new Map());
         this.plugins = nextPlugins;
         this.disposers = nextDisposers;
         this.invalidatePluginUiRevision(pluginId);
