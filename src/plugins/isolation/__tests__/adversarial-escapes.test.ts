@@ -385,7 +385,12 @@ async function runElectronControl(): Promise<Record<string, unknown>> {
       (resolve, reject) => {
         const child = spawn(
           launcher.command,
-          [...launcher.prefix, join(FIXTURE_SOURCE, "control-electron-main.cjs"), `--user-data-dir=${userData}`],
+          // `--no-sandbox`: Chromium's own renderer sandbox is not what this
+          // control measures, and on a Linux host that restricts unprivileged
+          // user namespaces (Ubuntu 24.04's default) with an unprivileged
+          // `chrome-sandbox` helper the zygote aborts with SIGTRAP (exit 133)
+          // before the main script runs.
+          [...launcher.prefix, join(FIXTURE_SOURCE, "control-electron-main.cjs"), "--no-sandbox", `--user-data-dir=${userData}`],
           { env, stdio: ["ignore", "pipe", "pipe"] },
         );
         let out = "";
