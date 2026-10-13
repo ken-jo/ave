@@ -25,7 +25,7 @@ import {
 } from "../auto-compact.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
-import { FALLBACK_PRICING } from "../../shared/pricing-data.js";
+import { FALLBACK_CONTEXT_WINDOW } from "../../shared/model-host-policy.js";
 import {
   getPreflightThreshold,
   getUsableContext,
@@ -92,7 +92,7 @@ function warnFallbackContextWindowOnce(identity: string, model: string): void {
   if (fallbackContextWindowWarned.has(identity)) return;
   fallbackContextWindowWarned.add(identity);
   log.warn(
-    `context budget: no context window known for model '${model}' — using the ${FALLBACK_PRICING.contextWindow}-token fallback. `
+    `context budget: no context window known for model '${model}' — using the ${FALLBACK_CONTEXT_WINDOW}-token fallback. `
     + `Declare the endpoint's real capacity as llm.vendors.<vendor>.contextWindow, or sync the provider's model list so it can report one.`,
   );
 }

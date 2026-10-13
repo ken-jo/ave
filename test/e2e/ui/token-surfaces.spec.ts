@@ -90,7 +90,7 @@ test.describe("context-budget token surfaces", () => {
       await expect(ctx.page.getByText("토큰 표면 응답")).toBeVisible();
 
       const ring = ctx.page.getByTestId("token-progress-ring");
-      // gpt-5.4-mini is TPM-bound (tpmDefault 200_000 in pricing-data), so the
+      // gpt-5.4-mini is TPM-bound (host TPM default 200_000 in model-host-policy), so the
       // effective limit is 200K: 123,456 / 200,000 ≈ 62%.
       await expect(ring).toHaveAttribute(
         "aria-label",

@@ -13,9 +13,9 @@
  */
 import {
   effectiveContextWindow,
-  FALLBACK_PRICING,
   lookupPricingOptional,
 } from "./pricing-data.js";
+import { FALLBACK_CONTEXT_WINDOW, MAX_CREDIBLE_CONTEXT_WINDOW } from "./model-host-policy.js";
 import {
   activeLlmRouteModel,
   getLlmVendorSettings,
@@ -80,7 +80,7 @@ export function getPreflightThreshold(contextWindow: number, inputLimit?: number
  * removes its context rows.
  *
  * `fallback` means nothing knew the model's real capacity and the conservative
- * {@link FALLBACK_PRICING} window is in use. That is the case worth reporting:
+ * {@link FALLBACK_CONTEXT_WINDOW} is in use. That is the case worth reporting:
  * a served model whose true window is larger gets compacted far earlier than it
  * needs to be, and one whose true window is smaller is never compacted early
  * enough.
@@ -112,18 +112,6 @@ export interface ResolvedContextWindow {
   readonly inputLimit?: number;
   readonly inputLimitSource?: InputLimitSource;
 }
-
-/**
- * The largest window a declared or reported value is believed at.
- *
- * Above this the number is far likelier to be a typo or a malformed field than
- * a real deployment: an extra digit on 229,376 reads as 2,293,760, whose
- * preflight threshold no conversation ever reaches, so compaction never runs
- * again and the turn dies on a provider context error instead. The largest
- * window the pricing catalog carries today is 2M, so this admits every real
- * model while refusing an order of magnitude past it.
- */
-export const MAX_CREDIBLE_CONTEXT_WINDOW = 4_000_000;
 
 /**
  * A token count only counts as an answer when it is a usable positive integer
@@ -181,7 +169,7 @@ export function resolveModelContextWindow(params: {
       ? lookupPricingOptional(params.vendor, params.model)
       : undefined;
     if (pricing) return { contextWindow: effectiveContextWindow(pricing), source: "pricing-catalog" };
-    return { contextWindow: FALLBACK_PRICING.contextWindow, source: "fallback" };
+    return { contextWindow: FALLBACK_CONTEXT_WINDOW, source: "fallback" };
   })();
   const catalogInput = positiveTokenCount(hit?.model.limits.input);
   return hit !== undefined && catalogInput !== undefined && catalogInput < window.contextWindow

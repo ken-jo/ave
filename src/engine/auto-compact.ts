@@ -5,7 +5,7 @@
 import type { GenericMessage, LLMVendor } from "./llm/types.js";
 import { serializeMessageForEstimation } from "./llm/types.js";
 import { selectAssistantWireThinkingBlocks } from "./llm/assistant-wire-content.js";
-import { lookupPricing } from "../shared/pricing-data.js";
+import { hostTpmDefault } from "../shared/model-host-policy.js";
 import {
   getUsableContext,
   getPreflightThreshold,
@@ -25,21 +25,16 @@ import { estimateTokens } from "../shared/token-estimate.js";
 export { countHangul, estimateTokens } from "../shared/token-estimate.js";
 
 
-// ─── Context Window Registry ─────────────────────────
+// ─── Context Window ──────────────────────────────────
 //
-// Single source of truth for context windows lives in
-// `shared/pricing-data.ts:DEFAULT_PRICING`. This module defers all lookups
-// there. The previous in-tree `MODEL_CONTEXT_WINDOWS` table was removed so
-// pricing and context-window data share one maintained source.
+// The window comes from one resolver, `shared/context-budget.ts`
+// (`resolveModelContextWindow`): the user's setting, the endpoint's report,
+// the model catalog, else the host's 128K fallback.
 
 /**
- * Model identifier → effective context window in tokens.
- *
- * "Effective" because the adapter auto-sends the `context-1m-2025-08-07`
- * beta header for any Claude model with `contextWindow1MBeta` set
- * (`engine/llm/vercel/adapter.ts`), so the beta value is what the model
- * actually delivers. {@link resolveModelContextWindow} owns that, together
- * with the conservative 128K fallback for a model nothing knows.
+ * Model identifier → effective context window in tokens: what
+ * {@link resolveModelContextWindow} answers, including the conservative 128K
+ * fallback for a model nothing describes.
  *
  * `resolvedContextWindow` is the window a caller resolved for the ACTIVE route
  * through {@link resolveContextWindowForRoute}, which also consults the vendor
@@ -105,11 +100,9 @@ export function getModelPreflightThreshold(
   if (devOverride !== null) return devOverride;
   const window = budgetWindow(vendor, model, resolvedContextWindow, inputLimit);
   const windowThreshold = getPreflightThreshold(window.contextWindow, window.inputLimit);
-
-
-  const pricing = lookupPricing(vendor, model);
-  if (typeof pricing.tpmDefault === "number" && pricing.tpmDefault > 0) {
-    const tpmThreshold = Math.floor(pricing.tpmDefault * 0.8);
+  const tpm = hostTpmDefault(vendor, model);
+  if (tpm !== undefined) {
+    const tpmThreshold = Math.floor(tpm * 0.8);
     return Math.min(windowThreshold, tpmThreshold);
   }
   return windowThreshold;
@@ -135,11 +128,8 @@ export function getModelPreflightThresholdSource(
   if (readDevPreflightOverride() !== null) return "dev-env-override";
   const window = budgetWindow(vendor, model, resolvedContextWindow, inputLimit);
   const windowThreshold = getPreflightThreshold(window.contextWindow, window.inputLimit);
-  const pricing = lookupPricing(vendor, model);
-  if (typeof pricing.tpmDefault === "number" && pricing.tpmDefault > 0) {
-    const tpmThreshold = Math.floor(pricing.tpmDefault * 0.8);
-    if (tpmThreshold < windowThreshold) return "tpm-capped";
-  }
+  const tpm = hostTpmDefault(vendor, model);
+  if (tpm !== undefined && Math.floor(tpm * 0.8) < windowThreshold) return "tpm-capped";
   return windowThreshold < getPreflightThreshold(window.contextWindow) ? "input-limit" : "context-window";
 }
 

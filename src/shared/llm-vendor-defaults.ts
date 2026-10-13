@@ -6,6 +6,7 @@
  *
  * Pure, browser-safe — no Electron / Node imports.
  */
+import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "./model-host-policy.js";
 
 export const OPENAI_COMPATIBLE_PRESET_VENDOR_IDS = [
   "openrouter",
@@ -403,14 +404,6 @@ export function isMarketplaceEligibleLLMVendor(
  * marketplace providers are not materialized until selected or installed.
  */
 export const DEFAULT_LLM_VENDOR: LLMVendor = "openai";
-/**
- * The host's default request for an API-backed chat round's output, used when
- * the user set none. A host budget, not a model's maximum: the effective
- * limit is this or the user's value, clamped to the model's output ceiling
- * (`resolveOutputTokenLimitForRoute` in `context-budget.ts`).
- */
-export const DEFAULT_LLM_OUTPUT_TOKEN_LIMIT = 32_000;
-
 const DEFAULT_THINKING_BUDGET_TOKENS = 8_000;
 const THINKING_BUDGET_PRESETS = [
   { key: "low", budget: 4_000 },

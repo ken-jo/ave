@@ -27,10 +27,10 @@ import {
   isSelfHostedVllmVendor,
   normalizeLlmVendorModel,
   DEFAULT_LLM_VENDOR,
-  DEFAULT_LLM_OUTPUT_TOKEN_LIMIT,
   narrowLlmVendor,
   COPILOT_BASE_URL,
 } from "../llm-vendor-defaults.js";
+import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../model-host-policy.js";
 
 describe("isLLMVendor", () => {
   it("accepts every member of LLM_VENDORS", () => {

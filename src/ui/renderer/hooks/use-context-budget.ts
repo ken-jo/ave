@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
-import { lookupPricing } from "../../../shared/pricing-data.js";
+import { hostTpmDefault } from "../../../shared/model-host-policy.js";
 import { getUsableContext } from "../../../shared/context-budget.js";
 
 /**
@@ -102,19 +102,12 @@ export function useContextBudget(params: {
     [usedTokens, contextBudget],
   );
 
-  // Issue #900 #1 — per-request TPM (Tokens Per Minute) projection.
-
-
-  //
-
-
-  const tpmLimit = useMemo(() => {
-    if (!enabled) return undefined;
-    const pricing = lookupPricing(llmVendor ?? "", llmModel ?? "");
-    return typeof pricing.tpmDefault === "number" && pricing.tpmDefault > 0
-      ? pricing.tpmDefault
-      : undefined;
-  }, [enabled, llmVendor, llmModel]);
+  // Issue #900 #1 — per-request TPM (Tokens Per Minute) projection against
+  // the host's TPM default for this model (model-host-policy.ts).
+  const tpmLimit = useMemo(
+    () => (enabled ? hostTpmDefault(llmVendor ?? "", llmModel ?? "") : undefined),
+    [enabled, llmVendor, llmModel],
+  );
 
   const tpmPct = useMemo(
     () => (tpmLimit && tpmLimit > 0 ? usedTokens / tpmLimit : undefined),
@@ -134,7 +127,7 @@ export function useContextBudget(params: {
     usedTokens,
     contextBudget,
     contextOverflowPct,
-    // #900 #1 — undefined for models without registered tpmDefault.
+    // #900 #1 — undefined for models without a host TPM default.
     tpmLimit,
     tpmPct,
     isTpmOverflow: typeof tpmPct === "number" && tpmPct >= 1,

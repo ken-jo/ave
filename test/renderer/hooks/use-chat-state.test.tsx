@@ -614,7 +614,7 @@ describe("useContextBudget (deterministic math)", () => {
   });
 
   // Issue #900 #1 — TPM hint fields (tpmLimit / tpmPct / isTpmOverflow).
-  // Hook 의 새 3 field 가 (a) tpmDefault 등록 모델 (nano) 에서 노출되고,
+  // Hook 의 새 3 field 가 (a) host TPM default 가 있는 모델 (nano) 에서 노출되고,
   // (b) 미등록 모델에서는 undefined 로 silent, (c) usedTokens >= tpmLimit
   // 시 isTpmOverflow 가 true 가 되는지 contract pin.
   it("tpmLimit/tpmPct/isTpmOverflow — gpt-5.4-nano returns numeric values", () => {

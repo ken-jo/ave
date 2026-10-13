@@ -30,7 +30,7 @@ vi.mock("../../../lib/logger.js", () => ({
 import type { ConversationLoop } from "../../conversation-loop.js";
 import { contextBudgetForCurrentRuntime } from "../compaction.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
-import { FALLBACK_PRICING } from "../../../shared/pricing-data.js";
+import { FALLBACK_CONTEXT_WINDOW } from "../../../shared/model-host-policy.js";
 import { getPreflightThreshold } from "../../../shared/context-budget.js";
 
 function loopOnModel(model: string, contextWindow?: number): ConversationLoop {
@@ -62,7 +62,7 @@ describe("context budget — unknown context window", () => {
     contextBudgetForCurrentRuntime(loop);
 
     expect(budget.contextWindowSource).toBe("fallback");
-    expect(budget.preflight).toBe(getPreflightThreshold(FALLBACK_PRICING.contextWindow));
+    expect(budget.preflight).toBe(getPreflightThreshold(FALLBACK_CONTEXT_WINDOW));
     expect(logged.warn).toHaveBeenCalledTimes(1);
     const message = String(logged.warn.mock.calls[0]?.[0]);
     expect(message).toContain("a-model-nothing-knows");

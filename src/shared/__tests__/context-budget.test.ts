@@ -4,13 +4,12 @@ import {
   getUsableContext,
   getPreflightThreshold,
   llmRouteCatalogAddress,
-  MAX_CREDIBLE_CONTEXT_WINDOW,
   resolveContextWindowForRoute,
   resolveInputModalities,
   resolveModelContextWindow,
   resolveOutputTokenLimit,
 } from "../context-budget.js";
-import { FALLBACK_PRICING } from "../pricing-data.js";
+import { FALLBACK_CONTEXT_WINDOW, MAX_CREDIBLE_CONTEXT_WINDOW } from "../model-host-policy.js";
 import { freshAllVendorBlocks, llmImageInputKey } from "../llm-vendor-defaults.js";
 import { llmModelListCacheKey, type LlmModelListCache } from "../llm-model-list.js";
 import { activeModelCatalog, installModelCatalog } from "../model-catalog/active.js";
@@ -162,7 +161,7 @@ describe("resolveModelContextWindow — where the budget's denominator comes fro
     });
 
     expect(resolved).toEqual({
-      contextWindow: FALLBACK_PRICING.contextWindow,
+      contextWindow: FALLBACK_CONTEXT_WINDOW,
       source: "fallback",
     });
   });
@@ -218,7 +217,7 @@ describe("resolveModelContextWindow — where the budget's denominator comes fro
         model: "a-model-no-catalog-knows",
         reported: 0,
       }),
-    ).toEqual({ contextWindow: FALLBACK_PRICING.contextWindow, source: "fallback" });
+    ).toEqual({ contextWindow: FALLBACK_CONTEXT_WINDOW, source: "fallback" });
   });
 });
 
@@ -410,7 +409,7 @@ describe("resolveContextWindowForRoute — one answer for the engine and the rin
 
   it("moves to the next source when the route has no handshake for the model", () => {
     expect(resolveContextWindowForRoute(routeSettings())).toMatchObject({
-      contextWindow: FALLBACK_PRICING.contextWindow,
+      contextWindow: FALLBACK_CONTEXT_WINDOW,
       source: "fallback",
     });
   });

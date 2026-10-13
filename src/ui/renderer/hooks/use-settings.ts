@@ -21,7 +21,7 @@ import {
 import { selectSubscriptionRuntimeUiPolicy, type SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-ui-policy.js";
 import { resolveContextWindowForRoute, type ResolvedOutputTokenLimit, type RouteInputModalities } from "../../../shared/context-budget.js";
 import { syncPricingOverrides } from "./use-pricing-overrides.js";
-import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../../shared/llm-vendor-defaults.js";
+import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../../shared/model-host-policy.js";
 import {
   DEFAULT_PROCESSING_DISPLAY_LEVEL,
   type ProcessingDisplayLevel,

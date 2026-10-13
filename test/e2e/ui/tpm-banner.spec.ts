@@ -11,7 +11,7 @@
  * -------------------
  * The renderer derives `tpmPct` from:
  *   usedTokens / tpmLimit
- * where `tpmLimit` comes from `lookupPricing(llmVendor, llmModel).tpmDefault`
+ * where `tpmLimit` comes from `hostTpmDefault(llmVendor, llmModel)` (model-host-policy.ts)
  * and `usedTokens` comes from the last `kind:"turn_summary"` ChatEntry in the
  * active session (field `tokensIn`).
  *
@@ -25,7 +25,7 @@
  *      on boot so the hydrated entries flow into the budget hook.
  *
  * Model for banner thresholds (gpt-5.4-nano):
- *   tpmDefault  = 200_000
+ *   host TPM default = 200_000
  *   contextWindow = 400_000  →  contextBudget (usable) = 360_000
  *
  *   TPM warning    : tpmPct ∈ [0.80, 0.95)  → usedTokens ∈ [160_000, 190_000)
@@ -195,10 +195,10 @@ test.describe("TPM warning / destructive banner", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Case 3 — non-nano model (gpt-4o-mini) → NO banner (tpmDefault undefined)
+  // Case 3 — non-nano model (gpt-4o-mini) → NO banner (no host TPM default)
   // -------------------------------------------------------------------------
   test("non-nano model (gpt-4o-mini) shows no TPM banner — backward compat", async () => {
-    // gpt-4o-mini has no tpmDefault registered → tpmLimit=undefined → banner hidden
+    // gpt-4o-mini has no host TPM default → tpmLimit=undefined → banner hidden
     const ctx = await launchWithTokens({ tokensIn: 160_000, vendor: "openai", model: "gpt-4o-mini" });
     const { page } = ctx;
     try {
