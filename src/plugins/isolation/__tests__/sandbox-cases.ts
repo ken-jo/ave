@@ -3,7 +3,8 @@
  * unable to run them is allowed to be silent.
  *
  * Shared by every suite that spawns a confined child and asserts what the
- * kernel refused (`confined-plugin-child.test.ts`, `adversarial-escapes.test.ts`),
+ * kernel refused (`confined-plugin-child.test.ts`, `adversarial-escapes.test.ts`,
+ * `bundled-hook-asrt.smoke.test.ts`),
  * so "the sandbox is not here" is decided by one rule rather than by a copy per
  * file that could drift into a quieter one.
  *
