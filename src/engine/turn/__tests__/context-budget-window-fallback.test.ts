@@ -57,6 +57,7 @@ import { planReasoning } from "../../llm/reasoning-plan.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { FALLBACK_CONTEXT_WINDOW } from "../../../shared/model-host-policy.js";
 import { getPreflightThreshold } from "../../../shared/context-budget.js";
+import { llmModelListCacheKey } from "../../../shared/llm-model-list.js";
 
 function loopOnModel(model: string, contextWindow?: number): ConversationLoop {
   const llm = fakeLlmSettings({ provider: "openai-compatible", model }) as Record<string, unknown>;
@@ -199,12 +200,20 @@ describe("reasoning — effort levels nobody states", () => {
 });
 
 describe("reasoning — a chat round on a model whose levels nobody states", () => {
-  async function roundOn(model: string, catalogModel?: string): Promise<Record<string, unknown>> {
+  async function roundOn(model: string, catalogModel?: string, supportedParameters?: string[]): Promise<Record<string, unknown>> {
     forbidAmbientFetch();
     requests.bodies.length = 0;
     const llm = fakeLlmSettings({ provider: "openai", model });
     llm.vendors.openai.enableThinking = true;
     if (catalogModel !== undefined) llm.vendors.openai.catalogModel = catalogModel;
+    if (supportedParameters !== undefined) {
+      llm.modelListCache = {
+        [llmModelListCacheKey("openai", llm.vendors.openai.baseUrl)]: {
+          vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: [model],
+          modelEntries: [{ id: model, supportedParameters }], fetchedAt: "2026-10-13T00:00:00.000Z",
+        },
+      };
+    }
     const loop = new ConversationLoop({
       settingsService: { get: (key: string) => key === "marketplace" ? { installedProviderPresets: [] } : llm, getSecret: () => "test-key" },
       systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
@@ -230,6 +239,13 @@ describe("reasoning — a chat round on a model whose levels nobody states", () 
     expect(body.reasoning).toBeUndefined();
     expect(reasoningWarnings()).toHaveLength(1);
     expect(reasoningWarnings()[0]).toContain("llm.vendors.openai.catalogModel");
+  });
+
+  it("sends the effort and says nothing when the endpoint's report names the parameter", async () => {
+    // The Responses wire's parameter is `reasoning`; the report states it.
+    const body = await roundOn("gpt-5.1-codex", undefined, ["tools", "reasoning"]);
+    expect(body.reasoning).toMatchObject({ effort: "medium" });
+    expect(reasoningWarnings()).toHaveLength(0);
   });
 
   it("says nothing once the route names the entry it serves", async () => {

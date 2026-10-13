@@ -23,13 +23,17 @@ import { apiRoundLlmSettings } from "../../../turn/round-llm-settings.js";
 async function sentBody(
   vendor: LLMVendor,
   model: string,
-  params: { outputTokenLimit?: number; thinkingBudgetTokens?: number; enableThinking?: boolean; tools?: boolean; baseUrl?: string; catalogModel?: string },
+  params: {
+    outputTokenLimit?: number; thinkingBudgetTokens?: number; enableThinking?: boolean; tools?: boolean; baseUrl?: string; catalogModel?: string;
+    modelCapabilities?: StreamTurnParams["modelCapabilities"];
+  },
 ): Promise<Record<string, unknown>> {
   const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
   const provider = new VercelUnifiedProvider(vendor, "fixture-key", params.baseUrl, fetchResponse);
   for await (const _event of provider.streamTurn({
     model,
     catalogModel: params.catalogModel,
+    ...(params.modelCapabilities !== undefined ? { modelCapabilities: params.modelCapabilities } : {}),
     systemPrompt: "Return the result.",
     messages: [{ role: "user", content: "Report the value." }],
     enableThinking: params.enableThinking ?? true,
@@ -288,6 +292,76 @@ describe("request fields the catalog decides", () => {
     const body = await sentBody("claude", "claude-sonnet-4-6", { thinkingBudgetTokens: 20_000 });
     expect(body.thinking).toEqual({ type: "adaptive" });
     expect(body.output_config).toMatchObject({ effort: "medium" });
+  });
+});
+
+describe("reasoning an endpoint's /models report states (design §5.1)", () => {
+  const bundled = activeModelCatalog();
+  beforeEach(forbidAmbientFetch);
+  afterEach(() => { installModelCatalog(bundled); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+  const reported = (control?: "reasoning" | "reasoning_effort" | "include_reasoning") => ({
+    reasoning: { supported: true as const, source: "endpoint-report" as const, ...(control ? { control } : {}) },
+  });
+  const openrouter = "https://openrouter.ai/api/v1";
+
+  it("sends OpenRouter's unified reasoning object when the report names `reasoning`", async () => {
+    const body = await sentBody("openrouter", "lab/unlisted-reasoner", { baseUrl: openrouter, thinkingBudgetTokens: 16_000, modelCapabilities: reported("reasoning") });
+    expect(body.reasoning).toEqual({ effort: "high" });
+    expect(body).not.toHaveProperty("reasoning_effort");
+    expect(body).not.toHaveProperty("include_reasoning");
+    // Ave's lowest budget maps to "none", which contradicts thinking being on.
+    const lowest = await sentBody("openrouter", "lab/unlisted-reasoner", { baseUrl: openrouter, thinkingBudgetTokens: 100, modelCapabilities: reported("reasoning") });
+    expect(lowest.reasoning).toEqual({ effort: "low" });
+  });
+
+  it("sends `reasoning_effort` when that is the parameter the report names", async () => {
+    const body = await sentBody("deepseek", "unlisted-reasoner", { baseUrl: "https://api.deepseek.com/v1", thinkingBudgetTokens: 4_000, modelCapabilities: reported("reasoning_effort") });
+    expect(body.reasoning_effort).toBe("medium");
+    expect(body).not.toHaveProperty("reasoning");
+  });
+
+  it("sends only the switch when the report names only `include_reasoning`", async () => {
+    const body = await sentBody("openrouter", "lab/unlisted-reasoner", { baseUrl: openrouter, thinkingBudgetTokens: 16_000, modelCapabilities: reported("include_reasoning") });
+    expect(body.include_reasoning).toBe(true);
+    expect(body).not.toHaveProperty("reasoning");
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  it("sends nothing when only a reasoning price says the model reasons, or thinking is off", async () => {
+    const priced = await sentBody("openrouter", "lab/unlisted-reasoner", { baseUrl: openrouter, thinkingBudgetTokens: 16_000, modelCapabilities: reported() });
+    expect(priced).not.toHaveProperty("reasoning");
+    expect(priced).not.toHaveProperty("reasoning_effort");
+    expect(priced).not.toHaveProperty("include_reasoning");
+    expect(planReasoning({ vendor: "openrouter", model: "lab/unlisted-reasoner", enableThinking: true, budgetTokens: 16_000, reasoning: reported().reasoning, request: { hasTools: false } }))
+      .toEqual({ kind: "none", source: "endpoint-report" });
+    const off = await sentBody("openrouter", "lab/unlisted-reasoner", { baseUrl: openrouter, enableThinking: false, modelCapabilities: reported("reasoning") });
+    expect(off).not.toHaveProperty("reasoning");
+  });
+
+  it("leaves the self-hosted class on its own switch and budget", async () => {
+    const body = await sentBody("openai-compatible", "served-model", {
+      baseUrl: "https://models.invalid/v1", thinkingBudgetTokens: 4_000, modelCapabilities: reported("reasoning"),
+    });
+    expect(body.chat_template_kwargs).toEqual({ enable_thinking: true });
+    expect(body.thinking_token_budget).toBe(4_000);
+    expect(body).not.toHaveProperty("reasoning");
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  it("sends an OpenAI-family effort only when the report names that wire's parameter", async () => {
+    // A custom endpoint does not establish the model; its report does.
+    const chat = await sentBody("openai", "chat-alias-fixture", {
+      baseUrl: "https://proxy.invalid/v1", thinkingBudgetTokens: 16_000, modelCapabilities: reported("reasoning_effort"),
+    });
+    expect(chat.reasoning_effort).toBe("high");
+    const wrongParameter = await sentBody("openai", "chat-alias-fixture", {
+      baseUrl: "https://proxy.invalid/v1", thinkingBudgetTokens: 16_000, modelCapabilities: reported("reasoning"),
+    });
+    expect(wrongParameter).not.toHaveProperty("reasoning_effort");
+    expect(planReasoning({
+      vendor: "openai", model: "chat-alias-fixture", baseUrl: "https://proxy.invalid/v1", enableThinking: true, budgetTokens: 16_000,
+      reasoning: reported("reasoning").reasoning, request: { hasTools: false },
+    })).toEqual({ kind: "none", requestedEffort: "high", source: "endpoint-report" });
   });
 });
 

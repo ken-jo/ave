@@ -50,6 +50,7 @@ export function apiRoundLlmSettings<Smoothing extends string>(
       ? { modelCapabilities: {
           ...(route.inputModalities !== undefined ? { inputModalities: route.inputModalities } : {}),
           ...(route.toolCall !== undefined ? { toolCall: route.toolCall } : {}),
+          ...(route.reasoning !== undefined ? { reasoning: route.reasoning } : {}),
         } }
       : {}),
     thinkingBudgetTokens: normalizeLlmThinkingBudgetTokens(block.thinkingBudgetTokens, output.effective),

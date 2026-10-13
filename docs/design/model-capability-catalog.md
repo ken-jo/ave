@@ -350,6 +350,56 @@ Implemented.
   color a typical turn several times dearer than it is; a fixed guess would ignore how
   this conversation actually runs.
 
+### 5.1 Reasoning an endpoint reports (slice 7 follow-up, owner direction 2026-10-13)
+
+`resolveReasoningSupport` (`src/shared/context-budget.ts`) is the one answer to "does this
+route's model reason" for the settings chooser and the engine, in the style of
+`resolveToolCallSupport`. Precedence: the user's named `catalogModel` entry; then the
+endpoint's `/models` report — a reasoning parameter in `supported_parameters`
+(`reasoning`, `reasoning_effort`, `include_reasoning`, preferred in that order) or an
+`internal_reasoning` price; then the catalog where the route establishes the model; else
+nobody states it (the host fallback). A report that names no reasoning parameter is not a
+denial. The route carries the answer (`RouteModelCapabilities.reasoning`) into the round
+settings, and `planReasoning` plans from it; a routeless call (a fallback) asks the
+catalog alone. Plans the report decides have source `endpoint-report`.
+
+What is sent, and why each is justified:
+
+- **Commercial OpenAI-compatible routes** (OpenRouter and the other preset gateways and
+  vendors; plan kind `endpoint-reasoning`) send only the parameter their own report
+  names. `reasoning` → `reasoning: { effort }`, OpenRouter's unified object, which its
+  reasoning guide recommends and which is the only control for Anthropic models there;
+  `reasoning_effort` → `reasoning_effort: <level>`, the OpenAI-style enum OpenRouter's
+  parameter reference also accepts (`xhigh … minimal, none`); `include_reasoning` only →
+  `include_reasoning: true`, which OpenRouter defines as equivalent to `reasoning: {}`.
+  A report with only an `internal_reasoning` price sends nothing (`kind: "none"`). The
+  catalog never chooses a parameter here, so a catalogued model behind such an endpoint
+  sends what the report says or, without a report, nothing, as before.
+  Sources: `https://openrouter.ai/docs/guides/best-practices/reasoning-tokens`,
+  `https://openrouter.ai/docs/api/reference/parameters`,
+  `https://openrouter.ai/docs/guides/overview/models` (fetched 2026-10-13).
+- **The level.** The report names a parameter, not the levels. `low`, `medium` and
+  `high` are the levels every effort convention defines; Ave's lowest budget maps to
+  `none`, which a model whose reasoning is mandatory rejects and which contradicts
+  thinking being on, so it is sent as `low`. `max_tokens` budgets are never sent.
+- **OpenAI-family routes** (OpenAI, Azure) send `reasoningEffort`, which the SDK writes
+  as `reasoning.effort` on the Responses wire and `reasoning_effort` on Chat
+  Completions; a report decides only when it names that wire's parameter (`reasoning`
+  or `reasoning_effort`), otherwise the plan is `none` from `endpoint-report`.
+- **The self-hosted class** (`openai-compatible`, LiteLLM, Ollama, LM Studio) keeps its
+  own switch and budget (`chat_template_kwargs.enable_thinking`, both budget spellings)
+  and gets no reported parameter.
+
+The engine's warning (`warnUnstatedReasoningOnce`) fires only for a `host-fallback` plan,
+so never when a report states reasoning. The chooser's reasoning badge reads the same
+resolver (before, a separate reading of the live report); a model whose thinking would
+send no effort because nobody states its levels — the engine's own `planReasoning`
+answering `host-fallback` — is marked in the model and fallback pickers with an "Effort
+unknown" badge (`llmTab.modelReasoningUnstated*`, en/ko, the "No tools" pattern), whose
+help names the remedy: `llm.vendors.<vendor>.catalogModel` in the settings file. The
+badge shares the row's first line with "No tools"; a CDP check at phone and desktop
+widths measured no overflow.
+
 ## 6. Modalities and tools (slice 4), pricing (slice 5)
 
 Slice 4 is implemented.
@@ -431,8 +481,21 @@ answers the rates with their source:
    `AVE_PRICING_OVERRIDE`, which replaces the whole list). It states what the
    deployment pays and is taken whole: no catalog tier or reasoning rate is mixed in,
    and a stated zero is a known $0.
-2. `model-catalog` — the entry `resolveCatalogKey` finds (§4), with `catalogEntry`.
-3. `unknown` — shown as unknown, never as $0.
+2. `endpoint-report` — the prices the route's own `/models` answer reported for the model
+   (slice 7 follow-up), where the route does not establish the catalog's identity for it
+   (`allowsImplicitModelLimits` fails: Azure, a custom `baseUrl`) or the catalog has no
+   price for it (an unmapped self-hosted, local or gateway endpoint, or an uncatalogued
+   id). The report follows OpenRouter's convention: USD per token as decimal strings
+   (`"0.0000025"` is $2.50 per million); `prompt`, `completion`, `input_cache_read`,
+   `input_cache_write` and `internal_reasoning` map to the input, output, cache and
+   reasoning rates. Both prompt and completion must parse as non-negative numbers
+   (OpenRouter's `-1` for a router is not a price), a zero for both is not a price, and
+   an extra rate that does not parse is dropped. OpenRouter's `overrides` tiers are not
+   read. The engine prices the primary route's requests with it; a fallback model is
+   priced without the primary's report. The estimate's tooltip names it ("the provider's
+   model list"). Records without the source read as before.
+3. `model-catalog` — the entry `resolveCatalogKey` finds (§4), with `catalogEntry`.
+4. `unknown` — shown as unknown, never as $0.
 
 Until slice 7 the hand-kept row answered as `pricing-catalog` between the catalog and
 `unknown`. A price snapshot an earlier build recorded with that source is still read back

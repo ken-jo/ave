@@ -58,7 +58,7 @@ const SUBSCRIPTION_FALLBACK_USABLE_CONTEXT = getUsableContext(
 
 interface RuntimeContextBudget
   extends RouteModelCapabilities,
-    Pick<RouteContextWindow, "catalogEntry" | "inputLimit" | "inputLimitSource" | "baseUrl" | "catalogModel"> {
+    Pick<RouteContextWindow, "catalogEntry" | "inputLimit" | "inputLimitSource" | "baseUrl" | "catalogModel" | "reportedPricing"> {
   readonly model: string;
   readonly preflight: number;
   readonly usableContext: number;
@@ -294,6 +294,8 @@ export function contextBudgetForCurrentRuntime(self: ConversationLoop): RuntimeC
     output: route.output,
     ...(route.inputModalities !== undefined ? { inputModalities: route.inputModalities } : {}),
     ...(route.toolCall !== undefined ? { toolCall: route.toolCall } : {}),
+    ...(route.reasoning !== undefined ? { reasoning: route.reasoning } : {}),
+    ...(route.reportedPricing !== undefined ? { reportedPricing: route.reportedPricing } : {}),
   };
 }
 

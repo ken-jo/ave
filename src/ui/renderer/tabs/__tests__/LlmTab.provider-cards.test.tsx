@@ -788,6 +788,66 @@ describe("LlmTab provider cards", () => {
     expect(ids).not.toContain("gpt-4.1");
   });
 
+  it.each([
+    { model: "gpt-5.1-codex", supportedParameters: undefined, unstated: true, reasoning: false },
+    { model: "gpt-5.4", supportedParameters: undefined, unstated: false, reasoning: true },
+    { model: "gpt-5.1-codex", supportedParameters: ["tools", "reasoning"], unstated: false, reasoning: true },
+  ])("marks a route whose reasoning levels nobody states, as the engine plans it: $model $supportedParameters", async ({ model, supportedParameters, unstated, reasoning }) => {
+    const modelListCache: LlmModelListCache = {
+      [llmModelListCacheKey("openai")]: {
+        vendor: "openai", models: [model], endpoint: "https://api.openai.com/v1/models",
+        modelEntries: [{ id: model, ...(supportedParameters ? { supportedParameters } : {}) }], fetchedAt: new Date(0).toISOString(),
+      },
+    };
+    const vendors = freshAllVendorBlocks();
+    vendors.openai.model = model;
+    const { api } = profileApi({ vendors, modelListCache }, {
+      hasApiKey: storedKeysFor("openai"),
+      listLlmModels: vi.fn(() => new Promise<LlmModelListResult>(() => {})),
+    });
+    await renderTab(api, { vendor: "openai", model });
+    expect(await chooserModelIds()).toContain(model);
+    const row = within(chooserOption(model));
+    const badge = row.queryByTestId(`llm-tab:model-reasoning-unstated:${model}`);
+    expect(Boolean(badge)).toBe(unstated);
+    if (badge) {
+      expect(badge).toHaveTextContent(t("llmTab.modelReasoningUnstatedBadge"));
+      expect(badge).toHaveAttribute("role", "note");
+      expect(badge.getAttribute("title")).toContain("llm.vendors.openai.catalogModel");
+      expect(badge).toHaveAccessibleName(t("llmTab.modelReasoningUnstatedHelp", { vendor: "openai" }));
+    }
+    expect(Boolean(row.queryByTestId(`llm-tab:model-reasoning:${model}`))).toBe(reasoning);
+  });
+
+  it("does not mark an OpenAI-compatible route, which plans no effort of its own", async () => {
+    const model = "lab/unlisted-model";
+    const { api } = profileApi({ vendors: { openrouter: { model } } }, {
+      hasApiKey: storedKeysFor("openrouter"),
+      listLlmModels: vi.fn(() => new Promise<LlmModelListResult>(() => {})),
+    });
+    await renderTab(api, { vendor: "openrouter", model });
+    expect(await chooserModelIds()).toContain(model);
+    expect(within(chooserOption(model)).queryByTestId(`llm-tab:model-reasoning-unstated:${model}`)).toBeNull();
+  });
+
+  it("marks a fallback row the same way the engine plans a fallback", async () => {
+    const { api } = profileApi({
+      vendors: { "azure-foundry": { model: "my-deployment", baseUrl: "https://synthetic.openai.azure.com/openai/v1" } },
+      installedProviderIds: ["azure-foundry"],
+    }, {
+      hasApiKey: storedKeysFor("azure-foundry", "claude"),
+      listLlmModels: vi.fn(() => new Promise<LlmModelListResult>(() => {})),
+    });
+    await renderTab(api, {
+      vendor: "claude", model: "claude-sonnet-4-6",
+      fallbackOpen: true, fallbackChain: [{ provider: "azure-foundry", model: "my-deployment" }],
+    });
+    const section = screen.getByTestId("fallback-chain-section");
+    const triggers = [...section.querySelectorAll<HTMLElement>("[role='combobox']")];
+    openMenu(triggers[triggers.length - 1]!);
+    await waitFor(() => expect(document.querySelector("[data-testid='llm-tab:model-reasoning-unstated:my-deployment']")).not.toBeNull());
+  });
+
   it.each(["pending", "failed"])("keeps the tool badge consistent with the engine during a %s capability cache save", async (saveState) => {
     const model = "text-embedding-3-small";
     const { api } = profileApi({

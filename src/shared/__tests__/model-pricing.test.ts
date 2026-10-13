@@ -263,3 +263,55 @@ describe("computeCost — cache and reasoning rates", () => {
     expect(computeCost({ inputTokens: 0, outputTokens: MILLION, reasoningTokens: 900_000 }, gpt, "openai")).toBeCloseTo(15, 9);
   });
 });
+
+describe("resolveModelPricing — the endpoint's own price report", () => {
+  const report = { prompt: "0.0000025", completion: "0.00001", inputCacheRead: "0.00000025", inputCacheWrite: "0.000003", internalReasoning: "0.0000004" };
+
+  it("reads OpenRouter's USD-per-token strings as per-million rates", () => {
+    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reported: report })).toEqual({
+      source: "endpoint-report",
+      rates: { inputPer1M: 2.5, outputPer1M: 10, cacheReadPer1M: 0.25, cacheWritePer1M: 3, reasoningPer1M: 0.4 },
+    });
+  });
+
+  it("prices a route that does not establish the catalog's model from its report, not the name match", () => {
+    // An Azure deployment named like a catalog model, and a custom OpenAI endpoint.
+    expect(resolveModelPricing("azure-foundry", "gpt-4o", [], { reported: report })).toMatchObject({ source: "endpoint-report" });
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { baseUrl: "https://proxy.invalid/v1", reported: report }))
+      .toMatchObject({ source: "endpoint-report" });
+  });
+
+  it("keeps the catalog where the route establishes the model and the catalog prices it", () => {
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { reported: report })).toMatchObject({ source: "model-catalog", catalogEntry: "openai/gpt-5.4" });
+    expect(resolveModelPricing("openai", "gpt-5.4", [], { baseUrl: "https://api.openai.com/v1", reported: report }))
+      .toMatchObject({ source: "model-catalog" });
+  });
+
+  it("takes the user's correction over the report", () => {
+    const override = { vendor: "openrouter", model: "lab/unlisted-reasoner", inputPer1M: 1, outputPer1M: 2 };
+    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [override], { reported: report })).toMatchObject({ source: "user" });
+  });
+
+  it.each([
+    [{ prompt: "-1", completion: "-1" }],
+    [{ prompt: "0", completion: "0" }],
+    [{ prompt: "0.000001" }],
+    [{ prompt: "free", completion: "0.000002" }],
+  ])("is not a price: %j", (reported) => {
+    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reported })).toEqual({ source: "unknown" });
+  });
+
+  it("drops an extra price that does not parse instead of the whole report", () => {
+    expect(resolveModelPricing("openrouter", "lab/unlisted-reasoner", [], { reported: { prompt: "1e-6", completion: "0.000002", inputCacheRead: "n/a" } }))
+      .toEqual({ source: "endpoint-report", rates: { inputPer1M: 1, outputPer1M: 2 } });
+  });
+
+  it("reads a recorded endpoint-report snapshot back, and older records still read", () => {
+    const recorded = { source: "endpoint-report", rates: { inputPer1M: 2.5, outputPer1M: 10 } };
+    expect(parseResolvedModelPricing(recorded)).toEqual(recorded);
+    expect(parseResolvedModelPricing({ source: "pricing-catalog", rates: { inputPer1M: 1, outputPer1M: 2 } }))
+      .toEqual({ source: "pricing-catalog", rates: { inputPer1M: 1, outputPer1M: 2 } });
+    expect(parseResolvedModelPricing({ source: "model-catalog", rates: { inputPer1M: 1, outputPer1M: 2 }, catalogEntry: "openai/x" }))
+      .toMatchObject({ source: "model-catalog" });
+  });
+});

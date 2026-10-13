@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { TokenProgressRing } from "../components/TokenProgressRing.js";
 import { TooltipProvider } from "../../../components/ui/tooltip.js";
-import { t } from "../../../i18n/runtime.js";
+import { setLocale, t } from "../../../i18n/runtime.js";
 
 function renderRing(used: number, budget: number) {
   return render(
@@ -87,6 +87,27 @@ describe("TokenProgressRing price source", () => {
     fireEvent.click(screen.getByTestId("token-progress-ring"));
     const row = await screen.findByTestId("token-progress-ring-price-source");
     expect(row.textContent).toBe("단가:사용자 보정");
+  });
+
+  it.each([
+    ["ko", "단가:프로바이더 모델 목록"],
+    ["en", "Prices:the provider's model list"],
+  ] as const)("names the provider's own model list as the source of reported rates (%s)", async (locale, text) => {
+    const { fireEvent } = await import("@testing-library/react");
+    setLocale(locale);
+    try {
+      render(
+        <TooltipProvider>
+          <TokenProgressRing used={1_000} budget={64_000} costEstimate={{ ...base, pricingKnown: true, pricingSource: "endpoint-report" }} />
+        </TooltipProvider>,
+      );
+      fireEvent.click(screen.getByTestId("token-progress-ring"));
+      const row = await screen.findByTestId("token-progress-ring-price-source");
+      // Literal text, not the key: a missing catalog entry would render the key.
+      expect(row.textContent).toBe(text);
+    } finally {
+      setLocale("ko");
+    }
   });
 
   it("says the catalog listed a zero rather than showing $0", async () => {

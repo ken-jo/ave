@@ -31,11 +31,13 @@ export interface RunModelSettings {
   readonly requestControls?: RequestGenerationControls;
   /** The reasoning control sent, when thinking was on and the route has one. */
   readonly reasoning?: {
-    readonly kind: "openai-effort" | "anthropic-adaptive" | "anthropic-numeric" | "none";
+    readonly kind: "openai-effort" | "anthropic-adaptive" | "anthropic-numeric" | "endpoint-reasoning" | "none";
+    /** The parameter an `endpoint-reasoning` request carried, as the endpoint's report named it. */
+    readonly control?: "reasoning" | "reasoning_effort" | "include_reasoning";
     readonly requestedEffort?: string;
     readonly effort?: string;
     readonly budgetTokens?: number;
-    readonly source: "model-catalog" | "request-shape" | "host-fallback";
+    readonly source: "model-catalog" | "endpoint-report" | "request-shape" | "host-fallback";
     readonly suppressed?: "chat-completions-tool-turn";
   };
   /**

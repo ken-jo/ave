@@ -30,6 +30,7 @@ import {
   llmModelListCacheKey,
   type LlmModelListCache,
   type LlmModelListCacheEntry,
+  type LlmModelListPricing,
 } from "./llm-model-list.js";
 import { CATALOG_PROVIDERS_BY_VENDOR } from "./model-catalog/provider-map.js";
 import { activeModelCatalog } from "./model-catalog/active.js";
@@ -413,9 +414,78 @@ export function resolveToolCallSupport(params: {
     : undefined;
 }
 
+/**
+ * The request parameter an endpoint's `/models` report names for reasoning,
+ * in the order the engine prefers it (design `model-capability-catalog.md`
+ * §5.1): OpenRouter's unified `reasoning` object, the OpenAI-style
+ * `reasoning_effort` level, and the `include_reasoning` switch.
+ */
+const REPORTED_REASONING_CONTROLS = ["reasoning", "reasoning_effort", "include_reasoning"] as const;
+export type ReportedReasoningControl = (typeof REPORTED_REASONING_CONTROLS)[number];
+
+/** Whether a route's model reasons, with the authority that states it. */
+export type ResolvedReasoningSupport =
+  | {
+      readonly supported: true;
+      readonly source: "endpoint-report";
+      /** The parameter the endpoint reported; absent when only a reasoning price says it reasons. */
+      readonly control?: ReportedReasoningControl;
+    }
+  | {
+      readonly supported: boolean;
+      readonly source: "model-catalog";
+      readonly catalogEntry: string;
+      /** The qualitative levels the entry accepts, when it lists them. */
+      readonly efforts?: readonly string[];
+    };
+
+/** What a `/models` row says about reasoning: its parameters and its prices. */
+export interface ReportedReasoningFacts {
+  readonly supportedParameters?: readonly string[];
+  readonly pricing?: { readonly internalReasoning?: string };
+}
+
+/**
+ * One rule for whether a route's model reasons, shared by the settings
+ * chooser and the engine. The user's named catalog entry decides first; then
+ * the endpoint's report — a reasoning parameter in `supported_parameters`, or
+ * an `internal_reasoning` price; then the catalog where the route establishes
+ * the model. A report that names no reasoning parameter is not a denial.
+ * `undefined` means nobody states it (the host fallback).
+ */
+export function resolveReasoningSupport(params: {
+  vendor: string;
+  model: string;
+  reported?: ReportedReasoningFacts;
+  catalogModel?: string;
+  /** The route's endpoint: an implicit name match follows the identity rule (§4). */
+  baseUrl?: string;
+}): ResolvedReasoningSupport | undefined {
+  const hit = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl);
+  const stated = hit?.model.reasoning;
+  const fromCatalog: ResolvedReasoningSupport | undefined = hit && stated
+    ? {
+        supported: stated.supported,
+        source: "model-catalog",
+        catalogEntry: `${hit.provider}/${hit.id}`,
+        ...(stated.effort !== undefined ? { efforts: stated.effort } : {}),
+      }
+    : undefined;
+  if (params.catalogModel !== undefined && fromCatalog) return fromCatalog;
+  const reportedParameters = new Set(
+    (params.reported?.supportedParameters ?? []).map((parameter) => parameter.trim().toLowerCase()),
+  );
+  const control = REPORTED_REASONING_CONTROLS.find((candidate) => reportedParameters.has(candidate));
+  if (control !== undefined || params.reported?.pricing?.internalReasoning !== undefined) {
+    return { supported: true, source: "endpoint-report", ...(control !== undefined ? { control } : {}) };
+  }
+  return fromCatalog;
+}
+
 /** Capability facts resolved for one route; absent fields stay unknown. */
 export interface RouteModelCapabilities extends RouteInputModalities {
   readonly toolCall?: ResolvedToolCallSupport;
+  readonly reasoning?: ResolvedReasoningSupport;
 }
 
 export interface RouteContextWindow extends ResolvedContextWindow, RouteModelCapabilities {
@@ -431,6 +501,8 @@ export interface RouteContextWindow extends ResolvedContextWindow, RouteModelCap
    * ceiling; the budget math does not use it.
    */
   readonly maxOutputTokens?: number;
+  /** The prices the route's own `/models` answer reported for this model, for `resolveModelPricing`. */
+  readonly reportedPricing?: LlmModelListPricing;
   /**
    * The output limit a chat request on this route carries, resolved once for
    * the engine and the renderer's cost estimate alike.
@@ -547,15 +619,24 @@ export function resolveContextWindowForRoute(
     ...(catalogModel !== undefined ? { catalogModel } : {}),
     ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
   });
+  const reasoning = resolveReasoningSupport({
+    vendor: llm.provider,
+    model,
+    ...(entry !== undefined ? { reported: entry } : {}),
+    ...(catalogModel !== undefined ? { catalogModel } : {}),
+    ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
+  });
   return {
     ...resolved,
     model,
     ...(address.baseUrl !== undefined ? { baseUrl: address.baseUrl } : {}),
     ...(catalogModel !== undefined ? { catalogModel } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    ...(entry?.pricing !== undefined ? { reportedPricing: entry.pricing } : {}),
     output,
     ...(unresolved ? { unresolvedCatalogModel: catalogModel } : {}),
     ...(inputModalities !== undefined ? { inputModalities } : {}),
     ...(toolCall !== undefined ? { toolCall } : {}),
+    ...(reasoning !== undefined ? { reasoning } : {}),
   };
 }

@@ -485,7 +485,12 @@ partial listing proves nothing). The host keeps no retired-name list. Retired mo
 not offered in any picker; a saved selection at one sets the `llm.retiredProvider` marker
 at settings load (`{ vendor, model, reason }` beside the removed-vendor string), which
 withholds API-key chat and credentials until the user picks — the same flow as a removed
-vendor. See [retired models](../design/model-capability-catalog.md#61-retired-models-slice-7-follow-up-owner-direction-2026-10-13).
+vendor. Whether a route's model reasons and what it costs may also come from the route's
+own `/models` report (`resolveReasoningSupport`; `resolveModelPricing`'s
+`endpoint-report` source): the user's named entry, then the report, then the catalog. A
+commercial OpenAI-compatible endpoint receives only the reasoning parameter its report
+names (`reasoning`, `reasoning_effort` or `include_reasoning`); the self-hosted class keeps
+its own switch and budget. See [retired models](../design/model-capability-catalog.md#61-retired-models-slice-7-follow-up-owner-direction-2026-10-13).
 The catalog in force is chosen once per launch (`src/core/model-catalog/bundled.ts`): a
 `AVE_MODEL_CATALOG` pin (`bundled`, a cached `<sha256>`, or an absolute file path; a pin
 that cannot be honoured fails boot), else the verified refreshed copy in

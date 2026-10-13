@@ -10,6 +10,7 @@ import {
   resolveModelContextWindow,
   resolveModelRetirement,
   resolveOutputTokenLimit,
+  resolveReasoningSupport,
   resolveRouteModelRetirement,
 } from "../context-budget.js";
 import { FALLBACK_CONTEXT_WINDOW, MAX_CREDIBLE_CONTEXT_WINDOW } from "../model-host-policy.js";
@@ -912,6 +913,7 @@ describe("context limits behind a custom endpoint", () => {
       // The named entry also states the model's inputs and tool support.
       inputModalities: expect.objectContaining({ source: "model-catalog", catalogEntry: "openai/gpt-5.2" }),
       toolCall: expect.objectContaining({ source: "model-catalog", catalogEntry: "openai/gpt-5.2" }),
+      reasoning: expect.objectContaining({ supported: true, source: "model-catalog", catalogEntry: "openai/gpt-5.2" }),
     });
   });
 
@@ -1003,5 +1005,59 @@ describe("resolveModelRetirement — design §6.1", () => {
     const llm = { provider: "openai" as const, vendors, modelListCache: { [key]: listing(["gpt-5.4"]) } };
     expect(resolveRouteModelRetirement(llm)).toBe("unlisted");
     expect(resolveRouteModelRetirement({ ...llm, modelListCache: {} })).toBeUndefined();
+  });
+});
+
+describe("resolveReasoningSupport — one answer for the chooser and the engine", () => {
+  it("reads the endpoint's report of a reasoning parameter, preferring the unified object", () => {
+    for (const [parameters, control] of [
+      [["tools", "reasoning", "include_reasoning"], "reasoning"],
+      [["reasoning_effort", "include_reasoning"], "reasoning_effort"],
+      [["include_reasoning"], "include_reasoning"],
+      [["Reasoning"], "reasoning"],
+    ] as const) {
+      expect(resolveReasoningSupport({ vendor: "openrouter", model: "lab/unlisted-reasoner", reported: { supportedParameters: parameters } }))
+        .toEqual({ supported: true, source: "endpoint-report", control });
+    }
+  });
+
+  it("reads a reasoning price as support with no parameter to send", () => {
+    expect(resolveReasoningSupport({
+      vendor: "openai-compatible", model: "served-model", reported: { pricing: { internalReasoning: "0.000002" } },
+    })).toEqual({ supported: true, source: "endpoint-report" });
+  });
+
+  it("is unknown when nobody states it, and a report without a reasoning parameter is not a denial", () => {
+    expect(resolveReasoningSupport({ vendor: "openai-compatible", model: "served-model" })).toBeUndefined();
+    expect(resolveReasoningSupport({ vendor: "openai-compatible", model: "served-model", reported: { supportedParameters: ["tools"] } }))
+      .toBeUndefined();
+  });
+
+  it("orders the user's named entry, then the report, then the catalog's identity", () => {
+    // The named entry decides even against a report.
+    expect(resolveReasoningSupport({
+      vendor: "openai", model: "alias", catalogModel: "openai/gpt-4.1", reported: { supportedParameters: ["reasoning_effort"] },
+    })).toMatchObject({ supported: false, source: "model-catalog", catalogEntry: "openai/gpt-4.1" });
+    // A report outranks the implicit catalog match.
+    expect(resolveReasoningSupport({ vendor: "openai", model: "gpt-4.1", reported: { supportedParameters: ["reasoning_effort"] } }))
+      .toMatchObject({ source: "endpoint-report", control: "reasoning_effort" });
+    // Without a report the catalog answers, with its levels.
+    expect(resolveReasoningSupport({ vendor: "openai", model: "gpt-5.4" }))
+      .toMatchObject({ supported: true, source: "model-catalog", catalogEntry: "openai/gpt-5.4", efforts: expect.arrayContaining(["high"]) });
+  });
+
+  it("puts the route's report on the resolved route", () => {
+    const vendors = freshAllVendorBlocks();
+    vendors.openrouter = { ...vendors.openrouter, model: "lab/unlisted-reasoner" };
+    const cache: LlmModelListCache = {
+      [llmModelListCacheKey("openrouter", vendors.openrouter.baseUrl)]: {
+        vendor: "openrouter", endpoint: "https://openrouter.ai/api/v1/models", models: ["lab/unlisted-reasoner"],
+        modelEntries: [{ id: "lab/unlisted-reasoner", supportedParameters: ["reasoning"], pricing: { prompt: "0.000001", completion: "0.000002" } }],
+        fetchedAt: "2026-10-13T00:00:00.000Z",
+      },
+    };
+    const route = resolveContextWindowForRoute({ provider: "openrouter", vendors, modelListCache: cache });
+    expect(route.reasoning).toEqual({ supported: true, source: "endpoint-report", control: "reasoning" });
+    expect(route.reportedPricing).toEqual({ prompt: "0.000001", completion: "0.000002" });
   });
 });

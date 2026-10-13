@@ -30,6 +30,7 @@ import {
   type RouteInputModalities,
 } from "../../../shared/context-budget.js";
 import { llmModelListCacheKey, type LlmModelListCacheEntry } from "../../../shared/llm-model-list.js";
+import type { ModelPricingRoute } from "../../../shared/model-pricing.js";
 import { syncPricingOverrides } from "./use-pricing-overrides.js";
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../../shared/model-host-policy.js";
 import {
@@ -113,6 +114,12 @@ export interface UseSettingsResult {
    */
   llmInputLimit: number | undefined;
   /**
+   * The active route's endpoint and the prices its own `/models` answer
+   * reported, for the pre-send estimate (`resolveModelPricing`'s route), so it
+   * prices a request as the engine records it.
+   */
+  llmRoutePricing: ModelPricingRoute;
+  /**
    * The active route's input modalities, as its endpoint or the catalog states
    * them (`resolveContextWindowForRoute(...).inputModalities`), for the image
    * gate (`supportsVision(vendor, model, route)`). `undefined` until settings
@@ -164,6 +171,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
   const [llmContextWindow, setLlmContextWindow] = useState<number>(0);
   const [llmOutputTokenLimit, setLlmOutputTokenLimit] = useState<ResolvedOutputTokenLimit>(INITIAL_OUTPUT_TOKEN_LIMIT);
   const [llmInputLimit, setLlmInputLimit] = useState<number | undefined>(undefined);
+  const [llmRoutePricing, setLlmRoutePricing] = useState<ModelPricingRoute>({});
   const [llmRouteModalities, setLlmRouteModalities] = useState<UseSettingsResult["llmRouteModalities"]>(undefined);
   const [enableThinkingChat, setEnableThinkingChat] = useState<boolean>(true);
   const [processingDisplayLevel, setProcessingDisplayLevel] = useState<ProcessingDisplayLevel>(
@@ -213,6 +221,14 @@ export function useSettings(api: AveApi): UseSettingsResult {
       setLlmContextWindow(route.contextWindow);
       setLlmOutputTokenLimit(route.output);
       setLlmInputLimit(route.inputLimit);
+      const nextRoutePricing: ModelPricingRoute = {
+        ...(route.baseUrl !== undefined ? { baseUrl: route.baseUrl } : {}),
+        ...(route.reportedPricing !== undefined ? { reported: route.reportedPricing } : {}),
+      };
+      // Content-compared: every settings broadcast resolves a fresh object, and
+      // a new identity would re-render every chat tile for the same route.
+      setLlmRoutePricing((current) =>
+        JSON.stringify(current) === JSON.stringify(nextRoutePricing) ? current : nextRoutePricing);
       setLlmRouteModalities(route.inputModalities !== undefined ? { inputModalities: route.inputModalities } : {});
       setEnableThinkingChat(block.enableThinking);
       setProcessingDisplayLevel(
@@ -366,6 +382,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     llmContextWindow,
     llmOutputTokenLimit,
     llmInputLimit,
+    llmRoutePricing,
     llmRouteModalities,
     enableThinkingChat,
     processingDisplayLevel,

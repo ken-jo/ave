@@ -18,6 +18,7 @@ import type { LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
+import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import type { TurnDecisionEvent } from "../turn/types.js";
 
 afterEach(() => vi.restoreAllMocks());
@@ -86,6 +87,30 @@ function makeLoop(
   (loop as unknown as { provider: LLMProvider | null }).provider = provider;
   return loop;
 }
+
+describe("ConversationLoop — the price a turn records (design §6, endpoint report)", () => {
+  it("prices the primary route from its endpoint's own report when the catalog cannot", async () => {
+    const model = "lab/unlisted-reasoner";
+    const provider = new ToolRecordingProvider([[
+      { type: "text_delta", text: "done" },
+      { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 1_000, outputTokens: 100 } },
+    ]], "openrouter");
+    const settings = fakeLlmSettings({ provider: "openrouter", model, outputTokenLimit: 32_000 });
+    settings.modelListCache = {
+      [llmModelListCacheKey("openrouter", settings.vendors.openrouter.baseUrl)]: {
+        vendor: "openrouter", endpoint: "https://openrouter.ai/api/v1/models", models: [model],
+        modelEntries: [{ id: model, pricing: { prompt: "0.0000025", completion: "0.00001", inputCacheRead: "0.00000025" } }],
+        fetchedAt: "2026-10-13T00:00:00.000Z",
+      },
+    };
+    const loop = makeLoop(provider, [], settings);
+    let summary: TurnSummary | undefined;
+    await loop.runTurn("go", { onTurnSummary: (value) => { summary = value; } }, undefined, { inputOrigin: "user-keyboard" });
+    const expected = { source: "endpoint-report", rates: { inputPer1M: 2.5, outputPer1M: 10, cacheReadPer1M: 0.25 } };
+    expect(summary?.modelSettings?.pricing).toEqual(expected);
+    expect(summary?.usageByModel?.[0]).toMatchObject({ vendorProvider: "openrouter", vendorModel: model, pricing: expected });
+  });
+});
 
 describe("ConversationLoop — provider-as-oracle tool-schema guard (#1182)", () => {
   it("records the reasoning of the retry after the last rejected tool is removed", async () => {

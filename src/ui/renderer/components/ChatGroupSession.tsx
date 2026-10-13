@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import type { ResolvedOutputTokenLimit, RouteInputModalities } from "../../../shared/context-budget.js";
+import type { ModelPricingRoute } from "../../../shared/model-pricing.js";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
@@ -67,6 +68,8 @@ export interface ChatGroupEnvironment {
   llmContextWindow: number;
   /** The active route's prompt cap below the window, when one is stated (`resolveContextWindowForRoute(...).inputLimit`). */
   llmInputLimit?: number;
+  /** The active route's endpoint and its own price report, for the pre-send estimate. */
+  llmRoutePricing?: ModelPricingRoute;
   /** The active route's input modalities, for the image gate; `undefined` until settings have resolved. */
   llmRouteModalities: RouteInputModalities | undefined;
   settingsLoaded: boolean;
@@ -427,6 +430,7 @@ export function ChatGroupSession({
     draft: composedDraft,
     llmVendor: env.subscriptionRuntimeSelected ? undefined : env.llmVendor,
     llmModel: env.subscriptionRuntimeSelected ? undefined : env.llmModel,
+    ...(env.subscriptionRuntimeSelected || env.llmRoutePricing === undefined ? {} : { pricingRoute: env.llmRoutePricing }),
     maxOutputTokens: env.maxOutputTokens,
     outputLimitSource: env.maxOutputTokensSource,
     enabled: env.apiUsageProjectionAvailable,

@@ -7,7 +7,7 @@ import {
   type PricingVendor,
   type TokenRates,
 } from "../../../shared/pricing-data.js";
-import { resolveModelPricing } from "../../../shared/model-pricing.js";
+import { resolveModelPricing, type ModelPricingRoute } from "../../../shared/model-pricing.js";
 import { usePricingOverrides } from "./use-pricing-overrides.js";
 import {
   estimateOutgoingUserMessageTokens,
@@ -23,6 +23,8 @@ type CostEstimateParams = {
   llmVendor?: string;
   /** Omit when the active runtime has no verified billing contract. */
   llmModel?: string;
+  /** The route's endpoint and its own price report (`resolveModelPricing`'s route). */
+  pricingRoute?: ModelPricingRoute;
   /** The route's effective output limit: the most a reply may cost in output. */
   maxOutputTokens: number;
   /** Who set that limit, shown beside the output estimate. */
@@ -49,7 +51,7 @@ export function useCostEstimate(params: CostEstimateParams & { enabled: boolean 
  * whole conversation.
  */
 export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate | DisabledCostEstimate {
-  const { entries, draft, llmVendor, llmModel, maxOutputTokens, outputLimitSource, enabled = true } = params;
+  const { entries, draft, llmVendor, llmModel, pricingRoute, maxOutputTokens, outputLimitSource, enabled = true } = params;
   const pricingOverrides = usePricingOverrides();
 
   const contextCarrierTokens = useMemo(() => {
@@ -85,7 +87,7 @@ export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate
 
   const costEstimate = useMemo(() => {
     if (!enabled) return undefined;
-    const resolved = resolveModelPricing(llmVendor ?? "", llmModel ?? "", pricingOverrides);
+    const resolved = resolveModelPricing(llmVendor ?? "", llmModel ?? "", pricingOverrides, pricingRoute);
     const pricing = resolved.source === "unknown" ? undefined : resolved.rates;
     // Where the rates came from, or why there are none: a model the catalog
     // lists at zero is said so, never shown as a $0 estimate.
@@ -122,7 +124,7 @@ export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate
       pricingKnown: true,
       ...provenance,
     };
-  }, [enabled, contextCarrierTokens, historySerialized, draft.text, draft.attachments, llmVendor, llmModel, maxOutputTokens, pricingOverrides]);
+  }, [enabled, contextCarrierTokens, historySerialized, draft.text, draft.attachments, llmVendor, llmModel, pricingRoute, maxOutputTokens, pricingOverrides]);
   // What this conversation's turns have produced, not the most a turn may:
   // the limit is the upper end of the range, never the tier on its own.
   const completedTurnOutputs = useMemo(() => {

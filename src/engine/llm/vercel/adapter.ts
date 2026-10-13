@@ -67,6 +67,7 @@ import { planReasoning } from "../reasoning-plan.js";
 import {
   resolveInputModalities,
   resolveOutputCeiling,
+  resolveReasoningSupport,
   resolveToolCallSupport,
   type RouteModelCapabilities,
 } from "../../../shared/context-budget.js";
@@ -225,9 +226,11 @@ function routelessModelCapabilities(params: {
 }): RouteModelCapabilities {
   const inputModalities = resolveInputModalities(params);
   const toolCall = resolveToolCallSupport(params);
+  const reasoning = resolveReasoningSupport(params);
   return {
     ...(inputModalities !== undefined ? { inputModalities } : {}),
     ...(toolCall !== undefined ? { toolCall } : {}),
+    ...(reasoning !== undefined ? { reasoning } : {}),
   };
 }
 
@@ -377,6 +380,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         budgetTokens: budget,
         baseUrl,
         catalogModel: params.catalogModel,
+        ...(capabilities.reasoning !== undefined ? { reasoning: capabilities.reasoning } : {}),
         request: { hasTools },
       });
       const isThinkingEnabled = params.enableThinking === true && reasoningPlan?.kind !== "none";
@@ -488,6 +492,25 @@ export class VercelUnifiedProvider implements LLMProvider {
         providerOptions = {
           ...(providerOptions ?? {}),
           [OPENAI_COMPAT_PROVIDER_OPTIONS_KEY]: compatOptions,
+        };
+      }
+
+      // An OpenAI-compatible endpoint whose `/models` report names a reasoning
+      // parameter gets that parameter and nothing else (reasoning-plan.ts):
+      // `reasoning: { effort }` (OpenRouter's unified object),
+      // `reasoning_effort` (the SDK's `reasoningEffort`), or
+      // `include_reasoning: true`, which OpenRouter defines as `reasoning: {}`.
+      if (reasoningPlan?.kind === "endpoint-reasoning") {
+        const reported: Record<string, unknown> =
+          reasoningPlan.control === "reasoning" ? { reasoning: { effort: reasoningPlan.effort } }
+          : reasoningPlan.control === "reasoning_effort" ? { reasoningEffort: reasoningPlan.effort }
+          : { include_reasoning: true };
+        providerOptions = {
+          ...(providerOptions ?? {}),
+          [OPENAI_COMPAT_PROVIDER_OPTIONS_KEY]: {
+            ...(providerOptions?.[OPENAI_COMPAT_PROVIDER_OPTIONS_KEY] ?? {}),
+            ...reported,
+          },
         };
       }
 

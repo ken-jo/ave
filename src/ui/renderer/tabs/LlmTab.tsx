@@ -82,7 +82,15 @@ import { TEST_IDS } from "../../../shared/test-ids.js";
 import { formatTokensExact } from "../../../lib/cost-format.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
-import { resolveInputModalities, resolveModelRetirement, resolveToolCallSupport, type ResolvedToolCallSupport } from "../../../shared/context-budget.js";
+import {
+  resolveInputModalities,
+  resolveModelRetirement,
+  resolveReasoningSupport,
+  resolveToolCallSupport,
+  type ResolvedReasoningSupport,
+  type ResolvedToolCallSupport,
+} from "../../../shared/context-budget.js";
+import { planReasoning } from "../../../engine/llm/reasoning-plan.js";
 
 export interface FallbackEntry {
   provider: LLMVendor;
@@ -807,11 +815,30 @@ function modelEntryPricingLabel(entry: LlmModelListEntry | undefined): string | 
  * carries the signal; the sentence rides on the row's `title`, where it is one
  * hover away instead of one line tall on every row.
  */
-function modelEntryDoesReasoning(entry: LlmModelListEntry | undefined): boolean {
-  if (!entry) return false;
-  if (entry.pricing?.internalReasoning !== undefined) return true;
-  return (entry.supportedParameters ?? []).some((parameter) =>
-    parameter === "reasoning" || parameter === "include_reasoning");
+/**
+ * Whether thinking on this model would send no reasoning effort because
+ * nobody states the levels it accepts: the engine's own plan
+ * (`planReasoning`) answering from the host fallback. The level does not
+ * change that answer, so any budget asks the same question.
+ */
+function reasoningFallsToHost(params: {
+  vendor: LLMVendor;
+  model: string;
+  baseUrl?: string;
+  catalogModel?: string;
+  reasoning?: ResolvedReasoningSupport;
+}): boolean {
+  const plan = planReasoning({
+    vendor: params.vendor,
+    model: params.model,
+    enableThinking: true,
+    budgetTokens: 16_000,
+    ...(params.baseUrl ? { baseUrl: params.baseUrl } : {}),
+    ...(params.catalogModel !== undefined ? { catalogModel: params.catalogModel } : {}),
+    ...(params.reasoning !== undefined ? { reasoning: params.reasoning } : {}),
+    request: { hasTools: false },
+  });
+  return plan?.kind === "none" && plan.source === "host-fallback";
 }
 
 function ModelSelectItemContent({
@@ -820,6 +847,8 @@ function ModelSelectItemContent({
   provider,
   vision,
   toolCall,
+  reasoning,
+  reasoningUnstatedVendor,
   factsOverride,
   tone,
 }: {
@@ -831,6 +860,11 @@ function ModelSelectItemContent({
   vision?: boolean;
   /** The same capability result the request uses to withhold tool definitions. */
   toolCall?: ResolvedToolCallSupport;
+  /** The shared reasoning answer (`resolveReasoningSupport`) the engine plans with. */
+  reasoning?: ResolvedReasoningSupport;
+  /** Set when thinking here would send no effort (host fallback): the vendor whose
+   *  `catalogModel` setting supplies the levels, named in the badge's help. */
+  reasoningUnstatedVendor?: string;
   /** Leading column: who serves this model. The caller decides whether the
    *  catalogue entry may name it — see `UnifiedModelOption.vendorLabel` — and
    *  the fallback chain lists a vendor's own models without one. */
@@ -844,7 +878,7 @@ function ModelSelectItemContent({
   const isFree = entry?.tags?.free === true || isOpenRouterFreeModel(option);
   const isRouter = entry?.tags?.router === true;
   const isLocal = entry?.tags?.local === true;
-  const isReasoning = modelEntryDoesReasoning(entry);
+  const isReasoning = reasoning?.supported === true;
   // Provider is the leading column now, so it is NOT repeated in the trailing
   // facts — those are the numbers that differ between models.
   const facts = factsOverride ? [factsOverride] : [
@@ -879,6 +913,18 @@ function ModelSelectItemContent({
             aria-label={t("llmTab.modelNoToolsHelp")}
           >
             {t("llmTab.modelNoToolsBadge")}
+          </Badge>
+        )}
+        {reasoningUnstatedVendor !== undefined && (
+          <Badge
+            variant="outline"
+            className="h-4 shrink-0 px-1 text-[9px]"
+            data-testid={`llm-tab:model-reasoning-unstated:${option}`}
+            role="note"
+            title={t("llmTab.modelReasoningUnstatedHelp", { vendor: reasoningUnstatedVendor })}
+            aria-label={t("llmTab.modelReasoningUnstatedHelp", { vendor: reasoningUnstatedVendor })}
+          >
+            {t("llmTab.modelReasoningUnstatedBadge")}
           </Badge>
         )}
       </span>
@@ -961,6 +1007,9 @@ interface UnifiedModelOption {
    *  it — the same gate the composer and the send path use. */
   vision?: boolean;
   toolCall?: ResolvedToolCallSupport;
+  reasoning?: ResolvedReasoningSupport;
+  /** The vendor whose `catalogModel` would state the levels, when nobody does. */
+  reasoningUnstatedVendor?: string;
   /** Subscription-side facts, where there is no catalogue entry to read them from. */
   facts?: string;
   /** The provider exposes no model choice — this row IS the provider. */
@@ -1110,6 +1159,8 @@ function UnifiedModelSelect({
           provider={option.vendorLabel}
           {...(option.vision === true ? { vision: true } : {})}
           {...(option.toolCall ? { toolCall: option.toolCall } : {})}
+          {...(option.reasoning ? { reasoning: option.reasoning } : {})}
+          {...(option.reasoningUnstatedVendor ? { reasoningUnstatedVendor: option.reasoningUnstatedVendor } : {})}
           {...(option.facts ? { factsOverride: option.facts } : {})}
           {...(option.unlisted ? { tone: "destructive" as const } : {})}
         />
@@ -2229,12 +2280,28 @@ export function LlmTab(props: LlmTabProps) {
         // An exact live report first; otherwise the report the engine and the
         // badges below match under the same rule, so one row never mixes two.
         const entry = entries.get(modelId) ?? savedEntry;
+        const rowCatalogModel = row.presetId ? undefined : savedVendorBlocks[row.apiVendorId]?.catalogModel;
         const toolCall = resolveToolCallSupport({
           vendor: row.apiVendorId,
           model: modelId,
           baseUrl: reportedBaseUrl || undefined,
           reported: savedEntry?.supportedParameters,
-          catalogModel: row.presetId ? undefined : savedVendorBlocks[row.apiVendorId]?.catalogModel,
+          catalogModel: rowCatalogModel,
+        });
+        // The same reasoning answer the engine plans the request with.
+        const reasoning = resolveReasoningSupport({
+          vendor: row.apiVendorId,
+          model: modelId,
+          ...(reportedBaseUrl ? { baseUrl: reportedBaseUrl } : {}),
+          ...(savedEntry ? { reported: savedEntry } : {}),
+          ...(rowCatalogModel !== undefined ? { catalogModel: rowCatalogModel } : {}),
+        });
+        const reasoningUnstated = visionVendor !== null && reasoningFallsToHost({
+          vendor: visionVendor,
+          model: modelId,
+          ...(reportedBaseUrl ? { baseUrl: reportedBaseUrl } : {}),
+          ...(rowCatalogModel !== undefined ? { catalogModel: rowCatalogModel } : {}),
+          ...(reasoning !== undefined ? { reasoning } : {}),
         });
         options.push({
           value,
@@ -2246,6 +2313,8 @@ export function LlmTab(props: LlmTabProps) {
           modelId,
           ...(entry ? { entry } : {}),
           ...(toolCall ? { toolCall } : {}),
+          ...(reasoning ? { reasoning } : {}),
+          ...(reasoningUnstated ? { reasoningUnstatedVendor: row.apiVendorId } : {}),
           // This row's own endpoint report, else the catalog entry for its id.
           ...(visionVendor && supportsVision(visionVendor, modelId, {
             inputModalities: resolveInputModalities({
@@ -3332,23 +3401,33 @@ export function LlmTab(props: LlmTabProps) {
                         />
                       </SelectTrigger>
                       <SelectContent className={SELECT_POPUP_LAYOUT}>
-                        {fallbackModelOptions.map((option) => (
-                          <SelectItem key={option} value={option}>
-                            <ModelSelectItemContent
-                              option={option}
-                              toolCall={resolveToolCallSupport({
-                                vendor: entry.provider,
-                                model: option,
-                                // The engine builds a fallback on its vendor block's saved
-                                // endpoint (provider.ts) and matches it under that endpoint's
-                                // identity, with no route catalog entry or report.
-                                ...(entry.provider !== "vertex-ai" && savedVendorBlocks[entry.provider]?.baseUrl
-                                  ? { baseUrl: savedVendorBlocks[entry.provider]!.baseUrl }
-                                  : {}),
-                              })}
-                            />
-                          </SelectItem>
-                        ))}
+                        {fallbackModelOptions.map((option) => {
+                          // The engine builds a fallback on its vendor block's saved
+                          // endpoint (provider.ts) and matches it under that endpoint's
+                          // identity, with no route catalog entry or report.
+                          const fallbackRoute = {
+                            vendor: entry.provider,
+                            model: option,
+                            ...(entry.provider !== "vertex-ai" && savedVendorBlocks[entry.provider]?.baseUrl
+                              ? { baseUrl: savedVendorBlocks[entry.provider]!.baseUrl }
+                              : {}),
+                          };
+                          const fallbackReasoning = resolveReasoningSupport(fallbackRoute);
+                          const fallbackReasoningUnstated = reasoningFallsToHost({
+                            ...fallbackRoute,
+                            ...(fallbackReasoning !== undefined ? { reasoning: fallbackReasoning } : {}),
+                          });
+                          return (
+                            <SelectItem key={option} value={option}>
+                              <ModelSelectItemContent
+                                option={option}
+                                toolCall={resolveToolCallSupport(fallbackRoute)}
+                                {...(fallbackReasoning ? { reasoning: fallbackReasoning } : {})}
+                                {...(fallbackReasoningUnstated ? { reasoningUnstatedVendor: entry.provider } : {})}
+                              />
+                            </SelectItem>
+                          );
+                        })}
                       </SelectContent>
                     </Select>
                     <Button
