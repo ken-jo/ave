@@ -16,7 +16,7 @@ import {
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
 import { BareRepo } from "../repo.js";
-import type { GitRemote } from "../run-git.js";
+import type { GitCommands, GitRemote } from "../run-git.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const execFileAsync = promisify(execFile);
@@ -338,6 +338,42 @@ describe("BareRepo", () => {
       expect((error as MarketplaceError).detail).toEqual({ reason: "http-status", host: "127.0.0.1", status: 302 });
       expect(requestsTo("elsewhere.git")).toBeGreaterThan(0);
       expect(requestsTo("landing")).toBe(0);
+    });
+
+    /** A runner that fails with `failures` in order, then succeeds, recording the address of each call. */
+    function scriptedRunner(failures: MarketplaceError[]): { runner: GitCommands; addresses: string[] } {
+      const addresses: string[] = [];
+      return {
+        addresses,
+        runner: {
+          run: async (args) => {
+            addresses.push(args[args.indexOf("--") + 1] ?? "");
+            const failure = failures.shift();
+            if (failure) throw failure;
+            return { stdout: Buffer.alloc(0), stderr: "" };
+          },
+        },
+      };
+    }
+
+    const redirected = (host: string) =>
+      new MarketplaceError("SOURCE_UNREACHABLE", "redirected", { detail: { reason: "http-status", host, status: 301 } });
+
+    it("never retries over ssh", async () => {
+      const sshRemote: GitRemote = { ...remote, url: normalizeSourceUrl("ssh://git@git.example.invalid/group/repo") };
+      const { runner, addresses } = scriptedRunner([redirected("git.example.invalid")]);
+      await expectCode(new BareRepo(runner, scratch).lsRemote(sshRemote), "SOURCE_UNREACHABLE");
+      expect(addresses).toEqual([sshRemote.url.url]);
+    });
+
+    it("reports what the .git address answered when it is not a missing repository", async () => {
+      const { runner, addresses } = scriptedRunner([
+        redirected("127.0.0.1"),
+        new MarketplaceError("SOURCE_AUTH_REQUIRED", "sign-in needed", { detail: { reason: "token", host: "127.0.0.1" } }),
+      ]);
+      const target = redirectedRemote("private");
+      await expectCode(new BareRepo(runner, scratch).lsRemote(target), "SOURCE_AUTH_REQUIRED");
+      expect(addresses).toEqual([target.url.url, `${target.url.url}.git`]);
     });
 
     it("does not retry an address that answers without a redirect", async () => {

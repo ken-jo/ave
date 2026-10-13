@@ -1330,6 +1330,16 @@ keeps its own rules (§11).
        lookup is not bound. The host key is the trust anchor.
 5. **Redirects.**
    - git never follows them (`http.followRedirects=false`).
+   - One exception, for hosts that redirect a repository path to its `.git`
+     form (GitLab): when an http(s) git call is answered with a redirect status
+     and the stored address (which never carries `.git`) has none, the call
+     runs once more at the same scheme, host, port and path with `.git`
+     appended (`src/marketplace/git/repo.ts`). The redirect's `Location` is
+     never read or requested, so the retry stays under steps 1–4 for the same
+     host. When the `.git` address holds no repository either, the redirect is
+     reported. The retry is not remembered: each call against such a host
+     costs one extra round trip, which keeps a host that later serves both
+     forms, or neither, from being read through a stale answer.
    - A download follows a redirect only after steps 1–4 pass for the new
      URL. It never carries `Authorization` or `Cookie` to a different
      origin.
