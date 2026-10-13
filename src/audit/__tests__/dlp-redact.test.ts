@@ -942,20 +942,39 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
     // A 64 KiB pass under this is fast whatever its growth: a ratio between runs of a few hundred microseconds
     // measures timer and JIT noise. The quadratic key regex took seconds here.
     const FAST_ENOUGH_MS = 5;
-    const timed = (scrub: (text: string) => string, input: string) => {
+    // Linux charges a thread's CPU time in whole scheduler ticks (4 ms at 250 Hz), so a single 4 KiB pass can read
+    // 0 ms and the ratio becomes Infinity. A 4 KiB pass that is judged is therefore repeated until the sample has
+    // spent at least this long and its per-pass mean kept, so a tick is a small fraction of it.
+    const MIN_SAMPLE_MS = 20;
+    const timed = (scrub: (text: string) => string, input: string, minSampleMs: number) => {
       const started = process.threadCpuUsage();
-      scrub(input);
-      const spent = process.threadCpuUsage(started);
-      return (spent.user + spent.system) / 1000;
+      let passes = 0;
+      let spentMs = 0;
+      do {
+        scrub(input);
+        passes += 1;
+        const spent = process.threadCpuUsage(started);
+        spentMs = (spent.user + spent.system) / 1000;
+      } while (spentMs < minSampleMs);
+      return spentMs / passes;
     };
-    const fastestPair = (scrub: (text: string) => string, smallInput: string, largeInput: string) => {
+    const fastestOf = (scrub: (text: string) => string, smallInput: string, largeInput: string) => {
       let smallMs = Number.POSITIVE_INFINITY;
       let largeMs = Number.POSITIVE_INFINITY;
       for (let run = 0; run < 5; run++) {
-        smallMs = Math.min(smallMs, timed(scrub, smallInput));
-        largeMs = Math.min(largeMs, timed(scrub, largeInput));
+        smallMs = Math.min(smallMs, timed(scrub, smallInput, 0));
+        largeMs = Math.min(largeMs, timed(scrub, largeInput, 0));
       }
       return { smallMs, largeMs };
+    };
+    const fastestPair = (scrub: (text: string) => string, smallInput: string, largeInput: string) => {
+      // Single passes first: most families are far under FAST_ENOUGH_MS and need no finer reading. Past it, the
+      // 64 KiB pass already spans more than a tick and only the 4 KiB pass is read again, as a per-pass mean.
+      const coarse = fastestOf(scrub, smallInput, largeInput);
+      if (coarse.largeMs < FAST_ENOUGH_MS) return coarse;
+      let smallMs = Number.POSITIVE_INFINITY;
+      for (let run = 0; run < 3; run++) smallMs = Math.min(smallMs, timed(scrub, smallInput, MIN_SAMPLE_MS));
+      return { smallMs, largeMs: coarse.largeMs };
     };
     const familiesAt = (size: number) => {
       const fill = (unit: string, tail = "") => unit.repeat(Math.ceil(size / unit.length)).slice(0, size - tail.length) + tail;
