@@ -192,7 +192,9 @@ describe("PermissionsTab — parent adjudication controls", () => {
     });
 
     expect(screen.getByTestId("parent-adjudication-toggle")).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByText("저장 실패")).toBeTruthy();
+    // A known code shows its localized copy; main's free-text message is logged, not shown.
+    expect(screen.getByText("설정을 저장하지 못했습니다.")).toBeTruthy();
+    expect(screen.queryByText("저장 실패")).toBeNull();
   });
 
   it("converts the timeout from seconds to the stored milliseconds on commit", async () => {
