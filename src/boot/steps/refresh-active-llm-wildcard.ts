@@ -7,9 +7,8 @@
  *
  * Contract (mirrors the inline `refreshActiveLlmWildcard` closure in boot.ts):
  *   - The wildcard slot carries ONLY non-secret API-provider metadata
- *     (`hostApiVendor`). It is deliberately absent while a subscription
- *     runtime owns generation: the persisted API provider is then inactive
- *     and must not be mistaken for the current runtime.
+ *     (`hostApiVendor`). It is absent while a subscription runtime owns
+ *     generation or the API selection remains unresolved after retirement.
  *     Stale `hostApiKey` slots from older builds are cleared on every call
  *     so a soft-reload after upgrade does not leave a ghost value.
  *   - On the FIRST invocation we seed `lastWildcardVendor` without restarting
@@ -22,7 +21,7 @@
  *   - Calls with the same vendor as last seen are no-ops (after the debounced
  *     restart has fired, if any).
  *   - Calls with no/empty vendor remove `hostApiVendor`. This is the
- *     subscription-runtime state, not an initialization failure.
+ *     subscription-runtime or unresolved retired-profile state.
  */
 
 import { createLogger } from "../../lib/logger.js";
@@ -31,7 +30,7 @@ import type { LLMSettings } from "../../data/settings-store.js";
 const log = createLogger("ave");
 
 export interface RefreshActiveLlmWildcardDeps {
-  /** Active API provider id, e.g. "openai". Undefined when a subscription runtime is active. */
+  /** Active API provider id. Undefined for subscription or unresolved retired profiles. */
   getActiveVendor: () => string | undefined;
   /** Wildcard-slot writer on `PluginRuntime`. */
   setWildcardConfigOverride: (config: Record<string, unknown>) => void;
@@ -58,13 +57,13 @@ export interface RefreshActiveLlmWildcardDeps {
 
 /**
  * Return the only API-vendor identity that may be exposed through plugin
- * `hostApiVendor` metadata. Subscription runtimes own generation separately,
- * so their retained API-provider settings are intentionally not projected.
+ * `hostApiVendor` metadata. Subscription runtimes and unresolved retired
+ * profiles do not project their retained API-provider settings.
  */
 export function activeHostApiVendor(
-  llm: Pick<LLMSettings, "activeChatRuntime" | "provider">,
+  llm: Pick<LLMSettings, "activeChatRuntime" | "provider" | "retiredProvider">,
 ): string | undefined {
-  if (llm.activeChatRuntime?.kind === "subscription") return undefined;
+  if (llm.activeChatRuntime?.kind === "subscription" || llm.retiredProvider) return undefined;
   const vendor = typeof llm.provider === "string" ? llm.provider.trim() : "";
   return vendor || undefined;
 }

@@ -43,11 +43,7 @@ const MAX_MODEL_ID_LENGTH = 256;
 
 const STANDARD_MODEL_LIST_BASE_URLS: Partial<Record<LLMVendor, string>> = {
   openai: "https://api.openai.com/v1",
-  copilot: "https://models.github.ai/catalog",
 };
-
-const GITHUB_MODELS_CATALOG_ENDPOINT = "https://models.github.ai/catalog/models";
-const GITHUB_MODELS_API_VERSION = "2026-03-10";
 
 export type LlmModelListFetchOptions = {
   /**
@@ -686,10 +682,6 @@ export async function listLlmModelsFromSettings(
     };
   }
   const headers: Record<string, string> = { Accept: "application/json" };
-  if (endpoint === GITHUB_MODELS_CATALOG_ENDPOINT) {
-    headers.Accept = "application/vnd.github+json";
-    headers["X-GitHub-Api-Version"] = GITHUB_MODELS_API_VERSION;
-  }
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
   let requestEndpoint = endpoint;

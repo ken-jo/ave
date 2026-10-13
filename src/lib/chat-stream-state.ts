@@ -29,6 +29,10 @@ export const EMPTY_ASSISTANT_RESPONSE_TEXT = t("be_chatStreamState.emptyAssistan
 export type ChatStreamEvent = {
   type: string;
   streamId?: number;
+  /** Host-owned side-chat identity announced by the turn's user_message prelude. */
+  sessionId?: string;
+  /** Correlates a side-chat prelude with the view that submitted its send. */
+  sendRequestId?: string;
   text?: string;
   /** Host-resolved input provenance carried by `user_message` frames. */
   origin?: string;

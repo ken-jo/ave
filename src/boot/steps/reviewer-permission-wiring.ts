@@ -73,6 +73,10 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       return subscriptionProviderFactory(activeChatRuntime);
     }
 
+    // Parent-session adjudication uses this same factory, so an unresolved
+    // API selection cannot answer an approval through another host key.
+    if (llmSettings.retiredProvider) return null;
+
     // Reviewer legacy provider names still resolve through the shared map.
     // Active-LLM following passes canonical LLMVendor names directly.
     const llmVendor = reviewerVendorFor(vendor) ?? (isLLMVendor(vendor) ? vendor : null);
@@ -200,7 +204,7 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       // Key inheritance — Foundry reads llm.apiKey.azure-foundry,
       // GCP playground reads llm.apiKey.gemini. Both use the same secret
       // store as the chat LLM providers so no new UI is required.
-      getSecret: (key) => settingsService.getSecret(key),
+      getSecret: (key) => settingsService.get("llm").retiredProvider ? null : settingsService.getSecret(key),
       // Foundry endpoint is a plain (non-secret) setting: the same
       // llm.vendors.azure-foundry.baseUrl field used by the chat provider.
       getFoundryEndpoint: () =>

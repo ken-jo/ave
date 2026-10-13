@@ -166,7 +166,7 @@ export interface WireReviewerDeps {
   /**
    * Provider factory for `mode: "llm"` stream-based host providers. Legacy
    * reviewer names (`openai | anthropic | google`) and active LLM vendor names
-   * (`claude | openai | gemini | copilot | azure-foundry | vertex-ai`) can
+   * (`claude | openai | gemini | azure-foundry | vertex-ai`) can
    * reach this callback.
    * Returning `null` means "vendor not configured" — wiring fails closed.
    * Not called for `foundry` or `gcp-playground` (direct HTTP adapters).

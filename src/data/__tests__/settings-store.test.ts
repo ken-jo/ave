@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +17,7 @@ vi.mock("electron", () => ({
 }));
 
 import { SettingsService, type SystemSettings } from "../settings-store.js";
+import { SecretDocumentStore } from "../secret-document-store.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { DEFAULT_SETTINGS } from "../settings-defaults.js";
 import { normalizeMarketplace } from "../settings-normalization.js";
@@ -3646,6 +3647,15 @@ describe("output token limit: the stored old default becomes the host default", 
   });
 });
 
+function writePlainSecrets(secretsPath: string, entries: Record<string, string>): void {
+  writeFileSync(secretsPath, `${JSON.stringify({
+    version: 1,
+    entries: Object.fromEntries(
+      Object.entries(entries).map(([key, value]) => [key, { encoding: "plain-development", value }]),
+    ),
+  })}\n`, { mode: 0o600 });
+}
+
 describe("vendor ids renamed to package names (nousResearch, v0)", () => {
   const MARKER = "llm-vendor-id-package-names";
   const MODEL = "DeepHermes-3-Llama-3-3-70B-Preview";
@@ -3662,15 +3672,6 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
       models,
       fetchedAt: "2026-09-01T00:00:00.000Z",
     };
-  }
-
-  function writeSecrets(entries: Record<string, string>): void {
-    writeFileSync(secretsPath, `${JSON.stringify({
-      version: 1,
-      entries: Object.fromEntries(
-        Object.entries(entries).map(([key, value]) => [key, { encoding: "plain-development", value }]),
-      ),
-    })}\n`, { mode: 0o600 });
   }
 
   beforeEach(() => {
@@ -3802,7 +3803,7 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
   });
 
   it("moves each API key stored under an old id to the new id's key", async () => {
-    writeSecrets({
+    writePlainSecrets(secretsPath, {
       "llm.apiKey.nousResearch": "nr_old",
       "llm.apiKey.v0": "v0_old",
       "llm.apiKey.openai": "sk-keep",
@@ -3819,7 +3820,7 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
   });
 
   it("drops the old key when the new id already has one", async () => {
-    writeSecrets({ "llm.apiKey.nousResearch": "nr_old", "llm.apiKey.nous-research": "nr_new" });
+    writePlainSecrets(secretsPath, { "llm.apiKey.nousResearch": "nr_old", "llm.apiKey.nous-research": "nr_new" });
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
 
     await service.migrateRenamedVendorSecrets();
@@ -3833,7 +3834,7 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
     await service.migrateRenamedVendorSecrets();
     expect(() => readFileSync(secretsPath, "utf-8")).toThrow();
 
-    writeSecrets({ "llm.apiKey.openai": "sk-keep" });
+    writePlainSecrets(secretsPath, { "llm.apiKey.openai": "sk-keep" });
     const before = readFileSync(secretsPath, "utf-8");
     await service.migrateRenamedVendorSecrets();
     expect(readFileSync(secretsPath, "utf-8")).toBe(before);
@@ -3841,7 +3842,7 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
 
   it("leaves the old key in place without failing the boot when the move fails", async () => {
     // Packaged policy with no OS encryption refuses every secret write.
-    writeSecrets({ "llm.apiKey.nousResearch": "nr_old" });
+    writePlainSecrets(secretsPath, { "llm.apiKey.nousResearch": "nr_old" });
     const before = readFileSync(secretsPath, "utf-8");
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "packaged" });
 
@@ -3856,7 +3857,7 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
   });
 
   it("deletes the retired marketplace API key and keeps every other secret", async () => {
-    writeSecrets({ "marketplace.apiKey": "mk_old", "llm.apiKey.openai": "sk-keep" });
+    writePlainSecrets(secretsPath, { "marketplace.apiKey": "mk_old", "llm.apiKey.openai": "sk-keep" });
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
 
     await service.deleteRetiredMarketplaceApiKey();
@@ -3867,12 +3868,156 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
   });
 
   it("leaves the retired key for the next boot when the store refuses the write", async () => {
-    writeSecrets({ "marketplace.apiKey": "mk_old" });
+    writePlainSecrets(secretsPath, { "marketplace.apiKey": "mk_old" });
     const before = readFileSync(secretsPath, "utf-8");
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "packaged" });
 
     await expect(service.deleteRetiredMarketplaceApiKey()).resolves.toBeUndefined();
     expect(readFileSync(secretsPath, "utf-8")).toBe(before);
+  });
+});
+
+describe("retired vendor profile migration", () => {
+  let userDataPath: string;
+  let settingsPath: string;
+  let secretsPath: string;
+
+  function writeCopilotProfile(): void {
+    writeFileSync(settingsPath, JSON.stringify({
+      llm: {
+        provider: "copilot",
+        vendors: {
+          copilot: { model: "gpt-5.4-mini" },
+          claude: { model: "claude-sonnet-4-6" },
+          openai: { model: "gpt-5.4" },
+        },
+        fallbackChain: [{ provider: "copilot", model: "gpt-4.1" }, { provider: "claude", model: "claude-sonnet-4-6" }],
+      },
+    }), "utf-8");
+  }
+
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-retired-vendor-"));
+    settingsPath = join(userDataPath, "ave-settings.json");
+    secretsPath = join(userDataPath, "ave-secrets.json");
+    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+  });
+
+  afterEach(async () => {
+    vi.clearAllMocks();
+    await cleanupTmpDir(userDataPath);
+  });
+
+  it("moves an active copilot profile off it with a marker, keeping the other vendor blocks", async () => {
+    writeCopilotProfile();
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const llm = service.get("llm");
+
+    expect(llm.provider).toBe(DEFAULT_LLM_VENDOR);
+    expect(llm.retiredProvider).toBe("copilot");
+    expect(Object.keys(llm.vendors)).not.toContain("copilot");
+    expect(getLlmVendorSettings(llm.vendors, "claude").model).toBe("claude-sonnet-4-6");
+    expect(getLlmVendorSettings(llm.vendors, "openai").model).toBe("gpt-5.4");
+    expect(llm.fallbackChain).toEqual([{ provider: "claude", model: "claude-sonnet-4-6" }]);
+
+    // Written back: the file no longer selects copilot, and the marker survives
+    // a restart until the user picks a provider.
+    await vi.waitFor(() => {
+      const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      expect(onDisk.llm.provider).toBe(DEFAULT_LLM_VENDOR);
+      expect(onDisk.llm.retiredProvider).toBe("copilot");
+    });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("llm").retiredProvider).toBe("copilot");
+  });
+
+  it("keeps the marker through unrelated patches and clears it when a provider is saved", async () => {
+    writeCopilotProfile();
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+
+    await service.patch({ llm: { pinnedModels: ["gpt-5.4"] } });
+    expect(service.get("llm").retiredProvider).toBe("copilot");
+
+    await service.patch({ llm: { provider: "claude" } });
+    expect(service.get("llm").provider).toBe("claude");
+    expect(service.get("llm").retiredProvider).toBeUndefined();
+  });
+
+  it("does not let a patch set the marker", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ llm: { retiredProvider: "copilot" } as never });
+    expect(service.get("llm").retiredProvider).toBeUndefined();
+  });
+
+  it.each([
+    { provider: "deepseek" },
+    { provider: "openai-compatible", marketplaceProviderPresetId: "missing-preset" },
+  ])("retains the retirement marker when a provider selection is unavailable: %j", async (llmPatch) => {
+    writeCopilotProfile();
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ llm: llmPatch as never });
+    expect(service.get("llm").retiredProvider).toBe("copilot");
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("llm").retiredProvider).toBe("copilot");
+  });
+
+  it("withholds host LLM credentials before reading the secret document until a provider is chosen", async () => {
+    writeCopilotProfile();
+    writePlainSecrets(secretsPath, { "llm.apiKey.openai": "credential-marker" });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
+    const read = vi.spyOn(SecretDocumentStore.prototype, "get");
+    const encryptedRead = vi.spyOn(SecretDocumentStore.prototype, "getEncrypted");
+    try {
+      for (const key of ["llm.apiKey.openai", "llm.apiKey.claude", "llm.marketplaceProvider.example.apiKey"]) {
+        expect(service.getSecret(key)).toBeNull();
+        expect(service.getEncryptedSecret(key)).toBeNull();
+      }
+      expect(read).not.toHaveBeenCalled();
+      expect(encryptedRead).not.toHaveBeenCalled();
+      expect(service.hasStoredSecret("llm.apiKey.openai")).toBe(true);
+      expect(service.hasStoredSecret("llm.apiKey.claude")).toBe(false);
+      expect(read).not.toHaveBeenCalled();
+      expect(encryptedRead).not.toHaveBeenCalled();
+      await service.patch({ llm: { provider: "openai" } });
+      service.getSecret("llm.apiKey.openai");
+      expect(read).toHaveBeenCalledOnce();
+    } finally {
+      read.mockRestore();
+      encryptedRead.mockRestore();
+    }
+  });
+
+  it("retries a failed retired credential deletion without blocking boot or logging the credential", async () => {
+    writePlainSecrets(secretsPath, { "llm.apiKey.copilot": "credential-marker" });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const deletion = vi.spyOn(service, "deleteSecret").mockRejectedValueOnce(new Error("credential-marker"));
+    try {
+      await expect(service.deleteRetiredLlmVendorApiKeys()).resolves.toBeUndefined();
+      const logContainsCredential = warn.mock.calls.some((call) => JSON.stringify(call).includes("credential-marker"));
+      expect(logContainsCredential).toBe(false);
+      await service.deleteRetiredLlmVendorApiKeys();
+      expect(service.getSecret("llm.apiKey.copilot")).toBeNull();
+      const afterDelete = statSync(secretsPath).mtimeMs;
+      await service.deleteRetiredLlmVendorApiKeys();
+      expect(statSync(secretsPath).mtimeMs).toBe(afterDelete);
+      expect(deletion).toHaveBeenCalledTimes(3);
+    } finally {
+      warn.mockRestore();
+      deletion.mockRestore();
+    }
+  });
+
+  it("deletes a retired vendor credential and preserves other keys", async () => {
+    writePlainSecrets(secretsPath, { "llm.apiKey.copilot": "gh-models-token", "llm.apiKey.openai": "sk-keep" });
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
+    expect(service.getSecret("llm.apiKey.copilot")).not.toBeNull();
+
+    await service.deleteRetiredLlmVendorApiKeys();
+
+    expect(service.getSecret("llm.apiKey.copilot")).toBeNull();
+    expect(service.getSecret("llm.apiKey.openai")).toBe("sk-keep");
+    expect(readFileSync(secretsPath, "utf-8")).not.toContain("gh-models-token");
   });
 });
 

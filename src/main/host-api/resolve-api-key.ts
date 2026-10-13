@@ -118,7 +118,7 @@ export interface ResolveApiKeyDeps {
  * Map public-contract vendor names to host internal vendor names. The contract has
  * `"openai" | "azure-openai" | "vertex" | "anthropic"`; the host's
  * `LLM_VENDORS` union is
- * `"openai" | "azure-foundry" | "vertex-ai" | "claude" | "gemini" | "copilot"`.
+ * `"openai" | "azure-foundry" | "vertex-ai" | "claude" | "gemini"`.
  *
  * Only the three aliases that *differ* between the two surfaces are
  * mapped; `"openai"` passes through unchanged. Adding a new public alias
@@ -226,7 +226,13 @@ export async function resolveApiKey(
   const llmSettings = deps.settingsService.get("llm") as {
     provider?: unknown;
     marketplaceProviderPresetId?: unknown;
+    retiredProvider?: unknown;
   };
+  // An unresolved profile has no active API vendor to choose for the plugin.
+  // Explicit plugin-owned provider choices keep their independent namespace.
+  if (llmSettings.retiredProvider && request.vendor === undefined) {
+    return { ok: false, reason: "no-host-vendor" };
+  }
   const defaultActiveProvider =
     typeof llmSettings.provider === "string" ? llmSettings.provider : "";
   // Map public vendor aliases before key lookup so the request reaches the

@@ -354,7 +354,6 @@ const TRUSTED_NETWORK_HOSTS: ReadonlySet<string> = new Set([
   "api.openai.com",
   "api.anthropic.com",
   "generativelanguage.googleapis.com",
-  "models.github.ai",
 ]);
 
 /**

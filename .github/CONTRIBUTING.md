@@ -42,13 +42,22 @@ standalone Node in place; that would replace the binary used by Electron.
 Direct `bunx vitest` and `bun test` invocations fail fast by design; use the
 canonical wrapper command above for both full and targeted tests.
 
-Use the smallest affected checks while iterating. For production code changes and
-documentation consumed by runtime, tests, build, or workflows, the pre-push
-hook is the sole local full gate: it runs `bun run typecheck`, the full
-`bun run test`, and `bun run build` once. Documentation prose with no such
+Use the smallest affected checks while iterating. The pre-push hook logs the
+tier it picked and why. A source change on a branch push takes the fast tier:
+typecheck, the duplicate-helper scan, the lock suites, the changed test files,
+and `vitest related` for the changed modules. Each source module must have
+related test files; empty discovery selects full checks and a zero-test run
+fails closed. The full `bun run test` and
+`bun run build` run once before merge on the exact main + PR merged tree, and
+CI runs full checks. The hook keeps the full gate for
+non-fast-forward pushes, deleted modules, documentation consumed by runtime,
+tests, build, or workflows, declaration files, generated catalogs, runtime
+entries, non-module assets, mode changes, and global inputs (`package.json`, `bun.lock`,
+compiler, Vitest and build configs, Vitest setup files, `scripts/`,
+`.github/`), including earlier commits in the push; `AVE_PREPUSH_FULL=1`
+forces it. Documentation prose with no such
 consumer skips those expensive gates after diff and policy checks. Eligible
-test-only pushes run typecheck and targeted Vitest in the hook; CI still runs
-full checks. Renames, deletes, and mixed changes run the full gate. Register
+test-only pushes run typecheck and targeted Vitest in the hook. Register
 documents read by native or non-Node processes, or through `openAsBlob`, in
 `scripts/hooks/documentation-references.json`; the read guard cannot see them.
 Every `main` push runs the full app suite in CI as a backstop. Do not duplicate
@@ -58,6 +67,15 @@ gate runs Playwright. The suite (`bun run test:ui-e2e`) is local and self-contai
 it seeds only fixture plugins from `test/fixtures` and reads nothing outside this
 repository. UI changes require the targeted local flow check above. Never
 bypass hooks with `--no-verify` or a hook-skip environment variable.
+
+For every update that pushes a commit, check out that exact commit before
+pushing and keep the tracked working tree and index clean. The hook checks
+this before and after validation, and refuses a different commit with
+checkout instructions. Push different commits separately. Deletion-only
+updates skip code checks because they push no commit tree.
+Annotated tag objects cannot equal `HEAD`; check out their commit and push
+a branch or lightweight tag instead. A complete checkout with no
+assume-unchanged or skip-worktree index flags is required for validation.
 
 ## Architecture
 

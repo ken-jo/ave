@@ -7,6 +7,8 @@ import { getLocale, setLocale, t } from "../../../i18n/runtime.js";
 
 describe("formatIpcError (SOT — #830)", () => {
   it.each([
+    ["ko", "invalid-send-request-id", "잘못된 입력입니다."],
+    ["en", "invalid-send-request-id", "Invalid input."],
     ["ko", "sub-agent-runner-unavailable", "지금은 서브에이전트를 사용할 수 없습니다."],
     ["en", "sub-agent-runner-unavailable", "Sub-agents are unavailable right now."],
     ["ko", "sub-agent-transcript-not-found", "서브에이전트 대화 기록을 찾을 수 없습니다."],
