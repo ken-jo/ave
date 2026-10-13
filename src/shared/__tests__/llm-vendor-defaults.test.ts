@@ -302,7 +302,7 @@ describe("LLM vendor defaults", () => {
     }
   });
 
-  it("ships no default or curated model the active catalog retires (design §6.1)", () => {
+  it("ships no default or curated model the active catalog deprecates (design §6.1)", () => {
     const retired = LLM_VENDORS.flatMap((vendor) =>
       [LLM_VENDOR_DEFAULTS[vendor].model, ...LLM_VENDOR_MODEL_OPTIONS[vendor]]
         .filter((model) => model && resolveModelRetirement({ vendor, model }) !== undefined)

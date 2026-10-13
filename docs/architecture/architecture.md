@@ -477,15 +477,17 @@ values live in `src/shared/model-host-policy.ts`: the 32,000 default output, the
 fallback, the credible-window ceiling, TPM defaults, and the request-shape table (the
 Claude 1M beta header and interleaved-thinking generations, adaptive vs numeric thinking,
 the Responses-vs-Chat wire choice).
-A model is retired when the active catalog marks it `deprecated` where the route
-establishes its identity, or when a public vendor's own complete `/models` listing on its
-native host no longer names it (`resolveModelRetirement`, `src/shared/context-budget.ts`;
-never for local, self-hosted, gateway, custom-`baseUrl` or Azure routes, and a failed or
-partial listing proves nothing). The host keeps no retired-name list. Retired models are
-not offered in any picker; a saved selection at one sets the `llm.retiredProvider` marker
-at settings load (`{ vendor, model, reason }` beside the removed-vendor string), which
+A model that is going away is in one of two tiers (`resolveModelRetirement`,
+`src/shared/context-budget.ts`). **Retired:** a public vendor's own complete `/models`
+listing on its native host no longer names it (never for local, self-hosted, gateway,
+custom-`baseUrl` or Azure routes; a failed or partial listing proves nothing). A saved
+selection at one sets the `llm.retiredProvider` marker at settings load
+(`{ vendor, model, reason: "unlisted" }` beside the removed-vendor string), which
 withholds API-key chat and credentials until the user picks — the same flow as a removed
-vendor. See [retired models](../design/model-capability-catalog.md#61-retired-models-slice-7-follow-up-owner-direction-2026-10-13).
+vendor. **Deprecated:** the active catalog marks it `deprecated` where the route
+establishes its identity; no marker, chat and credentials keep working, and the window
+shows a non-blocking notice. The listing outranks the catalog. Both tiers are hidden from
+every picker; the host keeps no retired-name list. See [retired models](../design/model-capability-catalog.md#61-retired-models-slice-7-follow-up-owner-direction-2026-10-13).
 Whether a route's model reasons and what it costs may also come from the route's
 own `/models` report (`resolveReasoningSupport`; `resolveModelPricing`'s
 `endpoint-report` source): the user's named entry, then the report, then the catalog. A
