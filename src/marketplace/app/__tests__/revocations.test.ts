@@ -40,15 +40,15 @@ describe("revocationFeed (design §10.4)", () => {
     const feed = await revocationFeed(
       [
         { kind: "plugin", name: "meeting", sourceId: "broken" },
-        { kind: "plugin", name: "orion", sourceId: "ave" },
+        { kind: "plugin", name: "sampleportal", sourceId: "ave" },
       ],
       async (sourceId) => {
         if (sourceId === "broken") throw new Error("snapshot abc.json of broken names other@abc");
-        return [revocation("plugin", "orion")];
+        return [revocation("plugin", "sampleportal")];
       },
     );
     expect(feed.unreadable).toEqual([{ sourceId: "broken", message: "snapshot abc.json of broken names other@abc" }]);
-    expect(feed.rules).toEqual([{ ...revocation("plugin", "orion"), sourceId: "ave" }]);
+    expect(feed.rules).toEqual([{ ...revocation("plugin", "sampleportal"), sourceId: "ave" }]);
   });
 
   it("reads nothing when no install is bound to a source", async () => {

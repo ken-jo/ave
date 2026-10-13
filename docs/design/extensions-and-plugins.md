@@ -32,7 +32,7 @@ The owner's direction splits today's single "plugin" concept in two:
 
 | | **Extension** | **Plugin** |
 |---|---|---|
-| What it is | Today's code plugin: `meeting`, `mail`, `local-indexer`, `assistant`, `hello-world`, the `templates/plugin` scaffold, `orion` (`portal`), `git` | A standard Agent Plugins 1.0.0 bundle: skills, MCP servers, prompts, agent profiles, routine templates and (one slice later) hooks, with no Ave runtime code |
+| What it is | Today's code plugin: `meeting`, `mail`, `local-indexer`, `assistant`, `hello-world`, the `templates/plugin` scaffold, `portal`, `git` | A standard Agent Plugins 1.0.0 bundle: skills, MCP servers, prompts, agent profiles, routine templates and (one slice later) hooks, with no Ave runtime code |
 | Structural marker | `extensions["ai.agent-connector.ave"].entry` (required today, `schemas/plugin-manifest.schema.json:122-125`, `:135-138`), or the `process` entry the amendment adds (amendment §2.1) | no `entry` and no `process` under `extensions["ai.agent-connector.ave"]` |
 | Runs | its own confined process speaking `ave/host/*` and MCP (protocol design §2, §3) | nothing of its own. Its MCP servers run as MCP servers do today; its hooks run as bundled hooks do; its other components are content the host reads |
 | Lifecycle gates | Lease and Admission (amendment §9.1) | the content install path and the per-component consent of §3 |
@@ -1330,7 +1330,7 @@ ships §7 slice B, every installed code package is an extension because its mani
 `entry`; the registry, the receipts, the data directories, the contribution trust
 records, the routine scopes and the alert kinds are untouched; the Sidebar group, the
 settings tabs and the kind tab show the new word. No migration file is written, because
-there is no state to migrate. The two external packages (`orion`, `git`) still carry the
+there is no state to migrate. The two external packages (the portal and repository plugins) still carry the
 retired `publisher` / `installPolicy` fields in their installed manifests and load
 through the existing strip-and-warn path (`src/plugins/runtime/manifest-validation.ts:98-119`),
 which this design preserves (§2.1 item 3).
@@ -1346,7 +1346,7 @@ repository's `templates/plugin` directory is renamed `templates/extension` at th
 republish wave (§6.4) because it is documentation for authors and the app never reads
 it (marketplace design §3.2: "the client never reads them"); the amendment validates
 and updates it in source at X (amendment §6.4, "Applicability"), and the rename rides
-that update. `orion` (`portal`, company git) and `git` (its own repository) change their
+that update. The portal plugin (company git) and the repository plugin (its own repository) change their
 README wording under this design; their republish with protocol 2 is the amendment's
 requirement, not this page's, and happens regardless.
 
@@ -1416,7 +1416,7 @@ runs its fast tier, `scripts/hooks/run-local-checks.mjs`), not as a separate rit
    routine template, with no MCP server and no hook, so the first thing a user installs
    from the new tab executes no code and creates no routine. Its `minAppVersion` is the
    release that ships slice C.
-3. `orion` and `git`: README wording only under this design, at the republish the
+3. the portal and repository plugins: README wording only under this design, at the republish the
    amendment already requires of them.
 
 **Order relative to releases.** Slice A now. Slice B merges to `main` after the v0.11.0

@@ -54,7 +54,7 @@ describe("feedRevocationsFromSnapshots", () => {
       version: 1,
       plugins: [
         { id: "meeting", manifestPath: "meeting/plugin.json", enabled: true, installSource: "user", origin: origin("acme") },
-        { id: "orion", manifestPath: "orion/plugin.json", enabled: true, installSource: "user", origin: origin("ave") },
+        { id: "sampleportal", manifestPath: "sampleportal/plugin.json", enabled: true, installSource: "user", origin: origin("ave") },
         { id: "sideloaded", manifestPath: "sideloaded/plugin.json", enabled: true, installSource: "user" },
       ],
     }));
@@ -74,28 +74,28 @@ describe("feedRevocationsFromSnapshots", () => {
 
   it("blocks an installed plugin only by the source it is bound to", async () => {
     const pluginRegistryPath = writePlugins();
-    writeSource("acme", [bad("meeting", "acme"), bad("orion", "acme"), bad("sideloaded", "acme")]);
+    writeSource("acme", [bad("meeting", "acme"), bad("sampleportal", "acme"), bad("sideloaded", "acme")]);
     writeSource("ave", []);
 
     await feedRevocationsFromSnapshots({ appVersion: "0.12.0", home, pluginRegistryPath, bootAuditLogger: audit as never });
 
     expect(revocationRegistry.evaluate("plugin", "meeting", "1.0.0")).toEqual({ kind: "block", sourceId: "acme", action: "disable", reason: "meeting revoked by acme" });
     expect(revocationRegistry.evaluate("plugin", "meeting", "2.0.0")).toEqual({ kind: "allow" });
-    // `orion` is bound to ave, and a sideloaded plugin to no source: acme cannot revoke either.
-    expect(revocationRegistry.evaluate("plugin", "orion", "1.0.0")).toEqual({ kind: "allow" });
+    // `sampleportal` is bound to ave, and a sideloaded plugin to no source: acme cannot revoke either.
+    expect(revocationRegistry.evaluate("plugin", "sampleportal", "1.0.0")).toEqual({ kind: "allow" });
     expect(revocationRegistry.evaluate("plugin", "sideloaded", "1.0.0")).toEqual({ kind: "allow" });
     expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ input: "revocations_loaded rules=1 unreadable=0" }));
   });
 
   it("feeds what it can read when a snapshot is unreadable, and never throws", async () => {
     const pluginRegistryPath = writePlugins();
-    writeSource("ave", [bad("orion", "ave")]);
+    writeSource("ave", [bad("sampleportal", "ave")]);
     mkdirSync(join(home, "marketplaces", "acme"), { recursive: true });
     writeFileSync(join(home, "marketplaces", "acme", "state.json"), "{ not json");
 
     await expect(feedRevocationsFromSnapshots({ appVersion: "0.12.0", home, pluginRegistryPath, bootAuditLogger: audit as never })).resolves.toBeUndefined();
 
-    expect(revocationRegistry.evaluate("plugin", "orion", "1.0.0")).toMatchObject({ kind: "block", sourceId: "ave" });
+    expect(revocationRegistry.evaluate("plugin", "sampleportal", "1.0.0")).toMatchObject({ kind: "block", sourceId: "ave" });
     expect(revocationRegistry.evaluate("plugin", "meeting", "1.0.0")).toEqual({ kind: "allow" });
     expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({ input: "revocations_loaded rules=1 unreadable=1" }));
   });

@@ -247,7 +247,7 @@ The official plugins are developed in this repository. Their source sits in
 directory has no `plugin.json` and declares no tree rung (§6.2): official
 plugins install from release assets only, which is also what a host-secret
 grant requires (§10.3). A plugin that is not official, such as the internal
-`orion` plugin, lives in its owner's repository and is listed by that owner's
+portal plugin, lives in its owner's repository and is listed by that owner's
 marketplace.
 
 ### 3.2 Custom marketplace
@@ -659,7 +659,7 @@ is retired with the server, after the first public release.
 
 - **Vendoring.** A plugin repository copies both files, unchanged, into
   `contract/` at an ave release tag. That may be the official monorepo or
-  any other repository, such as the one holding the internal `orion` plugin.
+  any other repository, such as the one holding the portal plugin.
   `contract/sources.json` records the repository, the tag and each file's
   sha256. Plugin code imports the copy as a workspace package,
   `@ave/plugin-contract`.
@@ -3165,7 +3165,7 @@ On first boot of the new version:
 - `installSource: "admin"` becomes `user`; the keys of those packages are
   written to `packages/default-installs.json` as already applied, so nothing
   is reinstalled or removed.
-- Entries that match no official package — today the internal `orion` plugin —
+- Entries that match no official package — today the portal plugin —
   keep running as "source unknown — no updates", receive no grants, and are
   no longer locked. They stay that way until the organization registers its
   internal marketplace (`additional`) and lists them in `requiredInstalls`;

@@ -9,7 +9,7 @@ function renderEditor() {
   const onSave = vi.fn();
   const { container } = render(
     <UserMessageEditor
-      initialText="ep 세션 유지 시간 확인할 수 있나?"
+      initialText="포털 세션 유지 시간 확인할 수 있나?"
       onCancel={onCancel}
       onSave={onSave}
       busy={false}

@@ -95,7 +95,7 @@ describe("grantEvidenceReader", () => {
     const reader = grantEvidenceReader({ paths, marketplacesRoot });
 
     await expect(reader.receiptArtifactSha256("meeting")).resolves.toBe(PIN);
-    await expect(reader.receiptArtifactSha256("orion")).resolves.toBeNull();
+    await expect(reader.receiptArtifactSha256("sampleportal")).resolves.toBeNull();
 
     // A payload that no longer matches its receipt proves nothing.
     writeFileSync(join(dir, "plugin.json"), "{\"tampered\":true}\n");

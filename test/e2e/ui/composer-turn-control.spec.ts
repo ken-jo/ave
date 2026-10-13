@@ -84,7 +84,7 @@ test('typing turns the quiet control solid', async ({ mainWindow }) => {
 
   const textarea = mainWindow.locator(MAIN + testIdSelector(TEST_IDS.composerTextarea));
   await textarea.click();
-  await textarea.fill('ep 세션 유지 시간 확인할 수 있나?');
+  await textarea.fill('포털 세션 유지 시간 확인할 수 있나?');
 
   const after = await send.evaluate((el) => ({
     background: getComputedStyle(el).backgroundColor,
@@ -153,7 +153,7 @@ test('message queue panel stays a full-bleed band and paints visible actions', a
 test('edit bubble is a single frame with a readable save button', async ({ mainWindow }) => {
   const textarea = mainWindow.locator(MAIN + '[data-testid="composer-textarea"]');
   await textarea.click();
-  await textarea.fill('ep 세션 유지 시간 확인할 수 있나?');
+  await textarea.fill('포털 세션 유지 시간 확인할 수 있나?');
   await mainWindow.locator(MAIN + '[data-testid="composer-send-button"]').click();
 
   const actions = mainWindow.locator('[data-testid="user-message-actions"]').first();

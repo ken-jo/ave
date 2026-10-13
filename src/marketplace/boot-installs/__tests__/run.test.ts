@@ -306,7 +306,7 @@ describe("bootInstallNoticeFrom (design §15.1)", () => {
     const notice = bootInstallNoticeFrom(
       { ...empty, installed: [key("meeting"), key("vpn", "corp"), key("tokyo-night", "ave", "theme")] },
       policy,
-      { unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }] },
+      { unmanaged: ["sampleportal"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }] },
       [],
     );
     expect(notice).toEqual({
@@ -315,7 +315,7 @@ describe("bootInstallNoticeFrom (design §15.1)", () => {
         { sourceId: "ave", kind: "theme", name: "tokyo-night" },
       ],
       required: [{ sourceId: "corp", kind: "plugin", name: "vpn" }],
-      unmanaged: ["orion"],
+      unmanaged: ["sampleportal"],
       lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }],
       revoked: [],
       autoUpdated: [],

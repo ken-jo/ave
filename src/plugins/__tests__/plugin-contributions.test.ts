@@ -35,12 +35,12 @@ describe("plugin contribution declarations", () => {
     const resolved = resolvePluginContributionDeclarations(manifest({
       skills: [{ id: "attendance", path: "skills/attendance" }],
       hooks: [{ id: "audit", path: "hooks/audit.json" }],
-      mcpServers: [{ id: "orion", path: "mcp/orion.json" }],
+      mcpServers: [{ id: "portal", path: "mcp/portal.json" }],
     }));
     expect(resolved.map(({ ownerPluginId, ownerVersion, kind, localId, path }) => ({ ownerPluginId, ownerVersion, kind, localId, path }))).toEqual([
       { ownerPluginId: "bundle-host-test", ownerVersion: "1.0.0", kind: "skill", localId: "attendance", path: "skills/attendance" },
       { ownerPluginId: "bundle-host-test", ownerVersion: "1.0.0", kind: "hook", localId: "audit", path: "hooks/audit.json" },
-      { ownerPluginId: "bundle-host-test", ownerVersion: "1.0.0", kind: "mcpServer", localId: "orion", path: "mcp/orion.json" },
+      { ownerPluginId: "bundle-host-test", ownerVersion: "1.0.0", kind: "mcpServer", localId: "portal", path: "mcp/portal.json" },
     ]);
     expect(Object.isFrozen(resolved)).toBe(true);
   });
@@ -83,7 +83,7 @@ describe("plugin contribution inventory", () => {
   const full = manifest({
     skills: [{ id: "attendance", path: "skills/attendance" }],
     hooks: [{ id: "audit", path: "hooks/audit.json" }],
-    mcpServers: [{ id: "orion", path: "mcp/orion.json" }],
+    mcpServers: [{ id: "portal", path: "mcp/portal.json" }],
   });
 
   it("requires the expected member kind and SKILL.md entry", () => {
@@ -91,13 +91,13 @@ describe("plugin contribution inventory", () => {
       { path: "skills/attendance/SKILL.md", kind: "file" },
       { path: "skills/attendance/references/policy.md", kind: "file" },
       { path: "hooks/audit.json", kind: "file" },
-      { path: "mcp/orion.json", kind: "file" },
+      { path: "mcp/portal.json", kind: "file" },
     ])).toHaveLength(3);
 
     expect(() => validatePluginContributionInventory(full, [
       { path: "skills/attendance/readme.md", kind: "file" },
       { path: "hooks/audit.json", kind: "file" },
-      { path: "mcp/orion.json", kind: "file" },
+      { path: "mcp/portal.json", kind: "file" },
     ])).toThrow(/skill_entry_missing/);
   });
 

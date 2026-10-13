@@ -47,7 +47,7 @@ describe("officialPluginsFrom", () => {
     expect(meeting.pins("0.4.0")).toEqual([]);
     expect(meeting.pins("0.3.0")).toEqual([]);
     expect(lookup("review")).toBeNull();
-    expect(lookup("orion")).toBeNull();
+    expect(lookup("sampleportal")).toBeNull();
   });
 });
 

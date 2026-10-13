@@ -251,20 +251,6 @@ const SEEDED_NOTE_BODY = [
  * reserved by RFC 2606 and can never resolve to anyone, and the names are role
  * labels rather than person names.
  */
-const ALERT_CONFLICT_SUMMARY = [
-  '새 일정이 기존 일정과 겹칩니다.',
-  '- 새 일정: 분기 데모 리허설 (14:00~15:00)',
-  '- 겹치는 일정 (1개):',
-  '  - 문서화 스프린트 점검 (14:30~15:30)',
-].join('\n');
-
-const ALERT_PREP_SUMMARY = [
-  '약 15분 후 일정이 시작됩니다.',
-  '- 제목: 분기 데모 리허설',
-  '- 주최자: 데모 진행자 (demo-host@example.invalid)',
-  '- 장소: 온라인',
-].join('\n');
-
 const ALERT_MEETING_SUMMARY = [
   '미팅이 방금 종료되었습니다.',
   '- 제목: 분기 데모 리허설',
@@ -691,134 +677,6 @@ export const scenarios: Record<string, ScenarioEntry> = {
   },
 
   // Host alert cards and their accepted prompts.
-  'alert-conflict': {
-    topic: 'alerts',
-    // Card plus chat, without the dead space the default viewport leaves.
-    captureViewport: { width: 1440, height: 820 },
-    uiLocale: 'ko',
-    steps: async ({ app, page }) => {
-      await openWorkMode(page);
-      await pushAlertOverlay(app, page, {
-        intent: 'calendar-conflict-prep',
-        summary: ALERT_CONFLICT_SUMMARY,
-        prompt: ALERT_CONFLICT_SUMMARY,
-      });
-    },
-  },
-  'alert-conflict-2': {
-    topic: 'alerts',
-    // Taller than its siblings: this reply carries both event detail blocks, and
-    // a shorter frame scrolls the imported-trigger bubble — the thing that shows
-    // the card's prompt became a chat turn — off the top.
-    captureViewport: { width: 1440, height: 980 },
-    uiLocale: 'ko',
-    reviewerMode: 'disabled',
-    scriptedScript: {
-      turns: [
-        {
-          expect: 'assistant',
-          parts: [
-            {
-              kind: 'text',
-              text: [
-                '겹치는 두 일정의 상세는 아래와 같습니다.',
-                '',
-                '1. 분기 데모 리허설',
-                '',
-                '- 시간: 2026-08-27 14:00 ~ 15:00',
-                '- 장소: 온라인',
-                '- 주최자: 데모 진행자 (demo-host@example.invalid)',
-                '- 상태: 참석자에 본인 포함',
-                '',
-                '2. 문서화 스프린트 점검',
-                '',
-                '- 시간: 2026-08-27 14:30 ~ 15:30',
-                '- 장소: 회의실 B',
-                '- 주최자: 문서 담당 (demo-docs@example.invalid)',
-                '- 상태: 수락, 정기 일정',
-                '',
-                '겹치는 구간은 30분입니다. 원하시면 다음 중 하나로 이어가겠습니다.',
-                '',
-                '1. 리허설을 30분 앞당겨 겹침을 없앨다',
-                '2. 점검을 다음 슬롯으로 미룬다',
-                '3. 이번엔 그대로 둔다',
-              ].join('\n'),
-            },
-          ],
-        },
-      ],
-    },
-    steps: async ({ app, page }) => {
-      await openWorkMode(page);
-      await pushAlertOverlay(app, page, {
-        intent: 'calendar-conflict-prep',
-        summary: ALERT_CONFLICT_SUMMARY,
-        prompt: ALERT_CONFLICT_SUMMARY,
-      });
-      // The published image for this key is the state AFTER the card's primary
-      // action: the staged prompt lands in chat as an imported trigger and the
-      // assistant answers it. Clicking the real button is what produces it.
-      await page.locator('[data-testid="overlay-card-primary-action"]').first().click();
-      await page.locator('[data-testid="assistant-message-body"]').last().waitFor({
-        state: 'visible',
-        timeout: 30_000,
-      });
-    },
-  },
-  'alert-reminder': {
-    topic: 'alerts',
-    // Card plus chat, without the dead space the default viewport leaves.
-    captureViewport: { width: 1440, height: 820 },
-    uiLocale: 'ko',
-    steps: async ({ app, page }) => {
-      await openWorkMode(page);
-      await pushAlertOverlay(app, page, {
-        intent: 'calendar-event-prep',
-        summary: ALERT_PREP_SUMMARY,
-        prompt: ALERT_PREP_SUMMARY,
-      });
-    },
-  },
-  'alert-reminder-2': {
-    topic: 'alerts',
-    // Card plus chat, without the dead space the default viewport leaves.
-    captureViewport: { width: 1440, height: 820 },
-    uiLocale: 'ko',
-    reviewerMode: 'disabled',
-    scriptedScript: {
-      turns: [
-        {
-          expect: 'assistant',
-          parts: [
-            {
-              kind: 'text',
-              text: [
-                '시작 전 준비할 것을 정리했습니다.',
-                '',
-                '- 지난 회차에서 넘어온 항목 2건이 아직 열려 있습니다.',
-                '- 데모 시나리오 문서는 어제 저녁 이후 변경이 없습니다.',
-                '',
-                '지금 열어드릴까요, 아니면 요약만 먼저 보시겠어요?',
-              ].join('\n'),
-            },
-          ],
-        },
-      ],
-    },
-    steps: async ({ app, page }) => {
-      await openWorkMode(page);
-      await pushAlertOverlay(app, page, {
-        intent: 'calendar-event-prep',
-        summary: ALERT_PREP_SUMMARY,
-        prompt: ALERT_PREP_SUMMARY,
-      });
-      await page.locator('[data-testid="overlay-card-primary-action"]').first().click();
-      await page.locator('[data-testid="assistant-message-body"]').last().waitFor({
-        state: 'visible',
-        timeout: 30_000,
-      });
-    },
-  },
   'alert-meeting-end-trigger': {
     topic: 'alerts',
     // Card plus chat, without the dead space the default viewport leaves.
@@ -896,7 +754,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
 };
 
 /**
- * ah-* / ep-* keys (agent-hub SERVER dashboards, internal portal) are
+ * ah-* keys (agent-hub SERVER dashboards) are
  * WEB/server screens per the task's explicit scope — they render in a browser against a separate Next.js app, not the Electron
  * host. Deliberately absent from `scenarios` (not even as skip entries) so
  * the matrix only enumerates keys this harness could ever plausibly own.
@@ -904,10 +762,6 @@ export const scenarios: Record<string, ScenarioEntry> = {
  */
 export const WEB_SERVER_KEYS_OUT_OF_SCOPE = [
   'ah-dashboard', 'ah-workboard', 'ah-worklog', 'ah-inbox', 'ah-report', 'ah-subscription',
-  'orion-login', 'orion-attendance', 'orion-attendance-2', 'orion-attendance-3', 'orion-approval', 'orion-parking',
-  'orion-meeting-room', 'orion-meeting-room-2', 'orion-meeting-room-3', 'orion-meeting-room-4', 'orion-meeting-room-5',
-  'orion-video-call', 'orion-video-call-2', 'orion-video-call-3', 'orion-video-call-4',
-  'orion-portal', 'orion-portal-2',
 ] as const;
 
 /**

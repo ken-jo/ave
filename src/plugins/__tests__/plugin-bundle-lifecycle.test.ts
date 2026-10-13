@@ -72,7 +72,7 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
     tools: [],
     skills: [{ id: "attendance", path: "skills/attendance" }],
     hooks: [{ id: "policy", path: "hooks/policy.json" }],
-    mcpServers: [{ id: "orion", path: "mcp/orion.json" }],
+    mcpServers: [{ id: "portal", path: "mcp/portal.json" }],
   } as unknown as PluginManifest;
   if (withContent) {
     manifest.prompts = [
@@ -92,13 +92,13 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
   await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
   await writeFile(join(pluginRoot, "skills", "attendance", "SKILL.md"), "---\nname: attendance\ndescription: Attendance workflow\n---\nUse the portal attendance API.", "utf8");
   await writeFile(join(pluginRoot, "hooks", "policy.json"), hookContent, "utf8");
-  await writeFile(join(pluginRoot, "mcp", "orion.json"), JSON.stringify({ transport: "http", url: "https://orion.example.test/mcp" }), "utf8");
+  await writeFile(join(pluginRoot, "mcp", "portal.json"), JSON.stringify({ transport: "http", url: "https://portal.example.test/mcp" }), "utf8");
   await mkdir(join(cacheRoot, "sampleportal"), { recursive: true });
   const payloadFiles = [
     "plugin.json",
     "skills/attendance/SKILL.md",
     "hooks/policy.json",
-    "mcp/orion.json",
+    "mcp/portal.json",
   ];
   if (withContent) payloadFiles.push("prompts/draft.md", "prompts/review.md", "routines/templates.json");
   const files = await hashReceiptFiles(pluginRoot, payloadFiles);
@@ -312,7 +312,7 @@ describe("PluginBundleLifecycle", () => {
 
     await lifecycle.approveHook("sampleportal", "policy", reviewed(lifecycle, "hook", "policy"));
     expect(hookManager.size()).toBe(0); // descriptor intentionally contains no runnable entries
-    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await lifecycle.approveMcpServer("sampleportal", "portal", reviewed(lifecycle, "mcpServer", "portal"));
     expect(prepareBundledGeneration).toHaveBeenCalledTimes(3);
     expect(publishBundledGeneration).toHaveBeenCalledTimes(3);
 
@@ -941,9 +941,9 @@ describe("PluginBundleLifecycle", () => {
     });
 
     await lifecycle.activate("sampleportal");
-    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await lifecycle.approveMcpServer("sampleportal", "portal", reviewed(lifecycle, "mcpServer", "portal"));
     expect(lifecycle.listContributionTrust("sampleportal")).toContainEqual(
-      expect.objectContaining({ kind: "mcpServer", localId: "orion", status: "approved" }),
+      expect.objectContaining({ kind: "mcpServer", localId: "portal", status: "approved" }),
     );
 
     const receiptPath = join(cacheRoot, "sampleportal", "install-receipt.json");
@@ -954,7 +954,7 @@ describe("PluginBundleLifecycle", () => {
 
     await lifecycle.activate("sampleportal");
     expect(lifecycle.listContributionTrust("sampleportal")).toContainEqual(
-      expect.objectContaining({ kind: "mcpServer", localId: "orion", status: "approved" }),
+      expect.objectContaining({ kind: "mcpServer", localId: "portal", status: "approved" }),
     );
     expect(prepareBundledGeneration).toHaveBeenCalledTimes(3);
     expect(publishBundledGeneration).toHaveBeenCalledTimes(3);
@@ -1002,11 +1002,11 @@ describe("PluginBundleLifecycle", () => {
     await lifecycle.waitForRetirements();
     retirePublishedMcpReplacement.mockRejectedValue(new Error("retirement endpoint token=secret"));
 
-    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await lifecycle.approveMcpServer("sampleportal", "portal", reviewed(lifecycle, "mcpServer", "portal"));
     await lifecycle.waitForRetirements();
 
     const trust = lifecycle.listContributionTrust("sampleportal")
-      .find((row) => row.kind === "mcpServer" && row.localId === "orion");
+      .find((row) => row.kind === "mcpServer" && row.localId === "portal");
     expect(trust?.status).toBe("approved");
     expect(publishBundledGeneration).toHaveBeenCalledTimes(2);
     expect(discardBundledGeneration).not.toHaveBeenCalled();
@@ -1053,14 +1053,14 @@ describe("PluginBundleLifecycle", () => {
     });
 
     await lifecycle.activate("sampleportal");
-    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await lifecycle.approveMcpServer("sampleportal", "portal", reviewed(lifecycle, "mcpServer", "portal"));
     prepareBundledGeneration.mockRejectedValueOnce(new Error("candidate preparation failed"));
 
-    await expect(lifecycle.revokeMcpServer("sampleportal", "orion")).rejects.toThrow(
+    await expect(lifecycle.revokeMcpServer("sampleportal", "portal")).rejects.toThrow(
       "candidate preparation failed",
     );
     expect(lifecycle.listContributionTrust("sampleportal")).toContainEqual(
-      expect.objectContaining({ kind: "mcpServer", localId: "orion", status: "approved" }),
+      expect.objectContaining({ kind: "mcpServer", localId: "portal", status: "approved" }),
     );
     expect(publishBundledGeneration).toHaveBeenCalledTimes(2);
   });
@@ -1360,7 +1360,7 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
       receipt.files = await hashReceiptFiles(base.pluginRoot, receipt.files.map((file: { path: string }) => file.path));
       await writeFile(receiptPath, JSON.stringify(receipt), "utf8");
     };
-    const row = (localId = "orion") => lifecycle.listContributionTrust("sampleportal").find((item) => item.kind === "mcpServer" && item.localId === localId)!;
+    const row = (localId = "portal") => lifecycle.listContributionTrust("sampleportal").find((item) => item.kind === "mcpServer" && item.localId === localId)!;
     /** The trust-store view of a row's exact identity. */
     const owned = (item: ReturnType<typeof row>) => ({ owner: {
       pluginId: item.pluginId, pluginVersion: item.pluginVersion, generationId: item.generationId, localId: item.localId, fingerprint: item.fingerprint,
@@ -1371,7 +1371,7 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
   it("carries an approval to a new version whose server and package bytes are unchanged, naming its source", async () => {
     const { lifecycle, release, row, owned } = await updatable();
     await lifecycle.activate("sampleportal");
-    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await lifecycle.approveMcpServer("sampleportal", "portal", reviewed(lifecycle, "mcpServer", "portal"));
     const approved = row();
     expect(approved.approvalDigest).toMatch(/^[a-f0-9]{64}$/u);
 
@@ -1388,8 +1388,8 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
   it("does not carry an approval to a server whose declaration changed", async () => {
     const { lifecycle, release, row } = await updatable();
     await lifecycle.activate("sampleportal");
-    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
-    await release("1.1.0", { "mcp/orion.json": JSON.stringify({ transport: "http", url: "https://elsewhere.example.test/mcp" }) });
+    await lifecycle.approveMcpServer("sampleportal", "portal", reviewed(lifecycle, "mcpServer", "portal"));
+    await release("1.1.0", { "mcp/portal.json": JSON.stringify({ transport: "http", url: "https://elsewhere.example.test/mcp" }) });
     await lifecycle.activate("sampleportal");
     expect(row()).toMatchObject({ pluginVersion: "1.1.0", status: "approval_required" });
     await lifecycle.waitForRetirements();
@@ -1399,7 +1399,7 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
     const loopbackManager = inertLoopbackManager();
     const { lifecycle, release, row, owned, cacheRoot } = await updatable({ loopbackManager });
     await lifecycle.activate("sampleportal");
-    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await lifecycle.approveMcpServer("sampleportal", "portal", reviewed(lifecycle, "mcpServer", "portal"));
     const source = row();
     await release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nChanged." });
     // The user revokes the approval while the update is being prepared.
@@ -1422,7 +1422,7 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
     const loopbackManager = inertLoopbackManager();
     const { lifecycle, release, row, cacheRoot } = await updatable({ loopbackManager });
     await lifecycle.activate("sampleportal");
-    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await lifecycle.approveMcpServer("sampleportal", "portal", reviewed(lifecycle, "mcpServer", "portal"));
     await release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nChanged." });
     loopbackManager.prepareGeneration.mockRejectedValueOnce(new Error("tool registry refused the candidate"));
     const approvedBefore = JSON.stringify(lifecycle.listContributionTrust("sampleportal"));
@@ -1466,13 +1466,13 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
   it("refuses an approval whose review names a generation or digest that is no longer installed", async () => {
     const { lifecycle, release, row } = await updatable();
     await lifecycle.activate("sampleportal");
-    const stale = reviewed(lifecycle, "mcpServer", "orion");
-    await release("1.1.0", { "mcp/orion.json": JSON.stringify({ transport: "http", url: "https://elsewhere.example.test/mcp" }) });
+    const stale = reviewed(lifecycle, "mcpServer", "portal");
+    await release("1.1.0", { "mcp/portal.json": JSON.stringify({ transport: "http", url: "https://elsewhere.example.test/mcp" }) });
     await lifecycle.activate("sampleportal");
-    await expect(lifecycle.approveMcpServer("sampleportal", "orion", stale)).rejects.toBeInstanceOf(ContributionTrustReviewStaleError);
-    await expect(lifecycle.approveMcpServer("sampleportal", "orion", { ...reviewed(lifecycle, "mcpServer", "orion"), approvalDigest: "0".repeat(64) }))
+    await expect(lifecycle.approveMcpServer("sampleportal", "portal", stale)).rejects.toBeInstanceOf(ContributionTrustReviewStaleError);
+    await expect(lifecycle.approveMcpServer("sampleportal", "portal", { ...reviewed(lifecycle, "mcpServer", "portal"), approvalDigest: "0".repeat(64) }))
       .rejects.toBeInstanceOf(ContributionTrustReviewStaleError);
-    await expect(lifecycle.approveMcpServer("sampleportal", "orion", undefined as never)).rejects.toThrow(/requires the reviewed generation/u);
+    await expect(lifecycle.approveMcpServer("sampleportal", "portal", undefined as never)).rejects.toThrow(/requires the reviewed generation/u);
     expect(row().status).toBe("approval_required");
     await lifecycle.waitForRetirements();
   });

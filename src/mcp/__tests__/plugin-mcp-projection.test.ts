@@ -48,13 +48,13 @@ function generation(version = "1.0.0", generationId = "g1", fingerprint = "a".re
       ownerPluginId: "sampleportal",
       ownerVersion: version,
       kind: "mcpServer",
-      localId: "orion",
-      path: "mcp/orion.json",
+      localId: "portal",
+      path: "mcp/portal.json",
       fingerprint,
       files: [{
-        path: "mcp/orion.json",
+        path: "mcp/portal.json",
         sha256: fingerprint,
-        content: JSON.stringify({ transport: "http", url: "https://orion.example.test/mcp" }),
+        content: JSON.stringify({ transport: "http", url: "https://portal.example.test/mcp" }),
       }],
     }],
   };

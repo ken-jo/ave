@@ -266,7 +266,7 @@ screenshot exists to show.
 Captured by the harness from seeded data, amplification-checked, and recorded in
 the manifest as `seeded` under the `host-capture-seed` account. Re-capture one
 with `node scripts/capture-screenshots.mjs --skip-build --grep <key>`; the six
-`chat-*` and six `alert-*` rows need nothing else;
+`chat-*` and two `alert-*` rows need nothing else;
 `plugin-permission-grant` needs one more thing, noted under the table. The two
 approval-dock crops differ between runs by one row — the tool-call id — and are
 otherwise byte-identical.
@@ -298,7 +298,7 @@ otherwise byte-identical.
 more than this repository: their panels come from sibling plugin repos, whose
 `dist/` is not committed, so that clone has to be present and built (`bun install
 && bun run build`) before the harness can seed it. Without it the harness reports
-the bundle missing and the key captures nothing. The six `chat-*` and six
+the bundle missing and the key captures nothing. The six `chat-*` and two
 `alert-*` rows need no sibling clone.
 
 The four `meeting-*` captures also run at a 1120px viewport rather than the
@@ -313,7 +313,7 @@ last 46px — the right edge of every card and control — falls off the element
 artefact**, and is worth an issue in the plugin repo independently of
 screenshots.
 
-Every string in the six `alert-*` captures is invented in `matrix.ts`
+Every string in the two `alert-*` captures is invented in `matrix.ts`
 rather than read from anything on the capturing machine, and every address in
 them is at `example.invalid` — reserved by RFC 2606, so it cannot resolve to a
 real mailbox. Rule 7 of the guard enforces that mechanically; see below.

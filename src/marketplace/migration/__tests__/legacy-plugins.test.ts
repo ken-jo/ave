@@ -114,17 +114,17 @@ describe("migrateLegacyPlugins", () => {
   it("turns a former admin install into a user install recorded as an applied default, and names every entry no source lists", async () => {
     registry([
       { id: "calendar", manifestPath: await plugin("calendar", "1.0.0", OTHER), installSource: "admin" },
-      { id: "orion", manifestPath: await plugin("orion", "2.0.0", OTHER), installSource: "admin" },
+      { id: "sampleportal", manifestPath: await plugin("sampleportal", "2.0.0", OTHER), installSource: "admin" },
       { id: "notes", manifestPath: await plugin("notes", "1.0.0", OTHER), installSource: "user" },
     ]);
 
     const report = await run();
 
-    expect(report).toEqual({ bound: ["calendar"], unmanaged: ["orion", "notes"], lostGrants: [], failed: [] });
+    expect(report).toEqual({ bound: ["calendar"], unmanaged: ["sampleportal", "notes"], lostGrants: [], failed: [] });
     const entries = new Map(readRegistry().plugins.map((entry) => [entry.id, entry]));
     expect(entries.get("calendar")).toMatchObject({ installSource: "user", origin: { sourceId: "ave", rung: "legacy" } });
-    expect(entries.get("orion")).toMatchObject({ installSource: "user" });
-    expect(entries.get("orion")!.origin).toBeUndefined();
+    expect(entries.get("sampleportal")).toMatchObject({ installSource: "user" });
+    expect(entries.get("sampleportal")!.origin).toBeUndefined();
     // A user install no source lists is named too (it gets no updates now), and left as it was.
     expect(entries.get("notes")).toEqual({ id: "notes", manifestPath: "notes/plugin.json", installSource: "user" });
     expect(applied.list()).toEqual([{ kind: "plugin", name: "calendar", source: "ave", result: "migrated", at: AT.toISOString() }]);

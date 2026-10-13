@@ -545,7 +545,7 @@ describe("MarketplaceService", () => {
     service.close();
     await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
     const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
-    legacyReport = { bound: ["meeting"], unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }], failed: [] };
+    legacyReport = { bound: ["meeting"], unmanaged: ["sampleportal"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }], failed: [] };
 
     const before = await service.applyBootInstalls([], applied);
     expect(legacyRuns).toEqual([]);
@@ -556,7 +556,7 @@ describe("MarketplaceService", () => {
     expect(legacyRuns).toHaveLength(1);
     // The lookup reads the official snapshot: this fixture lists skills, not plugins.
     expect(legacyRuns[0]!("review")).toBeNull();
-    expect(first.notice).toEqual({ forYou: [], required: [], unmanaged: ["orion"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }], revoked: [] , autoUpdated: [] });
+    expect(first.notice).toEqual({ forYou: [], required: [], unmanaged: ["sampleportal"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }], revoked: [] , autoUpdated: [] });
 
     const second = await service.applyBootInstalls([], applied);
     expect(legacyRuns).toHaveLength(1);

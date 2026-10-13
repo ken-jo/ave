@@ -827,7 +827,7 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
     const migrated = {
       forYou: [{ sourceId: "ave", kind: "theme" as const, name: "nord" }],
       required: [],
-      unmanaged: ["orion"],
+      unmanaged: ["sampleportal"],
       lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai", "llm.apiKey.claude"] }],
       revoked: [
         { key: { sourceId: "acme", kind: "mcp" as const, name: "scraper" }, version: "1.2.0", reason: "exfiltrates cookies", outcome: "uninstalled" as const },
@@ -839,7 +839,7 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
     renderTab(fake);
 
     const banner = await screen.findByTestId("git-marketplace:boot-notice");
-    expect(within(banner).getByTestId("git-marketplace:boot-notice:unmanaged")).toHaveTextContent("ep은(는) 더 이상 Ave가 관리하지 않습니다");
+    expect(within(banner).getByTestId("git-marketplace:boot-notice:unmanaged")).toHaveTextContent("sampleportal은(는) 더 이상 Ave가 관리하지 않습니다");
     expect(within(banner).getByTestId("git-marketplace:boot-notice:lost-grants")).toHaveTextContent("meeting은(는) 업데이트하기 전까지 llm.apiKey.openai, llm.apiKey.claude");
     const revoked = within(banner).getByTestId("git-marketplace:boot-notice:revoked");
     expect(revoked).toHaveTextContent("acme이(가) scraper 1.2.0을(를) 철회해 제거했습니다: exfiltrates cookies");

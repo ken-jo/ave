@@ -53,7 +53,7 @@ describe("revocationRegistry", () => {
 
   it("allows before the first feed and reports that once", () => {
     expect(revocationRegistry.evaluate("plugin", "meeting", "1.1.0")).toEqual({ kind: "allow" });
-    revocationRegistry.evaluate("plugin", "orion", "2.0.0");
+    revocationRegistry.evaluate("plugin", "sampleportal", "2.0.0");
     expect(logs.error).toHaveBeenCalledTimes(1);
     expect(logs.error.mock.calls[0]![0]).toContain("revocation_unconfigured");
 

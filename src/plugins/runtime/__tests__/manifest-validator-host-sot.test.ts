@@ -138,7 +138,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
       tools: [],
       skills: [{ id: "attendance", path: "skills/attendance" }],
       hooks: [{ id: "audit", path: "hooks/audit.json" }],
-      mcpServers: [{ id: "orion", path: "mcp/orion.json" }],
+      mcpServers: [{ id: "portal", path: "mcp/portal.json" }],
     })),
     ).toBe(true);
   });

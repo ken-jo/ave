@@ -48,7 +48,7 @@ describe("HostApiGenerationScope", () => {
       config: { get: vi.fn(), set, onChange: vi.fn() },
     } as never);
 
-    api.emitEvent("orion.ready", { ok: true });
+    api.emitEvent("sampleportal.ready", { ok: true });
     expect(emitEvent).not.toHaveBeenCalled();
     expect(() => api.config.set("mode", "remote")).toThrow(/replacement generation is preparing/);
     expect(set).not.toHaveBeenCalled();
@@ -57,7 +57,7 @@ describe("HostApiGenerationScope", () => {
     scope.publish();
     expect(emitEvent).not.toHaveBeenCalled();
     expect(scope.postPublish()).toEqual([]);
-    expect(emitEvent).toHaveBeenCalledWith("orion.ready", { ok: true });
+    expect(emitEvent).toHaveBeenCalledWith("sampleportal.ready", { ok: true });
   });
 
   it("admits callbacks only for the exact active generation and disposes exact resources", async () => {

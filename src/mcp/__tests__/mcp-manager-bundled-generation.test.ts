@@ -63,13 +63,13 @@ function generation(generationId: string): ActivePluginGeneration {
       ownerPluginId: "sampleportal",
       ownerVersion: "1.0.0",
       kind: "mcpServer",
-      localId: "orion",
-      path: "mcp/orion.json",
+      localId: "portal",
+      path: "mcp/portal.json",
       fingerprint: "a".repeat(64),
       files: [{
-        path: "mcp/orion.json",
+        path: "mcp/portal.json",
         sha256: "a".repeat(64),
-        content: JSON.stringify({ transport: "http", url: "https://orion.example.test/mcp" }),
+        content: JSON.stringify({ transport: "http", url: "https://portal.example.test/mcp" }),
       }],
     }],
   };
