@@ -1,4 +1,7 @@
-# Ave Docs — Design System
+# Ave Web — Design System
+
+> **Current: v4 (Ave renewal, end of file).** Sections 1–v3.1 are kept as history;
+> where they conflict with v4, v4 wins.
 
 > The visual language for **docs.former-site.invalid**, derived from the Ave Marketplace
 > (`marketplace.former-site.invalid`) as the structural foundation and refined with premium
@@ -364,3 +367,33 @@ Timing: entrances `450–650ms`, hovers `150–200ms`, ambient loops `6–26s`. 
   reduced-motion, and no-JS get the stacked list (SSR default).
 - **Downloads = OS tabs.** Segmented control auto-selected by platform detection;
   one platform at a time with a CTA card + full-width vertical setup steps.
+
+---
+
+# v4 — Ave renewal (supersedes v3.1 where they conflict)
+
+The product is now **Ave** (formerly Ave). The domain stays `former-site.invalid` until it moves.
+
+- **Framed column.** Landing content sits in one railed column (`.frame-rails`, hairline
+  left/right borders from `md` up, max 1120px); sections are full-width bands split by a
+  single hairline (`Band` in `components/landing/section.tsx`). Phones drop the rails.
+- **Type scale.** Display headings use weight 500 with tight tracking (hero
+  `clamp(2.25rem,7vw,3.75rem)`, section `clamp(1.75rem,4.2vw,2.5rem)`); body 15–16.5px.
+  Hierarchy comes from size and the ink/muted split, not weight.
+- **Eyebrow + heading.** Each section opens with a small fern (`#1d6b58`, 6.4:1 on
+  white) label above the heading. Fern is the only accent color used for text.
+- **Two-tone copy.** Captions lead with a bold ink phrase and continue in muted text
+  (`LeadIn`).
+- **Atmospheric tiles.** Illustrations sit on soft washes (`.wash-dawn/-mist/-sand/-fern`).
+  Illustrations are original inline SVG (`components/landing/illustrations.tsx`):
+  abstract signals → one proposal → approval. No app screenshots or UI captures.
+- **One CTA shape.** Primary actions are ink pills (`rounded-full`, 44px tall on the
+  page, 36px in the header); secondary actions are white pills with a hairline.
+- **Header.** Ave mark + wordmark, nav centered from `lg` (작동 방식 · 신뢰 · 다운로드 ·
+  문서), ink download pill on the right.
+- **Reinstall notice.** The Ave → Ave fresh-install rule has one source
+  (`lib/reinstall.ts`), shown on the landing download section (`#reinstall`) and as a
+  warn callout on the install and update docs.
+- **Accessibility.** Global `:focus-visible` outline; every text/background pair ≥ 4.5:1;
+  no horizontal scroll at 360px (long inline code wraps, grid tracks use `minmax(0,1fr)`).
+  The site is light-only; there is no dark theme.

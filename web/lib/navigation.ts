@@ -8,7 +8,7 @@ export const navigation: NavGroup[] = [
     title: "시작하기",
     eyebrow: "Getting Started",
     items: [
-      { title: "Ave AI 개요", href: "/docs/" },
+      { title: "Ave 개요", href: "/docs/" },
       { title: "설치 & 첫 실행", href: "/docs/getting-started/install" },
       { title: "로그인 & 첫 화면", href: "/docs/getting-started/login" },
       { title: "앱 업데이트", href: "/docs/getting-started/updates" },

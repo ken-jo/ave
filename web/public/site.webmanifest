@@ -1,9 +1,9 @@
 {
-  "name": "Ave AI",
-  "short_name": "Ave AI",
+  "name": "Ave",
+  "short_name": "Ave",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#fafafb",
-  "theme_color": "#fafafb",
-  "icons": [{ "src": "/favicon.svg", "sizes": "64x64", "type": "image/svg+xml" }]
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
 }

@@ -1,4 +1,5 @@
 import { PageHero } from "@/components/docs/page-hero";
+import { ReinstallCallout } from "@/components/docs/reinstall-callout";
 import { Callout } from "@/components/docs/callout";
 import { PageNav } from "@/components/docs/page-nav";
 
@@ -13,6 +14,8 @@ export default function Page() {
         description="Ave는 백그라운드에서 새 버전이 있는지 주기적으로 살펴봅니다. 사용자 동의 없이 다운로드되거나 강제로 설치되지 않습니다."
         tags={["자동 다운로드 X", "재시작은 사용자가", "롤백 가능"]}
       />
+
+      <ReinstallCallout locale="ko" />
 
       <h2 id="how">업데이트가 적용되는 방식</h2>
       <ul>

@@ -10,7 +10,7 @@ export interface SearchEntry {
 
 export const searchIndex: SearchEntry[] = [
   // Getting Started
-  { group: "시작하기", href: "/docs/", title: "Ave AI 개요", snippet: "데스크톱 호스트 · 익스텐션 런타임 · 스토리지 · 서버 4 레이어", keywords: ["overview", "intro"] },
+  { group: "시작하기", href: "/docs/", title: "Ave 개요", snippet: "데스크톱 호스트 · 익스텐션 런타임 · 스토리지 · 서버 4 레이어", keywords: ["overview", "intro"] },
   { group: "시작하기", href: "/docs/getting-started/install", title: "설치 & 첫 실행", snippet: "macOS arm64 / Windows / Linux AppImage · electron-updater · ave:// 등록" },
   { group: "시작하기", href: "/docs/getting-started/login", title: "로그인 & 첫 화면", snippet: "Ave 계정 없음 · 익스텐션별 OAuth · 비공개 마켓플레이스 토큰", keywords: ["sso", "auth", "oauth", "token"] },
   { group: "시작하기", href: "/docs/getting-started/updates", title: "앱 업데이트", snippet: "electron-updater · autoDownload=false · 4h interval · channel=latest" },

@@ -48,6 +48,9 @@ const config: Config = {
         ink: { DEFAULT: "#14161d", soft: "#3a3d47" },
         // ── Ambient accent: the single soft periwinkle glow. Never text. ──
         glow: { DEFAULT: "#b7bfd9", soft: "#c3ccdf" },
+        // ── Ave accent: deep fern for eyebrows and small links (6.4:1 on white,
+        //    AA for body text); `wash` is the matching tint for tiles. ──
+        fern: { DEFAULT: "#1d6b58", wash: "#e8f2ee" },
         // ── Legacy brand aliases — remapped to neutral so existing classes across the
         //    41 routes keep working but resolve to the monochrome system. Prefer
         //    ink / secondary / muted-foreground / glow in new code. See DESIGN.md §3.3.

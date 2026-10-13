@@ -14,7 +14,7 @@ export function StepList({ steps, className }: { steps: Step[]; className?: stri
       {steps.map((step, idx) => (
         <li
           key={idx}
-          className="grid grid-cols-[44px_1fr] gap-4 rounded-xl border border-border bg-white p-4 transition hover:-translate-y-0.5 hover:shadow-sm"
+          className="grid grid-cols-[44px_minmax(0,1fr)] gap-4 rounded-xl border border-border bg-white p-4 transition hover:-translate-y-0.5 hover:shadow-sm"
         >
           <span className="grid h-10 w-10 place-items-center rounded-full bg-secondary text-[13px] font-bold text-ink-soft">
             {String(idx + 1).padStart(2, "0")}

@@ -1,4 +1,5 @@
 import { PageHero } from "@/components/docs/page-hero";
+import { ReinstallCallout } from "@/components/docs/reinstall-callout";
 import { StepList } from "@/components/docs/step-list";
 import { Callout } from "@/components/docs/callout";
 import { FeatureGrid } from "@/components/docs/feature-grid";
@@ -13,9 +14,11 @@ export default function Page() {
       <PageHero
         eyebrow="Getting Started"
         title="Install & First Launch"
-        description="The Ave AI host app ships as an Electron desktop build, packaged per OS. This covers install → first launch → right up to the first extension install."
+        description="The Ave host app ships as an Electron desktop build, packaged per OS. This covers install → first launch → right up to the first extension install."
         tags={["macOS arm64", "Windows x64", "Linux AppImage", "electron-updater"]}
       />
+
+      <ReinstallCallout locale="en" />
 
       <FeatureGrid
         items={[
@@ -31,7 +34,7 @@ export default function Page() {
           { title: "Download the build for your OS", body: <p>Get macOS arm64 / Windows x64 / Linux AppImage from <a href="https://former-site.invalid/en#download">former-site.invalid/#download</a>.</p>, badge: "5 min" },
           { title: "Grant execute permission & double-click", body: <>
             <p>macOS: if a first-run security warning appears, go to <strong>System Settings → Privacy & Security</strong> and choose "Open Anyway."</p>
-            <p>Linux: run <code>chmod +x ave-ai-*.AppImage</code>, then double-click or run it from a terminal.</p>
+            <p>Linux: run <code>chmod +x Ave-*-linux-x86_64.AppImage</code>, then double-click or run it from a terminal.</p>
           </> },
           { title: "Splash screen → main host (App.tsx)", body: <p>Once the Ave splash screen disappears, the main host opens with an empty chat body (<code>src/ui/renderer/App.tsx</code>). At this point no extensions are registered yet.</p> },
           { title: "Deeplink registration", body: <p>The OS maps the <code>ave://</code> protocol handler to the host app (<code>src/main/ave-protocol.ts</code>). After this, an <code>ave://install/…</code> link opens the host&apos;s Marketplace screen.</p>, badge: "ave://" },

@@ -1,4 +1,5 @@
 import { PageHero } from "@/components/docs/page-hero";
+import { ReinstallCallout } from "@/components/docs/reinstall-callout";
 import { Callout } from "@/components/docs/callout";
 import { PageNav } from "@/components/docs/page-nav";
 
@@ -13,6 +14,8 @@ export default function Page() {
         description="Ave periodically checks in the background for new versions. Nothing is downloaded or force-installed without your consent."
         tags={["No auto-download", "You choose to restart", "Rollback available"]}
       />
+
+      <ReinstallCallout locale="en" />
 
       <h2 id="how">How updates are applied</h2>
       <ul>

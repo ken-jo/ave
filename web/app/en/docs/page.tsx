@@ -43,7 +43,7 @@ export default function HomePage() {
           <Reveal>
             <p className="mb-6 inline-flex items-center gap-2 rounded-full border border-border bg-white/60 px-3.5 py-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-ink-soft backdrop-blur">
               <span className="h-1.5 w-1.5 rounded-full bg-ink" />
-              Ave AI Docs · v1
+              Ave Docs · v1
             </p>
           </Reveal>
           <Reveal delay={60}>

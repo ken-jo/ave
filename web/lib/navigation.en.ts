@@ -5,7 +5,7 @@ export const navigationEn: NavGroup[] = [
     title: "Getting Started",
     eyebrow: "Getting Started",
     items: [
-      { title: "Ave AI Overview", href: "/en/docs/" },
+      { title: "Ave Overview", href: "/en/docs/" },
       { title: "Install & First Run", href: "/en/docs/getting-started/install" },
       { title: "Login & First Screen", href: "/en/docs/getting-started/login" },
       { title: "App Updates", href: "/en/docs/getting-started/updates" },

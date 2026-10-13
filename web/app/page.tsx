@@ -1,16 +1,11 @@
 import type { Metadata } from "next";
 import { Hero } from "@/components/landing/hero";
-import { About } from "@/components/landing/about";
-import { Workday } from "@/components/landing/workday";
-import { Workbench } from "@/components/landing/workbench";
+import { DocsIndex, Flow, Statement, Trust } from "@/components/landing/features";
 import { Downloads } from "@/components/landing/downloads";
-import { Architecture } from "@/components/landing/architecture";
-import { Surfaces } from "@/components/landing/surfaces";
-import { Roadmap } from "@/components/landing/roadmap";
-import { Cta } from "@/components/landing/cta";
+import { Closing } from "@/components/landing/closing";
 
 export const metadata: Metadata = {
-  title: "Ave AI — 조용한 관찰, 정확한 제안, 당신의 승인",
+  title: { absolute: "Ave — 일의 신호는 조용히, 결정은 당신이" },
   alternates: { canonical: "/" },
 };
 
@@ -18,14 +13,12 @@ export default function LandingPage() {
   return (
     <>
       <Hero locale="ko" />
-      <About locale="ko" />
-      <Workday locale="ko" />
-      <Workbench locale="ko" />
+      <Statement locale="ko" />
+      <Flow locale="ko" />
+      <Trust locale="ko" />
       <Downloads locale="ko" />
-      <Architecture locale="ko" />
-      <Surfaces locale="ko" />
-      <Roadmap locale="ko" />
-      <Cta locale="ko" />
+      <DocsIndex locale="ko" />
+      <Closing locale="ko" />
     </>
   );
 }

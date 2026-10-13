@@ -27,11 +27,9 @@ export function Header() {
   const otherLocale = locale === "en" ? "ko" : "en";
 
   const nav = [
-    { label: strings.nav.workday, href: `${landingBase}#workday` },
-    { label: strings.nav.workbench, href: `${landingBase}#workbench` },
+    { label: strings.nav.features, href: `${landingBase}#features` },
+    { label: strings.nav.trust, href: `${landingBase}#trust` },
     { label: strings.nav.download, href: `${landingBase}#download` },
-    { label: strings.nav.architecture, href: `${landingBase}#architecture` },
-    { label: strings.nav.roadmap, href: `${landingBase}#roadmap` },
     { label: strings.nav.docs, href: localeHref(locale, "/docs/"), isDocs: true },
   ];
 
@@ -52,7 +50,7 @@ export function Header() {
         scrolled ? "border-b border-border" : "border-b border-transparent"
       )}
     >
-      <div className="mx-auto flex h-[3.75rem] max-w-[1440px] items-center gap-3 px-4 sm:px-6">
+      <div className="relative mx-auto flex h-[3.75rem] max-w-[1440px] items-center gap-3 px-4 sm:px-6">
         {inDocs ? (
           <Sheet open={open} onOpenChange={setOpen}>
             <SheetTrigger asChild>
@@ -66,15 +64,13 @@ export function Header() {
           </Sheet>
         ) : null}
 
-        <Link href={landingBase} className="flex items-center gap-2">
-          <span className="grid h-8 w-8 place-items-center rounded-lg border border-border bg-white">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/ave-mark.svg" alt="" className="h-5 w-5" />
-          </span>
-          <span className="text-[15px] font-semibold tracking-tight text-ink">Ave AI</span>
+        <Link href={landingBase} aria-label={strings.home} className="flex shrink-0 items-center gap-2">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/ave-mark.svg" alt="" className="h-7 w-7" />
+          <span className="text-[17px] font-semibold tracking-[-0.02em] text-ink">Ave</span>
         </Link>
 
-        <nav className="ml-4 hidden items-center gap-1 md:flex">
+        <nav aria-label="Primary" className="ml-4 hidden items-center gap-1 md:flex lg:absolute lg:left-1/2 lg:ml-0 lg:-translate-x-1/2">
           {nav.map((n) => {
             const active = n.isDocs && inDocs;
             return (
@@ -116,9 +112,12 @@ export function Header() {
               </>
             )}
           </Link>
-          <Button asChild size="sm" variant="default" className="hidden sm:inline-flex">
-            <Link href={`${landingBase}#download`}>{strings.downloadApp}</Link>
-          </Button>
+          <Link
+            href={`${landingBase}#download`}
+            className="hidden h-9 items-center rounded-full bg-ink px-4 text-[13.5px] font-medium text-white transition-colors hover:bg-ink-soft sm:inline-flex"
+          >
+            {strings.downloadApp}
+          </Link>
         </div>
       </div>
     </header>

@@ -1,6 +1,6 @@
 # former-site.invalid
 
-Unified web home for [Ave AI](https://former-site.invalid) — marketing landing (`/`) and the
+Unified web home for [Ave](https://former-site.invalid) (formerly Ave) — marketing landing (`/`) and the
 user guide (`/docs/*`) in a single Next.js 14 static-export app.
 
 - Design system: see `docs/DESIGN.md` (marketplace-aligned neutral system)
@@ -22,7 +22,7 @@ npm run preview  # serve out/ locally
 app/            landing (/) + docs routes (/docs/**)
 components/     landing/*, docs/*, motion/*, ui/*
 lib/            navigation, search-index, roadmap, downloads
-public/         favicon, ave-mark
+public/         favicon, ave-mark, schemas/, .well-known/, announcements/
 infra/          docs-redirect shim for the legacy docs domain
 ```
 

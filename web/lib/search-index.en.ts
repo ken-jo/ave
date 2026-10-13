@@ -2,7 +2,7 @@ import type { SearchEntry } from "./search-index";
 
 export const searchEntriesEn: SearchEntry[] = [
   // Getting Started
-  { group: "Getting Started", href: "/en/docs/", title: "Ave AI Overview", snippet: "Desktop host · extension runtime · storage · server, 4 layers", keywords: ["overview", "intro"] },
+  { group: "Getting Started", href: "/en/docs/", title: "Ave Overview", snippet: "Desktop host · extension runtime · storage · server, 4 layers", keywords: ["overview", "intro"] },
   { group: "Getting Started", href: "/en/docs/getting-started/install", title: "Install & First Launch", snippet: "macOS arm64 / Windows / Linux AppImage · electron-updater · ave:// registration" },
   { group: "Getting Started", href: "/en/docs/getting-started/login", title: "Login & First Screen", snippet: "No Ave account · per-extension OAuth · private marketplace token", keywords: ["sso", "auth", "oauth", "token"] },
   { group: "Getting Started", href: "/en/docs/getting-started/updates", title: "App Updates", snippet: "electron-updater · autoDownload=false · 4h interval · channel=latest" },

@@ -39,6 +39,13 @@
     text-rendering: optimizeLegibility;
   }
 
+  /* One visible focus treatment for every interactive element (WCAG 2.4.7). */
+  :focus-visible {
+    outline: 2px solid #14161d;
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
   ::selection {
     background: #dfe3ef; /* soft periwinkle */
     color: #14161d;
@@ -88,6 +95,8 @@
   }
   .prose-doc :where(code) {
     @apply rounded-sm bg-secondary px-1.5 py-0.5 font-mono text-[13.5px] text-ink;
+    /* Long paths and identifiers wrap instead of widening the page at phone width. */
+    overflow-wrap: anywhere;
   }
   .prose-doc :where(strong) {
     @apply font-semibold text-ink;
@@ -183,5 +192,57 @@
     opacity: 1 !important;
     transform: none !important;
     transition: none !important;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+   Ave landing — framed column, soft atmospheric tiles
+   ────────────────────────────────────────────────────────────── */
+
+/* Hairline rails on the content column (desktop only, so 360px stays edge-to-edge). */
+@media (min-width: 768px) {
+  .frame-rails {
+    border-left: 1px solid hsl(var(--border));
+    border-right: 1px solid hsl(var(--border));
+  }
+}
+
+/* Atmospheric washes for illustration tiles. Decorative only — text never sits on them
+   without its own solid surface. */
+.wash-dawn {
+  background:
+    radial-gradient(120% 90% at 15% 10%, #fdf3e4 0%, transparent 55%),
+    radial-gradient(110% 90% at 90% 20%, #e3efe9 0%, transparent 60%),
+    linear-gradient(180deg, #f6f8f4 0%, #eef3f1 100%);
+}
+.wash-mist {
+  background:
+    radial-gradient(100% 80% at 80% 0%, #e7ecf6 0%, transparent 60%),
+    linear-gradient(180deg, #f5f7fb 0%, #eef1f7 100%);
+}
+.wash-sand {
+  background:
+    radial-gradient(100% 80% at 10% 100%, #f7ecdc 0%, transparent 60%),
+    linear-gradient(180deg, #faf7f2 0%, #f3eee6 100%);
+}
+.wash-fern {
+  background:
+    radial-gradient(100% 90% at 0% 0%, #dcebe4 0%, transparent 60%),
+    linear-gradient(180deg, #f2f7f4 0%, #e8f2ee 100%);
+}
+
+/* Slow drift for the hero flight paths; disabled under reduced motion below. */
+@keyframes ave-dash {
+  to {
+    stroke-dashoffset: -48;
+  }
+}
+.ave-flow {
+  stroke-dasharray: 4 8;
+  animation: ave-dash 3.2s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ave-flow {
+    animation: none;
   }
 }
