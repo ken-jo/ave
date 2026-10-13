@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,6 +12,7 @@ import {
 } from "../../plugin-install-receipt.js";
 import {
   createNoopHostApiForTests,
+  PluginRuntime,
   type PluginRuntimeOptions,
 } from "../../runtime.js";
 import type { EntryPluginManifest, PluginManifest } from "../../types.js";
@@ -21,14 +22,225 @@ import {
   HOST_PROTOCOL_VERSIONS_SERVED,
   IncompatibleHostProtocolError,
 } from "../../isolation/host-api-wire.js";
+import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
+import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
+import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
+import { PersonaPromptStore } from "../../../main/persona-prompt-store.js";
+import { SkillStore } from "../../../main/skill-store.js";
+import { PluginLoopbackManager } from "../../../mcp/plugin-loopback-manager.js";
+import { ToolRegistry } from "../../../tools/registry.js";
+import { ArtifactRollbackError } from "../../plugin-artifact-store.js";
+import { PluginBundleLifecycle } from "../../plugin-bundle-lifecycle.js";
+
+const removalFault = vi.hoisted(() => ({
+  error: undefined as Error | undefined,
+  calls: 0,
+}));
+vi.mock("../../plugin-contributions.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../plugin-contributions.js")>();
+  return { ...actual, removeRetainedPluginGeneration: async (...args: Parameters<typeof actual.removeRetainedPluginGeneration>) => {
+    if (removalFault.error) {
+      removalFault.calls += 1;
+      throw removalFault.error;
+    }
+    await actual.removeRetainedPluginGeneration(...args);
+  } };
+});
 
 const roots: string[] = [];
 
 afterEach(async () => {
+  removalFault.error = undefined;
+  removalFault.calls = 0;
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map(async (root) => {
     await makeTestTreeWritable(root);
     await rm(root, { recursive: true, force: true });
   }));
+});
+
+describe("prepared activation cleanup error identity", () => {
+  it.each(["routing", "host api", "durable commit"] as const)("preserves rollback metadata when %s and retained cleanup both fail", async (phase) => {
+    const root = await mkdtemp(join(tmpdir(), "ave-prepared-cleanup-"));
+    roots.push(root);
+    const pluginId = "cleanup-candidate";
+    const cacheRoot = join(root, "cache");
+    const prepared = await writePreparedPlugin(root, pluginId, pluginId);
+    const primary = new ArtifactRollbackError("directory rollback unresolved", [new Error("durable commit refused")], join(root, "rollback-backup"));
+    const secondary = new Error("retained generation removal refused");
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const runtime = new PluginRuntime({
+      childEntryPath: pluginChildEntryPath(),
+      encryption: unavailableSecretEncryption,
+      hostRoot: root,
+      pluginsRoot: join(root, "plugins"),
+      registryPath: join(root, "plugins", "registry.json"),
+      installReceiptCacheRoot: cacheRoot,
+      createHostApi: (id, manifest, dataDir) => {
+        if (phase === "host api") {
+          removalFault.error = secondary;
+          throw primary;
+        }
+        return createNoopHostApiForTests(id, manifest, dataDir);
+      },
+    });
+    const lifecycle = new PluginBundleLifecycle({
+      pluginRuntime: runtime,
+      receiptCacheRoot: cacheRoot,
+      skillStore: new SkillStore({ userDir: join(root, "skills") }),
+      personaPromptStore: new PersonaPromptStore({ userDir: join(root, "prompts") }),
+      hookManager: new ScriptHookManager(),
+      loopbackManager: new PluginLoopbackManager(runtime, new ToolRegistry(), () => undefined),
+      mcpManager: {
+        bundledServerIdsForPlugin: () => [],
+        prepareBundledGeneration: async () => ({ published: false }),
+        publishBundledGeneration: (candidate: { published: boolean }) => { candidate.published = true; },
+        retirePublishedMcpReplacement: async () => undefined,
+      } as never,
+      revokeOperationGeneration: () => undefined,
+      onContributionsUpdated: () => undefined,
+    });
+    runtime.setGenerationAccess(lifecycle);
+    if (phase === "routing") {
+      const routing = runtime as unknown as { importPluginFactoryForLifecycle(...args: unknown[]): Promise<unknown> };
+      vi.spyOn(routing, "importPluginFactoryForLifecycle").mockImplementationOnce(async () => {
+        removalFault.error = secondary;
+        throw primary;
+      });
+    }
+    const durableCommit = vi.fn(async () => {
+      removalFault.error = secondary;
+      throw primary;
+    });
+    try {
+      const failure = await runtime.activatePreparedArtifact({ installId: pluginId, ...prepared, durableCommit })
+        .catch((error: unknown) => error);
+      removalFault.error = undefined;
+      expect(failure).toBe(primary);
+      expect(failure).toBeInstanceOf(ArtifactRollbackError);
+      expect((failure as ArtifactRollbackError).backupDir).toBe(primary.backupDir);
+      expect(removalFault.calls).toBe(phase === "durable commit" ? 2 : 1);
+      expect(durableCommit).toHaveBeenCalledTimes(phase === "durable commit" ? 1 : 0);
+      expect(lifecycle.getActive(pluginId)).toBeUndefined();
+      expect(errorLog.mock.calls.map((args) => args.join(" ")).some((message) =>
+        message.includes("[plugin-runtime]") && message.includes(secondary.message))).toBe(true);
+    } finally {
+      removalFault.error = undefined;
+      await runtime.stopAll();
+    }
+  });
+});
+
+describe("restart cleanup error identity", () => {
+  it.each(["entry", "routing", "factory", "start", "publication"] as const)("preserves the primary %s error when replacement cleanup fails", async (phase) => {
+    const root = await mkdtemp(join(tmpdir(), "ave-restart-cleanup-"));
+    roots.push(root);
+    const pluginId = "restart-candidate";
+    const pluginsRoot = join(root, "plugins");
+    const registryPath = join(pluginsRoot, "registry.json");
+    const cacheRoot = join(root, "cache");
+    const prepared = await writePreparedPlugin(root, pluginId, pluginId, (toolName) => `export default async function createPlugin() {
+      return { handlers: { ${toolName}: async () => "pong" }, start: async () => {} };
+    }`);
+    await mkdir(pluginsRoot, { recursive: true });
+    const installDir = join(pluginsRoot, pluginId);
+    await rename(prepared.pluginRoot, installDir);
+    prepared.pluginRoot = installDir;
+    await writeFile(registryPath, JSON.stringify({ version: 1, plugins: [{
+      id: pluginId, manifestPath: `${pluginId}/plugin.json`, ...prepared.registryEntry,
+    }] }), "utf8");
+    const runtime = makeTestPluginRuntime({ rootDir: root, registryPath, pluginsRoot }, { installReceiptCacheRoot: cacheRoot });
+    await runtime.activatePreparedArtifact({ installId: pluginId, ...prepared, durableCommit: async () => {
+      await mkdir(join(cacheRoot, pluginId), { recursive: true });
+      await writeFile(join(cacheRoot, pluginId, "install-receipt.json"), prepared.receiptRaw, "utf8");
+    } });
+    const primary = new ArtifactRollbackError("replacement refused", [new Error("primary refusal")], join(root, "rollback-backup"));
+    const secondary = new Error("replacement root cleanup refused");
+    const internals = runtime as unknown as {
+      removeUnpublishedRuntimeRoot(...args: unknown[]): Promise<void>;
+      pluginFactorySource(...args: unknown[]): unknown;
+      importPluginFactoryForLifecycle(...args: unknown[]): Promise<unknown>;
+      runPluginLifecycleHook(scope: unknown, hook: () => unknown): Promise<unknown>;
+      generationLifecycle: { replaceRuntime(...args: unknown[]): Promise<void> };
+    };
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(internals, "removeUnpublishedRuntimeRoot").mockRejectedValueOnce(secondary);
+    if (phase === "entry") {
+      vi.spyOn(internals, "pluginFactorySource").mockImplementationOnce(() => { throw primary; });
+    } else if (phase === "routing") {
+      vi.spyOn(internals, "importPluginFactoryForLifecycle").mockRejectedValueOnce(primary);
+    } else if (phase === "publication") {
+      vi.spyOn(internals.generationLifecycle, "replaceRuntime").mockRejectedValueOnce(primary);
+    } else {
+      const hook = internals.runPluginLifecycleHook.bind(runtime);
+      const spy = vi.spyOn(internals, "runPluginLifecycleHook");
+      if (phase === "start") spy.mockImplementationOnce(hook);
+      spy.mockRejectedValueOnce(primary);
+    }
+    try {
+      await expect(runtime.restartPlugin(pluginId, { skipPreparation: true, throwOnFailure: true })).rejects.toBe(primary);
+      await expect(runtime.call("restart_candidate_ping")).resolves.toBe("pong");
+      expect(errorLog.mock.calls.map((args) => args.join(" ")).some((message) => message.includes(secondary.message))).toBe(true);
+    } finally {
+      await runtime.stopAll();
+    }
+  });
+});
+
+describe.each(["add", "boot"] as const)("%s cleanup failure reporting", (route) => {
+  it.each(["entry", "routing"] as const)("keeps the reported %s failure when root cleanup fails", async (phase) => {
+    const root = await mkdtemp(join(tmpdir(), "ave-add-cleanup-"));
+    roots.push(root);
+    const pluginId = "add-candidate";
+    const pluginsRoot = join(root, "plugins");
+    const registryPath = join(pluginsRoot, "registry.json");
+    const cacheRoot = join(root, "cache");
+    const prepared = await writePreparedPlugin(root, pluginId, pluginId);
+    await mkdir(pluginsRoot, { recursive: true });
+    await rename(prepared.pluginRoot, join(pluginsRoot, pluginId));
+    await writeFile(registryPath, JSON.stringify({ version: 1, plugins: [{
+      id: pluginId, manifestPath: `${pluginId}/plugin.json`, ...prepared.registryEntry,
+    }] }), "utf8");
+    await mkdir(join(cacheRoot, pluginId), { recursive: true });
+    await writeFile(join(cacheRoot, pluginId, "install-receipt.json"), prepared.receiptRaw, "utf8");
+    const runtime = makeTestPluginRuntime({ rootDir: root, registryPath, pluginsRoot }, { installReceiptCacheRoot: cacheRoot });
+    const primary = new Error("candidate factory refused");
+    const secondary = new Error("candidate root cleanup refused");
+    const internals = runtime as unknown as {
+      removeUnpublishedRuntimeRoot(...args: unknown[]): Promise<void>;
+      pluginFactorySource(...args: unknown[]): unknown;
+      importPluginFactoryForLifecycle(...args: unknown[]): Promise<unknown>;
+    };
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(internals, "removeUnpublishedRuntimeRoot").mockRejectedValueOnce(secondary);
+    if (phase === "entry") {
+      vi.spyOn(internals, "pluginFactorySource").mockImplementationOnce(() => { throw primary; });
+    } else {
+      vi.spyOn(internals, "importPluginFactoryForLifecycle").mockRejectedValueOnce(primary);
+    }
+    try {
+      if (route === "add") {
+        await expect(runtime.addPlugin(pluginId)).rejects.toThrow(`addPlugin failed for ${pluginId}`);
+      } else {
+        await runtime.startAll();
+        const card = runtime.listPluginCards().find((candidate) => candidate.id === pluginId);
+        expect(card?.loadStatus).toBe("failed");
+        expect(card?.installFailureKind).not.toBe("load-crash");
+      }
+      const messages = errorLog.mock.calls.map((args) => args.join(" "));
+      if (route === "boot") {
+        expect(errorLog).toHaveBeenCalledWith(
+          expect.stringContaining("[plugin-lifecycle]"),
+          expect.objectContaining({ err: primary }),
+        );
+      } else {
+        expect(messages.some((message) => message.includes(primary.message))).toBe(true);
+      }
+      expect(messages.some((message) => message.includes(secondary.message))).toBe(true);
+    } finally {
+      await runtime.stopAll();
+    }
+  });
 });
 
 async function writePreparedPlugin(
@@ -58,7 +270,7 @@ async function writePreparedPlugin(
     requires: { hostProtocol: HOST_PROTOCOL_VERSIONS_SERVED[0] },
     tools: [{
       name: toolName,
-      description: "ping",
+      description: "Return a ping reply.",
       inputSchema: { type: "object", properties: {} },
       _meta: { ui: { visibility: ["model"] } },
     }],

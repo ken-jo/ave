@@ -4643,7 +4643,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     }
 
     const activationId = randomUUID();
-    const runtimeRoot = await this.materializeImmutableRuntimeRoot(
+    const runtimeRoot = attempt.runtimeRoot = await this.materializeImmutableRuntimeRoot(
       manifest.id,
       pluginRoot,
       activationId,
@@ -4654,7 +4654,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       source = this.pluginFactorySource(manifest, runtimeRoot);
     } catch (err) {
       if (!canCommit()) {
-        await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+        await this.releaseAttempt(attempt, "cancelled add entry");
         return "cancelled";
       }
       const reason = (err as Error).message;
@@ -4665,7 +4665,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         reason,
       });
       this.markFailed(manifest.id);
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+      await this.releaseAttempt(attempt, "failed add entry");
       return "failed";
     }
 
@@ -4679,7 +4679,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       );
     } catch (err) {
       if (!canCommit()) {
-        await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+        await this.releaseAttempt(attempt, "cancelled add routing");
         return "cancelled";
       }
       log.error(`${manifest.id} import failed: %s`, (err as Error).message);
@@ -4692,16 +4692,15 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       } else {
         this.markFailed(manifest.id);
       }
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+      await this.releaseAttempt(attempt, "failed add routing");
       return "failed";
     }
     if (!canCommit()) {
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+      await this.releaseAttempt(attempt, "cancelled add routing");
       return "cancelled";
     }
     const { createPlugin } = routed;
     attempt.routed = routed;
-    attempt.runtimeRoot = runtimeRoot;
 
     const pluginDataDir = this.ensureDataDir(manifest.id, pluginRoot);
     const hostEffects = new HostApiGenerationScope(manifest.id);
@@ -5431,6 +5430,27 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       input.receiptRaw,
       installId,
     );
+    const releasePreparedConstruction = async (hostEffects?: HostApiGenerationScope): Promise<void> => {
+      const step = async (action: () => unknown): Promise<void> => {
+        try {
+          await action();
+        } catch (cleanupError) {
+          construction.cleanupFailures.push(cleanupError);
+          log.error(`${manifest.id} prepared candidate cleanup failed before startup: ${errorMessage(cleanupError)}`);
+          this.auditAttemptEvent("plugin_attempt_cleanup_failed", {
+            pluginId: manifest.id,
+            context: "prepared artifact construction",
+            reason: errorMessage(cleanupError),
+          });
+        }
+      };
+      if (hostEffects) await step(() => hostEffects.discard());
+      await step(() => removeRetainedPluginGeneration(
+        this.installReceiptCacheRoot!,
+        manifest.id,
+        generationId,
+      ));
+    };
     let routed: RoutedPluginFactory;
     try {
       // The staged receipt is verified against the payload it materialised the
@@ -5447,11 +5467,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         integrityEvidence(staged.receipt),
       );
     } catch (error) {
-      await removeRetainedPluginGeneration(
-        this.installReceiptCacheRoot!,
-        manifest.id,
-        generationId,
-      );
+      await releasePreparedConstruction();
       throw error;
     }
     const { createPlugin } = routed;
@@ -5470,12 +5486,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         input.approvedPluginAccess ?? null,
       );
     } catch (error) {
-      hostEffects.discard();
-      await removeRetainedPluginGeneration(
-        this.installReceiptCacheRoot!,
-        manifest.id,
-        generationId,
-      );
+      await releasePreparedConstruction(hostEffects);
       throw error;
     }
     const {
@@ -5677,14 +5688,11 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         try {
           await releaseUncommittedCandidate();
         } catch (cleanupError) {
-          // After a durable commit the marker is what keeps the install from
-          // rolling that commit back: a cleanup failure is reported, never
-          // put in its place.
-          if (!isCommittedPluginGenerationPublicationError(error)) throw cleanupError;
-          log.error(`${manifest.id} prepared candidate cleanup failed after its durable commit: ${errorMessage(cleanupError)}`);
+          const withheld = isCommittedPluginGenerationPublicationError(error);
+          log.error(`${manifest.id} prepared candidate cleanup failed${withheld ? " after its durable commit" : ""}: ${errorMessage(cleanupError)}`);
           this.auditAttemptEvent("plugin_attempt_cleanup_failed", {
             pluginId: manifest.id,
-            context: "withheld prepared artifact activation",
+            context: withheld ? "withheld prepared artifact activation" : "failed prepared artifact activation",
             reason: errorMessage(cleanupError),
           });
         }
@@ -6155,7 +6163,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         reason,
       });
       this.markFailed(manifest.id);
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+      await this.releaseAttempt(resources, "failed boot entry");
       return;
     }
     let routed: RoutedPluginFactory;
@@ -6179,7 +6187,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       } else {
         this.markFailed(manifest.id);
       }
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+      await this.releaseAttempt(resources, "failed boot routing");
       return;
     }
     const { createPlugin } = routed;
@@ -7056,12 +7064,14 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       activationId,
       receiptPluginId ?? pluginId,
     );
+    const replacementAttempt: PluginLoadAttemptResources = { pluginId, runtimeRoot };
     let source: PluginFactorySource;
     try {
       source = this.pluginFactorySource(manifest, runtimeRoot);
     } catch (error) {
-      await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
+      await this.releaseAttempt(replacementAttempt, "failed restart entry");
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err: error, reason: "entry_path" }, "entry path rejected during restart");
+      if (opts.throwOnFailure) throw error;
       return "failed";
     }
     let routed: RoutedPluginFactory;
@@ -7075,7 +7085,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       );
       logPluginLifecycle("debug", { pluginId, phase: PluginPhase.RESTART_RELOAD_OK }, "factory routed");
     } catch (err) {
-      await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
+      await this.releaseAttempt(replacementAttempt, "failed restart routing");
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err }, "module re-import failed");
       if (opts.throwOnFailure) throw err;
       return "failed";
@@ -7103,6 +7113,12 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       pluginDataDir,
       hostEffects,
     );
+    replacementAttempt.incarnation = {
+      deactivate: deactivateReplacementHostApi,
+      disposers: replacementDisposers,
+      drainOperations: drainReplacementHostApiOperations,
+      hostEffects,
+    };
 
     let instance: RuntimePlugin;
     try {
@@ -7131,16 +7147,10 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         },
       );
     } catch (err) {
-      deactivateReplacementHostApi();
-      hostEffects.discard();
       if (err instanceof PluginFactoryTimeoutError) {
         this.quarantinePluginLifecycle(pluginId, err.message);
       }
-      this.runDisposerList(replacementDisposers, "failed restart factory");
-      await this.drainPluginHostApiOperations(pluginId, {
-        drainHostApiOperations: drainReplacementHostApiOperations,
-      });
-      await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
+      await this.releaseAttempt(replacementAttempt, "failed restart factory");
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err, reason: "createPlugin_failed" }, "createPlugin failed during restart");
       // The replacement's refusal, not the incumbent's: the running
       // generation keeps serving and is never marked failed (decision 52).
@@ -7148,6 +7158,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       if (opts.throwOnFailure) throw err;
       return "failed";
     }
+    replacementAttempt.constructed = { instance, lifecycleHookScope: replacementLifecycleHookScope };
 
     if (!isCurrent()) {
       deactivateReplacementHostApi();
@@ -7181,14 +7192,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         this.quarantinePluginLifecycle(pluginId, err.message);
       }
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_START_FAIL, err }, "start after restart failed");
-      deactivateReplacementHostApi();
-      hostEffects.discard();
-      await this.stopAfterStartFailure(pluginId, instance, replacementLifecycleHookScope);
-      this.runDisposerList(replacementDisposers, "failed restart start");
-      await this.drainPluginHostApiOperations(pluginId, {
-        drainHostApiOperations: drainReplacementHostApiOperations,
-      });
-      await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
+      await this.releaseAttempt(replacementAttempt, "failed restart start");
       if (opts.throwOnFailure) throw err;
       return "failed";
     }
@@ -7260,15 +7264,9 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         if (opts.throwOnFailure) throw error;
         return "failed";
       }
-      deactivateReplacementHostApi();
-      if (hostEffects.isPreparing()) hostEffects.discard();
-      await this.stopAfterStartFailure(pluginId, instance, replacementLifecycleHookScope);
-      this.runDisposerList(replacementDisposers, "failed restart publication");
-      await this.drainPluginHostApiOperations(pluginId, {
-        drainHostApiOperations: drainReplacementHostApiOperations,
-      });
-      await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
+      await this.releaseAttempt(replacementAttempt, "failed restart publication");
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err: error, reason: "publication" }, "runtime generation publication failed");
+      if (opts.throwOnFailure) throw error;
       return "failed";
     } finally {
       this.commitHandoffs.delete(candidate);

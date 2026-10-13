@@ -5,6 +5,7 @@ import { mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { PluginMarketplaceService, type PreparedMarketplacePluginActivation } from "../marketplace.js";
+import { ArtifactRollbackError } from "../plugin-artifact-store.js";
 import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
 import { TOMBSTONE_SUBDIR } from "../installed-entry-fs.js";
 import { _resetConfinedProcessPhaseForTests, noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
@@ -108,6 +109,7 @@ describe("PluginMarketplaceService.installLocal", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(testDir, { recursive: true, force: true });
     if (priorEnv === undefined) {
       delete process.env.AVE_DEV;
@@ -382,6 +384,40 @@ describe("PluginMarketplaceService.installLocal", () => {
     const reg = JSON.parse(await readFile(registryPath, "utf-8"));
     expect(reg.plugins).toHaveLength(0);
   });
+
+  it.each(["before commit", "snapshot restore", "fresh cleanup", "snapshot cleanup"] as const)(
+    "preserves the activation error when local %s fails",
+    async (phase) => {
+      const service = makeService();
+      if (phase !== "fresh cleanup") await service.installLocal(sourceDir, preparedActivationOptionsForTest);
+      await writeFile(join(sourceDir, "dist", "hostPlugin.js"), "export default { updated: true };\n", "utf8");
+      const primary = new ArtifactRollbackError("directory rollback unresolved", [new Error("activation refused")], join(testDir, "rollback-backup"));
+      const secondary = new Error("secondary local cleanup refused");
+      const internals = service as unknown as {
+        artifactStore: { persistPreparedInstallReceipt(...args: unknown[]): Promise<void> };
+        restoreLocalInstallSnapshot(...args: unknown[]): Promise<void>;
+        cleanupFreshInstalledPlugin(...args: unknown[]): Promise<void>;
+        discardLocalInstallRollbackSnapshot(...args: unknown[]): Promise<void>;
+      };
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      if (phase === "snapshot restore") {
+        vi.spyOn(internals, "restoreLocalInstallSnapshot").mockRejectedValueOnce(secondary);
+      } else if (phase === "fresh cleanup") {
+        vi.spyOn(internals, "cleanupFreshInstalledPlugin").mockRejectedValueOnce(secondary);
+      } else {
+        vi.spyOn(internals, "discardLocalInstallRollbackSnapshot").mockRejectedValueOnce(secondary);
+      }
+      if (phase !== "before commit") {
+        vi.spyOn(internals.artifactStore, "persistPreparedInstallReceipt").mockRejectedValueOnce(primary);
+      }
+      const activatePreparedArtifact: PreparedMarketplacePluginActivation = async (input) => {
+        if (phase !== "before commit") await input.durableCommit();
+        throw primary;
+      };
+      await expect(service.installLocal(sourceDir, { activatePreparedArtifact })).rejects.toBe(primary);
+      expect(errorLog.mock.calls.map((args) => args.join(" ")).some((message) => message.includes(secondary.message))).toBe(true);
+    },
+  );
 
   it("hides an existing entry until its replacement receipt is durable", async () => {
     const service = makeService();
@@ -793,14 +829,16 @@ describe("PluginMarketplaceService.installLocal", () => {
       const store = (service as unknown as {
         artifactStore: { persistPreparedInstallReceipt: (...args: unknown[]) => Promise<unknown> };
       }).artifactStore;
-      vi.spyOn(store, "persistPreparedInstallReceipt").mockRejectedValueOnce(new Error("replacement receipt write failed"));
+      const primary = new Error("replacement receipt write failed");
+      vi.spyOn(store, "persistPreparedInstallReceipt").mockRejectedValueOnce(primary);
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
       noteConfinedProcessesMayRun();
 
       const failure = await service.installLocal(sourceDir, preparedActivationOptionsForTest)
         .then(() => { throw new Error("install resolved"); }, (error: unknown) => error);
 
-      expect(failure).toBeInstanceOf(AggregateError);
-      expect((failure as AggregateError).errors.map((error: Error) => error.message))
+      expect(failure).toBe(primary);
+      expect(errorLog.mock.calls.map((args) => args.join(" ")))
         .toContainEqual(expect.stringMatching(/holds runtime directory data\//));
       expect(existsSync(join(stale, "data"))).toBe(true);
     });
@@ -907,16 +945,17 @@ describe("PluginMarketplaceService.installLocal", () => {
       artifactStore: { persistPreparedInstallReceipt: (...args: unknown[]) => Promise<unknown> };
       restoreLocalInstallSnapshot: (...args: unknown[]) => Promise<void>;
     };
-    vi.spyOn(internals.artifactStore, "persistPreparedInstallReceipt").mockRejectedValueOnce(
-      new Error("replacement receipt write failed"),
-    );
+    const primary = new Error("replacement receipt write failed");
+    vi.spyOn(internals.artifactStore, "persistPreparedInstallReceipt").mockRejectedValueOnce(primary);
     vi.spyOn(internals, "restoreLocalInstallSnapshot").mockRejectedValueOnce(
-      Object.assign(new Error("transient Windows restore lock"), { code: "EACCES" }),
+      Object.assign(new Error("transient restore lock"), { code: "EACCES" }),
     );
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     const error = await service.installLocal(sourceDir).catch((caught) => caught);
-    expect(error).toBeInstanceOf(AggregateError);
-    expect((error as AggregateError).errors[1]).toMatchObject({ code: "EACCES" });
+    expect(error).toBe(primary);
+    expect(errorLog.mock.calls.map((args) => args.join(" ")))
+      .toContainEqual(expect.stringContaining("transient restore lock"));
     const hiddenRegistry = JSON.parse(await readFile(registryPath, "utf-8")) as {
       plugins: Array<{
         id: string;
