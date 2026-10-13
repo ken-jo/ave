@@ -818,10 +818,9 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
             cleanupErrors.push(cleanupError);
           }
         }
-        if (cleanupErrors.length > 0) {
-          throw new AggregateError(
-            [error, ...cleanupErrors],
-            `plugin generation preparation and candidate cleanup failed: ${pluginId}:${generationId}`,
+        for (const cleanupError of cleanupErrors) {
+          log.error(
+            `plugin '${pluginId}' candidate '${generationId}' cleanup failed during preparation: ${errorMessage(cleanupError)}`,
           );
         }
         throw error;
@@ -936,20 +935,10 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           cleanupErrors.push(cleanupError);
         }
       }
-      if (cleanupErrors.length > 0) {
-        if (isCommittedPluginGenerationPublicationError(error)) {
-          // Durably committed: the marker is what keeps every caller from
-          // rolling that commit back, so a cleanup failure must not hide it.
-          for (const cleanupError of cleanupErrors) {
-            log.error(
-              `plugin '${pluginId}' candidate '${candidate.generationId}' cleanup failed after a durable commit: ${errorMessage(cleanupError)}`,
-            );
-          }
-          throw error;
-        }
-        throw new AggregateError(
-          [error, ...cleanupErrors],
-          `plugin generation commit and candidate cleanup failed: ${pluginId}:${candidate.generationId}`,
+      // Callers use primary error identity to decide which recovery is safe.
+      for (const cleanupError of cleanupErrors) {
+        log.error(
+          `plugin '${pluginId}' candidate '${candidate.generationId}' cleanup failed: ${errorMessage(cleanupError)}`,
         );
       }
       throw error;

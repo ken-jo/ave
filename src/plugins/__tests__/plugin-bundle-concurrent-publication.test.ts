@@ -11,6 +11,8 @@ import { SkillStore } from "../../main/skill-store.js";
 import { PluginLoopbackManager } from "../../mcp/plugin-loopback-manager.js";
 import { PluginMcpHost } from "../../mcp/plugin-mcp-host.js";
 import { ToolRegistry } from "../../tools/registry.js";
+import { CommittedPluginGenerationPublicationError } from "../committed-generation-publication-error.js";
+import { ArtifactRollbackError } from "../plugin-artifact-store.js";
 import { PluginBundleLifecycle } from "../plugin-bundle-lifecycle.js";
 import type { PluginRuntimeGenerationProjection } from "../plugin-host-generation.js";
 import { hashReceiptFiles } from "../plugin-install-receipt.js";
@@ -241,54 +243,86 @@ describe("concurrent bundle method reservations", () => {
     }
   });
 
-  it("releases an update reservation when durable commit and carried Hook revocation both fail", async () => {
-    const { cacheRoot, runtime, lifecycle, candidate } = await fixture();
-    const first = await candidate("first-plugin", { hooksEnabled: true });
-    await lifecycle.replaceRuntimeWithCommit(first.projection, first.receiptRaw, async () => undefined);
-    const source = lifecycle.listContributionTrust("first-plugin").find((row) => row.kind === "hook" && row.localId === "policy");
-    if (!source) throw new Error("Missing Hook contribution");
-    expect(source.approvalDigest).toMatch(/^[a-f0-9]{64}$/u);
-    await lifecycle.approveHook("first-plugin", "policy", {
-      generationId: source.generationId, approvalDigest: source.approvalDigest,
-    });
-    const active = lifecycle.getActive("first-plugin");
-    const update = await candidate("first-plugin", { version: "1.1.0", hooksEnabled: true });
-    const trustDir = join(cacheRoot, "plugin-contribution-trust");
-    const savedTrustDir = join(cacheRoot, "saved-contribution-trust");
-    const commitFailure = new Error("durable commit refused");
-    const approve = vi.spyOn(lifecycle.hookTrust, "approve");
-    const revoke = vi.spyOn(lifecycle.hookTrust, "revoke");
-    let trustMoved = false;
-    let failure: unknown;
+  describe.each(["preparation", "commit"] as const)("%s cleanup", (phase) => {
+    it.each([
+      { label: "ordinary error", createPrimary: () => new Error("generation refused") },
+      { label: "artifact rollback error", createPrimary: (backupDir: string) => new ArtifactRollbackError(
+        "directory rollback unresolved", [new Error("durable commit refused"), new Error("directory rollback refused")], backupDir,
+      ) },
+      { label: "aggregate error", createPrimary: () => new AggregateError([new Error("generation refused")], "generation failures") },
+      { label: "committed publication error", createPrimary: () => new CommittedPluginGenerationPublicationError(
+        "first-plugin", "a".repeat(64), new Error("publication withheld"), {
+          retired: Promise.resolve(), markDispatchReady: async () => undefined, markDispatchUnavailable: () => undefined,
+        }, undefined, "withheld",
+      ) },
+      { label: "non-error rejection", createPrimary: () => "generation refused" },
+    ])("preserves $label and releases reservations when carried Hook revocation fails", async ({ createPrimary }) => {
+      const { cacheRoot, runtime, loopbackManager, lifecycle, candidate } = await fixture();
+      const first = await candidate("first-plugin", { hooksEnabled: true });
+      await lifecycle.replaceRuntimeWithCommit(first.projection, first.receiptRaw, async () => undefined);
+      const source = lifecycle.listContributionTrust("first-plugin").find((row) => row.kind === "hook" && row.localId === "policy");
+      if (!source) throw new Error("Missing Hook contribution");
+      expect(source.approvalDigest).toMatch(/^[a-f0-9]{64}$/u);
+      await lifecycle.approveHook("first-plugin", "policy", {
+        generationId: source.generationId, approvalDigest: source.approvalDigest,
+      });
+      const active = lifecycle.getActive("first-plugin");
+      const update = await candidate("first-plugin", { version: "1.1.0", hooksEnabled: true });
+      const trustDir = join(cacheRoot, "plugin-contribution-trust");
+      const savedTrustDir = join(cacheRoot, "saved-contribution-trust");
+      const primary = createPrimary(join(cacheRoot, "rollback-backup"));
+      const approve = vi.spyOn(lifecycle.hookTrust, "approve");
+      const revoke = vi.spyOn(lifecycle.hookTrust, "revoke");
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      let trustMoved = false;
+      let failure: unknown;
 
-    try {
-      failure = await lifecycle.replaceRuntimeWithCommit(update.projection, update.receiptRaw, async () => {
+      const blockTrustStorage = async () => {
         const carried = approve.mock.calls.at(-1)?.[0];
         if (!carried) throw new Error("Missing carried Hook approval");
         expect(lifecycle.hookTrust.record(carried)).toMatchObject({ carriedFrom: source.generationId });
         await rename(trustDir, savedTrustDir);
         trustMoved = true;
         await writeFile(trustDir, "Trust storage unavailable", "utf8");
-        throw commitFailure;
-      }).catch((error: unknown) => error);
-    } finally {
-      if (trustMoved) {
-        await rm(trustDir, { force: true });
-        await rename(savedTrustDir, trustDir);
+      };
+      if (phase === "preparation") {
+        const prepareGeneration = loopbackManager.prepareGeneration.bind(loopbackManager);
+        vi.spyOn(loopbackManager, "prepareGeneration").mockImplementationOnce(async (...args) => {
+          const prepared = await prepareGeneration(...args);
+          await blockTrustStorage();
+          return prepared;
+        });
+        vi.spyOn(runtime, "prepareRuntimeGeneration").mockImplementationOnce(() => { throw primary; });
       }
-    }
+      const durableCommit = vi.fn(async () => {
+        await blockTrustStorage();
+        throw primary;
+      });
 
-    expect(revoke).toHaveBeenCalledOnce();
-    expect(lifecycle.getActive("first-plugin")).toEqual(active);
-    await expect(runtime.callForPlugin("first-plugin", "shared_method")).resolves.toBe("first-plugin");
-    const retryCommit = vi.fn(async () => undefined);
-    await lifecycle.replaceRuntimeWithCommit(update.projection, update.receiptRaw, retryCommit);
-    expect(retryCommit).toHaveBeenCalledOnce();
-    expect(failure).toBeInstanceOf(AggregateError);
-    expect((failure as AggregateError).errors).toEqual([
-      commitFailure,
-      expect.objectContaining({ code: "EEXIST" }),
-    ]);
-    expect(runtime.getPluginManifest("first-plugin")?.version).toBe("1.1.0");
+      try {
+        failure = await lifecycle.replaceRuntimeWithCommit(update.projection, update.receiptRaw, durableCommit)
+          .catch((error: unknown) => error);
+      } finally {
+        if (trustMoved) {
+          await rm(trustDir, { force: true });
+          await rename(savedTrustDir, trustDir);
+        }
+      }
+
+      expect(durableCommit).toHaveBeenCalledTimes(phase === "commit" ? 1 : 0);
+      expect(revoke).toHaveBeenCalledOnce();
+      expect(lifecycle.getActive("first-plugin")).toEqual(active);
+      await expect(runtime.callForPlugin("first-plugin", "shared_method")).resolves.toBe("first-plugin");
+      const retryCommit = vi.fn(async () => undefined);
+      await lifecycle.replaceRuntimeWithCommit(update.projection, update.receiptRaw, retryCommit);
+      expect(retryCommit).toHaveBeenCalledOnce();
+      expect(failure).toBe(primary);
+      expect(failure instanceof ArtifactRollbackError).toBe(primary instanceof ArtifactRollbackError);
+      const cleanupLogs = errorLog.mock.calls.map((args) => args.join(" "))
+        .filter((message) => message.includes("[plugin-bundle-lifecycle]") && message.includes("cleanup failed"));
+      expect(cleanupLogs).toHaveLength(1);
+      expect(cleanupLogs[0]).toContain("EEXIST");
+      expect(runtime.getPluginManifest("first-plugin")?.version).toBe("1.1.0");
+    });
   });
 });
