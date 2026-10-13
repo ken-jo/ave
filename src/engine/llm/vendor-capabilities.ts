@@ -13,22 +13,12 @@
  * sends a file as a path the agent reads with its tools, never as a file part
  * the model has to accept.
  *
- * Where nothing states the modalities, the name rules below decide, as they
- * did before the catalog. Their 2026-04 snapshot:
- *   - Anthropic Claude 3+ family supports vision (3, 3.5, 3.7, 4, 4.5, 4.6, 4.7).
- *   - OpenAI: gpt-4o, gpt-4-turbo, gpt-4-vision, gpt-5* all support vision.
- *           o1, o1-mini, o3-mini reasoning models do NOT (text-only).
- *           gpt-3.5* does NOT.
- *   - Google Gemini 1.5 / 2.x family all support vision.
- *   - GitHub Copilot routes via OpenAI/Anthropic models — assume false unless
- *     model name matches a known vision-capable upstream.
- *   - Azure Foundry / Vertex AI — defer to underlying model name.
+ * Where nothing states the modalities, the turn may not carry images: support
+ * that nobody states is not assumed from the model's name. The refusal names
+ * Settings → Model → Image input → Supported, the declaration that states it.
  */
 import type { LLMVendor } from "./types.js";
-import {
-  isOpenAICompatibleVendor,
-  isSelfHostedVllmVendor,
-} from "../../shared/llm-vendor-defaults.js";
+import { isSelfHostedVllmVendor } from "../../shared/llm-vendor-defaults.js";
 import { resolveInputModalities, type RouteInputModalities } from "../../shared/context-budget.js";
 import type {
   MarketplaceInstalledProviderPreset,
@@ -40,32 +30,16 @@ type ProviderPackageCapabilitySource =
   | Pick<MarketplaceProviderPackageAsset, "capabilities">
   | undefined;
 
-const NON_VISION_MODEL_PATTERNS = [
-  /^o1(-mini|-preview)?$/i,
-  /^o3-mini/i,
-  /^gpt-3\.5/i,
-  /^text-/i,
-  /^claude-2/i,
-  /^claude-instant/i,
-];
-
-const VISION_MODEL_PATTERNS = [
-  /^claude-/i,
-  /^gpt-4(o|-turbo|-vision|\.5|\.6)/i,
-  /^gpt-5/i,
-  /^gemini-/i,
-];
-
 /**
  * Whether a turn on this model may carry images.
  *
  * `route` is the active route's resolution (`resolveContextWindowForRoute`),
  * for a caller that has it: its `inputModalities` already apply user declarations,
- * endpoint reports and catalog entries in that order, and when it has
- * none the name rules decide. It must not be re-resolved by name here: a named
- * entry missing from the catalog answers nothing, and a name match could be a
- * different model. A caller without a route (a direct model call) gets the
- * catalog entry the vendor's model id resolves to.
+ * endpoint reports and catalog entries in that order, and when it has none
+ * nobody stated that the model takes images. It must not be re-resolved by name
+ * here: a named entry missing from the catalog answers nothing, and a name match
+ * could be a different model. A caller without a route (a direct model call)
+ * gets the catalog entry the vendor's model id resolves to.
  */
 export function supportsVision(
   vendor: LLMVendor,
@@ -75,41 +49,7 @@ export function supportsVision(
   const m = model.trim();
   if (m.length === 0) return false;
   const stated = route ? route.inputModalities : resolveInputModalities({ vendor, model: m });
-  if (stated) return stated.input.includes("image");
-  return supportsVisionByName(vendor, m);
-}
-
-function supportsVisionByName(vendor: LLMVendor, m: string): boolean {
-  for (const re of NON_VISION_MODEL_PATTERNS) {
-    if (re.test(m)) return false;
-  }
-
-  for (const re of VISION_MODEL_PATTERNS) {
-    if (re.test(m)) return true;
-  }
-
-  switch (vendor) {
-    case "claude":
-      return true;
-    case "gemini":
-    case "vertex-ai":
-      return true;
-    case "openai":
-    case "azure-foundry":
-      return /^(gpt-4|gpt-5|chatgpt)/i.test(m);
-    case "copilot":
-      return /^(gpt-4|gpt-5|claude-)/i.test(m);
-    default:
-      if (isOpenAICompatibleVendor(vendor)) {
-        return /^(gpt-4|gpt-5|claude-|gemini-|qwen|kimi|glm|mimo|llama|meta-llama|nvidia\/)/i.test(m);
-      }
-      // Defense-in-depth: callers occasionally `as LLMVendor`-cast a raw
-      // string (settings load, IPC inputs). An unexpected vendor would
-      // otherwise yield undefined at runtime and violate the declared
-      // boolean return — fall back to "no vision" rather than silently
-      // surfacing as falsey.
-      return false;
-  }
+  return stated?.input.includes("image") === true;
 }
 
 /**

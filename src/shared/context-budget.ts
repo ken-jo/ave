@@ -290,8 +290,8 @@ export interface ResolvedInputModalities {
 /**
  * A model's input modalities: the user's image declaration or named entry,
  * then its endpoint's report, then the catalog match. `undefined` when
- * neither states them, which is unknown, not "text only"; the caller's name
- * rule decides then. An empty reported list states nothing. A reported list is
+ * neither states them: unknown, which the image gate (`supportsVision`) does
+ * not read as image support. An empty reported list states nothing. A reported list is
  * an external value, folded to lower case so `Image` reads as the catalog's `image`.
  */
 export function resolveInputModalities(params: {

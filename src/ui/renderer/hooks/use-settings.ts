@@ -106,8 +106,8 @@ export interface UseSettingsResult {
    * The active route's input modalities, as its endpoint or the catalog states
    * them (`resolveContextWindowForRoute(...).inputModalities`), for the image
    * gate (`supportsVision(vendor, model, route)`). `undefined` until settings
-   * have resolved; a route whose modalities nobody states carries none, and the
-   * name rules decide for it.
+   * have resolved; a route whose modalities nobody states carries none, and
+   * the image gate refuses images for it.
    */
   llmRouteModalities: RouteInputModalities | undefined;
   /** True after an authoritative settings snapshot has been applied. */
