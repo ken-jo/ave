@@ -35,7 +35,7 @@ export interface RunModelSettings {
     readonly requestedEffort?: string;
     readonly effort?: string;
     readonly budgetTokens?: number;
-    readonly source: "model-catalog" | "name-rule";
+    readonly source: "model-catalog" | "request-shape" | "host-fallback";
     readonly suppressed?: "chat-completions-tool-turn";
   };
   /**

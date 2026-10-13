@@ -14,11 +14,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { collectStreamEvents as collect } from "./test-helpers.js";
 import type { StreamEvent } from "../../types.js";
-import {
-  mapReasoningEffort,
-  isOpenAIReasoningModel,
-  supportsReasoningEffortNone,
-} from "../../reasoning-plan.js";
+import { mapReasoningEffort } from "../../reasoning-plan.js";
+import { usesOpenAIResponsesWire } from "../../../../shared/model-host-policy.js";
 import { MAX_BACKGROUND_OUTPUT_TOKEN_LIMIT } from "../../output-token-limit.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../../../../tools/registry.js";
 import { unusedNetworkFetch } from "../../../../__tests__/support/network-fetch-stubs.js";
@@ -37,27 +34,14 @@ describe("VercelUnifiedProvider openai — reasoning_effort mapping", () => {
     expect(mapReasoningEffort(32_000)).toBe("high");
   });
 
-  it("detects OpenAI reasoning-model families", () => {
-    expect(isOpenAIReasoningModel("gpt-5.4-mini")).toBe(true);
-    expect(isOpenAIReasoningModel("gpt-5")).toBe(true);
-    expect(isOpenAIReasoningModel("o1")).toBe(true);
-    expect(isOpenAIReasoningModel("o3-mini")).toBe(true);
-    expect(isOpenAIReasoningModel("o4-mini")).toBe(true);
-    expect(isOpenAIReasoningModel("gpt-4.1")).toBe(false);
-    expect(isOpenAIReasoningModel("gpt-4o")).toBe(false);
-  });
-
-  it("gates reasoning_effort 'none' to GPT-5.2+ only", () => {
-    // supported: gpt-5.2 and later minors, and future GPT majors
-    expect(supportsReasoningEffortNone("gpt-5.2")).toBe(true);
-    expect(supportsReasoningEffortNone("gpt-5.4-mini")).toBe(true);
-    expect(supportsReasoningEffortNone("gpt-6")).toBe(true);
-    // unsupported: gpt-5.0/5.1, bare gpt-5, and every o-series → they 400 on "none"
-    expect(supportsReasoningEffortNone("gpt-5")).toBe(false);
-    expect(supportsReasoningEffortNone("gpt-5.1")).toBe(false);
-    expect(supportsReasoningEffortNone("o1")).toBe(false);
-    expect(supportsReasoningEffortNone("o3-mini")).toBe(false);
-    expect(supportsReasoningEffortNone("o4-mini")).toBe(false);
+  it("routes OpenAI reasoning families and every Azure request to the Responses wire", () => {
+    for (const model of ["gpt-5.4-mini", "gpt-5", "o1", "o3-mini", "o4-mini"]) {
+      expect(usesOpenAIResponsesWire("openai", model)).toBe(true);
+    }
+    expect(usesOpenAIResponsesWire("openai", "gpt-4.1")).toBe(false);
+    expect(usesOpenAIResponsesWire("openai", "gpt-4o")).toBe(false);
+    expect(usesOpenAIResponsesWire("azure-foundry", "gpt-4o")).toBe(true);
+    expect(usesOpenAIResponsesWire("copilot", "gpt-5")).toBe(false);
   });
 });
 
@@ -65,6 +49,7 @@ describe("VercelUnifiedProvider — reasoning_effort 'none' clamp (#1574)", () =
   const captureProviderOptions = async (
     model: string,
     thinkingBudgetTokens: number,
+    catalogModel?: string,
   ): Promise<Record<string, unknown> | undefined> => {
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
@@ -98,6 +83,7 @@ describe("VercelUnifiedProvider — reasoning_effort 'none' clamp (#1574)", () =
         messages: [{ role: "user", content: "hi" }],
         enableThinking: true,
         thinkingBudgetTokens,
+        ...(catalogModel !== undefined ? { catalogModel } : {}),
       }),
     );
     const callArg = streamTextSpy.mock.calls[0]![0] as {
@@ -108,15 +94,21 @@ describe("VercelUnifiedProvider — reasoning_effort 'none' clamp (#1574)", () =
     return callArg.providerOptions?.openai;
   };
 
-  it("clamps a tiny budget from 'none' to 'low' for models without the capability", async () => {
-    // budget 100 → mapReasoningEffort "none"; gpt-5-mini can't take it → "low"
-    const openai = await captureProviderOptions("gpt-5-mini", 100);
-    expect(openai?.reasoningEffort).toBe("low");
+  it("sends the lowest accepted level when the named entry does not accept 'none'", async () => {
+    // budget 100 → mapReasoningEffort "none"; gpt-5-mini accepts minimal..high.
+    const openai = await captureProviderOptions("gpt-5-mini", 100, "openai/gpt-5-mini");
+    expect(openai?.reasoningEffort).toBe("minimal");
   });
 
-  it("keeps 'none' for GPT-5.2+ which supports it", async () => {
-    const openai = await captureProviderOptions("gpt-5.2-mini", 100);
+  it("keeps 'none' for a named entry that accepts it", async () => {
+    const openai = await captureProviderOptions("gpt-5.2", 100, "openai/gpt-5.2");
     expect(openai?.reasoningEffort).toBe("none");
+  });
+
+  it("sends no effort when nobody states the levels the model accepts", async () => {
+    // Copilot maps to no catalog provider. The level is not guessed from the name.
+    expect(await captureProviderOptions("gpt-5.2", 100)).toBeUndefined();
+    expect(await captureProviderOptions("gpt-5-mini", 10_000)).toBeUndefined();
   });
 });
 
@@ -583,6 +575,7 @@ describe("VercelUnifiedProvider copilot — L1/L2/L3 (mocked streamText)", () =>
         messages: [{ role: "user", content: "hi" }],
         enableThinking: true,
         thinkingBudgetTokens: 10_000,
+        catalogModel: "openai/gpt-5-mini",
         tools: [
           {
             name: "t",
@@ -602,7 +595,7 @@ describe("VercelUnifiedProvider copilot — L1/L2/L3 (mocked streamText)", () =>
     vi.doUnmock("@ai-sdk/openai");
   });
 
-  it("reasoning_effort IS passed on non-tool Copilot turns with gpt-5.x", async () => {
+  it("reasoning_effort IS passed on non-tool Copilot turns with a named gpt-5.x entry", async () => {
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
       stream: (async function* () {
@@ -636,6 +629,7 @@ describe("VercelUnifiedProvider copilot — L1/L2/L3 (mocked streamText)", () =>
         messages: [{ role: "user", content: "hi" }],
         enableThinking: true,
         thinkingBudgetTokens: 10_000,
+        catalogModel: "openai/gpt-5-mini",
       }),
     );
 
@@ -1324,6 +1318,8 @@ describe("custom endpoint request protocol", () => {
         messages: [{ role: "user", content: "hi" }],
         enableThinking: true,
         thinkingBudgetTokens: 10_000,
+        // A custom host does not establish the model; the user names the entry.
+        catalogModel: "openai/gpt-5.4-mini",
         tools: [
           {
             name: "t",

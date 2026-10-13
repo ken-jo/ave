@@ -64,7 +64,12 @@ describe("VercelUnifiedProvider azure-foundry", () => {
     vi.doUnmock("@ai-sdk/azure");
   });
 
-  it("passes Azure reasoning options when thinking is enabled", async () => {
+  it.each([
+    { catalogModel: "azure/gpt-5.4-mini", expected: { azure: { reasoningEffort: "high", reasoningSummary: "detailed" } } },
+    // A deployment alias does not establish its model, and no level is guessed
+    // from the alias: without a named entry the request carries no effort.
+    { catalogModel: undefined, expected: undefined },
+  ])("passes Azure reasoning options only from a named catalog entry ($catalogModel)", async ({ catalogModel, expected }) => {
     vi.resetModules();
     const streamTextSpy = vi.fn(() => ({
       stream: (async function* () {
@@ -104,13 +109,12 @@ describe("VercelUnifiedProvider azure-foundry", () => {
         messages: [{ role: "user", content: "hi" }],
         enableThinking: true,
         thinkingBudgetTokens: 10_000,
+        ...(catalogModel !== undefined ? { catalogModel } : {}),
       }),
     );
 
     const callArg = streamTextSpy.mock.calls[0]![0] as Record<string, unknown>;
-    expect(callArg.providerOptions).toEqual({
-      azure: { reasoningEffort: "high", reasoningSummary: "detailed" },
-    });
+    expect(callArg.providerOptions).toEqual(expected);
     expect(events).toContainEqual({ type: "reasoning_delta", text: "checking" });
 
     vi.doUnmock("ai");

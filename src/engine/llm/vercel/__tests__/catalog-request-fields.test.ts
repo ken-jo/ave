@@ -157,14 +157,27 @@ describe("request fields the catalog decides", () => {
   });
 
   it("preserves effort on a tool request sent over the responses wire at a custom endpoint", async () => {
+    // The custom host does not establish the model; the named entry states its levels.
     const body = await sentBody("openai", "gpt-5.4", {
-      baseUrl: "https://gateway.invalid/v1", thinkingBudgetTokens: 16_000, tools: true,
+      baseUrl: "https://gateway.invalid/v1", thinkingBudgetTokens: 16_000, tools: true, catalogModel: "openai/gpt-5.4",
     });
     expect(body.input).toBeDefined();
     expect(body.reasoning).toMatchObject({ effort: "high" });
     expect(planReasoning({ vendor: "openai", model: "gpt-5.4", enableThinking: true, budgetTokens: 16_000,
+      baseUrl: "https://gateway.invalid/v1", catalogModel: "openai/gpt-5.4", request: { hasTools: true } }))
+      .toMatchObject({ kind: "openai-effort", effort: "high", source: "model-catalog" });
+  });
+
+  it("sends no effort at a custom endpoint whose model nobody names", async () => {
+    // The responses wire is still chosen (request shape), but the levels are not guessed from the name.
+    const body = await sentBody("openai", "gpt-5.4", {
+      baseUrl: "https://gateway.invalid/v1", thinkingBudgetTokens: 16_000, tools: true,
+    });
+    expect(body.input).toBeDefined();
+    expect(body.reasoning).toBeUndefined();
+    expect(planReasoning({ vendor: "openai", model: "gpt-5.4", enableThinking: true, budgetTokens: 16_000,
       baseUrl: "https://gateway.invalid/v1", request: { hasTools: true } }))
-      .toMatchObject({ kind: "openai-effort", effort: "high", source: "name-rule" });
+      .toEqual({ kind: "none", requestedEffort: "high", source: "host-fallback" });
   });
 
   it("sends the lowest level GPT-5 accepts for a budget that maps below it", async () => {
@@ -179,9 +192,11 @@ describe("request fields the catalog decides", () => {
     expect(body.reasoning).toMatchObject({ effort: "none" });
   });
 
-  it("keeps the name rule for a model the catalog does not know", async () => {
+  it("sends no effort to a model the catalog does not know", async () => {
+    // Before slice 7 a name rule sent "low" here, guessed from "gpt-5" in the id.
     const body = await sentBody("openai", "gpt-5.0-fixture", { thinkingBudgetTokens: 100 });
-    expect(body.reasoning).toMatchObject({ effort: "low" });
+    expect(body.reasoning).toBeUndefined();
+    expect(body.reasoning_effort).toBeUndefined();
   });
 
   it("sends no reasoning control to a model the catalog says does not reason", async () => {
@@ -223,20 +238,22 @@ describe("request fields the catalog decides", () => {
     },
   );
 
-  it("keeps the name rule for a reasoning model whose levels the catalog does not list", async () => {
-    // Reasoning supported, no effort list: absent levels are unknown levels,
-    // and reading them as "none" dropped the effort the name rule sends.
+  it("sends no effort to a reasoning model whose levels the catalog does not list", async () => {
+    // Reasoning supported, no effort list: the levels are unknown, so no
+    // level is sent rather than one guessed from the name.
     installModelCatalog({
       ...bundled,
       providers: { ...bundled.providers, openai: { models: { "gpt-5.4-nano": { id: "gpt-5.4-nano", limits: { context: 400_000 }, reasoning: { supported: true } } } } },
     } as ModelCatalogDocument);
     const body = await sentBody("openai", "gpt-5.4-nano", { thinkingBudgetTokens: 16_000 });
-    expect((body.reasoning as { effort?: unknown } | undefined)?.effort).toBe("high");
+    expect(body.reasoning).toBeUndefined();
+    expect(planReasoning({ vendor: "openai", model: "gpt-5.4-nano", enableThinking: true, budgetTokens: 16_000, request: { hasTools: false } }))
+      .toEqual({ kind: "none", requestedEffort: "high", source: "host-fallback" });
   });
 
   it("sends no reasoning effort to a Claude model on Copilot", async () => {
-    // Copilot serves GitHub Models, which the catalog does not describe; the
-    // name rule sends reasoning_effort only to OpenAI reasoning models.
+    // Copilot serves GitHub Models, which the catalog does not describe, and
+    // nothing states the model's reasoning levels.
     const body = await sentBody("copilot", "claude-sonnet-4.6", { thinkingBudgetTokens: 16_000 });
     expect(body.reasoning_effort).toBeUndefined();
     expect(body.reasoning).toBeUndefined();
@@ -244,15 +261,16 @@ describe("request fields the catalog decides", () => {
 
   it("records the reasoning a GPT-5 tool turn on Chat Completions actually sends", async () => {
     // Copilot talks Chat Completions, which answers 400 to reasoning_effort with tools on GPT-5.x.
+    const catalogModel = "openai/gpt-5.4";
     const request = { hasTools: true };
-    const plan = planReasoning({ vendor: "copilot", model: "gpt-5.4", enableThinking: true, budgetTokens: 16_000, request });
+    const plan = planReasoning({ vendor: "copilot", model: "gpt-5.4", catalogModel, enableThinking: true, budgetTokens: 16_000, request });
     expect(plan).toMatchObject({ kind: "none", requestedEffort: "high", suppressed: "chat-completions-tool-turn" });
-    const withTools = await sentBody("copilot", "gpt-5.4", { thinkingBudgetTokens: 16_000, tools: true });
+    const withTools = await sentBody("copilot", "gpt-5.4", { thinkingBudgetTokens: 16_000, tools: true, catalogModel });
     expect(withTools.reasoning_effort).toBeUndefined();
     // Without tools the same route carries the effort, and the plan says so.
-    expect(planReasoning({ vendor: "copilot", model: "gpt-5.4", enableThinking: true, budgetTokens: 16_000, request: { ...request, hasTools: false } }))
+    expect(planReasoning({ vendor: "copilot", model: "gpt-5.4", catalogModel, enableThinking: true, budgetTokens: 16_000, request: { ...request, hasTools: false } }))
       .toMatchObject({ kind: "openai-effort", effort: "high" });
-    expect((await sentBody("copilot", "gpt-5.4", { thinkingBudgetTokens: 16_000 })).reasoning_effort).toBe("high");
+    expect((await sentBody("copilot", "gpt-5.4", { thinkingBudgetTokens: 16_000, catalogModel })).reasoning_effort).toBe("high");
   });
 
   it("lowers an adaptive Claude effort to the nearest level the model accepts", async () => {

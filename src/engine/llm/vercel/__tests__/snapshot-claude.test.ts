@@ -22,7 +22,8 @@ import {
   genericToModelMessages,
   fullStreamToStreamEvent,
 } from "../adapter.js";
-import { mapBudgetToEffort, supportsAdaptiveThinking } from "../../reasoning-plan.js";
+import { mapBudgetToEffort } from "../../reasoning-plan.js";
+import { claudeRequestShape } from "../../../../shared/model-host-policy.js";
 import { extractSignatureSafely } from "../signature-shim.js";
 
 
@@ -44,17 +45,17 @@ describe("Claude helpers — budget → thinking effort mapping", () => {
   });
 
   it("separates adaptive-capable versions from numeric-only versions and release dates", () => {
-    expect(supportsAdaptiveThinking("claude-sonnet-4-5")).toBe(false);
-    expect(supportsAdaptiveThinking("claude-sonnet-4-6")).toBe(true);
-    expect(supportsAdaptiveThinking("claude-opus-4.6")).toBe(true);
-    expect(supportsAdaptiveThinking("claude-opus-4")).toBe(false);
-    expect(supportsAdaptiveThinking("claude-haiku-4")).toBe(false);
-    expect(supportsAdaptiveThinking("claude-sonnet-4-20250514")).toBe(false);
+    expect(claudeRequestShape("claude-sonnet-4-5").adaptiveThinking).toBe(false);
+    expect(claudeRequestShape("claude-sonnet-4-6").adaptiveThinking).toBe(true);
+    expect(claudeRequestShape("claude-opus-4.6").adaptiveThinking).toBe(true);
+    expect(claudeRequestShape("claude-opus-4").adaptiveThinking).toBe(false);
+    expect(claudeRequestShape("claude-haiku-4").adaptiveThinking).toBe(false);
+    expect(claudeRequestShape("claude-sonnet-4-20250514").adaptiveThinking).toBe(false);
     // Future-proof: claude-5.x and later are picked up without code changes.
-    expect(supportsAdaptiveThinking("claude-sonnet-5-20270101")).toBe(true);
-    expect(supportsAdaptiveThinking("claude-5-opus")).toBe(true);
-    expect(supportsAdaptiveThinking("claude-3-5-sonnet-latest")).toBe(false);
-    expect(supportsAdaptiveThinking("claude-3-opus-20240229")).toBe(false);
+    expect(claudeRequestShape("claude-sonnet-5-20270101").adaptiveThinking).toBe(true);
+    expect(claudeRequestShape("claude-5-opus").adaptiveThinking).toBe(true);
+    expect(claudeRequestShape("claude-3-5-sonnet-latest").adaptiveThinking).toBe(false);
+    expect(claudeRequestShape("claude-3-opus-20240229").adaptiveThinking).toBe(false);
   });
 });
 

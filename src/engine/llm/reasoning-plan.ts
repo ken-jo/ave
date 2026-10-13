@@ -2,39 +2,33 @@
  * Which reasoning control a request carries, and at what level.
  *
  * The catalog states, per model, whether it reasons and which qualitative
- * effort levels it accepts. Where it knows the model, that list decides: the
+ * effort levels it accepts. Where it states them, that list decides: the
  * level Ave's budget maps to is sent if the model accepts it, otherwise the
  * nearest accepted level below it (the lowest accepted level when none is
- * below), and the change is reported. Where the catalog does not know the
- * model, the name rules below decide, as they did before the catalog — they
- * are removed in issue #2501's last slice.
+ * below), and the change is reported. Where nobody states the levels — the
+ * catalog does not know the model, lists no levels for it, or the route's
+ * endpoint does not establish its identity — an OpenAI-family request carries
+ * no `reasoning_effort` (source `host-fallback`): a level guessed from the
+ * model's name is a 400 on a model that does not take it. Naming the entry the
+ * endpoint serves (`llm.vendors.<vendor>.catalogModel`) supplies the levels.
  *
  * Request SHAPE stays out of this: whether a Claude model takes adaptive or
  * numeric thinking, whether numeric thinking interleaves with tools, and
  * whether an OpenAI model is reached over the Responses API are properties of
  * the wire the catalog does not describe (it lists effort levels for models
- * that take numeric thinking), so they remain host rules.
+ * that take numeric thinking), so they are host rules in the request-shape
+ * table (`shared/model-host-policy.ts`).
  *
  * The adapter applies {@link planReasoning}; the conversation loop records the
  * same function's answer in the turn summary, so the record is what was sent.
  */
 import { catalogModelFor } from "../../shared/context-budget.js";
 import type { LLMVendor } from "../../shared/llm-vendor-defaults.js";
-
-/** Name rule: an OpenAI-family model that takes `reasoning_effort` (gpt-5.x, o-series). */
-export function isOpenAIReasoningModel(model: string): boolean {
-  const m = model.toLowerCase();
-  return (
-    m.includes("gpt-5") ||
-    m.includes("o1") ||
-    m.includes("o3") ||
-    m.includes("o4")
-  );
-}
+import { claudeRequestShape, usesOpenAIResponsesWire } from "../../shared/model-host-policy.js";
 
 /**
  * Map Ave thinking budget (tokens) to OpenAI reasoning_effort.
- *   budget ≤   500 → "none"    (GPT-5.2+ only; callers ignore for older models)
+ *   budget ≤   500 → "none"
  *   budget ≤ 3 000 → "low"
  *   budget > 8 000 → "high"
  *   else           → "medium"
@@ -46,26 +40,6 @@ export function mapReasoningEffort(
   if (budget <= 3000) return "low";
   if (budget > 8000) return "high";
   return "medium";
-}
-
-/**
- * Whether a model accepts `reasoning_effort: "none"`. Only GPT-5.2+ (and later
- * GPT majors) support it; o-series (o1/o3/o4) and GPT-5.0/5.1 reject it with a
- * 400. `mapReasoningEffort` can emit "none" for tiny budgets, so callers must
- * clamp it to "low" for models without the capability.
- */
-export function supportsReasoningEffortNone(model: string): boolean {
-  const m = model.toLowerCase();
-  const gpt5 = m.match(/gpt-5(?:\.(\d+))?/);
-  if (gpt5) return Number(gpt5[1] ?? "0") >= 2;
-  const gptMajor = m.match(/gpt-(\d+)/);
-  if (gptMajor) return Number(gptMajor[1]) >= 6;
-  return false;
-}
-
-/** The native request protocol selected for this vendor and model. */
-export function usesOpenAIResponsesWire(vendor: LLMVendor, modelId: string): boolean {
-  return vendor === "azure-foundry" || (vendor === "openai" && isOpenAIReasoningModel(modelId));
 }
 
 /**
@@ -85,19 +59,6 @@ export function mapBudgetToEffort(
   return "max";
 }
 
-/**
- * Adaptive thinking starts with version 4.6. A release date after the major
- * version is not a minor version; earlier models retain numeric thinking.
- */
-export function supportsAdaptiveThinking(modelId: string): boolean {
-  const m = modelId.toLowerCase();
-  const match = m.match(/claude-(?:[a-z]+-)?(\d+)(?:[-.](\d{1,2})(?=$|[-.]))?/);
-  if (!match) return false;
-  const major = Number(match[1]);
-  const minor = Number(match[2] ?? 0);
-  return major > 4 || (major === 4 && minor >= 6);
-}
-
 /** Qualitative levels from least to most reasoning; `default` is not a level. */
 const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 type EffortLevel = (typeof EFFORT_ORDER)[number];
@@ -110,6 +71,8 @@ function nearestAcceptedEffort(requested: EffortLevel, accepted: readonly string
   const below = levels.filter((level) => EFFORT_ORDER.indexOf(level) <= at);
   return below.at(-1) ?? levels[0];
 }
+
+export type ReasoningPlanSource = "model-catalog" | "request-shape" | "host-fallback";
 
 /** What a request's reasoning control is, as the adapter sends it. */
 export interface ReasoningPlan {
@@ -126,8 +89,13 @@ export interface ReasoningPlan {
   readonly effort?: EffortLevel;
   /** The numeric budget, for `anthropic-numeric`. */
   readonly budgetTokens?: number;
-  /** Which knowledge decided: the catalog entry, or the name rules for a model it does not know. */
-  readonly source: "model-catalog" | "name-rule";
+  /**
+   * Which knowledge decided: the catalog entry; the request-shape table, for a
+   * Claude model whose reasoning the catalog does not state (adaptive or
+   * numeric thinking is a wire rule); or the host fallback, which sends no
+   * effort when nobody states the levels an OpenAI-family model accepts.
+   */
+  readonly source: ReasoningPlanSource;
   /**
    * The effort the route would carry was dropped for this request: a tool turn
    * on Chat Completions (see {@link chatCompletionsRejectsToolTurnEffort}).
@@ -191,18 +159,15 @@ function planReasoningLevel(params: {
   }
   if (OPENAI_FAMILY.has(params.vendor)) {
     const requestedEffort = mapReasoningEffort(params.budgetTokens);
-    // A reasoning model whose levels the catalog does not list has unknown
-    // levels, not none (absent means unknown): the name rule decides for it.
     const catalogEffort = entry?.reasoning?.supported === true && accepted ? nearestAcceptedEffort(requestedEffort, accepted) : undefined;
     if (catalogEffort !== undefined) return { kind: "openai-effort", requestedEffort, effort: catalogEffort, source: "model-catalog" };
-    if (!isOpenAIReasoningModel(params.model)) return { kind: "none", source: "name-rule" };
-    // "none" is GPT-5.2+ only by name; o-series / GPT-5.0-5.1 reject it with a 400.
-    const effort = requestedEffort === "none" && !supportsReasoningEffortNone(params.model) ? "low" : requestedEffort;
-    return { kind: "openai-effort", requestedEffort, effort, source: "name-rule" };
+    // Nobody states the levels this model accepts (absent means unknown, not
+    // none): the request carries no effort rather than a guessed one.
+    return { kind: "none", requestedEffort, source: "host-fallback" };
   }
   if (params.vendor === "claude") {
-    const source = entry?.reasoning !== undefined ? "model-catalog" : "name-rule";
-    if (!supportsAdaptiveThinking(params.model)) {
+    const source = entry?.reasoning !== undefined ? "model-catalog" : "request-shape";
+    if (!claudeRequestShape(params.model).adaptiveThinking) {
       return { kind: "anthropic-numeric", budgetTokens: params.budgetTokens, source };
     }
     const requestedEffort = mapBudgetToEffort(params.budgetTokens);

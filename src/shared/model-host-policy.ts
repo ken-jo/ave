@@ -102,6 +102,12 @@ const CLAUDE_REQUEST_SHAPES: readonly ClaudeRequestShapeRow[] = [
 
 /** The request-shape features the Anthropic wire carries for a model. */
 export interface ClaudeRequestShape {
+  /**
+   * Thinking is sent as `{type: "adaptive"}` with an effort, not as a numeric
+   * budget: version 4.6 onward. A release date after the major version is not
+   * a minor version.
+   */
+  readonly adaptiveThinking: boolean;
   readonly context1MBeta: boolean;
   readonly interleavedNumericThinking: boolean;
 }
@@ -109,9 +115,32 @@ export interface ClaudeRequestShape {
 export function claudeRequestShape(model: string): ClaudeRequestShape {
   const rows = CLAUDE_REQUEST_SHAPES.filter((row) => row.ids.test(model));
   return {
+    adaptiveThinking: takesAdaptiveThinking(model),
     context1MBeta: rows.some((row) => row.context1MBeta === true),
     interleavedNumericThinking: rows.some((row) => row.interleavedNumericThinking === true),
   };
+}
+
+function takesAdaptiveThinking(model: string): boolean {
+  const match = model.toLowerCase().match(/claude-(?:[a-z]+-)?(\d+)(?:[-.](\d{1,2})(?=$|[-.]))?/u);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2] ?? 0);
+  return major > 4 || (major === 4 && minor >= 6);
+}
+
+/**
+ * Whether a request goes over OpenAI's Responses API rather than Chat
+ * Completions: every Azure Foundry request, and an OpenAI request for the
+ * reasoning families (gpt-5.x, the o-series), which the Responses API serves
+ * with reasoning summaries. A wire choice, not a statement that the model
+ * reasons: whether a request carries `reasoning_effort` is the catalog's to say.
+ */
+export function usesOpenAIResponsesWire(vendor: string, model: string): boolean {
+  if (vendor === "azure-foundry") return true;
+  if (vendor !== "openai") return false;
+  const id = model.toLowerCase();
+  return ["gpt-5", "o1", "o3", "o4"].some((family) => id.includes(family));
 }
 
 /**

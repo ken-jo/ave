@@ -53,7 +53,7 @@ import {
   withProviderErrorClassification,
   type ProviderErrorDiagnostics,
 } from "../provider-error-diagnostics.js";
-import { claudeBetaHeaders, claudeRequestShape } from "../../../shared/model-host-policy.js";
+import { claudeBetaHeaders, claudeRequestShape, usesOpenAIResponsesWire } from "../../../shared/model-host-policy.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import {
   normalizeProviderToolAliasText,
@@ -64,7 +64,7 @@ import { TOOL_SEARCH_TOOL_NAME } from "../../../tools/registry.js";
 import type { MarketplaceInstalledProviderPreset } from "../../../shared/marketplace-package-assets.js";
 import { isGuardedInsecureCredentialedModelProviderFetch } from "../marketplace-provider-fetch.js";
 import { normalizeOutputTokenLimit } from "../output-token-limit.js";
-import { planReasoning, usesOpenAIResponsesWire } from "../reasoning-plan.js";
+import { planReasoning } from "../reasoning-plan.js";
 import {
   resolveInputModalities,
   resolveOutputCeiling,
@@ -366,7 +366,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         ? params.thinkingBudgetTokens ?? 10_000
         : normalizeLlmThinkingBudgetTokens(params.requestedThinkingBudgetTokens, outputTokenLimit);
       // Which reasoning control and level: the catalog's accepted effort
-      // levels where it knows the model, the name rules where it does not
+      // levels where it states them, no effort where nobody does
       // (reasoning-plan.ts). The turn summary records this same answer.
       // The plan also drops the effort on a GPT-5.x tool turn over Chat
       // Completions (chatCompletionsRejectsToolTurnEffort), the same rule the
