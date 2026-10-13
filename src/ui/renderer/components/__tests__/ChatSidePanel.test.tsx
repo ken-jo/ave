@@ -25,6 +25,9 @@ import { ChatContextProvider, type ChatContextValue } from "../../context/ChatCo
 import type { SideChatOpenRequest } from "../SideChatView.js";
 import type { AgentSpawnEvent } from "../../../../shared/subagent-events.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../../../../shared/subagent-transcript.js";
+import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
+
+type ChildTranscriptResult = Awaited<ReturnType<NonNullable<AveApi["chatGetSubAgentTranscript"]>>>;
 
 let nativeContextActionHandler: ((action: NativeContextMenuAction) => void) | null = null;
 let previousWindowAve: unknown;
@@ -152,6 +155,29 @@ function HarnessPanel({
       onOpenActivityItem={onOpenActivityItem}
     />
   );
+}
+
+function renderChildTranscript(apiMock: AveApi, overrides: Partial<SubAgentSpawn> = {}) {
+  renderPanel(
+    <HarnessPanel
+      api={apiMock}
+      sessionId="parent-session-1"
+      targets={[]}
+      files={[]}
+      initialSelectedId={null}
+      subAgentSpawns={[{
+        spawnId: "child-spawn",
+        childSessionId: "child-1",
+        title: "Child transcript",
+        status: "done",
+        entries: [],
+        toolCallCount: 0,
+        ...overrides,
+      }]}
+    />,
+  );
+  fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("subagent")));
+  return screen.getByTestId("chat-side-panel-subagent-detail");
 }
 
 async function renderPanelWithRecordedSideChat(
@@ -1699,6 +1725,63 @@ describe("ChatSidePanel", () => {
     expect(apiMock.chatGetSubAgentTranscript).not.toHaveBeenCalled();
   });
 
+  it.each(((["ko", "en"] as const).flatMap((locale) =>
+    (["tile", "side-chat"] as const).flatMap((route) =>
+      (["running", "waiting", "done", "error", "interrupted"] as const).map((status) => ({ locale, route, status })),
+    ),
+  )))(
+    "subagent tab: transcript miss preserves the $status state on the $route path in $locale",
+    async ({ locale, route, status }) => {
+      const previousLocale = getLocale();
+      setLocale(locale);
+      try {
+        const pending = deferred<SubAgentTranscriptResult>();
+        const apiMock = api();
+        const reader = vi.fn(() => pending.promise);
+        const otherReader = route === "side-chat" ? apiMock.chatGetSubAgentTranscript : apiMock.sideChat!.getSubAgentTranscript;
+        if (route === "side-chat") {
+          delete apiMock.chatGetSubAgentTranscript;
+          apiMock.sideChat!.getSubAgentTranscript = reader;
+        } else {
+          apiMock.chatGetSubAgentTranscript = reader;
+        }
+        const parentSessionId = route === "side-chat" ? "side-7" : "tile-session";
+        await renderPanelWithRecordedSideChat(apiMock, [{
+          spawnId: "side-spawn-1",
+          parentSessionId,
+          childSessionId: "side-child-1",
+          title: "Side researcher",
+          status,
+          entries: [],
+          toolCallCount: 0,
+        }]);
+        addTabViaMenu("subagent");
+        await waitFor(() => expect(reader).toHaveBeenCalledExactlyOnceWith({
+          originSessionId: parentSessionId, childSessionId: "side-child-1",
+        }));
+        const detail = screen.getByTestId("chat-side-panel-subagent-transcript");
+        expect(within(detail).getByRole("status")).toHaveTextContent(t("subAgentCard.transcriptLoading"));
+        await act(async () => {
+          pending.resolve({ ok: false, error: "sub-agent-transcript-not-found" });
+          await pending.promise;
+        });
+        if (status === "running" || status === "waiting") {
+          expect(detail.textContent).toBe(t(status === "running" ? "subAgentCard.statusRunning" : "subAgentCard.statusWaiting"));
+          expect(within(detail).queryByRole("alert")).toBeNull();
+        } else {
+          expect(within(detail).getByRole("alert")).toHaveTextContent(locale === "ko"
+            ? "대화 기록을 불러오지 못했습니다."
+            : "Couldn't load transcript.");
+        }
+        expect(within(detail).queryByRole("status")).toBeNull();
+        expect(detail).not.toHaveTextContent("sub-agent-transcript-not-found");
+        expect(otherReader).not.toHaveBeenCalled();
+      } finally {
+        act(() => setLocale(previousLocale));
+      }
+    },
+  );
+
   it.each(["missing", "denied", "rejected"] as const)(
     "subagent tab: side-chat transcript read keeps live entries without tile fallback when %s",
     async (readState) => {
@@ -1709,6 +1792,11 @@ describe("ChatSidePanel", () => {
         messages: [{ index: 0, role: "assistant", content: "Tile fallback transcript" }],
       }));
       if (readState === "missing") delete apiMock.sideChat!.getSubAgentTranscript;
+      if (readState === "denied") {
+        apiMock.sideChat!.getSubAgentTranscript = vi.fn(async (): Promise<SubAgentTranscriptResult> => ({
+          ok: false, error: "sub-agent-reference-not-found",
+        }));
+      }
       if (readState === "rejected") {
         apiMock.sideChat!.getSubAgentTranscript = vi.fn(async () => { throw new Error("read unavailable"); });
       }
@@ -1864,10 +1952,10 @@ describe("ChatSidePanel", () => {
     // keeps receiving their frames.
     const spawnHandlers = new Set<(event: AgentSpawnEvent) => void>();
     const base = api();
-    (base.sideChat!.load as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ok: true,
-      sessionId: "side-7",
-      messages: [],
+    const sideChatReady = deferred<void>();
+    (base.sideChat!.load as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      await sideChatReady.promise;
+      return { ok: true, sessionId: "side-7", messages: [] };
     });
     const apiMock = {
       ...base,
@@ -1894,6 +1982,11 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("side-chat")));
     await waitFor(() => expect(base.sideChat!.load).toHaveBeenCalledWith("side-7"));
+    // Record the loaded session's ownership before emitting its first spawn.
+    await act(async () => {
+      sideChatReady.resolve(undefined);
+      await sideChatReady.promise;
+    });
     await emit({
       type: "start",
       spawnId: "side-spawn-1",
@@ -2054,6 +2147,264 @@ describe("ChatSidePanel", () => {
       const detail = screen.getByTestId("chat-side-panel-subagent-detail");
       expect(detail.textContent).toContain("hydrated original transcript");
       expect(detail.textContent).toContain("live resume tail");
+    });
+  });
+
+  it.each(["success", "not-found", "reject"] as const)("subagent tab: keeps the selected child's transcript when an earlier %s response arrives late", async (responseMode) => {
+    const firstA = deferred<ChildTranscriptResult>();
+    const secondA = deferred<ChildTranscriptResult>();
+    const pendingB = deferred<ChildTranscriptResult>();
+    const responsesA = [firstA, secondA];
+    const apiMock = api();
+    apiMock.chatGetSubAgentTranscript = vi.fn<NonNullable<AveApi["chatGetSubAgentTranscript"]>>(async ({ childSessionId }) => {
+      const response = childSessionId === "child-a" ? responsesA.shift() : pendingB;
+      if (!response) throw new Error("Child transcript response was not prepared");
+      const result = await response.promise;
+      if (response === firstA && responseMode === "reject") throw new Error("Earlier child request failed");
+      return result;
+    });
+    renderPanel(
+      <HarnessPanel
+        api={apiMock}
+        sessionId="parent-session-1"
+        targets={[]}
+        files={[]}
+        initialSelectedId={null}
+        subAgentSpawns={[
+          { spawnId: "spawn-a", childSessionId: "child-a", title: "Child A", status: "done", entries: [], toolCallCount: 0 },
+          { spawnId: "spawn-b", childSessionId: "child-b", title: "Child B", status: "done", entries: [], toolCallCount: 0 },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("subagent")));
+    await waitFor(() => expect(apiMock.chatGetSubAgentTranscript).toHaveBeenNthCalledWith(1, {
+      originSessionId: "parent-session-1", childSessionId: "child-a",
+    }));
+
+    fireEvent.click(screen.getByRole("option", { name: /Child B/ }));
+    await waitFor(() => expect(apiMock.chatGetSubAgentTranscript).toHaveBeenNthCalledWith(2, {
+      originSessionId: "parent-session-1", childSessionId: "child-b",
+    }));
+    await act(async () => {
+      pendingB.resolve({ ok: true, childSessionId: "child-b", messages: [{ index: 0, role: "assistant", content: "Selected child B transcript" }] });
+      await pendingB.promise;
+    });
+    const detail = screen.getByTestId("chat-side-panel-subagent-detail");
+    expect(detail.textContent).toContain("Selected child B transcript");
+
+    await act(async () => {
+      firstA.resolve(responseMode === "not-found"
+        ? { ok: false, error: "not-found" }
+        : { ok: true, childSessionId: "child-a", messages: [{ index: 0, role: "assistant", content: "Earlier child A transcript" }] });
+      await firstA.promise;
+    });
+    expect(detail.textContent).toContain("Selected child B transcript");
+    expect(detail.textContent).not.toContain("Earlier child A transcript");
+    expect(within(detail).queryByRole("alert")).toBeNull();
+
+    fireEvent.click(screen.getByRole("option", { name: /Child A/ }));
+    await waitFor(() => expect(apiMock.chatGetSubAgentTranscript).toHaveBeenNthCalledWith(3, {
+      originSessionId: "parent-session-1", childSessionId: "child-a",
+    }));
+    expect(detail.textContent).not.toContain("Selected child B transcript");
+    await act(async () => {
+      secondA.resolve({ ok: true, childSessionId: "child-a", messages: [{ index: 0, role: "assistant", content: "Fresh child A transcript" }] });
+      await secondA.promise;
+    });
+    expect(detail.textContent).toContain("Fresh child A transcript");
+    expect(detail.textContent).not.toContain("Selected child B transcript");
+    expect(detail.textContent).not.toContain("Earlier child A transcript");
+    expect(apiMock.chatGetSubAgentTranscript).toHaveBeenCalledTimes(3);
+  });
+
+  describe.each([
+    { locale: "en", loading: "Loading transcript…", failed: "Couldn't load transcript.", summary: "Summary" },
+    { locale: "ko", loading: "대화 기록을 불러오는 중…", failed: "대화 기록을 불러오지 못했습니다.", summary: "요약" },
+  ] as const)("subagent transcript hydration in $locale", ({ locale, loading, failed, summary }) => {
+    let previousLocale = getLocale();
+    beforeEach(() => {
+      previousLocale = getLocale();
+      setLocale(locale);
+    });
+    afterEach(() => setLocale(previousLocale));
+
+    it("shows loading while the child transcript is pending", () => {
+      const pending = deferred<ChildTranscriptResult>();
+      const apiMock = api();
+      apiMock.chatGetSubAgentTranscript = vi.fn(() => pending.promise);
+      const detail = renderChildTranscript(apiMock);
+
+      expect(within(detail).getByRole("status")).toHaveTextContent(loading);
+      expect(detail.textContent).not.toContain(summary);
+      expect(within(detail).queryByRole("alert")).toBeNull();
+    });
+
+    it.each(["not-found", "reject"] as const)("shows a localized transcript failure after %s", async (responseMode) => {
+      const pending = deferred<ChildTranscriptResult>();
+      const apiMock = api();
+      apiMock.chatGetSubAgentTranscript = vi.fn(async () => {
+        const response = await pending.promise;
+        if (responseMode === "reject") throw new Error("Host-only transport details");
+        return response;
+      });
+      const detail = renderChildTranscript(apiMock);
+      await waitFor(() => expect(apiMock.chatGetSubAgentTranscript).toHaveBeenCalledOnce());
+
+      await act(async () => {
+        pending.resolve({ ok: false, error: "Host-only transport details" });
+        await pending.promise;
+      });
+      expect(within(detail).getByRole("alert")).toHaveTextContent(failed);
+      expect(within(detail).queryByRole("status")).toBeNull();
+      expect(detail.textContent).not.toContain(summary);
+      expect(detail.textContent).not.toContain("Host-only transport details");
+    });
+
+    it("keeps the summary for a successfully loaded empty transcript", async () => {
+      const pending = deferred<ChildTranscriptResult>();
+      const apiMock = api();
+      apiMock.chatGetSubAgentTranscript = vi.fn(() => pending.promise);
+      const detail = renderChildTranscript(apiMock);
+      await waitFor(() => expect(apiMock.chatGetSubAgentTranscript).toHaveBeenCalledOnce());
+
+      await act(async () => {
+        pending.resolve({ ok: true, childSessionId: "child-1", messages: [] });
+        await pending.promise;
+      });
+      expect(detail).toHaveTextContent(summary);
+      expect(within(detail).queryByRole("status")).toBeNull();
+      expect(within(detail).queryByRole("alert")).toBeNull();
+    });
+  });
+
+  describe("subagent transcript hydration across spawn status", () => {
+    it.each([
+      ["running", "not-found"], ["running", "reject"],
+      ["waiting", "not-found"], ["waiting", "reject"],
+    ] as const)("keeps the %s label after a %s transcript read", async (status, responseMode) => {
+      const pending = deferred<ChildTranscriptResult>();
+      const apiMock = api();
+      apiMock.chatGetSubAgentTranscript = vi.fn(async () => {
+        const response = await pending.promise;
+        if (responseMode === "reject") throw new Error("Transcript is not persisted yet");
+        return response;
+      });
+      const detail = renderChildTranscript(apiMock, { status });
+      await waitFor(() => expect(apiMock.chatGetSubAgentTranscript).toHaveBeenCalledOnce());
+      await act(async () => {
+        pending.resolve({ ok: false, error: "sub-agent-reference-not-found" });
+        await pending.promise;
+      });
+      expect(within(detail).queryByRole("alert")).toBeNull();
+      expect(detail).toHaveTextContent(t(status === "running" ? "subAgentCard.statusRunning" : "subAgentCard.statusWaiting"));
+    });
+
+    it.each(["not-found", "reject"] as const)("keeps running live entries after a %s transcript read", async (responseMode) => {
+      const pending = deferred<ChildTranscriptResult>();
+      const apiMock = api();
+      apiMock.chatGetSubAgentTranscript = vi.fn(async () => {
+        const response = await pending.promise;
+        if (responseMode === "reject") throw new Error("Transcript is not persisted yet");
+        return response;
+      });
+      const detail = renderChildTranscript(apiMock, {
+        status: "running", entries: [{ kind: "assistant", text: "Live child transcript", streaming: true }],
+      });
+      await waitFor(() => expect(apiMock.chatGetSubAgentTranscript).toHaveBeenCalledOnce());
+      await act(async () => {
+        pending.resolve({ ok: false, error: "sub-agent-transcript-not-found" });
+        await pending.promise;
+      });
+      expect(detail).toHaveTextContent("Live child transcript");
+      expect(within(detail).queryByRole("alert")).toBeNull();
+    });
+
+    it.each([
+      ["running", "done"], ["running", "error"], ["running", "interrupted"],
+      ["waiting", "done"], ["waiting", "error"], ["waiting", "interrupted"],
+    ] as const)("re-requests an earlier miss when %s becomes %s", async (initialStatus, terminalStatus) => {
+      const initial = deferred<ChildTranscriptResult>();
+      const terminal = deferred<ChildTranscriptResult>();
+      const apiMock = api();
+      apiMock.chatGetSubAgentTranscript = vi.fn<NonNullable<AveApi["chatGetSubAgentTranscript"]>>()
+        .mockReturnValueOnce(initial.promise).mockReturnValueOnce(terminal.promise);
+      const panel = (status: SubAgentSpawn["status"]) => (
+        <HarnessPanel api={apiMock} sessionId="parent-session-1" targets={[]} files={[]} initialSelectedId={null}
+          subAgentSpawns={[{ spawnId: "child-spawn", childSessionId: "child-1", title: "Child transcript", status, entries: [], toolCallCount: 0 }]} />
+      );
+      const view = renderPanel(panel(initialStatus));
+      fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("subagent")));
+      await waitFor(() => expect(apiMock.chatGetSubAgentTranscript).toHaveBeenCalledOnce());
+      await act(async () => {
+        initial.resolve({ ok: false, error: "sub-agent-transcript-not-found" });
+        await initial.promise;
+      });
+      view.rerender(panel(terminalStatus));
+      await waitFor(() => expect(apiMock.chatGetSubAgentTranscript).toHaveBeenCalledTimes(2));
+      await act(async () => {
+        terminal.resolve({ ok: true, childSessionId: "child-1", messages: [{ index: 0, role: "assistant", content: "Terminal persisted child history" }] });
+        await terminal.promise;
+      });
+      const detail = screen.getByTestId("chat-side-panel-subagent-detail");
+      expect(detail).toHaveTextContent("Terminal persisted child history");
+      expect(within(detail).queryByRole("alert")).toBeNull();
+      expect(apiMock.chatGetSubAgentTranscript).toHaveBeenNthCalledWith(2, {
+        originSessionId: "parent-session-1", childSessionId: "child-1",
+      });
+    });
+
+    it.each([
+      ["done", "not-found"], ["done", "reject"],
+      ["error", "not-found"], ["error", "reject"],
+      ["interrupted", "not-found"], ["interrupted", "reject"],
+    ] as const)("keeps the failure alert for %s after %s", async (status, responseMode) => {
+      const pending = deferred<ChildTranscriptResult>();
+      const apiMock = api();
+      apiMock.chatGetSubAgentTranscript = vi.fn(async () => {
+        const response = await pending.promise;
+        if (responseMode === "reject") throw new Error("Transcript read failed");
+        return response;
+      });
+      const detail = renderChildTranscript(apiMock, { status });
+      await waitFor(() => expect(apiMock.chatGetSubAgentTranscript).toHaveBeenCalledOnce());
+      await act(async () => {
+        pending.resolve({ ok: false, error: "sub-agent-transcript-not-found" });
+        await pending.promise;
+      });
+      expect(within(detail).getByRole("alert")).toHaveTextContent(t("subAgentCard.transcriptLoadFailed"));
+    });
+
+    it.each(["not-found", "reject"] as const)("ignores a late running %s after terminal hydration succeeds", async (responseMode) => {
+      const initial = deferred<ChildTranscriptResult>();
+      const terminal = deferred<ChildTranscriptResult>();
+      const apiMock = api();
+      apiMock.chatGetSubAgentTranscript = vi.fn<NonNullable<AveApi["chatGetSubAgentTranscript"]>>()
+        .mockImplementationOnce(async () => {
+          const response = await initial.promise;
+          if (responseMode === "reject") throw new Error("Earlier transcript read failed");
+          return response;
+        }).mockReturnValueOnce(terminal.promise);
+      const panel = (status: SubAgentSpawn["status"]) => (
+        <HarnessPanel api={apiMock} sessionId="parent-session-1" targets={[]} files={[]} initialSelectedId={null}
+          subAgentSpawns={[{ spawnId: "child-spawn", childSessionId: "child-1", title: "Child transcript", status, entries: [], toolCallCount: 0 }]} />
+      );
+      const view = renderPanel(panel("running"));
+      fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("subagent")));
+      await waitFor(() => expect(apiMock.chatGetSubAgentTranscript).toHaveBeenCalledOnce());
+      view.rerender(panel("done"));
+      await waitFor(() => expect(apiMock.chatGetSubAgentTranscript).toHaveBeenCalledTimes(2));
+      await act(async () => {
+        terminal.resolve({ ok: true, childSessionId: "child-1", messages: [{ index: 0, role: "assistant", content: "Fresh terminal history" }] });
+        await terminal.promise;
+      });
+      const detail = screen.getByTestId("chat-side-panel-subagent-detail");
+      expect(detail).toHaveTextContent("Fresh terminal history");
+      await act(async () => {
+        initial.resolve({ ok: false, error: "sub-agent-transcript-not-found" });
+        await initial.promise;
+      });
+      expect(detail).toHaveTextContent("Fresh terminal history");
+      expect(within(detail).queryByRole("alert")).toBeNull();
     });
   });
 
