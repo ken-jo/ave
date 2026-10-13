@@ -1146,5 +1146,9 @@ describe("colocated operation policy cross-field contract", () => {
     await expect(parse(invalid)).rejects.toThrow(
       /valid only for a read operation/,
     );
+    // The error path names the real _meta key, not a stale namespace.
+    await expect(parse(invalid)).rejects.toThrow(
+      /\._meta\.ave\/operationPolicy\.operations\.save\.successfulResultStatuses'/,
+    );
   });
 });

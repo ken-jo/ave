@@ -10,6 +10,7 @@ import {
   repositoryIdentity,
 } from "../../scripts/lib/repository-identity.mjs";
 import { workflowJobs } from "../../src/__tests__/support/workflow-source.js";
+import { HOST_PROTOCOL_NOTIFICATIONS, isHostApiMethod } from "../../src/plugins/isolation/host-api-wire.js";
 
 /**
  * `package.json` `repository` names this repository once (installed apps
@@ -123,18 +124,56 @@ const REPOSITORY_SLUG =
   [...new Set([identity.repo, "ave"])].map(escapeRegExp).join("|") +
   String.raw`)(?:\.git)?`;
 
-/**
- * The forms that name a GitHub repository. A quoted slug must end the quoted
- * token: `"notifications/ave/log"` is a path in the plugin host protocol's
- * `ave/*` namespace, not the repository `notifications/ave`.
- */
+/** The forms that name a GitHub repository. A quoted slug may continue into a
+ *  path (`"owner/repo/releases/..."`), unless the quoted token is a plugin host
+ *  protocol name (see {@link isProtocolName}). */
 const REPOSITORY_REFERENCES = [
   new RegExp(
     String.raw`(?:github\.com[/:]|repos/|-R\s+|--repo[ =]|repository:\s*["']?)` + REPOSITORY_SLUG + String.raw`(?![\w.-])`,
     "gu",
   ),
-  new RegExp(String.raw`["'\x60]` + REPOSITORY_SLUG + String.raw`(?![\w./-])`, "gu"),
+  new RegExp(String.raw`(["'\x60])` + REPOSITORY_SLUG + String.raw`(?![\w.-])`, "gu"),
 ];
+
+/** Notification namespaces (`notifications/ave/`), derived from the protocol's
+ *  own names so a namespace change moves this list with it. */
+const NOTIFICATION_NAMESPACES = [
+  ...new Set(
+    Object.values(HOST_PROTOCOL_NOTIFICATIONS)
+      .map((name) => name.split("/"))
+      .filter((segments) => segments.length > 2)
+      .map((segments) => `${segments[0]}/${segments[1]}/`),
+  ),
+];
+
+/** The golden fixtures keep each method's frames at `methods/<method>.json`. */
+const GOLDEN_METHOD_DIRECTORY = "methods/";
+
+/**
+ * Whether a quoted token is a plugin host protocol name rather than a
+ * repository path: `"notifications/ave/log"` reads as the slug
+ * `notifications/ave` but is a notification, and
+ * `"methods/ave/host/storage/read.json"` is a method's golden fixture.
+ */
+function isProtocolName(token: string): boolean {
+  if (NOTIFICATION_NAMESPACES.some((namespace) => token.startsWith(namespace))) return true;
+  return token.startsWith(GOLDEN_METHOD_DIRECTORY) && isHostApiMethod(token.slice(GOLDEN_METHOD_DIRECTORY.length));
+}
+
+/** Every repository reference in `source`, as `owner/repo` with its offset. */
+function repositoryReferences(source: string): Array<{ named: string; index: number }> {
+  const found: Array<{ named: string; index: number }> = [];
+  for (const [form, reference] of REPOSITORY_REFERENCES.entries()) {
+    for (const match of source.matchAll(reference)) {
+      const quoted = form === 1;
+      const [owner, repo] = quoted ? [match[2], match[3]] : [match[1], match[2]];
+      const index = match.index ?? 0;
+      if (quoted && isProtocolName(source.slice(index + 1))) continue;
+      found.push({ named: `${owner}/${repo}`, index });
+    }
+  }
+  return found;
+}
 
 const DEPRECATION_OWNER = /(?:organization\s+)?owner[\s*/#]+role\s+of\s+`([^`]+)`/gu;
 
@@ -184,6 +223,20 @@ describe("repository identity source of truth", () => {
     expect(() => repositoryIdentity(packageJson)).toThrow("[repository-identity]");
   });
 
+  it("reads a quoted repository path but not a quoted protocol name", () => {
+    expect(NOTIFICATION_NAMESPACES).toEqual(["notifications/ave/"]);
+    expect(repositoryReferences(`const old = "former_org/ave/releases/latest";`)).toEqual([
+      { named: "former_org/ave", index: 12 },
+    ]);
+    expect(repositoryReferences(`const slug = 'some-owner/ave';`)).toEqual([
+      { named: "some-owner/ave", index: 13 },
+    ]);
+    expect(repositoryReferences(`method: "${HOST_PROTOCOL_NOTIFICATIONS.log}"`)).toEqual([]);
+    expect(repositoryReferences(`join(ROOT, "methods/ave/host/storage/read.json")`)).toEqual([]);
+    // A golden-directory prefix alone does not excuse a non-method path.
+    expect(repositoryReferences(`"methods/ave/releases"`)).toEqual([{ named: "methods/ave", index: 0 }]);
+  });
+
   it("keeps the package homepage on the same repository", () => {
     const pkg = JSON.parse(read("package.json")) as { homepage?: string };
     expect(pkg.homepage).toBe(`https://github.com/${identity.slug}`);
@@ -193,13 +246,10 @@ describe("repository identity source of truth", () => {
     const mismatches: string[] = [];
     const covered = new Set<string>();
     for (const [path, source] of checkedTexts()) {
-      for (const reference of REPOSITORY_REFERENCES) {
-        for (const match of source.matchAll(reference)) {
-          covered.add(path);
-          const named = `${match[1]}/${match[2]}`;
-          if (named !== identity.slug) {
-            mismatches.push(`${path}:${lineOf(source, match.index ?? 0)} names ${named}`);
-          }
+      for (const { named, index } of repositoryReferences(source)) {
+        covered.add(path);
+        if (named !== identity.slug) {
+          mismatches.push(`${path}:${lineOf(source, index)} names ${named}`);
         }
       }
     }
