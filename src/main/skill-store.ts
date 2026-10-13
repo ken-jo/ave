@@ -842,10 +842,7 @@ export class SkillStore {
 
   /** Parse and prebuild the complete Skill snapshot before durable commit. */
   preparePluginGeneration(generation: ActivePluginGeneration): PreparedPluginSkillGeneration {
-    const next = new Map(this.pluginSkills);
-    for (const [selector, skill] of next) {
-      if (skill.pluginOwner?.pluginId === generation.pluginId) next.delete(selector);
-    }
+    const skills: LoadedSkill[] = [];
     for (const contribution of generation.contributions) {
       if (contribution.kind !== "skill") continue;
       // One unreadable SKILL.md drops ITS skill, not the plugin. A header the
@@ -865,37 +862,53 @@ export class SkillStore {
         );
         continue;
       }
-      if (next.has(skill.name)) {
-        throw new Error(`duplicate plugin Skill selector: ${skill.name}`);
-      }
-      next.set(skill.name, skill);
+      skills.push(skill);
     }
+    // Selectors are plugin-scoped, so this refuses only a generation that
+    // contradicts itself. Publish applies `skills` to the live catalog, which
+    // keeps any plugin published while this one awaited its commit.
+    this.pluginSkillsWith(generation.pluginId, skills);
     let published = false;
     return Object.freeze({
       pluginId: generation.pluginId,
       generationId: generation.generationId,
       publish: () => {
         if (published) return;
-        this.pluginSkills = next;
+        this.pluginSkills = this.pluginSkillsWith(generation.pluginId, skills);
         published = true;
       },
     });
   }
 
-  /** Prebuild exact plugin catalog removal; leased overlays keep their body. */
-  preparePluginRemoval(pluginId: string, generationId: string): PreparedPluginSkillGeneration {
+  /** The live plugin catalog with `pluginId`'s Skills replaced by `skills`. */
+  private pluginSkillsWith(pluginId: string, skills: readonly LoadedSkill[]): Map<string, LoadedSkill> {
     const next = new Map(this.pluginSkills);
     for (const [selector, skill] of next) {
-      if (skill.pluginOwner?.pluginId === pluginId && skill.pluginOwner.generationId === generationId) {
-        next.delete(selector);
-      }
+      if (skill.pluginOwner?.pluginId === pluginId) next.delete(selector);
     }
+    for (const skill of skills) {
+      if (next.has(skill.name)) {
+        throw new Error(`duplicate plugin Skill selector: ${skill.name}`);
+      }
+      next.set(skill.name, skill);
+    }
+    return next;
+  }
+
+  /** Exact plugin catalog removal, applied to the live catalog at publish; leased overlays keep their body. */
+  preparePluginRemoval(pluginId: string, generationId: string): PreparedPluginSkillGeneration {
     let published = false;
     return Object.freeze({
       pluginId,
       generationId,
       publish: () => {
         if (published) return;
+        const next = new Map(this.pluginSkills);
+        for (const [selector, skill] of next) {
+          if (skill.pluginOwner?.pluginId === pluginId && skill.pluginOwner.generationId === generationId) {
+            next.delete(selector);
+          }
+        }
         this.pluginSkills = next;
         published = true;
       },

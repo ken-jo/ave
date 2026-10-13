@@ -10,13 +10,15 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
 import type { PluginAuthority } from "../../marketplace/catalog/types.js";
 import type { PluginInstallPlan, StagedPluginArtifact } from "../../marketplace/resolve/plugin-ladder.js";
 import { preparePendingPluginUpdate, recoverPendingPluginUpdates } from "../marketplace-update-recovery.js";
 import type { PluginPaths } from "../plugin-paths.js";
 import { installReceiptPath, verifyInstallReceipt } from "../plugin-install-receipt.js";
+import * as receiptStore from "../plugin-install-receipt.js";
+import * as updateRecovery from "../marketplace-update-recovery.js";
 import { readPluginRegistry, updatePluginRegistry } from "../registry.js";
 import { MissingDependenciesError, MissingPluginDependenciesError } from "../types.js";
 import { MarketplaceError } from "../../marketplace/errors.js";
@@ -121,6 +123,7 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(testDir, { recursive: true, force: true });
     if (priorEnv === undefined) delete process.env.AVE_DEV;
     else process.env.AVE_DEV = priorEnv;
@@ -131,6 +134,25 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     service.installGitPlugin(forPlan, { stage: async () => artifact, activatePreparedArtifact: activate });
 
   const entry = async () => (await readPluginRegistry(registryPath)).plugins.find((item) => item.id === "alpha");
+
+  it.each(["receipt", "registry"] as const)("preserves the install error when %s recovery fails", async (phase) => {
+    await install(plan());
+    const primary = new Error("registry commit refused");
+    const secondary = new Error("secondary recovery refused");
+    const internals = service as unknown as { commitGitRegistryEntry(...args: unknown[]): Promise<void> };
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const commit = vi.spyOn(internals, "commitGitRegistryEntry").mockImplementationOnce(async () => {
+      if (phase === "receipt") {
+        vi.spyOn(receiptStore, "restoreInstallReceiptRaw").mockRejectedValueOnce(secondary);
+      } else {
+        vi.spyOn(updateRecovery, "recoverPendingPluginUpdate").mockRejectedValueOnce(secondary);
+      }
+      throw primary;
+    });
+    await expect(install(plan("2.0.0"))).rejects.toBe(primary);
+    expect(commit).toHaveBeenCalledOnce();
+    expect(errorLog.mock.calls.map((args) => args.join(" ")).some((message) => message.includes(secondary.message))).toBe(true);
+  });
 
   it("installs the staged zip with a v4 receipt and the registry origin", async () => {
     const forPlan = plan();

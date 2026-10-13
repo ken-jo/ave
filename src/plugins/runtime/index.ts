@@ -3778,6 +3778,23 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
     });
   }
 
+  /** The live method map with `pluginId`'s methods replaced by `methods`. */
+  private methodMapWith(
+    pluginId: string,
+    methods: ReadonlyMap<string, PluginToolHandler>,
+  ): Map<string, { pluginId: string; handler: PluginToolHandler }> {
+    const next = new Map(this.methodMap);
+    for (const [toolName, entry] of next) {
+      if (entry.pluginId === pluginId) next.delete(toolName);
+    }
+    for (const [toolName, handler] of methods) {
+      const owner = next.get(toolName)?.pluginId;
+      if (owner && owner !== pluginId) throw new Error(`Duplicate plugin method registered: ${toolName}`);
+      next.set(toolName, { pluginId, handler });
+    }
+    return next;
+  }
+
   prepareRuntimeGeneration(
     runtime: PluginRuntimeGenerationProjection,
     predecessorGenerationId: string | undefined,
@@ -3790,17 +3807,10 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
       [{ pluginId, alias: runtime.installId ?? undefined }],
       runtime.installId === null ? [] : [runtime.installId],
     );
-    const nextMethods = new Map(this.methodMap);
-    for (const [toolName, entry] of nextMethods) {
-      if (entry.pluginId === pluginId) nextMethods.delete(toolName);
-    }
-    for (const toolName of runtime.methods.keys()) {
-      const owner = nextMethods.get(toolName)?.pluginId;
-      if (owner && owner !== pluginId) throw new Error(`Duplicate plugin method registered: ${toolName}`);
-      nextMethods.set(toolName, { pluginId, handler: runtime.methods.get(toolName)! });
-    }
-    const nextPlugins = new Map(this.plugins);
-    nextPlugins.set(pluginId, {
+    // Refuse a method another plugin owns now; publish checks again against
+    // whatever was published in between.
+    this.methodMapWith(pluginId, runtime.methods);
+    const plugin: LoadedPlugin = {
       activationId: runtime.activationId,
       manifest: runtime.manifest,
       pluginRoot: runtime.pluginRoot,
@@ -3814,9 +3824,8 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
       lifecycleHookScope: runtime.lifecycleHookScope,
       arm: runtime.arm,
       confinement: runtime.confinement,
-    });
-    const nextDisposers = new Map(this.disposers);
-    nextDisposers.set(pluginId, [...(runtime.disposers ?? [])]);
+    };
+    const disposers = [...(runtime.disposers ?? [])];
     const predecessorAuthKey = predecessorGenerationId === undefined
       ? undefined
       : `${pluginId}\0${predecessorGenerationId}`;
@@ -3837,12 +3846,15 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
         if (published) return;
         // Publishing is only done for a committed generation.
         handOver();
+        // Other plugins publish while this one awaits its commit, so the next
+        // maps are built from the live ones here, not from a prepare-time copy.
+        const nextMethods = this.methodMapWith(pluginId, runtime.methods);
         this.plugins.get(pluginId)?.hostEffects?.supersede();
         publishHostEffects?.();
         this.publishValidatedPluginInstallAlias(pluginId, runtime.installId ?? undefined);
         this.methodMap = nextMethods;
-        this.plugins = nextPlugins;
-        this.disposers = nextDisposers;
+        this.plugins = new Map(this.plugins).set(pluginId, plugin);
+        this.disposers = new Map(this.disposers).set(pluginId, disposers);
         this.committedUnmappedGenerations.delete(pluginId);
         this.rememberPluginManifest(pluginId, runtime.manifest, runtime.approvedPluginAccess);
         this.markPluginUiRevision(pluginId);
@@ -3873,14 +3885,6 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
     pluginId: string,
     predecessorGenerationId: string | undefined,
   ): PreparedPluginRuntimeRemovalPublication {
-    const nextMethods = new Map(this.methodMap);
-    for (const [toolName, entry] of nextMethods) {
-      if (entry.pluginId === pluginId) nextMethods.delete(toolName);
-    }
-    const nextPlugins = new Map(this.plugins);
-    nextPlugins.delete(pluginId);
-    const nextDisposers = new Map(this.disposers);
-    nextDisposers.delete(pluginId);
     const predecessorAuthKey = predecessorGenerationId === undefined
       ? undefined
       : `${pluginId}\0${predecessorGenerationId}`;
@@ -3890,7 +3894,11 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
       publish: () => {
         if (published) return;
         this.plugins.get(pluginId)?.hostEffects?.supersede();
-        this.methodMap = nextMethods;
+        const nextPlugins = new Map(this.plugins);
+        nextPlugins.delete(pluginId);
+        const nextDisposers = new Map(this.disposers);
+        nextDisposers.delete(pluginId);
+        this.methodMap = this.methodMapWith(pluginId, new Map());
         this.plugins = nextPlugins;
         this.disposers = nextDisposers;
         this.invalidatePluginUiRevision(pluginId);
@@ -4635,7 +4643,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     }
 
     const activationId = randomUUID();
-    const runtimeRoot = await this.materializeImmutableRuntimeRoot(
+    const runtimeRoot = attempt.runtimeRoot = await this.materializeImmutableRuntimeRoot(
       manifest.id,
       pluginRoot,
       activationId,
@@ -4646,7 +4654,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       source = this.pluginFactorySource(manifest, runtimeRoot);
     } catch (err) {
       if (!canCommit()) {
-        await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+        await this.releaseAttempt(attempt, "cancelled add entry");
         return "cancelled";
       }
       const reason = (err as Error).message;
@@ -4657,7 +4665,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         reason,
       });
       this.markFailed(manifest.id);
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+      await this.releaseAttempt(attempt, "failed add entry");
       return "failed";
     }
 
@@ -4671,7 +4679,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       );
     } catch (err) {
       if (!canCommit()) {
-        await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+        await this.releaseAttempt(attempt, "cancelled add routing");
         return "cancelled";
       }
       log.error(`${manifest.id} import failed: %s`, (err as Error).message);
@@ -4684,16 +4692,15 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       } else {
         this.markFailed(manifest.id);
       }
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+      await this.releaseAttempt(attempt, "failed add routing");
       return "failed";
     }
     if (!canCommit()) {
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+      await this.releaseAttempt(attempt, "cancelled add routing");
       return "cancelled";
     }
     const { createPlugin } = routed;
     attempt.routed = routed;
-    attempt.runtimeRoot = runtimeRoot;
 
     const pluginDataDir = this.ensureDataDir(manifest.id, pluginRoot);
     const hostEffects = new HostApiGenerationScope(manifest.id);
@@ -5423,6 +5430,27 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       input.receiptRaw,
       installId,
     );
+    const releasePreparedConstruction = async (hostEffects?: HostApiGenerationScope): Promise<void> => {
+      const step = async (action: () => unknown): Promise<void> => {
+        try {
+          await action();
+        } catch (cleanupError) {
+          construction.cleanupFailures.push(cleanupError);
+          log.error(`${manifest.id} prepared candidate cleanup failed before startup: ${errorMessage(cleanupError)}`);
+          this.auditAttemptEvent("plugin_attempt_cleanup_failed", {
+            pluginId: manifest.id,
+            context: "prepared artifact construction",
+            reason: errorMessage(cleanupError),
+          });
+        }
+      };
+      if (hostEffects) await step(() => hostEffects.discard());
+      await step(() => removeRetainedPluginGeneration(
+        this.installReceiptCacheRoot!,
+        manifest.id,
+        generationId,
+      ));
+    };
     let routed: RoutedPluginFactory;
     try {
       // The staged receipt is verified against the payload it materialised the
@@ -5439,11 +5467,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         integrityEvidence(staged.receipt),
       );
     } catch (error) {
-      await removeRetainedPluginGeneration(
-        this.installReceiptCacheRoot!,
-        manifest.id,
-        generationId,
-      );
+      await releasePreparedConstruction();
       throw error;
     }
     const { createPlugin } = routed;
@@ -5462,12 +5486,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         input.approvedPluginAccess ?? null,
       );
     } catch (error) {
-      hostEffects.discard();
-      await removeRetainedPluginGeneration(
-        this.installReceiptCacheRoot!,
-        manifest.id,
-        generationId,
-      );
+      await releasePreparedConstruction(hostEffects);
       throw error;
     }
     const {
@@ -5669,14 +5688,11 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         try {
           await releaseUncommittedCandidate();
         } catch (cleanupError) {
-          // After a durable commit the marker is what keeps the install from
-          // rolling that commit back: a cleanup failure is reported, never
-          // put in its place.
-          if (!isCommittedPluginGenerationPublicationError(error)) throw cleanupError;
-          log.error(`${manifest.id} prepared candidate cleanup failed after its durable commit: ${errorMessage(cleanupError)}`);
+          const withheld = isCommittedPluginGenerationPublicationError(error);
+          log.error(`${manifest.id} prepared candidate cleanup failed${withheld ? " after its durable commit" : ""}: ${errorMessage(cleanupError)}`);
           this.auditAttemptEvent("plugin_attempt_cleanup_failed", {
             pluginId: manifest.id,
-            context: "withheld prepared artifact activation",
+            context: withheld ? "withheld prepared artifact activation" : "failed prepared artifact activation",
             reason: errorMessage(cleanupError),
           });
         }
@@ -6147,7 +6163,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         reason,
       });
       this.markFailed(manifest.id);
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+      await this.releaseAttempt(resources, "failed boot entry");
       return;
     }
     let routed: RoutedPluginFactory;
@@ -6171,7 +6187,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       } else {
         this.markFailed(manifest.id);
       }
-      await this.removeUnpublishedRuntimeRoot(manifest.id, runtimeRoot);
+      await this.releaseAttempt(resources, "failed boot routing");
       return;
     }
     const { createPlugin } = routed;
@@ -7048,12 +7064,14 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       activationId,
       receiptPluginId ?? pluginId,
     );
+    const replacementAttempt: PluginLoadAttemptResources = { pluginId, runtimeRoot };
     let source: PluginFactorySource;
     try {
       source = this.pluginFactorySource(manifest, runtimeRoot);
     } catch (error) {
-      await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
+      await this.releaseAttempt(replacementAttempt, "failed restart entry");
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err: error, reason: "entry_path" }, "entry path rejected during restart");
+      if (opts.throwOnFailure) throw error;
       return "failed";
     }
     let routed: RoutedPluginFactory;
@@ -7067,7 +7085,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       );
       logPluginLifecycle("debug", { pluginId, phase: PluginPhase.RESTART_RELOAD_OK }, "factory routed");
     } catch (err) {
-      await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
+      await this.releaseAttempt(replacementAttempt, "failed restart routing");
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err }, "module re-import failed");
       if (opts.throwOnFailure) throw err;
       return "failed";
@@ -7095,6 +7113,12 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       pluginDataDir,
       hostEffects,
     );
+    replacementAttempt.incarnation = {
+      deactivate: deactivateReplacementHostApi,
+      disposers: replacementDisposers,
+      drainOperations: drainReplacementHostApiOperations,
+      hostEffects,
+    };
 
     let instance: RuntimePlugin;
     try {
@@ -7123,16 +7147,10 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         },
       );
     } catch (err) {
-      deactivateReplacementHostApi();
-      hostEffects.discard();
       if (err instanceof PluginFactoryTimeoutError) {
         this.quarantinePluginLifecycle(pluginId, err.message);
       }
-      this.runDisposerList(replacementDisposers, "failed restart factory");
-      await this.drainPluginHostApiOperations(pluginId, {
-        drainHostApiOperations: drainReplacementHostApiOperations,
-      });
-      await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
+      await this.releaseAttempt(replacementAttempt, "failed restart factory");
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err, reason: "createPlugin_failed" }, "createPlugin failed during restart");
       // The replacement's refusal, not the incumbent's: the running
       // generation keeps serving and is never marked failed (decision 52).
@@ -7140,6 +7158,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       if (opts.throwOnFailure) throw err;
       return "failed";
     }
+    replacementAttempt.constructed = { instance, lifecycleHookScope: replacementLifecycleHookScope };
 
     if (!isCurrent()) {
       deactivateReplacementHostApi();
@@ -7173,14 +7192,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         this.quarantinePluginLifecycle(pluginId, err.message);
       }
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_START_FAIL, err }, "start after restart failed");
-      deactivateReplacementHostApi();
-      hostEffects.discard();
-      await this.stopAfterStartFailure(pluginId, instance, replacementLifecycleHookScope);
-      this.runDisposerList(replacementDisposers, "failed restart start");
-      await this.drainPluginHostApiOperations(pluginId, {
-        drainHostApiOperations: drainReplacementHostApiOperations,
-      });
-      await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
+      await this.releaseAttempt(replacementAttempt, "failed restart start");
       if (opts.throwOnFailure) throw err;
       return "failed";
     }
@@ -7252,15 +7264,9 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         if (opts.throwOnFailure) throw error;
         return "failed";
       }
-      deactivateReplacementHostApi();
-      if (hostEffects.isPreparing()) hostEffects.discard();
-      await this.stopAfterStartFailure(pluginId, instance, replacementLifecycleHookScope);
-      this.runDisposerList(replacementDisposers, "failed restart publication");
-      await this.drainPluginHostApiOperations(pluginId, {
-        drainHostApiOperations: drainReplacementHostApiOperations,
-      });
-      await this.removeUnpublishedRuntimeRoot(pluginId, runtimeRoot);
+      await this.releaseAttempt(replacementAttempt, "failed restart publication");
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err: error, reason: "publication" }, "runtime generation publication failed");
+      if (opts.throwOnFailure) throw error;
       return "failed";
     } finally {
       this.commitHandoffs.delete(candidate);

@@ -124,8 +124,10 @@ export class PersonaPromptStore {
 
   /** Prepare prompt replacement for one receipt-covered extension generation. */
   preparePluginGeneration(generation: ActivePluginGeneration): { publish(): void } {
-    const personas = new Map([...this.extensionPersonas].filter(([, prompt]) => prompt.origin?.package !== generation.pluginId));
-    const templates = new Map([...this.extensionTemplates].filter(([, prompt]) => prompt.packageName !== generation.pluginId));
+    // Only this plugin's prompts: ids are plugin-scoped, and publish applies
+    // them to the live maps so a plugin published in between is kept.
+    const personas = new Map<string, PersonaPrompt>();
+    const templates = new Map<string, AgentPluginTemplatePrompt>();
     for (const contribution of generation.contributions) {
       if (contribution.kind !== "prompt") continue;
       const file = contribution.files[0];
@@ -151,13 +153,26 @@ export class PersonaPromptStore {
         });
       }
     }
-    return { publish: () => { this.extensionPersonas = personas; this.extensionTemplates = templates; } };
+    return { publish: () => this.replacePluginPrompts(generation.pluginId, personas, templates) };
   }
 
   preparePluginRemoval(pluginId: string): { publish(): void } {
-    const personas = new Map([...this.extensionPersonas].filter(([, prompt]) => prompt.origin?.package !== pluginId));
-    const templates = new Map([...this.extensionTemplates].filter(([, prompt]) => prompt.packageName !== pluginId));
-    return { publish: () => { this.extensionPersonas = personas; this.extensionTemplates = templates; } };
+    return { publish: () => this.replacePluginPrompts(pluginId, new Map(), new Map()) };
+  }
+
+  private replacePluginPrompts(
+    pluginId: string,
+    personas: ReadonlyMap<string, PersonaPrompt>,
+    templates: ReadonlyMap<string, AgentPluginTemplatePrompt>,
+  ): void {
+    this.extensionPersonas = new Map([
+      ...[...this.extensionPersonas].filter(([, prompt]) => prompt.origin?.package !== pluginId),
+      ...personas,
+    ]);
+    this.extensionTemplates = new Map([
+      ...[...this.extensionTemplates].filter(([, prompt]) => prompt.packageName !== pluginId),
+      ...templates,
+    ]);
   }
 
   listTemplates(): AgentPluginTemplatePrompt[] {

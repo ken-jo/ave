@@ -72,6 +72,7 @@ import { createLogger } from "../lib/logger.js";
 import { materializePluginContributions } from "./plugin-contributions.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
+import { errorMessage } from "../shared/error-message.js";
 const log = createLogger("marketplace");
 
 interface PreparedMarketplacePluginArtifact {
@@ -1025,10 +1026,7 @@ export class PluginMarketplaceService {
           await restoreInstallReceiptRaw(this.cacheRoot, pluginId, priorReceiptRaw);
         }
       } catch (receiptRestoreError) {
-        throw new ArtifactRollbackError(
-          `marketplace install and receipt rollback both failed: ${pluginId}`,
-          [err, receiptRestoreError],
-        );
+        log.error(`marketplace receipt rollback failed for ${pluginId}: ${errorMessage(receiptRestoreError)}`);
       }
       throw err;
     }
@@ -1072,10 +1070,7 @@ export class PluginMarketplaceService {
         }
       }
     } catch (registryRestoreError) {
-      throw new AggregateError(
-        [installError, registryRestoreError],
-        `marketplace install and registry rollback both failed: ${pendingEntry.id}`,
-      );
+      log.error(`marketplace registry rollback failed for ${pendingEntry.id}: ${errorMessage(registryRestoreError)}`);
     }
     throw installError;
   }
@@ -1368,7 +1363,9 @@ export class PluginMarketplaceService {
         // Not payload-only once the durable commit started: without a recovery
         // backup (a fresh install), the activated candidate's runtime
         // directories are parked here for the swap, and it is still bound to them.
-        await removePluginTreeNowOrAtBoot(stagingDir, this.pluginsRoot, removeTreeNow).catch(() => undefined);
+        await removePluginTreeNowOrAtBoot(stagingDir, this.pluginsRoot, removeTreeNow).catch((cleanupErr) => {
+          log.error(`installLocal staging cleanup failed for ${pluginId}: ${errorMessage(cleanupErr)}`);
+        });
         // A generation callback must never trigger compensating rollback after
         // the durable pointer commit. Post-commit health is journaled by the
         // lifecycle; this branch is only candidate/durable-commit failure.
@@ -1382,41 +1379,35 @@ export class PluginMarketplaceService {
         }
         if (!commitAttempt) {
           if (rollbackSnapshot) {
-            await this.discardLocalInstallRollbackSnapshot(rollbackSnapshot);
+            try {
+              await this.discardLocalInstallRollbackSnapshot(rollbackSnapshot);
+            } catch (cleanupErr) {
+              log.error(`installLocal rollback snapshot cleanup failed for ${pluginId}: ${errorMessage(cleanupErr)}`);
+            }
           }
           throw err;
         }
-        const rollbackErrors: unknown[] = [];
         let restored = false;
         if (rollbackSnapshot) {
           try {
             await this.restoreLocalInstallSnapshot(pluginId, rollbackSnapshot);
             restored = true;
           } catch (restoreErr) {
-            log.warn(`installLocal rollback restore failed for ${pluginId}: ${(restoreErr as Error).message}`);
-            rollbackErrors.push(restoreErr);
+            log.error(`installLocal rollback restore failed for ${pluginId}: ${errorMessage(restoreErr)}`);
           }
         } else {
           try {
             await this.cleanupFreshInstalledPlugin(pluginId);
           } catch (cleanupErr) {
-            log.warn(`installLocal fresh cleanup failed for ${pluginId}: ${(cleanupErr as Error).message}`);
-            rollbackErrors.push(cleanupErr);
+            log.error(`installLocal fresh cleanup failed for ${pluginId}: ${errorMessage(cleanupErr)}`);
           }
         }
         if (restored) {
           try {
             await this.discardLocalInstallRollbackSnapshot(rollbackSnapshot);
           } catch (cleanupErr) {
-            log.warn(`installLocal rollback snapshot cleanup failed for ${pluginId}: ${(cleanupErr as Error).message}`);
-            rollbackErrors.push(cleanupErr);
+            log.error(`installLocal rollback snapshot cleanup failed for ${pluginId}: ${errorMessage(cleanupErr)}`);
           }
-        }
-        if (rollbackErrors.length > 0) {
-          throw new AggregateError(
-            [err, ...rollbackErrors],
-            `local plugin install and rollback both failed: ${pluginId}`,
-          );
         }
         throw err;
       }

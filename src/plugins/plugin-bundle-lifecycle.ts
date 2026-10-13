@@ -9,7 +9,7 @@ import type { PersonaPromptStore } from "../main/persona-prompt-store.js";
 import { parseAgentPluginRoutineTemplates } from "../marketplace/content/agent-plugin-components.js";
 import type { AgentPluginRoutineTemplate } from "../shared/agent-plugin-routine-template.js";
 import type { McpManager, PreparedBundledMcpGeneration } from "../mcp/mcp-manager.js";
-import type { PluginLoopbackManager } from "../mcp/plugin-loopback-manager.js";
+import type { PluginLoopbackManager, PreparedPluginLoopbackGeneration } from "../mcp/plugin-loopback-manager.js";
 import { PluginMcpTrustStore, preparePluginMcpGeneration, type PreparedPluginMcpProjection } from "../mcp/plugin-mcp-projection.js";
 import { pluginArtifactGenerationId } from "./plugin-artifact-identity.js";
 import { extensionComponentDigests, readPayloadFiles } from "./contribution-approval-digest.js";
@@ -686,8 +686,14 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
     // Approvals this preparation writes for the candidate (carried forward, or
     // consented by the install): revoked if it is never published (§18.7.3).
     const provisional: Array<() => void> = [];
-    const revokeProvisional = () => {
-      for (const revoke of provisional.splice(0).reverse()) revoke();
+    const revokeProvisional = (cleanupErrors: unknown[]) => {
+      for (const revoke of provisional.splice(0).reverse()) {
+        try {
+          revoke();
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+      }
     };
     let carriedHooks: ReturnType<typeof carryApprovals<PreparedPluginHookProjection>> = [];
     let carriedMcp: ReturnType<typeof carryApprovals<PreparedPluginMcpProjection>> = [];
@@ -695,6 +701,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
       let candidate:
         | ActivePluginGeneration<HostPluginGenerationState>
         | undefined;
+      let preparedLoopback: PreparedPluginLoopbackGeneration | undefined;
       try {
         const contributions =
           await materializePluginContributions(payloadRoot, manifest);
@@ -755,11 +762,6 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
         );
         const predecessorMcpServerIds =
           this.deps.mcpManager.bundledServerIdsForPlugin(pluginId);
-        const preparedRuntime =
-          this.deps.pluginRuntime.prepareRuntimeGeneration(
-            candidate.state.runtime,
-            predecessorBeforePreparation?.generationId,
-          );
         const preparedSkills =
           this.deps.skillStore.preparePluginGeneration(candidate);
         const preparedPrompts = this.deps.personaPromptStore.preparePluginGeneration(candidate);
@@ -769,13 +771,18 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
             this.hookTrust,
             { pluginId, generationId: candidate.generationId },
           );
-        // ToolRegistry reservation is prepared last so any earlier preparation
-        // failure cannot strand the global publication reservation.
-        const preparedLoopback =
+        preparedLoopback =
           await this.deps.loopbackManager.prepareGeneration(
             candidate.state.runtime.manifest,
             candidate.generationId,
             predecessorMcpServerIds,
+          );
+        // Another plugin can publish while discovery awaits. Validate live
+        // runtime ownership under the reservation, before durable commit.
+        const preparedRuntime =
+          this.deps.pluginRuntime.prepareRuntimeGeneration(
+            candidate.state.runtime,
+            predecessorBeforePreparation?.generationId,
           );
         return {
           candidate,
@@ -786,8 +793,20 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           preparedLoopback,
         };
       } catch (error) {
-        revokeProvisional();
-        candidate?.state.runtime.hostEffects?.discard();
+        const cleanupErrors: unknown[] = [];
+        revokeProvisional(cleanupErrors);
+        try {
+          candidate?.state.runtime.hostEffects?.discard();
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+        if (preparedLoopback) {
+          try {
+            await this.deps.loopbackManager.discardGeneration(preparedLoopback);
+          } catch (cleanupError) {
+            cleanupErrors.push(cleanupError);
+          }
+        }
         if (!activeBeforePreparation) {
           try {
             await removeRetainedPluginGeneration(
@@ -796,11 +815,13 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
               generationId,
             );
           } catch (cleanupError) {
-            throw new AggregateError(
-              [error, cleanupError],
-              `plugin generation preparation and retained-root cleanup both failed: ${pluginId}:${generationId}`,
-            );
+            cleanupErrors.push(cleanupError);
           }
+        }
+        for (const cleanupError of cleanupErrors) {
+          log.error(
+            `plugin '${pluginId}' candidate '${generationId}' cleanup failed during preparation: ${errorMessage(cleanupError)}`,
+          );
         }
         throw error;
       }
@@ -888,9 +909,13 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
         );
         throw error;
       }
-      revokeProvisional();
-      candidate.state.runtime.hostEffects?.discard();
       const cleanupErrors: unknown[] = [];
+      revokeProvisional(cleanupErrors);
+      try {
+        candidate.state.runtime.hostEffects?.discard();
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
       try {
         await this.deps.loopbackManager.discardGeneration(preparedLoopback);
       } catch (cleanupError) {
@@ -910,20 +935,10 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
           cleanupErrors.push(cleanupError);
         }
       }
-      if (cleanupErrors.length > 0) {
-        if (isCommittedPluginGenerationPublicationError(error)) {
-          // Durably committed: the marker is what keeps every caller from
-          // rolling that commit back, so a cleanup failure must not hide it.
-          for (const cleanupError of cleanupErrors) {
-            log.error(
-              `plugin '${pluginId}' candidate '${candidate.generationId}' cleanup failed after a durable commit: ${errorMessage(cleanupError)}`,
-            );
-          }
-          throw error;
-        }
-        throw new AggregateError(
-          [error, ...cleanupErrors],
-          `plugin generation commit and candidate cleanup failed: ${pluginId}:${candidate.generationId}`,
+      // Callers use primary error identity to decide which recovery is safe.
+      for (const cleanupError of cleanupErrors) {
+        log.error(
+          `plugin '${pluginId}' candidate '${candidate.generationId}' cleanup failed: ${errorMessage(cleanupError)}`,
         );
       }
       throw error;
