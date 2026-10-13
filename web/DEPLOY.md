@@ -26,7 +26,7 @@ SHA-256, source SHA 일치, tar 경로 traversal 차단, 파일별 체크섬.
 
 ```bash
 printf '{"reviewers":[{"type":"User","id":42824840}],"deployment_branch_policy":{"protected_branches":true,"custom_branch_policies":false}}' \
-  | gh api repos/former_org/ave/environments/web-production -X PUT --input -
+  | gh api repos/ken-jo/ave/environments/web-production -X PUT --input -
 ```
 
 배포에는 repo 시크릿 `CLOUDFLARE_API_TOKEN`(Cloudflare Pages: Edit)이 필요합니다. 없으면

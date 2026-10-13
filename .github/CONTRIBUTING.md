@@ -18,7 +18,7 @@ language should not be a barrier to participation.
 
 ```bash
 # Prerequisites: Node.js >= 22.4 and bun (https://bun.sh)
-git clone https://github.com/former_org/ave.git
+git clone https://github.com/ken-jo/ave.git
 cd ave
 bun install            # uv binary fetch + protocol/hook install (no native rebuild)
 bun run build          # TypeScript + esbuild renderer + Tailwind

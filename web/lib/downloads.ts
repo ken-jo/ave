@@ -19,17 +19,15 @@ export interface DownloadTarget {
 }
 
 /**
- * Download buttons open the latest GitHub Release page, and the visitor picks
- * the asset for their platform there.
+ * Download buttons link straight to the installer on the R2 release channel.
  *
- * They deliberately do NOT deep-link to an asset file. Assets are published
- * under their version (`Ave-0.10.0-mac-arm64.dmg`), so a static href can only
- * name a file that stops existing at the next release; the `Ave-latest-*`
- * aliases that once made a stable filename possible are no longer published.
- * `releases/latest` is the one URL GitHub keeps pointing at the newest release,
- * which is why it is the same URL for every platform here.
+ * Installers are published under their version (`releases/Ave-0.14.0-mac-arm64.dmg`),
+ * which a static site cannot name ahead of time. The release workflow therefore
+ * also writes a stable alias per installer under `latest/`
+ * (`scripts/lib/release-channel.mjs`): a copy of the newest versioned file
+ * that is always revalidated and downloads under its versioned file name.
  *
- * Flip a flag to false to render a "준비 중" state if a platform's asset is
+ * Flip a flag to false to render a "준비 중" state if a platform's installer is
  * temporarily missing from the latest release (manual safety valve —
  * we intentionally do no runtime HEAD probing on a static site).
  */
@@ -40,18 +38,14 @@ export const KNOWN_AVAILABLE: Record<OS, boolean> = {
 };
 
 /**
- * The app's release page. The repository it names must equal
- * `package.json` `build.publish`, the feed installed apps update from;
- * `test/scripts/repository-identity.test.ts` fails when they disagree.
+ * The release channel's public host. It must equal the origin of
+ * `package.json` `build.publish[0].url`, the feed installed apps update from;
+ * `test/scripts/release-channel.test.ts` fails when they disagree.
  */
-export const ALL_RELEASES_URL =
-  "https://github.com/former_org/ave/releases";
+const RELEASE_CHANNEL_ORIGIN = "https://downloads.agent-connector.ai";
 
-/**
- * The newest release. GitHub resolves this to the current tag on every hit.
- * Module-local: every caller reaches it through a `DownloadTarget.href`.
- */
-const LATEST_RELEASE_URL = `${ALL_RELEASES_URL}/latest`;
+/** The stable `latest/` alias for one installer. */
+const latest = (file: string) => `${RELEASE_CHANNEL_ORIGIN}/latest/${file}`;
 
 /** Per-OS download targets. `command`, `os`, `osLabel`, `title`, `format`, and
  *  `href` are locale-neutral; only the human-readable notes/step labels vary. */
@@ -63,7 +57,7 @@ export function getDownloads(locale: Locale): DownloadTarget[] {
       osLabel: "macOS",
       title: "Apple Silicon",
       format: "DMG · arm64",
-      href: LATEST_RELEASE_URL,
+      href: latest("mac-arm64.dmg"),
       setupNote: en
         ? "The app isn't signed with an Apple Developer certificate, so Gatekeeper blocks it. Open the DMG, move Ave.app to /Applications, then run the command below in Terminal."
         : "Apple 개발자 서명이 없어 Gatekeeper가 실행을 차단합니다. DMG를 열어 Ave.app을 /Applications로 옮긴 뒤, 터미널에서 아래를 실행하세요.",
@@ -85,7 +79,7 @@ export function getDownloads(locale: Locale): DownloadTarget[] {
       osLabel: "Windows",
       title: "Windows 10+",
       format: "Installer · x64",
-      href: LATEST_RELEASE_URL,
+      href: latest("windows-x64-setup.exe"),
       setupNote: en
         ? "Because the app is unsigned, Microsoft Defender SmartScreen shows a warning on first launch."
         : "서명되지 않은 앱이라 처음 실행 시 Microsoft Defender SmartScreen 경고가 표시됩니다.",
@@ -115,7 +109,7 @@ export function getDownloads(locale: Locale): DownloadTarget[] {
       osLabel: "Linux",
       title: "AppImage",
       format: "x86_64",
-      href: LATEST_RELEASE_URL,
+      href: latest("linux-x86_64.AppImage"),
       setupNote: en
         ? "The AppImage needs no installation — just grant it execute permission."
         : "AppImage는 설치가 필요 없습니다. 실행 권한만 부여하면 됩니다.",

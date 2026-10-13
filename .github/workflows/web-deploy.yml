@@ -17,7 +17,7 @@ jobs:
   # `if:` cannot read a file, so test/scripts/repository-identity.test.ts
   # fails when the two disagree instead of letting both jobs skip silently.
   build:
-    if: github.repository == 'former_org/ave'
+    if: github.repository == 'ken-jo/ave'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -96,7 +96,7 @@ jobs:
 
   deploy:
     needs: build
-    if: github.repository == 'former_org/ave'
+    if: github.repository == 'ken-jo/ave'
     runs-on: ubuntu-latest
     environment: web-production
     timeout-minutes: 15

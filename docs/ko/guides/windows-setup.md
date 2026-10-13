@@ -25,7 +25,7 @@ Ave app 은 sibling plugin repo 경로에 의존하지 않는다. 플러그인�
 mkdir former_org
 cd former_org
 
-git clone https://github.com/former_org/ave.git
+git clone https://github.com/ken-jo/ave.git
 ```
 
 완성된 구조:

@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Only the latest released version on the [GitHub Releases page](https://github.com/former_org/ave/releases)
+Only the latest released version on the [GitHub Releases page](https://github.com/ken-jo/ave/releases)
 receives security fixes. There is no LTS branch.
 
 ## Reporting a vulnerability

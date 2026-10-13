@@ -59,11 +59,15 @@ electron-updater metadata files:
 | Linux (`AppImage`, `deb`, `rpm`) | `Ave-X.Y.Z-linux-x86_64.AppImage`, `Ave-X.Y.Z-linux-amd64.deb`, `Ave-X.Y.Z-linux-x86_64.rpm`, `latest-linux.yml` |
 
 GitHub records a `sha256` digest for every asset, and the `latest*.yml` files
-carry the `sha512` that electron-updater verifies. There are no
-`Ave-latest-*` aliases or other fixed-name copies: a stable asset name would
-have to be overwritten on every release. The website's download buttons open
-`releases/latest` instead (`web/lib/downloads.ts`), which GitHub resolves to the
-newest release.
+carry the `sha512` that electron-updater verifies. The draft Release is the
+secondary record; the source repository is private, so installed apps never
+read it.
+
+The `publish-r2` job uploads the same files to the Cloudflare R2 release
+channel, which is what installed apps update from (`package.json`
+`build.publish`) and what the website's download buttons link to
+(`latest/<platform>` aliases). Layout, order, headers, owner setup and release
+verification: [R2 Release Channel](../guides/release-r2.md).
 
 A future signed/notarized release requires a separate reviewed workflow and
 positive platform signature/notarization evidence. It must not be enabled by

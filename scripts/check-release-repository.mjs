@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * Release gate: the repository a tag build publishes from must be the one
- * `package.json` `build.publish` names.
+ * Release gate: the repository a tag build releases from must be the one
+ * `package.json` `repository` names.
  *
- * electron-builder bakes `build.publish` into every installer's
- * `app-update.yml`. A tag built in a repository that `build.publish` does not
- * name would attach installers whose update feed points somewhere else, for
- * example at the previous owner after a transfer. The release workflow runs
- * this before the installer builds and again before it attaches anything.
+ * A tag built in a repository that `package.json` does not name (a fork, or
+ * the previous owner after a transfer) would draft its GitHub Release record
+ * there and upload installers to the update channel from there. The release
+ * workflow runs this before the installer builds and again in each publishing
+ * job before it uploads or attaches anything.
  *
  * This file is only an entry point and runs unconditionally: there is no
  * "am I the main module" check that a symlinked or relative invocation could
@@ -20,7 +20,7 @@ try {
     identity: readRepositoryIdentity(),
     repository: process.env.GITHUB_REPOSITORY,
   });
-  console.log(`[release-repository] package.json build.publish matches ${slug}`);
+  console.log(`[release-repository] package.json repository matches ${slug}`);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;

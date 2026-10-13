@@ -43,10 +43,10 @@ jobs:
             echo "Checkout HEAD does not equal immutable event source SHA" >&2
             exit 1
           fi
-      # Fails a tag build in a repository package.json build.publish does not
+      # Fails a tag build in a repository package.json `repository` does not
       # name before the installer matrix spends time on it. publish-release
-      # repeats the check before it attaches anything.
-      - name: Verify package.json publish repository is this repository
+      # and publish-r2 repeat the check before they attach or upload anything.
+      - name: Verify package.json repository is this repository
         if: github.event_name == 'push'
         shell: bash
         run: |
@@ -292,10 +292,10 @@ jobs:
             echo "Checkout HEAD does not equal immutable event source SHA" >&2
             exit 1
           fi
-      # The installers' app-update.yml carries package.json build.publish.
-      # Attaching them from any other repository would ship an update feed
-      # that points away from where they were released (e.g. an old owner).
-      - name: Verify package.json publish repository is this repository
+      # The GitHub Release is the secondary record of a tag. Drafting it in
+      # any repository package.json `repository` does not name (a fork, an old
+      # owner) would record the release somewhere it does not belong.
+      - name: Verify package.json repository is this repository
         shell: bash
         run: |
           set -euo pipefail
@@ -361,3 +361,105 @@ jobs:
           append_body: false
           generate_release_notes: false
           fail_on_unmatched_files: true
+
+  # ─────────────────────────────────────────────────────────────────────
+  # publish-r2 — the primary download and auto-update channel.
+  #
+  # Installed apps read the `generic` feed in package.json build.publish
+  # (https://downloads.agent-connector.ai/releases/latest*.yml), served from
+  # a Cloudflare R2 bucket through its custom domain. This job uploads the
+  # same matrix artifacts publish-release attaches; scripts/upload-release-r2.mjs
+  # owns the object layout and order: versioned installers and blockmaps
+  # first, then the `latest/` download aliases, then the feed files last, so
+  # a client never reads a feed that names a file not yet uploaded.
+  #
+  # It does not depend on publish-release: the GitHub Release is a draft
+  # record and must not hold back the update channel. Same tag-only gating.
+  publish-r2:
+    name: Publish to the R2 release channel
+    needs: [release-profile, installers]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify exact source head
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          actual_head="$(git rev-parse HEAD)"
+          if [ "$actual_head" != "$EXPECTED_SOURCE_SHA" ]; then
+            echo "Checkout HEAD does not equal immutable event source SHA" >&2
+            exit 1
+          fi
+      - name: Verify package.json repository is this repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/check-release-repository.mjs
+      - name: Verify protected annotated tag still resolves to event SHA
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+          EXPECTED_TAG: ${{ github.ref_name }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_PROTECTED" != "true" ]; then
+            echo "Public tag releases require an active immutable v* tag ruleset" >&2
+            exit 1
+          fi
+
+          tag_ref="$(curl --fail --silent --show-error --retry 3 \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/ref/tags/${EXPECTED_TAG}")"
+          tag_object_type="$(jq --raw-output '.object.type // empty' <<<"$tag_ref")"
+          tag_object_sha="$(jq --raw-output '.object.sha // empty' <<<"$tag_ref")"
+          if [ "$tag_object_type" != "tag" ] || [[ ! "$tag_object_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Public release tag must remain an annotated tag" >&2
+            exit 1
+          fi
+
+          tag_object="$(curl --fail --silent --show-error --retry 3 \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}")"
+          target_type="$(jq --raw-output '.object.type // empty' <<<"$tag_object")"
+          target_sha="$(jq --raw-output '.object.sha // empty' <<<"$tag_object")"
+          if [ "$target_type" != "commit" ] || [ "$target_sha" != "$EXPECTED_SOURCE_SHA" ]; then
+            echo "Annotated tag does not resolve to the immutable event source SHA" >&2
+            exit 1
+          fi
+      - name: Download all platform installers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: release-staging
+          pattern: ave-*-installers
+          merge-multiple: true
+      - name: Plan the R2 upload
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          node scripts/upload-release-r2.mjs --dir release-staging --tag "$RELEASE_TAG" --dry-run
+      - name: Upload to R2
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          aws --version
+          node scripts/upload-release-r2.mjs --dir release-staging --tag "$RELEASE_TAG"

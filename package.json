@@ -23,7 +23,11 @@
     "local-indexing",
     "meetings"
   ],
-  "homepage": "https://github.com/former_org/ave",
+  "homepage": "https://github.com/ken-jo/ave",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ken-jo/ave.git"
+  },
   "author": {
     "name": "Ken Jo",
     "email": "jo.dreame@gmail.com"
@@ -274,9 +278,10 @@
     ],
     "publish": [
       {
-        "provider": "github",
-        "owner": "former_org",
-        "repo": "ave"
+        "provider": "generic",
+        "url": "https://downloads.agent-connector.ai/releases",
+        "channel": "latest",
+        "useMultipleRangeRequest": false
       }
     ],
     "extraResources": [

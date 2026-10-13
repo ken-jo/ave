@@ -8,17 +8,17 @@ import { Reveal } from "@/components/motion/reveal";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { CopyButton } from "./copy-button";
 import { useOS } from "./use-os";
-import { ALL_RELEASES_URL, getDownloads, KNOWN_AVAILABLE, type OS } from "@/lib/downloads";
+import { getDownloads, KNOWN_AVAILABLE, type OS } from "@/lib/downloads";
 import { href, type Locale } from "@/lib/i18n";
 
 const copy = {
   ko: {
     heading: "사용 중인 OS에 맞게.",
-    leadPre: "macOS·Windows·Linux 빌드를 GitHub Releases에서 직접 받습니다. 버튼을 누르면 최신 릴리스 페이지가 열리고, 그 자리에서 내 운영체제용 파일을 고릅니다.",
-    allReleases: "모든 릴리스 보기 ",
+    leadPre: "macOS·Windows·Linux 최신 빌드를 downloads.agent-connector.ai에서 바로 받습니다. 설치한 앱은 같은 곳에서 업데이트됩니다.",
+    allReleases: "앱 업데이트 안내 ",
     recommended: "권장",
-    download: "릴리스 열기",
-    viewReleases: "릴리스 보기",
+    download: "다운로드",
+    viewReleases: "설치 가이드 보기",
     ready: "최신 빌드 · 다운로드 가능",
     notReady: "준비 중",
     installGuide: "설치 가이드",
@@ -28,11 +28,11 @@ const copy = {
   },
   en: {
     heading: "Pick the build for your OS.",
-    leadPre: "Grab the macOS, Windows, or Linux build straight from GitHub Releases. The button opens the latest release, where you pick the file for your operating system.",
-    allReleases: "See all releases ",
+    leadPre: "Download the latest macOS, Windows, or Linux build straight from downloads.agent-connector.ai. The installed app updates from the same place.",
+    allReleases: "How updates work ",
     recommended: "Recommended",
-    download: "Open the release",
-    viewReleases: "View releases",
+    download: "Download",
+    viewReleases: "Open the install guide",
     ready: "Latest build · available",
     notReady: "Coming soon",
     installGuide: "install guide",
@@ -69,14 +69,12 @@ export function Downloads({ locale = "ko" }: { locale?: Locale }) {
           </h2>
           <p className="mt-4 max-w-xl text-[16px] leading-relaxed text-muted-foreground">
             {t.leadPre}{" "}
-            <a
-              href={ALL_RELEASES_URL}
-              target="_blank"
-              rel="noreferrer"
+            <Link
+              href={href(locale, "/docs/getting-started/updates")}
               className="inline-flex items-center gap-0.5 font-semibold text-ink hover:underline"
             >
               {t.allReleases}<ArrowRight className="h-3 w-3" />
-            </a>
+            </Link>
           </p>
         </Reveal>
 
@@ -118,7 +116,7 @@ export function Downloads({ locale = "ko" }: { locale?: Locale }) {
                       <p className="mt-1 font-mono text-[12px] text-muted-foreground">{d.format}</p>
                       <div className="mt-5">
                         <Button asChild size="lg" variant="default" className="w-full text-[15px]">
-                          <a href={ready ? d.href : ALL_RELEASES_URL} target="_blank" rel="noreferrer">
+                          <a href={ready ? d.href : href(locale, "/docs/getting-started/install")}>
                             <Download className="h-4 w-4" />
                             {ready ? t.download : t.viewReleases}
                           </a>
