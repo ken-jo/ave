@@ -585,11 +585,15 @@ export function runGate({
   writeStderr = (message) => process.stderr.write(message),
 } = {}) {
   try {
+    // The inventory is one `git ls-files`; the measurement is a whole compiler
+    // run. A Git error or an empty inventory refuses here before the compiler
+    // starts, rather than after it (minutes on a loaded runner).
+    const expectedInventory = loadExpectedInventory();
     const decision = decide({
       update: argv.includes("--update-baseline"),
       baseline: loadBaseline(),
       measurement: measure(),
-      expectedInventory: loadExpectedInventory(),
+      expectedInventory,
     });
     if (decision.kind === "write") saveBaseline(decision.payload);
     if (decision.exitCode === 0) writeStdout(decision.message);
