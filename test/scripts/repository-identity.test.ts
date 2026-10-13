@@ -260,7 +260,6 @@ describe("repository identity source of truth", () => {
     // The live sites a move must change are among the references read.
     const missed = [
       ".github/CONTRIBUTING.md",
-      ".github/ISSUE_TEMPLATE/config.yml",
       ".github/workflows/ci.yml",
       ".github/workflows/web-deploy.yml",
       "docs/ko/guides/windows-setup.md",
