@@ -8,7 +8,7 @@ import type { ChatStreamEvent } from "../../../../lib/chat-stream-state.js";
 import type { AveApi } from "../../types.js";
 import { ChatContextProvider, type ChatContextValue } from "../../context/ChatContext.js";
 import { ApprovalSurfaceProvider } from "../../hooks/use-approval.js";
-import { approvalRequest, approvalSurfaceStub } from "../../../../../test/renderer/helpers.js";
+import { approvalRequest, approvalSurfaceStub, deferred } from "../../../../../test/renderer/helpers.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import type { ApprovalRequest, AskUserQuestionRequest } from "../../types.js";
 
@@ -18,7 +18,7 @@ function makeApi() {
   // in subscription order, exactly as the preload channel does.
   const handlers = new Set<(e: ChatStreamEvent) => void>();
   const spies = {
-    send: vi.fn(async (_input: string, _attachments?: unknown[]) => ({ ok: true as const, result: {} })),
+    send: vi.fn(async (_input: string, _attachments?: unknown[], _originSessionId?: string, _sendRequestId?: string) => ({ ok: true as const, result: {} })),
     new: vi.fn(async () => ({ ok: true as const, sessionId: "side-2" })),
     abort: vi.fn(async () => ({ ok: true as const })),
   };
@@ -38,7 +38,13 @@ function makeApi() {
   } as unknown as AveApi;
   return {
     api,
+    dispatch: (e: ChatStreamEvent) => { for (const h of handlers) h(e); },
     emit: (e: ChatStreamEvent) => act(() => { for (const h of handlers) h(e); }),
+    acceptTurn: (streamId: number) => act(() => {
+      for (const h of handlers) h({
+        type: "user_message", sessionId: "side-1", streamId, sendRequestId: spies.send.mock.calls.at(-1)![3],
+      });
+    }),
     spies,
   };
 }
@@ -80,7 +86,7 @@ async function startTurn(text = "hello") {
 
 describe("SideChatView — New button gating during streaming", () => {
   it("disables the New button while a turn is streaming", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     renderView(api);
 
     // Idle → New is enabled.
@@ -88,6 +94,7 @@ describe("SideChatView — New button gating during streaming", () => {
     expect(newBtn.disabled).toBe(false);
 
     await startTurn();
+    acceptTurn(1);
     emit({ type: "text_delta", text: "streaming…", streamId: 1 });
 
     // Streaming → New is disabled (no mid-stream session swap).
@@ -126,10 +133,11 @@ describe("SideChatView — New button gating during streaming", () => {
   });
 
   it("does not render token or cost estimates for a subscription side-chat runtime", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     renderView(api, { hasApiKey: true, usageAvailable: false });
 
     await startTurn();
+    acceptTurn(1);
     emit({ type: "assistant_round", text: "answer", stopReason: "end_turn", hasToolCalls: false, streamId: 1 } as ChatStreamEvent);
     emit({
       type: "turn_summary",
@@ -149,9 +157,10 @@ describe("SideChatView — New button gating during streaming", () => {
 
 describe("SideChatView — processing detail parity", () => {
   it("uses the shared tools-only policy without hiding the final answer", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     renderView(api, { processingDisplayLevel: "tools" });
     await startTurn("inspect");
+    acceptTurn(1);
 
     emit({ type: "reasoning_delta", text: "side reasoning", streamId: 1 });
     emit({ type: "text_delta", text: "side intermediate", streamId: 1 });
@@ -187,11 +196,12 @@ describe("SideChatView — the main composer's input system", () => {
   });
 
   it("queues a plain Enter while a turn runs and drains it as the next turn on done", async () => {
-    const { api, emit, spies } = makeApi();
+    const { api, emit, spies, acceptTurn } = makeApi();
     renderView(api);
     const { textarea, view } = sideComposer();
 
     await startTurn("first");
+    acceptTurn(1);
     emit({ type: "text_delta", text: "working…", streamId: 1 });
     expect(spies.send).toHaveBeenCalledTimes(1);
 
@@ -212,11 +222,12 @@ describe("SideChatView — the main composer's input system", () => {
   });
 
   it("interrupts the running turn on ⌘⏎: abort settles first, then the new send goes out", async () => {
-    const { api, emit, spies } = makeApi();
+    const { api, emit, spies, acceptTurn } = makeApi();
     renderView(api);
     const { textarea } = sideComposer();
 
     await startTurn("first");
+    acceptTurn(1);
     emit({ type: "text_delta", text: "working…", streamId: 1 });
 
     fireEvent.change(textarea, { target: { value: "now instead" } });
@@ -230,11 +241,12 @@ describe("SideChatView — the main composer's input system", () => {
   });
 
   it("aborts the running turn on Esc inside the field when nothing is queued", async () => {
-    const { api, emit, spies } = makeApi();
+    const { api, emit, spies, acceptTurn } = makeApi();
     renderView(api);
     const { textarea } = sideComposer();
 
     await startTurn("first");
+    acceptTurn(1);
     emit({ type: "text_delta", text: "working…", streamId: 1 });
 
     fireEvent.keyDown(textarea, { key: "Escape" });
@@ -255,11 +267,12 @@ describe("SideChatView — the main composer's input system", () => {
   });
 
   it("flips the turn control to stop while a turn runs with an empty draft", async () => {
-    const { api, emit } = makeApi();
+    const { api, emit, acceptTurn } = makeApi();
     renderView(api);
     const { view } = sideComposer();
 
     await startTurn("first");
+    acceptTurn(1);
     emit({ type: "text_delta", text: "working…", streamId: 1 });
     expect(view.getByTestId("composer-cancel-button")).toBeTruthy();
 
@@ -273,7 +286,7 @@ describe("SideChatView — the conversation a side chat belongs to", () => {
     const { api, spies } = makeApi();
     renderView(api, { currentSessionId: "parent-session", hasApiKey: true });
     await startTurn("hello");
-    expect(spies.send).toHaveBeenCalledWith("hello", expect.anything(), "parent-session");
+    expect(spies.send).toHaveBeenCalledWith("hello", expect.anything(), "parent-session", expect.any(String));
   });
 
   it("tells the window its conversation list is stale once the turn settles", async () => {
@@ -337,6 +350,7 @@ describe("SideChatView — the cards its own turn parks", () => {
     return {
       ...base,
       api,
+      dispatchAsk: (req: AskUserQuestionRequest) => { for (const h of askHandlers) h(req); },
       ask: (req: AskUserQuestionRequest) => act(() => { for (const h of askHandlers) h(req); }),
     };
   }
@@ -348,14 +362,19 @@ describe("SideChatView — the cards its own turn parks", () => {
   });
   const openRequest = { chatGroupId: "main", sessionId: "side-9", nonce: 1 };
 
-  function renderSurface(api: AveApi, surface = approvalSurfaceStub(), shown = true) {
+  function renderSurface(
+    api: AveApi,
+    surface = approvalSurfaceStub(),
+    shown = true,
+    view: Partial<React.ComponentProps<typeof SideChatView>> = {},
+  ) {
     const publishSideChatSurface = vi.fn();
     const chatContext = { hasApiKey: true, publishSideChatSurface } as unknown as ChatContextValue;
-    const tree = (visible: boolean) => (
+    const tree = (visible: boolean, props = view) => (
       <TooltipProvider>
         <ApprovalSurfaceProvider value={surface}>
           <ChatContextProvider value={chatContext}>
-            <SideChatView api={api} openRequest={openRequest} shown={visible} />
+            <SideChatView api={api} openRequest={openRequest} shown={visible} {...props} />
           </ChatContextProvider>
         </ApprovalSurfaceProvider>
       </TooltipProvider>
@@ -365,8 +384,176 @@ describe("SideChatView — the cards its own turn parks", () => {
       ...result,
       publishSideChatSurface,
       show: (visible: boolean) => act(() => { result.rerender(tree(visible)); }),
+      update: (props: Partial<React.ComponentProps<typeof SideChatView>>) =>
+        act(() => { result.rerender(tree(shown, { ...view, ...props })); }),
     };
   }
+
+  it("binds a default first pending send and captures its question and approval before React commits", async () => {
+    const { api, dispatch, dispatchAsk, spies } = makeAskApi();
+    const turn = deferred<{ ok: true; result: {} }>();
+    spies.send.mockReturnValueOnce(turn.promise);
+    let settled = false;
+    void turn.promise.then(() => { settled = true; });
+    const surface = approvalSurfaceStub();
+    const onSessionIdChange = vi.fn((id: string) => {
+      expect(surface.claims.ownerOf(id)).toBe(`side-chat:${id}`);
+      // A question raised inside the panel notification is in the same stack
+      // as the prelude, before the hook's session state has committed.
+      dispatchAsk(question(id));
+    });
+    const { publishSideChatSurface } = renderSurface(api, surface, true, {
+      openRequest: undefined,
+      onSessionIdChange,
+    });
+    await startTurn("hello");
+    expect(api.sideChat!.load).not.toHaveBeenCalled();
+    expect(surface.claims.ownerOf("side-live")).toBeNull();
+    expect(onSessionIdChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      dispatch({ type: "user_message", text: "hello", messageId: "row-live", sessionId: "side-live", streamId: 1, sendRequestId: spies.send.mock.calls.at(-1)![3] });
+      expect(onSessionIdChange).toHaveBeenCalledExactlyOnceWith("side-live");
+      expect(surface.claims.ownerOf("side-live")).toBe("side-chat:side-live");
+      expect(surface.claims.ownerOf("parent-session")).toBeNull();
+      expect(surface.claims.ownerOf("child-session")).toBeNull();
+      expect(publishSideChatSurface).not.toHaveBeenCalledWith(expect.objectContaining({ sessionId: "side-live" }));
+      expect(screen.queryByTestId(TEST_IDS.questionOverlay)).toBeNull();
+      expect(screen.queryByTestId(TEST_IDS.approvalDock)).toBeNull();
+      surface.queue = [
+        approvalRequest({ id: "own-approval", sessionId: "side-live" }) as unknown as ApprovalRequest,
+        approvalRequest({ id: "parent-approval", sessionId: "parent-session" }) as unknown as ApprovalRequest,
+        approvalRequest({ id: "child-approval", sessionId: "child-session" }) as unknown as ApprovalRequest,
+      ];
+      dispatchAsk(question("parent-session"));
+      dispatchAsk(question("child-session"));
+      const version = surface.claims.readVersion();
+      dispatch({ type: "user_message", text: "hello", sessionId: "side-live", streamId: 1, sendRequestId: spies.send.mock.calls.at(-1)![3] });
+      expect(surface.claims.readVersion()).toBe(version);
+      expect(onSessionIdChange).toHaveBeenCalledTimes(1);
+    });
+    const view = within(screen.getByTestId("side-chat-view"));
+    expect(view.getAllByTestId(TEST_IDS.questionOverlay)).toHaveLength(1);
+    expect(view.getAllByTestId(TEST_IDS.approvalDock)).toHaveLength(1);
+    expect(view.getByTestId(TEST_IDS.approvalDock).getAttribute("data-approval-request-id")).toBe("own-approval");
+    expect(view.queryByTestId(TEST_IDS.approvalDockQueueDepth)).toBeNull();
+    expect(view.getAllByText("hello")).toHaveLength(1);
+    const published = publishSideChatSurface.mock.calls.at(-1)![0] as { askQuestions: AskUserQuestionRequest[] };
+    expect(published.askQuestions.map((request) => request.id)).toEqual(["ask-side-live"]);
+    expect(settled).toBe(false);
+
+    await act(async () => {
+      dispatch({ type: "done", streamId: 1 });
+      turn.resolve({ ok: true, result: {} });
+      await turn.promise;
+    });
+    expect(settled).toBe(true);
+    expect(onSessionIdChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the previous claim before reporting a new or loaded session and releases the last claim on unmount", async () => {
+    const { api, spies } = makeAskApi();
+    const surface = approvalSurfaceStub();
+    const bindings: Array<{ sessionId: string; owner: string | null; previousOwner: string | null }> = [];
+    let previousSessionId = "unbound";
+    const onSessionIdChange = vi.fn((sessionId: string) => {
+      bindings.push({
+        sessionId,
+        owner: surface.claims.ownerOf(sessionId),
+        previousOwner: surface.claims.ownerOf(previousSessionId),
+      });
+      previousSessionId = sessionId;
+    });
+    const view = renderSurface(api, surface, true, { onSessionIdChange });
+    await act(async () => {});
+    expect(bindings).toEqual([{ sessionId: "side-9", owner: "side-chat:side-9", previousOwner: null }]);
+
+    await act(async () => { fireEvent.click(screen.getByTestId("side-chat-new")); });
+    expect(spies.new).toHaveBeenCalledTimes(1);
+    expect(surface.claims.ownerOf("side-9")).toBeNull();
+    expect(surface.claims.ownerOf("side-2")).toBe("side-chat:side-2");
+    (api.sideChat!.load as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: true, sessionId: "side-loaded", messages: [] });
+    await view.update({ openRequest: { chatGroupId: "main", sessionId: "side-loaded", nonce: 2 } });
+    await act(async () => {});
+    expect(bindings).toEqual([
+      { sessionId: "side-9", owner: "side-chat:side-9", previousOwner: null },
+      { sessionId: "side-2", owner: "side-chat:side-2", previousOwner: null },
+      { sessionId: "side-loaded", owner: "side-chat:side-loaded", previousOwner: null },
+    ]);
+    expect(surface.claims.ownerOf("side-2")).toBeNull();
+    const calls = onSessionIdChange.mock.calls.length;
+    view.unmount();
+    expect(surface.claims.ownerOf("side-loaded")).toBeNull();
+    expect(onSessionIdChange).toHaveBeenCalledTimes(calls);
+    expect(onSessionIdChange).toHaveBeenLastCalledWith("side-loaded");
+  });
+
+  it.each(["new", "load"] as const)("keeps pending questions scoped to the current session after %s", async (transition) => {
+    const { api, emit, ask, spies } = makeAskApi();
+    const surface = approvalSurfaceStub();
+    const view = renderSurface(api, surface, true, { openRequest: undefined });
+    await startTurn();
+    emit({ type: "user_message", sessionId: "side-live", streamId: 1, sendRequestId: spies.send.mock.calls.at(-1)![3] });
+    ask(question("side-live"));
+    emit({ type: "done", streamId: 1 });
+    expect(screen.getAllByTestId(TEST_IDS.questionOverlay)).toHaveLength(1);
+
+    const nextSessionId = transition === "new" ? "side-2" : "side-loaded";
+    if (transition === "new") {
+      await act(async () => { fireEvent.click(screen.getByTestId("side-chat-new")); });
+    } else {
+      (api.sideChat!.load as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: true, sessionId: nextSessionId, messages: [] });
+      await view.update({ openRequest: { chatGroupId: "main", sessionId: nextSessionId, nonce: 1 } });
+    }
+    expect(surface.claims.ownerOf("side-live")).toBeNull();
+    expect(surface.claims.ownerOf(nextSessionId)).toBe(`side-chat:${nextSessionId}`);
+    expect(screen.queryByTestId(TEST_IDS.questionOverlay)).toBeNull();
+    expect(view.publishSideChatSurface).toHaveBeenLastCalledWith(expect.objectContaining({
+      sessionId: nextSessionId, askQuestions: [],
+    }));
+
+    const nextQuestion = question(nextSessionId);
+    ask(nextQuestion);
+    expect(screen.getAllByTestId(TEST_IDS.questionOverlay)).toHaveLength(1);
+    expect(view.publishSideChatSurface).toHaveBeenLastCalledWith(expect.objectContaining({
+      askQuestions: [nextQuestion],
+    }));
+  });
+
+  it.each(["new", "load"] as const)("does not reclaim ownership when a deferred %s response arrives after unmount", async (transition) => {
+    const { api, emit, spies } = makeAskApi();
+    const surface = approvalSurfaceStub();
+    const onSessionIdChange = vi.fn();
+    const view = renderSurface(api, surface, true, { openRequest: undefined, onSessionIdChange });
+    await startTurn();
+    emit({ type: "user_message", text: "hello", sessionId: "side-live", streamId: 1, sendRequestId: spies.send.mock.calls.at(-1)![3] });
+    emit({ type: "done", streamId: 1 });
+    expect(surface.claims.ownerOf("side-live")).toBe("side-chat:side-live");
+    expect(onSessionIdChange).toHaveBeenCalledExactlyOnceWith("side-live");
+
+    const response = deferred<{ ok: true; sessionId: string; messages: [] }>();
+    if (transition === "new") {
+      spies.new.mockReturnValueOnce(response.promise);
+      await act(async () => { fireEvent.click(screen.getByTestId("side-chat-new")); });
+      expect(spies.new).toHaveBeenCalledTimes(1);
+    } else {
+      (api.sideChat!.load as ReturnType<typeof vi.fn>).mockReturnValueOnce(response.promise);
+      await view.update({ openRequest: { chatGroupId: "main", sessionId: "side-late", nonce: 1 } });
+      expect(api.sideChat!.load).toHaveBeenCalledExactlyOnceWith("side-late");
+    }
+    view.unmount();
+    expect(surface.claims.ownerOf("side-live")).toBeNull();
+    const version = surface.claims.readVersion();
+
+    await act(async () => {
+      response.resolve({ ok: true, sessionId: "side-late", messages: [] });
+      await response.promise;
+    });
+    expect(surface.claims.ownerOf("side-late")).toBeNull();
+    expect(surface.claims.readVersion()).toBe(version);
+    expect(onSessionIdChange).toHaveBeenCalledExactlyOnceWith("side-live");
+    expect(view.publishSideChatSurface).toHaveBeenLastCalledWith(null);
+  });
 
   it("draws a question its own session asked over its own composer, and tells the tile so", async () => {
     const { api, ask } = makeAskApi();

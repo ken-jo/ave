@@ -1,6 +1,7 @@
 import "../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { deferred } from "../../../../../test/renderer/helpers.js";
 import { RolesTab } from "../RolesTab.js";
 import type { AveApi } from "../../types.js";
 import { SavedToastProvider } from "../../context/SavedToastContext.js";
@@ -48,10 +49,21 @@ describe("RolesTab — long-term memory consolidation", () => {
 describe("RolesTab — ~/.ave reference doc upgrades", () => {
   it("shows the live doc path and no marker list when nothing is pending", async () => {
     const { api } = makeMockAveApi();
+    const docs = deferred<Awaited<ReturnType<AveApi["homeDocsStatus"]>>>();
+    api.homeDocsStatus.mockReturnValue(docs.promise);
     renderRolesTab(api);
 
-    expect(await screen.findByText("~/.ave/AGENTS.md")).toBeInTheDocument();
     await waitFor(() => expect(api.homeDocsStatus).toHaveBeenCalled());
+    await act(async () => {
+      docs.resolve({
+        agentsDisplayPath: "~/.ave/AGENTS.md",
+        customDisplayPath: "~/.ave/agents.custom.md",
+        markers: [],
+        mergedContent: null,
+      });
+      await docs.promise;
+    });
+    expect(await screen.findByText("~/.ave/AGENTS.md")).toBeInTheDocument();
     expect(screen.queryByTestId("roles-tab:upgrade-markers")).not.toBeInTheDocument();
     expect(screen.queryByTestId("roles-tab:merged-result")).not.toBeInTheDocument();
   });

@@ -452,6 +452,20 @@ export class SecretDocumentStore {
     return { fingerprint: documentFingerprint(raw), mutation: state.document.mutation ?? null };
   }
 
+  /** Stored presence and backend availability, without authenticating or decrypting a value. */
+  has(key: string): boolean {
+    validateSecretKey(key);
+    const state = this.readState(false);
+    this.assertCompatibleBackend(state);
+    if (!Object.hasOwn(state.document.entries, key)) return false;
+    if (state.document.entries[key].encoding === "plain-development") {
+      if (this.policy === "packaged") throw new SecretEncryptionUnavailableError();
+    } else if (!this.isEncryptionUsable()) {
+      throw new SecretEncryptionUnavailableError();
+    }
+    return true;
+  }
+
   get(key: string): string | null {
     validateSecretKey(key);
     const state = this.readState(false);
@@ -619,7 +633,7 @@ export class SecretDocumentStore {
     }
   }
 
-  private assertCompatibleDocument(state: StoredState): void {
+  private assertCompatibleBackend(state: StoredState): void {
     if (this.externalKey && state.kind === "legacy") {
       throw new SecretDocumentValidationError("External-key storage cannot migrate a legacy secret document");
     }
@@ -627,9 +641,15 @@ export class SecretDocumentStore {
       if (this.externalKey ? entry.encoding !== "external-key" : entry.encoding === "external-key") {
         throw new SecretDocumentValidationError("Secret document requires a different encryption backend");
       }
-      // Authenticate the entire external-key document before any mutation, so
-      // an incorrect key cannot replace or delete unreadable credentials.
-      if (this.externalKey) {
+    }
+  }
+
+  private assertCompatibleDocument(state: StoredState): void {
+    this.assertCompatibleBackend(state);
+    // Authenticate the entire external-key document before a read or mutation,
+    // so an incorrect key cannot replace or delete unreadable credentials.
+    if (this.externalKey) {
+      for (const entry of Object.values(state.document.entries)) {
         if (!this.isEncryptionUsable()) throw new SecretEncryptionUnavailableError();
         this.decrypt(entry.value);
       }

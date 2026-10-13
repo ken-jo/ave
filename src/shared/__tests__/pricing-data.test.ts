@@ -210,12 +210,6 @@ describe("engine pricing with a price correction", () => {
       expect(p.outputPer1M).toBe(180);
       expect(p.contextWindow).toBe(1_100_000);
     });
-    it("Copilot proxy gpt-5.4-mini contextWindow matches OpenAI spec (pricing 0 — subscription billing)", () => {
-      const p = lookupPricing("copilot", "gpt-5.4-mini");
-      expect(p.inputPer1M).toBe(0);
-      expect(p.outputPer1M).toBe(0);
-      expect(p.contextWindow).toBe(400_000);
-    });
     it("Azure OpenAI deployment id gpt-5.4-mini inherits the OpenAI model spec", () => {
       const p = lookupPricing("azure-foundry", "gpt-5.4-mini");
       expect(p.inputPer1M).toBe(0.75);
@@ -291,7 +285,7 @@ describe("normalizeAiSdkUsageForCost", () => {
     });
   });
 
-  it.each(["openai", "azure-foundry", "gemini", "vertex-ai", "copilot"] as const)(
+  it.each(["openai", "azure-foundry", "gemini", "vertex-ai"] as const)(
     "keeps %s provider prompt tokens cache-inclusive",
     (vendor) => {
       const usage = {

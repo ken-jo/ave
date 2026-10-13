@@ -322,6 +322,39 @@ describe("marketplace provider preset runtime refresh", () => {
 // ─── MAJOR-2 R2: settings:update triggers rewireReviewerAgent when baseUrl changes ──
 
 describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry baseUrl change", () => {
+  it("lets the settings chooser see saved credential presence without reading its value while retirement is unresolved", async () => {
+    const deps = makeDeps([]);
+    deps.settingsService.get.mockImplementation((key?: string) => key === "llm"
+      ? { provider: "openai", retiredProvider: "copilot", vendors: {} } as never
+      : {} as never);
+    const hasStoredSecret = vi.fn(() => true);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers({ ...deps, settingsService: { ...deps.settingsService, hasStoredSecret } } as never);
+    expect(await invoke("ave:settings:has-api-key", "openai")).toBe(true);
+    expect(hasStoredSecret).toHaveBeenCalledWith("llm.apiKey.openai");
+    expect(deps.settingsService.getSecret).not.toHaveBeenCalled();
+  });
+  it("rewires the reviewer when the retirement marker clears without changing provider or model", async () => {
+    const rewire = vi.fn();
+    const baseDeps = makeDeps([]);
+    const nextLlm = { provider: "openai", vendors: { openai: { model: "gpt-4o" } } };
+    const previousLlm = { ...nextLlm, retiredProvider: "copilot" };
+    let saved = false;
+    const deps = {
+      ...baseDeps,
+      settingsService: {
+        ...baseDeps.settingsService,
+        get: vi.fn((key?: string) => key === "llm" ? (saved ? nextLlm : previousLlm) : {}),
+        patch: vi.fn(async () => { saved = true; return { llm: nextLlm }; }),
+      },
+      rewireReviewerAgent: rewire,
+    };
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    await invoke("ave:settings:update", { llm: { provider: "openai" } });
+    expect(rewire).toHaveBeenCalledOnce();
+    expect(deps.conversationLoop.refreshProvider).toHaveBeenCalledOnce();
+  });
   it("calls rewireReviewerAgent when the active LLM provider changes", async () => {
     const windows: ReturnType<typeof makeWindow>[] = [];
     const rewire = vi.fn();

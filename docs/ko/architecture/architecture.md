@@ -4606,7 +4606,7 @@ v4 §4.5 의 11-step 쿼리 루프(`onUserMessage → ... → onTurnComplete`)�
 
 #### §4.5.Z Agent Profile Model Resolution — Sub-Agent 모델 선택 (신규 v5)
 
-`agent_spawn` 으로 띄우는 sub-agent 는 `~/.ave/agents/<name>.md` 프로필의 `model:` frontmatter 에 따라 child `ConversationLoop` 의 LLM 모델을 선택한다. Ave 는 멀티벤더(claude / openai / gemini / copilot / azure-foundry / vertex-ai)이므로 프로필에 vendor-specific 모델 ID 를 박지 않고 **복잡도 tier** 로 표현하는 것이 기본이다.
+`agent_spawn` 으로 띄우는 sub-agent 는 `~/.ave/agents/<name>.md` 프로필의 `model:` frontmatter 에 따라 child `ConversationLoop` 의 LLM 모델을 선택한다. Ave 는 멀티벤더(claude / openai / gemini / azure-foundry / vertex-ai)이므로 프로필에 vendor-specific 모델 ID 를 박지 않고 **복잡도 tier** 로 표현하는 것이 기본이다.
 
 **SOT — `src/shared/model-complexity-map.ts`**
 

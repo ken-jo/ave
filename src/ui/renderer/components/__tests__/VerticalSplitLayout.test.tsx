@@ -32,10 +32,10 @@ describe("VerticalSplitLayout", () => {
     expect(screen.getByTestId("bottom-pane")).toBeTruthy();
   });
 
-  it("gives the separator a ≥20px hit zone (1.25rem row) while the visual line stays thin", () => {
+  it("keeps the separator's hit track separate from its thin visual line", () => {
     renderLayout(45);
-    // The middle grid track is the pointer hit zone: 1.25rem == 20px, above the
-    // ~20-24px floor for a reliable drag (R1). The visible line inside is 2px.
+    // This structural check keeps the scalable hit track and visual line
+    // distinct; the browser check measures the pixel floor at every font scale.
     const layout = screen.getByTestId("split");
     expect(layout.style.gridTemplateRows).toContain("1.25rem");
     const line = screen.getByTestId("splitter").querySelector("span");

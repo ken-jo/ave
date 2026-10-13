@@ -110,6 +110,7 @@ export interface SettingsOrchestrationState {
   clearMarketplaceProviderPreset: () => void;
   // Lifecycle
   settingsLoaded: boolean;
+  retiredLlmProvider: AppSettings["llm"]["retiredProvider"] | null;
   saving: boolean;
   /**
    * Last save failure surface. Cleared on the next successful save.
@@ -189,6 +190,9 @@ export function useSettingsOrchestration(
   const [lastSaveError, setLastSaveError] = useState<{ tab: string; message: string } | null>(null);
   const clearLastSaveError = useCallback(() => setLastSaveError(null), []);
   const [settingsSnapshot, setSettingsSnapshot] = useState<AppSettings | null>(null);
+  // A migrated default is not a choice. Only the model chooser may release
+  // retirement; saving another setting must not select that default.
+  const providerSelectionRef = useRef(false);
   const hydratedVendorRef = useRef<string | null>(null);
   const hydratedWebProviderRef = useRef<string | null>(null);
   const vendorInfo = getVendorOption(vendor);
@@ -212,6 +216,7 @@ export function useSettingsOrchestration(
   // was gated on `open`; that's now always true while the window exists.)
   useEffect(() => {
     let cancelled = false;
+    providerSelectionRef.current = false;
     setSettingsLoaded(false);
     void (async () => {
       const s = await api.getSettings();
@@ -262,6 +267,7 @@ export function useSettingsOrchestration(
   // userTouchedRef-style guards in this hook protect in-flight form edits.
   useEffect(() => {
     return api.onSettingsUpdated((next) => {
+      if (!next.llm.retiredProvider) providerSelectionRef.current = false;
       setSettingsSnapshot(next);
       setIdlePreferenceRefresh(next.features?.idlePreferenceRefresh ?? false);
       setIdleMemoryConsolidation(next.features?.idleMemoryConsolidation ?? false);
@@ -325,6 +331,7 @@ export function useSettingsOrchestration(
   }
 
   function hydrateLlmFromSettings(next: AppSettings): void {
+    providerSelectionRef.current = false;
     const nextVendor = isLLMVendor(next.llm.provider)
       ? next.llm.provider
       : DEFAULT_LLM_VENDOR;
@@ -363,6 +370,7 @@ export function useSettingsOrchestration(
    */
   const selectApiVendorModel = useCallback((vendorId: string, modelId: string) => {
     if (!isLLMVendor(vendorId)) return;
+    providerSelectionRef.current = true;
     const block = getLlmVendorSettings(settingsSnapshot?.llm.vendors, vendorId);
     hydratedVendorRef.current = vendorId;
     setVendor(vendorId);
@@ -377,6 +385,7 @@ export function useSettingsOrchestration(
   }, [api, settingsSnapshot]);
 
   const selectMarketplaceProviderPreset = useCallback((preset: MarketplaceInstalledProviderPreset) => {
+    providerSelectionRef.current = true;
     const openaiCompatibleDefaults = getLlmVendorSettings(
       settingsSnapshot?.llm.vendors,
       "openai-compatible",
@@ -518,7 +527,9 @@ export function useSettingsOrchestration(
           thinkingBudgetTokens: effectiveThinkingBudget,
         };
         const llmPatch: DeepPartial<AppSettings["llm"]> = {
-          provider: vendor || undefined,
+          ...(!settingsSnapshot?.llm.retiredProvider || providerSelectionRef.current
+            ? { provider: vendor || undefined }
+            : {}),
           marketplaceProviderPresetId:
             vendor === "openai-compatible" ? marketplaceProviderPresetId : "",
           streamSmoothing,
@@ -728,6 +739,7 @@ export function useSettingsOrchestration(
     clearLastSaveError,
     hydrateLlmFromSettings,
     vendor,
+    retiredLlmProvider: settingsSnapshot?.llm.retiredProvider ?? null,
     providerCredentialDrafts, setProviderCredentialDrafts,
     saveProviderCredential,
     selectApiVendorModel,

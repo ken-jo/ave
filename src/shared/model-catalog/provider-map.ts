@@ -19,11 +19,6 @@ export const CATALOG_PROVIDERS_BY_VENDOR: Readonly<Record<LLMVendor, readonly st
   claude: ["anthropic"],
   openai: ["openai"],
   gemini: ["google"],
-  // Ave's Copilot vendor called GitHub Models (models.github.ai, retired
-  // 2026-07-30), which the catalog does not list; its `github-copilot`
-  // provider is the Copilot API (api.githubcopilot.com), another service.
-  // The vendor is being removed (re-add tracked in #2657).
-  copilot: [],
   "azure-foundry": ["azure"],
   "vertex-ai": ["google-vertex", "google-vertex-anthropic"],
   "openai-compatible": [],

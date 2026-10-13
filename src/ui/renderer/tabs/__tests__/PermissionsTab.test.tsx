@@ -6,6 +6,17 @@ import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 
+// The real preload surface is used by the issue #1608 gesture test below; its
+// ipcRenderer is routed to a fake main per test.
+const { ipcInvoke, mainHandlers } = vi.hoisted(() => ({
+  ipcInvoke: vi.fn(),
+  mainHandlers: new Map<string, (...args: unknown[]) => unknown>(),
+}));
+vi.mock("electron", () => ({
+  ipcMain: { handle: (channel: string, handler: (...args: unknown[]) => unknown) => mainHandlers.set(channel, handler) },
+  ipcRenderer: { invoke: ipcInvoke, on: vi.fn(), removeListener: vi.fn(), send: vi.fn() },
+}));
+
 vi.mock("../../../../components/ui/scroll-area.js", () => ({
   ScrollArea: ({ children, className }: { children: ReactNode; className?: string }) => (
     <div className={className}>{children}</div>
@@ -16,8 +27,12 @@ import { PermissionsTab } from "../PermissionsTab.js";
 import { makeHookTrustRow as hook } from "./test-helpers.js";
 import type { HookTrustRow } from "../../types.js";
 import { isPolicyUserEditable, type PolicySource } from "../../../../shared/policy-editability.js";
-import { t } from "../../../../i18n/runtime.js";
+import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
+import { buildInternalApiSurface } from "../../../../preload/internal-api-surface.js";
+import { PERMISSIONS } from "../../../../shared/ipc-channels.js";
+import { hostFrameEvent } from "../../../../__tests__/test-helpers.js";
+import { setProcessPlatform } from "../../../../__tests__/support/process-platform.js";
 
 /**
  * Mirrors the `PERMISSIONS.policyGet` handler: the host attaches `editable`
@@ -280,7 +295,9 @@ describe("PermissionsTab hook quarantine notice", () => {
     );
 
     await waitFor(() => expect(screen.getByTestId("permissions-load-error"))
-      .toHaveTextContent("settings unavailable"));
+      .toHaveTextContent(t("permissionsTab.errorLoadFailed")));
+    // The thrown text is logged, not shown.
+    expect(screen.getByTestId("permissions-load-error").textContent).not.toContain("settings unavailable");
     expect(screen.getByTestId("exact-deny-draft")).toHaveTextContent("bash");
     await waitFor(() => expect(screen.getByTestId("exact-deny-focus-target")).toHaveFocus());
 
@@ -413,7 +430,9 @@ describe("PermissionsTab hook quarantine notice", () => {
 
     expect(api.permission.setMode).toHaveBeenCalledWith("auto");
     expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode llm");
-    expect(screen.getByText("사용자가 모드 변경을 거부했습니다.")).toBeTruthy();
+    // main's free-text message is logged; the screen shows localized copy and the code.
+    expect(screen.getByText("실행 모드 변경에 실패했습니다. (approval-denied)")).toBeTruthy();
+    expect(screen.queryByText("사용자가 모드 변경을 거부했습니다.")).toBeNull();
     const defaultButton = screen.getByTestId(execModeTestId("default"));
     const autoButton = screen.getByTestId(execModeTestId("auto"));
     expect(defaultButton.className).toContain("border-primary");
@@ -714,7 +733,8 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(api.permission.setMode).toHaveBeenCalledWith("auto");
     expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
     expect(screen.getByText(/이전 설정으로 복원했습니다/)).toBeTruthy();
-    expect(screen.getByText(/상세: missing provider/)).toBeTruthy();
+    // The rewire detail is a raw exception message from main: logged, not shown.
+    expect(document.body.textContent).not.toContain("missing provider");
   });
 
   it("adds and removes additional directories through the slash-backed IPC", async () => {
@@ -1009,7 +1029,9 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     });
     expect(api.permission.sandboxCapability).toHaveBeenCalledTimes(1);
     expect(toggle).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByText("저장 실패")).toBeTruthy();
+    // A known code shows its localized copy; main's message is logged, not shown.
+    expect(screen.getByText(t("formatIpcError.writeFailed"))).toBeTruthy();
+    expect(screen.queryByText("저장 실패")).toBeNull();
   });
 
   it("renders platform potential, runtime reason, and restart note as separate branches", async () => {
@@ -1035,10 +1057,10 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     });
 
     expect(screen.getByTestId("os-sandbox-potential-reason")).toHaveTextContent(
-      "platform can confine filesystem, process, and network",
+      t("permissionsTab.osSandboxKindFull"),
     );
     expect(screen.getByTestId("os-sandbox-runtime-reason")).toHaveTextContent(
-      "ASRT runtime registered at startup",
+      t("permissionsTab.osSandboxKindFull"),
     );
     expect(screen.getByText(/변경 사항은 앱을 재시작한 후 적용됩니다/)).toBeTruthy();
   });
@@ -1181,12 +1203,49 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     return { ave, updateSettings: api.updateSettings! };
   }
 
-  it("keeps opt-in enabled and shows error banner on ok:false error shape", async () => {
+  it.each(["absent", "ready"])("keeps raw sandbox diagnostics off the screen for user state %s", async (userState) => {
+    const raw = String.raw`EACCES: open C:\Users\example\AppData\Local\ave`;
+    const { ave } = installApiWithWindows({ sandboxWindowsStatus: vi.fn(async () => ({
+      applicable: true, userState, wfpState: "absent", ready: false, instructions: raw,
+    })) });
+    ave.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "win32", enabled: true, available: true, kind: "partial", reason: raw,
+      potentialReason: raw, runtime: { available: false, kind: "none", reason: raw },
+      confines: { filesystem: true, process: false, network: true },
+      boot: { action: "degrade", reason: "degrade-windows-not-installed", onSignal: "default-settings", dependencyErrors: [raw] },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(document.body.textContent).not.toContain("EACCES");
+    expect(document.body.textContent).not.toContain("AppData");
+    expect(screen.getByText(t("permissionsTab.osSandboxWindowsReloginPending"))).toBeTruthy();
+  });
+
+  it.each([
+    { ok: false, error: String.raw`EACCES: open C:\Users\example\AppData` },
+    { outcome: "failed", errorCode: String.raw`EACCES: open C:\Users\example\AppData` },
+  ])("does not render raw refusal codes from %j", async (result) => {
+    installApiWithWindows({ sandboxWindowsInstall: vi.fn(async () => result) });
+    await act(async () => { render(<PermissionsTab />); });
+    await act(async () => { fireEvent.click(screen.getByTestId("os-sandbox-windows-install")); });
+    expect(document.body.textContent).not.toContain("EACCES");
+    expect(document.body.textContent).not.toContain("AppData");
+  });
+
+  it("does not claim a timeout or an unverified install proves isolation or an unchanged machine", async () => {
+    for (const outcome of ["timed-out", "installed-unverified"]) {
+      const { outcome: view } = await clickInstall(async () => ({ outcome, ready: false }));
+      expect(view.textContent).not.toContain("아무것도 바뀌지 않았습니다");
+      expect(view.textContent).not.toContain("꺼진 상태로 유지됩니다");
+      cleanup();
+    }
+  });
+
+  it("keeps opt-in enabled and shows a localized error, not main's raw detail, on an ok:false shape", async () => {
     const { updateSettings } = installApiWithWindows({
       sandboxWindowsInstall: vi.fn(async () => ({
         ok: false as const,
         error: "install-failed",
-        message: "srt-win returned non-zero",
+        message: String.raw`srt-win returned non-zero at C:\Users\example\AppData`,
       })),
     });
 
@@ -1195,10 +1254,8 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     });
 
     // The consent panel must be visible (sandboxEnabled=true, applicable, not ready).
-    const installBtn = screen.getByTestId("os-sandbox-windows-consent");
-    expect(installBtn).toBeTruthy();
+    expect(screen.getByTestId("os-sandbox-windows-consent")).toBeTruthy();
 
-    // Click "Re-provision" (i18n key osSandboxWindowsInstallButton → "재설정") — triggers the error-shape branch.
     await act(async () => {
       fireEvent.click(screen.getByText("재설정"));
     });
@@ -1207,9 +1264,13 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     // consent panel remains the place to retry/follow instructions.
     expect(updateSettings).not.toHaveBeenCalledWith({ features: { osToolSandbox: false } });
 
-    // An error banner must appear (the i18n key osSandboxWindowsInstallError
-    // wraps the detail: "Windows 샌드박스 설치 오류: {message}").
-    expect(screen.getByText(/srt-win returned non-zero/)).toBeTruthy();
+    // The refusal is visible and localized; main's free text (srt-win output,
+    // local paths with the user name) is not on screen.
+    const outcome = screen.getByTestId("os-sandbox-windows-install-outcome");
+    expect(outcome).toHaveAttribute("data-outcome", "refused");
+    expect(outcome).toHaveTextContent("Windows 샌드박스 설정 오류:");
+    expect(document.body.textContent).not.toContain("srt-win returned non-zero");
+    expect(document.body.textContent).not.toContain("AppData");
 
     // The consent panel must remain visible (toggle stays enabled).
     expect(screen.getByTestId("os-sandbox-windows-consent")).toBeTruthy();
@@ -1229,8 +1290,560 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     });
 
     expect(updateSettings).not.toHaveBeenCalledWith({ features: { osToolSandbox: false } });
-    expect(screen.getByTestId("os-sandbox-windows-install-cancelled")).toBeTruthy();
+    expect(screen.getByTestId("os-sandbox-windows-install-outcome")).toHaveAttribute("data-outcome", "cancelled");
     expect(screen.getByTestId("os-sandbox-windows-consent")).toBeTruthy();
+  });
+
+  // Issue #1608: the click must always end in a visible state of its own. The
+  // status mock returns the same not-ready snapshot before and after, which is
+  // exactly when the old handler left the panel looking untouched.
+  async function clickInstall(result: () => Promise<unknown>) {
+    const api = installApiWithWindows({ sandboxWindowsInstall: vi.fn(result) });
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText(t("permissionsTab.osSandboxWindowsInstallButton")));
+    });
+    return { outcome: screen.getByTestId("os-sandbox-windows-install-outcome"), api };
+  }
+
+  // What ASRT messages look like: srt-win output plus a path with the user name.
+  const RAW_DETAIL = String.raw`srt-win install exited 12: C:\Users\example\AppData\Local\ave`;
+
+  function expectNoRawDetail() {
+    expect(document.body.textContent).not.toContain("AppData");
+    expect(document.body.textContent).not.toContain("srt-win install exited");
+  }
+
+  it("shows that the install ran but could not be verified, for the shape an older main returns (#1608)", async () => {
+    const { outcome } = await clickInstall(async () => ({ userState: "ready", wfpState: "cannot-read", ready: false }));
+    expect(outcome).toHaveAttribute("data-outcome", "installed-unverified");
+    expect(outcome).toHaveTextContent("설정은 실행되었지만 Ave가 샌드박스의 준비 상태를 확인하지 못했습니다(샌드박스 사용자: 설정됨, 네트워크 필터: 관리자 권한 없이는 확인 불가)");
+    expect(outcome.textContent).not.toMatch(/cannot-read|: ready/);
+  });
+
+  it.each([
+    [{ outcome: "installed-unverified", userState: "incomplete", wfpState: "absent", ready: false }, "installed-unverified", "샌드박스 사용자: 일부만 설정됨, 네트워크 필터: 설치 안 됨"],
+    [{ outcome: "installed-unverified", userState: "absent", wfpState: "installed", ready: false }, "installed-unverified", "샌드박스 사용자: 설정 안 됨, 네트워크 필터: 설치됨"],
+    [{ outcome: "installed-unverified", userState: "mystery", ready: false }, "installed-unverified", "샌드박스 사용자: 알 수 없음, 네트워크 필터: 알 수 없음"],
+    [{ outcome: "ready", userState: "ready", wfpState: "installed", ready: true }, "ready", "Windows OS 격리 설정이 끝났고 확인되었습니다"],
+    [{ outcome: "already-ready", userState: "ready", wfpState: "cannot-read", ready: true }, "already-ready", "이미 설정되어 있고 확인되었으므로 관리자 확인이 필요하지 않았습니다"],
+    [{ outcome: "cancelled", cancelled: true }, "cancelled", "관리자 권한이 허용되지 않아"],
+    [{ outcome: "timed-out" }, "timed-out", "설치 프로그램이 2분 안에 끝나지 않아"],
+  ])("renders the %j outcome as a visible state", async (result, expected, text) => {
+    const { outcome } = await clickInstall(async () => result);
+    expect(outcome).toHaveAttribute("data-outcome", expected);
+    expect(outcome).toHaveTextContent(text);
+    expect(outcome.textContent).not.toMatch(/permissionsTab\./);
+  });
+
+  it.each([
+    ["install_wfp_failed", "Base Filtering Engine"],
+    ["install_user_failed", "로컬 샌드박스 사용자 계정을 만들거나 설정하지 못했"],
+    ["install_config_conflict", "설정이 다른 Windows 샌드박스 네트워크 필터가 이미 있습니다"],
+    ["install_ambient_failed", "시스템 폴더의 쓰기 차단이 적용되지 않아"],
+    ["srt_win_not_found", "Windows 샌드박스 도우미가 없어"],
+    ["unexpected", "예상하지 못한 오류로 중단되었고"],
+    ["install_failed", "Windows 샌드박스 설정에 실패했고(install_failed)"],
+  ])("shows localized copy for failure code %s, never main's message", async (errorCode, text) => {
+    const { outcome } = await clickInstall(async () => ({ outcome: "failed", errorCode, message: RAW_DETAIL }));
+    expect(outcome).toHaveAttribute("data-outcome", "failed");
+    expect(outcome).toHaveAttribute("data-error-code", errorCode);
+    expect(outcome).toHaveTextContent(text);
+    expect(outcome.textContent).not.toMatch(/permissionsTab\.|force/);
+    expectNoRawDetail();
+  });
+
+  it.each([
+    ["null", null],
+    ["an empty object", {}],
+    ["an unknown outcome", { outcome: "rebooting", detail: RAW_DETAIL }],
+    ["a string", RAW_DETAIL],
+  ])("renders %s as an unexpected result, never as nothing", async (_label, result) => {
+    const { outcome } = await clickInstall(async () => result);
+    expect(outcome).toHaveAttribute("data-outcome", "unexpected");
+    expect(outcome).toHaveTextContent("Windows 샌드박스 설정이 Ave가 알 수 없는 결과를 반환했습니다");
+    expectNoRawDetail();
+  });
+
+  it("renders a rejected IPC call and a localized refusal as errors, without raw text", async () => {
+    const { outcome: rejected } = await clickInstall(async () => {
+      throw new Error(RAW_DETAIL);
+    });
+    expect(rejected).toHaveAttribute("data-outcome", "refused");
+    expect(rejected).toHaveTextContent("Ave가 Windows 샌드박스 설정 결과를 받지 못했습니다");
+    expectNoRawDetail();
+    cleanup();
+
+    const { outcome: refused } = await clickInstall(async () => ({ ok: false, error: "user-keyboard-required", message: "permission change requires active user gesture (keyboard intent)" }));
+    expect(refused).toHaveAttribute("data-outcome", "refused");
+    expect(refused.textContent).not.toContain("keyboard intent");
+    expect(refused).toHaveTextContent("재설정은 이 창에서 클릭했을 때만 시작되는데, Ave가 클릭을 확인하지 못했습니다");
+  });
+
+  it.each(["en", "ko"] as const)("keeps unconfirmed setup results honest in %s", async (locale) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    try {
+      const results = [
+        async () => { throw new Error(RAW_DETAIL); },
+        async () => ({ outcome: "unrecognized" }),
+        async () => ({ outcome: "cancelled", cancelled: true }),
+        ...["install_wfp_failed", "install_user_failed", "install_config_conflict"].map(
+          (errorCode) => async () => ({ outcome: "failed", errorCode }),
+        ),
+      ];
+      for (const result of results) {
+        const { outcome } = await clickInstall(result);
+        expect(outcome.textContent).not.toMatch(/nothing changed|stays off|nothing is confined|아무것도 바뀌지|꺼진 상태|아무것도 격리되지/);
+        expect(outcome.textContent).toMatch(/unconfirmed|sandbox status|준비 상태|샌드박스 상태|확인되지|확인하지 못/);
+        cleanup();
+      }
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
+  it.each([
+    { outcome: "failed", errorCode: "c:private.cache" },
+    { ok: false, error: "c:private.cache" },
+  ])("does not render a drive-relative path as a diagnostic code: %j", async (result) => {
+    const { outcome } = await clickInstall(async () => result);
+    expect(outcome.textContent).not.toContain("c:private.cache");
+    expect(outcome.getAttribute("data-error-code")).not.toBe("c:private.cache");
+  });
+
+  it("shows a localized banner, not the raw error, when the status re-read after install fails", async () => {
+    const { ave } = installApiWithWindows({ sandboxWindowsInstall: vi.fn(async () => ({ outcome: "timed-out" })) });
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    (ave.permission.sandboxWindowsStatus as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error(RAW_DETAIL));
+    await act(async () => {
+      fireEvent.click(screen.getByText("재설정"));
+    });
+    expect(screen.getByTestId("os-sandbox-windows-install-outcome")).toHaveAttribute("data-outcome", "timed-out");
+    expect(screen.getByText(/설정 후 Ave가 Windows 샌드박스 상태를 다시 읽지 못했습니다/)).toBeTruthy();
+    expectNoRawDetail();
+    // The detail goes to the renderer log instead of the screen.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("sandboxWindowsStatus re-read failed"), RAW_DETAIL);
+    warn.mockRestore();
+  });
+
+  it("logs a rejected or refused install with its code", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await clickInstall(async () => {
+      throw new Error(RAW_DETAIL);
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("sandboxWindowsInstall rejected"), RAW_DETAIL);
+    cleanup();
+    warn.mockClear();
+    await clickInstall(async () => ({ ok: false, error: "user-keyboard-required", message: "x" }));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("sandboxWindowsInstall refused"), "user-keyboard-required");
+    warn.mockRestore();
+  });
+
+  it.each(["en", "ko"] as const)("scopes the timeout result to the installer deadline in %s", async (locale) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    try {
+      const { outcome } = await clickInstall(async () => ({ outcome: "timed-out" }));
+      expect(outcome).toHaveTextContent(locale === "en"
+        ? "The installer did not finish within 2 minutes"
+        : "설치 프로그램이 2분 안에 끝나지 않아");
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
+  it.each(["en", "ko"] as const)("explains a permission repair still pending beyond the installer deadline in %s", async (locale) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    const { grantAsrtWindowsBackendAcl, installAsrtWindowsSandbox } = await import("../../../../permissions/asrt-windows-support.js");
+    let finishRepair: ((error: Error | null) => void) | undefined;
+    const exec = vi.fn((
+      file: string,
+      _args: readonly string[],
+      _options: { readonly windowsHide?: boolean },
+      callback: (error: Error | null) => void,
+    ) => {
+      if (file.endsWith("icacls.exe")) callback(Object.assign(new Error("Access denied"), { code: 5 }));
+      else finishRepair = callback;
+    });
+    const install = vi.fn(() => installAsrtWindowsSandbox({
+      readStatus: async () => ({ applicable: true, userState: "incomplete", wfpState: "absent", ready: false, instructions: "" }),
+      loadRuntime: async () => ({
+        installWindowsSandboxAsync: async () => ({
+          user: { provisioned: true, sid: "S-1-5-21-1", groupExists: true, inBuiltinUsers: true, inSandboxGroup: true, hiddenFromLogon: true, credPresent: true },
+          wfp: { state: "installed" },
+        }),
+        verifyWindowsWfpEgress: vi.fn(),
+      }),
+      grantBackendAcl: () => grantAsrtWindowsBackendAcl({
+        execFile: exec,
+        pathExists: () => true,
+        resolvePackageRoot: () => String.raw`C:\fixture\runtime`,
+        systemRoot: String.raw`C:\Windows`,
+      }),
+    }));
+    installApiWithWindows({ sandboxWindowsInstall: install });
+    try {
+      await act(async () => { render(<PermissionsTab />); });
+      await act(async () => { fireEvent.click(screen.getByTestId("os-sandbox-windows-install")); });
+      await waitFor(() => expect(exec).toHaveBeenCalledTimes(2));
+      expect(exec.mock.calls[1]?.[0]).toMatch(/powershell\.exe$/);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_001); });
+      const pending = screen.getByTestId("os-sandbox-windows-install-pending");
+      expect(pending).toHaveAttribute("data-phase", "installing");
+      expect(screen.getByTestId("os-sandbox-windows-install")).toBeDisabled();
+      expect(pending).toHaveTextContent(locale === "en"
+        ? "The installer and its administrator prompt share a 2-minute limit"
+        : "설치 프로그램 실행과 해당 관리자 확인에는 합계 2분의 제한이 적용됩니다");
+      expect(pending).toHaveTextContent(locale === "en"
+        ? "Later status checks and permission repair can take longer and may show another administrator prompt"
+        : "이후 상태 확인과 권한 복구는 더 오래 걸릴 수 있고 관리자 확인이 다시 나타날 수 있습니다");
+      expect(screen.getByTestId("os-sandbox-windows-consent")).toHaveTextContent(locale === "en"
+        ? "Permission repair may ask for administrator approval again"
+        : "권한 복구 중 관리자 확인이 다시 나타날 수 있습니다");
+    } finally {
+      vi.useRealTimers();
+      await act(async () => { finishRepair?.(null); });
+      setLocale(previousLocale);
+    }
+  });
+
+  it("invokes the install straight from the click, with one hint for the install and its own copy for the re-check", async () => {
+    let finishInstall: ((value: unknown) => void) | undefined;
+    let finishReread: ((value: unknown) => void) | undefined;
+    const install = vi.fn(() => new Promise((resolve) => { finishInstall = resolve; }));
+    const { ave } = installApiWithWindows({ sandboxWindowsInstall: install });
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    const status = ave.permission.sandboxWindowsStatus as ReturnType<typeof vi.fn>;
+    const statusCallsAtMount = status.mock.calls.length;
+    status.mockImplementationOnce(() => new Promise((resolve) => { finishReread = resolve; }));
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("재설정"));
+    });
+    // No status read stands between the click and the install.
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(status.mock.calls.length).toBe(statusCallsAtMount);
+    let pending = screen.getByTestId("os-sandbox-windows-install-pending");
+    expect(pending).toHaveAttribute("data-phase", "installing");
+    expect(pending).toHaveTextContent("최대 약 45초");
+    expect(pending).toHaveTextContent("Windows가 관리자 권한을 요청하니 허용하세요");
+    expect(pending).toHaveTextContent("설치 프로그램 실행과 해당 관리자 확인에는 합계 2분의 제한이 적용됩니다");
+
+    await act(async () => {
+      finishInstall?.({ outcome: "ready", userState: "ready", wfpState: "installed", ready: true });
+    });
+    pending = screen.getByTestId("os-sandbox-windows-install-pending");
+    expect(pending).toHaveAttribute("data-phase", "refreshing");
+    expect(pending).toHaveTextContent("결과를 확인하고 있습니다");
+    expect(pending.textContent).not.toContain("관리자 권한");
+    expect(screen.getByTestId("os-sandbox-windows-install-outcome")).toHaveAttribute("data-outcome", "ready");
+
+    await act(async () => {
+      finishReread?.({ applicable: true, userState: "ready", wfpState: "installed", ready: true, instructions: "" });
+    });
+    expect(screen.queryByTestId("os-sandbox-windows-install-pending")).toBeNull();
+  });
+
+  describe("through the real preload surface (issue #1608 gesture expiry)", () => {
+    // Electron 44 measured: navigator.userActivation.isActive is true ~4.8 s
+    // after a click and false by ~5.3 s. The fake keeps that window.
+    const ACTIVATION_WINDOW_MS = 5_000;
+    // Slower than the window: a real status read is up to ~45 s.
+    const STATUS_READ_MS = 6_000;
+    let clickedAt: number | null = null;
+    let originalActivation: PropertyDescriptor | undefined;
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      clickedAt = null;
+      originalActivation = Object.getOwnPropertyDescriptor(navigator, "userActivation");
+      Object.defineProperty(navigator, "userActivation", {
+        configurable: true,
+        get: () => ({ isActive: clickedAt !== null && Date.now() - clickedAt < ACTIVATION_WINDOW_MS }),
+      });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      if (originalActivation) Object.defineProperty(navigator, "userActivation", originalActivation);
+      else delete (navigator as unknown as Record<string, unknown>).userActivation;
+      ipcInvoke.mockReset();
+    });
+
+    it("keeps the click's gesture valid for the install when a status read takes longer than the activation window", async () => {
+      const notReady = { applicable: true, userState: "ready", wfpState: "cannot-read", ready: false, instructions: "" };
+      const installed: unknown[] = [];
+      const originalPlatform = process.platform;
+      const statusRead = vi.fn(async () => {
+          await new Promise((resolve) => setTimeout(resolve, STATUS_READ_MS));
+          return { user: {}, wfp: { state: "absent" } };
+      });
+      const readyUser = { provisioned: true, sid: "S-1-5-21-1", groupExists: true, inBuiltinUsers: true, inSandboxGroup: true, hiddenFromLogon: true, credPresent: true };
+      vi.doMock("@anthropic-ai/sandbox-runtime", () => ({
+        WindowsSandboxError: class extends Error {},
+        resolveSrtWin: () => ({ exe: "srt-win.exe", prependArgs: [] }),
+        checkWindowsSandboxStatusAsync: statusRead,
+        windowsInstallInstructions: () => "",
+        DEFAULT_WINDOWS_PROXY_PORT_RANGE: [60080, 60089],
+        installWindowsSandboxAsync: async (options: unknown) => {
+          installed.push(options);
+          return { user: readyUser, wfp: { state: "installed" } };
+        },
+        verifyWindowsWfpEgress: vi.fn(),
+      }));
+      vi.doMock("../../../../permissions/asrt-windows-support.js", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("../../../../permissions/asrt-windows-support.js")>();
+        return { ...actual, installAsrtWindowsSandbox: () => actual.installAsrtWindowsSandbox({ grantBackendAcl: async () => undefined }) };
+      });
+      setProcessPlatform("win32");
+      try {
+        const { registerPermissionsHandlers } = await import("../../../../ipc/domains/permissions.js");
+        mainHandlers.clear();
+        registerPermissionsHandlers({
+          conversationLoop: { permissionManager: { getMode: () => "default", setDeferredEntryAsk: vi.fn() } },
+          approvalGate: {}, auditLogger: { log: vi.fn() }, toolRegistry: { setDenyRules: vi.fn() },
+          settingsService: { get: () => ({ osToolSandbox: false }) }, getAppWindows: () => [],
+        } as never);
+        ipcInvoke.mockImplementation((channel: string, payload?: unknown) => mainHandlers.get(channel)!(hostFrameEvent(), payload));
+        const preload = buildInternalApiSurface().permission;
+        const { ave } = installApiWithWindows({
+          sandboxWindowsStatus: vi.fn(async () => notReady),
+          sandboxWindowsInstall: vi.fn(),
+        });
+        await act(async () => {
+          render(<PermissionsTab />);
+        });
+        // From here on the panel talks to main only through the real preload.
+        ave.permission.sandboxWindowsStatus = vi.fn(() => preload.sandboxWindowsStatus());
+        ave.permission.sandboxWindowsInstall = vi.fn(() => preload.sandboxWindowsInstall());
+
+        clickedAt = Date.now();
+        await act(async () => {
+          fireEvent.click(screen.getByText("재설정"));
+        });
+        for (let i = 0; i < 4; i += 1) {
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(STATUS_READ_MS);
+          });
+        }
+
+        const outcome = screen.getByTestId("os-sandbox-windows-install-outcome");
+        expect(outcome).not.toHaveAttribute("data-outcome", "refused");
+        expect(outcome).toHaveAttribute("data-outcome", "ready");
+        expect(installed).toHaveLength(1);
+        expect(ipcInvoke).toHaveBeenCalledWith(PERMISSIONS.sandboxWindowsInstall, {
+          intent: { inputOrigin: "user-keyboard", userActivation: true },
+        });
+        expect(navigator.userActivation.isActive).toBe(false);
+        // An expired second click is refused before main starts a status read.
+        const readsBeforeRefusal = statusRead.mock.calls.length;
+        let refusal: unknown;
+        void preload.sandboxWindowsInstall().then((result) => { refusal = result; });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(refusal).toMatchObject({ ok: false, error: "user-keyboard-required" });
+        expect(statusRead).toHaveBeenCalledTimes(readsBeforeRefusal);
+      } finally {
+        setProcessPlatform(originalPlatform);
+        vi.doUnmock("@anthropic-ai/sandbox-runtime");
+        vi.doUnmock("../../../../permissions/asrt-windows-support.js");
+        mainHandlers.clear();
+      }
+    });
+  });
+});
+
+describe("PermissionsTab — failures never put raw text on screen", () => {
+  // What main's free-text messages and thrown errors can carry: English
+  // internals and local paths with the user's account name.
+  const RAW = String.raw`EACCES: open C:\Users\example\AppData\Local\ave\settings.json`;
+
+  async function renderTab() {
+    const api = installApi([[]]);
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    return api;
+  }
+
+  function expectNoRaw() {
+    expect(document.body.textContent).not.toContain("EACCES");
+    expect(document.body.textContent).not.toContain("AppData");
+  }
+
+  it("keeps raw directory warnings in the log before and after acknowledgement", async () => {
+    const api = await renderTab();
+    api.permission.dirDispatch.mockResolvedValueOnce({
+      ok: false, error: "directory warnings", warnings: [RAW], requiresAcknowledgement: true,
+    } as never);
+    const input = screen.getByPlaceholderText(t("permissionsTab.directoryInputPlaceholder"));
+    fireEvent.change(input, { target: { value: "/tmp/project/.git" } });
+    await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
+    expect(screen.getByTestId("directory-warning-confirmation")).toBeTruthy();
+    expectNoRaw();
+    api.permission.dirDispatch.mockResolvedValueOnce({
+      ok: true, verb: "allow", persisted: ["/tmp/project/.git"], sessionOnly: false, warnings: [RAW],
+    } as never);
+    await act(async () => { fireEvent.click(screen.getByText(t("permissionsTab.directoryWarningConfirmButton"))); });
+    expectNoRaw();
+    expect(screen.getByText(t("permissionsTab.directoryWarningBody"))).toBeTruthy();
+  });
+
+  async function addRule() {
+    fireEvent.change(screen.getByTestId("permissions-rule-pattern-input"), { target: { value: "bash:ls" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("permissions-rule-add"));
+    });
+  }
+
+  type FailureCase = (api: ReturnType<typeof installApi>) => Promise<string>;
+  const mock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
+  const cases: ReadonlyArray<readonly [string, FailureCase]> = [
+    ["a mode change refused with a message", async (api) => {
+      mock(api.permission.setMode).mockResolvedValueOnce({ ok: false, error: "mode-locked", message: RAW });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId(execModeTestId("auto")));
+      });
+      return "실행 모드 변경에 실패했습니다. (mode-locked)";
+    }],
+    ["a mode change that throws", async (api) => {
+      mock(api.permission.setMode).mockRejectedValueOnce(new Error(RAW));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId(execModeTestId("auto")));
+      });
+      return t("formatIpcError.unknownError");
+    }],
+    ["a rule add refused with a message", async (api) => {
+      mock(api.permission.addRule).mockResolvedValueOnce({ ok: false, error: "rule-conflict", message: RAW });
+      await addRule();
+      return "rule-conflict";
+    }],
+    ["a rule add that throws", async (api) => {
+      mock(api.permission.addRule).mockRejectedValueOnce(new Error(RAW));
+      await addRule();
+      return t("formatIpcError.unknownError");
+    }],
+  ];
+
+  it.each(cases)("%s shows localized copy and logs the raw text", async (_label, failure) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const api = await renderTab();
+    const shown = await failure(api);
+    expect(screen.getByText((content) => content.includes(shown))).toBeTruthy();
+    expectNoRaw();
+    expect(warn.mock.calls.some((call) => call.some((arg) => typeof arg === "string" && arg.includes("EACCES")))).toBe(true);
+    warn.mockRestore();
+  });
+
+  // The slash-backed directory dispatch puts chat-oriented English, or a bare
+  // IPC code, in `error` itself.
+  function dirDispatchFailing(failure: { add?: unknown; remove?: unknown }) {
+    const api = installApi([[]]);
+    mock(api.permission.dirDispatch).mockImplementation(async (rawArgs: string) => {
+      if (rawArgs === "list") {
+        return { ok: true, verb: "list", defaults: [], userAdditions: ["/tmp/ave-extra"], effective: [] };
+      }
+      if (rawArgs.startsWith("allow") && failure.add) return failure.add;
+      if (rawArgs.startsWith("deny") && failure.remove) return failure.remove;
+      return { ok: true, verb: "list", defaults: [], userAdditions: [], effective: [] };
+    });
+    return api;
+  }
+
+  async function addDirectory() {
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText("경로 (예: ~/Documents/project)"), { target: { value: "/tmp/other" } });
+      fireEvent.click(screen.getAllByText("추가").at(-1)!);
+    });
+  }
+
+  it.each([
+    ["chat-oriented usage text", { ok: false, error: "missing subcommand — usage: /permission dir <allow|deny|list> [path] [--session]" }, "디렉터리를 추가하지 못했습니다.", "usage:"],
+    ["a known IPC code", { ok: false, error: "user-keyboard-required" }, t("formatIpcError.userKeyboardRequired"), "user-keyboard-required"],
+  ] as const)("a directory add refused with %s shows localized copy", async (_label, add, shown, raw) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    dirDispatchFailing({ add });
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    await addDirectory();
+    expect(screen.getByText(shown)).toBeTruthy();
+    expect(document.body.textContent).not.toContain(raw);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("directory add failed"), add.error, "");
+    warn.mockRestore();
+  });
+
+  it.each([
+    ["free text", { ok: false, error: "workspace lifecycle unavailable" }, "디렉터리를 제거하지 못했습니다.", "workspace lifecycle"],
+    ["an unknown code", { ok: false, error: "dir-locked" }, "디렉터리를 제거하지 못했습니다. (dir-locked)", "-"],
+    ["the frame-trust code", { ok: false, error: "unauthorized-frame" }, t("formatIpcError.unauthorizedFrame"), "unauthorized-frame"],
+  ] as const)("a directory remove refused with %s shows localized copy", async (_label, remove, shown, raw) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    dirDispatchFailing({ remove });
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getAllByText("✕").at(-1)!);
+    });
+    expect(screen.getByText(shown)).toBeTruthy();
+    if (raw !== "-") expect(document.body.textContent).not.toContain(raw);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("directory remove failed"), remove.error, "");
+    warn.mockRestore();
+  });
+
+  it("a reviewer dispatch slash-parse failure shows the localized reviewer error, not the parser text", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const api = installApi([[]]);
+    mock(api.permission.reviewerDispatch).mockImplementation(async (rawArgs: string) => {
+      if (rawArgs === "show") {
+        return {
+          ok: true,
+          verb: "show",
+          settings: {
+            mode: "disabled",
+            provider: "openai",
+            model: "gpt-4o-mini",
+            fallbackOnError: "deny",
+            parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
+            interactive: { autoApprove: "off" },
+          },
+        };
+      }
+      return { ok: false, error: "unknown subcommand 'llm' — expected show|mode|model" };
+    });
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId(execModeTestId("auto")));
+    });
+    expect(screen.getByText(t("permissionsTab.errorReviewerFallbackContext"))).toBeTruthy();
+    expect(document.body.textContent).not.toContain("unknown subcommand");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("reviewer dispatch failed"), expect.stringContaining("unknown subcommand"), "");
+    warn.mockRestore();
+  });
+
+  it("a load failure shows localized copy and logs the raw text", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const api = installApi([[]]);
+    api.permission.getMode.mockRejectedValueOnce(new Error(RAW));
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    await waitFor(() => expect(screen.getByTestId("permissions-load-error")).toHaveTextContent(t("permissionsTab.errorLoadFailed")));
+    expectNoRaw();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("load failed"), RAW);
+    warn.mockRestore();
   });
 });
 

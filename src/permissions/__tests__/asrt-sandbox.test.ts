@@ -632,7 +632,7 @@ describe("asrt-sandbox — computeDynamicEndpointHosts (user-configured endpoint
             "azure-foundry": { baseUrl: "https://res.openai.azure.com/v1" },
             openai: { baseUrl: "https://proxy.internal.example:8443/v1" },
             // duplicate host (different path) collapses to one entry
-            copilot: { baseUrl: "https://res.openai.azure.com/other" },
+            "vertex-ai": { baseUrl: "https://res.openai.azure.com/other" },
           },
         },
       }),
@@ -646,7 +646,7 @@ describe("asrt-sandbox — computeDynamicEndpointHosts (user-configured endpoint
           vendors: {
             "azure-foundry": { baseUrl: "not a url" },
             openai: { baseUrl: "" },
-            copilot: { baseUrl: "   " },
+            "vertex-ai": { baseUrl: "   " },
             gemini: { baseUrl: undefined },
             // a value present but not even a string
             claude: { baseUrl: 123 as unknown as string },

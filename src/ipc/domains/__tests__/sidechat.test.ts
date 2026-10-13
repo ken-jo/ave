@@ -10,6 +10,7 @@
  *   4. when the side-chat loop is absent, handlers fail closed.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { EventEmitter } from "node:events";
 import type { IpcMainInvokeEvent } from "electron";
 import {
   MCP_RESOURCE_ATTACHMENTS_PER_TURN,
@@ -41,9 +42,14 @@ vi.mock("../../safe-send.js", () => ({
 
 import { registerSideChatHandlers } from "../sidechat.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
+import { deferred } from "../../../__tests__/test-helpers.js";
 
-function ev(url?: string): IpcMainInvokeEvent {
-  return (url ? { senderFrame: { url } } : {}) as unknown as IpcMainInvokeEvent;
+function rendererContents(senderId = 1): EventEmitter & { id: number } {
+  return Object.assign(new EventEmitter(), { id: senderId });
+}
+
+function ev(url?: string, senderId = 1, sender = rendererContents(senderId)): IpcMainInvokeEvent {
+  return (url ? { senderFrame: { url }, sender } : { sender }) as unknown as IpcMainInvokeEvent;
 }
 
 function makeSideLoop() {
@@ -56,7 +62,7 @@ function makeSideLoop() {
       return { route: "chat" };
     }),
     newConversation: vi.fn(),
-    loadSession: vi.fn(() => true),
+    loadSession: vi.fn((_sessionId: string, _lease?: object): boolean | Promise<boolean> => true),
     getSessionId: vi.fn(() => "34fd6270-309d-4e47-878b-75c0742a6ac2"),
     getHistory: vi.fn(() => ({ getMessages: vi.fn(() => []) })),
     listSessions: vi.fn(() => []),
@@ -86,7 +92,7 @@ function makeMainLoop() {
 function makeSideChatStore(existing?: Record<string, unknown>) {
   return {
     loadSessionMetadata: vi.fn(() => existing ?? null),
-    saveSessionMetadata: vi.fn(async () => {}),
+    saveSessionMetadata: vi.fn(async (_sessionId: string, _metadata: Record<string, unknown>) => {}),
   };
 }
 
@@ -116,6 +122,42 @@ beforeEach(() => {
 });
 
 describe("side-chat IPC domain", () => {
+  it("announces its current session before the first pending turn can publish tool events", async () => {
+    const pending = deferred<{ route: string }>();
+    const side = makeSideLoop();
+    const main = makeMainLoop();
+    let preludeAtTurnStart: unknown;
+    side.runTurn.mockImplementation(async () => {
+      preludeAtTurnStart = sent.find(({ payload }) => (payload as { type?: string }).type === "user_message")?.payload;
+      return pending.promise;
+    });
+    register(side, main);
+    const turn = handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html"), {
+      input: "first turn", originSessionId: main.getSessionId(),
+      sendRequestId: "side-request",
+    });
+    try {
+      expect(side.runTurn).toHaveBeenCalledOnce();
+      expect(preludeAtTurnStart).toMatchObject({
+        type: "user_message", sessionId: side.getSessionId(), streamId: 1,
+        sendRequestId: "side-request",
+      });
+      expect((preludeAtTurnStart as { sessionId: string }).sessionId).not.toBe(main.getSessionId());
+    } finally {
+      pending.resolve({ route: "chat" });
+      await turn;
+    }
+  });
+
+  it.each([null, 42, {}, [], "", " ", "x".repeat(257)])("refuses an invalid side-chat send correlation %j before starting a turn", async (sendRequestId) => {
+    const side = makeSideLoop();
+    register(side, makeMainLoop());
+    const result = await handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html"), { input: "hello", sendRequestId });
+    expect(result).toEqual({ ok: false, error: "invalid-input" });
+    expect(side.runTurn).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+  });
+
   it("send drives the side loop and streams to ave:sidechat:stream (never chat.stream)", async () => {
     const side = makeSideLoop();
     const main = makeMainLoop();
@@ -185,16 +227,199 @@ describe("side-chat IPC domain", () => {
     expect(side.runTurn).not.toHaveBeenCalled();
   });
 
-  it("abort aborts the side loop only", async () => {
+  it("a finished cancellation request leaves both loops untouched", async () => {
     const side = makeSideLoop();
     const main = makeMainLoop();
     register(side, main);
     const handler = handlers.get(CHANNELS.sidechat.abort)!;
-    const result = await handler(ev("file:///index.html"));
+    const result = await handler(ev("file:///index.html"), { sendRequestId: "finished-request" });
     expect(result).toEqual({ ok: true });
-    expect(side.abortCurrentTurn).toHaveBeenCalledTimes(1);
+    expect(side.abortCurrentTurn).not.toHaveBeenCalled();
     expect(main.abortCurrentTurn).not.toHaveBeenCalled();
   });
+
+  it.each(["missing-payload", "peer-renderer"] as const)("does not cancel an accepted turn from %s", async (scope) => {
+    const turn = deferred<{ route: string }>();
+    const side = makeSideLoop();
+    side.runTurn.mockReturnValueOnce(turn.promise);
+    register(side, makeMainLoop());
+    const pending = handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html", 1), {
+      input: "Own request", sendRequestId: "own-request",
+    });
+    let cancellation: unknown;
+    try {
+      cancellation = scope === "missing-payload"
+        ? handlers.get(CHANNELS.sidechat.abort)!(ev("file:///index.html", 1))
+        : handlers.get(CHANNELS.sidechat.abort)!(ev("file:///index.html", 2), { sendRequestId: "own-request" });
+      expect(side.abortCurrentTurn).not.toHaveBeenCalled();
+      await expect(cancellation).resolves.toEqual(scope === "missing-payload"
+        ? { ok: false, error: "invalid-send-request-id" } : { ok: true });
+    } finally {
+      turn.resolve({ route: "chat" });
+      await Promise.all([pending, cancellation]);
+    }
+  });
+
+  it.each((["new", "load"] as const).flatMap((pendingTransition) =>
+    (["send", "new", "load"] as const).map((attempt) => ({ pendingTransition, attempt })),
+  ))("refuses $attempt while a $pendingTransition session transition is pending", async ({ pendingTransition, attempt }) => {
+    const completion = deferred<boolean>();
+    const entered = deferred<void>();
+    const side = makeSideLoop();
+    if (pendingTransition === "new") side.newConversation.mockImplementationOnce(() => {
+      entered.resolve(undefined); return completion.promise;
+    });
+    else side.loadSession.mockImplementationOnce(() => {
+      entered.resolve(undefined); return completion.promise;
+    });
+    register(side, makeMainLoop());
+    const pending = pendingTransition === "new"
+      ? handlers.get(CHANNELS.sidechat.new)!(ev("file:///index.html"))
+      : handlers.get(CHANNELS.sidechat.load)!(ev("file:///index.html"), side.getSessionId());
+    try {
+      await entered.promise;
+      side.abortCurrentTurn.mockClear();
+      const blocked = attempt === "send"
+        ? handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html"), { input: "Blocked request", sendRequestId: "blocked-request" })
+        : attempt === "new" ? handlers.get(CHANNELS.sidechat.new)!(ev("file:///index.html"))
+          : handlers.get(CHANNELS.sidechat.load)!(ev("file:///index.html"), side.getSessionId());
+      await expect(blocked).resolves.toMatchObject({ ok: false, error: "streaming-active" });
+      expect(side.runTurn).not.toHaveBeenCalled();
+      expect(side.abortCurrentTurn).not.toHaveBeenCalled();
+      expect(sent).toEqual([]);
+    } finally {
+      completion.resolve(true);
+      await pending;
+    }
+  });
+
+  it("a refused request cannot abort a peer's active turn", async () => {
+    const turn = deferred<{ route: string }>();
+    const side = makeSideLoop();
+    side.runTurn.mockReturnValueOnce(turn.promise);
+    register(side, makeMainLoop());
+    const send = handlers.get(CHANNELS.sidechat.send)!;
+    const abort = handlers.get(CHANNELS.sidechat.abort)!;
+    const peer = send(ev("file:///index.html"), { input: "Peer request", sendRequestId: "peer-request" });
+    let cancellation: unknown;
+    try {
+      await expect(send(ev("file:///index.html"), { input: "Local request", sendRequestId: "local-request" }))
+        .resolves.toMatchObject({ ok: false, error: "streaming-active" });
+      cancellation = abort(ev("file:///index.html"), { sendRequestId: "local-request" });
+      expect(side.abortCurrentTurn).not.toHaveBeenCalled();
+      await expect(cancellation).resolves.toEqual({ ok: true });
+    } finally {
+      turn.resolve({ route: "chat" });
+      await Promise.all([peer, cancellation]);
+    }
+  });
+
+  it("the accepted request can abort its own active turn", async () => {
+    const turn = deferred<{ route: string }>();
+    const side = makeSideLoop();
+    side.runTurn.mockReturnValueOnce(turn.promise);
+    const main = makeMainLoop();
+    register(side, main);
+    const pending = handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html"), { input: "Own request", sendRequestId: "own-request" });
+    const cancellation = handlers.get(CHANNELS.sidechat.abort)!(ev("file:///index.html"), { sendRequestId: "own-request" });
+    try {
+      expect(side.abortCurrentTurn).toHaveBeenCalledOnce();
+      expect(main.abortCurrentTurn).not.toHaveBeenCalled();
+    } finally {
+      turn.resolve({ route: "chat" });
+      await Promise.all([pending, cancellation]);
+    }
+  });
+
+  it.each([
+    ["reloads", "did-navigate", []],
+    ["fails to reload into an error page", "did-fail-provisional-load", [{}, -6, "ERR_FILE_NOT_FOUND", "file:///index.html", true]],
+    ["crashes", "render-process-gone", [{}]],
+    ["is destroyed", "destroyed", []],
+  ] as const)("cancels its accepted turn when the owning renderer %s", async (_label, eventName, args) => {
+    const turn = deferred<{ route: string }>();
+    const side = makeSideLoop();
+    side.abortCurrentTurn.mockImplementation(() => turn.resolve({ route: "chat" }));
+    side.runTurn.mockReturnValueOnce(turn.promise);
+    register(side, makeMainLoop());
+    const owner = rendererContents(1);
+    const peer = rendererContents(2);
+    const pending = handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html", 1, owner), {
+      input: "Own request", sendRequestId: "own-request",
+    });
+    try {
+      // A peer renderer's departure, in-document or subframe navigation, and a
+      // main-frame navigation the window's will-navigate policy then cancels
+      // (an external link click) leave the owning document alive.
+      peer.emit(eventName, ...args);
+      owner.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true });
+      owner.emit("did-start-navigation", { isMainFrame: false, isSameDocument: false });
+      owner.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+      owner.emit("did-navigate-in-page", {});
+      owner.emit("did-frame-navigate", {});
+      // A failed subframe keeps the document too, and so does every main-frame
+      // `did-fail-load` without a committed error page (probed on Electron 44):
+      // a stopped load, a `loadURL` refused as invalid, and a committed
+      // document whose own load fails after commit.
+      owner.emit("did-fail-provisional-load", {}, -3, "ERR_ABORTED", "file:///index.html", true);
+      owner.emit("did-fail-provisional-load", {}, -6, "ERR_FILE_NOT_FOUND", "file:///frame.html", false);
+      owner.emit("did-fail-load", {}, -3, "ERR_ABORTED", "file:///index.html", true);
+      owner.emit("did-fail-load", {}, -300, "ERR_INVALID_URL", "http://[/", true);
+      owner.emit("did-fail-load", {}, -354, "ERR_CONTENT_LENGTH_MISMATCH", "file:///index.html", true);
+      expect(side.abortCurrentTurn).not.toHaveBeenCalled();
+      owner.emit(eventName, ...args);
+      expect(side.abortCurrentTurn).toHaveBeenCalledOnce();
+      await pending;
+      expect(owner.listenerCount("did-start-navigation") + owner.listenerCount("did-navigate")
+        + owner.listenerCount("did-fail-provisional-load") + owner.listenerCount("render-process-gone")
+        + owner.listenerCount("destroyed")).toBe(0);
+    } finally {
+      turn.resolve({ route: "chat" });
+      await pending;
+    }
+  });
+
+  it("keeps one departure watch per accepted turn and none after a turn fails", async () => {
+    const side = makeSideLoop();
+    register(side, makeMainLoop());
+    const owner = rendererContents(1);
+    const peer = rendererContents(2);
+    const send = handlers.get(CHANNELS.sidechat.send)!;
+    const watches = (contents: EventEmitter) => contents.listenerCount("did-navigate")
+      + contents.listenerCount("did-fail-provisional-load") + contents.listenerCount("render-process-gone") + contents.listenerCount("destroyed");
+
+    side.runTurn.mockRejectedValueOnce(new Error("provider failed"));
+    await expect(send(ev("file:///index.html", 1, owner), { input: "fails", sendRequestId: "failed-request" }))
+      .resolves.toMatchObject({ ok: false });
+    expect(watches(owner)).toBe(0);
+    await send(ev("file:///index.html", 1, owner), { input: "first", sendRequestId: "first-request" });
+    expect(watches(owner)).toBe(0);
+
+    // A later turn belongs to its own sender; the earlier owner leaving does not reach it.
+    const turn = deferred<{ route: string }>();
+    side.runTurn.mockReturnValueOnce(turn.promise);
+    const pending = send(ev("file:///index.html", 2, peer), { input: "peer", sendRequestId: "peer-request" });
+    try {
+      expect(watches(peer)).toBe(4);
+      owner.emit("did-navigate");
+      owner.emit("destroyed");
+      expect(side.abortCurrentTurn).not.toHaveBeenCalled();
+    } finally {
+      turn.resolve({ route: "chat" });
+      await pending;
+    }
+    expect(watches(peer)).toBe(0);
+  });
+
+  it.each([undefined, null, 17, [], {}, { sendRequestId: "" }, { sendRequestId: " " }, { sendRequestId: 17 }, { sendRequestId: "x".repeat(257) }])(
+    "refuses malformed scoped abort payload %j", async (payload) => {
+      const side = makeSideLoop();
+      register(side, makeMainLoop());
+      await expect(handlers.get(CHANNELS.sidechat.abort)!(ev("file:///index.html"), payload))
+        .resolves.toEqual({ ok: false, error: "invalid-send-request-id" });
+      expect(side.abortCurrentTurn).not.toHaveBeenCalled();
+    },
+  );
 
   it("new creates a fresh session on the side loop", async () => {
     const side = makeSideLoop();
@@ -336,11 +561,13 @@ describe("side-chat IPC domain", () => {
     register(side, makeMainLoop());
     const handler = handlers.get(CHANNELS.sidechat.send)!;
 
-    const first = handler(ev("file:///index.html"), { input: "first" });
-    const second = await handler(ev("file:///index.html"), { input: "second" });
+    const first = handler(ev("file:///index.html"), { input: "first", sendRequestId: "first-request" });
+    const second = await handler(ev("file:///index.html"), { input: "second", sendRequestId: "second-request" });
 
     expect(second).toMatchObject({ ok: false, error: "streaming-active" });
     expect(side.runTurn).toHaveBeenCalledTimes(1);
+    expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "user_message")
+      .map(({ payload }) => (payload as { sendRequestId?: string }).sendRequestId)).toEqual(["first-request"]);
 
     releaseTurn();
     await first;
@@ -349,9 +576,46 @@ describe("side-chat IPC domain", () => {
     // completes on its own so this send is not held by the same latch.
     const settledTurn = vi.fn(async () => ({ route: "chat" }));
     side.runTurn = settledTurn;
-    const third = await handler(ev("file:///index.html"), { input: "third" });
+    const third = await handler(ev("file:///index.html"), { input: "third", sendRequestId: "third-request" });
     expect(third).toMatchObject({ ok: true });
     expect(settledTurn).toHaveBeenCalledTimes(1);
+    expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "user_message")
+      .map(({ payload }) => (payload as { sendRequestId?: string }).sendRequestId)).toEqual(["first-request", "third-request"]);
+  });
+
+  it("can start the next turn while an earlier failed reply awaits origin persistence", async () => {
+    const originReady = deferred<void>();
+    const nextTurnReady = deferred<{ route: string }>();
+    const side = makeSideLoop();
+    const main = makeMainLoop();
+    const store = makeSideChatStore();
+    store.saveSessionMetadata.mockReturnValueOnce(originReady.promise);
+    side.runTurn.mockImplementationOnce(async (...args: unknown[]) => {
+      (args[1] as { onError: (message: string) => void }).onError("First turn failed");
+      throw new Error("First turn failed");
+    }).mockReturnValueOnce(nextTurnReady.promise);
+    register(side, main, false, store);
+    const handler = handlers.get(CHANNELS.sidechat.send)!;
+    const first = handler(ev("file:///index.html"), {
+      input: "first", originSessionId: main.getSessionId(), sendRequestId: "first-request",
+    });
+    let firstSettled = false;
+    void Promise.resolve(first).then(() => { firstSettled = true; });
+    let next: unknown;
+    try {
+      await vi.waitFor(() => expect(store.saveSessionMetadata).toHaveBeenCalledOnce());
+      next = handler(ev("file:///index.html"), {
+        input: "next", originSessionId: main.getSessionId(), sendRequestId: "next-request",
+      });
+      expect(firstSettled).toBe(false);
+      expect(side.runTurn).toHaveBeenCalledTimes(2);
+      expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "user_message")
+        .map(({ payload }) => (payload as { sendRequestId?: string }).sendRequestId)).toEqual(["first-request", "next-request"]);
+    } finally {
+      originReady.resolve(undefined);
+      nextTurnReady.resolve({ route: "chat" });
+      await Promise.all([first, next]);
+    }
   });
 
   it("fails closed when the side-chat loop is absent", async () => {
@@ -364,6 +628,37 @@ describe("side-chat IPC domain", () => {
 
 describe("side-chat parentage", () => {
   const PARENT = "89df5053-7dd8-4550-85c5-1a11011f7868";
+
+  it("keeps the first parent when consecutive turns overlap origin persistence", async () => {
+    const entered = deferred<void>();
+    const completion = deferred<void>();
+    let metadata: Record<string, unknown> | null = null;
+    const store = makeSideChatStore();
+    store.loadSessionMetadata.mockImplementation(() => metadata);
+    store.saveSessionMetadata.mockImplementation(async (_id, next) => {
+      entered.resolve(undefined);
+      await completion.promise;
+      metadata = next;
+    });
+    const side = makeSideLoop();
+    register(side, makeMainLoop(), false, store);
+    const send = handlers.get(CHANNELS.sidechat.send)!;
+    const first = send(ev("file:///index.html"), { input: "First prompt", originSessionId: PARENT, sendRequestId: "first-request" });
+    let second: unknown;
+    try {
+      await entered.promise;
+      second = send(ev("file:///index.html"), {
+        input: "Second prompt", originSessionId: side.getSessionId(), sendRequestId: "second-request",
+      });
+      await vi.waitFor(() => expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "done")).toHaveLength(2));
+      expect(side.runTurn).toHaveBeenCalledTimes(2);
+    } finally {
+      completion.resolve(undefined);
+      await Promise.all([first, second]);
+    }
+    expect(metadata).toMatchObject({ originSessionId: PARENT });
+    expect(store.saveSessionMetadata).toHaveBeenCalledOnce();
+  });
 
   it("records the conversation a side chat belongs to on its first turn", async () => {
     const store = makeSideChatStore();

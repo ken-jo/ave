@@ -154,7 +154,7 @@ function chatCompletionsRejectsToolTurnEffort(params: {
   return OPENAI_FAMILY.has(params.vendor) && !usesOpenAIResponsesWire(params.vendor, params.model);
 }
 
-const OPENAI_FAMILY: ReadonlySet<LLMVendor> = new Set(["openai", "copilot", "azure-foundry"]);
+const OPENAI_FAMILY: ReadonlySet<LLMVendor> = new Set(["openai", "azure-foundry"]);
 
 /**
  * The reasoning control for one request. `undefined` when thinking is off or

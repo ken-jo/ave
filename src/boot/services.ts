@@ -179,6 +179,7 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
   await settingsService.migrateSecrets();
   await settingsService.migrateRenamedVendorSecrets();
   await settingsService.deleteRetiredMarketplaceApiKey();
+  await settingsService.deleteRetiredLlmVendorApiKeys();
   applyBootPiiRedactionPolicy(settingsService);
 
   // Set the main-process UI locale from persisted settings (or system-detected
