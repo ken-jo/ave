@@ -10,6 +10,7 @@ import type { Attachment } from "../../types/attachments.js";
 import type { ChatStreamEvent } from "../../../../lib/chat-stream-state.js";
 import type { UserKeyboardIntentSnapshot } from "../../../../shared/chat-origin.js";
 import type { AveApi } from "../../types.js";
+import { deferred } from "../../../../../test/renderer/helpers.js";
 
 /**
  * The queue's end-of-turn drain, on a surface whose stream carries a turn id.
@@ -50,7 +51,7 @@ function makeApi(options: { reverseDispatch?: boolean } = {}) {
     framesDuringAbort = [];
     return { ok: true as const };
   });
-  const send = vi.fn(async () => ({ ok: true as const, result: {} }));
+  const send = vi.fn(async (_input: string, _attachments?: unknown[], _originSessionId?: string, _sendRequestId?: string): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> => ({ ok: true, result: {} }));
   const api = {
     sideChat: {
       send,
@@ -69,6 +70,11 @@ function makeApi(options: { reverseDispatch?: boolean } = {}) {
   } as unknown as AveApi;
   return {
     api,
+    acceptTurn: async (streamId: number) => {
+      await act(async () => {
+        dispatch({ type: "user_message", sessionId: "side-1", streamId, sendRequestId: send.mock.calls.at(-1)![3] });
+      });
+    },
     subscriberCount: () => handlers.size,
     /** One dispatch to every subscriber, as the stream channel does. */
     emit: async (e: ChatStreamEvent) => {
@@ -141,15 +147,41 @@ async function typeAndSubmit(result: { current: Surface }, text: string) {
 }
 
 describe("useMessageQueue end-of-turn drain (side chat)", () => {
+  it.each([false, true])("keeps queued drafts when a peer's unseen turn ends, reverse dispatch: %s", async (reverseDispatch) => {
+    const { api, emit, spies } = makeApi({ reverseDispatch });
+    await emit({ type: "user_message", sessionId: "side-peer", streamId: 1, sendRequestId: "peer-request" });
+    const reply = deferred<{ ok: false; error: string }>();
+    spies.send.mockReturnValueOnce(reply.promise);
+    const { result } = renderHook(() => useSideSurface(api));
+    let pending = Promise.resolve();
+    act(() => { pending = result.current.side.send("Local request"); });
+    await typeAndSubmit(result, "Keep queued");
+    const currentEntries = result.current.side.entries;
+    try {
+      await emit({ type: "text_delta", text: "Peer answer", streamId: 1 });
+      await emit({ type: "done", streamId: 1 });
+      expect(result.current.side.entries).toEqual(currentEntries);
+      expect(result.current.side.isStreaming).toBe(true);
+      expect(result.current.queue.messageQueueStore.getPending()).toHaveLength(1);
+      expect(spies.send).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => {
+        reply.resolve({ ok: false, error: "streaming-active" });
+        await pending;
+      });
+    }
+  });
+
   it("drains on the current turn's done", async () => {
-    const { api, emit, spies } = makeApi();
+    const { api, emit, spies, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideSurface(api));
 
     await act(async () => {
       await result.current.side.send("first");
     });
+    await acceptTurn(1);
     expect(spies.send).toHaveBeenCalledTimes(1);
-    // The turn's first frame establishes its stream id.
+    // The matching user prelude establishes its stream id.
     await emit({ type: "text_delta", text: "a", streamId: 1 });
 
     await typeAndSubmit(result, "later");
@@ -164,12 +196,13 @@ describe("useMessageQueue end-of-turn drain (side chat)", () => {
   });
 
   it("does not drain on the trailing done that arrives DURING an interrupt", async () => {
-    const { api, emit, emitDuringAbort, spies } = makeApi();
+    const { api, emit, emitDuringAbort, spies, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideSurface(api));
 
     await act(async () => {
       await result.current.side.send("first");
     });
+    await acceptTurn(1);
     await emit({ type: "text_delta", text: "a", streamId: 1 });
 
     await typeAndSubmit(result, "later");
@@ -191,12 +224,13 @@ describe("useMessageQueue end-of-turn drain (side chat)", () => {
   });
 
   it("does not drain on a trailing done that arrives after the interrupt", async () => {
-    const { api, emit, spies } = makeApi();
+    const { api, emit, spies, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideSurface(api));
 
     await act(async () => {
       await result.current.side.send("first");
     });
+    await acceptTurn(1);
     await emit({ type: "text_delta", text: "a", streamId: 1 });
     await typeAndSubmit(result, "later");
 
@@ -214,12 +248,13 @@ describe("useMessageQueue end-of-turn drain (side chat)", () => {
   // would read it as superseded — and the transcript, judging last, would drop
   // its own `done` and leave the answer streaming forever.
   it("drains and closes the answer whichever subscriber judges the frame first", async () => {
-    const { api, emit, spies } = makeApi({ reverseDispatch: true });
+    const { api, emit, spies, acceptTurn } = makeApi({ reverseDispatch: true });
     const { result } = renderHook(() => useSideSurface(api));
 
     await act(async () => {
       await result.current.side.send("first");
     });
+    await acceptTurn(1);
     await emit({ type: "text_delta", text: "hello", streamId: 1 });
     await typeAndSubmit(result, "later");
 
@@ -238,7 +273,7 @@ describe("useMessageQueue end-of-turn drain (side chat)", () => {
   });
 
   it("gives every subscriber the same verdict for one frame", async () => {
-    const { api, emit, subscriberCount } = makeApi();
+    const { api, emit, subscriberCount, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideSurface(api));
     // The transcript and the queue are BOTH on the channel, each holding its own
     // copy of the frame. Whoever asks second must not be told "superseded" about
@@ -248,6 +283,7 @@ describe("useMessageQueue end-of-turn drain (side chat)", () => {
     await act(async () => {
       await result.current.side.send("first");
     });
+    await acceptTurn(1);
     await emit({ type: "text_delta", text: "hello", streamId: 1 });
     await emit({ type: "done", streamId: 1 });
 

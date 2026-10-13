@@ -30,6 +30,8 @@ import { MAIN_CHAT_GROUP_ID, MAX_CHAT_GROUPS } from "../../src/contract/app-cont
 import { BLOCKING_SURFACE_SELECTOR, TEST_IDS, chatSidePanelLauncherTestId, testIdSelector } from "../../src/shared/test-ids.js";
 import type { MarketplaceAnnouncement } from "../../src/shared/marketplace-announcements.js";
 import { CHAT_SESSION_DRAG_TYPE } from "../../src/ui/renderer/components/pane-drop.js";
+import type { AveApi } from "../../src/ui/renderer/types.js";
+import { A2ATaskState } from "../../src/shared/a2a.js";
 
 /** The permission namespace's subscriptions, as the mock records them. */
 function permissionSubscription(api: MockAveApi, name: string): ReturnType<typeof vi.fn> {
@@ -872,6 +874,184 @@ describe("a turn parked on an approval, with two tiles", () => {
     await waitFor(() => expect(dock(restored.element)).toHaveLength(1));
     expect(dock(container)).toHaveLength(1);
     expect(primary!.element.querySelector('[data-testid="pane-maximize-pending-answer"]')).toBeNull();
+  });
+
+  it("keeps first-send side-chat questions and approvals exclusive before its surface publishes", async () => {
+    const { container, api, emitAskUserQuestion, emitApproval } = await renderApp({ hasApiKey: true, sideChat: true });
+    const side = api.sideChat as unknown as NonNullable<AveApi["sideChat"]>;
+    const turn = deferred<{ ok: true; result: {} }>();
+    const streams = new Set<Parameters<typeof side.onStream>[0]>();
+    vi.mocked(side.send).mockReturnValueOnce(turn.promise);
+    vi.mocked(side.onStream).mockImplementation((handler) => {
+      streams.add(handler);
+      return () => { streams.delete(handler); };
+    });
+    await act(async () => {
+      fireEvent.click(container.querySelector(`[data-testid="${TEST_IDS.panePanelToggle}"]`)!);
+    });
+    await act(async () => {
+      fireEvent.click(container.querySelector(`[data-testid="${chatSidePanelLauncherTestId("side-chat")}"]`)!);
+    });
+    const sideView = container.querySelector<HTMLElement>('[data-testid="side-chat-view"]')!;
+    try {
+      await act(async () => {
+        fireEvent.change(sideView.querySelector('[data-testid="composer-textarea"]')!, { target: { value: "First side turn" } });
+        fireEvent.click(sideView.querySelector('[data-testid="composer-send-button"]')!);
+      });
+      expect(side.send).toHaveBeenCalledOnce();
+      expect(side.new).not.toHaveBeenCalled();
+      expect(side.load).not.toHaveBeenCalled();
+      expect(streams.size).toBeGreaterThan(0);
+      await act(async () => {
+        for (const stream of streams) stream({ type: "user_message", sessionId: MOCK_SIDE_CHAT_SESSION_ID, streamId: 1, sendRequestId: vi.mocked(side.send).mock.calls.at(-1)![3] });
+        emitAskUserQuestion({
+          id: "ask-first-side", sessionId: MOCK_SIDE_CHAT_SESSION_ID, createdAt: Date.now(),
+          questions: [{ question: "Question for the first side turn", choices: ["Continue", "Stop"] }],
+        });
+        emitApproval(approvalRequest({ id: "approval-first-side", sessionId: MOCK_SIDE_CHAT_SESSION_ID }));
+      });
+      await waitFor(() => expect(sideView.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(1));
+      expect(container.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(1);
+      expect(sideView.querySelectorAll('[data-testid="approval-dock"]')).toHaveLength(1);
+      expect(container.querySelectorAll('[data-testid="approval-dock"]')).toHaveLength(1);
+      expect(container.querySelector('[data-testid="approval-lane-card"]')).toBeNull();
+    } finally {
+      await act(async () => {
+        turn.resolve({ ok: true, result: {} });
+        await turn.promise;
+      });
+    }
+  });
+
+  it("keeps a first side-chat turn's cards out of another tile's idle side view", async () => {
+    const { container, api, emitAskUserQuestion, emitApproval } = await renderApp({ hasApiKey: true, sideChat: true });
+    const [sender, peer] = await splitIntoTwoTiles(container);
+    const side = api.sideChat as unknown as NonNullable<AveApi["sideChat"]>;
+    const streams = new Set<Parameters<typeof side.onStream>[0]>();
+    vi.mocked(side.onStream).mockImplementation((handler) => {
+      streams.add(handler);
+      return () => { streams.delete(handler); };
+    });
+    const turn = deferred<{ ok: true; result: {} }>();
+    vi.mocked(side.send).mockReturnValueOnce(turn.promise);
+    for (const tile of [sender!, peer!]) {
+      await act(async () => { fireEvent.click(tile.element.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!); });
+      await act(async () => { fireEvent.click(tile.element.querySelector(`[data-testid="${chatSidePanelLauncherTestId("side-chat")}"]`)!); });
+    }
+    const senderView = sender!.element.querySelector<HTMLElement>('[data-testid="side-chat-view"]')!;
+    const peerView = peer!.element.querySelector<HTMLElement>('[data-testid="side-chat-view"]')!;
+    try {
+      await act(async () => {
+        fireEvent.change(senderView.querySelector('[data-testid="composer-textarea"]')!, { target: { value: "First side turn" } });
+        fireEvent.click(senderView.querySelector('[data-testid="composer-send-button"]')!);
+      });
+      expect(side.send).toHaveBeenCalledOnce();
+      expect(side.new).not.toHaveBeenCalled();
+      expect(side.load).not.toHaveBeenCalled();
+      await act(async () => {
+        for (const stream of streams) stream({ type: "user_message", sessionId: MOCK_SIDE_CHAT_SESSION_ID, streamId: 1, sendRequestId: vi.mocked(side.send).mock.calls[0]![3] });
+        emitAskUserQuestion({ id: "ask-side-owner", sessionId: MOCK_SIDE_CHAT_SESSION_ID, createdAt: Date.now(), questions: [{ question: "Question for the sender", choices: ["Continue", "Stop"] }] });
+        emitApproval(approvalRequest({ id: "approval-side-owner", sessionId: MOCK_SIDE_CHAT_SESSION_ID }));
+      });
+      await waitFor(() => expect(senderView.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(1));
+      expect(senderView.querySelectorAll('[data-testid="approval-dock"]')).toHaveLength(1);
+      expect(peerView.querySelectorAll(BLOCKING_SURFACE_SELECTOR)).toHaveLength(0);
+      expect(container.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(1);
+      expect(container.querySelectorAll('[data-testid="approval-dock"]')).toHaveLength(1);
+    } finally {
+      await act(async () => { turn.resolve({ ok: true, result: {} }); await turn.promise; });
+    }
+  });
+
+  it.each(["question", "approval", "child", "closed-child"] as const)("transfers a retained side session's %s ownership on sequential sends and back", async (surface) => {
+    const { container, api, emitAskUserQuestion, emitApproval, emitApprovalSettled, emitAgentSpawnEvent } = await renderApp({ hasApiKey: true, sideChat: true });
+    const [first, second] = await splitIntoTwoTiles(container);
+    const side = api.sideChat as unknown as NonNullable<AveApi["sideChat"]>;
+    const streams = new Set<Parameters<typeof side.onStream>[0]>();
+    vi.mocked(side.onStream).mockImplementation((handler) => {
+      streams.add(handler);
+      return () => { streams.delete(handler); };
+    });
+    const turns = Array.from({ length: 3 }, () => deferred<{ ok: true; result: {} }>());
+    for (const turn of turns) vi.mocked(side.send).mockReturnValueOnce(turn.promise);
+    for (const tile of [first!, second!]) {
+      await act(async () => { fireEvent.click(tile.element.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!); });
+      await act(async () => { fireEvent.click(tile.element.querySelector(`[data-testid="${chatSidePanelLauncherTestId("side-chat")}"]`)!); });
+    }
+    const children = surface === "child" || surface === "closed-child";
+    const showTab = async (tile: NonNullable<typeof first>, kind: "subagent" | "side-chat") => {
+      await act(async () => {
+        const add = tile.element.querySelector('[data-testid="chat-side-panel-add-tab"]')!;
+        fireEvent.pointerDown(add, { button: 0 });
+        fireEvent.click(add);
+      });
+      await act(async () => {
+        fireEvent.click(document.querySelector(`[data-testid="${chatSidePanelLauncherTestId(`menu-${kind}`)}"]`)!);
+      });
+    };
+    const childTitles = (tile: NonNullable<typeof first>) => Array.from(tile.element.querySelectorAll('[data-testid="chat-side-panel-subagent-row"]'), (row) => row.textContent);
+    const finish = async (number: number) => {
+      await act(async () => {
+        emitApprovalSettled(`approval-transfer-${number}`);
+        for (const [handler] of vi.mocked(api.onAskUserQuestionTimeout!).mock.calls) handler({ requestId: `ask-transfer-${number}` });
+        for (const stream of streams) stream({ type: "done", streamId: number });
+        turns[number - 1]!.resolve({ ok: true, result: {} });
+        await turns[number - 1]!.promise;
+      });
+    };
+    try {
+      for (const number of [1, 2, 3]) {
+        const senderIndex = number === 2 ? 1 : 0;
+        if (number === 3 && children) {
+          if (surface === "closed-child") await showTab(first!, "side-chat");
+          else await act(async () => { fireEvent.click(first!.element.querySelector('[data-testid="chat-side-panel-tab-side-chat"]')!); });
+        }
+        const tiles = [first!, second!];
+        const sender = tiles[senderIndex]!.element.querySelector<HTMLElement>('[data-testid="side-chat-view"]')!;
+        const peer = tiles[1 - senderIndex]!.element.querySelector<HTMLElement>('[data-testid="side-chat-view"]');
+        await act(async () => {
+          fireEvent.change(sender.querySelector('[data-testid="composer-textarea"]')!, { target: { value: `Side turn ${number}` } });
+          fireEvent.click(sender.querySelector('[data-testid="composer-send-button"]')!);
+        });
+        expect(side.send).toHaveBeenCalledTimes(number);
+        await act(async () => {
+          for (const stream of streams) stream({ type: "user_message", sessionId: MOCK_SIDE_CHAT_SESSION_ID, streamId: number, sendRequestId: vi.mocked(side.send).mock.calls[number - 1]![3] });
+          emitAskUserQuestion({ id: `ask-transfer-${number}`, sessionId: MOCK_SIDE_CHAT_SESSION_ID, createdAt: Date.now(), questions: [{ question: `Question for turn ${number}`, choices: ["Continue", "Stop"] }] });
+          emitApproval(approvalRequest({ id: `approval-transfer-${number}`, sessionId: MOCK_SIDE_CHAT_SESSION_ID }));
+          emitAgentSpawnEvent({ type: "start", spawnId: `child-transfer-${number}`, parentSessionId: MOCK_SIDE_CHAT_SESSION_ID, taskState: A2ATaskState.SUBMITTED, title: `Child from turn ${number}` });
+          emitAgentSpawnEvent({ type: "done", spawnId: `child-transfer-${number}`, parentSessionId: MOCK_SIDE_CHAT_SESSION_ID, taskState: A2ATaskState.COMPLETED, title: `Child from turn ${number}`, entries: [], toolCallCount: 0 });
+        });
+        if (!children) {
+          const selector = `[data-testid="${surface === "question" ? "question-overlay" : "approval-dock"}"]`;
+          await waitFor(() => expect(sender.querySelectorAll(selector)).toHaveLength(1));
+          expect(peer!.querySelectorAll(selector)).toHaveLength(0);
+          expect(container.querySelectorAll(selector)).toHaveLength(1);
+        } else if (number >= 2) {
+          await finish(number);
+          await showTab(first!, "subagent");
+          if (number === 2) await showTab(second!, "subagent");
+          await waitFor(() => expect(childTitles(second!)).toEqual([expect.stringContaining("Child from turn 2")]));
+          expect(childTitles(first!)).toEqual(number === 2
+            ? [expect.stringContaining("Child from turn 1")]
+            : [expect.stringContaining("Child from turn 1"), expect.stringContaining("Child from turn 3")]);
+          continue;
+        }
+        await finish(number);
+        if (number === 1 && surface === "closed-child") {
+          await showTab(first!, "subagent");
+          const tab = first!.element.querySelector('[data-testid="chat-side-panel-tab-side-chat"]')!;
+          await act(async () => { fireEvent.click(Array.from(tab.parentElement!.querySelectorAll("button")).at(-1)!); });
+          expect(first!.element.querySelector('[data-testid="side-chat-view"]')).toBeNull();
+        }
+      }
+      expect(side.new).not.toHaveBeenCalled();
+      expect(side.load).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        for (const turn of turns) turn.resolve({ ok: true, result: {} });
+        await Promise.all(turns.map((turn) => turn.promise));
+      });
+    }
   });
 
   it("draws a side chat's approval over the side composer, and marks the panel toggle and the tab while it is out of sight", async () => {
