@@ -1,0 +1,117 @@
+import { PageHero } from "@/components/docs/page-hero";
+import { Callout } from "@/components/docs/callout";
+import { PageNav } from "@/components/docs/page-nav";
+import { StepList } from "@/components/docs/step-list";
+import { Reveal } from "@/components/motion/reveal";
+
+export const metadata = { title: "Architecture — System at a Glance" };
+
+// Same layer-stack visual language as the landing architecture section —
+// tag column + hairline card + chip row (docs and landing must not diverge).
+const layers = [
+  {
+    tag: "Desktop Host",
+    band: "Electron host",
+    boxes: [
+      "App.tsx · MainToolbar · ChatView",
+      "MessageQueuePanel · SessionTasksPanel",
+      "Reviewer (risk-classifier)",
+      "Tool Registry · ConversationLoop",
+      "RoutineEngine (shutdown · schedule)",
+    ],
+  },
+  {
+    tag: "Extension Runtime",
+    band: "boot/steps/plugin-runtime.ts",
+    boxes: [
+      "local-indexer (kiwi · pymupdf4llm · LanceDB · FTS5)",
+      "meeting (Whisper STT)",
+    ],
+  },
+  {
+    tag: "Storage",
+    band: "~/.ave/ (0o700 / 0o600)",
+    boxes: [
+      "sessions/",
+      "routine/",
+      "audit/<YYYY-MM-DD>.jsonl",
+      "plugins/<id>/",
+      "secrets/",
+      "permissions.json",
+      "settings.json",
+      "memories/MEMORY.md",
+    ],
+  },
+  {
+    tag: "External",
+    band: "Marketplace · external",
+    boxes: [
+      "git marketplaces (official · organization · custom repositories)",
+      "MCP servers (external)",
+    ],
+  },
+];
+
+const flowSteps = [
+  { title: "User input", body: <>User input → <code>ChatView</code>.</> },
+  { title: "Scope selection", body: <>The Host selects enabled extension scope from explicit activation and carried session state.</> },
+  { title: "Tool call decision", body: <>The model uses eager Tool schemas or promotes deferred Tools through <code>tool_search</code>.</> },
+  { title: "Reviewer evaluation", body: <>Decides auto / card / dialog from the grid of tool RiskLevel × Category × the user's grant.</> },
+  { title: "Execution", body: <>On approval, the extension handler runs (cross-extension calls possible via <code>callTool</code>).</> },
+  { title: "Response streaming", body: <>Tool results + thinking tokens → LLM context → streamed into the chat body.</> },
+  { title: "Audit logging", body: <>Every step is appended to <code>{"~/.ave/audit/<YYYY-MM-DD>.jsonl"}</code>.</> },
+];
+
+export default function Page() {
+  return (
+    <article>
+      <PageHero
+        eyebrow="Architecture"
+        title="Ave system at a glance"
+        description="Ave is structured around four layers — the Electron host, the extension runtime, local storage (~/.ave), and servers — all operating on the same user signals. Every domain feature is split out into extensions, and the host never imports domain-specific code (enforced at the CI stage)."
+        tags={["static manifest", "no fallback"]}
+      />
+
+      <Reveal>
+        <div className="my-7 grid gap-2.5" role="figure" aria-label="Ave stack — 4 layers (source-verified)">
+          {layers.map((l) => (
+            <div
+              key={l.tag}
+              className="grid gap-3 rounded-2xl border border-border bg-white p-5 sm:grid-cols-[130px_1fr]"
+            >
+              <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                {l.tag}
+              </span>
+              <div>
+                <p className="font-mono text-[13px] font-semibold text-ink">{l.band}</p>
+                <div className="mt-2.5 flex flex-wrap gap-1.5">
+                  {l.boxes.map((b) => (
+                    <span
+                      key={b}
+                      className="rounded-full border border-border bg-secondary/50 px-2.5 py-1 text-[12px] font-medium text-ink-soft"
+                    >
+                      {b}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ))}
+          <p className="mt-1 text-[12.5px] text-muted-foreground">
+            ↑ decision · approval flow &nbsp;·&nbsp; ↓ signal · data flow — every layer is separated by an explicit permission boundary.
+          </p>
+        </div>
+      </Reveal>
+
+      <h2 id="data-flow">Data flow — one user message turn</h2>
+      <StepList steps={flowSteps} />
+
+      <Callout tone="security" title="Architecture doc consistency">
+        Every implementation is rooted in <code>ave/docs/architecture/architecture.md</code> (v4 Final), and
+        no pattern, structure, or approach that contradicts the document is introduced — Ave Project CLAUDE.md rule.
+      </Callout>
+
+      <PageNav />
+    </article>
+  );
+}
