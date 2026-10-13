@@ -15,11 +15,11 @@ import {
 
 /** The installed-plugin snapshot every recorded transcript pins. */
 const RECORDED_INSTALLED_PLUGIN_IDS: readonly string[] = [
-  "orion-api",
+  "sampleportal",
   "local-indexer",
   "meeting",
-  "lyra-mail",
-  "vega-helper",
+  "samplemail",
+  "sampleassistant",
 ];
 
 /** The validation host with the recorded neighbourhood, and `overrides` on top. */

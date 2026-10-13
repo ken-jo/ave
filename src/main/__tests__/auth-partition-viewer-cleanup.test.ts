@@ -120,7 +120,7 @@ describe("auth partition viewer cleanup", () => {
   });
 
   it("destroys live viewers before clearing persistent auth storage", async () => {
-    const pluginId = "orion-api";
+    const pluginId = "sampleportal";
     const partition = `persist:plugin-auth:${encodeURIComponent(pluginId)}`;
     const opened = openAuthPartitionViewer({
       pluginId,
@@ -144,7 +144,7 @@ describe("auth partition viewer cleanup", () => {
   });
 
   it("rejects a new viewer until partition clearing has completed", async () => {
-    const pluginId = "orion-api";
+    const pluginId = "sampleportal";
     const partition = `persist:plugin-auth:${encodeURIComponent(pluginId)}`;
     const opened = openAuthPartitionViewer({
       pluginId,

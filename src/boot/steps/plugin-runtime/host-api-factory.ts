@@ -1501,7 +1501,7 @@ export function createHostApiFactory(
       // ─── Issue #649 — Auth-partition viewer ───────────────────────────
       // Opens a hardened BrowserWindow inside the *caller plugin's*
       // `persist:plugin-auth:<pluginId>` partition so a re-load of an
-      // SSO-protected URL (e.g. Outlook calendar after lyra-mail login)
+      // SSO-protected URL (e.g. a web calendar after a plugin's SSO login)
       // does not force the user through AAD again. Same `external-auth-
       // consumer` capability gate as openAuthWindow — both surfaces grant
       // access to the plugin's auth partition cookie jar.

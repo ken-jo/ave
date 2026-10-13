@@ -9,13 +9,13 @@ describe("pluginPermissionGrantSubject", () => {
     expect(pluginPermissionGrantSubject({
       origin: "ui",
       ownerPluginId: "local-indexer",
-      callerPluginId: "vega-helper",
+      callerPluginId: "sampleassistant",
     })).toBe("local-indexer");
 
     expect(pluginPermissionGrantSubject({
       origin: "ui",
-      callerPluginId: "vega-helper",
-    })).toBe("vega-helper");
+      callerPluginId: "sampleassistant",
+    })).toBe("sampleassistant");
 
     expect(pluginPermissionGrantSubject({ origin: "ui" })).toBe("host");
   });
@@ -32,7 +32,7 @@ describe("createPluginSurfacePermissionScope", () => {
     const indexerContext = {
       origin: "ui" as const,
       ownerPluginId: "local-indexer",
-      callerPluginId: "vega-helper",
+      callerPluginId: "sampleassistant",
     };
 
     const first = scope.createPermissionContext(indexerContext, {

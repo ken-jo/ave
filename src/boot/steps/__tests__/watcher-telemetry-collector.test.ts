@@ -43,7 +43,7 @@ describe("watcher-telemetry-collector", () => {
       subscribe: bus.subscribe,
     });
 
-    bus.fire({ state: "initial-seed", ms: 142, msgCount: 100, aborted: false, pluginId: "lyra-mail" });
+    bus.fire({ state: "initial-seed", ms: 142, msgCount: 100, aborted: false, pluginId: "samplemail" });
     await collector.awaitFlush();
 
     const content = await readFile(logFile, "utf-8");
@@ -54,7 +54,7 @@ describe("watcher-telemetry-collector", () => {
     expect(record.ms).toBe(142);
     expect(record.msgCount).toBe(100);
     expect(record.aborted).toBe(false);
-    expect(record.plugin).toBe("lyra-mail");
+    expect(record.plugin).toBe("samplemail");
     expect(typeof record.ts).toBe("string");
     expect(typeof record.sessionId).toBe("string");
   });

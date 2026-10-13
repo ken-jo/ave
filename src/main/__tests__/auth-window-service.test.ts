@@ -139,7 +139,7 @@ describe("openAuthWindow — cookieHosts is validated by the host-allow-list SoT
   });
 
   it("admits loopback literals — the OAuth loopback-redirect flow declares them", async () => {
-    // Regression lock for the lyra-mail login outage: `cookieHosts:
+    // Regression lock for the samplemail login outage: `cookieHosts:
     // ["localhost"]` must get PAST intake validation (same positive-assertion
     // shape as the well-formed-list case below — the stubbed BrowserWindow
     // makes anything that passes validation fail later with a non-cookieHosts

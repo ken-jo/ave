@@ -147,12 +147,12 @@ import { ProcessEntryUnconfinedError } from "../../process-entry.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 
-const PLUGIN_ID = "vega-helper";
+const PLUGIN_ID = "sampleassistant";
 const EMPTY_SCHEMA = { type: "object", properties: {} } as const;
 
 const MANIFEST: PluginManifest = {
   id: PLUGIN_ID,
-  name: "Vega Helper",
+  name: "Sample Assistant",
   version: "0.10.14",
   entry: "dist/hostPlugin.js",
   requires: { hostProtocol: "2" },
@@ -263,7 +263,7 @@ function fakeHostApi(): PluginHostApi & {
     },
     agentApproval: { request: vi.fn(), respond: vi.fn() },
     getSecret: vi.fn(),
-    getInstalledPluginIds: vi.fn(() => ["vega-helper", "meeting"]),
+    getInstalledPluginIds: vi.fn(() => ["sampleassistant", "meeting"]),
     hasRoutineBySource: vi.fn(async () => false),
     getAppPreference: vi.fn(),
     probePrivateHost: vi.fn(),
@@ -335,10 +335,10 @@ function hostContext(
 ): PluginRuntimeContext {
   return {
     pluginId: PLUGIN_ID,
-    pluginRoot: "/plugins/vega-helper",
+    pluginRoot: "/plugins/sampleassistant",
     hostRoot: "/app",
-    pluginDataDir: "/plugins/vega-helper/data",
-    pluginSocketDir: "/plugins/vega-helper/sockets",
+    pluginDataDir: "/plugins/sampleassistant/data",
+    pluginSocketDir: "/plugins/sampleassistant/sockets",
     userHome: "/Users/example",
     aveHome: "/Users/example/.ave",
     config: { domains: ["portal.example.com"] },
@@ -350,8 +350,8 @@ function hostContext(
 
 /** The child's own filesystem envelope, as the production factory derives it. */
 const CONFINEMENT = {
-  read: ["/plugins/vega-helper", "/plugins/vega-helper/data"],
-  write: ["/plugins/vega-helper/data"],
+  read: ["/plugins/sampleassistant", "/plugins/sampleassistant/data"],
+  write: ["/plugins/sampleassistant/data"],
 };
 
 /**
@@ -464,8 +464,8 @@ describe("the pilot, out of process", () => {
       expect(echoed).toEqual({
         payload: { text: "hi" },
         payloadWasAbsent: false,
-        installed: ["vega-helper", "meeting"],
-        pluginDataDir: "/plugins/vega-helper/data",
+        installed: ["sampleassistant", "meeting"],
+        pluginDataDir: "/plugins/sampleassistant/data",
         configuredDomains: ["portal.example.com"],
       });
       // An absent payload stays absent across the boundary. MCP carries an
@@ -1856,7 +1856,7 @@ describe("a stored '~/…' directory value: refused with guidance, and both ways
 });
 
 describe("a ui:// card is MCP resources/read", () => {
-  const CARD = "ui://vega-helper/card";
+  const CARD = "ui://sampleassistant/card";
 
   it("reads the card through the child's MCP server when the manifest declares it", async () => {
     const { dir, entryPath } = writeModule(

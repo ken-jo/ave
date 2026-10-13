@@ -349,9 +349,9 @@ describe("SystemPromptBuilder — Conversation Continuity Guard", () => {
 
   it("injects current session title when set", () => {
     const builder = makeSystemPromptBuilder();
-    builder.setSessionTitle("LYRA Mail 메일 조회");
+    builder.setSessionTitle("메일 조회");
     const prompt = builder.build();
-    expect(prompt).toContain('현재 세션 제목: "LYRA Mail 메일 조회"');
+    expect(prompt).toContain('현재 세션 제목: "메일 조회"');
   });
 
   it("omits session title line when title is null", () => {
@@ -401,10 +401,10 @@ describe("SystemPromptBuilder — sanitizeTitle via setSessionTitle", () => {
 
   it("strips double-quote characters from title", () => {
     const builder = makeSystemPromptBuilder();
-    builder.setSessionTitle('LYRA Mail "이메일" 조회');
+    builder.setSessionTitle('메일 "이메일" 조회');
     const prompt = builder.build();
     // double quotes inside title are replaced with spaces
-    expect(prompt).not.toContain('"LYRA Mail "이메일"');
+    expect(prompt).not.toContain('"메일 "이메일"');
     expect(prompt).toContain("현재 세션 제목:");
   });
 

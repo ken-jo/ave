@@ -17,7 +17,7 @@ import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 
 const principal = {
-  ownerPluginId: "orion-api",
+  ownerPluginId: "sampleportal",
   ownerVersion: "2.0.0",
   generationId: "gen-2",
   appSessionId: "window-4",
@@ -1014,7 +1014,7 @@ describe("ToolExecutor plugin operation governance", () => {
     const { executor, write } = setup();
     const hostPrincipal = {
       ...principal,
-      appSessionId: "plugin-plugin-orion-api",
+      appSessionId: "plugin-plugin-sampleportal",
     };
     await runWithInvocationOrigin("ui", undefined, () =>
       executor.executeAll(

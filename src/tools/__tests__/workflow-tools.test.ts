@@ -2069,7 +2069,7 @@ describe("skill_load tool", () => {
       emit: () => undefined,
     });
     const result = await tool.execute(
-      { skillName: "plugin:orion-api:attendance" },
+      { skillName: "plugin:sampleportal:attendance" },
       ctx("sess-plugin"),
     );
     expect(result.isError).toBe(true);

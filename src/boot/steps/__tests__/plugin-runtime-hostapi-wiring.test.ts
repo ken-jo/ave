@@ -695,25 +695,25 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     );
     const candidateGrant = {
       plugins: [{
-        pluginId: "vega-helper",
-        events: ["vega_helper.snapshot.requested"],
+        pluginId: "sampleassistant",
+        events: ["sampleassistant.snapshot.requested"],
       }],
     };
     const api = createHostApi(
-      "lyra-mail",
-      { id: "lyra-mail", config: {}, capabilities: [] },
+      "samplemail",
+      { id: "samplemail", config: {}, capabilities: [] },
       pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-candidate-event-grant-"))),
       activeIncarnation(),
-      "lyra-mail",
+      "samplemail",
       { installSource: "admin", manifestSha256: "candidate-sha" },
       candidateGrant,
     );
 
-    api.onEvent("vega_helper.snapshot.requested", vi.fn());
+    api.onEvent("sampleassistant.snapshot.requested", vi.fn());
 
     expect(runtimeTestState.runtime.assertPluginEventAccess).toHaveBeenCalledWith(
-      "lyra-mail",
-      "vega_helper.snapshot.requested",
+      "samplemail",
+      "sampleassistant.snapshot.requested",
       candidateGrant,
     );
   });

@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "orion-api",
+  "name": "sampleportal",
   "version": "0.21.5",
-  "description": "Host protocol golden fixture: the hostApi surface the orion-api plugin reaches, beside its own lifecycle and access declarations.",
+  "description": "Host protocol golden fixture: the hostApi surface the sampleportal plugin reaches, beside its own lifecycle and access declarations.",
   "extensions": {
     "ai.agent-connector.ave": {
       "displayName": "Ave Portal",
@@ -12,13 +12,12 @@
         "background-watcher"
       ],
       "emittedEvents": [
-        "orion-api.auth.changed",
-        "orion-api.ui.open-request",
-        "orion-api.video-conference.reserved"
+        "sampleportal.auth.changed",
+        "sampleportal.ui.open-request",
+        "sampleportal.video-conference.reserved"
       ],
       "requires": {
-        "minAppVersion": "0.12.0",
-        "hostProtocol": "2"
+        "minAppVersion": "0.7.0"
       },
       "startupTimeoutMs": 5000,
       "configSchema": {

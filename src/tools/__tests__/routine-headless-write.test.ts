@@ -18,7 +18,7 @@ describe("routine write permission dependency", () => {
       const execute = vi.fn(async () => ({ output: "sent", isError: false }));
       const registry = new ToolRegistry();
       registry.register(createDynamicTool({
-        name: "lyramail_email_reply", pluginId: "lyra-mail", source: "plugin",
+        name: "samplemail_email_reply", pluginId: "samplemail", source: "plugin",
         description: "Send a reply", category: "network", pathFields: [], isReadOnly: () => false,
         jsonSchema: { type: "object", properties: {} }, execute,
       }));
@@ -27,7 +27,7 @@ describe("routine write permission dependency", () => {
       const classify = vi.fn(() => ({ level: level ?? "high", reason: "External write" }));
       if (level) manager.setReviewer({ classifier: { classify }, cache: new VerdictCache(join(dir, "cache.jsonl")), deferredQueue: new DeferredQueue(join(dir, "deferred.jsonl")) });
       const executor = new ToolExecutor(registry, undefined, manager);
-      const [result] = await executor.executeAll([{ id: "reply", name: "lyramail_email_reply", input: {} }], {
+      const [result] = await executor.executeAll([{ id: "reply", name: "samplemail_email_reply", input: {} }], {
         sessionId: "routine-session", permissionContext: userPermissionContext({ headless: true }),
       });
       expect(result.is_error).toBe(true);

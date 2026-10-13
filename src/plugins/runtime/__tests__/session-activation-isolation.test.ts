@@ -71,13 +71,13 @@ describe("PluginRuntime — per-session activation isolation (real methods)", ()
     const runtime = makeRuntime();
     runtime.setSessionActivated("session-A", "local-indexer");
     runtime.setSessionActivated("session-A", "meeting");
-    runtime.setSessionActivated("session-B", "lyra-mail");
+    runtime.setSessionActivated("session-B", "samplemail");
 
     runtime.clearSessionActivated("session-A");
 
     expect(runtime.isSessionActivated("session-A", "local-indexer")).toBe(false);
     expect(runtime.isSessionActivated("session-A", "meeting")).toBe(false);
     // Session B's unrelated activation survives session A's clear.
-    expect(runtime.isSessionActivated("session-B", "lyra-mail")).toBe(true);
+    expect(runtime.isSessionActivated("session-B", "samplemail")).toBe(true);
   });
 });

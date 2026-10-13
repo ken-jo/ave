@@ -53,9 +53,9 @@ const DESIGN_EXAMPLE = {
   additional: [{ id: "corp", url: "https://git.corp.example/ave/marketplace.git" }],
   defaultInstalls: [
     { kind: "plugin", name: "wiki-search", source: "corp" },
-    { kind: "plugin", name: "orion-api", source: "corp" },
+    { kind: "plugin", name: "sampleportal", source: "corp" },
   ],
-  requiredInstalls: [{ kind: "plugin", name: "orion-api", source: "corp" }],
+  requiredInstalls: [{ kind: "plugin", name: "sampleportal", source: "corp" }],
 };
 
 describe("loadMarketplacePolicy", () => {
@@ -88,7 +88,7 @@ describe("loadMarketplacePolicy", () => {
         auth: { kind: "none" },
       },
     ]);
-    expect(policy.requiredInstalls).toEqual([{ kind: "plugin", name: "orion-api", source: "corp" }]);
+    expect(policy.requiredInstalls).toEqual([{ kind: "plugin", name: "sampleportal", source: "corp" }]);
     expect(policy.defaultInstalls).toEqual([{ kind: "plugin", name: "wiki-search", source: "corp" }]);
     expect(policy.allowDirectInstall).toBe(true);
     expect(policy.allowDisablingOfficial).toBe(false);

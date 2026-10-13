@@ -50,29 +50,29 @@ describe("PluginUninstallCleanupJournal", () => {
     const { path } = fixture();
     const journal = new PluginUninstallCleanupJournal(path);
     journal.prepare({
-      pluginId: "orion-api",
-      installPluginId: "orion-api",
+      pluginId: "sampleportal",
+      installPluginId: "sampleportal",
       secretKeys: ["apiKey"],
       authPartitions: [
-        "persist:plugin-auth:orion-api",
-        "persist:plugin-auth:orion-api:tenant",
+        "persist:plugin-auth:sampleportal",
+        "persist:plugin-auth:sampleportal:tenant",
       ],
       cleanupCache: true,
     });
-    journal.beginAttempt("orion-api");
-    journal.completePhase("orion-api", "config");
+    journal.beginAttempt("sampleportal");
+    journal.completePhase("sampleportal", "config");
     journal.completeAuthPartition(
-      "orion-api",
-      "persist:plugin-auth:orion-api:tenant",
+      "sampleportal",
+      "persist:plugin-auth:sampleportal:tenant",
     );
 
     const reloaded = new PluginUninstallCleanupJournal(path);
-    expect(reloaded.find("orion-api")).toMatchObject({
-      pluginId: "orion-api",
+    expect(reloaded.find("sampleportal")).toMatchObject({
+      pluginId: "sampleportal",
       attempts: 1,
       completedPhases: ["config"],
       completedAuthPartitions: [
-        "persist:plugin-auth:orion-api:tenant",
+        "persist:plugin-auth:sampleportal:tenant",
       ],
     });
   });
@@ -83,8 +83,8 @@ describe("PluginUninstallCleanupJournal", () => {
 
     expect(() =>
       journal.prepare({
-        pluginId: "orion-api",
-        installPluginId: "orion-api",
+        pluginId: "sampleportal",
+        installPluginId: "sampleportal",
         secretKeys: [],
         authPartitions: ["persist:plugin-auth:other-plugin"],
         cleanupCache: false,
@@ -99,8 +99,8 @@ describe("PluginUninstallCleanupJournal", () => {
       JSON.stringify({
         version: 1,
         cleanups: [{
-          pluginId: "orion-api",
-          installPluginId: "orion-api",
+          pluginId: "sampleportal",
+          installPluginId: "sampleportal",
           secretKeys: [],
           authPartitions: ["persist:default"],
           cleanupCache: true,
@@ -124,10 +124,10 @@ describe("PluginUninstallCleanupJournal", () => {
       JSON.stringify({
         version: 2,
         cleanups: [{
-          pluginId: "orion-api",
-          installPluginId: "orion-api",
+          pluginId: "sampleportal",
+          installPluginId: "sampleportal",
           secretKeys: [],
-          authPartitions: ["persist:plugin-auth:orion-api"],
+          authPartitions: ["persist:plugin-auth:sampleportal"],
           cleanupCache: true,
           registryRemovalCommitted: true,
           recordedAt: new Date(0).toISOString(),
@@ -139,7 +139,7 @@ describe("PluginUninstallCleanupJournal", () => {
     );
 
     expect(
-      new PluginUninstallCleanupJournal(path).find("orion-api"),
+      new PluginUninstallCleanupJournal(path).find("sampleportal"),
     ).toMatchObject({
       registryRemovalCommitted: true,
       runtimeRetirementComplete: false,
@@ -150,13 +150,13 @@ describe("PluginUninstallCleanupJournal", () => {
     const { path } = fixture();
     const journal = new PluginUninstallCleanupJournal(path);
     journal.prepare({
-      pluginId: "orion-api",
-      installPluginId: "orion-api",
+      pluginId: "sampleportal",
+      installPluginId: "sampleportal",
       secretKeys: ["attendanceToken"],
-      authPartitions: ["persist:plugin-auth:orion-api"],
+      authPartitions: ["persist:plugin-auth:sampleportal"],
       cleanupCache: false,
     });
-    journal.beginAttempt("orion-api");
+    journal.beginAttempt("sampleportal");
 
     const raw = await readFile(path, "utf8");
     expect(raw).toContain("attendanceToken");
@@ -167,7 +167,7 @@ describe("PluginUninstallCleanupJournal", () => {
   it("retains independent cleanup ownership for multiple plugins", () => {
     const { path } = fixture();
     const journal = new PluginUninstallCleanupJournal(path);
-    for (const pluginId of ["orion-api", "agent-hub"]) {
+    for (const pluginId of ["sampleportal", "agent-hub"]) {
       journal.prepare({
         pluginId,
         installPluginId: pluginId,
@@ -184,35 +184,35 @@ describe("PluginUninstallCleanupJournal", () => {
         .list()
         .map((record) => record.pluginId)
         .sort(),
-    ).toEqual(["agent-hub", "orion-api"]);
+    ).toEqual(["agent-hub", "sampleportal"]);
   });
 
   it("durably merges late auth partitions and reopens tracker cleanup", () => {
     const { path } = fixture();
     const journal = new PluginUninstallCleanupJournal(path);
     journal.prepare({
-      pluginId: "orion-api",
-      installPluginId: "orion-api",
+      pluginId: "sampleportal",
+      installPluginId: "sampleportal",
       secretKeys: [],
-      authPartitions: ["persist:plugin-auth:orion-api"],
+      authPartitions: ["persist:plugin-auth:sampleportal"],
       cleanupCache: false,
     });
-    journal.completeAuthPartition("orion-api", "persist:plugin-auth:orion-api");
-    journal.completePhase("orion-api", "auth-tracker");
+    journal.completeAuthPartition("sampleportal", "persist:plugin-auth:sampleportal");
+    journal.completePhase("sampleportal", "auth-tracker");
 
-    journal.mergeAuthPartitions("orion-api", [
-      "persist:plugin-auth:orion-api:late",
+    journal.mergeAuthPartitions("sampleportal", [
+      "persist:plugin-auth:sampleportal:late",
     ]);
-    expect(new PluginUninstallCleanupJournal(path).find("orion-api")).toMatchObject({
+    expect(new PluginUninstallCleanupJournal(path).find("sampleportal")).toMatchObject({
       authPartitions: [
-        "persist:plugin-auth:orion-api",
-        "persist:plugin-auth:orion-api:late",
+        "persist:plugin-auth:sampleportal",
+        "persist:plugin-auth:sampleportal:late",
       ],
-      completedAuthPartitions: ["persist:plugin-auth:orion-api"],
+      completedAuthPartitions: ["persist:plugin-auth:sampleportal"],
       completedPhases: [],
     });
     expect(() =>
-      journal.mergeAuthPartitions("orion-api", [
+      journal.mergeAuthPartitions("sampleportal", [
         "persist:plugin-auth:other-plugin",
       ])).toThrow(/invalid plugin uninstall auth partition plan/);
   });
@@ -221,16 +221,16 @@ describe("PluginUninstallCleanupJournal", () => {
     const { path } = fixture();
     const journal = new PluginUninstallCleanupJournal(path);
     journal.prepare({
-      pluginId: "orion-api",
-      installPluginId: "orion-api",
+      pluginId: "sampleportal",
+      installPluginId: "sampleportal",
       secretKeys: [],
       authPartitions: [],
       cleanupCache: false,
     });
 
-    journal.markRegistryRemovalCommitted("orion-api", { cleanupCache: true });
-    journal.markRuntimeRetirementComplete("orion-api");
-    expect(new PluginUninstallCleanupJournal(path).find("orion-api")).toMatchObject({
+    journal.markRegistryRemovalCommitted("sampleportal", { cleanupCache: true });
+    journal.markRuntimeRetirementComplete("sampleportal");
+    expect(new PluginUninstallCleanupJournal(path).find("sampleportal")).toMatchObject({
       registryRemovalCommitted: true,
       runtimeRetirementComplete: true,
       cleanupCache: true,

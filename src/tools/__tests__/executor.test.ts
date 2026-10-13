@@ -1549,7 +1549,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       [{ id: "tu-plugin-scope", name: "meeting_get", input: {} }],
       {
         sessionId: "sess-plugin-scope",
-        permissionContext: userPermissionContext({ allowedPluginIds: new Set(["lyra-mail"]) }),
+        permissionContext: userPermissionContext({ allowedPluginIds: new Set(["samplemail"]) }),
       },
     );
 
@@ -1595,7 +1595,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
 
   it("denies all plugin tools when allowedPluginIds is empty Set (routine deny-all)", async () => {
     // C4 (multi-agent review test-engineer finding): existing scope test
-    // uses Set(['lyra-mail']) and denies a 'meeting' plugin tool. The
+    // uses Set(['samplemail']) and denies a 'meeting' plugin tool. The
     // empty-Set case (deny-all routine, e.g. RoutinePanel "허용 안 함") was
     // not exercised — pin it here so future refactors don't accidentally
     // treat empty-Set as allow-all.
@@ -3719,7 +3719,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
         name: "teams_send",
         description: "Sends a Teams message.",
         source: "plugin",
-        pluginId: "lyra-mail",
+        pluginId: "samplemail",
         category: "network",
         jsonSchema: {
           type: "object",
@@ -3814,7 +3814,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       reason: "ASRT active for plugin workers",
       confines: { filesystem: true, process: true, network: true },
     });
-    markPluginWorkerWrapped("lyra-mail", "graph-worker");
+    markPluginWorkerWrapped("samplemail", "graph-worker");
     const dir = mkdtempSync(join(tmpdir(), "ave-executor-worker-reviewer-"));
     try {
       const executeSpy = vi.fn(async () => ({ output: "sent", isError: false }));
@@ -3823,7 +3823,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
         name: "graph_worker_send",
         description: "Sends a Graph message from the plugin worker.",
         source: "plugin",
-        pluginId: "lyra-mail",
+        pluginId: "samplemail",
         workerId: "graph-worker",
         category: "network",
         jsonSchema: {
@@ -3868,7 +3868,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       expect(results[0].is_error).not.toBe(true);
       expect(executeSpy).toHaveBeenCalledOnce();
       expect(classifier.classify).toHaveBeenCalledOnce();
-      expect(seenSandbox[0]).toContain("plugin worker 'lyra-mail/graph-worker' ASRT-wrapped");
+      expect(seenSandbox[0]).toContain("plugin worker 'samplemail/graph-worker' ASRT-wrapped");
     } finally {
       await cleanupTmpDir(dir);
       __resetActiveSandboxCapabilityForTest();

@@ -36,7 +36,7 @@ describe("handlePluginBundleE2eSnapshot", () => {
   it("returns only the requested plugin generation, Skill body, and owned tools", async () => {
     const release = vi.fn();
     const generation = {
-      pluginId: "orion-api",
+      pluginId: "sampleportal",
       pluginVersion: "2.0.0",
       generationId: "runtime-g2",
       artifactGenerationId: "a".repeat(64),
@@ -49,10 +49,10 @@ describe("handlePluginBundleE2eSnapshot", () => {
       },
       skillStore: {
         loadPluginGeneration: vi.fn(() => ({
-          name: "plugin:orion-api:lifecycle",
+          name: "plugin:sampleportal:lifecycle",
           body: "fixture-version:2.0.0",
           pluginOwner: {
-            pluginId: "orion-api",
+            pluginId: "sampleportal",
             pluginVersion: "2.0.0",
             generationId: "runtime-g2",
             localId: "lifecycle",
@@ -63,18 +63,18 @@ describe("handlePluginBundleE2eSnapshot", () => {
       toolRegistry: {
         listAll: vi.fn(() => [
           {
-            name: "orion_api_read",
+            name: "fixture_api_read",
             source: "plugin",
             version: "2.0.0",
-            pluginId: "orion-api",
-            pluginGeneration: { pluginId: "orion-api", generationId: "runtime-g2" },
+            pluginId: "sampleportal",
+            pluginGeneration: { pluginId: "sampleportal", generationId: "runtime-g2" },
           },
           {
-            name: "mcp_orion_api_bundle_echo",
+            name: "mcp_sampleportal_bundle_echo",
             source: "mcp",
             version: "1.0.0",
             mcpServerId: "plugin_server_g2",
-            pluginGeneration: { pluginId: "orion-api", generationId: "runtime-g2" },
+            pluginGeneration: { pluginId: "sampleportal", generationId: "runtime-g2" },
           },
           {
             name: "other_read",
@@ -84,25 +84,25 @@ describe("handlePluginBundleE2eSnapshot", () => {
             pluginGeneration: { pluginId: "other-plugin", generationId: "runtime-g2" },
           },
           {
-            name: "orion_api_old_read",
+            name: "fixture_api_old_read",
             source: "plugin",
             version: "1.0.0",
-            pluginId: "orion-api",
-            pluginGeneration: { pluginId: "orion-api", generationId: "runtime-g1" },
+            pluginId: "sampleportal",
+            pluginGeneration: { pluginId: "sampleportal", generationId: "runtime-g1" },
           },
         ]),
       },
       scriptHookManager: {
         hooksOfType: vi.fn(() => [
           {
-            id: "plugin:orion-api:audit:matching",
+            id: "plugin:sampleportal:audit:matching",
             event: "pre",
-            matcher: "orion_api_*",
+            matcher: "fixture_api_*",
             command: ["node", "matching.mjs"],
             source: "config",
             timeoutMs: 5_000,
             owner: {
-              pluginId: "orion-api",
+              pluginId: "sampleportal",
               pluginVersion: "2.0.0",
               activationId: "runtime-g2",
               generationId: "artifact-g2",
@@ -111,14 +111,14 @@ describe("handlePluginBundleE2eSnapshot", () => {
             },
           },
           {
-            id: "plugin:orion-api:audit:not-matching",
+            id: "plugin:sampleportal:audit:not-matching",
             event: "pre",
             matcher: "other_*",
             command: ["node", "not-matching.mjs"],
             source: "config",
             timeoutMs: 5_000,
             owner: {
-              pluginId: "orion-api",
+              pluginId: "sampleportal",
               pluginVersion: "2.0.0",
               activationId: "runtime-g2",
               generationId: "artifact-g2",
@@ -129,7 +129,7 @@ describe("handlePluginBundleE2eSnapshot", () => {
           {
             id: "plugin:other-plugin:audit:matching",
             event: "pre",
-            matcher: "orion_api_*",
+            matcher: "fixture_api_*",
             command: ["node", "other-plugin.mjs"],
             source: "config",
             timeoutMs: 5_000,
@@ -149,23 +149,23 @@ describe("handlePluginBundleE2eSnapshot", () => {
     await expect(
       handlePluginBundleE2eSnapshot(
         deps,
-        "orion-api",
+        "sampleportal",
         "lifecycle",
-        "orion_api_read",
+        "fixture_api_read",
       ),
     ).resolves.toEqual({
       ok: true,
-      pluginId: "orion-api",
+      pluginId: "sampleportal",
       active: {
         version: "2.0.0",
         generationId: "runtime-g2",
         artifactGenerationId: "a".repeat(64),
       },
       skill: {
-        name: "plugin:orion-api:lifecycle",
+        name: "plugin:sampleportal:lifecycle",
         body: "fixture-version:2.0.0",
         owner: {
-          pluginId: "orion-api",
+          pluginId: "sampleportal",
           pluginVersion: "2.0.0",
           generationId: "runtime-g2",
           localId: "lifecycle",
@@ -174,14 +174,14 @@ describe("handlePluginBundleE2eSnapshot", () => {
       },
       tools: [
         {
-          name: "orion_api_read",
+          name: "fixture_api_read",
           source: "plugin",
           version: "2.0.0",
-          pluginId: "orion-api",
+          pluginId: "sampleportal",
           generationId: "runtime-g2",
         },
         {
-          name: "mcp_orion_api_bundle_echo",
+          name: "mcp_sampleportal_bundle_echo",
           source: "mcp",
           version: "1.0.0",
           mcpServerId: "plugin_server_g2",
@@ -189,14 +189,14 @@ describe("handlePluginBundleE2eSnapshot", () => {
         },
       ],
       hooks: {
-        probeToolName: "orion_api_read",
+        probeToolName: "fixture_api_read",
         registered: [
           {
-            id: "plugin:orion-api:audit:matching",
+            id: "plugin:sampleportal:audit:matching",
             event: "pre",
-            matcher: "orion_api_*",
+            matcher: "fixture_api_*",
             owner: {
-              pluginId: "orion-api",
+              pluginId: "sampleportal",
               pluginVersion: "2.0.0",
               activationId: "runtime-g2",
               generationId: "artifact-g2",
@@ -205,11 +205,11 @@ describe("handlePluginBundleE2eSnapshot", () => {
             },
           },
           {
-            id: "plugin:orion-api:audit:not-matching",
+            id: "plugin:sampleportal:audit:not-matching",
             event: "pre",
             matcher: "other_*",
             owner: {
-              pluginId: "orion-api",
+              pluginId: "sampleportal",
               pluginVersion: "2.0.0",
               activationId: "runtime-g2",
               generationId: "artifact-g2",
@@ -218,12 +218,12 @@ describe("handlePluginBundleE2eSnapshot", () => {
             },
           },
         ],
-        matchingPreToolUse: ["plugin:orion-api:audit:matching"],
+        matchingPreToolUse: ["plugin:sampleportal:audit:matching"],
       },
     });
     expect(deps.skillStore.loadPluginGeneration).toHaveBeenCalledWith(
       generation,
-      "plugin:orion-api:lifecycle",
+      "plugin:sampleportal:lifecycle",
     );
     expect(release).toHaveBeenCalledOnce();
   });
@@ -231,7 +231,7 @@ describe("handlePluginBundleE2eSnapshot", () => {
   it("holds one generation lease while a transition publishes another generation", async () => {
     const release = vi.fn();
     const leasedGeneration = {
-      pluginId: "orion-api",
+      pluginId: "sampleportal",
       pluginVersion: "1.0.0",
       generationId: "runtime-g1",
       artifactGenerationId: "a".repeat(64),
@@ -247,10 +247,10 @@ describe("handlePluginBundleE2eSnapshot", () => {
       },
       skillStore: {
         loadPluginGeneration: vi.fn(() => ({
-          name: "plugin:orion-api:lifecycle",
+          name: "plugin:sampleportal:lifecycle",
           body: "fixture-version:1.0.0",
           pluginOwner: {
-            pluginId: "orion-api",
+            pluginId: "sampleportal",
             pluginVersion: "1.0.0",
             generationId: "runtime-g1",
             localId: "lifecycle",
@@ -261,18 +261,18 @@ describe("handlePluginBundleE2eSnapshot", () => {
       toolRegistry: {
         listAll: vi.fn(() => [
           {
-            name: "orion_api_read_g1",
+            name: "sampleportal_read_g1",
             source: "plugin",
             version: "1.0.0",
-            pluginId: "orion-api",
-            pluginGeneration: { pluginId: "orion-api", generationId: "runtime-g1" },
+            pluginId: "sampleportal",
+            pluginGeneration: { pluginId: "sampleportal", generationId: "runtime-g1" },
           },
           {
-            name: "orion_api_read_g2",
+            name: "sampleportal_read_g2",
             source: "plugin",
             version: "2.0.0",
-            pluginId: "orion-api",
-            pluginGeneration: { pluginId: "orion-api", generationId: "runtime-g2" },
+            pluginId: "sampleportal",
+            pluginGeneration: { pluginId: "sampleportal", generationId: "runtime-g2" },
           },
         ]),
       },
@@ -283,16 +283,16 @@ describe("handlePluginBundleE2eSnapshot", () => {
 
     const snapshot = await handlePluginBundleE2eSnapshot(
       deps,
-      "orion-api",
+      "sampleportal",
       "lifecycle",
-      "orion_api_read",
+      "fixture_api_read",
     );
 
     expect(snapshot).toMatchObject({
       ok: true,
       active: { generationId: "runtime-g1" },
       skill: { owner: { generationId: "runtime-g1" } },
-      tools: [{ name: "orion_api_read_g1", generationId: "runtime-g1" }],
+      tools: [{ name: "sampleportal_read_g1", generationId: "runtime-g1" }],
     });
     expect(release).toHaveBeenCalledOnce();
   });
@@ -301,21 +301,21 @@ describe("handlePluginBundleE2eSnapshot", () => {
     const deps = {
       pluginBundleLifecycle: {
         acquire: vi.fn(async () => {
-          throw new Error("plugin 'orion-api' has no active generation");
+          throw new Error("plugin 'sampleportal' has no active generation");
         }),
       },
       skillStore: { loadPluginGeneration: vi.fn() },
       toolRegistry: { listAll: vi.fn() },
       scriptHookManager: {
         hooksOfType: vi.fn(() => [{
-          id: "plugin:orion-api:audit:orphan",
+          id: "plugin:sampleportal:audit:orphan",
           event: "pre",
-          matcher: "orion_api_*",
+          matcher: "fixture_api_*",
           command: ["node", "orphan.mjs"],
           source: "config",
           timeoutMs: 5_000,
           owner: {
-            pluginId: "orion-api",
+            pluginId: "sampleportal",
             pluginVersion: "1.0.0",
             activationId: "retired-runtime",
             generationId: "retired-artifact",
@@ -328,17 +328,17 @@ describe("handlePluginBundleE2eSnapshot", () => {
 
     await expect(handlePluginBundleE2eSnapshot(
       deps,
-      "orion-api",
+      "sampleportal",
       "lifecycle",
-      "orion_api_read",
+      "fixture_api_read",
     )).resolves.toMatchObject({
       ok: true,
       active: null,
       skill: null,
       tools: [],
       hooks: {
-        registered: [{ id: "plugin:orion-api:audit:orphan" }],
-        matchingPreToolUse: ["plugin:orion-api:audit:orphan"],
+        registered: [{ id: "plugin:sampleportal:audit:orphan" }],
+        matchingPreToolUse: ["plugin:sampleportal:audit:orphan"],
       },
     });
     expect(deps.skillStore!.loadPluginGeneration).not.toHaveBeenCalled();
@@ -356,9 +356,9 @@ describe("handlePluginBundleE2eSnapshot", () => {
     await expect(
       handlePluginBundleE2eSnapshot(
         deps,
-        "../orion-api",
+        "../sampleportal",
         "lifecycle",
-        "orion_api_read",
+        "fixture_api_read",
       ),
     ).resolves.toEqual({ ok: false, error: "invalid-plugin-id" });
     expect(deps.pluginBundleLifecycle!.acquire).not.toHaveBeenCalled();
@@ -378,9 +378,9 @@ describe("handlePluginBundleE2eSnapshot", () => {
     await expect(
       handlePluginBundleE2eSnapshot(
         deps,
-        "orion-api",
+        "sampleportal",
         "lifecycle",
-        "orion-api.read",
+        "sampleportal.read",
       ),
     ).resolves.toEqual({ ok: false, error: "invalid-hook-probe-tool-name" });
     expect(deps.pluginBundleLifecycle!.acquire).not.toHaveBeenCalled();

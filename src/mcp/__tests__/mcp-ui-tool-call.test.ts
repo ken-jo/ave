@@ -250,7 +250,7 @@ describe("loopback tool-call source — plugin methods through callFromApp", () 
           kind: "write" as const,
           minimumRisk: "write" as const,
           appVisible: true,
-          requiresRead: { tool: "orion_read", operations: ["list"], maxAgeMs: 60_000 },
+          requiresRead: { tool: "portal_read", operations: ["list"], maxAgeMs: 60_000 },
         },
         reserve: {
           kind: "write" as const,
@@ -260,19 +260,19 @@ describe("loopback tool-call source — plugin methods through callFromApp", () 
       },
     };
     const tool = {
-      name: "orion_write",
+      name: "portal_write",
       pluginId: "acme-cards",
       operationPolicy: policy,
     } as Tool;
     const source = createLoopbackToolCallSource({ runtime, findTool: () => tool });
 
-    expect(source.resolveOperationGrantTarget("acme-cards", "orion_write", { operation: "list" }))
+    expect(source.resolveOperationGrantTarget("acme-cards", "portal_write", { operation: "list" }))
       .toBeUndefined();
-    expect(source.resolveOperationGrantTarget("acme-cards", "orion_write", { operation: "update" }))
-      .toEqual({ pluginId: "acme-cards", toolName: "orion_write" });
-    expect(source.resolveOperationGrantTarget("acme-cards", "orion_write", { operation: "reserve" }))
-      .toEqual({ pluginId: "acme-cards", toolName: "orion_write" });
-    expect(() => source.resolveOperationGrantTarget("acme-cards", "orion_write", { operation: "admin" }))
+    expect(source.resolveOperationGrantTarget("acme-cards", "portal_write", { operation: "update" }))
+      .toEqual({ pluginId: "acme-cards", toolName: "portal_write" });
+    expect(source.resolveOperationGrantTarget("acme-cards", "portal_write", { operation: "reserve" }))
+      .toEqual({ pluginId: "acme-cards", toolName: "portal_write" });
+    expect(() => source.resolveOperationGrantTarget("acme-cards", "portal_write", { operation: "admin" }))
       .toThrow(/unknown operation/);
   });
 });

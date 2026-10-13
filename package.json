@@ -12,7 +12,7 @@
     "#hooks/*": "./src/hooks/*.ts",
     "#lib/*": "./src/lib/*.ts"
   },
-  "description": "Extensible Electron desktop agent workspace for Ave chat, plugin workflows, local indexing, meetings, LYRA Mail, and managed marketplace extensions.",
+  "description": "Extensible Electron desktop agent workspace for Ave chat, plugin workflows, local indexing, meetings, and managed marketplace extensions.",
   "keywords": [
     "ave",
     "electron",
@@ -21,8 +21,7 @@
     "plugin-runtime",
     "marketplace",
     "local-indexing",
-    "meetings",
-    "lyra-mail"
+    "meetings"
   ],
   "homepage": "https://github.com/former_org/ave",
   "author": {

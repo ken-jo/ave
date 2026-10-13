@@ -19,8 +19,9 @@
  *
  * Capabilities reduction removed unused and inferred entries from the former
  * vocabulary. Credential export later added a distinct raw-secret gate:
- *  - 6 DEAD strings (lyra-mail-consumer, background-watcher, document-indexer,
- *    lifecycle-observer, routine-provider, worker-client) have zero read sites
+ *  - 6 DEAD strings (one plugin-named consumer string, background-watcher,
+ *    document-indexer, lifecycle-observer, routine-provider, worker-client)
+ *    have zero read sites
  *    and were removed. They stay valid free-form manifest declarations, so an
  *    installed manifest still declaring one loads as a no-op.
  *  - 4 event-source strings (mail-source, calendar-source, meeting-recorder,

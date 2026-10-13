@@ -101,7 +101,7 @@ interface RecordedFrame {
  * are answered without a round trip and so are not here.
  */
 const PLUGIN_SURVEY: Readonly<Record<string, readonly HostApiPath[]>> = {
-  "vega-helper": [
+  "sampleassistant": [
     "onEvent",
     "onPluginsChanged",
     "config.onChange",
@@ -110,7 +110,7 @@ const PLUGIN_SURVEY: Readonly<Record<string, readonly HostApiPath[]>> = {
     "callLlm",
     "triggerConversation",
   ],
-  "lyra-mail": [
+  "samplemail": [
     "authRedirect.open",
     "authRedirect.wait",
     "authRedirect.close",
@@ -123,7 +123,7 @@ const PLUGIN_SURVEY: Readonly<Record<string, readonly HostApiPath[]>> = {
   ],
   "local-indexer": ["pickFolders", "resolveMappedDriveRoot", "resolveApiKey", "spawnWorker"],
   meeting: ["resolveApiKey", "attachFloatingPanel", "startAudioCapture", "spawnWorker", "callLlm"],
-  "orion-api": ["probePrivateHost", "openAuthWindow", "getAuthPartitionCookies", "spawnWorker"],
+  "sampleportal": ["probePrivateHost", "openAuthWindow", "getAuthPartitionCookies", "spawnWorker"],
 };
 
 const INVOKER_MANIFEST: PluginManifest = {
@@ -775,8 +775,8 @@ describe("a process launch's construct", () => {
 describe("a golden reads the same on every machine", () => {
   it("records a path under the golden root with `/`, whatever separator the platform used", () => {
     // What a Windows checkout records: the root in its own spelling, then `\`.
-    expect(goldenPath(`${GOLDEN_ROOT}plugins\\orion-api\\entry.mjs`)).toBe("<golden>/plugins/orion-api/entry.mjs");
-    expect(goldenPath(`${GOLDEN_ROOT}plugins/orion-api/entry.mjs`)).toBe("<golden>/plugins/orion-api/entry.mjs");
+    expect(goldenPath(`${GOLDEN_ROOT}plugins\\sampleportal\\entry.mjs`)).toBe("<golden>/plugins/sampleportal/entry.mjs");
+    expect(goldenPath(`${GOLDEN_ROOT}plugins/sampleportal/entry.mjs`)).toBe("<golden>/plugins/sampleportal/entry.mjs");
     expect(goldenPath(`cannot load ${GOLDEN_ROOT}invoker.mjs: gone`)).toBe("cannot load <golden>/invoker.mjs: gone");
     // A backslash that is not under the root is content, and stays.
     expect(goldenPath("a\\b")).toBe("a\\b");

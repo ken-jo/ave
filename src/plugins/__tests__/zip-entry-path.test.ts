@@ -23,24 +23,24 @@ describe("sanitizeZipEntryPath — reserved runtime directories", () => {
     "Data/state.json",
     "SOCKETS/egress.sock",
   ])("refuses %s", (entryName) => {
-    expect(() => sanitizeZipEntryPath("orion-api", entryName)).toThrow(
+    expect(() => sanitizeZipEntryPath("sampleportal", entryName)).toThrow(
       /reserved plugin runtime directory name/,
     );
   });
 
   it("keeps the same names when they are nested inside the payload", () => {
-    expect(sanitizeZipEntryPath("orion-api", "dist/data/seed.json")).toBe("dist/data/seed.json");
-    expect(sanitizeZipEntryPath("orion-api", "database/schema.sql")).toBe("database/schema.sql");
+    expect(sanitizeZipEntryPath("sampleportal", "dist/data/seed.json")).toBe("dist/data/seed.json");
+    expect(sanitizeZipEntryPath("sampleportal", "database/schema.sql")).toBe("database/schema.sql");
   });
 });
 
 describe("sanitizeZipEntryPath", () => {
   it("preserves an unambiguous relative POSIX member name", () => {
-    expect(sanitizeZipEntryPath("orion-api", "skills/attendance/SKILL.md")).toBe(
+    expect(sanitizeZipEntryPath("sampleportal", "skills/attendance/SKILL.md")).toBe(
       "skills/attendance/SKILL.md",
     );
-    expect(sanitizeZipEntryPath("orion-api", "skills/attendance/")).toBe("skills/attendance");
-    expect(sanitizeZipEntryPath("orion-api", "")).toBeNull();
+    expect(sanitizeZipEntryPath("sampleportal", "skills/attendance/")).toBe("skills/attendance");
+    expect(sanitizeZipEntryPath("sampleportal", "")).toBeNull();
   });
 
   it.each([
@@ -53,7 +53,7 @@ describe("sanitizeZipEntryPath", () => {
     "../escape",
     ".",
   ])("rejects raw unsafe archive syntax: %s", (entryName) => {
-    expect(() => sanitizeZipEntryPath("orion-api", entryName)).toThrow(/zip entry/);
+    expect(() => sanitizeZipEntryPath("sampleportal", entryName)).toThrow(/zip entry/);
   });
 
   it.each([
@@ -74,7 +74,7 @@ describe("sanitizeZipEntryPath", () => {
     "bad?name",
     "bad*name",
   ])("rejects Windows-ambiguous or invalid archive segment: %s", (entryName) => {
-    expect(() => sanitizeZipEntryPath("orion-api", entryName)).toThrow(/zip entry/);
+    expect(() => sanitizeZipEntryPath("sampleportal", entryName)).toThrow(/zip entry/);
   });
 
   it("uses a Unicode-aware case-insensitive member identity", () => {

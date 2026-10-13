@@ -24,7 +24,7 @@ describe("resolvePluginOperationAccount", () => {
       resolvePluginOperationAccount(
         runtime,
         { auth: {} } as PluginManifest,
-        "orion-api",
+        "sampleportal",
         "generation-a",
       ),
     ).toEqual({
@@ -40,7 +40,7 @@ describe("resolvePluginOperationAccount", () => {
       resolvePluginOperationAccount(
         runtime,
         { auth: {} } as PluginManifest,
-        "orion-api",
+        "sampleportal",
         "generation-a",
       ),
     ).toBeUndefined();
@@ -52,19 +52,19 @@ describe("resolvePluginOperationAccount", () => {
     const first = resolvePluginOperationAccount(
       runtime,
       manifest,
-      "orion-api",
+      "sampleportal",
       "generation-a",
     );
     const same = resolvePluginOperationAccount(
       runtime,
       manifest,
-      "orion-api",
+      "sampleportal",
       "generation-a",
     );
     const replacement = resolvePluginOperationAccount(
       runtime,
       manifest,
-      "orion-api",
+      "sampleportal",
       "generation-b",
     );
     const otherPlugin = resolvePluginOperationAccount(
@@ -88,19 +88,19 @@ describe("resolvePluginOperationAccount", () => {
     const predecessor = resolvePluginOperationAccount(
       anonymousRuntime,
       anonymousManifest,
-      "orion-api",
+      "sampleportal",
       "generation-a",
     )!;
     const replacement = resolvePluginOperationAccount(
       anonymousRuntime,
       anonymousManifest,
-      "orion-api",
+      "sampleportal",
       "generation-b",
     )!;
     const anonymousCoordinator = new PluginOperationGrantCoordinator();
     const predecessorDomain = "a".repeat(64);
     anonymousCoordinator.recordRead({
-      ownerPluginId: "orion-api",
+      ownerPluginId: "sampleportal",
       ownerVersion: "1.0.0",
       generationId: "generation-a",
       appSessionId: "window-a",
@@ -113,7 +113,7 @@ describe("resolvePluginOperationAccount", () => {
     await expect(anonymousCoordinator.acquireExecutionLease(
       "b".repeat(64),
       {
-        ownerPluginId: "orion-api",
+        ownerPluginId: "sampleportal",
         ownerVersion: "2.0.0",
         generationId: "generation-b",
         appSessionId: "window-b",
@@ -132,13 +132,13 @@ describe("resolvePluginOperationAccount", () => {
     const firstLogin = resolvePluginOperationAccount(
       authenticatedRuntime,
       authenticatedManifest,
-      "orion-api",
+      "sampleportal",
       "generation-a",
     )!;
     const authenticatedCoordinator = new PluginOperationGrantCoordinator();
     const firstLoginDomain = "c".repeat(64);
     authenticatedCoordinator.recordRead({
-      ownerPluginId: "orion-api",
+      ownerPluginId: "sampleportal",
       ownerVersion: "1.0.0",
       generationId: "generation-a",
       appSessionId: "window-c",
@@ -154,7 +154,7 @@ describe("resolvePluginOperationAccount", () => {
     const secondLogin = resolvePluginOperationAccount(
       authenticatedRuntime,
       authenticatedManifest,
-      "orion-api",
+      "sampleportal",
       "generation-a",
     )!;
 
@@ -163,7 +163,7 @@ describe("resolvePluginOperationAccount", () => {
     await expect(authenticatedCoordinator.acquireExecutionLease(
       "d".repeat(64),
       {
-        ownerPluginId: "orion-api",
+        ownerPluginId: "sampleportal",
         ownerVersion: "1.0.0",
         generationId: "generation-a",
         appSessionId: "window-d",

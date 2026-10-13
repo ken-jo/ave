@@ -46,7 +46,7 @@ function generation(version: string, generationId: string, fingerprint = "a".rep
         sha256: fingerprint,
         content: JSON.stringify({
           hooks: {
-            PreToolUse: [{ matcher: "ep_*", hooks: [{ type: "command", command: ["node", "./hooks/policy.mjs"] }] }],
+            PreToolUse: [{ matcher: "portal_*", hooks: [{ type: "command", command: ["node", "./hooks/policy.mjs"] }] }],
           },
         }),
       }],
@@ -85,7 +85,7 @@ describe("plugin-owned Hook projections", () => {
     manager.publishPluginGeneration([projection], trust);
 
     await expect(manager.runPreToolUse({
-      toolName: "orion_read",
+      toolName: "portal_read",
       source: "plugin",
       category: "read",
       input: {},
@@ -120,7 +120,7 @@ describe("plugin-owned Hook projections", () => {
     manager.setPluginGenerationAccess({ acquireExact } as never);
 
     await expect(manager.runPreToolUse({
-      toolName: "orion_write",
+      toolName: "portal_write",
       source: "plugin",
       category: "write",
       input: {},

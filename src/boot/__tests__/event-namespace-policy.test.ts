@@ -75,7 +75,7 @@ describe("capabilities module namespace policy", () => {
     // The 6 dead strings and the 4 event-source strings (now inferred from
     // emittedEvents) are all gone from the enforced vocab.
     for (const removed of [
-      "lyra-mail-consumer",
+      "samplemail-consumer",
       "background-watcher",
       "document-indexer",
       "lifecycle-observer",
@@ -100,7 +100,7 @@ describe("capabilities module namespace policy", () => {
   it("HOST-only namespaces reject plugin emit regardless of declared emittedEvents", () => {
     // `plugin.*` is reserved for host-side emit (lifecycle: plugin.installed,
     // plugin.uninstalled). A plugin spoofing `plugin.installed` could trick
-    // vega-helper's onPluginsChanged subscribers into reacting to fake
+    // sampleassistant's onPluginsChanged subscribers into reacting to fake
     // lifecycle. Gate here — the host-only check short-circuits before the
     // emittedEvents inference, so no declaration can unlock a host-only emit.
     expect(canEmitEvent("plugin.installed", [])).toBe(false);

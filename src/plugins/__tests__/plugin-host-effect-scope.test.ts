@@ -21,7 +21,7 @@ function generationAccess(activeGenerationId: { current: string }): PluginRuntim
 
 describe("HostApiGenerationScope", () => {
   it("runs each disposer once on retirement and retries only the ones that failed", () => {
-    const scope = new HostApiGenerationScope("orion-api");
+    const scope = new HostApiGenerationScope("sampleportal");
     let flakyCalls = 0;
     const steady = vi.fn();
     scope.registerDisposer(steady);
@@ -39,7 +39,7 @@ describe("HostApiGenerationScope", () => {
 
   it("queues reversible signals, rejects writes, and opens only after exact publish", async () => {
     const active = { current: "g1" };
-    const scope = new HostApiGenerationScope("orion-api");
+    const scope = new HostApiGenerationScope("sampleportal");
     const emitEvent = vi.fn();
     const set = vi.fn(async () => undefined);
     const api = scope.wrapHostApi({
@@ -62,7 +62,7 @@ describe("HostApiGenerationScope", () => {
 
   it("admits callbacks only for the exact active generation and disposes exact resources", async () => {
     const active = { current: "g1" };
-    const scope = new HostApiGenerationScope("orion-api");
+    const scope = new HostApiGenerationScope("sampleportal");
     const access = generationAccess(active);
     const callback = vi.fn();
     const dispose = vi.fn();
@@ -87,8 +87,8 @@ describe("HostApiGenerationScope", () => {
     const access = generationAccess(active);
     const admitted = vi.mocked(access.isExactAdmitted);
     admitted.mockReturnValue(false);
-    const scope = new HostApiGenerationScope("orion-api");
-    const getInstalledPluginIds = vi.fn(() => ["orion-api"]);
+    const scope = new HostApiGenerationScope("sampleportal");
+    const getInstalledPluginIds = vi.fn(() => ["sampleportal"]);
     const api = scope.wrapHostApi({ getInstalledPluginIds } as never);
     scope.bindGeneration(access, "g1");
     scope.publish();
@@ -99,7 +99,7 @@ describe("HostApiGenerationScope", () => {
   });
 
   it("discards a failed candidate and rejects its late work", () => {
-    const scope = new HostApiGenerationScope("orion-api");
+    const scope = new HostApiGenerationScope("sampleportal");
     const dispose = vi.fn();
     const api = scope.wrapHostApi({ getInstalledPluginIds: vi.fn(() => []) } as never);
     scope.registerDisposer(dispose);
@@ -110,7 +110,7 @@ describe("HostApiGenerationScope", () => {
 
   it("removes and restores generation-owned published effects", () => {
     const active = { current: "g1" };
-    const scope = new HostApiGenerationScope("orion-api");
+    const scope = new HostApiGenerationScope("sampleportal");
     const publish = vi.fn();
     const remove = vi.fn();
     scope.stagePublish(publish);
@@ -135,7 +135,7 @@ describe("HostApiGenerationScope", () => {
     // surviving `callTool` is the plugin UI webview bridge, not a hostApi
     // member. If it is ever put back into that map, this test turns red and
     // says so, rather than the plugin silently gaining a preparation-time call.
-    const scope = new HostApiGenerationScope("orion-api");
+    const scope = new HostApiGenerationScope("sampleportal");
     const callTool = vi.fn();
     const api = scope.wrapHostApi({ callTool, logEvent: vi.fn() } as never);
 
@@ -148,7 +148,7 @@ describe("HostApiGenerationScope", () => {
   it("refuses any other unlisted path the same way", () => {
     // The rule is "not in the SOT", not "is callTool" — an unknown member must
     // be refused for the same reason and by the same clause.
-    const scope = new HostApiGenerationScope("orion-api");
+    const scope = new HostApiGenerationScope("sampleportal");
     const invented = vi.fn();
     const api = scope.wrapHostApi({ someFutureMember: invented, logEvent: vi.fn() } as never);
 

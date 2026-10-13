@@ -148,5 +148,5 @@ describe("ave:feedback:submit", () => {
   });
 });
 
-// PR 3c: ave:lyra-mail:* IPC 채널 제거 — lyra-mail 플러그인이 자체 인증 소유.
+// PR 3c: ave:samplemail:* IPC 채널 제거 — samplemail 플러그인이 자체 인증 소유.
 // 관련 IPC 통합 테스트도 함께 제거됨.

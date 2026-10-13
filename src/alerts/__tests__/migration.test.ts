@@ -104,14 +104,14 @@ describe("retirement inheritance and binding", () => {
         hostKinds: [{ kind: "@host:due-soon", enabled,
           osNotification: { key: "osNotificationIntents", listed: "enabled", values: ["work-item-due-soon"], masterKey: "osNotificationsEnabled" } }],
       },
-    }), "vega-helper");
+    }), "sampleassistant");
     h.writes.length = 0;
     await h.service.reconcileMigration();
     expect(await h.service.listKinds()).toMatchObject([
       { kindKey: "@host:due-soon", choice: { enabled: true, osNotification: true, seenByUser: false } },
     ]);
     expect(h.writes).toEqual(["choices"]);
-    expect(h.records["vega-helper"]!.consumedBy).toEqual([]);
+    expect(h.records["sampleassistant"]!.consumedBy).toEqual([]);
     await h.service.reconcileMigration();
     expect(h.writes).toEqual(["choices"]);
 
@@ -126,15 +126,15 @@ describe("retirement inheritance and binding", () => {
 
     // Host mappings have no consuming-version entry. Plugin successors bind
     // the whole declaration they publish when they consume this same record.
-    await h.service.register(PLUGIN, manifest([], [{ pluginId: "vega-helper", to: "migrated", value: true }]));
-    expect(h.records["vega-helper"]!.consumedBy).toEqual([PLUGIN]);
+    await h.service.register(PLUGIN, manifest([], [{ pluginId: "sampleassistant", to: "migrated", value: true }]));
+    expect(h.records["sampleassistant"]!.consumedBy).toEqual([PLUGIN]);
     expect(h.configs[PLUGIN]).toEqual({ migrated: true });
     await h.service.register(PLUGIN, manifest([kind({
-      inherits: [{ pluginId: "vega-helper", sourceId: "trusted", enabled }],
+      inherits: [{ pluginId: "sampleassistant", sourceId: "trusted", enabled }],
     })]));
     expect(h.settings.kinds[KEY]!.enabled).toBe(false);
     expect(h.warn).toHaveBeenCalledWith(expect.stringContaining("already consumed by an earlier registration"));
-    expect(h.records["vega-helper"]!.consumedBy).toEqual([PLUGIN]);
+    expect(h.records["sampleassistant"]!.consumedBy).toEqual([PLUGIN]);
     expect(h.settings.kinds["@host:due-soon"]!.enabled).toBe(false);
   });
 

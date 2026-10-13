@@ -232,7 +232,7 @@ export interface RiskClassifier {
  *
  * Issue #664: pre-fix this classifier returned HIGH+"defer all" which silently
  * queued every plugin write/auth tool in the headless lane (an auth/sign-in
- * tool from the Microsoft Graph plugin was the original reproducer).
+ * tool from a mail/calendar plugin was the original reproducer).
  * The name contradicted the behaviour and broke wrapper UX.
  * Fail-closed semantics moved to {@link StrictRiskClassifier}.
  */
@@ -1923,8 +1923,8 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
   // value; a lying `true` never bypassed this proof). The failure direction is
   // safe: a path escaping the root falls through to the existing HIGH rules.
   //
-  // Without this rule a plugin like lyra-mail that writes its MSAL token cache
-  // to `~/.ave/plugins/ave-plugin-lyra-mail/data/...` gets caught by the "write
+  // Without this rule a plugin that writes its token cache
+  // to `~/.ave/plugins/<pluginId>/data/...` gets caught by the "write
   // path not declared" or "write outside allowed dirs" HIGH rules — the host's
   // `allowedDirectories` does not include plugin sandboxes by design (plugin
   // data isolation, §5 file-based memory). The auto-LOW rule lets plugins

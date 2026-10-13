@@ -93,7 +93,7 @@ describe("registerMarketplaceContentHandlers", () => {
   });
 
   it("includes active extension routine templates in the installed view", async () => {
-    const template = { id: "daily", title: "Daily review", packageName: "orion-api", version: "1.0.0", sourceKind: "extension" };
+    const template = { id: "daily", title: "Daily review", packageName: "sampleportal", version: "1.0.0", sourceKind: "extension" };
     registerMarketplaceContentHandlers(installedDeps([template]), TOKEN, async () => runtime(port));
     await expect(electron.handlers.get(CHANNELS.marketplaceContent.installed)!({})).resolves.toMatchObject({
       ok: true, content: { routineTemplates: [template] },

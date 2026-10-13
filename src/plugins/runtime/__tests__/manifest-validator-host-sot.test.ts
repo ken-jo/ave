@@ -463,9 +463,9 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
       pluginAccess: {
         plugins: [
           {
-            pluginId: "lyra-mail",
-            events: ["lyra-mail.snapshot.ready"],
-            tools: ["lyramail_email_list"],
+            pluginId: "samplemail",
+            events: ["samplemail.snapshot.ready"],
+            tools: ["samplemail_email_list"],
           },
         ],
       },

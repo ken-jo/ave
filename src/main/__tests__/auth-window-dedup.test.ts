@@ -101,7 +101,7 @@ wirePluginAuthPartitionPersistence({
   onError: vi.fn(),
 });
 
-const PARTITION = "persist:plugin-auth:orion-api";
+const PARTITION = "persist:plugin-auth:sampleportal";
 const COMPLETION = "portal.example.com/auth/callback";
 const COOKIE_HOST = "portal.example.com";
 

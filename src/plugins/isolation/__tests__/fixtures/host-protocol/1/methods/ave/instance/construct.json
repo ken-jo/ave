@@ -16,11 +16,11 @@
         "config": {},
         "hostRoot": "/app",
         "installedPluginIds": [
-          "orion-api",
+          "sampleportal",
           "local-indexer",
           "meeting",
-          "lyra-mail",
-          "vega-helper"
+          "samplemail",
+          "sampleassistant"
         ],
         "aveHome": "/Users/example/.ave",
         "pluginDataDir": "/plugins/golden-invoker/data",

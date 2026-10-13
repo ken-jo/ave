@@ -153,18 +153,18 @@ describe("resolveReviewerSandboxCapability — confined plugin CHILD substrate",
 
   it("reports genuine asrt for a plugin tool whose OWNER's confined child is marked (no workerId)", () => {
     setActiveSandboxCapability({ ...ASRT });
-    markPluginChildConfined("vega-helper");
+    markPluginChildConfined("sampleassistant");
 
     const cap = resolveReviewerSandboxCapability(
       "plugin",
-      "vega_helper_list_detectors",
+      "sampleassistant_list_detectors",
       undefined,
       undefined,
-      "vega-helper",
+      "sampleassistant",
     );
     expect(cap.kind).toBe("asrt");
     expect(isWeakSandbox(cap)).toBe(false);
-    expect(cap.reason).toContain("plugin child 'vega-helper' ASRT-confined");
+    expect(cap.reason).toContain("plugin child 'sampleassistant' ASRT-confined");
   });
 
   it("forces none for a plugin whose child is NOT marked, even when the global cap is asrt", () => {
@@ -182,29 +182,29 @@ describe("resolveReviewerSandboxCapability — confined plugin CHILD substrate",
 
   it("no-leak: a marked child reports none once the sandbox is torn down", () => {
     setActiveSandboxCapability({ ...ASRT });
-    markPluginChildConfined("vega-helper");
+    markPluginChildConfined("sampleassistant");
     __resetActiveSandboxCapabilityForTest(); // capability back to none
     const cap = resolveReviewerSandboxCapability(
       "plugin",
-      "vega_helper_list_detectors",
+      "sampleassistant_list_detectors",
       undefined,
       undefined,
-      "vega-helper",
+      "sampleassistant",
     );
     expect(cap.kind).toBe("none");
   });
 
   it("unmark on child exit drops the relaxation immediately", () => {
     setActiveSandboxCapability({ ...ASRT });
-    markPluginChildConfined("vega-helper");
-    unmarkPluginChildConfined("vega-helper");
-    expect(isPluginChildConfined("vega-helper")).toBe(false);
+    markPluginChildConfined("sampleassistant");
+    unmarkPluginChildConfined("sampleassistant");
+    expect(isPluginChildConfined("sampleassistant")).toBe(false);
     const cap = resolveReviewerSandboxCapability(
       "plugin",
-      "vega_helper_list_detectors",
+      "sampleassistant_list_detectors",
       undefined,
       undefined,
-      "vega-helper",
+      "sampleassistant",
     );
     expect(cap.kind).toBe("none");
   });

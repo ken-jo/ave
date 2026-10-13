@@ -98,7 +98,7 @@ describe("isDeterministicProviderRequestRejection", () => {
       "400 invalid_function_parameters",
     )).toBe(true);
     expect(isDeterministicProviderRequestRejection(
-      "Invalid schema for function 'orion_parking_read': array missing items",
+      "Invalid schema for function 'portal_parking_read': array missing items",
     )).toBe(true);
   });
 

@@ -11,7 +11,7 @@ import { describe, expect, it, afterEach } from "vitest";
 import { request as httpRequest } from "node:http";
 import { AuthRedirectCatchers } from "../auth-redirect-catcher.js";
 
-const OWNER = "lyra-mail";
+const OWNER = "samplemail";
 const OTHER_OWNER = "meeting";
 
 const openCatchers: Array<{ catchers: AuthRedirectCatchers; owner: string; handle: string }> = [];

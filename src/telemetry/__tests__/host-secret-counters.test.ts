@@ -79,9 +79,9 @@ describe("host-secret-counters (#893)", () => {
     it("counts allowed egress per plugin under the fixed 'egress' bucket", () => {
       incrementHostSecretCounter("hostFetch_egress", "meeting", "egress");
       incrementHostSecretCounter("hostFetch_egress", "meeting", "egress");
-      incrementHostSecretCounter("hostFetch_egress", "lyra-mail", "egress");
+      incrementHostSecretCounter("hostFetch_egress", "samplemail", "egress");
       expect(getHostSecretCounter("hostFetch_egress", "meeting", "egress")).toBe(2);
-      expect(getHostSecretCounter("hostFetch_egress", "lyra-mail", "egress")).toBe(1);
+      expect(getHostSecretCounter("hostFetch_egress", "samplemail", "egress")).toBe(1);
     });
 
     it("buckets denials by reason, and the egress reason buckets are NOT folded to 'other'", () => {

@@ -1090,15 +1090,15 @@ describe("PluginArtifactStore — cacheVersionFromManifest", () => {
 
       await store.cacheVersionFromManifest("acme", sourceManifest, {
         installSource: "admin",
-        bundleRefs: ["vega-helper"],
-        approvedPluginAccess: { plugins: [{ pluginId: "vega-helper", tools: ["task_list"] }] },
+        bundleRefs: ["sampleassistant"],
+        approvedPluginAccess: { plugins: [{ pluginId: "sampleassistant", tools: ["task_list"] }] },
       });
 
       const snapshot = await store.readCachedRegistryEntrySnapshot("acme", "1.2.3");
       expect(snapshot).toEqual({
         installSource: "admin",
-        bundleRefs: ["vega-helper"],
-        approvedPluginAccess: { plugins: [{ pluginId: "vega-helper" }] },
+        bundleRefs: ["sampleassistant"],
+        approvedPluginAccess: { plugins: [{ pluginId: "sampleassistant" }] },
       });
     } finally {
       await cleanupTmpDir(tmp);

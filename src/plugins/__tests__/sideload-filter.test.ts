@@ -157,11 +157,11 @@ describe("rejectSideloadSymlinks", () => {
 
 // ---------------------------------------------------------------------------
 // Integration: cp({ filter }) + rejectSideloadSymlinks against a fixture that
-// mimics the lyra-mail layout — proves the filter prevents the dangling-bin
+// mimics the samplemail layout — proves the filter prevents the dangling-bin
 // regression that motivated this PR. A future refactor that splits filter and
 // walker would re-regress without this case.
 // ---------------------------------------------------------------------------
-describe("integration: cp filter + rejectSideloadSymlinks (lyra-mail layout)", () => {
+describe("integration: cp filter + rejectSideloadSymlinks (samplemail layout)", () => {
   let baseDir: string;
   let sourceDir: string;
   let stagingDir: string;
@@ -179,7 +179,7 @@ describe("integration: cp filter + rejectSideloadSymlinks (lyra-mail layout)", (
 
   const itSymlink = it.skipIf(process.platform === "win32");
 
-  itSymlink("lyra-mail fixture (electron pkg + .bin/electron shim) installs cleanly", async () => {
+  itSymlink("samplemail fixture (electron pkg + .bin/electron shim) installs cleanly", async () => {
     // dist/ + plugin.json — the legitimate plugin payload.
     await mkdir(join(sourceDir, "dist"), { recursive: true });
     await writeFile(join(sourceDir, "dist", "hostPlugin.js"), "export default {};");
@@ -187,7 +187,7 @@ describe("integration: cp filter + rejectSideloadSymlinks (lyra-mail layout)", (
 
     // node_modules/electron/cli.js + node_modules/.bin/electron -> ../electron/cli.js
     // (the exact shape that triggered the dangling-symlink rejection on
-    // lyra-mail after PR #404 + PR #407 landed).
+    // samplemail after PR #404 + PR #407 landed).
     const electronPkg = join(sourceDir, "node_modules", "electron");
     await mkdir(electronPkg, { recursive: true });
     await writeFile(join(electronPkg, "cli.js"), "// electron cli");

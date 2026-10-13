@@ -6,7 +6,7 @@
  * (`ken-jo/agent-marketplace` at `6a4d3b3df60fbc1ffe4ade7ffb601b61781c6a27`,
  * sha256 `2e31b360da69f2915f45653cdee2f65ccb057ccf13cf0213d5ec1a4302d96221`),
  * reduced to its `plugin` packages — the five this test is about, with every
- * version as published, `vega-helper` included because it is still
+ * version as published, `sampleassistant` included because it is still
  * indexed; the other kinds carry no code and are not routed. When E2′ merges
  * the format-2 index, the fixture is the format-2 file. Nothing is downloaded.
  *
@@ -105,8 +105,8 @@ describe("the committed official index routes every plugin version to a child", 
       "hello-world",
       "local-indexer",
       "meeting",
-      "lyra-mail",
-      "vega-helper",
+      "sampleassistant",
+      "samplemail",
     ]);
     expect(index.packages.every((pkg) => pkg.kind === "plugin")).toBe(true);
   });

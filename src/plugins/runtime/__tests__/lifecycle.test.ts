@@ -365,7 +365,7 @@ export default async function createPlugin() {
     // `?reload=<ts>` 쿼리 없이 같은 file:// URL 을 다시 import 하면 옛
     // 모듈 그래프가 그대로 반환된다. 결과적으로 사용자가 플러그인을
     // 재설치하거나 config.set 으로 재시작 시켜도 옛 코드가 계속 동작.
-    // (실제 PR 발견 경로: lyra-mail 의 loginInExternalBrowser 토글이
+    // (실제 PR 발견 경로: samplemail 의 loginInExternalBrowser 토글이
     // 재설치 후에도 적용 안 되던 root cause 의 절반.)
     const pluginDir = join(installedDir, "lc-bust");
     await mkdir(pluginDir, { recursive: true });

@@ -1183,7 +1183,7 @@ describe("initPluginRuntime HostApi factory", () => {
     const evilApi = invokeHostApiFactory(
       createHostApi!,
       "evil-plugin",
-      { id: "lyra-mail", config: {} },
+      { id: "samplemail", config: {} },
       pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"))),
     );
     expect(evilApi).not.toHaveProperty("callTool");

@@ -23,22 +23,6 @@ const FORBIDDEN_LIVE_APP_LITERALS = [
     needle: 'route: "agent-hub"',
     reason: "Route choices must stay generic and manifest/capability driven.",
   },
-  {
-    needle: "lyramail_",
-    reason: "Microsoft Graph tool names must stay plugin-owned and manifest-driven.",
-  },
-  {
-    needle: "vega-helper",
-    reason: "Overlay trigger implementation names must stay plugin-owned and capability-driven.",
-  },
-  {
-    needle: "vega_helper",
-    reason: "Overlay trigger tool/event names must stay plugin-owned and manifest-driven.",
-  },
-  {
-    needle: "ave-plugin-vega-helper",
-    reason: "Host runtime must not depend on a concrete overlay-trigger plugin repository.",
-  },
 ] as const;
 
 /**
@@ -86,7 +70,7 @@ function listSourceFiles(dir: string): string[] {
 }
 
 describe("app runtime stays decoupled from plugin-specific tool names", () => {
-  it("does not hard-code Agent Hub or LYRA Mail plugin tool literals in live app source", () => {
+  it("does not hard-code Agent Hub plugin literals in live app source", () => {
     const violations: string[] = [];
     for (const file of listSourceFiles(SRC_ROOT)) {
       const content = readFileSync(file, "utf-8");

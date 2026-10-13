@@ -33,12 +33,12 @@ import {
   _resetPluginConfigChangeBus,
 } from "../../../../plugins/config-change-bus.js";
 
-const PLUGIN_ID = "vega-helper";
+const PLUGIN_ID = "sampleassistant";
 const GENERATION_ID = "generation-under-test";
 
 const MANIFEST = {
   id: PLUGIN_ID,
-  name: "Vega Helper",
+  name: "Sample Assistant",
   version: "0.10.14",
   entry: "plugin.mjs",
   description: "subscribes to one config key",

@@ -167,7 +167,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-const PLUGIN_ID = "vega-helper";
+const PLUGIN_ID = "sampleassistant";
 const WIDENED_PLUGIN_ID = "local-indexer";
 const WIDENED_SANDBOX: NonNullable<PluginManifest["sandbox"]> = {
   read: [
@@ -181,7 +181,7 @@ const WIDENED_SANDBOX: NonNullable<PluginManifest["sandbox"]> = {
 };
 const CANDIDATE_MANIFEST: PluginManifest = {
   id: PLUGIN_ID,
-  name: "Vega Helper",
+  name: "Sample Assistant",
   version: "1.0.0",
   entry: "index.js",
   requires: { hostProtocol: "2" },
@@ -678,7 +678,7 @@ process.stdout.write("PROBE:" + JSON.stringify(attempt(() => readFileSync(${JSON
  * localhost probe would prove something different on each platform". That is
  * true, and it is the reason to run one rather than the reason to skip it: the
  * difference between the platforms IS the result, and a plugin admission turned
- * on it. `lyra-mail` was carried as a candidate on the assumption that its auth
+ * on it. `samplemail` was carried as a candidate on the assumption that its auth
  * library opens no socket outside the injected egress client. It does —
  * `acquireTokenInteractive` falls back to MSAL's own `LoopbackClient`, which
  * spins up an HTTP server to catch the `localhost` redirect — so what a child
@@ -1762,7 +1762,7 @@ export const createPlugin = async (context) => ({
       const factory = createOutOfProcessPluginFactory({
         manifest: {
           id: PLUGIN_ID,
-          name: "Vega Helper",
+          name: "Sample Assistant",
           version: "0.10.14",
           entry: "plugin.mjs",
           requires: { hostProtocol: "2" },
@@ -1780,7 +1780,7 @@ export const createPlugin = async (context) => ({
       });
       const hostApi = {
         callLlm: async () => "the host answered",
-        getInstalledPluginIds: () => ["vega-helper"],
+        getInstalledPluginIds: () => ["sampleassistant"],
         onPluginsChanged: () => () => undefined,
         config: { get: () => undefined, set: async () => undefined, onChange: () => () => undefined },
       } as unknown as PluginHostApi;
@@ -1801,7 +1801,7 @@ export const createPlugin = async (context) => ({
         // The plugin's own structured value, out of a different process.
         expect(result.ownData).toBe("the plugin's own bytes");
         expect(result.fromHost).toBe("the host answered");
-        expect(result.installed).toEqual(["vega-helper"]);
+        expect(result.installed).toEqual(["sampleassistant"]);
         // …and the same process could not read the host's secrets while doing it.
         expect(String(result.secretRead)).toMatch(/^DENIED:/);
       } finally {
@@ -2191,7 +2191,7 @@ export const createPlugin = async (context) => {
             headers: { "x-ave": "from-the-host" },
           }),
         spawnWorker,
-        getInstalledPluginIds: () => ["vega-helper"],
+        getInstalledPluginIds: () => ["sampleassistant"],
         onPluginsChanged: () => () => undefined,
         config: {
           get: (key: string) => configValues.get(key),
@@ -2206,7 +2206,7 @@ export const createPlugin = async (context) => {
       const factory = createOutOfProcessPluginFactory({
         manifest: {
           id: PLUGIN_ID,
-          name: "Vega Helper",
+          name: "Sample Assistant",
           version: "0.10.14",
           entry: "plugin.mjs",
           requires: { hostProtocol: "2" },
@@ -2817,7 +2817,7 @@ export const createPlugin = async (context) => {
  *
  * A plugin whose sign-in flow needs to CATCH a redirect needs a server, and a
  * server needs a bind. The admission record (`out-of-process-plugins.ts`
- * before §9.8 A1 retired its census) carried `lyra-mail` as a
+ * before §9.8 A1 retired its census) carried `samplemail` as a
  * candidate on the written assumption that its auth library opens no socket
  * outside the injected egress client; it does, and this is where that stops
  * being an assumption. The case is kept platform-split because the backends do

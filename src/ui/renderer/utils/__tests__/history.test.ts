@@ -185,11 +185,11 @@ describe("historyToEntries", () => {
       {
         index: 0,
         role: "user",
-        content: '<imported-from-proactive source="overlay:vega-helper">오늘 일정 브리핑</imported-from-proactive>',
+        content: '<imported-from-proactive source="overlay:sampleassistant">오늘 일정 브리핑</imported-from-proactive>',
         importedTrigger: {
           sessionId: "trigger-1",
-          source: "overlay:vega-helper",
-          prompt: '<imported-from-proactive source="overlay:vega-helper">오늘 일정 브리핑</imported-from-proactive>',
+          source: "overlay:sampleassistant",
+          prompt: '<imported-from-proactive source="overlay:sampleassistant">오늘 일정 브리핑</imported-from-proactive>',
           summary: "오늘 일정 브리핑",
           toolCallCount: 0,
           importedAt: "2026-05-20T00:00:00.000Z",
@@ -201,7 +201,7 @@ describe("historyToEntries", () => {
     expect(entries[0]).toMatchObject({
       kind: "imported_trigger",
       sessionId: "trigger-1",
-      source: "overlay:vega-helper",
+      source: "overlay:sampleassistant",
       summary: "오늘 일정 브리핑",
     });
   });

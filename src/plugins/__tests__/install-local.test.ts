@@ -1015,10 +1015,10 @@ describe("PluginMarketplaceService.installLocal", () => {
   it("mirrors manifest.pluginAccess into registry approvedPluginAccess (parity with marketplace install)", async () => {
     // Without this, assertPluginEventAccess finds no grant for a
     // dev-sideloaded plugin and any cross-plugin event subscribe
-    // (e.g. vega-helper listening to lyra-mail email.new) throws at startup.
+    // (e.g. sampleassistant listening to samplemail email.new) throws at startup.
     const accessSpec = {
       plugins: [
-        { pluginId: "lyra-mail", events: ["email.new", "calendar.event.upcoming"] },
+        { pluginId: "samplemail", events: ["email.new", "calendar.event.upcoming"] },
       ],
     };
     await writeFile(
@@ -1053,7 +1053,7 @@ describe("PluginMarketplaceService.installLocal", () => {
     // here (rather than the now-removed "dev-link") since both produce the
     // same code path after the read-time migration.
     const accessSpec = {
-      plugins: [{ pluginId: "lyra-mail", events: ["email.new"] }],
+      plugins: [{ pluginId: "samplemail", events: ["email.new"] }],
     };
     await writeFile(
       registryPath,
@@ -1066,7 +1066,7 @@ describe("PluginMarketplaceService.installLocal", () => {
               manifestPath: "test-plugin/plugin.json",
               enabled: true,
               installSource: "local-dev",
-              bundleRefs: ["vega-helper"],
+              bundleRefs: ["sampleassistant"],
             },
           ],
         },
@@ -1098,7 +1098,7 @@ describe("PluginMarketplaceService.installLocal", () => {
     const entry = reg.plugins.find((p: { id: string }) => p.id === "test-plugin");
     expect(entry.approvedPluginAccess).toEqual(accessSpec);
     expect(entry.installSource).toBe("local-dev");
-    expect(entry.bundleRefs).toEqual(["vega-helper"]);
+    expect(entry.bundleRefs).toEqual(["sampleassistant"]);
     expect(entry.pendingUpdate).toBeUndefined();
   });
 

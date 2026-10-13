@@ -48,12 +48,12 @@ describe("routeExternalUrl (§B3)", () => {
     const stub = makeStub("in-app");
     await routeExternalUrl({
       url: "https://outlook.office.com/mail/deeplink/compose?to=a@b.com",
-      pluginId: "p-lyramail",
+      pluginId: "p-samplemail",
       ...stub,
     });
     await routeExternalUrl({
       url: "https://outlook.office.com/mail/deeplink/compose?to=c@d.com",
-      pluginId: "p-lyramail",
+      pluginId: "p-samplemail",
       ...stub,
     });
 

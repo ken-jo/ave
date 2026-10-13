@@ -23,23 +23,23 @@
       ],
       "eventSubscriptions": [
         {
-          "type": "vega_helper.calendar.sync.requested"
+          "type": "sampleassistant.calendar.sync.requested"
         },
         {
-          "type": "vega_helper.meeting.prep.requested"
+          "type": "sampleassistant.meeting.prep.requested"
         },
         {
-          "type": "vega_helper.meeting.recording.requested"
+          "type": "sampleassistant.meeting.recording.requested"
         }
       ],
       "pluginAccess": {
         "plugins": [
           {
-            "pluginId": "vega-helper",
+            "pluginId": "sampleassistant",
             "events": [
-              "vega_helper.calendar.sync.requested",
-              "vega_helper.meeting.prep.requested",
-              "vega_helper.meeting.recording.requested"
+              "sampleassistant.calendar.sync.requested",
+              "sampleassistant.meeting.prep.requested",
+              "sampleassistant.meeting.recording.requested"
             ]
           }
         ]

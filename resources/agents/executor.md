@@ -18,7 +18,7 @@ mode: execute
 - 메일 · 공문 · 사내 메모 초안
 - 표 / 일정표 / 진행현황표 (markdown 표 또는 csv)
 - 회의록 정리 (사용자가 준 transcript · 메모 정형화)
-- 일정 / 할일 등록 (host API `addTask`, LYRA Mail Calendar 등)
+- 일정 / 할일 등록 (host API `addTask`, 캘린더 plugin 등)
 - 양식 채우기 (사용자가 제공한 양식에 사용자가 준 데이터 매핑)
 - 파일 정리 · 명명 규칙 적용 · 폴더 분류 제안
 

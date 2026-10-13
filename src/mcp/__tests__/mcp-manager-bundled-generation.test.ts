@@ -18,7 +18,7 @@ vi.mock("../mcp-client.js", () => ({
     ) { constructedConfigs.push(config); }
     async connect() {
       this.registry.register(createDynamicTool({
-        name: "mcp_orion_api_orion_read",
+        name: "mcp_sampleportal_portal_read",
         description: "read",
         source: "mcp",
         category: "network",
@@ -29,7 +29,7 @@ vi.mock("../mcp-client.js", () => ({
     }
     disconnect = disconnect;
     getState() {
-      return { id: this.config.id, status: "connected" as const, registeredTools: ["mcp_orion_api_orion_read"] };
+      return { id: this.config.id, status: "connected" as const, registeredTools: ["mcp_sampleportal_portal_read"] };
     }
     async readResource(uri: string) { return { uri, html: "ok" }; }
     async callTool() { return { text: "ok" }; }
@@ -52,7 +52,7 @@ const root = mkdtempSync(join(tmpdir(), "ave-mcp-generation-"));
 
 function generation(generationId: string): ActivePluginGeneration {
   return {
-    pluginId: "orion-api",
+    pluginId: "sampleportal",
     pluginVersion: "1.0.0",
     artifactGenerationId: "a".repeat(64),
     generationId,
@@ -60,7 +60,7 @@ function generation(generationId: string): ActivePluginGeneration {
     receiptSha256: "2".repeat(64),
     state: {},
     contributions: [{
-      ownerPluginId: "orion-api",
+      ownerPluginId: "sampleportal",
       ownerVersion: "1.0.0",
       kind: "mcpServer",
       localId: "orion",
@@ -182,28 +182,28 @@ describe("McpManager bundled generation", () => {
     const g1Projection = preparePluginMcpGeneration(generation("g1"), root)[0];
     trust.approve(g1Projection);
     const g1 = await manager.prepareBundledGeneration(
-      { pluginId: "orion-api", generationId: "g1" },
+      { pluginId: "sampleportal", generationId: "g1" },
       [g1Projection],
       trust,
     );
-    expect(registry.findByName("mcp_orion_api_orion_read")).toBeUndefined();
+    expect(registry.findByName("mcp_sampleportal_portal_read")).toBeUndefined();
     manager.publishBundledGeneration(g1);
-    const oldTool = registry.findByName("mcp_orion_api_orion_read");
+    const oldTool = registry.findByName("mcp_sampleportal_portal_read");
     expect(oldTool?.mcpServerId).toBe(g1Projection.serverId);
 
     const g2Projection = preparePluginMcpGeneration(generation("g2"), root)[0];
     expect(trust.isApproved(g2Projection)).toBe(true);
     const g2 = await manager.prepareBundledGeneration(
-      { pluginId: "orion-api", generationId: "g2" },
+      { pluginId: "sampleportal", generationId: "g2" },
       [g2Projection],
       trust,
     );
-    expect(registry.findByName("mcp_orion_api_orion_read")?.mcpServerId).toBe(g1Projection.serverId);
+    expect(registry.findByName("mcp_sampleportal_portal_read")?.mcpServerId).toBe(g1Projection.serverId);
     active.current = "g2";
     manager.publishBundledGeneration(g2);
-    expect(registry.findByName("mcp_orion_api_orion_read")?.mcpServerId).toBe(g2Projection.serverId);
+    expect(registry.findByName("mcp_sampleportal_portal_read")?.mcpServerId).toBe(g2Projection.serverId);
     await expect(oldTool?.execute({}, {} as never)).rejects.toThrow(/stale generation/);
-    await expect(registry.findByName("mcp_orion_api_orion_read")?.execute({}, {} as never)).resolves.toMatchObject({ isError: false });
+    await expect(registry.findByName("mcp_sampleportal_portal_read")?.execute({}, {} as never)).resolves.toMatchObject({ isError: false });
   });
 
   it("routes an agent plugin's bundled leases to its registered source, for tool execution and every other call", async () => {
@@ -241,7 +241,7 @@ describe("McpManager bundled generation", () => {
     const prepared = await manager.prepareBundledGeneration({ pluginId: "agent-plugin/meeting-kit", generationId: "run-1" }, [projection], trust);
     manager.publishBundledGeneration(prepared);
 
-    await expect(registry.findByName("mcp_orion_api_orion_read")?.execute({}, {} as never)).resolves.toMatchObject({ isError: false });
+    await expect(registry.findByName("mcp_sampleportal_portal_read")?.execute({}, {} as never)).resolves.toMatchObject({ isError: false });
     await expect(manager.callTool(projection.serverId, "read", {})).resolves.toMatchObject({ text: "ok" });
     await expect(manager.readUiResource(projection.serverId, "ui://card")).resolves.toMatchObject({ uri: "ui://card" });
     expect(acquired).toEqual(["agent-plugin/meeting-kit#run-1", "agent-plugin/meeting-kit#run-1", "agent-plugin/meeting-kit#run-1"]);
@@ -251,7 +251,7 @@ describe("McpManager bundled generation", () => {
     // A retired activation admits no new call.
     retired.add("run-1");
     await expect(manager.callTool(projection.serverId, "read", {})).rejects.toThrow(/is retired/u);
-    await expect(registry.findByName("mcp_orion_api_orion_read")?.execute({}, {} as never)).rejects.toThrow(/is retired/u);
+    await expect(registry.findByName("mcp_sampleportal_portal_read")?.execute({}, {} as never)).rejects.toThrow(/is retired/u);
     await manager.disconnectBundledGeneration("agent-plugin/meeting-kit", "run-1");
   });
 
@@ -293,7 +293,7 @@ describe("McpManager bundled generation", () => {
     const projection = preparePluginMcpGeneration(generation("g-retry"), root)[0];
     trust.approve(projection);
     const prepared = await manager.prepareBundledGeneration(
-      { pluginId: "orion-api", generationId: "g-retry" },
+      { pluginId: "sampleportal", generationId: "g-retry" },
       [projection],
       trust,
     );

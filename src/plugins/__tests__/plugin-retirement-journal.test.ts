@@ -18,13 +18,13 @@ describe("PluginRetirementJournal", () => {
     const path = join(root, "journal.json");
     const generationId = "a".repeat(64);
     const journal = new PluginRetirementJournal(path);
-    journal.record("orion-api", generationId, new Error("disconnect failed"));
-    journal.completePhase("orion-api", generationId, "runtime");
+    journal.record("sampleportal", generationId, new Error("disconnect failed"));
+    journal.completePhase("sampleportal", generationId, "runtime");
 
     const reloaded = new PluginRetirementJournal(path);
     expect(reloaded.list()).toEqual([
       expect.objectContaining({
-        pluginId: "orion-api",
+        pluginId: "sampleportal",
         generationId,
         attempts: 1,
         lastError: "disconnect failed",
@@ -32,7 +32,7 @@ describe("PluginRetirementJournal", () => {
       }),
     ]);
 
-    reloaded.complete("orion-api", generationId);
+    reloaded.complete("sampleportal", generationId);
     expect(JSON.parse(await readFile(path, "utf8")).retirements).toEqual([]);
   });
 });

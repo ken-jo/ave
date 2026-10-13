@@ -41,12 +41,12 @@ describe("manifest-validation enriched error messages (#737)", () => {
   it("names the unknown top-level property and includes a reinstall hint", async () => {
     const path = join(workDir, "plugin.json");
     // Stale manifest with a deprecated `startupTools` field (the actual
-    // lyra-mail v0.3.2 case the user hit).
+    // samplemail v0.3.2 case the user hit).
     await writeFile(
       path,
       JSON.stringify(agentPluginsDocument({
-        id: "lyra-mail",
-        name: "LYRA Mail",
+        id: "samplemail",
+        name: "Sample Mail",
         description: "x",
         version: "0.3.2",
         entry: "dist/p.js",

@@ -26,13 +26,13 @@ import { resolveOwnerPluginSandboxRoot, resolvePluginWritableRoot } from "../../
 // Use realpath so the canonicalize step inside the classifier produces
 // the same string on darwin (/var → /private/var).
 const TMP = realpathSync(tmpdir());
-const PLUGIN_ID = "ave-plugin-lyra-mail";
+const PLUGIN_ID = "ave-plugin-samplemail";
 const SANDBOX_ROOT = `${TMP}/ave-sandbox-test/.ave/plugins/${PLUGIN_ID}`;
 const ALLOWED = [`${TMP}/ave-sandbox-test/work`];
 
 function ctx(overrides: Partial<ToolInvocationContext>): ToolInvocationContext {
   return {
-    toolName: "lyramail_auth",
+    toolName: "samplemail_auth",
     source: "plugin",
     category: "write",
     pathFields: ["path"],
@@ -124,7 +124,7 @@ describe("RuleBasedRiskClassifier — OS-confined no-declared-write-path LOW", (
   it("write + owner root + NO resolvable path + asrt-full substrate → LOW", () => {
     const v = rb.classify(
       ctx({
-        toolName: "vega_helper_list_detectors",
+        toolName: "sampleassistant_list_detectors",
         ownerPluginSandboxRoot: SANDBOX_ROOT,
         pathFields: [],
         finalInput: {},
@@ -142,7 +142,7 @@ describe("RuleBasedRiskClassifier — OS-confined no-declared-write-path LOW", (
     // not know" looks like, and unlike HIGH it can be answered once.
     const v = rb.classify(
       ctx({
-        toolName: "vega_helper_list_detectors",
+        toolName: "sampleassistant_list_detectors",
         ownerPluginSandboxRoot: SANDBOX_ROOT,
         pathFields: [],
         finalInput: {},

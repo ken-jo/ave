@@ -165,7 +165,7 @@ describe("marketplace changes", () => {
     await ensureInstalledContent({ installedContent: api, onPersonaPromptsUpdated: (listener) => ((changed = listener), off) });
     vi.mocked(api.installed).mockResolvedValue({ ok: true, content: view({ routineTemplates: [{
       id: "daily", title: "Daily review", description: "Review", trigger: "shutdown",
-      execution: "notification-only", notificationTitle: "Review", packageName: "orion-api",
+      execution: "notification-only", notificationTitle: "Review", packageName: "sampleportal",
       version: "1.0.0", sourceKind: "extension",
     }] }) });
     changed();

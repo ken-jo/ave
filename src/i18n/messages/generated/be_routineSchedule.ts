@@ -3,7 +3,7 @@ export const en = {
   "be_routineSchedule.toolDescription":
     "Registers a routine (automatic self-trigger) that fires at the scheduled time. " +
     "This is NOT a calendar/event query tool — do not use it for requests such as " +
-    "'check calendar', 'today's schedule', or 'confirm meeting' (calendar queries are handled by the lyra-mail extension). " +
+    "'check calendar', 'today's schedule', or 'confirm meeting' (calendar queries are handled by a calendar extension). " +
     "execution='llm-session' starts an LLM conversation at the specified time; " +
     "'notification-only' sends an OS notification only. " +
     "Repeat modes: none/daily/weekly/monthly/interval/cron. " +
@@ -37,7 +37,7 @@ export const ko: Record<keyof typeof en, string> = {
   "be_routineSchedule.toolDescription":
     "지정한 예약 시각에 발화되는 루틴(자동 self-trigger)을 등록합니다. " +
     "캘린더 일정/이벤트 조회 도구가 아니므로, '캘린더 점검', '오늘 일정', '회의 확인' 같은 " +
-    "캘린더/일정 조회 요청에는 사용하지 마십시오 (캘린더 조회는 lyra-mail 익스텐션). " +
+    "캘린더/일정 조회 요청에는 사용하지 마십시오 (캘린더 조회는 캘린더 익스텐션). " +
     "execution='llm-session'이면 지정 시각에 LLM 대화를 시작하고, " +
     "'notification-only'이면 OS 알림만 발송합니다. " +
     "반복 방식: none/daily/weekly/monthly/interval/cron. " +

@@ -461,7 +461,7 @@
               "properties": {
                 "label": {
                   "type": "string",
-                  "description": "Human-readable label for the auth surface, shown next to the badge (e.g. 'Microsoft 계정', '오리온 익스텐션'). Defaults to the plugin's `name` if omitted.",
+                  "description": "Human-readable label for the auth surface, shown next to the badge (e.g. 'Microsoft 계정', 'Portal'). Defaults to the plugin's `name` if omitted.",
                   "maxLength": 64
                 },
                 "statusTool": {

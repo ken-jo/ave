@@ -1,6 +1,6 @@
 # ave
 
-Extensible Electron desktop agent workspace for Ave chat, extension workflows, local indexing, meetings, LYRA Mail, and managed marketplace extensions.
+Extensible Electron desktop agent workspace for Ave chat, extension workflows, local indexing, meetings, and managed marketplace extensions.
 
 Ave App brings chat, work mode, tool execution, extensions, local state, permissions, and installable extensions into one desktop host. This repository owns the Electron main/renderer/preload layers, extension runtime, managed marketplace install flow, Python runtime bootstrap, local/cloud retrieval bridge, and OS installer packaging.
 
@@ -45,7 +45,6 @@ Current managed extension families include:
 
 - `@ave/plugin-local-indexer`
 - `@ave/plugin-meeting`
-- `@ave/plugin-lyra-mail`
 
 ### Marketplace And Local Development
 

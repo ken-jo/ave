@@ -1080,10 +1080,10 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     };
 
     const workManifestPath = await writePlugin(
-      "vega-helper",
-      "vega_helper_ping",
+      "sampleassistant",
+      "sampleassistant_ping",
       {
-        emittedEvents: ["vega_helper.snapshot.requested"],
+        emittedEvents: ["sampleassistant.snapshot.requested"],
         pluginAccess: {
           plugins: [
             { pluginId: "email", events: ["email.action.needed"] },
@@ -1091,7 +1091,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
               pluginId: "meeting",
               events: ["meeting.summary.created", "meeting.ended"],
             },
-            { pluginId: "lyra-mail", events: ["lyra-mail.snapshot.ready"] },
+            { pluginId: "samplemail", events: ["samplemail.snapshot.ready"] },
           ],
         },
       },
@@ -1102,20 +1102,20 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     );
     const emailManifestPath = await writePlugin("email", "email_ping");
     const meetingManifestPath = await writePlugin("meeting", "meeting_ping");
-    const lyraMailManifestPath = await writePlugin("lyra-mail", "lyramail_ping", {
-      emittedEvents: ["lyra-mail.snapshot.ready"],
+    const sampleMailManifestPath = await writePlugin("samplemail", "samplemail_ping", {
+      emittedEvents: ["samplemail.snapshot.ready"],
       pluginAccess: {
         plugins: [
           {
-            pluginId: "vega-helper",
-            events: ["vega_helper.snapshot.requested"],
+            pluginId: "sampleassistant",
+            events: ["sampleassistant.snapshot.requested"],
           },
         ],
       },
     });
     await writeTestPluginRegistry({ registryPath }, [
       {
-        id: "vega-helper",
+        id: "sampleassistant",
         manifestPath: workManifestPath,
         enabled: true,
         approvedPluginAccess: {
@@ -1125,7 +1125,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
               pluginId: "meeting",
               events: ["meeting.summary.created", "meeting.ended"],
             },
-            { pluginId: "lyra-mail", events: ["lyra-mail.snapshot.ready"] },
+            { pluginId: "samplemail", events: ["samplemail.snapshot.ready"] },
           ],
         },
       },
@@ -1133,14 +1133,14 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
       { id: "email", manifestPath: emailManifestPath, enabled: true },
       { id: "meeting", manifestPath: meetingManifestPath, enabled: true },
       {
-        id: "lyra-mail",
-        manifestPath: lyraMailManifestPath,
+        id: "samplemail",
+        manifestPath: sampleMailManifestPath,
         enabled: true,
         approvedPluginAccess: {
           plugins: [
             {
-              pluginId: "vega-helper",
-              events: ["vega_helper.snapshot.requested"],
+              pluginId: "sampleassistant",
+              events: ["sampleassistant.snapshot.requested"],
             },
           ],
         },
@@ -1151,30 +1151,30 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     await runtime.load();
 
     expect(() =>
-      runtime.assertPluginEventAccess("vega-helper", "email.action.needed"),
+      runtime.assertPluginEventAccess("sampleassistant", "email.action.needed"),
     ).not.toThrow();
     expect(() =>
       runtime.assertPluginEventAccess(
-        "vega-helper",
+        "sampleassistant",
         "meeting.summary.created",
       ),
     ).not.toThrow();
     expect(() =>
       runtime.assertPluginEventAccess(
-        "vega-helper",
-        "lyra-mail.snapshot.ready",
+        "sampleassistant",
+        "samplemail.snapshot.ready",
       ),
     ).not.toThrow();
     expect(() =>
       runtime.assertPluginEventAccess(
-        "lyra-mail",
-        "vega_helper.snapshot.requested",
+        "samplemail",
+        "sampleassistant.snapshot.requested",
       ),
     ).not.toThrow();
     expect(() =>
       runtime.assertPluginEventAccess(
         "calendar",
-        "vega_helper.snapshot.requested",
+        "sampleassistant.snapshot.requested",
       ),
     ).toThrow(/not allowed/i);
     expect(() =>
@@ -1183,25 +1183,25 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     expect(() =>
       runtime.assertPluginEventAccess(
         "calendar",
-        "vega_helper.snapshot.requested",
+        "sampleassistant.snapshot.requested",
         {
           plugins: [{
-            pluginId: "vega-helper",
-            events: ["vega_helper.snapshot.requested"],
+            pluginId: "sampleassistant",
+            events: ["sampleassistant.snapshot.requested"],
           }],
         },
       ),
     ).not.toThrow();
     expect(() =>
       runtime.assertPluginEventAccess(
-        "lyra-mail",
-        "vega_helper.snapshot.requested",
+        "samplemail",
+        "sampleassistant.snapshot.requested",
         null,
       ),
     ).toThrow(/not allowed/i);
   });
 
-  it("allows vega-helper to subscribe to granted calendar events (P4 detector grants)", async () => {
+  it("allows sampleassistant to subscribe to granted calendar events (P4 detector grants)", async () => {
     // Regression net for the host catalog ↔ registry grants paired
     // with the overlay-trigger plugin's calendar-* detectors:
     //   - `calendar-event-detector` (PR #7) → `calendar.event.upcoming`
@@ -1252,8 +1252,8 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
       "calendar.event.conflict.detected",
     ];
     const workManifestPath = await writePlugin(
-      "vega-helper",
-      "vega_helper_ping",
+      "sampleassistant",
+      "sampleassistant_ping",
       {
         pluginAccess: {
           plugins: [
@@ -1271,7 +1271,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     );
     await writeTestPluginRegistry({ registryPath }, [
       {
-        id: "vega-helper",
+        id: "sampleassistant",
         manifestPath: workManifestPath,
         enabled: true,
         approvedPluginAccess: {
@@ -1292,7 +1292,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     // Granted path: each event in the grant is allowed.
     for (const ev of grantedEvents) {
       expect(() =>
-        runtime.assertPluginEventAccess("vega-helper", ev),
+        runtime.assertPluginEventAccess("sampleassistant", ev),
       ).not.toThrow();
     }
     // Negative path — least-privilege: only the events explicitly
@@ -1300,7 +1300,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     // calendar event but NOT in the grant, so the runtime denies.
     expect(() =>
       runtime.assertPluginEventAccess(
-        "vega-helper",
+        "sampleassistant",
         "calendar.event.starting",
       ),
     ).toThrow(/not allowed/i);
@@ -3383,7 +3383,7 @@ export default async function createPlugin() {
     //
     // Reproduces by writing an entry that throws at the top level, which
     // surfaces through esbuild-style "Dynamic require of …" / generic
-    // ReferenceError patterns observed for lyra-mail 0.1.18 / pageindex 0.1.16
+    // ReferenceError patterns observed for samplemail 0.1.18 / pageindex 0.1.16
     // pre-SDK-v3.4.2.
     const pluginDir = join(installedDir, "p-broken-entry");
     await mkdir(pluginDir, { recursive: true });

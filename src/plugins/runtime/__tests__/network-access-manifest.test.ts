@@ -5,7 +5,7 @@
  *
  * Regression guard: when the host schema lacked `networkAccess`, the strict
  * root `additionalProperties:false` rejected
- * every migrated plugin manifest (meeting STT, lyra-mail) as an unknown
+ * every migrated plugin manifest (meeting STT, samplemail) as an unknown
  * property; the fail-soft load path then dropped the plugin with only an
  * audit-log entry. No prior test drove `buildManifestValidator()` with a
  * networkAccess manifest, so the regression was invisible. This locks the real
@@ -34,7 +34,7 @@ describe("manifest networkAccess (Tier A) — host-owned schema validator path",
     () => workDir,
   );
 
-  it("accepts a well-formed networkAccess manifest (meeting/lyra-mail shape)", async () => {
+  it("accepts a well-formed networkAccess manifest (meeting/samplemail shape)", async () => {
     const validator = await buildManifestValidator();
     const path = await writeManifest({
       networkAccess: {

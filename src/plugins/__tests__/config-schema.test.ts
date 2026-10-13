@@ -292,7 +292,7 @@ describe("US-B1 regression — baseline manifest WITHOUT configSchema still vali
     const ajv = buildAjv();
     const validate = ajv.compile(await loadHostManifestSchema());
     // Replicates the shape of the current (post-#885 v6) meeting / local-indexer
-    // / lyra-mail manifests — no configSchema, but heavy use of pure Tool[] +
+    // / samplemail manifests — no configSchema, but heavy use of pure Tool[] +
     // capabilities. Must keep loading without modification (DoD §4).
     const ok = validate(agentPluginsDocument({
       id: "meeting-recorder",

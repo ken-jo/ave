@@ -1339,23 +1339,23 @@ describe("SettingsService removes plugin-specific legacy host settings", () => {
     await cleanupTmpDir(userDataPath);
   });
 
-  it("drops legacy lyraMail blocks from loaded and saved settings", async () => {
+  it("drops legacy sampleMail blocks from loaded and saved settings", async () => {
     const settingsPath = join(userDataPath, "ave-settings.json");
     writeFileSync(
       settingsPath,
       JSON.stringify({
-        lyraMail: { enabled: true, tenantId: "legacy" },
+        sampleMail: { enabled: true, tenantId: "legacy" },
         chat: { systemPrompt: "preserved", autoCompact: false },
       }),
       "utf-8",
     );
 
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.getAll()).not.toHaveProperty("lyraMail");
+    expect(service.getAll()).not.toHaveProperty("sampleMail");
 
-    await service.patch({ lyraMail: { enabled: true } } as never);
-    expect(service.getAll()).not.toHaveProperty("lyraMail");
-    expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).not.toHaveProperty("lyraMail");
+    await service.patch({ sampleMail: { enabled: true } } as never);
+    expect(service.getAll()).not.toHaveProperty("sampleMail");
+    expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).not.toHaveProperty("sampleMail");
   });
 });
 

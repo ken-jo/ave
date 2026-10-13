@@ -110,12 +110,12 @@ describe("serializeHistoryMessage createdAt + turnSummary projection", () => {
   it("projects imported trigger and keeps persisted tool display metadata inert", () => {
     const imported: GenericMessage = {
       role: "user",
-      content: '<imported-from-proactive source="overlay:vega-helper">오늘 일정</imported-from-proactive>',
+      content: '<imported-from-proactive source="overlay:sampleassistant">오늘 일정</imported-from-proactive>',
       meta: {
         importedTrigger: {
           sessionId: "trigger-1",
-          source: "overlay:vega-helper",
-          prompt: '<imported-from-proactive source="overlay:vega-helper">오늘 일정</imported-from-proactive>',
+          source: "overlay:sampleassistant",
+          prompt: '<imported-from-proactive source="overlay:sampleassistant">오늘 일정</imported-from-proactive>',
           summary: "오늘 일정",
           toolCallCount: 0,
           importedAt: "2026-05-20T00:00:00.000Z",
@@ -138,7 +138,7 @@ describe("serializeHistoryMessage createdAt + turnSummary projection", () => {
       },
     };
 
-    expect(serializeHistoryMessage(imported, 6).importedTrigger?.source).toBe("overlay:vega-helper",
+    expect(serializeHistoryMessage(imported, 6).importedTrigger?.source).toBe("overlay:sampleassistant",
     );
     expect(serializeHistoryMessage(tool, 7).toolDisplay?.durationMs).toBe(123);
     expect(serializeHistoryMessage(tool, 7).toolDisplay).not.toHaveProperty("source",

@@ -1,5 +1,5 @@
 /**
- * The hostApi surface `orion-api` reaches (plugin-hostapi-protocol.md §9.2) — both
+ * The hostApi surface `sampleportal` reaches (plugin-hostapi-protocol.md §9.2) — both
  * forms of the auth window, the partition cookies, three workers and the
  * private-network probe — so the golden transcript beside this file shows every
  * frame that surface puts on the wire.
@@ -8,7 +8,7 @@ const SIGN_IN = {
   url: "https://portal.example.com/login",
   completionUrlPatterns: ["https://portal.example.com/home*"],
   cookieHosts: ["portal.example.com"],
-  persistPartition: "orion-api-sso",
+  persistPartition: "sampleportal-sso",
   show: false,
 };
 
@@ -22,7 +22,7 @@ export const createPlugin = async (context) => {
         const cookies = await api.openAuthWindow(SIGN_IN);
         const signIn = await api.openAuthWindow({ ...SIGN_IN, returnFinalUrl: true });
         const partitionCookies = await api.getAuthPartitionCookies({
-          partitionSub: "orion-api-sso",
+          partitionSub: "sampleportal-sso",
           urls: ["https://portal.example.com/"],
         });
         const workers = [];

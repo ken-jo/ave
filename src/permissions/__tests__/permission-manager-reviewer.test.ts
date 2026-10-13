@@ -812,10 +812,10 @@ describe("#664 flood guard — degraded rule reviewer does not over-defer headle
     expect(pm.isReviewerDegradedToRule()).toBe(true);
 
     const TMP = realpathSync(tmpdir());
-    const sandboxRoot = `${TMP}/ave-664-flood/.ave/plugins/ave-plugin-lyra-mail`;
+    const sandboxRoot = `${TMP}/ave-664-flood/.ave/plugins/ave-plugin-samplemail`;
 
     const r = await pm.dispatchReviewer(
-      "lyramail_auth",
+      "samplemail_auth",
       {
         source: "plugin",
         category: "write",

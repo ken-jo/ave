@@ -5,7 +5,7 @@
  *
  * NOTE: This tool registers a *routine* (a future-firing self-trigger).
  * It is NOT a calendar-event lookup tool — calendar event queries are served by
- * the lyra-mail plugin. Naming intentionally puts "routine" first to avoid the
+ * a calendar plugin. Naming intentionally puts "routine" first to avoid the
  * "schedule" verb colliding with calendar-event requests in LLM tool selection.
  *
  * Execution modes:

@@ -1,32 +1,32 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "vega-helper",
+  "name": "sampleassistant",
   "version": "0.11.3",
-  "description": "Host protocol golden fixture: the hostApi surface the vega-helper plugin reaches, beside its own lifecycle and access declarations.",
+  "description": "Host protocol golden fixture: the hostApi surface the sampleassistant plugin reaches, beside its own lifecycle and access declarations.",
   "extensions": {
     "ai.agent-connector.ave": {
-      "displayName": "Ave Vega Helper",
+      "displayName": "Ave Sample Assistant",
       "entry": "entry.mjs",
       "capabilities": [
         "host:overlay",
         "lifecycle-observer"
       ],
       "emittedEvents": [
-        "vega_helper.alert.mail-action",
-        "vega_helper.alert.mail-approval",
-        "vega_helper.alert.mail-meeting",
-        "vega_helper.alert.mail-reply",
-        "vega_helper.alert.meeting-summary",
-        "vega_helper.alert.calendar-event-prep",
-        "vega_helper.alert.work-item-due-soon",
-        "vega_helper.alert.video-conference-prep-register",
-        "vega_helper.alert.calendar-conflict-prep",
-        "vega_helper.alert.meeting-room-suggest",
-        "vega_helper.alert.webex-link-missing",
-        "vega_helper.snapshot.requested",
-        "vega_helper.calendar.sync.requested",
-        "vega_helper.meeting.prep.requested",
-        "vega_helper.meeting.recording.requested"
+        "sampleassistant.alert.mail-action",
+        "sampleassistant.alert.mail-approval",
+        "sampleassistant.alert.mail-meeting",
+        "sampleassistant.alert.mail-reply",
+        "sampleassistant.alert.meeting-summary",
+        "sampleassistant.alert.calendar-event-prep",
+        "sampleassistant.alert.work-item-due-soon",
+        "sampleassistant.alert.video-conference-prep-register",
+        "sampleassistant.alert.calendar-conflict-prep",
+        "sampleassistant.alert.meeting-room-suggest",
+        "sampleassistant.alert.webex-link-missing",
+        "sampleassistant.snapshot.requested",
+        "sampleassistant.calendar.sync.requested",
+        "sampleassistant.meeting.prep.requested",
+        "sampleassistant.meeting.recording.requested"
       ],
       "eventSubscriptions": [
         "email.new",
@@ -37,22 +37,22 @@
         "calendar.event.added",
         "calendar.event.conflict.detected",
         "work_board.work_item.due_soon",
-        "lyra-mail.auth.changed",
-        "lyra-mail.snapshot.ready",
-        "orion-api.video-conference.reserved"
+        "samplemail.auth.changed",
+        "samplemail.snapshot.ready",
+        "sampleportal.video-conference.reserved"
       ],
       "pluginAccess": {
         "plugins": [
           {
-            "pluginId": "lyra-mail",
+            "pluginId": "samplemail",
             "events": [
               "email.new",
               "calendar.event.upcoming",
               "calendar.event.starting",
               "calendar.event.conflict.detected",
               "calendar.event.added",
-              "lyra-mail.auth.changed",
-              "lyra-mail.snapshot.ready"
+              "samplemail.auth.changed",
+              "samplemail.snapshot.ready"
             ]
           },
           {
@@ -63,16 +63,16 @@
             ]
           },
           {
-            "pluginId": "orion-api",
+            "pluginId": "sampleportal",
             "events": [
-              "orion-api.video-conference.reserved"
+              "sampleportal.video-conference.reserved"
             ]
           }
         ]
       },
       "dependencies": [
         {
-          "pluginId": "lyra-mail",
+          "pluginId": "samplemail",
           "required": false
         },
         {
@@ -80,12 +80,13 @@
           "required": false
         },
         {
-          "pluginId": "orion-api",
+          "pluginId": "sampleportal",
           "required": false
         }
       ],
       "requires": {
-        "minAppVersion": "0.10.0"
+        "minAppVersion": "0.12.0",
+        "hostProtocol": "2"
       },
       "configSchema": {
         "properties": {

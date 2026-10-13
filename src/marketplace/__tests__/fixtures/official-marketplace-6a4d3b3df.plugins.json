@@ -461,11 +461,11 @@
             "pluginAccess": {
               "plugins": [
                 {
-                  "pluginId": "vega-helper",
+                  "pluginId": "sampleassistant",
                   "events": [
-                    "vega_helper.calendar.sync.requested",
-                    "vega_helper.meeting.prep.requested",
-                    "vega_helper.meeting.recording.requested"
+                    "sampleassistant.calendar.sync.requested",
+                    "sampleassistant.meeting.prep.requested",
+                    "sampleassistant.meeting.recording.requested"
                   ]
                 }
               ]
@@ -513,11 +513,11 @@
             "pluginAccess": {
               "plugins": [
                 {
-                  "pluginId": "vega-helper",
+                  "pluginId": "sampleassistant",
                   "events": [
-                    "vega_helper.calendar.sync.requested",
-                    "vega_helper.meeting.prep.requested",
-                    "vega_helper.meeting.recording.requested"
+                    "sampleassistant.calendar.sync.requested",
+                    "sampleassistant.meeting.prep.requested",
+                    "sampleassistant.meeting.recording.requested"
                   ]
                 }
               ]
@@ -569,11 +569,11 @@
             "pluginAccess": {
               "plugins": [
                 {
-                  "pluginId": "vega-helper",
+                  "pluginId": "sampleassistant",
                   "events": [
-                    "vega_helper.calendar.sync.requested",
-                    "vega_helper.meeting.prep.requested",
-                    "vega_helper.meeting.recording.requested"
+                    "sampleassistant.calendar.sync.requested",
+                    "sampleassistant.meeting.prep.requested",
+                    "sampleassistant.meeting.recording.requested"
                   ]
                 }
               ]
@@ -625,11 +625,11 @@
             "pluginAccess": {
               "plugins": [
                 {
-                  "pluginId": "vega-helper",
+                  "pluginId": "sampleassistant",
                   "events": [
-                    "vega_helper.calendar.sync.requested",
-                    "vega_helper.meeting.prep.requested",
-                    "vega_helper.meeting.recording.requested"
+                    "sampleassistant.calendar.sync.requested",
+                    "sampleassistant.meeting.prep.requested",
+                    "sampleassistant.meeting.recording.requested"
                   ]
                 }
               ]
@@ -681,11 +681,11 @@
             "pluginAccess": {
               "plugins": [
                 {
-                  "pluginId": "vega-helper",
+                  "pluginId": "sampleassistant",
                   "events": [
-                    "vega_helper.calendar.sync.requested",
-                    "vega_helper.meeting.prep.requested",
-                    "vega_helper.meeting.recording.requested"
+                    "sampleassistant.calendar.sync.requested",
+                    "sampleassistant.meeting.prep.requested",
+                    "sampleassistant.meeting.recording.requested"
                   ]
                 }
               ]
@@ -737,11 +737,11 @@
             "pluginAccess": {
               "plugins": [
                 {
-                  "pluginId": "vega-helper",
+                  "pluginId": "sampleassistant",
                   "events": [
-                    "vega_helper.calendar.sync.requested",
-                    "vega_helper.meeting.prep.requested",
-                    "vega_helper.meeting.recording.requested"
+                    "sampleassistant.calendar.sync.requested",
+                    "sampleassistant.meeting.prep.requested",
+                    "sampleassistant.meeting.recording.requested"
                   ]
                 }
               ]
@@ -768,10 +768,10 @@
     },
     {
       "kind": "plugin",
-      "name": "lyra-mail",
-      "path": "plugins/lyra-mail",
+      "name": "samplemail",
+      "path": "plugins/samplemail",
       "displayName": "Ave Lyra Mail",
-      "description": "Microsoft Graph 통합 플러그인 — Outlook 이메일 + Outlook 캘린더 (calendar/email 두 플러그인을 통합). LYRA Mail API 기반 폴링 watcher, 답장 작성, 일정 충돌 감지, 반복 패턴 분석.",
+      "description": "Microsoft Graph 통합 플러그인 — Outlook 이메일 + Outlook 캘린더 (calendar/email 두 플러그인을 통합). Microsoft Graph API 기반 폴링 watcher, 답장 작성, 일정 충돌 감지, 반복 패턴 분석.",
       "latest": "0.5.3",
       "versions": [
         {
@@ -783,7 +783,7 @@
               "calendar-source",
               "mail-source",
               "background-watcher",
-              "lyra-mail-consumer",
+              "samplemail-consumer",
               "external-auth-consumer"
             ],
             "networkAccess": {
@@ -796,18 +796,18 @@
             "pluginAccess": {
               "plugins": [
                 {
-                  "pluginId": "vega-helper",
+                  "pluginId": "sampleassistant",
                   "events": [
-                    "vega_helper.snapshot.requested"
+                    "sampleassistant.snapshot.requested"
                   ]
                 }
               ]
             },
             "auth": {
               "label": "Microsoft 365",
-              "statusTool": "lyramail_status",
-              "loginTool": "lyramail_auth",
-              "logoutTool": "lyramail_signout",
+              "statusTool": "samplemail_status",
+              "loginTool": "samplemail_auth",
+              "logoutTool": "samplemail_signout",
               "partitionDomains": [
                 "outlook.office.com",
                 "outlook.office365.com",
@@ -823,8 +823,8 @@
           "artifact": {
             "release": {
               "repo": "ken-jo/agent-marketplace",
-              "tag": "lyra-mail-v0.5.3",
-              "asset": "lyra-mail-0.5.3.zip",
+              "tag": "samplemail-v0.5.3",
+              "asset": "samplemail-0.5.3.zip",
               "sha256": "225a48b4d53b5716f98cd73c8959342bcfad1c780785210a8199600c7fa79e50"
             }
           },
@@ -834,9 +834,9 @@
     },
     {
       "kind": "plugin",
-      "name": "vega-helper",
-      "path": "plugins/vega-helper",
-      "displayName": "Ave Vega Helper",
+      "name": "sampleassistant",
+      "path": "plugins/sampleassistant",
+      "displayName": "Ave Sample Assistant",
       "description": "사용자가 요청하기 전에 먼저 제안하는 Ave 의 능동 업무 도우미. 다른 플러그인들과 신호를 주고받아 업무 흐름에 필요한 보조를 적시에 제공합니다.",
       "latest": "0.11.3",
       "versions": [
@@ -852,15 +852,15 @@
             "pluginAccess": {
               "plugins": [
                 {
-                  "pluginId": "lyra-mail",
+                  "pluginId": "samplemail",
                   "events": [
                     "email.new",
                     "calendar.event.upcoming",
                     "calendar.event.starting",
                     "calendar.event.conflict.detected",
                     "calendar.event.added",
-                    "lyra-mail.auth.changed",
-                    "lyra-mail.snapshot.ready"
+                    "samplemail.auth.changed",
+                    "samplemail.snapshot.ready"
                   ]
                 },
                 {
@@ -871,9 +871,9 @@
                   ]
                 },
                 {
-                  "pluginId": "orion-api",
+                  "pluginId": "sampleportal",
                   "events": [
-                    "orion-api.video-conference.reserved"
+                    "sampleportal.video-conference.reserved"
                   ]
                 }
               ]
@@ -883,7 +883,7 @@
             },
             "dependencies": [
               {
-                "pluginId": "lyra-mail",
+                "pluginId": "samplemail",
                 "required": false
               },
               {
@@ -891,7 +891,7 @@
                 "required": false
               },
               {
-                "pluginId": "orion-api",
+                "pluginId": "sampleportal",
                 "required": false
               }
             ]
@@ -899,8 +899,8 @@
           "artifact": {
             "release": {
               "repo": "ken-jo/agent-marketplace",
-              "tag": "vega-helper-v0.11.3",
-              "asset": "vega-helper-0.11.3.zip",
+              "tag": "sampleassistant-v0.11.3",
+              "asset": "sampleassistant-0.11.3.zip",
               "sha256": "f31ac94e499ee7885e475c43e28c434639dd26a84bb3c6409232699ee9d5c579"
             }
           },

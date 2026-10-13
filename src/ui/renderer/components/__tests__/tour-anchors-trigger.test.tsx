@@ -314,7 +314,7 @@ describe("Tutorial-C PR #983 follow-up: ⌘+Shift+/ trigger", () => {
 });
 
 describe("host tour registry carries no scenario for a dissolved extension", () => {
-  // vega-helper was dissolved into per-extension alerts and agent-hub was
+  // sampleassistant was dissolved into per-extension alerts and agent-hub was
   // archived; the host must not keep tours that walk a user through their UI.
   // A plugin-specific scenario in the host is the branch AGENTS.md forbids.
   const DISSOLVED = /work[-_]?assistant|agent[-_]?hub/i;
@@ -332,7 +332,7 @@ describe("host tour registry carries no scenario for a dissolved extension", () 
   });
 
   it("the tour catalog keeps no strings for the removed scenarios", () => {
-    const removed = /^defaultTourScenarios\.(vegaHelper|multiAgent)/;
+    const removed = /^defaultTourScenarios\.(sampleAssistant|multiAgent)/;
     expect(Object.keys(tourEn).filter((key) => removed.test(key))).toEqual([]);
     expect(Object.keys(tourKo).filter((key) => removed.test(key))).toEqual([]);
   });

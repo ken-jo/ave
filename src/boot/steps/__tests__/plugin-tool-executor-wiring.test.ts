@@ -72,7 +72,7 @@ vi.mock("../plugin-operation-account.js", () => ({
 
 import { setupPluginToolExecutor } from "../plugin-tool-executor.js";
 
-const pluginId = "orion-api";
+const pluginId = "sampleportal";
 const activeGenerationId = "generation-2";
 const predecessorGenerationId = "generation-1";
 

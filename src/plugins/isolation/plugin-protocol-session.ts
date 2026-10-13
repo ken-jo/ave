@@ -527,7 +527,7 @@ export async function openPluginProtocolSession(
      *
      * `getAppPreference` is synchronous, so §3.1 answers it from a snapshot,
      * and a snapshot with no re-push is the value the preference held at plugin
-     * start. `lyra-mail` reads `webView.preferredFlow` at CALL time, so it would
+     * start. A plugin may read `webView.preferredFlow` at CALL time, so it would
      * have read a stale answer for the life of the process with nothing
      * reporting it. The bus announces only a REAL change to an allow-listed
      * key (`publishAppPreferenceChange` diffs before emitting), so an unrelated

@@ -35,7 +35,7 @@ import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.
 
 function generation(version = "1.0.0", generationId = "g1", fingerprint = "a".repeat(64)): ActivePluginGeneration {
   return {
-    pluginId: "orion-api",
+    pluginId: "sampleportal",
     pluginVersion: version,
     artifactGenerationId: version === "1.0.0" && fingerprint === "a".repeat(64)
       ? "a".repeat(64)
@@ -45,7 +45,7 @@ function generation(version = "1.0.0", generationId = "g1", fingerprint = "a".re
     receiptSha256: "2".repeat(64),
     state: {},
     contributions: [{
-      ownerPluginId: "orion-api",
+      ownerPluginId: "sampleportal",
       ownerVersion: version,
       kind: "mcpServer",
       localId: "orion",
@@ -136,7 +136,7 @@ describe("plugin-owned MCP projections", () => {
     const trust = new PluginMcpTrustStore();
     trust.approve(projection);
     const mgr = new McpManager(governance, new ToolRegistry(), unusedNetworkFetch, configPath);
-    const prepared = await mgr.prepareBundledGeneration({ pluginId: "orion-api", generationId: "g1" }, [projection], trust);
+    const prepared = await mgr.prepareBundledGeneration({ pluginId: "sampleportal", generationId: "g1" }, [projection], trust);
     expect(prepared.records).toEqual([]);
     expect(prepared.degraded).toMatchObject([{ code: "blocked-by-policy", retryable: false }]);
     expect(construct).not.toHaveBeenCalled();
@@ -151,7 +151,7 @@ describe("plugin-owned MCP projections", () => {
     await writeFile(path, JSON.stringify({ ...base, bundledServers: [projection.approval.bundled] }));
     const governance = new McpGovernance(path);
     const mgr = new McpManager(governance, new ToolRegistry(), unusedNetworkFetch, configPath);
-    const prepared = await mgr.prepareBundledGeneration({ pluginId: "orion-api", generationId: "g1" }, [projection], new PluginMcpTrustStore());
+    const prepared = await mgr.prepareBundledGeneration({ pluginId: "sampleportal", generationId: "g1" }, [projection], new PluginMcpTrustStore());
     expect(prepared.records).toHaveLength(1);
     expect(construct).toHaveBeenCalledOnce();
     mgr.publishBundledGeneration(prepared);
@@ -162,7 +162,7 @@ describe("plugin-owned MCP projections", () => {
     await mgr.handlePolicyWithdrawal(withdrawn);
     expect(disconnect).toHaveBeenCalled();
     expect(mgr.getServerState(projection.serverId)).toBeUndefined();
-    expect(mgr.getBundledGenerationDegraded("orion-api", "g1")).toMatchObject([{ code: "blocked-by-policy" }]);
+    expect(mgr.getBundledGenerationDegraded("sampleportal", "g1")).toMatchObject([{ code: "blocked-by-policy" }]);
   });
 
   it("a rule flip disconnects user consent while leaving a listed fingerprint running", async () => {
@@ -178,7 +178,7 @@ describe("plugin-owned MCP projections", () => {
     await writeFile(path, JSON.stringify(base));
     const governance = new McpGovernance(path);
     const mgr = new McpManager(governance, new ToolRegistry(), unusedNetworkFetch, configPath);
-    const prepared = await mgr.prepareBundledGeneration({ pluginId: "orion-api", generationId: "g1" }, [listed, user], trust);
+    const prepared = await mgr.prepareBundledGeneration({ pluginId: "sampleportal", generationId: "g1" }, [listed, user], trust);
     mgr.publishBundledGeneration(prepared);
     expect(prepared.records).toHaveLength(2);
     await writeFile(path, JSON.stringify({ ...base, globalRules: { ...base.globalRules, allowUserApprovedServers: false } }));
@@ -199,7 +199,7 @@ describe("plugin-owned MCP projections", () => {
     const trust = new PluginMcpTrustStore();
     trust.approve(projection);
     const mgr = new McpManager(governance, new ToolRegistry(), unusedNetworkFetch, configPath);
-    const prepared = await mgr.prepareBundledGeneration({ pluginId: "orion-api", generationId: "g1" }, [projection], trust);
+    const prepared = await mgr.prepareBundledGeneration({ pluginId: "sampleportal", generationId: "g1" }, [projection], trust);
     await writeFile(path, JSON.stringify({ ...base, globalRules: { ...base.globalRules, allowUserApprovedServers: false } }));
     governance.reloadPolicy();
     expect(() => mgr.publishBundledGeneration(prepared)).toThrow("runtime approval not admitted by policy");
@@ -213,7 +213,7 @@ describe("plugin-owned MCP projections", () => {
     const [projection] = preparePluginMcpGeneration(generation(), testDir);
     const trust = new PluginMcpTrustStore();
     const prepared = await manager().prepareBundledGeneration(
-      { pluginId: "orion-api", generationId: "g1" },
+      { pluginId: "sampleportal", generationId: "g1" },
       [projection],
       trust,
     );
@@ -229,7 +229,7 @@ describe("plugin-owned MCP projections", () => {
       owner: { ...projection.owner, activationId: undefined },
     };
     await expect(manager().prepareBundledGeneration(
-      { pluginId: "orion-api", generationId: "g1" },
+      { pluginId: "sampleportal", generationId: "g1" },
       [missingActivation] as never,
       new PluginMcpTrustStore(),
     )).rejects.toThrow(/activation identity is missing/);
@@ -241,7 +241,7 @@ describe("plugin-owned MCP projections", () => {
     trust.approve(projection);
     const mgr = manager();
     const prepared = await mgr.prepareBundledGeneration(
-      { pluginId: "orion-api", generationId: "g1" },
+      { pluginId: "sampleportal", generationId: "g1" },
       [projection],
       trust,
     );
@@ -261,7 +261,7 @@ describe("plugin-owned MCP projections", () => {
     trust.approve(projection);
     const mgr = manager();
     const prepared = await mgr.prepareBundledGeneration(
-      { pluginId: "orion-api", generationId: "g1" },
+      { pluginId: "sampleportal", generationId: "g1" },
       [projection],
       trust,
     );
@@ -290,18 +290,18 @@ describe("plugin-owned MCP projections", () => {
     trust.approve(second);
     const mgr = manager();
     const firstPrepared = await mgr.prepareBundledGeneration(
-      { pluginId: "orion-api", generationId: "g1" },
+      { pluginId: "sampleportal", generationId: "g1" },
       [first],
       trust,
     );
     mgr.publishBundledGeneration(firstPrepared);
     const secondPrepared = await mgr.prepareBundledGeneration(
-      { pluginId: "orion-api", generationId: "g2" },
+      { pluginId: "sampleportal", generationId: "g2" },
       [second],
       trust,
     );
     mgr.publishBundledGeneration(secondPrepared);
-    await mgr.disconnectBundledGeneration("orion-api", "g1");
+    await mgr.disconnectBundledGeneration("sampleportal", "g1");
     expect(mgr.getServerState(first.serverId)).toBeUndefined();
     expect(mgr.getServerState(second.serverId)).toBeDefined();
   });
@@ -348,20 +348,20 @@ describe("plugin-owned MCP projections", () => {
     expect(trust.isApproved(stdioG2)).toBe(true);
     const mgr = manager();
     const first = await mgr.prepareBundledGeneration(
-      { pluginId: "orion-api", generationId: "g1" },
+      { pluginId: "sampleportal", generationId: "g1" },
       [stdioG1],
       trust,
     );
     mgr.publishBundledGeneration(first);
     const second = await mgr.prepareBundledGeneration(
-      { pluginId: "orion-api", generationId: "g2" },
+      { pluginId: "sampleportal", generationId: "g2" },
       [stdioG2],
       trust,
     );
     mgr.publishBundledGeneration(second);
 
     expect(connect).toHaveBeenCalledTimes(2);
-    await mgr.disconnectBundledGeneration("orion-api", "g1");
+    await mgr.disconnectBundledGeneration("sampleportal", "g1");
     expect(mgr.getServerState(stdioG1.serverId)).toBeUndefined();
     expect(mgr.getServerState(stdioG2.serverId)).toBeDefined();
   });

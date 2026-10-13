@@ -84,13 +84,13 @@ describe("plugin webview attach", () => {
     const webPreferences = weakRequest();
     configurePluginWebviewAttach({
       webPreferences,
-      params: { partition: pluginPartitionName("lyra-mail") },
+      params: { partition: pluginPartitionName("samplemail") },
     });
     expect(webPreferences.webviewTag).toBe(false);
   });
 
   it("enforces for every plugin id, not a fixed list", () => {
-    for (const pluginId of ["meeting", "lyra-mail", "orion-api", "vega-helper", "unknown-future"]) {
+    for (const pluginId of ["meeting", "samplemail", "sampleportal", "sampleassistant", "unknown-future"]) {
       const webPreferences = weakRequest();
       const result = configurePluginWebviewAttach({
         webPreferences,

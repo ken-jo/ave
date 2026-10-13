@@ -422,7 +422,7 @@ export type HostApiNotification =
    * host-pushed snapshot as well — and until this notification existed there
    * was nothing to re-push FROM, which is why the child left that one member
    * unwired rather than answering with a value frozen at plugin start.
-   * `lyra-mail` reads `webView.preferredFlow` at CALL time, so a construction
+   * A plugin may read `webView.preferredFlow` at CALL time, so a construction
    * snapshot with no re-push would answer it wrong by construction.
    *
    * TWO FIELDS, NOT ONE OBJECT, for the same reason the config snapshot splits

@@ -182,12 +182,12 @@ describe("plugin event bridge — host-derived <id>.auth.changed (R3)", () => {
 
   it("bridges ${id}.auth.changed when auth is declared but emittedEvents omits it", () => {
     const win = makeFakeWindow();
-    const dispose = bridge(makeRuntime([{ id: "lyra-mail", auth: AUTH }]), win); // no emittedEvents[]
+    const dispose = bridge(makeRuntime([{ id: "samplemail", auth: AUTH }]), win); // no emittedEvents[]
 
-    emitEvent("lyra-mail.auth.changed", { authenticated: true });
+    emitEvent("samplemail.auth.changed", { authenticated: true });
 
     expect(win._sent).toHaveLength(1);
-    expect(win._sent[0].eventType).toBe("lyra-mail.auth.changed");
+    expect(win._sent[0].eventType).toBe("samplemail.auth.changed");
     expect(win._sent[0].channel).toBe("ave:plugin:event");
 
     dispose();
@@ -211,15 +211,15 @@ describe("plugin event bridge — host-derived <id>.auth.changed (R3)", () => {
   it("dedupes when the author ALSO lists ${id}.auth.changed in emittedEvents (registers once)", () => {
     const win = makeFakeWindow();
     const dispose = bridge(
-      makeRuntime([{ id: "orion-api", auth: AUTH, emittedEvents: ["orion-api.auth.changed"] }]),
+      makeRuntime([{ id: "sampleportal", auth: AUTH, emittedEvents: ["sampleportal.auth.changed"] }]),
       win,
     );
 
-    emitEvent("orion-api.auth.changed", { authenticated: true });
+    emitEvent("sampleportal.auth.changed", { authenticated: true });
 
     // Exactly one forward — the derived name deduped against the declared one.
     expect(win._sent).toHaveLength(1);
-    expect(win._sent[0].eventType).toBe("orion-api.auth.changed");
+    expect(win._sent[0].eventType).toBe("sampleportal.auth.changed");
 
     dispose();
   });

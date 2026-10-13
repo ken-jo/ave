@@ -65,7 +65,7 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
   await mkdir(join(pluginRoot, "hooks"), { recursive: true });
   await mkdir(join(pluginRoot, "mcp"), { recursive: true });
   const manifest = {
-    id: "orion-api",
+    id: "sampleportal",
     name: "ORION API",
     version: "1.0.0",
     entry: "dist/index.js",
@@ -93,7 +93,7 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
   await writeFile(join(pluginRoot, "skills", "attendance", "SKILL.md"), "---\nname: attendance\ndescription: Attendance workflow\n---\nUse the ORION attendance API.", "utf8");
   await writeFile(join(pluginRoot, "hooks", "policy.json"), hookContent, "utf8");
   await writeFile(join(pluginRoot, "mcp", "orion.json"), JSON.stringify({ transport: "http", url: "https://orion.example.test/mcp" }), "utf8");
-  await mkdir(join(cacheRoot, "orion-api"), { recursive: true });
+  await mkdir(join(cacheRoot, "sampleportal"), { recursive: true });
   const payloadFiles = [
     "plugin.json",
     "skills/attendance/SKILL.md",
@@ -102,9 +102,9 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
   ];
   if (withContent) payloadFiles.push("prompts/draft.md", "prompts/review.md", "routines/templates.json");
   const files = await hashReceiptFiles(pluginRoot, payloadFiles);
-  await writeFile(join(cacheRoot, "orion-api", "install-receipt.json"), JSON.stringify({
+  await writeFile(join(cacheRoot, "sampleportal", "install-receipt.json"), JSON.stringify({
     schemaVersion: 2,
-    pluginId: "orion-api",
+    pluginId: "sampleportal",
     version: "1.0.0",
     installSource: "local-dev",
     artifactSha256: null,
@@ -117,7 +117,7 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
 
 /** The review binding a user approval sends: the row the user saw (design §18.7.5). */
 function reviewed(lifecycle: PluginBundleLifecycle, kind: "hook" | "mcpServer", localId: string) {
-  const row = lifecycle.listContributionTrust("orion-api").find((item) => item.kind === kind && item.localId === localId);
+  const row = lifecycle.listContributionTrust("sampleportal").find((item) => item.kind === kind && item.localId === localId);
   if (!row) throw new Error(`no ${kind} ${localId} row`);
   return { generationId: row.generationId, approvalDigest: row.approvalDigest };
 }
@@ -176,14 +176,14 @@ describe("PluginBundleLifecycle", () => {
       } as never,
     });
     await lifecycle.activate(manifest.id);
-    expect(personaPromptStore.listTemplates()).toMatchObject([{ id: "extension:orion-api:draft", body: "Draft {args}" }]);
-    expect(await personaPromptStore.get("extension:orion-api:review")).toMatchObject({
-      systemPromptAdd: "Review carefully.", origin: { kind: "plugin", package: "orion-api" },
+    expect(personaPromptStore.listTemplates()).toMatchObject([{ id: "extension:sampleportal:draft", body: "Draft {args}" }]);
+    expect(await personaPromptStore.get("extension:sampleportal:review")).toMatchObject({
+      systemPromptAdd: "Review carefully.", origin: { kind: "plugin", package: "sampleportal" },
     });
-    expect(lifecycle.listRoutineTemplates()).toMatchObject([{ id: "daily", packageName: "orion-api", sourceKind: "extension" }]);
+    expect(lifecycle.listRoutineTemplates()).toMatchObject([{ id: "daily", packageName: "sampleportal", sourceKind: "extension" }]);
     await lifecycle.deactivate(manifest.id);
     expect(personaPromptStore.listTemplates()).toEqual([]);
-    expect(await personaPromptStore.get("extension:orion-api:review")).toBeNull();
+    expect(await personaPromptStore.get("extension:sampleportal:review")).toBeNull();
     expect(lifecycle.listRoutineTemplates()).toEqual([]);
     expect(onContributionsUpdated).toHaveBeenCalledTimes(2);
   });
@@ -218,7 +218,7 @@ describe("PluginBundleLifecycle", () => {
     });
     const durableCommit = vi.fn(async () => "committed");
 
-    const inactiveCommit = await lifecycle.deactivateWithCommit("orion-api", durableCommit);
+    const inactiveCommit = await lifecycle.deactivateWithCommit("sampleportal", durableCommit);
     expect(inactiveCommit).toMatchObject({
       result: "committed",
     });
@@ -227,7 +227,7 @@ describe("PluginBundleLifecycle", () => {
     expect(loopbackManager.prepareRemoval).not.toHaveBeenCalled();
 
     getRuntimeGenerationProjection.mockReturnValue(runtimeProjection(manifest, pluginRoot));
-    await expect(lifecycle.deactivateWithCommit("orion-api", durableCommit)).rejects.toThrow(
+    await expect(lifecycle.deactivateWithCommit("sampleportal", durableCommit)).rejects.toThrow(
       /live projections without an active bundle generation/,
     );
     expect(durableCommit).toHaveBeenCalledOnce();
@@ -284,24 +284,24 @@ describe("PluginBundleLifecycle", () => {
       } as never,
     });
 
-    await lifecycle.activate("orion-api");
-    const initialGenerationId = lifecycle.getActive("orion-api")?.generationId;
+    await lifecycle.activate("sampleportal");
+    const initialGenerationId = lifecycle.getActive("sampleportal")?.generationId;
     expect(prepareRuntimeGeneration).toHaveBeenNthCalledWith(
       1,
       expect.anything(),
       undefined,
     );
-    expect(skillStore.listCatalogSync()).toEqual([expect.objectContaining({ name: "plugin:orion-api:attendance" })]);
+    expect(skillStore.listCatalogSync()).toEqual([expect.objectContaining({ name: "plugin:sampleportal:attendance" })]);
     expect(hookManager.size()).toBe(0);
     expect(prepareBundledGeneration).toHaveBeenCalledWith(
-      expect.objectContaining({ pluginId: "orion-api" }),
+      expect.objectContaining({ pluginId: "sampleportal" }),
       expect.anything(),
       lifecycle.mcpTrust,
     );
     expect(publishBundledGeneration).toHaveBeenCalledTimes(1);
 
     activationId = "test-activation-2";
-    await lifecycle.activate("orion-api");
+    await lifecycle.activate("sampleportal");
     expect(prepareRuntimeGeneration).toHaveBeenNthCalledWith(
       2,
       expect.anything(),
@@ -310,13 +310,13 @@ describe("PluginBundleLifecycle", () => {
     expect(prepareBundledGeneration).toHaveBeenCalledTimes(2);
     expect(publishBundledGeneration).toHaveBeenCalledTimes(2);
 
-    await lifecycle.approveHook("orion-api", "policy", reviewed(lifecycle, "hook", "policy"));
+    await lifecycle.approveHook("sampleportal", "policy", reviewed(lifecycle, "hook", "policy"));
     expect(hookManager.size()).toBe(0); // descriptor intentionally contains no runnable entries
-    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
     expect(prepareBundledGeneration).toHaveBeenCalledTimes(3);
     expect(publishBundledGeneration).toHaveBeenCalledTimes(3);
 
-    const active = lifecycle.getActive("orion-api");
+    const active = lifecycle.getActive("sampleportal");
     expect(active).not.toHaveProperty("state");
     expect(active?.manifest).not.toBe(manifest);
     expect(Object.isFrozen(active)).toBe(true);
@@ -324,16 +324,16 @@ describe("PluginBundleLifecycle", () => {
     expect(Object.isFrozen(active?.manifest.tools)).toBe(true);
     const generationId = active?.generationId;
     expect(generationId).toMatch(/^[a-f0-9]{64}$/);
-    await lifecycle.deactivate("orion-api");
+    await lifecycle.deactivate("sampleportal");
     await lifecycle.waitForRetirements();
     expect(prepareRuntimeRemoval).toHaveBeenCalledWith(
-      "orion-api",
+      "sampleportal",
       generationId,
     );
     expect(prepareBundledGeneration).toHaveBeenCalledTimes(3);
     expect(publishBundledGeneration).toHaveBeenCalledTimes(3);
     expect(skillStore.listCatalogSync()).toEqual([]);
-    expect(disconnectBundledGeneration).toHaveBeenCalledWith("orion-api", generationId);
+    expect(disconnectBundledGeneration).toHaveBeenCalledWith("sampleportal", generationId);
   });
 
   it("retires the predecessor before replacement post-publish startup", async () => {
@@ -397,11 +397,11 @@ describe("PluginBundleLifecycle", () => {
       } as never,
     });
 
-    await lifecycle.activate("orion-api");
+    await lifecycle.activate("sampleportal");
     expect(events).toEqual(["published:test-activation-1"]);
 
     activationId = "test-activation-2";
-    const replacement = lifecycle.activate("orion-api");
+    const replacement = lifecycle.activate("sampleportal");
     await retirementStarted;
     expect(events).toEqual([
       "published:test-activation-1",
@@ -474,9 +474,9 @@ describe("PluginBundleLifecycle", () => {
       } as never,
     });
 
-    await lifecycle.activate("orion-api");
-    const predecessorId = lifecycle.getActive("orion-api")!.generationId;
-    const predecessorLease = await lifecycle.acquireExact("orion-api", predecessorId);
+    await lifecycle.activate("sampleportal");
+    const predecessorId = lifecycle.getActive("sampleportal")!.generationId;
+    const predecessorLease = await lifecycle.acquireExact("sampleportal", predecessorId);
     let reportReplacementReturned!: () => void;
     const replacementReturned = new Promise<void>((resolve) => {
       reportReplacementReturned = resolve;
@@ -488,8 +488,8 @@ describe("PluginBundleLifecycle", () => {
     try {
       const predecessorOperation = lifecycle.runWithLease(predecessorLease, async () => {
         activationId = "test-activation-2";
-        await lifecycle.activate("orion-api");
-        await expect(lifecycle.activate("orion-api")).rejects.toThrow(
+        await lifecycle.activate("sampleportal");
+        await expect(lifecycle.activate("sampleportal")).rejects.toThrow(
           /cannot start another lifecycle mutation/,
         );
         reportReplacementReturned();
@@ -497,10 +497,10 @@ describe("PluginBundleLifecycle", () => {
       });
       await replacementReturned;
       let disableReturned = false;
-      const disable = lifecycle.deactivate("orion-api").then(() => {
+      const disable = lifecycle.deactivate("sampleportal").then(() => {
         disableReturned = true;
       });
-      const candidateLease = lifecycle.acquire("orion-api");
+      const candidateLease = lifecycle.acquire("sampleportal");
       let admitted = false;
       void candidateLease.then(() => { admitted = true; });
       await Promise.resolve();
@@ -662,12 +662,12 @@ describe("PluginBundleLifecycle", () => {
       retirementDeferred: true,
     });
 
-    await lifecycle.runInLifecycleQueue("orion-api", async () => {
-      await serializeCommitted("orion-api", async () => committed(firstCompletion));
-      await serializeCommitted("orion-api", async () => committed(secondCompletion));
+    await lifecycle.runInLifecycleQueue("sampleportal", async () => {
+      await serializeCommitted("sampleportal", async () => committed(firstCompletion));
+      await serializeCommitted("sampleportal", async () => committed(secondCompletion));
     });
     let nextMutationStarted = false;
-    const nextMutation = lifecycle.runInLifecycleQueue("orion-api", async () => {
+    const nextMutation = lifecycle.runInLifecycleQueue("sampleportal", async () => {
       nextMutationStarted = true;
     });
 
@@ -799,14 +799,14 @@ describe("PluginBundleLifecycle", () => {
       } as never,
     });
 
-    await lifecycle.activate("orion-api");
+    await lifecycle.activate("sampleportal");
     activationId = "test-activation-2";
-    await lifecycle.activate("orion-api");
+    await lifecycle.activate("sampleportal");
 
     expect(retirementAttempts).toBe(3);
     expect(postPublishRuntimeGeneration).toHaveBeenCalledTimes(1);
-    expect(lifecycle.getActive("orion-api")?.generationId).toMatch(/^[a-f0-9]{64}$/);
-    await expect(lifecycle.acquire("orion-api")).rejects.toThrow(/dispatch blocked/);
+    expect(lifecycle.getActive("sampleportal")?.generationId).toMatch(/^[a-f0-9]{64}$/);
+    await expect(lifecycle.acquire("sampleportal")).rejects.toThrow(/dispatch blocked/);
   });
 
   it("keeps replacement dispatch closed when runtime post-publish readiness fails", async () => {
@@ -849,13 +849,13 @@ describe("PluginBundleLifecycle", () => {
       } as never,
     });
 
-    await lifecycle.activate("orion-api");
+    await lifecycle.activate("sampleportal");
     activationId = "test-activation-2";
-    await lifecycle.activate("orion-api");
+    await lifecycle.activate("sampleportal");
 
     expect(postPublishRuntimeGeneration).toHaveBeenCalledTimes(2);
-    await expect(lifecycle.acquire("orion-api")).rejects.toThrow(/dispatch blocked/);
-    await expect(lifecycle.deactivate("orion-api")).resolves.toBeUndefined();
+    await expect(lifecycle.acquire("sampleportal")).rejects.toThrow(/dispatch blocked/);
+    await expect(lifecycle.deactivate("sampleportal")).resolves.toBeUndefined();
     await expect(lifecycle.waitForRetirements()).resolves.toBeUndefined();
   });
 
@@ -894,8 +894,8 @@ describe("PluginBundleLifecycle", () => {
       } as never,
     });
 
-    await expect(lifecycle.activate("orion-api")).resolves.toBeUndefined();
-    await expect(lifecycle.acquire("orion-api")).rejects.toThrow(/dispatch blocked/);
+    await expect(lifecycle.activate("sampleportal")).resolves.toBeUndefined();
+    await expect(lifecycle.acquire("sampleportal")).rejects.toThrow(/dispatch blocked/);
   });
 
   it("restores MCP approval after a same-artifact reinstall refreshes installedAt", async () => {
@@ -918,7 +918,7 @@ describe("PluginBundleLifecycle", () => {
         getRuntimeGenerationProjection: () => ({
           ...runtimeProjection(manifest, pluginRoot),
           activationId,
-          installId: "orion-api",
+          installId: "sampleportal",
         }),
         prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
         prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
@@ -940,20 +940,20 @@ describe("PluginBundleLifecycle", () => {
       } as never,
     });
 
-    await lifecycle.activate("orion-api");
-    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
-    expect(lifecycle.listContributionTrust("orion-api")).toContainEqual(
+    await lifecycle.activate("sampleportal");
+    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    expect(lifecycle.listContributionTrust("sampleportal")).toContainEqual(
       expect.objectContaining({ kind: "mcpServer", localId: "orion", status: "approved" }),
     );
 
-    const receiptPath = join(cacheRoot, "orion-api", "install-receipt.json");
+    const receiptPath = join(cacheRoot, "sampleportal", "install-receipt.json");
     const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
     receipt.installedAt = "2026-07-27T00:05:00.000Z";
     await writeFile(receiptPath, JSON.stringify(receipt), "utf8");
     activationId = "test-activation-v1-reinstalled";
 
-    await lifecycle.activate("orion-api");
-    expect(lifecycle.listContributionTrust("orion-api")).toContainEqual(
+    await lifecycle.activate("sampleportal");
+    expect(lifecycle.listContributionTrust("sampleportal")).toContainEqual(
       expect.objectContaining({ kind: "mcpServer", localId: "orion", status: "approved" }),
     );
     expect(prepareBundledGeneration).toHaveBeenCalledTimes(3);
@@ -998,14 +998,14 @@ describe("PluginBundleLifecycle", () => {
         disconnectBundledGeneration: vi.fn(async () => undefined),
       } as never,
     });
-    await lifecycle.activate("orion-api");
+    await lifecycle.activate("sampleportal");
     await lifecycle.waitForRetirements();
     retirePublishedMcpReplacement.mockRejectedValue(new Error("retirement endpoint token=secret"));
 
-    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
     await lifecycle.waitForRetirements();
 
-    const trust = lifecycle.listContributionTrust("orion-api")
+    const trust = lifecycle.listContributionTrust("sampleportal")
       .find((row) => row.kind === "mcpServer" && row.localId === "orion");
     expect(trust?.status).toBe("approved");
     expect(publishBundledGeneration).toHaveBeenCalledTimes(2);
@@ -1052,14 +1052,14 @@ describe("PluginBundleLifecycle", () => {
       } as never,
     });
 
-    await lifecycle.activate("orion-api");
-    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await lifecycle.activate("sampleportal");
+    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
     prepareBundledGeneration.mockRejectedValueOnce(new Error("candidate preparation failed"));
 
-    await expect(lifecycle.revokeMcpServer("orion-api", "orion")).rejects.toThrow(
+    await expect(lifecycle.revokeMcpServer("sampleportal", "orion")).rejects.toThrow(
       "candidate preparation failed",
     );
-    expect(lifecycle.listContributionTrust("orion-api")).toContainEqual(
+    expect(lifecycle.listContributionTrust("sampleportal")).toContainEqual(
       expect.objectContaining({ kind: "mcpServer", localId: "orion", status: "approved" }),
     );
     expect(publishBundledGeneration).toHaveBeenCalledTimes(2);
@@ -1098,22 +1098,22 @@ describe("PluginBundleLifecycle", () => {
         disconnectBundledGeneration: vi.fn(),
       } as never,
     });
-    await lifecycle.activate("orion-api");
-    const active = lifecycle.getActive("orion-api");
+    await lifecycle.activate("sampleportal");
+    const active = lifecycle.getActive("sampleportal");
     const generationRoot = join(
       valid.cacheRoot,
-      "orion-api",
+      "sampleportal",
       "generations",
     );
     const generationsBefore = await readdir(generationRoot);
 
     await writeFile(join(valid.pluginRoot, "hooks", "policy.json"), "{", "utf8");
-    const receiptPath = join(valid.cacheRoot, "orion-api", "install-receipt.json");
+    const receiptPath = join(valid.cacheRoot, "sampleportal", "install-receipt.json");
     const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
     receipt.files.find((file: { path: string }) => file.path === "hooks/policy.json").sha256 = createHash("sha256").update("{").digest("hex");
     await writeFile(receiptPath, JSON.stringify(receipt), "utf8");
-    await expect(lifecycle.activate("orion-api")).rejects.toThrow(/not valid JSON/);
-    expect(lifecycle.getActive("orion-api")?.generationId).toBe(active?.generationId);
+    await expect(lifecycle.activate("sampleportal")).rejects.toThrow(/not valid JSON/);
+    expect(lifecycle.getActive("sampleportal")?.generationId).toBe(active?.generationId);
     expect(skillStore.listCatalogSync()).toHaveLength(1);
     expect(await readdir(generationRoot)).toEqual(generationsBefore);
   });
@@ -1162,7 +1162,7 @@ describe("PluginBundleLifecycle", () => {
       } as never,
     });
     const receiptRaw = await readFile(
-      join(cacheRoot, "orion-api", "install-receipt.json"),
+      join(cacheRoot, "sampleportal", "install-receipt.json"),
       "utf8",
     );
     const commitFailure = new Error("registry commit rejected");
@@ -1177,7 +1177,7 @@ describe("PluginBundleLifecycle", () => {
       ),
     ).rejects.toBe(commitFailure);
 
-    const generationRoot = join(cacheRoot, "orion-api", "generations");
+    const generationRoot = join(cacheRoot, "sampleportal", "generations");
     const retained = await readdir(generationRoot).catch(
       (error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") return [];
@@ -1185,7 +1185,7 @@ describe("PluginBundleLifecycle", () => {
       },
     );
     expect(retained).toEqual([]);
-    expect(lifecycle.getActive("orion-api")).toBeUndefined();
+    expect(lifecycle.getActive("sampleportal")).toBeUndefined();
   });
 
   it("journals retirement progress and retries only the failed cleanup phase", async () => {
@@ -1230,9 +1230,9 @@ describe("PluginBundleLifecycle", () => {
       } as never,
     });
 
-    await lifecycle.activate("orion-api");
+    await lifecycle.activate("sampleportal");
     const committed = await lifecycle.deactivateWithCommit(
-      "orion-api",
+      "sampleportal",
       async () => "removed",
     );
     expect(committed.result).toBe("removed");
@@ -1279,7 +1279,7 @@ describe("PluginBundleLifecycle", () => {
         disconnectBundledGeneration: vi.fn(async () => undefined),
       } as never,
     });
-    const receiptRaw = await readFile(join(cacheRoot, "orion-api", "install-receipt.json"), "utf8");
+    const receiptRaw = await readFile(join(cacheRoot, "sampleportal", "install-receipt.json"), "utf8");
     const durableCommit = vi.fn(async () => "committed");
 
     const committed = await lifecycle.replaceRuntimeWithCommit(
@@ -1290,18 +1290,18 @@ describe("PluginBundleLifecycle", () => {
 
     expect(committed.result).toBe("committed");
     expect(durableCommit).toHaveBeenCalledOnce();
-    expect(lifecycle.getActive("orion-api")).toBeDefined();
+    expect(lifecycle.getActive("sampleportal")).toBeDefined();
     const health = JSON.parse(await readFile(join(cacheRoot, "plugin-generation-health.json"), "utf8"));
     expect(health.faults).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        pluginId: "orion-api",
+        pluginId: "sampleportal",
         phase: "runtime-post-publish",
         errorName: "Error",
         errorCode: null,
         message: "internal post-commit fault",
       }),
       expect.objectContaining({
-        pluginId: "orion-api",
+        pluginId: "sampleportal",
         phase: "mcp-publication",
         errorName: "Error",
         errorCode: null,
@@ -1354,13 +1354,13 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
       manifest = { ...manifest, version } as PluginManifest;
       await writeFile(join(base.pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
       for (const [path, content] of Object.entries(files)) await writeFile(join(base.pluginRoot, path), content, "utf8");
-      const receiptPath = join(base.cacheRoot, "orion-api", "install-receipt.json");
+      const receiptPath = join(base.cacheRoot, "sampleportal", "install-receipt.json");
       const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
       receipt.version = version;
       receipt.files = await hashReceiptFiles(base.pluginRoot, receipt.files.map((file: { path: string }) => file.path));
       await writeFile(receiptPath, JSON.stringify(receipt), "utf8");
     };
-    const row = (localId = "orion") => lifecycle.listContributionTrust("orion-api").find((item) => item.kind === "mcpServer" && item.localId === localId)!;
+    const row = (localId = "orion") => lifecycle.listContributionTrust("sampleportal").find((item) => item.kind === "mcpServer" && item.localId === localId)!;
     /** The trust-store view of a row's exact identity. */
     const owned = (item: ReturnType<typeof row>) => ({ owner: {
       pluginId: item.pluginId, pluginVersion: item.pluginVersion, generationId: item.generationId, localId: item.localId, fingerprint: item.fingerprint,
@@ -1370,14 +1370,14 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
 
   it("carries an approval to a new version whose server and package bytes are unchanged, naming its source", async () => {
     const { lifecycle, release, row, owned } = await updatable();
-    await lifecycle.activate("orion-api");
-    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await lifecycle.activate("sampleportal");
+    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
     const approved = row();
     expect(approved.approvalDigest).toMatch(/^[a-f0-9]{64}$/u);
 
     // Only the skill text changed: a remote server's approval digest is the same.
     await release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nUse the ORION attendance API, carefully." });
-    await lifecycle.activate("orion-api");
+    await lifecycle.activate("sampleportal");
     const carried = row();
     expect(carried.generationId).not.toBe(approved.generationId);
     expect(carried).toMatchObject({ pluginVersion: "1.1.0", status: "approved", approvalDigest: approved.approvalDigest });
@@ -1387,10 +1387,10 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
 
   it("does not carry an approval to a server whose declaration changed", async () => {
     const { lifecycle, release, row } = await updatable();
-    await lifecycle.activate("orion-api");
-    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await lifecycle.activate("sampleportal");
+    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
     await release("1.1.0", { "mcp/orion.json": JSON.stringify({ transport: "http", url: "https://elsewhere.example.test/mcp" }) });
-    await lifecycle.activate("orion-api");
+    await lifecycle.activate("sampleportal");
     expect(row()).toMatchObject({ pluginVersion: "1.1.0", status: "approval_required" });
     await lifecycle.waitForRetirements();
   });
@@ -1398,8 +1398,8 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
   it("abandons the update and revokes the carried approval when its source is revoked before publication", async () => {
     const loopbackManager = inertLoopbackManager();
     const { lifecycle, release, row, owned, cacheRoot } = await updatable({ loopbackManager });
-    await lifecycle.activate("orion-api");
-    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await lifecycle.activate("sampleportal");
+    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
     const source = row();
     await release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nChanged." });
     // The user revokes the approval while the update is being prepared.
@@ -1409,7 +1409,7 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
       carriedTo = generationId;
       return { pluginId: manifest.id, generationId, tools: [], registryReplacement: { publish: vi.fn(), cancel: vi.fn(), replacementTools: [] }, published: false, disconnectPredecessor: false };
     });
-    await expect(lifecycle.activate("orion-api")).rejects.toThrow(/was withdrawn while its update was prepared/u);
+    await expect(lifecycle.activate("sampleportal")).rejects.toThrow(/was withdrawn while its update was prepared/u);
     expect(carriedTo).toBeDefined();
     // The revocation is not undone, the old generation stays active, and nothing was carried.
     expect(row()).toMatchObject({ generationId: source.generationId, pluginVersion: "1.0.0", status: "approval_required" });
@@ -1421,14 +1421,14 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
   it("revokes a carried approval when preparation fails after the carry", async () => {
     const loopbackManager = inertLoopbackManager();
     const { lifecycle, release, row, cacheRoot } = await updatable({ loopbackManager });
-    await lifecycle.activate("orion-api");
-    await lifecycle.approveMcpServer("orion-api", "orion", reviewed(lifecycle, "mcpServer", "orion"));
+    await lifecycle.activate("sampleportal");
+    await lifecycle.approveMcpServer("sampleportal", "orion", reviewed(lifecycle, "mcpServer", "orion"));
     await release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nChanged." });
     loopbackManager.prepareGeneration.mockRejectedValueOnce(new Error("tool registry refused the candidate"));
-    const approvedBefore = JSON.stringify(lifecycle.listContributionTrust("orion-api"));
-    await expect(lifecycle.activate("orion-api")).rejects.toThrow();
+    const approvedBefore = JSON.stringify(lifecycle.listContributionTrust("sampleportal"));
+    await expect(lifecycle.activate("sampleportal")).rejects.toThrow();
     // The 1.0.0 approval is untouched, and no approval of the never-published 1.1.0 generation remains.
-    expect(JSON.stringify(lifecycle.listContributionTrust("orion-api"))).toBe(approvedBefore);
+    expect(JSON.stringify(lifecycle.listContributionTrust("sampleportal"))).toBe(approvedBefore);
     expect(row()).toMatchObject({ pluginVersion: "1.0.0", status: "approved" });
     const raw = JSON.parse(await readFile(join(cacheRoot, "plugin-contribution-trust", "mcp-servers.json"), "utf8"));
     expect(raw.approvals.filter((item: { pluginVersion: string }) => item.pluginVersion === "1.1.0")).toEqual([]);
@@ -1440,7 +1440,7 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
     roots.push(trustRoot);
     const trustPath = join(trustRoot, "mcp-servers.json");
     const first = await updatable({ mcpTrust: new PluginMcpTrustStore(trustPath) });
-    await first.lifecycle.activate("orion-api");
+    await first.lifecycle.activate("sampleportal");
     const identity = first.row();
     // A 0.12 approval of this exact generation: no approval digest.
     await writeFile(trustPath, JSON.stringify({ version: 2, kind: "mcpServer", approvals: [{
@@ -1452,27 +1452,27 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
     const migrated = new PluginMcpTrustStore(trustPath);
     const second = await updatable({ mcpTrust: migrated });
     await second.release("1.0.0");
-    await second.lifecycle.activate("orion-api");
+    await second.lifecycle.activate("sampleportal");
     expect(second.row()).toMatchObject({ generationId: identity.generationId, status: "approved" });
     const written = JSON.parse(await readFile(trustPath, "utf8"));
     expect(written).toMatchObject({ version: 3, approvals: [expect.objectContaining({ generationId: identity.generationId, approvalDigest: identity.approvalDigest })] });
 
     await second.release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nChanged." });
-    await second.lifecycle.activate("orion-api");
+    await second.lifecycle.activate("sampleportal");
     expect(second.row()).toMatchObject({ pluginVersion: "1.1.0", status: "approved" });
     await second.lifecycle.waitForRetirements();
   });
 
   it("refuses an approval whose review names a generation or digest that is no longer installed", async () => {
     const { lifecycle, release, row } = await updatable();
-    await lifecycle.activate("orion-api");
+    await lifecycle.activate("sampleportal");
     const stale = reviewed(lifecycle, "mcpServer", "orion");
     await release("1.1.0", { "mcp/orion.json": JSON.stringify({ transport: "http", url: "https://elsewhere.example.test/mcp" }) });
-    await lifecycle.activate("orion-api");
-    await expect(lifecycle.approveMcpServer("orion-api", "orion", stale)).rejects.toBeInstanceOf(ContributionTrustReviewStaleError);
-    await expect(lifecycle.approveMcpServer("orion-api", "orion", { ...reviewed(lifecycle, "mcpServer", "orion"), approvalDigest: "0".repeat(64) }))
+    await lifecycle.activate("sampleportal");
+    await expect(lifecycle.approveMcpServer("sampleportal", "orion", stale)).rejects.toBeInstanceOf(ContributionTrustReviewStaleError);
+    await expect(lifecycle.approveMcpServer("sampleportal", "orion", { ...reviewed(lifecycle, "mcpServer", "orion"), approvalDigest: "0".repeat(64) }))
       .rejects.toBeInstanceOf(ContributionTrustReviewStaleError);
-    await expect(lifecycle.approveMcpServer("orion-api", "orion", undefined as never)).rejects.toThrow(/requires the reviewed generation/u);
+    await expect(lifecycle.approveMcpServer("sampleportal", "orion", undefined as never)).rejects.toThrow(/requires the reviewed generation/u);
     expect(row().status).toBe("approval_required");
     await lifecycle.waitForRetirements();
   });

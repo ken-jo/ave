@@ -505,7 +505,7 @@ export async function startPluginChildRuntime(
      * only correct while something re-pushes it, and `hostApi` had no
      * preference-change signal to re-push from — so the member would have
      * answered with the value the preference held when the plugin started,
-     * forever. `lyra-mail` reads `webView.preferredFlow` at CALL time, so that
+     * forever. A plugin may read `webView.preferredFlow` at CALL time, so that
      * is precisely the wrong answer it would have received.
      *
      * The missing half is now `subscribeAppPreferenceChange`

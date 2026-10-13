@@ -751,16 +751,16 @@ describe("PluginConfigTab", () => {
 
   it("shows manifest validation field details in the Doctor panel", async () => {
     const broken = {
-      id: "lyra-mail",
-      name: "LYRA Mail",
+      id: "samplemail",
+      name: "Sample Mail",
       description: "Marketplace install failed",
       sampleTools: [],
       capabilities: [],
       tools: [],
-      installAliases: ["ave-plugin-lyra-mail"],
+      installAliases: ["ave-plugin-samplemail"],
       installFailureKind: "manifest-validation-error" as const,
       installFailureMessage:
-        "[manifest:lyra-mail] schema validation failed (/tmp/plugin.json): / unknown property: 'startupTools' — the manifest contains a field that the current SDK schema no longer allows.",
+        "[manifest:samplemail] schema validation failed (/tmp/plugin.json): / unknown property: 'startupTools' — the manifest contains a field that the current SDK schema no longer allows.",
       loadStatus: "failed" as const,
     };
     const cards = vi.fn().mockResolvedValue([broken]);
@@ -776,7 +776,7 @@ describe("PluginConfigTab", () => {
     render(<PluginConfigTab />);
 
     await waitFor(() => {
-      expect(screen.getByTestId("plugin-config:doctor-panel:lyra-mail")).toBeInTheDocument();
+      expect(screen.getByTestId("plugin-config:doctor-panel:samplemail")).toBeInTheDocument();
     });
     expect(screen.getByText("익스텐션 manifest 검증 실패")).toBeInTheDocument();
     expect(screen.getByText("상세 오류")).toBeInTheDocument();
@@ -1358,7 +1358,7 @@ describe("PluginConfigSchemaForm — values prop sync", () => {
 
     const { rerender } = render(
       <PluginConfigSchemaForm
-        pluginId="vega-helper"
+        pluginId="sampleassistant"
         schema={schema}
         values={{}}
         secretsPresent={{}}
@@ -1367,14 +1367,14 @@ describe("PluginConfigSchemaForm — values prop sync", () => {
       />,
     );
     const input = document.querySelector(
-      '[id="pcfg:vega-helper:meetingDetectorAllowedSenderDomains"]',
+      '[id="pcfg:sampleassistant:meetingDetectorAllowedSenderDomains"]',
     ) as HTMLInputElement;
     expect(input).not.toBeNull();
     expect(input.value).toBe("");
 
     rerender(
       <PluginConfigSchemaForm
-        pluginId="vega-helper"
+        pluginId="sampleassistant"
         schema={schema}
         values={{ meetingDetectorAllowedSenderDomains: ["outlook.com"] }}
         secretsPresent={{}}

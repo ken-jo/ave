@@ -91,7 +91,7 @@ describe("work-board migration", () => {
 
   it("skips + warns when more than one legacy board exists (ambiguous source)", async () => {
     writePluginBoard(home, "agent-hub", JSON.stringify(SAMPLE_BOARD));
-    writePluginBoard(home, "vega-helper", JSON.stringify({ version: 1, nextId: 1, items: [] }));
+    writePluginBoard(home, "sampleassistant", JSON.stringify({ version: 1, nextId: 1, items: [] }));
 
     const migrated = await migrateAgentHubBoardToWorkBoard();
 

@@ -452,9 +452,9 @@ describe("preload — plugin webview asset URLs", () => {
       ): Promise<unknown>;
     };
 
-    await mcp.readUiResource("plugin:orion-api:mcp:work", "ui://attendance", "generation-a");
+    await mcp.readUiResource("plugin:sampleportal:mcp:work", "ui://attendance", "generation-a");
     await mcp.callTool(
-      "plugin:orion-api:mcp:work",
+      "plugin:sampleportal:mcp:work",
       "attendance_read",
       { operation: "today" },
       "generation-a",
@@ -462,13 +462,13 @@ describe("preload — plugin webview asset URLs", () => {
 
     expect(mockInvoke).toHaveBeenCalledWith(
       "ave:mcp:ui-resource",
-      "plugin:orion-api:mcp:work",
+      "plugin:sampleportal:mcp:work",
       "ui://attendance",
       "generation-a",
     );
     expect(mockInvoke).toHaveBeenCalledWith(
       "ave:mcp:call-tool",
-      "plugin:orion-api:mcp:work",
+      "plugin:sampleportal:mcp:work",
       "attendance_read",
       { operation: "today" },
       "generation-a",

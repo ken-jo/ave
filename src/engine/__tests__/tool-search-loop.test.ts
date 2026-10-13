@@ -93,7 +93,7 @@ function makeLoop(opts: {
   );
   toolRegistry.register(readonlyPluginTool("email_list", "com.example.email"));
   toolRegistry.register(
-    readonlyPluginTool("lyramail_email_list", "com.example.lyramail"),
+    readonlyPluginTool("samplemail_email_list", "com.example.samplemail"),
   );
   toolRegistry.register(
     createDynamicTool({
@@ -138,7 +138,7 @@ function makeLoop(opts: {
       listPluginIds: () => [
         "com.example.meeting",
         "com.example.email",
-        "com.example.lyramail",
+        "com.example.samplemail",
       ],
       isPluginEnabled: (pluginId: string) => !inactive.has(pluginId),
     },

@@ -334,7 +334,7 @@ export interface PluginAuthSpec {
    * `mail.outlook.office.com` but not `outlook.office.com.attacker.com`).
    *
    * See `docs/references/plugin-tool-schema-design.md` §2.4.1 for the full
-   * contract (rejection table, three-layer defense, lyra-mail example).
+   * contract (rejection table, three-layer defense, worked example).
    */
   partitionDomains?: string[];
 }

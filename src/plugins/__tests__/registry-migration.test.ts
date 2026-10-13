@@ -219,15 +219,15 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
   });
 
   it("preserves bundleRefs and approvedPluginAccess across migration", async () => {
-    const accessSpec = { plugins: [{ pluginId: "lyra-mail", events: ["email.new"] }] };
+    const accessSpec = { plugins: [{ pluginId: "samplemail", events: ["email.new"] }] };
     await writeFile(
       registryPath,
       JSON.stringify({
         version: 1,
         plugins: [
           {
-            id: "vega-helper",
-            manifestPath: "vega-helper/plugin.json",
+            id: "sampleassistant",
+            manifestPath: "sampleassistant/plugin.json",
             enabled: true,
             installedBy: "user",
             bundleRefs: ["x-bundle"],
@@ -240,8 +240,8 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
 
     const registry = await readPluginRegistry(registryPath);
     expect(registry.plugins[0]).toEqual({
-      id: "vega-helper",
-      manifestPath: "vega-helper/plugin.json",
+      id: "sampleassistant",
+      manifestPath: "sampleassistant/plugin.json",
       enabled: true,
       installSource: "user",
       bundleRefs: ["x-bundle"],
@@ -329,14 +329,14 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
       JSON.stringify({
         version: 1,
         plugins: [{
-          id: "vega-helper",
-          manifestPath: "vega-helper/plugin.json",
+          id: "sampleassistant",
+          manifestPath: "sampleassistant/plugin.json",
           enabled: true,
           installSource: "user",
           approvedPluginAccess: {
             plugins: [null, {
-              pluginId: "lyra-mail",
-              tools: ["lyramail_calendar_list"],
+              pluginId: "samplemail",
+              tools: ["samplemail_calendar_list"],
               events: ["email.new"],
             }],
           },
@@ -347,13 +347,13 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
 
     const registry = await readPluginRegistry(registryPath);
     expect(registry.plugins[0]?.approvedPluginAccess).toEqual({
-      plugins: [{ pluginId: "lyra-mail", events: ["email.new"] }],
+      plugins: [{ pluginId: "samplemail", events: ["email.new"] }],
     });
 
     await migratePluginRegistry(registryPath);
     const persisted = JSON.parse(await readFile(registryPath, "utf-8"));
     expect(persisted.plugins[0]?.approvedPluginAccess).toEqual({
-      plugins: [{ pluginId: "lyra-mail", events: ["email.new"] }],
+      plugins: [{ pluginId: "samplemail", events: ["email.new"] }],
     });
   });
 
@@ -371,14 +371,14 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
         id: "calendar",
         manifestPath: "calendar/plugin.json",
         enabled: true,
-        bundleRefs: ["vega-helper"],
+        bundleRefs: ["sampleassistant"],
         pendingUpdate,
       }],
     }));
 
     expect((await readPluginRegistry(registryPath)).plugins[0]).toEqual(expect.objectContaining({
       id: "calendar",
-      bundleRefs: ["vega-helper"],
+      bundleRefs: ["sampleassistant"],
       pendingUpdate,
     }));
   });

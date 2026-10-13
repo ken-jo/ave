@@ -13,7 +13,7 @@ afterEach(async () => {
 
 describe("PluginContributionTrustStore", () => {
   const approved = {
-    pluginId: "orion-api",
+    pluginId: "sampleportal",
     pluginVersion: "1.0.0",
     generationId: "1".repeat(64),
     localId: "attendance_policy",

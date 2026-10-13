@@ -50,7 +50,7 @@ body:
         - Chat / conversation loop
         - Plugin runtime / marketplace
         - Local Indexer / retrieval
-        - Meeting / LYRA Mail / vega helper
+        - Meeting / mail / calendar
         - IPC / preload / permissions
         - UI / theme / localization
         - Packaging / installer / updater

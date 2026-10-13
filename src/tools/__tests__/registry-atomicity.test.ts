@@ -84,10 +84,10 @@ describe("ToolRegistry MCP generation replacement", () => {
 
   it("blocks an unrelated bulk plugin replacement from stealing a reserved plugin name", () => {
     const registry = new ToolRegistry();
-    registry.register(pluginTool("plugin_orion_read", "orion-api"));
+    registry.register(pluginTool("plugin_orion_read", "sampleportal"));
     const prepared = registry.reservePluginReplacement(
-      "orion-api",
-      [pluginTool("plugin_orion_read", "orion-api")],
+      "sampleportal",
+      [pluginTool("plugin_orion_read", "sampleportal")],
     );
 
     expect(() => registry.replacePluginTools(
@@ -96,22 +96,22 @@ describe("ToolRegistry MCP generation replacement", () => {
     )).toThrow(/reserved/);
 
     prepared.publish();
-    expect(registry.findByName("plugin_orion_read")?.pluginId).toBe("orion-api");
+    expect(registry.findByName("plugin_orion_read")?.pluginId).toBe("sampleportal");
   });
 
   it("publishes only prepared names and preserves unrelated registrations made while reserved", () => {
     const registry = new ToolRegistry();
-    registry.register(pluginTool("plugin_orion_read", "orion-api"));
+    registry.register(pluginTool("plugin_orion_read", "sampleportal"));
     const prepared = registry.reservePluginReplacement(
-      "orion-api",
-      [pluginTool("plugin_orion_write", "orion-api")],
+      "sampleportal",
+      [pluginTool("plugin_orion_write", "sampleportal")],
     );
 
     registry.register(pluginTool("other_read", "other-plugin"));
     prepared.publish();
 
     expect(registry.findByName("plugin_orion_read")).toBeUndefined();
-    expect(registry.findByName("plugin_orion_write")?.pluginId).toBe("orion-api");
+    expect(registry.findByName("plugin_orion_write")?.pluginId).toBe("sampleportal");
     expect(registry.findByName("other_read")?.pluginId).toBe("other-plugin");
   });
 

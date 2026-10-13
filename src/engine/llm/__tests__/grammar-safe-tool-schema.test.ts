@@ -102,11 +102,11 @@ describe("toGrammarSafeToolSchemas", () => {
   });
 
   it("rewrites patterns nested under array items", () => {
-    // The exact shape of orion_parking_read/orion_parking_write, which is what the
+    // The exact shape of portal_parking_read/portal_parking_write, which is what the
     // grammar compiler refused.
     const schemas: ToolSchema[] = [
       {
-        name: "orion_parking_read",
+        name: "portal_parking_read",
         description: "d",
         inputSchema: objectSchema({
           dates: {
@@ -132,7 +132,7 @@ describe("toGrammarSafeToolSchemas", () => {
       inputSchema: objectSchema({ query: { type: "string" } }),
     };
     const dirty: ToolSchema = {
-      name: "orion_attendance_read",
+      name: "portal_attendance_read",
       description: "d",
       inputSchema: {
         type: "object",
@@ -157,7 +157,7 @@ describe("toGrammarSafeToolSchemas", () => {
     const resumeSurface: ToolSchema[] = [
       ...spawnSurface,
       {
-        name: "orion_parking_write",
+        name: "portal_parking_write",
         description: "d",
         inputSchema: objectSchema({
           dates: { type: "array", items: { type: "string", pattern: "^(?:\\d{4}-\\d{2}-\\d{2}|\\d{8})$" } },

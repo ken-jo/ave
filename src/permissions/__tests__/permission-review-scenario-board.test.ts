@@ -255,7 +255,7 @@ describe("permission-review-scenario-board-v2.html contract", () => {
         name: "teams_send",
         category: "network",
         source: "plugin",
-        pluginId: "lyra-mail",
+        pluginId: "samplemail",
       });
       const gate = makeGate("allow-once");
       const result = await runProbe({
@@ -537,7 +537,7 @@ describe("permission-review-scenario-board-v2.html contract", () => {
         name: "teams_send",
         category: "network",
         source: "plugin",
-        pluginId: "lyra-mail",
+        pluginId: "samplemail",
       });
       const gate = makeGate("deny-once");
       const result = await runProbe({
@@ -628,7 +628,7 @@ describe("permission-review-scenario-board-v2.html contract", () => {
         name: "graph_profile_get",
         category: "network",
         source: "plugin",
-        pluginId: "lyra-mail",
+        pluginId: "samplemail",
       });
       const gate = makeGate("deny-once");
       const result = await runProbe({
@@ -652,7 +652,7 @@ describe("permission-review-scenario-board-v2.html contract", () => {
         name: "teams_send",
         category: "network",
         source: "plugin",
-        pluginId: "lyra-mail",
+        pluginId: "samplemail",
       });
       const gate = makeGate("deny-once");
       const result = await runProbe({
@@ -713,7 +713,7 @@ describe("permission-review-scenario-board-v2.html contract", () => {
         name: "teams_send",
         category: "network",
         source: "plugin",
-        pluginId: "lyra-mail",
+        pluginId: "samplemail",
       });
       const gate = makeGate("allow-once");
       const result = await runProbe({

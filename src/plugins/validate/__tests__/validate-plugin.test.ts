@@ -52,7 +52,7 @@ const CHILD_MAIN = fileURLToPath(new URL("../../isolation/plugin-child-main.ts",
 const LOGGER_HOOK = fileURLToPath(
   new URL("../../../../scripts/lib/stub-app-logger-hook.mjs", import.meta.url),
 );
-const GOLDEN_IDS = ["orion-api", "local-indexer", "meeting", "lyra-mail", "vega-helper"] as const;
+const GOLDEN_IDS = ["sampleportal", "local-indexer", "meeting", "samplemail", "sampleassistant"] as const;
 
 /** The reference runtime from source, as `plugin:validate` runs it. */
 const SOURCE_MODE: ValidateOptions = {

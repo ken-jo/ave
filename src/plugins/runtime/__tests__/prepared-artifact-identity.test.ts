@@ -379,8 +379,8 @@ describe("prepared artifact install identity", () => {
     const observedAccessGrants: unknown[] = [];
     const approvedPluginAccess = {
       plugins: [{
-        pluginId: "vega-helper",
-        events: ["vega_helper.snapshot.requested"],
+        pluginId: "sampleassistant",
+        events: ["sampleassistant.snapshot.requested"],
       }],
     };
     const createHostApi: PluginRuntimeOptions["createHostApi"] = (

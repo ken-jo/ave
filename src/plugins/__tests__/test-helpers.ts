@@ -1016,7 +1016,7 @@ export function makeTestPluginMarketplaceService(rootDir: string): PluginMarketp
  * root: what a confined child writes under `data/` — a JSON sidecar at the top
  * and a binary blob one level down — and what the HostApi storage surface
  * writes under the host-only `storage/`, including a depth-2 key the way
- * lyra-mail and the app bridge store theirs. A test sees flat and nested files
+ * samplemail and the app bridge store theirs. A test sees flat and nested files
  * in BOTH state directories survive a root swap.
  */
 export const PLUGIN_DATA_FIXTURE: ReadonlyMap<string, Buffer> = new Map([

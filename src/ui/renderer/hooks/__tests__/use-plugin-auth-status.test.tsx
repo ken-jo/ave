@@ -48,12 +48,12 @@ describe("usePluginAuthStatuses", () => {
       onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
     const { result } = renderHook(() =>
-      usePluginAuthStatuses(api, [makePlugin("lyra-mail", true)]),
+      usePluginAuthStatuses(api, [makePlugin("samplemail", true)]),
     );
     await waitFor(() => {
-      expect(result.current.statuses.get("lyra-mail")?.kind).toBe("authed");
+      expect(result.current.statuses.get("samplemail")?.kind).toBe("authed");
     });
-    const state = result.current.statuses.get("lyra-mail");
+    const state = result.current.statuses.get("samplemail");
     if (state?.kind === "authed") expect(state.account).toBe("u@x");
     expect(api.callPluginMethod).toHaveBeenCalledWith("foo_status");
   });
@@ -64,10 +64,10 @@ describe("usePluginAuthStatuses", () => {
       onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
     const { result } = renderHook(() =>
-      usePluginAuthStatuses(api, [makePlugin("lyra-mail", true)]),
+      usePluginAuthStatuses(api, [makePlugin("samplemail", true)]),
     );
     await waitFor(() => {
-      expect(result.current.statuses.get("lyra-mail")?.kind).toBe("unauthed");
+      expect(result.current.statuses.get("samplemail")?.kind).toBe("unauthed");
     });
   });
 
@@ -136,10 +136,10 @@ describe("usePluginAuthStatuses", () => {
       onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
     const { result } = renderHook(() =>
-      usePluginAuthStatuses(api, [makePlugin("lyra-mail", true)]),
+      usePluginAuthStatuses(api, [makePlugin("samplemail", true)]),
     );
     await waitFor(() => {
-      expect(result.current.statuses.get("lyra-mail")?.kind).toBe("error");
+      expect(result.current.statuses.get("samplemail")?.kind).toBe("error");
     });
   });
 
@@ -153,24 +153,24 @@ describe("usePluginAuthStatuses", () => {
       onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
     const { result } = renderHook(() =>
-      usePluginAuthStatuses(api, [makePlugin("lyra-mail", true)]),
+      usePluginAuthStatuses(api, [makePlugin("samplemail", true)]),
     );
 
     // Wait for the initial mount poll to consume the `null` reject AND
     // surface a fallback message — proves the catch handler did not crash.
     await waitFor(() => {
       expect(callPluginMethod).toHaveBeenCalledTimes(1);
-      const s = result.current.statuses.get("lyra-mail");
+      const s = result.current.statuses.get("samplemail");
       expect(s?.kind).toBe("error");
       expect(s?.kind === "error" && s.message).toBe("auth status invocation failed");
     });
 
     // Now trigger the second reject (raw string). This path proves the
     // string narrow returns the string verbatim.
-    act(() => result.current.refresh("lyra-mail"));
+    act(() => result.current.refresh("samplemail"));
     await waitFor(() => {
       expect(callPluginMethod).toHaveBeenCalledTimes(2);
-      const s = result.current.statuses.get("lyra-mail");
+      const s = result.current.statuses.get("samplemail");
       expect(s?.kind).toBe("error");
       expect(s?.kind === "error" && s.message).toBe("raw string");
     });
@@ -185,23 +185,23 @@ describe("usePluginAuthStatuses", () => {
     const api = {
       callPluginMethod,
       onPluginEvent: vi.fn((eventType: string, handler: (d: unknown) => void) => {
-        if (eventType === "lyra-mail.auth.changed") onAuthChanged = handler;
+        if (eventType === "samplemail.auth.changed") onAuthChanged = handler;
         return () => undefined;
       }),
     } as unknown as AveApi;
 
     const { result } = renderHook(() =>
-      usePluginAuthStatuses(api, [makePlugin("lyra-mail", true)]),
+      usePluginAuthStatuses(api, [makePlugin("samplemail", true)]),
     );
     await waitFor(() => {
-      expect(result.current.statuses.get("lyra-mail")?.kind).toBe("unauthed");
+      expect(result.current.statuses.get("samplemail")?.kind).toBe("unauthed");
     });
 
     expect(onAuthChanged).toBeDefined();
     act(() => onAuthChanged?.(undefined));
 
     await waitFor(() => {
-      expect(result.current.statuses.get("lyra-mail")?.kind).toBe("authed");
+      expect(result.current.statuses.get("samplemail")?.kind).toBe("authed");
     });
     expect(callPluginMethod).toHaveBeenCalledTimes(2);
   });
@@ -216,14 +216,14 @@ describe("usePluginAuthStatuses", () => {
       onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
     const { result } = renderHook(() =>
-      usePluginAuthStatuses(api, [makePlugin("lyra-mail", true)]),
+      usePluginAuthStatuses(api, [makePlugin("samplemail", true)]),
     );
     await waitFor(() => {
-      expect(result.current.statuses.get("lyra-mail")?.kind).toBe("unauthed");
+      expect(result.current.statuses.get("samplemail")?.kind).toBe("unauthed");
     });
-    act(() => result.current.refresh("lyra-mail"));
+    act(() => result.current.refresh("samplemail"));
     await waitFor(() => {
-      expect(result.current.statuses.get("lyra-mail")?.kind).toBe("authed");
+      expect(result.current.statuses.get("samplemail")?.kind).toBe("authed");
     });
   });
 });

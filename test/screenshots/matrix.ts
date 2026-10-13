@@ -676,27 +676,27 @@ export const scenarios: Record<string, ScenarioEntry> = {
   },
   'meeting-outlook-mail-2': { topic: 'integration', skip: 'Same as meeting-outlook-mail.' },
 
-  // ---- lyra-mail (Outlook) ------------------------------------------------
+  // ---- mail plugin (Outlook) ------------------------------------------------
   'outlook-login-trigger': {
-    topic: 'lyra-mail',
+    topic: 'mail',
     skip:
-      'The lyra-mail plugin lives in its own repository, and its manifest declares ' +
-      '`auth.loginTool: lyramail_auth`, so selecting the Outlook panel while unauthed goes ' +
+      'The mail plugin lives in its own repository, and its manifest declares ' +
+      '`auth.loginTool: mail_auth`, so selecting the Outlook panel while unauthed goes ' +
       'straight to the live Microsoft OAuth window (use-plugin-view-routing.ts handleViewSelect ' +
       'calls loginTool on select for auth plugins) rather than rendering an inline pre-login ' +
       'panel. Reaching a stable, non-OAuth trigger state needs a real/mocked auth session — ' +
       'out of scope (see outlook-login-window).',
   },
   'outlook-login-window': {
-    topic: 'lyra-mail',
+    topic: 'mail',
     skip: 'Live Microsoft OAuth popup — cannot be seeded deterministically or without real credentials.',
   },
   'outlook-login-after': {
-    topic: 'lyra-mail',
+    topic: 'mail',
     skip: 'Requires a completed live OAuth login.',
   },
   'outlook-logout': {
-    topic: 'lyra-mail',
+    topic: 'mail',
     skip: 'Requires a prior live OAuth login to revoke.',
   },
 

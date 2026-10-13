@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { pluginArtifactGenerationId } from "../plugin-artifact-identity.js";
 
 const manifestRaw = JSON.stringify({
-  id: "orion-api",
+  id: "sampleportal",
   version: "1.0.0",
   entry: "dist/index.js",
 });
@@ -12,7 +12,7 @@ const secondaryFileHash = "b".repeat(64);
 function receiptRaw(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     schemaVersion: 2,
-    pluginId: "orion-api",
+    pluginId: "sampleportal",
     version: "1.0.0",
     installSource: "marketplace",
     artifactSha256: "c".repeat(64),
@@ -61,7 +61,7 @@ describe("plugin artifact generation identity", () => {
       expect(pluginArtifactGenerationId(manifestRaw, changedReceipt)).not.toBe(initial);
     }
     expect(pluginArtifactGenerationId(
-      JSON.stringify({ id: "orion-api", version: "1.0.0", entry: "dist/changed.js" }),
+      JSON.stringify({ id: "sampleportal", version: "1.0.0", entry: "dist/changed.js" }),
       receiptRaw(),
     )).not.toBe(initial);
   });

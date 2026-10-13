@@ -78,7 +78,7 @@ import {
 import type { SettingsService, WebViewPreferredFlow } from "../../../data/settings-store.js";
 import { resolvePluginSocketDir } from "../../plugin-storage-layout.js";
 
-const PLUGIN_ID = "vega-helper";
+const PLUGIN_ID = "sampleassistant";
 
 /** What the plugin reports for one `config.onChange` delivery. */
 interface RecordedChange {
@@ -174,7 +174,7 @@ export const createPlugin = async (context) => {
 
 const MANIFEST = {
   id: PLUGIN_ID,
-  name: "Vega Helper",
+  name: "Sample Assistant",
   version: "0.10.14",
   requires: { hostProtocol: "2" },
   entry: "plugin.mjs",

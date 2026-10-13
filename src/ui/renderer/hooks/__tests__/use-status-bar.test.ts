@@ -253,12 +253,12 @@ describe("useStatusBar — install lifecycle producer", () => {
   it("keeps one toast per slug, replacing it with the latest result", () => {
     const { result, emit } = renderWithResultHandler();
 
-    emit({ slug: "vega-helper", success: false, error: "disk full" });
+    emit({ slug: "sampleassistant", success: false, error: "disk full" });
     const toastId = result.current.toasts[0]?.id;
-    emit({ slug: "vega-helper", success: true });
+    emit({ slug: "sampleassistant", success: true });
 
     expect(result.current.toasts).toHaveLength(1);
-    expect(result.current.toasts[0]).toMatchObject({ id: toastId, severity: "success", message: "vega-helper 설치 완료" });
+    expect(result.current.toasts[0]).toMatchObject({ id: toastId, severity: "success", message: "sampleassistant 설치 완료" });
   });
 });
 

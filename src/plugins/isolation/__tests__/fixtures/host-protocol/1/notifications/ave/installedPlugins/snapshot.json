@@ -4,11 +4,11 @@
     "method": "notifications/ave/installedPlugins/snapshot",
     "params": {
       "pluginIds": [
-        "orion-api",
+        "sampleportal",
         "local-indexer",
         "meeting",
-        "lyra-mail",
-        "vega-helper"
+        "samplemail",
+        "sampleassistant"
       ]
     }
   },

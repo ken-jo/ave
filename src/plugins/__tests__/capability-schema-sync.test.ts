@@ -66,7 +66,7 @@ describe("capability schema contract (free-form, not a closed enum)", () => {
       "calendar-source",
       "meeting-recorder",
       "knowledge-index",
-      "lyra-mail-consumer",
+      "samplemail-consumer",
       "background-watcher",
       "document-indexer",
       "lifecycle-observer",

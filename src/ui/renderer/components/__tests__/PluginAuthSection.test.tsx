@@ -34,24 +34,24 @@ describe("PluginAuthSection", () => {
     render(
       <PluginAuthSection
         api={api}
-        pluginId="lyra-mail"
-        pluginName="lyra-mail"
+        pluginId="samplemail"
+        pluginName="samplemail"
         auth={baseAuth}
         state={{ kind: "unauthed" }}
         onRefresh={() => undefined}
       />,
     );
     expect(screen.getByText("🔒 미인증")).toBeInTheDocument();
-    expect(screen.getByTestId("plugin-auth-login-lyra-mail")).toBeInTheDocument();
-    expect(screen.queryByTestId("plugin-auth-logout-lyra-mail")).toBeNull();
+    expect(screen.getByTestId("plugin-auth-login-samplemail")).toBeInTheDocument();
+    expect(screen.queryByTestId("plugin-auth-logout-samplemail")).toBeNull();
   });
 
   it("renders 인증됨 badge + account + 로그아웃 button when state is authed", () => {
     render(
       <PluginAuthSection
         api={pluginAuthSectionApi()}
-        pluginId="lyra-mail"
-        pluginName="lyra-mail"
+        pluginId="samplemail"
+        pluginName="samplemail"
         auth={baseAuth}
         state={{ kind: "authed", account: "user@example.com" }}
         onRefresh={() => undefined}
@@ -59,8 +59,8 @@ describe("PluginAuthSection", () => {
     );
     expect(screen.getByText("✓ 인증됨")).toBeInTheDocument();
     expect(screen.getByText("user@example.com")).toBeInTheDocument();
-    expect(screen.getByTestId("plugin-auth-logout-lyra-mail")).toBeInTheDocument();
-    expect(screen.queryByTestId("plugin-auth-login-lyra-mail")).toBeNull();
+    expect(screen.getByTestId("plugin-auth-logout-samplemail")).toBeInTheDocument();
+    expect(screen.queryByTestId("plugin-auth-login-samplemail")).toBeNull();
   });
 
   it("hides 로그아웃 button + shows hint when manifest does not declare logoutTool", () => {
@@ -85,14 +85,14 @@ describe("PluginAuthSection", () => {
     render(
       <PluginAuthSection
         api={api}
-        pluginId="lyra-mail"
-        pluginName="lyra-mail"
+        pluginId="samplemail"
+        pluginName="samplemail"
         auth={baseAuth}
         state={{ kind: "unauthed" }}
         onRefresh={onRefresh}
       />,
     );
-    fireEvent.click(screen.getByTestId("plugin-auth-login-lyra-mail"));
+    fireEvent.click(screen.getByTestId("plugin-auth-login-samplemail"));
     await waitFor(() => {
       expect(api.callPluginMethod).toHaveBeenCalledWith("ms_login", undefined, {
         userAction: true,
@@ -107,14 +107,14 @@ describe("PluginAuthSection", () => {
     render(
       <PluginAuthSection
         api={api}
-        pluginId="lyra-mail"
-        pluginName="lyra-mail"
+        pluginId="samplemail"
+        pluginName="samplemail"
         auth={baseAuth}
         state={{ kind: "authed", account: "user@example.com" }}
         onRefresh={onRefresh}
       />,
     );
-    fireEvent.click(screen.getByTestId("plugin-auth-logout-lyra-mail"));
+    fireEvent.click(screen.getByTestId("plugin-auth-logout-samplemail"));
     await waitFor(() => {
       expect(api.callPluginMethod).toHaveBeenCalledWith("ms_signout", undefined, {
         userAction: true,
@@ -155,7 +155,7 @@ describe("PluginAuthSection", () => {
   it("renders generic Korean error copy on login rejection (does not leak raw IPC message)", async () => {
     const api = {
       callPluginMethod: vi.fn(async () => {
-        throw new Error("Method 'lyramail_auth' is not declared as a UI action for plugin 'lyra-mail'");
+        throw new Error("Method 'samplemail_auth' is not declared as a UI action for plugin 'samplemail'");
       }),
       onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
@@ -165,14 +165,14 @@ describe("PluginAuthSection", () => {
       render(
         <PluginAuthSection
           api={api}
-          pluginId="lyra-mail"
-          pluginName="lyra-mail"
+          pluginId="samplemail"
+          pluginName="samplemail"
           auth={baseAuth}
           state={{ kind: "unauthed" }}
           onRefresh={() => undefined}
         />,
       );
-      fireEvent.click(screen.getByTestId("plugin-auth-login-lyra-mail"));
+      fireEvent.click(screen.getByTestId("plugin-auth-login-samplemail"));
       await waitFor(() => {
         expect(screen.getByText(/로그인에 실패했습니다/)).toBeInTheDocument();
       });

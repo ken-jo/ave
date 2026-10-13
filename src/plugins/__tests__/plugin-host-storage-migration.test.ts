@@ -113,7 +113,7 @@ function filesUnder(dir: string): Record<string, string> {
 
 describe("migratePluginHostStorage — what is copied", () => {
   it("copies the storage view, depth-2 keys included, and leaves data/ exactly as it was", async () => {
-    const data = dataOf("lyra-mail");
+    const data = dataOf("samplemail");
     mkdirSync(join(data, "auth"));
     writeFileSync(join(data, "auth", "token-default.json"), "ENC(token)");
     writeFileSync(join(data, "email-watcher-state.json"), '{"cursor":1}');
@@ -123,21 +123,21 @@ describe("migratePluginHostStorage — what is copied", () => {
 
     const result = await migratePluginHostStorage(pluginsRoot);
 
-    expect(result).toEqual({ migrated: [join(pluginsRoot, "lyra-mail")], skipped: [], failed: [] });
+    expect(result).toEqual({ migrated: [join(pluginsRoot, "samplemail")], skipped: [], failed: [] });
     const expected = {
       "auth/token-default.json": "ENC(token)",
       "email-watcher-state.json": '{"cursor":1}',
       "ui-storage/prefs.json": '{"theme":"dark"}',
     };
-    expect(filesUnder(storageOf("lyra-mail"))).toEqual(expected);
+    expect(filesUnder(storageOf("samplemail"))).toEqual(expected);
     // A directory holds no key, so one with nothing copied into it is not made.
-    expect(existsSync(join(storageOf("lyra-mail"), "empty"))).toBe(false);
+    expect(existsSync(join(storageOf("samplemail"), "empty"))).toBe(false);
     expect(filesUnder(data)).toEqual(expected);
-    expect(existsSync(join(pluginsRoot, "lyra-mail", PLUGIN_HOST_STORAGE_MIGRATION_DIR_NAME))).toBe(false);
+    expect(existsSync(join(pluginsRoot, "samplemail", PLUGIN_HOST_STORAGE_MIGRATION_DIR_NAME))).toBe(false);
     if (posix) {
-      expect(statSync(storageOf("lyra-mail")).mode & 0o777).toBe(0o700);
-      expect(statSync(join(storageOf("lyra-mail"), "auth")).mode & 0o777).toBe(0o700);
-      expect(statSync(join(storageOf("lyra-mail"), "auth", "token-default.json")).mode & 0o777).toBe(0o600);
+      expect(statSync(storageOf("samplemail")).mode & 0o777).toBe(0o700);
+      expect(statSync(join(storageOf("samplemail"), "auth")).mode & 0o777).toBe(0o700);
+      expect(statSync(join(storageOf("samplemail"), "auth", "token-default.json")).mode & 0o777).toBe(0o600);
     }
   });
 

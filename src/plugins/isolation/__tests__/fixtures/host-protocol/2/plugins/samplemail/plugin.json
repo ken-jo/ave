@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "lyra-mail",
+  "name": "samplemail",
   "version": "0.5.3",
-  "description": "Host protocol golden fixture: the hostApi surface the lyra-mail plugin reaches, beside its own lifecycle and access declarations.",
+  "description": "Host protocol golden fixture: the hostApi surface the samplemail plugin reaches, beside its own lifecycle and access declarations.",
   "extensions": {
     "ai.agent-connector.ave": {
       "displayName": "Ave Lyra Mail",
@@ -11,7 +11,7 @@
         "calendar-source",
         "mail-source",
         "background-watcher",
-        "lyra-mail-consumer",
+        "samplemail-consumer",
         "external-auth-consumer"
       ],
       "emittedEvents": [
@@ -25,18 +25,18 @@
         "calendar.event.upcoming",
         "calendar.event.starting",
         "calendar.event.conflict.detected",
-        "lyra-mail.auth.changed",
-        "lyra-mail.snapshot.ready"
+        "samplemail.auth.changed",
+        "samplemail.snapshot.ready"
       ],
       "eventSubscriptions": [
-        "vega_helper.snapshot.requested"
+        "sampleassistant.snapshot.requested"
       ],
       "pluginAccess": {
         "plugins": [
           {
-            "pluginId": "vega-helper",
+            "pluginId": "sampleassistant",
             "events": [
-              "vega_helper.snapshot.requested"
+              "sampleassistant.snapshot.requested"
             ]
           }
         ]
