@@ -91,7 +91,7 @@ Removing it required re-signing the published catalog first. From
 `server/scripts/resign_artifacts.py` and the comment block in
 `marketplace-keys.ts`: **804 of 860 version rows** were re-signed to `prod-v1`.
 The remaining 56 were safe only because their artifact files no longer exist on
-disk (archived `email`/`calendar`, pre-rename `pageindex`/`vega-early`), so
+disk (archived `email`/`calendar`, pre-rename `pageindex`/`proactive`), so
 their download 404s before any signature check runs.
 
 The script is well built — it re-runs the server's own `verify_artifact` over the

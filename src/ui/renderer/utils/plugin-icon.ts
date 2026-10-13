@@ -63,7 +63,7 @@ function buildTextIcon(rawText: string): ComponentType<LucideProps> {
         // `overflow-hidden` clamps the glyph to the box the call-site sizes via
         // `className` (e.g. the 28px plugin-grid avatar, or a 14px picker-row
         // slot). Without it a text glyph tuned for the avatar would spill out
-        // of a smaller slot and collide with the adjacent label (the "EPEP"
+        // of a smaller slot and collide with the adjacent label (the "ABAB"
         // overlap in the slash picker).
         className: `${className ?? ""} inline-flex items-center justify-center overflow-hidden font-bold leading-none tracking-normal`.trim(),
         // Screen readers should announce the badge text — e.g. "AB" — since

@@ -1,5 +1,5 @@
 /**
- * openAuthWindow idempotency guard (ORION double-login-window fix).
+ * openAuthWindow idempotency guard (portal double-login-window fix).
  *
  * A single VISIBLE auth window per (partition, title): a second concurrent call
  * for the same key focuses + awaits the in-flight window instead of spawning a

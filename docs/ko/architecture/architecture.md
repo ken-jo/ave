@@ -3516,7 +3516,7 @@ hostApi.emitEvent(`${pluginId}.auth.changed`);  // 예: "my-plugin.auth.changed"
 ```
 
 - `manifest.emittedEvents[]` 에 같은 이름을 등록해야 호스트 event-bridge 가 renderer 로 전달 (`boot/steps/ipc-bridge.ts`).
-- **이름의 `${pluginId}` 부분은 manifest `id` 필드를 그대로 사용** — `_`↔`-` 변환/정규화 없음. 호스트 hook (`use-plugin-auth-status.ts`) 이 `${manifest.id}.auth.changed` 로 strict subscribe 하므로 plugin 이 `agent_hub.auth.changed` (underscore) 로 emit 하면 manifest id `agent-hub` (dash) 와 mismatch 되어 badge refresh 가 안 걸린다 (ave-plugin-hydra#131 회귀 사례).
+- **이름의 `${pluginId}` 부분은 manifest `id` 필드를 그대로 사용** — `_`↔`-` 변환/정규화 없음. 호스트 hook (`use-plugin-auth-status.ts`) 이 `${manifest.id}.auth.changed` 로 strict subscribe 하므로 plugin 이 `agent_hub.auth.changed` (underscore) 로 emit 하면 manifest id `agent-hub` (dash) 와 mismatch 되어 badge refresh 가 안 걸린다 (agent-hub#131 회귀 사례).
 - `manifest-validation.ts` 의 cross-field check 가 `auth` 선언 시 `emittedEvents[]` 에 `${id}.auth.changed` 가 빠져있으면 load-time `log.warn` 발행 — drift 신호 (soft warn, hard fail 은 grace 후 별 PR 에서 전환 검토).
 - 네임스페이스는 plugin id prefix 라 `classifySubscription` 에서 `neutral` 로 떨어지지만 (private 아님), `boot/steps/ipc-bridge.ts` 가 neutral / public 둘 다 forward.
 - 호스트 `usePluginAuthStatuses` 훅이 이벤트를 받아 statusTool 를 재호출 → 뱃지 갱신. **폴링 안 함** — 폐기된 플러그인 전용 auth-change host-callback 안티패턴 회귀 방지.
@@ -3774,12 +3774,12 @@ guard in agent-hub-panel-v3.tsx throws if host omits the namespaces.
 ### 10.0 Readiness Status: Work Board Pilot + Approval/DM POC (2026-05-02)
 
 **현재 구현 범위 (작동 상태):**
-- ✅ **개인 업무 일지 조회** (Read-only): `ave-agent-hub` Work Board API와 `ave-plugin-hydra` bridge를 통해 사용자 자신의 일지·일정·할일 조회 가능
-- ✅ **팀 업무 요약 조회** (Read-only): `ave-agent-hub` Work Board API와 `ave-plugin-hydra` bridge를 통해 팀원 일지 통계 조회 가능
+- ✅ **개인 업무 일지 조회** (Read-only): `ave-agent-hub` Work Board API와 `agent-hub` bridge를 통해 사용자 자신의 일지·일정·할일 조회 가능
+- ✅ **팀 업무 요약 조회** (Read-only): `ave-agent-hub` Work Board API와 `agent-hub` bridge를 통해 팀원 일지 통계 조회 가능
 - ✅ **웹 대시보드**: `ave-agent-hub/web` Work Board 페이지로 live 데이터 소비 가능
 - ✅ **플러그인 UI 패널**: 사이드바·detached 창에서 mock-free 실데이터 렌더링
-- ✅ **Direct Message POC**: `ave-agent-hub`의 기존 `/api/v1/messages` Direct 1:1 메시지 API를 `ave-plugin-hydra` bridge가 호출
-- ✅ **First-class Approval POC**: `ave-agent-hub`의 `approval_requests` 테이블 + `pending → approved/rejected` 상태 전이를 `ave-plugin-hydra` bridge가 호출
+- ✅ **Direct Message POC**: `ave-agent-hub`의 기존 `/api/v1/messages` Direct 1:1 메시지 API를 `agent-hub` bridge가 호출
+- ✅ **First-class Approval POC**: `ave-agent-hub`의 `approval_requests` 테이블 + `pending → approved/rejected` 상태 전이를 `agent-hub` bridge가 호출
 - ✅ **Approval notification/audit**: 승인 요청/결정은 Agent Hub backend에 저장되고 `notifications(kind=approval)` 및 `audit_log`에 기록됨
 - ~~✅ **Host Task 호환성**: `hostApi.addTask()` 호환 경로~~ **(2026-05-05 Phase 4 제거)** `addTask` + `TaskService` 전체 삭제. task 소유권 agent-hub 플러그인으로 완전 이전.
 
@@ -3826,7 +3826,7 @@ graph LR
 
 ### 10.0.3 Direction Update (2026-06-16): Host-Integrated Agentic Work Board
 
-**결정**: Work Board를 **server-backed plugin POC** (`ave-agent-hub` 서버 + `ave-plugin-hydra` bridge) 에서 **호스트 1급 도메인 (host-integrated agentic work orchestrator)** 으로 전환한다. 이는 아래 §10.1 Roadmap 이 명시한 미구현 갭 — _"승인 후 실제 행위 실행은 아직 연결하지 않는다"_ — 을 실현하는 작업이다.
+**결정**: Work Board를 **server-backed plugin POC** (`ave-agent-hub` 서버 + `agent-hub` bridge) 에서 **호스트 1급 도메인 (host-integrated agentic work orchestrator)** 으로 전환한다. 이는 아래 §10.1 Roadmap 이 명시한 미구현 갭 — _"승인 후 실제 행위 실행은 아직 연결하지 않는다"_ — 을 실현하는 작업이다.
 
 **Why host, not plugin (권한 모델 정합):**
 - agentic 오케스트레이터는 본질적으로 (a) 서브에이전트 spawn, (b) §8 ApprovalGate 구동, (c) **타 플러그인 툴(mail/calendar/meeting) 오케스트레이션** 이 필요하다.
@@ -3844,7 +3844,7 @@ graph LR
 
 **차용한 구성 요소:** Skills = agent profile, Memory = `~/.ave/work-board/memories/{USER,MEMORY}.md` (업무 흐름 학습), Crons = RoutinesScheduler 연동 예약 실행, Self-improvement = run 결과로 skill/memory 보정.
 
-**Supersedes:** `ave-agent-hub` 서버 + `ave-plugin-hydra` 플러그인은 Work Board 기능에 대해 디커미션(서버 2026-06-15 셧다운). 저장소 `~/.ave/plugins/agent-hub/board.json` → `~/.ave/work-board/board.json` (부팅 1회 마이그레이션). `work_item.due_soon {itemId,title,notifiedAt}` 계약은 호스트가 계속 emit (구독 플러그인 소비 보존).
+**Supersedes:** `ave-agent-hub` 서버 + `agent-hub` 플러그인은 Work Board 기능에 대해 디커미션(서버 2026-06-15 셧다운). 저장소 `~/.ave/plugins/agent-hub/board.json` → `~/.ave/work-board/board.json` (부팅 1회 마이그레이션). `work_item.due_soon {itemId,title,notifiedAt}` 계약은 호스트가 계속 emit (구독 플러그인 소비 보존).
 
 **Phased delivery:** P1 도메인 스켈레톤(`src/work-board/`, `~/.ave/work-board/`) + WorkItem 포팅 + 프로페셔널 칸반 UI(host renderer `activeView='work-board'`). P2 네이티브 plan→approve→execute 오케스트레이션. P3 Skills/Memory/일일·주간 reports + due_soon 계약. P4 플러그인 디커미션 + 데이터 마이그레이션 + 샘플 데이터.
 

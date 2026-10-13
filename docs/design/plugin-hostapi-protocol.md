@@ -2332,7 +2332,7 @@ what the release must pass; the number grants no exemption from them.
 
 **Alerts integration.** The alerts successors target app 0.11.0 (`policy/revocations-by-app.json`
 on the official repository's `feat/alerts-successors` branch at `6672499` names
-0.11.0 and lists ORION 0.22.0 among the successors; the inspected `orion` checkout is still
+0.11.0 and lists portal 0.22.0 among the successors; the inspected `portal` checkout is still
 0.21.6, `package.json:3`). Those plugin versions are published for 0.11.0 **first**, at
 their own immutable versions and pinned to the v0.11.0 tag through the release
 process (`docs/development/release-process.md:66-76`: the checker's alerts release

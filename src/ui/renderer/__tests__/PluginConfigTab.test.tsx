@@ -249,7 +249,7 @@ describe("PluginConfigTab", () => {
       sampleTools: [],
       capabilities: [],
       tools: [],
-      installAliases: ["ave-plugin-hydra"],
+      installAliases: ["ave-plugin-samplehub"],
       loadStatus: "failed" as const,
     };
     const repaired = {
@@ -303,7 +303,7 @@ describe("PluginConfigTab", () => {
         sampleTools: [],
         capabilities: [],
         tools: [],
-        installAliases: ["ave-plugin-hydra"],
+        installAliases: ["ave-plugin-samplehub"],
         loadStatus: "failed" as const,
       };
       const cards = vi.fn()
@@ -386,7 +386,7 @@ describe("PluginConfigTab", () => {
       sampleTools: [],
       capabilities: [],
       tools: [],
-      installAliases: ["ave-plugin-hydra"],
+      installAliases: ["ave-plugin-samplehub"],
       loadStatus: "failed" as const,
     };
     const cards = vi.fn()

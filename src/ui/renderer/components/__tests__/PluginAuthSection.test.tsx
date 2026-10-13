@@ -67,16 +67,16 @@ describe("PluginAuthSection", () => {
     render(
       <PluginAuthSection
         api={pluginAuthSectionApi()}
-        pluginId="example-orion-classic"
-        pluginName="example-orion-classic"
+        pluginId="sampleportal"
+        pluginName="sampleportal"
         auth={{ statusTool: "portal_status", loginTool: "portal_login" }}
         state={{ kind: "authed", account: "alice@example.com" }}
         onRefresh={() => undefined}
       />,
     );
     expect(screen.getByText("✓ 인증됨")).toBeInTheDocument();
-    expect(screen.queryByTestId("plugin-auth-logout-example-orion-classic")).toBeNull();
-    expect(screen.getByTestId("plugin-auth-logout-hint-example-orion-classic")).toBeInTheDocument();
+    expect(screen.queryByTestId("plugin-auth-logout-sampleportal")).toBeNull();
+    expect(screen.getByTestId("plugin-auth-logout-hint-sampleportal")).toBeInTheDocument();
   });
 
   it("invokes loginTool + onRefresh when 로그인 clicked", async () => {

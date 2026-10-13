@@ -1,7 +1,7 @@
 /**
  * The host-side session-cookie vault: scoping + jar reads.
  *
- * The scoping half is a port of the rules ORION's `cookieScope.ts` enforced from
+ * The scoping half is a port of the rules a portal plugin's `cookieScope.ts` enforced from
  * inside the plugin, so these cases are deliberately the SAME questions that
  * module answered — including the ONE documented divergence from RFC 6265 §5.4
  * (a Secure cookie is NOT withheld from an `http://` request, because legacy

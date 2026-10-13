@@ -106,8 +106,7 @@ Ave는 개인 데스크톱에서 실행되는 AI 비서이며, 플러그인 생�
 │   │   │   │   └── .signature          # ECDSA 서명 검증 결과 캐시
 │   │   │   ├── 0.1.9/                  # 이전 버전 (자동 gc 전)
 │   │   │   └── current -> 0.2.0        # 심볼릭 링크 (활성 버전)
-│   │   ├── ave-plugin-meeting/
-│   │   └── ave-plugin-lyra-post/
+│   │   └── ave-plugin-meeting/
 │   ├── user/                           # 사용자 자율
 │   │   ├── mcp-notion/
 │   │   │   ├── plugin.json

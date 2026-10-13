@@ -36,7 +36,8 @@ describe("normalizePluginLookupKey", () => {
   });
 
   it("drops the ave-plugin- package prefix", () => {
-    expect(normalizePluginLookupKey("ave-plugin-ara")).toBe("weather");
+    expect(normalizePluginLookupKey("ave-plugin-samplewidget")).toBe("samplewidget");
+    expect(normalizePluginLookupKey("@ave/ave-plugin-samplewidget@0.1.0")).toBe("samplewidget");
   });
 
   it("drops the plugin- package prefix", () => {
@@ -57,8 +58,7 @@ describe("normalizePluginLookupKey", () => {
     const spellings = [
       "weather",
       "Weather",
-      "@ave/ave-plugin-ara@0.1.0",
-      "ave-plugin-ara",
+      "@ave/plugin-weather@0.1.0",
       "plugin-weather",
       " weather ",
     ];

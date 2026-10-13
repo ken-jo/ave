@@ -61,8 +61,8 @@ reporters in release notes unless anonymity is requested.
   (`safeStorage`).
 - Tool execution passes through a multi-stage permission gate (`approval-gate`,
   `permission-manager`, sandbox runner on macOS/Windows where available).
-- Marketplace artifacts are verified against signed manifests when the
-  `orion-classic-template` capability is configured; verify the threat model
+- Marketplace artifacts are verified against signed manifests when signing is
+  configured; verify the threat model
   in `docs/architecture/permission-policy-design.md` before deploying in
   a regulated environment.
 

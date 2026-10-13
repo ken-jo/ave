@@ -147,7 +147,7 @@ interface Tool {
 | `id` | PluginRegistry, HostApi cleanup | boot + 런타임 전반 |
 | `version` | 마켓플레이스 카탈로그 + 설명자와의 일치 검사(`MANIFEST_MISMATCH`) + update-detector 비교 + install receipt + Settings UI 카드 | install + 런타임 전반 |
 | `icon` | plugin grid v3 popover (Lucide named-export 동적 lookup, 누락/매치 실패 시 `Plug` fallback). 옵션 필드 — 없으면 default 아이콘 | UI 렌더 |
-| `iconText` | plugin grid v3 popover — 짧은 텍스트 라벨 (1-4자, 예: `"ORION"`, `"MTG"`) 을 Lucide 아이콘 대신 아바타 안에 렌더. 둘 다 선언 시 `iconText` 우선. 적당한 Lucide 글리프가 없는 도메인-내부 식별자에 사용. 옵션 필드 | UI 렌더 |
+| `iconText` | plugin grid v3 popover — 짧은 텍스트 라벨 (1-4자, 예: `"AB"`, `"MTG"`) 을 Lucide 아이콘 대신 아바타 안에 렌더. 둘 다 선언 시 `iconText` 우선. 적당한 Lucide 글리프가 없는 도메인-내부 식별자에 사용. 옵션 필드 | UI 렌더 |
 | `entry` | runtime.ts `require()` | boot |
 | `tools[]` (Tool 객체) | Tool Registry 등록 + LLM system prompt tool schema (`inputSchema`/`description`) | boot ToolRegistry 등록 + system prompt 빌드 |
 | `description` | 비활성 플러그인 카탈로그 (`listPluginCards`) | system prompt · UI |
@@ -902,7 +902,7 @@ Ave 는 IPC/RPC 를 **시스템 레벨 전용**으로 확정한다. 플러그인
 
 ### 5.3 Agent Hub (`agent-hub`) — 은퇴
 
-Agent Hub 플러그인과 `ave-plugin-hydra` 저장소는 폐기되었다. 현행 플러그인 소스가 없으므로 케이스스터디에서 뺀다. 최소 예제는 같은 모노레포의 `plugins/hello-world/source/src/hostPlugin.ts` 를 본다.
+Agent Hub 플러그인과 `agent-hub` 저장소는 폐기되었다. 현행 플러그인 소스가 없으므로 케이스스터디에서 뺀다. 최소 예제는 같은 모노레포의 `plugins/hello-world/source/src/hostPlugin.ts` 를 본다.
 
 ---
 

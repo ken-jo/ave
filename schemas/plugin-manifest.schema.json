@@ -836,7 +836,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 4,
-              "description": "Optional short text (1-4 chars) rendered inside the plugin grid avatar — e.g. 'ORION', 'MTG'. Takes precedence over `icon` when both are declared. Use when no Lucide glyph matches the plugin's domain identity."
+              "description": "Optional short text (1-4 chars) rendered inside the plugin grid avatar — e.g. 'AB', 'MTG'. Takes precedence over `icon` when both are declared. Use when no Lucide glyph matches the plugin's domain identity."
             },
             "python": {
               "type": "object",

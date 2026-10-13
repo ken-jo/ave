@@ -47,7 +47,7 @@ function makePluginTool(
     name,
     description: `plugin tool ${name}`,
     source: "plugin",
-    pluginId: "ave-plugin-crux",
+    pluginId: "ave-plugin-sampletool",
     category: "read",
     isReadOnly: () => true,
     jsonSchema: { type: "object", properties: {} },
@@ -97,13 +97,13 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
   it("a read-only plugin invocation → hasMutatingEffect:false", async () => {
     const registry = new ToolRegistry();
     registry.register(
-      makePluginTool("ave-plugin-crux_readonly", [
+      makePluginTool("ave-plugin-sampletool_readonly", [
         { kind: "config.get", effect: "read", target: "k" },
         { kind: "getSecret", effect: "read" },
       ]),
     );
     const results = await newExecutor(registry).executeAll(
-      [{ id: "tu-ro", name: "ave-plugin-crux_readonly", input: {} }],
+      [{ id: "tu-ro", name: "ave-plugin-sampletool_readonly", input: {} }],
       { sessionId: "sess-ro", permissionContext: userPermissionContext() },
     );
     // Success path omits `is_error` (only set when true).
@@ -111,12 +111,12 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     expect(results[0].content).toBe("ok");
 
     await auditLogger.flush();
-    const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-crux_readonly");
+    const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_readonly");
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       event: "effect-shadow",
       source: "plugin",
-      pluginId: "ave-plugin-crux",
+      pluginId: "ave-plugin-sampletool",
       declaredCategory: "read",
       hasMutatingEffect: false,
     });
@@ -125,13 +125,13 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
   it("a declared-read plugin invocation that mutates → hasMutatingEffect:true", async () => {
     const registry = new ToolRegistry();
     registry.register(
-      makePluginTool("ave-plugin-crux_mutating", [
+      makePluginTool("ave-plugin-sampletool_mutating", [
         { kind: "config.get", effect: "read", target: "k" },
         { kind: "config.set", effect: "write", target: "k" },
       ]),
     );
     const results = await newExecutor(registry).executeAll(
-      [{ id: "tu-mut", name: "ave-plugin-crux_mutating", input: {} }],
+      [{ id: "tu-mut", name: "ave-plugin-sampletool_mutating", input: {} }],
       { sessionId: "sess-mut", permissionContext: userPermissionContext() },
     );
     // Success path omits `is_error` (only set when true).
@@ -139,7 +139,7 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     expect(results[0].content).toBe("ok");
 
     await auditLogger.flush();
-    const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-crux_mutating");
+    const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_mutating");
     expect(rows).toHaveLength(1);
     expect(rows[0].hasMutatingEffect).toBe(true);
     // The declared category stays "read" — the host caught the divergence.
@@ -149,25 +149,25 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
   it("each invocation gets a FRESH ledger — no cross-invocation leak", async () => {
     const registry = new ToolRegistry();
     registry.register(
-      makePluginTool("ave-plugin-crux_mutating2", [{ kind: "config.set", effect: "write" }]),
+      makePluginTool("ave-plugin-sampletool_mutating2", [{ kind: "config.set", effect: "write" }]),
     );
     registry.register(
-      makePluginTool("ave-plugin-crux_readonly2", [{ kind: "config.get", effect: "read" }]),
+      makePluginTool("ave-plugin-sampletool_readonly2", [{ kind: "config.get", effect: "read" }]),
     );
     const executor = newExecutor(registry);
     // Run the mutating tool first, then the read-only tool. If the ledger leaked,
     // the read-only invocation would inherit the prior write.
     await executor.executeAll(
-      [{ id: "tu-1", name: "ave-plugin-crux_mutating2", input: {} }],
+      [{ id: "tu-1", name: "ave-plugin-sampletool_mutating2", input: {} }],
       { sessionId: "sess-1", permissionContext: userPermissionContext() },
     );
     await executor.executeAll(
-      [{ id: "tu-2", name: "ave-plugin-crux_readonly2", input: {} }],
+      [{ id: "tu-2", name: "ave-plugin-sampletool_readonly2", input: {} }],
       { sessionId: "sess-2", permissionContext: userPermissionContext() },
     );
     await auditLogger.flush();
-    const mut = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-crux_mutating2");
-    const ro = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-crux_readonly2");
+    const mut = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_mutating2");
+    const ro = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_readonly2");
     expect(mut[0].hasMutatingEffect).toBe(true);
     expect(ro[0].hasMutatingEffect).toBe(false);
   });
@@ -175,14 +175,14 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
   it("a read-declared wrapper that callTool→mutating-tool ⇒ outer hasMutatingEffect:true", async () => {
     const registry = new ToolRegistry();
     registry.register(
-      makePluginTool("ave-plugin-crux_inner_mut", [{ kind: "config.set", effect: "write", target: "k" }]),
+      makePluginTool("ave-plugin-sampletool_inner_mut", [{ kind: "config.set", effect: "write", target: "k" }]),
     );
     let executorRef!: ToolExecutor;
     const wrapper = createDynamicTool({
-      name: "ave-plugin-crux_wrapper",
+      name: "ave-plugin-sampletool_wrapper",
       description: "read-declared wrapper delegating a mutation via callTool",
       source: "plugin",
-      pluginId: "ave-plugin-crux",
+      pluginId: "ave-plugin-sampletool",
       category: "read",
       isReadOnly: () => true,
       jsonSchema: { type: "object", properties: {} },
@@ -190,9 +190,9 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
         // Stand in for ctx.callTool(M): the hostApi closure records a nested READ
         // marker on the outer ledger, then re-enters the SAME executor for the
         // inner mutating tool from within the wrapper's (outer) ledger scope.
-        recordEffect({ kind: "callTool", effect: "read", target: "ave-plugin-crux_inner_mut" });
+        recordEffect({ kind: "callTool", effect: "read", target: "ave-plugin-sampletool_inner_mut" });
         await executorRef.executeAll(
-          [{ id: "tu-inner", name: "ave-plugin-crux_inner_mut", input: {} }],
+          [{ id: "tu-inner", name: "ave-plugin-sampletool_inner_mut", input: {} }],
           { sessionId: "sess-inner", permissionContext: userPermissionContext() },
         );
         return { output: "ok", isError: false };
@@ -201,12 +201,12 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     registry.register(wrapper);
     executorRef = newExecutor(registry);
     await executorRef.executeAll(
-      [{ id: "tu-wrap", name: "ave-plugin-crux_wrapper", input: {} }],
+      [{ id: "tu-wrap", name: "ave-plugin-sampletool_wrapper", input: {} }],
       { sessionId: "sess-wrap", permissionContext: userPermissionContext() },
     );
 
     await auditLogger.flush();
-    const wrapRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-crux_wrapper");
+    const wrapRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_wrapper");
     expect(wrapRows).toHaveLength(1);
     // The wrapper's OWN ledger surfaces the delegated mutation via callTool-child —
     // without this propagation a later read-recognition gate would treat the
@@ -214,26 +214,26 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     expect(wrapRows[0].hasMutatingEffect).toBe(true);
     expect(wrapRows[0].effects).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ kind: "callTool-child", effect: "write", target: "ave-plugin-crux_inner_mut" }),
+        expect.objectContaining({ kind: "callTool-child", effect: "write", target: "ave-plugin-sampletool_inner_mut" }),
       ]),
     );
     // The inner tool's own shadow is also mutating.
-    const innerRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-crux_inner_mut");
+    const innerRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_inner_mut");
     expect(innerRows[0].hasMutatingEffect).toBe(true);
   });
 
   it("the category shadow + effect shadow for ONE invocation share a correlationId", async () => {
     const registry = new ToolRegistry();
     registry.register(
-      makePluginTool("ave-plugin-crux_corr", [{ kind: "config.get", effect: "read", target: "k" }]),
+      makePluginTool("ave-plugin-sampletool_corr", [{ kind: "config.get", effect: "read", target: "k" }]),
     );
     await newExecutor(registry).executeAll(
-      [{ id: "tu-corr", name: "ave-plugin-crux_corr", input: {} }],
+      [{ id: "tu-corr", name: "ave-plugin-sampletool_corr", input: {} }],
       { sessionId: "sess-corr", permissionContext: userPermissionContext() },
     );
     await auditLogger.flush();
-    const cat = shadowRows(auditDir, "risk-shadow").filter((r) => r.toolName === "ave-plugin-crux_corr");
-    const eff = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-crux_corr");
+    const cat = shadowRows(auditDir, "risk-shadow").filter((r) => r.toolName === "ave-plugin-sampletool_corr");
+    const eff = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_corr");
     expect(cat).toHaveLength(1);
     expect(eff).toHaveLength(1);
     // The id is present (non-empty) in BOTH emitted rows ...
@@ -256,10 +256,10 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       const registry = new ToolRegistry();
       registry.register(
         createDynamicTool({
-          name: "ave-plugin-crux_storage_mut",
+          name: "ave-plugin-sampletool_storage_mut",
           description: "plugin tool that mutates only via storage.writeJson",
           source: "plugin",
-          pluginId: "ave-plugin-crux",
+          pluginId: "ave-plugin-sampletool",
           category: "read",
           isReadOnly: () => true,
           jsonSchema: { type: "object", properties: {} },
@@ -267,20 +267,20 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
             // The ambient per-invocation ledger (bound by the executor) attributes
             // this storage write — the same AsyncLocalStorage mechanism the real
             // hostApi closures rely on.
-            const storage = createPluginStorage("ave-plugin-crux", storageDir, unavailableSecretEncryption);
+            const storage = createPluginStorage("ave-plugin-sampletool", storageDir, unavailableSecretEncryption);
             await storage.writeJson("data.json", { mutated: true });
             return { output: "ok", isError: false };
           },
         }),
       );
       const results = await newExecutor(registry).executeAll(
-        [{ id: "tu-storage", name: "ave-plugin-crux_storage_mut", input: {} }],
+        [{ id: "tu-storage", name: "ave-plugin-sampletool_storage_mut", input: {} }],
         { sessionId: "sess-storage", permissionContext: userPermissionContext() },
       );
       expect(results[0].is_error).toBeFalsy();
 
       await auditLogger.flush();
-      const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-crux_storage_mut");
+      const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_storage_mut");
       expect(rows).toHaveLength(1);
       // hostObservable:true is now HONEST — the storage mutation was recorded.
       expect(rows[0].hostObservable).toBe(true);
@@ -303,25 +303,25 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     const registry = new ToolRegistry();
     registry.register(
       createDynamicTool({
-        name: "ave-plugin-crux_clearauth_mut",
+        name: "ave-plugin-sampletool_clearauth_mut",
         description: "declared-read plugin tool that wipes an auth partition",
         source: "plugin",
-        pluginId: "ave-plugin-crux",
+        pluginId: "ave-plugin-sampletool",
         category: "read",
         isReadOnly: () => true,
         jsonSchema: { type: "object", properties: {} },
         execute: async () => {
-          recordChokepoint("clearAuthPartition", "persist:plugin-auth:ave-plugin-crux");
+          recordChokepoint("clearAuthPartition", "persist:plugin-auth:ave-plugin-sampletool");
           return { output: "ok", isError: false };
         },
       }),
     );
     await newExecutor(registry).executeAll(
-      [{ id: "tu-clearauth", name: "ave-plugin-crux_clearauth_mut", input: {} }],
+      [{ id: "tu-clearauth", name: "ave-plugin-sampletool_clearauth_mut", input: {} }],
       { sessionId: "sess-clearauth", permissionContext: userPermissionContext() },
     );
     await auditLogger.flush();
-    const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-crux_clearauth_mut");
+    const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_clearauth_mut");
     expect(rows).toHaveLength(1);
     expect(rows[0].hasMutatingEffect).toBe(true);
     expect(rows[0].effects).toEqual(
@@ -347,10 +347,10 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     const registry = new ToolRegistry();
     registry.register(
       createDynamicTool({
-        name: "ave-plugin-crux_inner_mut_real",
+        name: "ave-plugin-sampletool_inner_mut_real",
         description: "inner mutating tool reached through the real loopback invoker",
         source: "plugin",
-        pluginId: "ave-plugin-crux",
+        pluginId: "ave-plugin-sampletool",
         category: "read",
         isReadOnly: () => true,
         jsonSchema: { type: "object", properties: {} },
@@ -401,22 +401,22 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
 
     registry.register(
       createDynamicTool({
-        name: "ave-plugin-crux_wrapper_real",
+        name: "ave-plugin-sampletool_wrapper_real",
         description: "read-declared wrapper delegating a mutation via the REAL ctx.callTool path",
         source: "plugin",
-        pluginId: "ave-plugin-crux",
+        pluginId: "ave-plugin-sampletool",
         category: "read",
         isReadOnly: () => true,
         jsonSchema: { type: "object", properties: {} },
         execute: async () => {
-          await ctxCallTool("ave-plugin-crux_inner_mut_real", {});
+          await ctxCallTool("ave-plugin-sampletool_inner_mut_real", {});
           return { output: "ok", isError: false };
         },
       }),
     );
     executorRef = newExecutor(registry);
     await executorRef.executeAll(
-      [{ id: "tu-wrap-real", name: "ave-plugin-crux_wrapper_real", input: {} }],
+      [{ id: "tu-wrap-real", name: "ave-plugin-sampletool_wrapper_real", input: {} }],
       { sessionId: "sess-wrap-real", permissionContext: userPermissionContext() },
     );
 
@@ -425,16 +425,16 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     // ... and so did effect-ledger propagation: the outer wrapper ledger surfaces
     // the delegated mutation through the same intact async chain.
     await auditLogger.flush();
-    const wrapRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-crux_wrapper_real");
+    const wrapRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_wrapper_real");
     expect(wrapRows).toHaveLength(1);
     expect(wrapRows[0].hasMutatingEffect).toBe(true);
     expect(wrapRows[0].effects).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ kind: "callTool-child", effect: "write", target: "ave-plugin-crux_inner_mut_real" }),
+        expect.objectContaining({ kind: "callTool-child", effect: "write", target: "ave-plugin-sampletool_inner_mut_real" }),
       ]),
     );
     // The inner tool's own shadow is mutating too.
-    const innerRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-crux_inner_mut_real");
+    const innerRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_inner_mut_real");
     expect(innerRows[0].hasMutatingEffect).toBe(true);
   });
 

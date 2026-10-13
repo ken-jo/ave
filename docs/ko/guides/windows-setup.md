@@ -198,7 +198,6 @@ git pull --recurse-submodules
 
 cd ..\ave-plugin-local-indexer      ; git pull
 cd ..\ave-plugin-meeting        ; git pull
-cd ..\ave-plugin-hydra      ; git pull
 
 cd ..\ave
 bun install

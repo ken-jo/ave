@@ -509,7 +509,7 @@ For `ave-plugin-meeting@1.2.3` the pinned claim is, in full:
 | `extensions.issuer` | `https://token.actions.githubusercontent.com` | exact. Selects GitHub Actions OIDC and nothing else. |
 | `subjectAlternativeName` | `^https://github\.com/former_org/\.github/\.github/workflows/marketplace-publish\.yml@refs/heads/main$` — anchored | the **Build Signer**: only the org's reusable publish workflow may sign. A workflow in the plugin repo itself cannot. |
 | OID `…57264.1.12` Source Repository URI | `https://github.com/former_org/<slug-repo>` | exact, per plugin, derived from the catalog row |
-| OID `…57264.1.15` Source Repository Identifier | the numeric repo id | survives renames; `pageindex → local-indexer` and `vega-early → assistant` both happened |
+| OID `…57264.1.15` Source Repository Identifier | the numeric repo id | survives renames; `pageindex → local-indexer` and `proactive → assistant` both happened |
 | OID `…57264.1.17` Source Repository Owner Identifier | the numeric `former_org` org id | a repo named `former_org/ave-plugin-meeting` in a *different* account cannot match |
 | OID `…57264.1.14` Source Repository Ref | `refs/tags/v<version>` — exact, from the catalog version | binds the artifact to the released tag, not to a branch |
 | OID `…57264.1.18` Build Config URI | `https://github.com/former_org/<slug-repo>/.github/workflows/publish.yml@refs/tags/v<version>` | the **caller**'s top-level workflow, distinct from the Build Signer above. Pins that the thin caller was the entry point. |

@@ -47,7 +47,7 @@ describe("emitRiskShadowLog — category shadow", () => {
       {
         toolName: "files_read",
         source: "plugin",
-        pluginId: "ave-plugin-crux",
+        pluginId: "ave-plugin-sampletool",
         declaredCategory: "read",
         hostDerivedCategory: "read",
         enforced: false,
@@ -60,7 +60,7 @@ describe("emitRiskShadowLog — category shadow", () => {
       event: "risk-shadow",
       toolName: "files_read",
       source: "plugin",
-      pluginId: "ave-plugin-crux",
+      pluginId: "ave-plugin-sampletool",
       declaredCategory: "read",
       hostDerivedCategory: "read",
       diverged: false,
@@ -124,9 +124,9 @@ describe("emitEffectShadowLog — effect shadow", () => {
     const { entries, logger } = collectingAudit();
     emitEffectShadowLog(
       {
-        toolName: "ave-plugin-crux_read",
+        toolName: "ave-plugin-sampletool_read",
         source: "plugin",
-        pluginId: "ave-plugin-crux",
+        pluginId: "ave-plugin-sampletool",
         declaredCategory: "read",
         hostObservable: true,
         hostObservedEffect: {
@@ -139,9 +139,9 @@ describe("emitEffectShadowLog — effect shadow", () => {
     );
     expect(payload(entries[0])).toMatchObject({
       event: "effect-shadow",
-      toolName: "ave-plugin-crux_read",
+      toolName: "ave-plugin-sampletool_read",
       source: "plugin",
-      pluginId: "ave-plugin-crux",
+      pluginId: "ave-plugin-sampletool",
       declaredCategory: "read",
       hostObservable: true,
       hasMutatingEffect: false,
@@ -177,9 +177,9 @@ describe("emitEffectShadowLog — effect shadow", () => {
     const { entries, logger } = collectingAudit();
     emitEffectShadowLog(
       {
-        toolName: "ave-plugin-crux_write",
+        toolName: "ave-plugin-sampletool_write",
         source: "plugin",
-        pluginId: "ave-plugin-crux",
+        pluginId: "ave-plugin-sampletool",
         declaredCategory: "read",
         hostObservable: true,
         hostObservedEffect: {
@@ -216,9 +216,9 @@ describe("shadow log — dedicated shadow channel sink (temp AVE_HOME)", () => {
     logger.log({ timestamp: new Date().toISOString(), sessionId: "s", type: "turn", input: "hi", output: "yo" });
     emitEffectShadowLog(
       {
-        toolName: "ave-plugin-crux_write",
+        toolName: "ave-plugin-sampletool_write",
         source: "plugin",
-        pluginId: "ave-plugin-crux",
+        pluginId: "ave-plugin-sampletool",
         declaredCategory: "read",
         hostObservable: true,
         hostObservedEffect: {
@@ -242,7 +242,7 @@ describe("shadow log — dedicated shadow channel sink (temp AVE_HOME)", () => {
     const p = payload(effectRow!);
     expect(p.event).toBe("effect-shadow");
     expect(p.hasMutatingEffect).toBe(true);
-    expect(p.pluginId).toBe("ave-plugin-crux");
+    expect(p.pluginId).toBe("ave-plugin-sampletool");
     expect(p.correlationId).toBe("corr-sink");
 
     // The canonical telemetry channel (`<date>.jsonl`, NO channel infix) holds

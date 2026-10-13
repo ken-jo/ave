@@ -676,30 +676,6 @@ export const scenarios: Record<string, ScenarioEntry> = {
   },
   'meeting-outlook-mail-2': { topic: 'integration', skip: 'Same as meeting-outlook-mail.' },
 
-  // ---- mail plugin (Outlook) ------------------------------------------------
-  'outlook-login-trigger': {
-    topic: 'mail',
-    skip:
-      'The mail plugin lives in its own repository, and its manifest declares ' +
-      '`auth.loginTool: mail_auth`, so selecting the Outlook panel while unauthed goes ' +
-      'straight to the live Microsoft OAuth window (use-plugin-view-routing.ts handleViewSelect ' +
-      'calls loginTool on select for auth plugins) rather than rendering an inline pre-login ' +
-      'panel. Reaching a stable, non-OAuth trigger state needs a real/mocked auth session — ' +
-      'out of scope (see outlook-login-window).',
-  },
-  'outlook-login-window': {
-    topic: 'mail',
-    skip: 'Live Microsoft OAuth popup — cannot be seeded deterministically or without real credentials.',
-  },
-  'outlook-login-after': {
-    topic: 'mail',
-    skip: 'Requires a completed live OAuth login.',
-  },
-  'outlook-logout': {
-    topic: 'mail',
-    skip: 'Requires a prior live OAuth login to revoke.',
-  },
-
   // ---- meeting (recording) ------------------------------------------------
   'meeting-record': {
     topic: 'meeting',
@@ -902,7 +878,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
   'agent-hub-my-work': {
     topic: 'agent-hub-plugin',
     skip:
-      'No agent-hub plugin bundle exists in this workspace — there is no ave-plugin-hydra ' +
+      'No agent-hub plugin bundle exists in this workspace — there is no agent-hub plugin ' +
       'repo, and no plugin.json anywhere declares a ui extension named my-work / team-board / ' +
       'agent-hub (verified by scanning every ave-plugin-*/plugin.json). Nothing to side-load.',
   },

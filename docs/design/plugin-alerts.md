@@ -725,9 +725,9 @@ with raw title and summary, `meeting.summary.degraded`).
 
 Gains: `alerts.kinds` `room-suggest`, `webex-link-missing`,
 `conference-prep-register`, all `defaultEnabled: false`, with the plugin's own
-templates (they may name ORION facilities and tools) and `inherits` from
-assistant's three ORION intents; `eventSubscriptions: ["calendar.event.added"]`
-with a grant to `mail` (the ORION detectors took only `added` in
+templates (they may name portal facilities and tools) and `inherits` from
+assistant's three portal intents; `eventSubscriptions: ["calendar.event.added"]`
+with a grant to `mail` (the portal detectors took only `added` in
 assistant; running them over `calendar.events.loaded` would re-alert on
 every boot); moved
 `meeting-room-suggest-detector.ts`, `webex-link-missing-detector.ts`,
@@ -823,7 +823,7 @@ that cannot be trusted must not partially apply.
       "name": "assistant",
       "versions": "*",
       "appVersions": "0.12.0",
-      "reason": "Superseded by the plugin alert contract. Mail and calendar alerts ship in mail 0.6.0, meeting alerts in meeting 0.9.0, ORION alerts in portal 0.22.0.",
+      "reason": "Superseded by the plugin alert contract. Mail and calendar alerts ship in mail 0.6.0, meeting alerts in meeting 0.9.0, portal alerts in portal 0.22.0.",
       "at": "2026-10-01T00:00:00Z",
       "action": "uninstall",
       "successors": {
@@ -1054,7 +1054,7 @@ the successors without the host naming any plugin.
    applies. `values` lists both current and legacy spellings, which is where
    `LEGACY_INTENT_REMAP` (`hostPlugin.ts`: `meeting-detection`,
    `approval-detection`, `action-detection`, `reply-detection`) goes; the
-   three ORION intents are inherited by `portal`'s kinds the same way, and the
+   three portal intents are inherited by `portal`'s kinds the same way, and the
    host kind's mapping travels in the revocation entry's `successors` block
    with the same shape.
 3. **`configInherits` on a plugin manifest** fills a flat plugin config key

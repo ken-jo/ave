@@ -24,11 +24,11 @@ git marketplace, which leaves 59; the counts below are after that removal.
 
 | Verdict | Count | Meaning |
 | --- | --- | --- |
-| `reshoot` | 7 | Must be re-captured. Redaction cannot fix it, or would destroy what the image is there to show. |
+| `reshoot` | 4 | Must be re-captured. Redaction cannot fix it, or would destroy what the image is there to show. |
 | `redact` | 2 | One contiguous region carries the problem and is not the subject of the shot. |
-| `keep` | 9 | Nothing on screen identifies a third party or exposes a credential. |
+| `keep` | 8 | Nothing on screen identifies a third party or exposes a credential. |
 | `superseded` | 17 | A retired plugin page and its images were removed. No capture work here. |
-| `replaced` | 24 | Re-captured from seeded data by the harness. |
+| `replaced` | 20 | Re-captured from seeded data by the harness. |
 
 Twenty-four images have been replaced with seeded captures so far, and the
 ratchet now stands at **9**. Seventeen of the twenty-four moved it:
@@ -232,7 +232,7 @@ they are committed.
 
 ## Worklist
 
-### `reshoot` — 7
+### `reshoot` — 4
 
 Shared preconditions for every row here: capture on a machine that does not
 apply the identity overlay; sign in with a demo identity, never a working
@@ -243,9 +243,6 @@ the result before committing.
 | --- | --- | --- | --- |
 | `meeting-outlook-mail.png` | `meeting-outlook-mail` | `/docs/host/integration-recipes` | **Highest severity in this list.** Two recipients with names, grades and full organisational paths, and a sender signature block carrying a department chain and a direct mobile number. Retake with fabricated recipients and a demo signature. |
 | `meeting-outlook-mail-2.png` | `meeting-outlook-mail-2` | `/docs/host/integration-recipes` | Same recipients; signature partly in frame. Retake as the second step of the same fabricated flow. |
-| `outlook-login-trigger.png` | `outlook-login-trigger` | (page removed) | A work address, colleague names, room and building codes and an organisational path — **and the identity overlay is drawn diagonally across the answer text**. This is the clearest case in the set that redaction cannot solve. Retake against a demo mailbox. |
-| `outlook-login-window.png` | `outlook-login-window` | (page removed) | The form itself is empty and carries no personal data, **but the identity overlay is legible across the dialog**. Retake on a machine that does not apply it. *Disagreement with the earlier pass: this reads clean on inspection and is not — it is a reshoot solely because of the overlay.* |
-| `outlook-login-after.png` | `outlook-login-after` | (page removed) | The signed-in mailbox address, a second person's name and their address, an internal policy notice — and the overlay, carrying a different trailing value than the one on the trigger frame. Retake against a demo mailbox with fabricated messages. |
 | `meeting-record.png` | `meeting-record` | `/docs/plugins/meeting` | Briefing panel lists a mandatory internal training entry naming two employer sites. Retake with a fabricated day's agenda. |
 | `meeting-record-stt.png` | `meeting-record-stt` | `/docs/plugins/meeting` | Same briefing plus an interim transcription of a real meeting. Retake from the fabricated recording. |
 
@@ -264,7 +261,7 @@ screenshot exists to show.
 | `agent-hub-my-work.png` | `agent-hub-my-work` | `/docs/plugins/agent-hub` | The board itself runs on seeded demo identities. Only the right-hand day-schedule column is real, pulled from a live calendar: mask that column. The subject of the shot is the personal board on the left, which is untouched. Note the plugin is decommissioned — confirm the page should still exist before spending effort. |
 | `agent-hub-team-board.png` | `agent-hub-team-board` | `/docs/plugins/agent-hub` | Same shape: seeded team rows, real right-hand schedule column. Mask the right column only. Same decommissioning question applies. |
 
-### `replaced` — 24
+### `replaced` — 20
 
 Captured by the harness from seeded data, amplification-checked, and recorded in
 the manifest as `seeded` under the `host-capture-seed` account. Re-capture one
@@ -283,10 +280,6 @@ otherwise byte-identical.
 | `chat-permission-directory.png` | `chat-permission-directory` | The directory-level read grant, over an invented path outside the profile's allowed scope. Replaces a frame that printed the publisher's home directory in six places. |
 | `chat-permission-risk.png` | `chat-permission-risk` | A HIGH-risk shell approval with its impact detail expanded. The verdict comes from the scripted reviewer — see the tamper check under "The scripted provider". |
 | `chat-permission-llm-review.png` | `chat-permission-llm-review` | The in-flight review card for a shell call, captured while the scripted reviewer's answer is still streaming. |
-| `alert-conflict.png` | `alert-conflict` | The real host overlay card for a fabricated schedule conflict, summary expanded so the alert is legible rather than clamped to two lines. Came off the third-party backlog. |
-| `alert-conflict-2.png` | `alert-conflict-2` | The state after the card's primary action: the `overlay:calendar-conflict-prep` imported-trigger bubble, then a scripted reply detailing both events and offering three ways out. Replaces the highest-severity frame in the set — it printed a base64 calendar identifier from which a mailbox identifier was recoverable. |
-| `alert-reminder.png` | `alert-reminder` | A fabricated pre-meeting reminder card. Replaces a frame carrying two work addresses and a colleague's name, grade and full organisational path. |
-| `alert-reminder-2.png` | `alert-reminder-2` | Its confirmed state, showing the provenance bubble and a scripted prep summary. Replaces the second frame with a recoverable calendar identifier. |
 | `alert-meeting-end-trigger.png` | `alert-meeting-end-trigger` | A fabricated meeting-end summary card. |
 | `alert-meeting-end-trigger-2.png` | `alert-meeting-end-trigger-2` | Its confirmed state with the follow-up options. Replaces a frame of internal commercial subject matter. |
 | `meeting-upcoming.png` | `meeting-upcoming` | The real upcoming-meeting panel over a fabricated prep seeded into `preps.json`. Replaces the frame that printed a live conference join link next to its meeting password, host key and meeting key, plus three people's names, grades and organisational paths. |
@@ -325,7 +318,7 @@ rather than read from anything on the capturing machine, and every address in
 them is at `example.invalid` — reserved by RFC 2606, so it cannot resolve to a
 real mailbox. Rule 7 of the guard enforces that mechanically; see below.
 
-### `keep` — 9
+### `keep` — 8
 
 Inspected and clear: nothing identifies a third party, and no credential is in
 frame. One note worth recording rather than acting on:
@@ -340,7 +333,6 @@ frame. One note worth recording rather than acting on:
 | --- | --- | --- |
 | `chat-app-update.png` | `chat-app-update` | `/docs/getting-started/updates` |
 | `chat-plugin-panel.png` | `chat-plugin-panel` | `/docs/chat/plugin-panel`<br>`/docs/getting-started/login` |
-| `outlook-logout.png` | `outlook-logout` | (page removed) |
 | `ah-dashboard.png` | `ah-dashboard` | `/docs/servers/agent-hub` |
 | `ah-workboard.png` | `ah-workboard` | `/docs/servers/agent-hub/workboard` |
 | `ah-worklog.png` | `ah-worklog` | `/docs/servers/agent-hub/workboard` |

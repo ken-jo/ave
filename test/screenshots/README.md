@@ -112,7 +112,6 @@ screenshottable; the plugin's view renders inside an Electron `<webview>`.
 | Key(s) | Reason |
 |---|---|
 | `meeting-record`, `meeting-record-stt`, `meeting-outlook-mail*` (2 keys) | Need live audio, a completed STT recording or Outlook OAuth. |
-| `outlook-login-trigger`, `outlook-login-window`, `outlook-login-after`, `outlook-logout` | Every reachable state is past the live Microsoft OAuth window. |
 | `agent-hub-my-work`, `agent-hub-team-board` | **No agent-hub plugin bundle exists**; nothing to install. |
 
 ### Scenarios with capture steps
@@ -148,7 +147,7 @@ repository.
 `ah-dashboard`/`ah-workboard`/`ah-worklog`/`ah-inbox`/
 `ah-report`/`ah-subscription` (Agent Hub **server** dashboard — distinct from
 the `agent-hub-my-work`/`agent-hub-team-board` **plugin** panel keys, which
-render inside this Electron app), and `ep-*` (internal ORION portal) are
+render inside this Electron app) are
 **web/server screens** rendered by a separate Next.js app, not the Electron
 host. They are intentionally absent from `matrix.ts`'s `scenarios` map
 entirely (listed separately in `WEB_SERVER_KEYS_OUT_OF_SCOPE` for

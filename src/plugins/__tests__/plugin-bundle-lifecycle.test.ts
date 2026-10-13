@@ -66,7 +66,7 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
   await mkdir(join(pluginRoot, "mcp"), { recursive: true });
   const manifest = {
     id: "sampleportal",
-    name: "ORION API",
+    name: "Sample Portal API",
     version: "1.0.0",
     entry: "dist/index.js",
     tools: [],
@@ -90,7 +90,7 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
     }] }), "utf8");
   }
   await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
-  await writeFile(join(pluginRoot, "skills", "attendance", "SKILL.md"), "---\nname: attendance\ndescription: Attendance workflow\n---\nUse the ORION attendance API.", "utf8");
+  await writeFile(join(pluginRoot, "skills", "attendance", "SKILL.md"), "---\nname: attendance\ndescription: Attendance workflow\n---\nUse the portal attendance API.", "utf8");
   await writeFile(join(pluginRoot, "hooks", "policy.json"), hookContent, "utf8");
   await writeFile(join(pluginRoot, "mcp", "orion.json"), JSON.stringify({ transport: "http", url: "https://orion.example.test/mcp" }), "utf8");
   await mkdir(join(cacheRoot, "sampleportal"), { recursive: true });
@@ -1376,7 +1376,7 @@ describe("PluginBundleLifecycle approval carry-forward (design §18.7.3)", () =>
     expect(approved.approvalDigest).toMatch(/^[a-f0-9]{64}$/u);
 
     // Only the skill text changed: a remote server's approval digest is the same.
-    await release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nUse the ORION attendance API, carefully." });
+    await release("1.1.0", { "skills/attendance/SKILL.md": "---\nname: attendance\ndescription: Attendance workflow\n---\nUse the portal attendance API, carefully." });
     await lifecycle.activate("sampleportal");
     const carried = row();
     expect(carried.generationId).not.toBe(approved.generationId);

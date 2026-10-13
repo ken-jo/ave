@@ -112,22 +112,22 @@ describe("pluginIconFor", () => {
   // Lucide lookup without leaving the icon field undefined.
 
   it("iconText renders the text inline (no React.lazy)", () => {
-    const Icon = pluginIconFor({ iconText: "ORION" });
+    const Icon = pluginIconFor({ iconText: "AB" });
     expect(isLazy(Icon)).toBe(false);
     render(<Icon className="h-7 w-7" />);
     // `getByText` throws if not present — existence is the assertion.
-    expect(screen.getByText("ORION").tagName.toLowerCase()).toBe("span");
+    expect(screen.getByText("AB").tagName.toLowerCase()).toBe("span");
   });
 
   it("iconText takes precedence over icon when both are set", () => {
-    const Icon = pluginIconFor({ icon: "Mic", iconText: "ORION" });
+    const Icon = pluginIconFor({ icon: "Mic", iconText: "AB" });
     expect(isLazy(Icon)).toBe(false);
     render(<Icon className="h-7 w-7" />);
-    expect(screen.getByText("ORION").tagName.toLowerCase()).toBe("span");
+    expect(screen.getByText("AB").tagName.toLowerCase()).toBe("span");
   });
 
   it("iconText preserves the caller's className (sizing hook)", () => {
-    const Icon = pluginIconFor({ iconText: "ORION" });
+    const Icon = pluginIconFor({ iconText: "AB" });
     const { container } = render(<Icon className="h-7 w-7" />);
     const span = container.querySelector("span");
     expect(span?.className).toContain("h-7");
@@ -136,7 +136,7 @@ describe("pluginIconFor", () => {
   });
 
   it("iconText only accepts caller fontSize from style", () => {
-    const Icon = pluginIconFor({ iconText: "ORION" });
+    const Icon = pluginIconFor({ iconText: "AB" });
     const { container } = render(
       <Icon className="h-7 w-7" style={{ color: "red", fontSize: "0.62rem" }} />,
     );
@@ -146,17 +146,17 @@ describe("pluginIconFor", () => {
   });
 
   it("iconText caches by text — same reference on repeated calls", () => {
-    const first = pluginIconFor({ iconText: "ORION" });
-    const second = pluginIconFor({ iconText: "ORION" });
+    const first = pluginIconFor({ iconText: "AB" });
+    const second = pluginIconFor({ iconText: "AB" });
     expect(first).toBe(second);
   });
 
   it("iconText cache is keyed separately from Lucide name cache", () => {
     // Distinct text vs Lucide-name inputs should never collide, even when
     // the strings happen to match (defensive — there is no Lucide icon
-    // named "ORION" today but the contract should not depend on that).
-    const text = pluginIconFor({ iconText: "ORION" });
-    const lucide = pluginIconFor({ icon: "ORION" });
+    // named "AB" today but the contract should not depend on that).
+    const text = pluginIconFor({ iconText: "AB" });
+    const lucide = pluginIconFor({ icon: "AB" });
     expect(text).not.toBe(lucide);
   });
 
@@ -181,10 +181,10 @@ describe("pluginIconFor", () => {
   });
 
   it("iconText sets aria-label so screen readers announce the badge", () => {
-    const Icon = pluginIconFor({ iconText: "ORION" });
+    const Icon = pluginIconFor({ iconText: "AB" });
     const { container } = render(<Icon className="h-7 w-7" />);
     const span = container.querySelector("span");
-    expect(span?.getAttribute("aria-label")).toBe("ORION");
+    expect(span?.getAttribute("aria-label")).toBe("AB");
     expect(span?.getAttribute("role")).toBe("img");
   });
 });

@@ -28,10 +28,10 @@ broadcast + sticky replay + `getTheme()` pull) 자체는 견고하지만, **플�
 | 플러그인 | UI entry | 현재 테마 적용 코드 |
 |---|---|---|
 | `ave-plugin-assistant` | React | `useTheme(bridge)` 만 — `src/ui/detector-control.tsx:66`. prime 없음 |
-| `ave-plugin-hydra` | React | `useTheme(bridge)` + 별도 `avePlugin.getTheme()` pre-mount pull + **두 번째** `bridge.onEvent("host.theme.changed")` + 800ms wait + `.ah-root` scoped mirror — `src/ui/work-board-panel.tsx:602-684` |
+| `agent-hub` | React | `useTheme(bridge)` + 별도 `avePlugin.getTheme()` pre-mount pull + **두 번째** `bridge.onEvent("host.theme.changed")` + 800ms wait + `.ah-root` scoped mirror — `src/ui/work-board-panel.tsx:602-684` |
 | `ave-plugin-meeting` | vanilla JS + detached BrowserWindow | `src/ui/meeting-control.js:2380` 직접 `onEvent` + `recorder-window-preload.cjs:50` 별도 preload re-broadcast + `recorder-window.js:1087` 별도 fallback paint **3 곳 분기** |
 | `ave-plugin-local-indexer` | vanilla JS (scoped sidebar) | local helper `theme-sync.js:setupThemeSync(scope, bridge)` — `documentElement` 대신 scoped root, OS-preference fallback 포함 |
-| `ave-plugin-orion-classic` | vanilla JS + detached BrowserWindow | local helper `orion-classic-control.js:765-778 bootstrapHostTheme` — `getTheme()` + `onEvent` |
+| `ave-plugin-portal` | vanilla JS + detached BrowserWindow | local helper `portal-control.js:765-778 bootstrapHostTheme` — `getTheme()` + `onEvent` |
 | `ave-plugin-mail` | UI 없음 | 해당 없음 |
 | `ave-plugin-template` | docs only | `scripts/check-ui-tokens.mjs` 주석만 |
 
@@ -41,7 +41,7 @@ broadcast + sticky replay + `getTheme()` pull) 자체는 견고하지만, **플�
 2. **`useTheme` rigid → 이중 subscribe** — agent-hub 가 `useTheme` 외에 같은 채널을 한 번 더 `bridge.onEvent` 로 잡아 sidebar custom 토큰 매핑 (`work-board-panel.tsx:661`). 같은 이벤트를 두 번 구독은 비정상.
 3. **`_FALLBACK_CSS` 다크 1색 하드코딩** — host first-boot 시점에 light/HC/brand-accent 이면 첫 프레임 검은 깜빡임. SDK `inject.ts:23-41` 의 `_FALLBACK_CSS`.
 4. **3-place lockstep 부담** — `ave/src/ui/renderer/theme/plugin-token-map.ts` (`_DARK_BASE`) ↔ `ave-plugin-sdk/src/ui/tokens/ave-tokens.css` (`:root`) ↔ `ave-plugin-sdk/src/ui/tokens/inject.ts` (`_FALLBACK_CSS`) 셋이 손-lockstep. 디자인 팔레트 1번 바뀔 때마다 3 파일 동시 수정.
-5. **React / vanilla-JS entry 분기** — `useTheme`(React) 와 `applyThemeFromHostEvent`(vanilla) 둘 다 `document.documentElement` 만 target. detached BrowserWindow (meeting recorder, orion-classic detached) 와 scoped sidebar (local-indexer) 는 SDK API 가 못 가리켜서 각 플러그인이 자체 helper 작성.
+5. **React / vanilla-JS entry 분기** — `useTheme`(React) 와 `applyThemeFromHostEvent`(vanilla) 둘 다 `document.documentElement` 만 target. detached BrowserWindow (meeting recorder, portal detached) 와 scoped sidebar (local-indexer) 는 SDK API 가 못 가리켜서 각 플러그인이 자체 helper 작성.
 
 ## 2. Options considered
 
@@ -114,7 +114,7 @@ export function mount(host: PluginHost): PluginInstance {
   return { unmount: () => root.unmount() };
 }
 
-// vanilla 플러그인 + detached window (orion-classic / meeting recorder)
+// vanilla 플러그인 + detached window (portal / meeting recorder)
 export function mount(host: PluginHost): PluginInstance {
   // detached window 가 별도 BrowserWindow 의 document 라면 target 명시
   primeTheme(host.bridge, { target: host.targetDocument ?? document });
@@ -160,14 +160,14 @@ window 는 host first-boot 한정.
 
 | # | 레포 | 변경 | 트랙 | 비고 |
 |---|---|---|---|---|
-| 1 | `ave` | `plugin-ui-shell` prime 을 detached-window / scoped sidebar parity 까지 확장 | P0 | SDK 변경 없음. meeting recorder / orion-classic detached 측 host 측 paint 가 먼저 통일. |
+| 1 | `ave` | `plugin-ui-shell` prime 을 detached-window / scoped sidebar parity 까지 확장 | P0 | SDK 변경 없음. meeting recorder / portal detached 측 host 측 paint 가 먼저 통일. |
 | 2 | `ave-plugin-sdk` | `fallback-dark.json` 신설 + `_FALLBACK_CSS` / `ave-tokens.css` build-time generate + `primeTheme` export + `useTheme` 옵션 + `applyThemeTokens(target)` | P1 | Backward-compat: 기존 `useTheme(bridge)` 호출자는 그대로 동작. SDK semver minor bump + 마켓 publish. |
 | 3 | `ave` | `plugin-token-map.ts` 의 `_DARK_BASE` 를 SDK JSON 에서 re-import | P1 | PR-2 와 같은 세션 (host-plugin-contract-sync). |
 | 4 | `ave-plugin-template` | `scripts/check-ui-tokens.mjs` 가 `primeTheme` 사용 권장 패턴 명시. 새 플러그인 scaffold 가 `mount() { primeTheme(bridge); … }` 한 줄 자동 생성 | — | docs + template only. |
 | 5 | `ave-plugin-assistant` | SDK bump smoke. `useTheme(bridge)` 무변경 (no-op) | — | 가장 단순. SDK upgrade smoke 역할. |
 | 6 | `ave-plugin-local-indexer` | `theme-sync.js` 삭제 → `primeTheme(bridge, { target: scope })` 한 줄. OS-preference fallback 은 SDK 측 흡수 | — | |
-| 7 | `ave-plugin-orion-classic` | `bootstrapHostTheme` 삭제 → `primeTheme(bridge, { target: detachedDoc })` 한 줄 | — | PR-1 (host detached-window parity) 머지 후. |
-| 8 | `ave-plugin-hydra` | `applyThemePayload` + 두 번째 `onEvent` + 800ms wait 전체 삭제 → `useTheme(bridge, { target: root, onPayload: (p) => mapSidebarTokens(p) })` 한 줄 | P2 | sidebar custom 매핑은 `onPayload` 콜백으로. |
+| 7 | `ave-plugin-portal` | `bootstrapHostTheme` 삭제 → `primeTheme(bridge, { target: detachedDoc })` 한 줄 | — | PR-1 (host detached-window parity) 머지 후. |
+| 8 | `agent-hub` | `applyThemePayload` + 두 번째 `onEvent` + 800ms wait 전체 삭제 → `useTheme(bridge, { target: root, onPayload: (p) => mapSidebarTokens(p) })` 한 줄 | P2 | sidebar custom 매핑은 `onPayload` 콜백으로. |
 | 9 | `ave-plugin-meeting` | `meeting-control.js` + `recorder-window.js` 의 두 곳 prime 을 `primeTheme(bridge, { target: targetDoc })` 로 통합 | — | 3 곳 분기가 1 곳으로. |
 | 10 | (cleanup) | `useTheme` backward-compat 제거 검토 → SDK v4 major bump 대상으로 보류 | — | 즉시 처리 X. |
 
@@ -185,7 +185,7 @@ window 는 host first-boot 한정.
 - `ave/src/plugin-ui-shell.js:64-95` — pre-mount prime (이미 host 측에 존재)
 - `ave-plugin-sdk/src/ui/hooks/useTheme.ts` — React 훅
 - `ave-plugin-sdk/src/ui/tokens/inject.ts:23-41,75-83,105-129` — `_FALLBACK_CSS` + `applyThemeTokens` + `applyThemeFromHostEvent`
-- `ave-plugin-hydra/src/ui/work-board-panel.tsx:602-684` — 5-source prime 패턴 (가장 복잡)
+- `agent-hub/src/ui/work-board-panel.tsx:602-684` — 5-source prime 패턴 (가장 복잡)
 - `ave-plugin-meeting/src/ui/meeting-control.js:2376-2380` · `recorder-window.js:1087` · `recorder-window-preload.cjs:50` — 3 곳 분기
 - `ave-plugin-local-indexer/src/ui/theme-sync.js` — scoped sidebar pattern
-- `ave-plugin-orion-classic/src/ui/orion-classic-control.js:765-778` — detached window pattern
+- `ave-plugin-portal/src/ui/portal-control.js:765-778` — detached window pattern
