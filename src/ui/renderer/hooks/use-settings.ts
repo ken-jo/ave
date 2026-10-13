@@ -8,7 +8,9 @@ import {
   getLlmVendorSettings,
   narrowLlmVendor,
   isLLMVendor,
+  isRetiredLLMVendor,
   type LLMVendor,
+  type RetiredLLMVendor,
 } from "../../../shared/llm-vendor-defaults.js";
 import {
   DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES,
@@ -102,6 +104,11 @@ export interface UseSettingsResult {
   processingDisplayLevel: ProcessingDisplayLevel;
   /** True when the active vendor can run with no stored API key. */
   llmReadyWithoutApiKey: boolean;
+  /**
+   * The removed vendor the stored profile was moved off, until the user picks
+   * a provider in Settings. API-key chat is not ready while it is set.
+   */
+  retiredLlmProvider: RetiredLLMVendor | null;
   /** Single source of truth for selected subscription chat and attachment UX. */
   subscriptionRuntimePolicy: SubscriptionRuntimeUiPolicy;
   /** Active subscription runtime after untrusted settings boundary validation. */
@@ -128,6 +135,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     DEFAULT_PROCESSING_DISPLAY_LEVEL,
   );
   const [llmReadyWithoutApiKey, setLlmReadyWithoutApiKey] = useState(false);
+  const [retiredLlmProvider, setRetiredLlmProvider] = useState<RetiredLLMVendor | null>(null);
   const [activeSubscriptionRuntime, setActiveSubscriptionRuntime] =
     useState<SubscriptionChatRuntimeSelection | null>(null);
   const [subscriptionRuntimeCapabilities, setSubscriptionRuntimeCapabilities] =
@@ -169,6 +177,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
         settings.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
       );
       setLlmReadyWithoutApiKey(canUseSettingsWithoutApiKey(settings, provider));
+      setRetiredLlmProvider(isRetiredLLMVendor(settings.llm.retiredProvider) ? settings.llm.retiredProvider : null);
       const nextSubscriptionRuntime = activeSubscriptionRuntimeFromSettings(settings);
       const runtimeChanged = !sameSubscriptionRuntime(
         activeSubscriptionRuntimeRef.current,
@@ -317,6 +326,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     enableThinkingChat,
     processingDisplayLevel,
     llmReadyWithoutApiKey,
+    retiredLlmProvider,
     subscriptionRuntimePolicy,
     activeSubscriptionRuntime: subscriptionRuntimePolicy.activeSubscriptionRuntime,
     subscriptionChatReady: subscriptionRuntimePolicy.chatReady,
@@ -367,6 +377,9 @@ export type ModelCardChoice = ApiModelCardChoice | SubscriptionModelCardChoice;
  * `subscriptionUseApiForChat` at the call site). Otherwise the current API
  * model leads when it is not itself pinned; otherwise it sits where the pin
  * order puts it.
+ * A retirement marker leaves the configured API model as an unselected
+ * candidate. Picking it is an explicit provider choice, even when the saved
+ * vendor and model do not change.
  *
  * `pinnedModels` stores ids only, so a stored id is matched against what is
  * actually offered — the active vendor's curated line plus every synced
@@ -421,12 +434,14 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
         // A pinned API model can equal the vendor/model the settings still
         // hold for the API path even while a subscription runtime is what
         // the chat is actually on — that stale match is not "current".
-        current: subscription === null && vendor === active && modelId === currentModel,
+        current: subscription === null && !llm.retiredProvider && vendor === active && modelId === currentModel,
       });
     }
   }
-  if (subscription === null && currentModel && !choices.some((choice) => choice.current)) {
-    choices.unshift({ kind: "api", vendor: active, vendorLabel: getVendorOption(active).label, modelId: currentModel, current: true });
+  if (subscription === null && currentModel && !choices.some((choice) =>
+    choice.kind === "api" && choice.vendor === active && choice.modelId === currentModel
+  )) {
+    choices.unshift({ kind: "api", vendor: active, vendorLabel: getVendorOption(active).label, modelId: currentModel, current: !llm.retiredProvider });
   }
   if (subscription) {
     const model = typeof subscription.model === "string" ? subscription.model.trim() : "";

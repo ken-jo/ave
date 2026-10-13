@@ -9,6 +9,7 @@ import { CustomTitleBar } from "./components/CustomTitleBar.js";
 import { MainToolbar } from "./MainToolbar.js";
 import { Sidebar, isDarwinPlatform } from "./components/Sidebar.js";
 import { MarketplaceAnnouncementBanner } from "./components/MarketplaceAnnouncementBanner.js";
+import { RetiredProviderNotice } from "./components/RetiredProviderNotice.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { DevToolsPanel } from "./components/DevToolsPanel.js";
 import { DevComponentLabels } from "./components/DevComponentLabels.js";
@@ -871,6 +872,7 @@ export function App() {
     enableThinkingChat,
     processingDisplayLevel,
     llmReadyWithoutApiKey,
+    retiredLlmProvider,
     subscriptionRuntimePolicy,
     refresh: refreshLlmSettings,
     settingsLoaded,
@@ -895,11 +897,14 @@ export function App() {
       // A pending readiness probe is deliberately non-sendable: it has not yet
       // established an authenticated chat session.
       if (subscriptionRuntimeSelected) return subscriptionChatReady === true;
+      // Moved off a removed vendor: main refuses API turns until the user picks
+      // a provider, so a key saved for the fallback vendor reads as not ready.
+      if (retiredLlmProvider) return false;
       return effectiveHasApiKey === null
         ? (chatReadyWithoutApiKey ? true : null)
         : effectiveHasApiKey || chatReadyWithoutApiKey;
     },
-    [effectiveHasApiKey, chatReadyWithoutApiKey, subscriptionChatReady, subscriptionRuntimeSelected],
+    [effectiveHasApiKey, chatReadyWithoutApiKey, subscriptionChatReady, subscriptionRuntimeSelected, retiredLlmProvider],
   );
   const subscriptionUnavailableProvider = subscriptionRuntimePolicy.unavailableProvider;
   const subscriptionPendingProvider = subscriptionRuntimePolicy.pendingProvider;
@@ -1985,6 +1990,10 @@ export function App() {
                     className="flex shrink-0 flex-col gap-2 px-(--chrome-gap) pt-2 empty:hidden [&>*]:m-0"
                     data-testid="window-notice-strip"
                   >
+                    <RetiredProviderNotice
+                      retiredProvider={subscriptionRuntimeSelected ? null : retiredLlmProvider}
+                      onChooseProvider={() => onOpenSettings("llm")}
+                    />
                     <MarketplaceAnnouncementBanner
                       announcements={marketplaceAnnouncements}
                       onDismiss={handleMarketplaceAnnouncementDismiss}

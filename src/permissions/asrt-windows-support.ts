@@ -48,6 +48,9 @@ import {
   getVendoredSrtWinExePath,
   rewriteAsarPathToUnpacked,
 } from "./asrt-sandbox.js";
+import { createLogger } from "../lib/logger.js";
+
+const log = createLogger("asrt-windows-support");
 
 type WindowsUserState = NonNullable<SandboxWindowsStatusInfo["userState"]>;
 type WindowsWfpState = NonNullable<SandboxWindowsStatusInfo["wfpState"]>;
@@ -99,6 +102,8 @@ interface AsrtWindowsInstallRuntimeLike {
 interface AsrtWindowsInstallDependencies {
   readonly loadRuntime?: () => Promise<AsrtWindowsInstallRuntimeLike>;
   readonly grantBackendAcl?: () => Promise<void>;
+  /** The pre-install status read (default {@link readAsrtWindowsStatus}). */
+  readonly readStatus?: () => Promise<SandboxWindowsStatusInfo>;
 }
 
 interface AsrtWindowsAclDependencies {
@@ -401,12 +406,40 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
 export async function installAsrtWindowsSandbox(
   dependencies: AsrtWindowsInstallDependencies = {},
 ): Promise<SandboxWindowsInstallResult> {
+  // Status is read HERE, after the IPC handler has validated the click's
+  // gesture intent, and not in the renderer before it calls this: a status read
+  // can take ~45 s (15 s srt-win status + 30 s WFP egress verify), and the
+  // renderer's transient user activation lapses after ~5 s, so an install
+  // invoked after a renderer-side read is refused as `user-keyboard-required`
+  // on exactly the machines that need the repair. Already ready → no UAC.
+  // A status read that fails does not block the repair: the install is the
+  // way out of it.
+  try {
+    const before = await (dependencies.readStatus ?? readAsrtWindowsStatus)();
+    if (before.applicable && before.ready) {
+      return {
+        outcome: "already-ready",
+        userState: before.userState ?? undefined,
+        wfpState: before.wfpState ?? undefined,
+        ready: true,
+      };
+    }
+  } catch (error) {
+    log.warn({ err: error }, "Windows sandbox status could not be read before install; installing anyway");
+  }
+
   // Resolve the real module (for the explicit srt-win descriptor + the
   // WindowsSandboxError class) once; the install/verify functions may be
   // overridden by the DI seam for tests.
-  const { mod, srtWin } = await loadSrtWin();
-  const { installWindowsSandboxAsync, verifyWindowsWfpEgress } =
-    dependencies.loadRuntime ? await dependencies.loadRuntime() : mod;
+  let mod: typeof import("@anthropic-ai/sandbox-runtime");
+  let srtWin: SrtWinSpawn;
+  let runtime: AsrtWindowsInstallRuntimeLike;
+  try {
+    ({ mod, srtWin } = await loadSrtWin());
+    runtime = dependencies.loadRuntime ? await dependencies.loadRuntime() : mod;
+  } catch (error) {
+    return failedInstall(error, "unexpected");
+  }
 
   // ASRT 0.0.76: the install is ASYNC — the modal UAC prompt is still shown, but
   // the main-process event loop stays live (spinners/timers keep running) rather
@@ -414,62 +447,69 @@ export async function installAsrtWindowsSandbox(
   // descriptor is explicit (no implicit vendored fallback since 0.0.67).
   let result: AsrtWindowsInstallCancelledLike | AsrtWindowsInstallSuccessLike;
   try {
-    result = await installWindowsSandboxAsync({
+    result = await runtime.installWindowsSandboxAsync({
       proxyPortRange: DEFAULT_WINDOWS_PROXY_PORT_RANGE,
       srtWin,
     });
   } catch (error) {
     if (error instanceof mod.WindowsSandboxError) {
       if (error.code === "install_timeout") {
-        // The self-elevating install subprocess was killed by the 120s spawn
-        // timeout with the UAC consent dialog still open. Surface it distinctly so
-        // the caller can prompt the user to re-run and approve elevation promptly
-        // (a late approval after the timeout would half-complete).
-        throw new Error(
-          "ASRT Windows sandbox install timed out after 120s with the UAC consent " +
-            "prompt still open. Re-run the install and approve the elevation prompt.",
-        );
+        // The self-elevating install subprocess was killed by the 120 s spawn
+        // timeout. The elevation prompt may still be open, or setup may have
+        // started already; this does not prove rollback or an unchanged host.
+        log.warn({ errorCode: error.code, err: error }, "Windows sandbox install timed out; result unconfirmed");
+        return { outcome: "timed-out" };
       }
-      if (error.code === "install_ambient_failed") {
-        // ASRT 0.0.76 exit 17: the WFP filters and the sandbox user may both be
-        // in place, but the ambient write-deny stamps on the stock
-        // world-writable system directories did not land. Treating that as a
-        // generic failure would be dishonest in the dangerous direction — the
-        // filesystem confinement Ave publishes for win32
-        // (`sandboxConfinementForPlatform` → `filesystem: true`) assumes those
-        // stamps exist. Fail the install loudly so the capability is never
-        // published on a half-stamped machine.
-        throw new Error(
-          "ASRT Windows sandbox install could not deny-stamp the stock " +
-            "world-writable system directories for the sandbox user, so the " +
-            "filesystem confinement this sandbox reports would be incomplete. " +
-            "The install was NOT accepted. Re-run it from an account that can " +
-            "elevate, and check that no policy or security agent is reverting " +
-            `ACL changes on the Windows system directories. (${error.message})`,
-        );
-      }
+      // install_ambient_failed (ASRT 0.0.76 exit 17) lands here too: the WFP
+      // filters and the sandbox user may both be in place, but the ambient
+      // write-deny stamps on the stock world-writable system directories did
+      // not. Treating that as installed would be dishonest in the dangerous
+      // direction — the filesystem confinement Ave publishes for win32
+      // (`sandboxConfinementForPlatform` → `filesystem: true`) assumes those
+      // stamps exist — so it is a failure like any other ASRT code.
+      return failedInstall(error, error.code);
     }
-    throw error;
+    return failedInstall(error, "unexpected");
   }
 
-  if ((result as AsrtWindowsInstallCancelledLike).cancelled) {
-    return { cancelled: true };
+  if ((result as AsrtWindowsInstallCancelledLike | undefined)?.cancelled) {
+    return { outcome: "cancelled", cancelled: true };
   }
 
-  await (dependencies.grantBackendAcl ?? grantAsrtWindowsBackendAcl)();
+  try {
+    await (dependencies.grantBackendAcl ?? grantAsrtWindowsBackendAcl)();
+  } catch (error) {
+    // The default grant never throws: it is best-effort and logs its own
+    // failures. This catch only keeps this function's never-throw contract
+    // against an injected implementation (tests / DI).
+    return failedInstall(error, "unexpected");
+  }
 
-  const success = result as AsrtWindowsInstallSuccessLike;
-  const userState = normalizeAsrtWindowsUserState(success.user);
-  const wfpState = normalizeAsrtWindowsWfpState(success.wfp);
+  // A result without user/wfp (an unexpected ASRT shape) normalizes to
+  // absent → not ready → `installed-unverified`: what Ave can claim, no more.
+  const success = (result ?? {}) as Partial<AsrtWindowsInstallSuccessLike>;
+  const userState = normalizeAsrtWindowsUserState(success.user ?? {});
+  const wfpState = normalizeAsrtWindowsWfpState(success.wfp ?? {});
   const ready = await resolveAsrtWindowsReady(
     userState,
     wfpState,
-    verifyWindowsWfpEgress,
+    runtime.verifyWindowsWfpEgress,
     srtWin,
   );
   return {
+    outcome: ready ? "ready" : "installed-unverified",
     userState,
     wfpState,
     ready,
   };
+}
+
+/**
+ * The failure the panel sees is the stable code only. ASRT's message carries
+ * srt-win stdout/stderr and local paths (the user profile among them), so it is
+ * logged here, in the main process, and never sent to the renderer.
+ */
+function failedInstall(error: unknown, errorCode: string): SandboxWindowsInstallResult {
+  log.warn({ errorCode, err: error }, "Windows sandbox install failed");
+  return { outcome: "failed", errorCode };
 }

@@ -99,11 +99,6 @@ const EXPLICIT_MODEL_COMPLEXITY_MAP: Partial<
     mid: "gemini-2.5-flash",
     high: "gemini-2.5-pro",
   }),
-  copilot: Object.freeze({
-    low: "gpt-5.4-nano",
-    mid: "gpt-5.4-mini",
-    high: "gpt-5.4",
-  }),
   "azure-foundry": Object.freeze({
     low: "gpt-5.4-nano",
     mid: "gpt-5.4-mini",

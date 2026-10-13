@@ -15,7 +15,6 @@ export const STATUS_BAR_VENDOR_EMOJIS = {
   claude: "🟧",
   openai: "🟦",
   gemini: "🟢",
-  copilot: "🐙",
   azureFoundry: "🔷",
   vertexAi: "🟣",
   fallback: "🤖",

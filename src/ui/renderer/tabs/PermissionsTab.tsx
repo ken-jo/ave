@@ -21,7 +21,7 @@ import {
   normalizeExecutionMode,
   type ExecutionModeDisplay,
 } from "../../../shared/permission-mode.js";
-import { formatIpcError } from "../format-ipc-error.js";
+import { formatIpcError, resolveIpcErrorKey } from "../format-ipc-error.js";
 import type {
   ExecutionMode,
   HookTrustRow,
@@ -77,25 +77,191 @@ const DEFAULT_REVIEWER_SETTINGS: PermissionReviewerSettings = {
 
 const MS_PER_SECOND = 1_000;
 
+/** What the Windows install click led to, as the panel shows it. */
+interface WindowsInstallOutcomeView {
+  /** The main-side `outcome`, or `refused` / `unexpected` for other shapes. */
+  outcome: string;
+  tone: "success" | "info" | "warning" | "error";
+  text: string;
+  /** With `outcome: "failed"` / `refused`: the stable code main reported. */
+  errorCode?: string;
+}
+
+/**
+ * Localized copy per stable failure code. Only the code crosses IPC: ASRT's
+ * message holds srt-win output and local paths, so it stays in the main log.
+ */
+const WINDOWS_INSTALL_FAILURE_COPY: Record<string, () => string> = {
+  install_wfp_failed: () => t("permissionsTab.osSandboxWindowsInstallFailedWfp"),
+  install_user_failed: () => t("permissionsTab.osSandboxWindowsInstallFailedUser"),
+  install_config_conflict: () => t("permissionsTab.osSandboxWindowsInstallFailedConfigConflict"),
+  install_ambient_failed: () => t("permissionsTab.osSandboxWindowsInstallFailedAmbient"),
+  srt_win_not_found: () => t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing"),
+  unexpected: () => t("permissionsTab.osSandboxWindowsInstallFailedUnexpected"),
+};
+
+const WINDOWS_USER_STATE_LABEL: Record<string, () => string> = {
+  absent: () => t("permissionsTab.osSandboxWindowsUserStateAbsent"),
+  incomplete: () => t("permissionsTab.osSandboxWindowsUserStateIncomplete"),
+  ready: () => t("permissionsTab.osSandboxWindowsUserStateReady"),
+};
+
+const WINDOWS_WFP_STATE_LABEL: Record<string, () => string> = {
+  absent: () => t("permissionsTab.osSandboxWindowsWfpStateAbsent"),
+  installed: () => t("permissionsTab.osSandboxWindowsWfpStateInstalled"),
+  "cannot-read": () => t("permissionsTab.osSandboxWindowsWfpStateCannotRead"),
+};
+
+function windowsStateLabel(labels: Record<string, () => string>, value: unknown): string {
+  return typeof value === "string" && Object.hasOwn(labels, value)
+    ? labels[value]()
+    : t("permissionsTab.osSandboxWindowsStateUnknown");
+}
+
+const UNEXPECTED_WINDOWS_INSTALL_VIEW = (): WindowsInstallOutcomeView => ({
+  outcome: "unexpected",
+  tone: "error",
+  text: t("permissionsTab.osSandboxWindowsInstallUnexpected"),
+});
+
+/**
+ * Every value `sandboxWindowsInstall` can resolve to — an outcome, an IPC
+ * refusal, an older shape, or something unexpected — becomes a visible state.
+ * The click must never end looking like nothing happened (issue #1608). No
+ * free text from main reaches the screen; only codes and localized copy do.
+ */
+function describeWindowsInstallResult(result: unknown): WindowsInstallOutcomeView {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return UNEXPECTED_WINDOWS_INSTALL_VIEW();
+  }
+  const record = result as Record<string, unknown>;
+  if (record.ok === false) {
+    const code = ipcErrorCode(record.error);
+    const message = code === "user-keyboard-required"
+      ? t("permissionsTab.osSandboxWindowsInstallNeedsClick")
+      : ipcFailureText("Windows install", record, t("formatIpcError.unknownError"));
+    return { outcome: "refused", tone: "error", text: t("permissionsTab.osSandboxWindowsInstallError", { message }), errorCode: code };
+  }
+  // An older main process answers without `outcome`; read what it did say.
+  const outcome = typeof record.outcome === "string"
+    ? record.outcome
+    : record.cancelled === true
+      ? "cancelled"
+      : record.ready === true
+        ? "ready"
+        : record.ready === false
+          ? "installed-unverified"
+          : undefined;
+  switch (outcome) {
+    case "ready":
+      return { outcome, tone: "success", text: t("permissionsTab.osSandboxWindowsInstallReady") };
+    case "already-ready":
+      return { outcome, tone: "info", text: t("permissionsTab.osSandboxWindowsInstallAlreadyReady") };
+    case "installed-unverified":
+      return {
+        outcome,
+        tone: "warning",
+        text: t("permissionsTab.osSandboxWindowsInstallUnverified", {
+          userState: windowsStateLabel(WINDOWS_USER_STATE_LABEL, record.userState),
+          wfpState: windowsStateLabel(WINDOWS_WFP_STATE_LABEL, record.wfpState),
+        }),
+      };
+    case "cancelled":
+      return { outcome, tone: "warning", text: t("permissionsTab.osSandboxWindowsInstallCancelled") };
+    case "timed-out":
+      return { outcome, tone: "error", text: t("permissionsTab.osSandboxWindowsInstallTimedOut") };
+    case "failed": {
+      const errorCode = ipcErrorCode(record.errorCode) ?? "unexpected";
+      const text = Object.hasOwn(WINDOWS_INSTALL_FAILURE_COPY, errorCode)
+        ? WINDOWS_INSTALL_FAILURE_COPY[errorCode]()
+        : t("permissionsTab.osSandboxWindowsInstallFailedOther", { code: errorCode });
+      return { outcome, tone: "error", text, errorCode };
+    }
+    default:
+      return UNEXPECTED_WINDOWS_INSTALL_VIEW();
+  }
+}
+
+const WINDOWS_INSTALL_OUTCOME_TONE: Record<WindowsInstallOutcomeView["tone"], string> = {
+  success: "border-success/(--opacity-medium) bg-success/(--opacity-faint) text-success",
+  info: "border-info/(--opacity-medium) bg-info/(--opacity-soft) text-info",
+  warning: "border-warning/(--opacity-medium) bg-warning/(--opacity-soft) text-warning",
+  error: "border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive",
+};
+
+
+/**
+ * A thrown IPC failure as this tab shows it. The thrown text can carry paths
+ * and internal messages, so it goes to the renderer log, and the screen gets
+ * localized copy only.
+ */
+function thrownErrorText(context: string, error: unknown): string {
+  console.warn(`[ave] permissions: ${context} failed:`, errorMessage(error));
+  return t("formatIpcError.unknownError");
+}
+
+/** A stable machine code (`user-keyboard-required`), as opposed to free text. */
+const IPC_ERROR_CODE_RE = /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$/;
+
+function ipcErrorCode(value: unknown): string | undefined {
+  return typeof value === "string" && value.length <= 80 && IPC_ERROR_CODE_RE.test(value)
+    ? value
+    : undefined;
+}
+
+function sandboxKindText(kind: unknown): string {
+  if (kind === "full") return t("permissionsTab.osSandboxKindFull");
+  if (kind === "partial") return t("permissionsTab.osSandboxKindPartial");
+  if (kind === "none") return t("permissionsTab.osSandboxKindNone");
+  return t("permissionsTab.osSandboxKindUnknown");
+}
+
+/**
+ * An `ok: false` IPC result as this tab shows it: a known code in its
+ * localized form, otherwise the action's own localized copy with the code. The
+ * free-text `message` (English, possibly with paths) is logged, not shown.
+ * Some handlers (the slash-backed directory and reviewer dispatch) put free
+ * text in `error` itself, such as a "usage: /permission dir …" line; that is
+ * logged and replaced by the action's copy, without a code.
+ */
+function ipcFailureText(
+  context: string,
+  result: { readonly error?: unknown; readonly message?: unknown },
+  fallback: string | ((code: string | undefined) => string),
+): string {
+  const error = typeof result.error === "string" && result.error ? result.error : undefined;
+  const code = ipcErrorCode(error);
+  console.warn(
+    `[ave] permissions: ${context} failed:`,
+    error ?? "-",
+    typeof result.message === "string" ? result.message : "",
+  );
+  if (code && resolveIpcErrorKey(code)) return formatIpcError(code, undefined);
+  // A template that places the code itself gets it (or "-"); a plain sentence
+  // gets the code appended.
+  if (typeof fallback === "function") return fallback(code);
+  return code ? `${fallback} (${code})` : fallback;
+}
+
 function formatRevokeError(error: string | undefined, message: string | undefined): string {
-  return formatIpcError(error, message, {
-    codeMap: { "invalid-key": t("permissionsTab.errorInvalidKey") },
-  });
+  return ipcFailureText("revoke", { error, message }, error === "invalid-key"
+    ? t("permissionsTab.errorInvalidKey")
+    : t("formatIpcError.unknownError"));
 }
 
 function formatReviewerDispatchError(error: string): string {
   if (error.startsWith("reviewer-rewire-failed:")) {
-    const detail = error.slice("reviewer-rewire-failed:".length).trim();
+    // The detail is a raw exception message from main: log it, do not show it.
+    console.warn("[ave] permissions: reviewer rewire failed:", error.slice("reviewer-rewire-failed:".length).trim());
     return [
       t("permissionsTab.errorReviewerRewireFailed"),
       t("permissionsTab.errorReviewerRewireHint"),
-      detail ? t("permissionsTab.errorReviewerRewireDetail", { detail }) : "",
-    ].filter(Boolean).join(" ");
+    ].join(" ");
   }
-  return formatIpcError(error, undefined, {
-    codeMap: { "user-keyboard-required": t("permissionsTab.errorUserKeyboardRequired") },
-    fallbackContext: t("permissionsTab.errorReviewerFallbackContext"),
-  });
+  if (error === "user-keyboard-required") return t("permissionsTab.errorUserKeyboardRequired");
+  // A slash-parse failure arrives here as English free text; ipcFailureText
+  // logs it and shows the localized reviewer-error copy instead.
+  return ipcFailureText("reviewer dispatch", { error }, t("permissionsTab.errorReviewerFallbackContext"));
 }
 
 function preserveSettingsScrollPosition(): () => void {
@@ -213,12 +379,15 @@ export function PermissionsTab({
   // Windows srt-win repair flow (the OS sandbox is normally provisioned at
   // app-install time; this panel is the re-provision/repair fallback).
   // `windowsStatus` holds the latest readiness snapshot once the user opts in on
-  // win32; the panel renders off it. `windowsInstallBusy` disables the
-  // "Re-provision" button while the UAC prompt is in flight.
-  // `windowsInstallCancelled` shows the cancelled banner after a UAC dismissal.
+  // win32; the panel renders off it. `windowsInstallPhase` is where a click is:
+  // "installing" (main checks status, then may raise the UAC prompt) or
+  // "refreshing" (re-reading status afterwards); while it is set the
+  // "Re-provision" button is disabled.
+  // `windowsInstallOutcome` is what the last click led to, shown until the next.
   const [windowsStatus, setWindowsStatus] = useState<SandboxWindowsStatusInfo | null>(null);
-  const [windowsInstallBusy, setWindowsInstallBusy] = useState(false);
-  const [windowsInstallCancelled, setWindowsInstallCancelled] = useState(false);
+  const [windowsInstallPhase, setWindowsInstallPhase] = useState<"installing" | "refreshing" | null>(null);
+  const windowsInstallBusy = windowsInstallPhase !== null;
+  const [windowsInstallOutcome, setWindowsInstallOutcome] = useState<WindowsInstallOutcomeView | null>(null);
 
   // ── Sub-agent parent adjudication ─────────────────
   // The master switch is a feature flag in app settings; the ceilings below it
@@ -272,6 +441,9 @@ export function PermissionsTab({
       setDirectories(dirRes.ok && dirRes.verb === "list" ? dirRes.userAdditions : []);
       setReviewer(reviewerRes.settings);
       setSandboxCapability(sandboxRes);
+      console.warn("[ave] permissions: sandbox diagnostics:",
+        sandboxRes.potentialReason ?? sandboxRes.reason, sandboxRes.runtime?.reason,
+        sandboxRes.boot?.dependencyErrors);
       const osSandboxOn = settingsRes.features?.osToolSandbox ?? false;
       setSandboxEnabled(osSandboxOn);
       // Mirrors the store default (ON) for a settings file written before the
@@ -280,12 +452,15 @@ export function PermissionsTab({
       // On win32 with the setting already ON, surface the consent/setup state
       // on tab entry so the panel persists across navigations until ready.
       if (sandboxRes.platform === "win32" && osSandboxOn) {
-        setWindowsStatus(await window.ave.permission.sandboxWindowsStatus());
+        const status = await window.ave.permission.sandboxWindowsStatus();
+        if (status.instructions) console.warn("[ave] permissions: Windows setup diagnostics:", status.instructions);
+        setWindowsStatus(status);
       } else {
         setWindowsStatus(null);
       }
     } catch (e) {
-      const message = errorMessage(e) || t("permissionsTab.errorLoadFailed");
+      console.warn("[ave] permissions: load failed:", errorMessage(e));
+      const message = t("permissionsTab.errorLoadFailed");
       // Same rule for the failure surface. A refresh that fails still has the
       // last-known state on screen, so it reports through the banner instead of
       // replacing what the user is reading with an error page.
@@ -352,7 +527,7 @@ export function PermissionsTab({
         approvalCacheKey: exactDenyDraft.approvalCacheKey,
       });
       if (!result.ok) {
-        showBanner("error", result.message ?? result.error ?? t("permissionsTab.exactDenySaveFailed"));
+        showBanner("error", ipcFailureText("exact deny save", result, t("permissionsTab.exactDenySaveFailed")));
         return;
       }
       await fetchApprovals();
@@ -362,7 +537,7 @@ export function PermissionsTab({
         document.querySelector<HTMLElement>(testIdSelector(TEST_IDS.settingsPageTitle))?.focus();
       });
     } catch (err) {
-      showBanner("error", t("permissionsTab.errorRevokeFailed", { message: errorMessage(err) }));
+      showBanner("error", t("permissionsTab.errorRevokeFailed", { message: thrownErrorText("exact deny save", err) }));
     } finally {
       setExactDenyBusy(false);
     }
@@ -411,7 +586,7 @@ export function PermissionsTab({
           return;
         }
       } catch (err) {
-        showBanner("error", t("permissionsTab.errorRevokeFailed", { message: errorMessage(err) }));
+        showBanner("error", t("permissionsTab.errorRevokeFailed", { message: thrownErrorText("revoke", err) }));
         return;
       }
       try {
@@ -420,7 +595,7 @@ export function PermissionsTab({
       } catch (err) {
         showBanner(
           "warn",
-          t("permissionsTab.errorRevokeRefreshFailed", { toolName, message: errorMessage(err) }),
+          t("permissionsTab.errorRevokeRefreshFailed", { toolName, message: thrownErrorText("approval list refresh", err) }),
         );
       }
     } finally {
@@ -448,7 +623,7 @@ export function PermissionsTab({
           setMode(normalizeExecutionMode(res.mode));
           modeChanged = true;
         } else {
-          showBanner("error", res.message ?? res.error ?? t("permissionsTab.errorModeChangeFailed"));
+          showBanner("error", ipcFailureText("mode change", res, t("permissionsTab.errorModeChangeFailed")));
           return;
         }
       }
@@ -475,7 +650,7 @@ export function PermissionsTab({
         }
       }
     } catch (e) {
-      showBanner("error", t("permissionsTab.errorModeChangeError", { message: errorMessage(e) }));
+      showBanner("error", t("permissionsTab.errorModeChangeError", { message: thrownErrorText("mode change", e) }));
     } finally {
       setModeBusy(false);
     }
@@ -496,7 +671,7 @@ export function PermissionsTab({
     } catch (error) {
       showBanner(
         "error",
-        t("permissionsTab.errorModeChangeError", { message: errorMessage(error) }),
+        t("permissionsTab.errorModeChangeError", { message: thrownErrorText("reviewer mode change", error) }),
       );
     } finally {
       setModeBusy(false);
@@ -514,13 +689,13 @@ export function PermissionsTab({
       });
       if (isIpcErrorResult(res)) {
         setAdjudicationEnabled(!next);
-        showBanner("error", res.message ?? t("permissionsTab.adjudicationToggleFailed"));
+        showBanner("error", ipcFailureText("adjudication toggle", res, t("permissionsTab.adjudicationToggleFailed")));
       }
     } catch (e) {
       setAdjudicationEnabled(!next);
       showBanner(
         "error",
-        t("permissionsTab.adjudicationToggleError", { message: errorMessage(e) }),
+        t("permissionsTab.adjudicationToggleError", { message: thrownErrorText("adjudication toggle", e) }),
       );
     } finally {
       setAdjudicationBusy(false);
@@ -559,7 +734,7 @@ export function PermissionsTab({
       setAdjudicationRevision((revision) => revision + 1);
       showBanner(
         "error",
-        t("permissionsTab.adjudicationToggleError", { message: errorMessage(error) }),
+        t("permissionsTab.adjudicationToggleError", { message: thrownErrorText("adjudication ceiling", error) }),
       );
     } finally {
       setAdjudicationBusy(false);
@@ -577,7 +752,7 @@ export function PermissionsTab({
       } else if (res.error === "managed") {
         showBanner("warn", t("permissionsTab.errorPolicyManaged"));
       } else {
-        showBanner("error", res.message ?? t("permissionsTab.errorPolicyChangeFailed"));
+        showBanner("error", ipcFailureText("policy change", res, t("permissionsTab.errorPolicyChangeFailed")));
       }
     } finally {
       setPolicyBusy(false);
@@ -589,13 +764,13 @@ export function PermissionsTab({
     const next = !sandboxEnabled;
     setSandboxBusy(true);
     setSandboxEnabled(next);
-    // Clear any stale "Install cancelled" banner whenever the toggle moves.
-    setWindowsInstallCancelled(false);
+    // Clear any stale install outcome whenever the toggle moves.
+    setWindowsInstallOutcome(null);
     try {
       const res = await getApi().updateSettings({ features: { osToolSandbox: next } });
       if (isIpcErrorResult(res)) {
         setSandboxEnabled(!next);
-        showBanner("error", res.message ?? t("permissionsTab.osSandboxToggleFailed"));
+        showBanner("error", ipcFailureText("OS sandbox toggle", res, t("permissionsTab.osSandboxToggleFailed")));
         return;
       }
       // Re-read capability so the activation note reflects the new state.
@@ -616,7 +791,7 @@ export function PermissionsTab({
       }
     } catch (e) {
       setSandboxEnabled(!next);
-      showBanner("error", t("permissionsTab.osSandboxToggleError", { message: errorMessage(e) }));
+      showBanner("error", t("permissionsTab.osSandboxToggleError", { message: thrownErrorText("OS sandbox toggle", e) }));
     } finally {
       setSandboxBusy(false);
     }
@@ -629,38 +804,37 @@ export function PermissionsTab({
   // ASRT's single self-elevating UAC prompt.
   const handleWindowsInstall = async () => {
     if (windowsInstallBusy) return;
-    setWindowsInstallBusy(true);
-    setWindowsInstallCancelled(false);
+    setWindowsInstallOutcome(null);
+    // The install is invoked straight from the click: preload stamps the
+    // click's transient user activation onto the call, and that lapses after
+    // ~5 s. Main validates it at entry, then reads status (up to ~45 s) and
+    // raises the UAC prompt only when setup is needed (issue #1608).
+    setWindowsInstallPhase("installing");
     try {
-      const result = await window.ave.permission.sandboxWindowsInstall();
-      if (result.cancelled) {
-        // UAC dismissed — not an error. Keep the user's opt-in setting ON so
-        // the Windows consent panel remains visible and they can retry instead
-        // of seeing the toggle immediately snap back off.
-        setWindowsInstallCancelled(true);
-        setWindowsStatus(await window.ave.permission.sandboxWindowsStatus());
-        return;
+      let view: WindowsInstallOutcomeView;
+      try {
+        view = describeWindowsInstallResult(await window.ave.permission.sandboxWindowsInstall());
+      } catch (error) {
+        // Main logs its own failure; this records the renderer's side of it.
+        console.warn("[ave] sandboxWindowsInstall rejected:", errorMessage(error));
+        view = { outcome: "refused", tone: "error", text: t("permissionsTab.osSandboxWindowsInstallRejected") };
       }
-      // Defensive: an error shape from the IPC (install threw or returned ok:false).
-      // Keep the user's opt-in setting ON and leave the consent panel available
-      // so a transient installer failure can be retried without re-enabling the
-      // setting first.
-      if ("ok" in result && result.ok === false) {
-        setWindowsStatus(await window.ave.permission.sandboxWindowsStatus());
-        const detail = (result as { ok: false; message?: string; error?: string }).message
-          ?? (result as { ok: false; message?: string; error?: string }).error
-          ?? "unknown error";
-        showBanner("error", t("permissionsTab.osSandboxWindowsInstallError", { message: detail }));
-        return;
+      if (view.outcome === "refused") {
+        console.warn("[ave] sandboxWindowsInstall refused:", view.errorCode ?? "rejected");
       }
-      // Install ran — refresh the readiness snapshot so the panel advances to
-      // the ready or setup-status state (verbatim instructions still drive the copy).
-      const status = await window.ave.permission.sandboxWindowsStatus();
-      setWindowsStatus(status);
-    } catch (e) {
-      showBanner("error", t("permissionsTab.osSandboxWindowsInstallError", { message: errorMessage(e) }));
+      // Shown whatever the status re-read says: an unchanged panel is exactly
+      // what made the click look like a no-op. The user's opt-in stays ON in
+      // every case, so the panel remains the place to retry.
+      setWindowsInstallOutcome(view);
+      setWindowsInstallPhase("refreshing");
+      try {
+        setWindowsStatus(await window.ave.permission.sandboxWindowsStatus());
+      } catch (error) {
+        console.warn("[ave] sandboxWindowsStatus re-read failed:", errorMessage(error));
+        showBanner("error", t("permissionsTab.osSandboxWindowsStatusRefreshFailed"));
+      }
     } finally {
-      setWindowsInstallBusy(false);
+      setWindowsInstallPhase(null);
     }
   };
 
@@ -679,10 +853,10 @@ export function PermissionsTab({
         setNewPattern("");
         await refreshRules();
       } else {
-        showBanner("error", res.message ?? t("permissionsTab.errorRuleAddFailed", { error: res.error }));
+        showBanner("error", ipcFailureText("rule add", res, (code) => t("permissionsTab.errorRuleAddFailed", { error: code ?? "-" })));
       }
     } catch (e) {
-      showBanner("error", t("permissionsTab.errorRuleAddError", { message: errorMessage(e) }));
+      showBanner("error", t("permissionsTab.errorRuleAddError", { message: thrownErrorText("rule add", e) }));
     } finally {
       setRulesBusy(false);
     }
@@ -695,10 +869,10 @@ export function PermissionsTab({
       if (res.ok) {
         await refreshRules();
       } else {
-        showBanner("error", res.message ?? t("permissionsTab.errorRuleRemoveFailed", { error: res.error }));
+        showBanner("error", ipcFailureText("rule remove", res, (code) => t("permissionsTab.errorRuleRemoveFailed", { error: code ?? "-" })));
       }
     } catch (e) {
-      showBanner("error", t("permissionsTab.errorRuleRemoveError", { message: errorMessage(e) }));
+      showBanner("error", t("permissionsTab.errorRuleRemoveError", { message: thrownErrorText("rule remove", e) }));
     } finally {
       setRulesBusy(false);
     }
@@ -725,7 +899,8 @@ export function PermissionsTab({
         setPendingDirectoryWarning(null);
         setDirectories(res.persisted);
         if (res.warnings.length > 0) {
-          showBanner("warn", res.warnings.join(" "));
+          console.warn("[ave] permissions: directory warnings:", ...res.warnings);
+          showBanner("warn", t("permissionsTab.directoryWarningBody"));
         }
       } else if (!res.ok) {
         const failed = res as {
@@ -735,16 +910,17 @@ export function PermissionsTab({
           requiresAcknowledgement?: boolean;
         };
         if (failed.requiresAcknowledgement && failed.warnings?.length) {
+          console.warn("[ave] permissions: directory warnings:", ...failed.warnings);
           setPendingDirectoryWarning({ path: dir, warnings: failed.warnings });
           showBanner("warn", t("permissionsTab.warnDirectoryAckRequired"));
         } else {
           setPendingDirectoryWarning(null);
-          showBanner("error", failed.error);
+          showBanner("error", ipcFailureText("directory add", failed, t("permissionsTab.errorDirectoryAddFailed")));
         }
       }
     } catch (e) {
       setPendingDirectoryWarning(null);
-      showBanner("error", t("permissionsTab.errorDirectoryAddError", { message: errorMessage(e) }));
+      showBanner("error", t("permissionsTab.errorDirectoryAddError", { message: thrownErrorText("directory add", e) }));
     } finally {
       setDirsBusy(false);
     }
@@ -758,10 +934,10 @@ export function PermissionsTab({
       if (res.ok && res.verb === "deny") {
         setDirectories(res.persisted);
       } else if (!res.ok) {
-        showBanner("error", res.error);
+        showBanner("error", ipcFailureText("directory remove", res, t("permissionsTab.errorDirectoryRemoveFailed")));
       }
     } catch (e) {
-      showBanner("error", t("permissionsTab.errorDirectoryRemoveError", { message: errorMessage(e) }));
+      showBanner("error", t("permissionsTab.errorDirectoryRemoveError", { message: thrownErrorText("directory remove", e) }));
     } finally {
       setDirsBusy(false);
       restoreScroll();
@@ -1118,12 +1294,12 @@ export function PermissionsTab({
               <p className="italic">{t("permissionsTab.osSandboxRestartNote")}</p>
               {sandboxPotentialReason ? (
                 <p data-testid="os-sandbox-potential-reason">
-                  {t("permissionsTab.osSandboxPotentialReason", { reason: sandboxPotentialReason })}
+                  {t("permissionsTab.osSandboxPotentialReason", { reason: sandboxKindText(sandboxCapability.kind) })}
                 </p>
               ) : null}
               {sandboxRuntimeReason ? (
                 <p data-testid="os-sandbox-runtime-reason">
-                  {t("permissionsTab.osSandboxRuntimeReason", { reason: sandboxRuntimeReason })}
+                  {t("permissionsTab.osSandboxRuntimeReason", { reason: sandboxKindText(sandboxCapability.runtime?.kind) })}
                 </p>
               ) : null}
             </div>
@@ -1140,35 +1316,49 @@ export function PermissionsTab({
                   data-testid="os-sandbox-boot-degraded-detail"
                   className="whitespace-pre-line font-mono text-foreground"
                 >
-                  {sandboxBoot.dependencyErrors.join("\n")}
+                  {t("permissionsTab.osSandboxDiagnosticHint")}
                 </p>
               ) : null}
               <p className="italic">
-                {t("permissionsTab.osSandboxBootDegradedReason", { reason: sandboxBoot.reason })}
+                {t("permissionsTab.osSandboxBootDegradedReason", { reason: ipcErrorCode(sandboxBoot.reason) ?? "unknown" })}
               </p>
             </div>
           ) : null}
           {/* ── Windows srt-win consent flow ── */}
-          {windowsInstallCancelled ? (
+          {windowsInstallOutcome ? (
             <p
-              data-testid="os-sandbox-windows-install-cancelled"
-              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+              data-testid="os-sandbox-windows-install-outcome"
+              data-outcome={windowsInstallOutcome.outcome}
+              data-error-code={windowsInstallOutcome.errorCode}
+              role={windowsInstallOutcome.tone === "error" ? "alert" : "status"}
+              className={`whitespace-pre-line rounded-md border px-3 py-2 text-[11px] ${WINDOWS_INSTALL_OUTCOME_TONE[windowsInstallOutcome.tone]}`}
             >
-              {t("permissionsTab.osSandboxWindowsInstallCancelled")}
+              {windowsInstallOutcome.text}
+            </p>
+          ) : null}
+          {windowsInstallPhase ? (
+            <p
+              data-testid="os-sandbox-windows-install-pending"
+              data-phase={windowsInstallPhase}
+              role="status"
+              className="text-[11px] italic text-muted-foreground"
+            >
+              {windowsInstallPhase === "installing"
+                ? t("permissionsTab.osSandboxWindowsInstallPending")
+                : t("permissionsTab.osSandboxWindowsInstallRefreshing")}
             </p>
           ) : null}
           {sandboxEnabled && windowsStatus?.applicable && !windowsStatus.ready ? (
             windowsStatus.userState !== "absent" ||
             windowsStatus.wfpState !== "absent" ? (
               // Install partially ran or status cannot be fully read. Show the
-              // verbatim ASRT instructions and keep the explicit retry action
-              // available. ASRT 0.0.76 no longer requires Windows sign-out.
+              // localized setup guidance and keep the explicit retry action
+              // available. Setup does not require signing out.
               <div
                 data-testid="os-sandbox-windows-setup-status"
                 className="space-y-2 rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-soft) px-3 py-2 text-[11px] text-info"
               >
                 <p className="font-medium">{t("permissionsTab.osSandboxWindowsReloginHeading")}</p>
-                <p className="whitespace-pre-line font-mono text-foreground">{windowsStatus.instructions}</p>
                 <p className="italic">{t("permissionsTab.osSandboxWindowsReloginPending")}</p>
                 <Button
                   type="button"
@@ -1194,9 +1384,7 @@ export function PermissionsTab({
               >
                 <p className="font-medium">{t("permissionsTab.osSandboxWindowsConsentHeading")}</p>
                 <p>{t("permissionsTab.osSandboxWindowsConsentBody")}</p>
-                {windowsStatus.instructions ? (
-                  <p className="whitespace-pre-line font-mono text-foreground">{windowsStatus.instructions}</p>
-                ) : null}
+                <p className="italic">{t("permissionsTab.osSandboxWindowsReloginPending")}</p>
                 <Button
                   type="button"
                   size="sm"
@@ -1599,11 +1787,7 @@ export function PermissionsTab({
               className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[12px] text-warning"
             >
               <p className="font-medium">{t("permissionsTab.directoryWarningTitle")}</p>
-              <ul className="mt-1 list-disc space-y-1 pl-4">
-                {pendingDirectoryWarning.warnings.map((warning) => (
-                  <li key={warning}>{warning}</li>
-                ))}
-              </ul>
+              <p className="mt-1">{t("permissionsTab.directoryWarningBody")}</p>
               <div className="mt-2 flex gap-2">
                 <Button
                   size="sm"
